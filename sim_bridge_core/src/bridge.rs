@@ -7,7 +7,7 @@ use peppylib::runtime::CancellationToken;
 use serde::{Deserialize, Serialize};
 
 use crate::config::DaemonState;
-use crate::pipeline::{run_os_to_sim, run_sim_to_os};
+use crate::pipeline::{run_os_to_sim, run_sim_to_os, BoxFuture};
 
 type Pipeline = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
@@ -37,17 +37,17 @@ impl ArmMergeState {
     }
 }
 
-pub struct SimBridge<R> {
-    runner: Arc<R>,
+pub struct SimBridge<Runner> {
+    runner: Arc<Runner>,
     daemon: DaemonState,
     token: CancellationToken,
     sim_node: Arc<str>,
     pipelines: Vec<Pipeline>,
 }
 
-impl<R: Clone + Send + Sync + 'static> SimBridge<R> {
+impl<Runner: Clone + Send + Sync + 'static> SimBridge<Runner> {
     pub fn new(
-        runner: Arc<R>,
+        runner: Arc<Runner>,
         daemon: DaemonState,
         token: CancellationToken,
         sim_node: Arc<str>,
@@ -55,12 +55,10 @@ impl<R: Clone + Send + Sync + 'static> SimBridge<R> {
         Self { runner, daemon, token, sim_node, pipelines: Vec::new() }
     }
 
-    pub fn sim_to_os<M, F, Fut, E>(mut self, topic: Arc<str>, emit_fn: F) -> Self
+    pub fn sim_to_os<Msg, EmitFn>(mut self, topic: Arc<str>, emit_fn: EmitFn) -> Self
     where
-        M: for<'de> Deserialize<'de> + Send + 'static,
-        E: std::fmt::Display + Send + 'static,
-        F: Fn(Arc<R>, M) -> Fut + Send + 'static,
-        Fut: Future<Output = std::result::Result<(), E>> + Send + 'static,
+        Msg: for<'de> Deserialize<'de> + Send + 'static,
+        EmitFn: Fn(Arc<Runner>, Msg) -> BoxFuture<std::result::Result<(), String>> + Send + 'static,
     {
         self.pipelines.push(Box::pin(run_sim_to_os(
             self.runner.clone(),
@@ -73,12 +71,10 @@ impl<R: Clone + Send + Sync + 'static> SimBridge<R> {
         self
     }
 
-    pub fn os_to_sim<M, F, Fut, E>(mut self, topic: Arc<str>, recv_fn: F) -> Self
+    pub fn os_to_sim<Msg, RecvFn>(mut self, topic: Arc<str>, recv_fn: RecvFn) -> Self
     where
-        M: Serialize + Send + 'static,
-        E: std::fmt::Display + Send + 'static,
-        F: Fn(Arc<R>) -> Fut + Send + 'static,
-        Fut: Future<Output = std::result::Result<(String, M), E>> + Send + 'static,
+        Msg: Serialize + Send + 'static,
+        RecvFn: Fn(Arc<Runner>) -> BoxFuture<std::result::Result<(String, Msg), String>> + Send + 'static,
     {
         self.pipelines.push(Box::pin(run_os_to_sim(
             self.runner.clone(),

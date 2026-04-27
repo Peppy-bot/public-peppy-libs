@@ -5,9 +5,9 @@ pub mod services;
 pub mod types;
 
 pub use bridge::{ArmMergeState, SimBridge};
+pub use pipeline::{run_os_to_sim, run_sim_to_os, BoxFuture};
 pub use config::{
-    read_bridge_config, read_daemon_state, resolve_joint_indices, sim_node_name, BridgeConfig,
-    DaemonState,
+    read_bridge_config, resolve_joint_indices, sim_node_name, BridgeConfig, DaemonState,
 };
 pub use services::{call_sim, call_sim_sync};
 pub use types::error::{BridgeError, Result};

@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::sync::Arc;
 
 use peppylib::config::QoSProfile;
@@ -8,18 +7,16 @@ use serde::Serialize;
 use crate::config::DaemonState;
 use super::{BACKOFF_INIT, BACKOFF_MAX};
 
-pub async fn run_os_to_sim<R, M, F, Fut, E>(
-    runner: Arc<R>,
+pub async fn run_os_to_sim<Runner, Msg, RecvFn>(
+    runner: Arc<Runner>,
     token: CancellationToken,
     daemon: DaemonState,
     topic: Arc<str>,
-    recv_fn: F,
+    recv_fn: RecvFn,
 ) where
-    R: Send + Sync + 'static,
-    M: Serialize + Send + 'static,
-    E: std::fmt::Display + Send + 'static,
-    F: Fn(Arc<R>) -> Fut + Send + 'static,
-    Fut: Future<Output = std::result::Result<(String, M), E>> + Send + 'static,
+    Runner: Send + Sync + 'static,
+    Msg: Serialize + Send + 'static,
+    RecvFn: Fn(Arc<Runner>) -> super::BoxFuture<std::result::Result<(String, Msg), String>> + Send + 'static,
 {
     let mut backoff = BACKOFF_INIT;
 

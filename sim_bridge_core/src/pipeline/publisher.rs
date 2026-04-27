@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::sync::Arc;
 
 use peppylib::config::QoSProfile;
@@ -8,19 +7,17 @@ use serde::Deserialize;
 use crate::config::DaemonState;
 use super::{BACKOFF_INIT, BACKOFF_MAX};
 
-pub async fn run_sim_to_os<R, M, F, Fut, E>(
-    runner: Arc<R>,
+pub async fn run_sim_to_os<Runner, Msg, EmitFn>(
+    runner: Arc<Runner>,
     token: CancellationToken,
     daemon: DaemonState,
     sim_node: Arc<str>,
     topic: Arc<str>,
-    emit_fn: F,
+    emit_fn: EmitFn,
 ) where
-    R: Send + Sync + 'static,
-    M: for<'de> Deserialize<'de> + Send + 'static,
-    E: std::fmt::Display + Send + 'static,
-    F: Fn(Arc<R>, M) -> Fut + Send + 'static,
-    Fut: Future<Output = std::result::Result<(), E>> + Send + 'static,
+    Runner: Send + Sync + 'static,
+    Msg: for<'de> Deserialize<'de> + Send + 'static,
+    EmitFn: Fn(Arc<Runner>, Msg) -> super::BoxFuture<Result<(), String>> + Send + 'static,
 {
     let mut backoff = BACKOFF_INIT;
 
@@ -79,7 +76,7 @@ pub async fn run_sim_to_os<R, M, F, Fut, E>(
                 _ = token.cancelled() => break 'retry,
                 msg = sub.on_next_message() => match msg {
                     Some(msg) => {
-                        match serde_json::from_slice::<M>(msg.payload().as_ref()) {
+                        match serde_json::from_slice::<Msg>(msg.payload().as_ref()) {
                             Ok(m) => {
                                 if let Err(e) = emit_fn(runner.clone(), m).await {
                                     tracing::warn!("sim_to_os({topic}): emit — {e}");

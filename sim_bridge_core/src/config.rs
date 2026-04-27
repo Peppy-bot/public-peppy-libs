@@ -60,18 +60,10 @@ pub struct BridgeConfig {
     pub subscribers: Vec<SubscriberConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct DaemonState {
     pub core_node_name: String,
     pub messaging_port: u16,
-}
-
-pub fn read_daemon_state() -> Result<DaemonState> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let path = PathBuf::from(home).join(".peppy/daemon_state.json");
-    let text = fs::read_to_string(&path)
-        .map_err(|source| BridgeError::ConfigNotFound { path: path.clone(), source })?;
-    serde_json::from_str(&text).map_err(|e| BridgeError::ConfigParse(e.to_string()))
 }
 
 pub fn read_bridge_config() -> Result<BridgeConfig> {
