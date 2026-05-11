@@ -254,3 +254,31 @@ impl GripperCan {
         state
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::assertions_on_constants)]
+mod tests {
+    use super::v10;
+
+    #[test]
+    fn arm_arrays_have_consistent_length() {
+        assert_eq!(v10::ARM_MOTOR_TYPES.len(), v10::ARM_DOF);
+        assert_eq!(v10::ARM_SEND_IDS.len(), v10::ARM_DOF);
+        assert_eq!(v10::ARM_RECV_IDS.len(), v10::ARM_DOF);
+    }
+
+    #[test]
+    fn gripper_mapping_signs_oppose() {
+        // Linear mapping: 0 m → 0 rad, GRIPPER_OPEN_M → GRIPPER_OPEN_RAD. The open
+        // direction is negative in the motor frame; a sign flip sends the gripper
+        // the wrong way.
+        assert!(v10::GRIPPER_OPEN_M > 0.0);
+        assert!(v10::GRIPPER_OPEN_RAD < 0.0);
+    }
+
+    #[test]
+    fn gripper_can_id_does_not_collide_with_arm() {
+        assert!(!v10::ARM_SEND_IDS.contains(&v10::GRIPPER_SEND_ID));
+        assert!(!v10::ARM_RECV_IDS.contains(&v10::GRIPPER_RECV_ID));
+    }
+}
