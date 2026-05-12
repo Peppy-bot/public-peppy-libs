@@ -24,6 +24,7 @@ OpenArmHandle openarm_create(const char* can_interface, bool enable_fd) {
 }
 
 void openarm_destroy(OpenArmHandle h) {
+    if (!h) return;
     delete static_cast<OA*>(h);
 }
 
@@ -32,6 +33,7 @@ void openarm_init_arm_motors(OpenArmHandle h,
                              const uint32_t* send_can_ids,
                              const uint32_t* recv_can_ids,
                              int count) {
+    if (!h) { std::cerr << "openarm_init_arm_motors: null handle" << std::endl; std::abort(); }
     auto* arm = static_cast<OA*>(h);
     std::vector<openarm::damiao_motor::MotorType> types;
     std::vector<uint32_t> send_ids, recv_ids;
@@ -47,22 +49,27 @@ void openarm_init_arm_motors(OpenArmHandle h,
 }
 
 void openarm_enable_all(OpenArmHandle h) {
+    if (!h) { std::cerr << "openarm_enable_all: null handle" << std::endl; std::abort(); }
     static_cast<OA*>(h)->enable_all();
 }
 
 void openarm_disable_all(OpenArmHandle h) {
+    if (!h) { std::cerr << "openarm_disable_all: null handle" << std::endl; std::abort(); }
     static_cast<OA*>(h)->disable_all();
 }
 
 void openarm_recv_all(OpenArmHandle h, int first_timeout_us) {
+    if (!h) { std::cerr << "openarm_recv_all: null handle" << std::endl; std::abort(); }
     static_cast<OA*>(h)->recv_all(first_timeout_us);
 }
 
 void openarm_refresh_all(OpenArmHandle h) {
+    if (!h) { std::cerr << "openarm_refresh_all: null handle" << std::endl; std::abort(); }
     static_cast<OA*>(h)->refresh_all();
 }
 
 void openarm_set_callback_mode_all(OpenArmHandle h, int mode) {
+    if (!h) { std::cerr << "openarm_set_callback_mode_all: null handle" << std::endl; std::abort(); }
     using CM = openarm::damiao_motor::CallbackMode;
     CM cm;
     switch (mode) {
@@ -83,6 +90,7 @@ void openarm_arm_mit_control(OpenArmHandle h,
                              const double* dq,
                              const double* tau,
                              int count) {
+    if (!h) { std::cerr << "openarm_arm_mit_control: null handle" << std::endl; std::abort(); }
     auto* arm = static_cast<OA*>(h);
     std::vector<openarm::damiao_motor::MITParam> params;
     params.reserve(count);
@@ -97,6 +105,7 @@ void openarm_arm_get_state(OpenArmHandle h,
                            double* velocities,
                            double* torques,
                            int count) {
+    if (!h) { std::cerr << "openarm_arm_get_state: null handle" << std::endl; std::abort(); }
     auto* arm = static_cast<OA*>(h);
     const auto& motors = arm->get_arm().get_motors();
     if (static_cast<int>(motors.size()) != count) {
@@ -116,6 +125,7 @@ void openarm_init_gripper_motor(OpenArmHandle h,
                                 uint8_t motor_type,
                                 uint32_t send_can_id,
                                 uint32_t recv_can_id) {
+    if (!h) { std::cerr << "openarm_init_gripper_motor: null handle" << std::endl; std::abort(); }
     auto* arm = static_cast<OA*>(h);
     arm->init_gripper_motor(
         static_cast<openarm::damiao_motor::MotorType>(motor_type),
@@ -129,6 +139,7 @@ void openarm_gripper_mit_control(OpenArmHandle h,
                                  double q,
                                  double dq,
                                  double tau) {
+    if (!h) { std::cerr << "openarm_gripper_mit_control: null handle" << std::endl; std::abort(); }
     auto* arm = static_cast<OA*>(h);
     arm->get_gripper().mit_control_all({{kp, kd, q, dq, tau}});
 }
@@ -137,6 +148,7 @@ void openarm_gripper_get_state(OpenArmHandle h,
                                double* position,
                                double* velocity,
                                double* torque) {
+    if (!h) { std::cerr << "openarm_gripper_get_state: null handle" << std::endl; std::abort(); }
     auto* arm = static_cast<OA*>(h);
     const auto& motors = arm->get_gripper().get_motors();
     if (motors.empty()) {

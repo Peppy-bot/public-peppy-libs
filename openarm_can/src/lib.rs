@@ -97,10 +97,12 @@ mod inner {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
-// Send: handle is a pointer to a heap-allocated C++ object backed by a SocketCAN fd; no
-// thread-local state, so ownership can be transferred across threads. Sync is intentionally
-// not impl'd: most methods are &mut self and get_state(&self) reads internal C++ state whose
-// concurrent-read safety is not documented. Wrap in Arc<Mutex<_>> for cross-task sharing.
+// SAFETY: Verified by inspection of enactic/openarm_can: CANSocket wraps a plain
+// socket_fd_ (int) with no thread affinity; all other fields are heap-allocated
+// (std::unique_ptr / std::vector / std::map); the library has no thread_local storage
+// and no static mutable state. Transferring ownership across threads is safe.
+// Sync is intentionally not impl'd: mutable motor state is read back without any
+// synchronisation. Wrap in Arc<Mutex<_>> for cross-task sharing.
 struct CanHandle {
     handle: inner::OpenArmHandle,
 }
