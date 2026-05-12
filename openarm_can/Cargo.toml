@@ -1,0 +1,11 @@
+[package]
+name = "openarm_can"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+thiserror = "2"
+
+[build-dependencies]
+cc = "1"
+bindgen = "0.72"
