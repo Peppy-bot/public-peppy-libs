@@ -1,3 +1,4 @@
+from .actuator_ctrl import IsaacActuatorCtrl
 from .articulation import IsaacArticulation
 from .clock_sensor import IsaacClockSensor
 from .contact_sensor import IsaacContactSensor
@@ -10,6 +11,7 @@ from .transform_tree import IsaacTransformTree
 from .wrench_sensor import IsaacWrenchSensor
 
 __all__ = [
+    "IsaacActuatorCtrl",
     "IsaacArticulation",
     "IsaacClockSensor",
     "IsaacContactSensor",
