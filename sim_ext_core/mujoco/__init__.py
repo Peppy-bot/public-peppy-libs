@@ -1,3 +1,4 @@
+from .actuator_ctrl import MujocoActuatorCtrl
 from .articulation import MujocoArticulation
 from .clock_sensor import MujocoClockSensor
 from .contact_sensor import MujocoContactSensor
@@ -10,6 +11,7 @@ from .transform_tree import MujocoTransformTree
 from .wrench_sensor import MujocoWrenchSensor
 
 __all__ = [
+    "MujocoActuatorCtrl",
     "MujocoArticulation",
     "MujocoClockSensor",
     "MujocoContactSensor",
