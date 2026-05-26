@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 pub struct JointStatesMsg {
     pub robot: String,
     pub step: u64,
+    #[serde(default)]
+    pub joint_names: Vec<String>,
     pub positions: Vec<f64>,
     pub velocities: Vec<f64>,
     pub stamp: f64,
