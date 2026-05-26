@@ -16,9 +16,16 @@ class JointStatesBridge(BridgePlugin):
         self._node_name: str = config.node_name
         self._robot_name: str = entry.robot_name
         self._topic: str = entry.topic
+        self._joint_names: list[str] = []
 
     def setup(self) -> bool:
-        return self._articulation.setup()
+        if not self._articulation.setup():
+            return False
+        if hasattr(self._articulation, "get_joint_names"):
+            self._joint_names = list(self._articulation.get_joint_names())
+        else:
+            self._joint_names = []
+        return True
 
     def teardown(self) -> None:
         pass  # articulation lifecycle is managed by the extension, not the plugin
@@ -32,6 +39,7 @@ class JointStatesBridge(BridgePlugin):
             {
                 "robot": self._robot_name,
                 "step": step,
+                "joint_names": self._joint_names,
                 "positions": positions,
                 "velocities": velocities,
                 "stamp": time.time(),

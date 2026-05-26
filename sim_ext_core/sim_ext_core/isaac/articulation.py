@@ -58,6 +58,10 @@ class IsaacArticulation:
             logger.warning(f"Could not read DOF names: {exc}")
             return []
 
+    def get_joint_names(self) -> list[str]:
+        """Cross-engine alias of get_dof_names — order matches get_joint_states()."""
+        return self.get_dof_names()
+
     def get_joint_states(self) -> Optional[tuple[list[float], list[float]]]:
         """Read current joint positions and velocities."""
         if self._view is None:

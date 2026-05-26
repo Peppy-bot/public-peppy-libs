@@ -17,12 +17,15 @@ class MujocoArticulation:
         self._qpos_indices: list[int] = []
         self._qvel_indices: list[int] = []
         self._ctrl_indices: list[int] = []
+        self._joint_names: list[str] = []
         self._num_dof: int = 0
         self._ready: bool = False
 
     def setup(self) -> bool:
-        """Resolve actuated joint indices from model metadata."""
+        """Resolve actuated joint indices + names from model metadata."""
         try:
+            import mujoco  # pylint: disable=E0401,C0415
+
             actuator_indices = [
                 i
                 for i in range(self._model.nu)
@@ -38,6 +41,10 @@ class MujocoArticulation:
             self._qvel_indices = [
                 int(self._model.jnt_dofadr[jid]) for jid in actuator_joint_ids
             ]
+            self._joint_names = [
+                mujoco.mj_id2name(self._model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+                for jid in actuator_joint_ids
+            ]
             self._num_dof = len(actuator_indices)
             self._ready = True
         except Exception as exc:
@@ -46,6 +53,10 @@ class MujocoArticulation:
 
         logger.info(f"MujocoArticulation ready — dof={self._num_dof}")
         return True
+
+    def get_joint_names(self) -> list[str]:
+        """Return joint names in the same order as get_joint_states() output."""
+        return list(self._joint_names)
 
     def teardown(self) -> None:
         """Reset articulation state."""
