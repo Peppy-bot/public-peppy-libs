@@ -13,6 +13,7 @@ from peppylib import (  # pylint: disable=E0401
     QoSProfile,
     TopicMessenger,
 )
+from peppylib.messaging import SenderTarget  # pylint: disable=E0401
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +50,10 @@ class PeppylibIO:  # pylint: disable=R0902
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._handle: Optional[MessengerHandle] = None
-        self._queues: dict[tuple[str, str], queue.SimpleQueue] = {}
+        self._queues: dict[tuple[str, str, str], queue.SimpleQueue] = {}
         self._queues_lock = threading.Lock()
-        self._pending_subs: list[tuple[str, str, str]] = []
-        self._all_subs: list[tuple[str, str, str]] = []
+        self._pending_subs: list[tuple[str, str, str, str]] = []
+        self._all_subs: list[tuple[str, str, str, str]] = []
         self._subs_lock = threading.Lock()
         self._recv_tasks: list[asyncio.Task] = []
         self._ready = threading.Event()
@@ -93,21 +94,36 @@ class PeppylibIO:  # pylint: disable=R0902
         self._ready.clear()
         logger.info("peppylib I/O stopped.")
 
-    def emit(self, node_name: str, topic: str, qos: str, payload: bytes) -> None:
+    def emit(
+        self,
+        node_name: str,
+        topic: str,
+        qos: str,
+        payload: bytes,
+        *,
+        node_tag: str = "v1",
+    ) -> None:
         if self._loop is None or self._loop.is_closed() or self._handle is None:
             return
         asyncio.run_coroutine_threadsafe(
-            self._emit(node_name, topic, qos, payload), self._loop
+            self._emit(node_name, node_tag, topic, qos, payload), self._loop
         )
 
-    def register_subscription(self, source_node: str, topic: str, qos: str) -> None:
-        key = (source_node, topic)
+    def register_subscription(
+        self,
+        source_node: str,
+        topic: str,
+        qos: str,
+        *,
+        source_tag: str = "v1",
+    ) -> None:
+        key = (source_node, source_tag, topic)
         with self._queues_lock:
             if key in self._queues:
                 return
             self._queues[key] = queue.SimpleQueue()
 
-        entry = (source_node, topic, qos)
+        entry = (source_node, source_tag, topic, qos)
         schedule_now = False
         with self._subs_lock:
             if entry not in self._all_subs:
@@ -123,12 +139,15 @@ class PeppylibIO:  # pylint: disable=R0902
 
         if schedule_now:
             asyncio.run_coroutine_threadsafe(
-                self._subscribe_with_retry(source_node, topic, qos), self._loop
+                self._subscribe_with_retry(source_node, source_tag, topic, qos),
+                self._loop,
             )
 
-    def get_latest(self, source_node: str, topic: str) -> Optional[bytes]:
+    def get_latest(
+        self, source_node: str, topic: str, *, source_tag: str = "v1"
+    ) -> Optional[bytes]:
         with self._queues_lock:
-            q = self._queues.get((source_node, topic))
+            q = self._queues.get((source_node, source_tag, topic))
         if q is None:
             return None
         latest: Optional[bytes] = None
@@ -183,16 +202,18 @@ class PeppylibIO:  # pylint: disable=R0902
         # On reconnect, all_subs covers subscriptions that pending_subs may have
         # missed if they were registered before the loop was ready.
         with self._subs_lock:
-            to_start: list[tuple[str, str, str]] = self._pending_subs[:]
+            to_start: list[tuple[str, str, str, str]] = self._pending_subs[:]
             self._pending_subs.clear()
-            already = {(s, t) for s, t, _ in to_start}
-            for s, t, q in self._all_subs:
-                if (s, t) not in already:
-                    to_start.append((s, t, q))
+            already = {(s, tg, t) for s, tg, t, _ in to_start}
+            for s, tg, t, q in self._all_subs:
+                if (s, tg, t) not in already:
+                    to_start.append((s, tg, t, q))
 
         loop = asyncio.get_event_loop()
-        for source_node, topic, qos in to_start:
-            task = loop.create_task(self._subscribe_with_retry(source_node, topic, qos))
+        for source_node, source_tag, topic, qos in to_start:
+            task = loop.create_task(
+                self._subscribe_with_retry(source_node, source_tag, topic, qos)
+            )
             task.add_done_callback(
                 lambda t: self._recv_tasks.remove(t) if t in self._recv_tasks else None
             )
@@ -211,47 +232,51 @@ class PeppylibIO:  # pylint: disable=R0902
             self._stop_future = None
 
     async def _subscribe_with_retry(
-        self, source_node: str, topic: str, qos: str
+        self, source_node: str, source_tag: str, topic: str, qos: str
     ) -> None:
         backoff = 1.0
         while True:
             try:
-                sub = await self._subscribe_once(source_node, topic, qos)
-                await self._recv_loop((source_node, topic), sub)
+                sub = await self._subscribe_once(source_node, source_tag, topic, qos)
+                await self._recv_loop((source_node, source_tag, topic), sub)
                 logger.info(
-                    f"{source_node}/{topic} subscription closed — re-subscribing."
+                    f"{source_node}:{source_tag}/{topic} subscription closed"
+                    " — re-subscribing."
                 )
                 backoff = 1.0
             except asyncio.CancelledError:
                 return
             except Exception as exc:
                 logger.warning(
-                    f"Subscribe error for {source_node}/{topic}: {exc}"
+                    f"Subscribe error for {source_node}:{source_tag}/{topic}: {exc}"
                     f" — retrying in {backoff:.0f}s"
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, _SUBSCRIBE_MAX_BACKOFF_S)
 
-    async def _subscribe_once(self, source_node: str, topic: str, qos: str):
+    async def _subscribe_once(
+        self, source_node: str, source_tag: str, topic: str, qos: str
+    ):
         if self._handle is None:
             raise RuntimeError("No daemon handle — not connected.")
         qos_profile = _QOS_MAP.get(qos, QoSProfile.Standard)
         cfg = self._config
         logger.info(
-            f"Subscribing to {source_node}/{topic}  (daemon_node={cfg.daemon_node})."
+            f"Subscribing to {source_node}:{source_tag}/{topic}"
+            f"  (daemon_node={cfg.daemon_node})."
         )
         return await TopicMessenger.subscribe(
             self._handle,
             cfg.daemon_node,
             self._instance_id,
-            source_node,
+            SenderTarget.node(source_node, source_tag),
             topic,
             None,
             None,
             qos_profile,
         )
 
-    async def _recv_loop(self, key: tuple[str, str], sub) -> None:
+    async def _recv_loop(self, key: tuple[str, str, str], sub) -> None:
         while True:
             msg = await sub.on_next_message()
             if msg is None:
@@ -261,17 +286,24 @@ class PeppylibIO:  # pylint: disable=R0902
             if q is not None:
                 q.put(msg.payload)
 
-    async def _emit(self, node_name: str, topic: str, qos: str, payload: bytes) -> None:
+    async def _emit(
+        self,
+        node_name: str,
+        node_tag: str,
+        topic: str,
+        qos: str,
+        payload: bytes,
+    ) -> None:
         qos_profile = _QOS_MAP.get(qos, QoSProfile.Standard)
         try:
             await TopicMessenger.emit(
                 self._handle,
                 self._config.daemon_node,
                 self._instance_id,
-                node_name,
+                SenderTarget.node(node_name, node_tag),
                 topic,
                 qos_profile,
                 payload,
             )
         except Exception as exc:
-            logger.warning(f"Failed to emit {node_name}/{topic}: {exc}")
+            logger.warning(f"Failed to emit {node_name}:{node_tag}/{topic}: {exc}")
