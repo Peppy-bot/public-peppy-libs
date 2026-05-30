@@ -166,22 +166,12 @@ def _normalise_params(raw: Any, entry_type: str) -> dict[str, Any]:
 
 
 def _read_jsonc(path: Path) -> dict[str, Any]:
+    import pyjson5  # pylint: disable=E0401
+
     text = path.read_text()
     try:
-        import pyjson5  # pylint: disable=E0401
-
-        try:
-            return pyjson5.loads(text)
-        except pyjson5.Json5DecoderException as exc:
-            # Re-raise as json.JSONDecodeError so BridgeConfig.from_file's
-            # fallback path (which catches that type) fires uniformly across
-            # parser backends.
-            raise json.JSONDecodeError(str(exc), text, 0) from exc
-    except ImportError:
-        pass
-    # Fallback: strip // full-line comments and parse as standard JSON.
-    # Does not handle JSON5 unquoted keys — install pyjson5 for full support.
-    stripped = "\n".join(
-        line for line in text.splitlines() if not line.strip().startswith("//")
-    )
-    return json.loads(stripped)
+        return pyjson5.loads(text)
+    except pyjson5.Json5DecoderException as exc:
+        # Re-raise as json.JSONDecodeError so BridgeConfig.from_file catches
+        # it uniformly.
+        raise json.JSONDecodeError(str(exc), text, 0) from exc
