@@ -85,7 +85,11 @@ class IsaacGripperSensor:
                     float(np.linalg.norm(all_forces[i][:3]))
                     for i in self._finger_indices
                 ]
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Could not read gripper applied forces — falling back to"
+                    f" zeros: {exc}"
+                )
                 applied_forces = [0.0] * len(self._finger_indices)
 
             return {
