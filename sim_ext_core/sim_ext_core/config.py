@@ -86,9 +86,14 @@ class BridgeConfig:
                     for e in raw.get("subscribers", [])
                 ],
             )
-        except (OSError, json.JSONDecodeError, KeyError):
+        except (OSError, json.JSONDecodeError):
             logger.exception(f"Could not load {resolved} — falling back to env vars")
             return cls.from_env(default_node_name=default_node_name)
+        except KeyError as exc:
+            raise ValueError(
+                f"sim_bridge.json5 at {resolved} is missing required field {exc}"
+                " — every publishers/subscribers entry needs at least a 'type' field"
+            ) from exc
 
     @classmethod
     def from_env(cls, default_node_name: str = "sim") -> BridgeConfig:
