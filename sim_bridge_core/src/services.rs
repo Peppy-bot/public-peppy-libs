@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use peppylib::config::QoSProfile;
+use peppylib::messaging::{ConsumerFilter, SenderTarget};
 use peppylib::{MessengerHandle, Payload};
 use serde_json::Value;
 
@@ -23,14 +24,24 @@ pub async fn call_sim(
         .await
         .map_err(|e| format!("connect: {e}"))?;
 
+    // v0.10: TopicMessenger::subscribe / emit take typed SenderTarget for the
+    // sender-side identity. The sim-side producer is a node-shaped target
+    // (the conforming robot_initializer impl); our own publish identity is
+    // the "sim_bridge" placeholder name retained from v0.9.
+    let sim_target = SenderTarget::node(sim_node, "v1")
+        .map_err(|e| format!("invalid sim_node target '{sim_node}': {e}"))?;
+    let bridge_target = SenderTarget::node("sim_bridge", "v1")
+        .map_err(|e| format!("invalid sim_bridge target: {e}"))?;
+
     let mut sub = peppylib::TopicMessenger::subscribe(
         &handle,
         &daemon.core_node_name,
         &format!("sim_bridge_{service}_res_sub"),
-        sim_node,
+        Some(sim_target),
+        false,
         &res_topic,
         None,
-        None,
+        &ConsumerFilter::Any,
         QoSProfile::Standard,
     )
     .await
@@ -41,7 +52,7 @@ pub async fn call_sim(
         &handle,
         &daemon.core_node_name,
         &format!("sim_bridge_{service}_req_pub"),
-        "sim_bridge",
+        bridge_target,
         &req_topic,
         QoSProfile::Standard,
         Payload::from(body),

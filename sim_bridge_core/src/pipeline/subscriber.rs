@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use peppylib::config::QoSProfile;
+use peppylib::messaging::SenderTarget;
 use peppylib::runtime::CancellationToken;
 use serde::Serialize;
 
@@ -62,11 +63,20 @@ pub async fn run_os_to_sim<Runner, Msg, RecvFn>(
                         }
                     };
 
+                    // v0.10: TopicMessenger::emit takes a typed SenderTarget
+                    // for the publisher-side identity (was a bare &str).
+                    let bridge_target = match SenderTarget::node("sim_bridge", "v1") {
+                        Ok(t) => t,
+                        Err(e) => {
+                            tracing::error!("os_to_sim({topic}): invalid sim_bridge target: {e}");
+                            break 'retry;
+                        }
+                    };
                     if let Err(e) = peppylib::TopicMessenger::emit(
                         &handle,
                         &daemon.core_node_name,
                         &format!("sim_bridge_{topic}_pub"),
-                        "sim_bridge",
+                        bridge_target,
                         &*topic,
                         QoSProfile::Standard,
                         peppylib::Payload::from(payload),

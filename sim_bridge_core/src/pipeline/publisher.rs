@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use peppylib::config::QoSProfile;
+use peppylib::messaging::{ConsumerFilter, SenderTarget};
 use peppylib::runtime::CancellationToken;
 use serde::Deserialize;
 
@@ -41,16 +42,27 @@ pub async fn run_sim_to_os<Runner, Msg, EmitFn>(
         };
 
         let instance_id = format!("sim_bridge_{topic}");
+        // v0.10: subscribe takes SenderTarget for the producer-side identity.
+        // sim_node names a conforming node (its tag is fixed at v1 across
+        // the openarm01 deployment).
+        let sim_target = match SenderTarget::node(&*sim_node, "v1") {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("sim_to_os({topic}): invalid sim_node target '{sim_node}': {e}");
+                break 'retry;
+            }
+        };
         let mut sub = tokio::select! {
             _ = token.cancelled() => break,
             result = peppylib::TopicMessenger::subscribe(
                 &handle,
                 &daemon.core_node_name,
                 &instance_id,
-                &*sim_node,
+                Some(sim_target),
+                false,
                 &*topic,
                 None,
-                None,
+                &ConsumerFilter::Any,
                 QoSProfile::SensorData,
             ) => {
                 match result {
