@@ -1,18 +1,18 @@
-//! End-to-end IK<->FK round trip through the public `from_urdf` path: a handful of
+//! End-to-end IK<->FK round trip through the public `Arm` API: a handful of
 //! in-limit configurations are mapped to an EE pose by FK and recovered by the
 //! closed-form IK, checking that the URDF -> FK -> model wiring is correct.
 //! The exhaustive seeded-random sweep over the configuration space lives in
-//! `ik.rs` (which drives the same solver through `ArmModel::from_fk` directly);
-//! this test exists only to prove the URDF-loading path reaches it.
+//! the in-crate `ik` unit tests; this test exists only to prove the public
+//! URDF-loading path reaches it.
 
 mod common;
 
-use srs_model::ik::{self, ArmAnglePolicy};
+use srs_model::ArmAnglePolicy;
 
 #[test]
 fn fixture_round_trip() {
-    let mut fk = common::fk("left");
-    let m = common::model("left");
+    let mut arm = common::arm("left");
+    let limits = arm.limits();
 
     // A small deterministic spread of in-limit, non-singular configurations.
     let samples: [[f64; 7]; 4] = [
@@ -23,20 +23,19 @@ fn fixture_round_trip() {
     ];
 
     for q in samples {
-        for (i, (&v, l)) in q.iter().zip(&m.limits).enumerate() {
+        for (i, (&v, l)) in q.iter().zip(&limits).enumerate() {
             assert!(l.contains(v), "seed sample joint {i} = {v} outside [{}, {}]", l.lo, l.hi);
         }
-        let target = fk.at(&q).ee_pose();
-        let r_d = target.rotation.to_rotation_matrix();
-        let p_d = target.translation.vector;
+        let target = arm.at(&q).ee_pose();
 
-        let sol = ik::solve(&m, &r_d, &p_d, ArmAnglePolicy::FromSeed, &q)
+        let sol = arm
+            .solve_ik(&target, ArmAnglePolicy::FromSeed, &q)
             .unwrap_or_else(|| panic!("no IK solution for {q:?}"));
-        for (i, (&v, l)) in sol.q.iter().zip(&m.limits).enumerate() {
+        for (i, (&v, l)) in sol.q.iter().zip(&limits).enumerate() {
             assert!(l.contains(v), "joint {i} = {v} outside [{}, {}]", l.lo, l.hi);
         }
-        let got = fk.at(&sol.q).ee_pose();
-        let pos_err = (got.translation.vector - p_d).norm();
+        let got = arm.at(&sol.q).ee_pose();
+        let pos_err = (got.translation.vector - target.translation.vector).norm();
         let rot_err = got.rotation.angle_to(&target.rotation);
         assert!(
             pos_err < 1e-6 && rot_err < 1e-6,

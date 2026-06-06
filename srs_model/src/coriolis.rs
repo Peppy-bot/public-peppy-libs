@@ -19,7 +19,7 @@ use crate::fk::Posed;
 /// Coriolis + centripetal torques at velocity `q̇`. The configuration is baked
 /// into the posed `fk` ([`ForwardKinematics::at`](crate::fk::ForwardKinematics::at)),
 /// so there is no separate refresh step to forget or race on.
-pub fn torques(fk: &Posed, qdot: &JointVec) -> JointVec {
+pub(crate) fn torques(fk: &Posed, qdot: &JointVec) -> JointVec {
     // Forward pass: propagate angular velocity, angular acceleration, and
     // the linear acceleration of each joint origin and link COM outward.
     // Index 0 is the fixed base (zeros); index i+1 belongs to segment i.

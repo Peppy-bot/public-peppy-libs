@@ -15,7 +15,7 @@ use crate::fk::ForwardKinematics;
 /// Constant kinematic model of one OpenArm: PoE screw data plus the SRS
 /// shoulder/elbow/wrist centers and link lengths.
 #[derive(Debug, Clone)]
-pub struct ArmModel {
+pub(crate) struct ArmModel {
     /// Home screw axis direction of each joint (unit, base frame).
     pub axes: [Vector3<f64>; ARM_DOF],
     /// A point on each joint's axis at the home configuration (base frame).
@@ -26,7 +26,10 @@ pub struct ArmModel {
     pub shoulder: Vector3<f64>,
     /// Elbow center `E*` = joint-4 axis point on the S-W line, at home.
     pub elbow_home: Vector3<f64>,
-    /// Wrist center `W` = concurrency of joints 5,6,7, at home.
+    /// Wrist center `W` = concurrency of joints 5,6,7, at home. Part of the SRS
+    /// geometry record and checked by the tests; the solver derives the live wrist
+    /// from the target (EE == W), so it is not read on the solve path.
+    #[allow(dead_code)]
     pub wrist_home: Vector3<f64>,
     /// Upper-arm length |S-E*|.
     pub l_su: f64,
@@ -55,6 +58,9 @@ impl ArmModel {
     /// a clean SRS chain (shoulder/wrist axes not concurrent within [`SRS_TOL_M`],
     /// or the elbow axis not intersecting the shoulder-wrist line), so a non-SRS
     /// URDF fails loudly rather than panicking or yielding NaNs.
+    ///
+    /// The [`Arm`](crate::Arm) facade builds the FK once and calls this so the
+    /// URDF is parsed a single time for both FK/dynamics and IK.
     pub fn from_fk(fk: &mut ForwardKinematics) -> Result<Self, String> {
         let limits = fk.limits(); // joint limits read off the chain before posing
         let fk = fk.at(&[0.0; ARM_DOF]); // pose at home; read everything off this view
@@ -154,22 +160,6 @@ impl ArmModel {
     /// Convert an arm-base-frame pose (e.g. FK output) back into the world frame.
     pub fn world_pose(&self, base: &Isometry3<f64>) -> Isometry3<f64> {
         self.base_from_world.inverse() * base
-    }
-
-    /// Build the model from a URDF string and the arm's base link. The wrist is
-    /// found by walking 7 revolute joints out from the base (see
-    /// [`ForwardKinematics::from_urdf`]). Robot-agnostic: which URDF and base
-    /// link to use is the caller's concern (a description layer maps a robot
-    /// revision to these).
-    pub fn from_urdf(urdf: &str, base_link: &str) -> Result<Self, String> {
-        Self::from_fk(&mut ForwardKinematics::from_urdf(urdf, base_link)?)
-    }
-
-    /// Like [`from_urdf`](Self::from_urdf) but reads the URDF from a file path,
-    /// folding the IO error into the same `Result` so callers need not handle the
-    /// read separately.
-    pub fn from_urdf_file(path: &str, base_link: &str) -> Result<Self, String> {
-        Self::from_fk(&mut ForwardKinematics::from_urdf_file(path, base_link)?)
     }
 }
 

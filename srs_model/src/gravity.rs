@@ -9,7 +9,7 @@ const GRAVITY_MAGNITUDE: f64 = 9.81;
 /// against gravity at the posed configuration. The pose is baked into `fk`
 /// ([`ForwardKinematics::at`](crate::fk::ForwardKinematics::at)), so there is no
 /// configuration argument and no refresh to forget.
-pub fn torques(fk: &Posed) -> JointVec {
+pub(crate) fn torques(fk: &Posed) -> JointVec {
     // Joint j carries every downstream segment i (j..=last). Gravity on
     // segment i is (0, 0, -m·g_mag); its moment about joint j projected
     // onto the joint axis reduces to m·g_mag·(axis × r).z because gravity

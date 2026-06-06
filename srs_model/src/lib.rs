@@ -1,21 +1,23 @@
 //! Kinematics + dynamics for a 7-DOF SRS (spherical-revolute-spherical) arm.
 //!
-//! - [`fk`]: forward kinematics from a URDF (via the `k` crate).
-//! - [`model`]: the SRS geometry (shoulder/elbow/wrist centers, link lengths,
-//!   joint limits) derived once from the FK chain.
-//! - [`ik`]: closed-form arm-angle (Shimizu) inverse kinematics.
-//! - [`gravity`] / [`coriolis`]: feedforward dynamics torques for the arm control
-//!   loop. Each carries the distal payload (gripper, fingers, tools) lumped into
-//!   the last segment, and is validated in tests against KDL `TreeIdSolver_RNE`
-//!   reference values (tree inverse dynamics, so the branched gripper is
-//!   included); gravity additionally against the potential-energy gradient.
+//! Build an [`Arm`] from a URDF once; everything hangs off it:
 //!
-//! Frames: [`fk`] and [`ik`] report poses in the **arm base frame** (the arm's
-//! own mounting link). [`gravity`] / [`coriolis`] instead compute in the **world frame**,
-//! because gravity is a world quantity (acts along world -Z). The fixed
-//! world <-> base mount transform relating the two is captured here and exposed
-//! via [`model::ArmModel::base_pose`] / [`world_pose`](model::ArmModel::world_pose),
-//! so a caller converting between world and base frames does not redo it.
+//! - [`Arm::at`] poses the arm and returns a [`Posed`] view for forward
+//!   kinematics ([`Posed::ee_pose`]) and feedforward dynamics
+//!   ([`Posed::gravity_torques`], [`Posed::coriolis_torques`]). The dynamics carry
+//!   the distal payload (gripper, fingers, tools) lumped into the last segment, and
+//!   are validated in tests against KDL `TreeIdSolver_RNE` reference values (tree
+//!   inverse dynamics, so the branched gripper is included); gravity additionally
+//!   against the potential-energy gradient.
+//! - [`Arm::solve_ik`] is closed-form arm-angle (Shimizu) inverse kinematics
+//!   ([`ArmAnglePolicy`], [`Solution`]); [`Arm::arm_angle`] reports a config's arm angle.
+//! - [`Arm::limits`] are the URDF joint limits; [`Arm::base_pose`] /
+//!   [`Arm::world_pose`] convert between world and arm base frames.
+//!
+//! Frames: FK and IK work in the **arm base frame** (the arm's own mounting link).
+//! Gravity / Coriolis compute in the **world frame**, because gravity is a world
+//! quantity (acts along world -Z). The fixed world <-> base mount transform
+//! relating the two is captured at load (see [`Arm::base_from_world`]).
 //!
 //! Robot-agnostic: geometry, joint limits and inertials are all derived from
 //! whatever URDF the caller passes, and a non-SRS chain is rejected with `Err`.
@@ -32,12 +34,20 @@
 //! hardware crate, so the full IK<->FK round-trip runs under a plain `cargo test`
 //! on any host.
 
-pub mod coriolis;
-pub mod fk;
-pub mod gravity;
-pub mod ik;
-pub mod model;
+mod arm;
+mod coriolis;
+mod fk;
+mod gravity;
+mod ik;
+mod model;
 mod payload;
+
+/// The library entry point: build an [`Arm`] from a URDF, then read FK, gravity,
+/// Coriolis, and IK off it. [`Posed`] is the read-only view returned by
+/// [`Arm::at`]; [`ArmAnglePolicy`] / [`Solution`] are the IK types.
+pub use arm::Arm;
+pub use fk::Posed;
+pub use ik::{ArmAnglePolicy, Solution};
 
 /// Degrees of freedom of the arm. The URDF chain is validated against this at
 /// load (the closed-form arm-angle redundancy resolution is specific to 7 DOF).
@@ -47,8 +57,8 @@ pub const ARM_DOF: usize = 7;
 pub type JointVec = [f64; ARM_DOF];
 
 /// Inclusive joint position limit, radians. Lives at the crate root because it is
-/// shared data of the URDF chain: the [`fk`] layer reads it off the joints, and
-/// the [`model`] layer carries it for IK limit checks.
+/// shared data of the URDF chain: the forward-kinematics layer reads it off the
+/// joints ([`Arm::limits`]) and the IK layer carries it for limit checks.
 #[derive(Debug, Clone, Copy)]
 pub struct Limit {
     pub lo: f64,
@@ -98,6 +108,6 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn v1_model(side: &str) -> ArmModel {
-        ArmModel::from_urdf(FIXTURE_URDF, &base(side)).expect("load fixture model")
+        ArmModel::from_fk(&mut v1_fk(side)).expect("load fixture model")
     }
 }

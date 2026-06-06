@@ -26,7 +26,7 @@
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use k::nalgebra::{Matrix3, Rotation3, Unit, Vector3};
+use k::nalgebra::{Isometry3, Matrix3, Rotation3, Unit, Vector3};
 
 use crate::model::ArmModel;
 use crate::{ARM_DOF, JointVec, Limit, PARALLEL_SIN_EPS};
@@ -73,7 +73,7 @@ fn screw_point(
 /// Forward kinematics from the PoE screw data: EE position in the base frame.
 /// Independent path from the `k`-chain FK; the two must agree (see tests),
 /// which validates the screw axes/points the IK relies on.
-pub fn fk_poe_position(model: &ArmModel, q: &JointVec) -> Vector3<f64> {
+pub(crate) fn fk_poe_position(model: &ArmModel, q: &JointVec) -> Vector3<f64> {
     let mut p = model.home_ee.translation.vector;
     for i in (0..ARM_DOF).rev() {
         p = screw_point(model.axes[i], model.points[i], q[i], p);
@@ -81,8 +81,11 @@ pub fn fk_poe_position(model: &ArmModel, q: &JointVec) -> Vector3<f64> {
     p
 }
 
-/// Full PoE forward rotation: `exp(w1 q1)...exp(w7 q7) * R_home`.
-pub fn fk_poe_rotation(model: &ArmModel, q: &JointVec) -> Rotation3<f64> {
+/// Full PoE forward rotation: `exp(w1 q1)...exp(w7 q7) * R_home`. Only the
+/// rotation cross-check in the tests needs it (the production path uses the
+/// position map via `arm_angle_of`).
+#[cfg(test)]
+pub(crate) fn fk_poe_rotation(model: &ArmModel, q: &JointVec) -> Rotation3<f64> {
     let mut r = model.home_ee.rotation.to_rotation_matrix();
     for i in (0..ARM_DOF).rev() {
         r = exp_so3(model.axes[i], q[i]) * r;
@@ -205,7 +208,7 @@ const SINGULAR_RADIUS: f64 = 0.01;
 /// the straight-arm singularity, where the elbow sits on the S-W line and the
 /// redundancy circle collapses, so the arm angle is geometrically undefined
 /// (returning a fabricated 0.0 there would mislead callers).
-pub fn arm_angle_of(model: &ArmModel, q: &JointVec) -> Option<f64> {
+pub(crate) fn arm_angle_of(model: &ArmModel, q: &JointVec) -> Option<f64> {
     let circle = circle_frame(model, fk_poe_position(model, q));
     if circle.radius < SINGULAR_RADIUS {
         return None;
@@ -284,9 +287,11 @@ fn circle_frame(model: &ArmModel, p_w: Vector3<f64>) -> Circle {
     }
 }
 
-/// Solve inverse kinematics for target rotation `r_d` and position `p_d`
-/// (EE pose in the arm base frame), resolving redundancy per `arm_angle`.
-/// `seed` selects the discrete branch (and the arm angle when `FromSeed`).
+/// Solve inverse kinematics for a `target` EE pose in the arm base frame,
+/// resolving redundancy per `arm_angle`. `seed` selects the discrete branch (and
+/// the arm angle when `FromSeed`). The target is the same [`Isometry3`] type the
+/// forward kinematics emit, so an FK pose feeds straight back in; convert a
+/// world-frame target first with [`ArmModel::base_pose`].
 ///
 /// In `FromSeed` mode the seed's arm angle is used when it is feasible
 /// (continuity); otherwise the closest feasible arm angle is taken from the
@@ -294,20 +299,21 @@ fn circle_frame(model: &ArmModel, p_w: Vector3<f64>) -> Circle {
 /// infeasible for this target, or when the seed is near-singular (e.g. the home
 /// pose, q4 ≈ 0) and so carries no usable arm angle. In `Fixed`
 /// mode the given arm angle is used verbatim and infeasibility yields `None`.
-pub fn solve(
+pub(crate) fn solve(
     model: &ArmModel,
-    r_d: &Rotation3<f64>,
-    p_d: &Vector3<f64>,
+    target: &Isometry3<f64>,
     arm_angle: ArmAnglePolicy,
     seed: &JointVec,
 ) -> Option<Solution> {
+    let r_d = target.rotation.to_rotation_matrix();
+    let p_d = target.translation.vector;
     if !(p_d.x.is_finite() && p_d.y.is_finite() && p_d.z.is_finite()) {
         return None; // reject NaN/Inf position up front
     }
     if !r_d.matrix().iter().all(|x| x.is_finite()) {
         return None; // reject NaN/Inf orientation up front
     }
-    let p_w = *p_d; // EE origin coincides with the wrist center
+    let p_w = p_d; // EE origin coincides with the wrist center
     let d = (p_w - model.shoulder).norm();
     if d > model.l_su + model.l_uw - REACH_EPS || d < (model.l_su - model.l_uw).abs() + REACH_EPS {
         return None; // unreachable / straight-arm singular boundary
@@ -323,7 +329,7 @@ pub fn solve(
     // reuse it across all arm angles.
     let circle = circle_frame(model, p_w);
     match arm_angle {
-        ArmAnglePolicy::Fixed(psi) => solve_at_psi(model, r_d, &p_w, theta4, psi, seed, &circle)
+        ArmAnglePolicy::Fixed(psi) => solve_at_psi(model, &r_d, &p_w, theta4, psi, seed, &circle)
             .map(|q| Solution { q, arm_angle: psi }),
         ArmAnglePolicy::FromSeed => {
             // The redundancy circle is resolved analytically: every joint angle is
@@ -331,9 +337,9 @@ pub fn solve(
             // feasible-psi interval. Pick the feasible psi nearest the seed's arm
             // angle for continuity, then build q there.
             let preferred = seed_arm_angle(model, seed).unwrap_or(0.0);
-            let intervals = feasible_psi_intervals(model, r_d, &p_w, theta4, seed, &circle);
+            let intervals = feasible_psi_intervals(model, &r_d, &p_w, theta4, seed, &circle);
             let psi = nearest_feasible_psi(&intervals, preferred)?;
-            solve_at_psi(model, r_d, &p_w, theta4, psi, seed, &circle)
+            solve_at_psi(model, &r_d, &p_w, theta4, psi, seed, &circle)
                 .map(|q| Solution { q, arm_angle: psi })
         }
     }
@@ -687,6 +693,12 @@ mod tests {
         fk.at(q).ee_pose()
     }
 
+    /// Assemble an EE target pose from a rotation + position (for the tests that
+    /// build a target directly rather than from FK).
+    fn iso(r: Rotation3<f64>, p: Vector3<f64>) -> Isometry3<f64> {
+        Isometry3::from_parts(p.into(), UnitQuaternion::from_rotation_matrix(&r))
+    }
+
     #[test]
     fn round_trip_random_samples() {
         let mut fk = v1_fk("left");
@@ -703,10 +715,9 @@ mod tests {
                 continue;
             }
             let target = pose(&mut fk, &q);
-            let r_d = target.rotation.to_rotation_matrix();
             let p_d = target.translation.vector;
 
-            let Some(sol) = solve(&m, &r_d, &p_d, ArmAnglePolicy::FromSeed, &q) else {
+            let Some(sol) = solve(&m, &target, ArmAnglePolicy::FromSeed, &q) else {
                 fail += 1;
                 continue;
             };
@@ -750,14 +761,8 @@ mod tests {
             }
             let target = pose(&mut fk, &q);
             let psi = arm_angle_of(&m, &q).expect("q is non-singular (q[3] >= 0.1)");
-            let sol = solve(
-                &m,
-                &target.rotation.to_rotation_matrix(),
-                &target.translation.vector,
-                ArmAnglePolicy::Fixed(psi),
-                &q,
-            )
-            .expect("exact psi should solve");
+            let sol = solve(&m, &target, ArmAnglePolicy::Fixed(psi), &q)
+                .expect("exact psi should solve");
             // Same branch as seed: each joint within a small tolerance.
             for (i, (&got, &want)) in sol.q.iter().zip(&q).enumerate() {
                 assert!(
@@ -780,14 +785,8 @@ mod tests {
                 continue;
             }
             let target = pose(&mut fk, &q);
-            let sol = solve(
-                &m,
-                &target.rotation.to_rotation_matrix(),
-                &target.translation.vector,
-                ArmAnglePolicy::FromSeed,
-                &q,
-            )
-            .expect("right-arm target should solve");
+            let sol = solve(&m, &target, ArmAnglePolicy::FromSeed, &q)
+                .expect("right-arm target should solve");
             let got = pose(&mut fk, &sol.q);
             assert!((got.translation.vector - target.translation.vector).norm() < 1e-6);
             assert!(got.rotation.angle_to(&target.rotation) < 1e-6);
@@ -814,13 +813,12 @@ mod tests {
             }
         };
         let target = pose(&mut fk, &q);
-        let r_d = target.rotation.to_rotation_matrix();
         let p_d = target.translation.vector;
 
         let mut feasible = 0;
         for k in 0..72 {
             let psi = -std::f64::consts::PI + k as f64 * std::f64::consts::TAU / 72.0;
-            if let Some(sol) = solve(&m, &r_d, &p_d, ArmAnglePolicy::Fixed(psi), &q) {
+            if let Some(sol) = solve(&m, &target, ArmAnglePolicy::Fixed(psi), &q) {
                 let got = pose(&mut fk, &sol.q);
                 assert!(
                     (got.translation.vector - p_d).norm() < 1e-6
@@ -862,15 +860,10 @@ mod tests {
             let p_d = p0 + radius * (t.cos() * u + t.sin() * w);
             // Gentle wrist wobble (vanishes at t=0 and t=2π so the loop closes).
             let r_d = r0 * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.15 * t.sin());
+            let target = Isometry3::from_parts(p_d.into(), r_d);
 
-            let sol = solve(
-                &m,
-                &r_d.to_rotation_matrix(),
-                &p_d,
-                ArmAnglePolicy::FromSeed,
-                &seed,
-            )
-            .expect("trajectory point should solve");
+            let sol = solve(&m, &target, ArmAnglePolicy::FromSeed, &seed)
+                .expect("trajectory point should solve");
 
             let got = pose(&mut fk, &sol.q);
             assert!(
@@ -1107,8 +1100,8 @@ mod tests {
         let m = v1_model("left");
         // Far beyond max reach (l_su + l_uw = 0.436 from the shoulder).
         let p_d = m.shoulder + Vector3::new(1.0, 0.0, 0.0);
-        let r_d = Rotation3::identity();
-        assert!(solve(&m, &r_d, &p_d, ArmAnglePolicy::FromSeed, &[0.0; ARM_DOF]).is_none());
+        let target = iso(Rotation3::identity(), p_d);
+        assert!(solve(&m, &target, ArmAnglePolicy::FromSeed, &[0.0; ARM_DOF]).is_none());
     }
 
     #[test]
@@ -1121,14 +1114,7 @@ mod tests {
         // of limits for at least some value, yielding None there.
         let any_none = (0..360).any(|d| {
             let psi = (d as f64).to_radians();
-            solve(
-                &m,
-                &target.rotation.to_rotation_matrix(),
-                &target.translation.vector,
-                ArmAnglePolicy::Fixed(psi),
-                &q,
-            )
-            .is_none()
+            solve(&m, &target, ArmAnglePolicy::Fixed(psi), &q).is_none()
         });
         assert!(any_none, "expected some arm angle to be infeasible");
     }
@@ -1150,13 +1136,7 @@ mod tests {
             }
             total += 1;
             let target = pose(&mut fk, &q);
-            if let Some(sol) = solve(
-                &m,
-                &target.rotation.to_rotation_matrix(),
-                &target.translation.vector,
-                ArmAnglePolicy::FromSeed,
-                &home,
-            ) {
+            if let Some(sol) = solve(&m, &target, ArmAnglePolicy::FromSeed, &home) {
                 let got = pose(&mut fk, &sol.q);
                 assert!((got.translation.vector - target.translation.vector).norm() < 1e-6);
                 assert!(got.rotation.angle_to(&target.rotation) < 1e-6);
@@ -1175,24 +1155,12 @@ mod tests {
         let seed = [0.0; ARM_DOF];
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert!(
-                solve(
-                    &m,
-                    &r,
-                    &Vector3::new(bad, 0.0, 0.2),
-                    ArmAnglePolicy::FromSeed,
-                    &seed
-                )
-                .is_none()
+                solve(&m, &iso(r, Vector3::new(bad, 0.0, 0.2)), ArmAnglePolicy::FromSeed, &seed)
+                    .is_none()
             );
             assert!(
-                solve(
-                    &m,
-                    &r,
-                    &Vector3::new(0.1, bad, 0.2),
-                    ArmAnglePolicy::Fixed(0.0),
-                    &seed
-                )
-                .is_none()
+                solve(&m, &iso(r, Vector3::new(0.1, bad, 0.2)), ArmAnglePolicy::Fixed(0.0), &seed)
+                    .is_none()
             );
         }
     }
@@ -1219,14 +1187,12 @@ mod tests {
                 continue;
             }
             let target = pose(&mut fk, &q);
-            let rd = target.rotation.to_rotation_matrix();
-            let pd = target.translation.vector;
             let psi = arm_angle_of(&m, &q).expect("q is non-singular (q[3] >= 0.1)");
             // Collect distinct in-limit branches at this fixed arm angle.
             let mut branches: Vec<JointVec> = Vec::new();
             for _ in 0..50 {
                 let s = sample_q(&mut rng, &m);
-                if let Some(sol) = solve(&m, &rd, &pd, ArmAnglePolicy::Fixed(psi), &s)
+                if let Some(sol) = solve(&m, &target, ArmAnglePolicy::Fixed(psi), &s)
                     && !branches.iter().any(|e| same(e, &sol.q))
                 {
                     branches.push(sol.q);
@@ -1237,7 +1203,7 @@ mod tests {
             }
             // Seeding with each distinct branch returns that branch.
             for b in &branches {
-                let got = solve(&m, &rd, &pd, ArmAnglePolicy::Fixed(psi), b)
+                let got = solve(&m, &target, ArmAnglePolicy::Fixed(psi), b)
                     .unwrap()
                     .q;
                 assert!(same(b, &got), "seed branch not returned: {b:?} -> {got:?}");

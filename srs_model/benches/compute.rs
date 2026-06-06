@@ -2,8 +2,8 @@
 //! Run with `cargo bench`.
 //!
 //! Each bench mirrors what a consumer does on a control tick: the `get_fk` /
-//! `get_*` dynamics benches re-pose the FK chain at the requested configuration
-//! and evaluate the term; the `get_ik` benches run the closed-form solver. The
+//! `get_*` dynamics benches re-pose the arm at the requested configuration and
+//! evaluate the term; the `get_ik` benches run the closed-form solver. The
 //! fixture is the bundled OpenArm V1.0 (left arm).
 //!
 //! IK has two cost regimes:
@@ -15,24 +15,13 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-use srs_model::{coriolis, gravity};
-use srs_model::fk::ForwardKinematics;
-use srs_model::ik::{self, ArmAnglePolicy};
-use srs_model::model::ArmModel;
-use srs_model::JointVec;
+use srs_model::{Arm, ArmAnglePolicy, JointVec};
 
 const URDF: &str = include_str!("../tests/fixtures/openarm_v10.urdf");
 const BASE: &str = "openarm_left_link0";
 
-fn fixture() -> (ForwardKinematics, ArmModel) {
-    (
-        ForwardKinematics::from_urdf(URDF, BASE).expect("fk"),
-        ArmModel::from_urdf(URDF, BASE).expect("model"),
-    )
-}
-
 fn benchmarks(c: &mut Criterion) {
-    let (mut fk, model) = fixture();
+    let mut arm = Arm::from_urdf(URDF, BASE).expect("load fixture arm");
     // A non-singular configuration and a non-trivial velocity.
     let q: JointVec = [0.3, -0.4, 0.2, 0.8, -0.5, 0.3, 0.6];
     let qd: JointVec = [0.4, -0.3, 0.5, -0.2, 0.6, -0.1, 0.3];
@@ -40,30 +29,28 @@ fn benchmarks(c: &mut Criterion) {
     // IK target: the FK of `q`, so it is reachable. `q` is a "warm" seed (it is
     // the solution); `cold_seed` is decorrelated, exercising the same interval
     // search from a different starting angle. `psi` is `q`'s (feasible) arm angle.
-    let target = fk.at(&q).ee_pose();
-    let r_d = target.rotation.to_rotation_matrix();
-    let p_d = target.translation.vector;
+    let target = arm.at(&q).ee_pose();
     let cold_seed: JointVec = [0.0, 0.2, -0.2, 1.2, 0.3, -0.3, 0.4];
-    let psi = ik::arm_angle_of(&model, &q).expect("benchmark seed is non-singular");
+    let psi = arm.arm_angle(&q).expect("benchmark seed is non-singular");
 
     c.bench_function("get_fk", |b| {
-        b.iter(|| black_box(fk.at(black_box(&q)).ee_pose()))
+        b.iter(|| black_box(arm.at(black_box(&q)).ee_pose()))
     });
 
     c.bench_function("get_gravity", |b| {
-        b.iter(|| black_box(gravity::torques(&fk.at(black_box(&q)))))
+        b.iter(|| black_box(arm.at(black_box(&q)).gravity_torques()))
     });
 
     c.bench_function("get_coriolis", |b| {
-        b.iter(|| black_box(coriolis::torques(&fk.at(black_box(&q)), black_box(&qd))))
+        b.iter(|| black_box(arm.at(black_box(&q)).coriolis_torques(black_box(&qd))))
     });
 
     // The combined compensation the arm computes every control tick: gravity + Coriolis.
     c.bench_function("get_compensation", |b| {
         b.iter(|| {
-            let posed = fk.at(black_box(&q));
-            let g = gravity::torques(&posed);
-            let co = coriolis::torques(&posed, black_box(&qd));
+            let posed = arm.at(black_box(&q));
+            let g = posed.gravity_torques();
+            let co = posed.coriolis_torques(black_box(&qd));
             black_box((g, co))
         })
     });
@@ -71,36 +58,22 @@ fn benchmarks(c: &mut Criterion) {
     // IK, FromSeed with a warm seed (the solution itself).
     c.bench_function("get_ik_from_seed_warm", |b| {
         b.iter(|| {
-            black_box(ik::solve(
-                &model,
-                black_box(&r_d),
-                black_box(&p_d),
-                ArmAnglePolicy::FromSeed,
-                black_box(&q),
-            ))
+            black_box(arm.solve_ik(black_box(&target), ArmAnglePolicy::FromSeed, black_box(&q)))
         })
     });
 
     // IK, FromSeed with a decorrelated ("cold") seed: same interval search.
     c.bench_function("get_ik_from_seed_cold", |b| {
         b.iter(|| {
-            black_box(ik::solve(
-                &model,
-                black_box(&r_d),
-                black_box(&p_d),
-                ArmAnglePolicy::FromSeed,
-                black_box(&cold_seed),
-            ))
+            black_box(arm.solve_ik(black_box(&target), ArmAnglePolicy::FromSeed, black_box(&cold_seed)))
         })
     });
 
     // IK, Fixed arm angle: skips the feasible-interval search (cheaper path).
     c.bench_function("get_ik_fixed", |b| {
         b.iter(|| {
-            black_box(ik::solve(
-                &model,
-                black_box(&r_d),
-                black_box(&p_d),
+            black_box(arm.solve_ik(
+                black_box(&target),
                 ArmAnglePolicy::Fixed(black_box(psi)),
                 black_box(&q),
             ))

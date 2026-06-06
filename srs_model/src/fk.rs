@@ -22,7 +22,7 @@ use crate::{ARM_DOF, JointVec, Limit};
 /// transform and per-segment immutable data (axis, mass, COM, inertia)
 /// captured at load. Segment `i` is the link moved by joint `i`; its inertia
 /// is in the link frame (V1.0 URDF inertials use identity rpy).
-pub struct ForwardKinematics {
+pub(crate) struct ForwardKinematics {
     chain: SerialChain<f64>,
     /// The 7 revolute joint nodes in chain order.
     joint_nodes: [Node<f64>; ARM_DOF],
@@ -164,9 +164,9 @@ impl ForwardKinematics {
     }
 }
 
-/// A [`ForwardKinematics`] posed at one configuration: an immutable, read-only
-/// view obtained from [`ForwardKinematics::at`]. Every pose-dependent quantity is
-/// read through here, so it can only be queried after a pose has been applied.
+/// The arm posed at one configuration: an immutable, read-only view obtained from
+/// [`Arm::at`](crate::Arm::at). Every pose-dependent quantity (EE pose, gravity,
+/// Coriolis) is read through here, so it can only be queried after a pose.
 pub struct Posed<'a> {
     fk: &'a ForwardKinematics,
 }
@@ -175,6 +175,17 @@ impl Posed<'_> {
     /// End-effector (tip-link) pose in the arm base frame.
     pub fn ee_pose(&self) -> Isometry3<f64> {
         self.to_base(&self.fk.tip)
+    }
+
+    /// Gravity-compensation torques at this posture: the torque each joint must
+    /// apply to hold the arm against gravity (distal payload included).
+    pub fn gravity_torques(&self) -> JointVec {
+        crate::gravity::torques(self)
+    }
+
+    /// Coriolis + centripetal torques at joint velocity `qdot` for this posture.
+    pub fn coriolis_torques(&self, qdot: &JointVec) -> JointVec {
+        crate::coriolis::torques(self, qdot)
     }
 
     /// World-frame revolute axis of joint `i`, re-expressed in the base frame. A
