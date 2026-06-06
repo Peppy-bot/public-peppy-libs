@@ -28,8 +28,8 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use k::nalgebra::{Matrix3, Rotation3, Unit, Vector3};
 
-use crate::model::{ArmModel, Limit};
-use crate::{ARM_DOF, JointVec, PARALLEL_SIN_EPS};
+use crate::model::ArmModel;
+use crate::{ARM_DOF, JointVec, Limit, PARALLEL_SIN_EPS};
 
 /// How to resolve the redundant arm angle when the caller doesn't pin it.
 #[derive(Debug, Clone, Copy)]

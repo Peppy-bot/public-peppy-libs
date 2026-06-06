@@ -9,21 +9,8 @@
 
 use k::nalgebra::{Isometry3, Matrix3, Vector3};
 
-use crate::{ARM_DOF, PARALLEL_SIN_EPS};
+use crate::{ARM_DOF, Limit, PARALLEL_SIN_EPS};
 use crate::fk::ForwardKinematics;
-
-/// Inclusive joint position limit, radians.
-#[derive(Debug, Clone, Copy)]
-pub struct Limit {
-    pub lo: f64,
-    pub hi: f64,
-}
-
-impl Limit {
-    pub fn contains(&self, x: f64) -> bool {
-        self.lo <= x && x <= self.hi
-    }
-}
 
 /// Constant kinematic model of one OpenArm: PoE screw data plus the SRS
 /// shoulder/elbow/wrist centers and link lengths.
@@ -69,14 +56,11 @@ impl ArmModel {
     /// or the elbow axis not intersecting the shoulder-wrist line), so a non-SRS
     /// URDF fails loudly rather than panicking or yielding NaNs.
     pub fn from_fk(fk: &mut ForwardKinematics) -> Result<Self, String> {
+        let limits = fk.limits(); // joint limits read off the chain before posing
         let fk = fk.at(&[0.0; ARM_DOF]); // pose at home; read everything off this view
         let home_ee = fk.ee_pose();
         let axes: [Vector3<f64>; ARM_DOF] = std::array::from_fn(|i| fk.axis_base(i));
         let points: [Vector3<f64>; ARM_DOF] = std::array::from_fn(|i| fk.origin_base(i));
-        let limits = std::array::from_fn(|i| {
-            let (lo, hi) = fk.joint_limit(i);
-            Limit { lo, hi }
-        });
 
         let shoulder = concurrency(&[
             (axes[0], points[0]),
@@ -179,6 +163,13 @@ impl ArmModel {
     /// revision to these).
     pub fn from_urdf(urdf: &str, base_link: &str) -> Result<Self, String> {
         Self::from_fk(&mut ForwardKinematics::from_urdf(urdf, base_link)?)
+    }
+
+    /// Like [`from_urdf`](Self::from_urdf) but reads the URDF from a file path,
+    /// folding the IO error into the same `Result` so callers need not handle the
+    /// read separately.
+    pub fn from_urdf_file(path: &str, base_link: &str) -> Result<Self, String> {
+        Self::from_fk(&mut ForwardKinematics::from_urdf_file(path, base_link)?)
     }
 }
 

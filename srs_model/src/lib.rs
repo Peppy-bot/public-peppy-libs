@@ -46,6 +46,23 @@ pub const ARM_DOF: usize = 7;
 /// One joint-space configuration, j1..j7 in radians.
 pub type JointVec = [f64; ARM_DOF];
 
+/// Inclusive joint position limit, radians. Lives at the crate root because it is
+/// shared data of the URDF chain: the [`fk`] layer reads it off the joints, and
+/// the [`model`] layer carries it for IK limit checks.
+#[derive(Debug, Clone, Copy)]
+pub struct Limit {
+    pub lo: f64,
+    pub hi: f64,
+}
+
+impl Limit {
+    /// True if `x` lies within `[lo, hi]`. Non-finite `x` (NaN/inf) compares
+    /// false on both sides, so it is rejected.
+    pub fn contains(&self, x: f64) -> bool {
+        self.lo <= x && x <= self.hi
+    }
+}
+
 /// Smallest sine of an angle between two unit axes (or two link directions) we
 /// treat as non-degenerate (~1e-6 rad). Below it the perpendicular / cross
 /// direction is ill-conditioned to normalize, so the caller bails out (parallel
