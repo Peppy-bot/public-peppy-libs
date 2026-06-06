@@ -134,6 +134,15 @@ impl ForwardKinematics {
         self.chain.update_transforms();
         Posed { fk: self }
     }
+
+    /// The fixed `world -> base` mount transform resolved from the URDF: the world
+    /// frame this arm's base sits in. Gravity / Coriolis are computed in that world
+    /// frame. It is **identity** when `base_link` is the URDF root (no mount tree
+    /// above it), i.e. gravity is then computed in the base frame. Exposed so a
+    /// caller can log/verify which frame is in play rather than assume one.
+    pub fn base_from_world(&self) -> Isometry3<f64> {
+        self.base_from_world
+    }
 }
 
 /// A [`ForwardKinematics`] posed at one configuration: an immutable, read-only

@@ -16,13 +16,16 @@ fn fixture_round_trip() {
 
     // A small deterministic spread of in-limit, non-singular configurations.
     let samples: [[f64; 7]; 4] = [
-        [0.3, 0.4, -0.2, 0.6, 0.1, -0.3, 0.2],
-        [-0.5, 0.2, 0.4, 1.0, -0.4, 0.5, -0.1],
+        [0.3, 0.1, -0.2, 0.6, 0.1, -0.3, 0.2],
+        [-0.5, 0.0, 0.4, 1.0, -0.4, 0.5, -0.1],
         [0.1, -0.3, 0.5, 0.8, 0.3, -0.2, 0.4],
-        [-0.2, 0.5, -0.3, 1.2, -0.1, 0.4, -0.5],
+        [-0.2, 0.15, -0.3, 1.2, -0.1, 0.4, -0.5],
     ];
 
     for q in samples {
+        for (i, (&v, l)) in q.iter().zip(&m.limits).enumerate() {
+            assert!(l.contains(v), "seed sample joint {i} = {v} outside [{}, {}]", l.lo, l.hi);
+        }
         let target = fk.at(&q).ee_pose();
         let r_d = target.rotation.to_rotation_matrix();
         let p_d = target.translation.vector;

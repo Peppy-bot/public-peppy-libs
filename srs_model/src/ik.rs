@@ -201,9 +201,16 @@ const REACH_EPS: f64 = 1e-9;
 const SINGULAR_RADIUS: f64 = 0.01;
 
 /// Arm angle of configuration `q`: the angle of its elbow on the redundancy
-/// circle about the S-W line, measured from the reference direction.
-pub fn arm_angle_of(model: &ArmModel, q: &JointVec) -> f64 {
-    circle_frame(model, fk_poe_position(model, q)).angle(elbow_position(model, q))
+/// circle about the S-W line, measured from the reference direction. `None` at
+/// the straight-arm singularity, where the elbow sits on the S-W line and the
+/// redundancy circle collapses, so the arm angle is geometrically undefined
+/// (returning a fabricated 0.0 there would mislead callers).
+pub fn arm_angle_of(model: &ArmModel, q: &JointVec) -> Option<f64> {
+    let circle = circle_frame(model, fk_poe_position(model, q));
+    if circle.radius < SINGULAR_RADIUS {
+        return None;
+    }
+    Some(circle.angle(elbow_position(model, q)))
 }
 
 /// Elbow center of configuration `q`: joints 1-3 carry the home elbow about S;
@@ -742,7 +749,7 @@ mod tests {
                 continue;
             }
             let target = pose(&mut fk, &q);
-            let psi = arm_angle_of(&m, &q);
+            let psi = arm_angle_of(&m, &q).expect("q is non-singular (q[3] >= 0.1)");
             let sol = solve(
                 &m,
                 &target.rotation.to_rotation_matrix(),
@@ -831,7 +838,7 @@ mod tests {
     fn cartesian_trajectory_servos_continuously() {
         // Trace a smooth closed Cartesian path (a circle in position plus a gentle
         // orientation wobble) and servo along it in FromSeed mode, seeding each
-        // solve with the *previous* solution, as a real streaming consumer would.
+        // solve with the *previous* solution, as a real servo consumer would.
         // This is the one test that exercises the README's continuity guarantee:
         // along a smooth path the joints move smoothly, with no branch flip or psi
         // jump, while every pose is still hit exactly.
@@ -1214,7 +1221,7 @@ mod tests {
             let target = pose(&mut fk, &q);
             let rd = target.rotation.to_rotation_matrix();
             let pd = target.translation.vector;
-            let psi = arm_angle_of(&m, &q);
+            let psi = arm_angle_of(&m, &q).expect("q is non-singular (q[3] >= 0.1)");
             // Collect distinct in-limit branches at this fixed arm angle.
             let mut branches: Vec<JointVec> = Vec::new();
             for _ in 0..50 {

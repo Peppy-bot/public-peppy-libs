@@ -91,6 +91,26 @@ impl ArmModel {
         ])
         .ok_or("wrist axes (j5-j7) are not concurrent: not an SRS arm")?;
 
+        // The closed-form IK decomposes the shoulder/wrist rotations on orthonormal
+        // spherical bases (`frame_map` inverts by transpose), so a concurrent-but-
+        // oblique triplet would be accepted here and then solved wrong. Require each
+        // triplet's axes to be mutually orthogonal. |cos| between two unit axes is
+        // the sine of their deviation from perpendicular, so the angular
+        // [`PARALLEL_SIN_EPS`] is the right gate (not the length tolerance).
+        let oblique = [("shoulder (j1-j3)", [0usize, 1, 2]), ("wrist (j5-j7)", [4, 5, 6])]
+            .into_iter()
+            .flat_map(|(label, [i, j, k])| [(label, i, j), (label, j, k), (label, i, k)])
+            .find(|&(_, a, b)| axes[a].dot(&axes[b]).abs() > PARALLEL_SIN_EPS);
+        if let Some((label, a, b)) = oblique {
+            return Err(format!(
+                "{label}: axes j{} and j{} are not orthogonal (|cos|={:.6}): \
+                 the closed-form IK needs orthonormal spherical bases",
+                a + 1,
+                b + 1,
+                axes[a].dot(&axes[b]).abs(),
+            ));
+        }
+
         // The closed-form IK assumes the EE (tip) origin coincides with the wrist
         // center, i.e. a zero wrist-to-tip offset (`ik::solve` takes p_w = p_d).
         // Enforce it here so a URDF whose tip sits off the wrist concurrency point
@@ -111,6 +131,15 @@ impl ArmModel {
         // j4's axis must actually *intersect* the S-W line (SRS), not merely
         // pass near it: closest_point_on_line yields a point even for skew lines.
         let sw_dir = (wrist_home - shoulder).normalize();
+        // j4 must be perpendicular to the S-W line (SRS elbow), so the elbow
+        // redundancy circle the solver builds is well-defined.
+        let j4_cos = axes[3].dot(&sw_dir).abs();
+        if j4_cos > PARALLEL_SIN_EPS {
+            return Err(format!(
+                "elbow axis (j4) is not perpendicular to the shoulder-wrist line \
+                 (|cos|={j4_cos:.6}): not an SRS arm"
+            ));
+        }
         let elbow_skew = (elbow_home - shoulder).cross(&sw_dir).norm();
         if elbow_skew > SRS_TOL_M {
             return Err(format!(
@@ -210,10 +239,39 @@ fn closest_point_on_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::v1_model;
+    use crate::test_support::{v1_fk, v1_model};
 
     fn model() -> ArmModel {
         v1_model("left")
+    }
+
+    /// `from_fk` and the closed-form IK require the shoulder (j1-j3) and wrist
+    /// (j5-j7) axes to form orthonormal bases. The raw URDF-local axes do NOT
+    /// (j1 and j3 are both +Z locally); this confirms the link rotations make the
+    /// base-frame axes at home orthonormal, so the orthogonality gate in `from_fk`
+    /// accepts the real arm rather than rejecting it.
+    #[test]
+    fn fixture_shoulder_and_wrist_axes_orthonormal_at_home() {
+        for side in ["left", "right"] {
+            let mut fk = v1_fk(side);
+            let posed = fk.at(&[0.0; ARM_DOF]);
+            let axes: [Vector3<f64>; ARM_DOF] = std::array::from_fn(|i| posed.axis_base(i));
+            for (label, [i, j, k]) in [("shoulder", [0usize, 1, 2]), ("wrist", [4, 5, 6])] {
+                for idx in [i, j, k] {
+                    assert!(
+                        (axes[idx].norm() - 1.0).abs() < 1e-9,
+                        "{side} {label} axis j{} not unit (|a|={})",
+                        idx + 1,
+                        axes[idx].norm(),
+                    );
+                }
+                for (a, b) in [(i, j), (j, k), (i, k)] {
+                    let dot = axes[a].dot(&axes[b]).abs();
+                    println!("{side} {label}: |cos(j{}, j{})| = {dot:.2e}", a + 1, b + 1);
+                    assert!(dot < 1e-9, "{side} {label}: j{}·j{} = {dot:.2e}, not orthogonal", a + 1, b + 1);
+                }
+            }
+        }
     }
 
     #[test]

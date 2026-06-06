@@ -1,11 +1,10 @@
-//! Microbenchmarks for the per-request compute cost of the service handlers
-//! (pure math, excluding the peppy IPC round trip). Run with `cargo bench`.
+//! Microbenchmarks for the per-call compute cost of the library entry points.
+//! Run with `cargo bench`.
 //!
-//! Each bench mirrors what the corresponding service handler does: the `get_fk`
-//! / `get_*` dynamics benches re-pose the FK chain at the requested configuration
-//! (as the handlers do, once per request) and evaluate the term; the `get_ik`
-//! benches run the closed-form solver. The fixture is the bundled OpenArm V1.0
-//! (left arm).
+//! Each bench mirrors what a consumer does on a control tick: the `get_fk` /
+//! `get_*` dynamics benches re-pose the FK chain at the requested configuration
+//! and evaluate the term; the `get_ik` benches run the closed-form solver. The
+//! fixture is the bundled OpenArm V1.0 (left arm).
 //!
 //! IK has two cost regimes:
 //!   - `FromSeed` always computes the exact feasible-arm-angle intervals (the
@@ -45,7 +44,7 @@ fn benchmarks(c: &mut Criterion) {
     let r_d = target.rotation.to_rotation_matrix();
     let p_d = target.translation.vector;
     let cold_seed: JointVec = [0.0, 0.2, -0.2, 1.2, 0.3, -0.3, 0.4];
-    let psi = ik::arm_angle_of(&model, &q);
+    let psi = ik::arm_angle_of(&model, &q).expect("benchmark seed is non-singular");
 
     c.bench_function("get_fk", |b| {
         b.iter(|| black_box(fk.at(black_box(&q)).ee_pose()))
@@ -59,7 +58,7 @@ fn benchmarks(c: &mut Criterion) {
         b.iter(|| black_box(coriolis::torques(&fk.at(black_box(&q)), black_box(&qd))))
     });
 
-    // The combined service the arm calls every control tick: gravity + Coriolis.
+    // The combined compensation the arm computes every control tick: gravity + Coriolis.
     c.bench_function("get_compensation", |b| {
         b.iter(|| {
             let posed = fk.at(black_box(&q));
