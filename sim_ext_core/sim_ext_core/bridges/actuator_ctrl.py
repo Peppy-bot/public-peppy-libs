@@ -12,17 +12,6 @@ _QOS = "standard"
 
 
 class ActuatorCtrlBridge(BridgePlugin):
-    """Subscribes to a raw set_ctrl topic and writes the latest actuator_values
-    into the sim's ctrl[] array before the next physics step.
-
-    Payload shape (raw JSON, peppylib Standard QoS):
-        { "actuator_values": { "<actuator_name>": <float>, ... } }
-
-    The bridge holds a duck-typed `actuator_ctrl` wrapper — anything that
-    exposes setup(), teardown(), is_ready, and write_targets(dict). The MuJoCo
-    implementation is `sim_ext_core.mujoco.MujocoActuatorCtrl`.
-    """
-
     def __init__(self, actuator_ctrl: Any, _config: Any, entry: Any) -> None:
         self._actuator_ctrl = actuator_ctrl
         self._source_node: str = entry.source_node
