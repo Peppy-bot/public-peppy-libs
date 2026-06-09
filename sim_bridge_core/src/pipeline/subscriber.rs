@@ -5,8 +5,8 @@ use peppylib::messaging::SenderTarget;
 use peppylib::runtime::CancellationToken;
 use serde::Serialize;
 
-use crate::config::DaemonState;
 use super::{BACKOFF_INIT, BACKOFF_MAX};
+use crate::config::DaemonState;
 
 pub async fn run_os_to_sim<Runner, Msg, RecvFn>(
     runner: Arc<Runner>,
@@ -17,7 +17,9 @@ pub async fn run_os_to_sim<Runner, Msg, RecvFn>(
 ) where
     Runner: Send + Sync + 'static,
     Msg: Serialize + Send + 'static,
-    RecvFn: Fn(Arc<Runner>) -> super::BoxFuture<std::result::Result<(String, Msg), String>> + Send + 'static,
+    RecvFn: Fn(Arc<Runner>) -> super::BoxFuture<std::result::Result<(String, Msg), String>>
+        + Send
+        + 'static,
 {
     let mut backoff = BACKOFF_INIT;
 
@@ -63,8 +65,7 @@ pub async fn run_os_to_sim<Runner, Msg, RecvFn>(
                         }
                     };
 
-                    // v0.10: TopicMessenger::emit takes a typed SenderTarget
-                    // for the publisher-side identity (was a bare &str).
+                    // SenderTarget addresses this publisher's identity.
                     let bridge_target = match SenderTarget::node("sim_bridge", "v1") {
                         Ok(t) => t,
                         Err(e) => {

@@ -88,11 +88,9 @@ class PeppylibIO:  # pylint: disable=R0902
         if self._thread is not None:
             self._thread.join(timeout=5.0)
             if self._thread.is_alive():
-                # peppylib v0.10's MessengerHandle exposes no explicit close;
-                # teardown relies on Python GC dropping the last reference.
-                # If the I/O thread didn't observe the cancel within 5s, the
-                # daemon connection will linger until process exit — log it so
-                # the leak is observable rather than silent.
+                # MessengerHandle has no explicit close; teardown relies on
+                # GC. If the I/O thread didn't observe the cancel within 5s,
+                # the daemon connection lingers until process exit.
                 logger.warning(
                     "peppylib I/O thread still alive after 5s shutdown timeout"
                     " — daemon connection may linger until process exit"
@@ -170,10 +168,9 @@ class PeppylibIO:  # pylint: disable=R0902
     def get_all(
         self, source_node: str, topic: str, *, source_tag: str = "v1"
     ) -> list[bytes]:
-        # Drain every queued message in FIFO order. Use for topics where each
-        # message is a distinct event (e.g. per-arm joint commands on a shared
-        # topic) and dropping earlier ones is a bug. For idempotent state
-        # signals (latest pause/reset wins) use get_latest instead.
+        # FIFO drain of every queued message. Use when each message is a
+        # distinct event (drops are bugs); use get_latest for idempotent
+        # signals where latest wins.
         with self._queues_lock:
             q = self._queues.get((source_node, source_tag, topic))
         if q is None:

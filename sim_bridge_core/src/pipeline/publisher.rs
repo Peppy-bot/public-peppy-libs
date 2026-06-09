@@ -5,8 +5,8 @@ use peppylib::messaging::{ConsumerFilter, SenderTarget};
 use peppylib::runtime::CancellationToken;
 use serde::Deserialize;
 
-use crate::config::DaemonState;
 use super::{BACKOFF_INIT, BACKOFF_MAX};
+use crate::config::DaemonState;
 
 pub async fn run_sim_to_os<Runner, Msg, EmitFn>(
     runner: Arc<Runner>,
@@ -42,9 +42,7 @@ pub async fn run_sim_to_os<Runner, Msg, EmitFn>(
         };
 
         let instance_id = format!("sim_bridge_{topic}");
-        // v0.10: subscribe takes SenderTarget for the producer-side identity.
-        // sim_node names a conforming node (its tag is fixed at v1 across
-        // the openarm01 deployment).
+        // SenderTarget addresses the producer interface; tag pinned to "v1".
         let sim_target = match SenderTarget::node(&*sim_node, "v1") {
             Ok(t) => t,
             Err(e) => {

@@ -9,10 +9,9 @@ from sim_ext_core.base import BridgePlugin
 
 logger = logging.getLogger(__name__)
 
-# Idempotent services: only the latest queued request matters (a stale
-# pause is harmless if a newer pause came in). Non-idempotent services
-# carry distinct payloads (e.g. per-arm joint commands on the same topic)
-# and every queued request must be processed — see on_step.
+# Idempotent services: latest queued wins (a stale pause is harmless if
+# a newer one arrived). Non-idempotent services carry distinct payloads;
+# every queued request must be processed.
 _IDEMPOTENT_SERVICES = ("reset_sim", "pause_sim", "step_sim")
 _NON_IDEMPOTENT_SERVICES = ("set_joint_positions",)
 _SERVICES = _IDEMPOTENT_SERVICES + _NON_IDEMPOTENT_SERVICES

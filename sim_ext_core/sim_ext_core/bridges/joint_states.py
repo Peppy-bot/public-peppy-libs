@@ -28,9 +28,8 @@ class JointStatesBridge(BridgePlugin):
         return True
 
     def teardown(self) -> None:
-        # Every other sensor bridge (Imu, EePose, Gripper, …) forwards teardown
-        # to its impl; on Isaac the articulation view holds native handles that
-        # must be released when the extension reloads.
+        # Forward teardown so any native handles the articulation view holds
+        # are released on extension reload.
         self._articulation.teardown()
 
     def on_step(self, step: int, io: Any) -> None:

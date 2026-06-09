@@ -24,10 +24,8 @@ pub async fn call_sim(
         .await
         .map_err(|e| format!("connect: {e}"))?;
 
-    // v0.10: TopicMessenger::subscribe / emit take typed SenderTarget for the
-    // sender-side identity. The sim-side producer is a node-shaped target
-    // (the conforming robot_initializer impl); our own publish identity is
-    // the "sim_bridge" placeholder name retained from v0.9.
+    // SenderTarget identities: the sim-side producer is a node target;
+    // "sim_bridge" is the placeholder for this side's publish identity.
     let sim_target = SenderTarget::node(sim_node, "v1")
         .map_err(|e| format!("invalid sim_node target '{sim_node}': {e}"))?;
     let bridge_target = SenderTarget::node("sim_bridge", "v1")
@@ -77,7 +75,6 @@ pub fn call_sim_sync(
     payload: Value,
 ) -> std::result::Result<Value, String> {
     tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current()
-            .block_on(call_sim(daemon, sim_node, service, payload))
+        tokio::runtime::Handle::current().block_on(call_sim(daemon, sim_node, service, payload))
     })
 }
