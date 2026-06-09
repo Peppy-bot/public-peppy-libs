@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 # Idempotent services: latest queued wins (a stale pause is harmless if
 # a newer one arrived). Non-idempotent services carry distinct payloads;
 # every queued request must be processed.
-_IDEMPOTENT_SERVICES = ("reset_sim", "pause_sim", "step_sim")
-_NON_IDEMPOTENT_SERVICES = ("set_joint_positions",)
+_IDEMPOTENT_SERVICES = ("reset_sim", "pause_sim")
+_NON_IDEMPOTENT_SERVICES = ("step_sim", "set_joint_positions")
 _SERVICES = _IDEMPOTENT_SERVICES + _NON_IDEMPOTENT_SERVICES
 _TOPIC_PREFIX = "sim_ctrl_"
 _REQ_SUFFIX = "_req"
