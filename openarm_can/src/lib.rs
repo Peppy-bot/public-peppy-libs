@@ -25,24 +25,6 @@ pub enum MotorType {
 pub mod v10 {
     use super::MotorType;
 
-    /// An inclusive `[lower, upper]` limit on a single position value.
-    #[derive(Debug, Clone, Copy)]
-    pub struct Limit {
-        pub lower: f64,
-        pub upper: f64,
-    }
-
-    impl Limit {
-        pub const fn new(lower: f64, upper: f64) -> Self {
-            Self { lower, upper }
-        }
-
-        /// True if `x` lies within `[lower, upper]` (inclusive).
-        pub fn contains(&self, x: f64) -> bool {
-            (self.lower..=self.upper).contains(&x)
-        }
-    }
-
     pub const ARM_DOF: usize = 7;
     pub const ARM_MOTOR_TYPES: [MotorType; ARM_DOF] = [
         MotorType::DM8009,
@@ -56,20 +38,6 @@ pub mod v10 {
     pub const ARM_SEND_IDS: [u32; ARM_DOF] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
     pub const ARM_RECV_IDS: [u32; ARM_DOF] = [0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17];
 
-    /// Per-joint position limits in radians, j1..j7.
-    /// Values match enactic/openarm_description v1.0 (config/arm/joint_limits.yaml);
-    /// kept as the source's literals (e.g. 1.570796) rather than `FRAC_PI_2`.
-    #[allow(clippy::approx_constant)]
-    pub const ARM_JOINT_LIMITS: [Limit; ARM_DOF] = [
-        Limit::new(-1.396263, 3.490659),
-        Limit::new(-1.745329, 1.745329),
-        Limit::new(-1.570796, 1.570796),
-        Limit::new(0.0, 2.443461),
-        Limit::new(-1.570796, 1.570796),
-        Limit::new(-0.785398, 0.785398),
-        Limit::new(-1.570796, 1.570796),
-    ];
-
     /// A fixed-length array of one `f64` per arm joint.
     pub type JointVec = [f64; ARM_DOF];
 
@@ -82,10 +50,6 @@ pub mod v10 {
     pub const GRIPPER_OPEN_M: f64 = 0.044;
     #[allow(clippy::approx_constant)]
     pub const GRIPPER_OPEN_RAD: f64 = -1.0472;
-
-    /// Gripper opening limits in meters: fully closed to fully open.
-    /// Parallels `ARM_JOINT_LIMITS`; lets consumers validate gripper targets uniformly.
-    pub const GRIPPER_LIMITS_M: Limit = Limit::new(0.0, GRIPPER_OPEN_M);
 }
 
 /// Damiao motor callback mode. Controls which CAN frames the firmware emits.
@@ -303,19 +267,6 @@ mod tests {
         assert_eq!(v10::ARM_MOTOR_TYPES.len(), v10::ARM_DOF);
         assert_eq!(v10::ARM_SEND_IDS.len(), v10::ARM_DOF);
         assert_eq!(v10::ARM_RECV_IDS.len(), v10::ARM_DOF);
-        assert_eq!(v10::ARM_JOINT_LIMITS.len(), v10::ARM_DOF);
-    }
-
-    #[test]
-    fn arm_joint_limits_are_ordered_and_span_zero_reference() {
-        // lower < upper for every joint; a flipped pair would reject all targets.
-        // The home pose is all-zeros, so each range must contain 0.
-        for (i, limit) in v10::ARM_JOINT_LIMITS.iter().enumerate() {
-            assert!(limit.lower < limit.upper, "joint {i}: lower {} >= upper {}", limit.lower, limit.upper);
-            assert!(limit.contains(0.0), "joint {i}: range excludes home (0.0)");
-            assert!(!limit.contains(limit.lower - 1e-3), "joint {i}: contains below lower");
-            assert!(!limit.contains(limit.upper + 1e-3), "joint {i}: contains above upper");
-        }
     }
 
     #[test]
@@ -325,17 +276,6 @@ mod tests {
         // the wrong way.
         assert!(v10::GRIPPER_OPEN_M > 0.0);
         assert!(v10::GRIPPER_OPEN_RAD < 0.0);
-    }
-
-    #[test]
-    fn gripper_limits_span_closed_to_open() {
-        let limit = v10::GRIPPER_LIMITS_M;
-        assert_eq!(limit.lower, 0.0);
-        assert_eq!(limit.upper, v10::GRIPPER_OPEN_M);
-        assert!(limit.contains(0.0));
-        assert!(limit.contains(v10::GRIPPER_OPEN_M));
-        assert!(!limit.contains(-1e-9));
-        assert!(!limit.contains(v10::GRIPPER_OPEN_M + 1e-9));
     }
 
     #[test]
