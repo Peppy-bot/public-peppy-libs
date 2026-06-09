@@ -193,21 +193,28 @@ fn decompose_three_axes(
 
 /// Float slack on the reach interval so a target sitting essentially *at* the
 /// max-reach (straight arm) or min-reach boundary is rejected rather than driven
-/// into the ill-conditioned region just inside it. The genuinely near-singular
-/// band is caught downstream by the arm-plane normal check ([`PARALLEL_SIN_EPS`])
+/// into the ill-conditioned region just inside it. The exact straight-arm pose is
+/// also caught downstream by the arm-plane normal check ([`PARALLEL_SIN_EPS`])
 /// and, for seeds, by [`SINGULAR_RADIUS`].
 const REACH_EPS: f64 = 1e-9;
 
-/// Below this elbow-circle radius (m) the arm angle is geometrically ill-defined
-/// (the elbow sits on the shoulder-wrist line), so a seed there carries no
-/// usable continuity information and the solver resolves from a neutral angle.
-const SINGULAR_RADIUS: f64 = 0.01;
+/// Numerical floor (m) on the elbow-circle radius below which the arm angle is
+/// taken as undefined. The arm angle is the *direction* of the elbow off the
+/// shoulder-wrist line, so it stays well-defined and numerically stable for any
+/// physically non-straight configuration even when that offset is sub-millimetre
+/// (a near-straight seed still carries a usable arm angle, e.g. the home pose at
+/// q4 ≈ 0.05 has a ~5 mm radius and a clean angle). Only at the exact straight-arm
+/// pose (radius → 0, elbow on the line) is the angle genuinely undefined; this
+/// floor guards just that degenerate case, where the offset direction is lost to
+/// rounding.
+const SINGULAR_RADIUS: f64 = 1e-6;
 
 /// Arm angle of configuration `q`: the angle of its elbow on the redundancy
-/// circle about the S-W line, measured from the reference direction. `None` at
-/// the straight-arm singularity, where the elbow sits on the S-W line and the
-/// redundancy circle collapses, so the arm angle is geometrically undefined
-/// (returning a fabricated 0.0 there would mislead callers).
+/// circle about the S-W line, measured from the reference direction. `None` only
+/// at the exact straight-arm singularity (elbow-circle radius below
+/// [`SINGULAR_RADIUS`]), where the elbow sits on the S-W line and the angle is
+/// geometrically undefined (returning a fabricated 0.0 there would mislead
+/// callers). A merely near-straight `q` still has a well-defined angle.
 pub(crate) fn arm_angle_of(model: &ArmModel, q: &JointVec) -> Option<f64> {
     let circle = circle_frame(model, fk_poe_position(model, q));
     if circle.radius < SINGULAR_RADIUS {
@@ -296,8 +303,9 @@ fn circle_frame(model: &ArmModel, p_w: Vector3<f64>) -> Circle {
 /// In `FromSeed` mode the seed's arm angle is used when it is feasible
 /// (continuity); otherwise the closest feasible arm angle is taken from the
 /// exact feasible set, so a solution is still returned when the seed's angle is
-/// infeasible for this target, or when the seed is near-singular (e.g. the home
-/// pose, q4 ≈ 0) and so carries no usable arm angle. In `Fixed`
+/// infeasible for this target, or when the seed is at the exact straight-arm
+/// singularity and so carries no arm angle (a merely near-straight seed, e.g. the
+/// home pose at q4 ≈ 0.05, still does and is tracked continuously). In `Fixed`
 /// mode the given arm angle is used verbatim and infeasibility yields `None`.
 pub(crate) fn solve(
     model: &ArmModel,
@@ -416,8 +424,9 @@ fn solve_at_psi(
     best.map(|(_, q)| q)
 }
 
-/// The seed's arm angle, or `None` if the seed is near-singular (elbow circle
-/// radius below [`SINGULAR_RADIUS`]) and so has no well-defined arm angle.
+/// The seed's arm angle, or `None` only at the exact straight-arm singularity
+/// (elbow-circle radius below [`SINGULAR_RADIUS`]), where it has no well-defined
+/// arm angle. See [`SINGULAR_RADIUS`]: a near-straight seed still has one.
 fn seed_arm_angle(model: &ArmModel, seed: &JointVec) -> Option<f64> {
     let circle = circle_frame(model, fk_poe_position(model, seed));
     (circle.radius >= SINGULAR_RADIUS).then(|| circle.angle(elbow_position(model, seed)))
@@ -1149,6 +1158,75 @@ mod tests {
     }
 
     #[test]
+    fn near_straight_seed_reproduces_its_own_configuration() {
+        // A near-straight seed (e.g. the hanging home pose at q4 ≈ 0.05) is not at
+        // the singularity: its elbow-circle radius is millimetres, not zero, so its
+        // arm angle is well-defined. FromSeed must return the seed itself when
+        // solving for the seed's own pose, rather than reconfiguring in place to a
+        // different feasible arm angle for the same end-effector pose.
+        let mut fk = v1_fk("left");
+        let m = ArmModel::from_fk(&mut fk).unwrap();
+        let seeds = [
+            [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0], // hanging home
+            [0.3, -0.2, 0.1, 0.03, 0.4, 0.1, -0.2], // near-straight, off-axis
+        ];
+        for seed in seeds {
+            // These are near-straight but not singular: the arm angle is defined.
+            assert!(
+                arm_angle_of(&m, &seed).is_some(),
+                "near-straight seed should still have a defined arm angle: {seed:?}"
+            );
+            let target = pose(&mut fk, &seed);
+            let sol = solve(&m, &target, ArmAnglePolicy::FromSeed, &seed)
+                .expect("the seed's own pose is solvable");
+            for (i, (&got, &want)) in sol.q.iter().zip(&seed).enumerate() {
+                assert!(
+                    wrap_pi(got - want).abs() < 1e-6,
+                    "joint {i}: got {got}, want {want} — seed not reproduced (arm-angle jump?)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cartesian_departure_from_near_straight_start_is_continuous() {
+        // Walking the EE from a near-straight hanging start to a bent reach pose,
+        // seeding each solve from the previous solution, must keep every joint step
+        // small: the solution tracks the seed continuously, with no instantaneous
+        // reconfiguration as the arm leaves the near-singular region.
+        let mut fk = v1_fk("left");
+        let m = ArmModel::from_fk(&mut fk).unwrap();
+        let start_q = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0]; // hanging
+        let reach_q = [0.0, -0.3, 0.0, 1.2, 0.0, 0.4, 0.0]; // bent reach
+        let start = pose(&mut fk, &start_q);
+        let end = pose(&mut fk, &reach_q);
+
+        let n = 500; // ~5 s move at 100 Hz
+        let mut seed = start_q;
+        let mut prev = start_q;
+        let mut worst = 0.0_f64;
+        for k in 0..=n {
+            let s = k as f64 / n as f64;
+            let p = start.translation.vector.lerp(&end.translation.vector, s);
+            let r = start.rotation.try_slerp(&end.rotation, s, 1e-6).unwrap_or(end.rotation);
+            let target = Isometry3::from_parts(p.into(), r);
+            let sol = solve(&m, &target, ArmAnglePolicy::FromSeed, &seed)
+                .expect("departure path stays reachable");
+            let step = sol
+                .q
+                .iter()
+                .zip(&prev)
+                .map(|(&a, &b)| wrap_pi(a - b).abs())
+                .fold(0.0, f64::max);
+            worst = worst.max(step);
+            prev = sol.q;
+            seed = sol.q;
+        }
+        println!("worst joint step over departure: {worst:.4} rad");
+        assert!(worst < 0.1, "largest joint step {worst} rad — discontinuous departure");
+    }
+
+    #[test]
     fn rejects_non_finite_target() {
         let m = v1_model("left");
         let r = Rotation3::identity();
@@ -1213,4 +1291,5 @@ mod tests {
         panic!("no target with >=2 distinct branches found");
     }
 }
+
 
