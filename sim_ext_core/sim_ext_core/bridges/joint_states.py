@@ -28,7 +28,10 @@ class JointStatesBridge(BridgePlugin):
         return True
 
     def teardown(self) -> None:
-        pass  # articulation lifecycle is managed by the extension, not the plugin
+        # Every other sensor bridge (Imu, EePose, Gripper, …) forwards teardown
+        # to its impl; on Isaac the articulation view holds native handles that
+        # must be released when the extension reloads.
+        self._articulation.teardown()
 
     def on_step(self, step: int, io: Any) -> None:
         states = self._articulation.get_joint_states()
