@@ -8,12 +8,6 @@ use std::pin::Pin;
 
 pub type TransportFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RawQoS {
-    Standard,
-    SensorData,
-}
-
 pub trait RawSubscription: Send + 'static {
     /// Next raw payload. `None` means the subscription closed and the caller
     /// should resubscribe.
@@ -23,24 +17,23 @@ pub trait RawSubscription: Send + 'static {
 pub trait RawTransport: Send + Sync + 'static {
     type Subscription: RawSubscription;
 
-    /// Subscribe to `topic` produced by `source_node` (interface tag v1).
-    /// The implementation owns connection setup; an Err here is retried by
-    /// the pipeline with exponential backoff.
+    /// Subscribe to `topic` produced by `source_node` (interface tag v1) with
+    /// telemetry (latest-wins) delivery. The implementation owns connection
+    /// setup; an Err here is retried by the pipeline with exponential backoff.
     fn subscribe<'a>(
         &'a self,
         instance_id: &'a str,
         source_node: &'a str,
         topic: &'a str,
-        qos: RawQoS,
     ) -> TransportFuture<'a, std::result::Result<Self::Subscription, String>>;
 
-    /// Publish `payload` on `topic` under the sim-bridge identity. The
-    /// implementation owns connection reuse and teardown on failure.
+    /// Publish `payload` on `topic` under the sim-bridge identity with
+    /// reliable delivery. The implementation owns connection reuse and
+    /// teardown on failure.
     fn emit<'a>(
         &'a self,
         instance_id: &'a str,
         topic: &'a str,
-        qos: RawQoS,
         payload: Vec<u8>,
     ) -> TransportFuture<'a, std::result::Result<(), String>>;
 }

@@ -4,7 +4,7 @@ use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use super::{BACKOFF_INIT, BACKOFF_MAX};
-use crate::transport::{RawQoS, RawTransport};
+use crate::transport::RawTransport;
 
 pub async fn run_os_to_sim<T, Runner, Msg, RecvFn>(
     transport: Arc<T>,
@@ -48,7 +48,7 @@ pub async fn run_os_to_sim<T, Runner, Msg, RecvFn>(
                     }
                 };
 
-                match transport.emit(&instance_id, &topic, RawQoS::Standard, payload).await {
+                match transport.emit(&instance_id, &topic, payload).await {
                     Ok(()) => backoff = BACKOFF_INIT,
                     Err(e) => {
                         tracing::warn!("os_to_sim({topic}): emit — {e}, retry in {backoff:?}");

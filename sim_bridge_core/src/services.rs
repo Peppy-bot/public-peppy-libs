@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::transport::{RawQoS, RawSubscription, RawTransport};
+use crate::transport::{RawSubscription, RawTransport};
 
 const SIM_CTRL_TIMEOUT: Duration = Duration::from_secs(5);
 const SIM_CTRL_REQ_SUFFIX: &str = "_req";
@@ -24,7 +24,6 @@ pub async fn call_sim<T: RawTransport>(
             &format!("sim_bridge_{service}_res_sub"),
             sim_node,
             &res_topic,
-            RawQoS::Standard,
         )
         .await
         .map_err(|e| format!("subscribe {res_topic}: {e}"))?;
@@ -34,7 +33,6 @@ pub async fn call_sim<T: RawTransport>(
         .emit(
             &format!("sim_bridge_{service}_req_pub"),
             &req_topic,
-            RawQoS::Standard,
             body,
         )
         .await

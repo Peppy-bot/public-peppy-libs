@@ -4,7 +4,7 @@ use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use super::{BACKOFF_INIT, BACKOFF_MAX};
-use crate::transport::{RawQoS, RawSubscription, RawTransport};
+use crate::transport::{RawSubscription, RawTransport};
 
 pub async fn run_sim_to_os<T, Runner, Msg, EmitFn>(
     transport: Arc<T>,
@@ -25,7 +25,7 @@ pub async fn run_sim_to_os<T, Runner, Msg, EmitFn>(
     'retry: loop {
         let mut sub = tokio::select! {
             _ = token.cancelled() => break,
-            result = transport.subscribe(&instance_id, &sim_node, &topic, RawQoS::SensorData) => {
+            result = transport.subscribe(&instance_id, &sim_node, &topic) => {
                 match result {
                     Ok(s) => s,
                     Err(e) => {
