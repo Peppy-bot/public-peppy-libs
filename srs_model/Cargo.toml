@@ -1,0 +1,18 @@
+[package]
+name = "srs_model"
+version = "0.1.0"
+edition = "2024"
+description = "Kinematics + dynamics (FK, closed-form IK, gravity/Coriolis) for a 7-DOF SRS arm. Robot-agnostic: all geometry derives from the supplied URDF. Pure Rust, no hardware or messaging deps."
+license = "Apache-2.0"
+
+[dependencies]
+k = "0.32"
+urdf-rs = "0.9"
+
+[dev-dependencies]
+rand = "0.8"
+criterion = "0.5"
+
+[[bench]]
+name = "compute"
+harness = false
