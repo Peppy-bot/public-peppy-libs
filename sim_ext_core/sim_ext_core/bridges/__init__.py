@@ -1,3 +1,6 @@
+"""Concrete bridge plugins, re-exported for bridge_extension wiring."""
+
+from .actuator_ctrl import ActuatorCtrlBridge
 from .clock import ClockBridge
 from .contact_forces import ContactForcesBridge
 from .ee_pose import EePoseBridge
@@ -10,6 +13,7 @@ from .tf_tree import TfTreeBridge
 from .wrench import WrenchBridge
 
 __all__ = [
+    "ActuatorCtrlBridge",
     "ClockBridge",
     "ContactForcesBridge",
     "EePoseBridge",

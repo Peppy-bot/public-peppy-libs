@@ -6,4 +6,4 @@ build-backend = "hatchling.build"
 name = "sim_ext_core"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["pyjson5>=1.6"]

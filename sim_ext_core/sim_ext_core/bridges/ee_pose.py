@@ -1,3 +1,5 @@
+"""End-effector pose publisher bridge."""
+
 from __future__ import annotations
 
 import json
@@ -9,7 +11,9 @@ from sim_ext_core.base import BridgePlugin
 _QOS = "sensor_data"
 
 
-class WrenchBridge(BridgePlugin):
+class EePoseBridge(BridgePlugin):
+    """Publishes end-effector position and orientation."""
+
 
     def __init__(self, sensor: Any, config: Any, entry: Any) -> None:
         self._sensor = sensor
@@ -24,15 +28,15 @@ class WrenchBridge(BridgePlugin):
         self._sensor.teardown()
 
     def on_step(self, step: int, io: Any) -> None:
-        data = self._sensor.get_wrench_data()
+        data = self._sensor.get_ee_pose()
         if data is None:
             return
         payload = json.dumps(
             {
                 "robot": self._robot_name,
                 "step": step,
-                "force": data["force"],
-                "torque": data["torque"],
+                "position": data["position"],
+                "orientation": data["orientation"],
                 "stamp": time.time(),
             }
         ).encode()

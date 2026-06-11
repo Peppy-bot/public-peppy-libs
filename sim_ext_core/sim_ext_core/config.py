@@ -1,3 +1,5 @@
+"""Bridge configuration parsed from sim_bridge.json5, env vars, and daemon state."""
+
 from __future__ import annotations
 
 import json
@@ -38,10 +40,13 @@ class SubscriberEntry:
     prim: str
     topic: str
     source_node: str = "sim_bridge"
+    params: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class BridgeConfig:
+    """Parsed bridge configuration: node identity, transport endpoint, and the publisher/subscriber registry."""
+
     node_name: str
     host: str
     port: int
@@ -80,13 +85,19 @@ class BridgeConfig:
                         prim=e.get("prim", ""),
                         topic=e.get("topic", e["type"]),
                         source_node=e.get("source_node", "sim_bridge"),
+                        params=_normalise_params(e.get("params"), e["type"]),
                     )
                     for e in raw.get("subscribers", [])
                 ],
             )
-        except (OSError, json.JSONDecodeError, KeyError):
+        except (OSError, json.JSONDecodeError):
             logger.exception(f"Could not load {resolved} — falling back to env vars")
             return cls.from_env(default_node_name=default_node_name)
+        except KeyError as exc:
+            raise ValueError(
+                f"sim_bridge.json5 at {resolved} is missing required field {exc}"
+                " — every publishers/subscribers entry needs at least a 'type' field"
+            ) from exc
 
     @classmethod
     def from_env(cls, default_node_name: str = "sim") -> BridgeConfig:
@@ -108,9 +119,9 @@ class BridgeConfig:
             ],
             subscribers=[
                 SubscriberEntry(
-                    type="joint_command",
+                    type="actuator_ctrl",
                     prim=prim,
-                    topic=os.environ.get(_ENV_COMMAND_TOPIC, "joint_command"),
+                    topic=os.environ.get(_ENV_COMMAND_TOPIC, "set_ctrl"),
                     source_node=os.environ.get(_ENV_COMMAND_SOURCE_NODE, "sim_bridge"),
                 )
             ],
@@ -135,7 +146,7 @@ def _resolve_port(daemon_state: dict[str, Any]) -> int:
 
 def _read_daemon_state() -> dict[str, Any]:
     try:
-        return json.loads(_DAEMON_STATE_PATH.read_text())
+        return _read_jsonc(_DAEMON_STATE_PATH)
     except FileNotFoundError:
         logger.warning(
             f"daemon_state.json not found at {_DAEMON_STATE_PATH}"
@@ -159,7 +170,12 @@ def _normalise_params(raw: Any, entry_type: str) -> dict[str, Any]:
 
 
 def _read_jsonc(path: Path) -> dict[str, Any]:
-    """Parses JSON with full-line // comments only. Inline comments not supported."""
-    lines = path.read_text().splitlines()
-    stripped = "\n".join(line for line in lines if not line.strip().startswith("//"))
-    return json.loads(stripped)
+    import pyjson5  # pylint: disable=E0401
+
+    text = path.read_text()
+    try:
+        return pyjson5.loads(text)
+    except pyjson5.Json5DecoderException as exc:
+        # Re-raise as json.JSONDecodeError so BridgeConfig.from_file catches
+        # it uniformly.
+        raise json.JSONDecodeError(str(exc), text, 0) from exc

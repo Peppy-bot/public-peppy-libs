@@ -1,3 +1,5 @@
+"""Contact force publisher bridge."""
+
 from __future__ import annotations
 
 import json
@@ -9,7 +11,9 @@ from sim_ext_core.base import BridgePlugin
 _QOS = "sensor_data"
 
 
-class ImuBridge(BridgePlugin):
+class ContactForcesBridge(BridgePlugin):
+    """Publishes active contacts read from a contact sensor."""
+
 
     def __init__(self, sensor: Any, config: Any, entry: Any) -> None:
         self._sensor = sensor
@@ -24,16 +28,22 @@ class ImuBridge(BridgePlugin):
         self._sensor.teardown()
 
     def on_step(self, step: int, io: Any) -> None:
-        data = self._sensor.get_imu_data()
-        if data is None:
+        contacts = self._sensor.get_contact_data()
+        if not contacts:
             return
         payload = json.dumps(
             {
                 "robot": self._robot_name,
                 "step": step,
-                "orientation": data["orientation"],
-                "angular_velocity": data["angular_velocity"],
-                "linear_acceleration": data["linear_acceleration"],
+                "contacts": [
+                    {
+                        "body1": c["body1"],
+                        "body2": c["body2"],
+                        "position": list(c["position"]),
+                        "force": list(c["force"]),
+                    }
+                    for c in contacts
+                ],
                 "stamp": time.time(),
             }
         ).encode()

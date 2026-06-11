@@ -1,3 +1,5 @@
+"""Sim control bridge — pause, resume, and step the sim over raw topics."""
+
 from __future__ import annotations
 
 import json
@@ -9,7 +11,12 @@ from sim_ext_core.base import BridgePlugin
 
 logger = logging.getLogger(__name__)
 
-_SERVICES = ("reset_sim", "pause_sim", "step_sim", "set_joint_positions")
+# Idempotent services: latest queued wins (a stale pause is harmless if
+# a newer one arrived). Non-idempotent services carry distinct payloads;
+# every queued request must be processed.
+_IDEMPOTENT_SERVICES = ("reset_sim", "pause_sim")
+_NON_IDEMPOTENT_SERVICES = ("step_sim", "set_joint_positions")
+_SERVICES = _IDEMPOTENT_SERVICES + _NON_IDEMPOTENT_SERVICES
 _TOPIC_PREFIX = "sim_ctrl_"
 _REQ_SUFFIX = "_req"
 _RES_SUFFIX = "_res"
@@ -17,6 +24,8 @@ _QOS = "standard"
 
 
 class SimControlInterface(ABC):
+    """Engine hooks the sim launcher provides for pause/resume/step."""
+
 
     @abstractmethod
     def reset(self) -> dict: ...
@@ -32,6 +41,8 @@ class SimControlInterface(ABC):
 
 
 class SimControlBridge(BridgePlugin):
+    """Applies pause/resume/step_sim requests against the SimControlInterface."""
+
 
     def __init__(
         self,
@@ -61,26 +72,35 @@ class SimControlBridge(BridgePlugin):
         ]
 
     def on_step(self, step: int, io: Any) -> None:
-        for svc in _SERVICES:
-            raw = io.get_latest(self._source_node, f"{_TOPIC_PREFIX}{svc}{_REQ_SUFFIX}")
-            if raw is None:
-                continue
-            try:
-                request = json.loads(raw)
-            except Exception as exc:
-                logger.warning(f"sim_control: malformed JSON on {svc}: {exc}")
-                continue
+        for svc in _IDEMPOTENT_SERVICES:
+            topic = f"{_TOPIC_PREFIX}{svc}{_REQ_SUFFIX}"
+            raw = io.get_latest(self._source_node, topic)
+            if raw is not None:
+                self._handle_request(svc, raw, io)
+
+        for svc in _NON_IDEMPOTENT_SERVICES:
+            topic = f"{_TOPIC_PREFIX}{svc}{_REQ_SUFFIX}"
+            for raw in io.get_all(self._source_node, topic):
+                self._handle_request(svc, raw, io)
+
+    def _handle_request(self, svc: str, raw: bytes, io: Any) -> None:
+        try:
+            request = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.warning(f"sim_control: malformed JSON on {svc}: {exc}")
+            response = {"success": False, "message": f"malformed JSON: {exc}"}
+        else:
             try:
                 response = self._dispatch(svc, request)
             except Exception as exc:
                 logger.error(f"sim_control: unhandled error in {svc}: {exc}")
                 response = {"success": False, "message": str(exc)}
-            io.emit(
-                self._node_name,
-                f"{_TOPIC_PREFIX}{svc}{_RES_SUFFIX}",
-                _QOS,
-                json.dumps(response).encode(),
-            )
+        io.emit(
+            self._node_name,
+            f"{_TOPIC_PREFIX}{svc}{_RES_SUFFIX}",
+            _QOS,
+            json.dumps(response).encode(),
+        )
 
     def _dispatch(self, service: str, request: dict) -> dict:
         if service == "reset_sim":

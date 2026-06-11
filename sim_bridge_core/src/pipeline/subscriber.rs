@@ -1,33 +1,35 @@
 use std::sync::Arc;
 
-use peppylib::config::QoSProfile;
-use peppylib::runtime::CancellationToken;
-use serde::Serialize;
+use serde::Deserialize;
+use tokio_util::sync::CancellationToken;
 
-use crate::config::DaemonState;
 use super::{BACKOFF_INIT, BACKOFF_MAX};
+use crate::transport::{RawSubscription, RawTransport};
 
-pub async fn run_os_to_sim<Runner, Msg, RecvFn>(
+pub async fn run_sim_to_os<T, Runner, Msg, EmitFn>(
+    transport: Arc<T>,
     runner: Arc<Runner>,
     token: CancellationToken,
-    daemon: DaemonState,
+    sim_node: Arc<str>,
     topic: Arc<str>,
-    recv_fn: RecvFn,
+    emit_fn: EmitFn,
 ) where
+    T: RawTransport,
     Runner: Send + Sync + 'static,
-    Msg: Serialize + Send + 'static,
-    RecvFn: Fn(Arc<Runner>) -> super::BoxFuture<std::result::Result<(String, Msg), String>> + Send + 'static,
+    Msg: for<'de> Deserialize<'de> + Send + 'static,
+    EmitFn: Fn(Arc<Runner>, Msg) -> super::BoxFuture<Result<(), String>> + Send + 'static,
 {
+    let instance_id = format!("sim_bridge_{topic}");
     let mut backoff = BACKOFF_INIT;
 
     'retry: loop {
-        let handle = tokio::select! {
+        let mut sub = tokio::select! {
             _ = token.cancelled() => break,
-            result = peppylib::MessengerHandle::from_host_port("localhost", daemon.messaging_port) => {
+            result = transport.subscribe(&instance_id, &sim_node, &topic) => {
                 match result {
-                    Ok(h) => h,
+                    Ok(s) => s,
                     Err(e) => {
-                        tracing::warn!("os_to_sim({topic}): connect — {e}, retry in {backoff:?}");
+                        tracing::warn!("sim_to_os({topic}): subscribe — {e}, retry in {backoff:?}");
                         tokio::select! {
                             _ = token.cancelled() => break 'retry,
                             _ = tokio::time::sleep(backoff) => {}
@@ -39,41 +41,25 @@ pub async fn run_os_to_sim<Runner, Msg, RecvFn>(
             }
         };
 
-        tracing::info!("os_to_sim({topic}): connected");
+        tracing::info!("sim_to_os: subscribed to {sim_node}/{topic}");
         backoff = BACKOFF_INIT;
 
         loop {
             tokio::select! {
                 _ = token.cancelled() => break 'retry,
-                result = recv_fn(runner.clone()) => {
-                    let (_sender, msg) = match result {
-                        Ok(m) => m,
-                        Err(e) => {
-                            tracing::warn!("os_to_sim({topic}): receive — {e}, reconnecting");
-                            break;
+                msg = sub.next() => match msg {
+                    Some(payload) => {
+                        match serde_json::from_slice::<Msg>(&payload) {
+                            Ok(m) => {
+                                if let Err(e) = emit_fn(runner.clone(), m).await {
+                                    tracing::warn!("sim_to_os({topic}): emit — {e}");
+                                }
+                            }
+                            Err(e) => tracing::warn!("sim_to_os({topic}): deserialize — {e}"),
                         }
-                    };
-
-                    let payload = match serde_json::to_vec(&msg) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::warn!("os_to_sim({topic}): serialize — {e}");
-                            continue;
-                        }
-                    };
-
-                    if let Err(e) = peppylib::TopicMessenger::emit(
-                        &handle,
-                        &daemon.core_node_name,
-                        &format!("sim_bridge_{topic}_pub"),
-                        "sim_bridge",
-                        &*topic,
-                        QoSProfile::Standard,
-                        peppylib::Payload::from(payload),
-                    )
-                    .await
-                    {
-                        tracing::warn!("os_to_sim({topic}): peppylib emit — {e}, reconnecting");
+                    }
+                    None => {
+                        tracing::info!("sim_to_os({topic}): subscription closed — re-subscribing");
                         break;
                     }
                 },

@@ -1,3 +1,5 @@
+"""Sim clock publisher bridge."""
+
 from __future__ import annotations
 
 import json
@@ -7,33 +9,34 @@ from typing import Any
 from sim_ext_core.base import BridgePlugin
 
 _QOS = "sensor_data"
+_DEFAULT_TOPIC = "clock"
 
 
-class JointStatesBridge(BridgePlugin):
+class ClockBridge(BridgePlugin):
+    """Publishes the sim clock each step."""
 
-    def __init__(self, articulation: Any, config: Any, entry: Any) -> None:
-        self._articulation = articulation
+
+    def __init__(self, sensor: Any, config: Any, entry: Any) -> None:
+        if entry is None:
+            raise ValueError("ClockBridge requires a non-None entry with a topic field")
+        self._sensor = sensor
         self._node_name: str = config.node_name
-        self._robot_name: str = entry.robot_name
         self._topic: str = entry.topic
 
     def setup(self) -> bool:
-        return self._articulation.setup()
+        return self._sensor.setup()
 
     def teardown(self) -> None:
-        pass  # articulation lifecycle is managed by the extension, not the plugin
+        self._sensor.teardown()
 
     def on_step(self, step: int, io: Any) -> None:
-        states = self._articulation.get_joint_states()
-        if states is None:
+        data = self._sensor.get_clock_data()
+        if data is None:
             return
-        positions, velocities = states
         payload = json.dumps(
             {
-                "robot": self._robot_name,
                 "step": step,
-                "positions": positions,
-                "velocities": velocities,
+                "sim_time": data["sim_time"],
                 "stamp": time.time(),
             }
         ).encode()
@@ -41,4 +44,4 @@ class JointStatesBridge(BridgePlugin):
 
     @property
     def is_ready(self) -> bool:
-        return self._articulation.is_ready
+        return self._sensor.is_ready

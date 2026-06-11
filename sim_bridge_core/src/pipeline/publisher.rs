@@ -1,96 +1,65 @@
 use std::sync::Arc;
 
-use peppylib::config::QoSProfile;
-use peppylib::runtime::CancellationToken;
-use serde::Deserialize;
+use serde::Serialize;
+use tokio_util::sync::CancellationToken;
 
-use crate::config::DaemonState;
 use super::{BACKOFF_INIT, BACKOFF_MAX};
+use crate::transport::RawTransport;
 
-pub async fn run_sim_to_os<Runner, Msg, EmitFn>(
+pub async fn run_os_to_sim<T, Runner, Msg, RecvFn>(
+    transport: Arc<T>,
     runner: Arc<Runner>,
     token: CancellationToken,
-    daemon: DaemonState,
-    sim_node: Arc<str>,
     topic: Arc<str>,
-    emit_fn: EmitFn,
+    recv_fn: RecvFn,
 ) where
+    T: RawTransport,
     Runner: Send + Sync + 'static,
-    Msg: for<'de> Deserialize<'de> + Send + 'static,
-    EmitFn: Fn(Arc<Runner>, Msg) -> super::BoxFuture<Result<(), String>> + Send + 'static,
+    Msg: Serialize + Send + 'static,
+    RecvFn: Fn(Arc<Runner>) -> super::BoxFuture<std::result::Result<(String, Msg), String>>
+        + Send
+        + 'static,
 {
+    let instance_id = format!("sim_bridge_{topic}_pub");
     let mut backoff = BACKOFF_INIT;
 
-    'retry: loop {
-        let handle = tokio::select! {
+    loop {
+        tokio::select! {
             _ = token.cancelled() => break,
-            result = peppylib::MessengerHandle::from_host_port("localhost", daemon.messaging_port) => {
-                match result {
-                    Ok(h) => h,
+            result = recv_fn(runner.clone()) => {
+                let (_sender, msg) = match result {
+                    Ok(m) => m,
                     Err(e) => {
-                        tracing::warn!("sim_to_os({topic}): connect — {e}, retry in {backoff:?}");
+                        tracing::warn!("os_to_sim({topic}): receive — {e}, retry in {backoff:?}");
                         tokio::select! {
-                            _ = token.cancelled() => break 'retry,
+                            _ = token.cancelled() => break,
                             _ = tokio::time::sleep(backoff) => {}
                         }
                         backoff = (backoff * 2).min(BACKOFF_MAX);
-                        continue 'retry;
+                        continue;
                     }
-                }
-            }
-        };
+                };
 
-        let instance_id = format!("sim_bridge_{topic}");
-        let mut sub = tokio::select! {
-            _ = token.cancelled() => break,
-            result = peppylib::TopicMessenger::subscribe(
-                &handle,
-                &daemon.core_node_name,
-                &instance_id,
-                &*sim_node,
-                &*topic,
-                None,
-                None,
-                QoSProfile::SensorData,
-            ) => {
-                match result {
-                    Ok(s) => s,
+                let payload = match serde_json::to_vec(&msg) {
+                    Ok(b) => b,
                     Err(e) => {
-                        tracing::warn!("sim_to_os({topic}): subscribe — {e}, retry in {backoff:?}");
+                        tracing::warn!("os_to_sim({topic}): serialize — {e}");
+                        continue;
+                    }
+                };
+
+                match transport.emit(&instance_id, &topic, payload).await {
+                    Ok(()) => backoff = BACKOFF_INIT,
+                    Err(e) => {
+                        tracing::warn!("os_to_sim({topic}): emit — {e}, retry in {backoff:?}");
                         tokio::select! {
-                            _ = token.cancelled() => break 'retry,
+                            _ = token.cancelled() => break,
                             _ = tokio::time::sleep(backoff) => {}
                         }
                         backoff = (backoff * 2).min(BACKOFF_MAX);
-                        continue 'retry;
                     }
                 }
-            }
-        };
-
-        tracing::info!("sim_to_os: subscribed to {sim_node}/{topic}");
-        backoff = BACKOFF_INIT;
-
-        loop {
-            tokio::select! {
-                _ = token.cancelled() => break 'retry,
-                msg = sub.on_next_message() => match msg {
-                    Some(msg) => {
-                        match serde_json::from_slice::<Msg>(msg.payload().as_ref()) {
-                            Ok(m) => {
-                                if let Err(e) = emit_fn(runner.clone(), m).await {
-                                    tracing::warn!("sim_to_os({topic}): emit — {e}");
-                                }
-                            }
-                            Err(e) => tracing::warn!("sim_to_os({topic}): deserialize — {e}"),
-                        }
-                    }
-                    None => {
-                        tracing::info!("sim_to_os({topic}): subscription closed — re-subscribing");
-                        break;
-                    }
-                },
-            }
+            },
         }
     }
 }

@@ -1,3 +1,5 @@
+"""Transform tree publisher bridge."""
+
 from __future__ import annotations
 
 import json
@@ -9,7 +11,9 @@ from sim_ext_core.base import BridgePlugin
 _QOS = "sensor_data"
 
 
-class OdometryBridge(BridgePlugin):
+class TfTreeBridge(BridgePlugin):
+    """Publishes the world transform tree."""
+
 
     def __init__(self, sensor: Any, config: Any, entry: Any) -> None:
         self._sensor = sensor
@@ -24,17 +28,22 @@ class OdometryBridge(BridgePlugin):
         self._sensor.teardown()
 
     def on_step(self, step: int, io: Any) -> None:
-        data = self._sensor.get_odometry_data()
-        if data is None:
+        frames = self._sensor.get_tf_data()
+        if not frames:
             return
         payload = json.dumps(
             {
                 "robot": self._robot_name,
                 "step": step,
-                "position": data["position"],
-                "orientation": data["orientation"],
-                "linear_velocity": data["linear_velocity"],
-                "angular_velocity": data["angular_velocity"],
+                "frames": [
+                    {
+                        "name": f["name"],
+                        "parent": f["parent"],
+                        "position": list(f["position"]),
+                        "orientation": list(f["orientation"]),
+                    }
+                    for f in frames
+                ],
                 "stamp": time.time(),
             }
         ).encode()

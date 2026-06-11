@@ -9,24 +9,24 @@ PeppyOS nodes live in separate repositories under the nodes hub. Shared code tha
 | Library | Language | Purpose |
 |---|---|---|
 | [openarm_can](./openarm_can) | Rust | Safe wrapper around the `openarm_can` C++ library for driving the physical OpenArm hardware over CAN (`ArmCan` / `GripperCan`, Damiao motor types, OpenArm v10 constants) |
-| [sim_bridge_core](./sim_bridge_core) | Rust | peppylib ↔ peppygen translation layer for Isaac Sim and MuJoCo sim bridge nodes |
-| [sim_ext_core](./sim_ext_core) | Python | Plugin lifecycle, peppylib transport, config loading, and sensor bridge plugins for Isaac Sim and MuJoCo extensions |
+| [sim_bridge_core](./sim_bridge_core) | Rust | raw-to-peppygen pipelines for Isaac Sim and MuJoCo bridge nodes; the node supplies the peppylib transport |
+| [sim_ext_core](./sim_ext_core) | Python | Plugin lifecycle, config loading, and sensor bridge plugins for the in-sim extensions; the node supplies the IO transport |
 
-## Quick dependency setup
+## Using these libraries
 
-**Rust** (`Cargo.toml`):
+Rust nodes pin `sim_bridge_core` in `Cargo.toml`:
+
 ```toml
 [dependencies]
-sim_bridge_core = { git = "https://github.com/Peppy-bot/nodes_shared_code", package = "sim_bridge_core" }
+sim_bridge_core = { git = "https://github.com/Peppy-bot/nodes_shared_code", rev = "<commit>" }
 ```
 
-**Python** (`pyproject.toml`):
-```toml
-[project]
-dependencies = ["sim_ext_core"]
+Python consumers install `sim_ext_core` from a pinned commit:
 
-[tool.uv.sources]
-sim_ext_core = { git = "https://github.com/Peppy-bot/nodes_shared_code", subdirectory = "sim_ext_core" }
+```
+sim_ext_core @ git+https://github.com/Peppy-bot/nodes_shared_code.git@<commit>#subdirectory=sim_ext_core
 ```
 
-See each library's README for full API reference and configuration.
+Pin a commit rather than a branch: node builds happen inside containers and should be reproducible. When this repo changes, bump the pin in the consuming node and rebuild it.
+
+See each library's README for the API.

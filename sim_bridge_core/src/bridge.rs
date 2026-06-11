@@ -3,11 +3,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use peppylib::runtime::CancellationToken;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
-use crate::config::DaemonState;
 use crate::pipeline::{run_os_to_sim, run_sim_to_os, BoxFuture};
+use crate::transport::RawTransport;
 
 type Pipeline = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
@@ -28,31 +28,31 @@ impl ArmMergeState {
     pub fn update_and_merge(&self, indices: &[usize], positions: &[f64]) -> Vec<f64> {
         debug_assert_eq!(indices.len(), positions.len(), "indices and positions length mismatch");
         let mut state = self.inner.lock().expect("arm merge state poisoned");
-        for (&idx, &pos) in indices.iter().zip(positions.iter()) {
+        for (i, &idx) in indices.iter().enumerate() {
             if idx < self.total_joints {
-                state[idx] = pos;
+                state[idx] = positions[i];
             }
         }
         state.clone()
     }
 }
 
-pub struct SimBridge<Runner> {
+pub struct SimBridge<Runner, T: RawTransport> {
     runner: Arc<Runner>,
-    daemon: DaemonState,
+    transport: Arc<T>,
     token: CancellationToken,
     sim_node: Arc<str>,
     pipelines: Vec<Pipeline>,
 }
 
-impl<Runner: Clone + Send + Sync + 'static> SimBridge<Runner> {
+impl<Runner: Send + Sync + 'static, T: RawTransport> SimBridge<Runner, T> {
     pub fn new(
         runner: Arc<Runner>,
-        daemon: DaemonState,
+        transport: Arc<T>,
         token: CancellationToken,
         sim_node: Arc<str>,
     ) -> Self {
-        Self { runner, daemon, token, sim_node, pipelines: Vec::new() }
+        Self { runner, transport, token, sim_node, pipelines: Vec::new() }
     }
 
     pub fn sim_to_os<Msg, EmitFn>(mut self, topic: Arc<str>, emit_fn: EmitFn) -> Self
@@ -61,9 +61,9 @@ impl<Runner: Clone + Send + Sync + 'static> SimBridge<Runner> {
         EmitFn: Fn(Arc<Runner>, Msg) -> BoxFuture<std::result::Result<(), String>> + Send + 'static,
     {
         self.pipelines.push(Box::pin(run_sim_to_os(
+            self.transport.clone(),
             self.runner.clone(),
             self.token.clone(),
-            self.daemon.clone(),
             self.sim_node.clone(),
             topic,
             emit_fn,
@@ -77,9 +77,9 @@ impl<Runner: Clone + Send + Sync + 'static> SimBridge<Runner> {
         RecvFn: Fn(Arc<Runner>) -> BoxFuture<std::result::Result<(String, Msg), String>> + Send + 'static,
     {
         self.pipelines.push(Box::pin(run_os_to_sim(
+            self.transport.clone(),
             self.runner.clone(),
             self.token.clone(),
-            self.daemon.clone(),
             topic,
             recv_fn,
         )));
@@ -89,7 +89,11 @@ impl<Runner: Clone + Send + Sync + 'static> SimBridge<Runner> {
     pub async fn run(self) {
         let handles: Vec<_> = self.pipelines.into_iter().map(tokio::spawn).collect();
         for handle in handles {
-            let _ = handle.await;
+            // Surface panics + cancellations from spawned pipelines so a failed
+            // pipeline doesn't silently degrade telemetry/command flow.
+            if let Err(e) = handle.await {
+                tracing::warn!(error = %e, "sim bridge pipeline task failed");
+            }
         }
     }
 }

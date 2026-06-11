@@ -1,4 +1,5 @@
 pub mod bridge;
+pub mod transport;
 pub mod config;
 pub mod pipeline;
 pub mod services;
@@ -10,4 +11,5 @@ pub use config::{
     read_bridge_config, resolve_joint_indices, sim_node_name, BridgeConfig, DaemonState,
 };
 pub use services::{call_sim, call_sim_sync};
+pub use transport::{RawSubscription, RawTransport, TransportFuture};
 pub use types::error::{BridgeError, Result};

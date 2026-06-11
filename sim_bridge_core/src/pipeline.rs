@@ -1,8 +1,8 @@
 pub mod publisher;
 pub mod subscriber;
 
-pub use publisher::run_sim_to_os;
-pub use subscriber::run_os_to_sim;
+pub use publisher::run_os_to_sim;
+pub use subscriber::run_sim_to_os;
 
 use std::future::Future;
 use std::pin::Pin;

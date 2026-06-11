@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 pub struct JointStatesMsg {
     pub robot: String,
     pub step: u64,
+    #[serde(default)]
+    pub joint_names: Vec<String>,
     pub positions: Vec<f64>,
     pub velocities: Vec<f64>,
     pub stamp: f64,
@@ -93,6 +95,10 @@ pub struct GripperStateMsg {
     pub step: u64,
     pub joint_names: Vec<String>,
     pub positions: Vec<f64>,
+    // Optional on the wire — some publishers omit applied_forces (e.g. when the
+    // engine doesn't expose actuator force readback). Defaults to empty Vec so
+    // consumers don't fail to deserialize against partial payloads.
+    #[serde(default)]
     pub applied_forces: Vec<f64>,
     pub stamp: f64,
 }

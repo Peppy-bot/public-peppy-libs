@@ -1,3 +1,5 @@
+"""IMU publisher bridge."""
+
 from __future__ import annotations
 
 import json
@@ -9,7 +11,9 @@ from sim_ext_core.base import BridgePlugin
 _QOS = "sensor_data"
 
 
-class TfTreeBridge(BridgePlugin):
+class ImuBridge(BridgePlugin):
+    """Publishes IMU orientation, angular velocity, and linear acceleration."""
+
 
     def __init__(self, sensor: Any, config: Any, entry: Any) -> None:
         self._sensor = sensor
@@ -24,22 +28,16 @@ class TfTreeBridge(BridgePlugin):
         self._sensor.teardown()
 
     def on_step(self, step: int, io: Any) -> None:
-        frames = self._sensor.get_tf_data()
-        if not frames:
+        data = self._sensor.get_imu_data()
+        if data is None:
             return
         payload = json.dumps(
             {
                 "robot": self._robot_name,
                 "step": step,
-                "frames": [
-                    {
-                        "name": f["name"],
-                        "parent": f["parent"],
-                        "position": list(f["position"]),
-                        "orientation": list(f["orientation"]),
-                    }
-                    for f in frames
-                ],
+                "orientation": data["orientation"],
+                "angular_velocity": data["angular_velocity"],
+                "linear_acceleration": data["linear_acceleration"],
                 "stamp": time.time(),
             }
         ).encode()
