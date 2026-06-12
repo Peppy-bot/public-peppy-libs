@@ -135,7 +135,7 @@ const FACE_SAMPLES: [[f64; 3]; 12] = [
 /// construction, faces by sampled bound; the final containment tests sample
 /// independently. No-op for non-triangle clouds and single capsules.
 fn repair_face_coverage(points: &[Point3<f64>], capsules: &mut [Capsule]) -> Result<(), String> {
-    if points.len() % 3 != 0 || capsules.len() < 2 {
+    if !points.len().is_multiple_of(3) || capsules.len() < 2 {
         return Ok(());
     }
     for _ in 0..8 {
