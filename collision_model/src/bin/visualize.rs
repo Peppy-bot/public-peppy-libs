@@ -14,8 +14,8 @@
 //! pair is highlighted, and the margin-adjusted distance is shown. Use it to
 //! eyeball fit quality against the mesh wireframes and to review scenarios.
 
-use collision_model::DualArmCollisionModel;
 use collision_model::config::CollisionConfig;
+use collision_model::{DualArmCollisionModel, MarginPolicy};
 use collision_model::nalgebra::Point3;
 use collision_model::urdf_collision::UrdfCollisions;
 use srs_model::{ARM_DOF, Arm, JointVec};
@@ -40,6 +40,8 @@ struct Args {
     right: JointVec,
     out: String,
     meshes: Option<String>,
+    headroom: f64,
+    references: Vec<JointVec>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -52,6 +54,8 @@ fn parse_args() -> Result<Args, String> {
         right: [0.0; ARM_DOF],
         out: "scene.html".into(),
         meshes: None,
+        headroom: 0.04,
+        references: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -65,11 +69,22 @@ fn parse_args() -> Result<Args, String> {
             "--right" | "-r" => args.right = parse_joints(&value()?)?,
             "--out" | "-o" => args.out = value()?,
             "--meshes" | "-m" => args.meshes = Some(value()?),
+            "--headroom" => args.headroom = value()?.parse().map_err(|e| format!("{e}"))?,
+            "--reference" => args.references.push(parse_joints(&value()?)?),
             other => return Err(format!("unknown argument '{other}'")),
         }
     }
-    if args.urdf.is_empty() || args.config.is_empty() || args.left_base.is_empty() || args.right_base.is_empty() {
-        return Err("required: --urdf <file> --config <json> --left-base <link> --right-base <link>".into());
+    if args.urdf.is_empty()
+        || args.config.is_empty()
+        || args.left_base.is_empty()
+        || args.right_base.is_empty()
+        || args.references.is_empty()
+    {
+        return Err(
+            "required: --urdf <file> --config <json> --left-base <link> --right-base <link> \
+             --reference <q1,..,q7> (repeatable; match the consumer's margin policy)"
+                .into(),
+        );
     }
     Ok(args)
 }
@@ -85,8 +100,9 @@ fn parse_joints(s: &str) -> Result<JointVec, String> {
 fn run() -> Result<(), String> {
     let args = parse_args()?;
     let config = CollisionConfig::from_file(&args.config)?.parse()?;
+    let policy = MarginPolicy { headroom: args.headroom, references: args.references.clone() };
     let mut model =
-        DualArmCollisionModel::from_urdf_file(&args.urdf, &args.left_base, &args.right_base, &config)?;
+        DualArmCollisionModel::from_urdf_file(&args.urdf, &args.left_base, &args.right_base, &config, &policy)?;
     let proximity = model.min_distance(&args.left, &args.right)?;
     let (witness_a, witness_b) = (proximity.on_a, proximity.on_b);
     let (link_a, link_b) = (proximity.link_a.to_string(), proximity.link_b.to_string());

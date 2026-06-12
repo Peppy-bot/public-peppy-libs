@@ -5,17 +5,17 @@
 //! re-baseline deliberately if values move.
 
 use collision_model::config::CollisionConfig;
-use collision_model::DualArmCollisionModel;
+use collision_model::{DualArmCollisionModel, MarginPolicy};
 use srs_model::JointVec;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
-/// The classifier's reference-pose headroom: margined pairs read exactly
-/// this at home/ready.
+/// The margin policy headroom: margined pairs read exactly this at the
+/// reference poses.
 const FLOOR: f64 = 0.04;
 
-/// In-limit home: the elbow's one-sided lower limit is 0.05, and the
-/// classifier clamps its reference poses into limits the same way.
+/// In-limit home: the elbow's one-sided lower limit is 0.05, and the model
+/// clamps its reference poses into limits the same way.
 const HOME: JointVec = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
 const READY: JointVec = [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0];
 
@@ -29,6 +29,7 @@ fn model() -> DualArmCollisionModel {
         "openarm_left_link0",
         "openarm_right_link0",
         &config,
+        &MarginPolicy { headroom: FLOOR, references: vec![[0.0; 7], READY] },
     )
     .expect("fixture model")
 }

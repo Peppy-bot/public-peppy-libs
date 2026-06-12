@@ -111,17 +111,8 @@ fn run() -> Result<(), String> {
         }
     }
 
-    // Refitting changes capsules, not the pair classification; carry the
-    // existing pairs (and their fingerprint) through. A changed fit makes
-    // the fingerprint stale, so loading fails until classify_pairs reruns.
-    // A present-but-corrupt config is an error, not a silent pairs wipe.
-    let (pairs, pairs_fingerprint) = match CollisionConfig::from_file(&args.out) {
-        Ok(c) => (c.pairs, c.pairs_fingerprint),
-        Err(_) if !std::fs::exists(&args.out).unwrap_or(false) => (Vec::new(), None),
-        Err(e) => return Err(format!("existing config is unreadable, refusing to discard its pairs: {e}")),
-    };
     let source_urdf = args.urdf.rsplit('/').next().unwrap_or(&args.urdf).to_string();
-    let config = CollisionConfig { source_urdf, fixed, links, pairs, pairs_fingerprint };
+    let config = CollisionConfig { source_urdf, fixed, links };
     std::fs::write(&args.out, config.to_json_pretty() + "\n").map_err(|e| format!("write {}: {e}", args.out))?;
     println!("wrote {}", args.out);
     Ok(())

@@ -12,13 +12,15 @@ chain base links, and the config. Any bimanual URDF whose arms are 7-DOF SRS
 chains (the `srs_model` contract) is supported.
 
 ```rust
-use collision_model::{CollisionConfig, DualArmCollisionModel, GovernorBand};
+use collision_model::{CollisionConfig, DualArmCollisionModel, GovernorBand, MarginPolicy};
 
 // Config and URDF come from the caller; from_file and from_json are both
-// provided, the model itself only consumes the parsed values.
+// provided, the model itself only consumes the parsed values. The margin
+// policy names the poses that must read as clear and by how much.
 let config = CollisionConfig::from_file(&collision_config_path)?.parse()?;
+let policy = MarginPolicy { headroom: 0.04, references: vec![home_pose, ready_pose] };
 let mut model =
-    DualArmCollisionModel::from_urdf_file(&urdf_path, &left_base, &right_base, &config)?;
+    DualArmCollisionModel::from_urdf_file(&urdf_path, &left_base, &right_base, &config, &policy)?;
 
 // Watchdog: evaluate the live joint states of both arms.
 let p = model.min_distance(&q_left, &q_right)?;
@@ -76,10 +78,9 @@ URDF collision entries
 - Fixed bodies (a torso, the mount links) never move; their capsules are
   baked in world frame.
 
-The tools are robot-agnostic. Chains, fixed bodies, candidate pairs, and
-reference poses are command-line inputs; moving-link names come from walking
-each chain in the URDF. The fixture invocations below are the worked
-example:
+The fit tool is robot-agnostic. Chains and fixed bodies are command-line
+inputs; moving-link names come from walking each chain in the URDF. The
+fixture invocation is the worked example:
 
 ```sh
 cargo run --release --bin fit_capsules -- \
@@ -87,43 +88,34 @@ cargo run --release --bin fit_capsules -- \
     --chain openarm_left_link0 --chain openarm_right_link0 \
     --fixed openarm_body_link0 --fixed openarm_left_link0 --fixed openarm_right_link0 \
     --out tests/fixtures/openarm_v10_capsules.json
-
-cargo run --release --bin classify_pairs -- \
-    --urdf tests/fixtures/openarm_v10.urdf \
-    --config tests/fixtures/openarm_v10_capsules.json \
-    --left openarm_left_link0 --right openarm_right_link0 \
-    --candidates tests/fixtures/openarm_v10_pair_candidates.json \
-    --reference 0,0,0,0,0,0,0 --reference 0,0,0,0.1,0,0,0
 ```
 
-Containment tests pin the checked-in fixture config to the fixture assets,
-and the pairs section carries a fingerprint of the capsules it was
-classified against: a refit without reclassification fails at load instead
-of running stale margins.
+Containment tests pin the checked-in fixture config to the fixture assets.
 
-## Pair classification and margins
+## Pairs and margins (derived at construction)
 
-Checking every body pair is wasteful and noisy: adjacent links are
-permanently in contact, and some non-adjacent pairs sit close by
-construction. The checked pairs are therefore data in the config, produced
-by `classify_pairs` from a candidate list:
+The config carries geometry only. Which pairs are checked, and with what
+margins, is derived when the model is built, so it can never go stale
+against the geometry:
 
-- Candidates enumerate what can geometrically approach. The fixture set
-  covers cross-arm link pairs, each arm against both mounts, the torso
-  against the elbow-out links, the shoulder cluster against the wrist
-  cluster within each arm, and each arm against its own mount.
-- 30k reachable configurations are sampled per arm against that arm's own
-  joint limits, with a deterministic seed. Sampling can prove a pair
-  approaches, never that it cannot, so no pair is dropped on distance
-  evidence; never-approaching pairs are reported and kept at margin zero.
-- A pair closer than the headroom (40 mm) at a reference pose (clamped into
-  joint limits) gets `margin = baseline - headroom`. Reported distance is
-  `raw - margin`, so a structurally snug pair reads the headroom at rest
-  and reaches zero only when it gets closer than its rest baseline. Pairs
-  whose capsules already overlap at reference are flagged by the
-  classifier: their alarm is baseline-relative, not an absolute
-  pre-contact guarantee, because the margin spends part of the
-  conservative cushion.
+- Structural rule: two world-fixed bodies are skipped (their distance never
+  changes), and same-side pairs within two moving joints of each other are
+  skipped as joint-yoked: cluster members orbit each other through their
+  whole range, so their capsule distance swings with every legitimate
+  motion while real contact between them is blocked by the link in
+  between. Cross-arm pairs are always checked. For the fixture robot this
+  yields the cross-arm grid, the elbow-fold pairs, the torso and the
+  mounts against each arm from the upper arm out.
+- Margins come from the caller's `MarginPolicy`: reference poses that must
+  read as clear (clamped into each arm's own joint limits) and a headroom.
+  A pair closer than the headroom at a reference gets
+  `margin = baseline - headroom`; reported distance is `raw - margin`, so
+  a structurally snug pair reads the headroom at rest and reaches zero
+  only when it gets closer than its rest baseline. For pairs whose
+  capsules already overlap at reference (the torso against the upper arm)
+  the alarm is baseline-relative, not an absolute pre-contact guarantee,
+  because the margin spends part of the conservative cushion.
+  `pair_margins()` exposes the derived set for inspection.
 
 Tuning consequence: the margined floor caps the rest-pose global minimum at
 the headroom, so any watchdog threshold or governor `d_safe` must stay
@@ -164,6 +156,7 @@ cargo run --release --bin visualize -- \
     --urdf tests/fixtures/openarm_v10.urdf \
     --config tests/fixtures/openarm_v10_capsules.json \
     --left-base openarm_left_link0 --right-base openarm_right_link0 \
+    --reference 0,0,0,0,0,0,0 --reference 0,0,0,0.1,0,0,0 \
     --left 0,0,0.9,0.4,0,0,0 --right 0,0,-0.9,0.4,0,0,0 \
     --meshes tests/fixtures/meshes -o scene.html
 ```
@@ -179,18 +172,17 @@ meshes as wireframes for judging fit quality.
 tests/fixtures/                     OpenArm V1.0 fixture, srs_model-style
   openarm_v10.urdf                  fixture URDF
   meshes/*.stl                      fixture collision meshes
-  openarm_v10_pair_candidates.json  candidate pair set (classify_pairs input)
-  openarm_v10_capsules.json         generated capsules + classified pairs
+  openarm_v10_capsules.json         generated capsule config
 src/
   geometry.rs        capsule primitive, closed-form distances
   fit.rs             PCA capsule fit, adaptive banding, face repair
   stl.rs             binary STL reader
   urdf_collision.rs  URDF collision extraction, fixed poses, child transforms
-  config.rs          JSON schema, validated loading, capsule fingerprint
-  pairs.rs           pair specs (candidate sets are data, not code)
-  model.rs           DualArmCollisionModel runtime queries
+  config.rs          JSON schema, validated loading
+  pairs.rs           pair specs (explicit lists for tests and tools)
+  model.rs           DualArmCollisionModel queries, pair and margin derivation
   governor.rs        direction-aware proximity scaling
-  bin/               fit_capsules, classify_pairs, visualize
+  bin/               fit_capsules, visualize
 tests/
   config_containment.rs  capsules contain their meshes; config pinned to fixtures
   dual_arm.rs            two-arm scenarios: converge, fold, separate; budgets

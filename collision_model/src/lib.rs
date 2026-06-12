@@ -29,7 +29,7 @@ pub mod urdf_collision;
 pub use config::{CollisionConfig, LoadedConfig};
 pub use geometry::{Capsule, CapsuleDistance, point_segment_distance, segment_segment_closest};
 pub use governor::GovernorBand;
-pub use model::{DualArmCollisionModel, Proximity};
+pub use model::{DualArmCollisionModel, MarginPolicy, Proximity};
 pub use pairs::PairSpec;
 
 /// Re-export the linear-algebra types so downstream crates use the same
