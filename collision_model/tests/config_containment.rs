@@ -3,16 +3,16 @@
 //! the convex hull of each triangle (capsules are convex), so the capsule can
 //! never report a larger distance than the true mesh allows.
 //!
-//! This also pins the config to the assets: regenerate with
-//! `cargo run --bin fit_capsules` after changing the URDF, the meshes, or the
-//! fit, or this test fails.
+//! This also pins the fixture config to the fixture assets: regenerate with
+//! the documented fit_capsules invocation after changing the URDF, the
+//! meshes, or the fit, or this test fails.
 
 use collision_model::config::CollisionConfig;
 use collision_model::geometry::Capsule;
 use collision_model::nalgebra::Point3;
 use collision_model::urdf_collision::UrdfCollisions;
 
-const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
+const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 /// Rounding the stored radius up to 1e-6 absorbs float noise; allow only that.
 const TOL: f64 = 1e-9;

@@ -158,19 +158,6 @@ impl DualArmCollisionModel {
         Self::new(&urdf, left_base, right_base, config)
     }
 
-    /// The OpenArm V1.0 model from the assets embedded in this crate: the
-    /// vendored URDF plus the checked-in capsule config and its classified
-    /// pairs. Runtime nodes need no file plumbing; sim and real load
-    /// identical geometry.
-    pub fn openarm_v10() -> Result<Self, String> {
-        let config = crate::config::CollisionConfig::from_json(include_str!("../assets/openarm_v10_capsules.json"))?
-            .parse()?;
-        if config.pairs.is_empty() {
-            return Err("embedded config has no classified pairs; run classify_pairs".into());
-        }
-        Self::new(include_str!("../assets/openarm_v10.urdf"), "openarm_left_link0", "openarm_right_link0", &config)
-    }
-
     /// Minimum margin-adjusted distance over all checked pairs at the given
     /// configurations. Non-finite joint values are rejected so the caller
     /// fails safe rather than comparing against NaN.
@@ -282,10 +269,10 @@ mod tests {
     use crate::config::CollisionConfig;
     use crate::pairs::PairSpec;
 
-    const URDF: &str = include_str!("../assets/openarm_v10.urdf");
+    const URDF: &str = include_str!("../tests/fixtures/openarm_v10.urdf");
 
     fn loaded() -> LoadedConfig {
-        CollisionConfig::from_json(include_str!("../assets/openarm_v10_capsules.json"))
+        CollisionConfig::from_json(include_str!("../tests/fixtures/openarm_v10_capsules.json"))
             .expect("embedded config")
             .parse()
             .expect("valid config")
@@ -312,8 +299,9 @@ mod tests {
 
     #[test]
     fn margined_winner_reports_adjusted_distance_and_raw_witnesses() {
-        let mut m = DualArmCollisionModel::openarm_v10().expect("model");
         let config = loaded();
+        let mut m = DualArmCollisionModel::new(URDF, "openarm_left_link0", "openarm_right_link0", &config)
+            .expect("model");
         let q = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
         let p = m.min_distance(&q, &q).expect("query");
         let margin = config
@@ -336,7 +324,8 @@ mod tests {
     fn multi_capsule_bodies_take_part_in_the_minimum() {
         // Wrists wrapped toward each other: the winning bodies carry several
         // capsules (wrist bands + fingers), exercising the inner loops.
-        let mut m = DualArmCollisionModel::openarm_v10().expect("model");
+        let mut m = DualArmCollisionModel::new(URDF, "openarm_left_link0", "openarm_right_link0", &loaded())
+            .expect("model");
         let ql = [0.0, 0.0, 1.2, 0.4, 0.0, 0.0, 0.0];
         let qr = [0.0, 0.0, -1.2, 0.4, 0.0, 0.0, 0.0];
         let p = m.min_distance(&ql, &qr).expect("query");
@@ -346,7 +335,8 @@ mod tests {
 
     #[test]
     fn world_capsules_rejects_non_finite_configurations() {
-        let mut m = DualArmCollisionModel::openarm_v10().expect("model");
+        let mut m = DualArmCollisionModel::new(URDF, "openarm_left_link0", "openarm_right_link0", &loaded())
+            .expect("model");
         let mut bad = [0.0; ARM_DOF];
         bad[0] = f64::NAN;
         assert!(m.world_capsules(&bad, &[0.0; ARM_DOF]).is_err());

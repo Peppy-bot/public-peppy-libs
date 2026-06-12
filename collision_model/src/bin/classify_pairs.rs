@@ -1,44 +1,59 @@
-//! Classify the structural pair set by sampling the reachable joint space,
+//! Classify a candidate pair set by sampling the reachable joint space,
 //! then write the resulting pair list (with per-pair margins) into the
 //! capsule config.
 //!
-//! Three outcomes per structural pair:
+//! Robot-agnostic: the candidate pairs come from a JSON file (an array of
+//! `{"a": ..., "b": ...}` body names), the chains and reference poses from
+//! the command line. Two outcomes per candidate pair:
 //!
-//! - **dropped**: its capsule distance never came within [`FAR_FLOOR`] across
-//!   every sample; it cannot approach, so checking it is wasted work.
-//! - **margined**: it sits closer than [`HEADROOM`] at the reference poses
-//!   (home, ready). That closeness is structural, not a fault, so the pair
-//!   gets `margin = baseline - HEADROOM` and alarms only on getting closer
-//!   than its rest baseline.
-//! - **kept** as-is (margin 0) otherwise.
+//! - **kept (margin 0)**: the default. Sampling can prove a pair approaches,
+//!   never that it cannot, so distance evidence alone never drops a pair;
+//!   pairs that never approached are only reported.
+//! - **margined**: closer than the headroom at a reference pose. That
+//!   closeness is structural, not a fault, so the pair gets
+//!   `margin = baseline - headroom` and alarms only on getting closer than
+//!   its rest baseline. Pairs whose capsules already overlap at reference
+//!   are flagged: their alarm is baseline-relative, not an absolute
+//!   pre-contact guarantee.
 //!
 //! Deterministic: a fixed-seed xorshift drives the sampling, so reruns give
-//! identical artifacts.
+//! identical artifacts. The written pairs carry a fingerprint of the
+//! capsules they were classified against.
 //!
 //! ```sh
-//! cargo run --release --bin classify_pairs
+//! cargo run --release --bin classify_pairs -- \
+//!     --urdf tests/fixtures/openarm_v10.urdf \
+//!     --config tests/fixtures/openarm_v10_capsules.json \
+//!     --left openarm_left_link0 --right openarm_right_link0 \
+//!     --candidates tests/fixtures/openarm_v10_pair_candidates.json \
+//!     --reference 0,0,0,0,0,0,0 --reference 0,0,0,0.1,0,0,0
 //! ```
 
 use std::collections::HashMap;
 
 use collision_model::config::CollisionConfig;
-use collision_model::{DualArmCollisionModel, PairSpec, openarm_structural_pairs};
+use collision_model::{DualArmCollisionModel, PairSpec};
 use srs_model::{ARM_DOF, Arm, JointVec};
 
-const URDF_BASENAME: &str = "openarm_v10.urdf";
-const CONFIG_BASENAME: &str = "openarm_v10_capsules.json";
 /// Sampled configurations (per arm, drawn independently).
 const SAMPLES: usize = 30_000;
-/// A pair whose sampled minimum never drops below this is dropped.
+/// A pair whose sampled minimum never drops below this is reported as
+/// never-approaching (but still kept).
 const FAR_FLOOR: f64 = 0.15;
 /// Margined pairs read this much clearance at their worst reference pose.
 /// This floor caps the rest-pose global minimum, so a runtime governor or
 /// watchdog band must keep `d_safe` below it or rest poses throttle.
 const HEADROOM: f64 = 0.04;
-/// Reference poses that must read as clear: home, and the arm node's ready
-/// pose. Both are clamped into each arm's own joint limits before use (the
-/// all-zero home pose sits below the elbow's one-sided lower limit).
-const REFERENCE: [JointVec; 2] = [[0.0; ARM_DOF], [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0]];
+
+struct Args {
+    urdf: String,
+    config: String,
+    left: String,
+    right: String,
+    candidates: String,
+    /// Poses that must read as clear (clamped into each arm's own limits).
+    references: Vec<JointVec>,
+}
 
 fn main() {
     if let Err(e) = run() {
@@ -47,25 +62,67 @@ fn main() {
     }
 }
 
-fn run() -> Result<(), String> {
-    let assets = format!("{}/assets", env!("CARGO_MANIFEST_DIR"));
-    let urdf_path = format!("{assets}/{URDF_BASENAME}");
-    let config_path = format!("{assets}/{CONFIG_BASENAME}");
+fn parse_args() -> Result<Args, String> {
+    let mut args = Args {
+        urdf: String::new(),
+        config: String::new(),
+        left: String::new(),
+        right: String::new(),
+        candidates: String::new(),
+        references: Vec::new(),
+    };
+    let mut it = std::env::args().skip(1);
+    while let Some(flag) = it.next() {
+        let mut value = || it.next().ok_or(format!("{flag} needs a value"));
+        match flag.as_str() {
+            "--urdf" => args.urdf = value()?,
+            "--config" => args.config = value()?,
+            "--left" => args.left = value()?,
+            "--right" => args.right = value()?,
+            "--candidates" => args.candidates = value()?,
+            "--reference" => args.references.push(parse_joints(&value()?)?),
+            other => return Err(format!("unknown argument '{other}'")),
+        }
+    }
+    if args.urdf.is_empty()
+        || args.config.is_empty()
+        || args.left.is_empty()
+        || args.right.is_empty()
+        || args.candidates.is_empty()
+        || args.references.is_empty()
+    {
+        return Err(
+            "required: --urdf <file> --config <json> --left <base> --right <base> \
+             --candidates <json> --reference <q1,..,q7> (repeatable)"
+                .into(),
+        );
+    }
+    Ok(args)
+}
 
-    let mut config = CollisionConfig::from_file(&config_path)?;
+fn parse_joints(s: &str) -> Result<JointVec, String> {
+    let vals: Vec<f64> = s
+        .split(',')
+        .map(|p| p.trim().parse::<f64>().map_err(|e| format!("bad joint value '{p}': {e}")))
+        .collect::<Result<_, _>>()?;
+    vals.try_into().map_err(|v: Vec<f64>| format!("expected {ARM_DOF} joint values, got {}", v.len()))
+}
+
+fn run() -> Result<(), String> {
+    let args = parse_args()?;
+
+    let mut config = CollisionConfig::from_file(&args.config)?;
     let loaded = config.clone().parse()?;
-    let structural = openarm_structural_pairs();
-    let urdf_text = std::fs::read_to_string(&urdf_path).map_err(|e| format!("read urdf: {e}"))?;
-    let mut model = DualArmCollisionModel::with_pairs(
-        &urdf_text,
-        "openarm_left_link0",
-        "openarm_right_link0",
-        &loaded,
-        &structural,
-    )?;
-    // The arms' j1/j2 ranges are mirrored, so each side samples its own limits.
-    let limits_l = Arm::from_urdf_file(&urdf_path, "openarm_left_link0")?.limits();
-    let limits_r = Arm::from_urdf_file(&urdf_path, "openarm_right_link0")?.limits();
+    let candidates: Vec<PairSpec> = serde_json::from_str(
+        &std::fs::read_to_string(&args.candidates).map_err(|e| format!("read candidates: {e}"))?,
+    )
+    .map_err(|e| format!("parse candidates: {e}"))?;
+
+    let urdf_text = std::fs::read_to_string(&args.urdf).map_err(|e| format!("read urdf: {e}"))?;
+    let mut model = DualArmCollisionModel::with_pairs(&urdf_text, &args.left, &args.right, &loaded, &candidates)?;
+    // The arms' joint ranges can be mirrored, so each side samples its own.
+    let limits_l = Arm::from_urdf(&urdf_text, &args.left)?.limits();
+    let limits_r = Arm::from_urdf(&urdf_text, &args.right)?.limits();
 
     // Sampled minimum per pair across reachable space.
     let mut sampled_min: HashMap<(String, String), f64> = HashMap::new();
@@ -83,7 +140,7 @@ fn run() -> Result<(), String> {
 
     // Baseline per pair over the reference poses.
     let mut reference_min: HashMap<(String, String), f64> = HashMap::new();
-    for q in &REFERENCE {
+    for q in &args.references {
         let ql: JointVec = std::array::from_fn(|i| q[i].clamp(limits_l[i].lo, limits_l[i].hi));
         let qr: JointVec = std::array::from_fn(|i| q[i].clamp(limits_r[i].lo, limits_r[i].hi));
         for (a, b, d) in model.pair_distances_raw(&ql, &qr)? {
@@ -94,11 +151,9 @@ fn run() -> Result<(), String> {
         }
     }
 
-    // Every structural pair stays checked: sampling can prove a pair CAN
-    // approach, never that it cannot, so distance alone never drops a pair.
     let mut kept = Vec::new();
     let (mut far, mut margined, mut baseline_overlapping) = (0, 0, 0);
-    for spec in &structural {
+    for spec in &candidates {
         let key = (spec.a.clone(), spec.b.clone());
         let sampled = sampled_min[&key];
         if sampled >= FAR_FLOOR {
@@ -129,13 +184,13 @@ for this pair is baseline-relative, not an absolute pre-contact guarantee",
     }
 
     println!(
-        "classified {} structural pairs: all kept; {margined} with margins ({baseline_overlapping} overlap at reference), {far} never approached in sampling",
-        structural.len(),
+        "classified {} candidate pairs: all kept; {margined} with margins ({baseline_overlapping} overlap at reference), {far} never approached in sampling",
+        candidates.len(),
     );
     config.pairs = kept;
     config.pairs_fingerprint = Some(config.capsules_fingerprint());
-    std::fs::write(&config_path, config.to_json_pretty() + "\n").map_err(|e| format!("write {config_path}: {e}"))?;
-    println!("wrote {config_path}");
+    std::fs::write(&args.config, config.to_json_pretty() + "\n").map_err(|e| format!("write {}: {e}", args.config))?;
+    println!("wrote {}", args.config);
     Ok(())
 }
 
@@ -160,5 +215,27 @@ impl XorShift {
     fn uniform(&mut self, lo: f64, hi: f64) -> f64 {
         let u = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
         lo + (hi - lo) * u
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xorshift_uniform_stays_in_range_and_is_deterministic() {
+        let mut a = XorShift(42);
+        let mut b = XorShift(42);
+        for _ in 0..1000 {
+            let x = a.uniform(-2.0, 3.0);
+            assert!((-2.0..=3.0).contains(&x));
+            assert_eq!(x, b.uniform(-2.0, 3.0));
+        }
+    }
+
+    #[test]
+    fn parse_joints_validates_count() {
+        assert!(parse_joints("0,0,0,0,0,0,0").is_ok());
+        assert!(parse_joints("0,0,0").is_err());
     }
 }

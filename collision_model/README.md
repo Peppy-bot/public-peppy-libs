@@ -1,16 +1,24 @@
 # collision_model
 
-Runtime self-collision detection for the bimanual OpenArm: are the two arms
-(or an arm and the torso, or an arm and itself) too close, right now, at
-these joint configurations?
+Runtime self-collision detection for a bimanual robot: the minimum distance
+between the two arms, an arm and the torso, or an arm and itself, evaluated
+at a pair of joint configurations, plus a proximity law for scaling commands
+near contact.
 
-Pure Rust, no hardware or messaging dependencies. Built once from the URDF,
-queried every control tick. Sim and real load identical geometry.
+Pure Rust, no hardware or messaging dependencies. The model is built once
+from a URDF and a generated capsule config, then queried every control tick.
+The library contains no robot names; the caller supplies the URDF, the two
+chain base links, and the config. Any bimanual URDF whose arms are 7-DOF SRS
+chains (the `srs_model` contract) is supported.
 
 ```rust
-use collision_model::{DualArmCollisionModel, GovernorBand};
+use collision_model::{CollisionConfig, DualArmCollisionModel, GovernorBand};
 
-let mut model = DualArmCollisionModel::openarm_v10()?;
+// Config and URDF come from the caller; from_file and from_json are both
+// provided, the model itself only consumes the parsed values.
+let config = CollisionConfig::from_file(&collision_config_path)?.parse()?;
+let mut model =
+    DualArmCollisionModel::from_urdf_file(&urdf_path, &left_base, &right_base, &config)?;
 
 // Watchdog: evaluate the live joint states of both arms.
 let p = model.min_distance(&q_left, &q_right)?;
@@ -20,104 +28,109 @@ if p.distance <= 0.0 {
 }
 
 // Command vetting: scale a step by where it would land.
-let band = GovernorBand::new(0.01, 0.03)?;   // d_stop, d_safe
+let band = GovernorBand::new(0.01, 0.03)?; // d_stop, d_safe
 let d_now = model.min_distance(&q_left, &q_right)?.distance;
 let d_next = model.min_distance(&q_left_next, &q_right)?.distance;
 let allowed_fraction = band.scale(d_now, d_next);
 ```
 
-## How it works
-
-### Capsules, not meshes
+## Capsules
 
 Every link is wrapped in one or more capsules (sphere-swept segments) fitted
 offline from the URDF's collision meshes. Capsule-capsule distance is closed
-form and branch-light, so a full dual-arm query (99 checked pairs, ~390
-capsule-capsule distances) measures ~23 us in release on the target class of
-hardware. The query budget is asserted under 1 ms in a release-mode test.
+form and branch-light; a full query over the fixture robot (99 checked
+pairs, ~390 capsule-capsule distances) measures ~23 us in release, and a
+release-mode test asserts the budget stays under 1 ms.
 
-Capsules strictly contain their meshes (every mesh vertex is inside, checked
-by test), so capsule distance is a lower bound on true mesh distance: the
-model can alarm early, never late.
+Capsules strictly contain their meshes, verified by test on every mesh
+vertex and on sampled face points, so capsule distance is a lower bound on
+true mesh distance: the model alarms early, never late.
 
-### The fit pipeline (offline)
+## The fit pipeline (offline)
 
 ```
-URDF collision entries          assets/openarm_v10.urdf
+URDF collision entries
   mesh + origin + scale   -->   per-link vertex clouds      (urdf_collision, stl)
   PCA axis + shrink scan  -->   one capsule per cloud       (fit_capsule)
-  adaptive axial banding  -->   tapered bodies split until  (fit_capsules_adaptive)
-                                volume stops improving
-  fingers at full travel  -->   baked into the wrist link
-  fixed links             -->   world-frame capsules
-                          -->   assets/openarm_v10_capsules.json
+  adaptive axial banding  -->   compound bodies split while (fit_capsules_adaptive)
+                                it keeps reducing volume
+  attached children       -->   baked into the parent link
+  fixed bodies            -->   world-frame capsules
+                          -->   capsule config JSON
 ```
 
-Notes that matter:
+- Mirrored mesh references (negative scale components) are read per
+  collision entry from the URDF; there is no runtime mirroring logic.
+- Banding is adaptive: band counts from one up to a per-body ceiling are
+  tried, and a larger count wins only by reducing total capsule volume at
+  least 5%. Volume is the phantom space a proxy adds, and each extra band
+  pays for its own end caps, so uniform shapes stay single-capsule while
+  compound shapes split. A capsule union is not convex, so a face-coverage
+  repair pass then samples every mesh face and grows leaking bands until
+  the union contains faces, not only vertices.
+- A movable child hanging off a chain link (a gripper finger) is fitted
+  over the union of its travel extremes and stored in the parent link's
+  capsule list. Travel is a joint-space line, so containing both extremes
+  contains every intermediate opening: any gripper position is covered
+  conservatively and the runtime needs no gripper state.
+- Fixed bodies (a torso, the mount links) never move; their capsules are
+  baked in world frame.
 
-- Left and right links reference the same STLs but several left entries are
-  mirrored (negative Y scale); the fit reads origin and scale per entry from
-  the URDF, so there is no runtime mirroring logic.
-- Banding is adaptive: band counts from one to a per-body ceiling are tried
-  and a larger count wins only by reducing total capsule volume at least 5%
-  (volume is the phantom space a proxy adds, and each extra band pays for
-  its own end caps, so uniform shapes stay single). A capsule union is not
-  convex, so after banding a face-coverage repair pass samples every mesh
-  face and grows the bands that leak until the union contains faces, not
-  just vertices. The torso lands on seven bands: a single capsule needs the
-  base-plate radius (180 mm) everywhere and swallows the space the arms
-  hang in; banded, the column gets its true ~42 mm. The tapered elbow link
-  drops from a 91 mm to a 61 mm worst radius, the upper-arm link from
-  51 mm to 36 mm; blob-shaped links stay single-capsule.
-- Gripper fingers are prismatic children of link7. Each finger is fitted
-  over the union of its travel extremes and stored in the wrist's capsule
-  list, so worst-case-open is always covered and the runtime needs no
-  gripper state.
-- The body and the two mount links never move; their capsules are baked in
-  world frame.
-
-Regenerate after changing the URDF, the meshes, or the fit:
+The tools are robot-agnostic. Chains, fixed bodies, candidate pairs, and
+reference poses are command-line inputs; moving-link names come from walking
+each chain in the URDF. The fixture invocations below are the worked
+example:
 
 ```sh
-cargo run --release --bin fit_capsules     # capsules
-cargo run --release --bin classify_pairs   # pair margins (after geometry changes)
+cargo run --release --bin fit_capsules -- \
+    --urdf tests/fixtures/openarm_v10.urdf --meshes tests/fixtures/meshes \
+    --chain openarm_left_link0 --chain openarm_right_link0 \
+    --fixed openarm_body_link0 --fixed openarm_left_link0 --fixed openarm_right_link0 \
+    --out tests/fixtures/openarm_v10_capsules.json
+
+cargo run --release --bin classify_pairs -- \
+    --urdf tests/fixtures/openarm_v10.urdf \
+    --config tests/fixtures/openarm_v10_capsules.json \
+    --left openarm_left_link0 --right openarm_right_link0 \
+    --candidates tests/fixtures/openarm_v10_pair_candidates.json \
+    --reference 0,0,0,0,0,0,0 --reference 0,0,0,0.1,0,0,0
 ```
 
-Containment tests pin the checked-in JSON to the assets (capsules must
-contain every mesh vertex and sampled face point), and the pairs section
-carries a fingerprint of the capsules it was classified against, so a refit
-without reclassification fails at load instead of running stale margins.
+Containment tests pin the checked-in fixture config to the fixture assets,
+and the pairs section carries a fingerprint of the capsules it was
+classified against: a refit without reclassification fails at load instead
+of running stale margins.
 
-### Pair classification and margins
+## Pair classification and margins
 
-Checking all body pairs is wrong twice over: adjacent links always "collide",
-and some pairs sit close by construction (the upper arm hangs centimeters
-from the shoulder yoke; the two mount capsules permanently overlap). Pairs
-are therefore data in the config, produced by `classify_pairs`:
+Checking every body pair is wasteful and noisy: adjacent links are
+permanently in contact, and some non-adjacent pairs sit close by
+construction. The checked pairs are therefore data in the config, produced
+by `classify_pairs` from a candidate list:
 
-- Start from the structural set: cross-arm everything (49), each arm against
-  both mounts, torso against elbow-out links, and shoulder cluster against
-  wrist cluster within each arm (the elbow fold). 99 pairs.
-- Sample 30k reachable configurations per arm's own limits (deterministic
-  seed). Sampling can prove a pair approaches, never that it cannot, so
-  nothing is dropped on distance evidence; never-approaching pairs are only
-  reported.
-- Pairs closer than `HEADROOM` (40 mm) at the reference poses (home and
-  ready, clamped into joint limits) get `margin = baseline - HEADROOM`. The
-  reported distance for a pair is `raw - margin`, so a structurally snug
-  pair reads `HEADROOM` at rest and goes to zero only when it gets closer
-  than its rest baseline. Pairs whose capsules already overlap at reference
-  (the torso against the upper arm; the two mount capsules) are flagged by
-  the classifier: for them the alarm is baseline-relative, not an absolute
-  pre-contact guarantee, because the margin spends part of the conservative
-  cushion.
+- Candidates enumerate what can geometrically approach. The fixture set
+  covers cross-arm link pairs, each arm against both mounts, the torso
+  against the elbow-out links, the shoulder cluster against the wrist
+  cluster within each arm, and each arm against its own mount.
+- 30k reachable configurations are sampled per arm against that arm's own
+  joint limits, with a deterministic seed. Sampling can prove a pair
+  approaches, never that it cannot, so no pair is dropped on distance
+  evidence; never-approaching pairs are reported and kept at margin zero.
+- A pair closer than the headroom (40 mm) at a reference pose (clamped into
+  joint limits) gets `margin = baseline - headroom`. Reported distance is
+  `raw - margin`, so a structurally snug pair reads the headroom at rest
+  and reaches zero only when it gets closer than its rest baseline. Pairs
+  whose capsules already overlap at reference are flagged by the
+  classifier: their alarm is baseline-relative, not an absolute
+  pre-contact guarantee, because the margin spends part of the
+  conservative cushion.
 
-Consequence for tuning: the margined floor caps the rest-pose global
-minimum at `HEADROOM`. Any watchdog threshold or governor `d_safe` must stay
-below it, or rest poses read as warnings. With `HEADROOM = 0.04`, a band of
+Tuning consequence: the margined floor caps the rest-pose global minimum at
+the headroom, so any watchdog threshold or governor `d_safe` must stay
+below it or rest poses read as warnings. With 40 mm headroom,
 `GovernorBand::new(0.01, 0.03)` leaves working space.
 
-### The governor law
+## The governor law
 
 `GovernorBand::scale(d_now, d_next)` returns the fraction of a commanded
 step to allow and is direction-aware:
@@ -128,59 +141,72 @@ step to allow and is direction-aware:
 - approaching: 1 at or above `d_safe`, 0 at or below `d_stop`, linear in
   between; non-finite input fails safe to 0.
 
-### Who calls this
+The law sees only step endpoints, so steps must stay small against capsule
+radii plus margins (true for per-tick control steps), and it is
+intentionally discontinuous at `d_next == d_now` inside the band; consumers
+tracking a tangential path should rate-limit the commanded step if chatter
+matters downstream.
 
-The `openarm01_backbone` node, which is the one node that depends on both
-arms (`left_arm` / `right_arm`): it consumes both arms' joint states for a
-watchdog (`min_distance` on every update, hold/abort both arms below
-threshold) and vets commands at the routing point (reject a goal landing in
-violation; scale streamed setpoints with the governor). See
-`collision_avoidance_PLAN.md` at the repo root for the integration design.
+## Integration shape
+
+The consumer is whichever node sees both arms (for OpenArm, the backbone):
+it evaluates `min_distance` on every joint-state update as a watchdog,
+holds or aborts both arms below threshold, and vets commands at the routing
+point by rejecting goals that land in violation and scaling streamed
+setpoints with the governor. Everything robot-specific arrives as
+parameters and vendored files: the URDF path, the capsule config JSON, and
+the two base-link names.
 
 ## Visualization
 
 ```sh
 cargo run --release --bin visualize -- \
+    --urdf tests/fixtures/openarm_v10.urdf \
+    --config tests/fixtures/openarm_v10_capsules.json \
+    --left-base openarm_left_link0 --right-base openarm_right_link0 \
     --left 0,0,0.9,0.4,0,0,0 --right 0,0,-0.9,0.4,0,0,0 \
-    --meshes -o scene.html
+    --meshes tests/fixtures/meshes -o scene.html
 ```
 
 Writes a self-contained interactive page (three.js from CDN): capsules
 colored by side, the closest pair highlighted with its witness segment and
-margin-adjusted distance, and with `--meshes` the decimated source meshes as
-wireframes for judging fit quality. Omitting `--left` / `--right` renders
-the home pose.
+margin-adjusted distance, and with `--meshes <dir>` the decimated source
+meshes as wireframes for judging fit quality.
 
 ## Layout
 
 ```
-assets/
-  openarm_v10.urdf            vendored copy (also the test fixture)
-  meshes/*.stl                vendored v1.0 collision meshes
-  openarm_v10_capsules.json   generated capsules + classified pairs (checked in)
+tests/fixtures/                     OpenArm V1.0 fixture, srs_model-style
+  openarm_v10.urdf                  fixture URDF
+  meshes/*.stl                      fixture collision meshes
+  openarm_v10_pair_candidates.json  candidate pair set (classify_pairs input)
+  openarm_v10_capsules.json         generated capsules + classified pairs
 src/
-  geometry.rs    capsule primitive, closed-form distances
-  fit.rs         PCA capsule fit, adaptive banding
-  stl.rs         binary STL reader
-  urdf_collision.rs  URDF collision extraction, fixed poses, finger transforms
-  config.rs      JSON schema and validated loading
-  pairs.rs       pair specs, OpenArm structural set
-  model.rs       DualArmCollisionModel runtime queries
-  governor.rs    direction-aware proximity scaling
-  bin/fit_capsules.rs, bin/classify_pairs.rs, bin/visualize.rs
+  geometry.rs        capsule primitive, closed-form distances
+  fit.rs             PCA capsule fit, adaptive banding, face repair
+  stl.rs             binary STL reader
+  urdf_collision.rs  URDF collision extraction, fixed poses, child transforms
+  config.rs          JSON schema, validated loading, capsule fingerprint
+  pairs.rs           pair specs (candidate sets are data, not code)
+  model.rs           DualArmCollisionModel runtime queries
+  governor.rs        direction-aware proximity scaling
+  bin/               fit_capsules, classify_pairs, visualize
 tests/
-  config_containment.rs  capsules contain their meshes; config pinned to assets
+  config_containment.rs  capsules contain their meshes; config pinned to fixtures
   dual_arm.rs            two-arm scenarios: converge, fold, separate; budgets
 ```
 
-Assets are vendored copies of the Enactic `openarm_description` v1.0
-collision proxies; nothing reads outside the crate at build or run time.
+The fixture meshes are vendored copies of the Enactic `openarm_description`
+v1.0 collision proxies; nothing reads outside the crate at build or run
+time. A robot with a moving mount (a lift axis) needs a model extension:
+fixed bodies are currently baked in world frame.
 
 ## Testing
 
 `cargo test` covers the primitives analytically (degenerate segments,
 penetration, symmetry, isometry invariance), the fit (containment by
-construction, banding), the config boundary, and the integration scenarios:
-arms converging monotonically into collision, elbows folding inward,
-separating sweeps holding the floor, witness consistency, NaN rejection.
-`cargo test --release` additionally asserts the per-query time budget.
+construction, banding, face repair), the config boundary, and the fixture
+integration scenarios: arms converging monotonically into collision, elbows
+folding inward, separating sweeps holding the floor, a governor halt before
+contact, witness consistency, and non-finite rejection. `cargo test
+--release` additionally asserts the per-query time budget.

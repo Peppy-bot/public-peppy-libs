@@ -108,6 +108,18 @@ impl UrdfCollisions {
         self.parent_joints.get(link)
     }
 
+    /// Links whose parent joint hangs them directly below `link`.
+    pub fn children_of(&self, link: &str) -> Vec<String> {
+        let mut children: Vec<String> = self
+            .parent_joints
+            .iter()
+            .filter(|(_, j)| j.parent_link == link)
+            .map(|(child, _)| child.clone())
+            .collect();
+        children.sort(); // HashMap order is not deterministic; the config is
+        children
+    }
+
     /// All collision-mesh vertices of `link`, in the link frame. Mesh files
     /// are resolved as `<meshes_dir>/<basename>`.
     pub fn link_vertices(&self, link: &str, meshes_dir: &str) -> Result<Vec<Point3<f64>>, String> {

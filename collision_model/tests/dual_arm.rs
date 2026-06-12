@@ -1,10 +1,14 @@
-//! Integration tests: the embedded OpenArm model driven through two-arm
+//! Integration tests: the OpenArm fixture model driven through two-arm
 //! scenarios. Distances assert against the classified pair set, so these
-//! also pin the checked-in margins; regenerate with `classify_pairs` after
-//! changing geometry and re-baseline deliberately if values move.
+//! also pin the checked-in fixture margins; regenerate with the documented
+//! fit_capsules/classify_pairs invocations after changing geometry and
+//! re-baseline deliberately if values move.
 
+use collision_model::config::CollisionConfig;
 use collision_model::DualArmCollisionModel;
 use srs_model::JointVec;
+
+const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 /// The classifier's reference-pose headroom: margined pairs read exactly
 /// this at home/ready.
@@ -16,7 +20,17 @@ const HOME: JointVec = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
 const READY: JointVec = [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0];
 
 fn model() -> DualArmCollisionModel {
-    DualArmCollisionModel::openarm_v10().expect("embedded model")
+    let config = CollisionConfig::from_file(&format!("{FIXTURES}/openarm_v10_capsules.json"))
+        .expect("fixture config")
+        .parse()
+        .expect("valid config");
+    DualArmCollisionModel::from_urdf_file(
+        &format!("{FIXTURES}/openarm_v10.urdf"),
+        "openarm_left_link0",
+        "openarm_right_link0",
+        &config,
+    )
+    .expect("fixture model")
 }
 
 /// Both arms elbow-bent, j3 wrapping the wrists toward the centerline.

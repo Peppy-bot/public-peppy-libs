@@ -2,9 +2,11 @@
 //! configuration into a self-contained interactive HTML scene.
 //!
 //! ```sh
-//! cargo run --bin visualize -- \
-//!     --left 0,0,0.9,0.4,0,0,0 --right 0,0,-0.9,0.4,0,0,0 \
-//!     --meshes -o /tmp/scene.html
+//! cargo run --release --bin visualize -- \
+//!     --urdf tests/fixtures/openarm_v10.urdf --meshes tests/fixtures/meshes \
+//!     --left-base openarm_left_link0 --right-base openarm_right_link0 \
+//!     --left -0.45,-0.1,0,0.5,0,-0.3,0 --right 0.4,0.1,0,0.7,0,-0.2,0 \
+//!     --wireframes -o scene.html
 //! ```
 //!
 //! The page loads three.js from a CDN; everything else (capsules, meshes,
@@ -18,7 +20,6 @@ use collision_model::nalgebra::Point3;
 use collision_model::urdf_collision::UrdfCollisions;
 use srs_model::{ARM_DOF, Arm, JointVec};
 
-const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
 /// Wireframes are decimated to about this many triangles per body; fit
 /// eyeballing needs shape, not the full decimation-resistant mesh.
 const MAX_WIRE_TRIS: usize = 2500;
@@ -31,23 +32,44 @@ fn main() {
 }
 
 struct Args {
+    urdf: String,
+    config: String,
+    left_base: String,
+    right_base: String,
     left: JointVec,
     right: JointVec,
     out: String,
-    meshes: bool,
+    meshes: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut args = Args { left: [0.0; ARM_DOF], right: [0.0; ARM_DOF], out: "scene.html".into(), meshes: false };
+    let mut args = Args {
+        urdf: String::new(),
+        config: String::new(),
+        left_base: String::new(),
+        right_base: String::new(),
+        left: [0.0; ARM_DOF],
+        right: [0.0; ARM_DOF],
+        out: "scene.html".into(),
+        meshes: None,
+    };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
+        let mut value = || it.next().ok_or(format!("{flag} needs a value"));
         match flag.as_str() {
-            "--left" | "-l" => args.left = parse_joints(&it.next().ok_or("--left needs a value")?)?,
-            "--right" | "-r" => args.right = parse_joints(&it.next().ok_or("--right needs a value")?)?,
-            "--out" | "-o" => args.out = it.next().ok_or("--out needs a value")?,
-            "--meshes" | "-m" => args.meshes = true,
-            other => return Err(format!("unknown argument '{other}' (try --left, --right, --out, --meshes)")),
+            "--urdf" => args.urdf = value()?,
+            "--config" => args.config = value()?,
+            "--left-base" => args.left_base = value()?,
+            "--right-base" => args.right_base = value()?,
+            "--left" | "-l" => args.left = parse_joints(&value()?)?,
+            "--right" | "-r" => args.right = parse_joints(&value()?)?,
+            "--out" | "-o" => args.out = value()?,
+            "--meshes" | "-m" => args.meshes = Some(value()?),
+            other => return Err(format!("unknown argument '{other}'")),
         }
+    }
+    if args.urdf.is_empty() || args.config.is_empty() || args.left_base.is_empty() || args.right_base.is_empty() {
+        return Err("required: --urdf <file> --config <json> --left-base <link> --right-base <link>".into());
     }
     Ok(args)
 }
@@ -62,7 +84,9 @@ fn parse_joints(s: &str) -> Result<JointVec, String> {
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
-    let mut model = DualArmCollisionModel::openarm_v10()?;
+    let config = CollisionConfig::from_file(&args.config)?.parse()?;
+    let mut model =
+        DualArmCollisionModel::from_urdf_file(&args.urdf, &args.left_base, &args.right_base, &config)?;
     let proximity = model.min_distance(&args.left, &args.right)?;
     let (witness_a, witness_b) = (proximity.on_a, proximity.on_b);
     let (link_a, link_b) = (proximity.link_a.to_string(), proximity.link_b.to_string());
@@ -89,7 +113,10 @@ fn run() -> Result<(), String> {
         }));
     }
 
-    let meshes = if args.meshes { mesh_wireframes(&args)? } else { Vec::new() };
+    let meshes = match &args.meshes {
+        Some(dir) => mesh_wireframes(&args, dir)?,
+        None => Vec::new(),
+    };
 
     let data = serde_json::json!({
         "title": format!("left {:?}  right {:?}", args.left, args.right),
@@ -112,32 +139,31 @@ fn run() -> Result<(), String> {
 /// World-frame decimated triangle soup per body, from the same URDF + STL
 /// pipeline the fit used. Fingers are drawn at full open, matching the
 /// worst-case capsules baked into the wrist.
-fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
-    let urdf_path = format!("{ASSETS}/openarm_v10.urdf");
-    let meshes_dir = format!("{ASSETS}/meshes");
-    let urdf = UrdfCollisions::from_file(&urdf_path)?;
-    let config = CollisionConfig::from_file(&format!("{ASSETS}/openarm_v10_capsules.json"))?.parse()?;
+fn mesh_wireframes(args: &Args, meshes_dir: &str) -> Result<Vec<serde_json::Value>, String> {
+    let urdf = UrdfCollisions::from_file(&args.urdf)?;
+    let config = CollisionConfig::from_file(&args.config)?.parse()?;
 
     let mut out = Vec::new();
     for (name, _) in &config.fixed {
-        let vertices = urdf.fixed_vertices_in_root(name, &meshes_dir)?;
+        let vertices = urdf.fixed_vertices_in_root(name, meshes_dir)?;
         out.push(wire_json(name, decimate(&vertices)));
     }
-    for (side, q) in [("left", &args.left), ("right", &args.right)] {
-        let mut arm = Arm::from_urdf_file(&urdf_path, &format!("openarm_{side}_link0"))?;
+    for (base, q) in [(&args.left_base, &args.left), (&args.right_base, &args.right)] {
+        let mut arm = Arm::from_urdf_file(&args.urdf, base)?;
         let posed = arm.at(q);
         for i in 0..ARM_DOF {
             let name = posed.link_name(i);
             let pose = posed.link_pose_world(i);
             let mut vertices: Vec<Point3<f64>> =
-                urdf.link_vertices(&name, &meshes_dir)?.iter().map(|v| pose * v).collect();
-            if i == ARM_DOF - 1 {
-                for finger in ["left_finger", "right_finger"] {
-                    let fname = format!("openarm_{side}_{finger}");
-                    let open = urdf.parent_joint(&fname).map(|j| j.upper_limit).unwrap_or(0.0);
-                    vertices
-                        .extend(urdf.child_vertices_in_parent(&fname, open, &meshes_dir)?.iter().map(|v| pose * v));
+                urdf.link_vertices(&name, meshes_dir)?.iter().map(|v| pose * v).collect();
+            // Attached collision-bearing children (gripper fingers) drawn at
+            // full extension, matching the worst-case capsules.
+            for child in urdf.children_of(&name) {
+                if urdf.collisions_of(&child).is_empty() {
+                    continue;
                 }
+                let open = urdf.parent_joint(&child).map(|j| j.upper_limit).unwrap_or(0.0);
+                vertices.extend(urdf.child_vertices_in_parent(&child, open, meshes_dir)?.iter().map(|v| pose * v));
             }
             out.push(wire_json(&name, decimate(&vertices)));
         }
