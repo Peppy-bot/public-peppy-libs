@@ -16,14 +16,15 @@ base links. Any bimanual URDF whose arms are 7-DOF SRS chains (the
 ```rust
 use collision_model::{DualArmCollisionModel, GovernorBand, MarginPolicy};
 
-// The default margin policy is 40 mm headroom at the neutral pose; add
-// application rest poses to `references` if the robot parks elsewhere.
+// References are the caller's assertion: poses the robot legitimately
+// rests in, which must read as clear. The model cannot guess these.
+let policy = MarginPolicy { headroom: 0.04, references: vec![home_pose, ready_pose] };
 let mut model = DualArmCollisionModel::from_urdf_file(
     &urdf_path,
     &meshes_dir,
     &left_base,
     &right_base,
-    &MarginPolicy::default(),
+    &policy,
 )?;
 
 // Watchdog: evaluate the live joint states of both arms.
@@ -50,7 +51,14 @@ release-mode test asserts the budget stays under 1 ms.
 
 Capsules strictly contain their meshes, verified by test on every mesh
 vertex and on sampled face points, so capsule distance is a lower bound on
-true mesh distance: the model alarms early, never late.
+true mesh distance: the model alarms early, never late. The fit is tight:
+the radius is exactly what the worst mesh vertex requires, with no safety
+padding added, so any visual slack (the elbow) is shape mismatch between an
+L-shaped link and a straight capsule, not a buffer. The buffer lives in the
+margin headroom and the governor band, where it is visible and tunable.
+One upstream gap is covered and pinned by test: the palm crossbar has no
+collision entry in the description, and the wrist capsule union is verified
+to contain it at its only physically possible placement.
 
 ## The fit (at construction)
 
@@ -99,8 +107,11 @@ is built:
   between. Cross-arm pairs are always checked. For the fixture robot this
   yields the cross-arm grid, the elbow-fold pairs, the torso and the
   mounts against each arm from the upper arm out.
-- Margins come from the caller's `MarginPolicy`: reference poses that must
-  read as clear (clamped into each arm's own joint limits) and a headroom.
+- Margins come from the caller's `MarginPolicy`. The references are
+  assertions, not measurements: poses the caller declares legitimate and
+  collision-free (clamped into each arm's own joint limits). A reference
+  that is actually a bad pose weakens protection for exactly the pairs it
+  rebases; the library cannot detect that for you.
   A pair closer than the headroom at a reference gets
   `margin = baseline - headroom`; reported distance is `raw - margin`, so
   a structurally snug pair reads the headroom at rest and reaches zero
@@ -139,8 +150,8 @@ matters downstream.
 | URDF path | the robot description itself |
 | collision mesh directory | `package://` URIs are not filesystem paths; the meshes must be deployed next to the description |
 | left and right base links | which chain is "left" is robot identity, not geometry (the model's `q_left` follows it) |
-| `MarginPolicy` (optional, `Default`) | headroom is a safety-tuning knob coupled to the governor band; extra reference poses are application facts |
-| `GovernorBand` (or `policy.recommended_band()`) | stop/safe thresholds belong to the consumer's control loop |
+| `MarginPolicy` | the references are safety assertions (poses the caller declares legitimate and clear); the headroom is a tuning knob that also carries the buffer role, since capsules are fitted tight with no added padding |
+| `GovernorBand` (or `policy.consistent_band()`) | stop/safe thresholds belong to the consumer's control loop; `consistent_band` only guarantees rest poses sit above the band, not dynamic safety |
 
 Everything else is derived at construction: capsules (fitted from the
 meshes), the body set (chains walked from the base links, attached children
@@ -172,7 +183,9 @@ let mut model = DualArmCollisionModel::from_urdf_file(
     &params.right_base_link,
     &policy,
 )?;
-let band = policy.recommended_band()?; // d_stop, d_safe consistent with margins
+// Arithmetically consistent with the margins (rest poses never throttle);
+// validate against closing speed and reaction latency before trusting it.
+let band = policy.consistent_band()?;
 
 // Log the derived contract once; margined pairs are the structurally snug
 // ones whose alarm is baseline-relative.

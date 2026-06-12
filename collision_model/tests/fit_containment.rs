@@ -103,6 +103,25 @@ fn wrist_capsules_contain_fingers_across_full_travel() {
 }
 
 #[test]
+fn wrist_union_covers_the_unmodeled_palm_crossbar() {
+    // The upstream description gives the palm (hand.stl) no collision entry
+    // and no authored placement for this robot. Its only physically possible
+    // slot is the carriage plane (z = 0.1025 off the wrist) under the
+    // fingers' shared -0.673001 export offset; placed there, it must sit
+    // inside the wrist capsule union or the gripper body is unguarded.
+    let (_, model, meshes) = fixture();
+    let raw = collision_model::stl::load_stl(&format!("{meshes}/hand.stl")).expect("vendored palm mesh");
+    let placed: Vec<Point3<f64>> = raw
+        .iter()
+        .map(|v| Point3::new(v.x * 0.001, v.y * 0.001, v.z * 0.001 - 0.673001 + 0.1025))
+        .collect();
+    for side in ["left", "right"] {
+        let capsules = model.local_capsules(&format!("openarm_{side}_link7")).expect("wrist body");
+        assert_contained(&placed, &capsules, &format!("palm crossbar ({side})"));
+    }
+}
+
+#[test]
 fn moving_links_contain_their_meshes_in_link_frame() {
     let (urdf, model, meshes) = fixture();
     for side in ["left", "right"] {

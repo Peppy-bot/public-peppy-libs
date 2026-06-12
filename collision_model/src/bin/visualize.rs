@@ -190,8 +190,8 @@ fn mesh_wireframes(args: &Args, meshes_dir: &str) -> Result<Vec<serde_json::Valu
             let mut vertices: Vec<Point3<f64>> =
                 urdf.link_vertices(&name, meshes_dir)?.iter().map(|v| pose * v).collect();
             // Attached collision-bearing children (gripper fingers) drawn at
-            // full extension, matching the worst-case capsules.
-            // The next chain link is also a child; it places itself.
+            // full extension, matching the worst-case capsules. The next
+            // chain link is also a child; it places itself.
             for child in urdf.children_of(&name) {
                 if chain_links.contains(&child) || urdf.collisions_of(&child).is_empty() {
                     continue;
@@ -288,6 +288,14 @@ function addCapsule(c, color, hit) {
   mesh.position.copy(a.clone().add(b).multiplyScalar(0.5));
   if (len > 1e-9) mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
   scene.add(mesh);
+  // Silhouette so tight capsules stay visible against bright wireframes.
+  const edges = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: hit ? 0xffb0b0 : 0xdfe6f2, wireframe: true, transparent: true,
+    depthWrite: false, opacity: 0.06,
+  }));
+  edges.position.copy(mesh.position);
+  edges.quaternion.copy(mesh.quaternion);
+  scene.add(edges);
 }
 
 for (const body of DATA.bodies)
