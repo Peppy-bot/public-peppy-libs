@@ -1,17 +1,14 @@
-//! Which body pairs the runtime checks, by name, with a per-pair margin
-//! offset subtracted from the raw capsule distance.
+//! Which body pairs the runtime checks, by name, for explicit pair lists
+//! (tests and special-purpose tools).
 //!
 //! Pairs are data, not logic: the model checks whatever list it is given.
-//! Derived models get their pair set and margins from the URDF and the
-//! policy at construction; explicit lists serve tests and special-purpose
-//! tools.
+//! Derived models get their pair set and per-pair readings from the URDF
+//! and the policy at construction instead.
 
 /// One checked pair of bodies, by URDF link name. `margin` is subtracted
-/// from the raw capsule distance for this pair. Construction sets a
-/// negative margin for permanently snug pairs, moving their zero point to
-/// the pair's reference baseline minus the headroom: such a pair reads the
-/// headroom at rest and reaches zero only when it gets that much closer
-/// than its rest baseline.
+/// from the raw capsule distance for this pair; zero reports the raw
+/// clearance. Derived models do not use this field: their per-pair
+/// readings come from the reference baselines at construction.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PairSpec {
     pub a: String,

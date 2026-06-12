@@ -11,10 +11,10 @@
 //!
 //! The page loads three.js from a CDN; everything else (capsules, meshes,
 //! witness segment) is embedded. Capsules are colored by side, the closest
-//! pair is highlighted, and the margin-adjusted distance is shown. Use it to
+//! pair is highlighted, and the adjusted distance is shown. Use it to
 //! eyeball fit quality against the mesh wireframes and to review scenarios.
 
-use collision_model::{DualArmCollisionModel, MarginPolicy};
+use collision_model::{DualArmCollisionModel, GovernorBand, MarginPolicy};
 use collision_model::nalgebra::Point3;
 use collision_model::urdf_collision::UrdfCollisions;
 use srs_model::{ARM_DOF, Arm, JointVec};
@@ -39,7 +39,8 @@ struct Args {
     right: JointVec,
     out: String,
     wireframes: bool,
-    headroom: f64,
+    d_stop: f64,
+    d_safe: f64,
     references: Vec<JointVec>,
 }
 
@@ -53,7 +54,8 @@ fn parse_args() -> Result<Args, String> {
         right: [0.0; ARM_DOF],
         out: "scene.html".into(),
         wireframes: false,
-        headroom: 0.04,
+        d_stop: 0.01,
+        d_safe: 0.03,
         references: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
@@ -68,7 +70,8 @@ fn parse_args() -> Result<Args, String> {
             "--right" | "-r" => args.right = parse_joints(&value()?)?,
             "--out" | "-o" => args.out = value()?,
             "--wireframes" | "-w" => args.wireframes = true,
-            "--headroom" => args.headroom = value()?.parse().map_err(|e| format!("{e}"))?,
+            "--d-stop" => args.d_stop = value()?.parse().map_err(|e| format!("{e}"))?,
+            "--d-safe" => args.d_safe = value()?.parse().map_err(|e| format!("{e}"))?,
             "--reference" => args.references.push(parse_joints(&value()?)?),
             other => return Err(format!("unknown argument '{other}'")),
         }
@@ -76,7 +79,7 @@ fn parse_args() -> Result<Args, String> {
     if args.urdf.is_empty() || args.meshes.is_empty() || args.left_base.is_empty() || args.right_base.is_empty() {
         return Err(
             "required: --urdf <file> --meshes <dir> --left-base <link> --right-base <link>; \
-             --reference/--headroom default to the neutral pose and 40 mm"
+             --reference/--d-stop/--d-safe default to the neutral pose and 10/30 mm"
                 .into(),
         );
     }
@@ -99,7 +102,7 @@ fn run() -> Result<(), String> {
     } else {
         args.references.clone()
     };
-    let policy = MarginPolicy { headroom: args.headroom, references };
+    let policy = MarginPolicy { band: GovernorBand::new(args.d_stop, args.d_safe)?, references };
     let mut model = DualArmCollisionModel::from_urdf_file(
         &args.urdf,
         &args.meshes,
@@ -137,6 +140,8 @@ fn run() -> Result<(), String> {
 
     let data = serde_json::json!({
         "title": format!("left {:?}  right {:?}", args.left, args.right),
+        "dStop": args.d_stop,
+        "dSafe": args.d_safe,
         "distance": round(distance),
         "pair": format!("{link_a}  vs  {link_b}"),
         "witness": [point_json(&witness_a), point_json(&witness_b)],
@@ -323,7 +328,7 @@ for (const wire of DATA.meshes) {
   }
 }
 
-const cls = DATA.distance <= 0 ? 'bad' : (DATA.distance < 0.08 ? 'warn' : 'ok');
+const cls = DATA.distance <= DATA.dStop ? 'bad' : (DATA.distance < DATA.dSafe ? 'warn' : 'ok');
 document.getElementById('hud').innerHTML =
   `<div>min adjusted distance <b class="${cls}">${DATA.distance.toFixed(4)} m</b> &mdash; ${DATA.pair}</div>` +
   `<div>${DATA.title}</div>` +

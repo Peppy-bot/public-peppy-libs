@@ -8,8 +8,9 @@
 //! The checked pairs are derived at construction from the URDF: every body
 //! pair except those that cannot inform (two fixed bodies never change
 //! distance) or that touch by construction (URDF-adjacent bodies). Pairs
-//! closer than the policy headroom at a reference pose get that baseline as
-//! their zero point, so structural closeness reads as headroom, not alarm.
+//! closer than the band's `d_safe` at a reference pose get rebased to read
+//! exactly `d_safe` there, so structural closeness reads as the edge of
+//! full speed, not alarm.
 
 use std::collections::HashMap;
 
@@ -25,37 +26,31 @@ use crate::urdf_collision::UrdfCollisions;
 ///
 /// `references` are joint configurations (applied to both arms, clamped
 /// into each arm's own limits) that the caller declares legitimate and
-/// expects to read as clear. Pairs that sit closer than `headroom` at any
-/// reference get that closeness rebased to read `headroom` there; the model
-/// cannot know which poses are legitimate, so a reference that is actually
-/// a collision weakens protection for exactly the pairs it touches. There
-/// is deliberately no default: declaring these poses is the caller's
+/// expects to read as clear. Pairs that sit closer than the band's `d_safe`
+/// at any reference get their reading adjusted so that worst reference
+/// reads exactly `d_safe`: a reference pose sits at the edge of full speed
+/// and approaching past it throttles from the first millimeter. Clear
+/// pairs are stretched (capsule contact still reads zero, so they can
+/// never be commanded into interpenetration); overlapping pairs are
+/// shifted (the alarm is relative to their rest overlap). The model cannot
+/// know which poses are legitimate, so a reference that is actually a
+/// collision weakens protection for exactly the pairs it touches. There is
+/// deliberately no default: declaring these poses is the caller's
 /// statement about the robot, not a library guess.
 ///
-/// `headroom` also carries the buffer role: the fitted capsules are tight
-/// around their meshes with no added padding, so size the headroom to
-/// absorb tracking error and watchdog reaction distance.
+/// `band` is the same [`GovernorBand`](crate::GovernorBand) the consumer
+/// gates motion with; the model reads its `d_safe` as the rebase floor so
+/// the two cannot disagree. The band also carries the buffer role: the
+/// fitted capsules are tight around their meshes with no added padding, so
+/// size `d_stop` to cover tracking drift plus watchdog reaction distance.
 #[derive(Debug, Clone)]
 pub struct MarginPolicy {
-    pub headroom: f64,
+    pub band: crate::GovernorBand,
     pub references: Vec<JointVec>,
 }
 
 impl MarginPolicy {
-    /// A governor band arithmetically consistent with this policy: stop at a
-    /// quarter of the headroom, full speed at three quarters, so reference
-    /// poses (which read exactly the headroom) sit above the band and never
-    /// throttle. Consistency is all it guarantees; whether the thresholds
-    /// are dynamically safe depends on closing speed and reaction latency,
-    /// which only the consumer knows.
-    pub fn consistent_band(&self) -> Result<crate::GovernorBand, String> {
-        crate::GovernorBand::new(self.headroom / 4.0, self.headroom * 0.75)
-    }
-
     fn validate(&self) -> Result<(), String> {
-        if !(self.headroom.is_finite() && self.headroom > 0.0) {
-            return Err(format!("margin policy headroom must be finite and positive, got {}", self.headroom));
-        }
         if self.references.is_empty() {
             return Err("margin policy needs at least one reference pose".into());
         }
@@ -82,11 +77,21 @@ struct Body {
     placement: Placement,
 }
 
-/// One checked pair, resolved to body indices.
+/// One checked pair, resolved to body indices. The reported distance is
+/// [`apply_reading`]`(gain, offset, raw)`: identity for pairs clear by at
+/// least `d_safe` at every reference, a stretch (`gain = d_safe /
+/// baseline`, clearances only, so capsule contact still reads zero and
+/// penetration depths stay physical) for pairs clear but snugger than
+/// `d_safe`, and a shift (`offset = d_safe - baseline`) for pairs whose
+/// capsules already overlap at a reference, where no zero-preserving
+/// monotone map exists. `baseline` is kept for diagnostics on derived
+/// models; explicit [`PairSpec`] lists have none.
 struct Pair {
     a: usize,
     b: usize,
-    margin: f64,
+    gain: f64,
+    offset: f64,
+    baseline: Option<f64>,
 }
 
 /// Best candidate while scanning pairs in [`DualArmCollisionModel::min_distance`].
@@ -99,11 +104,12 @@ struct Closest {
 }
 
 /// The closest approach over all checked pairs at one configuration.
-/// `distance` is the margin-adjusted surface distance of the winning pair;
-/// zero or negative means that pair violates its margin (or interpenetrates).
-/// The witness points are raw geometry: their gap equals `distance` plus the
-/// winning pair's margin, so they coincide with `|distance|` only for
-/// unmargined pairs, and when the capsule axes themselves intersect they
+/// `distance` is the adjusted surface distance of the winning pair: raw
+/// meters for pairs clear by at least `d_safe` at reference, stretched
+/// (zero still means capsule contact) for snugger clear pairs, shifted
+/// (baseline-relative) for pairs overlapping at reference. The witness
+/// points are raw geometry: their gap coincides with `|distance|` only for
+/// unadjusted pairs, and when the capsule axes themselves intersect they
 /// degenerate to the axis points (no outward direction exists).
 #[derive(Debug, Clone)]
 pub struct Proximity<'a> {
@@ -127,7 +133,7 @@ pub struct DualArmCollisionModel {
 
 impl DualArmCollisionModel {
     /// Build from the URDF (both chains) and its collision meshes, fitting
-    /// the capsules and deriving the checked pairs and their margins at
+    /// the capsules and deriving the checked pairs and their readings at
     /// construction; there is no intermediate artifact to go stale. Mesh
     /// files are resolved as `<meshes_dir>/<basename>` from the URDF's
     /// collision entries. Fitting the fixture robot takes ~0.25 s in
@@ -202,14 +208,15 @@ impl DualArmCollisionModel {
                     .or_insert(d);
             }
         }
-        for spec in &mut specs {
+        probe.set_pairs(&specs)?;
+        let floor = policy.band.d_safe();
+        for (spec, pair) in specs.iter().zip(probe.pairs.iter_mut()) {
             let baseline = baselines[&(spec.a.clone(), spec.b.clone())];
-            if baseline < policy.headroom {
-                spec.margin = baseline - policy.headroom;
+            (pair.gain, pair.offset) = pair_adjustment(baseline, floor);
+            if baseline < floor {
+                pair.baseline = Some(baseline);
             }
         }
-
-        probe.set_pairs(&specs)?;
         Ok(probe)
     }
 
@@ -283,7 +290,7 @@ impl DualArmCollisionModel {
                 if !p.margin.is_finite() {
                     return Err(format!("pair {}/{} has non-finite margin", p.a, p.b));
                 }
-                Ok(Pair { a, b, margin: p.margin })
+                Ok(Pair { a, b, gain: 1.0, offset: -p.margin, baseline: None })
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok(())
@@ -307,15 +314,30 @@ impl DualArmCollisionModel {
         self.bodies.iter().find(|b| b.name == name).map(|b| b.local.clone())
     }
 
-    /// The checked pairs and their margins, for diagnostics and tests.
-    pub fn pair_margins(&self) -> Vec<(&str, &str, f64)> {
+    /// All checked pairs by name, for diagnostics and tests.
+    pub fn checked_pairs(&self) -> Vec<(&str, &str)> {
         self.pairs
             .iter()
-            .map(|p| (self.bodies[p.a].name.as_str(), self.bodies[p.b].name.as_str(), p.margin))
+            .map(|p| (self.bodies[p.a].name.as_str(), self.bodies[p.b].name.as_str()))
             .collect()
     }
 
-    /// Raw (margin-free) minimum distance between two placed bodies; callers
+    /// The pairs whose reading is adjusted (reference baseline closer than
+    /// the band's `d_safe`), with that baseline: positive means clear but
+    /// snug (stretched reading, contact still reads zero), zero or negative
+    /// means overlapping at reference (shifted reading, baseline-relative
+    /// alarm). Empty on models built from an explicit pair list.
+    pub fn adjusted_pairs(&self) -> Vec<(&str, &str, f64)> {
+        self.pairs
+            .iter()
+            .filter_map(|p| {
+                let baseline = p.baseline?;
+                Some((self.bodies[p.a].name.as_str(), self.bodies[p.b].name.as_str(), baseline))
+            })
+            .collect()
+    }
+
+    /// Raw (unadjusted) minimum distance between two placed bodies; callers
     /// must have called [`place`](Self::place) first.
     fn raw_pair_distance(&self, a: &str, b: &str) -> f64 {
         let idx = |n: &str| self.bodies.iter().position(|x| x.name == n).expect("derived names resolve");
@@ -326,13 +348,11 @@ impl DualArmCollisionModel {
             .fold(f64::INFINITY, f64::min)
     }
 
-    /// Minimum margin-adjusted distance over all checked pairs at the given
+    /// Minimum adjusted distance over all checked pairs at the given
     /// configurations. Non-finite joint values are rejected so the caller
     /// fails safe rather than comparing against NaN.
     pub fn min_distance(&mut self, q_left: &JointVec, q_right: &JointVec) -> Result<Proximity<'_>, String> {
-        if q_left.iter().chain(q_right).any(|x| !x.is_finite()) {
-            return Err("non-finite joint configuration".into());
-        }
+        ensure_finite(q_left, q_right)?;
         self.place(q_left, q_right);
 
         let mut best: Option<Closest> = None;
@@ -340,7 +360,7 @@ impl DualArmCollisionModel {
             for ca in &self.world[pair.a] {
                 for cb in &self.world[pair.b] {
                     let d = ca.distance_to(cb);
-                    let adjusted = d.distance - pair.margin;
+                    let adjusted = apply_reading(pair.gain, pair.offset, d.distance);
                     if best.as_ref().is_none_or(|c| adjusted < c.distance) {
                         best = Some(Closest { distance: adjusted, a: pair.a, b: pair.b, on_a: d.on_a, on_b: d.on_b });
                     }
@@ -359,7 +379,7 @@ impl DualArmCollisionModel {
         })
     }
 
-    /// True if any checked pair is at or below `threshold` margin-adjusted
+    /// True if any checked pair is at or below `threshold` adjusted
     /// distance.
     pub fn in_collision(&mut self, q_left: &JointVec, q_right: &JointVec, threshold: f64) -> Result<bool, String> {
         Ok(self.min_distance(q_left, q_right)?.distance <= threshold)
@@ -374,9 +394,7 @@ impl DualArmCollisionModel {
     /// the body name (for visualization tools; runtime queries use
     /// [`min_distance`](Self::min_distance)).
     pub fn world_capsules(&mut self, q_left: &JointVec, q_right: &JointVec) -> Result<Vec<(&str, Vec<Capsule>)>, String> {
-        if q_left.iter().chain(q_right).any(|x| !x.is_finite()) {
-            return Err("non-finite joint configuration".into());
-        }
+        ensure_finite(q_left, q_right)?;
         self.place(q_left, q_right);
         Ok(self
             .bodies
@@ -415,6 +433,45 @@ fn link_poses(arm: &mut Arm, q: &JointVec) -> [Isometry3<f64>; ARM_DOF] {
     std::array::from_fn(|i| posed.link_pose_world(i))
 }
 
+/// Reject NaN/inf joint values so queries fail safe instead of comparing
+/// against NaN downstream.
+fn ensure_finite(q_left: &JointVec, q_right: &JointVec) -> Result<(), String> {
+    if q_left.iter().chain(q_right).any(|x| !x.is_finite()) {
+        return Err("non-finite joint configuration".into());
+    }
+    Ok(())
+}
+
+/// The `(gain, offset)` of a derived pair's reading, `reported =
+/// gain * raw + offset`, from its worst reference baseline and the band's
+/// `d_safe`. Three regimes, all mapping the baseline to at least `d_safe`
+/// so a reference pose is never throttled:
+///
+/// - clear by at least `d_safe`: identity, absolute clearances;
+/// - clear but snugger: stretched through zero, so capsule contact still
+///   reads zero and the hard stop lands at `baseline * d_stop / d_safe`,
+///   never past contact (and positive whenever `d_stop` is): such a pair
+///   can never be commanded into interpenetration;
+/// - overlapping at reference: no zero-preserving monotone map exists, so
+///   the reading is shifted and alarms relative to the rest overlap.
+fn pair_adjustment(baseline: f64, d_safe: f64) -> (f64, f64) {
+    if baseline >= d_safe {
+        (1.0, 0.0)
+    } else if baseline > 0.0 {
+        (d_safe / baseline, 0.0)
+    } else {
+        (1.0, d_safe - baseline)
+    }
+}
+
+/// A pair's reported distance from its raw capsule distance. The gain
+/// stretches clearances only: below contact the raw depth passes through,
+/// so penetration depths stay physical meters and a stretched pair cannot
+/// out-deep the genuinely deepest pair in the global minimum.
+fn apply_reading(gain: f64, offset: f64, raw: f64) -> f64 {
+    gain * raw.max(0.0) + raw.min(0.0) + offset
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,7 +482,7 @@ mod tests {
 
     fn policy() -> MarginPolicy {
         MarginPolicy {
-            headroom: 0.04,
+            band: crate::GovernorBand::new(0.01, 0.03).expect("valid band"),
             references: vec![[0.0; ARM_DOF], [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0]],
         }
     }
@@ -445,26 +502,84 @@ mod tests {
     }
 
     #[test]
-    fn margined_winner_reports_adjusted_distance_and_raw_witnesses() {
+    fn explicit_pair_margins_offset_the_raw_reading() {
+        let pair = |margin| PairSpec { a: "openarm_left_link7".into(), b: "openarm_right_link7".into(), margin };
+        let mut raw_model = build(&[pair(0.0)]).expect("model");
+        let mut offset_model = build(&[pair(0.01)]).expect("model");
+        let q = [0.0; ARM_DOF];
+        let raw = raw_model.min_distance(&q, &q).expect("query").distance;
+        let adjusted = offset_model.min_distance(&q, &q).expect("query").distance;
+        assert!((adjusted - (raw - 0.01)).abs() < 1e-12);
+        assert!(offset_model.adjusted_pairs().is_empty(), "explicit lists carry no baselines");
+    }
+
+    #[test]
+    fn rejects_self_pairs_and_non_finite_margins() {
+        let pair = |a: &str, b: &str, margin| PairSpec { a: a.into(), b: b.into(), margin };
+        assert!(build(&[pair("openarm_left_link7", "openarm_left_link7", 0.0)]).is_err());
+        assert!(build(&[pair("openarm_left_link7", "openarm_right_link7", f64::NAN)]).is_err());
+    }
+
+    #[test]
+    fn adjusted_winner_reports_band_floor_and_raw_witnesses() {
         let mut m = DualArmCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", &policy())
             .expect("model");
         let q = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
-        let margins: Vec<(String, String, f64)> =
-            m.pair_margins().iter().map(|(a, b, v)| (a.to_string(), b.to_string(), *v)).collect();
+        let adjusted: Vec<(String, String, f64)> =
+            m.adjusted_pairs().iter().map(|(a, b, v)| (a.to_string(), b.to_string(), *v)).collect();
         let p = m.min_distance(&q, &q).expect("query");
-        let margin = margins
+        let baseline = adjusted
             .iter()
             .find(|(a, b, _)| (a == p.link_a && b == p.link_b) || (a == p.link_b && b == p.link_a))
-            .expect("winning pair is checked")
+            .expect("rest winner should be an adjusted pair")
             .2;
-        assert!(margin < 0.0, "rest winner should be a margined pair, got margin {margin}");
+        // Witnesses are raw geometry: undo the pair's reading to compare.
+        let d_safe = policy().band.d_safe();
+        let (gain, offset) = pair_adjustment(baseline, d_safe);
+        let x = p.distance - offset;
+        let raw = if x >= 0.0 { x / gain } else { x };
         let gap = (p.on_a - p.on_b).norm();
-        // Witnesses are raw geometry: gap equals |raw| = |distance + margin|.
         assert!(
-            (gap - (p.distance + margin).abs()) < 1e-9,
-            "gap {gap:.4} vs adjusted {:+.4} margin {margin:+.4}",
+            (gap - raw.abs()).abs() < 1e-9,
+            "gap {gap:.4} vs adjusted {:+.4} baseline {baseline:+.4}",
             p.distance,
         );
+    }
+
+    #[test]
+    fn pair_adjustment_maps_each_regime_onto_the_band() {
+        let (d_stop, d_safe) = (0.01, 0.03);
+        let reported = |baseline: f64, raw: f64| {
+            let (gain, offset) = pair_adjustment(baseline, d_safe);
+            apply_reading(gain, offset, raw)
+        };
+        // Clear by at least d_safe: identity, absolute clearances.
+        assert_eq!(pair_adjustment(0.05, d_safe), (1.0, 0.0));
+        assert_eq!(pair_adjustment(d_safe, d_safe), (1.0, 0.0));
+        // Adjusted regimes read exactly d_safe at their baseline and the
+        // identity regime reads its larger baseline as-is, so a reference
+        // pose is never throttled.
+        for baseline in [0.05, 0.03, 0.02, 0.007, 0.0, -0.047] {
+            assert!((reported(baseline, baseline) - baseline.max(d_safe)).abs() < 1e-12);
+        }
+        // Clear but snug: zero is preserved (contact reads contact) and the
+        // hard stop lands at positive raw clearance, so a pair clear at
+        // reference is never commanded into interpenetration.
+        for baseline in [0.029, 0.02, 0.007, 1e-4] {
+            assert_eq!(reported(baseline, 0.0), 0.0);
+            let raw_at_stop = baseline * d_stop / d_safe;
+            assert!((reported(baseline, raw_at_stop) - d_stop).abs() < 1e-12);
+            assert!(raw_at_stop > 0.0 && raw_at_stop < d_stop);
+            // Below contact the depth passes through unstretched, so a
+            // snug pair cannot out-deep the genuinely deepest pair.
+            assert_eq!(reported(baseline, -0.05), -0.05);
+        }
+        // Overlapping: shifted, so the alarm is baseline-relative; zero
+        // reported means "closed d_safe past the rest overlap".
+        let (gain, offset) = pair_adjustment(-0.047, d_safe);
+        assert_eq!(gain, 1.0);
+        assert!((reported(-0.047, -0.047 - d_safe) - 0.0).abs() < 1e-12);
+        assert!(offset > d_safe);
     }
 
     #[test]
@@ -481,13 +596,13 @@ mod tests {
     }
 
     #[test]
-    fn derived_pairs_skip_fixed_pairs_and_adjacency_and_margin_snug_bodies() {
+    fn derived_pairs_skip_fixed_pairs_and_adjacency_and_adjust_snug_bodies() {
         let mut m = DualArmCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", &policy())
             .expect("model");
-        let margins: Vec<(String, String, f64)> =
-            m.pair_margins().iter().map(|(a, b, v)| (a.to_string(), b.to_string(), *v)).collect();
+        let checked: Vec<(String, String)> =
+            m.checked_pairs().iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
         let has = |a: &str, b: &str| {
-            margins.iter().any(|(x, y, _)| (x == a && y == b) || (x == b && y == a))
+            checked.iter().any(|(x, y)| (x == a && y == b) || (x == b && y == a))
         };
         // Two fixed bodies never change distance.
         assert!(!has("openarm_left_link0", "openarm_right_link0"));
@@ -502,13 +617,30 @@ mod tests {
         assert!(has("openarm_left_link1", "openarm_left_link7"));
         assert!(has("openarm_left_link0", "openarm_left_link4"));
         assert!(has("openarm_body_link0", "openarm_left_link3"));
-        // Cross-arm pairs are checked; structurally snug ones carry margins.
+        // Cross-arm pairs are checked; structurally snug ones are adjusted,
+        // and both regimes (clear-snug and overlapping) occur on the fixture.
         assert!(has("openarm_left_link7", "openarm_right_link7"));
-        assert!(margins.iter().any(|(_, _, m)| *m < 0.0), "some pairs are margined");
-        // The rest pose reads exactly the headroom.
+        let baselines: Vec<f64> = m.adjusted_pairs().iter().map(|(_, _, b)| *b).collect();
+        assert!(baselines.iter().any(|b| *b > 0.0), "some snug pairs are clear at reference");
+        assert!(baselines.iter().any(|b| *b < 0.0), "some pairs overlap at reference");
+        // The rest pose reads exactly the band's d_safe: the edge of full
+        // speed, so the governor never hard-stops a reference pose.
         let home = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
         let p = m.min_distance(&home, &home).expect("query");
-        assert!((p.distance - 0.04).abs() < 1e-3, "home floor {:+.4}", p.distance);
+        assert!((p.distance - 0.03).abs() < 1e-3, "home floor {:+.4}", p.distance);
+    }
+
+    #[test]
+    fn rest_floor_follows_the_band_d_safe() {
+        let wider = MarginPolicy {
+            band: crate::GovernorBand::new(0.005, 0.02).expect("valid band"),
+            references: policy().references,
+        };
+        let mut m = DualArmCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", &wider)
+            .expect("model");
+        let home = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
+        let p = m.min_distance(&home, &home).expect("query");
+        assert!((p.distance - 0.02).abs() < 1e-3, "home floor {:+.4}", p.distance);
     }
 
     #[test]
@@ -526,25 +658,16 @@ mod tests {
     }
 
     #[test]
-    fn consistent_band_sits_inside_the_headroom() {
-        let band = policy().consistent_band().expect("valid band");
-        assert!(band.d_safe() < policy().headroom);
-        assert!(band.d_stop() < band.d_safe());
-        // Rest poses read the headroom and must pass at full speed.
-        assert_eq!(band.scale(policy().headroom, policy().headroom - 1e-6), 1.0);
-    }
-
-    #[test]
     fn rejects_bad_margin_policies() {
+        // Bad bands are unconstructible (GovernorBand::new validates), so
+        // only the references can be wrong here.
         let build = |policy: &MarginPolicy| {
             DualArmCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", policy)
         };
-        assert!(build(&MarginPolicy { headroom: 0.0, references: vec![[0.0; ARM_DOF]] }).is_err());
-        assert!(build(&MarginPolicy { headroom: f64::NAN, references: vec![[0.0; ARM_DOF]] }).is_err());
-        assert!(build(&MarginPolicy { headroom: 0.04, references: vec![] }).is_err());
+        assert!(build(&MarginPolicy { band: policy().band, references: vec![] }).is_err());
         let mut bad = [0.0; ARM_DOF];
         bad[2] = f64::INFINITY;
-        assert!(build(&MarginPolicy { headroom: 0.04, references: vec![bad] }).is_err());
+        assert!(build(&MarginPolicy { band: policy().band, references: vec![bad] }).is_err());
     }
 
     #[test]

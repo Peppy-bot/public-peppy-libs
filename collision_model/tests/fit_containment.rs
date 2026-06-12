@@ -7,7 +7,7 @@
 use collision_model::geometry::Capsule;
 use collision_model::nalgebra::Point3;
 use collision_model::urdf_collision::UrdfCollisions;
-use collision_model::{DualArmCollisionModel, MarginPolicy};
+use collision_model::{DualArmCollisionModel, GovernorBand, MarginPolicy};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
@@ -21,7 +21,7 @@ fn fixture() -> (UrdfCollisions, DualArmCollisionModel, String) {
         &format!("{FIXTURES}/meshes"),
         "openarm_left_link0",
         "openarm_right_link0",
-        &MarginPolicy { headroom: 0.04, references: vec![[0.0; 7]] },
+        &MarginPolicy { band: GovernorBand::new(0.01, 0.03).expect("valid band"), references: vec![[0.0; 7]] },
     )
     .expect("fixture model");
     (urdf, model, format!("{FIXTURES}/meshes"))

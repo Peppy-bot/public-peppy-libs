@@ -1,21 +1,23 @@
 //! Integration tests: the OpenArm fixture model driven through two-arm
 //! scenarios. Distances assert against construction-derived capsules and
-//! margins, so a change to the fixture geometry or to the fit moves these
-//! numbers; re-baseline deliberately when that happens.
+//! pair readings, so a change to the fixture geometry or to the fit moves
+//! these numbers; re-baseline deliberately when that happens.
 
-use collision_model::{DualArmCollisionModel, MarginPolicy};
+use collision_model::{DualArmCollisionModel, GovernorBand, MarginPolicy};
 use srs_model::JointVec;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
-
-/// The margin policy headroom: margined pairs read exactly this at the
-/// reference poses.
-const FLOOR: f64 = 0.04;
 
 /// In-limit home: the elbow's one-sided lower limit is 0.05, and the model
 /// clamps its reference poses into limits the same way.
 const HOME: JointVec = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
 const READY: JointVec = [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0];
+
+/// The band the model is built with and the governor tests gate with.
+/// Adjusted pairs read exactly `d_safe` at the reference poses.
+fn band() -> GovernorBand {
+    GovernorBand::new(0.01, 0.03).expect("valid band")
+}
 
 fn model() -> DualArmCollisionModel {
     DualArmCollisionModel::from_urdf_file(
@@ -23,7 +25,7 @@ fn model() -> DualArmCollisionModel {
         &format!("{FIXTURES}/meshes"),
         "openarm_left_link0",
         "openarm_right_link0",
-        &MarginPolicy { headroom: FLOOR, references: vec![[0.0; 7], READY] },
+        &MarginPolicy { band: band(), references: vec![[0.0; 7], READY] },
     )
     .expect("fixture model")
 }
@@ -43,8 +45,8 @@ fn home_and_ready_rest_at_the_margin_floor() {
     for q in [HOME, READY] {
         let p = m.min_distance(&q, &q).expect("clear pose");
         assert!(
-            (p.distance - FLOOR).abs() < 1e-3,
-            "rest pose should sit at the classified headroom floor, got {:+.4} ({} vs {})",
+            (p.distance - band().d_safe()).abs() < 1e-3,
+            "rest pose should sit at the band's d_safe, got {:+.4} ({} vs {})",
             p.distance,
             p.link_a,
             p.link_b,
@@ -101,7 +103,7 @@ fn separating_sweep_never_alarms() {
         let ql: JointVec = [0.0, -t, 0.0, 0.4, 0.0, 0.0, 0.0];
         let qr: JointVec = [0.0, t, 0.0, 0.4, 0.0, 0.0, 0.0];
         let p = m.min_distance(&ql, &qr).expect("query");
-        assert!(p.distance > FLOOR - 0.005, "outward sweep dipped to {:+.4} at t={t}", p.distance);
+        assert!(p.distance > band().d_safe() - 0.005, "outward sweep dipped to {:+.4} at t={t}", p.distance);
     }
 }
 
@@ -113,8 +115,8 @@ fn witnesses_are_finite_world_points_consistent_with_distance() {
     for w in [p.on_a, p.on_b] {
         assert!(w.coords.iter().all(|c| c.is_finite() && c.abs() < 2.0), "witness {w:?} not plausible");
     }
-    // The witness gap equals the raw (margin-free) distance for the winning
-    // pair; the wrist pair is unmargined, so it matches `distance` exactly.
+    // The witness gap equals the raw distance for the winning pair; the
+    // wrist pair is unadjusted, so it matches `distance` exactly.
     let gap = (p.on_a - p.on_b).norm();
     assert!(
         (gap - p.distance.abs()).abs() < 1e-9,
@@ -126,8 +128,8 @@ fn witnesses_are_finite_world_points_consistent_with_distance() {
 #[test]
 fn in_collision_threshold_semantics() {
     let mut m = model();
-    assert!(m.in_collision(&HOME, &HOME, FLOOR + 0.005).expect("query"));
-    assert!(!m.in_collision(&HOME, &HOME, FLOOR - 0.005).expect("query"));
+    assert!(m.in_collision(&HOME, &HOME, band().d_safe() + 0.005).expect("query"));
+    assert!(!m.in_collision(&HOME, &HOME, band().d_safe() - 0.005).expect("query"));
     let (ql, qr) = wrists_inward(1.2);
     assert!(m.in_collision(&ql, &qr, 0.0).expect("query"));
 }
@@ -167,7 +169,7 @@ fn query_stays_inside_the_control_tick() {
 #[test]
 fn governor_halts_an_approach_before_contact() {
     let mut m = model();
-    let band = collision_model::GovernorBand::new(0.01, 0.03).expect("band");
+    let band = band();
     let mut halted_at = None;
     let mut d_now = m.min_distance(&wrists_inward(0.0).0, &wrists_inward(0.0).1).expect("d0").distance;
     for i in 1..=120 {

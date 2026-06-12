@@ -16,9 +16,12 @@ base links. Any bimanual URDF whose arms are 7-DOF SRS chains (the
 ```rust
 use collision_model::{DualArmCollisionModel, GovernorBand, MarginPolicy};
 
+// Two numbers: hard stop at 10 mm, full speed at or above 30 mm.
+let band = GovernorBand::new(0.01, 0.03)?;
 // References are the caller's assertion: poses the robot legitimately
 // rests in, which must read as clear. The model cannot guess these.
-let policy = MarginPolicy { headroom: 0.04, references: vec![home_pose, ready_pose] };
+// They are rebased to read exactly d_safe: rest is the edge of full speed.
+let policy = MarginPolicy { band, references: vec![home_pose, ready_pose] };
 let mut model = DualArmCollisionModel::from_urdf_file(
     &urdf_path,
     &meshes_dir,
@@ -29,13 +32,12 @@ let mut model = DualArmCollisionModel::from_urdf_file(
 
 // Watchdog: evaluate the live joint states of both arms.
 let p = model.min_distance(&q_left, &q_right)?;
-if p.distance <= 0.0 {
-    // p.link_a / p.link_b name the offending pair,
+if p.distance <= band.d_stop() {
+    // hold; p.link_a / p.link_b name the offending pair,
     // p.on_a / p.on_b are the closest world-frame points.
 }
 
 // Command vetting: scale a step by where it would land.
-let band = GovernorBand::new(0.01, 0.03)?; // d_stop, d_safe
 let d_now = model.min_distance(&q_left, &q_right)?.distance;
 let d_next = model.min_distance(&q_left_next, &q_right)?.distance;
 let allowed_fraction = band.scale(d_now, d_next);
@@ -55,7 +57,7 @@ true mesh distance: the model alarms early, never late. The fit is tight:
 the radius is exactly what the worst mesh vertex requires, with no safety
 padding added, so any visual slack (the elbow) is shape mismatch between an
 L-shaped link and a straight capsule, not a buffer. The buffer lives in the
-margin headroom and the governor band, where it is visible and tunable.
+governor band, where it is visible and tunable.
 One upstream gap is covered and pinned by test: the palm crossbar has no
 collision entry in the description, and the wrist capsule union is verified
 to contain it at its only physically possible placement.
@@ -94,37 +96,55 @@ URDF collision entries
 Containment is verified by test on the fixture: every mesh vertex and
 sampled face point lies inside its body's capsule union.
 
-## Pairs and margins (derived at construction)
+## Pairs and their readings (derived at construction)
 
-Which pairs are checked, and with what margins, is derived when the model
-is built:
+Which pairs are checked, and how each pair's distance is read, is derived
+when the model is built.
 
-- Structural rule: two world-fixed bodies are skipped (their distance never
-  changes), and same-side pairs within two moving joints of each other are
-  skipped as joint-yoked: cluster members orbit each other through their
-  whole range, so their capsule distance swings with every legitimate
-  motion while real contact between them is blocked by the link in
-  between. Cross-arm pairs are always checked. For the fixture robot this
-  yields the cross-arm grid, the elbow-fold pairs, the torso and the
-  mounts against each arm from the upper arm out.
-- Margins come from the caller's `MarginPolicy`. The references are
-  assertions, not measurements: poses the caller declares legitimate and
-  collision-free (clamped into each arm's own joint limits). A reference
-  that is actually a bad pose weakens protection for exactly the pairs it
-  rebases; the library cannot detect that for you.
-  A pair closer than the headroom at a reference gets
-  `margin = baseline - headroom`; reported distance is `raw - margin`, so
-  a structurally snug pair reads the headroom at rest and reaches zero
-  only when it gets closer than its rest baseline. For pairs whose
-  capsules already overlap at reference (the torso against the upper arm)
-  the alarm is baseline-relative, not an absolute pre-contact guarantee,
-  because the margin spends part of the conservative cushion.
-  `pair_margins()` exposes the derived set for inspection.
+Structural rule: two world-fixed bodies are skipped (their distance never
+changes), and pairs within two moving joints of each other, same-side or
+torso against a chain's first links, are skipped as joint-yoked: cluster
+members orbit each other through their whole range, so their capsule
+distance swings with every legitimate motion while real contact between
+them is blocked by the link in between.
+Cross-arm pairs are always checked. For the fixture robot this yields the
+cross-arm grid, the elbow-fold pairs, the torso and the mounts against
+each arm from the upper arm out.
 
-Tuning consequence: the margined floor caps the rest-pose global minimum at
-the headroom, so any watchdog threshold or governor `d_safe` must stay
-below it or rest poses read as warnings. With 40 mm headroom,
-`GovernorBand::new(0.01, 0.03)` leaves working space.
+Reading rule: for every checked pair the model measures its **baseline**,
+the smallest raw capsule distance over the reference poses. The references
+are assertions, not measurements: poses the caller declares legitimate and
+collision-free (clamped into each arm's own joint limits). A reference
+that is actually a bad pose weakens protection for exactly the pairs it
+rebases; the library cannot detect that for you. The baseline places each
+pair in one of three regimes:
+
+- **Clear by at least `d_safe`** (`baseline >= d_safe`): the reported
+  distance is the raw clearance. Throttling begins below `d_safe`, the
+  hard stop is at `d_stop`, and zero means capsule contact.
+- **Clear but snug** (`0 < baseline < d_safe`): the reading is stretched,
+  `reported = raw * d_safe / baseline`, so the reference reads exactly
+  `d_safe` and a parked robot is never throttled. The stretch preserves
+  zero: capsule contact still reads zero, and the hard stop lands at a raw
+  clearance of `baseline * d_stop / d_safe`, never past contact. A pair
+  whose capsules were not interpenetrating at reference can therefore
+  never be commanded into interpenetration; its stop band is the nominal
+  band compressed in proportion to how snug it rests. The stretch applies
+  to clearances only; below contact, depths pass through as physical
+  meters.
+- **Overlapping at reference** (`baseline <= 0`, the torso against the
+  upper arm, where the proxy shells overlap while the physical parts are
+  clear): the reading is shifted, `reported = raw + (d_safe - baseline)`.
+  Throttling begins as soon as the overlap exceeds its reference value and
+  the hard stop comes another `d_safe - d_stop` of closure deeper. No
+  zero-preserving monotone map exists for a pair that starts past zero, so
+  this alarm is relative to the rest overlap, not an absolute pre-contact
+  guarantee; the capsules' built-in conservatism is the remaining cushion.
+
+In every regime the reference baseline reads at least `d_safe`, so rest
+poses sit at or above the edge of full speed and approaching past rest
+throttles from the first millimeter. `adjusted_pairs()` exposes the
+derived baselines for inspection.
 
 ## The governor law
 
@@ -150,13 +170,14 @@ matters downstream.
 | URDF path | the robot description itself |
 | collision mesh directory | `package://` URIs are not filesystem paths; the meshes must be deployed next to the description |
 | left and right base links | which chain is "left" is robot identity, not geometry (the model's `q_left` follows it) |
-| `MarginPolicy` | the references are safety assertions (poses the caller declares legitimate and clear); the headroom is a tuning knob that also carries the buffer role, since capsules are fitted tight with no added padding |
-| `GovernorBand` (or `policy.consistent_band()`) | stop/safe thresholds belong to the consumer's control loop; `consistent_band` only guarantees rest poses sit above the band, not dynamic safety |
+| `GovernorBand` (`d_stop`, `d_safe`) | the only two tuned numbers: how close is too close. They encode worst closing speed, watchdog latency, and tracking drift, none of which the geometry knows; the capsules are fitted tight with no added padding, so the band also carries the buffer role |
+| reference poses (in `MarginPolicy`) | safety assertions: poses the caller declares legitimate and clear, which the model rebases to read exactly `d_safe` |
 
 Everything else is derived at construction: capsules (fitted from the
 meshes), the body set (chains walked from the base links, attached children
 baked, remaining collision links must be world-fixed), the checked pairs
-(structural rules), and the margins (reference baselines). Construction
+(structural rules), and the per-pair readings (reference baselines).
+Construction
 fails loudly on anything it cannot account for; nothing is silently
 unchecked.
 
@@ -168,12 +189,15 @@ directory, since peppy snapshots only the node dir and does not follow
 symlinks, and exposes the paths and base links as parameters:
 
 ```rust
-use collision_model::{DualArmCollisionModel, MarginPolicy};
+use collision_model::{DualArmCollisionModel, GovernorBand, MarginPolicy};
 
 // Bringup, once (~0.25 s release; bimanual fit + pair derivation).
+// The two tuned numbers. d_stop must cover tracking drift plus worst
+// closing speed times watchdog latency; measure both before trusting it.
+let band = GovernorBand::new(0.01, 0.03)?;
 let policy = MarginPolicy {
-    headroom: 0.04,
-    // Neutral is covered by default; add poses the arms actually park in.
+    band,
+    // Poses the arms actually park in; each is rebased to read d_safe.
     references: vec![[0.0; 7], [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0]],
 };
 let mut model = DualArmCollisionModel::from_urdf_file(
@@ -183,16 +207,11 @@ let mut model = DualArmCollisionModel::from_urdf_file(
     &params.right_base_link,
     &policy,
 )?;
-// Arithmetically consistent with the margins (rest poses never throttle);
-// validate against closing speed and reaction latency before trusting it.
-let band = policy.consistent_band()?;
 
-// Log the derived contract once; margined pairs are the structurally snug
-// ones whose alarm is baseline-relative.
-for (a, b, margin) in model.pair_margins() {
-    if margin < 0.0 {
-        info!("margined pair {a} / {b}: {margin:+.3}");
-    }
+// Log the derived contract once. A negative baseline marks a pair whose
+// capsules overlap at reference; its alarm is relative to that overlap.
+for (a, b, baseline) in model.adjusted_pairs() {
+    info!("adjusted pair {a} / {b}: rests at {baseline:+.3}");
 }
 
 // Queries take &mut self (FK poses in place), so one task owns the model;
@@ -235,13 +254,13 @@ cargo run --release --bin visualize -- \
 
 The example pose swings both arms forward into the workspace, hands
 mid-reach in front of the torso, like the approach of a bimanual pick and
-place; it reads the margined rest floor (clear).
+place; it reads the rest floor (clear).
 
 Writes a self-contained interactive page (three.js from CDN): capsules
 colored by side, the closest pair highlighted with its witness segment and
 margin-adjusted distance, and with `--wireframes` the decimated source
-meshes for judging fit quality. `--headroom` and `--reference` override the
-default margin policy to match the consumer's.
+meshes for judging fit quality. `--d-stop`, `--d-safe`, and `--reference`
+override the default policy to match the consumer's.
 
 ## Layout
 
