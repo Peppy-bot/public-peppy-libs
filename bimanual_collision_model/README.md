@@ -1,4 +1,4 @@
-# collision_model
+# bimanual_collision_model
 
 Runtime self-collision detection for a bimanual robot: the minimum distance
 between the two arms, an arm and the torso, or an arm and itself, evaluated
@@ -14,7 +14,7 @@ base links. Any bimanual URDF whose arms are 7-DOF SRS chains (the
 `srs_model` contract) is supported.
 
 ```rust
-use collision_model::{DualArmCollisionModel, GovernorBand, MarginPolicy};
+use bimanual_collision_model::{BimanualCollisionModel, GovernorBand, MarginPolicy};
 
 // Two numbers: hard stop at 10 mm, full speed at or above 30 mm.
 let band = GovernorBand::new(0.01, 0.03)?;
@@ -22,7 +22,7 @@ let band = GovernorBand::new(0.01, 0.03)?;
 // rests in, which must read as clear. The model cannot guess these.
 // They are rebased to read exactly d_safe: rest is the edge of full speed.
 let policy = MarginPolicy { band, references: vec![home_pose, ready_pose] };
-let mut model = DualArmCollisionModel::from_urdf_file(
+let mut model = BimanualCollisionModel::from_urdf_file(
     &urdf_path,
     &meshes_dir,
     &left_base,
@@ -189,7 +189,7 @@ directory, since peppy snapshots only the node dir and does not follow
 symlinks, and exposes the paths and base links as parameters:
 
 ```rust
-use collision_model::{DualArmCollisionModel, GovernorBand, MarginPolicy};
+use bimanual_collision_model::{BimanualCollisionModel, GovernorBand, MarginPolicy};
 
 // Bringup, once (~0.25 s release; bimanual fit + pair derivation).
 // The two tuned numbers. d_stop must cover tracking drift plus worst
@@ -200,7 +200,7 @@ let policy = MarginPolicy {
     // Poses the arms actually park in; each is rebased to read d_safe.
     references: vec![[0.0; 7], [0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0]],
 };
-let mut model = DualArmCollisionModel::from_urdf_file(
+let mut model = BimanualCollisionModel::from_urdf_file(
     &params.urdf_path,         // same description the arm nodes load
     &params.collision_meshes_dir,
     &params.left_base_link,    // e.g. "openarm_left_link0"
@@ -275,7 +275,7 @@ src/
   urdf_collision.rs  URDF collision extraction, fixed poses, child transforms
   assemble.rs        construction-time fitting of all collision bodies
   pairs.rs           pair specs (explicit lists for tests and tools)
-  model.rs           DualArmCollisionModel queries, pair and margin derivation
+  model.rs           BimanualCollisionModel queries, pair and margin derivation
   governor.rs        direction-aware proximity scaling
   bin/               visualize
 tests/

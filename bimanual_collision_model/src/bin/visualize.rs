@@ -14,9 +14,9 @@
 //! pair is highlighted, and the adjusted distance is shown. Use it to
 //! eyeball fit quality against the mesh wireframes and to review scenarios.
 
-use collision_model::{DualArmCollisionModel, GovernorBand, MarginPolicy};
-use collision_model::nalgebra::Point3;
-use collision_model::urdf_collision::UrdfCollisions;
+use bimanual_collision_model::{BimanualCollisionModel, GovernorBand, MarginPolicy};
+use bimanual_collision_model::nalgebra::Point3;
+use bimanual_collision_model::urdf_collision::UrdfCollisions;
 use srs_model::{ARM_DOF, Arm, JointVec};
 
 /// Wireframes are decimated to about this many triangles per body; fit
@@ -103,7 +103,7 @@ fn run() -> Result<(), String> {
         args.references.clone()
     };
     let policy = MarginPolicy { band: GovernorBand::new(args.d_stop, args.d_safe)?, references };
-    let mut model = DualArmCollisionModel::from_urdf_file(
+    let mut model = BimanualCollisionModel::from_urdf_file(
         &args.urdf,
         &args.meshes,
         &args.left_base,
@@ -235,7 +235,7 @@ const TEMPLATE: &str = r##"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>collision_model scene</title>
+<title>bimanual_collision_model scene</title>
 <style>
   body { margin: 0; background: #15171c; color: #d7dae0; font: 13px/1.4 system-ui, sans-serif; }
   #hud { position: fixed; top: 10px; left: 10px; background: rgba(21,23,28,.85); padding: 10px 12px;

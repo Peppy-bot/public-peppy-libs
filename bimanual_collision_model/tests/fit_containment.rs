@@ -4,19 +4,19 @@
 //! the model can alarm early, never late. A capsule union is not convex, so
 //! vertex containment alone does not imply face containment across bands.
 
-use collision_model::geometry::Capsule;
-use collision_model::nalgebra::Point3;
-use collision_model::urdf_collision::UrdfCollisions;
-use collision_model::{DualArmCollisionModel, GovernorBand, MarginPolicy};
+use bimanual_collision_model::geometry::Capsule;
+use bimanual_collision_model::nalgebra::Point3;
+use bimanual_collision_model::urdf_collision::UrdfCollisions;
+use bimanual_collision_model::{BimanualCollisionModel, GovernorBand, MarginPolicy};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 /// Allow only float round-off at the surface.
 const TOL: f64 = 1e-9;
 
-fn fixture() -> (UrdfCollisions, DualArmCollisionModel, String) {
+fn fixture() -> (UrdfCollisions, BimanualCollisionModel, String) {
     let urdf = UrdfCollisions::from_file(&format!("{FIXTURES}/openarm_v10.urdf")).expect("fixture urdf");
-    let model = DualArmCollisionModel::from_urdf_file(
+    let model = BimanualCollisionModel::from_urdf_file(
         &format!("{FIXTURES}/openarm_v10.urdf"),
         &format!("{FIXTURES}/meshes"),
         "openarm_left_link0",
@@ -31,7 +31,7 @@ fn assert_contained(vertices: &[Point3<f64>], capsules: &[Capsule], what: &str) 
     let union_escape = |p: &Point3<f64>| {
         capsules
             .iter()
-            .map(|c| collision_model::point_segment_distance(p, &c.a, &c.b) - c.radius)
+            .map(|c| bimanual_collision_model::point_segment_distance(p, &c.a, &c.b) - c.radius)
             .fold(f64::INFINITY, f64::min)
     };
     let mut worst = f64::NEG_INFINITY;
@@ -39,7 +39,7 @@ fn assert_contained(vertices: &[Point3<f64>], capsules: &[Capsule], what: &str) 
         // Convexity early-exit: one capsule containing all three vertices
         // contains the whole face.
         if capsules.iter().any(|c| {
-            tri.iter().all(|v| collision_model::point_segment_distance(v, &c.a, &c.b) <= c.radius + TOL)
+            tri.iter().all(|v| bimanual_collision_model::point_segment_distance(v, &c.a, &c.b) <= c.radius + TOL)
         }) {
             continue;
         }
@@ -110,7 +110,7 @@ fn wrist_union_covers_the_unmodeled_palm_crossbar() {
     // fingers' shared -0.673001 export offset; placed there, it must sit
     // inside the wrist capsule union or the gripper body is unguarded.
     let (_, model, meshes) = fixture();
-    let raw = collision_model::stl::load_stl(&format!("{meshes}/hand.stl")).expect("vendored palm mesh");
+    let raw = bimanual_collision_model::stl::load_stl(&format!("{meshes}/hand.stl")).expect("vendored palm mesh");
     let placed: Vec<Point3<f64>> = raw
         .iter()
         .map(|v| Point3::new(v.x * 0.001, v.y * 0.001, v.z * 0.001 - 0.673001 + 0.1025))

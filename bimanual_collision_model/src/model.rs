@@ -94,7 +94,7 @@ struct Pair {
     baseline: Option<f64>,
 }
 
-/// Best candidate while scanning pairs in [`DualArmCollisionModel::min_distance`].
+/// Best candidate while scanning pairs in [`BimanualCollisionModel::min_distance`].
 struct Closest {
     distance: f64,
     a: usize,
@@ -121,7 +121,7 @@ pub struct Proximity<'a> {
     pub on_b: Point3<f64>,
 }
 
-pub struct DualArmCollisionModel {
+pub struct BimanualCollisionModel {
     left: Arm,
     right: Arm,
     bodies: Vec<Body>,
@@ -131,7 +131,7 @@ pub struct DualArmCollisionModel {
     world: Vec<Vec<Capsule>>,
 }
 
-impl DualArmCollisionModel {
+impl BimanualCollisionModel {
     /// Build from the URDF (both chains) and its collision meshes, fitting
     /// the capsules and deriving the checked pairs and their readings at
     /// construction; there is no intermediate artifact to go stale. Mesh
@@ -487,13 +487,13 @@ mod tests {
         }
     }
 
-    fn build(pairs: &[PairSpec]) -> Result<DualArmCollisionModel, String> {
-        DualArmCollisionModel::with_pairs(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", pairs)
+    fn build(pairs: &[PairSpec]) -> Result<BimanualCollisionModel, String> {
+        BimanualCollisionModel::with_pairs(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", pairs)
     }
 
     #[test]
     fn rejects_unknown_pairs_and_querying_with_no_pairs() {
-        let err = |r: Result<DualArmCollisionModel, String>| r.err().expect("expected an error");
+        let err = |r: Result<BimanualCollisionModel, String>| r.err().expect("expected an error");
         let bad = [PairSpec::new("openarm_left_link1", "no_such_body")];
         assert!(err(build(&bad)).contains("unknown body"));
 
@@ -522,7 +522,7 @@ mod tests {
 
     #[test]
     fn adjusted_winner_reports_band_floor_and_raw_witnesses() {
-        let mut m = DualArmCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", &policy())
+        let mut m = BimanualCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", &policy())
             .expect("model");
         let q = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
         let adjusted: Vec<(String, String, f64)> =
@@ -586,7 +586,7 @@ mod tests {
     fn multi_capsule_bodies_take_part_in_the_minimum() {
         // Wrists wrapped toward each other: the winning bodies carry several
         // capsules (wrist bands + fingers), exercising the inner loops.
-        let mut m = DualArmCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", &policy())
+        let mut m = BimanualCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", &policy())
             .expect("model");
         let ql = [0.0, 0.0, 1.2, 0.4, 0.0, 0.0, 0.0];
         let qr = [0.0, 0.0, -1.2, 0.4, 0.0, 0.0, 0.0];
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn derived_pairs_skip_fixed_pairs_and_adjacency_and_adjust_snug_bodies() {
-        let mut m = DualArmCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", &policy())
+        let mut m = BimanualCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", &policy())
             .expect("model");
         let checked: Vec<(String, String)> =
             m.checked_pairs().iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
@@ -636,7 +636,7 @@ mod tests {
             band: crate::GovernorBand::new(0.005, 0.02).expect("valid band"),
             references: policy().references,
         };
-        let mut m = DualArmCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", &wider)
+        let mut m = BimanualCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", &wider)
             .expect("model");
         let home = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
         let p = m.min_distance(&home, &home).expect("query");
@@ -646,12 +646,12 @@ mod tests {
     #[test]
     fn model_is_send_for_task_ownership() {
         fn assert_send<T: Send>() {}
-        assert_send::<DualArmCollisionModel>();
+        assert_send::<BimanualCollisionModel>();
     }
 
     #[test]
     fn rejects_identical_base_links() {
-        let e = DualArmCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_left_link0", &policy())
+        let e = BimanualCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_left_link0", &policy())
             .err()
             .expect("identical bases must fail");
         assert!(e.contains("two chains"), "{e}");
@@ -662,7 +662,7 @@ mod tests {
         // Bad bands are unconstructible (GovernorBand::new validates), so
         // only the references can be wrong here.
         let build = |policy: &MarginPolicy| {
-            DualArmCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", policy)
+            BimanualCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", policy)
         };
         assert!(build(&MarginPolicy { band: policy().band, references: vec![] }).is_err());
         let mut bad = [0.0; ARM_DOF];
@@ -672,7 +672,7 @@ mod tests {
 
     #[test]
     fn world_capsules_rejects_non_finite_configurations() {
-        let mut m = DualArmCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", &policy())
+        let mut m = BimanualCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", &policy())
             .expect("model");
         let mut bad = [0.0; ARM_DOF];
         bad[0] = f64::NAN;

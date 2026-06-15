@@ -3,7 +3,7 @@
 //! pair readings, so a change to the fixture geometry or to the fit moves
 //! these numbers; re-baseline deliberately when that happens.
 
-use collision_model::{DualArmCollisionModel, GovernorBand, MarginPolicy};
+use bimanual_collision_model::{BimanualCollisionModel, GovernorBand, MarginPolicy};
 use srs_model::JointVec;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
@@ -19,8 +19,8 @@ fn band() -> GovernorBand {
     GovernorBand::new(0.01, 0.03).expect("valid band")
 }
 
-fn model() -> DualArmCollisionModel {
-    DualArmCollisionModel::from_urdf_file(
+fn model() -> BimanualCollisionModel {
+    BimanualCollisionModel::from_urdf_file(
         &format!("{FIXTURES}/openarm_v10.urdf"),
         &format!("{FIXTURES}/meshes"),
         "openarm_left_link0",
