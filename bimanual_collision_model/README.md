@@ -288,6 +288,33 @@ v1.0 collision proxies; nothing reads outside the crate at build or run
 time. A robot with a moving mount (a lift axis) needs a model extension:
 fixed bodies are currently baked in world frame.
 
+## Reuse for other robots
+
+The "bimanual" and "SRS" assumptions are confined to `model.rs`: the two
+`srs_model::Arm`s, the `q_left`/`q_right` query, the FK source, and the
+same-side/cross-arm pair rule. Every other module is robot-agnostic, by
+tier:
+
+- pure algorithms (`geometry`, `fit`, `stl`, `governor`, `pairs`) carry no
+  robot assumptions at all;
+- `urdf_collision` and `assemble` are generic over any URDF, and
+  `assemble::fit_bodies` already takes the chains as a parameter.
+
+So a second robot topology (a single arm, a humanoid) does not need this
+crate generalized in place. The extraction is to lift those modules plus
+the generic engine in `model.rs` (the min-distance scan,
+`pair_adjustment`/`apply_reading`, the world-capsule buffers) into a
+`collision_core` crate, leaving each robot crate to supply two things: a
+way to pose its bodies in the world frame from a configuration (today
+`srs_model::Arm::link_pose_world`, the one hard dependency, behind what
+would become a `BodyPoser` trait) and a function producing its checked
+`PairSpec` list. This is deliberately not done yet: with a single consumer
+the right shape of that seam is a guess, so the trigger is the arrival of
+robot two, which defines it. Until then the discipline that keeps the
+extraction cheap is keeping the pure modules pure (no bimanual assumptions
+leaking down into them). Whoever extracts it repoints the `nalgebra`
+re-export from `srs_model` to `k` and inherits the nalgebra 0.30 pin.
+
 ## Testing
 
 `cargo test` covers the primitives analytically (degenerate segments,
