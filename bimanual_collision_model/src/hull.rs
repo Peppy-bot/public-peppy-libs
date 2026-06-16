@@ -1,0 +1,484 @@
+//! Convex hull of a point cloud, computed once at construction to turn a mesh
+//! of tens of thousands of triangles into the handful of vertices GJK needs for
+//! its support function. The hull strictly contains the mesh (every mesh point
+//! is a convex combination of the cloud, so it lies inside the cloud's hull),
+//! so a hull proxy is as conservative as a capsule while following the shape.
+//!
+//! Incremental construction (the classic Clarkson-Shor / "Quickhull"-family
+//! online insertion): seed a tetrahedron, then fold each remaining point in,
+//! deleting the faces it can see and stitching new faces across the horizon.
+//! Face orientation is kept robust by pointing every normal away from a fixed
+//! interior point instead of tracking winding, so the horizon is found purely
+//! by counting shared edges.
+
+use std::collections::HashMap;
+
+use srs_model::nalgebra::{Matrix3, Point3, Vector3};
+
+/// A point in front of a face by more than this (metres) sees it. At 1e-9 a
+/// point is classified inside only when it is inside to within a nanometre, far
+/// under any millimetre-scale safety threshold.
+const FRONT_EPS: f64 = 1e-9;
+
+/// Degenerate area/length guard: a face or spanning direction below this in
+/// squared magnitude is treated as collapsed.
+const DEGEN_EPS2: f64 = 1e-20;
+
+/// The convex hull as outward-oriented triangles over a deduplicated vertex
+/// list. `vertices` is what GJK needs; `faces` index into it for rendering.
+#[derive(Debug, Clone)]
+pub struct ConvexHull {
+    pub vertices: Vec<Point3<f64>>,
+    pub faces: Vec<[usize; 3]>,
+}
+
+/// A working face: vertex indices into the source cloud and an outward normal
+/// (pointing away from the hull interior) with its plane offset.
+#[derive(Clone, Copy)]
+struct Face {
+    v: [usize; 3],
+    normal: Vector3<f64>,
+    offset: f64,
+}
+
+impl Face {
+    /// Signed distance of a point from the face plane, positive outward.
+    fn signed_distance(&self, p: &Point3<f64>) -> f64 {
+        self.normal.dot(&p.coords) - self.offset
+    }
+}
+
+/// Exact convex hull of `points` (minimal tolerance, every point on or inside).
+/// Errors only on a cloud that spans fewer than three dimensions (collinear or
+/// coplanar), which no solid collision mesh is.
+pub fn convex_hull(points: &[Point3<f64>]) -> Result<ConvexHull, String> {
+    build_hull(points, FRONT_EPS)
+}
+
+/// A simplified hull: points are welded onto a grid of cell size `cell` before
+/// hulling, and the returned `radius` re-contains the mesh. Welding both shrinks
+/// the cloud (tens of thousands of vertices fall to a few thousand, so the hull
+/// builds fast) and thins near-duplicate hull vertices (cheap support). Every
+/// welded-away point sits within `radius` of its cell's kept representative, so
+/// the radius is the exact worst weld displacement, tracked in one pass with no
+/// scan, and the rounded hull strictly contains the mesh (the capsule margin
+/// trick).
+pub fn simplified_hull(points: &[Point3<f64>], cell: f64) -> Result<(ConvexHull, f64), String> {
+    let mut reps: HashMap<[i64; 3], Point3<f64>> = HashMap::new();
+    let mut radius = 0.0_f64;
+    for p in points {
+        let key = [(p.x / cell).floor() as i64, (p.y / cell).floor() as i64, (p.z / cell).floor() as i64];
+        match reps.entry(key) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(*p);
+            }
+            std::collections::hash_map::Entry::Occupied(e) => {
+                radius = radius.max((p - e.get()).norm());
+            }
+        }
+    }
+    let rep_points: Vec<Point3<f64>> = reps.into_values().collect();
+    Ok((build_hull(&rep_points, FRONT_EPS)?, radius))
+}
+
+/// A candidate split during decomposition: the piece index, its two halves
+/// (triangle soups), and the total-volume gain the split yields.
+type Split = (usize, Vec<Point3<f64>>, Vec<Point3<f64>>, f64);
+
+/// Greedily decompose a triangle soup into up to `max_pieces` simplified hulls,
+/// each split chosen to shrink total enclosed volume the most, stopping early
+/// when no split improves total volume by `min_gain_frac` of the whole body. A
+/// convex body keeps one piece (no split helps); a concave one (the torso
+/// waist, a forked yoke) splits. Cuts are planes swept along each piece's
+/// principal axes, not fixed slabs, and every whole triangle lands in one
+/// piece, so the union of the per-piece hulls contains the mesh with no face
+/// escape. `points` is a triangle soup (consecutive triples).
+pub fn decompose(points: &[Point3<f64>], cell: f64, max_pieces: usize, min_gain_frac: f64) -> Vec<(ConvexHull, f64)> {
+    // Volume of a piece's simplified hull; a piece that cannot hull (degenerate)
+    // reports infinite volume so a split that produces it is never chosen.
+    let volume = |tris: &[Point3<f64>]| simplified_hull(tris, cell).map_or(f64::INFINITY, |(h, _)| hull_volume(&h));
+    let total = volume(points);
+    let mut pieces = vec![points.to_vec()];
+
+    while pieces.len() < max_pieces && total.is_finite() {
+        let mut best: Option<Split> = None;
+        for (i, piece) in pieces.iter().enumerate() {
+            let piece_volume = volume(piece);
+            for axis in principal_axes(piece) {
+                let projected: Vec<f64> = piece.chunks_exact(3).map(|t| triangle_centroid(t).dot(&axis)).collect();
+                let lo = projected.iter().copied().fold(f64::INFINITY, f64::min);
+                let hi = projected.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                for k in 1..4 {
+                    let (a, b) = split_triangles(piece, &axis, lo + (hi - lo) * k as f64 / 4.0);
+                    if a.len() < 12 || b.len() < 12 {
+                        continue;
+                    }
+                    let gain = piece_volume - volume(&a) - volume(&b);
+                    if best.as_ref().is_none_or(|(.., g)| gain > *g) {
+                        best = Some((i, a, b, gain));
+                    }
+                }
+            }
+        }
+        match best {
+            Some((i, a, b, gain)) if gain > min_gain_frac * total => {
+                pieces[i] = a;
+                pieces.push(b);
+            }
+            _ => break,
+        }
+    }
+    pieces.iter().filter_map(|p| simplified_hull(p, cell).ok()).collect()
+}
+
+/// Volume enclosed by a convex hull (divergence theorem over its faces; the
+/// outward sense is fixed by the vertex centroid, so winding need not agree).
+fn hull_volume(hull: &ConvexHull) -> f64 {
+    let interior = Point3::from(hull.vertices.iter().fold(Vector3::zeros(), |a, v| a + v.coords) / hull.vertices.len() as f64);
+    let total: f64 = hull
+        .faces
+        .iter()
+        .map(|f| {
+            let (a, b, c) = (hull.vertices[f[0]], hull.vertices[f[1]], hull.vertices[f[2]]);
+            let mut cross = (b - a).cross(&(c - a));
+            if cross.dot(&(interior - a)) > 0.0 {
+                cross = -cross;
+            }
+            ((a.coords + b.coords + c.coords) / 3.0).dot(&cross)
+        })
+        .sum();
+    total.abs() / 6.0
+}
+
+/// The three principal axes of `points` (covariance eigenvectors, any order).
+fn principal_axes(points: &[Point3<f64>]) -> [Vector3<f64>; 3] {
+    let centroid = points.iter().fold(Vector3::zeros(), |a, p| a + p.coords) / points.len() as f64;
+    let cov = points.iter().fold(Matrix3::zeros(), |m, p| {
+        let d = p.coords - centroid;
+        m + d * d.transpose()
+    }) / points.len() as f64;
+    let eigen = cov.symmetric_eigen();
+    [0, 1, 2].map(|i| {
+        let v = eigen.eigenvectors.column(i).into_owned();
+        if v.norm_squared() < 1e-12 { Vector3::z() } else { v.normalize() }
+    })
+}
+
+fn triangle_centroid(t: &[Point3<f64>]) -> Vector3<f64> {
+    (t[0].coords + t[1].coords + t[2].coords) / 3.0
+}
+
+/// Partition a triangle soup by the plane `axis . x = offset`, assigning each
+/// whole triangle by its centroid so each side's hull covers its triangles.
+fn split_triangles(tris: &[Point3<f64>], axis: &Vector3<f64>, offset: f64) -> (Vec<Point3<f64>>, Vec<Point3<f64>>) {
+    let (mut lo, mut hi) = (Vec::new(), Vec::new());
+    for t in tris.chunks_exact(3) {
+        if triangle_centroid(t).dot(axis) <= offset { &mut lo } else { &mut hi }.extend_from_slice(t);
+    }
+    (lo, hi)
+}
+
+/// Incremental hull with a tunable visibility tolerance: a point in front of a
+/// face by more than `front_eps` sees it (and so becomes a vertex), so a larger
+/// `front_eps` keeps fewer, more separated vertices.
+fn build_hull(points: &[Point3<f64>], front_eps: f64) -> Result<ConvexHull, String> {
+    let seed = initial_tetrahedron(points)?;
+    let interior = seed.iter().fold(Vector3::zeros(), |acc, &i| acc + points[i].coords) / 4.0;
+    let interior = Point3::from(interior);
+
+    let mut faces: Vec<Face> = Vec::new();
+    for &[i, j, k] in &[[seed[0], seed[1], seed[2]], [seed[0], seed[1], seed[3]], [seed[0], seed[2], seed[3]], [seed[1], seed[2], seed[3]]] {
+        if let Some(f) = make_face(i, j, k, points, &interior) {
+            faces.push(f);
+        }
+    }
+
+    for (idx, p) in points.iter().enumerate() {
+        let visible: Vec<usize> = faces.iter().enumerate().filter(|(_, f)| f.signed_distance(p) > front_eps).map(|(i, _)| i).collect();
+        if visible.is_empty() {
+            continue;
+        }
+        let horizon = horizon_edges(&faces, &visible);
+        let dropped: std::collections::HashSet<usize> = visible.into_iter().collect();
+        faces = faces.into_iter().enumerate().filter(|(i, _)| !dropped.contains(i)).map(|(_, f)| f).collect();
+        for (a, b) in horizon {
+            if let Some(f) = make_face(a, b, idx, points, &interior) {
+                faces.push(f);
+            }
+        }
+    }
+
+    Ok(reindex(points, &faces))
+}
+
+/// Undirected edges that border exactly one visible face: the boundary between
+/// the deleted cap and the rest of the hull, where the new faces attach.
+fn horizon_edges(faces: &[Face], visible: &[usize]) -> Vec<(usize, usize)> {
+    let mut count: HashMap<(usize, usize), u32> = HashMap::new();
+    for &fi in visible {
+        let v = faces[fi].v;
+        for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
+            *count.entry(if a < b { (a, b) } else { (b, a) }).or_insert(0) += 1;
+        }
+    }
+    count.into_iter().filter(|&(_, c)| c == 1).map(|(e, _)| e).collect()
+}
+
+/// A face on `i, j, k`, its normal flipped to point away from `interior`.
+/// `None` if the three points are collinear (zero area).
+fn make_face(i: usize, j: usize, k: usize, points: &[Point3<f64>], interior: &Point3<f64>) -> Option<Face> {
+    let n = (points[j] - points[i]).cross(&(points[k] - points[i]));
+    if n.norm_squared() <= DEGEN_EPS2 {
+        return None;
+    }
+    let mut normal = n.normalize();
+    if normal.dot(&(interior - points[i])) > 0.0 {
+        normal = -normal;
+    }
+    Some(Face { v: [i, j, k], normal, offset: normal.dot(&points[i].coords) })
+}
+
+/// Four affinely independent seed points: an extreme point, the farthest from
+/// it, the farthest from that line, the farthest from that plane.
+fn initial_tetrahedron(points: &[Point3<f64>]) -> Result<[usize; 4], String> {
+    if points.len() < 4 {
+        return Err(format!("a hull needs at least four points, got {}", points.len()));
+    }
+    let i0 = (0..points.len()).max_by(|&a, &b| points[a].x.total_cmp(&points[b].x)).expect("nonempty");
+    let i1 = farthest(points, |p| (p - points[i0]).norm_squared()).ok_or("cloud is a single point")?;
+    let axis = points[i1] - points[i0];
+    if axis.norm_squared() <= DEGEN_EPS2 {
+        return Err("cloud is a single point".into());
+    }
+    let i2 = farthest(points, |p| (p - points[i0]).cross(&axis).norm_squared()).ok_or("collinear cloud")?;
+    let normal = (points[i1] - points[i0]).cross(&(points[i2] - points[i0]));
+    if normal.norm_squared() <= DEGEN_EPS2 {
+        return Err("collinear cloud has no hull".into());
+    }
+    let i3 = farthest(points, |p| (p - points[i0]).dot(&normal).abs()).ok_or("coplanar cloud")?;
+    if (points[i3] - points[i0]).dot(&normal).abs() <= FRONT_EPS {
+        return Err("coplanar cloud has no volume".into());
+    }
+    Ok([i0, i1, i2, i3])
+}
+
+/// Index of the point maximizing `score`, or `None` if every score is zero
+/// (the cloud is degenerate along this measure).
+fn farthest(points: &[Point3<f64>], score: impl Fn(&Point3<f64>) -> f64) -> Option<usize> {
+    let (idx, best) = (0..points.len()).map(|i| (i, score(&points[i]))).max_by(|a, b| a.1.total_cmp(&b.1))?;
+    if best <= DEGEN_EPS2 { None } else { Some(idx) }
+}
+
+/// Compact the surviving faces to a deduplicated vertex list.
+fn reindex(points: &[Point3<f64>], faces: &[Face]) -> ConvexHull {
+    let mut remap: HashMap<usize, usize> = HashMap::new();
+    let mut vertices = Vec::new();
+    let mut out_faces = Vec::new();
+    for f in faces {
+        let tri = f.v.map(|old| {
+            *remap.entry(old).or_insert_with(|| {
+                vertices.push(points[old]);
+                vertices.len() - 1
+            })
+        });
+        out_faces.push(tri);
+    }
+    ConvexHull { vertices, faces: out_faces }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::{Rng, SeedableRng};
+
+    fn pt(x: f64, y: f64, z: f64) -> Point3<f64> {
+        Point3::new(x, y, z)
+    }
+
+    fn contains(hull: &ConvexHull, p: &Point3<f64>, interior: &Point3<f64>) -> bool {
+        // Inside iff behind every face plane (normals point outward).
+        hull.faces.iter().all(|tri| {
+            let (a, b, c) = (hull.vertices[tri[0]], hull.vertices[tri[1]], hull.vertices[tri[2]]);
+            let mut n = (b - a).cross(&(c - a));
+            if n.dot(&(interior - a)) > 0.0 {
+                n = -n;
+            }
+            n.dot(&(p - a)) <= 1e-9 * n.norm().max(1.0)
+        })
+    }
+
+    /// From just the eight corners the hull is the clean box: eight vertices,
+    /// twelve triangles, all corners inside.
+    #[test]
+    fn cube_corners_make_a_clean_box() {
+        let mut verts = Vec::new();
+        for sx in [0.0, 1.0] {
+            for sy in [0.0, 1.0] {
+                for sz in [0.0, 1.0] {
+                    verts.push(pt(sx, sy, sz));
+                }
+            }
+        }
+        let hull = convex_hull(&verts).expect("box hull");
+        assert_eq!(hull.vertices.len(), 8, "a box has eight hull vertices");
+        assert_eq!(hull.faces.len(), 12, "a box triangulates to twelve faces");
+        let center = pt(0.5, 0.5, 0.5);
+        for p in &verts {
+            assert!(contains(&hull, p, &center));
+        }
+    }
+
+    /// A dense grid still contains every point and keeps the corners. Coplanar
+    /// face points may survive as vertices (a known property of plain
+    /// incremental insertion), so the count is not asserted minimal, only that
+    /// the hull is correct and a real compression.
+    #[test]
+    fn a_dense_grid_hull_contains_every_point_and_keeps_the_corners() {
+        let mut pts = Vec::new();
+        for i in 0..5 {
+            for j in 0..5 {
+                for k in 0..5 {
+                    pts.push(pt(i as f64 / 4.0, j as f64 / 4.0, k as f64 / 4.0));
+                }
+            }
+        }
+        let hull = convex_hull(&pts).expect("grid hull");
+        let center = pt(0.5, 0.5, 0.5);
+        for p in &pts {
+            assert!(contains(&hull, p, &center), "grid point {p:?} escaped the hull");
+        }
+        for corner in [pt(0.0, 0.0, 0.0), pt(1.0, 1.0, 1.0), pt(1.0, 0.0, 1.0), pt(0.0, 1.0, 0.0)] {
+            assert!(hull.vertices.iter().any(|v| (v - corner).norm() < 1e-9), "corner {corner:?} missing");
+        }
+        assert!(hull.vertices.len() < pts.len(), "hull should compress the cloud");
+    }
+
+    #[test]
+    fn interior_points_are_dropped() {
+        let mut pts = vec![
+            pt(0.0, 0.0, 0.0),
+            pt(1.0, 0.0, 0.0),
+            pt(0.0, 1.0, 0.0),
+            pt(0.0, 0.0, 1.0),
+            pt(1.0, 1.0, 1.0),
+        ];
+        // Pile of interior points that must not become vertices.
+        let mut rng = rand::rngs::StdRng::seed_from_u64(5);
+        for _ in 0..200 {
+            pts.push(pt(rng.gen_range(0.05..0.3), rng.gen_range(0.05..0.3), rng.gen_range(0.05..0.3)));
+        }
+        let hull = convex_hull(&pts).expect("hull");
+        assert_eq!(hull.vertices.len(), 5, "only the five extreme points are vertices");
+    }
+
+    #[test]
+    fn every_cloud_point_lies_inside_its_hull() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(9);
+        for _ in 0..20 {
+            let pts: Vec<_> = (0..300)
+                .map(|_| pt(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+                .collect();
+            let hull = convex_hull(&pts).expect("hull");
+            let center = Point3::from(pts.iter().fold(Vector3::zeros(), |a, p| a + p.coords) / pts.len() as f64);
+            for p in &pts {
+                assert!(contains(&hull, p, &center), "a cloud point escaped its own hull");
+            }
+            // A random cloud hull is far smaller than the cloud.
+            assert!(hull.vertices.len() < pts.len(), "hull should compress the cloud");
+        }
+    }
+
+    #[test]
+    fn sphere_surface_points_are_all_vertices() {
+        // Points on a sphere are all extreme, so all survive as hull vertices.
+        let mut pts = Vec::new();
+        for i in 0..80 {
+            let phi = i as f64 * 0.618 * std::f64::consts::TAU;
+            let z = -1.0 + 2.0 * (i as f64 + 0.5) / 80.0;
+            let r = (1.0f64 - z * z).sqrt();
+            pts.push(pt(r * phi.cos(), r * phi.sin(), z));
+        }
+        let hull = convex_hull(&pts).expect("sphere hull");
+        assert_eq!(hull.vertices.len(), pts.len(), "all sphere points are extreme");
+    }
+
+    #[test]
+    fn rejects_a_coplanar_cloud() {
+        let flat: Vec<_> = (0..10).flat_map(|i| (0..10).map(move |j| pt(i as f64, j as f64, 0.0))).collect();
+        assert!(convex_hull(&flat).is_err(), "a flat cloud has no volume");
+    }
+
+    #[test]
+    fn simplified_hull_welds_points_and_its_radius_recontains() {
+        // Dense fibonacci sphere: welding at 0.12 collapses neighbours, and the
+        // radius (bounded by a cell diagonal) re-contains every original point.
+        let mut pts = Vec::new();
+        for i in 0..4000 {
+            let phi = i as f64 * 0.618 * std::f64::consts::TAU;
+            let z = -1.0 + 2.0 * (i as f64 + 0.5) / 4000.0;
+            let r = (1.0f64 - z * z).sqrt();
+            pts.push(pt(r * phi.cos(), r * phi.sin(), z));
+        }
+        let exact = convex_hull(&pts).expect("exact hull");
+        let (simp, radius) = simplified_hull(&pts, 0.12).expect("simplified hull");
+        assert!(simp.vertices.len() < exact.vertices.len(), "welding should drop vertices");
+        assert!(radius > 0.0 && radius <= 0.12 * 3.0f64.sqrt() + 1e-9, "radius {radius} within a cell diagonal");
+        // Every original point within `radius` of the simplified hull (the
+        // per-face distance is a lower bound on the true distance to the hull,
+        // so this passes exactly when containment holds).
+        let interior = Point3::from(simp.vertices.iter().fold(Vector3::zeros(), |a, v| a + v.coords) / simp.vertices.len() as f64);
+        for p in &pts {
+            let protrusion = simp
+                .faces
+                .iter()
+                .map(|f| {
+                    let (a, b, c) = (simp.vertices[f[0]], simp.vertices[f[1]], simp.vertices[f[2]]);
+                    let mut n = (b - a).cross(&(c - a)).normalize();
+                    if n.dot(&(interior - a)) > 0.0 {
+                        n = -n;
+                    }
+                    n.dot(&(p - a))
+                })
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!(protrusion <= radius + 1e-9, "point protrudes {protrusion} past radius {radius}");
+        }
+    }
+
+    #[test]
+    fn decompose_splits_a_two_lobe_shape_and_contains_it() {
+        use rand::{Rng, SeedableRng};
+        // Two separated clusters: one hull bridges them (huge volume), so the
+        // best split separates the lobes and the union still covers every point.
+        let mut rng = rand::rngs::StdRng::seed_from_u64(13);
+        let mut soup = Vec::new();
+        for cz in [0.0, 5.0] {
+            for _ in 0..24 {
+                soup.push(pt(rng.gen_range(-0.5..0.5), rng.gen_range(-0.5..0.5), cz + rng.gen_range(-0.5..0.5)));
+            }
+        }
+        let single_vol = hull_volume(&convex_hull(&soup).expect("single hull"));
+        let pieces = decompose(&soup, 0.05, 2, 0.1);
+        assert_eq!(pieces.len(), 2, "two separated lobes should split into two");
+        let pieces_vol: f64 = pieces.iter().map(|(h, _)| hull_volume(h)).sum();
+        assert!(pieces_vol < 0.6 * single_vol, "splitting must cut volume: {pieces_vol} vs {single_vol}");
+        for p in &soup {
+            let covered = pieces.iter().any(|(h, r)| {
+                let interior = Point3::from(h.vertices.iter().fold(Vector3::zeros(), |s, v| s + v.coords) / h.vertices.len() as f64);
+                let protrusion = h
+                    .faces
+                    .iter()
+                    .map(|f| {
+                        let (a, b, c) = (h.vertices[f[0]], h.vertices[f[1]], h.vertices[f[2]]);
+                        let mut n = (b - a).cross(&(c - a)).normalize();
+                        if n.dot(&(interior - a)) > 0.0 {
+                            n = -n;
+                        }
+                        n.dot(&(p - a))
+                    })
+                    .fold(f64::NEG_INFINITY, f64::max);
+                protrusion <= *r + 1e-9
+            });
+            assert!(covered, "a point escaped every piece");
+        }
+    }
+}

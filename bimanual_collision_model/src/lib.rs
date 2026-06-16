@@ -21,6 +21,8 @@
 mod assemble;
 pub mod fit;
 pub mod geometry;
+pub mod gjk;
+pub mod hull;
 mod governor;
 mod model;
 pub mod pairs;
