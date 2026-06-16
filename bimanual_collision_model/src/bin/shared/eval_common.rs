@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bimanual_collision_model::hull::{ConvexHull, decompose};
-use bimanual_collision_model::nalgebra::Isometry3;
+use bimanual_collision_model::nalgebra::{Isometry3, Point3};
 use bimanual_collision_model::urdf_collision::UrdfCollisions;
 use srs_model::{ARM_DOF, Arm, JointVec};
 
@@ -37,18 +37,17 @@ pub fn chains() -> Vec<Vec<String>> {
         .collect()
 }
 
-/// One convex hull per collision body: fixed bodies in root frame, moving links
-/// in link frame with attached fingers baked over their full travel (the same
-/// bodies assemble.rs fits capsules to).
-pub fn fit_hulls() -> HashMap<String, Vec<(ConvexHull, f64)>> {
+/// The local triangle soup of every collision body: fixed bodies in root frame,
+/// moving links in link frame with attached fingers baked over their full
+/// travel (the same bodies assemble.rs fits capsules to).
+pub fn body_vertices() -> HashMap<String, Vec<Point3<f64>>> {
     let urdf = UrdfCollisions::from_file(URDF).expect("urdf");
     let chains = chains();
     let chain_set: HashSet<String> = chains.iter().flatten().cloned().chain(FIXED.iter().map(|s| s.to_string())).collect();
 
-    let mut hulls = HashMap::new();
+    let mut bodies = HashMap::new();
     for name in FIXED {
-        let v = urdf.fixed_vertices_in_root(name, MESHES).expect("fixed vertices");
-        hulls.insert(name.to_string(), decompose(&v, SIMPLIFY_TOL, MAX_PIECES, MIN_GAIN));
+        bodies.insert(name.to_string(), urdf.fixed_vertices_in_root(name, MESHES).expect("fixed vertices"));
     }
     for name in chains.iter().flatten() {
         let mut v = urdf.link_vertices(name, MESHES).expect("link vertices");
@@ -62,9 +61,14 @@ pub fn fit_hulls() -> HashMap<String, Vec<(ConvexHull, f64)>> {
                 v.extend(urdf.child_vertices_in_parent(&child, j.upper_limit, MESHES).expect("child hi"));
             }
         }
-        hulls.insert(name.clone(), decompose(&v, SIMPLIFY_TOL, MAX_PIECES, MIN_GAIN));
+        bodies.insert(name.clone(), v);
     }
-    hulls
+    bodies
+}
+
+/// One decomposition (up to `MAX_PIECES` simplified hulls) per collision body.
+pub fn fit_hulls() -> HashMap<String, Vec<(ConvexHull, f64)>> {
+    body_vertices().iter().map(|(k, v)| (k.clone(), decompose(v, SIMPLIFY_TOL, MAX_PIECES, MIN_GAIN))).collect()
 }
 
 /// World placement of every body at a configuration.

@@ -85,6 +85,20 @@ fn run() -> Result<(), String> {
         }
     }
 
+    // Source mesh wireframes (decimated), placed in world frame, to eyeball
+    // how the hull pieces sit against the real geometry.
+    let meshes: Vec<serde_json::Value> = common::body_vertices()
+        .iter()
+        .map(|(name, verts)| {
+            let m = iso[name];
+            let positions: Vec<f64> = decimate(verts).iter().flat_map(|v| {
+                let p = m * v;
+                [round(p.x), round(p.y), round(p.z)]
+            }).collect();
+            serde_json::json!({ "positions": positions })
+        })
+        .collect();
+
     let data = serde_json::json!({
         "capMin": round(cap_min),
         "hullMin": round(hull_min),
@@ -93,6 +107,7 @@ fn run() -> Result<(), String> {
         "dStop": 0.01,
         "dSafe": 0.03,
         "bodies": bodies,
+        "meshes": meshes,
     });
     let json = data.to_string().replace('<', "\\u003c");
     std::fs::write(&out, TEMPLATE.replace("__DATA__", &json)).map_err(|e| format!("write {out}: {e}"))?;
@@ -128,6 +143,14 @@ fn round(x: f64) -> f64 {
 
 fn point_json(p: &Point3<f64>) -> serde_json::Value {
     serde_json::json!([round(p.x), round(p.y), round(p.z)])
+}
+
+/// Keep every k-th triangle so each mesh stays under this many for the overlay.
+const MAX_WIRE_TRIS: usize = 2000;
+
+fn decimate(verts: &[Point3<f64>]) -> Vec<Point3<f64>> {
+    let step = (verts.len() / 3).div_ceil(MAX_WIRE_TRIS).max(1);
+    verts.chunks_exact(3).step_by(step).flatten().copied().collect()
 }
 
 const TEMPLATE: &str = r##"<!DOCTYPE html>
@@ -168,6 +191,11 @@ for (const b of DATA.bodies) {
   // scene stays light to orbit.
   scene.add(new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color, transparent:true, opacity: b.hit ? 0.55 : 0.22, depthWrite:false, roughness:0.6, side:THREE.DoubleSide })));
 }
+for (const w of DATA.meshes) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(w.positions, 3));
+  scene.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color:0x6b7280, wireframe:true })));
+}
 { const [a,b] = DATA.witness.map(p => new THREE.Vector3(...p));
   scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([a,b]), new THREE.LineBasicMaterial({ color:0xff5a5a })));
   for (const p of [a,b]) { const d = new THREE.Mesh(new THREE.SphereGeometry(0.008), new THREE.MeshBasicMaterial({ color:0xff5a5a })); d.position.copy(p); scene.add(d); } }
@@ -179,7 +207,7 @@ document.getElementById('hud').innerHTML =
   `<span><i class="dot" style="background:#53b97a"></i>right</span>` +
   `<span><i class="dot" style="background:#8a8f9c"></i>fixed</span>` +
   `<span><i class="dot" style="background:#e2902f"></i>closest pair</span>` +
-  `<span>wireframe = convex hull</span></div>`;
+  `<span>solid = hull pieces, wireframe = source mesh</span></div>`;
 addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
 </script></body></html>
