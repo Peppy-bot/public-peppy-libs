@@ -22,8 +22,8 @@ pub const SIMPLIFY_TOL: f64 = 0.004;
 
 /// Decomposition budget: up to this many convex pieces per body, taken only
 /// while a split still cuts total volume by at least `MIN_GAIN` of the body.
-pub const MAX_PIECES: usize = 3;
-pub const MIN_GAIN: f64 = 0.1;
+pub const MAX_PIECES: usize = 5;
+pub const MIN_GAIN: f64 = 0.04;
 
 /// Moving-link names per arm, from walking each chain at the zero pose.
 pub fn chains() -> Vec<Vec<String>> {
