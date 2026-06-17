@@ -7,11 +7,11 @@ license = "Apache-2.0"
 
 [dependencies]
 srs_model = { path = "../srs_model" }
-serde_json = "1"
 urdf-rs = "0.9"
 
 [dev-dependencies]
 rand = "0.8"
+serde_json = "1"
 
 # Construction hulls and decomposes the meshes; those numeric loops crawl
 # unoptimized, so tests build this crate with light optimization.

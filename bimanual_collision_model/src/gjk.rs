@@ -97,6 +97,15 @@ struct SupportPoint {
     b: Point3<f64>,
 }
 
+/// The Minkowski-difference support point in direction `dir`: the farthest core
+/// point of `a` minus the farthest of `b` in the opposite direction, carrying
+/// both witnesses so they can be blended back later.
+fn support(a: &impl Support, b: &impl Support, dir: &Vector3<f64>) -> SupportPoint {
+    let pa = a.core_support(dir);
+    let pb = b.core_support(&(-dir));
+    SupportPoint { v: pa.coords - pb.coords, a: pa, b: pb }
+}
+
 /// The point of a (sub-)simplex closest to the origin, reduced to the vertices
 /// that actually carry it: `closest` as a vector from the origin, the carrying
 /// `simplex`, and the barycentric `weights` that locate it. Each GJK step
@@ -210,20 +219,15 @@ impl Support for Placed<'_> {
 /// Runs GJK on the cores, then subtracts the radii and pushes the witnesses out
 /// to the rounded surfaces along the separating direction.
 pub fn distance(a: &impl Support, b: &impl Support) -> GjkDistance {
-    let support = |dir: &Vector3<f64>| -> SupportPoint {
-        let pa = a.core_support(dir);
-        let pb = b.core_support(&(-dir));
-        SupportPoint { v: pa.coords - pb.coords, a: pa, b: pb }
-    };
     let (ra, rb) = (a.radius(), b.radius());
 
-    let mut simplex = vec![support(&Vector3::x())];
+    let mut simplex = vec![support(a, b, &Vector3::x())];
     let mut weights = vec![1.0];
     let mut v = simplex[0].v;
     let mut iterations = 0;
 
     while v.norm_squared() > ORIGIN_EPS2 {
-        let w = support(&(-v));
+        let w = support(a, b, &(-v));
         let vv = v.norm_squared();
         // Duality gap: ||v|| - (v . w)/||v|| as a fraction of ||v||. Once the
         // farthest point toward the origin is no closer than v's plane, v is
@@ -281,12 +285,6 @@ struct EpaFace {
 /// the horizon-stitching of the convex hull: a new support point deletes the
 /// faces it can see and is joined to the horizon they leave behind.
 fn epa(a: &impl Support, b: &impl Support, kept: &[SupportPoint], ra: f64, rb: f64) -> GjkDistance {
-    let support = |dir: &Vector3<f64>| -> SupportPoint {
-        let pa = a.core_support(dir);
-        let pb = b.core_support(&(-dir));
-        SupportPoint { v: pa.coords - pb.coords, a: pa, b: pb }
-    };
-
     // A closed polytope strictly enclosing the origin. GJK stops on a
     // tetrahedron for a clear overlap, or on a triangle with the origin in its
     // plane for a shallow one; lift that triangle to a bipyramid with a support
@@ -299,7 +297,7 @@ fn epa(a: &impl Support, b: &impl Support, kept: &[SupportPoint], ra: f64, rb: f
                 return touch(kept, ra, rb);
             }
             let n = n.normalize();
-            let (wp, wm) = (support(&n), support(&(-n)));
+            let (wp, wm) = (support(a, b, &n), support(a, b, &(-n)));
             if wp.v.dot(&n) <= EPA_TOL || wm.v.dot(&n) >= -EPA_TOL {
                 return touch(kept, ra, rb);
             }
@@ -318,7 +316,7 @@ fn epa(a: &impl Support, b: &impl Support, kept: &[SupportPoint], ra: f64, rb: f
     while let Some(closest) = (0..faces.len()).min_by(|&x, &y| faces[x].dist.total_cmp(&faces[y].dist)) {
         let face = faces[closest];
         best = Some(face);
-        let w = support(&face.normal);
+        let w = support(a, b, &face.normal);
         iterations += 1;
         // Converged (support no farther than the face), capped, or the support
         // is already a vertex (no progress).

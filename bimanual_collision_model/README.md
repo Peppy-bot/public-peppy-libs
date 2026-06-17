@@ -296,7 +296,7 @@ plumbing, live with the backbone, not here.
 ## Visualization
 
 ```sh
-cargo run --release --bin visualize -- \
+cargo run --release --example visualize -- \
     --urdf tests/fixtures/openarm_v10.urdf --meshes tests/fixtures/meshes \
     --left-base openarm_left_link0 --right-base openarm_right_link0 \
     --left 0,0,1.2,0.4,0,0,0 --right 0,0,-1.2,0.4,0,0,0 \
@@ -326,7 +326,8 @@ src/
   pairs.rs           pair specs (explicit lists for tests and tools)
   model.rs           BimanualCollisionModel queries, pair derivation, exclusions
   governor.rs        direction-aware proximity scaling
-  bin/visualize.rs   the HTML scene
+examples/
+  visualize.rs       the HTML scene
 tests/
   dual_arm.rs        two-arm scenarios: converge, fold, separate, with budgets
 ```
