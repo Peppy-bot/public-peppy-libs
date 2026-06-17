@@ -107,6 +107,13 @@ impl UrdfCollisions {
                 urdf_rs::JointType::Prismatic => JointKind::Prismatic,
                 _ => JointKind::OtherMovable,
             };
+            // A movable joint's limits bound the swept envelope baked at fit
+            // time, so non-finite or inverted limits would corrupt it silently.
+            let movable = !matches!(kind, JointKind::Fixed);
+            let valid_limits = j.limit.lower.is_finite() && j.limit.upper.is_finite() && j.limit.lower <= j.limit.upper;
+            if movable && !valid_limits {
+                return Err(format!("joint to '{}' has invalid limits [{}, {}]", j.child.link, j.limit.lower, j.limit.upper));
+            }
             let pj = ParentJoint {
                 parent_link: j.parent.link.clone(),
                 kind,

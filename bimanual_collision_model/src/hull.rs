@@ -25,6 +25,12 @@ const FRONT_EPS: f64 = 1e-9;
 /// squared magnitude is treated as collapsed.
 const DEGEN_EPS2: f64 = 1e-20;
 
+/// Most repair rounds [`build_hull`] will run re-inserting protruding points
+/// before giving up. Real meshes converge in a handful; exceeding this means a
+/// pathological cloud, and erroring beats silently returning a hull that does
+/// not contain its own points.
+const REPAIR_ROUNDS: usize = 16;
+
 /// The convex hull as outward-oriented triangles over a deduplicated vertex
 /// list. `vertices` is what GJK needs; `faces` index into it for rendering.
 #[derive(Debug, Clone)]
@@ -266,15 +272,20 @@ fn build_hull(points: &[Point3<f64>], front_eps: f64) -> Result<ConvexHull, Stri
     for idx in 0..points.len() {
         insert_point(idx, points, &mut faces, &interior, front_eps);
     }
-    // Repair: a single pass is not robust on real meshes. Float predicates can
-    // leave a point a hair outside a near-parallel face, so a vertex can end up
-    // protruding past its own hull. Re-insert any point still outside until none
-    // remain, which restores convexity (and `simplified_hull` inflates by any
-    // residual besides, so containment is guaranteed either way).
-    for _ in 0..4 {
+    // Repair: a single insertion pass is not robust on real meshes. Float
+    // predicates can leave a point a hair outside a near-parallel face, so a
+    // vertex can end up protruding past its own hull. Re-insert every point
+    // still outside until none remain, which makes the hull genuinely convex and
+    // (since the points are what it is built from) guarantees it contains them
+    // to within `front_eps`. Erroring on non-convergence keeps a bad hull from
+    // silently under-containing the mesh downstream.
+    for round in 0.. {
         let outside: Vec<usize> = (0..points.len()).filter(|&i| faces.iter().any(|f| f.signed_distance(&points[i]) > front_eps)).collect();
         if outside.is_empty() {
             break;
+        }
+        if round == REPAIR_ROUNDS {
+            return Err(format!("convex hull did not converge in {REPAIR_ROUNDS} repair rounds, {} points still outside", outside.len()));
         }
         for idx in outside {
             insert_point(idx, points, &mut faces, &interior, front_eps);
@@ -514,9 +525,10 @@ mod tests {
         let RoundedHull { hull: simp, radius } = simplified_hull(&pts, 0.12).expect("simplified hull");
         assert!(simp.vertices.len() < exact.vertices.len(), "welding should drop vertices");
         assert!(radius > 0.0 && radius <= 0.12 * 3.0f64.sqrt() + 1e-9, "radius {radius} within a cell diagonal");
-        // Every original point within `radius` of the simplified hull (the
-        // per-face distance is a lower bound on the true distance to the hull,
-        // so this passes exactly when containment holds).
+        // Every original point within `radius` of the simplified hull by the
+        // per-face metric. That metric is a lower bound on the true distance, so
+        // this is a necessary check; the true-distance (GJK) containment test
+        // below is the sufficient one.
         let interior = Point3::from(simp.vertices.iter().fold(Vector3::zeros(), |a, v| a + v.coords) / simp.vertices.len() as f64);
         for p in &pts {
             let protrusion = simp
@@ -550,6 +562,24 @@ mod tests {
         }
         // The repair leaves the hull convex: its own vertices do not protrude.
         assert!(max_protrusion(&hull, &hull.vertices) < 1e-6, "hull not convex after repair");
+    }
+
+    #[test]
+    fn rounded_hull_contains_a_real_mesh_by_true_distance() {
+        // The checks above use the per-face plane metric, which is only a lower
+        // bound on the true distance to the hull. Verify containment with an
+        // independent, exact metric: the crate's own GJK, which gives the true
+        // distance from each mesh point to the rounded hull. A point inside the
+        // rounded hull reads a non-positive signed distance.
+        let raw = crate::stl::load_stl(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/meshes/link6_symp.stl")).expect("mesh");
+        let pts: Vec<Point3<f64>> = raw.iter().map(|v| pt(v.x * 0.001, v.y * 0.001, v.z * 0.001)).collect();
+        let RoundedHull { hull, radius } = simplified_hull(&pts, 0.004).expect("hull");
+        let body = crate::gjk::Hull::new(&hull, radius).expect("gjk hull");
+        for p in &pts {
+            let point = crate::gjk::Hull::new(&ConvexHull { vertices: vec![*p], faces: vec![] }, 0.0).expect("point");
+            let d = crate::gjk::distance(&point, &body).distance;
+            assert!(d <= 1e-9, "mesh point at true distance {d:+} lies outside the rounded hull (radius {radius})");
+        }
     }
 
     #[test]

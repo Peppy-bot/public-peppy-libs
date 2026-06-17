@@ -50,7 +50,10 @@ pub(crate) fn fit_bodies(urdf: &UrdfCollisions, chains: &[Vec<String>], meshes_d
         // pass below, which errors if it is not actually world-fixed. So such a
         // URDF fails construction loudly rather than being modeled wrong. OpenArm
         // has only single-link attachments; widen this to a recursive walk if a
-        // multi-link end-effector is added.
+        // multi-link end-effector is added. A mimic joint's own declared limits
+        // are used as its travel; the mimic multiplier/offset are not resolved,
+        // which is sound only while those limits already cover the true travel
+        // (true on OpenArm, where the fingers mirror 1:1).
         let mut verts = urdf.link_vertices(name, meshes_dir)?;
         for child in urdf.children_of(name) {
             if chain_set.contains(child.as_str()) || urdf.collisions_of(&child).is_empty() {

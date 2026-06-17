@@ -483,6 +483,39 @@ mod tests {
         assert!(p.distance >= 0.02 - 1e-9, "rest min {:+.4} should clear d_safe", p.distance);
     }
 
+    #[test]
+    fn broadphase_min_matches_a_brute_force_scan() {
+        // The broadphase sorts pairs and stops early once the lower bound exceeds
+        // the running minimum. Pin that this never changes the answer: it must
+        // equal a full scan of every checked pair at every pose.
+        let mut m = model();
+        let pairs: Vec<(String, String)> = m.checked_pairs().iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let poses = [
+            ([0.0; ARM_DOF], [0.0; ARM_DOF]),
+            ([0.0, 0.0, 1.2, 0.4, 0.0, 0.0, 0.0], [0.0, 0.0, -1.2, 0.4, 0.0, 0.0, 0.0]),
+            ([-0.4, -0.1, 0.0, 0.5, 0.0, -0.3, 0.0], [0.4, 0.1, 0.0, 0.7, 0.0, -0.2, 0.0]),
+        ];
+        for (ql, qr) in poses {
+            let fast = m.min_distance(&ql, &qr).expect("query").distance;
+            let placed: HashMap<String, Vec<gjk::Hull>> = m
+                .world_pieces(&ql, &qr)
+                .expect("pieces")
+                .into_iter()
+                .map(|(name, ps)| {
+                    let hulls = ps
+                        .into_iter()
+                        .map(|p| gjk::Hull::new(&crate::hull::ConvexHull { vertices: p.vertices, faces: p.faces }, p.radius).expect("hull"))
+                        .collect();
+                    (name.to_string(), hulls)
+                })
+                .collect();
+            let slow = pairs.iter().fold(f64::INFINITY, |best, (a, b)| {
+                placed[a].iter().flat_map(|ha| placed[b].iter().map(move |hb| gjk::distance(ha, hb).distance)).fold(best, f64::min)
+            });
+            assert!((fast - slow).abs() < 1e-9, "broadphase {fast:+.6} != brute force {slow:+.6}");
+        }
+    }
+
     fn excluding(pairs: &[PairSpec]) -> Result<BimanualCollisionModel, String> {
         BimanualCollisionModel::new(URDF, MESHES, "openarm_left_link0", "openarm_right_link0", pairs)
     }

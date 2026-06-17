@@ -110,8 +110,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_an_empty_mesh() {
+        let v = parse_binary_stl(&stl_bytes(&[])).expect("zero facets is valid");
+        assert!(v.is_empty());
+    }
+
+    #[test]
     fn rejects_non_finite_vertices() {
-        let bytes = stl_bytes(&[[[f32::NAN, 0., 0.], [1., 0., 0.], [0., 1., 0.]]]);
-        assert!(parse_binary_stl(&bytes).is_err());
+        let nan = stl_bytes(&[[[f32::NAN, 0., 0.], [1., 0., 0.], [0., 1., 0.]]]);
+        assert!(parse_binary_stl(&nan).is_err());
+        let inf = stl_bytes(&[[[1., f32::INFINITY, 0.], [1., 0., 0.], [0., 1., 0.]]]);
+        assert!(parse_binary_stl(&inf).is_err());
     }
 }
