@@ -158,9 +158,6 @@ URDF collision entries
   walking each chain, attached children fold into their parents, and every
   remaining collision link must be world-fixed or construction fails loudly.
 
-The capsule approach this replaced is archived on the
-`archive/capsule-collision-model` branch.
-
 ## Checked pairs
 
 Which pairs are checked is structural and independent of the geometry. Two
@@ -303,7 +300,7 @@ cargo run --release --example visualize -- \
     --wireframes -o scene.html
 ```
 
-This writes a self-contained interactive page (three.js from a CDN). The solids
+This writes an interactive HTML scene you open in a browser. The solids
 are the true rounded collision surface: each piece's faces offset outward by the
 inflation radius, with cylinders along the edges and spheres at the vertices
 filling the fillets, which is the geometry the distance query actually measures
@@ -349,20 +346,23 @@ fixed bodies are currently baked in the world frame.
   list rather than proving it.
 - **Moving mounts.** A lift or torso axis would need the currently world-fixed
   bodies posed from a configuration like the arms, rather than baked once.
-
-## Reuse for other robots
-
-The "bimanual" and "SRS" assumptions are confined to `model.rs`: the two
-`srs_model::Arm` instances, the `q_left` and `q_right` query, the forward
-kinematics source, and the same-side and cross-arm pair rules. The `hull`, `gjk`,
-`governor`, `pairs`, `stl`, and `urdf_collision` modules carry no robot
-assumptions. A second topology does not need this crate generalized in place. The
-extraction is to lift those modules, plus the generic minimum-distance scan in
-`model.rs`, into a `collision_core` crate, leaving each robot crate to supply a
-way to pose its bodies from a configuration (today `srs_model::Arm`'s
-`link_pose_world`, the one hard dependency, behind a future `BodyPoser` trait) and
-its checked `PairSpec` list. This is deliberately not done with a single
-consumer: the second robot defines the seam.
+- **Tighter or caller-supplied hulls.** A concave body like the torso is wrapped
+  in a few convex pieces, and convex pieces bulge outward where the real shape is
+  concave, so an arm can read closer to the torso than it truly is (this is what
+  pulls the torso-vs-arm clearance down at rest). Two ways to tighten it: a better
+  concave decomposition, or letting the caller supply hand-authored hulls for
+  chosen bodies. The latter subsumes the decomposition question and fits the
+  existing `Support` design, and would skip the fit step for those bodies.
+- **Other robot topologies.** The "bimanual" and "SRS" assumptions are confined
+  to `model.rs`: the two `srs_model::Arm` instances, the `q_left`/`q_right` query,
+  the forward-kinematics source, and the same-side and cross-arm pair rules. The
+  `hull`, `gjk`, `governor`, `pairs`, `stl`, and `urdf_collision` modules carry no
+  robot assumptions. A second topology would lift those modules, plus the generic
+  minimum-distance scan in `model.rs`, into a `collision_core` crate, leaving each
+  robot crate to pose its bodies from a configuration (today
+  `srs_model::Arm::link_pose_world`, the one hard dependency, behind a future
+  `BodyPoser` trait) and supply its checked `PairSpec` list. Deliberately not done
+  with a single consumer: the second robot defines the seam.
 
 ## Testing
 
