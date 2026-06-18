@@ -188,6 +188,25 @@ impl Posed<'_> {
         crate::coriolis::torques(self, qdot)
     }
 
+    /// World-frame (URDF root) pose of segment `i`'s link frame: the link moved
+    /// by joint `i+1`, the frame URDF `<collision>`/`<visual>` origins of that
+    /// link are relative to. Both arms of a bimanual URDF share the root frame,
+    /// so poses from two `Arm`s compose directly (e.g. for collision checking).
+    pub fn link_pose_world(&self, i: usize) -> Isometry3<f64> {
+        self.joint_world(i)
+    }
+
+    /// URDF name of segment `i`'s link (the link moved by joint `i+1`), e.g.
+    /// `openarm_left_link3`. Keys per-link data such as collision geometry.
+    pub fn link_name(&self, i: usize) -> String {
+        self.fk.joint_nodes[i]
+            .link()
+            .as_ref()
+            .expect("revolute joint node has a link (validated at load)")
+            .name
+            .clone()
+    }
+
     /// World-frame revolute axis of joint `i`, re-expressed in the base frame. A
     /// revolute axis is invariant under its own angle, so rotating the local axis
     /// by the joint's world rotation is exact.
@@ -359,6 +378,42 @@ mod tests {
             (w - Vector3::new(0.0, 0.436, 0.1225)).norm() < 1e-3,
             "home EE {w:?} not at expected wrist center",
         );
+    }
+
+    #[test]
+    fn link_names_follow_fixture_naming() {
+        let mut fk = fk();
+        let posed = fk.at(&[0.0; ARM_DOF]);
+        for i in 0..ARM_DOF {
+            let expected = format!("openarm_left_link{}", i + 1);
+            assert_eq!(posed.link_name(i), expected);
+        }
+    }
+
+    #[test]
+    fn last_link_world_pose_matches_ee_pose_via_mount() {
+        // link_pose_world(6) is the tip link's world pose; ee_pose is the same
+        // pose re-expressed in the base frame, so they must agree through the
+        // fixed mount transform.
+        let mut fk = fk();
+        let q = [0.3, -0.4, 0.5, 0.6, -0.2, 0.1, 0.7];
+        let posed = fk.at(&q);
+        let via_mount = posed.base_from_world() * posed.link_pose_world(ARM_DOF - 1);
+        let ee = posed.ee_pose();
+        assert!((via_mount.translation.vector - ee.translation.vector).norm() < 1e-12);
+        assert!(via_mount.rotation.angle_to(&ee.rotation) < 1e-12);
+    }
+
+    #[test]
+    fn left_and_right_first_links_are_mirrored_in_world() {
+        // Both chains share the URDF root frame: at home, the two shoulder
+        // (link1) origins must mirror across the XZ plane at the mount offsets.
+        let mut left = crate::test_support::v1_fk("left");
+        let mut right = crate::test_support::v1_fk("right");
+        let l = left.at(&[0.0; ARM_DOF]).link_pose_world(0).translation.vector;
+        let r = right.at(&[0.0; ARM_DOF]).link_pose_world(0).translation.vector;
+        assert!((l - Vector3::new(0.0, 0.0935, 0.698)).norm() < 1e-6, "left shoulder at {l:?}");
+        assert!((r - Vector3::new(0.0, -0.0935, 0.698)).norm() < 1e-6, "right shoulder at {r:?}");
     }
 
     #[test]
