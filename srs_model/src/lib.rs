@@ -39,6 +39,7 @@ mod coriolis;
 mod fk;
 mod gravity;
 mod ik;
+mod jacobian;
 mod model;
 mod payload;
 
@@ -48,6 +49,14 @@ mod payload;
 pub use arm::Arm;
 pub use fk::Posed;
 pub use ik::{ArmAnglePolicy, Solution};
+
+/// Differential kinematics: the geometric [`Jacobian`] (read off a [`Posed`] view
+/// via [`Posed::jacobian`]) and its redundancy-aware inverses and helpers for
+/// velocity-level control.
+pub use jacobian::{
+    damped_pseudo_inverse, manipulability, null_space_projector, try_pseudo_inverse, Jacobian,
+    JacobianPinv,
+};
 
 /// Degrees of freedom of the arm. The URDF chain is validated against this at
 /// load (the closed-form arm-angle redundancy resolution is specific to 7 DOF).
