@@ -1,4 +1,4 @@
-"""Bridge configuration parsed from sim_bridge.json5, env vars, and daemon state."""
+"""Bridge configuration parsed from sim_bridge.json5 and env vars."""
 
 from __future__ import annotations
 
@@ -11,12 +11,13 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_DAEMON_STATE_PATH = Path.home() / ".peppy" / "daemon_state.json"
 _DEFAULT_MESSAGING_PORT = 7448
 _ENV_CONFIG_PATH = "PEPPY_BRIDGE_CONFIG_PATH"
 _ENV_NODE_NAME = "PEPPY_BRIDGE_NODE_NAME"
 _ENV_HOST = "PEPPY_BRIDGE_HOST"
 _ENV_PORT = "PEPPY_BRIDGE_PORT"
+# Core node name: the node resolves it via peppylib and passes it in here.
+_ENV_DAEMON_NODE = "PEPPY_BRIDGE_DAEMON_NODE"
 _ENV_PRIM_PATH = "PEPPY_BRIDGE_PRIM_PATH"
 _ENV_ROBOT_NAME = "PEPPY_BRIDGE_ROBOT_NAME"
 _ENV_STATES_TOPIC = "PEPPY_BRIDGE_STATES_TOPIC"
@@ -63,12 +64,11 @@ class BridgeConfig:
         resolved = path or Path(os.environ.get(_ENV_CONFIG_PATH, _DEFAULT_CONFIG_PATH))
         try:
             raw = _read_jsonc(resolved)
-            daemon_state = _read_daemon_state()
             return cls(
                 node_name=os.environ.get(_ENV_NODE_NAME, default_node_name),
                 host=os.environ.get(_ENV_HOST, "localhost"),
-                port=_resolve_port(daemon_state),
-                daemon_node=daemon_state.get("core_node_name", ""),
+                port=_resolve_port(),
+                daemon_node=os.environ.get(_ENV_DAEMON_NODE, ""),
                 publishers=[
                     PublisherEntry(
                         type=e["type"],
@@ -101,14 +101,13 @@ class BridgeConfig:
 
     @classmethod
     def from_env(cls, default_node_name: str = "sim") -> BridgeConfig:
-        daemon_state = _read_daemon_state()
         prim = os.environ.get(_ENV_PRIM_PATH, "")
         robot_name = os.environ.get(_ENV_ROBOT_NAME, "robot")
         return cls(
             node_name=os.environ.get(_ENV_NODE_NAME, default_node_name),
             host=os.environ.get(_ENV_HOST, "localhost"),
-            port=_resolve_port(daemon_state),
-            daemon_node=daemon_state.get("core_node_name", ""),
+            port=_resolve_port(),
+            daemon_node=os.environ.get(_ENV_DAEMON_NODE, ""),
             publishers=[
                 PublisherEntry(
                     type="joint_states",
@@ -128,34 +127,18 @@ class BridgeConfig:
         )
 
 
-def _resolve_port(daemon_state: dict[str, Any]) -> int:
+def _resolve_port() -> int:
     port_env = os.environ.get(_ENV_PORT, "").strip()
+    if not port_env:
+        return _DEFAULT_MESSAGING_PORT
     try:
-        return int(
-            port_env
-            if port_env
-            else daemon_state.get("messaging_port", _DEFAULT_MESSAGING_PORT)
-        )
+        return int(port_env)
     except (ValueError, TypeError):
         logger.warning(
             f"Invalid {_ENV_PORT} '{port_env}'"
             f" — using default {_DEFAULT_MESSAGING_PORT}"
         )
         return _DEFAULT_MESSAGING_PORT
-
-
-def _read_daemon_state() -> dict[str, Any]:
-    try:
-        return _read_jsonc(_DAEMON_STATE_PATH)
-    except FileNotFoundError:
-        logger.warning(
-            f"daemon_state.json not found at {_DAEMON_STATE_PATH}"
-            " — is the PeppyOS daemon running?"
-        )
-        return {}
-    except (json.JSONDecodeError, OSError):
-        logger.exception("Failed to read daemon_state.json")
-        return {}
 
 
 def _normalise_params(raw: Any, entry_type: str) -> dict[str, Any]:
