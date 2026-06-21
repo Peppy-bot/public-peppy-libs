@@ -7,6 +7,12 @@ description = "The peppyOS control library"
 license = "MIT OR Apache-2.0"
 readme = "Readme.md"
 
+# The package is published as `peppylib-rs`, but the importable crate stays
+# `peppylib` so dependents (e.g. peppylib-py) and the integration tests refer
+# to it as `peppylib`.
+[lib]
+name = "peppylib"
+
 [dependencies]
 pmi = { path = "../pmi-internal" }
 config = { path = "../config-internal" }
