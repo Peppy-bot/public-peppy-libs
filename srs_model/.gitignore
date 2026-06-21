@@ -2,7 +2,6 @@
 # will have compiled files and executables
 debug
 target
-scene*.html
 
 # Release artifacts
 /dist/

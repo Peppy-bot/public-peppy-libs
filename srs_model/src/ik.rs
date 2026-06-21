@@ -684,7 +684,7 @@ mod tests {
     use crate::fk::ForwardKinematics;
     use crate::test_support::{v1_fk, v1_model};
     use k::nalgebra::{Isometry3, UnitQuaternion};
-    use rand::Rng;
+    use rand::RngExt;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
@@ -693,7 +693,7 @@ mod tests {
     fn sample_q(rng: &mut StdRng, m: &ArmModel) -> JointVec {
         std::array::from_fn(|i| {
             let l = m.limits[i];
-            rng.gen_range(l.lo..l.hi)
+            rng.random_range(l.lo..l.hi)
         })
     }
 

@@ -318,7 +318,7 @@ fn reindex(points: &[Point3<f64>], faces: &[Face]) -> ConvexHull {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     fn pt(x: f64, y: f64, z: f64) -> Point3<f64> {
         Point3::new(x, y, z)
@@ -394,7 +394,7 @@ mod tests {
         // Pile of interior points that must not become vertices.
         let mut rng = rand::rngs::StdRng::seed_from_u64(5);
         for _ in 0..200 {
-            pts.push(pt(rng.gen_range(0.05..0.3), rng.gen_range(0.05..0.3), rng.gen_range(0.05..0.3)));
+            pts.push(pt(rng.random_range(0.05..0.3), rng.random_range(0.05..0.3), rng.random_range(0.05..0.3)));
         }
         let hull = convex_hull(&pts).expect("hull");
         assert_eq!(hull.vertices.len(), 5, "only the five extreme points are vertices");
@@ -405,7 +405,7 @@ mod tests {
         let mut rng = rand::rngs::StdRng::seed_from_u64(9);
         for _ in 0..20 {
             let pts: Vec<_> = (0..300)
-                .map(|_| pt(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+                .map(|_| pt(rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0)))
                 .collect();
             let hull = convex_hull(&pts).expect("hull");
             let center = Point3::from(pts.iter().fold(Vector3::zeros(), |a, p| a + p.coords) / pts.len() as f64);

@@ -15,7 +15,7 @@ mod common;
 
 use srs_model::ArmAnglePolicy;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 /// Joint-4 floor that keeps targets off the straight-arm singularity, where the
 /// arm angle is geometrically undefined and a miss is expected, not a defect.
@@ -28,7 +28,7 @@ fn from_seed_solves_every_reachable_target_from_a_bad_seed() {
         let mut rng = StdRng::seed_from_u64(0xBEEF);
         let lim = arm.limits();
         let sample = |rng: &mut StdRng| -> [f64; 7] {
-            std::array::from_fn(|i| rng.gen_range(lim[i].lo..lim[i].hi))
+            std::array::from_fn(|i| rng.random_range(lim[i].lo..lim[i].hi))
         };
 
         let (mut miss, mut solved) = (0u32, 0u32);

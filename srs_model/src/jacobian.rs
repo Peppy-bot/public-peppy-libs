@@ -160,12 +160,12 @@ mod tests {
     use crate::test_support::v1_fk;
     use crate::JointVec;
     use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     /// Uniform in-limit joint sample (mirrors the IK tests' sampler).
     fn sample_q(rng: &mut StdRng, fk: &ForwardKinematics) -> JointVec {
         let limits = fk.limits();
-        std::array::from_fn(|i| rng.gen_range(limits[i].lo..limits[i].hi))
+        std::array::from_fn(|i| rng.random_range(limits[i].lo..limits[i].hi))
     }
 
     /// EE twist between two configurations by central finite difference: the linear
