@@ -7,18 +7,6 @@ use std::process::Command;
 use crate::command::run_command_streaming;
 use crate::fs::{CleanupDir, acquire_file_lock};
 
-/// Returns the Rust target triple for the current build.
-///
-/// Must be called from a build script. It reads the `TARGET` environment
-/// variable, which cargo only sets while running `build.rs`. The read
-/// `expect()`s on purpose: the variable's absence means the function was
-/// called outside that context, which is a programming error rather than a
-/// recoverable runtime condition.
-pub fn build_target_triple() -> String {
-    std::env::var("TARGET")
-        .expect("TARGET not set; build_target_triple must be called from a build script")
-}
-
 /// Embed the `PEPPY_GIT_TAG` environment variable into the binary at compile time.
 ///
 /// If `PEPPY_GIT_TAG` is set and non-empty (by build_release.sh), emits a
@@ -157,8 +145,7 @@ fn cargo_install_binary_with(
         .env("CARGO_TARGET_DIR", &cargo_target_dir);
 
     let label = format!("cargo-install-{name}");
-    let output = run_command_streaming(&mut cmd, &label);
-    if !output.success {
+    if !run_command_streaming(&mut cmd, &label) {
         return None;
     }
 
