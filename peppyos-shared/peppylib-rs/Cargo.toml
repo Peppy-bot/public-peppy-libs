@@ -3,6 +3,7 @@ name = "peppylib-rs"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+publish = false
 homepage = "https://dev.peppy.bot"
 description = "The peppyOS control library"
 license = "MIT OR Apache-2.0"

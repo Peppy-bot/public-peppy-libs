@@ -3,6 +3,7 @@ name = "peppylib-py"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+publish = false
 
 [lib]
 name = "_peppylib"

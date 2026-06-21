@@ -1,8 +1,11 @@
 # Workspace root for the peppyOS shared crates.
 #
-# Public surface: only `peppylib-rs` (Rust, imported as `peppylib`) and
-# `peppylib-py` (Python wheel built by maturin) are meant for downstream users.
-# The remaining members are internal and carry `publish = false`.
+# Distribution: these crates are consumed downstream via git (tags), not
+# crates.io. The public surface for downstream users is `peppylib-rs` (Rust,
+# imported as `peppylib`), `peppylib-py` (Python wheel built by maturin), and
+# `core-node-api`; the remaining members are internal. Every member carries
+# `publish = false` so an accidental `cargo publish` can't push any of them to
+# crates.io (git/path dependencies ignore the flag, so consumers are unaffected).
 [workspace]
 resolver = "2"
 members = [
