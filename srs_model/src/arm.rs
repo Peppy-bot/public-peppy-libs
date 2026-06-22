@@ -93,7 +93,10 @@ impl Arm {
 mod tests {
     use super::*;
 
-    const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/openarm_v10.urdf");
+    const FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/openarm_v10.urdf"
+    );
 
     #[test]
     fn from_urdf_file_loads_and_reports_limits() {
@@ -113,6 +116,9 @@ mod tests {
             Ok(_) => panic!("expected an error for a missing path"),
             Err(e) => e,
         };
-        assert!(err.contains("/no/such/file.urdf"), "error should name the path: {err}");
+        assert!(
+            err.contains("/no/such/file.urdf"),
+            "error should name the path: {err}"
+        );
     }
 }

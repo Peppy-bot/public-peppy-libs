@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use srs_model::nalgebra::Point3;
 
 use crate::gjk::{self, Hull};
-use crate::hull::{convex_hull, simplified_hull, ConvexHull, ConvexPiece};
+use crate::hull::{ConvexHull, ConvexPiece, convex_hull, simplified_hull};
 use crate::urdf_collision::UrdfCollisions;
 
 /// Grid cell for hull simplification: points are welded onto this grid before
@@ -69,10 +69,16 @@ pub(crate) fn fit_bodies(
             if chain_set.contains(child.as_str()) || urdf.collisions_of(&child).is_empty() {
                 continue;
             }
-            let joint = urdf.parent_joint(&child).expect("children_of implies a parent joint");
+            let joint = urdf
+                .parent_joint(&child)
+                .expect("children_of implies a parent joint");
             verts.extend(urdf.child_vertices_in_parent(&child, joint.lower_limit, meshes_dir)?);
             if !joint.is_fixed() {
-                verts.extend(urdf.child_vertices_in_parent(&child, joint.upper_limit, meshes_dir)?);
+                verts.extend(urdf.child_vertices_in_parent(
+                    &child,
+                    joint.upper_limit,
+                    meshes_dir,
+                )?);
             }
             attached.insert(child);
         }
@@ -94,7 +100,9 @@ pub(crate) fn fit_bodies(
     }
 
     if let Some(unknown) = supplied.keys().find(|k| !body_names.contains(*k)) {
-        return Err(format!("supplied hulls name '{unknown}', which is not a collision body"));
+        return Err(format!(
+            "supplied hulls name '{unknown}', which is not a collision body"
+        ));
     }
 
     Ok(FittedBodies { fixed, links })
@@ -102,13 +110,19 @@ pub(crate) fn fit_bodies(
 
 /// The hulls for one body: the caller's supplied pieces if any (verified to
 /// contain the mesh), otherwise a single simplified hull of the vertex cloud.
-fn fit_body(name: &str, verts: &[Point3<f64>], supplied: &HashMap<String, Vec<ConvexPiece>>) -> Result<Vec<Hull>, String> {
+fn fit_body(
+    name: &str,
+    verts: &[Point3<f64>],
+    supplied: &HashMap<String, Vec<ConvexPiece>>,
+) -> Result<Vec<Hull>, String> {
     let Some(pieces) = supplied.get(name) else {
         let rounded = simplified_hull(verts, SIMPLIFY_CELL)?;
         return Ok(vec![Hull::new(&rounded.hull, rounded.radius)?]);
     };
     if pieces.is_empty() {
-        return Err(format!("supplied hulls for '{name}' is empty; provide at least one piece"));
+        return Err(format!(
+            "supplied hulls for '{name}' is empty; provide at least one piece"
+        ));
     }
     let mut hulls = Vec::with_capacity(pieces.len());
     for piece in pieces {
@@ -129,7 +143,9 @@ fn fit_body(name: &str, verts: &[Point3<f64>], supplied: &HashMap<String, Vec<Co
 fn verify_contains(name: &str, hulls: &[Hull], verts: &[Point3<f64>]) -> Result<(), String> {
     for v in verts {
         if !inside_union(hulls, v)? {
-            return Err(format!("supplied hulls for '{name}' do not contain its mesh: a vertex lies outside every piece"));
+            return Err(format!(
+                "supplied hulls for '{name}' do not contain its mesh: a vertex lies outside every piece"
+            ));
         }
     }
     for tri in verts.chunks_exact(3) {
@@ -138,7 +154,9 @@ fn verify_contains(name: &str, hulls: &[Hull], verts: &[Point3<f64>]) -> Result<
             continue;
         }
         if !face_in_union(hulls, &t)? {
-            return Err(format!("supplied hulls for '{name}' do not contain its mesh: a face escapes the union of pieces"));
+            return Err(format!(
+                "supplied hulls for '{name}' do not contain its mesh: a face escapes the union of pieces"
+            ));
         }
     }
     Ok(())
@@ -163,7 +181,9 @@ fn inside_union(hulls: &[Hull], v: &Point3<f64>) -> Result<bool, String> {
 /// that falls entirely in one piece stops immediately.
 fn face_in_union(hulls: &[Hull], t: &[Point3<f64>; 3]) -> Result<bool, String> {
     for h in hulls {
-        if t.iter().try_fold(true, |acc, v| Ok::<_, String>(acc && inside(h, v)?))? {
+        if t.iter()
+            .try_fold(true, |acc, v| Ok::<_, String>(acc && inside(h, v)?))?
+        {
             return Ok(true);
         }
     }
@@ -172,7 +192,12 @@ fn face_in_union(hulls: &[Hull], t: &[Point3<f64>; 3]) -> Result<bool, String> {
     }
     let mid = |a: &Point3<f64>, b: &Point3<f64>| Point3::from((a.coords + b.coords) / 2.0);
     let (m01, m12, m20) = (mid(&t[0], &t[1]), mid(&t[1], &t[2]), mid(&t[2], &t[0]));
-    let subs = [[t[0], m01, m20], [m01, t[1], m12], [m20, m12, t[2]], [m01, m12, m20]];
+    let subs = [
+        [t[0], m01, m20],
+        [m01, t[1], m12],
+        [m20, m12, t[2]],
+        [m01, m12, m20],
+    ];
     for s in &subs {
         if !face_in_union(hulls, s)? {
             return Ok(false);
@@ -183,13 +208,25 @@ fn face_in_union(hulls: &[Hull], t: &[Point3<f64>; 3]) -> Result<bool, String> {
 
 /// Whether point `v` lies inside hull `h` (within [`CONTAIN_TOL`]).
 fn inside(h: &Hull, v: &Point3<f64>) -> Result<bool, String> {
-    let point = Hull::new(&ConvexHull { vertices: vec![*v], faces: Vec::new() }, 0.0)?;
+    let point = Hull::new(
+        &ConvexHull {
+            vertices: vec![*v],
+            faces: Vec::new(),
+        },
+        0.0,
+    )?;
     Ok(gjk::distance(&point, h).distance <= CONTAIN_TOL)
 }
 
 /// The longest of the triangle's three edges (metres).
 fn longest_edge(t: &[Point3<f64>; 3]) -> f64 {
-    [(t[1] - t[0]).norm(), (t[2] - t[1]).norm(), (t[0] - t[2]).norm()].into_iter().fold(0.0, f64::max)
+    [
+        (t[1] - t[0]).norm(),
+        (t[2] - t[1]).norm(),
+        (t[0] - t[2]).norm(),
+    ]
+    .into_iter()
+    .fold(0.0, f64::max)
 }
 
 /// The triangle's smallest altitude (`2 * area / longest edge`): near zero for a
@@ -222,35 +259,57 @@ mod tests {
 
     /// Two boxes with an empty gap in z, the case a vertex-only check gets wrong.
     fn split_pieces() -> [Hull; 2] {
-        [box_hull([-0.05, -0.05, 0.0], [0.05, 0.05, 0.1]), box_hull([-0.05, -0.05, 0.2], [0.05, 0.05, 0.3])]
+        [
+            box_hull([-0.05, -0.05, 0.0], [0.05, 0.05, 0.1]),
+            box_hull([-0.05, -0.05, 0.2], [0.05, 0.05, 0.3]),
+        ]
     }
 
     #[test]
     fn a_real_face_bridging_the_gap_is_rejected() {
         // Corners land in the two pieces, but the face slopes through the gap.
-        let verts = vec![Point3::new(0.0, 0.0, 0.05), Point3::new(0.04, 0.0, 0.25), Point3::new(-0.04, 0.0, 0.25)];
-        let e = verify_contains("t", &split_pieces(), &verts).expect_err("bridging face must be rejected");
+        let verts = vec![
+            Point3::new(0.0, 0.0, 0.05),
+            Point3::new(0.04, 0.0, 0.25),
+            Point3::new(-0.04, 0.0, 0.25),
+        ];
+        let e = verify_contains("t", &split_pieces(), &verts)
+            .expect_err("bridging face must be rejected");
         assert!(e.contains("face escapes"), "{e}");
     }
 
     #[test]
     fn a_degenerate_sliver_across_the_gap_is_skipped() {
         // Collinear: no surface to contain, only its (contained) corners matter.
-        let verts = vec![Point3::new(0.0, 0.0, 0.05), Point3::new(0.0, 0.0, 0.25), Point3::new(0.0, 0.0, 0.28)];
-        verify_contains("t", &split_pieces(), &verts).expect("a sliver is skipped when its corners are contained");
+        let verts = vec![
+            Point3::new(0.0, 0.0, 0.05),
+            Point3::new(0.0, 0.0, 0.25),
+            Point3::new(0.0, 0.0, 0.28),
+        ];
+        verify_contains("t", &split_pieces(), &verts)
+            .expect("a sliver is skipped when its corners are contained");
     }
 
     #[test]
     fn a_vertex_outside_every_piece_is_rejected() {
-        let verts = vec![Point3::new(0.0, 0.0, 0.05), Point3::new(0.0, 0.0, 0.15), Point3::new(0.0, 0.0, 0.25)];
-        let e = verify_contains("t", &split_pieces(), &verts).expect_err("a gap vertex must be rejected");
+        let verts = vec![
+            Point3::new(0.0, 0.0, 0.05),
+            Point3::new(0.0, 0.0, 0.15),
+            Point3::new(0.0, 0.0, 0.25),
+        ];
+        let e = verify_contains("t", &split_pieces(), &verts)
+            .expect_err("a gap vertex must be rejected");
         assert!(e.contains("vertex lies outside"), "{e}");
     }
 
     #[test]
     fn a_face_inside_one_piece_passes() {
         let tall = [box_hull([-0.05, -0.05, 0.0], [0.05, 0.05, 0.3])];
-        let verts = vec![Point3::new(0.0, 0.0, 0.05), Point3::new(0.04, 0.0, 0.25), Point3::new(-0.04, 0.0, 0.25)];
+        let verts = vec![
+            Point3::new(0.0, 0.0, 0.05),
+            Point3::new(0.04, 0.0, 0.25),
+            Point3::new(-0.04, 0.0, 0.25),
+        ];
         verify_contains("t", &tall, &verts).expect("a face within one piece is contained");
     }
 }

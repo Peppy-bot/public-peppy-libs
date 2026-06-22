@@ -82,12 +82,18 @@ pub fn convex_hull(points: &[Point3<f64>]) -> Result<ConvexHull, String> {
 /// shrink-then-inflate margin trick).
 pub fn simplified_hull(points: &[Point3<f64>], cell: f64) -> Result<RoundedHull, String> {
     if !(cell.is_finite() && cell > 0.0) {
-        return Err(format!("simplification cell must be finite and positive, got {cell}"));
+        return Err(format!(
+            "simplification cell must be finite and positive, got {cell}"
+        ));
     }
     let mut reps: HashMap<[i64; 3], Point3<f64>> = HashMap::new();
     let mut weld = 0.0_f64;
     for p in points {
-        let key = [(p.x / cell).floor() as i64, (p.y / cell).floor() as i64, (p.z / cell).floor() as i64];
+        let key = [
+            (p.x / cell).floor() as i64,
+            (p.y / cell).floor() as i64,
+            (p.z / cell).floor() as i64,
+        ];
         match reps.entry(key) {
             std::collections::hash_map::Entry::Vacant(e) => {
                 e.insert(*p);
@@ -111,11 +117,20 @@ pub fn simplified_hull(points: &[Point3<f64>], cell: f64) -> Result<RoundedHull,
 /// Outward face planes (unit normal, plane offset) of a hull, oriented away from
 /// the vertex centroid (interior to a convex hull).
 fn face_planes(hull: &ConvexHull) -> Vec<(Vector3<f64>, f64)> {
-    let interior = Point3::from(hull.vertices.iter().fold(Vector3::zeros(), |a, v| a + v.coords) / hull.vertices.len() as f64);
+    let interior = Point3::from(
+        hull.vertices
+            .iter()
+            .fold(Vector3::zeros(), |a, v| a + v.coords)
+            / hull.vertices.len() as f64,
+    );
     hull.faces
         .iter()
         .filter_map(|f| {
-            let (a, b, c) = (hull.vertices[f[0]], hull.vertices[f[1]], hull.vertices[f[2]]);
+            let (a, b, c) = (
+                hull.vertices[f[0]],
+                hull.vertices[f[1]],
+                hull.vertices[f[2]],
+            );
             let n = (b - a).cross(&(c - a));
             if n.norm_squared() <= DEGEN_EPS2 {
                 return None;
@@ -135,7 +150,13 @@ fn max_protrusion(hull: &ConvexHull, points: &[Point3<f64>]) -> f64 {
     let planes = face_planes(hull);
     points
         .iter()
-        .map(|p| planes.iter().map(|(n, off)| n.dot(&p.coords) - off).fold(f64::NEG_INFINITY, f64::max).max(0.0))
+        .map(|p| {
+            planes
+                .iter()
+                .map(|(n, off)| n.dot(&p.coords) - off)
+                .fold(f64::NEG_INFINITY, f64::max)
+                .max(0.0)
+        })
         .fold(0.0, f64::max)
 }
 
@@ -182,15 +203,27 @@ fn build_hull(points: &[Point3<f64>], front_eps: f64) -> Result<ConvexHull, Stri
     // HashMap of grid cells) happened to order it. Construction is then
     // reproducible run to run.
     let mut sorted = points.to_vec();
-    sorted.sort_by(|p, q| p.x.total_cmp(&q.x).then_with(|| p.y.total_cmp(&q.y)).then_with(|| p.z.total_cmp(&q.z)));
+    sorted.sort_by(|p, q| {
+        p.x.total_cmp(&q.x)
+            .then_with(|| p.y.total_cmp(&q.y))
+            .then_with(|| p.z.total_cmp(&q.z))
+    });
     let points: &[Point3<f64>] = &sorted;
 
     let seed = initial_tetrahedron(points)?;
-    let interior = seed.iter().fold(Vector3::zeros(), |acc, &i| acc + points[i].coords) / 4.0;
+    let interior = seed
+        .iter()
+        .fold(Vector3::zeros(), |acc, &i| acc + points[i].coords)
+        / 4.0;
     let interior = Point3::from(interior);
 
     let mut faces: Vec<Face> = Vec::new();
-    for &[i, j, k] in &[[seed[0], seed[1], seed[2]], [seed[0], seed[1], seed[3]], [seed[0], seed[2], seed[3]], [seed[1], seed[2], seed[3]]] {
+    for &[i, j, k] in &[
+        [seed[0], seed[1], seed[2]],
+        [seed[0], seed[1], seed[3]],
+        [seed[0], seed[2], seed[3]],
+        [seed[1], seed[2], seed[3]],
+    ] {
         if let Some(f) = make_face(i, j, k, points, &interior) {
             faces.push(f);
         }
@@ -207,12 +240,21 @@ fn build_hull(points: &[Point3<f64>], front_eps: f64) -> Result<ConvexHull, Stri
     // to within `front_eps`. Erroring on non-convergence keeps a bad hull from
     // silently under-containing the mesh downstream.
     for round in 0.. {
-        let outside: Vec<usize> = (0..points.len()).filter(|&i| faces.iter().any(|f| f.signed_distance(&points[i]) > front_eps)).collect();
+        let outside: Vec<usize> = (0..points.len())
+            .filter(|&i| {
+                faces
+                    .iter()
+                    .any(|f| f.signed_distance(&points[i]) > front_eps)
+            })
+            .collect();
         if outside.is_empty() {
             break;
         }
         if round == REPAIR_ROUNDS {
-            return Err(format!("convex hull did not converge in {REPAIR_ROUNDS} repair rounds, {} points still outside", outside.len()));
+            return Err(format!(
+                "convex hull did not converge in {REPAIR_ROUNDS} repair rounds, {} points still outside",
+                outside.len()
+            ));
         }
         for idx in outside {
             insert_point(idx, points, &mut faces, &interior, front_eps);
@@ -224,15 +266,31 @@ fn build_hull(points: &[Point3<f64>], front_eps: f64) -> Result<ConvexHull, Stri
 
 /// Fold one point into the hull: delete the faces it can see, then stitch it to
 /// the horizon they leave behind. A no-op if the point is already inside.
-fn insert_point(idx: usize, points: &[Point3<f64>], faces: &mut Vec<Face>, interior: &Point3<f64>, front_eps: f64) {
+fn insert_point(
+    idx: usize,
+    points: &[Point3<f64>],
+    faces: &mut Vec<Face>,
+    interior: &Point3<f64>,
+    front_eps: f64,
+) {
     let p = &points[idx];
-    let visible: Vec<usize> = faces.iter().enumerate().filter(|(_, f)| f.signed_distance(p) > front_eps).map(|(i, _)| i).collect();
+    let visible: Vec<usize> = faces
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.signed_distance(p) > front_eps)
+        .map(|(i, _)| i)
+        .collect();
     if visible.is_empty() {
         return;
     }
     let horizon = horizon_edges(faces, &visible);
     let dropped: std::collections::HashSet<usize> = visible.into_iter().collect();
-    *faces = std::mem::take(faces).into_iter().enumerate().filter(|(i, _)| !dropped.contains(i)).map(|(_, f)| f).collect();
+    *faces = std::mem::take(faces)
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !dropped.contains(i))
+        .map(|(_, f)| f)
+        .collect();
     for (a, b) in horizon {
         if let Some(f) = make_face(a, b, idx, points, interior) {
             faces.push(f);
@@ -247,15 +305,27 @@ fn horizon_edges(faces: &[Face], visible: &[usize]) -> Vec<(usize, usize)> {
     for &fi in visible {
         let v = faces[fi].v;
         for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
-            *count.entry(if a < b { (a, b) } else { (b, a) }).or_insert(0) += 1;
+            *count
+                .entry(if a < b { (a, b) } else { (b, a) })
+                .or_insert(0) += 1;
         }
     }
-    count.into_iter().filter(|&(_, c)| c == 1).map(|(e, _)| e).collect()
+    count
+        .into_iter()
+        .filter(|&(_, c)| c == 1)
+        .map(|(e, _)| e)
+        .collect()
 }
 
 /// A face on `i, j, k`, its normal flipped to point away from `interior`.
 /// `None` if the three points are collinear (zero area).
-fn make_face(i: usize, j: usize, k: usize, points: &[Point3<f64>], interior: &Point3<f64>) -> Option<Face> {
+fn make_face(
+    i: usize,
+    j: usize,
+    k: usize,
+    points: &[Point3<f64>],
+    interior: &Point3<f64>,
+) -> Option<Face> {
     let n = (points[j] - points[i]).cross(&(points[k] - points[i]));
     if n.norm_squared() <= DEGEN_EPS2 {
         return None;
@@ -264,22 +334,33 @@ fn make_face(i: usize, j: usize, k: usize, points: &[Point3<f64>], interior: &Po
     if normal.dot(&(interior - points[i])) > 0.0 {
         normal = -normal;
     }
-    Some(Face { v: [i, j, k], normal, offset: normal.dot(&points[i].coords) })
+    Some(Face {
+        v: [i, j, k],
+        normal,
+        offset: normal.dot(&points[i].coords),
+    })
 }
 
 /// Four affinely independent seed points: an extreme point, the farthest from
 /// it, the farthest from that line, the farthest from that plane.
 fn initial_tetrahedron(points: &[Point3<f64>]) -> Result<[usize; 4], String> {
     if points.len() < 4 {
-        return Err(format!("a hull needs at least four points, got {}", points.len()));
+        return Err(format!(
+            "a hull needs at least four points, got {}",
+            points.len()
+        ));
     }
-    let i0 = (0..points.len()).max_by(|&a, &b| points[a].x.total_cmp(&points[b].x)).expect("nonempty");
-    let i1 = farthest(points, |p| (p - points[i0]).norm_squared()).ok_or("cloud is a single point")?;
+    let i0 = (0..points.len())
+        .max_by(|&a, &b| points[a].x.total_cmp(&points[b].x))
+        .expect("nonempty");
+    let i1 =
+        farthest(points, |p| (p - points[i0]).norm_squared()).ok_or("cloud is a single point")?;
     let axis = points[i1] - points[i0];
     if axis.norm_squared() <= DEGEN_EPS2 {
         return Err("cloud is a single point".into());
     }
-    let i2 = farthest(points, |p| (p - points[i0]).cross(&axis).norm_squared()).ok_or("collinear cloud")?;
+    let i2 = farthest(points, |p| (p - points[i0]).cross(&axis).norm_squared())
+        .ok_or("collinear cloud")?;
     let normal = (points[i1] - points[i0]).cross(&(points[i2] - points[i0]));
     if normal.norm_squared() <= DEGEN_EPS2 {
         return Err("collinear cloud has no hull".into());
@@ -294,7 +375,9 @@ fn initial_tetrahedron(points: &[Point3<f64>]) -> Result<[usize; 4], String> {
 /// Index of the point maximizing `score`, or `None` if every score is zero
 /// (the cloud is degenerate along this measure).
 fn farthest(points: &[Point3<f64>], score: impl Fn(&Point3<f64>) -> f64) -> Option<usize> {
-    let (idx, best) = (0..points.len()).map(|i| (i, score(&points[i]))).max_by(|a, b| a.1.total_cmp(&b.1))?;
+    let (idx, best) = (0..points.len())
+        .map(|i| (i, score(&points[i])))
+        .max_by(|a, b| a.1.total_cmp(&b.1))?;
     if best <= DEGEN_EPS2 { None } else { Some(idx) }
 }
 
@@ -312,13 +395,16 @@ fn reindex(points: &[Point3<f64>], faces: &[Face]) -> ConvexHull {
         });
         out_faces.push(tri);
     }
-    ConvexHull { vertices, faces: out_faces }
+    ConvexHull {
+        vertices,
+        faces: out_faces,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     fn pt(x: f64, y: f64, z: f64) -> Point3<f64> {
         Point3::new(x, y, z)
@@ -327,7 +413,11 @@ mod tests {
     fn contains(hull: &ConvexHull, p: &Point3<f64>, interior: &Point3<f64>) -> bool {
         // Inside iff behind every face plane (normals point outward).
         hull.faces.iter().all(|tri| {
-            let (a, b, c) = (hull.vertices[tri[0]], hull.vertices[tri[1]], hull.vertices[tri[2]]);
+            let (a, b, c) = (
+                hull.vertices[tri[0]],
+                hull.vertices[tri[1]],
+                hull.vertices[tri[2]],
+            );
             let mut n = (b - a).cross(&(c - a));
             if n.dot(&(interior - a)) > 0.0 {
                 n = -n;
@@ -374,12 +464,26 @@ mod tests {
         let hull = convex_hull(&pts).expect("grid hull");
         let center = pt(0.5, 0.5, 0.5);
         for p in &pts {
-            assert!(contains(&hull, p, &center), "grid point {p:?} escaped the hull");
+            assert!(
+                contains(&hull, p, &center),
+                "grid point {p:?} escaped the hull"
+            );
         }
-        for corner in [pt(0.0, 0.0, 0.0), pt(1.0, 1.0, 1.0), pt(1.0, 0.0, 1.0), pt(0.0, 1.0, 0.0)] {
-            assert!(hull.vertices.iter().any(|v| (v - corner).norm() < 1e-9), "corner {corner:?} missing");
+        for corner in [
+            pt(0.0, 0.0, 0.0),
+            pt(1.0, 1.0, 1.0),
+            pt(1.0, 0.0, 1.0),
+            pt(0.0, 1.0, 0.0),
+        ] {
+            assert!(
+                hull.vertices.iter().any(|v| (v - corner).norm() < 1e-9),
+                "corner {corner:?} missing"
+            );
         }
-        assert!(hull.vertices.len() < pts.len(), "hull should compress the cloud");
+        assert!(
+            hull.vertices.len() < pts.len(),
+            "hull should compress the cloud"
+        );
     }
 
     #[test]
@@ -394,10 +498,18 @@ mod tests {
         // Pile of interior points that must not become vertices.
         let mut rng = rand::rngs::StdRng::seed_from_u64(5);
         for _ in 0..200 {
-            pts.push(pt(rng.gen_range(0.05..0.3), rng.gen_range(0.05..0.3), rng.gen_range(0.05..0.3)));
+            pts.push(pt(
+                rng.random_range(0.05..0.3),
+                rng.random_range(0.05..0.3),
+                rng.random_range(0.05..0.3),
+            ));
         }
         let hull = convex_hull(&pts).expect("hull");
-        assert_eq!(hull.vertices.len(), 5, "only the five extreme points are vertices");
+        assert_eq!(
+            hull.vertices.len(),
+            5,
+            "only the five extreme points are vertices"
+        );
     }
 
     #[test]
@@ -405,15 +517,29 @@ mod tests {
         let mut rng = rand::rngs::StdRng::seed_from_u64(9);
         for _ in 0..20 {
             let pts: Vec<_> = (0..300)
-                .map(|_| pt(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+                .map(|_| {
+                    pt(
+                        rng.random_range(-1.0..1.0),
+                        rng.random_range(-1.0..1.0),
+                        rng.random_range(-1.0..1.0),
+                    )
+                })
                 .collect();
             let hull = convex_hull(&pts).expect("hull");
-            let center = Point3::from(pts.iter().fold(Vector3::zeros(), |a, p| a + p.coords) / pts.len() as f64);
+            let center = Point3::from(
+                pts.iter().fold(Vector3::zeros(), |a, p| a + p.coords) / pts.len() as f64,
+            );
             for p in &pts {
-                assert!(contains(&hull, p, &center), "a cloud point escaped its own hull");
+                assert!(
+                    contains(&hull, p, &center),
+                    "a cloud point escaped its own hull"
+                );
             }
             // A random cloud hull is far smaller than the cloud.
-            assert!(hull.vertices.len() < pts.len(), "hull should compress the cloud");
+            assert!(
+                hull.vertices.len() < pts.len(),
+                "hull should compress the cloud"
+            );
         }
     }
 
@@ -428,12 +554,18 @@ mod tests {
             pts.push(pt(r * phi.cos(), r * phi.sin(), z));
         }
         let hull = convex_hull(&pts).expect("sphere hull");
-        assert_eq!(hull.vertices.len(), pts.len(), "all sphere points are extreme");
+        assert_eq!(
+            hull.vertices.len(),
+            pts.len(),
+            "all sphere points are extreme"
+        );
     }
 
     #[test]
     fn rejects_a_coplanar_cloud() {
-        let flat: Vec<_> = (0..10).flat_map(|i| (0..10).map(move |j| pt(i as f64, j as f64, 0.0))).collect();
+        let flat: Vec<_> = (0..10)
+            .flat_map(|i| (0..10).map(move |j| pt(i as f64, j as f64, 0.0)))
+            .collect();
         assert!(convex_hull(&flat).is_err(), "a flat cloud has no volume");
     }
 
@@ -449,20 +581,36 @@ mod tests {
             pts.push(pt(r * phi.cos(), r * phi.sin(), z));
         }
         let exact = convex_hull(&pts).expect("exact hull");
-        let RoundedHull { hull: simp, radius } = simplified_hull(&pts, 0.12).expect("simplified hull");
-        assert!(simp.vertices.len() < exact.vertices.len(), "welding should drop vertices");
-        assert!(radius > 0.0 && radius <= 0.12 * 3.0f64.sqrt() + 1e-9, "radius {radius} within a cell diagonal");
+        let RoundedHull { hull: simp, radius } =
+            simplified_hull(&pts, 0.12).expect("simplified hull");
+        assert!(
+            simp.vertices.len() < exact.vertices.len(),
+            "welding should drop vertices"
+        );
+        assert!(
+            radius > 0.0 && radius <= 0.12 * 3.0f64.sqrt() + 1e-9,
+            "radius {radius} within a cell diagonal"
+        );
         // Every original point within `radius` of the simplified hull by the
         // per-face metric. That metric is a lower bound on the true distance, so
         // this is a necessary check; the true-distance (GJK) containment test
         // below is the sufficient one.
-        let interior = Point3::from(simp.vertices.iter().fold(Vector3::zeros(), |a, v| a + v.coords) / simp.vertices.len() as f64);
+        let interior = Point3::from(
+            simp.vertices
+                .iter()
+                .fold(Vector3::zeros(), |a, v| a + v.coords)
+                / simp.vertices.len() as f64,
+        );
         for p in &pts {
             let protrusion = simp
                 .faces
                 .iter()
                 .map(|f| {
-                    let (a, b, c) = (simp.vertices[f[0]], simp.vertices[f[1]], simp.vertices[f[2]]);
+                    let (a, b, c) = (
+                        simp.vertices[f[0]],
+                        simp.vertices[f[1]],
+                        simp.vertices[f[2]],
+                    );
                     let mut n = (b - a).cross(&(c - a)).normalize();
                     if n.dot(&(interior - a)) > 0.0 {
                         n = -n;
@@ -470,7 +618,10 @@ mod tests {
                     n.dot(&(p - a))
                 })
                 .fold(f64::NEG_INFINITY, f64::max);
-            assert!(protrusion <= radius + 1e-9, "point protrudes {protrusion} past radius {radius}");
+            assert!(
+                protrusion <= radius + 1e-9,
+                "point protrudes {protrusion} past radius {radius}"
+            );
         }
     }
 
@@ -479,16 +630,32 @@ mod tests {
         // A real collision mesh in the production (metre) frame: the incremental
         // hull is prone to a float-predicate dent on data like this, so this
         // pins the repair + inflation that guarantee containment regardless.
-        let raw = crate::stl::load_stl(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/meshes/link6_symp.stl")).expect("mesh");
-        let pts: Vec<Point3<f64>> = raw.iter().map(|v| pt(v.x * 0.001, v.y * 0.001, v.z * 0.001)).collect();
+        let raw = crate::stl::load_stl(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/meshes/link6_symp.stl"
+        ))
+        .expect("mesh");
+        let pts: Vec<Point3<f64>> = raw
+            .iter()
+            .map(|v| pt(v.x * 0.001, v.y * 0.001, v.z * 0.001))
+            .collect();
         let RoundedHull { hull, radius } = simplified_hull(&pts, 0.004).expect("hull");
         let planes = face_planes(&hull);
         for p in &pts {
-            let protrusion = planes.iter().map(|(n, off)| n.dot(&p.coords) - off).fold(f64::NEG_INFINITY, f64::max);
-            assert!(protrusion <= radius + 1e-9, "mesh point protrudes {protrusion} past inflation {radius}");
+            let protrusion = planes
+                .iter()
+                .map(|(n, off)| n.dot(&p.coords) - off)
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!(
+                protrusion <= radius + 1e-9,
+                "mesh point protrudes {protrusion} past inflation {radius}"
+            );
         }
         // The repair leaves the hull convex: its own vertices do not protrude.
-        assert!(max_protrusion(&hull, &hull.vertices) < 1e-6, "hull not convex after repair");
+        assert!(
+            max_protrusion(&hull, &hull.vertices) < 1e-6,
+            "hull not convex after repair"
+        );
     }
 
     #[test]
@@ -498,14 +665,31 @@ mod tests {
         // independent, exact metric: the crate's own GJK, which gives the true
         // distance from each mesh point to the rounded hull. A point inside the
         // rounded hull reads a non-positive signed distance.
-        let raw = crate::stl::load_stl(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/meshes/link6_symp.stl")).expect("mesh");
-        let pts: Vec<Point3<f64>> = raw.iter().map(|v| pt(v.x * 0.001, v.y * 0.001, v.z * 0.001)).collect();
+        let raw = crate::stl::load_stl(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/meshes/link6_symp.stl"
+        ))
+        .expect("mesh");
+        let pts: Vec<Point3<f64>> = raw
+            .iter()
+            .map(|v| pt(v.x * 0.001, v.y * 0.001, v.z * 0.001))
+            .collect();
         let RoundedHull { hull, radius } = simplified_hull(&pts, 0.004).expect("hull");
         let body = crate::gjk::Hull::new(&hull, radius).expect("gjk hull");
         for p in &pts {
-            let point = crate::gjk::Hull::new(&ConvexHull { vertices: vec![*p], faces: vec![] }, 0.0).expect("point");
+            let point = crate::gjk::Hull::new(
+                &ConvexHull {
+                    vertices: vec![*p],
+                    faces: vec![],
+                },
+                0.0,
+            )
+            .expect("point");
             let d = crate::gjk::distance(&point, &body).distance;
-            assert!(d <= 1e-9, "mesh point at true distance {d:+} lies outside the rounded hull (radius {radius})");
+            assert!(
+                d <= 1e-9,
+                "mesh point at true distance {d:+} lies outside the rounded hull (radius {radius})"
+            );
         }
     }
 
@@ -515,7 +699,10 @@ mod tests {
         let hull = convex_hull(piece.points()).expect("box hull");
         assert_eq!(hull.vertices.len(), 8, "a box has eight hull vertices");
         for c in piece.points() {
-            assert!(hull.vertices.iter().any(|v| (v - c).norm() < 1e-12), "corner {c:?} missing");
+            assert!(
+                hull.vertices.iter().any(|v| (v - c).norm() < 1e-12),
+                "corner {c:?} missing"
+            );
         }
     }
 }

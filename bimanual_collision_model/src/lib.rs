@@ -19,6 +19,7 @@
 //!   overlap), approaching motion ramps to a stop across the band.
 //!
 //! Pure Rust, no hardware or messaging deps, same discipline as `srs_model`.
+#![forbid(unsafe_code)]
 
 mod assemble;
 mod gjk;

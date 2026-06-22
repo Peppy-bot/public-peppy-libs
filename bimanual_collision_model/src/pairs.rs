@@ -13,6 +13,9 @@ pub struct PairSpec {
 
 impl PairSpec {
     pub fn new(a: impl Into<String>, b: impl Into<String>) -> Self {
-        Self { a: a.into(), b: b.into() }
+        Self {
+            a: a.into(),
+            b: b.into(),
+        }
     }
 }

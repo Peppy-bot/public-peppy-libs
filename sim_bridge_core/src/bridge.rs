@@ -1,4 +1,3 @@
-
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -6,7 +5,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::pipeline::{run_os_to_sim, run_sim_to_os, BoxFuture};
+use crate::pipeline::{BoxFuture, run_os_to_sim, run_sim_to_os};
 use crate::transport::RawTransport;
 
 type Pipeline = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -26,7 +25,11 @@ impl ArmMergeState {
     }
 
     pub fn update_and_merge(&self, indices: &[usize], positions: &[f64]) -> Vec<f64> {
-        debug_assert_eq!(indices.len(), positions.len(), "indices and positions length mismatch");
+        debug_assert_eq!(
+            indices.len(),
+            positions.len(),
+            "indices and positions length mismatch"
+        );
         let mut state = self.inner.lock().expect("arm merge state poisoned");
         for (i, &idx) in indices.iter().enumerate() {
             if idx < self.total_joints {
@@ -52,7 +55,13 @@ impl<Runner: Send + Sync + 'static, T: RawTransport> SimBridge<Runner, T> {
         token: CancellationToken,
         sim_node: Arc<str>,
     ) -> Self {
-        Self { runner, transport, token, sim_node, pipelines: Vec::new() }
+        Self {
+            runner,
+            transport,
+            token,
+            sim_node,
+            pipelines: Vec::new(),
+        }
     }
 
     pub fn sim_to_os<Msg, EmitFn>(mut self, topic: Arc<str>, emit_fn: EmitFn) -> Self
@@ -74,7 +83,9 @@ impl<Runner: Send + Sync + 'static, T: RawTransport> SimBridge<Runner, T> {
     pub fn os_to_sim<Msg, RecvFn>(mut self, topic: Arc<str>, recv_fn: RecvFn) -> Self
     where
         Msg: Serialize + Send + 'static,
-        RecvFn: Fn(Arc<Runner>) -> BoxFuture<std::result::Result<(String, Msg), String>> + Send + 'static,
+        RecvFn: Fn(Arc<Runner>) -> BoxFuture<std::result::Result<(String, Msg), String>>
+            + Send
+            + 'static,
     {
         self.pipelines.push(Box::pin(run_os_to_sim(
             self.transport.clone(),

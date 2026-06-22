@@ -105,7 +105,11 @@ struct SupportPoint {
 fn support(a: &impl Support, b: &impl Support, dir: &Vector3<f64>) -> SupportPoint {
     let pa = a.core_support(dir);
     let pb = b.core_support(&(-dir));
-    SupportPoint { v: pa.coords - pb.coords, a: pa, b: pb }
+    SupportPoint {
+        v: pa.coords - pb.coords,
+        a: pa,
+        b: pb,
+    }
 }
 
 /// The point of a (sub-)simplex closest to the origin, reduced to the vertices
@@ -122,12 +126,20 @@ struct SubSimplex {
 impl SubSimplex {
     /// A lone carrying vertex (the closest feature is a corner), weight one.
     fn vertex(p: SupportPoint) -> SubSimplex {
-        SubSimplex { closest: p.v, simplex: vec![p], weights: vec![1.0] }
+        SubSimplex {
+            closest: p.v,
+            simplex: vec![p],
+            weights: vec![1.0],
+        }
     }
 
     /// A carrying edge `[a, b]` with the origin projecting at parameter `t`.
     fn edge(closest: Vector3<f64>, a: SupportPoint, b: SupportPoint, t: f64) -> SubSimplex {
-        SubSimplex { closest, simplex: vec![a, b], weights: vec![1.0 - t, t] }
+        SubSimplex {
+            closest,
+            simplex: vec![a, b],
+            weights: vec![1.0 - t, t],
+        }
     }
 }
 
@@ -149,7 +161,13 @@ impl Hull {
                 }
             }
         }
-        Ok(Hull { vertices: hull.vertices.clone(), faces: hull.faces.clone(), neighbors, radius, hint: Cell::new(0) })
+        Ok(Hull {
+            vertices: hull.vertices.clone(),
+            faces: hull.faces.clone(),
+            neighbors,
+            radius,
+            hint: Cell::new(0),
+        })
     }
 
     /// The hull vertices, for placement and rendering.
@@ -209,7 +227,10 @@ impl<'a> Placed<'a> {
 
 impl Support for Placed<'_> {
     fn core_support(&self, dir: &Vector3<f64>) -> Point3<f64> {
-        self.iso * self.hull.core_support(&self.iso.inverse_transform_vector(dir))
+        self.iso
+            * self
+                .hull
+                .core_support(&self.iso.inverse_transform_vector(dir))
     }
 
     fn radius(&self) -> f64 {
@@ -238,7 +259,10 @@ pub fn distance(a: &impl Support, b: &impl Support) -> GjkDistance {
             break;
         }
         // A repeated support direction means no new vertex is reachable.
-        if simplex.iter().any(|s| (s.v - w.v).norm_squared() <= ORIGIN_EPS2) {
+        if simplex
+            .iter()
+            .any(|s| (s.v - w.v).norm_squared() <= ORIGIN_EPS2)
+        {
             break;
         }
         simplex.push(w);
@@ -266,7 +290,12 @@ pub fn distance(a: &impl Support, b: &impl Support) -> GjkDistance {
     } else {
         (core_a, core_b)
     };
-    GjkDistance { distance: core_dist - ra - rb, on_a, on_b, iterations }
+    GjkDistance {
+        distance: core_dist - ra - rb,
+        on_a,
+        on_b,
+        iterations,
+    }
 }
 
 /// A face of the EPA polytope: vertex indices into the growing point list, its
@@ -292,7 +321,13 @@ fn epa(a: &impl Support, b: &impl Support, kept: &[SupportPoint], ra: f64, rb: f
     // plane for a shallow one; lift that triangle to a bipyramid with a support
     // point on each side. Anything lower is a true touch, depth zero.
     let (mut points, mut faces): (Vec<SupportPoint>, Vec<EpaFace>) = match kept.len() {
-        4 => (kept.to_vec(), [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]].into_iter().filter_map(|v| epa_face(v, kept)).collect()),
+        4 => (
+            kept.to_vec(),
+            [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]
+                .into_iter()
+                .filter_map(|v| epa_face(v, kept))
+                .collect(),
+        ),
         3 => {
             let n = (kept[1].v - kept[0].v).cross(&(kept[2].v - kept[0].v));
             if n.norm_squared() <= ORIGIN_EPS2 {
@@ -304,7 +339,17 @@ fn epa(a: &impl Support, b: &impl Support, kept: &[SupportPoint], ra: f64, rb: f
                 return touch(kept, ra, rb);
             }
             let points = vec![kept[0], kept[1], kept[2], wp, wm];
-            let faces = [[0, 1, 3], [1, 2, 3], [2, 0, 3], [0, 1, 4], [1, 2, 4], [2, 0, 4]].into_iter().filter_map(|v| epa_face(v, &points)).collect();
+            let faces = [
+                [0, 1, 3],
+                [1, 2, 3],
+                [2, 0, 3],
+                [0, 1, 4],
+                [1, 2, 4],
+                [2, 0, 4],
+            ]
+            .into_iter()
+            .filter_map(|v| epa_face(v, &points))
+            .collect();
             (points, faces)
         }
         _ => return touch(kept, ra, rb),
@@ -315,24 +360,41 @@ fn epa(a: &impl Support, b: &impl Support, kept: &[SupportPoint], ra: f64, rb: f
     // answer instead of panicking.
     let mut iterations = 0;
     let mut best: Option<EpaFace> = None;
-    while let Some(closest) = (0..faces.len()).min_by(|&x, &y| faces[x].dist.total_cmp(&faces[y].dist)) {
+    while let Some(closest) =
+        (0..faces.len()).min_by(|&x, &y| faces[x].dist.total_cmp(&faces[y].dist))
+    {
         let face = faces[closest];
         best = Some(face);
         let w = support(a, b, &face.normal);
         iterations += 1;
         // Converged (support no farther than the face), capped, or the support
         // is already a vertex (no progress).
-        if w.v.dot(&face.normal) - face.dist < EPA_TOL || iterations >= EPA_MAX_ITERS || points.iter().any(|p| (p.v - w.v).norm_squared() <= ORIGIN_EPS2) {
+        if w.v.dot(&face.normal) - face.dist < EPA_TOL
+            || iterations >= EPA_MAX_ITERS
+            || points
+                .iter()
+                .any(|p| (p.v - w.v).norm_squared() <= ORIGIN_EPS2)
+        {
             break;
         }
         // Delete every face the new point can see, stitch it to the horizon.
-        let visible: Vec<usize> = faces.iter().enumerate().filter(|(_, f)| w.v.dot(&f.normal) > f.dist).map(|(i, _)| i).collect();
+        let visible: Vec<usize> = faces
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| w.v.dot(&f.normal) > f.dist)
+            .map(|(i, _)| i)
+            .collect();
         let horizon = epa_horizon(&faces, &visible);
         if horizon.is_empty() {
             break;
         }
         let dropped: HashSet<usize> = visible.into_iter().collect();
-        faces = faces.into_iter().enumerate().filter(|(i, _)| !dropped.contains(i)).map(|(_, f)| f).collect();
+        faces = faces
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !dropped.contains(i))
+            .map(|(_, f)| f)
+            .collect();
         let wi = points.len();
         points.push(w);
         for (i, j) in horizon {
@@ -351,7 +413,12 @@ fn epa(a: &impl Support, b: &impl Support, kept: &[SupportPoint], ra: f64, rb: f
 /// `kept` is the GJK carrier simplex, which always has at least one point.
 fn touch(kept: &[SupportPoint], ra: f64, rb: f64) -> GjkDistance {
     debug_assert!(!kept.is_empty(), "the GJK carrier simplex is never empty");
-    GjkDistance { distance: -ra - rb, on_a: kept[0].a, on_b: kept[0].b, iterations: 0 }
+    GjkDistance {
+        distance: -ra - rb,
+        on_a: kept[0].a,
+        on_b: kept[0].b,
+        iterations: 0,
+    }
 }
 
 /// A polytope face from three difference vertices, oriented so its normal
@@ -365,7 +432,15 @@ fn epa_face(v: [usize; 3], points: &[SupportPoint]) -> Option<EpaFace> {
     }
     let normal = n.normalize();
     let dist = normal.dot(&pa);
-    if dist < 0.0 { Some(EpaFace { v, normal: -normal, dist: -dist }) } else { Some(EpaFace { v, normal, dist }) }
+    if dist < 0.0 {
+        Some(EpaFace {
+            v,
+            normal: -normal,
+            dist: -dist,
+        })
+    } else {
+        Some(EpaFace { v, normal, dist })
+    }
 }
 
 /// Undirected edges bordering exactly one visible face: the horizon the new
@@ -375,20 +450,37 @@ fn epa_horizon(faces: &[EpaFace], visible: &[usize]) -> Vec<(usize, usize)> {
     for &fi in visible {
         let v = faces[fi].v;
         for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
-            *count.entry(if a < b { (a, b) } else { (b, a) }).or_insert(0) += 1;
+            *count
+                .entry(if a < b { (a, b) } else { (b, a) })
+                .or_insert(0) += 1;
         }
     }
-    count.into_iter().filter(|&(_, c)| c == 1).map(|(e, _)| e).collect()
+    count
+        .into_iter()
+        .filter(|&(_, c)| c == 1)
+        .map(|(e, _)| e)
+        .collect()
 }
 
 /// Signed distance and witnesses from the closest face: depth `face.dist` along
 /// `face.normal`, witnesses the barycentric blend of the face's support points.
-fn epa_result(points: &[SupportPoint], face: &EpaFace, ra: f64, rb: f64, iterations: u32) -> GjkDistance {
+fn epa_result(
+    points: &[SupportPoint],
+    face: &EpaFace,
+    ra: f64,
+    rb: f64,
+    iterations: u32,
+) -> GjkDistance {
     let (pa, pb, pc) = (points[face.v[0]], points[face.v[1]], points[face.v[2]]);
     let [l0, l1, l2] = barycentric(face.normal * face.dist, pa.v, pb.v, pc.v);
     let on_a = Point3::from(pa.a.coords * l0 + pb.a.coords * l1 + pc.a.coords * l2);
     let on_b = Point3::from(pa.b.coords * l0 + pb.b.coords * l1 + pc.b.coords * l2);
-    GjkDistance { distance: -face.dist - ra - rb, on_a: on_a - face.normal * ra, on_b: on_b + face.normal * rb, iterations }
+    GjkDistance {
+        distance: -face.dist - ra - rb,
+        on_a: on_a - face.normal * ra,
+        on_b: on_b + face.normal * rb,
+        iterations,
+    }
 }
 
 /// Barycentric coordinates of `p` in triangle `abc` (Ericson 3.4).
@@ -406,8 +498,15 @@ fn barycentric(p: Vector3<f64>, a: Vector3<f64>, b: Vector3<f64>, c: Vector3<f64
 }
 
 /// Barycentric blend of a chosen core point over the simplex.
-fn weighted_point(simplex: &[SupportPoint], weights: &[f64], pick: impl Fn(&SupportPoint) -> Point3<f64>) -> Point3<f64> {
-    let blended = simplex.iter().zip(weights).fold(Vector3::zeros(), |acc, (s, &w)| acc + pick(s).coords * w);
+fn weighted_point(
+    simplex: &[SupportPoint],
+    weights: &[f64],
+    pick: impl Fn(&SupportPoint) -> Point3<f64>,
+) -> Point3<f64> {
+    let blended = simplex
+        .iter()
+        .zip(weights)
+        .fold(Vector3::zeros(), |acc, (s, &w)| acc + pick(s).coords * w);
     Point3::from(blended)
 }
 
@@ -484,7 +583,11 @@ fn closest_triangle(a: SupportPoint, b: SupportPoint, c: SupportPoint) -> SubSim
     let denom = 1.0 / (va + vb + vc);
     let v = vb * denom;
     let w = vc * denom;
-    SubSimplex { closest: pa + ab * v + ac * w, simplex: vec![a, b, c], weights: vec![1.0 - v - w, v, w] }
+    SubSimplex {
+        closest: pa + ab * v + ac * w,
+        simplex: vec![a, b, c],
+        weights: vec![1.0 - v - w, v, w],
+    }
 }
 
 /// Closest point on tetrahedron `abcd` to the origin (Ericson 5.1.6): the
@@ -503,17 +606,29 @@ fn closest_tetrahedron(
             continue;
         }
         let face = closest_triangle(p, q, r);
-        if best.as_ref().is_none_or(|b| face.closest.norm_squared() < b.closest.norm_squared()) {
+        if best
+            .as_ref()
+            .is_none_or(|b| face.closest.norm_squared() < b.closest.norm_squared())
+        {
             best = Some(face);
         }
     }
     // Inside all faces: the origin is enclosed, the cores overlap.
-    best.unwrap_or(SubSimplex { closest: Vector3::zeros(), simplex: vec![a, b, c, d], weights: vec![0.25; 4] })
+    best.unwrap_or(SubSimplex {
+        closest: Vector3::zeros(),
+        simplex: vec![a, b, c, d],
+        weights: vec![0.25; 4],
+    })
 }
 
 /// Whether the origin lies on the far side of plane `pqr` from `opp` (so the
 /// face can carry the closest point). A degenerate face is never outside.
-fn origin_outside_plane(p: Vector3<f64>, q: Vector3<f64>, r: Vector3<f64>, opp: Vector3<f64>) -> bool {
+fn origin_outside_plane(
+    p: Vector3<f64>,
+    q: Vector3<f64>,
+    r: Vector3<f64>,
+    opp: Vector3<f64>,
+) -> bool {
     let n = (q - p).cross(&(r - p));
     let origin_side = -p.dot(&n);
     let opp_side = (opp - p).dot(&n);
@@ -523,7 +638,7 @@ fn origin_outside_plane(p: Vector3<f64>, q: Vector3<f64>, r: Vector3<f64>, opp: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     use srs_model::nalgebra::{Isometry3, Translation3, UnitQuaternion};
 
     fn pt(x: f64, y: f64, z: f64) -> Point3<f64> {
@@ -569,9 +684,16 @@ mod tests {
         let a = box_hull(pt(0.0, 0.0, 0.0), 0.5, 0.0); // [-0.5, 0.5]^3
         let b = box_hull(pt(0.7, 0.0, 0.0), 0.5, 0.0); // [0.2, 1.2] on x
         let r = distance(&a, &b);
-        assert!((r.distance + 0.3).abs() < 1e-6, "penetration depth ~0.3, got {}", -r.distance);
+        assert!(
+            (r.distance + 0.3).abs() < 1e-6,
+            "penetration depth ~0.3, got {}",
+            -r.distance
+        );
         let sep = r.on_a - r.on_b;
-        assert!(sep.x.abs() > 0.29 && sep.y.abs() < 1e-6 && sep.z.abs() < 1e-6, "escape is along x, got {sep:?}");
+        assert!(
+            sep.x.abs() > 0.29 && sep.y.abs() < 1e-6 && sep.z.abs() < 1e-6,
+            "escape is along x, got {sep:?}"
+        );
     }
 
     #[test]
@@ -580,19 +702,28 @@ mod tests {
         let a = box_hull(pt(0.0, 0.0, 0.0), 0.5, 0.1);
         let b = box_hull(pt(0.3, 0.0, 0.0), 0.5, 0.2);
         let r = distance(&a, &b);
-        assert!((r.distance + 1.0).abs() < 1e-6, "expected -1.0, got {}", r.distance);
+        assert!(
+            (r.distance + 1.0).abs() < 1e-6,
+            "expected -1.0, got {}",
+            r.distance
+        );
     }
 
     #[test]
     fn distance_is_continuous_through_contact() {
-        use rand::{Rng, SeedableRng};
         // Mesh hulls are never perfectly symmetric; an irregular blob swept
         // apart has a signed distance that rises smoothly through zero (EPA
         // below, GJK above), with no jump at contact.
         let blob = |c: Point3<f64>| {
             let mut rng = rand::rngs::StdRng::seed_from_u64(4);
             let verts: Vec<_> = (0..40)
-                .map(|_| Point3::new(c.x + rng.gen_range(-0.5..0.5), c.y + rng.gen_range(-0.5..0.5), c.z + rng.gen_range(-0.5..0.5)))
+                .map(|_| {
+                    Point3::new(
+                        c.x + rng.random_range(-0.5..0.5),
+                        c.y + rng.random_range(-0.5..0.5),
+                        c.z + rng.random_range(-0.5..0.5),
+                    )
+                })
                 .collect();
             Hull::new(&crate::hull::convex_hull(&verts).expect("hull"), 0.0).expect("blob")
         };
@@ -602,8 +733,14 @@ mod tests {
             let x = 0.2 + k as f64 * 0.03; // deep overlap through to separation
             let d = distance(&a, &blob(pt(x, 0.0, 0.0))).distance;
             if let Some(p) = prev {
-                assert!(d >= p - 1e-6, "distance jumped backward: {p} then {d} at x={x}");
-                assert!(d - p < 0.06, "distance jumped forward: {p} then {d} at x={x}");
+                assert!(
+                    d >= p - 1e-6,
+                    "distance jumped backward: {p} then {d} at x={x}"
+                );
+                assert!(
+                    d - p < 0.06,
+                    "distance jumped forward: {p} then {d} at x={x}"
+                );
                 crossed |= p < 0.0 && d >= 0.0;
             }
             prev = Some(d);
@@ -629,8 +766,24 @@ mod tests {
     fn is_symmetric() {
         let mut rng = rand::rngs::StdRng::seed_from_u64(3);
         for _ in 0..500 {
-            let a = box_hull(pt(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), 0.0), 0.4, 0.05);
-            let b = box_hull(pt(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), 1.0), 0.4, 0.05);
+            let a = box_hull(
+                pt(
+                    rng.random_range(-1.0..1.0),
+                    rng.random_range(-1.0..1.0),
+                    0.0,
+                ),
+                0.4,
+                0.05,
+            );
+            let b = box_hull(
+                pt(
+                    rng.random_range(-1.0..1.0),
+                    rng.random_range(-1.0..1.0),
+                    1.0,
+                ),
+                0.4,
+                0.05,
+            );
             let ab = distance(&a, &b).distance;
             let ba = distance(&b, &a).distance;
             assert!((ab - ba).abs() < 1e-9, "asymmetric: {ab} vs {ba}");

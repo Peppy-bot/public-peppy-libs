@@ -53,13 +53,23 @@ fn wrists_converging_monotonically_reach_collision() {
     for i in 0..=12 {
         let (ql, qr) = wrists_inward(i as f64 * 0.1);
         let p = m.min_distance(&ql, &qr).expect("query");
-        assert!(p.distance <= prev + 1e-3, "approach not monotone: {:+.4} after {prev:+.4}", p.distance);
+        assert!(
+            p.distance <= prev + 1e-3,
+            "approach not monotone: {:+.4} after {prev:+.4}",
+            p.distance
+        );
         prev = p.distance;
         last = (p.link_a.to_string(), p.link_b.to_string(), p.distance);
     }
     let (a, b, d) = last;
-    assert!(d < 0.0, "fully wrapped wrists should interpenetrate, got {d:+.4}");
-    assert!(a.contains("link7") || b.contains("link7"), "deepest pair should involve a wrist, got {a} vs {b}");
+    assert!(
+        d < 0.0,
+        "fully wrapped wrists should interpenetrate, got {d:+.4}"
+    );
+    assert!(
+        a.contains("link7") || b.contains("link7"),
+        "deepest pair should involve a wrist, got {a} vs {b}"
+    );
 }
 
 #[test]
@@ -69,9 +79,19 @@ fn folding_the_arms_inward_drives_a_collision() {
     let ql: JointVec = [0.0, 0.6, 0.0, 0.4, 0.0, 0.0, 0.0];
     let qr: JointVec = [0.0, -0.6, 0.0, 0.4, 0.0, 0.0, 0.0];
     let p = m.min_distance(&ql, &qr).expect("query");
-    assert!(p.distance < 0.0, "folded arms should interpenetrate, got {:+.4}", p.distance);
-    let touches_arm = [p.link_a, p.link_b].iter().any(|l| l.contains("link3") || l.contains("link4") || l.contains("body"));
-    assert!(touches_arm, "expected an upper-arm or torso witness, got {} vs {}", p.link_a, p.link_b);
+    assert!(
+        p.distance < 0.0,
+        "folded arms should interpenetrate, got {:+.4}",
+        p.distance
+    );
+    let touches_arm = [p.link_a, p.link_b]
+        .iter()
+        .any(|l| l.contains("link3") || l.contains("link4") || l.contains("body"));
+    assert!(
+        touches_arm,
+        "expected an upper-arm or torso witness, got {} vs {}",
+        p.link_a, p.link_b
+    );
 }
 
 #[test]
@@ -81,7 +101,11 @@ fn rest_pose_clears_d_safe() {
     // clearance of several centimetres, well clear of the band.
     let mut m = model();
     let p = m.min_distance(&HOME, &HOME).expect("query");
-    assert!(p.distance > band().d_safe(), "rest min {:+.4} should clear d_safe", p.distance);
+    assert!(
+        p.distance > band().d_safe(),
+        "rest min {:+.4} should clear d_safe",
+        p.distance
+    );
 }
 
 #[test]
@@ -89,8 +113,17 @@ fn separating_sweep_never_alarms() {
     let mut m = model();
     for i in 0..=12 {
         let t = i as f64 * 0.1;
-        let p = m.min_distance(&[0.0, -t, 0.0, 0.4, 0.0, 0.0, 0.0], &[0.0, t, 0.0, 0.4, 0.0, 0.0, 0.0]).expect("query");
-        assert!(p.distance > band().d_safe(), "outward sweep dipped to {:+.4} at t={t}", p.distance);
+        let p = m
+            .min_distance(
+                &[0.0, -t, 0.0, 0.4, 0.0, 0.0, 0.0],
+                &[0.0, t, 0.0, 0.4, 0.0, 0.0, 0.0],
+            )
+            .expect("query");
+        assert!(
+            p.distance > band().d_safe(),
+            "outward sweep dipped to {:+.4} at t={t}",
+            p.distance
+        );
     }
 }
 
@@ -101,11 +134,22 @@ fn witnesses_are_finite_and_span_the_gap_when_clear() {
     // equals the (positive) reported distance.
     let (ql, qr) = wrists_inward(0.3);
     let p = m.min_distance(&ql, &qr).expect("query");
-    assert!(p.distance > 0.0, "pose should be clear, got {:+.4}", p.distance);
+    assert!(
+        p.distance > 0.0,
+        "pose should be clear, got {:+.4}",
+        p.distance
+    );
     for w in [p.on_a, p.on_b] {
-        assert!(w.coords.iter().all(|c| c.is_finite() && c.abs() < 2.0), "witness {w:?} not plausible");
+        assert!(
+            w.coords.iter().all(|c| c.is_finite() && c.abs() < 2.0),
+            "witness {w:?} not plausible"
+        );
     }
-    assert!(((p.on_a - p.on_b).norm() - p.distance).abs() < 1e-6, "witness gap vs distance {:+.4}", p.distance);
+    assert!(
+        ((p.on_a - p.on_b).norm() - p.distance).abs() < 1e-6,
+        "witness gap vs distance {:+.4}",
+        p.distance
+    );
 }
 
 #[test]
@@ -134,7 +178,8 @@ fn non_finite_configurations_are_rejected() {
 #[test]
 fn query_stays_inside_the_control_tick() {
     let mut m = model();
-    let configs: Vec<(JointVec, JointVec)> = (0..200).map(|i| wrists_inward(i as f64 * 0.005)).collect();
+    let configs: Vec<(JointVec, JointVec)> =
+        (0..200).map(|i| wrists_inward(i as f64 * 0.005)).collect();
 
     let start = std::time::Instant::now();
     let mut acc = 0.0;
@@ -145,7 +190,11 @@ fn query_stays_inside_the_control_tick() {
     assert!(acc.is_finite());
     println!("per-query: {:.1} us", per_query * 1e6);
     if !cfg!(debug_assertions) {
-        assert!(per_query < 1e-3, "query took {:.1} us, budget is 1 ms", per_query * 1e6);
+        assert!(
+            per_query < 1e-3,
+            "query took {:.1} us, budget is 1 ms",
+            per_query * 1e6
+        );
     }
 }
 
@@ -154,7 +203,10 @@ fn governor_halts_an_approach_before_contact() {
     let mut m = model();
     let band = band();
     let mut halted_at = None;
-    let mut d_now = m.min_distance(&wrists_inward(0.0).0, &wrists_inward(0.0).1).expect("d0").distance;
+    let mut d_now = m
+        .min_distance(&wrists_inward(0.0).0, &wrists_inward(0.0).1)
+        .expect("d0")
+        .distance;
     for i in 1..=120 {
         let t = i as f64 * 0.01;
         let (ql, qr) = wrists_inward(t);
@@ -166,5 +218,8 @@ fn governor_halts_an_approach_before_contact() {
         d_now = d_next;
     }
     let (t, d) = halted_at.expect("the approach must trip the governor");
-    assert!(d > 0.0, "governor halted at t={t} with clearance {d:+.4}, after contact");
+    assert!(
+        d > 0.0,
+        "governor halted at t={t} with clearance {d:+.4}, after contact"
+    );
 }

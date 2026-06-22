@@ -13,9 +13,11 @@
 //!   - `Fixed(psi)` skips the interval search (single placement), so it is the
 //!     cheaper path.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use std::hint::black_box;
 
-use srs_model::{damped_pseudo_inverse, Arm, ArmAnglePolicy, JointVec};
+use criterion::{Criterion, criterion_group, criterion_main};
+
+use srs_model::{Arm, ArmAnglePolicy, JointVec, damped_pseudo_inverse};
 
 const URDF: &str = include_str!("../tests/fixtures/openarm_v10.urdf");
 const BASE: &str = "openarm_left_link0";
@@ -77,7 +79,11 @@ fn benchmarks(c: &mut Criterion) {
     // IK, FromSeed with a decorrelated ("cold") seed: same interval search.
     c.bench_function("get_ik_from_seed_cold", |b| {
         b.iter(|| {
-            black_box(arm.solve_ik(black_box(&target), ArmAnglePolicy::FromSeed, black_box(&cold_seed)))
+            black_box(arm.solve_ik(
+                black_box(&target),
+                ArmAnglePolicy::FromSeed,
+                black_box(&cold_seed),
+            ))
         })
     });
 

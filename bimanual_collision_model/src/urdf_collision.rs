@@ -31,7 +31,10 @@ impl CollisionMesh {
     pub fn to_link_frame(&self, vertices: &[Point3<f64>]) -> Vec<Point3<f64>> {
         vertices
             .iter()
-            .map(|v| self.origin * Point3::new(v.x * self.scale.x, v.y * self.scale.y, v.z * self.scale.z))
+            .map(|v| {
+                self.origin
+                    * Point3::new(v.x * self.scale.x, v.y * self.scale.y, v.z * self.scale.z)
+            })
             .collect()
     }
 }
@@ -85,12 +88,17 @@ impl UrdfCollisions {
                     continue; // only mesh collisions exist in this pipeline
                 };
                 let basename = filename.rsplit('/').next().unwrap_or(filename).to_string();
-                if by_basename.insert(basename.clone(), filename.clone()).is_some_and(|prev| prev != *filename) {
+                if by_basename
+                    .insert(basename.clone(), filename.clone())
+                    .is_some_and(|prev| prev != *filename)
+                {
                     return Err(format!(
                         "collision meshes share the basename '{basename}' from different paths; meshes resolve by basename in a flat directory, so they must be unique"
                     ));
                 }
-                let s = scale.map(|s| Vector3::new(s[0], s[1], s[2])).unwrap_or_else(|| Vector3::repeat(1.0));
+                let s = scale
+                    .map(|s| Vector3::new(s[0], s[1], s[2]))
+                    .unwrap_or_else(|| Vector3::repeat(1.0));
                 collisions.push(CollisionMesh {
                     link: link.name.clone(),
                     mesh_basename: basename,
@@ -110,9 +118,14 @@ impl UrdfCollisions {
             // A movable joint's limits bound the swept envelope baked at fit
             // time, so non-finite or inverted limits would corrupt it silently.
             let movable = !matches!(kind, JointKind::Fixed);
-            let valid_limits = j.limit.lower.is_finite() && j.limit.upper.is_finite() && j.limit.lower <= j.limit.upper;
+            let valid_limits = j.limit.lower.is_finite()
+                && j.limit.upper.is_finite()
+                && j.limit.lower <= j.limit.upper;
             if movable && !valid_limits {
-                return Err(format!("joint to '{}' has invalid limits [{}, {}]", j.child.link, j.limit.lower, j.limit.upper));
+                return Err(format!(
+                    "joint to '{}' has invalid limits [{}, {}]",
+                    j.child.link, j.limit.lower, j.limit.upper
+                ));
             }
             let pj = ParentJoint {
                 parent_link: j.parent.link.clone(),
@@ -123,11 +136,17 @@ impl UrdfCollisions {
                 upper_limit: j.limit.upper,
             };
             if parent_joints.insert(j.child.link.clone(), pj).is_some() {
-                return Err(format!("link '{}' has two parent joints; URDF must be a tree", j.child.link));
+                return Err(format!(
+                    "link '{}' has two parent joints; URDF must be a tree",
+                    j.child.link
+                ));
             }
         }
 
-        Ok(Self { collisions, parent_joints })
+        Ok(Self {
+            collisions,
+            parent_joints,
+        })
     }
 
     pub fn from_file(path: &str) -> Result<Self, String> {
@@ -185,9 +204,17 @@ impl UrdfCollisions {
 
     /// Collision vertices of a world-fixed `link`, mapped into the URDF root
     /// frame through its fixed mount chain.
-    pub fn fixed_vertices_in_root(&self, link: &str, meshes_dir: &str) -> Result<Vec<Point3<f64>>, String> {
+    pub fn fixed_vertices_in_root(
+        &self,
+        link: &str,
+        meshes_dir: &str,
+    ) -> Result<Vec<Point3<f64>>, String> {
         let pose = self.fixed_pose_in_root(link)?;
-        Ok(self.link_vertices(link, meshes_dir)?.into_iter().map(|v| pose * v).collect())
+        Ok(self
+            .link_vertices(link, meshes_dir)?
+            .into_iter()
+            .map(|v| pose * v)
+            .collect())
     }
 
     /// Collision vertices of `child` at joint position `q`, mapped into the
@@ -195,7 +222,12 @@ impl UrdfCollisions {
     /// are supported: a translation is the only motion for which positions
     /// along the travel interpolate linearly (the basis for extremes-union
     /// containment). A revolute child sweeps an arc and is rejected.
-    pub fn child_vertices_in_parent(&self, child: &str, q: f64, meshes_dir: &str) -> Result<Vec<Point3<f64>>, String> {
+    pub fn child_vertices_in_parent(
+        &self,
+        child: &str,
+        q: f64,
+        meshes_dir: &str,
+    ) -> Result<Vec<Point3<f64>>, String> {
         let j = self
             .parent_joint(child)
             .ok_or_else(|| format!("link '{child}' has no parent joint"))?;
@@ -216,7 +248,11 @@ impl UrdfCollisions {
                 ));
             }
         };
-        Ok(self.link_vertices(child, meshes_dir)?.into_iter().map(|v| pose * v).collect())
+        Ok(self
+            .link_vertices(child, meshes_dir)?
+            .into_iter()
+            .map(|v| pose * v)
+            .collect())
     }
 
     /// Pose of `link` in the URDF root frame, composing only fixed joints.
@@ -231,12 +267,16 @@ impl UrdfCollisions {
                 return Ok(pose); // reached the root
             };
             if !j.is_fixed() {
-                return Err(format!("link '{link}' hangs below movable joint into '{current}', not world-fixed"));
+                return Err(format!(
+                    "link '{link}' hangs below movable joint into '{current}', not world-fixed"
+                ));
             }
             pose = j.origin * pose;
             current = j.parent_link.clone();
         }
-        Err(format!("link '{link}' has a cyclic parent chain in the URDF"))
+        Err(format!(
+            "link '{link}' has a cyclic parent chain in the URDF"
+        ))
     }
 }
 
@@ -287,7 +327,9 @@ mod tests {
     #[test]
     fn rejects_baking_a_revolute_child() {
         let u = UrdfCollisions::from_urdf(URDF).expect("parse");
-        let err = u.child_vertices_in_parent("arm1", 0.5, "/nonexistent").expect_err("revolute child");
+        let err = u
+            .child_vertices_in_parent("arm1", 0.5, "/nonexistent")
+            .expect_err("revolute child");
         assert!(err.contains("not a translation"), "{err}");
     }
 
@@ -295,7 +337,9 @@ mod tests {
     fn rejects_a_prismatic_child_with_a_zero_axis() {
         let zero_axis = URDF.replace(r#"<axis xyz="0 -1 0"/>"#, r#"<axis xyz="0 0 0"/>"#);
         let u = UrdfCollisions::from_urdf(&zero_axis).expect("parse");
-        let err = u.child_vertices_in_parent("finger", 0.02, "/nonexistent").expect_err("zero axis");
+        let err = u
+            .child_vertices_in_parent("finger", 0.02, "/nonexistent")
+            .expect_err("zero axis");
         assert!(err.contains("zero axis"), "{err}");
     }
 

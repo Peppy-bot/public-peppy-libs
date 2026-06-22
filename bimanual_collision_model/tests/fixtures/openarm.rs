@@ -36,11 +36,23 @@ pub const TORSO_BODY: &str = "openarm_body_link0";
 /// bounding the OpenArm v10 torso mesh in the root frame.
 pub fn torso() -> Vec<ConvexPiece> {
     vec![
-        ConvexPiece::aabb(Point3::new(-0.157, -0.097, -0.002), Point3::new(0.097, 0.097, 0.026)),
+        ConvexPiece::aabb(
+            Point3::new(-0.157, -0.097, -0.002),
+            Point3::new(0.097, 0.097, 0.026),
+        ),
         flare(),
-        ConvexPiece::aabb(Point3::new(-0.156, -0.034, 0.006), Point3::new(-0.029, 0.034, 0.226)),
-        ConvexPiece::aabb(Point3::new(-0.032, -0.032, 0.058), Point3::new(0.032, 0.032, 0.604)),
-        ConvexPiece::aabb(Point3::new(-0.087, -0.082, 0.598), Point3::new(0.067, 0.082, 0.775)),
+        ConvexPiece::aabb(
+            Point3::new(-0.156, -0.034, 0.006),
+            Point3::new(-0.029, 0.034, 0.226),
+        ),
+        ConvexPiece::aabb(
+            Point3::new(-0.032, -0.032, 0.058),
+            Point3::new(0.032, 0.032, 0.604),
+        ),
+        ConvexPiece::aabb(
+            Point3::new(-0.087, -0.082, 0.598),
+            Point3::new(0.067, 0.082, 0.775),
+        ),
     ]
 }
 
@@ -55,5 +67,10 @@ fn flare() -> ConvexPiece {
             Point3::new(-0.033, y, z),
         ]
     };
-    ConvexPiece::from_points(ring(0.085, 0.016).into_iter().chain(ring(0.034, 0.080)).collect())
+    ConvexPiece::from_points(
+        ring(0.085, 0.016)
+            .into_iter()
+            .chain(ring(0.034, 0.080))
+            .collect(),
+    )
 }

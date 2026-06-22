@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 #[derive(Debug)]
 pub enum BridgeError {
-    ConfigNotFound { path: PathBuf, source: std::io::Error },
+    ConfigNotFound {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     ConfigParse(String),
     InvalidPreset(String),
     UnknownTopicType(String),

@@ -30,10 +30,14 @@ pub struct GovernorBand {
 impl GovernorBand {
     pub fn new(d_stop: f64, d_safe: f64) -> Result<Self, String> {
         if !(d_stop.is_finite() && d_safe.is_finite()) {
-            return Err(format!("governor band must be finite, got stop={d_stop} safe={d_safe}"));
+            return Err(format!(
+                "governor band must be finite, got stop={d_stop} safe={d_safe}"
+            ));
         }
         if !(0.0 <= d_stop && d_stop < d_safe) {
-            return Err(format!("governor band needs 0 <= d_stop < d_safe, got stop={d_stop} safe={d_safe}"));
+            return Err(format!(
+                "governor band needs 0 <= d_stop < d_safe, got stop={d_stop} safe={d_safe}"
+            ));
         }
         Ok(Self { d_stop, d_safe })
     }

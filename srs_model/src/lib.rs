@@ -33,6 +33,7 @@
 //! Hardware-free: it defines its own [`ARM_DOF`] rather than depending on any
 //! hardware crate, so the full IK<->FK round-trip runs under a plain `cargo test`
 //! on any host.
+#![forbid(unsafe_code)]
 
 mod arm;
 mod coriolis;
@@ -54,8 +55,8 @@ pub use ik::{ArmAnglePolicy, Solution};
 /// via [`Posed::jacobian`]) and its redundancy-aware inverses and helpers for
 /// velocity-level control.
 pub use jacobian::{
-    damped_pseudo_inverse, manipulability, null_space_projector, try_pseudo_inverse, Jacobian,
-    JacobianPinv,
+    Jacobian, JacobianPinv, damped_pseudo_inverse, manipulability, null_space_projector,
+    try_pseudo_inverse,
 };
 
 /// Degrees of freedom of the arm. The URDF chain is validated against this at

@@ -15,7 +15,6 @@ _DEFAULT_TOPIC = "clock"
 class ClockBridge(BridgePlugin):
     """Publishes the sim clock each step."""
 
-
     def __init__(self, sensor: Any, config: Any, entry: Any) -> None:
         if entry is None:
             raise ValueError("ClockBridge requires a non-None entry with a topic field")

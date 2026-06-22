@@ -9,8 +9,8 @@
 
 use k::nalgebra::{Isometry3, Matrix3, Vector3};
 
-use crate::{ARM_DOF, Limit, PARALLEL_SIN_EPS};
 use crate::fk::ForwardKinematics;
+use crate::{ARM_DOF, Limit, PARALLEL_SIN_EPS};
 
 /// Constant kinematic model of one OpenArm: PoE screw data plus the SRS
 /// shoulder/elbow/wrist centers and link lengths.
@@ -87,10 +87,13 @@ impl ArmModel {
         // triplet's axes to be mutually orthogonal. |cos| between two unit axes is
         // the sine of their deviation from perpendicular, so the angular
         // [`PARALLEL_SIN_EPS`] is the right gate (not the length tolerance).
-        let oblique = [("shoulder (j1-j3)", [0usize, 1, 2]), ("wrist (j5-j7)", [4, 5, 6])]
-            .into_iter()
-            .flat_map(|(label, [i, j, k])| [(label, i, j), (label, j, k), (label, i, k)])
-            .find(|&(_, a, b)| axes[a].dot(&axes[b]).abs() > PARALLEL_SIN_EPS);
+        let oblique = [
+            ("shoulder (j1-j3)", [0usize, 1, 2]),
+            ("wrist (j5-j7)", [4, 5, 6]),
+        ]
+        .into_iter()
+        .flat_map(|(label, [i, j, k])| [(label, i, j), (label, j, k), (label, i, k)])
+        .find(|&(_, a, b)| axes[a].dot(&axes[b]).abs() > PARALLEL_SIN_EPS);
         if let Some((label, a, b)) = oblique {
             return Err(format!(
                 "{label}: axes j{} and j{} are not orthogonal (|cos|={:.6}): \
@@ -249,7 +252,12 @@ mod tests {
                 for (a, b) in [(i, j), (j, k), (i, k)] {
                     let dot = axes[a].dot(&axes[b]).abs();
                     println!("{side} {label}: |cos(j{}, j{})| = {dot:.2e}", a + 1, b + 1);
-                    assert!(dot < 1e-9, "{side} {label}: j{}·j{} = {dot:.2e}, not orthogonal", a + 1, b + 1);
+                    assert!(
+                        dot < 1e-9,
+                        "{side} {label}: j{}·j{} = {dot:.2e}, not orthogonal",
+                        a + 1,
+                        b + 1
+                    );
                 }
             }
         }
