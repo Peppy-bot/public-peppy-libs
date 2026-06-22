@@ -10,8 +10,8 @@ k = "0.32"
 urdf-rs = "0.9"
 
 [dev-dependencies]
-rand = "0.8"
-criterion = "0.5"
+rand = "0.10"
+criterion = "0.8"
 
 [[bench]]
 name = "compute"

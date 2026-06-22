@@ -87,6 +87,7 @@ pub enum CanError {
 
 pub type Result<T> = std::result::Result<T, CanError>;
 
+#[cfg(openarm_sdk)]
 mod inner {
     #![allow(
         non_upper_case_globals,
@@ -95,6 +96,78 @@ mod inner {
         dead_code
     )]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
+
+// Stub FFI used when the openarm_can C++ SDK is absent (dev machines / CI without
+// the hardware library; see build.rs). `openarm_create` returns null so
+// `CanHandle::new` fails with `CanError::OpenFailed`, which makes the other entry
+// points unreachable — they exist only so the crate links and the pure-Rust API
+// and tests compile. Build against the real SDK for hardware support.
+#[cfg(not(openarm_sdk))]
+mod inner {
+    #![allow(dead_code, unused_variables)]
+    use std::os::raw::{c_char, c_void};
+
+    pub type OpenArmHandle = *mut c_void;
+
+    pub unsafe fn openarm_create(_iface: *const c_char, _enable_fd: bool) -> OpenArmHandle {
+        std::ptr::null_mut()
+    }
+    pub unsafe fn openarm_destroy(h: OpenArmHandle) {}
+    pub unsafe fn openarm_enable_all(h: OpenArmHandle) {}
+    pub unsafe fn openarm_disable_all(h: OpenArmHandle) {}
+    pub unsafe fn openarm_recv_all(h: OpenArmHandle, first_timeout_us: i32) {}
+    pub unsafe fn openarm_refresh_all(h: OpenArmHandle) {}
+    pub unsafe fn openarm_set_callback_mode_all(h: OpenArmHandle, mode: i32) {}
+    pub unsafe fn openarm_init_arm_motors(
+        h: OpenArmHandle,
+        motor_types: *const u8,
+        send_can_ids: *const u32,
+        recv_can_ids: *const u32,
+        count: i32,
+    ) {
+    }
+    pub unsafe fn openarm_arm_mit_control(
+        h: OpenArmHandle,
+        kp: *const f64,
+        kd: *const f64,
+        q: *const f64,
+        dq: *const f64,
+        tau: *const f64,
+        count: i32,
+    ) {
+    }
+    pub unsafe fn openarm_arm_get_state(
+        h: OpenArmHandle,
+        positions: *mut f64,
+        velocities: *mut f64,
+        torques: *mut f64,
+        count: i32,
+    ) {
+    }
+    pub unsafe fn openarm_init_gripper_motor(
+        h: OpenArmHandle,
+        motor_type: u8,
+        send_can_id: u32,
+        recv_can_id: u32,
+    ) {
+    }
+    pub unsafe fn openarm_gripper_mit_control(
+        h: OpenArmHandle,
+        kp: f64,
+        kd: f64,
+        q: f64,
+        dq: f64,
+        tau: f64,
+    ) {
+    }
+    pub unsafe fn openarm_gripper_get_state(
+        h: OpenArmHandle,
+        position: *mut f64,
+        velocity: *mut f64,
+        torque: *mut f64,
+    ) {
+    }
 }
 
 // SAFETY: Verified by inspection of enactic/openarm_can: CANSocket wraps a plain

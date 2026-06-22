@@ -523,7 +523,7 @@ fn origin_outside_plane(p: Vector3<f64>, q: Vector3<f64>, r: Vector3<f64>, opp: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     use srs_model::nalgebra::{Isometry3, Translation3, UnitQuaternion};
 
     fn pt(x: f64, y: f64, z: f64) -> Point3<f64> {
@@ -585,14 +585,14 @@ mod tests {
 
     #[test]
     fn distance_is_continuous_through_contact() {
-        use rand::{Rng, SeedableRng};
+        use rand::{RngExt, SeedableRng};
         // Mesh hulls are never perfectly symmetric; an irregular blob swept
         // apart has a signed distance that rises smoothly through zero (EPA
         // below, GJK above), with no jump at contact.
         let blob = |c: Point3<f64>| {
             let mut rng = rand::rngs::StdRng::seed_from_u64(4);
             let verts: Vec<_> = (0..40)
-                .map(|_| Point3::new(c.x + rng.gen_range(-0.5..0.5), c.y + rng.gen_range(-0.5..0.5), c.z + rng.gen_range(-0.5..0.5)))
+                .map(|_| Point3::new(c.x + rng.random_range(-0.5..0.5), c.y + rng.random_range(-0.5..0.5), c.z + rng.random_range(-0.5..0.5)))
                 .collect();
             Hull::new(&crate::hull::convex_hull(&verts).expect("hull"), 0.0).expect("blob")
         };
@@ -629,8 +629,8 @@ mod tests {
     fn is_symmetric() {
         let mut rng = rand::rngs::StdRng::seed_from_u64(3);
         for _ in 0..500 {
-            let a = box_hull(pt(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), 0.0), 0.4, 0.05);
-            let b = box_hull(pt(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), 1.0), 0.4, 0.05);
+            let a = box_hull(pt(rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0), 0.0), 0.4, 0.05);
+            let b = box_hull(pt(rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0), 1.0), 0.4, 0.05);
             let ab = distance(&a, &b).distance;
             let ba = distance(&b, &a).distance;
             assert!((ab - ba).abs() < 1e-9, "asymmetric: {ab} vs {ba}");
