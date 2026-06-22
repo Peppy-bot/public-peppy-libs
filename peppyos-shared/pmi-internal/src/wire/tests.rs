@@ -189,34 +189,6 @@ fn action_sender_cancel_and_result_only_differ_by_kind() {
     assert_eq!(result.to_target, goal.to_target);
 }
 
-#[test]
-fn action_sender_pinned_to_overwrites_identity_and_preserves_rest() {
-    // Mimic the wildcard-goal case: start with no target identity, then
-    // latch to a concrete responder after `goal_response` arrives.
-    let mut wildcard = sample_action_sender();
-    wildcard.target_core_node = None;
-    wildcard.target_instance_id = None;
-
-    let pinned = wildcard
-        .pinned_to("responder_core", "responder_inst")
-        .expect("pinned_to should validate the segments");
-
-    assert_eq!(pinned.target_core_node.as_deref(), Some("responder_core"));
-    assert_eq!(pinned.target_instance_id.as_deref(), Some("responder_inst"));
-    // Everything else carries over unchanged.
-    assert_eq!(pinned.as_core_node, wildcard.as_core_node);
-    assert_eq!(pinned.as_instance_id, wildcard.as_instance_id);
-    assert_eq!(pinned.to_target, wildcard.to_target);
-    assert_eq!(pinned.to_action_name, wildcard.to_action_name);
-}
-
-#[test]
-fn action_sender_pinned_to_rejects_invalid_identity_segment() {
-    let wildcard = sample_action_sender();
-    let err = wildcard.pinned_to("ok_core", "bad/inst").unwrap_err();
-    assert!(format!("{err}").contains("/"));
-}
-
 // ─── ActionWireReceiver derived services ──────────────────────────────────
 
 fn sample_action_receiver() -> ActionWireReceiver {
@@ -257,27 +229,3 @@ fn action_receiver_all_three_variants_have_consistent_addressing() {
 }
 
 // ─── from_validated panic contract ──────────────────────────────────────────
-
-#[test]
-fn node_from_validated_builds_a_node_target_for_safe_segments() {
-    let target = SenderTarget::node_from_validated("uvc_camera", "v1");
-    assert!(target.is_node());
-    assert_eq!(target.name(), "uvc_camera");
-    assert_eq!(target.tag(), "v1");
-}
-
-#[test]
-fn node_from_validated_normalizes_hyphenated_tag_like_new() {
-    // from_validated funnels through new(), so the hyphen-to-underscore tag
-    // normalization still applies to the validated path.
-    let target = SenderTarget::node_from_validated("arm", "v1-beta");
-    assert_eq!(target.tag(), "v1_beta");
-}
-
-#[test]
-#[should_panic(expected = "validated name and tag should be wire-segment safe")]
-fn node_from_validated_panics_on_reserved_sentinel() {
-    // The documented panic contract: a degenerate name that collides with a
-    // reserved wire sentinel must blow up rather than produce a bad target.
-    let _ = NodeIdentifier::from_validated("_", "v1");
-}

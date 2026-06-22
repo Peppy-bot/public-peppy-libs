@@ -27,7 +27,6 @@ authors = ["Tuatini Godard <tuatini@peppy.bot>"]
 # their own `features`/`optional` on top. Single-consumer deps stay inline in
 # the owning crate's manifest.
 [workspace.dependencies]
-askama = "0.16"
 bytes = "1"
 capnp = "0.26"
 capnpc = "0.26"

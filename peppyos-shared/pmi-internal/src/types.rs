@@ -825,10 +825,6 @@ impl TopicMessage {
         self.source_timestamp_nanos
     }
 
-    pub fn into_payload(self) -> Payload {
-        self.payload
-    }
-
     /// Raw incoming keyexpr. Wire-format-aware code (peppylib's service flow,
     /// adapters) uses this to address responses back to the request; no other
     /// consumer should touch this — the wire format is owned by

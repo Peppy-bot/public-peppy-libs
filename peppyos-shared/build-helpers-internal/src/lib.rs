@@ -10,5 +10,4 @@ mod command;
 mod fs;
 
 pub use cargo::{cargo_install_binary, embed_git_tag, find_bundled_capnp};
-pub use command::run_command;
 pub use fs::{acquire_file_lock, cache_dir, copy_if_changed, set_executable};

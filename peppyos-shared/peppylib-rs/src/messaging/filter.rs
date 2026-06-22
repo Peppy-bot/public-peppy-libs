@@ -1,6 +1,6 @@
 //! Consumer-side per-slot filter applied by the messaging layer to decide
 //! which producer messages reach which `depends_on` slot. The validator
-//! (in `config-internal::launcher::bindings`) pre-resolves each consumer
+//! (in `the daemon-side launcher binding validation`) pre-resolves each consumer
 //! instance's launcher / CLI binding map into per-slot
 //! [`config::runtime::SlotBinding`] entries — each stamped with the
 //! producer's full `(core_node, instance_id)` wire address; at startup,

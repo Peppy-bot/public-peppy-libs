@@ -44,7 +44,6 @@ capnpc.workspace = true
 [dev-dependencies]
 libc = "0.2"
 tempfile.workspace = true
-askama.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-util = "0.7"
 rand.workspace = true

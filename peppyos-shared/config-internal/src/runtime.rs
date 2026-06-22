@@ -14,7 +14,7 @@ use crate::launcher::Name;
 /// within one stack, while the pair is unique across the whole mesh — so
 /// every reference to a producer below the validator carries both halves.
 /// The validator stamps `core_node` when it materializes bindings (see
-/// `crate::launcher::validate_bindings`); after that point a half-address
+/// the daemon-side launcher binding validation); after that point a half-address
 /// is unrepresentable.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -69,7 +69,7 @@ pub struct NodeInstanceConfig {
     /// distinguishes pinned vs `from_any` slots). Empty when the manifest
     /// has no `depends_on` entries. Read by the generated subscribe /
     /// poll / send_goal call sites via
-    /// [`crate::runtime::ConsumerFilter`].
+    /// `ConsumerFilter`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: BTreeMap<String, SlotBinding>,
 }
@@ -90,7 +90,7 @@ impl NodeInstanceConfig {
 }
 
 /// Framework knobs already resolved by the daemon. Distinct from
-/// `launcher::FrameworkOverrides` so the type system enforces "resolution
+/// `the daemon-side launcher framework overrides` so the type system enforces "resolution
 /// happens once": the launcher form carries optional overrides; this form
 /// carries concrete values the spawned node reads without further fallback.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -13,15 +13,13 @@ use std::path::{Path, PathBuf};
 /// version-keyed when their contents are version-specific (existing
 /// convention: `ruff-{version}`, `lima-{version}-{os}-{arch}`). Nothing ever
 /// cleans the cache — stale entries persist until removed manually with
-/// `rm -rf ~/.peppy/tmp/<suffix>`. In production runs the peppy runtime's
-/// `PeppyDirs::tmp_dir()` (config-internal) resolves to the same
-/// `~/.peppy/tmp`, so neither side may ever bulk-clean the directory.
+/// `rm -rf ~/.peppy/tmp/<suffix>`. The peppy runtime's `~/.peppy/tmp` resolves
+/// to this same directory, so neither side may ever bulk-clean it.
 ///
-/// This is deliberately rooted at `$HOME`, not the `PEPPY_HOME` override that
-/// config's `peppy_root_dir` honors: it is the persistent, version-keyed
-/// build-tool cache that should survive across CI runs, distinct from the
-/// per-run scratch that CI redirects via `PEPPY_HOME`. Do not "fix" it to follow
-/// `PEPPY_HOME`.
+/// This is deliberately rooted at `$HOME`, not the `PEPPY_HOME` override: it is
+/// the persistent, version-keyed build-tool cache that should survive across CI
+/// runs, distinct from the per-run scratch that CI redirects via `PEPPY_HOME`.
+/// Do not "fix" it to follow `PEPPY_HOME`.
 pub fn cache_dir(suffix: &str) -> PathBuf {
     let user_home = std::env::var("HOME").expect("HOME environment variable not set");
     cache_dir_under(Path::new(&user_home), suffix)

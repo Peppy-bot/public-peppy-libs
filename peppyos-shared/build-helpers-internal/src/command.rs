@@ -3,21 +3,6 @@
 use std::io::{BufRead, Read};
 use std::process::{Command, Stdio};
 
-/// Runs a command and prints a cargo warning on failure. Returns `true` on success.
-pub fn run_command(command: &mut Command, description: &str) -> bool {
-    match command.status() {
-        Ok(status) if status.success() => true,
-        Ok(status) => {
-            println!("cargo:warning=Failed to {description} (exit status: {status})");
-            false
-        }
-        Err(err) => {
-            println!("cargo:warning=Failed to {description}: {err}");
-            false
-        }
-    }
-}
-
 /// Runs a command, streaming its stdout and stderr as `cargo:warning=` lines.
 /// Returns `true` on success.
 ///
@@ -76,25 +61,6 @@ mod tests {
     /// Absolute so the result does not depend on `PATH` contents.
     fn missing_binary(dir: &tempfile::TempDir) -> std::path::PathBuf {
         dir.path().join("no-such-bin")
-    }
-
-    #[test]
-    fn run_command_reports_success() {
-        assert!(run_command(&mut Command::new("true"), "run true"));
-    }
-
-    #[test]
-    fn run_command_reports_failure() {
-        assert!(!run_command(&mut Command::new("false"), "run false"));
-    }
-
-    #[test]
-    fn run_command_reports_spawn_error() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        assert!(!run_command(
-            &mut Command::new(missing_binary(&dir)),
-            "run missing binary"
-        ));
     }
 
     #[test]

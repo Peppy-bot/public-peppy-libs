@@ -220,16 +220,6 @@ impl NodeIdentifier {
         })
     }
 
-    /// Builds a node identifier from segments the caller has already validated
-    /// upstream (e.g. via `config::Name`). Panics if a segment turns out to
-    /// collide with a reserved wire sentinel; the only inputs that can trigger
-    /// this are degenerate `Name`s like `"_"` or `"-"` (the latter after
-    /// hyphen-to-underscore tag normalization). Use this at call sites whose
-    /// inputs were funneled through a typed `Name` boundary.
-    pub fn from_validated(name: &str, tag: &str) -> Self {
-        Self::new(name, tag).expect("validated name and tag should be wire-segment safe")
-    }
-
     pub fn name(&self) -> &str {
         self.node_name.as_str()
     }
@@ -260,13 +250,6 @@ impl SenderTarget {
     /// `SenderTarget::Node(NodeIdentifier::new("uvc_camera", "v1")?)`.
     pub fn node(name: &str, tag: &str) -> Result<Self, SenderTargetError> {
         NodeIdentifier::new(name, tag).map(Self::Node)
-    }
-
-    /// Builds a node-shaped target from segments validated upstream (e.g. via
-    /// `config::Name`). See [`NodeIdentifier::from_validated`] for the panic
-    /// contract.
-    pub fn node_from_validated(name: &str, tag: &str) -> Self {
-        Self::Node(NodeIdentifier::from_validated(name, tag))
     }
 
     pub(crate) fn discriminator(&self) -> &'static str {
@@ -453,15 +436,6 @@ impl TopicWireReceiver {
             defers_secondary_drop: false,
         })
     }
-
-    /// Tells the adapter to skip its built-in secondary-publish drop because
-    /// peppylib will apply a sibling-pinned link_id filter above it. Set to
-    /// `true` only when the consumer's manifest registers sibling-pinned
-    /// link_ids for this `(name, tag)`.
-    pub fn with_defers_secondary_drop(mut self, defers: bool) -> Self {
-        self.defers_secondary_drop = defers;
-        self
-    }
 }
 
 // ─── Services ────────────────────────────────────────────────────────────────
@@ -633,19 +607,6 @@ impl ActionWireSender {
 
     pub fn target_instance_id(&self) -> Option<&str> {
         self.target_instance_id.as_deref()
-    }
-
-    /// Returns a clone with `target_core_node` and `target_instance_id`
-    /// overwritten by the given values. Used by `ActionMessenger::send_goal`
-    /// to latch the stored sender to the responding producer after the first
-    /// `goal_response` arrives, so cancel / result / feedback all target the
-    /// winner instead of fanning out to every producer that received the
-    /// wildcard goal.
-    pub fn pinned_to(&self, core_node: &str, instance_id: &str) -> crate::error::Result<Self> {
-        let mut out = self.clone();
-        out.target_core_node = Some(Segment::try_from(core_node)?);
-        out.target_instance_id = Some(Segment::try_from(instance_id)?);
-        Ok(out)
     }
 
     fn action_service(&self, kind: ServiceKind) -> ServiceWireSender {

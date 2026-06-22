@@ -52,14 +52,7 @@ impl FromStr for Toolchain {
     }
 }
 
-impl Toolchain {
-    pub fn map_to_language(&self) -> PeppygenLanguage {
-        match self {
-            Toolchain::Cargo => PeppygenLanguage::Rust,
-            Toolchain::Uv => PeppygenLanguage::Python,
-        }
-    }
-}
+impl Toolchain {}
 
 /// Reject any `peppy_schema` value other than `node_v1` so a launcher
 /// document that happens to share a node-compatible field set can't
@@ -170,36 +163,6 @@ pub struct MessageFormat(pub IndexMap<String, SchemaType>);
 
 fn is_false(value: &bool) -> bool {
     !*value
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum InterfaceKind {
-    Topic,
-    Service,
-    Action,
-}
-
-impl std::fmt::Display for InterfaceKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            InterfaceKind::Topic => write!(f, "topic"),
-            InterfaceKind::Service => write!(f, "service"),
-            InterfaceKind::Action => write!(f, "action"),
-        }
-    }
-}
-
-impl std::str::FromStr for InterfaceKind {
-    type Err = String;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
-            "topic" => Ok(InterfaceKind::Topic),
-            "service" => Ok(InterfaceKind::Service),
-            "action" => Ok(InterfaceKind::Action),
-            other => Err(format!("unknown interface kind: {other}")),
-        }
-    }
 }
 
 // Schema types used inside MessageFormat
@@ -342,14 +305,6 @@ impl SchemaType {
             SchemaType::Primitive(schema) => schema.optional,
             SchemaType::Array(schema) => schema.optional,
             SchemaType::Object(schema) => schema.optional,
-        }
-    }
-
-    pub fn as_type_token(&self) -> Option<&TypeToken> {
-        match self {
-            SchemaType::Type(token) => Some(token),
-            SchemaType::Primitive(schema) => Some(&schema.kind),
-            _ => None,
         }
     }
 }
@@ -788,194 +743,6 @@ pub struct Interfaces {
     pub actions: Option<ActionInterfaces>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conforms_to: Option<Vec<ConformsToItem>>,
-}
-
-/// Puts a value into canonical form so that derived `PartialEq` becomes
-/// order-independent: vecs are sorted by name, IndexMap keys are sorted
-/// recursively, and `Some(default)` is collapsed to `None`.
-trait Normalize {
-    fn normalize(&mut self);
-
-    fn normalized(mut self) -> Self
-    where
-        Self: Sized,
-    {
-        self.normalize();
-        self
-    }
-}
-
-fn normalize_schema_map(map: &mut IndexMap<String, SchemaType>) {
-    for value in map.values_mut() {
-        value.normalize();
-    }
-    map.sort_keys();
-}
-
-fn normalize_opt<T: Normalize>(opt: &mut Option<T>) {
-    if let Some(inner) = opt.as_mut() {
-        inner.normalize();
-    }
-}
-
-fn normalize_opt_default<T: Normalize + Default + PartialEq>(opt: &mut Option<T>) {
-    if let Some(inner) = opt.as_mut() {
-        inner.normalize();
-        let mut def = T::default();
-        def.normalize();
-        if *inner == def {
-            *opt = None;
-        }
-    }
-}
-
-fn normalize_opt_vec<T: Normalize>(
-    opt: &mut Option<Vec<T>>,
-    cmp: impl Fn(&T, &T) -> std::cmp::Ordering,
-) {
-    if let Some(items) = opt.as_mut() {
-        for item in items.iter_mut() {
-            item.normalize();
-        }
-        items.sort_by(|a, b| cmp(a, b));
-        if items.is_empty() {
-            *opt = None;
-        }
-    }
-}
-
-impl Normalize for SchemaType {
-    fn normalize(&mut self) {
-        match self {
-            SchemaType::Type(_) | SchemaType::Primitive(_) => {}
-            SchemaType::Array(arr) => arr.items.normalize(),
-            SchemaType::Object(obj) => normalize_schema_map(&mut obj.fields),
-        }
-    }
-}
-
-impl Normalize for MessageFormat {
-    fn normalize(&mut self) {
-        normalize_schema_map(&mut self.0);
-    }
-}
-
-impl Normalize for EmittedTopic {
-    fn normalize(&mut self) {
-        normalize_opt(&mut self.message_format);
-    }
-}
-
-impl Normalize for ConsumedTopic {
-    fn normalize(&mut self) {}
-}
-
-impl Normalize for ConformsToItem {
-    fn normalize(&mut self) {}
-}
-
-impl Normalize for ExposedService {
-    fn normalize(&mut self) {
-        normalize_opt(&mut self.request_message_format);
-        normalize_opt(&mut self.response_message_format);
-    }
-}
-
-impl Normalize for ConsumedService {
-    fn normalize(&mut self) {}
-}
-
-impl Normalize for ConsumedAction {
-    fn normalize(&mut self) {}
-}
-
-impl Normalize for ActionServiceEndpoint {
-    fn normalize(&mut self) {
-        normalize_opt(&mut self.request_message_format);
-        normalize_opt(&mut self.response_message_format);
-    }
-}
-
-impl Normalize for ActionTopicEndpoint {
-    fn normalize(&mut self) {
-        normalize_opt(&mut self.message_format);
-    }
-}
-
-impl Normalize for ExposedAction {
-    fn normalize(&mut self) {
-        if let Some(gs) = &mut self.goal_service {
-            gs.normalize();
-        }
-        if let Some(ft) = &mut self.feedback_topic {
-            ft.normalize();
-        }
-        if let Some(rs) = &mut self.result_service {
-            rs.normalize();
-        }
-    }
-}
-
-impl Normalize for TopicInterfaces {
-    fn normalize(&mut self) {
-        normalize_opt_vec(&mut self.emits, |a, b| {
-            a.name
-                .cmp(&b.name)
-                .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
-        });
-        normalize_opt_vec(&mut self.consumes, |a, b| {
-            a.name.cmp(&b.name).then_with(|| a.link_id.cmp(&b.link_id))
-        });
-    }
-}
-
-impl Normalize for ServiceInterfaces {
-    fn normalize(&mut self) {
-        normalize_opt_vec(&mut self.exposes, |a, b| {
-            a.name
-                .cmp(&b.name)
-                .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
-        });
-        normalize_opt_vec(&mut self.consumes, |a, b| {
-            a.name.cmp(&b.name).then_with(|| a.link_id.cmp(&b.link_id))
-        });
-    }
-}
-
-impl Normalize for ActionInterfaces {
-    fn normalize(&mut self) {
-        normalize_opt_vec(&mut self.exposes, |a, b| {
-            a.name
-                .cmp(&b.name)
-                .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
-        });
-        normalize_opt_vec(&mut self.consumes, |a, b| {
-            a.name.cmp(&b.name).then_with(|| a.link_id.cmp(&b.link_id))
-        });
-    }
-}
-
-impl Normalize for Interfaces {
-    fn normalize(&mut self) {
-        normalize_opt_default(&mut self.topics);
-        normalize_opt_default(&mut self.services);
-        normalize_opt_default(&mut self.actions);
-        normalize_opt_vec(&mut self.conforms_to, |a, b| {
-            a.name
-                .as_str()
-                .cmp(b.name.as_str())
-                .then_with(|| a.tag.cmp(&b.tag))
-                .then_with(|| a.sha256.cmp(&b.sha256))
-        });
-    }
-}
-
-impl Interfaces {
-    /// Compares two `Interfaces` for equivalence, ignoring the order of items
-    /// within each list and the order of fields within message formats.
-    pub fn matches_unordered(&self, other: &Interfaces) -> bool {
-        self.clone().normalized() == other.clone().normalized()
-    }
 }
 
 #[cfg(test)]
@@ -1721,35 +1488,6 @@ mod tests {
     }
 
     #[test]
-    fn interfaces_conforms_to_normalization_sorts_by_name() {
-        let item_a = ConformsToItem {
-            name: Name::new("alpha").unwrap(),
-            tag: "v1".into(),
-            sha256: None,
-        };
-        let item_b = ConformsToItem {
-            name: Name::new("beta").unwrap(),
-            tag: "v1".into(),
-            sha256: Some("aaaa".into()),
-        };
-
-        let interfaces_a = Interfaces {
-            topics: None,
-            services: None,
-            actions: None,
-            conforms_to: Some(vec![item_a.clone(), item_b.clone()]),
-        };
-        let interfaces_b = Interfaces {
-            topics: None,
-            services: None,
-            actions: None,
-            conforms_to: Some(vec![item_b, item_a]),
-        };
-
-        assert!(interfaces_a.matches_unordered(&interfaces_b));
-    }
-
-    #[test]
     fn depends_on_rejects_unknown_fields() {
         let json5 = r#"{
             name: "node",
@@ -1799,111 +1537,5 @@ mod tests {
             err.to_string().contains("node_v1"),
             "error should mention the expected schema, got: {err}"
         );
-    }
-
-    #[test]
-    fn consume_normalization_sorts_by_name_and_link_id() {
-        // TopicInterfaces: two linked consumed topics with same name, different link_id
-        let mut topics_a = TopicInterfaces {
-            emits: None,
-            consumes: Some(vec![
-                ConsumedTopic {
-                    link_id: "node_b".into(),
-                    name: "topic".into(),
-                },
-                ConsumedTopic {
-                    link_id: "node_a".into(),
-                    name: "topic".into(),
-                },
-            ]),
-        };
-        let mut topics_b = TopicInterfaces {
-            emits: None,
-            consumes: Some(vec![
-                ConsumedTopic {
-                    link_id: "node_a".into(),
-                    name: "topic".into(),
-                },
-                ConsumedTopic {
-                    link_id: "node_b".into(),
-                    name: "topic".into(),
-                },
-            ]),
-        };
-        topics_a.normalize();
-        topics_b.normalize();
-        assert_eq!(topics_a, topics_b);
-        // Verify sorted order: node_a before node_b
-        let consumes = topics_a.consumes.unwrap();
-        assert_eq!(consumes[0].link_id, "node_a");
-        assert_eq!(consumes[1].link_id, "node_b");
-
-        // ServiceInterfaces: same name, different link_id
-        let mut services_a = ServiceInterfaces {
-            exposes: None,
-            consumes: Some(vec![
-                ConsumedService {
-                    link_id: "node_b".into(),
-                    name: "svc".into(),
-                },
-                ConsumedService {
-                    link_id: "node_a".into(),
-                    name: "svc".into(),
-                },
-            ]),
-        };
-        let mut services_b = ServiceInterfaces {
-            exposes: None,
-            consumes: Some(vec![
-                ConsumedService {
-                    link_id: "node_a".into(),
-                    name: "svc".into(),
-                },
-                ConsumedService {
-                    link_id: "node_b".into(),
-                    name: "svc".into(),
-                },
-            ]),
-        };
-        services_a.normalize();
-        services_b.normalize();
-        assert_eq!(services_a, services_b);
-        let consumes = services_a.consumes.unwrap();
-        assert_eq!(consumes[0].link_id, "node_a");
-        assert_eq!(consumes[1].link_id, "node_b");
-
-        // ActionInterfaces: same name, different link_id
-        let mut actions_a = ActionInterfaces {
-            exposes: None,
-            consumes: Some(vec![
-                ConsumedAction {
-                    link_id: "node_b".into(),
-                    name: "act".into(),
-                },
-                ConsumedAction {
-                    link_id: "node_a".into(),
-                    name: "act".into(),
-                },
-            ]),
-        };
-        let mut actions_b = ActionInterfaces {
-            exposes: None,
-            consumes: Some(vec![
-                ConsumedAction {
-                    link_id: "node_a".into(),
-                    name: "act".into(),
-                },
-                ConsumedAction {
-                    link_id: "node_b".into(),
-                    name: "act".into(),
-                },
-            ]),
-        };
-        actions_a.normalize();
-        actions_b.normalize();
-        assert_eq!(actions_a, actions_b);
-        let consumes = actions_a.consumes.unwrap();
-        assert_eq!(consumes[0].link_id, "node_a");
-        assert_eq!(consumes[1].link_id, "node_b");
     }
 }

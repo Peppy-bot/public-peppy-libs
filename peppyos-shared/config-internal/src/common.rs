@@ -971,8 +971,6 @@ pub enum NodeArgumentsError {
     MissingParameters(Vec<String>),
     /// An argument key is not declared in the schema.
     UnknownParameter { key: String },
-    /// The input string could not be deserialized.
-    Deserialization(String),
 }
 
 impl std::fmt::Display for NodeArgumentsError {
@@ -984,9 +982,6 @@ impl std::fmt::Display for NodeArgumentsError {
             }
             Self::UnknownParameter { key } => {
                 write!(f, "unknown parameter `{key}` not declared in schema")
-            }
-            Self::Deserialization(msg) => {
-                write!(f, "failed to deserialize arguments: {msg}")
             }
         }
     }
@@ -1007,40 +1002,6 @@ pub fn validate_node_arguments(
     raw.into_resolved(schema)
 }
 
-/// Fill any keys missing from `arguments` with values synthesized from the
-/// schema's `$default` fallbacks, without validating types or unknown keys.
-///
-/// Returned [`Vec`] is the dot-paths of leaves required by the schema that
-/// have no `$default` to synthesize from. The argument map is left unchanged
-/// when the result is non-empty.
-///
-/// Use this at the daemon edge before spawning a node, when the spawned node
-/// is responsible for its own full validation. For one-shot validation +
-/// defaulting in a single call, use [`validate_node_arguments`] instead.
-pub fn apply_parameter_defaults(
-    arguments: &mut BTreeMap<String, AnyType>,
-    schema: &ParameterSchema,
-) -> Vec<String> {
-    // Stage mutations on a clone so partially synthesized values are not
-    // visible to the caller when we end up returning a non-empty `missing`.
-    let mut staged = arguments.clone();
-    let mut missing = Vec::new();
-    for (key, spec) in schema {
-        match staged.get_mut(key) {
-            Some(value) => merge_defaults(value, spec, key, &mut missing),
-            None => {
-                if let Some(value) = spec.synthesize_default(key, &mut missing) {
-                    staged.insert(key.clone(), value);
-                }
-            }
-        }
-    }
-    if missing.is_empty() {
-        *arguments = staged;
-    }
-    missing
-}
-
 /// Resolve a dot-path (e.g., `"video.device_path"`) against a parameter schema,
 /// returning the leaf [`ParameterSpec`] if found.
 ///
@@ -1056,32 +1017,6 @@ pub fn resolve_parameter_path<'a>(
     for segment in segments {
         match current {
             ParameterSpec::Group(map) => {
-                current = map.get(segment)?;
-            }
-            _ => return None,
-        }
-    }
-
-    Some(current)
-}
-
-/// Resolve a dot-path against a tree of runtime parameter VALUES (a
-/// `BTreeMap<String, AnyType>`), descending into [`AnyType::Object`] groups.
-///
-/// This is the value-side counterpart to `resolve_parameter_path`: that one
-/// walks the schema and returns a [`ParameterSpec`]; this one walks resolved
-/// arguments and returns the concrete [`AnyType`] value at the leaf.
-pub fn resolve_argument_path<'a>(
-    arguments: &'a BTreeMap<String, AnyType>,
-    dot_path: &str,
-) -> Option<&'a AnyType> {
-    let mut segments = dot_path.split('.');
-    let first = segments.next()?;
-    let mut current = arguments.get(first)?;
-
-    for segment in segments {
-        match current {
-            AnyType::Object(map) => {
                 current = map.get(segment)?;
             }
             _ => return None,
@@ -1720,64 +1655,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_parameter_defaults_fills_partial_group() {
-        let s = schema(
-            r#"{
-                device: {
-                    path: { $type: "string", $default: "/dev/video0" }
-                }
-            }"#,
-        );
-        let mut args: BTreeMap<String, AnyType> =
-            BTreeMap::from([("device".to_string(), AnyType::Object(BTreeMap::new()))]);
-        let missing = apply_parameter_defaults(&mut args, &s);
-        assert!(missing.is_empty(), "got missing: {missing:?}");
-        let AnyType::Object(device) = args.get("device").unwrap() else {
-            panic!("expected device object");
-        };
-        assert_eq!(
-            device.get("path"),
-            Some(&AnyType::String("/dev/video0".into()))
-        );
-    }
-
-    #[test]
-    fn apply_parameter_defaults_leaves_arguments_untouched_on_missing() {
-        let s = schema(
-            r#"{
-                device: {
-                    path: { $type: "string", $default: "/dev/video0" },
-                    serial: "string"
-                }
-            }"#,
-        );
-        let original_device = AnyType::Object(BTreeMap::new());
-        let mut args: BTreeMap<String, AnyType> =
-            BTreeMap::from([("device".to_string(), original_device.clone())]);
-        let missing = apply_parameter_defaults(&mut args, &s);
-        assert_eq!(missing, vec!["device.serial".to_string()]);
-        assert_eq!(args.get("device"), Some(&original_device));
-    }
-
-    #[test]
-    fn missing_group_with_partial_defaults_reports_required_leaf() {
-        let s = schema(
-            r#"{
-                device: {
-                    path: { $type: "string", $default: "/dev/video0" },
-                    serial: "string"
-                }
-            }"#,
-        );
-        let raw = RawNodeArguments::from(BTreeMap::new());
-        let err = raw.into_resolved(&s).unwrap_err();
-        let NodeArgumentsError::MissingParameters(keys) = err else {
-            panic!("unexpected error: {err:?}");
-        };
-        assert_eq!(keys, vec!["device.serial".to_string()]);
-    }
-
-    #[test]
     fn user_supplied_value_type_mismatch_errors() {
         let s = schema(r#"{ fps: "u16" }"#);
         let raw =
@@ -1858,40 +1735,6 @@ mod tests {
     }
 
     // ---- resolve_argument_path ----
-
-    #[test]
-    fn resolve_argument_path_descends_into_object_groups() {
-        let args: BTreeMap<String, AnyType> = BTreeMap::from([(
-            "video".to_string(),
-            AnyType::Object(BTreeMap::from([(
-                "device_path".to_string(),
-                AnyType::String("/dev/video0".to_string()),
-            )])),
-        )]);
-        assert_eq!(
-            resolve_argument_path(&args, "video.device_path"),
-            Some(&AnyType::String("/dev/video0".to_string()))
-        );
-        // A top-level leaf resolves without descending.
-        let flat: BTreeMap<String, AnyType> =
-            BTreeMap::from([("fps".to_string(), AnyType::UInt(30))]);
-        assert_eq!(
-            resolve_argument_path(&flat, "fps"),
-            Some(&AnyType::UInt(30))
-        );
-    }
-
-    #[test]
-    fn resolve_argument_path_returns_none_for_missing_or_non_group() {
-        let args: BTreeMap<String, AnyType> = BTreeMap::from([(
-            "video".to_string(),
-            AnyType::String("not-an-object".to_string()),
-        )]);
-        // Missing top-level key.
-        assert!(resolve_argument_path(&args, "missing").is_none());
-        // Descending past a non-Object leaf yields None rather than panicking.
-        assert!(resolve_argument_path(&args, "video.device_path").is_none());
-    }
 
     // ---- validate_node_arguments (programmatic map entry point) ----
 

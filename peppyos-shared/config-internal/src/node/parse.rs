@@ -115,7 +115,8 @@ pub fn load_standalone_node_config(path: impl AsRef<Path>) -> Result<NodeConfig>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{error::Error, launcher::PeppyLauncherParser, node::ContainerConfig};
+    use crate::error::Error;
+    use crate::internal::node::types::ContainerConfig;
     use tempfile::NamedTempFile;
 
     /// Test helper: borrows the `ContainerConfig` from a parsed config.
@@ -175,7 +176,7 @@ mod tests {
         assert_eq!(config.manifest.tag, "v21");
         assert_eq!(
             config.execution.language,
-            crate::node::PeppygenLanguage::Rust
+            crate::internal::node::types::PeppygenLanguage::Rust
         );
         assert_eq!(
             config.execution.run_cmd.as_ref().unwrap(),
@@ -616,25 +617,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_invalid_deployment_source() {
-        let json5 = r#"{
-            peppy_schema: "launcher_v1",
-            deployments: [
-                {
-                    source: { local: "" },
-                    instances: []
-                }
-            ]
-        }"#;
-
-        let result = PeppyLauncherParser::from_content(json5);
-        let Error::Parsing(ParsingError::InvalidDeploymentSource(msg)) = result.unwrap_err() else {
-            panic!("expected InvalidDeploymentSource error");
-        };
-        assert_eq!(msg, "local path cannot be empty");
-    }
-
     /// Top-level system directories (e.g. `/tmp`) are blocked as mount sources
     /// because Lima 2.0+ rejects them as guest mount points and binding an
     /// entire system directory into a container is almost always a mistake.
@@ -1068,7 +1050,10 @@ mod tests {
         assert_eq!(peppy_schema, crate::schema::PeppySchema::NodeV1);
         assert_eq!(manifest.name.as_str(), "my_node");
         assert_eq!(manifest.tag, "v1");
-        assert_eq!(interfaces, crate::node::Interfaces::default());
+        assert_eq!(
+            interfaces,
+            crate::internal::node::types::Interfaces::default()
+        );
         assert_eq!(
             execution.run_cmd.as_deref(),
             Some(["./target/debug/my_node".to_string()].as_slice())
