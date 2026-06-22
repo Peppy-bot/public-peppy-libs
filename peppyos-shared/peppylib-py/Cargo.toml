@@ -25,5 +25,5 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros"] }
 parking_lot = "0.12"
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers-shared = { path = "../build-helpers-shared" }
 pyo3-build-config.workspace = true

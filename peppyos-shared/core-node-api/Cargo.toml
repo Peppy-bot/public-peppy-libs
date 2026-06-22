@@ -18,7 +18,7 @@ url = "2"
 gix-url = "0.36"
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers-shared = { path = "../build-helpers-shared" }
 capnpc.workspace = true
 
 [dev-dependencies]

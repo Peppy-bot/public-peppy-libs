@@ -28,7 +28,7 @@ tempfile.workspace = true
 zenoh = { workspace = true, optional = true }
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers-shared = { path = "../build-helpers-shared" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = [

@@ -301,7 +301,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "build-helpers"
+name = "build-helpers-shared"
 version = "0.0.1"
 dependencies = [
  "tempfile",
@@ -557,7 +557,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 name = "core-node-api"
 version = "0.0.1"
 dependencies = [
- "build-helpers",
+ "build-helpers-shared",
  "bytes",
  "capnp",
  "capnpc",
@@ -2216,7 +2216,7 @@ dependencies = [
 name = "peppylib-py"
 version = "0.0.1"
 dependencies = [
- "build-helpers",
+ "build-helpers-shared",
  "bytes",
  "config",
  "core-node-api",
@@ -2237,7 +2237,7 @@ dependencies = [
 name = "peppylib-rs"
 version = "0.0.1"
 dependencies = [
- "build-helpers",
+ "build-helpers-shared",
  "bytes",
  "capnp",
  "capnpc",
@@ -2399,7 +2399,7 @@ dependencies = [
 name = "pmi"
 version = "0.0.1"
 dependencies = [
- "build-helpers",
+ "build-helpers-shared",
  "bytes",
  "config",
  "derive_more",

@@ -38,7 +38,7 @@ capnp.workspace = true
 flume.workspace = true
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers-shared = { path = "../build-helpers-shared" }
 capnpc.workspace = true
 
 [dev-dependencies]

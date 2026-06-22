@@ -14,7 +14,7 @@ members = [
     "core-node-api",
     "config-internal",
     "pmi-internal",
-    "build-helpers-internal",
+    "build-helpers-shared",
 ]
 
 [workspace.package]
