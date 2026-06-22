@@ -27,7 +27,11 @@ pub(crate) struct Payload {
 impl Payload {
     /// No distal mass. Folding it into a segment leaves the segment unchanged.
     pub(crate) fn none() -> Self {
-        Self { mass: 0.0, com: Vector3::zeros(), inertia: Matrix3::zeros() }
+        Self {
+            mass: 0.0,
+            com: Vector3::zeros(),
+            inertia: Matrix3::zeros(),
+        }
     }
 
     /// Lump every link distal to `tip` into one rigid body in the tip frame. The
@@ -83,7 +87,12 @@ fn distal_body_in_tip(
             return None;
         }
         // Rotate the COM inertia by the inertial's own rpy into the link frame.
-        let r = *link.inertial.origin().rotation.to_rotation_matrix().matrix();
+        let r = *link
+            .inertial
+            .origin()
+            .rotation
+            .to_rotation_matrix()
+            .matrix();
         (
             mass,
             link.inertial.origin().translation.vector,
@@ -93,7 +102,9 @@ fn distal_body_in_tip(
 
     // Re-express the frozen distal link in the tip frame (constant at home).
     let link_in_tip = tip_inv * node.world_transform().expect("distal world transform");
-    let com = link_in_tip.transform_point(&Point3::from(com_in_link)).coords;
+    let com = link_in_tip
+        .transform_point(&Point3::from(com_in_link))
+        .coords;
     let r = *link_in_tip.rotation.to_rotation_matrix().matrix();
     Some((mass, com, r * inertia_in_link * r.transpose()))
 }
@@ -173,10 +184,18 @@ mod tests {
 
         let p = Payload::from_distal(tip);
         let finger_mass = 0.03602545343277134;
-        assert!((p.mass - 2.0 * finger_mass).abs() < 1e-12, "mass = {}", p.mass);
+        assert!(
+            (p.mass - 2.0 * finger_mass).abs() < 1e-12,
+            "mass = {}",
+            p.mass
+        );
         assert!((p.com.x - 0.0064528).abs() < 1e-9, "com.x = {}", p.com.x);
         assert!(p.com.y.abs() < 1e-9, "com.y = {}", p.com.y); // fingers mirror in y
-        assert!((p.com.z - (0.1025 + 0.0219685)).abs() < 1e-9, "com.z = {}", p.com.z);
+        assert!(
+            (p.com.z - (0.1025 + 0.0219685)).abs() < 1e-9,
+            "com.z = {}",
+            p.com.z
+        );
     }
 
     #[test]
@@ -192,6 +211,10 @@ mod tests {
         assert!((merged.mass - 1.0).abs() < 1e-12);
         assert!(merged.com.norm() < 1e-12, "COM = {:?}", merged.com);
         let expected = Matrix3::from_diagonal(&Vector3::new(0.0, 1.0, 1.0));
-        assert!((merged.inertia - expected).norm() < 1e-12, "I = {:?}", merged.inertia);
+        assert!(
+            (merged.inertia - expected).norm() < 1e-12,
+            "I = {:?}",
+            merged.inertia
+        );
     }
 }

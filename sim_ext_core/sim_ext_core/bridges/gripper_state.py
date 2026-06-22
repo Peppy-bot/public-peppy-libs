@@ -14,7 +14,6 @@ _QOS = "sensor_data"
 class GripperStateBridge(BridgePlugin):
     """Publishes finger joint positions and applied forces."""
 
-
     def __init__(self, sensor: Any, config: Any, entry: Any) -> None:
         self._sensor = sensor
         self._node_name: str = config.node_name

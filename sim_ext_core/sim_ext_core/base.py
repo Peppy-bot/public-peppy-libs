@@ -14,7 +14,6 @@ if TYPE_CHECKING:
 class BridgePlugin(ABC):
     """Lifecycle contract: setup() resolves sim handles, on_step() runs every physics step, teardown() releases them."""
 
-
     @abstractmethod
     def setup(self) -> bool: ...
 

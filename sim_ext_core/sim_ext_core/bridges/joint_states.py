@@ -14,7 +14,6 @@ _QOS = "sensor_data"
 class JointStatesBridge(BridgePlugin):
     """Publishes joint positions and velocities from the articulation."""
 
-
     def __init__(self, articulation: Any, config: Any, entry: Any) -> None:
         self._articulation = articulation
         self._node_name: str = config.node_name

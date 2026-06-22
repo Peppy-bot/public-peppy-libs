@@ -30,11 +30,7 @@ pub async fn call_sim<T: RawTransport>(
 
     let body = serde_json::to_vec(&payload).map_err(|e| format!("serialize: {e}"))?;
     transport
-        .emit(
-            &format!("sim_bridge_{service}_req_pub"),
-            &req_topic,
-            body,
-        )
+        .emit(&format!("sim_bridge_{service}_req_pub"), &req_topic, body)
         .await
         .map_err(|e| format!("emit {req_topic}: {e}"))?;
 

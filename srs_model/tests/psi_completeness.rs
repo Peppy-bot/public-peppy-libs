@@ -13,9 +13,9 @@
 
 mod common;
 
-use srs_model::ArmAnglePolicy;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
+use srs_model::ArmAnglePolicy;
 
 /// Joint-4 floor that keeps targets off the straight-arm singularity, where the
 /// arm angle is geometrically undefined and a miss is expected, not a defect.

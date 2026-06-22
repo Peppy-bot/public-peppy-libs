@@ -24,7 +24,12 @@ fn fixture_round_trip() {
 
     for q in samples {
         for (i, (&v, l)) in q.iter().zip(&limits).enumerate() {
-            assert!(l.contains(v), "seed sample joint {i} = {v} outside [{}, {}]", l.lo, l.hi);
+            assert!(
+                l.contains(v),
+                "seed sample joint {i} = {v} outside [{}, {}]",
+                l.lo,
+                l.hi
+            );
         }
         let target = arm.at(&q).ee_pose();
 
@@ -32,7 +37,12 @@ fn fixture_round_trip() {
             .solve_ik(&target, ArmAnglePolicy::FromSeed, &q)
             .unwrap_or_else(|| panic!("no IK solution for {q:?}"));
         for (i, (&v, l)) in sol.q.iter().zip(&limits).enumerate() {
-            assert!(l.contains(v), "joint {i} = {v} outside [{}, {}]", l.lo, l.hi);
+            assert!(
+                l.contains(v),
+                "joint {i} = {v} outside [{}, {}]",
+                l.lo,
+                l.hi
+            );
         }
         let got = arm.at(&sol.q).ee_pose();
         let pos_err = (got.translation.vector - target.translation.vector).norm();

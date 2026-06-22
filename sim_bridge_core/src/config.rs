@@ -70,7 +70,10 @@ pub fn read_bridge_config() -> Result<BridgeConfig> {
     let path = resolve_config_path()?;
     let raw = fs::read_to_string(&path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            BridgeError::ConfigNotFound { path: path.clone(), source: e }
+            BridgeError::ConfigNotFound {
+                path: path.clone(),
+                source: e,
+            }
         } else {
             BridgeError::Io(e)
         }
@@ -140,8 +143,9 @@ fn resolve_config_path() -> Result<PathBuf> {
 }
 
 fn validate_preset_name(preset: &str) -> Result<()> {
-    let valid =
-        preset.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    let valid = preset
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
     if preset.is_empty() || !valid {
         return Err(BridgeError::InvalidPreset(format!(
             "{preset}: must match [A-Za-z0-9_-]+ (no path separators or dots allowed)"
@@ -152,7 +156,13 @@ fn validate_preset_name(preset: &str) -> Result<()> {
 
 fn strip_json5_comments(src: &str) -> String {
     src.lines()
-        .map(|l| if l.trim_start().starts_with("//") { "" } else { l })
+        .map(|l| {
+            if l.trim_start().starts_with("//") {
+                ""
+            } else {
+                l
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

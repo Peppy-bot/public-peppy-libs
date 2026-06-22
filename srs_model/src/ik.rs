@@ -565,8 +565,22 @@ fn feasible_psi_intervals(
     let mut events = Vec::new();
     let shoulder_limits = [model.limits[0], model.limits[1], model.limits[2]];
     let wrist_limits = [model.limits[4], model.limits[5], model.limits[6]];
-    limb_event_angles(&sa_s, &cb_s, &cc_s, bs.determinant(), shoulder_limits, &mut events);
-    limb_event_angles(&sa_w, &cb_w, &cc_w, bw.determinant(), wrist_limits, &mut events);
+    limb_event_angles(
+        &sa_s,
+        &cb_s,
+        &cc_s,
+        bs.determinant(),
+        shoulder_limits,
+        &mut events,
+    );
+    limb_event_angles(
+        &sa_w,
+        &cb_w,
+        &cc_w,
+        bw.determinant(),
+        wrist_limits,
+        &mut events,
+    );
 
     intervals_from_events(events, |psi| {
         solve_at_psi(model, r_d, p_w, theta4, psi, seed, circle).is_some()
@@ -581,13 +595,21 @@ fn intervals_from_events(mut events: Vec<f64>, feasible: impl Fn(f64) -> bool) -
     events.sort_by(|a, b| a.partial_cmp(b).expect("psi roots are finite"));
     if events.is_empty() {
         // Feasibility is constant over the whole circle.
-        return if feasible(0.0) { vec![(-PI, PI)] } else { Vec::new() };
+        return if feasible(0.0) {
+            vec![(-PI, PI)]
+        } else {
+            Vec::new()
+        };
     }
     let n = events.len();
     let mut intervals = Vec::new();
     for k in 0..n {
         let start = events[k];
-        let end = if k + 1 < n { events[k + 1] } else { events[0] + TAU };
+        let end = if k + 1 < n {
+            events[k + 1]
+        } else {
+            events[0] + TAU
+        };
         if feasible(wrap_pi(0.5 * (start + end))) {
             intervals.push((start, end));
         }
@@ -770,8 +792,8 @@ mod tests {
             }
             let target = pose(&mut fk, &q);
             let psi = arm_angle_of(&m, &q).expect("q is non-singular (q[3] >= 0.1)");
-            let sol = solve(&m, &target, ArmAnglePolicy::Fixed(psi), &q)
-                .expect("exact psi should solve");
+            let sol =
+                solve(&m, &target, ArmAnglePolicy::Fixed(psi), &q).expect("exact psi should solve");
             // Same branch as seed: each joint within a small tolerance.
             for (i, (&got, &want)) in sol.q.iter().zip(&q).enumerate() {
                 assert!(
@@ -956,8 +978,7 @@ mod tests {
             let p_w = target.translation.vector;
 
             let d = (p_w - m.shoulder).norm();
-            let cos4 = ((d * d - m.l_su * m.l_su - m.l_uw * m.l_uw)
-                / (2.0 * m.l_su * m.l_uw))
+            let cos4 = ((d * d - m.l_su * m.l_su - m.l_uw * m.l_uw) / (2.0 * m.l_su * m.l_uw))
                 .clamp(-1.0, 1.0);
             let theta4 = cos4.acos();
             let circle = circle_frame(&m, p_w);
@@ -1167,7 +1188,7 @@ mod tests {
         let mut fk = v1_fk("left");
         let m = ArmModel::from_fk(&mut fk).unwrap();
         let seeds = [
-            [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0], // hanging home
+            [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0],   // hanging home
             [0.3, -0.2, 0.1, 0.03, 0.4, 0.1, -0.2], // near-straight, off-axis
         ];
         for seed in seeds {
@@ -1208,7 +1229,10 @@ mod tests {
         for k in 0..=n {
             let s = k as f64 / n as f64;
             let p = start.translation.vector.lerp(&end.translation.vector, s);
-            let r = start.rotation.try_slerp(&end.rotation, s, 1e-6).unwrap_or(end.rotation);
+            let r = start
+                .rotation
+                .try_slerp(&end.rotation, s, 1e-6)
+                .unwrap_or(end.rotation);
             let target = Isometry3::from_parts(p.into(), r);
             let sol = solve(&m, &target, ArmAnglePolicy::FromSeed, &seed)
                 .expect("departure path stays reachable");
@@ -1223,7 +1247,10 @@ mod tests {
             seed = sol.q;
         }
         println!("worst joint step over departure: {worst:.4} rad");
-        assert!(worst < 0.1, "largest joint step {worst} rad — discontinuous departure");
+        assert!(
+            worst < 0.1,
+            "largest joint step {worst} rad — discontinuous departure"
+        );
     }
 
     #[test]
@@ -1233,12 +1260,22 @@ mod tests {
         let seed = [0.0; ARM_DOF];
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert!(
-                solve(&m, &iso(r, Vector3::new(bad, 0.0, 0.2)), ArmAnglePolicy::FromSeed, &seed)
-                    .is_none()
+                solve(
+                    &m,
+                    &iso(r, Vector3::new(bad, 0.0, 0.2)),
+                    ArmAnglePolicy::FromSeed,
+                    &seed
+                )
+                .is_none()
             );
             assert!(
-                solve(&m, &iso(r, Vector3::new(0.1, bad, 0.2)), ArmAnglePolicy::Fixed(0.0), &seed)
-                    .is_none()
+                solve(
+                    &m,
+                    &iso(r, Vector3::new(0.1, bad, 0.2)),
+                    ArmAnglePolicy::Fixed(0.0),
+                    &seed
+                )
+                .is_none()
             );
         }
     }
@@ -1281,9 +1318,7 @@ mod tests {
             }
             // Seeding with each distinct branch returns that branch.
             for b in &branches {
-                let got = solve(&m, &target, ArmAnglePolicy::Fixed(psi), b)
-                    .unwrap()
-                    .q;
+                let got = solve(&m, &target, ArmAnglePolicy::Fixed(psi), b).unwrap().q;
                 assert!(same(b, &got), "seed branch not returned: {b:?} -> {got:?}");
             }
             return; // verified on the first multi-branch target
@@ -1291,5 +1326,3 @@ mod tests {
         panic!("no target with >=2 distinct branches found");
     }
 }
-
-

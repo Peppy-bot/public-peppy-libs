@@ -64,8 +64,14 @@ impl ForwardKinematics {
     /// computing gravity/Coriolis) never has to build an [`ArmModel`](crate::model::ArmModel).
     pub fn limits(&self) -> [Limit; ARM_DOF] {
         std::array::from_fn(|i| match &self.joint_nodes[i].joint().limits {
-            Some(range) => Limit { lo: range.min, hi: range.max },
-            None => Limit { lo: -std::f64::consts::PI, hi: std::f64::consts::PI },
+            Some(range) => Limit {
+                lo: range.min,
+                hi: range.max,
+            },
+            None => Limit {
+                lo: -std::f64::consts::PI,
+                hi: std::f64::consts::PI,
+            },
         })
     }
 
@@ -117,7 +123,8 @@ impl ForwardKinematics {
         // rigid body. Gravity / Coriolis then carry it.
         if payload.mass > 0.0 {
             let last = ARM_DOF - 1;
-            let merged = payload.combined_with(masses[last], coms_local[last], inertias_local[last]);
+            let merged =
+                payload.combined_with(masses[last], coms_local[last], inertias_local[last]);
             masses[last] = merged.mass;
             coms_local[last] = merged.com;
             inertias_local[last] = merged.inertia;
@@ -288,8 +295,7 @@ fn find_srs_tip(base: &Node<f64>) -> Result<Node<f64>, String> {
         // Materialize children before filtering so the parent lock is released
         // before `subtree_has_revolute` locks each child.
         let children: Vec<Node<f64>> = node.children().to_vec();
-        let mut arm: Vec<Node<f64>> =
-            children.into_iter().filter(subtree_has_revolute).collect();
+        let mut arm: Vec<Node<f64>> = children.into_iter().filter(subtree_has_revolute).collect();
         node = match arm.len() {
             1 => arm.pop().unwrap(),
             0 => {
@@ -330,10 +336,12 @@ fn subtree_has_revolute(node: &Node<f64>) -> bool {
 /// `base_from_world` is frozen at home, silently building the wrong model
 /// instead of returning `Err`.
 fn collect_revolute_nodes(chain: &SerialChain<f64>) -> Result<[Node<f64>; ARM_DOF], String> {
-    if let Some(extra) = chain
-        .iter()
-        .find(|n| !matches!(n.joint().joint_type, JointType::Fixed | JointType::Rotational { .. }))
-    {
+    if let Some(extra) = chain.iter().find(|n| {
+        !matches!(
+            n.joint().joint_type,
+            JointType::Fixed | JointType::Rotational { .. }
+        )
+    }) {
         return Err(format!(
             "SRS chain has a non-revolute movable joint '{}': not a 7-DOF revolute arm",
             extra.joint().name
@@ -344,9 +352,12 @@ fn collect_revolute_nodes(chain: &SerialChain<f64>) -> Result<[Node<f64>; ARM_DO
         .filter(|n| matches!(n.joint().joint_type, JointType::Rotational { .. }))
         .cloned()
         .collect();
-    nodes
-        .try_into()
-        .map_err(|v: Vec<_>| format!("expected {ARM_DOF} revolute joints in the SRS chain, got {}", v.len()))
+    nodes.try_into().map_err(|v: Vec<_>| {
+        format!(
+            "expected {ARM_DOF} revolute joints in the SRS chain, got {}",
+            v.len()
+        )
+    })
 }
 
 #[cfg(test)]
@@ -410,10 +421,24 @@ mod tests {
         // (link1) origins must mirror across the XZ plane at the mount offsets.
         let mut left = crate::test_support::v1_fk("left");
         let mut right = crate::test_support::v1_fk("right");
-        let l = left.at(&[0.0; ARM_DOF]).link_pose_world(0).translation.vector;
-        let r = right.at(&[0.0; ARM_DOF]).link_pose_world(0).translation.vector;
-        assert!((l - Vector3::new(0.0, 0.0935, 0.698)).norm() < 1e-6, "left shoulder at {l:?}");
-        assert!((r - Vector3::new(0.0, -0.0935, 0.698)).norm() < 1e-6, "right shoulder at {r:?}");
+        let l = left
+            .at(&[0.0; ARM_DOF])
+            .link_pose_world(0)
+            .translation
+            .vector;
+        let r = right
+            .at(&[0.0; ARM_DOF])
+            .link_pose_world(0)
+            .translation
+            .vector;
+        assert!(
+            (l - Vector3::new(0.0, 0.0935, 0.698)).norm() < 1e-6,
+            "left shoulder at {l:?}"
+        );
+        assert!(
+            (r - Vector3::new(0.0, -0.0935, 0.698)).norm() < 1e-6,
+            "right shoulder at {r:?}"
+        );
     }
 
     #[test]

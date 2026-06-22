@@ -81,21 +81,37 @@ fn parse_args() -> Result<Args, String> {
             "--d-safe" => args.d_safe = value()?.parse().map_err(|e| format!("{e}"))?,
             "--exclude" | "-x" => {
                 let v = value()?;
-                let (a, b) = v.split_once(',').ok_or(format!("--exclude wants 'link_a,link_b', got '{v}'"))?;
+                let (a, b) = v
+                    .split_once(',')
+                    .ok_or(format!("--exclude wants 'link_a,link_b', got '{v}'"))?;
                 args.exclude.push(PairSpec::new(a.trim(), b.trim()));
             }
             other => return Err(format!("unknown argument '{other}'")),
         }
     }
-    if args.urdf.is_empty() || args.meshes.is_empty() || args.left_base.is_empty() || args.right_base.is_empty() {
-        return Err("required: --urdf <file> --meshes <dir> --left-base <link> --right-base <link>".into());
+    if args.urdf.is_empty()
+        || args.meshes.is_empty()
+        || args.left_base.is_empty()
+        || args.right_base.is_empty()
+    {
+        return Err(
+            "required: --urdf <file> --meshes <dir> --left-base <link> --right-base <link>".into(),
+        );
     }
     Ok(args)
 }
 
 fn parse_joints(s: &str) -> Result<JointVec, String> {
-    let vals: Vec<f64> = s.split(',').map(|p| p.trim().parse::<f64>().map_err(|e| format!("bad joint '{p}': {e}"))).collect::<Result<_, _>>()?;
-    vals.try_into().map_err(|v: Vec<f64>| format!("expected {ARM_DOF} joints, got {}", v.len()))
+    let vals: Vec<f64> = s
+        .split(',')
+        .map(|p| {
+            p.trim()
+                .parse::<f64>()
+                .map_err(|e| format!("bad joint '{p}': {e}"))
+        })
+        .collect::<Result<_, _>>()?;
+    vals.try_into()
+        .map_err(|v: Vec<f64>| format!("expected {ARM_DOF} joints, got {}", v.len()))
 }
 
 fn run() -> Result<(), String> {
@@ -104,28 +120,53 @@ fn run() -> Result<(), String> {
     // d_stop/d_safe (the --d-stop / --d-safe args), independent of any band.
     // Supply the tight torso proxy we ship whenever this is the OpenArm robot,
     // so the scene shows the real fit; any other URDF falls through to auto-fit.
-    let mut builder = BimanualCollisionModel::builder_from_file(&args.urdf, &args.meshes, &args.left_base, &args.right_base)?
-        .exclude(&args.exclude);
-    if UrdfCollisions::from_file(&args.urdf)?.collision_link_names().iter().any(|n| n == openarm::TORSO_BODY) {
+    let mut builder = BimanualCollisionModel::builder_from_file(
+        &args.urdf,
+        &args.meshes,
+        &args.left_base,
+        &args.right_base,
+    )?
+    .exclude(&args.exclude);
+    if UrdfCollisions::from_file(&args.urdf)?
+        .collision_link_names()
+        .iter()
+        .any(|n| n == openarm::TORSO_BODY)
+    {
         builder = builder.hulls(openarm::TORSO_BODY, openarm::torso());
     }
     let mut model = builder.build()?;
 
     let proximity = model.min_distance(&args.left, &args.right)?;
-    let (distance, witness) = (proximity.distance, [point_json(&proximity.on_a), point_json(&proximity.on_b)]);
+    let (distance, witness) = (
+        proximity.distance,
+        [point_json(&proximity.on_a), point_json(&proximity.on_b)],
+    );
     let (link_a, link_b) = (proximity.link_a.to_string(), proximity.link_b.to_string());
 
     let bodies: Vec<serde_json::Value> = model
         .world_pieces(&args.left, &args.right)?
         .into_iter()
         .flat_map(|(name, pieces)| {
-            let side = if name.contains("_left_") { "left" } else if name.contains("_right_") { "right" } else { "fixed" };
+            let side = if name.contains("_left_") {
+                "left"
+            } else if name.contains("_right_") {
+                "right"
+            } else {
+                "fixed"
+            };
             let hit = name == link_a || name == link_b;
-            pieces.into_iter().map(move |p| rounded_piece_json(&p, side, hit)).collect::<Vec<_>>()
+            pieces
+                .into_iter()
+                .map(move |p| rounded_piece_json(&p, side, hit))
+                .collect::<Vec<_>>()
         })
         .collect();
 
-    let meshes = if args.wireframes { mesh_wireframes(&args)? } else { Vec::new() };
+    let meshes = if args.wireframes {
+        mesh_wireframes(&args)?
+    } else {
+        Vec::new()
+    };
 
     let data = serde_json::json!({
         "dStop": args.d_stop,
@@ -139,7 +180,10 @@ fn run() -> Result<(), String> {
     // Escape "</script>" / "<!--" in any name so it cannot end the script early.
     let html = TEMPLATE.replace("__DATA__", &data.to_string().replace('<', "\\u003c"));
     std::fs::write(&args.out, html).map_err(|e| format!("write {}: {e}", args.out))?;
-    println!("wrote {} (d={distance:+.4} m, {link_a} vs {link_b})", args.out);
+    println!(
+        "wrote {} (d={distance:+.4} m, {link_a} vs {link_b})",
+        args.out
+    );
     Ok(())
 }
 
@@ -156,30 +200,53 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
             (0..ARM_DOF).map(|i| posed.link_name(i)).collect::<Vec<_>>()
         })
         .collect();
-    let attached: Vec<String> = chain_links.iter().flat_map(|l| urdf.children_of(l)).filter(|c| !chain_links.contains(c)).collect();
+    let attached: Vec<String> = chain_links
+        .iter()
+        .flat_map(|l| urdf.children_of(l))
+        .filter(|c| !chain_links.contains(c))
+        .collect();
 
     let mut out = Vec::new();
     for name in urdf.collision_link_names() {
         if chain_links.contains(&name) || attached.contains(&name) {
             continue;
         }
-        out.push(wire_json(decimate(&urdf.fixed_vertices_in_root(&name, &args.meshes)?)));
+        out.push(wire_json(decimate(
+            &urdf.fixed_vertices_in_root(&name, &args.meshes)?,
+        )));
     }
-    for (base, q) in [(&args.left_base, &args.left), (&args.right_base, &args.right)] {
+    for (base, q) in [
+        (&args.left_base, &args.left),
+        (&args.right_base, &args.right),
+    ] {
         let mut arm = Arm::from_urdf_file(&args.urdf, base)?;
         let posed = arm.at(q);
         for i in 0..ARM_DOF {
             let name = posed.link_name(i);
             let pose = posed.link_pose_world(i);
-            let mut verts: Vec<Point3<f64>> = urdf.link_vertices(&name, &args.meshes)?.iter().map(|v| pose * v).collect();
+            let mut verts: Vec<Point3<f64>> = urdf
+                .link_vertices(&name, &args.meshes)?
+                .iter()
+                .map(|v| pose * v)
+                .collect();
             for child in urdf.children_of(&name) {
                 if chain_links.contains(&child) || urdf.collisions_of(&child).is_empty() {
                     continue;
                 }
-                let joint = urdf.parent_joint(&child).expect("children_of implies a parent joint");
-                let travel = if joint.is_fixed() { vec![joint.lower_limit] } else { vec![joint.lower_limit, joint.upper_limit] };
+                let joint = urdf
+                    .parent_joint(&child)
+                    .expect("children_of implies a parent joint");
+                let travel = if joint.is_fixed() {
+                    vec![joint.lower_limit]
+                } else {
+                    vec![joint.lower_limit, joint.upper_limit]
+                };
                 for qc in travel {
-                    verts.extend(urdf.child_vertices_in_parent(&child, qc, &args.meshes)?.iter().map(|v| pose * v));
+                    verts.extend(
+                        urdf.child_vertices_in_parent(&child, qc, &args.meshes)?
+                            .iter()
+                            .map(|v| pose * v),
+                    );
                 }
             }
             out.push(wire_json(decimate(&verts)));
@@ -191,7 +258,12 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
 /// Keep every k-th triangle so each body stays under [`MAX_WIRE_TRIS`].
 fn decimate(verts: &[Point3<f64>]) -> Vec<Point3<f64>> {
     let step = (verts.len() / 3).div_ceil(MAX_WIRE_TRIS).max(1);
-    verts.chunks_exact(3).step_by(step).flatten().copied().collect()
+    verts
+        .chunks_exact(3)
+        .step_by(step)
+        .flatten()
+        .copied()
+        .collect()
 }
 
 /// One rounded hull piece as render data: the faces offset outward by the
@@ -200,7 +272,12 @@ fn decimate(verts: &[Point3<f64>]) -> Vec<Point3<f64>> {
 /// edges and vertices, so caps + edge cylinders + vertex spheres union into the
 /// exact rounded surface the distance query sees.
 fn rounded_piece_json(p: &PlacedPiece, side: &str, hit: bool) -> serde_json::Value {
-    let centroid = Point3::from(p.vertices.iter().fold(Vector3::zeros(), |a, v| a + v.coords) / p.vertices.len() as f64);
+    let centroid = Point3::from(
+        p.vertices
+            .iter()
+            .fold(Vector3::zeros(), |a, v| a + v.coords)
+            / p.vertices.len() as f64,
+    );
     let mut caps: Vec<f64> = Vec::new();
     for f in &p.faces {
         let (a, b, c) = (p.vertices[f[0]], p.vertices[f[1]], p.vertices[f[2]]);
@@ -210,9 +287,17 @@ fn rounded_piece_json(p: &PlacedPiece, side: &str, hit: bool) -> serde_json::Val
         if n.dot(&(face_center - centroid)) < 0.0 {
             n = -n;
         }
-        let offset = if n.norm_squared() > 1e-20 { n.normalize() * p.radius } else { Vector3::zeros() };
+        let offset = if n.norm_squared() > 1e-20 {
+            n.normalize() * p.radius
+        } else {
+            Vector3::zeros()
+        };
         for v in [a, b, c] {
-            caps.extend([round(v.x + offset.x), round(v.y + offset.y), round(v.z + offset.z)]);
+            caps.extend([
+                round(v.x + offset.x),
+                round(v.y + offset.y),
+                round(v.z + offset.z),
+            ]);
         }
     }
     let verts = flat(&p.vertices);
@@ -230,7 +315,10 @@ fn rounded_piece_json(p: &PlacedPiece, side: &str, hit: bool) -> serde_json::Val
 }
 
 fn flat(verts: &[Point3<f64>]) -> Vec<f64> {
-    verts.iter().flat_map(|p| [round(p.x), round(p.y), round(p.z)]).collect()
+    verts
+        .iter()
+        .flat_map(|p| [round(p.x), round(p.y), round(p.z)])
+        .collect()
 }
 
 fn wire_json(verts: Vec<Point3<f64>>) -> serde_json::Value {

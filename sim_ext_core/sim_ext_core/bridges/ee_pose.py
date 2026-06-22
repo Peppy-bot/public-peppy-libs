@@ -14,7 +14,6 @@ _QOS = "sensor_data"
 class EePoseBridge(BridgePlugin):
     """Publishes end-effector position and orientation."""
 
-
     def __init__(self, sensor: Any, config: Any, entry: Any) -> None:
         self._sensor = sensor
         self._node_name: str = config.node_name

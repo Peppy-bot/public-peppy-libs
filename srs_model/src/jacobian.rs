@@ -21,8 +21,8 @@
 
 use k::nalgebra::{Matrix6, SMatrix, Vector6};
 
-use crate::fk::Posed;
 use crate::ARM_DOF;
+use crate::fk::Posed;
 
 /// Floor on `λ²` in [`damped_pseudo_inverse`], keeping `J Jᵀ + λ²I` strictly
 /// positive-definite (hence invertible) even if a caller passes `lambda = 0` or a
@@ -156,9 +156,9 @@ pub fn null_space_projector(j: &Jacobian, eps: f64) -> SMatrix<f64, { ARM_DOF },
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::JointVec;
     use crate::fk::ForwardKinematics;
     use crate::test_support::v1_fk;
-    use crate::JointVec;
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};
 
@@ -213,7 +213,8 @@ mod tests {
                 continue;
             }
             let j = fk.at(&q).jacobian();
-            let pinv = try_pseudo_inverse(&j, 1e-6).expect("non-singular config has a pseudo-inverse");
+            let pinv =
+                try_pseudo_inverse(&j, 1e-6).expect("non-singular config has a pseudo-inverse");
             // Right inverse: J J⁺ = I₆ (so any commanded twist is realized exactly).
             let resid = (j * pinv - Matrix6::identity()).norm();
             assert!(resid < 1e-9, "J J⁺ - I = {resid}");
@@ -229,7 +230,10 @@ mod tests {
         let j = fk.at(&q).jacobian();
         let pinv = try_pseudo_inverse(&j, 1e-9).expect("non-singular");
         let damped = damped_pseudo_inverse(&j, 1e-6);
-        assert!((pinv - damped).norm() < 1e-4, "DLS should approach J⁺ as lambda -> 0");
+        assert!(
+            (pinv - damped).norm() < 1e-4,
+            "DLS should approach J⁺ as lambda -> 0"
+        );
     }
 
     #[test]
@@ -240,10 +244,20 @@ mod tests {
         let mut fk = v1_fk("left");
         let q = [0.0; ARM_DOF];
         let j = fk.at(&q).jacobian();
-        assert!(manipulability(&j) < 1e-6, "straight arm should be (near) singular");
-        assert!(try_pseudo_inverse(&j, 1e-6).is_none(), "singular: no pseudo-inverse");
+        assert!(
+            manipulability(&j) < 1e-6,
+            "straight arm should be (near) singular"
+        );
+        assert!(
+            try_pseudo_inverse(&j, 1e-6).is_none(),
+            "singular: no pseudo-inverse"
+        );
         let damped = damped_pseudo_inverse(&j, 0.05);
-        assert!(damped.norm().is_finite() && damped.norm() < 1e3, "DLS blew up: {}", damped.norm());
+        assert!(
+            damped.norm().is_finite() && damped.norm() < 1e3,
+            "DLS blew up: {}",
+            damped.norm()
+        );
     }
 
     #[test]
@@ -255,7 +269,10 @@ mod tests {
         let j = fk.at(&[0.0; ARM_DOF]).jacobian();
         for lambda in [0.0, -0.05, f64::NAN, f64::INFINITY] {
             let d = damped_pseudo_inverse(&j, lambda);
-            assert!(d.iter().all(|x| x.is_finite()), "lambda={lambda} gave non-finite inverse");
+            assert!(
+                d.iter().all(|x| x.is_finite()),
+                "lambda={lambda} gave non-finite inverse"
+            );
         }
     }
 
@@ -264,7 +281,10 @@ mod tests {
         let mut fk = v1_fk("left");
         let q = [0.2, -0.3, 0.3, 1.0, -0.4, 0.5, 0.3];
         let w = manipulability(&fk.at(&q).jacobian());
-        assert!(w > 1e-4, "generic posture should be well-conditioned, got {w}");
+        assert!(
+            w > 1e-4,
+            "generic posture should be well-conditioned, got {w}"
+        );
     }
 
     #[test]
@@ -297,7 +317,13 @@ mod tests {
         // does not see.
         let qdot0 = SMatrix::<f64, { ARM_DOF }, 1>::from_fn(|i, _| (i as f64) - 3.0);
         let projected = n * qdot0;
-        assert!(projected.norm() > 1e-6, "null-space motion should be non-trivial");
-        assert!((j * projected).norm() < 1e-9, "projected motion must not move the EE");
+        assert!(
+            projected.norm() > 1e-6,
+            "null-space motion should be non-trivial"
+        );
+        assert!(
+            (j * projected).norm() < 1e-9,
+            "projected motion must not move the EE"
+        );
     }
 }

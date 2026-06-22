@@ -246,11 +246,21 @@ impl ArmCan {
         }
     }
 
-    pub fn enable_all(&mut self) { self.0.enable_all() }
-    pub fn disable_all(&mut self) { self.0.disable_all() }
-    pub fn recv_all(&mut self, first_timeout_us: i32) { self.0.recv_all(first_timeout_us) }
-    pub fn refresh_all(&mut self) { self.0.refresh_all() }
-    pub fn set_callback_mode(&mut self, mode: CallbackMode) { self.0.set_callback_mode(mode) }
+    pub fn enable_all(&mut self) {
+        self.0.enable_all()
+    }
+    pub fn disable_all(&mut self) {
+        self.0.disable_all()
+    }
+    pub fn recv_all(&mut self, first_timeout_us: i32) {
+        self.0.recv_all(first_timeout_us)
+    }
+    pub fn refresh_all(&mut self) {
+        self.0.refresh_all()
+    }
+    pub fn set_callback_mode(&mut self, mode: CallbackMode) {
+        self.0.set_callback_mode(mode)
+    }
 
     pub fn mit_control(
         &mut self,
@@ -304,11 +314,21 @@ impl GripperCan {
         }
     }
 
-    pub fn enable_all(&mut self) { self.0.enable_all() }
-    pub fn disable_all(&mut self) { self.0.disable_all() }
-    pub fn recv_all(&mut self, first_timeout_us: i32) { self.0.recv_all(first_timeout_us) }
-    pub fn refresh_all(&mut self) { self.0.refresh_all() }
-    pub fn set_callback_mode(&mut self, mode: CallbackMode) { self.0.set_callback_mode(mode) }
+    pub fn enable_all(&mut self) {
+        self.0.enable_all()
+    }
+    pub fn disable_all(&mut self) {
+        self.0.disable_all()
+    }
+    pub fn recv_all(&mut self, first_timeout_us: i32) {
+        self.0.recv_all(first_timeout_us)
+    }
+    pub fn refresh_all(&mut self) {
+        self.0.refresh_all()
+    }
+    pub fn set_callback_mode(&mut self, mode: CallbackMode) {
+        self.0.set_callback_mode(mode)
+    }
 
     pub fn mit_control(&mut self, kp: f64, kd: f64, q: f64, dq: f64, tau: f64) {
         unsafe { inner::openarm_gripper_mit_control(self.0.handle, kp, kd, q, dq, tau) }

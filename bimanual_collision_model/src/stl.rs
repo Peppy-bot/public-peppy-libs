@@ -17,13 +17,24 @@ pub fn parse_binary_stl(bytes: &[u8]) -> Result<Vec<Point3<f64>>, String> {
     if bytes.len() < HEADER_LEN + COUNT_LEN {
         return Err(format!("binary STL too short: {} bytes", bytes.len()));
     }
-    let count = u32::from_le_bytes(bytes[HEADER_LEN..HEADER_LEN + COUNT_LEN].try_into().unwrap()) as usize;
+    let count = u32::from_le_bytes(
+        bytes[HEADER_LEN..HEADER_LEN + COUNT_LEN]
+            .try_into()
+            .unwrap(),
+    ) as usize;
     // u64 so a hostile facet count cannot wrap the size check on 32-bit.
     let expected = (HEADER_LEN + COUNT_LEN) as u64 + count as u64 * FACET_LEN as u64;
     if bytes.len() as u64 != expected {
         // ASCII STL starts with "solid"; mention it when the size formula fails.
-        let hint = if bytes.starts_with(b"solid") { " (looks like ASCII STL, only binary is supported)" } else { "" };
-        return Err(format!("binary STL size mismatch: {count} facets imply {expected} bytes, file has {}{hint}", bytes.len()));
+        let hint = if bytes.starts_with(b"solid") {
+            " (looks like ASCII STL, only binary is supported)"
+        } else {
+            ""
+        };
+        return Err(format!(
+            "binary STL size mismatch: {count} facets imply {expected} bytes, file has {}{hint}",
+            bytes.len()
+        ));
     }
 
     let mut vertices = Vec::with_capacity(count * 3);
@@ -32,7 +43,9 @@ pub fn parse_binary_stl(bytes: &[u8]) -> Result<Vec<Point3<f64>>, String> {
         for v in 0..3 {
             // Skip the 12-byte normal; vertices follow at 12, 24, 36.
             let off = base + 12 + v * 12;
-            let coord = |k: usize| f32::from_le_bytes(bytes[off + 4 * k..off + 4 * k + 4].try_into().unwrap()) as f64;
+            let coord = |k: usize| {
+                f32::from_le_bytes(bytes[off + 4 * k..off + 4 * k + 4].try_into().unwrap()) as f64
+            };
             let p = Point3::new(coord(0), coord(1), coord(2));
             if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
                 return Err(format!("binary STL facet {facet} has a non-finite vertex"));
