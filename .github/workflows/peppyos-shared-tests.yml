@@ -1,0 +1,70 @@
+name: peppyos-shared Tests
+
+# Standalone CI for the `peppyos-shared` virtual workspace
+# (nodes_shared_code/peppyos-shared). The workspace is now self-contained: every
+# path dependency resolves to a sibling crate within peppyos-shared (config,
+# core-node-api, peppy-messaging-interface, build-helpers, peppylib-rs), so it no
+# longer needs the superproject checkout to build and can be tested here, in the
+# repo that owns the code.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'peppyos-shared/**'
+      - '.github/workflows/peppyos-shared-tests.yml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'peppyos-shared/**'
+      - '.github/workflows/peppyos-shared-tests.yml'
+
+concurrency:
+  group: peppyos-shared-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Give this run its own peppy data root so the reused self-hosted runner
+      # does not accumulate or collide on /tmp/.peppy across runs.
+      - name: Set up isolated peppy data root
+        run: |
+          PEPPY_RUN_HOME="$RUNNER_TEMP/peppy-home"
+          mkdir -p "$PEPPY_RUN_HOME/tmpdir"
+          echo "PEPPY_RUN_HOME=$PEPPY_RUN_HOME" >> "$GITHUB_ENV"
+
+      # Rust workspace tests. Exclude peppylib-py: its cdylib build and
+      # tests/python_tests.rs only wrap `pixi run test`, which the dedicated
+      # Python step below runs directly.
+      - name: Run Rust tests
+        working-directory: peppyos-shared
+        run: |
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          cargo test --workspace --exclude peppylib-py
+
+      # Python tests for the peppylib-py extension: `pixi run test` builds the
+      # native module with `maturin develop` and runs the pytest suite. Requires
+      # pixi + a Python toolchain on the runner.
+      - name: Run peppylib-py Python tests
+        working-directory: peppyos-shared/peppylib-py
+        run: |
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          pixi run test
+
+      # Reclaim the per-run data root so disk does not grow on every run.
+      - name: Clean up isolated peppy data root
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/peppy-home"
