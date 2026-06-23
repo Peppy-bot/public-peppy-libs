@@ -12,12 +12,12 @@ bytes = "1"
 # Reverse path deps into the peppyos submodule: these crates have not been moved
 # to peppyos-shared yet. Valid only inside the superproject checkout (peppyos and
 # nodes_shared_code are sibling submodules). Tightens as crates migrate per PR.
-config = { path = "../../../peppyos/crates/config-internal" }
+config = { path = "../config-internal" }
 # core-node-api now lives here in peppyos-shared; local sibling path.
 core-node-api = { path = "../core-node-api" }
+pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
 # peppylib lives here in peppyos-shared now (package `peppylib-rs`, lib `peppylib`).
 peppylib = { package = "peppylib-rs", path = "../peppylib-rs" }
-pmi = { path = "../../../peppyos/crates/pmi-internal", features = ["zenoh", "build_zenoh"] }
 pythonize = { version = "0.29" }
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py311"] }
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }

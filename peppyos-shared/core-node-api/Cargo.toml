@@ -8,7 +8,7 @@ edition.workspace = true
 # This is the only crate that is allowed to be imported to avoid future circular dependencies
 # `config` stays in the peppyos workspace (shared by many peppyos crates); reach it
 # via a reverse path, the same way peppylib-rs does.
-config = { path = "../../../peppyos/crates/config-internal" }
+config = { path = "../config-internal" }
 capnp = "0.26"
 bytes = "1.10"
 chrono = "0.4"

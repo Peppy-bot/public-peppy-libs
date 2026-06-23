@@ -18,8 +18,8 @@ name = "peppylib"
 # Reverse path deps into the peppyos submodule: these crates have not been moved
 # to peppyos-shared yet. Valid only inside the superproject checkout (peppyos and
 # nodes_shared_code are sibling submodules). Tightens as crates migrate per PR.
-pmi = { path = "../../../peppyos/crates/pmi-internal" }
-config = { path = "../../../peppyos/crates/config-internal" }
+pmi = { path = "../pmi-internal" }
+config = { path = "../config-internal" }
 # core-node-api now lives here in peppyos-shared; local sibling path.
 core-node-api = { path = "../core-node-api" }
 thiserror = "2.0"                                  # Avoid Anyhow in this crate
@@ -52,8 +52,13 @@ tokio = { version = "1", features = ["full", "test-util"] }
 tokio-util = "0.7"
 rand = "0.10"
 regex = "1"
-config = { path = "../../../peppyos/crates/config-internal", features = ["test_helpers"] }
-pmi = { path = "../../../peppyos/crates/pmi-internal", features = ["zenoh", "build_zenoh"] }
+config = { path = "../config-internal", features = [
+    "test_helpers",
+] }
+pmi = { path = "../pmi-internal", features = [
+    "zenoh",
+    "build_zenoh",
+] }
 ctor = "1.0"
 # Raw zenoh session for wire-level observation in messaging tests (probe
 # accounting). Pinned to the exact version pmi pins so the test binary
