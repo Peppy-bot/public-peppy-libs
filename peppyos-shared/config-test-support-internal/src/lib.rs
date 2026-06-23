@@ -1,7 +1,20 @@
+//! Test-support fixtures shared across the peppyOS workspaces, extracted from
+//! `config`'s former `test_helpers` feature.
+//!
+//! The pure-`std` helpers ([`assert_contains_all`], [`test_tmp_root`]) are
+//! always available. The git-repo and node-config-template fixtures need
+//! libgit2 + askama and so live behind the `git_fixtures` feature, so consumers
+//! that only need a scratch dir (e.g. `containers`, `generator`) don't link
+//! libgit2.
+
+#[cfg(feature = "git_fixtures")]
 mod git;
+#[cfg(feature = "git_fixtures")]
 mod templates;
 
+#[cfg(feature = "git_fixtures")]
 pub use git::*;
+#[cfg(feature = "git_fixtures")]
 pub use templates::*;
 
 /// Asserts that all given patterns are present in the rendered output.
@@ -42,7 +55,7 @@ use std::time::Duration;
 /// concurrently-running test binaries from deleting each other's live dirs.
 pub fn test_tmp_root() -> PathBuf {
     let base =
-        match std::env::var_os(crate::internal::consts::PEPPY_HOME_ENV).filter(|v| !v.is_empty()) {
+        match std::env::var_os(config::consts::PEPPY_HOME_ENV).filter(|v| !v.is_empty()) {
             Some(home) => PathBuf::from(home),
             None => PathBuf::from(std::env::var("HOME").expect("HOME must be set")).join(".peppy"),
         };

@@ -17,14 +17,12 @@ serde_json5 = "0.2"
 serde_path_to_error = "0.1"
 tracing = "0.1"
 walkdir = "2.5"
-askama = "0.16"
 # Used only by the `Capnp` error variant in `error.rs`; Cap'n Proto schema
 # generation itself now lives in the separate `encoding` crate.
 capnp = "0.26"
 sha2 = "0.11"
 tempfile = "3.8"
 indexmap = { version = "2.2", features = ["serde"] }
-git2 = { version = "0.21", optional = true }
 dirs = "6"
 # Compile-time string concatenation so the bundled peppy_config template splices
 # in the buffer-size constants instead of duplicating the literals.
@@ -34,4 +32,9 @@ const_format = "0.2"
 
 [features]
 default = []
-test_helpers = ["git2"]
+# Gates the fingerprint test helpers (`create_codegen_fingerprint`,
+# `create_wrong_codegen_fingerprint`), which are co-located with the production
+# fingerprint reader because they share its private file-layout constants. The
+# git-repo/template fixtures that used to live behind this flag (and pulled in
+# git2) now live in the separate `config-test-support` crate.
+fingerprint_test_helpers = []

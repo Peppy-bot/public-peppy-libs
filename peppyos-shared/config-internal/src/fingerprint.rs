@@ -97,7 +97,7 @@ pub fn verify_codegen_fingerprint(
 ///
 /// This creates both:
 /// 1. The config fingerprint (`peppy.json5.sha256`) in the peppygen output directory
-#[cfg(feature = "test_helpers")]
+#[cfg(feature = "fingerprint_test_helpers")]
 pub fn create_codegen_fingerprint(peppy_config_path: &Path, output_path: &Path) {
     let fingerprint_path = node_config_fingerprint_path(peppy_config_path, output_path);
     if let Some(dir) = fingerprint_path.parent() {
@@ -113,7 +113,7 @@ pub fn create_codegen_fingerprint(peppy_config_path: &Path, output_path: &Path) 
 }
 
 /// Creates a config fingerprint file with incorrect content to test mismatch errors.
-#[cfg(feature = "test_helpers")]
+#[cfg(feature = "fingerprint_test_helpers")]
 pub fn create_wrong_codegen_fingerprint(peppy_config_path: &Path, output_path: &Path) {
     let fingerprint_path = node_config_fingerprint_path(peppy_config_path, output_path);
     if let Some(dir) = fingerprint_path.parent() {

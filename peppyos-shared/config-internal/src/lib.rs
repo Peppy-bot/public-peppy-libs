@@ -74,7 +74,7 @@ pub mod fingerprint {
         verify_codegen_fingerprint,
     };
 
-    #[cfg(feature = "test_helpers")]
+    #[cfg(feature = "fingerprint_test_helpers")]
     pub use crate::internal::fingerprint::{
         create_codegen_fingerprint, create_wrong_codegen_fingerprint,
     };
@@ -147,6 +147,3 @@ pub mod source {
 pub mod repo_node_id {
     pub use crate::internal::repo_node_id::{validate_repo_node_name, validate_repo_node_tag};
 }
-
-#[cfg(feature = "test_helpers")]
-pub mod test_helpers;
