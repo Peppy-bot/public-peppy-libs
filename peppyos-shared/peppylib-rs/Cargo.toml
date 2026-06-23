@@ -19,7 +19,7 @@ name = "peppylib"
 # to peppyos-shared yet. Valid only inside the superproject checkout (peppyos and
 # nodes_shared_code are sibling submodules). Tightens as crates migrate per PR.
 pmi = { path = "../peppy-messaging-interface" }
-config = { path = "../config-internal" }
+config = { path = "../config" }
 # core-node-api now lives here in peppyos-shared; local sibling path.
 core-node-api = { path = "../core-node-api" }
 thiserror = "2.0"                                  # Avoid Anyhow in this crate
@@ -41,7 +41,7 @@ capnp = "0.26"
 flume = "0.12"
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers = { path = "../build-helpers" }
 capnpc = "0.26"
 
 [dev-dependencies]
@@ -52,7 +52,7 @@ tokio = { version = "1", features = ["full", "test-util"] }
 tokio-util = "0.7"
 rand = "0.10"
 regex = "1"
-config = { path = "../config-internal", features = [
+config = { path = "../config", features = [
     "fingerprint_test_helpers",
 ] }
 pmi = { path = "../peppy-messaging-interface", features = [

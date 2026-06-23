@@ -1,8 +1,8 @@
 //! Integration tests that parse the example configs shipped inside this crate
-//! (`config-internal/examples/`) to ensure the schema types stay in sync with
+//! (`config/examples/`) to ensure the schema types stay in sync with
 //! the ground-truth files.
 //!
-//! If any test here fails, it means the config types in `config-internal` have
+//! If any test here fails, it means the config types in `config` have
 //! drifted from the example files — either the code or the examples need updating.
 //!
 //! The docs-snippet equivalent — parsing the `peppy.json5` files under

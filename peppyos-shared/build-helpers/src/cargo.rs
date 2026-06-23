@@ -48,7 +48,7 @@ fn git_tag_directives(tag: Option<&str>) -> Vec<String> {
 ///
 /// Returns `Some(path)` if a binary matching the host OS/arch exists,
 /// `None` otherwise. The `tools_dir` should point to the directory containing
-/// platform-specific capnp binaries (e.g. `crates/config-internal/tools/`).
+/// platform-specific capnp binaries (e.g. `crates/config/tools/`).
 pub fn find_bundled_capnp(tools_dir: &Path) -> Option<PathBuf> {
     let binary_name = host_capnp_binary_name();
     let binary_path = tools_dir.join(binary_name);

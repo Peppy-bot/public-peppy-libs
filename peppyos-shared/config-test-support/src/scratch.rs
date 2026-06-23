@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Root for per-test scratch directories: `<base>/test-tmp`, where base is
-/// `PEPPY_HOME` when set and non-empty (the CI per-run redirect), otherwise
-/// `$HOME/.peppy`.
+/// Disk-backed base root for test data: `PEPPY_HOME` when set and non-empty
+/// (the CI per-run redirect), otherwise `$HOME/.peppy`.
 ///
 /// The `$HOME` fallback is deliberate so two constraints documented at the call
 /// sites still hold for local dev:
@@ -11,12 +10,24 @@ use std::time::Duration;
 ///    live under `$HOME` to be visible inside the VM (system temp such as
 ///    `/var/folders/...` is inaccessible).
 /// 2. On Linux dev/CI machines `/tmp` is frequently a size-quota'd `tmpfs`;
-///    building a node there (the cargo `target/` alone is ~2 GB) trips the
-///    per-user quota. `$HOME` lives on the roomy backing disk instead.
+///    building a node there (the cargo `target/` alone is ~2 GB, and the shared
+///    cross-test target dir grows to tens of GB) exhausts it, which surfaces as
+///    a SIGBUS in `ld` mid-link rather than a clean `ENOSPC`. `$HOME` lives on
+///    the roomy backing disk instead.
 ///
-/// This is intentionally NOT keyed off `app_env()`/`temp_dir()`, so it never
-/// lands on `/tmp` tmpfs. Only CI, which sets `PEPPY_HOME` on a roomy disk,
-/// redirects it.
+/// This is intentionally NOT keyed off `app_env()`/`temp_dir()` (which resolve
+/// to `/tmp/.peppy` in dev), so test data never lands on `/tmp` tmpfs. Both the
+/// per-test scratch dirs ([`test_tmp_root`]) and the shared cargo target dir
+/// used by the build/clippy test helpers hang off this root. Only CI, which sets
+/// `PEPPY_HOME` on a roomy disk, redirects it.
+pub fn test_data_root() -> PathBuf {
+    match std::env::var_os(config::consts::PEPPY_HOME_ENV).filter(|v| !v.is_empty()) {
+        Some(home) => PathBuf::from(home),
+        None => PathBuf::from(std::env::var("HOME").expect("HOME must be set")).join(".peppy"),
+    }
+}
+
+/// Root for per-test scratch directories: [`test_data_root`]`/test-tmp`.
 ///
 /// Every scratch dir handed out from here should be a `TempDir`, so it is
 /// removed when its guard drops; normal completion and panics both clean up, and
@@ -25,11 +36,7 @@ use std::time::Duration;
 /// reclaims leftovers older than [`STALE_TEST_TMP_AGE`]; that age floor keeps
 /// concurrently-running test binaries from deleting each other's live dirs.
 pub fn test_tmp_root() -> PathBuf {
-    let base = match std::env::var_os(config::consts::PEPPY_HOME_ENV).filter(|v| !v.is_empty()) {
-        Some(home) => PathBuf::from(home),
-        None => PathBuf::from(std::env::var("HOME").expect("HOME must be set")).join(".peppy"),
-    };
-    let root = base.join("test-tmp");
+    let root = test_data_root().join("test-tmp");
     std::fs::create_dir_all(&root).expect("create test-tmp root");
 
     static RECLAIM: std::sync::Once = std::sync::Once::new();

@@ -100,7 +100,7 @@ impl SubscriberBufferSizes {
     }
 }
 
-// The daemon resolves buffer sizes as config types (config-internal must not
+// The daemon resolves buffer sizes as config types (config must not
 // depend on pmi), so the field mapping lives here on pmi's side of the boundary
 // instead of being re-inlined at each session-construction call site.
 impl From<config::peppy_config::PeerConfig> for SubscriberBufferSizes {

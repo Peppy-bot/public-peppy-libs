@@ -5,7 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-config = { path = "../config-internal" }
+config = { path = "../config" }
 bytes = "1"
 serde_json = "1.0"
 # `sync` + `rt` are what pmi's own code names directly. The MockAdapter also uses
@@ -32,7 +32,7 @@ zenoh = { version = "=1.9.0", optional = true }
 # already a build-dep of the sibling crates every pmi consumer builds
 # (peppylib-rs, peppy, …), so making it optional removes it from pmi's manifest
 # but not from any real build — not worth the extra optional-dependency wiring.
-build-helpers = { path = "../build-helpers-internal" }
+build-helpers = { path = "../build-helpers" }
 
 [dev-dependencies]
 tokio = { version = "1", features = [

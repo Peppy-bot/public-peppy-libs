@@ -14,26 +14,22 @@ fn main() {
         .canonicalize()
         .expect("Failed to canonicalize CARGO_MANIFEST_DIR");
 
-    // config-internal/tools holds the bundled capnp binaries. It lives in two
+    // config/tools holds the bundled capnp binaries. It lives in two
     // places depending on how core-node-api is being built:
-    //   1. Deployed flat cache (`.peppy/libs/<hash>/core-node-api`): config-internal
-    //      is a flat sibling, so `../config-internal/tools`.
+    //   1. Deployed flat cache (`.peppy/libs/<hash>/core-node-api`): config
+    //      is a flat sibling, so `../config/tools`.
     //   2. Superproject dev checkout (`nodes_shared_code/peppyos-shared/core-node-api`):
-    //      config-internal stays in the peppyos submodule, reached via the reverse
-    //      path `../../../peppyos/crates/config-internal/tools`.
+    //      config stays in the peppyos submodule, reached via the reverse
+    //      path `../../../peppyos/crates/config/tools`.
     // manifest_dir is canonicalized above, so the deployed crate dir resolves to the
     // real shared-cache path; both candidates are evaluated against that canonical base.
-    let sibling_tools = manifest_dir
-        .parent()
-        .unwrap()
-        .join("config-internal")
-        .join("tools");
-    let reverse_tools = manifest_dir.join("../../../peppyos/crates/config-internal/tools");
+    let sibling_tools = manifest_dir.parent().unwrap().join("config").join("tools");
+    let reverse_tools = manifest_dir.join("../../../peppyos/crates/config/tools");
     let tools_dir = [sibling_tools, reverse_tools]
         .into_iter()
         .find(|candidate| candidate.exists())
         .expect(
-            "Could not locate config-internal/tools (capnp binaries) as a flat \
+            "Could not locate config/tools (capnp binaries) as a flat \
              sibling or via the peppyos reverse path",
         );
     let capnp_path = build_helpers::find_bundled_capnp(&tools_dir).expect(

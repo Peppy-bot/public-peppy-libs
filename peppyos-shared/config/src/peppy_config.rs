@@ -91,7 +91,7 @@ pub const RUNTIME_FINALIZE_MARGIN_SECS: u64 = 2;
 
 // The bundled default config, written verbatim on first create so its comments
 // survive. Kept inline (not `include_str!` from an asset file) because
-// `config-internal` is vendored into every generated node as `src/` only, with
+// `config` is vendored into every generated node as `src/` only, with
 // no sibling `assets/` directory, so an external include would fail to compile
 // inside a node build.
 //
