@@ -1,15 +1,16 @@
 #![forbid(unsafe_code)]
 
-//! Parsing, validation, and encoding of Peppy configuration documents.
+//! Parsing and validation of Peppy configuration documents.
 //!
 //! This crate owns the on-disk Peppy config formats (`peppy.json5` node
 //! configs, launcher files, `peppy_config.json5`) and the typed API the rest
 //! of the workspace builds on: parsing those documents, validating them against
-//! Peppy's schema and structural constraints, encoding a [`node::MessageFormat`]
-//! to Cap'n Proto, and the [`consts::PeppyDirs`] filesystem-layout helper.
+//! Peppy's schema and structural constraints, and the [`consts::PeppyDirs`]
+//! filesystem-layout helper. (Cap'n Proto schema generation for a
+//! [`node::MessageFormat`] lives in the separate `encoding` crate.)
 //!
 //! Boundaries: it performs no I/O beyond reading/writing config files and
-//! fingerprints and extracting the bundled Cap'n Proto binary, and requires no
+//! fingerprints, and requires no
 //! global init — every type is built through an explicit parser/constructor.
 //! The one process-global is [`consts::set_app_env`], a set-once `OnceLock`
 //! that only shifts the default [`consts::PeppyDirs`] root between dev/prod.
@@ -25,10 +26,8 @@ mod parsing;
 mod internal {
     pub mod atomic_write;
     pub mod consts;
-    pub mod encoding;
     pub mod fingerprint;
     pub mod interface;
-    pub mod json5_pretty;
     pub mod launcher;
     pub mod node;
     pub mod peppy_config;
@@ -66,18 +65,6 @@ pub mod consts {
         PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
         PeppyDirs, RUNTIME_CONFIG_VAR_NAME, peppy_root_dir, set_app_env,
     };
-}
-
-// -- encoding --
-pub mod encoding {
-    pub use crate::internal::encoding::{
-        CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper, compile_capnp,
-    };
-}
-
-// -- json5_pretty --
-pub mod json5_pretty {
-    pub use crate::internal::json5_pretty::to_string_pretty;
 }
 
 // -- fingerprint --

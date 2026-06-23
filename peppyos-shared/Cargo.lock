@@ -556,15 +556,12 @@ name = "config"
 version = "0.0.1"
 dependencies = [
  "askama",
- "build-helpers",
  "capnp",
- "capnpc",
  "clap",
  "const_format",
  "dirs",
  "git2",
  "indexmap 2.14.0",
- "proc-macro2",
  "serde",
  "serde_json",
  "serde_json5",
