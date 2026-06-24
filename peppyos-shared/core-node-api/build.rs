@@ -14,36 +14,28 @@ fn main() {
         .canonicalize()
         .expect("Failed to canonicalize CARGO_MANIFEST_DIR");
 
-    // config/tools holds the bundled capnp binaries. It lives in two
-    // places depending on how core-node-api is being built:
-    //   1. Deployed flat cache (`.peppy/libs/<hash>/core-node-api`): config
-    //      is a flat sibling, so `../peppy-config-model/tools`.
-    //   2. Superproject dev checkout (`nodes_shared_code/peppyos-shared/core-node-api`):
-    //      config stays in the peppyos submodule, reached via the reverse
-    //      path `../../../peppyos/crates/config/tools`.
-    // manifest_dir is canonicalized above, so the deployed crate dir resolves to the
-    // real shared-cache path; both candidates are evaluated against that canonical base.
-    let sibling_tools = manifest_dir
-        .parent()
-        .unwrap()
-        .join("peppy-config-model")
-        .join("tools");
-    let reverse_tools = manifest_dir.join("../../../peppyos/crates/config/tools");
-    let tools_dir = [sibling_tools, reverse_tools]
-        .into_iter()
-        .find(|candidate| candidate.exists())
+    // Single source of truth: the capnp binary bundled with `build-helpers`
+    // (`peppyos-shared/peppy-config-model/tools`). Resolving it through
+    // build-helpers means every consumer shares one copy and works whether this
+    // crate is built in-tree or from a cargo git checkout. The in-place sibling
+    // (`../peppy-config-model/tools`) stays as a fallback for deployed flat-cache
+    // layouts where build-helpers' own copy may not be reachable.
+    let capnp_path = build_helpers::bundled_capnp_path()
+        .or_else(|| {
+            let sibling_tools = manifest_dir
+                .parent()
+                .unwrap()
+                .join("peppy-config-model")
+                .join("tools");
+            build_helpers::find_bundled_capnp(&sibling_tools)
+        })
         .expect(
-            "Could not locate peppy-config-model/tools (capnp binaries) as a flat \
-             sibling or via the peppyos reverse path",
+            "Could not find capnp binary. Please install Cap'n Proto: https://capnproto.org/install.html",
         );
-    let capnp_path = build_helpers::find_bundled_capnp(&tools_dir).expect(
-        "Could not find capnp binary. Please install Cap'n Proto: https://capnproto.org/install.html",
-    );
 
-    // Regenerate when the bundled capnp tools change, not just the schemas, so a
+    // Regenerate when the bundled capnp binary changes, not just the schemas, so a
     // capnp-binary update (new compiler version, different platform binary)
     // triggers fresh code generation.
-    println!("cargo:rerun-if-changed={}", tools_dir.display());
     println!("cargo:rerun-if-changed={}", capnp_path.display());
 
     let schemas_dir = manifest_dir.join("schemas");

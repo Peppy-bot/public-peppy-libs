@@ -48,7 +48,7 @@ fn git_tag_directives(tag: Option<&str>) -> Vec<String> {
 ///
 /// Returns `Some(path)` if a binary matching the host OS/arch exists,
 /// `None` otherwise. The `tools_dir` should point to the directory containing
-/// platform-specific capnp binaries (e.g. `crates/config/tools/`).
+/// platform-specific capnp binaries (e.g. `peppy-config-model/tools/`).
 pub fn find_bundled_capnp(tools_dir: &Path) -> Option<PathBuf> {
     let binary_name = host_capnp_binary_name();
     let binary_path = tools_dir.join(binary_name);
@@ -57,6 +57,32 @@ pub fn find_bundled_capnp(tools_dir: &Path) -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+/// Locate the bundled capnp binary that ships next to this crate, in
+/// `peppyos-shared/peppy-config-model/tools/`, for the current host platform.
+///
+/// The lookup is resolved relative to *this crate's own* source directory,
+/// baked in at compile time via `CARGO_MANIFEST_DIR`. That makes it the single
+/// source of truth for every consumer, regardless of how `build-helpers` is
+/// pulled in:
+///   - As a path dependency inside the `peppyos-shared` workspace, the tools
+///     dir is the real sibling on disk.
+///   - As a cargo **git** dependency (for example from the `peppyos` workspace),
+///     cargo checks out the whole `nodes_shared_code` repo, so the sibling tools
+///     dir rides along in that checkout — no superproject sibling or duplicated
+///     copy required.
+///
+/// This deliberately reads `build-helpers`'s own manifest dir, not the calling
+/// build script's, so the binary is found in the one place it lives rather than
+/// via fragile `../../../` paths from each consumer. Returns `Some(path)` if a
+/// binary matching the host platform exists.
+pub fn bundled_capnp_path() -> Option<PathBuf> {
+    let tools_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("peppy-config-model")
+        .join("tools");
+    find_bundled_capnp(&tools_dir)
 }
 
 fn host_capnp_binary_name() -> &'static str {
@@ -231,6 +257,22 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         std::fs::write(dir.path().join("capnp_wrong_name"), b"").expect("create file");
         assert_eq!(find_bundled_capnp(dir.path()), None);
+    }
+
+    #[test]
+    fn bundled_capnp_path_resolves_for_supported_host() {
+        // On the platforms we bundle binaries for, `bundled_capnp_path` must
+        // locate one relative to this crate's own source dir — the single source
+        // of truth in `peppy-config-model/tools/`. Hosts we don't bundle for
+        // legitimately return `None`, so only assert on supported hosts.
+        if host_capnp_binary_name() == "capnp_unsupported" {
+            return;
+        }
+        assert!(
+            bundled_capnp_path().is_some(),
+            "expected a bundled capnp binary for host {}",
+            host_capnp_binary_name()
+        );
     }
 
     #[test]
