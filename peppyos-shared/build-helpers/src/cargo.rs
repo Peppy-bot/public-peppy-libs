@@ -85,6 +85,31 @@ pub fn bundled_capnp_path() -> Option<PathBuf> {
     find_bundled_capnp(&tools_dir)
 }
 
+/// Locate the `peppyos-shared` directory that this crate lives inside.
+///
+/// `build-helpers` always sits at `peppyos-shared/build-helpers`, so the parent
+/// of its own manifest dir is `peppyos-shared` — the directory that holds every
+/// sibling crate (`peppylib-rs`, `peppy-config-model`, `core-node-api`,
+/// `peppy-messaging-interface`, `peppylib-py`, …). The path is baked in at
+/// compile time via `CARGO_MANIFEST_DIR`, the same single-source approach as
+/// [`bundled_capnp_path`], so it resolves correctly regardless of how
+/// `build-helpers` is pulled in:
+///   - As a path dependency inside `peppyos-shared`, it is the real dir on disk.
+///   - As a cargo **git** dependency (for example from the `peppyos` workspace),
+///     cargo checks out the whole `nodes_shared_code` repo, so every sibling
+///     rides along in that checkout — no superproject sibling and no fragile
+///     `../../../` reaches from each consumer.
+///
+/// Consumers such as `generator`'s build script use this to find the shared
+/// crate source trees they embed, giving one source of truth instead of a
+/// relative path duplicated at every call site.
+pub fn peppyos_shared_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("build-helpers' manifest dir always has a peppyos-shared parent")
+        .to_path_buf()
+}
+
 fn host_capnp_binary_name() -> &'static str {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
@@ -273,6 +298,21 @@ mod tests {
             "expected a bundled capnp binary for host {}",
             host_capnp_binary_name()
         );
+    }
+
+    #[test]
+    fn peppyos_shared_dir_contains_sibling_crates() {
+        // The locator must point at the real `peppyos-shared` dir: the place that
+        // holds this crate alongside its siblings. Assert via crates that always
+        // exist so consumers (e.g. generator) can rely on joining a sibling name.
+        let shared = peppyos_shared_dir();
+        for sibling in ["build-helpers", "peppy-config-model", "peppylib-rs"] {
+            assert!(
+                shared.join(sibling).is_dir(),
+                "peppyos_shared_dir() should contain {sibling}, got {}",
+                shared.display()
+            );
+        }
     }
 
     #[test]
