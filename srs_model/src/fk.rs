@@ -235,6 +235,29 @@ impl Posed<'_> {
         self.fk.base_from_world
     }
 
+    /// Linear-velocity Jacobian of a point rigidly attached to `segment` (the link
+    /// moved by joint `segment`), as per-joint world-frame contributions: entry `j`
+    /// is the point's world linear velocity per unit rate of joint `j`,
+    /// `zⱼ × (p − pⱼ)`, and is zero for joints distal to the segment (they do not
+    /// move the point). `point` is in the world (URDF root) frame that
+    /// [`link_pose_world`](Self::link_pose_world) returns; a `segment` past the last
+    /// joint clamps to the full chain. This is the EE [`jacobian`](Self::jacobian)'s
+    /// linear rows generalized to an arbitrary witness point, for collision-distance
+    /// gradients.
+    pub fn point_world_jacobian(&self, point: &Point3<f64>, segment: usize) -> [Vector3<f64>; ARM_DOF] {
+        let base_from_world = self.base_from_world();
+        let world_from_base = base_from_world.rotation.inverse();
+        let p_base = (base_from_world * point).coords;
+        let last = segment.min(ARM_DOF - 1);
+        std::array::from_fn(|j| {
+            if j <= last {
+                world_from_base * self.axis_base(j).cross(&(p_base - self.origin_base(j)))
+            } else {
+                Vector3::zeros()
+            }
+        })
+    }
+
     // --- World-frame accessors (gravity is world -z; used by `gravity` / `coriolis`). ---
     // These are expressed in the URDF root/world frame used for gravity and for
     // the KDL reference checks. In the bundled OpenArm fixture, that root also
@@ -375,6 +398,40 @@ mod tests {
         for i in 0..ARM_DOF {
             let n = posed.axis_base(i).norm();
             assert!((n - 1.0).abs() < 1e-9, "joint {i} axis not unit: {n}");
+        }
+    }
+
+    #[test]
+    fn point_world_jacobian_matches_finite_difference() {
+        let h = 1e-6;
+        let configs: [JointVec; 3] = [
+            [0.3, -0.2, 0.5, 0.4, -0.6, 0.2, 0.1],
+            [-0.5, 0.4, -0.3, 0.8, 0.5, -0.4, 0.7],
+            [0.1, 0.1, 0.1, 0.3, 0.1, 0.1, 0.1],
+        ];
+        // A fixed offset in each link's frame, so the same material point is tracked
+        // across the perturbed configurations.
+        let offset = Point3::new(0.05, -0.03, 0.04);
+        for side in ["left", "right"] {
+            let mut fk = crate::test_support::v1_fk(side);
+            for q in configs {
+                for segment in 0..ARM_DOF {
+                    let point = fk.at(&q).link_pose_world(segment) * offset;
+                    let cols = fk.at(&q).point_world_jacobian(&point, segment);
+                    for j in 0..ARM_DOF {
+                        let mut qp = q;
+                        let mut qm = q;
+                        qp[j] += h;
+                        qm[j] -= h;
+                        let pp = fk.at(&qp).link_pose_world(segment) * offset;
+                        let pm = fk.at(&qm).link_pose_world(segment) * offset;
+                        let fd = (pp.coords - pm.coords) / (2.0 * h);
+                        // For j > segment the column is zero and the point does not
+                        // move (a distal joint), so both sides are ~0.
+                        assert!((cols[j] - fd).norm() < 1e-5, "{side} segment {segment} joint {j} off by {}", (cols[j] - fd).norm());
+                    }
+                }
+            }
         }
     }
 
