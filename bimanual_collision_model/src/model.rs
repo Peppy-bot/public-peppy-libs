@@ -96,6 +96,25 @@ pub struct Proximity<'a> {
     pub on_b: Point3<f64>,
 }
 
+/// The min surface distance at one configuration and its gradient with respect to
+/// each arm's joints. `grad_left[j]` is `d(distance)/d(q_left[j])`; separating
+/// motion has a positive gradient. Computed analytically from the nearest pair's
+/// witness points (the gradient of the active pair, by the envelope theorem), so
+/// it costs one distance query plus two point Jacobians rather than a
+/// finite-difference sweep over all 14 joints.
+#[derive(Debug, Clone)]
+pub struct DistanceGradient<'a> {
+    pub distance: f64,
+    pub link_a: &'a str,
+    pub link_b: &'a str,
+    pub grad_left: JointVec,
+    pub grad_right: JointVec,
+}
+
+/// Witness separation below which the surface normal is ill-defined (deep
+/// penetration where the two witnesses coincide); the gradient query fails there.
+const WITNESS_MIN_SEPARATION: f64 = 1e-9;
+
 /// One hull piece placed in the world: the vertices, the face triangles
 /// indexing them, and the inflation `radius` swept around the core to recover
 /// the mesh. Enough to draw the true rounded collision surface (offset faces
@@ -423,15 +442,11 @@ impl BimanualCollisionModel {
             .collect()
     }
 
-    /// Minimum signed distance over all checked pairs at the given
-    /// configurations, with the witness points. Non-finite joint values are
-    /// rejected so the caller fails safe rather than comparing against NaN.
-    pub fn min_distance(
-        &mut self,
-        q_left: &JointVec,
-        q_right: &JointVec,
-    ) -> Result<Proximity<'_>, String> {
-        ensure_finite(q_left, q_right)?;
+    /// The nearest checked pair at the given configurations: places the hulls by
+    /// FK, then scans the pairs (broadphase-ordered) for the minimum signed
+    /// distance. The shared core of [`min_distance`](Self::min_distance) and
+    /// [`distance_gradient`](Self::distance_gradient).
+    fn closest(&mut self, q_left: &JointVec, q_right: &JointVec) -> Result<Closest, String> {
         self.place(q_left, q_right);
 
         // Broadphase: a pair's bounding-sphere gap is a lower bound on its true
@@ -482,15 +497,74 @@ impl BimanualCollisionModel {
                 }
             }
         }
-        let Some(c) = best else {
-            return Err("no pairs to check".into());
-        };
+        best.ok_or_else(|| "no pairs to check".into())
+    }
+
+    /// Minimum signed distance over all checked pairs at the given
+    /// configurations, with the witness points. Non-finite joint values are
+    /// rejected so the caller fails safe rather than comparing against NaN.
+    pub fn min_distance(
+        &mut self,
+        q_left: &JointVec,
+        q_right: &JointVec,
+    ) -> Result<Proximity<'_>, String> {
+        ensure_finite(q_left, q_right)?;
+        let c = self.closest(q_left, q_right)?;
         Ok(Proximity {
             distance: c.distance,
             link_a: &self.bodies[c.a].name,
             link_b: &self.bodies[c.b].name,
             on_a: c.on_a,
             on_b: c.on_b,
+        })
+    }
+
+    /// The min surface distance and its analytic gradient with respect to each
+    /// arm's joints (see [`DistanceGradient`]). The gradient is the nearest pair's
+    /// witness normal projected through each witness point's velocity Jacobian, so
+    /// it reflects the same min-over-pairs distance `min_distance` returns at one
+    /// distance query's cost rather than 14 finite-difference queries. Fails on a
+    /// non-finite configuration, or when the witnesses coincide (deep penetration)
+    /// and the normal is undefined; a velocity-barrier caller holds there.
+    pub fn distance_gradient(
+        &mut self,
+        q_left: &JointVec,
+        q_right: &JointVec,
+    ) -> Result<DistanceGradient<'_>, String> {
+        ensure_finite(q_left, q_right)?;
+        let c = self.closest(q_left, q_right)?;
+        let separation = c.on_b - c.on_a;
+        let norm = separation.norm();
+        if norm < WITNESS_MIN_SEPARATION {
+            return Err(format!("witnesses coincide (d={:+.4}); distance gradient undefined", c.distance));
+        }
+        // Unit normal along the witness separation. d grows when body a's witness
+        // moves along +normal and shrinks when body b's does, so a carries +1 and b
+        // carries -1. Each witness moves only its own arm; a world-fixed witness
+        // (torso) contributes nothing.
+        let normal = separation / norm;
+        let zero: JointVec = [0.0; ARM_DOF];
+        let project = |arm: &mut Arm, q: &JointVec, point: &Point3<f64>, segment: usize, sign: f64| -> JointVec {
+            let cols = arm.at(q).point_world_jacobian(point, segment);
+            std::array::from_fn(|j| sign * normal.dot(&cols[j]))
+        };
+        let (place_a, place_b) = (self.bodies[c.a].placement, self.bodies[c.b].placement);
+        let (left_a, right_a) = match place_a {
+            Placement::Fixed => (zero, zero),
+            Placement::Left(s) => (project(&mut self.left, q_left, &c.on_a, s, 1.0), zero),
+            Placement::Right(s) => (zero, project(&mut self.right, q_right, &c.on_a, s, 1.0)),
+        };
+        let (left_b, right_b) = match place_b {
+            Placement::Fixed => (zero, zero),
+            Placement::Left(s) => (project(&mut self.left, q_left, &c.on_b, s, -1.0), zero),
+            Placement::Right(s) => (zero, project(&mut self.right, q_right, &c.on_b, s, -1.0)),
+        };
+        Ok(DistanceGradient {
+            distance: c.distance,
+            link_a: &self.bodies[c.a].name,
+            link_b: &self.bodies[c.b].name,
+            grad_left: std::array::from_fn(|j| left_a[j] + left_b[j]),
+            grad_right: std::array::from_fn(|j| right_a[j] + right_b[j]),
         })
     }
 
@@ -621,6 +695,43 @@ mod tests {
             "openarm_right_link0",
             pairs,
         )
+    }
+
+    #[test]
+    fn distance_gradient_matches_finite_difference() {
+        let mut m = model();
+        let h = 1e-5;
+        // Wrists folded inward but ASYMMETRICALLY, so one moving cross-arm pair is
+        // unambiguously nearest. A left/right-symmetric pose sits on a pair-switch
+        // tie where the single-pair analytic gradient and the straddling central
+        // difference legitimately disagree, so it would not be a valid check.
+        let configs: [(JointVec, JointVec); 3] = [
+            ([0.15, 0.1, 0.85, 0.5, -0.2, 0.1, 0.0], [-0.05, -0.25, -0.45, 0.35, 0.1, -0.1, 0.0]),
+            ([0.0, 0.3, 0.95, 0.45, 0.1, 0.0, 0.0], [0.0, -0.1, -0.55, 0.4, 0.0, 0.1, 0.0]),
+            ([0.25, -0.1, 0.6, 0.65, 0.0, 0.2, 0.1], [-0.1, 0.05, -0.7, 0.3, 0.0, -0.2, 0.0]),
+        ];
+        for (ql, qr) in configs {
+            let grad = m.distance_gradient(&ql, &qr).expect("gradient defined");
+            let (analytic_left, analytic_right) = (grad.grad_left, grad.grad_right);
+            for j in 0..ARM_DOF {
+                let mut lp = ql;
+                let mut lm = ql;
+                lp[j] += h;
+                lm[j] -= h;
+                let fd_left = (m.min_distance(&lp, &qr).unwrap().distance
+                    - m.min_distance(&lm, &qr).unwrap().distance)
+                    / (2.0 * h);
+                let mut rp = qr;
+                let mut rm = qr;
+                rp[j] += h;
+                rm[j] -= h;
+                let fd_right = (m.min_distance(&ql, &rp).unwrap().distance
+                    - m.min_distance(&ql, &rm).unwrap().distance)
+                    / (2.0 * h);
+                assert!((analytic_left[j] - fd_left).abs() < 3e-3, "left j{j}: analytic {} fd {fd_left}", analytic_left[j]);
+                assert!((analytic_right[j] - fd_right).abs() < 3e-3, "right j{j}: analytic {} fd {fd_right}", analytic_right[j]);
+            }
+        }
     }
 
     #[test]
