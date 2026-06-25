@@ -84,7 +84,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
     }
 }
 
-/// Reject any `peppy_schema` value other than `launcher_v1` so a node
+/// Reject any `peppy_schema` value other than `launcher/v1` so a node
 /// document that happens to share the launcher's deployment shape can't
 /// slip through `PeppyLauncherParser`.
 fn deserialize_launcher_v1_schema<'de, D>(deserializer: D) -> Result<PeppySchema, D::Error>
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn bindings_resolve_against_siblings() {
         let json5 = r#"{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {
                     source: { local: "./left" },
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn bindings_reject_unknown_instance_id() {
         let json5 = r#"{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {
                     source: { local: "./backbone" },
@@ -553,7 +553,7 @@ mod tests {
     #[test]
     fn bindings_reject_underscore_key() {
         let json5 = r#"{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {
                     source: { local: "./backbone" },

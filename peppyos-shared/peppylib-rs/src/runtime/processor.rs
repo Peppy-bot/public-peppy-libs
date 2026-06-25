@@ -310,7 +310,7 @@ mod tests {
         // Create a peppy config file with type specifications matching runtime parameters
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "uvc_camera",
                 tag: "v1",
@@ -411,7 +411,7 @@ mod tests {
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "test_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
@@ -462,7 +462,7 @@ mod tests {
         // Compiled config only has 'value' parameter
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "test_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
@@ -515,7 +515,7 @@ mod tests {
         // Compiled config expects 'value' to be i64
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "test_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
@@ -568,7 +568,7 @@ mod tests {
         // Compiled config expects nested object with specific types
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "test_node", tag: "v1" },
             execution: {
                 language: "rust",
@@ -631,7 +631,7 @@ mod tests {
         // Compiled config expects array of strings
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "test_node", tag: "v1" },
             execution: {
                 language: "rust",
@@ -694,7 +694,7 @@ mod tests {
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "test_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
@@ -740,7 +740,7 @@ mod tests {
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
@@ -764,7 +764,7 @@ mod tests {
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
@@ -791,7 +791,7 @@ mod tests {
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
@@ -822,7 +822,7 @@ mod tests {
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
@@ -849,7 +849,7 @@ mod tests {
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
@@ -880,7 +880,7 @@ mod tests {
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool", name: "string" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
@@ -914,7 +914,7 @@ mod tests {
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: {
                 language: "rust",
@@ -946,7 +946,7 @@ mod tests {
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: {
                 language: "rust",
@@ -982,7 +982,7 @@ mod tests {
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: {
                 language: "rust",

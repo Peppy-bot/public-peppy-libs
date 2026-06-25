@@ -109,7 +109,7 @@ mod tests {
     fn service_formats(req: &str, resp: &str) -> (MessageFormat, MessageFormat) {
         let cfg = NodeConfigParser::from_content(&format!(
             r#"{{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: {{ name: "n", tag: "v1" }},
                 execution: {{ language: "rust", run_cmd: ["n"] }},
                 interfaces: {{ services: {{ exposes: [ {{

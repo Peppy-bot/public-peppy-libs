@@ -61,7 +61,7 @@ impl Toolchain {
     }
 }
 
-/// Reject any `peppy_schema` value other than `node_v1` so a launcher
+/// Reject any `peppy_schema` value other than `node/v1` so a launcher
 /// document that happens to share a node-compatible field set can't
 /// slip through `NodeConfigParser`.
 fn deserialize_node_v1_schema<'de, D>(deserializer: D) -> Result<PeppySchema, D::Error>
@@ -1797,7 +1797,7 @@ mod tests {
     #[test]
     fn node_config_rejects_unknown_fields() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./run"] },
             extra: "bad"
@@ -1811,14 +1811,14 @@ mod tests {
     #[test]
     fn node_config_rejects_non_node_schema() {
         let json5 = r#"{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             manifest: { name: "node", tag: "v1" },
             execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
         }"#;
         let err = serde_json5::from_str::<NodeConfig>(json5)
-            .expect_err("launcher_v1 schema must be rejected");
+            .expect_err("launcher/v1 schema must be rejected");
         assert!(
-            err.to_string().contains("node_v1"),
+            err.to_string().contains("node/v1"),
             "error should mention the expected schema, got: {err}"
         );
     }

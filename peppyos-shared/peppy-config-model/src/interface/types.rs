@@ -8,7 +8,7 @@ use serde::{
 };
 use std::collections::HashSet;
 
-/// Reject any `peppy_schema` value other than `interface_v1` so a node or
+/// Reject any `peppy_schema` value other than `interface/v1` so a node or
 /// launcher document can't slip through `PeppyInterfaceParser`.
 fn deserialize_interface_v1_schema<'de, D>(deserializer: D) -> Result<PeppySchema, D::Error>
 where
@@ -19,7 +19,7 @@ where
 
 /// A reusable contract describing the topics, services, and actions a node
 /// claims to expose. Interface documents are stand-alone JSON5 files identified
-/// by `peppy_schema: "interface_v1"`; nodes reference them by name/tag to
+/// by `peppy_schema: "interface/v1"`; nodes reference them by name/tag to
 /// declare conformance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn parses_depth_camera_example() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: {
                 name: "depth_camera",
                 tag: "v1"
@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn minimal_interface_with_only_manifest_parses() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "empty_iface", tag: "v1" },
             interfaces: {}
         }"#;
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn actions_can_be_declared() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "arm", tag: "v1" },
             interfaces: {
                 actions: [
@@ -283,14 +283,14 @@ mod tests {
     #[test]
     fn rejects_wrong_schema_tag() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {}
         }"#;
         let err =
-            serde_json5::from_str::<PeppyInterface>(json5).expect_err("node_v1 must be rejected");
+            serde_json5::from_str::<PeppyInterface>(json5).expect_err("node/v1 must be rejected");
         assert!(
-            err.to_string().contains("interface_v1"),
+            err.to_string().contains("interface/v1"),
             "error should mention expected schema, got: {err}"
         );
     }
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn rejects_unknown_top_level_fields() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {},
             execution: { language: "rust" }
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn rejects_unknown_interfaces_fields() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: { mystery: [] }
         }"#;
@@ -321,7 +321,7 @@ mod tests {
     #[test]
     fn rejects_manifest_depends_on() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: {
                 name: "x",
                 tag: "v1",
@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn accepts_manifest_labels() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: {
                 name: "x",
                 tag: "v1",
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn rejects_invalid_manifest_name() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "bad/name", tag: "v1" },
             interfaces: {}
         }"#;
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn rejects_invalid_manifest_tag() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "x", tag: "1bad" },
             interfaces: {}
         }"#;
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn rejects_empty_topic_name() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {
                 topics: [ { qos_profile: "standard" } ]
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_topic_names() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {
                 topics: [
@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_service_names() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {
                 services: [
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_action_names() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {
                 actions: [
@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn allows_same_name_across_kinds() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "x", tag: "v1" },
             interfaces: {
                 topics: [ { name: "ping" } ],

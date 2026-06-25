@@ -13,19 +13,21 @@ use std::fmt;
 /// through a repository. Interface files are filename-agnostic and identified
 /// solely by their schema tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum PeppySchema {
+    #[serde(rename = "node/v1")]
     NodeV1,
+    #[serde(rename = "launcher/v1")]
     LauncherV1,
+    #[serde(rename = "interface/v1")]
     InterfaceV1,
 }
 
 impl fmt::Display for PeppySchema {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            PeppySchema::NodeV1 => "node_v1",
-            PeppySchema::LauncherV1 => "launcher_v1",
-            PeppySchema::InterfaceV1 => "interface_v1",
+            PeppySchema::NodeV1 => "node/v1",
+            PeppySchema::LauncherV1 => "launcher/v1",
+            PeppySchema::InterfaceV1 => "interface/v1",
         };
         f.write_str(s)
     }

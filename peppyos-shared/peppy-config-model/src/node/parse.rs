@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn test_parse_minimal_config() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "test_node",
                 tag: "v1",
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn test_parse_complex_config() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "camera_driver",
                 tag: "v21",
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn test_parse_container_config() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "container_node",
                 tag: "v1",
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn test_process_and_container_conflict() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "bad_node",
                 tag: "v1",
@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn test_no_process_or_container() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "bare_node",
                 tag: "v1",
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn test_duplicate_link_id_within_nodes_rejected() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "dup_node",
                 tag: "v1",
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn test_duplicate_link_id_across_nodes_and_interfaces_rejected() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "dup_node",
                 tag: "v1",
@@ -346,7 +346,7 @@ mod tests {
     fn test_unique_link_ids_parse_ok() {
         // Same (name, tag) repeated under distinct link_ids must parse.
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "openarm01_backbone",
                 tag: "v1",
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn test_from_any_defaults_to_false() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "default_node",
                 tag: "v1",
@@ -414,7 +414,7 @@ mod tests {
         // A single `from_any: true` node entry alongside three plain
         // interface entries with the same (name, tag).
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "openarm01_backbone",
                 tag: "v1",
@@ -447,7 +447,7 @@ mod tests {
         // The wildcard is on an interface entry; a plain node entry shares
         // (name, tag).
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "openarm01_backbone",
                 tag: "v1",
@@ -477,7 +477,7 @@ mod tests {
     #[test]
     fn test_conflicting_from_any_two_nodes_rejected() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "dup_from_any_node",
                 tag: "v1",
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn test_conflicting_from_any_two_interfaces_rejected() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "dup_from_any_iface",
                 tag: "v1",
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn test_conflicting_from_any_across_node_and_interface_rejected() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "dup_from_any_mixed",
                 tag: "v1",
@@ -574,7 +574,7 @@ mod tests {
     fn test_from_any_true_allowed_for_distinct_name_tag_pairs() {
         // Different (name, tag) pairs may each carry their own from_any=true.
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "distinct_from_any",
                 tag: "v1",
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn test_empty_run_cmd() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "empty_cmd_node",
                 tag: "v1",
@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn test_invalid_deployment_source() {
         let json5 = r#"{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {
                     source: { local: "" },
@@ -642,7 +642,7 @@ mod tests {
     #[test]
     fn test_container_config_rejects_system_path_mount() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "bad_mount_node",
                 tag: "v1",
@@ -672,7 +672,7 @@ mod tests {
     #[test]
     fn test_container_config_rejects_private_system_path_mount() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "bad_mount_node",
                 tag: "v1",
@@ -699,7 +699,7 @@ mod tests {
     #[test]
     fn test_container_config_accepts_subdirectory_mount() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "good_mount_node",
                 tag: "v1",
@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn test_container_config_accepts_no_mount_paths() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "no_mount_node",
                 tag: "v1",
@@ -746,7 +746,7 @@ mod tests {
     #[test]
     fn test_container_mount_path_with_parameter_ref() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "camera_node",
                 tag: "v1",
@@ -773,7 +773,7 @@ mod tests {
     #[test]
     fn test_container_mount_path_with_nested_parameter_ref() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "camera_node",
                 tag: "v1",
@@ -803,7 +803,7 @@ mod tests {
     #[test]
     fn test_container_mount_path_rejects_unknown_parameter_ref() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "bad_ref_node",
                 tag: "v1",
@@ -834,7 +834,7 @@ mod tests {
     #[test]
     fn test_container_mount_path_rejects_non_string_parameter_ref() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "bad_type_node",
                 tag: "v1",
@@ -867,7 +867,7 @@ mod tests {
         // A mount path whose source is a parameter reference should NOT be rejected
         // at parse time, even though the resolved value might be a blocked path.
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "dynamic_mount_node",
                 tag: "v1",
@@ -894,7 +894,7 @@ mod tests {
     #[test]
     fn test_container_config_extra_args_default_to_none() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "container_node",
                 tag: "v1",
@@ -915,7 +915,7 @@ mod tests {
     #[test]
     fn test_container_config_parses_extra_args() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "container_node",
                 tag: "v1",
@@ -949,7 +949,7 @@ mod tests {
     #[test]
     fn test_container_config_parses_empty_extra_args() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "container_node",
                 tag: "v1",
@@ -983,7 +983,7 @@ mod tests {
     #[test]
     fn test_parse_config_execution_without_language_rejected() {
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "test_node",
                 tag: "v1",
@@ -1003,7 +1003,7 @@ mod tests {
     fn test_node_error_message_includes_field_path() {
         // run_cmd should be an array, not a map
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {
                 name: "test_node",
                 tag: "v1",
@@ -1027,7 +1027,7 @@ mod tests {
     fn load_standalone_returns_resolved_config() {
         let tmp = NamedTempFile::new().unwrap();
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
@@ -1049,7 +1049,7 @@ mod tests {
     fn node_config_field_set_is_complete() {
         let tmp = NamedTempFile::new().unwrap();
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "my_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;

@@ -105,7 +105,7 @@ async fn daemon_runner_succeed() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
-      peppy_schema: "node_v1",
+      peppy_schema: "node/v1",
       manifest: {
         name: "test_node",
         tag: "v1",
@@ -249,7 +249,7 @@ async fn standalone_runner_succeed() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
-      peppy_schema: "node_v1",
+      peppy_schema: "node/v1",
       manifest: {
         name: "test_node",
         tag: "v1",
@@ -308,7 +308,7 @@ async fn node_ready_but_not_healthy() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
-      peppy_schema: "node_v1",
+      peppy_schema: "node/v1",
       manifest: {
         name: "test_node",
         tag: "v1",
@@ -555,7 +555,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
-      peppy_schema: "node_v1",
+      peppy_schema: "node/v1",
       manifest: {
         name: "test_node",
         tag: "v1",
@@ -692,7 +692,7 @@ async fn daemon_shutdown_during_setup_cancels_token_and_exits() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
-      peppy_schema: "node_v1",
+      peppy_schema: "node/v1",
       manifest: {
         name: "test_node",
         tag: "v1",
@@ -829,7 +829,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
-      peppy_schema: "node_v1",
+      peppy_schema: "node/v1",
       manifest: {
         name: "test_node",
         tag: "v1",
@@ -918,7 +918,7 @@ async fn start_daemon_stack(shutdown_grace_secs: Option<u64>) -> DaemonStack {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
-      peppy_schema: "node_v1",
+      peppy_schema: "node/v1",
       manifest: {
         name: "test_node",
         tag: "v1",
@@ -1231,7 +1231,7 @@ async fn standalone_cancel_awaits_hooks_before_exit() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
     let peppy_config = r#"{
-      peppy_schema: "node_v1",
+      peppy_schema: "node/v1",
       manifest: {
         name: "test_node",
         tag: "v1",
@@ -1304,7 +1304,7 @@ fn write_value_param_config(dir: &Path, parameter_type: &str) -> PathBuf {
     let path = dir.join(NODE_CONFIG_FILE);
     let content = format!(
         r#"{{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: {{ name: "test_node", tag: "v1" }},
             execution: {{ language: "rust", parameters: {{ value: "{parameter_type}" }}, run_cmd: ["./test"] }},
         }}"#,

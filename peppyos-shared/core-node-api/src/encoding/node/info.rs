@@ -267,7 +267,7 @@ mod tests {
 
     fn sample_config_for_roundtrip() -> NodeConfig {
         let config_json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "sensor_node", tag: "v1" },
             execution: { language: "rust", run_cmd: ["sleep", "10"] }
         }"#;

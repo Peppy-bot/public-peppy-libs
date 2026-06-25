@@ -5,7 +5,7 @@ use std::path::Path;
 /// Parser responsible for extracting interface documents.
 ///
 /// Interface files are stand-alone JSON5 documents declaring
-/// `peppy_schema: "interface_v1"`. Like launchers, they are filename-agnostic
+/// `peppy_schema: "interface/v1"`. Like launchers, they are filename-agnostic
 /// — schema and shape validation are handled by serde so callers walking a
 /// repository can attempt to parse and treat failures as "not an interface."
 pub struct PeppyInterfaceParser;
@@ -35,7 +35,7 @@ mod tests {
     #[test]
     fn from_content_parses_interface() {
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "depth_camera", tag: "v1" },
             interfaces: {
                 topics: [
@@ -53,7 +53,7 @@ mod tests {
     fn from_path_loads_file() {
         let tmp = NamedTempFile::new().unwrap();
         let json5 = r#"{
-            peppy_schema: "interface_v1",
+            peppy_schema: "interface/v1",
             manifest: { name: "ping", tag: "v1" },
             interfaces: {}
         }"#;
@@ -97,13 +97,13 @@ mod tests {
     #[test]
     fn launcher_document_rejected() {
         let json5 = r#"{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: []
         }"#;
         let err = PeppyInterfaceParser::from_content(json5)
             .expect_err("launcher must not parse as interface");
         assert!(
-            err.to_string().contains("interface_v1"),
+            err.to_string().contains("interface/v1"),
             "error should mention expected schema, got: {err}"
         );
     }

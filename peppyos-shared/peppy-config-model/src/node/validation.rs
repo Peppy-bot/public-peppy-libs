@@ -353,7 +353,7 @@ mod tests {
     fn camera_mock() -> NodeConfig {
         parse(
             r#"{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: { name: "uvc_camera_python_mock", tag: "v1" },
                 execution: { language: "rust", run_cmd: ["camera"] },
                 interfaces: { conforms_to: [ { name: "uvc_camera", tag: "v1" } ] }
@@ -366,7 +366,7 @@ mod tests {
     fn brain() -> NodeConfig {
         parse(
             r#"{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: {
                     name: "brain", tag: "v1",
                     depends_on: {
@@ -385,7 +385,7 @@ mod tests {
     fn unrelated() -> NodeConfig {
         parse(
             r#"{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: { name: "other", tag: "v1" },
                 execution: { language: "rust", run_cmd: ["other"] }
             }"#,
@@ -438,7 +438,7 @@ mod tests {
         // A second, differently-named node that also conforms to uvc_camera:v1.
         let cam2 = parse(
             r#"{
-                peppy_schema: "node_v1",
+                peppy_schema: "node/v1",
                 manifest: { name: "uvc_camera_other_mock", tag: "v1" },
                 execution: { language: "rust", run_cmd: ["camera2"] },
                 interfaces: { conforms_to: [ { name: "uvc_camera", tag: "v1" } ] }

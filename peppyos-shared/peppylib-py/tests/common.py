@@ -19,7 +19,7 @@ TEST_INSTANCE_ID = "test_instance"
 TEST_FREQUENCY_HZ = 10.0
 
 PEPPY_CONFIG = """{
-  peppy_schema: "node_v1",
+  peppy_schema: "node/v1",
   manifest: {
     name: "test_node",
     tag: "v1",

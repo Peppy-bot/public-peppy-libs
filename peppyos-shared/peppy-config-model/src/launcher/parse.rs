@@ -5,7 +5,7 @@ use std::path::Path;
 /// Parser responsible for extracting launcher documents.
 ///
 /// Launcher files have no fixed name — any `.json5` file whose body
-/// declares `peppy_schema: "launcher_v1"` is a launcher. Schema and
+/// declares `peppy_schema: "launcher/v1"` is a launcher. Schema and
 /// shape validation are handled by serde
 /// (`#[serde(deny_unknown_fields)]` + the typed `PeppySchema` enum), so
 /// callers that walk a repository can just attempt to parse and treat
@@ -36,7 +36,7 @@ mod tests {
     #[test]
     fn test_parse_peppy_config() {
         let json5 = r#"{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: [
                 {
                     source: {
@@ -123,7 +123,7 @@ mod tests {
     fn test_from_path_accepts_arbitrary_file_name() {
         let dir = tempdir().unwrap();
         let json5 = r#"{
-            peppy_schema: "launcher_v1",
+            peppy_schema: "launcher/v1",
             deployments: []
         }"#;
 
@@ -137,7 +137,7 @@ mod tests {
         }
     }
 
-    /// A file declaring `peppy_schema: "node_v1"` is not a launcher.
+    /// A file declaring `peppy_schema: "node/v1"` is not a launcher.
     /// The strict deserializer either rejects unexpected node fields or
     /// the caller can gate on `peppy_schema` after parsing — either way
     /// node configs do not slip through `from_path`.
@@ -146,7 +146,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("anything.json5");
         let json5 = r#"{
-            peppy_schema: "node_v1",
+            peppy_schema: "node/v1",
             manifest: { name: "n", tag: "v1" },
             interfaces: {},
             execution: { language: "rust", build_cmd: ["true"], run_cmd: ["true"] }
@@ -157,7 +157,7 @@ mod tests {
             .expect_err("node config must not parse as a launcher");
         // The schema check fires before `deny_unknown_fields` does.
         assert!(
-            err.to_string().contains("launcher_v1"),
+            err.to_string().contains("launcher/v1"),
             "unexpected error: {err}"
         );
     }
@@ -168,11 +168,11 @@ mod tests {
     /// alone isn't enough.
     #[test]
     fn test_from_content_rejects_non_launcher_schema() {
-        let json5 = r#"{ peppy_schema: "node_v1", deployments: [] }"#;
+        let json5 = r#"{ peppy_schema: "node/v1", deployments: [] }"#;
         let err = PeppyLauncherParser::from_content(json5)
             .expect_err("non-launcher schema must be rejected");
         assert!(
-            err.to_string().contains("launcher_v1"),
+            err.to_string().contains("launcher/v1"),
             "error should mention the expected schema, got: {err}"
         );
     }
