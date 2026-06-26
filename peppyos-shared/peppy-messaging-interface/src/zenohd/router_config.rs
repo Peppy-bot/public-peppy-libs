@@ -22,8 +22,8 @@ pub(crate) fn router_config_path(
     connect_endpoints: Vec<String>,
     tls: Option<TlsConfig>,
 ) -> Result<PathBuf> {
-    if let Ok(config_path) = std::env::var("ZENOH_CONFIG") {
-        return Ok(PathBuf::from(config_path));
+    if let Some(config_path) = config_override() {
+        return Ok(config_path);
     }
 
     let config_path = std::env::temp_dir().join(format!("zenohd_config_{}.json5", messaging_port));
@@ -45,4 +45,15 @@ pub(crate) fn router_config_path(
         .map_err(|e| Error::ConfigurationError(format!("Failed to write zenohd config: {}", e)))?;
 
     Ok(config_path)
+}
+
+/// The operator-pinned router config path from `ZENOH_CONFIG`, if set. When
+/// present, [`router_config_path`] returns it untouched — we never render our own
+/// config over an operator-owned one. Callers that *re-render* to apply a change
+/// (e.g. [`crate::ZenohAdapter::refederate`]) consult this to detect that the
+/// re-render would be a no-op, so they can skip the work it would otherwise
+/// trigger (a pointless zenohd restart). This is the single source of truth for
+/// the override so the two call sites cannot drift.
+pub(crate) fn config_override() -> Option<PathBuf> {
+    std::env::var("ZENOH_CONFIG").ok().map(PathBuf::from)
 }
