@@ -59,6 +59,12 @@ fn zenohd_log_excerpt(log_path: &Path) -> String {
 pub struct ZenohdFacade {
     zenohd_path: Option<String>,
     pub zenohd_config_path: PathBuf,
+    /// Whether `zenohd_config_path` is an operator-pinned `ZENOH_CONFIG` file,
+    /// captured once when the router is built (the env is process-global and does
+    /// not change at runtime). peppy never rewrites a pinned config, so
+    /// [`refederate`](crate::ZenohAdapter::refederate) is a no-op for such a router
+    /// and the caller skips a pointless zenohd restart.
+    pub(crate) pinned: bool,
     /// File that receives zenohd's stdout+stderr. These streams must be drained
     /// for the process's lifetime; an unread pipe deadlocks the router once its
     /// buffer fills (a zenohd thread blocks in `write` and stops servicing
@@ -74,6 +80,12 @@ impl ZenohdFacade {
         let zenohd_path = ZenohdFacade::get_zenohd_binary();
         let zenoh_endpoint = ZenohdFacade::get_endpoint_from_config(&zenohd_config_path)?;
         let zenohd_config_path = zenohd_config_path.as_ref().to_path_buf();
+        // The router is operator-pinned when it runs the `ZENOH_CONFIG` file
+        // verbatim (`router_config_path` returns that path unchanged). Capture it
+        // once, here, when the router is built — refederate consults this instead
+        // of re-reading the process-global env on every call.
+        let pinned =
+            crate::zenohd::config_override().as_deref() == Some(zenohd_config_path.as_path());
         // Keep the log next to the generated config (same directory), one file
         // per router port.
         let zenohd_log_path = zenohd_config_path
@@ -83,6 +95,7 @@ impl ZenohdFacade {
         Ok(Self {
             zenohd_path,
             zenohd_config_path,
+            pinned,
             zenohd_log_path,
             router_process: None,
             zenoh_endpoint,

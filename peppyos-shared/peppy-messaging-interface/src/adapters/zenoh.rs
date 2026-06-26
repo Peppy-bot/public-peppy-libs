@@ -238,30 +238,14 @@ impl ZenohAdapter {
         connect_endpoints: Vec<String>,
         tls: Option<TlsConfig>,
     ) -> Result<bool> {
-        // The single env read; the rendering decision is delegated so it can be
-        // tested without mutating the process-global `ZENOH_CONFIG`.
-        let pinned = zenohd::config_override().is_some();
-        self.refederate_unless_pinned(connect_endpoints, tls, pinned)
-    }
-
-    /// Inner [`refederate`](Self::refederate) with the operator-override decision
-    /// passed in (`pinned`), so the no-op-vs-rewrite behavior is testable without
-    /// mutating the process-global `ZENOH_CONFIG` (which would race the other
-    /// tests that render router configs by port).
-    #[cfg(feature = "router")]
-    fn refederate_unless_pinned(
-        &mut self,
-        connect_endpoints: Vec<String>,
-        tls: Option<TlsConfig>,
-        pinned: bool,
-    ) -> Result<bool> {
         let facade = self.zenohd.as_ref().ok_or_else(|| {
             Error::BackendError("refederate called on an adapter that owns no router".to_string())
         })?;
-        // An operator-pinned `ZENOH_CONFIG` is never rendered over, so re-rendering
-        // would change nothing. Report the no-op so the caller skips the restart it
-        // would otherwise do to apply a change that cannot take effect here.
-        if pinned {
+        // An operator-pinned `ZENOH_CONFIG` (captured when the router was built) is
+        // never rendered over, so re-rendering would change nothing. Report the
+        // no-op so the caller skips the restart it would otherwise do to apply a
+        // change that cannot take effect here.
+        if facade.pinned {
             return Ok(false);
         }
         let ep = &facade.zenoh_endpoint;
@@ -1393,56 +1377,6 @@ mod tests {
         let mut clientish = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, "127.0.0.1", port)
             .expect("build client adapter");
         assert!(clientish.refederate(Vec::new(), None).is_err());
-
-        let _ = std::fs::remove_file(&cfg_path);
-    }
-
-    /// Under an operator-pinned `ZENOH_CONFIG` (modeled by the `pinned` flag so the
-    /// test never mutates the process-global env that the render tests read),
-    /// `refederate` must report the no-op (`Ok(false)`) and leave the config
-    /// untouched, so the daemon skips a pointless zenohd restart that could apply
-    /// nothing.
-    #[cfg(feature = "router")]
-    #[test]
-    fn refederate_is_a_no_op_when_the_config_is_operator_pinned() {
-        let port = 59248;
-        let mut adapter = ZenohAdapter::with_router(
-            ZenohNetProtocol::Tcp,
-            "127.0.0.1",
-            port,
-            false,
-            SubscriberBufferSizes::default(),
-            Vec::new(),
-            None,
-        )
-        .expect("build standalone router adapter");
-
-        let cfg_path = adapter
-            .zenohd
-            .as_ref()
-            .expect("router adapter owns a facade")
-            .zenohd_config_path
-            .clone();
-        let before = std::fs::read_to_string(&cfg_path).expect("read rendered config");
-
-        let rewrote = adapter
-            .refederate_unless_pinned(
-                vec!["tls/cap.zenoh.localhost:7443".to_string()],
-                Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
-                true, // operator-pinned ZENOH_CONFIG in effect
-            )
-            .expect("refederate under a pinned config succeeds as a no-op");
-
-        assert!(
-            !rewrote,
-            "a pinned config must report no rewrite so the caller skips the restart"
-        );
-        let after = std::fs::read_to_string(&cfg_path).expect("read config after refederate");
-        assert_eq!(before, after, "the pinned config must be left untouched");
-        assert!(
-            !after.contains("tls/cap.zenoh.localhost:7443"),
-            "no upstream connect endpoint was written under a pinned config"
-        );
 
         let _ = std::fs::remove_file(&cfg_path);
     }
