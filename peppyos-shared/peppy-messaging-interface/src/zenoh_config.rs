@@ -63,6 +63,129 @@ impl Default for TlsConfig {
     }
 }
 
+/// Verify that a TLS endpoint at `host:port` is reachable AND that its
+/// certificate actually validates against the trust configured in `tls`,
+/// completing a real TLS handshake within `timeout` *total* — the TCP connect
+/// and the TLS handshake share one deadline, so the whole call is bounded by
+/// `timeout` (not `timeout` per phase). The caller relies on this single bound
+/// to keep the probe inside its federation ack budget.
+///
+/// ## Why a raw handshake and not `zenoh::open`
+///
+/// In zenoh *client* mode `zenoh::open` returns `Ok` as soon as the local
+/// session is created — even if the configured connect endpoint cannot be
+/// reached or its certificate cannot be validated. The link failure is
+/// asynchronous and silent (no data ever flows, but nothing errors), so a
+/// successful `open` is NOT a usable "the federation link validates" signal.
+/// The only deterministic way to know the link is good is to perform the TLS
+/// handshake ourselves and observe the result. This probe does exactly that
+/// with rustls directly (no zenoh session involved): a TCP connect followed by
+/// a full TLS handshake that trusts the configured roots and verifies the
+/// server name. `Ok(())` is returned iff the chain is trusted and the server
+/// name matches; any other outcome returns a human-readable `Err` naming
+/// `host:port` (it is surfaced into a user-facing CLI error).
+///
+/// Name verification is intentionally left ON (rustls's default) regardless of
+/// `tls.verify_name_on_connect`: this probe is the authoritative "does the link
+/// validate" check, so it always validates fully.
+pub async fn probe_tls_reachable(
+    host: &str,
+    port: u16,
+    tls: &TlsConfig,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    use std::sync::Arc;
+    use tokio_rustls::TlsConnector;
+    use tokio_rustls::rustls::pki_types::ServerName;
+    use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+
+    // Build the trust anchors: either an explicit private CA, or the OS roots.
+    let mut roots = RootCertStore::empty();
+    match &tls.root_ca_certificate {
+        Some(path) => {
+            let bytes = std::fs::read(path)
+                .map_err(|e| format!("read root CA `{}` failed: {e}", path.display()))?;
+            let mut added = 0usize;
+            for cert in rustls_pemfile::certs(&mut &bytes[..]) {
+                let cert =
+                    cert.map_err(|e| format!("parse root CA `{}` failed: {e}", path.display()))?;
+                roots
+                    .add(cert)
+                    .map_err(|e| format!("add root CA `{}` failed: {e}", path.display()))?;
+                added += 1;
+            }
+            if added == 0 {
+                return Err(format!(
+                    "root CA `{}` contained no certificates",
+                    path.display()
+                ));
+            }
+        }
+        None => {
+            // rustls-native-certs 0.8 returns a `CertificateResult`; take all of
+            // its `.certs` (any per-cert load errors are non-fatal as long as at
+            // least one root ends up trusted).
+            let native = rustls_native_certs::load_native_certs();
+            for cert in native.certs {
+                let _ = roots.add(cert);
+            }
+            if roots.is_empty() {
+                return Err(
+                    "system trust store is empty (no native roots could be loaded)".to_string(),
+                );
+            }
+        }
+    }
+
+    // Select the crypto backend explicitly rather than relying on rustls's
+    // process-default provider. In this dependency tree rustls is built with BOTH
+    // its `ring` and `aws-lc-rs` features enabled (zenoh's stack pulls `aws-lc-rs`
+    // via tokio-rustls's default, while quinn/tls-listener pull `ring`), so rustls
+    // cannot auto-determine a single default provider and a bare
+    // `ClientConfig::builder()` would panic. tokio-rustls's default features
+    // guarantee `ring` is available, so we name it directly.
+    let config = ClientConfig::builder_with_provider(Arc::new(
+        tokio_rustls::rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| format!("TLS provider setup failed: {e}"))?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+
+    let server_name = ServerName::try_from(host.to_string())
+        .map_err(|e| format!("invalid server name `{host}`: {e}"))?;
+
+    // One deadline for the whole probe (TCP connect + TLS handshake), so a peer
+    // that accepts the TCP connection but stalls the handshake cannot stretch the
+    // call to ~2x `timeout` — the total stays bounded by `timeout`.
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    let tcp = match tokio::time::timeout_at(deadline, tokio::net::TcpStream::connect((host, port)))
+        .await
+    {
+        Err(_) => {
+            return Err(format!(
+                "connect to {host}:{port} timed out after {timeout:?}"
+            ));
+        }
+        Ok(Err(e)) => return Err(format!("connect to {host}:{port} failed: {e}")),
+        Ok(Ok(tcp)) => tcp,
+    };
+
+    // Finish the handshake under the same deadline. tokio-rustls surfaces
+    // validation failures (UnknownIssuer / unknown CA / bad server name) as an
+    // io::Error whose message contains the rustls reason, so `{e}` carries the
+    // cause.
+    let connector = TlsConnector::from(Arc::new(config));
+    match tokio::time::timeout_at(deadline, connector.connect(server_name, tcp)).await {
+        Err(_) => Err(format!(
+            "TLS handshake to {host}:{port} timed out after {timeout:?}"
+        )),
+        Ok(Err(e)) => Err(format!("TLS handshake to {host}:{port} failed: {e}")),
+        Ok(Ok(_stream)) => Ok(()),
+    }
+}
+
 impl TlsConfig {
     /// Server (router/listener) identity: a leaf certificate chain + its key.
     pub fn server(certificate: PathBuf, private_key: PathBuf) -> Self {
