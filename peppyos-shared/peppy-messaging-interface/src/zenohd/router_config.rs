@@ -6,7 +6,7 @@
 use super::ZenohNetProtocol;
 use crate::error::{Error, Result};
 use crate::zenoh_config::{TlsConfig, render_config_string, router_spec};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Resolves the zenohd router config path. Honors a `ZENOH_CONFIG` override;
 /// otherwise renders a router config to a temp file keyed by messaging port and
@@ -27,7 +27,34 @@ pub(crate) fn router_config_path(
     }
 
     let config_path = std::env::temp_dir().join(format!("zenohd_config_{}.json5", messaging_port));
+    render_router_config_to_path(
+        &config_path,
+        protocol,
+        host,
+        messaging_port,
+        connect_endpoints,
+        tls,
+    )?;
+    Ok(config_path)
+}
 
+/// Renders the router config and writes it to `config_path`, *bypassing* the
+/// `ZENOH_CONFIG` override resolution that [`router_config_path`] does. The
+/// refederation path ([`crate::ZenohAdapter::refederate`]) uses this to rewrite
+/// the file captured by [`ZenohdFacade::new`](super::ZenohdFacade::new) in place:
+/// going back through `router_config_path` would re-read the process-global
+/// `ZENOH_CONFIG`, which — if it changed after startup — could redirect the write
+/// to a different path or skip it entirely (the override early-return), leaving
+/// the running router's actual config file stale. (The operator-pinned case is
+/// already filtered out by `facade.pinned` before this is reached.)
+pub(crate) fn render_router_config_to_path(
+    config_path: &Path,
+    protocol: ZenohNetProtocol,
+    host: &str,
+    messaging_port: u16,
+    connect_endpoints: Vec<String>,
+    tls: Option<TlsConfig>,
+) -> Result<()> {
     // The router seeds gossip discovery for the peer mesh, so gossip stays on;
     // multicast is off everywhere (see `crate::zenoh_config`). The router listens
     // on `host` as given (typically `0.0.0.0`) so nodes can reach it. Shares
@@ -41,10 +68,10 @@ pub(crate) fn router_config_path(
         tls,
     ));
 
-    std::fs::write(&config_path, config_content)
+    std::fs::write(config_path, config_content)
         .map_err(|e| Error::ConfigurationError(format!("Failed to write zenohd config: {}", e)))?;
 
-    Ok(config_path)
+    Ok(())
 }
 
 /// The operator-pinned router config path from `ZENOH_CONFIG`, if set. When
@@ -55,5 +82,12 @@ pub(crate) fn router_config_path(
 /// trigger (a pointless zenohd restart). This is the single source of truth for
 /// the override so the two call sites cannot drift.
 pub(crate) fn config_override() -> Option<PathBuf> {
-    std::env::var("ZENOH_CONFIG").ok().map(PathBuf::from)
+    // A blank or whitespace-only `ZENOH_CONFIG` is treated as unset (not an empty
+    // path), so startup falls back to the rendered temp config instead of trying
+    // to read `""`. Mirrors `ZenohAdapter::resolve_session_config_override`.
+    std::env::var("ZENOH_CONFIG")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }

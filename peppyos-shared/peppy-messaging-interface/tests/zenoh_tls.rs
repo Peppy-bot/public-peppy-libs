@@ -208,11 +208,20 @@ mod zenoh_tls_tests {
             ..TlsConfig::default()
         };
 
+        // Confirm the router's TLS listener is actually up *first* (a trusting
+        // client opens, retrying while it settles, then is dropped). Otherwise a
+        // `start_session` error below could be the router still starting rather
+        // than the untrusted CA being rejected — making a readiness failure look
+        // like the intended negative result. Same retry pattern as the trusted
+        // and plaintext opens in this file.
+        drop(open_tls_client(port, &trusting_client_tls(&certs)).await);
+
         let mut subscriber =
             ZenohAdapter::connect_to_tls("127.0.0.1", port, untrusted).expect("build adapter");
         // In client mode `zenoh::open` succeeds even if the link can't be
-        // validated (the failure is async — no data ever flows). If it instead
-        // errors here, that's a strictly stronger negative result.
+        // validated (the failure is async — no data ever flows). The router is
+        // now known to be up, so an error here can only be the untrusted CA — a
+        // strictly stronger negative result.
         if subscriber.start_session().await.is_err() {
             return;
         }

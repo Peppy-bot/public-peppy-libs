@@ -231,6 +231,7 @@ pub(crate) fn render_probe_config(
     protocol: ZenohNetProtocol,
     host: &str,
     port: u16,
+    tls: Option<TlsConfig>,
 ) -> zenoh::config::Config {
     render_config(&ZenohConfigSpec {
         mode: SessionMode::Client,
@@ -238,7 +239,9 @@ pub(crate) fn render_probe_config(
         listen_endpoints: Vec::new(),
         reconnect: false,
         gossip: false,
-        tls: None,
+        // A `tls/` router needs the probe to speak TLS too; plaintext callers pass
+        // `None` (no `transport.link.tls` block, byte-identical to before).
+        tls,
     })
 }
 
@@ -426,7 +429,7 @@ mod tests {
         // surface as a panic at session/router open.
         render_config(&peer_spec(true, true));
         render_config(&peer_spec(false, true));
-        render_probe_config(ZenohNetProtocol::Tcp, "0.0.0.0", 7448);
+        render_probe_config(ZenohNetProtocol::Tcp, "0.0.0.0", 7448, None);
     }
 
     // ---- TLS rendering (the Phase-A breaking change) ----

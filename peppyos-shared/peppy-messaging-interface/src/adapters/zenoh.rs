@@ -249,8 +249,18 @@ impl ZenohAdapter {
             return Ok(false);
         }
         let ep = &facade.zenoh_endpoint;
-        // Rewrites the same port-keyed path the facade already reads on spawn.
-        zenohd::router_config_path(ep.protocol, &ep.host, ep.port, connect_endpoints, tls)?;
+        // Rewrite the exact config file captured when the router was built, *not*
+        // via `router_config_path` — that re-reads `ZENOH_CONFIG`, which (if it
+        // changed after startup) could redirect this write elsewhere or skip it
+        // via the override early-return, leaving the running router's file stale.
+        zenohd::render_router_config_to_path(
+            &facade.zenohd_config_path,
+            ep.protocol,
+            &ep.host,
+            ep.port,
+            connect_endpoints,
+            tls,
+        )?;
         Ok(true)
     }
 
@@ -392,7 +402,7 @@ impl ZenohAdapter {
             )?;
             // A lightweight client probe (no listener, no peer discovery) is the
             // cheapest reliable "router accepts sessions yet?" check.
-            let probe_config = render_probe_config(ZenohNetProtocol::Tcp, host, port);
+            let probe_config = render_probe_config(ZenohNetProtocol::Tcp, host, port, None);
             let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
 
             // Drop the port reservation before starting the router so zenohd can bind to it
@@ -451,6 +461,9 @@ impl ZenohAdapter {
             self.client_config.protocol,
             &self.client_config.host,
             self.client_config.port,
+            // Probe a `tls/` router over TLS using the same trust the adapter
+            // holds; `None` for a plaintext router renders an unchanged config.
+            self.client_config.tls.clone(),
         );
         zenohd::RouterHealthChecker::new(probe_config)
     }
