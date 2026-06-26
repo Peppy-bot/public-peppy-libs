@@ -15,13 +15,12 @@ mod common;
 
 mod zenoh_tls_tests {
     use crate::common::{
-        RECV_TIMEOUT, ZENOH_SERIAL, test_node_target, wait_for_subscriber_discovery,
+        RECV_TIMEOUT, ZENOH_SERIAL, receiver, sender, wait_for_subscriber_discovery,
     };
     use bytes::Bytes;
     use pmi::{
         Messenger, MessengerAdapter, MessengerBackend, Payload, PublisherQoS,
-        SubscriberBufferSizes, SubscriberQoS, TlsConfig, TopicWireReceiver, TopicWireSender,
-        ZenohAdapter, ZenohNetProtocol,
+        SubscriberBufferSizes, SubscriberQoS, TlsConfig, ZenohAdapter, ZenohNetProtocol,
     };
     use std::io::Write;
     use std::path::PathBuf;
@@ -65,30 +64,6 @@ mod zenoh_tls_tests {
             verify_name_on_connect: false,
             ..TlsConfig::client(certs.ca.clone())
         }
-    }
-
-    fn sender(as_topic_name: &str) -> TopicWireSender {
-        TopicWireSender::new(
-            "test_core_node",
-            "test_instance",
-            test_node_target("test_node"),
-            None,
-            as_topic_name,
-        )
-        .expect("valid wire fields")
-    }
-
-    fn receiver(to_topic: &str) -> TopicWireReceiver {
-        TopicWireReceiver::new(
-            "test_core_node",
-            "test_instance",
-            None,
-            None,
-            Some(test_node_target("test_node")),
-            None,
-            to_topic,
-        )
-        .expect("valid wire fields")
     }
 
     /// Starts a `zenohd` router listening on `tls/127.0.0.1:<port>` with the
