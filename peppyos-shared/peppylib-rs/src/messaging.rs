@@ -296,6 +296,7 @@ impl MessengerHandle {
             discovery.seed_peers.clone(),
             discovery.gossip,
             buffer_sizes,
+            None,
         )?
         .with_session_reconnect();
         let messenger = Self::new_session(adapter).await?;

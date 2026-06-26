@@ -36,10 +36,17 @@ use crate::wire::{
     TopicWireReceiver, TopicWireSender,
 };
 use crate::zenoh_config::{
-    SessionMode, ZenohConfigSpec, connectable_host, loopback_listen_endpoint, render_config,
-    render_probe_config,
+    SessionMode, TlsConfig, ZenohConfigSpec, connectable_host, loopback_listen_endpoint,
+    render_config,
 };
-use crate::zenohd::{self, ZenohNetProtocol};
+// `render_probe_config` and the `zenohd` module (facade/health/config-path) are
+// only used by the router-management paths; a `zenoh`-without-`router` build (the
+// backend, which only renders configs and opens client sessions) does not see them.
+#[cfg(feature = "router")]
+use crate::zenoh_config::render_probe_config;
+#[cfg(feature = "router")]
+use crate::zenohd;
+use crate::zenohd::ZenohNetProtocol;
 #[cfg(feature = "router")]
 use crate::{Messenger, MessengerAdapter};
 use crate::{MessengerBackend, Subscription};
@@ -156,6 +163,10 @@ pub struct ZenohClientConfig {
     /// operator file wins regardless of the routing model. `None` renders from
     /// the fields above.
     override_config: Option<zenoh::config::Config>,
+    /// Client TLS material for a `tls/` endpoint (`None` for plaintext). Retained
+    /// (not just baked into `zenoh_config`) so the reconnecting-session rebuild
+    /// in `start_session` re-renders with the same TLS settings.
+    tls: Option<TlsConfig>,
 }
 
 pub struct ZenohAdapter {
@@ -181,10 +192,12 @@ impl ZenohAdapter {
         port: u16,
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
+        tls: Option<TlsConfig>,
     ) -> Result<Self> {
-        let zenohd_config_path = zenohd::router_config_path(protocol, host, port)?;
+        let zenohd_config_path = zenohd::router_config_path(protocol, host, port, tls.clone())?;
         let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
-        let client_config = Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes)?;
+        let client_config =
+            Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, tls)?;
 
         Ok(Self {
             zenohd: Some(facade),
@@ -206,6 +219,28 @@ impl ZenohAdapter {
             Vec::new(),
             true,
             SubscriberBufferSizes::default(),
+            None,
+        )
+    }
+
+    /// Like [`connect_to`](Self::connect_to) but over TLS: opens a `tls/`
+    /// **client** session to `host:port`, verifying the router against `tls`'s
+    /// `root_ca_certificate` (with `verify_name_on_connect`). Used by the CLI to
+    /// reach a per-user cloud router. Unlike `connect_to`, this is **client**
+    /// mode (`gossip = false`): all traffic routes through the router and the
+    /// session binds no loopback peer listener — which is what we want for a
+    /// remote router (a peer listener would also need its own server cert, which
+    /// a pure client has no reason to hold). Use
+    /// [`connect_to_with_discovery`](Self::connect_to_with_discovery) for control.
+    pub fn connect_to_tls(host: &str, port: u16, tls: TlsConfig) -> Result<Self> {
+        Self::connect_to_with_discovery(
+            ZenohNetProtocol::Tls,
+            host,
+            port,
+            Vec::new(),
+            false,
+            SubscriberBufferSizes::default(),
+            Some(tls),
         )
     }
 
@@ -213,6 +248,7 @@ impl ZenohAdapter {
     /// list, gossip toggle, and subscriber buffer sizes. The node runtime passes
     /// its `DiscoveryConfig` here. An empty `seed_peers` falls back to the single
     /// `host:port` seed.
+    #[allow(clippy::too_many_arguments)]
     pub fn connect_to_with_discovery(
         protocol: ZenohNetProtocol,
         host: &str,
@@ -220,6 +256,7 @@ impl ZenohAdapter {
         seed_peers: Vec<String>,
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
+        tls: Option<TlsConfig>,
     ) -> Result<Self> {
         let override_config = Self::resolve_session_config_override()?;
         let client_config = Self::create_client_config(
@@ -231,6 +268,7 @@ impl ZenohAdapter {
             gossip,
             buffer_sizes,
             override_config,
+            tls,
         );
 
         Ok(Self {
@@ -291,8 +329,14 @@ impl ZenohAdapter {
                 }
             };
 
-            let adapter =
-                Self::with_router(ZenohNetProtocol::Tcp, host, port, gossip, buffer_sizes)?;
+            let adapter = Self::with_router(
+                ZenohNetProtocol::Tcp,
+                host,
+                port,
+                gossip,
+                buffer_sizes,
+                None,
+            )?;
             // A lightweight client probe (no listener, no peer discovery) is the
             // cheapest reliable "router accepts sessions yet?" check.
             let probe_config = render_probe_config(ZenohNetProtocol::Tcp, host, port);
@@ -401,6 +445,7 @@ impl ZenohAdapter {
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
         override_config: Option<zenoh::config::Config>,
+        tls: Option<TlsConfig>,
     ) -> ZenohClientConfig {
         let connect_host = connectable_host(host);
         let seeds = if seed_peers.is_empty() {
@@ -425,6 +470,7 @@ impl ZenohAdapter {
                 listen_endpoints: vec![loopback_listen_endpoint(protocol)],
                 reconnect,
                 gossip: true,
+                tls: tls.clone(),
             }),
             None => render_config(&ZenohConfigSpec {
                 mode: SessionMode::Client,
@@ -432,6 +478,7 @@ impl ZenohAdapter {
                 listen_endpoints: Vec::new(),
                 reconnect,
                 gossip: false,
+                tls: tls.clone(),
             }),
         };
 
@@ -444,6 +491,7 @@ impl ZenohAdapter {
             gossip,
             buffer_sizes,
             override_config,
+            tls,
         }
     }
 
@@ -452,6 +500,7 @@ impl ZenohAdapter {
         zenohd: &zenohd::ZenohdFacade,
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
+        tls: Option<TlsConfig>,
     ) -> Result<ZenohClientConfig> {
         // The daemon joins the mesh it hosts, seeded by its own router, so peers
         // can reach its core-node/daemon services. `gossip` (from
@@ -471,6 +520,7 @@ impl ZenohAdapter {
             gossip,
             buffer_sizes,
             override_config,
+            tls,
         ))
     }
 }
@@ -491,6 +541,7 @@ impl MessengerBackend for ZenohAdapter {
                 self.client_config.gossip,
                 self.client_config.buffer_sizes,
                 self.client_config.override_config.clone(),
+                self.client_config.tls.clone(),
             )
             .zenoh_config
         } else {
@@ -1186,6 +1237,7 @@ mod tests {
             true,
             SubscriberBufferSizes::default(),
             None,
+            None,
         );
         assert_eq!(reconnecting.host, "127.0.0.1");
         assert_eq!(
@@ -1208,6 +1260,7 @@ mod tests {
                 standard: 64,
                 high_throughput: 4096,
             },
+            None,
             None,
         );
         assert_eq!(cfg.seed_peers, vec!["tcp/10.0.0.2:7448".to_string()]);

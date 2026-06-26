@@ -156,6 +156,7 @@ impl ZenohdFacade {
             "udp" => ZenohNetProtocol::Udp,
             "quic" => ZenohNetProtocol::Quic,
             "ws" => ZenohNetProtocol::Ws,
+            "tls" => ZenohNetProtocol::Tls,
             _ => {
                 return Err(Error::ConfigurationError(format!(
                     "Unknown protocol: {}",
@@ -196,9 +197,15 @@ impl ZenohdFacade {
         };
         let connect_addr = format!("{connect_host}:{}", self.zenoh_endpoint.port);
 
-        if self.zenoh_endpoint.protocol == ZenohNetProtocol::Tcp
-            && TcpStream::connect(&connect_addr).is_ok()
-        {
+        // `Tls` is TLS-over-TCP, so the plain TCP probes below apply to it too:
+        // the listening socket accepts TCP before the TLS handshake, which is all
+        // a "port already bound / accepting yet?" check needs.
+        let tcp_based = matches!(
+            self.zenoh_endpoint.protocol,
+            ZenohNetProtocol::Tcp | ZenohNetProtocol::Tls
+        );
+
+        if tcp_based && TcpStream::connect(&connect_addr).is_ok() {
             return Err(Error::BackendError(format!(
                 "Zenoh router port already in use: {}",
                 connect_addr
@@ -232,7 +239,7 @@ impl ZenohdFacade {
             .spawn()
             .map_err(|e| Error::BackendError(format!("Failed to start zenohd: {}", e)))?;
 
-        if self.zenoh_endpoint.protocol == ZenohNetProtocol::Tcp {
+        if tcp_based {
             tracing::info!(
                 "Waiting for Zenoh router to accept connections at {}://{}",
                 self.zenoh_endpoint.protocol,

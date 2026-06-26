@@ -301,6 +301,7 @@ mod zenoh_tests {
             Vec::new(),
             false,
             SubscriberBufferSizes::default(),
+            None,
         )
         .expect("subscriber adapter");
         subscriber
@@ -319,6 +320,7 @@ mod zenoh_tests {
             Vec::new(),
             false,
             SubscriberBufferSizes::default(),
+            None,
         )
         .expect("publisher adapter");
         publisher
@@ -366,6 +368,7 @@ mod zenoh_tests {
             Vec::new(),
             gossip,
             SubscriberBufferSizes::default(),
+            None,
         )
         .expect("subscriber adapter");
         subscriber
@@ -384,6 +387,7 @@ mod zenoh_tests {
             Vec::new(),
             gossip,
             SubscriberBufferSizes::default(),
+            None,
         )
         .expect("publisher adapter");
         publisher
@@ -455,6 +459,7 @@ mod zenoh_tests {
             Vec::new(),
             true,
             tiny,
+            None,
         )
         .expect("subscriber adapter");
         subscriber
@@ -908,6 +913,7 @@ mod zenoh_tests {
             port,
             true,
             SubscriberBufferSizes::default(),
+            None,
         )
         .unwrap();
         let (host, adapter_port) = adapter.client_endpoint();
