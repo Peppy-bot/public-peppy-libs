@@ -4740,3 +4740,168 @@ async fn probes_answered_while_pinned_producer_is_busy() {
 
     router.shutdown().await;
 }
+
+/// Per-user remote-router (TLS) wiring: [`MessengerHandle::from_remote_tls`].
+///
+/// The transport itself — a real `tls/` zenohd, a `connect_to_tls` client, and
+/// cert validation (both the trusting and the untrusted-CA paths) — is proven
+/// authoritatively in pmi's `tests/zenoh_tls.rs`. This test proves the thin
+/// `MessengerHandle` wrapper threads host/port/TLS through to `connect_to_tls`
+/// and round-trips a topic message over the encrypted link, exactly as a CLI
+/// session against a per-user cloud router would. One positive case only: the
+/// untrusted-CA negative lives in pmi and isn't worth a second zenoh-churn test
+/// here (see the `ZENOH_SERIAL` deadlock note above).
+mod remote_tls {
+    use super::*;
+    use pmi::{Messenger, MessengerAdapter, SubscriberBufferSizes, TlsConfig, ZenohNetProtocol};
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    const CA_PEM: &[u8] = include_bytes!("fixtures/minica_ca.pem");
+    const SERVER_CERT_PEM: &[u8] = include_bytes!("fixtures/server_localhost.pem");
+    const SERVER_KEY_PEM: &[u8] = include_bytes!("fixtures/server_localhost.key");
+
+    /// Embedded fixture certs materialized to a tempdir (zenoh's TLS config takes
+    /// filesystem paths). Same `minica` CA + `localhost` leaf pmi's TLS test uses.
+    struct Certs {
+        // Held only for its `Drop` (removes the tempdir at end of test).
+        #[allow(dead_code)]
+        dir: tempfile::TempDir,
+        ca: PathBuf,
+        cert: PathBuf,
+        key: PathBuf,
+    }
+
+    fn write_certs() -> Certs {
+        let dir = tempfile::tempdir().expect("create cert tempdir");
+        let put = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::File::create(&path)
+                .and_then(|mut f| f.write_all(bytes))
+                .expect("write cert file");
+            path
+        };
+        let ca = put("ca.pem", CA_PEM);
+        let cert = put("server.pem", SERVER_CERT_PEM);
+        let key = put("server.key", SERVER_KEY_PEM);
+        Certs { dir, ca, cert, key }
+    }
+
+    /// Client trust = the fixture CA. The leaf's SAN is `localhost` but we dial
+    /// `127.0.0.1`, so name verification is off here (the choice pmi's TLS test
+    /// also makes); the CA-trust check stays on. Name verification itself is
+    /// exercised in pmi.
+    fn trusting_client_tls(certs: &Certs) -> TlsConfig {
+        TlsConfig {
+            verify_name_on_connect: false,
+            ..TlsConfig::client(certs.ca.clone())
+        }
+    }
+
+    /// Starts a `zenohd` listening on `tls/127.0.0.1:<port>` with the fixture
+    /// leaf. Returns the owning `Messenger` (drop it to stop zenohd) and the port.
+    async fn start_tls_router(certs: &Certs) -> (Messenger, u16) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+
+        let adapter = ZenohAdapter::with_router(
+            ZenohNetProtocol::Tls,
+            "127.0.0.1",
+            port,
+            false,
+            SubscriberBufferSizes::default(),
+            Some(TlsConfig::server(certs.cert.clone(), certs.key.clone())),
+        )
+        .expect("build tls router adapter");
+        let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
+        messenger
+            .start_router()
+            .await
+            .expect("start tls zenohd router");
+        (messenger, port)
+    }
+
+    /// Opens a `from_remote_tls` client session, retrying briefly while the TLS
+    /// listener settles after the TCP socket begins accepting (mirrors pmi's
+    /// `open_tls_client`).
+    async fn connect_remote_tls(port: u16, tls: &TlsConfig) -> MessengerHandle {
+        const MAX_RETRIES: u32 = 40;
+        let mut last_error = None;
+        for attempt in 0..MAX_RETRIES {
+            match MessengerHandle::from_remote_tls("127.0.0.1", port, tls.clone()).await {
+                Ok(handle) => return handle,
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt + 1 < MAX_RETRIES {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                }
+            }
+        }
+        panic!("from_remote_tls never connected on 127.0.0.1:{port}: {last_error:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn from_remote_tls_round_trips_over_the_encrypted_link() {
+        let _serial = ZENOH_SERIAL.lock().await;
+        ensure_test_fd_limit();
+        let certs = write_certs();
+        let (_router, port) = start_tls_router(&certs).await;
+        let client_tls = trusting_client_tls(&certs);
+
+        let qos = QoSProfile::Reliable;
+        let node_name = "uvc_camera";
+        let topic = "video_stream";
+        let payload = Payload::from_static(b"tls-hello");
+
+        let subscriber_handle = connect_remote_tls(port, &client_tls).await;
+        let mut subscription = TopicMessenger::subscribe(
+            &subscriber_handle,
+            "core_node_subscribe",
+            "subscriber_instance",
+            Some(test_node_target(node_name)),
+            true,
+            topic,
+            &ConsumerFilter::Any,
+            qos.clone(),
+        )
+        .await
+        .expect("subscribe over tls");
+
+        let emitter_handle = connect_remote_tls(port, &client_tls).await;
+        let emitter_core_node = "core_node_emit";
+        let emitter_instance_id = "emitter_instance";
+        TopicMessenger::wait_for_subscriber(
+            &emitter_handle,
+            emitter_core_node,
+            emitter_instance_id,
+            test_node_target(node_name),
+            topic,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("subscriber should become reachable over tls");
+        publish_once(
+            &emitter_handle,
+            emitter_core_node,
+            emitter_instance_id,
+            test_node_target(node_name),
+            topic,
+            qos,
+            payload.clone(),
+        )
+        .await
+        .expect("publish over tls");
+
+        let received = tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
+            .await
+            .expect("timed out waiting for tls message")
+            .expect("should receive the tls message");
+        assert_eq!(received.payload(), &payload);
+        assert_eq!(received.core_node(), emitter_core_node);
+        assert_eq!(received.instance_id(), emitter_instance_id);
+
+        drop(_router); // stop zenohd
+    }
+}

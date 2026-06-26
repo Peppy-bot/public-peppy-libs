@@ -303,6 +303,40 @@ impl MessengerHandle {
         Ok(Self::from_messenger(messenger))
     }
 
+    /// Opens a one-shot **client** session to a *remote* zenoh router over TLS.
+    ///
+    /// Unlike [`from_host_port`](Self::from_host_port) (plaintext TCP to the
+    /// local daemon's loopback router), this dials a remote `tls/<host>:<port>`
+    /// endpoint — the caller's per-user cloud router behind the SNI-passthrough
+    /// gateway. The TLS handshake (and thus end-to-end encryption) terminates AT
+    /// the router, not the gateway; `tls` carries the deployment trust root
+    /// (`root_ca_certificate`) the client validates the router's certificate
+    /// against, and `verify_name_on_connect` binds the dialed name (the
+    /// capability SNI) to that certificate. No loopback peer listener is opened
+    /// (the underlying adapter runs in client mode), so the CLI needs no server
+    /// certificate of its own.
+    pub async fn from_remote_tls(host: &str, port: u16, tls: pmi::TlsConfig) -> Result<Self> {
+        let adapter = ZenohAdapter::connect_to_tls(host, port, tls)?;
+        let messenger = Self::new_session(adapter).await?;
+        Ok(Self::from_messenger(messenger))
+    }
+
+    /// Like [`from_remote_tls`](Self::from_remote_tls) but opens a *reconnecting*
+    /// session: if the remote router is restarted under it (e.g. reaped and
+    /// re-provisioned after a re-pull), the session re-establishes and
+    /// re-declares its subscriptions/queryables instead of going dead. Use for a
+    /// long-lived remote session; keep [`from_remote_tls`](Self::from_remote_tls)
+    /// for short-lived CLI calls that should fail fast.
+    pub async fn from_remote_tls_reconnecting(
+        host: &str,
+        port: u16,
+        tls: pmi::TlsConfig,
+    ) -> Result<Self> {
+        let adapter = ZenohAdapter::connect_to_tls(host, port, tls)?.with_session_reconnect();
+        let messenger = Self::new_session(adapter).await?;
+        Ok(Self::from_messenger(messenger))
+    }
+
     async fn new_session(adapter: ZenohAdapter) -> Result<Messenger> {
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
         messenger
