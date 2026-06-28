@@ -89,6 +89,19 @@ pub const EVENT_LOOP_JOIN_BUDGET_SECS: u64 = 5;
 /// windows when the daemon computes how long to wait before force-killing.
 pub const RUNTIME_FINALIZE_MARGIN_SECS: u64 = 2;
 
+/// Default bound, in seconds, on resolving the caller's per-user cloud router
+/// when the daemon federates its local router to it: at startup (where it gates
+/// `serve` reporting ready) and again whenever `auth login`/`logout` pokes the
+/// daemon. A slow or unreachable backend must not stall federation past this, so
+/// the daemon falls back to standalone and retries in the background. 30 mirrors
+/// the historical hardcoded HTTP-client timeout, so behavior is unchanged until
+/// edited.
+pub const DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS: u64 = 30;
+/// Minimum accepted federation connect timeout, in seconds. At least 1 so a
+/// hand-edited 0 cannot collapse the bound to "give up immediately" (a 0 would
+/// also mean "no timeout" to the HTTP client, the opposite of the intent).
+pub const MIN_FEDERATION_CONNECT_TIMEOUT_SECS: u64 = 1;
+
 // The bundled default config, written verbatim on first create so its comments
 // survive. Kept inline (not `include_str!` from an asset file) because
 // `config` is vendored into every generated node as `src/` only, with
@@ -191,6 +204,30 @@ const RESOURCE_SERVERS_SECTION_SNIPPET: &str = const_format::concatcp!(
     "  },\n"
 );
 
+/// The `federation.connect_timeout_secs` entry with its comment, indented for
+/// the `federation` block.
+const FEDERATION_TIMEOUT_FIELD_SNIPPET: &str = const_format::concatcp!(
+    r#"    // Seconds the daemon spends resolving your per-user cloud router before
+    // giving up for this attempt (it retries in the background). Bounds the
+    // federation done at startup and on each `peppy auth login`/`logout`;
+    // minimum 1. If the backend is unreachable within this window the daemon
+    // stays standalone rather than blocking.
+    connect_timeout_secs: "#,
+    DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
+    ",\n"
+);
+
+/// The whole `federation` block with its explanatory comment.
+const FEDERATION_SECTION_SNIPPET: &str = const_format::concatcp!(
+    r#"  // Per-user zenoh-router federation: how the daemon links its local router to
+  // your private cloud router. Only tuned to bound a slow/unreachable backend
+  // during the federation step.
+  federation: {
+"#,
+    FEDERATION_TIMEOUT_FIELD_SNIPPET,
+    "  },\n"
+);
+
 /// The full bundled default config, composed from the snippets above.
 const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
     TEMPLATE_HEADER,
@@ -202,6 +239,8 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
     LIFECYCLE_SECTION_SNIPPET,
     "\n",
     RESOURCE_SERVERS_SECTION_SNIPPET,
+    "\n",
+    FEDERATION_SECTION_SNIPPET,
     "}\n"
 );
 
@@ -300,6 +339,28 @@ impl Default for ResourceServers {
     }
 }
 
+/// Per-user zenoh-router federation knobs. `connect_timeout_secs` bounds the
+/// backend round-trip the daemon makes to resolve the caller's cloud router so a
+/// slow or unreachable backend never stalls the federation step past it (read at
+/// startup, where it gates `serve` reporting ready, and on every login/logout
+/// poke).
+///
+/// `#[serde(default)]` fills any field a partial `federation` block omits from
+/// [`FederationConfig::default`], matching the `LifecycleConfig` pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FederationConfig {
+    pub connect_timeout_secs: u64,
+}
+
+impl Default for FederationConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout_secs: DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
+        }
+    }
+}
+
 /// The whole `peppy_config.json5` document. Every field is serde-defaulted so a
 /// partial or older file still parses; extra unknown keys are tolerated (this is
 /// a user-edited file, forward-compat beats strictness here).
@@ -317,6 +378,8 @@ pub struct PeppyConfig {
     pub lifecycle: LifecycleConfig,
     #[serde(default)]
     pub resource_servers: ResourceServers,
+    #[serde(default)]
+    pub federation: FederationConfig,
 }
 
 impl PeppyConfig {
@@ -353,6 +416,14 @@ impl PeppyConfig {
         if self.lifecycle.shutdown_grace_secs < MIN_SHUTDOWN_GRACE_SECS {
             return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
                 "invalid lifecycle.shutdown_grace_secs: must be >= {MIN_SHUTDOWN_GRACE_SECS}"
+            ))));
+        }
+        // A 0 bound would make the federation pull either give up instantly or
+        // (to the HTTP client) wait forever; reject a hand-edited too-small value
+        // loud at load time, same as the grace periods.
+        if self.federation.connect_timeout_secs < MIN_FEDERATION_CONNECT_TIMEOUT_SECS {
+            return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
+                "invalid federation.connect_timeout_secs: must be >= {MIN_FEDERATION_CONNECT_TIMEOUT_SECS}"
             ))));
         }
         Ok(())
@@ -491,6 +562,49 @@ mod tests {
             DEFAULT_SHUTDOWN_GRACE_SECS
         );
         assert_eq!(cfg.resource_servers.api, DEFAULT_API_URL);
+        assert_eq!(
+            cfg.federation.connect_timeout_secs,
+            DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn federation_section_defaults_and_completes() {
+        // An existing file with no `federation` block parses with the default
+        // and is completed in place with the section (the auto-complete path
+        // older files rely on).
+        let (_tmp, peppy_dirs, path) = dirs_with_config(r#"{ mode: "router" }"#);
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(
+            cfg.federation.connect_timeout_secs,
+            DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS
+        );
+        let completed = std::fs::read_to_string(&path).unwrap();
+        assert!(completed.contains("federation: {"));
+        assert!(completed.contains(&format!(
+            "connect_timeout_secs: {DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS},"
+        )));
+        // Idempotent: a second load parses to the same config and stops rewriting.
+        assert_eq!(load_or_create(&peppy_dirs).unwrap(), cfg);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), completed);
+
+        // An explicit value is honored.
+        let (_tmp, peppy_dirs, _) =
+            dirs_with_config(r#"{ federation: { connect_timeout_secs: 5 } }"#);
+        let cfg = load_or_create(&peppy_dirs).unwrap();
+        assert_eq!(cfg.federation.connect_timeout_secs, 5);
+    }
+
+    #[test]
+    fn zero_federation_timeout_fails_loud() {
+        let (_tmp, peppy_dirs, _) =
+            dirs_with_config(r#"{ federation: { connect_timeout_secs: 0 } }"#);
+
+        let err = load_or_create(&peppy_dirs).unwrap_err();
+        assert!(
+            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref m)) if m.contains("connect_timeout_secs")),
+            "expected a federation-timeout validation error, got: {err:?}"
+        );
     }
 
     #[test]
@@ -652,6 +766,9 @@ mod tests {
             },
             resource_servers: ResourceServers {
                 api: "http://localhost:9000".to_string(),
+            },
+            federation: FederationConfig {
+                connect_timeout_secs: 45,
             },
         };
         let serialized = serde_json5::to_string(&custom).unwrap();

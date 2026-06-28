@@ -4,6 +4,7 @@
 //! used in the core-node services.
 mod clock;
 mod datastore;
+mod health;
 mod info;
 mod node;
 mod ping;
@@ -19,6 +20,7 @@ pub use datastore::{
     DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
     DatastoreStoreRequest, DatastoreStoreResponse,
 };
+pub use health::{HealthRequest, HealthResponse};
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
 pub use node::builder::FeedbackStream;
 pub use node::{

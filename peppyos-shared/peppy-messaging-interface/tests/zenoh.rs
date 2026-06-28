@@ -4,12 +4,12 @@ mod common;
 
 mod zenoh_tests {
     use crate::common::{
-        RECV_TIMEOUT, ZENOH_SERIAL, test_node_target, wait_for_subscriber_discovery,
+        RECV_TIMEOUT, ZENOH_SERIAL, receiver, sender, wait_for_subscriber_discovery,
     };
     use bytes::Bytes;
     use pmi::{
         MessengerBackend, Payload, PublisherQoS, SubscriberBufferSizes, SubscriberQoS,
-        TopicWireReceiver, TopicWireSender, ZenohAdapter, ZenohNetProtocol,
+        ZenohAdapter, ZenohNetProtocol,
     };
     use std::time::{Duration, Instant};
 
@@ -24,30 +24,6 @@ mod zenoh_tests {
             .await
             .unwrap_or_else(|_| panic!("timed out waiting for message on {label}"))
             .unwrap_or_else(|_| panic!("channel closed before message on {label}"))
-    }
-
-    fn sender(as_topic_name: &str) -> TopicWireSender {
-        TopicWireSender::new(
-            "test_core_node",
-            "test_instance",
-            test_node_target("test_node"),
-            None,
-            as_topic_name,
-        )
-        .expect("valid wire fields")
-    }
-
-    fn receiver(to_topic: &str) -> TopicWireReceiver {
-        TopicWireReceiver::new(
-            "test_core_node",
-            "test_instance",
-            None,
-            None,
-            Some(test_node_target("test_node")),
-            None,
-            to_topic,
-        )
-        .expect("valid wire fields")
     }
 
     /// Opens a fresh (non-reconnecting) publisher session against the router at
@@ -301,6 +277,7 @@ mod zenoh_tests {
             Vec::new(),
             false,
             SubscriberBufferSizes::default(),
+            None,
         )
         .expect("subscriber adapter");
         subscriber
@@ -319,6 +296,7 @@ mod zenoh_tests {
             Vec::new(),
             false,
             SubscriberBufferSizes::default(),
+            None,
         )
         .expect("publisher adapter");
         publisher
@@ -366,6 +344,7 @@ mod zenoh_tests {
             Vec::new(),
             gossip,
             SubscriberBufferSizes::default(),
+            None,
         )
         .expect("subscriber adapter");
         subscriber
@@ -384,6 +363,7 @@ mod zenoh_tests {
             Vec::new(),
             gossip,
             SubscriberBufferSizes::default(),
+            None,
         )
         .expect("publisher adapter");
         publisher
@@ -455,6 +435,7 @@ mod zenoh_tests {
             Vec::new(),
             true,
             tiny,
+            None,
         )
         .expect("subscriber adapter");
         subscriber
@@ -908,6 +889,8 @@ mod zenoh_tests {
             port,
             true,
             SubscriberBufferSizes::default(),
+            Vec::new(),
+            None,
         )
         .unwrap();
         let (host, adapter_port) = adapter.client_endpoint();

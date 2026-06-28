@@ -14,6 +14,11 @@ pub enum ZenohNetProtocol {
     Udp,
     Quic,
     Ws,
+    /// TLS-over-TCP. The transport is byte-streamed over TCP, so everything that
+    /// special-cases `Tcp` for liveness/readiness (a `TcpStream::connect` probe)
+    /// must treat `Tls` identically. The cert/key/CA material is carried out of
+    /// band in [`crate::TlsConfig`] and rendered into `transport.link.tls`.
+    Tls,
 }
 
 impl fmt::Display for ZenohNetProtocol {
@@ -23,6 +28,7 @@ impl fmt::Display for ZenohNetProtocol {
             ZenohNetProtocol::Udp => write!(f, "udp"),
             ZenohNetProtocol::Quic => write!(f, "quic"),
             ZenohNetProtocol::Ws => write!(f, "ws"),
+            ZenohNetProtocol::Tls => write!(f, "tls"),
         }
     }
 }
@@ -42,4 +48,4 @@ pub use health::RouterHealthChecker;
 #[cfg(feature = "router")]
 mod router_config;
 #[cfg(feature = "router")]
-pub(crate) use router_config::router_config_path;
+pub(crate) use router_config::{config_override, render_router_config_to_path, router_config_path};

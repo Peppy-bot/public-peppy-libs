@@ -296,8 +296,25 @@ impl MessengerHandle {
             discovery.seed_peers.clone(),
             discovery.gossip,
             buffer_sizes,
+            None,
         )?
         .with_session_reconnect();
+        let messenger = Self::new_session(adapter).await?;
+        Ok(Self::from_messenger(messenger))
+    }
+
+    /// Like [`from_host_port_reconnecting`](Self::from_host_port_reconnecting) but
+    /// dials the router over TLS (`tls/`), validating its certificate against the
+    /// trust configured in `tls`. Used by an out-of-band prober that connects to a
+    /// router's `tls/` listener (e.g. the platform backend health-checking a
+    /// per-user cloud router over the federated link); the plaintext
+    /// `from_host_port*` paths only speak `tcp/`.
+    pub async fn from_host_port_tls_reconnecting(
+        host: &str,
+        port: u16,
+        tls: pmi::TlsConfig,
+    ) -> Result<Self> {
+        let adapter = ZenohAdapter::connect_to_tls(host, port, tls)?.with_session_reconnect();
         let messenger = Self::new_session(adapter).await?;
         Ok(Self::from_messenger(messenger))
     }
