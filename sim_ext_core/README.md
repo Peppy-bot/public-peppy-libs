@@ -19,7 +19,7 @@ Used by the Isaac and MuJoCo extension variants of `openarm01_backbone`, `openar
 dependencies = ["sim_ext_core"]
 
 [tool.uv.sources]
-sim_ext_core = { git = "https://github.com/Peppy-bot/nodes_shared_code", subdirectory = "sim_ext_core" }
+sim_ext_core = { git = "https://github.com/Peppy-bot/public-peppy-libs", subdirectory = "sim_ext_core" }
 ```
 
 ## Available bridge plugins

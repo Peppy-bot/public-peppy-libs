@@ -1,6 +1,6 @@
 //! Generic build-script helpers shared across peppy crates.
 //!
-//! This crate lives in `nodes_shared_code/peppyos-shared` so it sits at the
+//! This crate lives in `public-peppy-libs/peppyos-shared` so it sits at the
 //! bottom of the dependency graph: both the `peppyos` workspace crates and the
 //! `peppyos-shared` crates depend on it, never the other way around. Helpers
 //! that are specific to a single `peppyos` crate (for example the peppylib

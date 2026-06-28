@@ -69,7 +69,7 @@ pub fn find_bundled_capnp(tools_dir: &Path) -> Option<PathBuf> {
 ///   - As a path dependency inside the `peppyos-shared` workspace, the tools
 ///     dir is the real sibling on disk.
 ///   - As a cargo **git** dependency (for example from the `peppyos` workspace),
-///     cargo checks out the whole `nodes_shared_code` repo, so the sibling tools
+///     cargo checks out the whole `public-peppy-libs` repo, so the sibling tools
 ///     dir rides along in that checkout — no superproject sibling or duplicated
 ///     copy required.
 ///
@@ -96,7 +96,7 @@ pub fn bundled_capnp_path() -> Option<PathBuf> {
 /// `build-helpers` is pulled in:
 ///   - As a path dependency inside `peppyos-shared`, it is the real dir on disk.
 ///   - As a cargo **git** dependency (for example from the `peppyos` workspace),
-///     cargo checks out the whole `nodes_shared_code` repo, so every sibling
+///     cargo checks out the whole `public-peppy-libs` repo, so every sibling
 ///     rides along in that checkout — no superproject sibling and no fragile
 ///     `../../../` reaches from each consumer.
 ///

@@ -17,7 +17,7 @@ name = "peppylib"
 [dependencies]
 # Reverse path deps into the peppyos submodule: these crates have not been moved
 # to peppyos-shared yet. Valid only inside the superproject checkout (peppyos and
-# nodes_shared_code are sibling submodules). Tightens as crates migrate per PR.
+# public-peppy-libs are sibling submodules). Tightens as crates migrate per PR.
 pmi = { path = "../peppy-messaging-interface" }
 config = { package = "peppy-config-model", path = "../peppy-config-model" }
 # core-node-api now lives here in peppyos-shared; local sibling path.
