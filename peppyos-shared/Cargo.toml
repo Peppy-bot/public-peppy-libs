@@ -4,7 +4,7 @@
 # `peppylib-py` and `peppylib` (the Rust lib, now the `peppylib-rs` package);
 # `core-node-api` follows. Crates that have not been moved yet are referenced from
 # `peppyos` via relative reverse paths (`../../../peppyos/crates/<crate>`), which only
-# resolve inside the superproject checkout where `peppyos` and `nodes_shared_code` are
+# resolve inside the superproject checkout where `peppyos` and `public-peppy-libs` are
 # sibling submodules.
 #
 # `build-helpers` holds the generic build-script

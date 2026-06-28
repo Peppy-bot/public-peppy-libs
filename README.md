@@ -1,4 +1,4 @@
-# nodes_shared_code
+# public-peppy-libs
 
 Shared infrastructure libraries for PeppyOS nodes. Each library in this repo is an independent package pulled as a git dependency by nodes that require it.
 
@@ -18,13 +18,13 @@ Rust nodes pin `sim_bridge_core` in `Cargo.toml`:
 
 ```toml
 [dependencies]
-sim_bridge_core = { git = "https://github.com/Peppy-bot/nodes_shared_code", rev = "<commit>" }
+sim_bridge_core = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "<commit>" }
 ```
 
 Python consumers install `sim_ext_core` from a pinned commit:
 
 ```
-sim_ext_core @ git+https://github.com/Peppy-bot/nodes_shared_code.git@<commit>#subdirectory=sim_ext_core
+sim_ext_core @ git+https://github.com/Peppy-bot/public-peppy-libs.git@<commit>#subdirectory=sim_ext_core
 ```
 
 Pin a commit rather than a branch: node builds happen inside containers and should be reproducible. When this repo changes, bump the pin in the consuming node and rebuild it.

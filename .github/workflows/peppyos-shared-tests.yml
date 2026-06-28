@@ -1,7 +1,7 @@
 name: peppyos-shared Tests
 
 # Standalone CI for the `peppyos-shared` virtual workspace
-# (nodes_shared_code/peppyos-shared). The workspace is now self-contained: every
+# (public-peppy-libs/peppyos-shared). The workspace is now self-contained: every
 # path dependency resolves to a sibling crate within peppyos-shared (config,
 # core-node-api, peppy-messaging-interface, build-helpers, peppylib-rs), so it no
 # longer needs the superproject checkout to build and can be tested here, in the
