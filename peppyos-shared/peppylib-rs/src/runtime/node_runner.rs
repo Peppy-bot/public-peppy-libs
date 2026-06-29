@@ -45,12 +45,11 @@ impl NodeRunner {
         // (e.g. the daemon's watchdog respawning zenohd) is recovered
         // transparently instead of leaving the node off the bus. The session is
         // a peer that forms direct links per the node's discovery settings.
-        let messenger = MessengerHandle::from_host_port_reconnecting_with_discovery(
-            processor.messaging_host(),
-            processor.messaging_port(),
-            processor.discovery(),
-        )
-        .await?;
+        let messenger =
+            MessengerHandle::connect(processor.messaging_host(), processor.messaging_port())
+                .reconnecting()
+                .discovery(processor.discovery())
+                .await?;
 
         Ok(Self {
             messenger,

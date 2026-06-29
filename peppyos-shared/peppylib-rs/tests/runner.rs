@@ -3,7 +3,6 @@ mod common;
 use common::test_node_target;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::launcher::Name;
-use config::org::OrgNamespace;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use peppylib::PeppyError;
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
@@ -164,13 +163,9 @@ async fn daemon_runner_succeed() {
     // The daemon runner opens its session under the `local` org namespace (no
     // organization id in the runtime config); this control messenger must too,
     // or its reachability probe never routes to the node's services.
-    let messenger = peppylib::MessengerHandle::from_host_port_with_namespace(
-        &router_host,
-        router_port,
-        Some(OrgNamespace::local()),
-    )
-    .await
-    .expect("failed to create messenger");
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger");
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -375,13 +370,9 @@ async fn node_ready_but_not_healthy() {
     // The daemon runner opens its session under the `local` org namespace (no
     // organization id in the runtime config); this control messenger must too,
     // or its reachability probe never routes to the node's services.
-    let messenger = peppylib::MessengerHandle::from_host_port_with_namespace(
-        &router_host,
-        router_port,
-        Some(OrgNamespace::local()),
-    )
-    .await
-    .expect("failed to create messenger");
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger");
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -634,13 +625,9 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
     // The daemon runner opens its session under the `local` org namespace (no
     // organization id in the runtime config); this control messenger must too,
     // or its reachability probe never routes to the node's services.
-    let messenger = peppylib::MessengerHandle::from_host_port_with_namespace(
-        &router_host,
-        router_port,
-        Some(OrgNamespace::local()),
-    )
-    .await
-    .expect("failed to create messenger");
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger");
 
     // Wait for shutdown service to become reachable
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -780,13 +767,9 @@ async fn daemon_shutdown_during_setup_cancels_token_and_exits() {
     // The daemon runner opens its session under the `local` org namespace (no
     // organization id in the runtime config); this control messenger must too,
     // or its reachability probe never routes to the node's services.
-    let messenger = peppylib::MessengerHandle::from_host_port_with_namespace(
-        &router_host,
-        router_port,
-        Some(OrgNamespace::local()),
-    )
-    .await
-    .expect("failed to create messenger");
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger");
 
     // The shutdown service is a pre-setup service, so it must be reachable
     // while setup_fn is still blocked
@@ -1011,13 +994,9 @@ async fn send_shutdown_when_reachable<T: std::fmt::Debug>(
     // The daemon runner opens its session under the `local` org namespace (no
     // organization id in the runtime config); this control messenger must too,
     // or its reachability probe never routes to the node's services.
-    let messenger = peppylib::MessengerHandle::from_host_port_with_namespace(
-        router_host,
-        router_port,
-        Some(OrgNamespace::local()),
-    )
-    .await
-    .expect("failed to create messenger");
+    let messenger = peppylib::MessengerHandle::connect(router_host, router_port)
+        .await
+        .expect("failed to create messenger");
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

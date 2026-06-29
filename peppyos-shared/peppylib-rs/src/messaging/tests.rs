@@ -206,7 +206,7 @@ async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
 
     let mut last_error = None;
     for attempt in 0..MAX_RETRIES {
-        match MessengerHandle::from_host_port(host, port).await {
+        match MessengerHandle::connect(host, port).await {
             Ok(handle) => return handle,
             Err(error) => {
                 last_error = Some(error);

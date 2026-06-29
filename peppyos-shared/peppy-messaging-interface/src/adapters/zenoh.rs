@@ -341,7 +341,8 @@ impl ZenohAdapter {
             override_config,
             tls,
             // Namespace-free by default; callers apply org-id isolation with
-            // [`Self::with_namespace`] so `from_host_port` stays signature-stable.
+            // [`Self::with_namespace`] (e.g. peppylib's `MessengerHandle::connect`
+            // builder, which defaults the namespace to `local`).
             None,
         );
 

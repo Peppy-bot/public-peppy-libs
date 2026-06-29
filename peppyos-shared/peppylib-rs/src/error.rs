@@ -189,6 +189,9 @@ pub enum Error {
     #[error("deserialization error: {0}")]
     Deserialization(String),
 
+    #[error("invalid messenger configuration: {0}")]
+    ConfigurationError(String),
+
     // --- Runner
     #[error("failed to build blocking runtime for `{context}`")]
     RuntimeInitialization {

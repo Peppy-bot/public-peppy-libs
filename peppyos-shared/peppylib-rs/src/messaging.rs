@@ -154,11 +154,134 @@ pub(crate) fn generate_short_id(domain: &str) -> String {
     hex
 }
 
+/// Transport for a [`MessengerConnect`]: plaintext TCP (`tcp/`, the default) or
+/// TLS (`tls/`), the latter validated against a [`pmi::TlsConfig`].
+enum Transport {
+    Tcp,
+    Tls(pmi::TlsConfig),
+}
+
+/// Discovery parameters pulled from a node's
+/// [`DiscoveryConfig`](config::runtime::DiscoveryConfig) by
+/// [`MessengerConnect::discovery`]: the gossip seed list, the gossip toggle, and
+/// subscriber buffer sizing. The namespace travels on [`MessengerConnect`] itself
+/// (resolved from the config's org id), not here.
+struct DiscoveryParams {
+    seed_peers: Vec<String>,
+    gossip: bool,
+    buffer_sizes: pmi::SubscriberBufferSizes,
+}
+
+/// Fluent builder for opening a [`MessengerHandle`] session, returned by
+/// [`MessengerHandle::connect`]. Await it directly — it implements
+/// [`IntoFuture`](std::future::IntoFuture) — to perform the connect. Every
+/// builder method is infallible; the only failure point is the awaited connect,
+/// which yields `Result<MessengerHandle>`.
+pub struct MessengerConnect {
+    host: String,
+    port: u16,
+    reconnect: bool,
+    namespace: OrgNamespace,
+    transport: Transport,
+    discovery: Option<DiscoveryParams>,
+}
+
+impl MessengerConnect {
+    /// Opt into a *reconnecting* session: if the router is restarted under it
+    /// (e.g. the daemon's watchdog respawning zenohd), the session re-establishes
+    /// and re-declares its subscriptions/queryables instead of going dead. Used
+    /// by long-lived node processes; short-lived / CLI connections leave it off
+    /// so a dead daemon fails fast rather than blocking on connection retries.
+    pub fn reconnecting(mut self) -> Self {
+        self.reconnect = true;
+        self
+    }
+
+    /// Open the session under an explicit organization namespace (org-id routing
+    /// isolation) instead of the `local` default, so a CLI control session
+    /// reaches the daemon/node services under the same namespace the daemon runs.
+    /// Mutually exclusive with [`discovery`](Self::discovery), which resolves the
+    /// namespace from the node's config.
+    pub fn namespace(mut self, ns: OrgNamespace) -> Self {
+        self.namespace = ns;
+        self
+    }
+
+    /// Dial the router over TLS (`tls/`), validating its certificate against the
+    /// trust configured in `tls`, instead of the plaintext `tcp/` default. Used
+    /// by an out-of-band prober that connects to a router's `tls/` listener.
+    pub fn tls(mut self, tls: pmi::TlsConfig) -> Self {
+        self.transport = Transport::Tls(tls);
+        self
+    }
+
+    /// Apply the node's [`DiscoveryConfig`](config::runtime::DiscoveryConfig): an
+    /// explicit gossip seed list (falling back to `host:port`), the gossip
+    /// toggle, subscriber buffer sizing, and the organization namespace stamped
+    /// by the daemon. Used by the node runtime so peers form direct links per the
+    /// daemon-supplied discovery settings and stay routing-isolated under the
+    /// daemon's namespace. Mutually exclusive with [`namespace`](Self::namespace):
+    /// it resolves the namespace from `cfg.organization_id`.
+    pub fn discovery(mut self, cfg: &config::runtime::DiscoveryConfig) -> Self {
+        // The namespace is always present: a stamped org id resolves to that org,
+        // an absent one (or a malformed value) to the constant `local`. So the
+        // node session opens under exactly the daemon's namespace.
+        self.namespace = resolve_session_namespace(cfg.organization_id.as_deref());
+        self.discovery = Some(DiscoveryParams {
+            seed_peers: cfg.seed_peers.clone(),
+            gossip: cfg.gossip,
+            buffer_sizes: pmi::SubscriberBufferSizes::from(cfg),
+        });
+        self
+    }
+}
+
+impl std::future::IntoFuture for MessengerConnect {
+    type Output = Result<MessengerHandle>;
+    type IntoFuture =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<MessengerHandle>> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            let adapter = match (self.transport, self.discovery) {
+                (Transport::Tcp, None) => {
+                    ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &self.host, self.port)?
+                }
+                (Transport::Tls(tls), None) => {
+                    ZenohAdapter::connect_to_tls(&self.host, self.port, tls)?
+                }
+                (Transport::Tcp, Some(d)) => ZenohAdapter::connect_to_with_discovery(
+                    ZenohNetProtocol::Tcp,
+                    &self.host,
+                    self.port,
+                    d.seed_peers,
+                    d.gossip,
+                    d.buffer_sizes,
+                    None,
+                )?,
+                (Transport::Tls(_), Some(_)) => {
+                    return Err(Error::ConfigurationError(
+                        "TLS transport with discovery is not supported".into(),
+                    ));
+                }
+            };
+            let adapter = if self.reconnect {
+                adapter.with_session_reconnect()
+            } else {
+                adapter
+            };
+            let adapter = adapter.with_namespace(Some(self.namespace));
+            let messenger = MessengerHandle::new_session(adapter).await?;
+            Ok(MessengerHandle::from_messenger(messenger))
+        })
+    }
+}
+
 impl MessengerHandle {
     /// Build a handle from an already-shared `pmi::Messenger`. This is the
     /// escape hatch for consumers that construct and own the messenger
-    /// themselves (peppy and core-node-internal both do); the `from_host_port*`
-    /// constructors are the normal path for opening a fresh session.
+    /// themselves (peppy and core-node-internal both do); the [`connect`](Self::connect)
+    /// builder is the normal path for opening a fresh session.
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
         Self {
             messenger,
@@ -167,8 +290,8 @@ impl MessengerHandle {
     }
 
     /// Wrap a freshly-opened `Messenger` in the shared-handle state. Shared by
-    /// the `from_host_port*` constructors so the handle's field initialization
-    /// lives in one place.
+    /// the [`connect`](Self::connect) builder so the handle's field
+    /// initialization lives in one place.
     fn from_messenger(messenger: Messenger) -> Self {
         Self {
             messenger: Arc::new(Mutex::new(messenger)),
@@ -258,88 +381,30 @@ impl MessengerHandle {
         }
     }
 
-    pub async fn from_host_port(host: &str, port: u16) -> Result<Self> {
-        let adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)?;
-        let messenger = Self::new_session(adapter).await?;
-        Ok(Self::from_messenger(messenger))
-    }
-
-    /// Like [`from_host_port`](Self::from_host_port) but opens the session under
-    /// an organization namespace (org-id routing isolation), so a CLI control
-    /// session reaches the daemon/node services under the same namespace the
-    /// daemon runs. `from_host_port` stays signature-stable for the Python
-    /// binding and the many test call sites; this is the namespaced sibling.
-    pub async fn from_host_port_with_namespace(
-        host: &str,
-        port: u16,
-        namespace: Option<OrgNamespace>,
-    ) -> Result<Self> {
-        let adapter =
-            ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)?.with_namespace(namespace);
-        let messenger = Self::new_session(adapter).await?;
-        Ok(Self::from_messenger(messenger))
-    }
-
-    /// Like [`from_host_port`](Self::from_host_port) but opens a *reconnecting*
-    /// session: if the router is restarted under it (e.g. the daemon's router
-    /// watchdog respawning zenohd), the session re-establishes and re-declares
-    /// its subscriptions/queryables instead of going dead.
+    /// One entry point for opening a session to a router at `host:port`.
     ///
-    /// Used by long-lived node processes. Short-lived / CLI connections keep
-    /// [`from_host_port`](Self::from_host_port) so a dead daemon fails fast
-    /// rather than blocking on connection retries.
-    pub async fn from_host_port_reconnecting(host: &str, port: u16) -> Result<Self> {
-        let adapter =
-            ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)?.with_session_reconnect();
-        let messenger = Self::new_session(adapter).await?;
-        Ok(Self::from_messenger(messenger))
-    }
-
-    /// Like [`from_host_port_reconnecting`](Self::from_host_port_reconnecting)
-    /// but applies the node's [`DiscoveryConfig`](config::runtime::DiscoveryConfig):
-    /// an explicit gossip seed list (falling back to `host:port`), the gossip
-    /// toggle, and the organization namespace stamped by the daemon. Used by the
-    /// node runtime so peers form direct links per the daemon-supplied discovery
-    /// settings and stay routing-isolated under the daemon's namespace.
-    pub async fn from_host_port_reconnecting_with_discovery(
-        host: &str,
-        port: u16,
-        discovery: &config::runtime::DiscoveryConfig,
-    ) -> Result<Self> {
-        let buffer_sizes = pmi::SubscriberBufferSizes::from(discovery);
-        // The namespace is always present: a stamped org id resolves to that org,
-        // an absent one (or a malformed value) to the constant `local`. So the
-        // node session opens under exactly the daemon's namespace.
-        let namespace = resolve_session_namespace(discovery.organization_id.as_deref());
-        let adapter = ZenohAdapter::connect_to_with_discovery(
-            ZenohNetProtocol::Tcp,
-            host,
+    /// Returns a [`MessengerConnect`] builder, awaited directly to perform the
+    /// connect. Defaults: plaintext TCP peer (gossip) mode, one-shot (no
+    /// reconnect), and the [`OrgNamespace::local()`] namespace. Opt into the
+    /// other axes fluently:
+    ///
+    /// ```ignore
+    /// MessengerHandle::connect(host, port)
+    ///     .reconnecting()      // re-establishing session for long-lived nodes
+    ///     .namespace(ns)       // explicit org namespace (else `local`)
+    ///     .discovery(&cfg)     // gossip/seed peers + namespace from a node's DiscoveryConfig
+    ///     .tls(cfg)            // TLS client transport
+    ///     .await               // -> Result<MessengerHandle>
+    /// ```
+    pub fn connect(host: &str, port: u16) -> MessengerConnect {
+        MessengerConnect {
+            host: host.to_string(),
             port,
-            discovery.seed_peers.clone(),
-            discovery.gossip,
-            buffer_sizes,
-            None,
-        )?
-        .with_session_reconnect()
-        .with_namespace(Some(namespace));
-        let messenger = Self::new_session(adapter).await?;
-        Ok(Self::from_messenger(messenger))
-    }
-
-    /// Like [`from_host_port_reconnecting`](Self::from_host_port_reconnecting) but
-    /// dials the router over TLS (`tls/`), validating its certificate against the
-    /// trust configured in `tls`. Used by an out-of-band prober that connects to a
-    /// router's `tls/` listener (e.g. the platform backend health-checking a
-    /// per-user cloud router over the federated link); the plaintext
-    /// `from_host_port*` paths only speak `tcp/`.
-    pub async fn from_host_port_tls_reconnecting(
-        host: &str,
-        port: u16,
-        tls: pmi::TlsConfig,
-    ) -> Result<Self> {
-        let adapter = ZenohAdapter::connect_to_tls(host, port, tls)?.with_session_reconnect();
-        let messenger = Self::new_session(adapter).await?;
-        Ok(Self::from_messenger(messenger))
+            reconnect: false,
+            namespace: OrgNamespace::local(),
+            transport: Transport::Tcp,
+            discovery: None,
+        }
     }
 
     async fn new_session(adapter: ZenohAdapter) -> Result<Messenger> {

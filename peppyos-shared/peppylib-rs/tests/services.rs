@@ -23,10 +23,10 @@ async fn service_messenger_communication() {
     let request_payload = Payload::from_static(b"Hello request");
     let response_payload = Payload::from_static(b"Hello response");
 
-    let server_handle = MessengerHandle::from_host_port(&host, port)
+    let server_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create server handle");
-    let client_handle = MessengerHandle::from_host_port(&host, port)
+    let client_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create client handle");
 
@@ -96,13 +96,13 @@ async fn service_iface_scoped_native_and_conformed_do_not_collide() {
     let native_response = Payload::from_static(b"from_native");
     let iface_response = Payload::from_static(b"from_iface");
 
-    let native_handle = MessengerHandle::from_host_port(&host, port)
+    let native_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create native handle");
-    let iface_handle = MessengerHandle::from_host_port(&host, port)
+    let iface_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create iface handle");
-    let caller_handle = MessengerHandle::from_host_port(&host, port)
+    let caller_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create caller handle");
 
@@ -210,10 +210,10 @@ async fn service_iface_tag_hyphen_normalized() {
 
     let response_payload = Payload::from_static(b"ack");
 
-    let server_handle = MessengerHandle::from_host_port(&host, port)
+    let server_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create server handle");
-    let client_handle = MessengerHandle::from_host_port(&host, port)
+    let client_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create client handle");
 
@@ -300,7 +300,7 @@ async fn service_from_any_poll_runs_handler_on_winner_only() {
         ready: oneshot::Sender<()>,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> tokio::task::JoinHandle<()> {
-        let handle = MessengerHandle::from_host_port(&host, port)
+        let handle = MessengerHandle::connect(&host, port)
             .await
             .expect("connect");
         tokio::spawn(async move {
@@ -373,7 +373,7 @@ async fn service_from_any_poll_runs_handler_on_winner_only() {
     ready_a_rx.await.expect("producer A ready");
     ready_b_rx.await.expect("producer B ready");
 
-    let caller_handle = MessengerHandle::from_host_port(&host, port)
+    let caller_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("caller connect");
 

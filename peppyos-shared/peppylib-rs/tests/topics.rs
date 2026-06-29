@@ -20,10 +20,10 @@ async fn topic_messenger_communication() {
     let topic_name = "test_topic";
     let payload = Payload::from_static(b"Hello world");
 
-    let receiver_handle = MessengerHandle::from_host_port(&host, port)
+    let receiver_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create receiver handle");
-    let sender_handle = MessengerHandle::from_host_port(&host, port)
+    let sender_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create sender handle");
 
@@ -77,7 +77,7 @@ async fn topic_messenger_communication() {
 
 /// Proves a NODE session keeps receiving after the router process is killed and
 /// respawned on the same port. The subscriber is created via the node-path
-/// `from_host_port_reconnecting`, so this exercises the actual reconnecting
+/// `connect(..).reconnecting()`, so this exercises the actual reconnecting
 /// config that `NodeRunner` gives every node — confirming a watchdog
 /// router-respawn doesn't knock running nodes off the bus.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -93,7 +93,8 @@ async fn node_session_recovers_after_router_restart() {
     let topic_name = "reconnect_topic";
 
     // Subscriber uses the NODE path: a reconnecting session.
-    let receiver_handle = MessengerHandle::from_host_port_reconnecting(&host, port)
+    let receiver_handle = MessengerHandle::connect(&host, port)
+        .reconnecting()
         .await
         .expect("failed to create reconnecting receiver handle");
     let mut subscription = TopicMessenger::subscribe(
@@ -111,7 +112,7 @@ async fn node_session_recovers_after_router_restart() {
 
     // Baseline: a publisher reaches the subscriber through the router.
     {
-        let sender_handle = MessengerHandle::from_host_port(&host, port)
+        let sender_handle = MessengerHandle::connect(&host, port)
             .await
             .expect("failed to create sender handle");
         wait_for_topic_subscriber(
@@ -155,13 +156,14 @@ async fn node_session_recovers_after_router_restart() {
     // The reconnecting node session must re-establish and re-declare its
     // subscription. Drive a fresh publisher (on the new router) and poll until
     // delivery, or give up after a generous budget.
-    // A non-reconnecting `from_host_port` would race the respawn: the freshly
+    // A non-reconnecting `connect` would race the respawn: the freshly
     // started router can accept a TCP connection before its protocol handshake
     // has settled, failing the one-shot session open. A reconnecting publisher
     // opens immediately and connects in the background instead, so the
     // emit-until-delivered loop below drives recovery without a hand-rolled
     // connect-retry loop here.
-    let sender_handle = MessengerHandle::from_host_port_reconnecting(&host, port)
+    let sender_handle = MessengerHandle::connect(&host, port)
+        .reconnecting()
         .await
         .expect("failed to create post-restart sender handle");
 
@@ -218,10 +220,10 @@ async fn bidirectional_from_any_topics_with_late_producer() {
     let joint_states = "joint_states"; // emitted by robot_arm, consumed by arm_controller
     let joint_commands = "joint_commands"; // emitted by arm_controller, consumed by robot_arm
 
-    let controller_handle = MessengerHandle::from_host_port(&host, port)
+    let controller_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create arm_controller handle");
-    let arm_handle = MessengerHandle::from_host_port(&host, port)
+    let arm_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create robot_arm handle");
 
@@ -320,7 +322,7 @@ async fn bidirectional_from_any_topics_with_late_producer() {
     // subscribed. With no binding to update, the wildcard subscription picks
     // it up automatically; only the returned instance_id distinguishes it
     // from the first producer.
-    let late_arm_handle = MessengerHandle::from_host_port(&host, port)
+    let late_arm_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create late robot_arm handle");
     wait_for_topic_subscriber(
