@@ -17,6 +17,7 @@
 //! and with a known seed it adds nothing gossip does not already cover.
 
 use crate::zenohd::ZenohNetProtocol;
+use config::org::OrgNamespace;
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -238,6 +239,12 @@ pub(crate) struct ZenohConfigSpec {
     /// (`tcp/`, …), in which case no `transport.link.tls` block is rendered and
     /// the output is byte-identical to a pre-TLS config.
     pub tls: Option<TlsConfig>,
+    /// Organization namespace for an application session (org-id routing
+    /// isolation). Rendered into the session-level `namespace` field for
+    /// `Peer`/`Client` sessions only; `None` for the router and for liveness
+    /// probes. Zenoh prepends `<ns>/` to every declared key on egress and strips
+    /// it on ingress, so two sessions interoperate iff their namespaces match.
+    pub namespace: Option<OrgNamespace>,
 }
 
 /// Builds the JSON5-equivalent config value for a session or the router.
@@ -298,6 +305,22 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
             json!({ "enabled": { "client": true }, "drop_future_timestamp": false })
         }
     };
+
+    // Session namespace (org-id routing isolation). zenoh's `namespace` is a
+    // session-level field: it is applied to the application session opened
+    // against a router, where egress prepends `<ns>/` to every declared key and
+    // ingress strips it — so two sessions interoperate iff their namespaces
+    // match. It is rendered only for `Peer`/`Client` application sessions, never
+    // for the router: a router only forwards between transport faces and never
+    // opens an application session, so a router-level `namespace` would NOT
+    // prefix forwarded/federated traffic. `router_spec` and `render_probe_config`
+    // therefore pass `namespace: None` — readiness probes are deliberately
+    // namespace-free (they only check "is our router up?").
+    if let Some(namespace) = &spec.namespace
+        && !matches!(spec.mode, SessionMode::Router)
+    {
+        config["namespace"] = json!(namespace.as_str());
+    }
 
     // TLS material maps to zenoh's `transport.link.tls`. Rendered only when
     // present so a plaintext config is byte-identical to before. Path fields are
@@ -365,6 +388,9 @@ pub(crate) fn render_probe_config(
         // A `tls/` router needs the probe to speak TLS too; plaintext callers pass
         // `None` (no `transport.link.tls` block, byte-identical to before).
         tls,
+        // Readiness probes are deliberately namespace-free: a probe only checks
+        // "is our router up?", which a namespace would only get in the way of.
+        namespace: None,
     })
 }
 
@@ -397,6 +423,11 @@ pub(crate) fn router_spec(
         listen_endpoints: vec![format!("{protocol}/{host}:{port}")],
         gossip,
         tls,
+        // A router is never namespaced: it only forwards between transport faces
+        // and never opens an application session, so a router-level namespace
+        // would not prefix forwarded/federated traffic. Isolation is enforced on
+        // the application sessions instead.
+        namespace: None,
     }
 }
 
@@ -446,6 +477,7 @@ mod tests {
             reconnect,
             gossip,
             tls: None,
+            namespace: None,
         }
     }
 
@@ -496,6 +528,7 @@ mod tests {
             reconnect: false,
             gossip: false,
             tls: None,
+            namespace: None,
         });
 
         assert_eq!(cfg["mode"], "client");
@@ -520,6 +553,7 @@ mod tests {
             reconnect: false,
             gossip: false,
             tls: None,
+            namespace: None,
         });
 
         assert_eq!(cfg["mode"], "client");
@@ -536,6 +570,7 @@ mod tests {
             reconnect: false,
             gossip: true,
             tls: None,
+            namespace: None,
         });
 
         assert_eq!(cfg["mode"], "router");
@@ -611,6 +646,7 @@ mod tests {
             reconnect: false,
             gossip: false,
             tls: Some(TlsConfig::client(PathBuf::from("/certs/ca.pem"))),
+            namespace: None,
         });
         let tls = &cfg["transport"]["link"]["tls"];
         assert_eq!(tls["root_ca_certificate"], "/certs/ca.pem");
@@ -677,5 +713,59 @@ mod tests {
 
         // And the whole thing is a config zenoh accepts.
         zenoh::config::Config::from_json5(&s).expect("federated router config parses");
+    }
+
+    // ---- Org-id session namespace rendering ----
+
+    /// The `namespace` key is rendered for application sessions (`Peer`/`Client`)
+    /// and only for them: it is a session-level field, so a router (which only
+    /// forwards between faces) must never carry one. A namespaced spec must also
+    /// still parse as a real zenoh config.
+    #[test]
+    fn namespace_rendered_for_sessions_never_for_router() {
+        let ns = OrgNamespace::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+
+        // Peer session: namespace present with the org value.
+        let peer = build_zenoh_config(&ZenohConfigSpec {
+            namespace: Some(ns.clone()),
+            ..peer_spec(true, true)
+        });
+        assert_eq!(peer["namespace"], ns.as_str());
+        render_config(&ZenohConfigSpec {
+            namespace: Some(ns.clone()),
+            ..peer_spec(true, true)
+        });
+
+        // Client session: namespace present.
+        let client = build_zenoh_config(&ZenohConfigSpec {
+            mode: SessionMode::Client,
+            connect_endpoints: vec!["tcp/127.0.0.1:7448".to_string()],
+            listen_endpoints: Vec::new(),
+            reconnect: false,
+            gossip: false,
+            tls: None,
+            namespace: Some(ns.clone()),
+        });
+        assert_eq!(client["namespace"], ns.as_str());
+
+        // Router: even when a namespace is supplied it is NOT rendered, because a
+        // router never opens an application session.
+        let router = build_zenoh_config(&ZenohConfigSpec {
+            mode: SessionMode::Router,
+            connect_endpoints: Vec::new(),
+            listen_endpoints: vec!["tcp/0.0.0.0:7448".to_string()],
+            reconnect: false,
+            gossip: true,
+            tls: None,
+            namespace: Some(ns.clone()),
+        });
+        assert!(
+            router.get("namespace").is_none(),
+            "a router must never render a namespace: {router}"
+        );
+
+        // A session with no namespace omits the key entirely (back-compat).
+        let bare = build_zenoh_config(&peer_spec(false, true));
+        assert!(bare.get("namespace").is_none());
     }
 }

@@ -47,11 +47,12 @@ pub use pmi::{
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
+use config::org::resolve_session_namespace;
 use pmi::{
     ActionLivelinessWatch, ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend,
-    MessengerPublisher, PublisherQoS, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
-    ServiceWireSender, SubscriberQoS, Subscription as PmiSubscription, TopicWireReceiver,
-    TopicWireSender, ZenohAdapter, ZenohNetProtocol,
+    MessengerPublisher, OrgNamespace, PublisherQoS, ServiceQueryKind, ServiceReplyKind,
+    ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription as PmiSubscription,
+    TopicWireReceiver, TopicWireSender, ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -263,6 +264,22 @@ impl MessengerHandle {
         Ok(Self::from_messenger(messenger))
     }
 
+    /// Like [`from_host_port`](Self::from_host_port) but opens the session under
+    /// an organization namespace (org-id routing isolation), so a CLI control
+    /// session reaches the daemon/node services under the same namespace the
+    /// daemon runs. `from_host_port` stays signature-stable for the Python
+    /// binding and the many test call sites; this is the namespaced sibling.
+    pub async fn from_host_port_with_namespace(
+        host: &str,
+        port: u16,
+        namespace: Option<OrgNamespace>,
+    ) -> Result<Self> {
+        let adapter =
+            ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)?.with_namespace(namespace);
+        let messenger = Self::new_session(adapter).await?;
+        Ok(Self::from_messenger(messenger))
+    }
+
     /// Like [`from_host_port`](Self::from_host_port) but opens a *reconnecting*
     /// session: if the router is restarted under it (e.g. the daemon's router
     /// watchdog respawning zenohd), the session re-establishes and re-declares
@@ -280,15 +297,20 @@ impl MessengerHandle {
 
     /// Like [`from_host_port_reconnecting`](Self::from_host_port_reconnecting)
     /// but applies the node's [`DiscoveryConfig`](config::runtime::DiscoveryConfig):
-    /// an explicit gossip seed list (falling back to `host:port`) and the gossip
-    /// toggle. Used by the node runtime so peers form direct links per the
-    /// daemon-supplied discovery settings.
+    /// an explicit gossip seed list (falling back to `host:port`), the gossip
+    /// toggle, and the organization namespace stamped by the daemon. Used by the
+    /// node runtime so peers form direct links per the daemon-supplied discovery
+    /// settings and stay routing-isolated under the daemon's namespace.
     pub async fn from_host_port_reconnecting_with_discovery(
         host: &str,
         port: u16,
         discovery: &config::runtime::DiscoveryConfig,
     ) -> Result<Self> {
         let buffer_sizes = pmi::SubscriberBufferSizes::from(discovery);
+        // The namespace is always present: a stamped org id resolves to that org,
+        // an absent one (or a malformed value) to the constant `local`. So the
+        // node session opens under exactly the daemon's namespace.
+        let namespace = resolve_session_namespace(discovery.organization_id.as_deref());
         let adapter = ZenohAdapter::connect_to_with_discovery(
             ZenohNetProtocol::Tcp,
             host,
@@ -298,7 +320,8 @@ impl MessengerHandle {
             buffer_sizes,
             None,
         )?
-        .with_session_reconnect();
+        .with_session_reconnect()
+        .with_namespace(Some(namespace));
         let messenger = Self::new_session(adapter).await?;
         Ok(Self::from_messenger(messenger))
     }

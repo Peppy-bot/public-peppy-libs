@@ -39,6 +39,7 @@ use crate::zenoh_config::{
     SessionMode, TlsConfig, ZenohConfigSpec, connectable_host, loopback_listen_endpoint,
     render_config,
 };
+use config::org::{LOCAL_NAMESPACE, OrgNamespace};
 // `render_probe_config` and the `zenohd` module (facade/health/config-path) are
 // only used by the router-management paths; a `zenoh`-without-`router` build (the
 // backend, which only renders configs and opens client sessions) does not see them.
@@ -167,6 +168,14 @@ pub struct ZenohClientConfig {
     /// (not just baked into `zenoh_config`) so the reconnecting-session rebuild
     /// in `start_session` re-renders with the same TLS settings.
     tls: Option<TlsConfig>,
+    /// Organization namespace for this session (org-id routing isolation).
+    /// Retained (like `tls`) so the reconnecting-session rebuild in
+    /// `start_session` re-applies it; lost otherwise on every router-restart
+    /// reconnect. Applied via [`ZenohAdapter::with_namespace`]; `None` leaves the
+    /// session namespace-free (probes, tests). zenoh captures the namespace once
+    /// at session build, so there is no in-process swap -- a change needs a fresh
+    /// session.
+    namespace: Option<OrgNamespace>,
 }
 
 pub struct ZenohAdapter {
@@ -331,6 +340,9 @@ impl ZenohAdapter {
             buffer_sizes,
             override_config,
             tls,
+            // Namespace-free by default; callers apply org-id isolation with
+            // [`Self::with_namespace`] so `from_host_port` stays signature-stable.
+            None,
         );
 
         Ok(Self {
@@ -512,6 +524,7 @@ impl ZenohAdapter {
         buffer_sizes: SubscriberBufferSizes,
         override_config: Option<zenoh::config::Config>,
         tls: Option<TlsConfig>,
+        namespace: Option<OrgNamespace>,
     ) -> ZenohClientConfig {
         let connect_host = connectable_host(host);
         let seeds = if seed_peers.is_empty() {
@@ -537,6 +550,7 @@ impl ZenohAdapter {
                 reconnect,
                 gossip: true,
                 tls: tls.clone(),
+                namespace: namespace.clone(),
             }),
             None => render_config(&ZenohConfigSpec {
                 mode: SessionMode::Client,
@@ -545,6 +559,7 @@ impl ZenohAdapter {
                 reconnect,
                 gossip: false,
                 tls: tls.clone(),
+                namespace: namespace.clone(),
             }),
         };
 
@@ -558,6 +573,7 @@ impl ZenohAdapter {
             buffer_sizes,
             override_config,
             tls,
+            namespace,
         }
     }
 
@@ -587,12 +603,98 @@ impl ZenohAdapter {
             buffer_sizes,
             override_config,
             tls,
+            // The daemon applies its org namespace via [`Self::with_namespace`]
+            // after `with_router`, so the initial derive is namespace-free.
+            None,
         ))
+    }
+
+    /// Applies an organization namespace to this adapter's session (org-id
+    /// routing isolation), re-rendering the stored session config so a
+    /// non-reconnecting session -- which opens `client_config.zenoh_config`
+    /// directly -- carries it, and `start_session`'s reconnecting rebuild
+    /// re-applies it the same way it does `tls`. `None` leaves the session
+    /// namespace-free.
+    ///
+    /// There is intentionally no in-process namespace *swap* once a session is
+    /// open: zenoh captures the namespace once at session build, so a change
+    /// requires a fresh session (the daemon rebuilds its whole generation). The
+    /// fail-closed check against an operator override runs at `start_session`.
+    pub fn with_namespace(mut self, namespace: Option<OrgNamespace>) -> Self {
+        let protocol = self.client_config.protocol;
+        let host = self.client_config.host.clone();
+        let port = self.client_config.port;
+        let seed_peers = self.client_config.seed_peers.clone();
+        let gossip = self.client_config.gossip;
+        let buffer_sizes = self.client_config.buffer_sizes;
+        let override_config = self.client_config.override_config.clone();
+        let tls = self.client_config.tls.clone();
+        self.client_config = Self::create_client_config(
+            protocol,
+            &host,
+            port,
+            false,
+            seed_peers,
+            gossip,
+            buffer_sizes,
+            override_config,
+            tls,
+            namespace,
+        );
+        self
+    }
+
+    /// Fail closed if an operator `ZENOH_SESSION_CONFIG` override would drop or
+    /// change the org namespace on a session that federates. The override
+    /// replaces the rendered config wholesale, so a federating session whose
+    /// override carries no (or a different) namespace would emit unprefixed keys
+    /// and accept everything -- a cross-tenant leak. A `local` (logged-out)
+    /// session does not federate, so a missing/divergent namespace there is only
+    /// warned about, not refused.
+    fn ensure_override_preserves_namespace(&self) -> Result<()> {
+        let (Some(expected), Some(override_cfg)) = (
+            self.client_config.namespace.as_ref(),
+            self.client_config.override_config.as_ref(),
+        ) else {
+            return Ok(());
+        };
+        // Read the override's session-level `namespace` by serializing it (the
+        // public `Config` is a transparent newtype over the inner validated
+        // config, so its `namespace` field surfaces as a top-level JSON key).
+        // This avoids depending on the visibility of the macro-generated getter.
+        let override_json = serde_json::to_value(override_cfg).unwrap_or(serde_json::Value::Null);
+        let override_ns = override_json.get("namespace").and_then(|v| v.as_str());
+        if override_ns == Some(expected.as_str()) {
+            return Ok(());
+        }
+        // The override does not declare the expected namespace.
+        if expected.as_str() == LOCAL_NAMESPACE {
+            tracing::warn!(
+                expected = %expected.as_str(),
+                override_namespace = ?override_ns,
+                "ZENOH_SESSION_CONFIG overrides the local-namespace session config; \
+                 proceeding because a logged-out session does not federate"
+            );
+            return Ok(());
+        }
+        Err(Error::ConfigurationError(format!(
+            "ZENOH_SESSION_CONFIG drops or changes the organization namespace \
+             (expected `{}`, override has `{}`); refusing to open a federating session \
+             that would route across tenants",
+            expected.as_str(),
+            override_ns.unwrap_or("<none>"),
+        )))
     }
 }
 
 impl MessengerBackend for ZenohAdapter {
     async fn start_session(&mut self) -> Result<()> {
+        // Fail closed before opening: an operator `ZENOH_SESSION_CONFIG` override
+        // replaces the rendered config wholesale (namespace included), so a
+        // federating session whose override carries no org namespace would leak
+        // across tenants. Refuse rather than silently downgrade.
+        self.ensure_override_preserves_namespace()?;
+
         // The daemon's long-lived session uses a reconnecting config so it
         // re-establishes itself (and re-declares its subscriptions/queryables)
         // if the router is restarted under it — e.g. by the router watchdog.
@@ -608,6 +710,7 @@ impl MessengerBackend for ZenohAdapter {
                 self.client_config.buffer_sizes,
                 self.client_config.override_config.clone(),
                 self.client_config.tls.clone(),
+                self.client_config.namespace.clone(),
             )
             .zenoh_config
         } else {
@@ -1304,6 +1407,7 @@ mod tests {
             SubscriberBufferSizes::default(),
             None,
             None,
+            None,
         );
         assert_eq!(reconnecting.host, "127.0.0.1");
         assert_eq!(
@@ -1326,6 +1430,7 @@ mod tests {
                 standard: 64,
                 high_throughput: 4096,
             },
+            None,
             None,
             None,
         );

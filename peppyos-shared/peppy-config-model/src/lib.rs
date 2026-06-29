@@ -30,6 +30,7 @@ mod internal {
     pub mod interface;
     pub mod launcher;
     pub mod node;
+    pub mod org;
     pub mod peppy_config;
     pub mod repo_node_id;
     pub mod runtime;
@@ -100,6 +101,14 @@ pub mod runtime {
     pub use crate::internal::runtime::{
         DiscoveryConfig, LifecycleRuntimeConfig, NodeInstanceConfig, ProducerRef,
         ResolvedFramework, RuntimeConfig, SlotBinding,
+    };
+}
+
+// -- org --
+pub mod org {
+    pub use crate::internal::org::{
+        InvalidOrgNamespace, LOCAL_NAMESPACE, OrgNamespace, resolve_session_namespace,
+        should_federate,
     };
 }
 

@@ -1008,4 +1008,142 @@ mod zenoh_tests {
         .await;
         assert_eq!(received.payload(), &body);
     }
+
+    // ---- Organization-id namespace isolation ----
+
+    /// Opens a non-reconnecting peer session under `namespace`, retrying briefly
+    /// while the router settles.
+    async fn open_namespaced(host: &str, port: u16, namespace: &str) -> ZenohAdapter {
+        let ns = pmi::OrgNamespace::parse(namespace).expect("valid namespace");
+        for _ in 0..40 {
+            let mut adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)
+                .expect("adapter")
+                .with_namespace(Some(ns.clone()));
+            if adapter.start_session().await.is_ok() {
+                return adapter;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("could not open a namespaced session against {host}:{port}");
+    }
+
+    /// Asserts the subscription receives nothing within a short window.
+    async fn assert_no_delivery(rx: &mut flume::Receiver<pmi::TopicMessage>, label: &str) {
+        let isolated = tokio::time::timeout(Duration::from_millis(1500), rx.recv_async())
+            .await
+            .is_err();
+        assert!(
+            isolated,
+            "a cross-namespace publish must not reach the subscriber ({label})"
+        );
+    }
+
+    /// The core org-id guarantee: two sessions under the SAME namespace deliver
+    /// pub/sub through the router, while a publisher under a DIFFERENT namespace
+    /// never reaches the subscriber. This is routing-layer isolation, not merely
+    /// an ingress drop: the subscriber's key is rewritten on the wire to
+    /// `<ns>/<key>`, which a different org's `<other>/<key>` never intersects.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn same_namespace_delivers_and_different_is_isolated() {
+        const TOPIC: &str = "org_ns_topic";
+        let _lock = ZENOH_SERIAL.lock().await;
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("router");
+        let host = instance.host.clone();
+        let port = instance.port;
+
+        let subscriber = open_namespaced(&host, port, "org-a").await;
+        let mut subscription = subscriber
+            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .await
+            .expect("subscribe");
+
+        // Same namespace ⇒ delivered.
+        {
+            let mut pub_a = open_namespaced(&host, port, "org-a").await;
+            wait_for_subscriber_discovery().await;
+            pub_a
+                .publish_topic(
+                    &sender(TOPIC),
+                    Payload::from_bytes(Bytes::from_static(b"same-namespace")),
+                    PublisherQoS::Standard,
+                    true,
+                )
+                .await
+                .expect("same-namespace publish");
+            let got = recv_or_timeout(&mut subscription.rx, "same-namespace").await;
+            assert_eq!(got.payload(), &Bytes::from_static(b"same-namespace"));
+        }
+
+        // Different namespace ⇒ the subscriber receives NOTHING.
+        {
+            let mut pub_b = open_namespaced(&host, port, "org-b").await;
+            wait_for_subscriber_discovery().await;
+            pub_b
+                .publish_topic(
+                    &sender(TOPIC),
+                    Payload::from_bytes(Bytes::from_static(b"other-namespace")),
+                    PublisherQoS::Standard,
+                    true,
+                )
+                .await
+                .expect("other-namespace publish");
+            assert_no_delivery(&mut subscription.rx, "different org").await;
+        }
+    }
+
+    /// A logged-out (`local`) session and an org session sharing one router are
+    /// routing-isolated: `local`'s keys are rewritten to `local/<key>` and the
+    /// org's to `<org>/<key>`, which never intersect. Closes the LAN cross-tenant
+    /// leak a "no namespace when logged out" model would leave open.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn local_and_org_namespaces_are_isolated() {
+        const TOPIC: &str = "local_vs_org_topic";
+        let _lock = ZENOH_SERIAL.lock().await;
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("router");
+        let host = instance.host.clone();
+        let port = instance.port;
+
+        let subscriber = open_namespaced(&host, port, pmi::OrgNamespace::local().as_str()).await;
+        let mut subscription = subscriber
+            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .await
+            .expect("subscribe");
+
+        // Baseline: a `local` publisher reaches the `local` subscriber.
+        {
+            let mut local_pub = open_namespaced(&host, port, "local").await;
+            wait_for_subscriber_discovery().await;
+            local_pub
+                .publish_topic(
+                    &sender(TOPIC),
+                    Payload::from_bytes(Bytes::from_static(b"local-payload")),
+                    PublisherQoS::Standard,
+                    true,
+                )
+                .await
+                .expect("local publish");
+            let got = recv_or_timeout(&mut subscription.rx, "local").await;
+            assert_eq!(got.payload(), &Bytes::from_static(b"local-payload"));
+        }
+
+        // An org publisher must NOT reach the `local` subscriber.
+        {
+            let mut org_pub = open_namespaced(&host, port, "org-x").await;
+            wait_for_subscriber_discovery().await;
+            org_pub
+                .publish_topic(
+                    &sender(TOPIC),
+                    Payload::from_bytes(Bytes::from_static(b"org-payload")),
+                    PublisherQoS::Standard,
+                    true,
+                )
+                .await
+                .expect("org publish");
+            assert_no_delivery(&mut subscription.rx, "org vs local").await;
+        }
+    }
 }
