@@ -37,6 +37,7 @@
 
 mod arm;
 mod coriolis;
+mod error;
 mod fk;
 mod gravity;
 mod ik;
@@ -48,6 +49,7 @@ mod payload;
 /// Coriolis, and IK off it. [`Posed`] is the read-only view returned by
 /// [`Arm::at`]; [`ArmAnglePolicy`] / [`Solution`] are the IK types.
 pub use arm::Arm;
+pub use error::SrsError;
 pub use fk::Posed;
 pub use ik::{ArmAnglePolicy, Solution};
 

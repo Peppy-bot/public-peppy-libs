@@ -9,10 +9,10 @@
 //! The checked pairs are derived at construction from the URDF: every body
 //! pair except those that cannot inform (two fixed bodies never change
 //! distance) or that touch by construction (URDF-adjacent, joint-yoked bodies).
-//! The hulls are tight, so no rebasing is needed: instead every checked pair is
-//! required to read at least the band's `d_safe` at each declared reference
-//! pose, or construction fails loudly. A reference that is actually a near-miss
-//! is the caller's error to fix, not a margin to paper over.
+//! The hulls are tight: the reported distance is the true surface clearance, with
+//! no safety margin baked into the geometry. Keeping the arms apart is the
+//! caller's job (a deployment band over the reported distance), not a margin the
+//! model papers over.
 
 use std::collections::HashMap;
 
@@ -20,6 +20,7 @@ use srs_model::nalgebra::{Isometry3, Point3, Vector3};
 use srs_model::{ARM_DOF, Arm, JointVec};
 
 use crate::assemble::fit_bodies;
+use crate::{BuildError, CollisionError};
 use crate::gjk::{self, Hull, Placed};
 use crate::hull::ConvexPiece;
 use crate::pairs::PairSpec;
@@ -96,6 +97,23 @@ pub struct Proximity<'a> {
     pub on_b: Point3<f64>,
 }
 
+/// The nearest-pair [`Proximity`] at one configuration plus the gradient of its
+/// surface distance with respect to each arm's joints. `grad_left[j]` is
+/// `d(distance)/d(q_left[j])`; separating motion has a positive gradient. Computed
+/// analytically from the nearest pair's witness points (the gradient of the active
+/// pair, by the envelope theorem), so it costs one distance query plus two point
+/// Jacobians.
+#[derive(Debug, Clone)]
+pub struct DistanceGradient<'a> {
+    pub proximity: Proximity<'a>,
+    pub grad_left: JointVec,
+    pub grad_right: JointVec,
+}
+
+/// Witness separation below which the surface normal is ill-defined (deep
+/// penetration where the two witnesses coincide); the gradient query fails there.
+const WITNESS_MIN_SEPARATION: f64 = 1e-9;
+
 /// One hull piece placed in the world: the vertices, the face triangles
 /// indexing them, and the inflation `radius` swept around the core to recover
 /// the mesh. Enough to draw the true rounded collision surface (offset faces
@@ -155,7 +173,7 @@ impl Builder {
 
     /// Fit the bodies (supplied pieces override the auto-fit), derive the checked
     /// pairs from the structural rules, and apply the exclusions.
-    pub fn build(self) -> Result<BimanualCollisionModel, String> {
+    pub fn build(self) -> Result<BimanualCollisionModel, CollisionError> {
         let mut model = BimanualCollisionModel::assemble(
             &self.urdf,
             &self.meshes_dir,
@@ -214,8 +232,9 @@ impl Builder {
 impl BimanualCollisionModel {
     /// Start building a model from a URDF string and its collision mesh
     /// directory, naming the two chain base links. See [`Builder`]. The model is
-    /// a pure distance oracle: it reports clearances, and the caller decides what
-    /// to do with them (see [`GovernorBand`](crate::GovernorBand)).
+    /// a pure distance oracle: it reports clearances (and, via
+    /// [`distance_gradient`](Self::distance_gradient), their gradient), and the
+    /// caller decides how to throttle on them.
     pub fn builder(urdf: &str, meshes_dir: &str, left_base: &str, right_base: &str) -> Builder {
         Builder {
             urdf: urdf.to_string(),
@@ -233,8 +252,9 @@ impl BimanualCollisionModel {
         meshes_dir: &str,
         left_base: &str,
         right_base: &str,
-    ) -> Result<Builder, String> {
-        let urdf = std::fs::read_to_string(path).map_err(|e| format!("read urdf '{path}': {e}"))?;
+    ) -> Result<Builder, CollisionError> {
+        let urdf = std::fs::read_to_string(path)
+            .map_err(|e| BuildError::Geometry(format!("read urdf '{path}': {e}")))?;
         Ok(Self::builder(&urdf, meshes_dir, left_base, right_base))
     }
 
@@ -249,7 +269,7 @@ impl BimanualCollisionModel {
         left_base: &str,
         right_base: &str,
         pair_specs: &[PairSpec],
-    ) -> Result<Self, String> {
+    ) -> Result<Self, BuildError> {
         let mut model = Self::assemble(urdf, meshes_dir, left_base, right_base, &HashMap::new())?;
         model.set_pairs(pair_specs)?;
         Ok(model)
@@ -263,11 +283,9 @@ impl BimanualCollisionModel {
         left_base: &str,
         right_base: &str,
         supplied: &HashMap<String, Vec<ConvexPiece>>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, BuildError> {
         if left_base == right_base {
-            return Err(format!(
-                "left and right base links are both '{left_base}'; a bimanual model needs two chains"
-            ));
+            return Err(BuildError::IdenticalBases { base: left_base.to_string() });
         }
         let mut left = Arm::from_urdf(urdf, left_base)?;
         let mut right = Arm::from_urdf(urdf, right_base)?;
@@ -289,9 +307,9 @@ impl BimanualCollisionModel {
         )?;
 
         let mut bodies: Vec<Body> = Vec::new();
-        let push_body = |bodies: &mut Vec<Body>, body: Body| -> Result<(), String> {
+        let push_body = |bodies: &mut Vec<Body>, body: Body| -> Result<(), BuildError> {
             if bodies.iter().any(|b| b.name == body.name) {
-                return Err(format!("duplicate body name '{}'", body.name));
+                return Err(BuildError::DuplicateBody { name: body.name.clone() });
             }
             bodies.push(body);
             Ok(())
@@ -313,7 +331,7 @@ impl BimanualCollisionModel {
             for (i, name) in names.iter().enumerate() {
                 let hulls = links
                     .remove(name)
-                    .ok_or_else(|| format!("link '{name}' is shared between the two chains"))?;
+                    .ok_or_else(|| BuildError::SharedLink { name: name.clone() })?;
                 let placement = if side_left {
                     Placement::Left(i)
                 } else {
@@ -347,7 +365,7 @@ impl BimanualCollisionModel {
     /// must resolve to real bodies, but the assertion that the pair cannot
     /// collide is trusted, not re-derived: a pair that is not currently checked
     /// is a harmless no-op.
-    fn exclude_named(&mut self, exclude: &[PairSpec]) -> Result<(), String> {
+    fn exclude_named(&mut self, exclude: &[PairSpec]) -> Result<(), BuildError> {
         for spec in exclude {
             let a = self.body_index(&spec.a)?;
             let b = self.body_index(&spec.b)?;
@@ -367,15 +385,15 @@ impl BimanualCollisionModel {
         &self.excluded
     }
 
-    fn body_index(&self, name: &str) -> Result<usize, String> {
+    fn body_index(&self, name: &str) -> Result<usize, BuildError> {
         self.bodies
             .iter()
             .position(|b| b.name == name)
-            .ok_or_else(|| format!("unknown body '{name}'"))
+            .ok_or_else(|| BuildError::UnknownBody { name: name.to_string() })
     }
 
     /// Replace the checked pair list (names resolved against the bodies).
-    fn set_pairs(&mut self, pair_specs: &[PairSpec]) -> Result<(), String> {
+    fn set_pairs(&mut self, pair_specs: &[PairSpec]) -> Result<(), BuildError> {
         let index: HashMap<&str, usize> = self
             .bodies
             .iter()
@@ -387,16 +405,16 @@ impl BimanualCollisionModel {
             .map(|p| {
                 let a = *index
                     .get(p.a.as_str())
-                    .ok_or_else(|| format!("pair references unknown body '{}'", p.a))?;
+                    .ok_or_else(|| BuildError::UnknownPairBody { name: p.a.clone() })?;
                 let b = *index
                     .get(p.b.as_str())
-                    .ok_or_else(|| format!("pair references unknown body '{}'", p.b))?;
+                    .ok_or_else(|| BuildError::UnknownPairBody { name: p.b.clone() })?;
                 if a == b {
-                    return Err(format!("pair '{}' against itself", p.a));
+                    return Err(BuildError::SelfPair { name: p.a.clone() });
                 }
                 Ok(Pair { a, b })
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, BuildError>>()?;
         Ok(())
     }
 
@@ -423,15 +441,11 @@ impl BimanualCollisionModel {
             .collect()
     }
 
-    /// Minimum signed distance over all checked pairs at the given
-    /// configurations, with the witness points. Non-finite joint values are
-    /// rejected so the caller fails safe rather than comparing against NaN.
-    pub fn min_distance(
-        &mut self,
-        q_left: &JointVec,
-        q_right: &JointVec,
-    ) -> Result<Proximity<'_>, String> {
-        ensure_finite(q_left, q_right)?;
+    /// The nearest checked pair at the given configurations: places the hulls by
+    /// FK, then scans the pairs (broadphase-ordered) for the minimum signed
+    /// distance. The shared core of [`min_distance`](Self::min_distance) and
+    /// [`distance_gradient`](Self::distance_gradient).
+    fn closest(&mut self, q_left: &JointVec, q_right: &JointVec) -> Result<Closest, CollisionError> {
         self.place(q_left, q_right);
 
         // Broadphase: a pair's bounding-sphere gap is a lower bound on its true
@@ -482,9 +496,19 @@ impl BimanualCollisionModel {
                 }
             }
         }
-        let Some(c) = best else {
-            return Err("no pairs to check".into());
-        };
+        best.ok_or(CollisionError::NoPairs)
+    }
+
+    /// Minimum signed distance over all checked pairs at the given
+    /// configurations, with the witness points. Non-finite joint values are
+    /// rejected so the caller fails safe rather than comparing against NaN.
+    pub fn min_distance(
+        &mut self,
+        q_left: &JointVec,
+        q_right: &JointVec,
+    ) -> Result<Proximity<'_>, CollisionError> {
+        ensure_finite(q_left, q_right)?;
+        let c = self.closest(q_left, q_right)?;
         Ok(Proximity {
             distance: c.distance,
             link_a: &self.bodies[c.a].name,
@@ -494,17 +518,83 @@ impl BimanualCollisionModel {
         })
     }
 
+    /// The nearest-pair [`Proximity`] and the analytic gradient of its distance
+    /// with respect to each arm's joints (see [`DistanceGradient`]). The gradient
+    /// is the nearest pair's witness normal projected through each witness point's
+    /// velocity Jacobian, so it reflects the same min-over-pairs distance
+    /// `min_distance` returns at one distance query's cost. Fails on a non-finite
+    /// configuration, or when the witnesses coincide (deep penetration) and the
+    /// normal is undefined; a velocity-barrier caller holds there.
+    pub fn distance_gradient(
+        &mut self,
+        q_left: &JointVec,
+        q_right: &JointVec,
+    ) -> Result<DistanceGradient<'_>, CollisionError> {
+        ensure_finite(q_left, q_right)?;
+        let c = self.closest(q_left, q_right)?;
+        let separation = c.on_b - c.on_a;
+        let norm = separation.norm();
+        if norm < WITNESS_MIN_SEPARATION {
+            return Err(CollisionError::WitnessesCoincide { distance: c.distance });
+        }
+        // Unit normal along the witness separation (points a -> b). Each witness
+        // moves only its own arm; a world-fixed witness (torso) contributes nothing.
+        // The per-body signs below (+1 on a, -1 on b) are the convention that makes
+        // the projected witness velocities sum to d(distance)/dq; the result is
+        // checked against central differences in
+        // `distance_gradient_matches_finite_difference`.
+        let normal = separation / norm;
+        let (place_a, place_b) = (self.bodies[c.a].placement, self.bodies[c.b].placement);
+        let (left_a, right_a) = self.gradient_contribution(place_a, &c.on_a, &normal, 1.0, q_left, q_right);
+        let (left_b, right_b) = self.gradient_contribution(place_b, &c.on_b, &normal, -1.0, q_left, q_right);
+        Ok(DistanceGradient {
+            proximity: Proximity {
+                distance: c.distance,
+                link_a: &self.bodies[c.a].name,
+                link_b: &self.bodies[c.b].name,
+                on_a: c.on_a,
+                on_b: c.on_b,
+            },
+            grad_left: std::array::from_fn(|j| left_a[j] + left_b[j]),
+            grad_right: std::array::from_fn(|j| right_a[j] + right_b[j]),
+        })
+    }
+
+    /// One body's contribution to the per-arm distance gradient: the witness
+    /// `normal` projected through the witness `point`'s velocity Jacobian, on the
+    /// arm the body belongs to. `sign` is +1 for body a's witness and -1 for body
+    /// b's (the convention that yields d(distance)/dq; see `distance_gradient` and
+    /// its finite-difference test). A world-fixed body (torso) contributes nothing.
+    fn gradient_contribution(
+        &mut self,
+        placement: Placement,
+        point: &Point3<f64>,
+        normal: &Vector3<f64>,
+        sign: f64,
+        q_left: &JointVec,
+        q_right: &JointVec,
+    ) -> (JointVec, JointVec) {
+        let zero: JointVec = [0.0; ARM_DOF];
+        let project = |arm: &mut Arm, q: &JointVec, segment: usize| -> JointVec {
+            let cols = arm.at(q).point_world_jacobian(point, segment);
+            std::array::from_fn(|j| sign * normal.dot(&cols[j]))
+        };
+        match placement {
+            Placement::Fixed => (zero, zero),
+            Placement::Left(s) => (project(&mut self.left, q_left, s), zero),
+            Placement::Right(s) => (zero, project(&mut self.right, q_right, s)),
+        }
+    }
+
     /// True if any checked pair is at or below `threshold`.
     pub fn in_collision(
         &mut self,
         q_left: &JointVec,
         q_right: &JointVec,
         threshold: f64,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, CollisionError> {
         if !threshold.is_finite() {
-            return Err(format!(
-                "collision threshold must be finite, got {threshold}"
-            ));
+            return Err(CollisionError::NonFinite);
         }
         Ok(self.min_distance(q_left, q_right)?.distance <= threshold)
     }
@@ -518,7 +608,7 @@ impl BimanualCollisionModel {
         &mut self,
         q_left: &JointVec,
         q_right: &JointVec,
-    ) -> Result<BodyPieces<'_>, String> {
+    ) -> Result<BodyPieces<'_>, CollisionError> {
         ensure_finite(q_left, q_right)?;
         self.place(q_left, q_right);
         Ok(self
@@ -568,9 +658,9 @@ fn link_poses(arm: &mut Arm, q: &JointVec) -> [Isometry3<f64>; ARM_DOF] {
 
 /// Reject NaN/inf joint values so queries fail safe instead of comparing
 /// against NaN downstream.
-fn ensure_finite(q_left: &JointVec, q_right: &JointVec) -> Result<(), String> {
+fn ensure_finite(q_left: &JointVec, q_right: &JointVec) -> Result<(), CollisionError> {
     if q_left.iter().chain(q_right).any(|x| !x.is_finite()) {
-        return Err("non-finite joint configuration".into());
+        return Err(CollisionError::NonFinite);
     }
     Ok(())
 }
@@ -578,17 +668,10 @@ fn ensure_finite(q_left: &JointVec, q_right: &JointVec) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::GovernorBand;
     use crate::pairs::PairSpec;
 
     const URDF: &str = include_str!("../tests/fixtures/openarm_v10.urdf");
     const MESHES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/meshes");
-
-    // The band the governor-law test gates with; d_safe 20 mm clears the rest
-    // pose comfortably (closest pair ~33 mm).
-    fn band() -> GovernorBand {
-        GovernorBand::new(0.005, 0.02).expect("valid band")
-    }
 
     fn model() -> BimanualCollisionModel {
         BimanualCollisionModel::builder(URDF, MESHES, "openarm_left_link0", "openarm_right_link0")
@@ -613,7 +696,7 @@ mod tests {
         ]
     }
 
-    fn build(pairs: &[PairSpec]) -> Result<BimanualCollisionModel, String> {
+    fn build(pairs: &[PairSpec]) -> Result<BimanualCollisionModel, BuildError> {
         BimanualCollisionModel::with_pairs(
             URDF,
             MESHES,
@@ -624,13 +707,48 @@ mod tests {
     }
 
     #[test]
+    fn distance_gradient_matches_finite_difference() {
+        let mut m = model();
+        let h = 1e-5;
+        // Wrists folded inward but ASYMMETRICALLY, so one moving cross-arm pair is
+        // unambiguously nearest. A left/right-symmetric pose sits on a pair-switch
+        // tie where the single-pair analytic gradient and the straddling central
+        // difference legitimately disagree, so it would not be a valid check.
+        let configs: [(JointVec, JointVec); 3] = [
+            ([0.15, 0.1, 0.85, 0.5, -0.2, 0.1, 0.0], [-0.05, -0.25, -0.45, 0.35, 0.1, -0.1, 0.0]),
+            ([0.0, 0.3, 0.95, 0.45, 0.1, 0.0, 0.0], [0.0, -0.1, -0.55, 0.4, 0.0, 0.1, 0.0]),
+            ([0.25, -0.1, 0.6, 0.65, 0.0, 0.2, 0.1], [-0.1, 0.05, -0.7, 0.3, 0.0, -0.2, 0.0]),
+        ];
+        for (ql, qr) in configs {
+            let grad = m.distance_gradient(&ql, &qr).expect("gradient defined");
+            let (analytic_left, analytic_right) = (grad.grad_left, grad.grad_right);
+            for j in 0..ARM_DOF {
+                let mut lp = ql;
+                let mut lm = ql;
+                lp[j] += h;
+                lm[j] -= h;
+                let fd_left = (m.min_distance(&lp, &qr).unwrap().distance
+                    - m.min_distance(&lm, &qr).unwrap().distance)
+                    / (2.0 * h);
+                let mut rp = qr;
+                let mut rm = qr;
+                rp[j] += h;
+                rm[j] -= h;
+                let fd_right = (m.min_distance(&ql, &rp).unwrap().distance
+                    - m.min_distance(&ql, &rm).unwrap().distance)
+                    / (2.0 * h);
+                assert!((analytic_left[j] - fd_left).abs() < 3e-3, "left j{j}: analytic {} fd {fd_left}", analytic_left[j]);
+                assert!((analytic_right[j] - fd_right).abs() < 3e-3, "right j{j}: analytic {} fd {fd_right}", analytic_right[j]);
+            }
+        }
+    }
+
+    #[test]
     fn rejects_unknown_pairs_and_querying_with_no_pairs() {
-        assert!(
-            build(&[PairSpec::new("openarm_left_link1", "no_such_body")])
-                .err()
-                .expect("error")
-                .contains("unknown body")
-        );
+        assert!(matches!(
+            build(&[PairSpec::new("openarm_left_link1", "no_such_body")]).err(),
+            Some(BuildError::UnknownPairBody { .. })
+        ));
         let mut empty = build(&[]).expect("bodies build without pairs");
         assert!(
             empty
@@ -651,7 +769,7 @@ mod tests {
         .build()
         .err()
         .expect("identical bases must fail");
-        assert!(e.contains("two chains"), "{e}");
+        assert!(matches!(&e, CollisionError::Build(BuildError::IdenticalBases { .. })), "{e}");
     }
 
     #[test]
@@ -729,7 +847,7 @@ mod tests {
         .build()
         .err()
         .expect("a too-small hull must be rejected");
-        assert!(e.contains("do not contain"), "{e}");
+        assert!(matches!(&e, CollisionError::Build(BuildError::HullMissesMesh { .. })), "{e}");
     }
 
     #[test]
@@ -744,7 +862,7 @@ mod tests {
         .build()
         .err()
         .expect("unknown body must fail");
-        assert!(e.contains("not a collision body"), "{e}");
+        assert!(matches!(&e, CollisionError::Build(BuildError::UnknownSuppliedBody { .. })), "{e}");
     }
 
     #[test]
@@ -759,7 +877,7 @@ mod tests {
         .build()
         .err()
         .expect("empty pieces must fail");
-        assert!(e.contains("is empty"), "{e}");
+        assert!(matches!(&e, CollisionError::Build(BuildError::EmptyHulls { .. })), "{e}");
     }
 
     #[test]
@@ -824,7 +942,7 @@ mod tests {
         }
     }
 
-    fn excluding(pairs: &[PairSpec]) -> Result<BimanualCollisionModel, String> {
+    fn excluding(pairs: &[PairSpec]) -> Result<BimanualCollisionModel, CollisionError> {
         BimanualCollisionModel::builder(URDF, MESHES, "openarm_left_link0", "openarm_right_link0")
             .exclude(pairs)
             .build()
@@ -860,7 +978,7 @@ mod tests {
         let e = excluding(&[PairSpec::new("openarm_left_link0", "no_such_link")])
             .err()
             .expect("unknown body must fail");
-        assert!(e.contains("unknown body"), "{e}");
+        assert!(matches!(&e, CollisionError::Build(BuildError::UnknownBody { .. })), "{e}");
     }
 
     #[test]
@@ -882,10 +1000,10 @@ mod tests {
     }
 
     #[test]
-    fn separating_motion_always_passes_even_from_overlap() {
-        // The criterion: from a colliding pose, moving apart is full speed;
-        // moving deeper is throttled. EPA's continuous signed distance is what
-        // lets the band tell the two apart inside an overlap.
+    fn epa_gives_continuous_signed_distance_through_overlap() {
+        // EPA recovers penetration depth as a continuous signed distance: a more
+        // deeply wrapped pose reads more negative than a shallower one, so a caller
+        // can tell approaching from separating even from inside an overlap.
         let mut m = model();
         let deep = m
             .min_distance(
@@ -904,16 +1022,6 @@ mod tests {
         assert!(
             deep < 0.0 && shallow > deep,
             "deep {deep:+.4} shallow {shallow:+.4}"
-        );
-        let band = band();
-        assert_eq!(
-            band.scale(deep, shallow),
-            1.0,
-            "separating from overlap must pass at full speed"
-        );
-        assert!(
-            band.scale(shallow, deep) < 1.0,
-            "approaching into overlap must throttle"
         );
     }
 

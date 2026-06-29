@@ -1,2 +1,5 @@
 # Cargo build artifacts for the peppyos-shared workspace.
 target
+
+# Library crate: the lockfile is not tracked (consumers resolve their own).
+/Cargo.lock

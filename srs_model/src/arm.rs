@@ -8,7 +8,7 @@ use k::nalgebra::Isometry3;
 use crate::fk::{ForwardKinematics, Posed};
 use crate::ik::{self, ArmAnglePolicy, Solution};
 use crate::model::ArmModel;
-use crate::{ARM_DOF, JointVec, Limit};
+use crate::{ARM_DOF, JointVec, Limit, SrsError};
 
 /// A complete SRS arm built from a URDF: forward kinematics + gravity/Coriolis
 /// dynamics + closed-form inverse kinematics. The URDF is parsed once at
@@ -23,7 +23,7 @@ impl Arm {
     /// Build from a URDF string, given the link where the 7-DOF SRS chain starts
     /// (`base_link`). Returns `Err` if the chain is missing, too short, or not a
     /// clean SRS arm.
-    pub fn from_urdf(urdf: &str, base_link: &str) -> Result<Self, String> {
+    pub fn from_urdf(urdf: &str, base_link: &str) -> Result<Self, SrsError> {
         let mut fk = ForwardKinematics::from_urdf(urdf, base_link)?;
         let model = ArmModel::from_fk(&mut fk)?;
         Ok(Self { fk, model })
@@ -31,17 +31,18 @@ impl Arm {
 
     /// Like [`from_urdf`](Self::from_urdf) but reads the URDF from a file path,
     /// folding the IO error into the same `Result`.
-    pub fn from_urdf_file(path: &str, base_link: &str) -> Result<Self, String> {
+    pub fn from_urdf_file(path: &str, base_link: &str) -> Result<Self, SrsError> {
         let mut fk = ForwardKinematics::from_urdf_file(path, base_link)?;
         let model = ArmModel::from_fk(&mut fk)?;
         Ok(Self { fk, model })
     }
 
     /// Pose the arm at configuration `q` for forward-kinematics and dynamics
-    /// reads. Takes `&mut self` because posing updates the chain in place; the
-    /// returned [`Posed`] borrows it so reads (EE pose, gravity, Coriolis) always
-    /// follow a pose. See [`Posed::ee_pose`], [`Posed::gravity_torques`],
-    /// [`Posed::coriolis_torques`].
+    /// reads. Takes `&mut self` not because posing requires it (`k` poses through
+    /// interior mutability) but to enforce "pose, then read": the returned [`Posed`]
+    /// holds exclusive access for its lifetime, so reads (EE pose, gravity, Coriolis)
+    /// always follow a pose and never race a re-pose. See [`Posed::ee_pose`],
+    /// [`Posed::gravity_torques`], [`Posed::coriolis_torques`].
     pub fn at(&mut self, q: &JointVec) -> Posed<'_> {
         self.fk.at(q)
     }
@@ -117,7 +118,7 @@ mod tests {
             Err(e) => e,
         };
         assert!(
-            err.contains("/no/such/file.urdf"),
+            matches!(&err, SrsError::UrdfRead { path, .. } if path == "/no/such/file.urdf"),
             "error should name the path: {err}"
         );
     }

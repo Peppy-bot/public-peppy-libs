@@ -15,6 +15,8 @@
 use k::nalgebra::{Isometry3, Matrix3, Point3, Vector3};
 use k::{Chain, JointType, Node, SerialChain};
 
+use crate::SrsError;
+
 use crate::payload::Payload;
 use crate::{ARM_DOF, JointVec, Limit};
 
@@ -45,7 +47,7 @@ impl ForwardKinematics {
     /// Everything past the wrist (gripper, fingers, tools) becomes the distal
     /// payload. Agnostic to *which* 7-DOF SRS arm: any URDF + base link the
     /// caller passes (it is not a general N-DOF or non-SRS solver).
-    pub fn from_urdf(urdf: &str, base_link: &str) -> Result<Self, String> {
+    pub fn from_urdf(urdf: &str, base_link: &str) -> Result<Self, SrsError> {
         let robot = urdf_rs::read_from_string(urdf).map_err(|e| format!("parse URDF: {e}"))?;
         Self::from_chain(Chain::<f64>::from(robot), base_link)
     }
@@ -53,8 +55,9 @@ impl ForwardKinematics {
     /// Like [`from_urdf`](Self::from_urdf) but reads the URDF from a file path,
     /// folding the IO error into the same `Result` so callers need not handle the
     /// read separately.
-    pub fn from_urdf_file(path: &str, base_link: &str) -> Result<Self, String> {
-        let urdf = std::fs::read_to_string(path).map_err(|e| format!("read urdf '{path}': {e}"))?;
+    pub fn from_urdf_file(path: &str, base_link: &str) -> Result<Self, SrsError> {
+        let urdf = std::fs::read_to_string(path)
+            .map_err(|source| SrsError::UrdfRead { path: path.to_string(), source })?;
         Self::from_urdf(&urdf, base_link)
     }
 
@@ -75,7 +78,7 @@ impl ForwardKinematics {
         })
     }
 
-    fn from_chain(full: Chain<f64>, base_link: &str) -> Result<Self, String> {
+    fn from_chain(full: Chain<f64>, base_link: &str) -> Result<Self, SrsError> {
         let base = full
             .find_link(base_link)
             .ok_or_else(|| format!("URDF missing base link '{base_link}'"))?
@@ -149,12 +152,12 @@ impl ForwardKinematics {
         })
     }
 
-    /// Pose the chain at `q` and return a read-only view of it. Posing needs
-    /// `&mut` (the `k` chain mutates in place), but the returned [`Posed`] is the
-    /// only way to read the chain, so a configuration is always applied before any
-    /// accessor runs, and the `&mut` borrow is held for the view's lifetime so no
-    /// read can race a re-pose. "Pose, then read" is thus a type invariant, not a
-    /// calling convention.
+    /// Pose the chain at `q` and return a read-only view of it. `k`'s posing API is
+    /// itself `&self` (the chain caches transforms through interior mutability), so
+    /// the `&mut` here is deliberate, not a `k` requirement: it gives the returned
+    /// [`Posed`] exclusive access for its lifetime, making "pose, then read" a
+    /// type-enforced invariant (no accessor runs before a pose, and no re-pose can
+    /// race a read), not just a calling convention.
     pub fn at(&mut self, q: &JointVec) -> Posed<'_> {
         self.chain.set_joint_positions_unchecked(q);
         self.chain.update_transforms();
@@ -235,6 +238,29 @@ impl Posed<'_> {
         self.fk.base_from_world
     }
 
+    /// Linear-velocity Jacobian of a point rigidly attached to `segment` (the link
+    /// moved by joint `segment`), as per-joint world-frame contributions: entry `j`
+    /// is the point's world linear velocity per unit rate of joint `j`,
+    /// `zⱼ × (p − pⱼ)`, and is zero for joints distal to the segment (they do not
+    /// move the point). `point` is in the world (URDF root) frame that
+    /// [`link_pose_world`](Self::link_pose_world) returns; a `segment` past the last
+    /// joint clamps to the full chain. This is the EE [`jacobian`](Self::jacobian)'s
+    /// linear rows generalized to an arbitrary witness point, for collision-distance
+    /// gradients.
+    pub fn point_world_jacobian(&self, point: &Point3<f64>, segment: usize) -> [Vector3<f64>; ARM_DOF] {
+        let base_from_world = self.base_from_world();
+        let world_from_base = base_from_world.rotation.inverse();
+        let p_base = (base_from_world * point).coords;
+        let last = segment.min(ARM_DOF - 1);
+        std::array::from_fn(|j| {
+            if j <= last {
+                world_from_base * self.axis_base(j).cross(&(p_base - self.origin_base(j)))
+            } else {
+                Vector3::zeros()
+            }
+        })
+    }
+
     // --- World-frame accessors (gravity is world -z; used by `gravity` / `coriolis`). ---
     // These are expressed in the URDF root/world frame used for gravity and for
     // the KDL reference checks. In the bundled OpenArm fixture, that root also
@@ -288,7 +314,7 @@ impl Posed<'_> {
 /// to a revolute joint; a fixed sensor branch or the (prismatic) gripper is
 /// skipped, and a genuine fork (two revolute branches) is rejected as not a
 /// single SRS arm.
-fn find_srs_tip(base: &Node<f64>) -> Result<Node<f64>, String> {
+fn find_srs_tip(base: &Node<f64>) -> Result<Node<f64>, SrsError> {
     let mut node = base.clone();
     let mut revolute = 0;
     while revolute < ARM_DOF {
@@ -299,16 +325,16 @@ fn find_srs_tip(base: &Node<f64>) -> Result<Node<f64>, String> {
         node = match arm.len() {
             1 => arm.pop().unwrap(),
             0 => {
-                return Err(format!(
+                return Err(SrsError::NotSrsArm(format!(
                     "chain from base reaches only {revolute} revolute joints; \
                      a 7-DOF SRS arm needs {ARM_DOF}"
-                ));
+                )));
             }
             n => {
-                return Err(format!(
+                return Err(SrsError::NotSrsArm(format!(
                     "ambiguous arm: {n} revolute-bearing branches share one link; \
                      not a single SRS chain"
-                ));
+                )));
             }
         };
         if matches!(node.joint().joint_type, JointType::Rotational { .. }) {
@@ -335,17 +361,17 @@ fn subtree_has_revolute(node: &Node<f64>) -> bool {
 /// path) is rejected: it would otherwise pass the revolute count below while
 /// `base_from_world` is frozen at home, silently building the wrong model
 /// instead of returning `Err`.
-fn collect_revolute_nodes(chain: &SerialChain<f64>) -> Result<[Node<f64>; ARM_DOF], String> {
+fn collect_revolute_nodes(chain: &SerialChain<f64>) -> Result<[Node<f64>; ARM_DOF], SrsError> {
     if let Some(extra) = chain.iter().find(|n| {
         !matches!(
             n.joint().joint_type,
             JointType::Fixed | JointType::Rotational { .. }
         )
     }) {
-        return Err(format!(
+        return Err(SrsError::NotSrsArm(format!(
             "SRS chain has a non-revolute movable joint '{}': not a 7-DOF revolute arm",
             extra.joint().name
-        ));
+        )));
     }
     let nodes: Vec<Node<f64>> = chain
         .iter()
@@ -353,10 +379,10 @@ fn collect_revolute_nodes(chain: &SerialChain<f64>) -> Result<[Node<f64>; ARM_DO
         .cloned()
         .collect();
     nodes.try_into().map_err(|v: Vec<_>| {
-        format!(
+        SrsError::NotSrsArm(format!(
             "expected {ARM_DOF} revolute joints in the SRS chain, got {}",
             v.len()
-        )
+        ))
     })
 }
 
@@ -375,6 +401,40 @@ mod tests {
         for i in 0..ARM_DOF {
             let n = posed.axis_base(i).norm();
             assert!((n - 1.0).abs() < 1e-9, "joint {i} axis not unit: {n}");
+        }
+    }
+
+    #[test]
+    fn point_world_jacobian_matches_finite_difference() {
+        let h = 1e-6;
+        let configs: [JointVec; 3] = [
+            [0.3, -0.2, 0.5, 0.4, -0.6, 0.2, 0.1],
+            [-0.5, 0.4, -0.3, 0.8, 0.5, -0.4, 0.7],
+            [0.1, 0.1, 0.1, 0.3, 0.1, 0.1, 0.1],
+        ];
+        // A fixed offset in each link's frame, so the same material point is tracked
+        // across the perturbed configurations.
+        let offset = Point3::new(0.05, -0.03, 0.04);
+        for side in ["left", "right"] {
+            let mut fk = crate::test_support::v1_fk(side);
+            for q in configs {
+                for segment in 0..ARM_DOF {
+                    let point = fk.at(&q).link_pose_world(segment) * offset;
+                    let cols = fk.at(&q).point_world_jacobian(&point, segment);
+                    for j in 0..ARM_DOF {
+                        let mut qp = q;
+                        let mut qm = q;
+                        qp[j] += h;
+                        qm[j] -= h;
+                        let pp = fk.at(&qp).link_pose_world(segment) * offset;
+                        let pm = fk.at(&qm).link_pose_world(segment) * offset;
+                        let fd = (pp.coords - pm.coords) / (2.0 * h);
+                        // For j > segment the column is zero and the point does not
+                        // move (a distal joint), so both sides are ~0.
+                        assert!((cols[j] - fd).norm() < 1e-5, "{side} segment {segment} joint {j} off by {}", (cols[j] - fd).norm());
+                    }
+                }
+            }
         }
     }
 
@@ -471,6 +531,6 @@ mod tests {
             Ok(_) => panic!("expected Err for a prismatic joint"),
             Err(e) => e,
         };
-        assert!(err.contains("revolute"), "unexpected error: {err}");
+        assert!(matches!(&err, SrsError::NotSrsArm(_)), "unexpected error: {err}");
     }
 }

@@ -114,7 +114,7 @@ fn parse_joints(s: &str) -> Result<JointVec, String> {
         .map_err(|v: Vec<f64>| format!("expected {ARM_DOF} joints, got {}", v.len()))
 }
 
-fn run() -> Result<(), String> {
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args()?;
     // The model is a pure distance oracle; the HUD colours by the caller's own
     // d_stop/d_safe (the --d-stop / --d-safe args), independent of any band.
@@ -219,7 +219,7 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
         (&args.left_base, &args.left),
         (&args.right_base, &args.right),
     ] {
-        let mut arm = Arm::from_urdf_file(&args.urdf, base)?;
+        let mut arm = Arm::from_urdf_file(&args.urdf, base).map_err(|e| e.to_string())?;
         let posed = arm.at(q);
         for i in 0..ARM_DOF {
             let name = posed.link_name(i);

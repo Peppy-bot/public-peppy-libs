@@ -9,21 +9,23 @@
 //!
 //! Robot-agnostic: any bimanual URDF whose arms are 7-DOF SRS chains
 //! (`srs_model`'s contract) runs through the same construction. The caller
-//! supplies the URDF, the collision mesh directory, the chain base links, a
-//! [`GovernorBand`], and an optional list of pairs to exclude from checking.
+//! supplies the URDF, the collision mesh directory, the chain base links, and an
+//! optional list of pairs to exclude from checking.
 //!
 //! - [`BimanualCollisionModel::min_distance`] is the runtime query: the signed
 //!   surface distance over the checked pairs, negative meaning penetration.
-//! - [`GovernorBand`] is the direction-aware proximity law that scales
-//!   commanded steps: separating motion always passes (even from inside an
-//!   overlap), approaching motion ramps to a stop across the band.
+//! - [`BimanualCollisionModel::distance_gradient`] adds the analytic gradient of
+//!   that distance with respect to the joints, for a velocity-barrier caller.
+//!
+//! The model is a pure distance oracle: it reports clearances and their gradient,
+//! and the caller decides how to throttle on them.
 //!
 //! Pure Rust, no hardware or messaging deps, same discipline as `srs_model`.
 #![forbid(unsafe_code)]
 
 mod assemble;
+mod error;
 mod gjk;
-mod governor;
 mod hull;
 mod model;
 mod pairs;
@@ -31,9 +33,9 @@ mod stl;
 // `urdf_collision` stays public: the `visualize` example loads meshes through it.
 pub mod urdf_collision;
 
-pub use governor::GovernorBand;
+pub use error::{BuildError, CollisionError, ContainmentFailure};
 pub use hull::ConvexPiece;
-pub use model::{BimanualCollisionModel, BodyPieces, Builder, PlacedPiece, Proximity};
+pub use model::{BimanualCollisionModel, BodyPieces, Builder, DistanceGradient, PlacedPiece, Proximity};
 pub use pairs::PairSpec;
 
 /// Re-export the linear-algebra types so downstream crates use the same
