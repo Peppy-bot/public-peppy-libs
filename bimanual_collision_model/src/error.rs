@@ -1,4 +1,4 @@
-//! The crate's error type.
+//! The crate's error types.
 
 /// A failure from building or querying a
 /// [`BimanualCollisionModel`](crate::BimanualCollisionModel). The query variants
@@ -20,8 +20,74 @@ pub enum CollisionError {
     #[error("witnesses coincide (d={distance:+.4}); distance gradient undefined")]
     WitnessesCoincide { distance: f64 },
 
-    /// Model construction failed (URDF parse, mesh load, hull fit, or a bad
-    /// pair/base specification). The string is the underlying reason.
-    #[error("collision model build: {0}")]
-    Build(String),
+    /// Model construction failed; see [`BuildError`] for the specific reason.
+    #[error(transparent)]
+    Build(#[from] BuildError),
+}
+
+/// Why building a [`BimanualCollisionModel`](crate::BimanualCollisionModel) failed.
+/// Each semantic failure is its own variant so a caller (and a test) can match the
+/// reason structurally; the lower-level geometry/URDF/mesh failures share the
+/// [`Geometry`](Self::Geometry) catch-all, since they carry an opaque reason.
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError {
+    /// Both chains were given the same base link; a bimanual model needs two.
+    #[error("left and right base links are both '{base}'; a bimanual model needs two chains")]
+    IdenticalBases { base: String },
+
+    /// Two bodies resolved to the same name.
+    #[error("duplicate body name '{name}'")]
+    DuplicateBody { name: String },
+
+    /// A link belongs to both chains.
+    #[error("link '{name}' is shared between the two chains")]
+    SharedLink { name: String },
+
+    /// Supplied hulls were keyed by a name that is not a collision body.
+    #[error("supplied hulls name '{name}', which is not a collision body")]
+    UnknownSuppliedBody { name: String },
+
+    /// Supplied hulls for a body were an empty list.
+    #[error("supplied hulls for '{body}' is empty; provide at least one piece")]
+    EmptyHulls { body: String },
+
+    /// Supplied hulls do not conservatively contain the body's mesh.
+    #[error("supplied hulls for '{body}' do not contain its mesh: {kind}")]
+    HullMissesMesh { body: String, kind: ContainmentFailure },
+
+    /// A name (e.g. an exclusion) did not resolve to a known body.
+    #[error("unknown body '{name}'")]
+    UnknownBody { name: String },
+
+    /// A checked-pair spec referenced an unknown body.
+    #[error("pair references unknown body '{name}'")]
+    UnknownPairBody { name: String },
+
+    /// A checked-pair spec paired a body with itself.
+    #[error("pair '{name}' against itself")]
+    SelfPair { name: String },
+
+    /// A lower-level geometry, URDF, or mesh failure during assembly.
+    #[error("{0}")]
+    Geometry(String),
+}
+
+/// Which containment check a supplied hull failed (see
+/// [`BuildError::HullMissesMesh`]).
+#[derive(Debug, thiserror::Error)]
+pub enum ContainmentFailure {
+    /// A mesh vertex lies outside every supplied piece.
+    #[error("a vertex lies outside every piece")]
+    VertexOutside,
+    /// A mesh face slopes out through the gap between pieces.
+    #[error("a face escapes the union of pieces")]
+    FaceEscapes,
+}
+
+/// Lower-level helpers report opaque `String` reasons; fold them into the
+/// [`Geometry`](BuildError::Geometry) catch-all so `?` propagates them.
+impl From<String> for BuildError {
+    fn from(reason: String) -> Self {
+        BuildError::Geometry(reason)
+    }
 }

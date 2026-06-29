@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use srs_model::nalgebra::Point3;
 
 use crate::gjk::{self, Hull};
+use crate::{BuildError, ContainmentFailure};
 use crate::hull::{ConvexHull, ConvexPiece, convex_hull, simplified_hull};
 use crate::urdf_collision::UrdfCollisions;
 
@@ -45,7 +46,7 @@ pub(crate) fn fit_bodies(
     chains: &[Vec<String>],
     meshes_dir: &str,
     supplied: &HashMap<String, Vec<ConvexPiece>>,
-) -> Result<FittedBodies, String> {
+) -> Result<FittedBodies, BuildError> {
     let chain_set: HashSet<&str> = chains.iter().flatten().map(String::as_str).collect();
     let mut body_names: HashSet<String> = HashSet::new();
 
@@ -100,9 +101,7 @@ pub(crate) fn fit_bodies(
     }
 
     if let Some(unknown) = supplied.keys().find(|k| !body_names.contains(*k)) {
-        return Err(format!(
-            "supplied hulls name '{unknown}', which is not a collision body"
-        ));
+        return Err(BuildError::UnknownSuppliedBody { name: unknown.clone() });
     }
 
     Ok(FittedBodies { fixed, links })
@@ -114,15 +113,13 @@ fn fit_body(
     name: &str,
     verts: &[Point3<f64>],
     supplied: &HashMap<String, Vec<ConvexPiece>>,
-) -> Result<Vec<Hull>, String> {
+) -> Result<Vec<Hull>, BuildError> {
     let Some(pieces) = supplied.get(name) else {
         let rounded = simplified_hull(verts, SIMPLIFY_CELL)?;
         return Ok(vec![Hull::new(&rounded.hull, rounded.radius)?]);
     };
     if pieces.is_empty() {
-        return Err(format!(
-            "supplied hulls for '{name}' is empty; provide at least one piece"
-        ));
+        return Err(BuildError::EmptyHulls { body: name.to_string() });
     }
     let mut hulls = Vec::with_capacity(pieces.len());
     for piece in pieces {
@@ -140,12 +137,13 @@ fn fit_body(
 /// checked for surface coverage, and every vertex is checked outright (the
 /// latter also covers the corners of degenerate sliver faces, which the face
 /// pass skips because they bound no surface).
-fn verify_contains(name: &str, hulls: &[Hull], verts: &[Point3<f64>]) -> Result<(), String> {
+fn verify_contains(name: &str, hulls: &[Hull], verts: &[Point3<f64>]) -> Result<(), BuildError> {
     for v in verts {
         if !inside_union(hulls, v)? {
-            return Err(format!(
-                "supplied hulls for '{name}' do not contain its mesh: a vertex lies outside every piece"
-            ));
+            return Err(BuildError::HullMissesMesh {
+                body: name.to_string(),
+                kind: ContainmentFailure::VertexOutside,
+            });
         }
     }
     for tri in verts.chunks_exact(3) {
@@ -154,9 +152,10 @@ fn verify_contains(name: &str, hulls: &[Hull], verts: &[Point3<f64>]) -> Result<
             continue;
         }
         if !face_in_union(hulls, &t)? {
-            return Err(format!(
-                "supplied hulls for '{name}' do not contain its mesh: a face escapes the union of pieces"
-            ));
+            return Err(BuildError::HullMissesMesh {
+                body: name.to_string(),
+                kind: ContainmentFailure::FaceEscapes,
+            });
         }
     }
     Ok(())
@@ -275,7 +274,7 @@ mod tests {
         ];
         let e = verify_contains("t", &split_pieces(), &verts)
             .expect_err("bridging face must be rejected");
-        assert!(e.contains("face escapes"), "{e}");
+        assert!(matches!(&e, BuildError::HullMissesMesh { kind: ContainmentFailure::FaceEscapes, .. }), "{e}");
     }
 
     #[test]
@@ -299,7 +298,7 @@ mod tests {
         ];
         let e = verify_contains("t", &split_pieces(), &verts)
             .expect_err("a gap vertex must be rejected");
-        assert!(e.contains("vertex lies outside"), "{e}");
+        assert!(matches!(&e, BuildError::HullMissesMesh { kind: ContainmentFailure::VertexOutside, .. }), "{e}");
     }
 
     #[test]

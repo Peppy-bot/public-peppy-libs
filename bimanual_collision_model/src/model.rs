@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use srs_model::nalgebra::{Isometry3, Point3, Vector3};
 use srs_model::{ARM_DOF, Arm, JointVec};
 
-use crate::CollisionError;
 use crate::assemble::fit_bodies;
+use crate::{BuildError, CollisionError};
 use crate::gjk::{self, Hull, Placed};
 use crate::hull::ConvexPiece;
 use crate::pairs::PairSpec;
@@ -180,8 +180,7 @@ impl Builder {
             &self.left_base,
             &self.right_base,
             &self.supplied,
-        )
-        .map_err(CollisionError::Build)?;
+        )?;
         // Candidate pairs: everything that can inform. Excluded structurally:
         // two world-fixed bodies (their distance never changes), and pairs within
         // two moving joints of each other, same-side or torso against a chain's
@@ -224,8 +223,8 @@ impl Builder {
                 }
             }
         }
-        model.set_pairs(&specs).map_err(CollisionError::Build)?;
-        model.exclude_named(&self.exclude).map_err(CollisionError::Build)?;
+        model.set_pairs(&specs)?;
+        model.exclude_named(&self.exclude)?;
         Ok(model)
     }
 }
@@ -255,7 +254,7 @@ impl BimanualCollisionModel {
         right_base: &str,
     ) -> Result<Builder, CollisionError> {
         let urdf = std::fs::read_to_string(path)
-            .map_err(|e| CollisionError::Build(format!("read urdf '{path}': {e}")))?;
+            .map_err(|e| BuildError::Geometry(format!("read urdf '{path}': {e}")))?;
         Ok(Self::builder(&urdf, meshes_dir, left_base, right_base))
     }
 
@@ -270,7 +269,7 @@ impl BimanualCollisionModel {
         left_base: &str,
         right_base: &str,
         pair_specs: &[PairSpec],
-    ) -> Result<Self, String> {
+    ) -> Result<Self, BuildError> {
         let mut model = Self::assemble(urdf, meshes_dir, left_base, right_base, &HashMap::new())?;
         model.set_pairs(pair_specs)?;
         Ok(model)
@@ -284,11 +283,9 @@ impl BimanualCollisionModel {
         left_base: &str,
         right_base: &str,
         supplied: &HashMap<String, Vec<ConvexPiece>>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, BuildError> {
         if left_base == right_base {
-            return Err(format!(
-                "left and right base links are both '{left_base}'; a bimanual model needs two chains"
-            ));
+            return Err(BuildError::IdenticalBases { base: left_base.to_string() });
         }
         let mut left = Arm::from_urdf(urdf, left_base)?;
         let mut right = Arm::from_urdf(urdf, right_base)?;
@@ -310,9 +307,9 @@ impl BimanualCollisionModel {
         )?;
 
         let mut bodies: Vec<Body> = Vec::new();
-        let push_body = |bodies: &mut Vec<Body>, body: Body| -> Result<(), String> {
+        let push_body = |bodies: &mut Vec<Body>, body: Body| -> Result<(), BuildError> {
             if bodies.iter().any(|b| b.name == body.name) {
-                return Err(format!("duplicate body name '{}'", body.name));
+                return Err(BuildError::DuplicateBody { name: body.name.clone() });
             }
             bodies.push(body);
             Ok(())
@@ -334,7 +331,7 @@ impl BimanualCollisionModel {
             for (i, name) in names.iter().enumerate() {
                 let hulls = links
                     .remove(name)
-                    .ok_or_else(|| format!("link '{name}' is shared between the two chains"))?;
+                    .ok_or_else(|| BuildError::SharedLink { name: name.clone() })?;
                 let placement = if side_left {
                     Placement::Left(i)
                 } else {
@@ -368,7 +365,7 @@ impl BimanualCollisionModel {
     /// must resolve to real bodies, but the assertion that the pair cannot
     /// collide is trusted, not re-derived: a pair that is not currently checked
     /// is a harmless no-op.
-    fn exclude_named(&mut self, exclude: &[PairSpec]) -> Result<(), String> {
+    fn exclude_named(&mut self, exclude: &[PairSpec]) -> Result<(), BuildError> {
         for spec in exclude {
             let a = self.body_index(&spec.a)?;
             let b = self.body_index(&spec.b)?;
@@ -388,15 +385,15 @@ impl BimanualCollisionModel {
         &self.excluded
     }
 
-    fn body_index(&self, name: &str) -> Result<usize, String> {
+    fn body_index(&self, name: &str) -> Result<usize, BuildError> {
         self.bodies
             .iter()
             .position(|b| b.name == name)
-            .ok_or_else(|| format!("unknown body '{name}'"))
+            .ok_or_else(|| BuildError::UnknownBody { name: name.to_string() })
     }
 
     /// Replace the checked pair list (names resolved against the bodies).
-    fn set_pairs(&mut self, pair_specs: &[PairSpec]) -> Result<(), String> {
+    fn set_pairs(&mut self, pair_specs: &[PairSpec]) -> Result<(), BuildError> {
         let index: HashMap<&str, usize> = self
             .bodies
             .iter()
@@ -408,16 +405,16 @@ impl BimanualCollisionModel {
             .map(|p| {
                 let a = *index
                     .get(p.a.as_str())
-                    .ok_or_else(|| format!("pair references unknown body '{}'", p.a))?;
+                    .ok_or_else(|| BuildError::UnknownPairBody { name: p.a.clone() })?;
                 let b = *index
                     .get(p.b.as_str())
-                    .ok_or_else(|| format!("pair references unknown body '{}'", p.b))?;
+                    .ok_or_else(|| BuildError::UnknownPairBody { name: p.b.clone() })?;
                 if a == b {
-                    return Err(format!("pair '{}' against itself", p.a));
+                    return Err(BuildError::SelfPair { name: p.a.clone() });
                 }
                 Ok(Pair { a, b })
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, BuildError>>()?;
         Ok(())
     }
 
@@ -697,7 +694,7 @@ mod tests {
         ]
     }
 
-    fn build(pairs: &[PairSpec]) -> Result<BimanualCollisionModel, String> {
+    fn build(pairs: &[PairSpec]) -> Result<BimanualCollisionModel, BuildError> {
         BimanualCollisionModel::with_pairs(
             URDF,
             MESHES,
@@ -746,12 +743,10 @@ mod tests {
 
     #[test]
     fn rejects_unknown_pairs_and_querying_with_no_pairs() {
-        assert!(
-            build(&[PairSpec::new("openarm_left_link1", "no_such_body")])
-                .err()
-                .expect("error")
-                .contains("unknown body")
-        );
+        assert!(matches!(
+            build(&[PairSpec::new("openarm_left_link1", "no_such_body")]).err(),
+            Some(BuildError::UnknownPairBody { .. })
+        ));
         let mut empty = build(&[]).expect("bodies build without pairs");
         assert!(
             empty
@@ -772,7 +767,7 @@ mod tests {
         .build()
         .err()
         .expect("identical bases must fail");
-        assert!(e.to_string().contains("two chains"), "{e}");
+        assert!(matches!(&e, CollisionError::Build(BuildError::IdenticalBases { .. })), "{e}");
     }
 
     #[test]
@@ -850,7 +845,7 @@ mod tests {
         .build()
         .err()
         .expect("a too-small hull must be rejected");
-        assert!(e.to_string().contains("do not contain"), "{e}");
+        assert!(matches!(&e, CollisionError::Build(BuildError::HullMissesMesh { .. })), "{e}");
     }
 
     #[test]
@@ -865,7 +860,7 @@ mod tests {
         .build()
         .err()
         .expect("unknown body must fail");
-        assert!(e.to_string().contains("not a collision body"), "{e}");
+        assert!(matches!(&e, CollisionError::Build(BuildError::UnknownSuppliedBody { .. })), "{e}");
     }
 
     #[test]
@@ -880,7 +875,7 @@ mod tests {
         .build()
         .err()
         .expect("empty pieces must fail");
-        assert!(e.to_string().contains("is empty"), "{e}");
+        assert!(matches!(&e, CollisionError::Build(BuildError::EmptyHulls { .. })), "{e}");
     }
 
     #[test]
@@ -981,7 +976,7 @@ mod tests {
         let e = excluding(&[PairSpec::new("openarm_left_link0", "no_such_link")])
             .err()
             .expect("unknown body must fail");
-        assert!(e.to_string().contains("unknown body"), "{e}");
+        assert!(matches!(&e, CollisionError::Build(BuildError::UnknownBody { .. })), "{e}");
     }
 
     #[test]

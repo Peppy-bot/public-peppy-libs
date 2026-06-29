@@ -33,7 +33,7 @@ mod stl;
 // `urdf_collision` stays public: the `visualize` example loads meshes through it.
 pub mod urdf_collision;
 
-pub use error::CollisionError;
+pub use error::{BuildError, CollisionError, ContainmentFailure};
 pub use hull::ConvexPiece;
 pub use model::{BimanualCollisionModel, BodyPieces, Builder, DistanceGradient, PlacedPiece, Proximity};
 pub use pairs::PairSpec;
