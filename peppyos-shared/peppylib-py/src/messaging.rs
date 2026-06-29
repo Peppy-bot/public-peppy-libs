@@ -7,7 +7,7 @@ pub(crate) use iface::{PyProducerRef, PySenderTarget};
 
 use config::org::resolve_session_namespace;
 use peppylib::PeppyError;
-use peppylib::messaging::MessengerHandle;
+use peppylib::messaging::{MessengerHandle, SessionScope};
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -196,7 +196,7 @@ impl PyMessengerHandle {
     }
 
     /// Connect under an organization namespace (org-id routing isolation),
-    /// mirroring `MessengerHandle::connect(..).namespace(..)`. `org_id` of
+    /// mirroring `MessengerHandle::connect(..).scope(SessionScope::Namespace(..))`. `org_id` of
     /// `None` resolves to the `local` namespace — the same logged-out default
     /// the node runtime resolves to — so a standalone control/stub session
     /// opens under the runner's namespace and actually routes to it.
@@ -211,7 +211,7 @@ impl PyMessengerHandle {
         crate::py_future::future_into_py(py, async move {
             let namespace = resolve_session_namespace(org_id.as_deref());
             let handle = MessengerHandle::connect(&host, port)
-                .namespace(namespace)
+                .scope(SessionScope::Namespace(namespace))
                 .await
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
             Ok(PyMessengerHandle { inner: handle })

@@ -1,7 +1,7 @@
 use super::CancellationToken;
 
-use crate::MessengerHandle;
 use crate::error::Result;
+use crate::{MessengerHandle, SessionScope};
 
 use futures::FutureExt;
 use std::future::Future;
@@ -48,7 +48,7 @@ impl NodeRunner {
         let messenger =
             MessengerHandle::connect(processor.messaging_host(), processor.messaging_port())
                 .reconnecting()
-                .discovery(processor.discovery())
+                .scope(SessionScope::Discovery(processor.discovery()))
                 .await?;
 
         Ok(Self {

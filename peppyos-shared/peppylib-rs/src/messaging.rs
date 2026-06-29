@@ -163,13 +163,33 @@ enum Transport {
 
 /// Discovery parameters pulled from a node's
 /// [`DiscoveryConfig`](config::runtime::DiscoveryConfig) by
-/// [`MessengerConnect::discovery`]: the gossip seed list, the gossip toggle, and
+/// [`SessionScope::Discovery`]: the gossip seed list, the gossip toggle, and
 /// subscriber buffer sizing. The namespace travels on [`MessengerConnect`] itself
 /// (resolved from the config's org id), not here.
 struct DiscoveryParams {
     seed_peers: Vec<String>,
     gossip: bool,
     buffer_sizes: pmi::SubscriberBufferSizes,
+}
+
+/// How a [`MessengerConnect`] session resolves its organization namespace, and
+/// whether it opens a gossip-discovery peer session. Passed to
+/// [`MessengerConnect::scope`]. The two cases are mutually exclusive *by
+/// construction* — a session is either pinned to an explicit namespace or driven
+/// by a node's discovery config, never both.
+pub enum SessionScope<'a> {
+    /// Open the session under an explicit organization namespace (org-id routing
+    /// isolation) instead of the `local` default, with no gossip discovery. Used
+    /// by a CLI control session so it reaches the daemon/node services under the
+    /// same namespace the daemon runs.
+    Namespace(OrgNamespace),
+    /// Apply the node's [`DiscoveryConfig`](config::runtime::DiscoveryConfig): an
+    /// explicit gossip seed list (falling back to `host:port`), the gossip
+    /// toggle, subscriber buffer sizing, and the organization namespace stamped
+    /// by the daemon (resolved from `cfg.organization_id`). Used by the node
+    /// runtime so peers form direct links per the daemon-supplied discovery
+    /// settings and stay routing-isolated under the daemon's namespace.
+    Discovery(&'a config::runtime::DiscoveryConfig),
 }
 
 /// Fluent builder for opening a [`MessengerHandle`] session, returned by
@@ -197,16 +217,6 @@ impl MessengerConnect {
         self
     }
 
-    /// Open the session under an explicit organization namespace (org-id routing
-    /// isolation) instead of the `local` default, so a CLI control session
-    /// reaches the daemon/node services under the same namespace the daemon runs.
-    /// Mutually exclusive with [`discovery`](Self::discovery), which resolves the
-    /// namespace from the node's config.
-    pub fn namespace(mut self, ns: OrgNamespace) -> Self {
-        self.namespace = ns;
-        self
-    }
-
     /// Dial the router over TLS (`tls/`), validating its certificate against the
     /// trust configured in `tls`, instead of the plaintext `tcp/` default. Used
     /// by an out-of-band prober that connects to a router's `tls/` listener.
@@ -215,23 +225,28 @@ impl MessengerConnect {
         self
     }
 
-    /// Apply the node's [`DiscoveryConfig`](config::runtime::DiscoveryConfig): an
-    /// explicit gossip seed list (falling back to `host:port`), the gossip
-    /// toggle, subscriber buffer sizing, and the organization namespace stamped
-    /// by the daemon. Used by the node runtime so peers form direct links per the
-    /// daemon-supplied discovery settings and stay routing-isolated under the
-    /// daemon's namespace. Mutually exclusive with [`namespace`](Self::namespace):
-    /// it resolves the namespace from `cfg.organization_id`.
-    pub fn discovery(mut self, cfg: &config::runtime::DiscoveryConfig) -> Self {
-        // The namespace is always present: a stamped org id resolves to that org,
-        // an absent one (or a malformed value) to the constant `local`. So the
-        // node session opens under exactly the daemon's namespace.
-        self.namespace = resolve_session_namespace(cfg.organization_id.as_deref());
-        self.discovery = Some(DiscoveryParams {
-            seed_peers: cfg.seed_peers.clone(),
-            gossip: cfg.gossip,
-            buffer_sizes: pmi::SubscriberBufferSizes::from(cfg),
-        });
+    /// Set how the session resolves its organization namespace, and whether it
+    /// opens a gossip-discovery peer session. The two cases — an explicit
+    /// [`OrgNamespace`](SessionScope::Namespace) or a node's
+    /// [`DiscoveryConfig`](SessionScope::Discovery) — are mutually exclusive by
+    /// construction, so a session can never request both at once. Left unset, the
+    /// session opens under the `local` default namespace with no discovery.
+    pub fn scope(mut self, scope: SessionScope<'_>) -> Self {
+        match scope {
+            SessionScope::Namespace(ns) => self.namespace = ns,
+            SessionScope::Discovery(cfg) => {
+                // The namespace is always present: a stamped org id resolves to
+                // that org, an absent one (or a malformed value) to the constant
+                // `local`. So the node session opens under exactly the daemon's
+                // namespace.
+                self.namespace = resolve_session_namespace(cfg.organization_id.as_deref());
+                self.discovery = Some(DiscoveryParams {
+                    seed_peers: cfg.seed_peers.clone(),
+                    gossip: cfg.gossip,
+                    buffer_sizes: pmi::SubscriberBufferSizes::from(cfg),
+                });
+            }
+        }
         self
     }
 }
@@ -390,11 +405,11 @@ impl MessengerHandle {
     ///
     /// ```ignore
     /// MessengerHandle::connect(host, port)
-    ///     .reconnecting()      // re-establishing session for long-lived nodes
-    ///     .namespace(ns)       // explicit org namespace (else `local`)
-    ///     .discovery(&cfg)     // gossip/seed peers + namespace from a node's DiscoveryConfig
-    ///     .tls(cfg)            // TLS client transport
-    ///     .await               // -> Result<MessengerHandle>
+    ///     .reconnecting()                          // re-establishing session for long-lived nodes
+    ///     .scope(SessionScope::Namespace(ns))      // explicit org namespace (else `local`)
+    ///     .scope(SessionScope::Discovery(&cfg))    // gossip/seed peers + namespace from a node's DiscoveryConfig
+    ///     .tls(cfg)                                // TLS client transport
+    ///     .await                                   // -> Result<MessengerHandle>
     /// ```
     pub fn connect(host: &str, port: u16) -> MessengerConnect {
         MessengerConnect {
