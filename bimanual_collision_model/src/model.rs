@@ -96,17 +96,15 @@ pub struct Proximity<'a> {
     pub on_b: Point3<f64>,
 }
 
-/// The min surface distance at one configuration and its gradient with respect to
-/// each arm's joints. `grad_left[j]` is `d(distance)/d(q_left[j])`; separating
-/// motion has a positive gradient. Computed analytically from the nearest pair's
-/// witness points (the gradient of the active pair, by the envelope theorem), so
-/// it costs one distance query plus two point Jacobians rather than a
-/// finite-difference sweep over all 14 joints.
+/// The nearest-pair [`Proximity`] at one configuration plus the gradient of its
+/// surface distance with respect to each arm's joints. `grad_left[j]` is
+/// `d(distance)/d(q_left[j])`; separating motion has a positive gradient. Computed
+/// analytically from the nearest pair's witness points (the gradient of the active
+/// pair, by the envelope theorem), so it costs one distance query plus two point
+/// Jacobians.
 #[derive(Debug, Clone)]
 pub struct DistanceGradient<'a> {
-    pub distance: f64,
-    pub link_a: &'a str,
-    pub link_b: &'a str,
+    pub proximity: Proximity<'a>,
     pub grad_left: JointVec,
     pub grad_right: JointVec,
 }
@@ -519,13 +517,13 @@ impl BimanualCollisionModel {
         })
     }
 
-    /// The min surface distance and its analytic gradient with respect to each
-    /// arm's joints (see [`DistanceGradient`]). The gradient is the nearest pair's
-    /// witness normal projected through each witness point's velocity Jacobian, so
-    /// it reflects the same min-over-pairs distance `min_distance` returns at one
-    /// distance query's cost rather than 14 finite-difference queries. Fails on a
-    /// non-finite configuration, or when the witnesses coincide (deep penetration)
-    /// and the normal is undefined; a velocity-barrier caller holds there.
+    /// The nearest-pair [`Proximity`] and the analytic gradient of its distance
+    /// with respect to each arm's joints (see [`DistanceGradient`]). The gradient
+    /// is the nearest pair's witness normal projected through each witness point's
+    /// velocity Jacobian, so it reflects the same min-over-pairs distance
+    /// `min_distance` returns at one distance query's cost. Fails on a non-finite
+    /// configuration, or when the witnesses coincide (deep penetration) and the
+    /// normal is undefined; a velocity-barrier caller holds there.
     pub fn distance_gradient(
         &mut self,
         q_left: &JointVec,
@@ -543,29 +541,46 @@ impl BimanualCollisionModel {
         // carries -1. Each witness moves only its own arm; a world-fixed witness
         // (torso) contributes nothing.
         let normal = separation / norm;
-        let zero: JointVec = [0.0; ARM_DOF];
-        let project = |arm: &mut Arm, q: &JointVec, point: &Point3<f64>, segment: usize, sign: f64| -> JointVec {
-            let cols = arm.at(q).point_world_jacobian(point, segment);
-            std::array::from_fn(|j| sign * normal.dot(&cols[j]))
-        };
         let (place_a, place_b) = (self.bodies[c.a].placement, self.bodies[c.b].placement);
-        let (left_a, right_a) = match place_a {
-            Placement::Fixed => (zero, zero),
-            Placement::Left(s) => (project(&mut self.left, q_left, &c.on_a, s, 1.0), zero),
-            Placement::Right(s) => (zero, project(&mut self.right, q_right, &c.on_a, s, 1.0)),
-        };
-        let (left_b, right_b) = match place_b {
-            Placement::Fixed => (zero, zero),
-            Placement::Left(s) => (project(&mut self.left, q_left, &c.on_b, s, -1.0), zero),
-            Placement::Right(s) => (zero, project(&mut self.right, q_right, &c.on_b, s, -1.0)),
-        };
+        let (left_a, right_a) = self.gradient_contribution(place_a, &c.on_a, &normal, 1.0, q_left, q_right);
+        let (left_b, right_b) = self.gradient_contribution(place_b, &c.on_b, &normal, -1.0, q_left, q_right);
         Ok(DistanceGradient {
-            distance: c.distance,
-            link_a: &self.bodies[c.a].name,
-            link_b: &self.bodies[c.b].name,
+            proximity: Proximity {
+                distance: c.distance,
+                link_a: &self.bodies[c.a].name,
+                link_b: &self.bodies[c.b].name,
+                on_a: c.on_a,
+                on_b: c.on_b,
+            },
             grad_left: std::array::from_fn(|j| left_a[j] + left_b[j]),
             grad_right: std::array::from_fn(|j| right_a[j] + right_b[j]),
         })
+    }
+
+    /// One body's contribution to the per-arm distance gradient: the witness
+    /// `normal` projected through the witness `point`'s velocity Jacobian, on the
+    /// arm the body belongs to. `sign` is +1 for body a (distance grows as it moves
+    /// along the normal) and -1 for body b. A world-fixed body (torso) contributes
+    /// nothing on either arm.
+    fn gradient_contribution(
+        &mut self,
+        placement: Placement,
+        point: &Point3<f64>,
+        normal: &Vector3<f64>,
+        sign: f64,
+        q_left: &JointVec,
+        q_right: &JointVec,
+    ) -> (JointVec, JointVec) {
+        let zero: JointVec = [0.0; ARM_DOF];
+        let project = |arm: &mut Arm, q: &JointVec, segment: usize| -> JointVec {
+            let cols = arm.at(q).point_world_jacobian(point, segment);
+            std::array::from_fn(|j| sign * normal.dot(&cols[j]))
+        };
+        match placement {
+            Placement::Fixed => (zero, zero),
+            Placement::Left(s) => (project(&mut self.left, q_left, s), zero),
+            Placement::Right(s) => (zero, project(&mut self.right, q_right, s)),
+        }
     }
 
     /// True if any checked pair is at or below `threshold`.
