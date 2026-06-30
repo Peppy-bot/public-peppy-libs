@@ -63,12 +63,13 @@ impl Pacer {
         }
     }
 
-    /// Advance the deadline by one period: the deadline to sleep until, or `None`
-    /// on an overrun (`now` is already past it), in which case the overrun is
-    /// tallied and the timeline re-anchors to `now`.
+    /// Advance the deadline by one period: the deadline to sleep until (the tick is
+    /// on time when `now` is at or before it), or `None` on an overrun (`now` is
+    /// already past it), in which case the overrun is tallied and the timeline
+    /// re-anchors to `now`.
     fn schedule(&mut self, now: tokio::time::Instant) -> Option<tokio::time::Instant> {
         self.next_tick += self.period;
-        if self.next_tick > now {
+        if self.next_tick >= now {
             return Some(self.next_tick);
         }
         self.overruns += 1;
@@ -120,6 +121,16 @@ mod tests {
         // where within the cycle the tick finishes (sleep overshoot corrects).
         assert_eq!(p.schedule(start), Some(start + PERIOD));
         assert_eq!(p.schedule(start + PERIOD / 2), Some(start + 2 * PERIOD));
+        assert_eq!(p.overruns, 0);
+    }
+
+    #[test]
+    fn schedule_treats_an_exact_deadline_as_on_time() {
+        let start = tokio::time::Instant::now();
+        let mut p = pacer_at(start);
+        // The tick finishes exactly on the deadline (now == next_tick after the
+        // one-period advance): on time, not an overrun.
+        assert_eq!(p.schedule(start + PERIOD), Some(start + PERIOD));
         assert_eq!(p.overruns, 0);
     }
 
