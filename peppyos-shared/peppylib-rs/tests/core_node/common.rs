@@ -135,7 +135,7 @@ pub(crate) async fn start_router_and_runner()
         .await
         .expect("start zenoh router");
     // The node runner opens its session under an org namespace
-    // (`connect(..).reconnecting().discovery(..)`); the standalone config
+    // (`connect(..).reconnecting().scope(SessionScope::Discovery(..))`); the standalone config
     // carries no organization id, so it resolves to the `local` namespace. The
     // stub server must open under that same namespace — zenoh sessions only
     // interoperate when their namespaces match — or the runner's service
