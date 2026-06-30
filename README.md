@@ -1,6 +1,6 @@
 # public-peppy-libs
 
-Shared infrastructure libraries for PeppyOS nodes. Each library in this repo is an independent package pulled as a git dependency by nodes that require it.
+Shared infrastructure libraries for PeppyOS nodes. Most libraries in this repo are independent packages pulled as a git dependency by nodes that require it; `peppyos-shared` is a Cargo workspace of public-facing crates (including the `peppylib` control library) consumed inside the peppy superproject.
 
 PeppyOS nodes live in separate repositories under the nodes hub. Shared code that is needed across multiple independent node repos cannot be a path dependency inside one node's repo — it needs a central place. This repo is that central place.
 
@@ -9,8 +9,26 @@ PeppyOS nodes live in separate repositories under the nodes hub. Shared code tha
 | Library | Language | Purpose |
 |---|---|---|
 | [openarm_can](./openarm_can) | Rust | Safe wrapper around the `openarm_can` C++ library for driving the physical OpenArm hardware over CAN (`ArmCan` / `GripperCan`, Damiao motor types, OpenArm v10 constants) |
+| [srs_model](./srs_model) | Rust | Kinematics and dynamics for a 7-DOF SRS arm — FK, closed-form arm-angle (Shimizu) IK, gravity/Coriolis feedforward, and Jacobians. Robot-agnostic: all geometry derives from the supplied URDF. Pure Rust, no hardware or messaging deps |
+| [bimanual_collision_model](./bimanual_collision_model) | Rust | Runtime self-collision detection for a bimanual robot — URDF-fitted convex hulls, GJK/EPA minimum distance, the analytic distance gradient, and a proximity band for scaling commanded motion near contact. Builds on `srs_model`; pure Rust, no hardware or messaging deps |
 | [sim_bridge_core](./sim_bridge_core) | Rust | raw-to-peppygen pipelines for Isaac Sim and MuJoCo bridge nodes; the node supplies the peppylib transport |
 | [sim_ext_core](./sim_ext_core) | Python | Plugin lifecycle, config loading, and sensor bridge plugins for the in-sim extensions; the node supplies the IO transport |
+| [peppyos-shared](./peppyos-shared) | Rust + Python | Cargo workspace of public-facing peppyOS crates migrated out of the `peppyos` workspace — the `peppylib` control library and its Python bindings, plus the messaging, config, and core-node API crates they build on (see [below](#peppyos-shared-crates)) |
+
+### peppyos-shared crates
+
+A virtual Cargo workspace. Crates are migrated here from the private `peppyos` workspace PR by PR, so they sit at the bottom of the dependency graph and are shared by both workspaces.
+
+| Crate | Language | Purpose |
+|---|---|---|
+| [peppylib-rs](./peppyos-shared/peppylib-rs) (`peppylib`) | Rust | The peppyOS control library — messaging, core-node helpers, runtime, services, config, and types |
+| [peppylib-py](./peppyos-shared/peppylib-py) | Python | PyO3 bindings exposing the `peppylib` control library to Python; published to PyPI as `peppylib` |
+| [peppy-messaging-interface](./peppyos-shared/peppy-messaging-interface) (`pmi`) | Rust | Messaging transport interface — zenoh transport plus an in-process mock adapter, sessions, and org-id namespace routing |
+| [peppy-config-model](./peppyos-shared/peppy-config-model) | Rust | Parsing and validation of Peppy config documents (`peppy.json5`, launcher files, `peppy_config.json5`) and the `PeppyDirs` filesystem-layout helper |
+| [core-node-api](./peppyos-shared/core-node-api) | Rust | Shared API surface for talking to a core-node daemon — capnp request/response types, service-name constants, and response parsers |
+| [json5-pretty](./peppyos-shared/json5-pretty) | Rust | Pretty-print a `Serialize` value as JSON5 with unquoted object keys |
+| [config-test-support](./peppyos-shared/config-test-support) | Rust | Test fixtures shared across the peppyOS workspaces (scratch dirs, and git-repo / node-config-template fixtures behind a feature) |
+| [build-helpers](./peppyos-shared/build-helpers) | Rust | Generic build-script helpers shared across peppy crates |
 
 ## Using these libraries
 
@@ -28,5 +46,7 @@ sim_ext_core @ git+https://github.com/Peppy-bot/public-peppy-libs.git@<commit>#s
 ```
 
 Pin a commit rather than a branch: node builds happen inside containers and should be reproducible. When this repo changes, bump the pin in the consuming node and rebuild it.
+
+The `peppyos-shared` crates are different: they are consumed inside the peppy superproject as sibling-submodule path dependencies (`peppyos` and `public-peppy-libs` checked out side by side) rather than via git-rev pins, and Python consumers install `peppylib` from PyPI.
 
 See each library's README for the API.
