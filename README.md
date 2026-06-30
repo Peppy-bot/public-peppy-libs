@@ -13,6 +13,7 @@ PeppyOS nodes live in separate repositories under the nodes hub. Shared code tha
 | [bimanual_collision_model](./bimanual_collision_model) | Rust | Runtime self-collision detection for a bimanual robot — URDF-fitted convex hulls, GJK/EPA minimum distance, the analytic distance gradient, and a proximity band for scaling commanded motion near contact. Builds on `srs_model`; pure Rust, no hardware or messaging deps |
 | [sim_bridge_core](./sim_bridge_core) | Rust | raw-to-peppygen pipelines for Isaac Sim and MuJoCo bridge nodes; the node supplies the peppylib transport |
 | [sim_ext_core](./sim_ext_core) | Python | Plugin lifecycle, config loading, and sensor bridge plugins for the in-sim extensions; the node supplies the IO transport |
+| [control_core](./control_core) | Rust | Shared control-loop primitives for the openarm control nodes: a fixed-rate `Pacer` with overrun accounting |
 | [peppyos-shared](./peppyos-shared) | Rust + Python | Cargo workspace of public-facing peppyOS crates migrated out of the `peppyos` workspace — the `peppylib` control library and its Python bindings, plus the messaging, config, and core-node API crates they build on (see [below](#peppyos-shared-crates)) |
 
 ### peppyos-shared crates
