@@ -233,7 +233,13 @@ impl MessengerConnect {
     /// session opens under the `local` default namespace with no discovery.
     pub fn scope(mut self, scope: SessionScope<'_>) -> Self {
         match scope {
-            SessionScope::Namespace(ns) => self.namespace = ns,
+            SessionScope::Namespace(ns) => {
+                // A namespace-only session never gossips, so drop any discovery
+                // params a prior `scope(Discovery(..))` call may have set. This
+                // keeps the two modes mutually exclusive across chained calls.
+                self.namespace = ns;
+                self.discovery = None;
+            }
             SessionScope::Discovery(cfg) => {
                 // The namespace is always present: a stamped org id resolves to
                 // that org, an absent one (or a malformed value) to the constant
