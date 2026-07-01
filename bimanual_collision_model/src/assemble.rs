@@ -9,7 +9,7 @@ use srs_model::nalgebra::Point3;
 use crate::gjk::{self, Hull};
 use crate::{BuildError, ContainmentFailure};
 use crate::hull::{ConvexHull, ConvexPiece, convex_hull, simplified_hull};
-use crate::urdf_collision::UrdfCollisions;
+use crate::urdf_collision::{JointKind, UrdfCollisions};
 
 /// Grid cell for hull simplification: points are welded onto this grid before
 /// hulling, recovered by each hull's inflation radius, so a 68k-vertex link
@@ -73,13 +73,12 @@ pub(crate) fn fit_bodies(
             let joint = urdf
                 .parent_joint(&child)
                 .expect("children_of implies a parent joint");
-            verts.extend(urdf.child_vertices_in_parent(&child, joint.lower_limit, meshes_dir)?);
-            if !joint.is_fixed() {
-                verts.extend(urdf.child_vertices_in_parent(
-                    &child,
-                    joint.upper_limit,
-                    meshes_dir,
-                )?);
+            // Bake the attached child (a gripper finger) over its full travel into the
+            // parent's cloud. A prismatic travel is linear so its two extremes bound every
+            // pose; a revolute travel sweeps an arc, so sample it densely and union (the
+            // extremes alone would miss the arc's bulge).
+            for q in sweep_samples(&joint.kind, joint.lower_limit, joint.upper_limit) {
+                verts.extend(urdf.child_vertices_in_parent(&child, q, meshes_dir)?);
             }
             attached.insert(child);
         }
@@ -105,6 +104,23 @@ pub(crate) fn fit_bodies(
     }
 
     Ok(FittedBodies { fixed, links })
+}
+
+/// Joint positions at which to bake an attached child (a gripper finger) into its parent's
+/// collision cloud: the origin pose for a fixed joint; the two extremes for a prismatic
+/// (linear) travel, which bound every intermediate pose; and a dense sampling (~0.1 rad
+/// spacing) across a revolute travel, whose arc the extremes alone would under-bound.
+/// A continuous/planar/floating joint yields the extremes too, but
+/// `child_vertices_in_parent` rejects it there.
+fn sweep_samples(kind: &JointKind, lo: f64, hi: f64) -> Vec<f64> {
+    match kind {
+        JointKind::Fixed => vec![lo],
+        JointKind::Prismatic | JointKind::OtherMovable => vec![lo, hi],
+        JointKind::Revolute => {
+            let n = ((hi - lo).abs() / 0.1).ceil().max(1.0) as usize;
+            (0..=n).map(|k| lo + (hi - lo) * (k as f64 / n as f64)).collect()
+        }
+    }
 }
 
 /// The hulls for one body: the caller's supplied pieces if any (verified to
