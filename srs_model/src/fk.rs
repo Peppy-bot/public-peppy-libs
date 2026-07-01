@@ -37,6 +37,11 @@ pub(crate) struct ForwardKinematics {
     masses: [f64; ARM_DOF],
     coms_local: [Vector3<f64>; ARM_DOF],
     inertias_local: [Matrix3<f64>; ARM_DOF],
+    /// Per-joint lower-bound floors applied on top of the URDF limits (see
+    /// [`limits`](Self::limits)). Defaults to `-inf` (no-op); a caller raises one
+    /// via [`set_lower_floor`](Self::set_lower_floor) to impose a control margin
+    /// (e.g. holding a joint off a solver singularity) without editing the URDF.
+    lower_floors: [f64; ARM_DOF],
 }
 
 impl ForwardKinematics {
@@ -56,8 +61,10 @@ impl ForwardKinematics {
     /// folding the IO error into the same `Result` so callers need not handle the
     /// read separately.
     pub fn from_urdf_file(path: &str, base_link: &str) -> Result<Self, SrsError> {
-        let urdf = std::fs::read_to_string(path)
-            .map_err(|source| SrsError::UrdfRead { path: path.to_string(), source })?;
+        let urdf = std::fs::read_to_string(path).map_err(|source| SrsError::UrdfRead {
+            path: path.to_string(),
+            source,
+        })?;
         Self::from_urdf(&urdf, base_link)
     }
 
@@ -65,17 +72,33 @@ impl ForwardKinematics {
     /// joint the URDF leaves unlimited (none do for the OpenArm V1.0). Read off the
     /// parsed chain, so a consumer that only needs FK + limits (e.g. a controller
     /// computing gravity/Coriolis) never has to build an [`ArmModel`](crate::model::ArmModel).
+    ///
+    /// Any lower floor set via [`set_lower_floor`](Self::set_lower_floor) raises the
+    /// reported lower bound (clamped to stay `<= hi`, so the range is always
+    /// well-ordered).
     pub fn limits(&self) -> [Limit; ARM_DOF] {
-        std::array::from_fn(|i| match &self.joint_nodes[i].joint().limits {
-            Some(range) => Limit {
-                lo: range.min,
-                hi: range.max,
-            },
-            None => Limit {
-                lo: -std::f64::consts::PI,
-                hi: std::f64::consts::PI,
-            },
+        std::array::from_fn(|i| {
+            let (lo, hi) = match &self.joint_nodes[i].joint().limits {
+                Some(range) => (range.min, range.max),
+                None => (-std::f64::consts::PI, std::f64::consts::PI),
+            };
+            Limit {
+                lo: lo.max(self.lower_floors[i]).min(hi),
+                hi,
+            }
         })
+    }
+
+    /// Raise the reported lower bound of joint `joint_idx` to at least `floor`,
+    /// leaving the parsed URDF untouched. Used to impose a control margin the URDF
+    /// itself should not carry (the mechanical limit stays as vendored). Panics if
+    /// `joint_idx >= ARM_DOF`.
+    pub(crate) fn set_lower_floor(&mut self, joint_idx: usize, floor: f64) {
+        assert!(
+            joint_idx < ARM_DOF,
+            "joint_idx {joint_idx} out of range (ARM_DOF={ARM_DOF})"
+        );
+        self.lower_floors[joint_idx] = floor;
     }
 
     fn from_chain(full: Chain<f64>, base_link: &str) -> Result<Self, SrsError> {
@@ -149,6 +172,7 @@ impl ForwardKinematics {
             masses,
             coms_local,
             inertias_local,
+            lower_floors: [f64::NEG_INFINITY; ARM_DOF],
         })
     }
 
@@ -247,7 +271,11 @@ impl Posed<'_> {
     /// joint clamps to the full chain. This is the EE [`jacobian`](Self::jacobian)'s
     /// linear rows generalized to an arbitrary witness point, for collision-distance
     /// gradients.
-    pub fn point_world_jacobian(&self, point: &Point3<f64>, segment: usize) -> [Vector3<f64>; ARM_DOF] {
+    pub fn point_world_jacobian(
+        &self,
+        point: &Point3<f64>,
+        segment: usize,
+    ) -> [Vector3<f64>; ARM_DOF] {
         let base_from_world = self.base_from_world();
         let world_from_base = base_from_world.rotation.inverse();
         let p_base = (base_from_world * point).coords;
@@ -431,7 +459,11 @@ mod tests {
                         let fd = (pp.coords - pm.coords) / (2.0 * h);
                         // For j > segment the column is zero and the point does not
                         // move (a distal joint), so both sides are ~0.
-                        assert!((cols[j] - fd).norm() < 1e-5, "{side} segment {segment} joint {j} off by {}", (cols[j] - fd).norm());
+                        assert!(
+                            (cols[j] - fd).norm() < 1e-5,
+                            "{side} segment {segment} joint {j} off by {}",
+                            (cols[j] - fd).norm()
+                        );
                     }
                 }
             }
@@ -531,6 +563,9 @@ mod tests {
             Ok(_) => panic!("expected Err for a prismatic joint"),
             Err(e) => e,
         };
-        assert!(matches!(&err, SrsError::NotSrsArm(_)), "unexpected error: {err}");
+        assert!(
+            matches!(&err, SrsError::NotSrsArm(_)),
+            "unexpected error: {err}"
+        );
     }
 }

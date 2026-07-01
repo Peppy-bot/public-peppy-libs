@@ -37,6 +37,16 @@ impl Arm {
         Ok(Self { fk, model })
     }
 
+    /// Raise the reported lower limit of joint `joint_idx` (0-based, j1..j7) to at
+    /// least `floor`, returning the arm. The parsed URDF is left untouched: this is a
+    /// control margin layered over the mechanical limit (e.g. holding a joint off a
+    /// solver singularity), surfaced through [`limits`](Self::limits) so every
+    /// consumer of the limits inherits it. Panics if `joint_idx >= ARM_DOF`.
+    pub fn with_lower_floor(mut self, joint_idx: usize, floor: f64) -> Self {
+        self.fk.set_lower_floor(joint_idx, floor);
+        self
+    }
+
     /// Pose the arm at configuration `q` for forward-kinematics and dynamics
     /// reads. Takes `&mut self` not because posing requires it (`k` poses through
     /// interior mutability) but to enforce "pose, then read": the returned [`Posed`]
@@ -108,6 +118,37 @@ mod tests {
         }
         // j4 (elbow) is one-sided in the V1.0 URDF: lower bound at 0.
         assert!(limits[3].lo.abs() < 1e-9, "j4 lower = {}", limits[3].lo);
+    }
+
+    #[test]
+    fn with_lower_floor_raises_only_the_targeted_lower_bound() {
+        let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture");
+        let base = arm.limits();
+        // The fixture's elbow (j4, index 3) has a mechanical lower bound of 0.0.
+        let floored = arm.with_lower_floor(3, 0.05).limits();
+
+        assert_eq!(
+            floored[3].lo, 0.05,
+            "targeted joint's lower bound is raised"
+        );
+        assert_eq!(floored[3].hi, base[3].hi, "upper bound is untouched");
+        for i in [0, 1, 2, 4, 5, 6] {
+            assert_eq!(
+                floored[i].lo, base[i].lo,
+                "joint {i} lower bound is untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn with_lower_floor_below_the_mechanical_limit_is_a_noop() {
+        let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture");
+        let base = arm.limits();
+        let floored = arm.with_lower_floor(3, -10.0).limits();
+        assert_eq!(
+            floored[3].lo, base[3].lo,
+            "a floor under the limit does not lower it"
+        );
     }
 
     #[test]
