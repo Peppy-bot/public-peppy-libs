@@ -1,0 +1,14 @@
+[package]
+name = "openarm_description"
+version = "0.1.0"
+edition = "2024"
+description = "The OpenArm v1.0 robot description: the single embedded source of truth for the URDF (and, behind the `meshes` feature, the collision meshes), plus the constants describing its control margins. Pure data, no kinematics or solver deps."
+
+[features]
+# Embed the collision meshes and expose `write_meshes_to`. Off by default so
+# consumers that only need the URDF (e.g. the per-arm control node) do not carry
+# the mesh bytes.
+meshes = []
+
+[dev-dependencies]
+urdf-rs = "0.9"
