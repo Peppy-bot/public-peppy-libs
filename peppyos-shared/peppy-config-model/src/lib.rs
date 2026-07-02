@@ -1,19 +1,19 @@
 #![forbid(unsafe_code)]
 
-//! Parsing and validation of Peppy configuration documents.
+//! Parsing and validation of the shared Peppy configuration documents.
 //!
-//! This crate owns the on-disk Peppy config formats (`peppy.json5` node
-//! configs, launcher files, `peppy_config.json5`) and the typed API the rest
-//! of the workspace builds on: parsing those documents, validating them against
-//! Peppy's schema and structural constraints, and the [`consts::PeppyDirs`]
-//! filesystem-layout helper. (Cap'n Proto schema generation for a
-//! [`node::MessageFormat`] lives in the separate `encoding` crate.)
+//! This crate owns the wire-facing config tier every peppy surface builds
+//! on: the `peppy.json5` node config model, the runtime configs shipped to
+//! spawned nodes, codegen fingerprints, org namespaces, and the schema tags
+//! identifying each document shape. (Cap'n Proto schema generation for a
+//! [`node::MessageFormat`] lives in the separate `encoding` crate; the
+//! daemon-side documents, launcher files, interface documents,
+//! `peppy_config.json5`, and the `PeppyDirs` filesystem layout, live in the
+//! peppyos `daemon-config` crate, which builds on this one.)
 //!
 //! Boundaries: it performs no I/O beyond reading/writing config files and
-//! fingerprints, and requires no
-//! global init — every type is built through an explicit parser/constructor.
-//! The one process-global is [`consts::set_app_env`], a set-once `OnceLock`
-//! that only shifts the default [`consts::PeppyDirs`] root between dev/prod.
+//! fingerprints, holds no process-global state, and requires no global
+//! init; every type is built through an explicit parser/constructor.
 
 mod common;
 mod error;
@@ -24,18 +24,14 @@ mod parsing;
 /// the same directory as this file, so existing file paths are preserved.
 #[path = "."]
 mod internal {
-    pub mod atomic_write;
     pub mod consts;
     pub mod fingerprint;
-    pub mod interface;
-    pub mod launcher;
     pub mod node;
     pub mod org;
     pub mod peppy_config;
     pub mod repo_node_id;
     pub mod runtime;
     pub mod schema;
-    pub mod source;
 }
 
 // -- common --
@@ -46,25 +42,14 @@ pub use common::{
 };
 
 // -- error --
-pub use error::{
-    BindingMissingForPinnedDep, BindingTargetMismatch, DuplicateInstanceIdAcrossStack,
-    Error as ConfigError, MissingInterface, ParsingError, SlotKind, format_bulleted,
-};
-
-// -- atomic_write --
-pub mod atomic_write {
-    pub use crate::internal::atomic_write::publish_atomic;
-}
+pub use error::{Error as ConfigError, MissingInterface, ParsingError};
 
 // -- consts --
 pub mod consts {
     pub use crate::internal::consts::{
-        ALLOWED_CONFIG_CHARS, AppEnv, CREDENTIALS_FILE, DAEMON_STATE_FILE_ENV,
-        DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_LINK_ID_SENTINEL, DEFAULT_MESSAGING_HOST,
-        DEFAULT_MESSAGING_PORT, DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE,
-        NODE_CONFIG_FILE, PEPPY_HOME_ENV, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR,
-        PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
-        PeppyDirs, RUNTIME_CONFIG_VAR_NAME, peppy_root_dir, set_app_env,
+        ALLOWED_CONFIG_CHARS, DEFAULT_LINK_ID_SENTINEL, DEFAULT_MESSAGING_HOST,
+        DEFAULT_MESSAGING_PORT, NODE_CONFIG_FILE, PEPPY_HOME_ENV, PEPPYGEN_OUTPUT_PATH,
+        PYTHON_MAX_VERSION, PYTHON_MIN_VERSION, RUNTIME_CONFIG_VAR_NAME,
     };
 }
 
@@ -98,12 +83,8 @@ pub mod node {
 
 // -- runtime --
 pub mod runtime {
-    // `Name` is defined in `launcher/types.rs` today; it is also re-exported
-    // here (its long-term home) so runtime-config consumers can address it as
-    // `config::runtime::Name` independently of the launcher module.
-    pub use crate::internal::launcher::Name;
     pub use crate::internal::runtime::{
-        DiscoveryConfig, LifecycleRuntimeConfig, NodeInstanceConfig, ProducerRef,
+        DiscoveryConfig, LifecycleRuntimeConfig, Name, NodeInstanceConfig, ProducerRef,
         ResolvedFramework, RuntimeConfig, SlotBinding,
     };
 }
@@ -119,42 +100,15 @@ pub mod org {
 // -- peppy_config --
 pub mod peppy_config {
     pub use crate::internal::peppy_config::{
-        DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, DEFAULT_DAEMON_GRACE_SECS,
-        DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
+        DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
         DEFAULT_SHUTDOWN_GRACE_SECS, DEFAULT_STANDARD_BUFFER_SIZE, EVENT_LOOP_JOIN_BUDGET_SECS,
-        FederationConfig, LifecycleConfig, Mode, PeerConfig, PeppyConfig,
-        RUNTIME_FINALIZE_MARGIN_SECS, ResourceServers, load_or_create,
-    };
-}
-
-// -- launcher --
-pub mod launcher {
-    pub use crate::internal::launcher::{
-        BindingValidationItem, Deployment, DeploymentGitSource, DeploymentInstance,
-        DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource,
-        FrameworkOverrides, Name, PeppyLauncher, PeppyLauncherParser, ValidatedBindings,
-        validate_bindings,
+        PeerConfig, RUNTIME_FINALIZE_MARGIN_SECS,
     };
 }
 
 // -- schema --
 pub mod schema {
     pub use crate::internal::schema::PeppySchema;
-}
-
-// -- interface --
-pub mod interface {
-    pub use crate::internal::interface::{
-        Interfaces, Manifest, PeppyInterface, PeppyInterfaceParser,
-    };
-}
-
-// -- source --
-pub mod source {
-    pub use crate::internal::source::{
-        DeploymentGitSource, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
-        DeploymentUrlSource,
-    };
 }
 
 // -- repo node id --

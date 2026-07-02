@@ -13,7 +13,6 @@
 //! into `peppyos/`.
 
 use peppy_config_model::consts::NODE_CONFIG_FILE;
-use peppy_config_model::launcher::PeppyLauncherParser;
 use peppy_config_model::node::NodeConfigParser;
 use std::path::{Path, PathBuf};
 
@@ -64,24 +63,3 @@ fn test_example_node_configs_parse() {
     }
 }
 
-#[test]
-fn test_example_launcher_config_parses() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples")
-        .join("nodes_example_1")
-        .join("peppy_launcher.json5");
-
-    let result = PeppyLauncherParser::from_path(&path);
-    assert!(
-        result.is_ok(),
-        "failed to parse {}: {:?}",
-        path.display(),
-        result.unwrap_err()
-    );
-
-    let launcher = result.unwrap();
-    assert!(
-        !launcher.deployments.is_empty(),
-        "example launcher should contain at least one deployment"
-    );
-}

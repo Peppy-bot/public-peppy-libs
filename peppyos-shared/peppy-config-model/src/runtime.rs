@@ -1,5 +1,6 @@
 use crate::common::AnyType;
-use crate::error::Result;
+use crate::consts::ALLOWED_CONFIG_CHARS;
+use crate::error::{ParsingError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::{
@@ -7,15 +8,115 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::launcher::Name;
+/// Validated identifier for node names, tags, instance ids, and core node
+/// names in runtime configs: non-empty and restricted to
+/// [`ALLOWED_CONFIG_CHARS`](crate::consts::ALLOWED_CONFIG_CHARS).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(into = "String")]
+pub struct Name(String);
+
+impl Name {
+    pub fn new<S: Into<String>>(s: S) -> std::result::Result<Self, ParsingError> {
+        Self::try_from(s.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn is_valid_char(c: char) -> bool {
+        ALLOWED_CONFIG_CHARS.contains(c)
+    }
+}
+
+impl TryFrom<String> for Name {
+    type Error = ParsingError;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        if value.is_empty() {
+            return Err(ParsingError::EmptyName);
+        }
+        if value.chars().all(Name::is_valid_char) {
+            return Ok(Name(value));
+        }
+        Err(ParsingError::InvalidName(
+            value,
+            ALLOWED_CONFIG_CHARS.to_string(),
+        ))
+    }
+}
+
+impl<'de> Deserialize<'de> for Name {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Name::try_from(s).map_err(|err| serde::de::Error::custom(err.to_string()))
+    }
+}
+
+impl From<Name> for String {
+    fn from(v: Name) -> Self {
+        v.0
+    }
+}
+
+impl std::fmt::Display for Name {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<str> for Name {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq<&str> for Name {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<Name> for &str {
+    fn eq(&self, other: &Name) -> bool {
+        *self == other.0
+    }
+}
+
+impl PartialEq<String> for Name {
+    fn eq(&self, other: &String) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<Name> for String {
+    fn eq(&self, other: &Name) -> bool {
+        *self == other.0
+    }
+}
+
+impl PartialOrd for Name {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Name {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
+    }
+}
 
 /// Fully-qualified producer address. The wire addresses a producer by the
 /// `(core_node, instance_id)` pair — `instance_id` alone is only unique
 /// within one stack, while the pair is unique across the whole mesh — so
 /// every reference to a producer below the validator carries both halves.
-/// The validator stamps `core_node` when it materializes bindings (see
-/// `crate::launcher::validate_bindings`); after that point a half-address
-/// is unrepresentable.
+/// The validator stamps `core_node` when it materializes bindings (the
+/// `validate_bindings` pass in the peppyos `daemon-config` crate); after
+/// that point a half-address is unrepresentable.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -90,7 +191,7 @@ impl NodeInstanceConfig {
 }
 
 /// Framework knobs already resolved by the daemon. Distinct from
-/// `launcher::FrameworkOverrides` so the type system enforces "resolution
+/// the launcher-file `FrameworkOverrides` (peppyos `daemon-config`) so the type system enforces "resolution
 /// happens once": the launcher form carries optional overrides; this form
 /// carries concrete values the spawned node reads without further fallback.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -287,8 +388,30 @@ impl RuntimeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::{Error, ParsingError};
+    use crate::error::Error;
     use tempfile::TempDir;
+
+    #[test]
+    fn name_validation() {
+        assert!(Name::new("robot").is_ok());
+        assert!(Name::new("camera_v1").is_ok());
+
+        assert!(Name::new("").is_err()); // empty not permitted
+        assert!(Name::new("/").is_err()); // slash not permitted
+        assert!(Name::new("/robot").is_err()); // slash not permitted
+        assert!(Name::new("Robot").is_ok()); // capital now allowed
+        assert!(Name::new("robot$cam").is_err()); // special
+    }
+
+    #[test]
+    fn name_error_message() {
+        let err = Name::new("Invalid!").unwrap_err();
+        if let ParsingError::InvalidName(_, msg) = err {
+            assert_eq!(msg, crate::consts::ALLOWED_CONFIG_CHARS);
+        } else {
+            panic!("Expected InvalidName error");
+        }
+    }
 
     fn runtime_config_from_json(instance_id: &str) -> Result<RuntimeConfig> {
         let json = r#"{
