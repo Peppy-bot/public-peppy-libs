@@ -2,6 +2,54 @@ use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// Deserializes JSON5 content with field-path tracking and an embedded
+/// structured-error bridge, generic over the caller's error types.
+///
+/// Parsers that need to raise rich validation errors from inside
+/// `Deserialize` impls encode a payload of type `S` as JSON5 into the serde
+/// error message (see `StructuredError::json5_message`); this helper decodes
+/// it back and hands it to `on_structured` unchanged, since such payloads
+/// already carry descriptive messages. Plain serde messages get the dotted
+/// field path (e.g. `execution.run_cmd`) prepended before `on_plain`.
+/// Phase-1 JSON5 syntax errors (no field path exists yet) go to `on_syntax`.
+///
+/// Exposed so downstream document models (e.g. the daemon-side launcher
+/// configs) can reuse the engine with their own structured-error enums
+/// instead of duplicating the path-tracking logic.
+pub fn deserialize_json5_with_structured_errors<'de, T, S, E>(
+    content: &'de str,
+    on_syntax: impl FnOnce(serde_json5::Error) -> E,
+    on_structured: impl FnOnce(S) -> E,
+    on_plain: impl FnOnce(String) -> E,
+) -> core::result::Result<T, E>
+where
+    T: serde::de::Deserialize<'de>,
+    S: serde::de::DeserializeOwned,
+{
+    // Phase 1: parse JSON5 syntax. If this fails, there's no field path.
+    let mut deserializer = serde_json5::Deserializer::from_str(content).map_err(on_syntax)?;
+
+    // Phase 2: deserialize with path tracking.
+    serde_path_to_error::deserialize(&mut deserializer).map_err(|path_err| {
+        let path = path_err.path().to_string();
+        let serde_json5::Error::Message { msg, .. } = path_err.into_inner();
+
+        // Check if it's a structured payload (custom validation).
+        // These already have rich messages; don't prepend path.
+        if let Ok(structured) = serde_json5::from_str::<S>(&msg) {
+            return on_structured(structured);
+        }
+
+        // Standard serde error: prepend path if non-empty.
+        let message = if path.is_empty() || path == "." {
+            msg
+        } else {
+            format!("{path}: {msg}")
+        };
+        on_plain(message)
+    })
+}
+
 /// Deserializes JSON5 content with field-path tracking.
 ///
 /// On error, prepends the JSON path (e.g. `execution.run_cmd`) to standard
@@ -11,33 +59,12 @@ pub fn deserialize_json5_with_path<'de, T>(content: &'de str) -> Result<T>
 where
     T: serde::de::Deserialize<'de>,
 {
-    // Phase 1: parse JSON5 syntax. If this fails, there's no field path.
-    let mut deserializer = serde_json5::Deserializer::from_str(content)
-        .map_err(|e| Error::Parsing(ParsingError::from(e)))?;
-
-    // Phase 2: deserialize with path tracking.
-    serde_path_to_error::deserialize(&mut deserializer).map_err(|path_err| {
-        let path = path_err.path().to_string();
-        let inner: serde_json5::Error = path_err.into_inner();
-
-        match inner {
-            serde_json5::Error::Message { ref msg, .. } => {
-                // Check if it's a StructuredError (custom validation).
-                // These already have rich messages; don't prepend path.
-                if let Ok(structured) = serde_json5::from_str::<StructuredError>(msg) {
-                    return Error::Parsing(ParsingError::from(structured));
-                }
-
-                // Standard serde error: prepend path if non-empty.
-                let message = if path.is_empty() || path == "." {
-                    msg.clone()
-                } else {
-                    format!("{path}: {msg}")
-                };
-                Error::Parsing(ParsingError::CannotParseConfig(message))
-            }
-        }
-    })
+    deserialize_json5_with_structured_errors(
+        content,
+        |e| Error::Parsing(ParsingError::from(e)),
+        |s: StructuredError| Error::Parsing(ParsingError::from(s)),
+        |message| Error::Parsing(ParsingError::CannotParseConfig(message)),
+    )
 }
 
 /// Payload for [`ParsingError::MissingInterface`]. Boxed in the variant so

@@ -42,7 +42,9 @@ pub use common::{
 };
 
 // -- error --
-pub use error::{Error as ConfigError, MissingInterface, ParsingError};
+pub use error::{
+    Error as ConfigError, MissingInterface, ParsingError, deserialize_json5_with_structured_errors,
+};
 
 // -- consts --
 pub mod consts {
