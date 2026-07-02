@@ -98,6 +98,10 @@ pub mod node {
 
 // -- runtime --
 pub mod runtime {
+    // `Name` is defined in `launcher/types.rs` today; it is also re-exported
+    // here (its long-term home) so runtime-config consumers can address it as
+    // `config::runtime::Name` independently of the launcher module.
+    pub use crate::internal::launcher::Name;
     pub use crate::internal::runtime::{
         DiscoveryConfig, LifecycleRuntimeConfig, NodeInstanceConfig, ProducerRef,
         ResolvedFramework, RuntimeConfig, SlotBinding,

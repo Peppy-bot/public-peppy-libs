@@ -35,9 +35,11 @@ impl fmt::Display for PeppySchema {
 
 impl PeppySchema {
     /// Deserialize a `peppy_schema` field and reject any value other
-    /// than `expected`. Used as the core of the per-document-shape
-    /// `#[serde(deserialize_with = ...)]` guards.
-    pub(crate) fn deserialize_expecting<'de, D>(
+    /// than `expected`. Used as the core of the strict per-document-shape
+    /// `#[serde(deserialize_with = ...)]` guards, both here and in
+    /// daemon-side document parsers (peppyos `daemon-config`); public so
+    /// every parser shares this one guard and its error text.
+    pub fn deserialize_expecting<'de, D>(
         deserializer: D,
         expected: Self,
     ) -> Result<Self, D::Error>
