@@ -80,3 +80,4 @@ ENV/
 .idea/
 .vscode/
 *.swp
+/openarm_description/Cargo.lock

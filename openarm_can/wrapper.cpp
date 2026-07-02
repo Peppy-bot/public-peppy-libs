@@ -133,6 +133,20 @@ void openarm_init_gripper_motor(OpenArmHandle h,
         recv_can_id);
 }
 
+void openarm_init_gripper_motor_mode(OpenArmHandle h,
+                                     uint8_t motor_type,
+                                     uint32_t send_can_id,
+                                     uint32_t recv_can_id,
+                                     uint8_t control_mode) {
+    if (!h) { std::cerr << "openarm_init_gripper_motor_mode: null handle" << std::endl; std::abort(); }
+    auto* arm = static_cast<OA*>(h);
+    arm->init_gripper_motor(
+        static_cast<openarm::damiao_motor::MotorType>(motor_type),
+        send_can_id,
+        recv_can_id,
+        static_cast<openarm::damiao_motor::ControlMode>(control_mode));
+}
+
 void openarm_gripper_mit_control(OpenArmHandle h,
                                  double kp,
                                  double kd,
@@ -142,6 +156,16 @@ void openarm_gripper_mit_control(OpenArmHandle h,
     if (!h) { std::cerr << "openarm_gripper_mit_control: null handle" << std::endl; std::abort(); }
     auto* arm = static_cast<OA*>(h);
     arm->get_gripper().mit_control_all({{kp, kd, q, dq, tau}});
+}
+
+void openarm_gripper_pos_force_control(OpenArmHandle h,
+                                       double q,
+                                       double dq,
+                                       double i) {
+    if (!h) { std::cerr << "openarm_gripper_pos_force_control: null handle" << std::endl; std::abort(); }
+    auto* arm = static_cast<OA*>(h);
+    // POS_FORCE: position command with an absolute speed limit and a torque-current cap.
+    arm->get_gripper().set_position(q, dq, i);
 }
 
 void openarm_gripper_get_state(OpenArmHandle h,

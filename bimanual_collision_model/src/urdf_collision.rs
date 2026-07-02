@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use srs_model::nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
+use srs_model::nalgebra::{Isometry3, Point3, Translation3, Unit, UnitQuaternion, Vector3};
 
 /// One `<collision><mesh>` entry of a link, with everything needed to map the
 /// mesh's vertices into the link frame.
@@ -51,8 +51,11 @@ pub struct UrdfCollisions {
 pub enum JointKind {
     Fixed,
     Prismatic,
-    /// Revolute, continuous, planar, floating: anything whose motion is not
-    /// a pure translation.
+    /// A bounded rotation about a single axis: its finite limits bound the swept arc,
+    /// which the fit samples across (a rotation is not a translation, so extremes alone
+    /// do not bound it; see [`UrdfCollisions::child_vertices_in_parent`]).
+    Revolute,
+    /// Continuous, planar, floating: motion not bounded to a single finite 1-DOF sweep.
     OtherMovable,
 }
 
@@ -113,6 +116,7 @@ impl UrdfCollisions {
             let kind = match j.joint_type {
                 urdf_rs::JointType::Fixed => JointKind::Fixed,
                 urdf_rs::JointType::Prismatic => JointKind::Prismatic,
+                urdf_rs::JointType::Revolute => JointKind::Revolute,
                 _ => JointKind::OtherMovable,
             };
             // A movable joint's limits bound the swept envelope baked at fit
@@ -217,11 +221,13 @@ impl UrdfCollisions {
             .collect())
     }
 
-    /// Collision vertices of `child` at joint position `q`, mapped into the
-    /// parent link's frame. Only fixed (`q` ignored) and prismatic children
-    /// are supported: a translation is the only motion for which positions
-    /// along the travel interpolate linearly (the basis for extremes-union
-    /// containment). A revolute child sweeps an arc and is rejected.
+    /// Collision vertices of `child` posed at joint position `q`, mapped into the
+    /// parent link's frame. Fixed (`q` ignored), prismatic (translate along the axis),
+    /// and revolute (rotate about the axis) children are supported. A prismatic travel
+    /// interpolates linearly, so its two extremes bound the sweep; a revolute travel
+    /// sweeps an arc, so the caller must sample several `q` across the range and union
+    /// them (extremes alone under-bound the arc). Continuous/planar/floating joints have
+    /// no finite 1-DOF sweep and are rejected.
     pub fn child_vertices_in_parent(
         &self,
         child: &str,
@@ -241,10 +247,18 @@ impl UrdfCollisions {
                 // URDF axes are conventionally unit but the spec does not require it.
                 j.origin * Translation3::from(j.axis * (q / norm))
             }
+            JointKind::Revolute => {
+                if j.axis.norm() < 1e-12 {
+                    return Err(format!("link '{child}' parent joint has a zero axis"));
+                }
+                // Rotate about the (normalized) axis by q; the caller samples q across the
+                // joint's limits so the union of poses bounds the swept arc.
+                j.origin * UnitQuaternion::from_axis_angle(&Unit::new_normalize(j.axis), q)
+            }
             JointKind::OtherMovable => {
                 return Err(format!(
-                    "link '{child}' hangs off a non-prismatic movable joint; its travel is not \
-                     a translation, so extremes do not bound it. Model it as part of a chain instead."
+                    "link '{child}' hangs off a continuous/planar/floating joint with no finite \
+                     1-DOF sweep, so it cannot be bounded. Model it as part of a chain instead."
                 ));
             }
         };
@@ -325,12 +339,17 @@ mod tests {
     </robot>"#;
 
     #[test]
-    fn rejects_baking_a_revolute_child() {
+    fn poses_a_revolute_child_rather_than_rejecting_it() {
         let u = UrdfCollisions::from_urdf(URDF).expect("parse");
+        // A revolute child (arm1 hangs off revolute joint `ma`) is now posed by rotation,
+        // so the only failure here is the nonexistent mesh dir, not the joint kind.
         let err = u
             .child_vertices_in_parent("arm1", 0.5, "/nonexistent")
-            .expect_err("revolute child");
-        assert!(err.contains("not a translation"), "{err}");
+            .expect_err("mesh dir does not exist");
+        assert!(
+            err.contains("/nonexistent"),
+            "the revolute path must reach mesh loading and fail on the missing dir, got: {err}"
+        );
     }
 
     #[test]

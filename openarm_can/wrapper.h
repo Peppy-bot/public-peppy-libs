@@ -44,12 +44,29 @@ void openarm_init_gripper_motor(OpenArmHandle h,
                                 uint32_t send_can_id,
                                 uint32_t recv_can_id);
 
+// Initialise the gripper motor in an explicit control mode (ControlMode in
+// openarm/damiao_motor/dm_motor_constants.hpp; 1=MIT, 4=POS_FORCE). The v2.0 pinch
+// gripper uses POS_FORCE.
+void openarm_init_gripper_motor_mode(OpenArmHandle h,
+                                     uint8_t motor_type,
+                                     uint32_t send_can_id,
+                                     uint32_t recv_can_id,
+                                     uint8_t control_mode);
+
 void openarm_gripper_mit_control(OpenArmHandle h,
                                  double kp,
                                  double kd,
                                  double q,
                                  double dq,
                                  double tau);
+
+// POS_FORCE gripper command: drive to motor angle `q` (rad) with an absolute speed
+// limit `dq` (rad/s) and a torque-current limit `i` (per-unit, 0..1). Requires the
+// motor to have been initialised in POS_FORCE mode.
+void openarm_gripper_pos_force_control(OpenArmHandle h,
+                                       double q,
+                                       double dq,
+                                       double i);
 
 void openarm_gripper_get_state(OpenArmHandle h,
                                double* position,
