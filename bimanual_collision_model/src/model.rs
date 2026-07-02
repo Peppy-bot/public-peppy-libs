@@ -213,6 +213,18 @@ pub struct BimanualCollisionModel {
     /// finger envelope, so a caller that never sets it (or whose live telemetry
     /// lapses) stays conservative rather than under-reporting clearance.
     openings: [f64; 2],
+    /// Per-body, per-joint surface-speed bound (m/rad): `reaches[b][j]` bounds
+    /// how far any surface point of body `b` can move per radian of its own
+    /// side's joint `j`, over all poses and openings (zero for a fixed body and
+    /// for joints distal of the body). Computed once at build from the chain
+    /// geometry and bounding spheres.
+    reaches: Vec<JointVec>,
+    /// Per-side, per-joint Lipschitz levers of the min surface distance (m/rad):
+    /// the max over checked pairs of the sum of both bodies' reaches on that
+    /// side (a same-side pair moves both witnesses with one arm's joints).
+    /// Derived from `reaches` whenever the pair list changes; feeds
+    /// [`clearance_step_bound`](Self::clearance_step_bound).
+    levers: [JointVec; 2],
 }
 
 /// Configures and builds a [`BimanualCollisionModel`]; start from
@@ -453,6 +465,7 @@ impl BimanualCollisionModel {
         }
 
         let world_iso = vec![Isometry3::identity(); bodies.len()];
+        let reaches = body_reaches(&mut left, &mut right, &bodies);
         Ok(Self {
             left,
             right,
@@ -461,6 +474,8 @@ impl BimanualCollisionModel {
             excluded: Vec::new(),
             world_iso,
             openings: [1.0, 1.0],
+            reaches,
+            levers: [[0.0; ARM_DOF]; 2],
         })
     }
 
@@ -480,6 +495,7 @@ impl BimanualCollisionModel {
                     .push((self.bodies[a].name.clone(), self.bodies[b].name.clone()));
             }
         }
+        self.recompute_levers();
         Ok(())
     }
 
@@ -520,7 +536,32 @@ impl BimanualCollisionModel {
                 Ok(Pair { a, b })
             })
             .collect::<Result<Vec<_>, BuildError>>()?;
+        self.recompute_levers();
         Ok(())
+    }
+
+    /// Rebuild the per-side Lipschitz levers from the checked pairs: for each
+    /// side and joint, the max over pairs of the sum of both bodies' reaches on
+    /// that side. Summing per pair is what keeps the bound sound for a same-side
+    /// pair, whose two witnesses both move with that arm's joints. Called
+    /// whenever the pair list changes.
+    fn recompute_levers(&mut self) {
+        let side_reach = |body: usize, side: usize, j: usize| -> f64 {
+            let on_side = match self.bodies[body].placement {
+                Placement::Left(_) => side == 0,
+                Placement::Right(_) => side == 1,
+                Placement::Fixed => false,
+            };
+            if on_side { self.reaches[body][j] } else { 0.0 }
+        };
+        self.levers = std::array::from_fn(|side| {
+            std::array::from_fn(|j| {
+                self.pairs
+                    .iter()
+                    .map(|p| side_reach(p.a, side, j) + side_reach(p.b, side, j))
+                    .fold(0.0, f64::max)
+            })
+        });
     }
 
     /// Link-local hull pieces of a body (fixed bodies are in the root frame).
@@ -758,6 +799,23 @@ impl BimanualCollisionModel {
         }
     }
 
+    /// Upper bound (m) on how much the minimum surface distance can change over a
+    /// joint step of `dq_left` / `dq_right`, valid along the whole straight
+    /// joint-space segment: `sum_j levers[side][j] * |dq[j]|` over both arms.
+    /// Each lever bounds, over all poses and openings, the worst per-radian
+    /// closing rate of any checked pair (summing both witnesses' travel when a
+    /// pair's bodies share a side), and a minimum of Lipschitz functions is
+    /// Lipschitz, so a segment whose start clearance exceeds a floor by more than
+    /// this bound cannot cross that floor anywhere along the step. Deliberately
+    /// loose (chain-length bounds), so it is sound for a caller skipping an exact
+    /// scan, never tight.
+    pub fn clearance_step_bound(&self, dq_left: &JointVec, dq_right: &JointVec) -> f64 {
+        let dot_abs = |lever: &JointVec, dq: &JointVec| -> f64 {
+            lever.iter().zip(dq).map(|(l, d)| l * d.abs()).sum::<f64>()
+        };
+        dot_abs(&self.levers[0], dq_left) + dot_abs(&self.levers[1], dq_right)
+    }
+
     /// Refresh the world pose of the moving bodies from FK. Finger bodies are
     /// additionally offset by their host link pose at the side's current opening.
     fn place(&mut self, q_left: &JointVec, q_right: &JointVec) {
@@ -796,6 +854,53 @@ enum Lineage {
 fn link_poses(arm: &mut Arm, q: &JointVec) -> [Isometry3<f64>; ARM_DOF] {
     let posed = arm.at(q);
     std::array::from_fn(|i| posed.link_pose_world(i))
+}
+
+/// Per-body, per-joint surface-speed bounds (m/rad). A point rigidly attached
+/// distal of revolute joint `j` moves at most `r * |dq_j|`, with `r` its distance
+/// from the joint axis; that distance is bounded, over all poses, by the chain
+/// hops from joint `j`'s origin out to the body's link origin (each hop's norm is
+/// pose invariant: a rigid link separates consecutive joint origins) plus the
+/// body's own reach: bounding-sphere centre offset + radius, and for a finger the
+/// worst translation its joint offset can add across the travel (a prismatic
+/// slide adds the full travel; a revolute offset only rotates about its origin).
+/// Rows are zero for fixed bodies and for joints distal of the body.
+fn body_reaches(left: &mut Arm, right: &mut Arm, bodies: &[Body]) -> Vec<JointVec> {
+    let home = [0.0; ARM_DOF];
+    let hops = |arm: &mut Arm| -> [f64; ARM_DOF - 1] {
+        let poses = link_poses(arm, &home);
+        std::array::from_fn(|k| {
+            (poses[k + 1].translation.vector - poses[k].translation.vector).norm()
+        })
+    };
+    let hops = [hops(left), hops(right)];
+
+    bodies
+        .iter()
+        .map(|body| {
+            let (side, seg) = match body.placement {
+                Placement::Fixed => return [0.0; ARM_DOF], // never moved by a joint
+                Placement::Left(s) => (0, s),
+                Placement::Right(s) => (1, s),
+            };
+            let finger_reach = body.finger.as_ref().map_or(0.0, |f| {
+                let travel = if f.revolute {
+                    0.0
+                } else {
+                    f.closed.abs().max(f.open.abs())
+                };
+                f.origin.translation.vector.norm() + travel
+            });
+            let reach = finger_reach + body.bound.center.coords.norm() + body.bound.radius;
+            std::array::from_fn(|j| {
+                if j <= seg {
+                    hops[side][j..seg].iter().sum::<f64>() + reach
+                } else {
+                    0.0 // a joint distal of the body does not move it
+                }
+            })
+        })
+        .collect()
 }
 
 /// Reject NaN/inf joint values so queries fail safe instead of comparing
@@ -1128,6 +1233,61 @@ mod tests {
             matches!(&e, CollisionError::Build(BuildError::EmptyRegions { .. })),
             "{e}"
         );
+    }
+
+    #[test]
+    fn clearance_step_bound_dominates_the_real_change() {
+        // The scan-skip soundness contract: over a joint step, the real change in
+        // min surface distance never exceeds clearance_step_bound. Sampled across
+        // poses (clear, in-band, near-contact), directions, magnitudes, and
+        // openings; each segment is also probed at interior points, since the
+        // bound must hold along the whole segment, not just at its ends.
+        let mut m = model();
+        let poses: [(JointVec, JointVec); 3] = [
+            ([0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0]),
+            ([0.15, 0.1, 0.85, 0.5, -0.2, 0.1, 0.0], [-0.05, -0.25, -0.45, 0.35, 0.1, -0.1, 0.0]),
+            ([0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2], [0.0, 0.0, -1.05, 0.4, -0.1, 0.1, 0.0]),
+        ];
+        // A deterministic spread of step directions: single joints, all joints,
+        // and mixed-sign combinations, at a small and a large magnitude.
+        let dirs: Vec<(JointVec, JointVec)> = {
+            let mut d: Vec<(JointVec, JointVec)> = Vec::new();
+            for j in 0..ARM_DOF {
+                let mut l = [0.0; ARM_DOF];
+                l[j] = 1.0;
+                d.push((l, [0.0; ARM_DOF]));
+                d.push(([0.0; ARM_DOF], l));
+            }
+            d.push(([1.0; ARM_DOF], [-1.0; ARM_DOF]));
+            d.push((
+                std::array::from_fn(|i| if i % 2 == 0 { 1.0 } else { -1.0 }),
+                std::array::from_fn(|i| if i % 3 == 0 { -1.0 } else { 1.0 }),
+            ));
+            d
+        };
+        for (open_l, open_r) in [(1.0, 1.0), (0.3, 0.8), (0.0, 0.0)] {
+            m.set_gripper_openings(open_l, open_r);
+            for (ql, qr) in &poses {
+                let d0 = m.min_distance(ql, qr).expect("query").distance;
+                for (dl, dr) in &dirs {
+                    for mag in [0.02, 0.2] {
+                        let sl: JointVec = std::array::from_fn(|i| dl[i] * mag);
+                        let sr: JointVec = std::array::from_fn(|i| dr[i] * mag);
+                        let bound = m.clearance_step_bound(&sl, &sr);
+                        for t in [0.25, 0.5, 1.0] {
+                            let qlt: JointVec = std::array::from_fn(|i| ql[i] + t * sl[i]);
+                            let qrt: JointVec = std::array::from_fn(|i| qr[i] + t * sr[i]);
+                            let dt = m.min_distance(&qlt, &qrt).expect("query").distance;
+                            assert!(
+                                (dt - d0).abs() <= bound + 1e-9,
+                                "step bound violated: |{dt:+.5} - {d0:+.5}| > {bound:.5} \
+                                 (mag {mag}, t {t})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
