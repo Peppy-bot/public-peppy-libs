@@ -21,18 +21,16 @@ walkdir = "2.5"
 # generation itself now lives in the separate `encoding` crate.
 capnp = "0.26"
 sha2 = "0.11"
-tempfile = "3.8"
 indexmap = { version = "2.2", features = ["serde"] }
-dirs = "6"
-# Compile-time string concatenation so the bundled peppy_config template splices
-# in the buffer-size constants instead of duplicating the literals.
-const_format = "0.2"
 # Validates the organization namespace (`org::OrgNamespace`) as a zenoh non-wild
 # key expression so an invalid org id can never reach a live session. Pinned to
 # the zenoh version pmi/zenohd federate against.
 zenoh-keyexpr = "=1.9.0"
 
 [dev-dependencies]
+# Test-only since the daemon-side atomic_write helper moved to peppyos
+# daemon-config: scratch dirs/files for fingerprint, runtime, and parser tests.
+tempfile = "3.8"
 
 [features]
 default = []

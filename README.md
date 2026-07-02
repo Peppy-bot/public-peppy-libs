@@ -26,7 +26,7 @@ A virtual Cargo workspace. Crates are migrated here from the private `peppyos` w
 | [peppylib-rs](./peppyos-shared/peppylib-rs) (`peppylib`) | Rust | The peppyOS control library — messaging, core-node helpers, runtime, services, config, and types |
 | [peppylib-py](./peppyos-shared/peppylib-py) | Python | PyO3 bindings exposing the `peppylib` control library to Python; published to PyPI as `peppylib` |
 | [peppy-messaging-interface](./peppyos-shared/peppy-messaging-interface) (`pmi`) | Rust | Messaging transport interface — zenoh transport plus an in-process mock adapter, sessions, and org-id namespace routing |
-| [peppy-config-model](./peppyos-shared/peppy-config-model) | Rust | Parsing and validation of Peppy config documents (`peppy.json5`, launcher files, `peppy_config.json5`) and the `PeppyDirs` filesystem-layout helper |
+| [peppy-config-model](./peppyos-shared/peppy-config-model) | Rust | Parsing and validation of the shared Peppy config documents: the `peppy.json5` node config model, runtime configs shipped to nodes, codegen fingerprints, and schema tags |
 | [core-node-api](./peppyos-shared/core-node-api) | Rust | Shared API surface for talking to a core-node daemon — capnp request/response types, service-name constants, and response parsers |
 | [json5-pretty](./peppyos-shared/json5-pretty) | Rust | Pretty-print a `Serialize` value as JSON5 with unquoted object keys |
 | [config-test-support](./peppyos-shared/config-test-support) | Rust | Test fixtures shared across the peppyOS workspaces (scratch dirs, and git-repo / node-config-template fixtures behind a feature) |

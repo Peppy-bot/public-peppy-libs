@@ -14,11 +14,11 @@ use std::path::{Path, PathBuf};
 /// convention: `ruff-{version}`, `lima-{version}-{os}-{arch}`). Nothing ever
 /// cleans the cache — stale entries persist until removed manually with
 /// `rm -rf ~/.peppy/tmp/<suffix>`. In production runs the peppy runtime's
-/// `PeppyDirs::tmp_dir()` (config) resolves to the same
+/// `PeppyDirs::tmp_dir()` (peppyos `daemon-config`) resolves to the same
 /// `~/.peppy/tmp`, so neither side may ever bulk-clean the directory.
 ///
 /// This is deliberately rooted at `$HOME`, not the `PEPPY_HOME` override that
-/// config's `peppy_root_dir` honors: it is the persistent, version-keyed
+/// the peppyos `daemon-config` crate's `peppy_root_dir` honors: it is the persistent, version-keyed
 /// build-tool cache that should survive across CI runs, distinct from the
 /// per-run scratch that CI redirects via `PEPPY_HOME`. Do not "fix" it to follow
 /// `PEPPY_HOME`.

@@ -2,8 +2,7 @@ mod common;
 
 use common::test_node_target;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
-use config::launcher::Name;
-use config::runtime::{NodeInstanceConfig, RuntimeConfig};
+use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig};
 use peppylib::PeppyError;
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{

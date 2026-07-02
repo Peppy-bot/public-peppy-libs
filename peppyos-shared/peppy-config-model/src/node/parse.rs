@@ -115,7 +115,7 @@ pub fn load_standalone_node_config(path: impl AsRef<Path>) -> Result<NodeConfig>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{error::Error, launcher::PeppyLauncherParser, node::ContainerConfig};
+    use crate::{error::Error, node::ContainerConfig};
     use tempfile::NamedTempFile;
 
     /// Test helper: borrows the `ContainerConfig` from a parsed config.
@@ -614,25 +614,6 @@ mod tests {
             result.unwrap_err(),
             Error::Parsing(ParsingError::EmptyRunCmd)
         ));
-    }
-
-    #[test]
-    fn test_invalid_deployment_source() {
-        let json5 = r#"{
-            peppy_schema: "launcher/v1",
-            deployments: [
-                {
-                    source: { local: "" },
-                    instances: []
-                }
-            ]
-        }"#;
-
-        let result = PeppyLauncherParser::from_content(json5);
-        let Error::Parsing(ParsingError::InvalidDeploymentSource(msg)) = result.unwrap_err() else {
-            panic!("expected InvalidDeploymentSource error");
-        };
-        assert_eq!(msg, "local path cannot be empty");
     }
 
     /// Top-level system directories (e.g. `/tmp`) are blocked as mount sources
