@@ -50,8 +50,8 @@ pub fn torso_regions() -> Vec<ClipRegion> {
     [
         // plate: the full-footprint base, everything below the flare skirt.
         ([-INF, -INF, -INF], [INF, INF, 0.012]),
-        // flare: skirt + column bottom, fenced off the gusset at x -0.033.
-        ([-0.033, -0.086, 0.006], [0.033, 0.086, 0.083]),
+        // flare: skirt + column bottom, fenced off the gusset at x -0.0335.
+        ([-0.0335, -0.086, 0.006], [0.033, 0.086, 0.083]),
         // gusset: the diagonal web behind the column; hulls to a tight wedge.
         ([-INF, -0.031, 0.009], [-0.0305, 0.031, 0.226]),
         // column: the square shaft, fenced off the gusset at x -0.0335.
