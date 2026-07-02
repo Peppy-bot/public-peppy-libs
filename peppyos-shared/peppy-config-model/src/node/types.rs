@@ -1,6 +1,7 @@
 use crate::{
     common::{ParameterSchema, ParameterSpec, resolve_parameter_path, type_token_name},
     error::ParsingError,
+    internal::runtime::Name,
     schema::PeppySchema,
 };
 use indexmap::IndexMap;
@@ -9,7 +10,6 @@ use serde::{
     de::{self, Deserializer, MapAccess, Visitor},
 };
 use std::{
-    convert::TryFrom,
     fmt::{self, Formatter},
     str::FromStr,
 };
@@ -83,60 +83,6 @@ pub struct NodeConfig {
     #[serde(default)]
     pub interfaces: Interfaces,
     pub execution: Execution,
-}
-
-/// Validated node name. Lowercase letters, digits, '_' and '-' only.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-#[serde(into = "String")]
-pub struct Name(String);
-
-use crate::consts::ALLOWED_CONFIG_CHARS;
-
-impl Name {
-    pub fn new<S: Into<String>>(s: S) -> Result<Self, ParsingError> {
-        Self::try_from(s.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    fn is_valid_char(c: char) -> bool {
-        ALLOWED_CONFIG_CHARS.contains(c)
-    }
-}
-
-impl TryFrom<String> for Name {
-    type Error = ParsingError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.is_empty() {
-            return Err(ParsingError::EmptyName);
-        }
-        if value.chars().all(Name::is_valid_char) {
-            return Ok(Name(value));
-        }
-        Err(ParsingError::InvalidName(
-            value,
-            ALLOWED_CONFIG_CHARS.to_string(),
-        ))
-    }
-}
-
-impl<'de> Deserialize<'de> for Name {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Name::try_from(s).map_err(|err| de::Error::custom(err.to_string()))
-    }
-}
-
-impl From<Name> for String {
-    fn from(v: Name) -> Self {
-        v.0
-    }
 }
 
 // NodeInfo is not part of the new schema; manifest/config/instances carry this information.

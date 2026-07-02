@@ -73,7 +73,7 @@ pub mod node {
         ConformsToItem, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
         DependencySpec, DependsOn, EmittedTopic, Execution, ExposedAction, ExposedService,
         InterfaceConformanceEdge, InterfaceKind, Interfaces, Manifest, MessageFormat,
-        MessageSizeEstimate, Name, NodeConfig, NodeConfigParser, NodeDependency, ObjectKind,
+        MessageSizeEstimate, NodeConfig, NodeConfigParser, NodeDependency, ObjectKind,
         ObjectSchema, PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces,
         Toolchain, TopicInterfaces, TypeToken, collect_dependency_specs,
         collect_interface_conformance_edges, estimate_serialized_size, is_blocked_mount_source,

@@ -231,7 +231,8 @@ fn all_sibling_claims_for_name_tag(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::node::{Name, NodeDependency};
+    use config::node::NodeDependency;
+    use config::runtime::Name;
 
     /// Core_node used by these fixtures: bindings are stack-scoped, so
     /// every producer in one consumer's binding map shares the launching
