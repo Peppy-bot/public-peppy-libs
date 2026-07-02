@@ -1,9 +1,11 @@
 //! URDF collision extraction for the construction-time fit: which mesh each
 //! link's `<collision>` uses, with what origin and scale, plus the fixed-link
-//! world poses and the prismatic finger transforms the fit composes.
+//! world poses and the 1-DOF joint transforms shared by the fit and the live
+//! finger placement.
 //!
-//! Consumed by `assemble::fit_bodies` when the model is built; runtime
-//! queries see only the fitted hulls.
+//! Consumed by `assemble::fit_bodies` when the model is built; runtime queries
+//! see the fitted hulls, with finger hulls re-posed per query through
+//! [`place_1dof`].
 
 use std::collections::HashMap;
 
@@ -51,9 +53,8 @@ pub struct UrdfCollisions {
 pub enum JointKind {
     Fixed,
     Prismatic,
-    /// A bounded rotation about a single axis: its finite limits bound the swept arc,
-    /// which the fit samples across (a rotation is not a translation, so extremes alone
-    /// do not bound it; see [`UrdfCollisions::child_vertices_in_parent`]).
+    /// A bounded rotation about a single axis; its finite limits delimit the
+    /// travel the live finger placement interpolates across.
     Revolute,
     /// Continuous, planar, floating: motion not bounded to a single finite 1-DOF sweep.
     OtherMovable,
@@ -86,7 +87,7 @@ impl ParentJoint {
         match self.kind {
             JointKind::Fixed => Ok(self.origin),
             JointKind::Prismatic | JointKind::Revolute => {
-                if self.axis.norm() < 1e-12 {
+                if self.axis.norm() < ZERO_AXIS_EPS {
                     return Err("parent joint has a zero axis".into());
                 }
                 // URDF axes are conventionally unit but the spec does not require it.
@@ -100,6 +101,10 @@ impl ParentJoint {
         }
     }
 }
+
+/// An axis whose norm is below this cannot be normalized into a joint
+/// direction; shared by every joint-axis validation in the crate.
+pub(crate) const ZERO_AXIS_EPS: f64 = 1e-12;
 
 /// Compose a joint `origin` with a 1-DOF motion of `q` about (revolute) or along
 /// (prismatic) the unit `axis`. The shared placement core of [`ParentJoint::offset`]
@@ -263,35 +268,26 @@ impl UrdfCollisions {
             .collect())
     }
 
-    /// Collision vertices of `child` posed at joint position `q`, mapped into the
-    /// parent link's frame. Fixed (`q` ignored), prismatic (translate along the axis),
-    /// and revolute (rotate about the axis) children are supported. A prismatic travel
-    /// interpolates linearly, so its two extremes bound the sweep; a revolute travel
-    /// sweeps an arc, so the caller must sample several `q` across the range and union
-    /// them (extremes alone under-bound the arc). Continuous/planar/floating joints have
-    /// no finite 1-DOF sweep and are rejected.
+    /// Collision vertices of `child` posed at joint position `q`, mapped into
+    /// the parent link's frame via [`ParentJoint::offset`]: one pose, no sweep.
+    /// Fixed (`q` ignored), prismatic, and revolute children are supported;
+    /// continuous/planar/floating joints cannot be posed and are rejected.
     pub fn child_vertices_in_parent(
         &self,
         child: &str,
         q: f64,
         meshes_dir: &str,
     ) -> Result<Vec<Point3<f64>>, String> {
-        let pose = self.child_pose_in_parent(child, q)?;
+        let pose = self
+            .parent_joint(child)
+            .ok_or_else(|| format!("link '{child}' has no parent joint"))?
+            .offset(q)
+            .map_err(|e| format!("link '{child}': {e}"))?;
         Ok(self
             .link_vertices(child, meshes_dir)?
             .into_iter()
             .map(|v| pose * v)
             .collect())
-    }
-
-    /// The joint transform placing `child`'s link frame in its parent's frame at
-    /// joint position `q` (see [`ParentJoint::offset`]). No mesh IO, so a runtime
-    /// placer can call it every tick to move a live finger hull.
-    pub fn child_pose_in_parent(&self, child: &str, q: f64) -> Result<Isometry3<f64>, String> {
-        let j = self
-            .parent_joint(child)
-            .ok_or_else(|| format!("link '{child}' has no parent joint"))?;
-        j.offset(q).map_err(|e| format!("link '{child}': {e}"))
     }
 
     /// Pose of `link` in the URDF root frame, composing only fixed joints.

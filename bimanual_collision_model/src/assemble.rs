@@ -9,7 +9,7 @@ use srs_model::nalgebra::Point3;
 use crate::clip::ClipRegion;
 use crate::gjk::{self, Hull};
 use crate::hull::{ConvexHull, simplified_hull};
-use crate::urdf_collision::{JointKind, ParentJoint, UrdfCollisions};
+use crate::urdf_collision::{ParentJoint, UrdfCollisions};
 use crate::{BuildError, ContainmentFailure};
 
 /// Grid cell for hull simplification: points are welded onto this grid before
@@ -43,12 +43,16 @@ pub(crate) struct FittedBodies {
 /// link. Fit as its own hull (not baked into the parent) so it can be placed at
 /// the live opening rather than swept over its whole travel. `parent_link` is the
 /// chain link it hangs off (its FK segment host); `joint` places its hull in that
-/// link's frame at a given opening ([`ParentJoint::offset`]).
+/// link's frame at a given opening ([`ParentJoint::offset`]). `closed` and `open`
+/// are the joint positions of the two travel extremes, oriented geometrically by
+/// [`orient_finger_pair`], not by the URDF limit order.
 pub(crate) struct FittedFinger {
     pub name: String,
     pub parent_link: String,
     pub hulls: Vec<Hull>,
     pub joint: ParentJoint,
+    pub closed: f64,
+    pub open: f64,
 }
 
 /// Fit all collision bodies. `chains` are the moving-link names per arm (from
@@ -70,18 +74,22 @@ pub(crate) fn fit_bodies(
     let mut fingers: Vec<FittedFinger> = Vec::new();
     let mut attached: HashSet<String> = HashSet::new();
     for name in chains.iter().flatten() {
-        // The link mesh plus any *fixed* collision-bearing child, baked into one
-        // vertex cloud (a fixed sensor or hand base rides rigidly with the link).
-        // A *movable* collision-bearing child (a gripper finger) is NOT baked: it
-        // becomes its own body, fit from its own mesh and placed live at the
-        // current opening, so the tip hull no longer carries the finger's whole
-        // swept envelope. Only direct children are handled; a deeper collision-
-        // bearing descendant (a multi-link end-effector) falls through to the
-        // fixed-body pass below, which errors if it is not actually world-fixed,
-        // so such a URDF fails construction loudly rather than being modeled
-        // wrong. OpenArm has only single-link attachments; widen this to a
-        // recursive walk if a multi-link end-effector is added.
+        // A chain link's cloud is its mesh plus any *fixed* collision-bearing
+        // child (a fixed sensor or hand base rides rigidly with the link). A
+        // *movable* collision-bearing child is a gripper finger: its own body,
+        // fit from its own mesh and placed live at the current opening; the
+        // link hull covers only the link mesh and its fixed children. Only
+        // direct children are handled; a deeper collision-bearing descendant
+        // (a multi-link end-effector) falls through to the fixed-body pass
+        // below, which errors if it is not actually world-fixed, so such a
+        // URDF fails construction loudly rather than being modeled wrong.
+        // OpenArm has only single-link attachments; widen this to a recursive
+        // walk if a multi-link end-effector is added. A mimic finger joint's
+        // own declared limits are its travel; the mimic multiplier/offset are
+        // not resolved, sound while those limits cover the true travel
+        // (OpenArm's fingers mirror 1:1).
         let mut verts = urdf.link_vertices(name, meshes_dir)?;
+        let mut link_fingers: Vec<(FittedFinger, Point3<f64>)> = Vec::new();
         for child in urdf.children_of(name) {
             if chain_set.contains(child.as_str()) || urdf.collisions_of(&child).is_empty() {
                 continue;
@@ -95,28 +103,29 @@ pub(crate) fn fit_bodies(
                 verts.extend(urdf.child_vertices_in_parent(&child, 0.0, meshes_dir)?);
                 continue;
             }
-            // A movable finger placed live per opening. Reject an unbounded joint
-            // (the kinds `ParentJoint::offset` cannot place) up front rather than
-            // discovering it every tick. A mimic joint's own declared limits are
-            // its travel; the multiplier/offset are not resolved, sound while
-            // those limits cover the true travel (OpenArm's fingers mirror 1:1).
-            if matches!(joint.kind, JointKind::OtherMovable) {
-                return Err(format!(
-                    "collision link '{child}' hangs off a continuous/planar/floating joint \
-                     with no finite 1-DOF sweep; it cannot be placed as a live finger"
-                )
-                .into());
-            }
+            // A movable finger placed live per opening. An unplaceable joint
+            // kind (continuous/planar/floating) is rejected when the model
+            // parses this into its runtime placer, so the build still fails
+            // loudly there; the mesh centroid feeds the pair orientation below.
             let finger_verts = urdf.link_vertices(&child, meshes_dir)?;
+            let centroid = vertex_centroid(&finger_verts);
             let hulls = fit_body(&child, &finger_verts, supplied)?;
             body_names.insert(child.clone());
-            fingers.push(FittedFinger {
-                name: child,
-                parent_link: name.clone(),
-                hulls,
-                joint,
-            });
+            let (closed, open) = (joint.lower_limit, joint.upper_limit);
+            link_fingers.push((
+                FittedFinger {
+                    name: child,
+                    parent_link: name.clone(),
+                    hulls,
+                    joint,
+                    closed,
+                    open,
+                },
+                centroid,
+            ));
         }
+        orient_finger_pair(&mut link_fingers)?;
+        fingers.extend(link_fingers.into_iter().map(|(finger, _)| finger));
         links.insert(name.clone(), fit_body(name, &verts, supplied)?);
         body_names.insert(name.clone());
     }
@@ -141,6 +150,57 @@ pub(crate) fn fit_bodies(
     }
 
     Ok(FittedBodies { fixed, links, fingers })
+}
+
+/// Orient a two-finger gripper's `closed`/`open` joint positions from its
+/// meshes. URDF convention puts closed at the lower limit, but a mirrored
+/// gripper (OpenArm v2's right hand) mirrors by flipping the limit range
+/// instead of the axis, so its lower limit is the open end; trusting the
+/// convention there would invert the live placement, and "fully open" (the
+/// conservative default) would park the collision fingers closed. The meshes
+/// decide instead: the travel extreme with the larger between-finger centroid
+/// separation is open. The limit order is untrustworthy in general, so a link
+/// with any other movable-child count has no oriented travel and errors,
+/// keeping an unorientable gripper a loud build failure instead of a silently
+/// inverted model.
+fn orient_finger_pair(pair: &mut [(FittedFinger, Point3<f64>)]) -> Result<(), BuildError> {
+    let [a, b] = pair else {
+        if pair.is_empty() {
+            return Ok(());
+        }
+        return Err(BuildError::Geometry(format!(
+            "link '{}' has {} movable collision-bearing children; orienting finger travel \
+             needs exactly two (a two-finger gripper)",
+            pair[0].0.parent_link,
+            pair.len()
+        )));
+    };
+    let posed = |f: &(FittedFinger, Point3<f64>), q: f64| -> Result<Point3<f64>, BuildError> {
+        let offset = f.0.joint.offset(q).map_err(|e| {
+            BuildError::Geometry(format!("finger '{}': {e}", f.0.name))
+        })?;
+        Ok(offset * f.1)
+    };
+    let separation = |qa: f64, qb: f64| -> Result<f64, BuildError> {
+        Ok((posed(a, qa)? - posed(b, qb)?).norm())
+    };
+    let at_lower = separation(a.0.joint.lower_limit, b.0.joint.lower_limit)?;
+    let at_upper = separation(a.0.joint.upper_limit, b.0.joint.upper_limit)?;
+    if at_lower > at_upper {
+        for (finger, _) in pair.iter_mut() {
+            (finger.closed, finger.open) = (finger.joint.upper_limit, finger.joint.lower_limit);
+        }
+    }
+    Ok(())
+}
+
+/// Centroid of a vertex cloud (the meshes here are dense enough that the
+/// vertex mean is a stable stand-in for the surface centroid).
+fn vertex_centroid(verts: &[Point3<f64>]) -> Point3<f64> {
+    let sum = verts
+        .iter()
+        .fold(srs_model::nalgebra::Vector3::zeros(), |acc, p| acc + p.coords);
+    Point3::from(sum / verts.len().max(1) as f64)
 }
 
 /// The hulls for one body. Without an override: a single simplified hull of the

@@ -259,6 +259,9 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
                 .iter()
                 .map(|v| pose * v)
                 .collect();
+            // Fixed children ride with the link; movable children are the
+            // gripper fingers, drawn at the requested opening.
+            let mut fingers: Vec<(String, f64, f64)> = Vec::new();
             for child in urdf.children_of(&name) {
                 if chain_links.contains(&child) || urdf.collisions_of(&child).is_empty() {
                     continue;
@@ -266,15 +269,38 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
                 let joint = urdf
                     .parent_joint(&child)
                     .expect("children_of implies a parent joint");
-                // A fixed child rides with the link; a movable finger is drawn at
-                // the requested opening, the same q the model places its hull at.
-                let qc = if joint.is_fixed() {
-                    joint.lower_limit
+                if joint.is_fixed() {
+                    verts.extend(
+                        urdf.child_vertices_in_parent(&child, joint.lower_limit, &args.meshes)?
+                            .iter()
+                            .map(|v| pose * v),
+                    );
                 } else {
-                    joint.lower_limit + opening * (joint.upper_limit - joint.lower_limit)
+                    fingers.push((child, joint.lower_limit, joint.upper_limit));
+                }
+            }
+            // Orient the finger travel the way the model does (the extreme with
+            // the larger between-finger separation is open; a mirrored gripper
+            // flips the URDF limit order), so the wireframe fingers land on the
+            // same pose as the placed hulls. The model build already rejected
+            // any link whose movable children are not a two-finger pair.
+            if let [fa, fb] = fingers.as_mut_slice() {
+                let centroid = |child: &str, q: f64| -> Result<Point3<f64>, String> {
+                    let vs = urdf.child_vertices_in_parent(child, q, &args.meshes)?;
+                    let sum = vs.iter().fold(Vector3::zeros(), |a, p| a + p.coords);
+                    Ok(Point3::from(sum / vs.len().max(1) as f64))
                 };
+                let sep_lower = (centroid(&fa.0, fa.1)? - centroid(&fb.0, fb.1)?).norm();
+                let sep_upper = (centroid(&fa.0, fa.2)? - centroid(&fb.0, fb.2)?).norm();
+                if sep_lower > sep_upper {
+                    std::mem::swap(&mut fa.1, &mut fa.2);
+                    std::mem::swap(&mut fb.1, &mut fb.2);
+                }
+            }
+            for (child, closed, open) in &fingers {
+                let qc = closed + opening * (open - closed);
                 verts.extend(
-                    urdf.child_vertices_in_parent(&child, qc, &args.meshes)?
+                    urdf.child_vertices_in_parent(child, qc, &args.meshes)?
                         .iter()
                         .map(|v| pose * v),
                 );

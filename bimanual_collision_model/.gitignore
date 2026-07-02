@@ -2,7 +2,9 @@
 # will have compiled files and executables
 debug
 target
-scene*.html
+
+# Rendered visualize-example scenes
+*.html
 
 # Release artifacts
 /dist/
