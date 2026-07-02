@@ -73,6 +73,48 @@ impl ParentJoint {
     pub fn is_fixed(&self) -> bool {
         self.kind == JointKind::Fixed
     }
+
+    /// Placement of the child link in the parent frame at joint position `q`: the
+    /// joint origin for a fixed joint (`q` ignored), the origin composed with a
+    /// translation along the axis for a prismatic joint, and with a rotation about
+    /// the axis for a revolute joint. Continuous/planar/floating joints have no
+    /// finite 1-DOF sweep and are rejected. Pure (no mesh IO), so it is the shared
+    /// transform used both to bake a child at build time
+    /// ([`UrdfCollisions::child_vertices_in_parent`]) and to place a live finger
+    /// hull every tick.
+    pub fn offset(&self, q: f64) -> Result<Isometry3<f64>, String> {
+        match self.kind {
+            JointKind::Fixed => Ok(self.origin),
+            JointKind::Prismatic | JointKind::Revolute => {
+                if self.axis.norm() < 1e-12 {
+                    return Err("parent joint has a zero axis".into());
+                }
+                // URDF axes are conventionally unit but the spec does not require it.
+                let axis = Unit::new_normalize(self.axis);
+                let revolute = self.kind == JointKind::Revolute;
+                Ok(place_1dof(&self.origin, &axis, revolute, q))
+            }
+            JointKind::OtherMovable => Err("continuous/planar/floating joint has no finite \
+                 1-DOF sweep, so it cannot be bounded. Model it as part of a chain instead."
+                .into()),
+        }
+    }
+}
+
+/// Compose a joint `origin` with a 1-DOF motion of `q` about (revolute) or along
+/// (prismatic) the unit `axis`. The shared placement core of [`ParentJoint::offset`]
+/// (build-time baking) and the runtime finger placer, so the two cannot drift.
+pub fn place_1dof(
+    origin: &Isometry3<f64>,
+    axis: &Unit<Vector3<f64>>,
+    revolute: bool,
+    q: f64,
+) -> Isometry3<f64> {
+    if revolute {
+        origin * UnitQuaternion::from_axis_angle(axis, q)
+    } else {
+        origin * Translation3::from(axis.into_inner() * q)
+    }
 }
 
 impl UrdfCollisions {
@@ -234,39 +276,22 @@ impl UrdfCollisions {
         q: f64,
         meshes_dir: &str,
     ) -> Result<Vec<Point3<f64>>, String> {
-        let j = self
-            .parent_joint(child)
-            .ok_or_else(|| format!("link '{child}' has no parent joint"))?;
-        let pose = match j.kind {
-            JointKind::Fixed => j.origin,
-            JointKind::Prismatic => {
-                let norm = j.axis.norm();
-                if norm < 1e-12 {
-                    return Err(format!("link '{child}' parent joint has a zero axis"));
-                }
-                // URDF axes are conventionally unit but the spec does not require it.
-                j.origin * Translation3::from(j.axis * (q / norm))
-            }
-            JointKind::Revolute => {
-                if j.axis.norm() < 1e-12 {
-                    return Err(format!("link '{child}' parent joint has a zero axis"));
-                }
-                // Rotate about the (normalized) axis by q; the caller samples q across the
-                // joint's limits so the union of poses bounds the swept arc.
-                j.origin * UnitQuaternion::from_axis_angle(&Unit::new_normalize(j.axis), q)
-            }
-            JointKind::OtherMovable => {
-                return Err(format!(
-                    "link '{child}' hangs off a continuous/planar/floating joint with no finite \
-                     1-DOF sweep, so it cannot be bounded. Model it as part of a chain instead."
-                ));
-            }
-        };
+        let pose = self.child_pose_in_parent(child, q)?;
         Ok(self
             .link_vertices(child, meshes_dir)?
             .into_iter()
             .map(|v| pose * v)
             .collect())
+    }
+
+    /// The joint transform placing `child`'s link frame in its parent's frame at
+    /// joint position `q` (see [`ParentJoint::offset`]). No mesh IO, so a runtime
+    /// placer can call it every tick to move a live finger hull.
+    pub fn child_pose_in_parent(&self, child: &str, q: f64) -> Result<Isometry3<f64>, String> {
+        let j = self
+            .parent_joint(child)
+            .ok_or_else(|| format!("link '{child}' has no parent joint"))?;
+        j.offset(q).map_err(|e| format!("link '{child}': {e}"))
     }
 
     /// Pose of `link` in the URDF root frame, composing only fixed joints.

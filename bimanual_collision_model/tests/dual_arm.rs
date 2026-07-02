@@ -63,10 +63,91 @@ fn wrists_converging_monotonically_reach_collision() {
         d < 0.0,
         "fully wrapped wrists should interpenetrate, got {d:+.4}"
     );
+    // The gripper region: the wrist link (link7) or one of its fingers, now their
+    // own bodies. A wrapped wrist drives its outstretched finger into contact, so
+    // the deepest witness is typically the finger rather than the bare wrist hull.
+    let gripper_region =
+        |l: &str| l.contains("link7") || l.contains("finger");
     assert!(
-        a.contains("link7") || b.contains("link7"),
-        "deepest pair should involve a wrist, got {a} vs {b}"
+        gripper_region(&a) || gripper_region(&b),
+        "deepest pair should involve a wrist or its finger, got {a} vs {b}"
     );
+}
+
+#[test]
+fn closing_the_gripper_recovers_clearance() {
+    // The core reason per-finger live hulls exist: when the two grippers approach,
+    // closing the fingers pulls them back from the fat fully-open envelope, so the
+    // reported clearance grows and the arms can come closer before the governor
+    // stops them. Same pose, only the opening changes.
+    let mut m = model();
+    let (ql, qr) = wrists_inward(0.9);
+
+    m.set_gripper_openings(1.0, 1.0); // fully open: widest finger envelope
+    let (open, open_a, open_b) = {
+        let p = m.min_distance(&ql, &qr).expect("query");
+        (p.distance, p.link_a.to_string(), p.link_b.to_string())
+    };
+    assert!(
+        open_a.contains("finger") || open_b.contains("finger"),
+        "setup: a finger should be the nearest body when open, got {open_a} vs {open_b}"
+    );
+
+    m.set_gripper_openings(0.0, 0.0); // fully closed: fingers retract
+    let closed = m.min_distance(&ql, &qr).expect("query").distance;
+
+    assert!(
+        closed > open + 1e-4,
+        "closing the fingers should recover clearance: open {open:+.4}, closed {closed:+.4}"
+    );
+}
+
+#[test]
+fn finger_distance_gradient_matches_finite_difference() {
+    // A finger body shares the ordinary link gradient path (its host wrist
+    // segment's point Jacobian at the witness), with the opening held constant
+    // across the perturbation. Pin that the analytic gradient still matches a
+    // central difference when a finger is the nearest pair.
+    let mut m = model();
+    m.set_gripper_openings(0.6, 0.6);
+    // Asymmetric wrists-inward so one cross-arm finger pair is unambiguously
+    // nearest (a symmetric pose sits on a pair-switch tie).
+    let ql: JointVec = [0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2];
+    let qr: JointVec = [0.0, 0.0, -1.05, 0.4, -0.1, 0.1, 0.0];
+    let p = m.min_distance(&ql, &qr).expect("query");
+    assert!(
+        p.link_a.contains("finger") || p.link_b.contains("finger"),
+        "setup: nearest pair should involve a finger, got {} vs {}",
+        p.link_a,
+        p.link_b
+    );
+    let grad = m.distance_gradient(&ql, &qr).expect("gradient defined");
+    let (analytic_left, analytic_right) = (grad.grad_left, grad.grad_right);
+    let h = 1e-5;
+    for j in 0..ql.len() {
+        let (mut lp, mut lm) = (ql, ql);
+        lp[j] += h;
+        lm[j] -= h;
+        let fd_left = (m.min_distance(&lp, &qr).unwrap().distance
+            - m.min_distance(&lm, &qr).unwrap().distance)
+            / (2.0 * h);
+        assert!(
+            (analytic_left[j] - fd_left).abs() < 3e-3,
+            "left j{j}: analytic {} fd {fd_left}",
+            analytic_left[j]
+        );
+        let (mut rp, mut rm) = (qr, qr);
+        rp[j] += h;
+        rm[j] -= h;
+        let fd_right = (m.min_distance(&ql, &rp).unwrap().distance
+            - m.min_distance(&ql, &rm).unwrap().distance)
+            / (2.0 * h);
+        assert!(
+            (analytic_right[j] - fd_right).abs() < 3e-3,
+            "right j{j}: analytic {} fd {fd_right}",
+            analytic_right[j]
+        );
+    }
 }
 
 #[test]

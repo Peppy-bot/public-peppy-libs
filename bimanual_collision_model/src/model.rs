@@ -16,14 +16,14 @@
 
 use std::collections::HashMap;
 
-use srs_model::nalgebra::{Isometry3, Point3, Vector3};
+use srs_model::nalgebra::{Isometry3, Point3, Unit, Vector3};
 use srs_model::{ARM_DOF, Arm, JointVec};
 
 use crate::assemble::fit_bodies;
 use crate::clip::ClipRegion;
 use crate::gjk::{self, Hull, Placed};
 use crate::pairs::PairSpec;
-use crate::urdf_collision::UrdfCollisions;
+use crate::urdf_collision::{JointKind, ParentJoint, UrdfCollisions, place_1dof};
 use crate::{BuildError, CollisionError};
 
 /// How a body's hulls reach the world frame.
@@ -67,6 +67,74 @@ struct Body {
     local: Vec<Hull>,
     placement: Placement,
     bound: BoundingSphere,
+    /// For a gripper finger: how its hull hangs off its host chain link, so it
+    /// can be placed at the live opening. `None` for every ordinary body (whose
+    /// hulls sit directly in the link frame).
+    finger: Option<Finger>,
+}
+
+impl Body {
+    /// World pose of this body given its host chain link's world pose and its
+    /// side's gripper opening: the link pose directly for an ordinary body, or
+    /// composed with the finger offset at `opening` for a gripper finger.
+    fn place_on(&self, link_world: Isometry3<f64>, opening: f64) -> Isometry3<f64> {
+        match &self.finger {
+            Some(f) => link_world * f.offset(opening),
+            None => link_world,
+        }
+    }
+}
+
+/// A gripper finger's parent joint, parsed at build into an infallible placer:
+/// the joint origin, its unit axis, whether it rotates (revolute) or slides
+/// (prismatic), and the finger-joint travel `[closed, open]`. Validated once here
+/// (bounded 1-DOF, non-zero axis) so placing it at any opening cannot fail in the
+/// per-tick hot path.
+struct Finger {
+    origin: Isometry3<f64>,
+    axis: Unit<Vector3<f64>>,
+    revolute: bool,
+    /// Finger-joint position (URDF joint units) at fully closed and fully open.
+    closed: f64,
+    open: f64,
+}
+
+impl Finger {
+    /// Parse a finger's parent joint into a validated placer. Errors on a joint
+    /// kind that cannot be placed (only prismatic/revolute fingers are supported)
+    /// or a zero axis, so the runtime placer is total.
+    fn from_joint(joint: &ParentJoint) -> Result<Self, BuildError> {
+        let revolute = match joint.kind {
+            JointKind::Revolute => true,
+            JointKind::Prismatic => false,
+            _ => {
+                return Err(BuildError::Geometry(format!(
+                    "finger joint kind {:?} is not a placeable 1-DOF finger",
+                    joint.kind
+                )));
+            }
+        };
+        if joint.axis.norm() < 1e-12 {
+            return Err(BuildError::Geometry("finger parent joint has a zero axis".into()));
+        }
+        Ok(Finger {
+            origin: joint.origin,
+            axis: Unit::new_normalize(joint.axis),
+            revolute,
+            closed: joint.lower_limit,
+            open: joint.upper_limit,
+        })
+    }
+
+    /// Placement of the finger hull in its host link's frame at opening `fraction`
+    /// in `[0, 1]` (0 = fully closed, 1 = fully open), linearly interpolating the
+    /// finger-joint travel. The published gripper width is a linear proxy for this
+    /// fraction (`width / jaw_open_m`), exact at both extremes for the prismatic
+    /// (v1) and revolute (v2) grippers alike.
+    fn offset(&self, fraction: f64) -> Isometry3<f64> {
+        let q = self.closed + fraction.clamp(0.0, 1.0) * (self.open - self.closed);
+        place_1dof(&self.origin, &self.axis, self.revolute, q)
+    }
 }
 
 /// One checked pair, resolved to body indices.
@@ -138,6 +206,13 @@ pub struct BimanualCollisionModel {
     /// Per-body world pose, refreshed by [`place`](Self::place). Fixed bodies
     /// keep the identity (their hulls are already in world frame).
     world_iso: Vec<Isometry3<f64>>,
+    /// Gripper opening per side (0 = left, 1 = right) as a fraction in `[0, 1]`
+    /// (0 = fully closed, 1 = fully open), set by
+    /// [`set_gripper_openings`](Self::set_gripper_openings). Finger bodies are
+    /// placed at this opening every query. Defaults to fully open, the widest
+    /// finger envelope, so a caller that never sets it (or whose live telemetry
+    /// lapses) stays conservative rather than under-reporting clearance.
+    openings: [f64; 2],
 }
 
 /// Configures and builds a [`BimanualCollisionModel`]; start from
@@ -330,6 +405,7 @@ impl BimanualCollisionModel {
                     local: hulls,
                     placement: Placement::Fixed,
                     bound,
+                    finger: None,
                 },
             )?;
         }
@@ -351,9 +427,29 @@ impl BimanualCollisionModel {
                         local: hulls,
                         placement,
                         bound,
+                        finger: None,
                     },
                 )?;
             }
+        }
+        // Finger bodies hang off their host chain link's FK segment (so they share
+        // its lineage: not checked against their own hand or sibling finger, but
+        // checked cross-arm and against the torso) and carry a `Finger` placer so
+        // each query positions them at the live opening.
+        for finger in fitted.fingers {
+            let placement = chain_segment(&left_names, &right_names, &finger.parent_link)
+                .ok_or_else(|| BuildError::SharedLink { name: finger.parent_link.clone() })?;
+            let bound = BoundingSphere::of(&finger.hulls);
+            push_body(
+                &mut bodies,
+                Body {
+                    name: finger.name,
+                    local: finger.hulls,
+                    placement,
+                    bound,
+                    finger: Some(Finger::from_joint(&finger.joint)?),
+                },
+            )?;
         }
 
         let world_iso = vec![Isometry3::identity(); bodies.len()];
@@ -364,6 +460,7 @@ impl BimanualCollisionModel {
             pairs: Vec::new(),
             excluded: Vec::new(),
             world_iso,
+            openings: [1.0, 1.0],
         })
     }
 
@@ -646,18 +743,47 @@ impl BimanualCollisionModel {
             .collect())
     }
 
-    /// Refresh the world pose of the moving bodies from FK.
+    /// Set the gripper opening per side as a fraction in `[0, 1]` (0 = fully
+    /// closed, 1 = fully open); values are clamped. Finger bodies are placed at
+    /// this opening on every subsequent query, so the reported clearance follows
+    /// the fingers' true positions instead of their full swept envelope. A
+    /// non-finite value is ignored for that side (the last good opening stands),
+    /// so a bad reading never poisons the placement.
+    pub fn set_gripper_openings(&mut self, left: f64, right: f64) {
+        if left.is_finite() {
+            self.openings[0] = left.clamp(0.0, 1.0);
+        }
+        if right.is_finite() {
+            self.openings[1] = right.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Refresh the world pose of the moving bodies from FK. Finger bodies are
+    /// additionally offset by their host link pose at the side's current opening.
     fn place(&mut self, q_left: &JointVec, q_right: &JointVec) {
         let poses_l = link_poses(&mut self.left, q_left);
         let poses_r = link_poses(&mut self.right, q_right);
+        let openings = self.openings;
         for (body, iso) in self.bodies.iter().zip(self.world_iso.iter_mut()) {
             *iso = match body.placement {
                 Placement::Fixed => continue,
-                Placement::Left(i) => poses_l[i],
-                Placement::Right(i) => poses_r[i],
+                Placement::Left(i) => body.place_on(poses_l[i], openings[0]),
+                Placement::Right(i) => body.place_on(poses_r[i], openings[1]),
             };
         }
     }
+}
+
+/// The [`Placement`] of a body hanging off chain link `parent`: `Left`/`Right`
+/// with the link's FK segment index, or `None` if `parent` is not a chain link.
+fn chain_segment(left: &[String], right: &[String], parent: &str) -> Option<Placement> {
+    if let Some(i) = left.iter().position(|n| n == parent) {
+        return Some(Placement::Left(i));
+    }
+    right
+        .iter()
+        .position(|n| n == parent)
+        .map(Placement::Right)
 }
 
 /// Where a body sits in the kinematic tree, for the structural pair rules:
@@ -851,6 +977,53 @@ mod tests {
             m.local_hulls("openarm_left_link7").expect("gripper").len(),
             1
         );
+    }
+
+    #[test]
+    fn fingers_are_their_own_bodies_not_baked_into_the_wrist() {
+        // Each gripper finger is fit as its own single-hull body (in its finger
+        // frame), so the wrist hull no longer carries the finger's swept envelope.
+        let m = model();
+        for finger in [
+            "openarm_left_left_finger",
+            "openarm_left_right_finger",
+            "openarm_right_left_finger",
+            "openarm_right_right_finger",
+        ] {
+            assert_eq!(
+                m.local_hulls(finger)
+                    .unwrap_or_else(|| panic!("finger body {finger} missing"))
+                    .len(),
+                1,
+                "{finger} should be one auto-fit hull"
+            );
+        }
+    }
+
+    #[test]
+    fn finger_pairs_check_across_arms_but_not_own_hand_or_sibling() {
+        let m = model();
+        let checked: Vec<(String, String)> = m
+            .checked_pairs()
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        let has = |a: &str, b: &str| {
+            checked
+                .iter()
+                .any(|(x, y)| (x == a && y == b) || (x == b && y == a))
+        };
+        // The whole point: a left finger is checked against the right gripper's
+        // fingers and hand, and against the torso, so the arms cannot drive their
+        // grippers into each other undetected.
+        assert!(has("openarm_left_right_finger", "openarm_right_right_finger"));
+        assert!(has("openarm_left_right_finger", "openarm_right_link7"));
+        assert!(has("openarm_left_right_finger", "openarm_body_link0"));
+        // A finger shares its wrist link's lineage, so it is not checked against
+        // its own hand or its sibling finger (they touch by construction as the
+        // jaws close on an object).
+        assert!(!has("openarm_left_right_finger", "openarm_left_link7"));
+        assert!(!has("openarm_left_right_finger", "openarm_left_left_finger"));
     }
 
     #[test]
