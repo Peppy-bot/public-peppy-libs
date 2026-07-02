@@ -4,7 +4,7 @@
 //! own error type.
 
 use crate::consts::ALLOWED_CONFIG_CHARS;
-use crate::internal::node::Name;
+use crate::internal::runtime::Name;
 
 pub fn validate_repo_node_name(value: &str, label: &str) -> Result<(), String> {
     Name::try_from(value.to_owned())

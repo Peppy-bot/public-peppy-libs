@@ -11,7 +11,7 @@ pub use types::{
     ActionInterfaces, ActionServiceEndpoint, ActionTopicEndpoint, ArrayKind, ArraySchema,
     ConformsToItem, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig, DependsOn,
     EmittedTopic, Execution, ExposedAction, ExposedService, InterfaceKind, Interfaces, Manifest,
-    MessageFormat, Name, NodeConfig, NodeDependency, ObjectKind, ObjectSchema, PeppygenLanguage,
+    MessageFormat, NodeConfig, NodeDependency, ObjectKind, ObjectSchema, PeppygenLanguage,
     PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces,
     TypeToken, is_blocked_mount_source,
 };
