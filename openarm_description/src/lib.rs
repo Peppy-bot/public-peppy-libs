@@ -67,12 +67,13 @@ impl HardwareVersion {
     /// the aperture the shared gripper interfaces carry: measured between the
     /// finger pad faces (the flat gripping surfaces), which is where an object's
     /// fit is decided. It is gripper-linkage data, not a URDF joint limit, so it
-    /// lives here. The v2 value is the modeled pad gap at the finger joints'
-    /// full travel, pending hardware calibration.
+    /// lives here. The v2 value is the pad gap at the finger joints' full
+    /// travel computed from the URDF pivots and the finger meshes' pad faces,
+    /// pending confirmation by one measurement on hardware.
     pub fn jaw_open_m(self) -> f64 {
         match self {
             Self::V1 => 0.044,
-            Self::V2 => 0.06,
+            Self::V2 => 0.0697,
         }
     }
 }
