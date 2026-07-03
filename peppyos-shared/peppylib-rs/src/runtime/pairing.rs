@@ -104,7 +104,7 @@ impl Drop for PeerSubscription {
 }
 
 /// Subscribe to one peer-emitted topic of the pairing slot at `link_id`.
-/// Spliced by the generated `peppygen::peers::<link_id>::<topic>::subscribe`
+/// Spliced by the generated `peppygen::pairings::<link_id>::<topic>::subscribe`
 /// call sites; `pairing_name` / `pairing_tag` / `topic` come from the
 /// pairing doc via codegen constants.
 pub async fn subscribe_peer(

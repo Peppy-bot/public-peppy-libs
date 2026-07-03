@@ -155,7 +155,7 @@ pub enum ParsingError {
         link_id: String,
     },
     #[error(
-        "`{dependant}:{dependant_tag}` references pairing link_id `{link_id}` in consumed interfaces — pairing topics are not wired via `topics.consumes`; both directions are generated under the slot module (`peppygen.peers.{link_id}` / `peppygen::peers::{link_id}`)"
+        "`{dependant}:{dependant_tag}` references pairing link_id `{link_id}` in consumed interfaces — pairing topics are not wired via `topics.consumes`; both directions are generated under the slot module (`peppygen.pairings.{link_id}` / `peppygen::pairings::{link_id}`)"
     )]
     ConsumedItemReferencesPairingLinkId {
         dependant: String,
