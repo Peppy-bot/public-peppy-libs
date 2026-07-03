@@ -28,6 +28,11 @@ struct AsyncSetup {
     /// thread, which must not fire the loop drain once the runner's
     /// shutdown-hook phase owns it (see `start_async_setup`).
     monitor_disarm: tokio::sync::oneshot::Sender<()>,
+    /// Pure-Python callable that attaches a failure watcher to every task
+    /// returned by setup (marshalled onto the loop thread). A returned task
+    /// that dies with an exception records the error (so `run` re-raises
+    /// it) and cancels the node; see `build_async_setup`.
+    task_failure_attach: Py<PyAny>,
 }
 
 /// How long the main thread waits for the asyncio event-loop thread to drain
@@ -366,6 +371,48 @@ def make_exception_handler(cancel_token):
             cancel_token.cancel()
     return _handler
 
+def make_task_failure_attacher(event_loop, report_failure):
+    def _on_task_done(task):
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        try:
+            msg = ''.join(traceback.format_exception(exc))
+            print(f'Node background task failed:\\n{msg}', file=sys.stderr, flush=True)
+        except BaseException as fmt_err:
+            print(f'Node background task failed: {fmt_err}', file=sys.stderr, flush=True)
+        report_failure(exc)
+
+    def _attach_on_loop(tasks):
+        for task in tasks:
+            task.add_done_callback(_on_task_done)
+
+    def _attach(setup_result):
+        # The setup return value is documented as a list of asyncio.Tasks,
+        # but any object is legal: accept a single Task/Future or any
+        # iterable of them; ignore everything else.
+        if hasattr(setup_result, 'add_done_callback'):
+            tasks = [setup_result]
+        else:
+            try:
+                items = list(setup_result)
+            except TypeError:
+                return
+            tasks = [t for t in items if hasattr(t, 'add_done_callback')]
+        if not tasks:
+            return
+        # Called from the runner thread. add_done_callback is not
+        # thread-safe, and on an already-done task it degrades to a bare
+        # call_soon, which from a foreign thread never wakes an idle loop.
+        # Marshalling the attach onto the loop thread avoids both.
+        try:
+            event_loop.call_soon_threadsafe(_attach_on_loop, tasks)
+        except RuntimeError:
+            pass  # loop already closed: the node is shutting down anyway
+    return _attach
+
 def make_run_loop(event_loop, asyncio_mod, cancel_token):
     def _run():
         try:
@@ -464,12 +511,16 @@ def make_loop_teardown(event_loop, asyncio_mod):
 ///
 /// On node shutdown (cancellation token triggered), the event loop is stopped
 /// and its thread exits. Uncaught exceptions in background tasks cancel the
-/// node via the event loop's exception handler.
+/// node via the event loop's exception handler; tasks *returned* by setup are
+/// watched directly (their exception is recorded in `setup_error` and
+/// re-raised out of `run`), because holding them for the node's lifetime
+/// keeps the GC-time unretrieved-exception path from ever firing.
 fn start_async_setup(
     py: Python<'_>,
     setup_awaitable: &Bound<'_, PyAny>,
     node_runner: &Arc<NodeRunner>,
     event_loop_slot: &SharedEventLoopSlot,
+    setup_error: &SharedPyError,
 ) -> PyResult<AsyncSetup> {
     let asyncio = py.import("asyncio")?;
     let threading = py.import("threading")?;
@@ -527,6 +578,7 @@ fn start_async_setup(
         node_runner,
         setup_awaitable,
         &thread,
+        setup_error,
     )
     .inspect_err(|_| abort_loop_thread(&event_loop, &thread))
 }
@@ -535,6 +587,7 @@ fn start_async_setup(
 /// the caller and turned into a stop+join of the already-running loop thread.
 /// Builds the loop teardown, registers the loop-drain shutdown hook, submits the
 /// setup coroutine, and spawns the setup-scoped shutdown monitor.
+#[allow(clippy::too_many_arguments)]
 fn build_async_setup(
     py: Python<'_>,
     helpers: &Bound<'_, PyModule>,
@@ -543,6 +596,7 @@ fn build_async_setup(
     node_runner: &Arc<NodeRunner>,
     setup_awaitable: &Bound<'_, PyAny>,
     thread: &Bound<'_, PyAny>,
+    setup_error: &SharedPyError,
 ) -> PyResult<AsyncSetup> {
     // 6. Build the loop teardown: two pure-Python callables. The drain trigger
     //    cancels pending tasks and gathers them WITHOUT stopping the loop, and
@@ -641,6 +695,38 @@ fn build_async_setup(
         })
         .map_err(|e| PyRuntimeError::new_err(format!("failed to start shutdown monitor: {e}")))?;
 
+    // 10. Build the failure attacher that Phase 3 of `PyNodeBuilder::run`
+    //     invokes with the setup return value. The returned tasks are held
+    //     for the node's lifetime (to keep them alive), so asyncio's GC-time
+    //     "Task exception was never retrieved" report — and with it the loop
+    //     exception handler that would cancel the node — can never fire for
+    //     them. Without this watcher, a returned task that dies leaves a
+    //     half-alive node that still answers health probes. On a
+    //     non-cancelled exception the watcher records the error (re-raised
+    //     out of `run`, so the process exits non-zero and the daemon records
+    //     a terminal `Failed` instance) and cancels the node. The attach and
+    //     watcher bodies are pure Python (see `create_event_loop_helpers`);
+    //     only this trivial recording leaf is a PyCFunction, mirroring
+    //     `notify_on_future_done`.
+    let error_slot = Arc::clone(setup_error);
+    let cancel_on_failure = node_runner.cancellation_token().clone();
+    let report_failure = PyCFunction::new_closure(
+        py,
+        Some(c"_peppy_report_task_failure"),
+        None,
+        move |args, _kwargs| {
+            if let Ok(exc) = args.get_item(0) {
+                store_python_error(&error_slot, PyErr::from_value(exc));
+            }
+            cancel_on_failure.cancel();
+            Ok::<(), PyErr>(())
+        },
+    )?;
+    let task_failure_attach = helpers
+        .getattr("make_task_failure_attacher")?
+        .call1((event_loop, report_failure))?
+        .unbind();
+
     Ok(AsyncSetup {
         setup_complete_rx,
         setup_future: future_ref,
@@ -649,6 +735,7 @@ fn build_async_setup(
             thread: thread.clone().unbind(),
         },
         monitor_disarm: disarm_tx,
+        task_failure_attach,
     })
 }
 
@@ -1044,6 +1131,7 @@ impl PyNodeBuilder {
                                         setup_bound,
                                         &node_runner,
                                         &hook_loop_slot,
+                                        &setup_error,
                                     )?))
                                 } else {
                                     Ok(None)
@@ -1080,12 +1168,21 @@ impl PyNodeBuilder {
                                 match Python::try_attach(|py| -> PyResult<()> {
                                     let result =
                                         async_setup.setup_future.bind(py).call_method0("result")?;
-                                    // Store the return value to prevent GC of
-                                    // returned tasks.
-                                    if !result.is_none()
-                                        && let Ok(mut guard) = setup_return.lock()
-                                    {
-                                        *guard = Some(result.unbind());
+                                    if !result.is_none() {
+                                        // Watch every returned task: holding
+                                        // them below keeps the GC-time
+                                        // unretrieved-exception report from
+                                        // ever firing, so this is the only
+                                        // path that observes their failure.
+                                        async_setup
+                                            .task_failure_attach
+                                            .bind(py)
+                                            .call1((&result,))?;
+                                        // Store the return value to prevent GC
+                                        // of returned tasks.
+                                        if let Ok(mut guard) = setup_return.lock() {
+                                            *guard = Some(result.unbind());
+                                        }
                                     }
                                     Ok(())
                                 }) {

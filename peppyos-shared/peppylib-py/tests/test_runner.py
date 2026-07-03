@@ -347,6 +347,71 @@ async def test_async_setup_with_background_task(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("death_delay_s", [0.0, 0.2])
+async def test_returned_task_failure_fails_the_node(monkeypatch, death_delay_s):
+    """A background task returned by setup that dies with an exception must
+    bring the node down by itself and re-raise that exception out of
+    NodeBuilder.run().
+
+    The runner holds the returned tasks for the node's lifetime, so asyncio's
+    GC-time "Task exception was never retrieved" report — and with it the
+    loop exception handler — never fires for them; without the runtime's
+    failure watcher the node would keep answering health probes with its real
+    work dead. The re-raise makes the process exit non-zero, which the
+    daemon's exit watcher records as a terminal Failed instance. Delay 0 dies
+    before the watcher is attached (already-done path); 0.2s dies after
+    setup completed (live-callback path).
+    """
+    monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            peppy_config_path = str(Path(temp_dir) / NODE_CONFIG_FILE)
+            Path(peppy_config_path).write_text(PEPPY_CONFIG)
+
+            standalone_config = (
+                StandaloneConfig()
+                .with_parameters({"frequency_hz": TEST_FREQUENCY_HZ})
+                .with_messaging(router.host, router.port)
+                .with_instance_id(TEST_INSTANCE_ID)
+            )
+
+            error_queue: queue.Queue = queue.Queue()
+
+            def run_node():
+                try:
+
+                    async def setup_fn(_params, _node_runner):
+                        async def dying_task():
+                            if death_delay_s:
+                                await asyncio.sleep(death_delay_s)
+                            raise FileNotFoundError("scene file missing")
+
+                        return [asyncio.create_task(dying_task())]
+
+                    (
+                        NodeBuilder()
+                        .with_config_path(peppy_config_path)
+                        .standalone(standalone_config)
+                        .run(setup_fn)
+                    )
+                except Exception as e:
+                    error_queue.put(e)
+
+            runner_thread = threading.Thread(target=run_node, daemon=True)
+            runner_thread.start()
+
+            # No external cancel: the dying task alone must bring the node down.
+            runner_thread.join(timeout=15.0)
+
+    assert not runner_thread.is_alive(), (
+        "node must shut itself down when a returned background task dies"
+    )
+    error = error_queue.get_nowait()
+    assert isinstance(error, FileNotFoundError), f"unexpected error: {error!r}"
+    assert "scene file missing" in str(error)
+
+
+@pytest.mark.asyncio
 async def test_setup_exception_propagates_to_run(monkeypatch):
     """Exceptions from setup propagate out of NodeBuilder.run."""
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
