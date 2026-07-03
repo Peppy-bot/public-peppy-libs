@@ -41,3 +41,8 @@ mod health_capnp {
 mod action_cancel_capnp {
     include!(concat!(env!("OUT_DIR"), "/action_cancel_capnp.rs"));
 }
+
+#[allow(clippy::all)]
+mod peer_update_capnp {
+    include!(concat!(env!("OUT_DIR"), "/peer_update_capnp.rs"));
+}

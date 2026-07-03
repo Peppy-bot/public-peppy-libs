@@ -1,5 +1,6 @@
 //! Encoding types for the NodeRun action (streaming version with feedback).
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use capnp::message::Builder;
@@ -20,6 +21,17 @@ pub struct NodeRunGoal {
     pub tag: String,
     pub env_vars: Vec<(String, String)>,
     pub timeout_secs: u64,
+    /// Pairing requests from `--pair <link_id>@<peer_instance>[/<peer_link_id>]`,
+    /// keyed by the starting node's own slot link_id; the value is the raw
+    /// peer spec (`<peer_instance>` or `<peer_instance>/<peer_link_id>`).
+    /// Commands to the daemon, not resolved config: the daemon validates and
+    /// reserves each pair BEFORE spawning and delivers it live after the
+    /// instance commits to Running.
+    pub requested_pairs: BTreeMap<String, String>,
+    /// Pairing slot link_ids deliberately left unpaired via `--defer-pair`.
+    /// Together with `requested_pairs` these must cover every required
+    /// pairing slot of the manifest, or the daemon rejects the run.
+    pub deferred_pairs: Vec<String>,
 }
 
 impl NodeRunGoal {
@@ -35,11 +47,23 @@ impl NodeRunGoal {
             tag: tag.into(),
             env_vars: Vec::new(),
             timeout_secs,
+            requested_pairs: BTreeMap::new(),
+            deferred_pairs: Vec::new(),
         }
     }
 
     pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars = env_vars;
+        self
+    }
+
+    pub fn with_requested_pairs(mut self, requested_pairs: BTreeMap<String, String>) -> Self {
+        self.requested_pairs = requested_pairs;
+        self
+    }
+
+    pub fn with_deferred_pairs(mut self, deferred_pairs: Vec<String>) -> Self {
+        self.deferred_pairs = deferred_pairs;
         self
     }
 
@@ -72,6 +96,22 @@ impl NodeRunGoal {
             }
 
             goal.reborrow().set_timeout_secs(self.timeout_secs);
+
+            let pair_count =
+                capnp_list_len(self.requested_pairs.len(), "NodeRunGoal.requested_pairs")?;
+            let mut pairs = goal.reborrow().init_requested_pairs(pair_count);
+            for (idx, (link_id, peer_spec)) in self.requested_pairs.iter().enumerate() {
+                let mut pair = pairs.reborrow().get(idx as u32);
+                pair.set_link_id(link_id);
+                pair.set_peer_spec(peer_spec);
+            }
+
+            let deferred_count =
+                capnp_list_len(self.deferred_pairs.len(), "NodeRunGoal.deferred_pairs")?;
+            let mut deferred = goal.reborrow().init_deferred_pairs(deferred_count);
+            for (idx, link_id) in self.deferred_pairs.iter().enumerate() {
+                deferred.set(idx as u32, link_id.as_str());
+            }
         }
         encode_message(&builder)
     }
@@ -90,12 +130,30 @@ impl NodeRunGoal {
             ));
         }
 
+        let pairs_reader = goal.get_requested_pairs()?;
+        let mut requested_pairs = BTreeMap::new();
+        for idx in 0..pairs_reader.len() {
+            let pair = pairs_reader.get(idx);
+            requested_pairs.insert(
+                pair.get_link_id()?.to_str()?.to_owned(),
+                pair.get_peer_spec()?.to_str()?.to_owned(),
+            );
+        }
+
+        let deferred_reader = goal.get_deferred_pairs()?;
+        let mut deferred_pairs = Vec::with_capacity(deferred_reader.len() as usize);
+        for idx in 0..deferred_reader.len() {
+            deferred_pairs.push(deferred_reader.get(idx)?.to_str()?.to_owned());
+        }
+
         Ok(Self {
             runtime_config_json5: goal.get_runtime_config_json5()?.to_str()?.to_owned(),
             node_name: goal.get_node_name()?.to_str()?.to_owned(),
             tag: goal.get_tag()?.to_str()?.to_owned(),
             env_vars,
             timeout_secs: goal.get_timeout_secs(),
+            requested_pairs,
+            deferred_pairs,
         })
     }
 }
@@ -290,6 +348,32 @@ mod tests {
         let decoded = NodeRunGoal::decode(&encoded).expect("decode");
         assert_eq!(decoded, goal);
         assert!(decoded.env_vars.is_empty());
+    }
+
+    #[test]
+    fn node_run_goal_roundtrip_pairs() {
+        let goal = NodeRunGoal::new("config", "node", "tag", 30)
+            .with_requested_pairs(
+                [
+                    ("arm".to_owned(), "arm_1".to_owned()),
+                    ("gripper".to_owned(), "grip_1/controller".to_owned()),
+                ]
+                .into_iter()
+                .collect(),
+            )
+            .with_deferred_pairs(vec!["spare".to_owned()]);
+        let encoded = goal.encode().expect("encode");
+        let decoded = NodeRunGoal::decode(&encoded).expect("decode");
+        assert_eq!(decoded, goal);
+        assert_eq!(
+            decoded.requested_pairs.get("arm").map(String::as_str),
+            Some("arm_1")
+        );
+        assert_eq!(
+            decoded.requested_pairs.get("gripper").map(String::as_str),
+            Some("grip_1/controller")
+        );
+        assert_eq!(decoded.deferred_pairs, vec!["spare".to_owned()]);
     }
 
     #[test]

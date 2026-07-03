@@ -69,6 +69,20 @@ impl NodeRunner {
         &self.processor
     }
 
+    /// Handle onto the pairing slot declared at `link_id` in
+    /// `depends_on.pairings`. Exposes the slot's live pin state:
+    /// `peer(link_id)?.paired()` returns the current peer (if any) and
+    /// `wait_paired()` awaits one. Errors if the manifest declares no such
+    /// slot.
+    pub fn peer(&self, link_id: &str) -> crate::error::Result<super::PeerSlot> {
+        self.processor
+            .peer_pin_watch(link_id)
+            .map(super::PeerSlot::new)
+            .ok_or_else(|| crate::error::Error::UnknownPairingSlot {
+                link_id: link_id.to_string(),
+            })
+    }
+
     /// Get the cancellation token for coordinating graceful shutdown.
     ///
     /// The token fires on every stop path: `peppy node stop`, the daemon

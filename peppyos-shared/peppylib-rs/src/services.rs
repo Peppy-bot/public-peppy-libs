@@ -1,6 +1,7 @@
 pub mod clock_offset;
 pub mod daemon_watchdog;
 pub mod health;
+pub mod peer_update;
 pub mod ready;
 pub mod shutdown;
 

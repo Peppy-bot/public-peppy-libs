@@ -128,6 +128,39 @@ fn sender_target_interface_and_node_with_same_name_tag_are_distinct() {
     assert_ne!(interface.discriminator(), node.discriminator());
 }
 
+#[test]
+fn sender_target_pairing_discriminator_is_pairing() {
+    let target = SenderTarget::pairing("arm_link", "v1").expect("valid pairing target");
+    assert_eq!(target.discriminator(), "pairing");
+    assert_eq!(target.name(), "arm_link");
+    assert_eq!(target.tag(), "v1");
+    assert!(target.is_pairing());
+    assert!(!target.is_interface());
+    assert!(!target.is_node());
+}
+
+#[test]
+fn sender_target_pairing_normalizes_hyphenated_tag() {
+    let target = SenderTarget::pairing("arm_link", "v1-beta").expect("valid pairing target");
+    assert_eq!(target.tag(), "v1_beta");
+}
+
+#[test]
+fn sender_target_pairing_and_interface_with_same_name_tag_are_distinct() {
+    // The load-bearing lock-in property: pairing traffic can never match an
+    // interface subscription because the wire discriminators differ.
+    let pairing = SenderTarget::pairing("widget", "v1").expect("valid pairing target");
+    let interface = SenderTarget::interface("widget", "v1").expect("valid interface target");
+    assert_ne!(pairing, interface);
+    assert_ne!(pairing.discriminator(), interface.discriminator());
+}
+
+#[test]
+fn sender_target_pairing_rejects_invalid_segment() {
+    let err = SenderTarget::pairing("arm/link", "v1").unwrap_err();
+    assert!(matches!(err, SenderTargetError::InvalidSegment(_)));
+}
+
 // ─── ServiceKind ──────────────────────────────────────────────────────────
 
 #[test]

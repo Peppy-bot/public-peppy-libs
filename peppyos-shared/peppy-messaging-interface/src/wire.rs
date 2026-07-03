@@ -159,6 +159,11 @@ pub(crate) const INTERFACE_DISCRIMINATOR: &str = "interface";
 /// is a node (no `conforms_to`).
 pub(crate) const NODE_DISCRIMINATOR: &str = "node";
 
+/// Wire discriminator placed before the name/tag pair on senders whose target
+/// is a pairing (a `depends_on.pairings` slot). Distinct from `interface` so
+/// pairing traffic can never match a `from_any` interface subscription.
+pub(crate) const PAIRING_DISCRIMINATOR: &str = "pairing";
+
 /// Hyphen-to-underscore normalization applied at construction time to any tag
 /// segment. The generator emits tags with hyphens (config-side identifier rule);
 /// the wire form requires identifier-safe segments.
@@ -203,6 +208,32 @@ impl InterfaceIdentifier {
     }
 }
 
+/// Identifier of a pairing declared via `depends_on.pairings`. Carries the
+/// pairing's name and tag. Used as one variant of [`SenderTarget`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PairingIdentifier {
+    pairing_name: Segment,
+    pairing_tag: Segment,
+}
+
+impl PairingIdentifier {
+    pub fn new(name: &str, tag: &str) -> Result<Self, SenderTargetError> {
+        let (pairing_name, pairing_tag) = validated_name_tag(name, tag)?;
+        Ok(Self {
+            pairing_name,
+            pairing_tag,
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        self.pairing_name.as_str()
+    }
+
+    pub fn tag(&self) -> &str {
+        self.pairing_tag.as_str()
+    }
+}
+
 /// Identifier of a node (no `conforms_to`). Carries the node's name and tag
 /// (from `manifest.tag`). Used as one variant of [`SenderTarget`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -240,13 +271,14 @@ impl NodeIdentifier {
 }
 
 /// Addressing target carried by a sender (or matched by a receiver). Each
-/// emission is **either** an interface **or** a node, never both. The wire
-/// format embeds an `interface`|`node` discriminator so the two identifier
-/// spaces cannot collide.
+/// emission is **either** an interface, a node, **or** a pairing — never more
+/// than one. The wire format embeds an `interface`|`node`|`pairing`
+/// discriminator so the three identifier spaces cannot collide.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SenderTarget {
     Interface(InterfaceIdentifier),
     Node(NodeIdentifier),
+    Pairing(PairingIdentifier),
 }
 
 impl SenderTarget {
@@ -269,10 +301,17 @@ impl SenderTarget {
         Self::Node(NodeIdentifier::from_validated(name, tag))
     }
 
+    /// Shortcut: `SenderTarget::pairing("arm_link", "v1")` instead of
+    /// `SenderTarget::Pairing(PairingIdentifier::new("arm_link", "v1")?)`.
+    pub fn pairing(name: &str, tag: &str) -> Result<Self, SenderTargetError> {
+        PairingIdentifier::new(name, tag).map(Self::Pairing)
+    }
+
     pub(crate) fn discriminator(&self) -> &'static str {
         match self {
             Self::Interface(_) => INTERFACE_DISCRIMINATOR,
             Self::Node(_) => NODE_DISCRIMINATOR,
+            Self::Pairing(_) => PAIRING_DISCRIMINATOR,
         }
     }
 
@@ -280,6 +319,7 @@ impl SenderTarget {
         match self {
             Self::Interface(i) => i.name(),
             Self::Node(n) => n.name(),
+            Self::Pairing(p) => p.name(),
         }
     }
 
@@ -287,6 +327,7 @@ impl SenderTarget {
         match self {
             Self::Interface(i) => i.tag(),
             Self::Node(n) => n.tag(),
+            Self::Pairing(p) => p.tag(),
         }
     }
 
@@ -296,6 +337,10 @@ impl SenderTarget {
 
     pub fn is_node(&self) -> bool {
         matches!(self, Self::Node(_))
+    }
+
+    pub fn is_pairing(&self) -> bool {
+        matches!(self, Self::Pairing(_))
     }
 }
 

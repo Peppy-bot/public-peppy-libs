@@ -1,5 +1,6 @@
 use peppylib::messaging::{
-    InterfaceIdentifier, NodeIdentifier, ProducerRef, SenderTarget, SenderTargetError,
+    InterfaceIdentifier, NodeIdentifier, PairingIdentifier, ProducerRef, SenderTarget,
+    SenderTargetError,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -49,6 +50,18 @@ impl PySenderTarget {
             .map_err(sender_target_error_to_py)
     }
 
+    /// Build a pairing-shaped target. Used for topics exchanged over a
+    /// `depends_on.pairings` slot. Raises `ValueError` if either segment
+    /// fails validation.
+    #[staticmethod]
+    fn pairing(name: &str, tag: &str) -> PyResult<Self> {
+        PairingIdentifier::new(name, tag)
+            .map(|inner| Self {
+                inner: SenderTarget::Pairing(inner),
+            })
+            .map_err(sender_target_error_to_py)
+    }
+
     #[getter]
     fn is_node(&self) -> bool {
         self.inner.is_node()
@@ -57,6 +70,11 @@ impl PySenderTarget {
     #[getter]
     fn is_interface(&self) -> bool {
         self.inner.is_interface()
+    }
+
+    #[getter]
+    fn is_pairing(&self) -> bool {
+        self.inner.is_pairing()
     }
 
     #[getter]
@@ -81,6 +99,13 @@ impl PySenderTarget {
             SenderTarget::Interface(_) => {
                 format!(
                     "SenderTarget.interface({:?}, {:?})",
+                    self.inner.name(),
+                    self.inner.tag()
+                )
+            }
+            SenderTarget::Pairing(_) => {
+                format!(
+                    "SenderTarget.pairing({:?}, {:?})",
                     self.inner.name(),
                     self.inner.tag()
                 )

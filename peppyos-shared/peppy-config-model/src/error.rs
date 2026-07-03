@@ -107,6 +107,10 @@ pub enum ParsingError {
         "Conflicting `from_any: true` for dependency `{name}` (tag `{tag}`) in manifest.depends_on: only one entry per (name, tag) may set from_any=true"
     )]
     ConflictingFromAny { name: String, tag: String },
+    #[error(
+        "Pairing link_id `{0}` in manifest.depends_on.pairings is not a valid wire segment (must not contain '/' or '@', and must not collide with a reserved sentinel) — pairing slot link_ids appear on the wire as the producer-side link_id segment"
+    )]
+    PairingSentinelLinkId(String),
 
     // -- build system
     #[error("Invalid toolchain {0}")]
@@ -146,6 +150,14 @@ pub enum ParsingError {
         "`{dependant}:{dependant_tag}` references undeclared link_id `{link_id}` in consumed interfaces"
     )]
     UndeclaredLinkId {
+        dependant: String,
+        dependant_tag: String,
+        link_id: String,
+    },
+    #[error(
+        "`{dependant}:{dependant_tag}` references pairing link_id `{link_id}` in consumed interfaces — pairing topics are not wired via `topics.consumes`; both directions are generated under the slot module (`peppygen.peers.{link_id}` / `peppygen::peers::{link_id}`)"
+    )]
+    ConsumedItemReferencesPairingLinkId {
         dependant: String,
         dependant_tag: String,
         link_id: String,
@@ -264,5 +276,4 @@ mod tests {
             panic!("Expected CannotParseConfig, got {:?}", err);
         }
     }
-
 }

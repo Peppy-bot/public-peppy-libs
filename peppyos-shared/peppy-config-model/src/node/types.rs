@@ -484,6 +484,20 @@ where
     deserialize_non_empty_identifier(deserializer, "InterfaceDependency.link_id")
 }
 
+fn deserialize_pairing_dependency_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_empty_identifier(deserializer, "PairingDependency.link_id")
+}
+
+fn deserialize_pairing_dependency_role<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_empty_identifier(deserializer, "PairingDependency.role")
+}
+
 fn deserialize_non_empty_identifier<'de, D>(
     deserializer: D,
     label: &'static str,
@@ -549,6 +563,28 @@ pub struct InterfaceDependency {
     pub from_any: bool,
 }
 
+/// One pairing slot of a node: the node participates in the named pairing as
+/// `role`, addressable in code and CLI flags via `link_id`. One entry covers
+/// both directions of the conversation — the topics the role emits AND the
+/// counterpart-role topics it consumes. Like interface dependencies, pairings
+/// contribute no DAG edge. `optional: true` marks a slot the node functions
+/// meaningfully without (it boots unpaired with no `--pair`/`--defer-pair`
+/// ceremony); a required slot must be paired or explicitly deferred at start.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PairingDependency {
+    pub name: Name,
+    pub tag: String,
+    #[serde(deserialize_with = "deserialize_pairing_dependency_role")]
+    pub role: String,
+    #[serde(deserialize_with = "deserialize_pairing_dependency_link_id")]
+    pub link_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DependsOn {
@@ -556,6 +592,8 @@ pub struct DependsOn {
     pub nodes: Vec<NodeDependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub interfaces: Vec<InterfaceDependency>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pairings: Vec<PairingDependency>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]

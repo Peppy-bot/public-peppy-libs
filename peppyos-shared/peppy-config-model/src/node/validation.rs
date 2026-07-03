@@ -160,6 +160,16 @@ pub fn validate_dependency_specs(
         })
         .unwrap_or_default();
 
+    // Pairing slots are never legal targets for `consumes` wiring — both
+    // directions of a pairing are generated from the pairing doc under the
+    // slot module. Kept separate from `declared_link_ids` so a consumed item
+    // naming one gets a dedicated error instead of `UndeclaredLinkId`.
+    let pairing_link_ids: HashSet<&str> = manifest
+        .depends_on
+        .as_ref()
+        .map(|d| d.pairings.iter().map(|p| p.link_id.as_str()).collect())
+        .unwrap_or_default();
+
     // Phase 2: Validate consumed interfaces reference valid link_ids
     // and that the dependency exposes the required interface
     if let Some(topics) = &interfaces.topics
@@ -173,6 +183,7 @@ pub fn validate_dependency_specs(
             InterfaceKind::Topic,
             &resolved_deps,
             &declared_link_ids,
+            &pairing_link_ids,
             dependant_name,
             dependant_tag,
             &mut errors,
@@ -190,6 +201,7 @@ pub fn validate_dependency_specs(
             InterfaceKind::Service,
             &resolved_deps,
             &declared_link_ids,
+            &pairing_link_ids,
             dependant_name,
             dependant_tag,
             &mut errors,
@@ -207,6 +219,7 @@ pub fn validate_dependency_specs(
             InterfaceKind::Action,
             &resolved_deps,
             &declared_link_ids,
+            &pairing_link_ids,
             dependant_name,
             dependant_tag,
             &mut errors,
@@ -241,16 +254,26 @@ impl InterfaceRequirement {
 
 /// Validates a set of consumed interfaces, checking that each `link_id` is declared
 /// and that the referenced dependency exposes the required interface.
+#[allow(clippy::too_many_arguments)]
 fn validate_consumed_items<'a>(
     items: impl Iterator<Item = (&'a str, &'a str)>,
     kind: InterfaceKind,
     resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
     declared_link_ids: &HashSet<&str>,
+    pairing_link_ids: &HashSet<&str>,
     dependant_name: &str,
     dependant_tag: &str,
     errors: &mut Vec<ParsingError>,
 ) {
     for (link_id, name) in items {
+        if pairing_link_ids.contains(link_id) {
+            errors.push(ParsingError::ConsumedItemReferencesPairingLinkId {
+                dependant: dependant_name.to_owned(),
+                dependant_tag: dependant_tag.to_owned(),
+                link_id: link_id.to_owned(),
+            });
+            continue;
+        }
         if !resolved_deps.contains_key(link_id) {
             if !declared_link_ids.contains(link_id) {
                 errors.push(ParsingError::UndeclaredLinkId {
@@ -390,6 +413,45 @@ mod tests {
                 execution: { language: "rust", run_cmd: ["other"] }
             }"#,
         )
+    }
+
+    #[test]
+    fn consumed_item_referencing_pairing_link_id_gets_dedicated_error() {
+        // A consumed topic naming a pairing slot must not fall through to
+        // `UndeclaredLinkId` — pairing directions are generated from the
+        // pairing doc, never wired via `topics.consumes`.
+        let node = parse(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: {
+                    name: "confused", tag: "v1",
+                    depends_on: {
+                        pairings: [ { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" } ]
+                    }
+                },
+                execution: { language: "rust", run_cmd: ["confused"] },
+                interfaces: {
+                    topics: { consumes: [ { link_id: "controller", name: "joint_commands" } ] }
+                }
+            }"#,
+        );
+        let errors = validate_dependency_specs(
+            &node.manifest,
+            &node.interfaces,
+            "confused",
+            "v1",
+            |_, _| None,
+        );
+        assert_eq!(errors.len(), 1, "errors: {errors:?}");
+        assert!(
+            matches!(
+                &errors[0],
+                ParsingError::ConsumedItemReferencesPairingLinkId { link_id, .. }
+                    if link_id == "controller"
+            ),
+            "expected ConsumedItemReferencesPairingLinkId, got: {:?}",
+            errors[0]
+        );
     }
 
     #[test]

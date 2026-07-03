@@ -40,8 +40,9 @@ pub use types::{
 };
 pub use wire::{
     ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, InterfaceIdentifier, NodeIdentifier,
-    Segment, SegmentError, SenderTarget, SenderTargetError, ServiceKind, ServiceQueryKind,
-    ServiceReplyKind, ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
+    PairingIdentifier, Segment, SegmentError, SenderTarget, SenderTargetError, ServiceKind,
+    ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver, ServiceWireSender, TopicWireReceiver,
+    TopicWireSender,
 };
 
 pub use adapters::mock::{MockAdapter, MockInstance};

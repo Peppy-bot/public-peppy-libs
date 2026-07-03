@@ -1,9 +1,11 @@
 mod actions;
 mod iface;
+mod pairing;
 mod services;
 mod topics;
 
 pub(crate) use iface::{PyProducerRef, PySenderTarget};
+pub(crate) use pairing::{PyPeerInfo, PyPeerSlot, PyPeerSubscription};
 
 use config::org::resolve_session_namespace;
 use peppylib::PeppyError;
@@ -24,11 +26,15 @@ pub(crate) use topics::{PySubscription, PyTopicMessage, PyTopicMessenger, PyTopi
 /// `ActionFeedbackProducerGone` joins the `ConnectionError` family (the peer
 /// vanished), which keeps it type-distinguishable from the clean
 /// end-of-stream close (`ActionFeedbackChannelClosed` → `RuntimeError`).
+/// `UnknownPairingSlot` is caller misuse (a link_id the manifest never
+/// declared), so it maps to `ValueError` — the same type `peer()` raises for
+/// the same input.
 pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
     match &err {
         PeppyError::ServiceTimeout { .. } | PeppyError::ActionResultTimeout { .. } => {
             PyErr::new::<pyo3::exceptions::PyTimeoutError, _>(err.to_string())
         }
+        PeppyError::UnknownPairingSlot { .. } => PyValueError::new_err(err.to_string()),
         PeppyError::ServiceUnreachable { .. }
         | PeppyError::ActionResultUnreachable { .. }
         | PeppyError::ActionFeedbackProducerGone { .. } => {
@@ -242,6 +248,9 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     messaging_module.add_class::<PyTopicPublisher>()?;
     messaging_module.add_class::<PySenderTarget>()?;
     messaging_module.add_class::<PyProducerRef>()?;
+    messaging_module.add_class::<PyPeerInfo>()?;
+    messaging_module.add_class::<PyPeerSlot>()?;
+    messaging_module.add_class::<PyPeerSubscription>()?;
     services::register(&messaging_module)?;
     actions::register(&messaging_module)?;
     parent_module.add_submodule(&messaging_module)?;

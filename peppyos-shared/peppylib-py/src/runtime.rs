@@ -831,6 +831,49 @@ impl PyNodeRunner {
             .pinned_producer_for(link_id)
             .map(PyProducerRef::from)
     }
+
+    /// Handle onto the pairing slot declared at `link_id` in
+    /// `depends_on.pairings`: `peer(link_id).paired()` returns the current
+    /// peer's identity (or `None` while unpaired) and `wait_paired()` awaits
+    /// one. Raises `ValueError` if the manifest declares no such slot.
+    fn peer(&self, link_id: &str) -> PyResult<crate::messaging::PyPeerSlot> {
+        match self.inner.peer(link_id) {
+            Ok(slot) => Ok(crate::messaging::PyPeerSlot { inner: slot }),
+            Err(err) => Err(pyo3::exceptions::PyValueError::new_err(err.to_string())),
+        }
+    }
+
+    /// Subscribe to one peer-emitted topic of the pairing slot at `link_id`.
+    /// Spliced by the generated `peppygen.peers.<link_id>.<topic>.subscribe`
+    /// call sites; `pairing_name` / `pairing_tag` / `topic` come from the
+    /// pairing doc via codegen constants. The subscription yields nothing
+    /// while the slot is unpaired and follows the slot's live pin.
+    fn subscribe_peer<'py>(
+        &self,
+        py: Python<'py>,
+        link_id: String,
+        pairing_name: String,
+        pairing_tag: String,
+        topic: String,
+        qos: crate::config::PyQoSProfile,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let node_runner = Arc::clone(&self.inner);
+        crate::py_future::future_into_py(py, async move {
+            let subscription = peppylib::runtime::subscribe_peer(
+                &node_runner,
+                &link_id,
+                &pairing_name,
+                &pairing_tag,
+                &topic,
+                qos.into(),
+            )
+            .await
+            .map_err(crate::messaging::to_py_err)?;
+            Ok(crate::messaging::PyPeerSubscription {
+                inner: Arc::new(tokio::sync::Mutex::new(subscription)),
+            })
+        })
+    }
 }
 
 /// Python wrapper for StandaloneConfig.

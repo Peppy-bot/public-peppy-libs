@@ -194,6 +194,24 @@ struct NodeRunGoal {
     envVars @3 :List(EnvVar);
     # Timeout in seconds for the run operation (used to report remaining time when busy)
     timeoutSecs @4 :UInt64;
+    # Pairing requests from `--pair <link_id>@<peer_instance>[/<peer_link_id>]`:
+    # commands to the daemon, not resolved config. The daemon validates and
+    # reserves each pair BEFORE spawning and delivers it live after the
+    # instance commits to Running.
+    requestedPairs @5 :List(PairRequest);
+    # Pairing slot link_ids deliberately left unpaired via `--defer-pair`.
+    # Together with requestedPairs these must cover every required pairing
+    # slot of the manifest or the daemon rejects the run.
+    deferredPairs @6 :List(Text);
+}
+
+struct PairRequest {
+    # The starting node's own pairing-slot link_id.
+    linkId @0 :Text;
+    # The raw peer spec as given on the CLI: "<peer_instance>" or
+    # "<peer_instance>/<peer_link_id>". The daemon resolves it against the
+    # running stack.
+    peerSpec @1 :Text;
 }
 
 struct NodeRunGoalResponse {
@@ -288,6 +306,11 @@ struct NodeInstanceInfo {
     # otherwise. Defaults to `true` so a message from a producer that predates
     # this field is not read as spuriously unhealthy on version skew.
     healthy @3 :Bool = true;
+    # JSON-encoded `BTreeMap<String, SerializedPairingSlot>` mirroring
+    # `SerializedInstance.pairing_slots` (the live pairing-slot state per
+    # `depends_on.pairings` entry). Empty string when the node declares no
+    # pairings.
+    pairingSlotsJson @4 :Text;
 }
 
 # Node info lookup result.

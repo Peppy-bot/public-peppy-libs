@@ -8,13 +8,18 @@ use std::path::Path;
 
 /// Validates `manifest.depends_on`:
 ///
-/// - Rejects duplicate `link_id`s across the combined nodes/interfaces set.
-///   `link_id` is the shared identity for both: consumed topics/services/actions
-///   resolve their producer by `link_id` alone, so a collision either silently
-///   overwrites a resolution or binds to the wrong producer.
+/// - Rejects duplicate `link_id`s across the combined nodes/interfaces/pairings
+///   set. `link_id` is the shared identity for all three: consumed
+///   topics/services/actions resolve their producer by `link_id` alone, and
+///   pairing slots are addressed by `link_id` in `--pair`/`pairings:`, so a
+///   collision either silently overwrites a resolution or binds the wrong slot.
 /// - Rejects more than one entry with `from_any: true` for the same
 ///   `(name, tag)` pair. `from_any` marks a dependency as a wildcard producer;
 ///   two wildcards for the same `(name, tag)` would be ambiguous at resolution.
+/// - Rejects pairing link_ids that are not wire-safe segments: unlike
+///   node/interface link_ids (local resolution names), a pairing slot link_id
+///   is stamped verbatim into the producer-side link_id segment of every
+///   publish keyexpr.
 fn validate_depends_on(manifest: &Manifest) -> Result<()> {
     let Some(depends_on) = &manifest.depends_on else {
         return Ok(());
@@ -37,7 +42,11 @@ fn validate_depends_on(manifest: &Manifest) -> Result<()> {
             i.from_any,
         )
     });
-    for (link_id, name, tag, from_any) in nodes.chain(interfaces) {
+    let pairings = depends_on
+        .pairings
+        .iter()
+        .map(|p| (p.link_id.as_str(), p.name.as_str(), p.tag.as_str(), false));
+    for (link_id, name, tag, from_any) in nodes.chain(interfaces).chain(pairings) {
         if !seen_link_ids.insert(link_id) {
             return Err(ParsingError::DuplicateLinkId(link_id.to_owned()).into());
         }
@@ -49,7 +58,24 @@ fn validate_depends_on(manifest: &Manifest) -> Result<()> {
             .into());
         }
     }
+    for pairing in &depends_on.pairings {
+        if !is_wire_safe_link_id(&pairing.link_id) {
+            return Err(ParsingError::PairingSentinelLinkId(pairing.link_id.clone()).into());
+        }
+    }
     Ok(())
+}
+
+/// A pairing slot link_id travels the wire as a keyexpr segment, so it must
+/// obey the segment rules from `pmi::wire::Segment` (which this crate cannot
+/// name — pmi depends on us): no `/`, no `@`, and not one of the reserved
+/// sentinels (`*`, `**`, and the default-link_id sentinel `_`). Emptiness and
+/// all-punctuation values are already rejected by the field deserializer.
+fn is_wire_safe_link_id(link_id: &str) -> bool {
+    !link_id.contains('/')
+        && !link_id.contains('@')
+        && !matches!(link_id, "*" | "**")
+        && link_id != crate::consts::DEFAULT_LINK_ID_SENTINEL
 }
 
 /// Validates execution constraints.
@@ -594,6 +620,237 @@ mod tests {
             .expect("distinct (name, tag) pairs each with from_any=true should parse");
         let deps = config.manifest.depends_on.unwrap();
         assert!(deps.nodes.iter().all(|n| n.from_any));
+    }
+
+    #[test]
+    fn test_pairing_dependency_parses_with_defaults() {
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "robot_arm",
+                tag: "v1",
+                depends_on: {
+                    pairings: [
+                        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        let deps = config.manifest.depends_on.unwrap();
+        assert_eq!(deps.pairings.len(), 1);
+        let pairing = &deps.pairings[0];
+        assert_eq!(pairing.name.as_str(), "arm_link");
+        assert_eq!(pairing.role, "arm");
+        assert_eq!(pairing.link_id, "controller");
+        assert!(pairing.optional);
+        assert!(pairing.sha256.is_none());
+    }
+
+    #[test]
+    fn test_pairing_optional_defaults_to_false() {
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "arm_controller",
+                tag: "v1",
+                depends_on: {
+                    pairings: [
+                        { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        let deps = config.manifest.depends_on.unwrap();
+        assert!(!deps.pairings[0].optional);
+    }
+
+    #[test]
+    fn test_same_pairing_twice_under_distinct_link_ids_parses() {
+        // The two-arm commander shape: one pairing contract, two slots.
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "two_arm_commander",
+                tag: "v1",
+                depends_on: {
+                    pairings: [
+                        { name: "arm_link", tag: "v1", role: "controller", link_id: "left_arm" },
+                        { name: "arm_link", tag: "v1", role: "controller", link_id: "right_arm" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        assert_eq!(config.manifest.depends_on.unwrap().pairings.len(), 2);
+    }
+
+    #[test]
+    fn test_duplicate_link_id_across_interfaces_and_pairings_rejected() {
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "dup_node",
+                tag: "v1",
+                depends_on: {
+                    interfaces: [
+                        { name: "depth_camera", tag: "v1", link_id: "shared" },
+                    ],
+                    pairings: [
+                        { name: "arm_link", tag: "v1", role: "arm", link_id: "shared" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
+            ),
+            "expected DuplicateLinkId(\"shared\") across interfaces+pairings, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_pairing_link_id_with_at_sign_rejected_as_wire_unsafe() {
+        // Node/interface link_ids never travel the wire, but a pairing slot
+        // link_id is stamped into publish keyexprs, so wire-unsafe characters
+        // must be rejected at parse time.
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "bad_pairing_node",
+                tag: "v1",
+                depends_on: {
+                    pairings: [
+                        { name: "arm_link", tag: "v1", role: "arm", link_id: "ctrl@home" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::PairingSentinelLinkId(id)) if id == "ctrl@home"
+            ),
+            "expected PairingSentinelLinkId(\"ctrl@home\"), got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn is_wire_safe_link_id_rejects_each_reserved_shape() {
+        // Direct coverage of every branch: separator, addressing marker,
+        // reserved keyexpr sentinels, default-link_id sentinel.
+        for unsafe_id in ["a/b", "ctrl@home", "*", "**", "_"] {
+            assert!(
+                !is_wire_safe_link_id(unsafe_id),
+                "{unsafe_id:?} must be rejected as wire-unsafe"
+            );
+        }
+        assert!(is_wire_safe_link_id("controller"));
+    }
+
+    #[test]
+    fn test_pairing_link_id_keyexpr_wildcards_rejected() {
+        // Like the `_` sentinel below, bare `*` / `**` are caught by the
+        // field deserializer's alphanumeric rule before the wire-safety
+        // check; the parse must fail one way or another.
+        for wildcard in ["*", "**"] {
+            let json5 = format!(
+                r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{
+                    name: "bad_pairing_node",
+                    tag: "v1",
+                    depends_on: {{
+                        pairings: [
+                            {{ name: "arm_link", tag: "v1", role: "arm", link_id: "{wildcard}" }},
+                        ],
+                    }},
+                }},
+                execution: {{
+                    language: "rust",
+                    run_cmd: ["./bin"],
+                }},
+            }}"#
+            );
+            assert!(
+                NodeConfigParser::from_content(&json5).is_err(),
+                "pairing link_id {wildcard:?} must fail parse"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pairing_link_id_sentinel_rejected() {
+        // The bare `_` sentinel never reaches the wire-safety check (the field
+        // deserializer's alphanumeric rule rejects it first), but it must fail
+        // parse one way or another.
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "bad_pairing_node",
+                tag: "v1",
+                depends_on: {
+                    pairings: [
+                        { name: "arm_link", tag: "v1", role: "arm", link_id: "_" },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        assert!(NodeConfigParser::from_content(json5).is_err());
+    }
+
+    #[test]
+    fn test_pairing_entry_with_unknown_field_rejected() {
+        // `from_any` belongs to node/interface deps; pairing entries are
+        // deny_unknown_fields so it must not silently pass.
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "bad_pairing_node",
+                tag: "v1",
+                depends_on: {
+                    pairings: [
+                        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller", from_any: true },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["./bin"],
+            },
+        }"#;
+        assert!(NodeConfigParser::from_content(json5).is_err());
     }
 
     #[test]

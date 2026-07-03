@@ -1,4 +1,5 @@
 pub mod health;
+pub mod peer_update;
 pub mod ready;
 
 use crate::error::Result;

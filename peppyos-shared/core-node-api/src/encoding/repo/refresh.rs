@@ -77,6 +77,7 @@ pub enum RepoItemKind {
     Node,
     Launcher,
     Interface,
+    Pairing,
 }
 
 impl RepoItemKind {
@@ -85,6 +86,7 @@ impl RepoItemKind {
             RepoItemKind::Node => "node",
             RepoItemKind::Launcher => "launcher",
             RepoItemKind::Interface => "interface",
+            RepoItemKind::Pairing => "pairing",
         }
     }
 
@@ -93,6 +95,7 @@ impl RepoItemKind {
             "node" => Some(RepoItemKind::Node),
             "launcher" => Some(RepoItemKind::Launcher),
             "interface" => Some(RepoItemKind::Interface),
+            "pairing" => Some(RepoItemKind::Pairing),
             _ => None,
         }
     }
@@ -217,6 +220,7 @@ pub struct RepoRefreshResult {
     pub total_nodes_found: u32,
     pub total_launchers_found: u32,
     pub total_interfaces_found: u32,
+    pub total_pairings_found: u32,
 }
 
 impl RepoRefreshResult {
@@ -224,6 +228,7 @@ impl RepoRefreshResult {
         total_nodes_found: u32,
         total_launchers_found: u32,
         total_interfaces_found: u32,
+        total_pairings_found: u32,
     ) -> Self {
         Self {
             success: true,
@@ -231,6 +236,7 @@ impl RepoRefreshResult {
             total_nodes_found,
             total_launchers_found,
             total_interfaces_found,
+            total_pairings_found,
         }
     }
 
@@ -241,6 +247,7 @@ impl RepoRefreshResult {
             total_nodes_found: 0,
             total_launchers_found: 0,
             total_interfaces_found: 0,
+            total_pairings_found: 0,
         }
     }
 
@@ -255,6 +262,7 @@ impl RepoRefreshResult {
             result.set_total_nodes_found(self.total_nodes_found);
             result.set_total_launchers_found(self.total_launchers_found);
             result.set_total_interfaces_found(self.total_interfaces_found);
+            result.set_total_pairings_found(self.total_pairings_found);
         }
         encode_message(&builder)
     }
@@ -268,6 +276,7 @@ impl RepoRefreshResult {
             total_nodes_found: result.get_total_nodes_found(),
             total_launchers_found: result.get_total_launchers_found(),
             total_interfaces_found: result.get_total_interfaces_found(),
+            total_pairings_found: result.get_total_pairings_found(),
         })
     }
 }
@@ -326,6 +335,7 @@ mod tests {
             RepoItemKind::Node,
             RepoItemKind::Launcher,
             RepoItemKind::Interface,
+            RepoItemKind::Pairing,
         ] {
             assert_eq!(RepoItemKind::parse(kind.as_str()), Some(kind));
         }
@@ -336,6 +346,7 @@ mod tests {
         assert_eq!(RepoItemKind::Node.as_str(), "node");
         assert_eq!(RepoItemKind::Launcher.as_str(), "launcher");
         assert_eq!(RepoItemKind::Interface.as_str(), "interface");
+        assert_eq!(RepoItemKind::Pairing.as_str(), "pairing");
     }
 
     #[test]
@@ -417,12 +428,13 @@ mod tests {
 
     #[test]
     fn result_success_roundtrips() {
-        let result = RepoRefreshResult::success(3, 1, 2);
+        let result = RepoRefreshResult::success(3, 1, 2, 4);
         assert!(result.success);
         assert_eq!(result.error_message, None);
         assert_eq!(result.total_nodes_found, 3);
         assert_eq!(result.total_launchers_found, 1);
         assert_eq!(result.total_interfaces_found, 2);
+        assert_eq!(result.total_pairings_found, 4);
         let bytes = result.encode().expect("encode");
         assert_eq!(RepoRefreshResult::decode(&bytes).expect("decode"), result);
     }
@@ -435,6 +447,7 @@ mod tests {
         assert_eq!(result.total_nodes_found, 0);
         assert_eq!(result.total_launchers_found, 0);
         assert_eq!(result.total_interfaces_found, 0);
+        assert_eq!(result.total_pairings_found, 0);
         let bytes = result.encode().expect("encode");
         assert_eq!(RepoRefreshResult::decode(&bytes).expect("decode"), result);
     }

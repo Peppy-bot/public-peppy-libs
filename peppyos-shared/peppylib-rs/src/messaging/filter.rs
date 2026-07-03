@@ -255,6 +255,7 @@ mod tests {
                 })
                 .collect(),
             interfaces: vec![],
+            pairings: vec![],
         }
     }
 
