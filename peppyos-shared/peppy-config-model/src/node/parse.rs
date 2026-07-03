@@ -763,6 +763,50 @@ mod tests {
     }
 
     #[test]
+    fn is_wire_safe_link_id_rejects_each_reserved_shape() {
+        // Direct coverage of every branch: separator, addressing marker,
+        // reserved keyexpr sentinels, default-link_id sentinel.
+        for unsafe_id in ["a/b", "ctrl@home", "*", "**", "_"] {
+            assert!(
+                !is_wire_safe_link_id(unsafe_id),
+                "{unsafe_id:?} must be rejected as wire-unsafe"
+            );
+        }
+        assert!(is_wire_safe_link_id("controller"));
+    }
+
+    #[test]
+    fn test_pairing_link_id_keyexpr_wildcards_rejected() {
+        // Like the `_` sentinel below, bare `*` / `**` are caught by the
+        // field deserializer's alphanumeric rule before the wire-safety
+        // check; the parse must fail one way or another.
+        for wildcard in ["*", "**"] {
+            let json5 = format!(
+                r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{
+                    name: "bad_pairing_node",
+                    tag: "v1",
+                    depends_on: {{
+                        pairings: [
+                            {{ name: "arm_link", tag: "v1", role: "arm", link_id: "{wildcard}" }},
+                        ],
+                    }},
+                }},
+                execution: {{
+                    language: "rust",
+                    run_cmd: ["./bin"],
+                }},
+            }}"#
+            );
+            assert!(
+                NodeConfigParser::from_content(&json5).is_err(),
+                "pairing link_id {wildcard:?} must fail parse"
+            );
+        }
+    }
+
+    #[test]
     fn test_pairing_link_id_sentinel_rejected() {
         // The bare `_` sentinel never reaches the wire-safety check (the field
         // deserializer's alphanumeric rule rejects it first), but it must fail

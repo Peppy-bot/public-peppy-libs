@@ -89,6 +89,38 @@ async fn wait_for_peer_wire_sub(handle: &MessengerHandle, peer_instance: &str) {
     assert!(matched, "peer wire subscription did not appear within 2s");
 }
 
+/// Inverse of [`wait_for_peer_wire_sub`]: waits until the consumer's wire
+/// subscription pinned to `peer_instance` has disappeared from the
+/// publisher's session. The forwarding task drops the old wire sub
+/// asynchronously after a clear, so tests must gate on the actual teardown
+/// before probing for silence. A probe window returning `false` means every
+/// poll inside it saw no matching subscriber — i.e. the drop has landed;
+/// while the sub still exists the probe returns `true` immediately and we
+/// retry until the deadline.
+async fn wait_for_peer_wire_sub_gone(handle: &MessengerHandle, peer_instance: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let matched = TopicMessenger::wait_for_subscriber_with_link_id(
+            handle,
+            CORE,
+            peer_instance,
+            pairing_target(),
+            Some(ARM_SLOT_LINK_ID),
+            TOPIC,
+            Duration::from_millis(25),
+        )
+        .await
+        .expect("wait_for_subscriber should not error");
+        if !matched {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "peer wire subscription did not disappear within 2s"
+        );
+    }
+}
+
 async fn expect_message(subscription: &mut PeerSubscription, expected_payload: &[u8]) {
     let message = tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
         .await
@@ -257,9 +289,9 @@ async fn clear_silences_the_slot_until_repaired() {
         pin: None,
     })
     .expect("watch send");
-    // Deterministic sync point for the drop: wait until the wire sub is gone
-    // by observing that a fresh publish is not delivered.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Deterministic sync point for the drop: gate on the wire subscription
+    // actually disappearing before probing for silence.
+    wait_for_peer_wire_sub_gone(&peer_handle, "arm_1").await;
     publisher
         .publish(Payload::from_static(b"after clear"))
         .await
@@ -343,7 +375,7 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
         &daemon_handle,
         CORE,
         "daemon",
-        node_identity,
+        node_identity.clone(),
         PEER_UPDATE_SERVICE,
         ServiceTarget::Producer(&node_ref),
         stale.encode().expect("encode"),
@@ -355,4 +387,37 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
     assert!(!response.accepted);
     assert!(response.stale_sequence);
     assert_eq!(slot_rx.borrow().sequence, 7, "stale must not roll back");
+
+    // A caller stamped with a foreign core_node is not this node's daemon:
+    // it must be rejected before touching slot state, even with a fresher
+    // sequence.
+    let foreign = PeerUpdateRequest {
+        link_id: "arm".to_string(),
+        sequence: 99,
+        pin: None,
+    };
+    let reply = ServiceMessenger::poll(
+        &daemon_handle,
+        "foreign_core",
+        "daemon",
+        node_identity,
+        PEER_UPDATE_SERVICE,
+        ServiceTarget::Producer(&node_ref),
+        foreign.encode().expect("encode"),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("foreign delivery still gets a reply");
+    let response = PeerUpdateResponse::decode(&reply.payload_bytes()).expect("decode response");
+    assert!(!response.accepted, "foreign core_node must be rejected");
+    assert!(!response.stale_sequence);
+    assert_eq!(
+        slot_rx.borrow().sequence,
+        7,
+        "foreign caller must not mutate the slot"
+    );
+    assert!(
+        slot_rx.borrow().pin.is_some(),
+        "foreign clear must not land"
+    );
 }

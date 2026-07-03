@@ -806,7 +806,14 @@ mod tests {
                 messaging_port: 7448,
                 node_instance: {
                     instance_id: "ctrl_1",
-                    pairing_slots: { arm: { kind: "unpaired" } }
+                    pairing_slots: {
+                        arm: { kind: "unpaired" },
+                        gripper: {
+                            kind: "paired",
+                            peer: { core_node: "core_a", instance_id: "grip_1" },
+                            peer_link_id: "controller"
+                        }
+                    }
                 },
                 node_name: "arm_controller",
                 node_tag: "v1",
@@ -817,6 +824,13 @@ mod tests {
         assert_eq!(
             with_slots.node_instance.pairing_slots.get("arm"),
             Some(&PairingSlotBinding::Unpaired)
+        );
+        assert_eq!(
+            with_slots.node_instance.pairing_slots.get("gripper"),
+            Some(&PairingSlotBinding::Paired {
+                peer: ProducerRef::new("core_a", "grip_1"),
+                peer_link_id: "controller".to_string(),
+            })
         );
         let reparsed: RuntimeConfig =
             serde_json5::from_str(&serde_json5::to_string(&with_slots).unwrap()).unwrap();

@@ -151,10 +151,12 @@ impl Processor {
 
         // Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a
         // slot as already-paired, standing in for the daemon's live
-        // `peer_update` delivery.
+        // `peer_update` delivery. `send_replace`, not `send`: no receiver
+        // exists yet (the first `peer(...)` subscribes later), and `send`
+        // discards the value on a receiver-less channel.
         for (link_id, pin) in &config.peer_pins {
             if let Some(sender) = pairing_slots.get(link_id) {
-                let _ = sender.send(PeerPinState {
+                sender.send_replace(PeerPinState {
                     sequence: 1,
                     pin: Some(pin.clone()),
                 });
@@ -924,6 +926,47 @@ mod tests {
         let args_json = serde_json::to_value(processor.input_arguments()).unwrap();
         assert_eq!(args_json.get("threshold"), Some(&serde_json::json!(0.75)));
         assert_eq!(args_json.get("enabled"), Some(&serde_json::json!(true)));
+    }
+
+    #[test]
+    fn standalone_mode_peer_pin_is_retained_for_late_subscriber() {
+        // `with_peer_pin` seeds the slot before any watch receiver exists
+        // (the first `peer(...)` subscribes later); the seed must land in the
+        // receiver-less channel rather than being discarded.
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        let peppy_config_content = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "my_node",
+                tag: "v1",
+                depends_on: {
+                    pairings: [
+                        { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
+                    ],
+                },
+            },
+            execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+
+        let config = StandaloneConfig::new().with_peer_pin("arm", "core_a", "arm_1", "controller");
+        let processor = Processor::new_standalone(&peppy_config_path, &config)
+            .expect("should create processor");
+
+        let watch_rx = processor
+            .peer_pin_watch("arm")
+            .expect("declared slot should have a channel");
+        let state = watch_rx.borrow();
+        let pin = state
+            .pin
+            .as_ref()
+            .expect("seeded pin should survive until the first subscriber");
+        assert_eq!(pin.producer.core_node, "core_a");
+        assert_eq!(pin.producer.instance_id, "arm_1");
+        assert_eq!(pin.peer_link_id, "controller");
     }
 
     #[test]

@@ -463,10 +463,11 @@ impl MessengerHandle {
     /// learns remote subscriptions through gossip, which is not instantaneous,
     /// so its first reliable publish can be dropped before discovery
     /// propagates; awaiting a match closes that window without a fixed sleep.
-    /// The mock backend polls its in-process subscription map — outside the
-    /// messenger lock, which mock tests share between publisher and
-    /// subscriber (polling under it would starve the very subscribe being
-    /// awaited).
+    /// Both backends wait outside the central messenger lock (mirroring
+    /// [`probe_action_producer`](Self::probe_action_producer)): a wait bounded
+    /// only by `timeout` held under it would starve every other messenger
+    /// call — including, in mock tests that share the handle between
+    /// publisher and subscriber, the very subscribe being awaited.
     pub(crate) async fn wait_for_matching_subscriber(
         &self,
         sender: &TopicWireSender,
@@ -477,8 +478,12 @@ impl MessengerHandle {
             match &messenger.adapter {
                 #[cfg(feature = "zenoh")]
                 MessengerAdapter::Zenoh(adapter) => {
-                    return adapter
-                        .wait_for_topic_subscriber(sender, timeout)
+                    let wait = adapter
+                        .topic_subscriber_wait(sender)
+                        .map_err(Error::PeppyMessagingInterface)?;
+                    drop(messenger);
+                    return wait
+                        .resolve(timeout)
                         .await
                         .map_err(Error::PeppyMessagingInterface);
                 }

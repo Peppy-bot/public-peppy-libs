@@ -4,6 +4,13 @@
 //! it. Requests carry ABSOLUTE slot state with a sequence number; the handler
 //! is idempotent and rejects strictly-stale sequences so a delayed retry can
 //! never roll a slot back.
+//!
+//! Pairing state is daemon-authoritative: stacks are daemon-scoped, so the
+//! only legitimate caller is the node's own daemon, whose identity the node
+//! knows as its bound core_node. Requests stamped with any other core_node
+//! are rejected before touching slot state. (Identity stamps are cooperative
+//! on the fabric — this guards against misdirected or misbehaving callers;
+//! transport-level access control remains the security boundary.)
 
 use crate::encoding::peer_update::{PeerUpdateRequest, PeerUpdateResponse};
 use crate::messaging::{PEER_UPDATE_SERVICE, PeerPinState, SenderTarget, ServiceRequestContext};
@@ -37,11 +44,13 @@ pub async fn listen_for_peer_update(
     )
     .await?;
 
+    let daemon_core_node = core_node.to_string();
     let handle = crate::runtime::spawn(async move {
         endpoint
             .handle_requests(|context| {
                 let slots = Arc::clone(&slots);
-                async move { handle_peer_update_request(context, slots) }
+                let daemon_core_node = daemon_core_node.clone();
+                async move { handle_peer_update_request(context, &daemon_core_node, slots) }
             })
             .await
     });
@@ -50,8 +59,22 @@ pub async fn listen_for_peer_update(
 
 fn handle_peer_update_request(
     context: ServiceRequestContext,
+    daemon_core_node: &str,
     slots: PairingSlotSenders,
 ) -> PeppyResult<Payload> {
+    let caller_core_node = context.message().core_node();
+    if caller_core_node != daemon_core_node {
+        warn!(
+            caller_core_node = %caller_core_node,
+            caller_instance_id = %context.message().instance_id(),
+            "peer_update from a caller outside this node's daemon; rejecting"
+        );
+        return PeerUpdateResponse::rejected(format!(
+            "peer_update is daemon-only: caller core_node '{caller_core_node}' is not this \
+             node's daemon '{daemon_core_node}'"
+        ))
+        .encode();
+    }
     let request = PeerUpdateRequest::decode(&context.message().payload_bytes())?;
     debug!(
         link_id = %request.link_id,

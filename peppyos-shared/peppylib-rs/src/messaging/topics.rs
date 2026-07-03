@@ -199,6 +199,10 @@ impl TopicMessenger {
         to_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
+        debug_assert!(
+            pairing_target.is_pairing(),
+            "subscribe_peer_pinned requires a pairing-shaped target, got {pairing_target:?}"
+        );
         let recv = TopicWireReceiver::new(
             as_core_node,
             as_instance_id,

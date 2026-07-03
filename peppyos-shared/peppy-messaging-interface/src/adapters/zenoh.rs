@@ -1120,51 +1120,25 @@ impl ZenohAdapter {
         keyexpr: &str,
         timeout: std::time::Duration,
     ) -> Result<bool> {
+        self.subscriber_match_wait(keyexpr.to_string())?
+            .resolve(timeout)
+            .await
+    }
+
+    /// Snapshot a detached [`SubscriberMatchWait`] for `keyexpr`. Cheap and
+    /// non-blocking (clones the session handle); the wait itself happens in
+    /// [`SubscriberMatchWait::resolve`], so callers sharing the adapter behind
+    /// a lock can release it before waiting out the timeout (mirrors
+    /// [`ActionLivelinessProbe`]).
+    fn subscriber_match_wait(&self, keyexpr: String) -> Result<SubscriberMatchWait> {
         let session = self
             .session
             .as_ref()
             .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
-        let publisher = session
-            .declare_publisher(keyexpr.to_string())
-            .await
-            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
-
-        if publisher
-            .matching_status()
-            .await
-            .map_err(|e| Error::BackendError(e.to_string()))?
-            .matching()
-        {
-            return Ok(true);
-        }
-        // Subscribe to changes, then re-check once: this closes the race where a
-        // matching subscriber appears between the first query and the listener
-        // being installed.
-        let listener = publisher
-            .matching_listener()
-            .await
-            .map_err(|e| Error::BackendError(e.to_string()))?;
-        if publisher
-            .matching_status()
-            .await
-            .map_err(|e| Error::BackendError(e.to_string()))?
-            .matching()
-        {
-            return Ok(true);
-        }
-
-        let matched = tokio::time::timeout(timeout, async {
-            loop {
-                match listener.recv_async().await {
-                    Ok(status) if status.matching() => return true,
-                    Ok(_) => continue,
-                    Err(_) => return false,
-                }
-            }
+        Ok(SubscriberMatchWait {
+            session: Arc::clone(session),
+            keyexpr,
         })
-        .await
-        .unwrap_or(false);
-        Ok(matched)
     }
 
     /// [`wait_for_matching_subscriber`](Self::wait_for_matching_subscriber) for a
@@ -1174,8 +1148,13 @@ impl ZenohAdapter {
         sender: &TopicWireSender,
         timeout: std::time::Duration,
     ) -> Result<bool> {
-        self.wait_for_matching_subscriber(&ZenohWireFormat::topic_publish(sender), timeout)
-            .await
+        self.topic_subscriber_wait(sender)?.resolve(timeout).await
+    }
+
+    /// [`subscriber_match_wait`](Self::subscriber_match_wait) for a topic,
+    /// building the publish key expression from `sender`.
+    pub fn topic_subscriber_wait(&self, sender: &TopicWireSender) -> Result<SubscriberMatchWait> {
+        self.subscriber_match_wait(ZenohWireFormat::topic_publish(sender))
     }
 
     async fn publish_keyexpr(
@@ -1379,6 +1358,66 @@ pub struct ZenohPublisher {
     session: Arc<zenoh::Session>,
     topic: String,
     qos: ZenohQoS,
+}
+
+/// In-flight wait for a matching subscriber, issued by
+/// [`ZenohAdapter::topic_subscriber_wait`]. Owns its session handle, so
+/// [`resolve`](Self::resolve) runs detached from the adapter and callers can
+/// release any shared adapter lock before waiting out the timeout — the same
+/// issue-then-resolve split as
+/// [`ActionLivelinessProbe`](crate::types::ActionLivelinessProbe).
+pub struct SubscriberMatchWait {
+    session: Arc<zenoh::Session>,
+    keyexpr: String,
+}
+
+impl SubscriberMatchWait {
+    /// Waits until a subscriber whose key expression matches is known to the
+    /// session, or `timeout` elapses; returns whether a match was seen.
+    pub async fn resolve(self, timeout: std::time::Duration) -> Result<bool> {
+        let publisher = self
+            .session
+            .declare_publisher(self.keyexpr)
+            .await
+            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+
+        if publisher
+            .matching_status()
+            .await
+            .map_err(|e| Error::BackendError(e.to_string()))?
+            .matching()
+        {
+            return Ok(true);
+        }
+        // Subscribe to changes, then re-check once: this closes the race where a
+        // matching subscriber appears between the first query and the listener
+        // being installed.
+        let listener = publisher
+            .matching_listener()
+            .await
+            .map_err(|e| Error::BackendError(e.to_string()))?;
+        if publisher
+            .matching_status()
+            .await
+            .map_err(|e| Error::BackendError(e.to_string()))?
+            .matching()
+        {
+            return Ok(true);
+        }
+
+        let matched = tokio::time::timeout(timeout, async {
+            loop {
+                match listener.recv_async().await {
+                    Ok(status) if status.matching() => return true,
+                    Ok(_) => continue,
+                    Err(_) => return false,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        Ok(matched)
+    }
 }
 
 impl ZenohPublisher {

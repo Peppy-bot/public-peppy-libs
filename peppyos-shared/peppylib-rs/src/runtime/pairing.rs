@@ -70,6 +70,7 @@ impl PeerSlot {
 pub struct PeerSubscription {
     rx: mpsc::Receiver<(PeerPin, Message)>,
     watch_rx: watch::Receiver<PeerPinState>,
+    forward_task: crate::runtime::TaskHandle<()>,
 }
 
 impl PeerSubscription {
@@ -88,6 +89,17 @@ impl PeerSubscription {
             // Stale: buffered under a pin that has since been swapped or
             // cleared.
         }
+    }
+}
+
+/// Aborting the forwarding task here (rather than relying on its `tx.send`
+/// erroring) matters because the task only touches `tx` when a message
+/// arrives: an unpaired or quiet slot leaves it parked on
+/// `watch_rx.changed()`, where it would outlive the dropped subscription —
+/// wire subscription included — until the next pin update.
+impl Drop for PeerSubscription {
+    fn drop(&mut self) {
+        self.forward_task.abort();
     }
 }
 
@@ -136,7 +148,7 @@ pub fn subscribe_peer_with_watch(
 ) -> PeerSubscription {
     let (tx, rx) = mpsc::channel(PEER_CHANNEL_CAPACITY);
     let task_watch_rx = watch_rx.clone();
-    crate::runtime::spawn(forward_peer_messages(
+    let forward_task = crate::runtime::spawn(forward_peer_messages(
         messenger,
         as_core_node,
         as_instance_id,
@@ -146,13 +158,17 @@ pub fn subscribe_peer_with_watch(
         qos,
         tx,
     ));
-    PeerSubscription { rx, watch_rx }
+    PeerSubscription {
+        rx,
+        watch_rx,
+        forward_task,
+    }
 }
 
 /// The eager forwarding loop: keeps the wire subscription converged with the
 /// slot's pin state and forwards each received message tagged with the pin
 /// it arrived under. Ends when the slot channel closes (runtime teardown) or
-/// the receiving `PeerSubscription` is dropped.
+/// the receiving `PeerSubscription` is dropped (its `Drop` aborts this task).
 #[allow(clippy::too_many_arguments)]
 async fn forward_peer_messages(
     messenger: MessengerHandle,
