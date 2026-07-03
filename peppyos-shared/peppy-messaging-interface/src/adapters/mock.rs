@@ -125,6 +125,31 @@ impl Default for MockAdapter {
     }
 }
 
+impl MockAdapter {
+    /// Clone of the shared subscription map. Exposed so matching-status
+    /// waits (peppylib's `wait_for_matching_subscriber`) can poll for a
+    /// subscriber WITHOUT holding the owning messenger's lock — in-process
+    /// mock tests share one messenger between publisher and subscriber, so
+    /// polling under that lock would starve the subscribe it waits for.
+    pub fn subscription_map(&self) -> SubscriptionMap {
+        Arc::clone(&self.subscriptions)
+    }
+
+    /// Mock counterpart of Zenoh's publisher matching status: does any LIVE
+    /// subscription intersect `sender`'s publish keyexpr? Dropped
+    /// subscriptions leave stale senders in the map by design (see
+    /// `subscribe_keyexpr`); they are excluded here so a wait cannot match a
+    /// subscription that no longer receives.
+    pub fn topic_has_matching_subscriber(map: &SubscriptionMap, sender: &TopicWireSender) -> bool {
+        let publish_keyexpr = ZenohWireFormat::topic_publish(sender);
+        let subscriptions = map.lock().unwrap();
+        subscriptions.iter().any(|(declared, entries)| {
+            Self::key_exprs_intersect(declared, &publish_keyexpr)
+                && entries.iter().any(|entry| !entry.tx.is_disconnected())
+        })
+    }
+}
+
 impl MessengerBackend for MockAdapter {
     async fn start_session(&mut self) -> Result<()> {
         self.is_session_connected = true;

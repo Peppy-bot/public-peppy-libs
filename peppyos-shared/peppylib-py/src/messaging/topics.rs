@@ -138,8 +138,13 @@ impl PyTopicMessenger {
     /// ONCE here, at declaration; every subsequent `publisher.publish(...)` is
     /// lock-free. Declare once, then publish per message (a camera streaming
     /// frames, a sensor at rate).
+    ///
+    /// `link_id` binds the publisher under a concrete producer-side link_id
+    /// wire segment (pairing slot publishers pass their own slot link_id);
+    /// `None` falls back to the reserved default `_` segment.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, qos, link_id=None))]
+    #[allow(clippy::too_many_arguments)]
     fn declare_publisher<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -148,6 +153,7 @@ impl PyTopicMessenger {
         as_target: PySenderTarget,
         as_topic_name: String,
         qos: PyQoSProfile,
+        link_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let as_target = as_target.into_inner();
@@ -157,7 +163,7 @@ impl PyTopicMessenger {
                 &as_core_node,
                 &as_instance_id,
                 as_target,
-                None,
+                link_id.as_deref(),
                 &as_topic_name,
                 qos.into(),
             )

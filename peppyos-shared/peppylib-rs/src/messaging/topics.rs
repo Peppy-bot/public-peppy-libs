@@ -180,6 +180,38 @@ impl TopicMessenger {
         Ok(subscription)
     }
 
+    /// Subscribe to one topic of a pairing, pinned to the current peer's full
+    /// wire triple: `(core_node, instance_id)` plus the link_id of the peer's
+    /// own slot (the producer-side link_id segment of its publishes). Unlike
+    /// [`Self::subscribe`], the link_id slot is a literal, never a wildcard —
+    /// an unpaired slot has no wire subscription at all, so there is no
+    /// wildcard shape to build. The `from_any` reservation machinery is
+    /// deliberately not involved: pairing traffic rides the `pairing` wire
+    /// discriminator, which no interface subscription can match.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn subscribe_peer_pinned(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        pairing_target: SenderTarget,
+        peer: &ProducerRef,
+        peer_link_id: &str,
+        to_topic: &str,
+        qos: QoSProfile,
+    ) -> Result<Subscription> {
+        let recv = TopicWireReceiver::new(
+            as_core_node,
+            as_instance_id,
+            Some(peer.core_node.as_str()),
+            Some(peer.instance_id.as_str()),
+            Some(pairing_target),
+            Some(peer_link_id),
+            to_topic,
+        )?;
+        let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
+        Ok(Subscription::new(subscription))
+    }
+
     /// Waits until a subscriber for this topic is known to the publisher's
     /// session, or `timeout` elapses; returns whether a match was observed.
     ///
@@ -197,8 +229,38 @@ impl TopicMessenger {
         as_topic_name: &str,
         timeout: std::time::Duration,
     ) -> Result<bool> {
-        let sender =
-            TopicWireSender::new(as_core_node, as_instance_id, as_target, None, as_topic_name)?;
+        Self::wait_for_subscriber_with_link_id(
+            messenger,
+            as_core_node,
+            as_instance_id,
+            as_target,
+            None,
+            as_topic_name,
+            timeout,
+        )
+        .await
+    }
+
+    /// [`Self::wait_for_subscriber`] for a publisher bound under a concrete
+    /// producer-side `link_id` (a pairing slot publisher, or any
+    /// `--link-id`-scoped publisher): the match is checked against the same
+    /// keyexpr the publisher will emit on, link_id segment included.
+    pub async fn wait_for_subscriber_with_link_id(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        as_target: SenderTarget,
+        link_id: Option<&str>,
+        as_topic_name: &str,
+        timeout: std::time::Duration,
+    ) -> Result<bool> {
+        let sender = TopicWireSender::new(
+            as_core_node,
+            as_instance_id,
+            as_target,
+            link_id,
+            as_topic_name,
+        )?;
         messenger
             .wait_for_matching_subscriber(&sender, timeout)
             .await

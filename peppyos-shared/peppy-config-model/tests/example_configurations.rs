@@ -62,4 +62,3 @@ fn test_example_node_configs_parse() {
         );
     }
 }
-

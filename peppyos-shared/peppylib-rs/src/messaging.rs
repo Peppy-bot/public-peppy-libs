@@ -3,6 +3,7 @@ mod tests;
 
 mod actions;
 mod discovery;
+mod pairing;
 mod services;
 mod topics;
 
@@ -17,6 +18,7 @@ pub use actions::{
     encode_cancel_ack, generate_goal_id, unwrap_goal_payload, wrap_goal_payload,
     wrap_result_outcome,
 };
+pub use pairing::{PeerInfo, PeerPin, PeerPinState};
 pub use services::{
     ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder, ServiceTarget,
 };
@@ -40,8 +42,8 @@ pub(crate) use filter::resolve_consumer_filter;
 // peppylib's own messaging implementation; each submodule imports them directly
 // from `pmi::`.
 pub use pmi::{
-    ActionLivelinessToken, ActionWireSender, InterfaceIdentifier, NodeIdentifier, SenderTarget,
-    SenderTargetError,
+    ActionLivelinessToken, ActionWireSender, InterfaceIdentifier, NodeIdentifier,
+    PairingIdentifier, SenderTarget, SenderTargetError,
 };
 
 use crate::error::{Error, Result};
@@ -75,6 +77,11 @@ pub const SHUTDOWN_SERVICE: &str = "shutdown";
 /// `peppy stack benchmark` to normalize cross-host producer timestamps. Like
 /// `node_health`, this triggers no user code.
 pub const CLOCK_OFFSET_SERVICE: &str = "clock_offset";
+/// Framework service every node exposes: the daemon delivers absolute
+/// pairing-slot state (pair, re-pin, clear) over it. Registered pre-setup —
+/// a node may block in its `setup_fn` forever, and pairing delivery must not
+/// depend on user code. Triggers no user code.
+pub const PEER_UPDATE_SERVICE: &str = "peer_update";
 
 /// Timeout for a single reachability probe sent by `is_reachable`.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
@@ -450,26 +457,43 @@ impl MessengerHandle {
             .map_err(Error::PeppyMessagingInterface)
     }
 
-    /// Waits (deterministically, via Zenoh matching status) until a subscriber
-    /// for `sender`'s topic is known to this session, or `timeout` elapses;
-    /// returns whether a match was observed. A freshly-connected peer learns
-    /// remote subscriptions through gossip, which is not instantaneous, so its
-    /// first reliable publish can be dropped before discovery propagates; awaiting
-    /// a match closes that window without a fixed sleep. The mock backend has no
-    /// propagation delay and returns `true` immediately.
+    /// Waits (deterministically, via the backend's matching status) until a
+    /// subscriber for `sender`'s topic is known to this session, or `timeout`
+    /// elapses; returns whether a match was observed. A freshly-connected peer
+    /// learns remote subscriptions through gossip, which is not instantaneous,
+    /// so its first reliable publish can be dropped before discovery
+    /// propagates; awaiting a match closes that window without a fixed sleep.
+    /// The mock backend polls its in-process subscription map — outside the
+    /// messenger lock, which mock tests share between publisher and
+    /// subscriber (polling under it would starve the very subscribe being
+    /// awaited).
     pub(crate) async fn wait_for_matching_subscriber(
         &self,
         sender: &TopicWireSender,
         timeout: Duration,
     ) -> Result<bool> {
-        let messenger = self.messenger.lock().await;
-        match &messenger.adapter {
-            #[cfg(feature = "zenoh")]
-            MessengerAdapter::Zenoh(adapter) => adapter
-                .wait_for_topic_subscriber(sender, timeout)
-                .await
-                .map_err(Error::PeppyMessagingInterface),
-            _ => Ok(true),
+        let subscription_map = {
+            let messenger = self.messenger.lock().await;
+            match &messenger.adapter {
+                #[cfg(feature = "zenoh")]
+                MessengerAdapter::Zenoh(adapter) => {
+                    return adapter
+                        .wait_for_topic_subscriber(sender, timeout)
+                        .await
+                        .map_err(Error::PeppyMessagingInterface);
+                }
+                MessengerAdapter::Mock(adapter) => adapter.subscription_map(),
+            }
+        };
+        let deadline = Instant::now() + timeout;
+        loop {
+            if pmi::MockAdapter::topic_has_matching_subscriber(&subscription_map, sender) {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            sleep(Duration::from_millis(5)).await;
         }
     }
 

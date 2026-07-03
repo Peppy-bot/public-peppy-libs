@@ -20,6 +20,8 @@ pub enum PeppySchema {
     LauncherV1,
     #[serde(rename = "interface/v1")]
     InterfaceV1,
+    #[serde(rename = "pairing/v1")]
+    PairingV1,
 }
 
 impl fmt::Display for PeppySchema {
@@ -28,6 +30,7 @@ impl fmt::Display for PeppySchema {
             PeppySchema::NodeV1 => "node/v1",
             PeppySchema::LauncherV1 => "launcher/v1",
             PeppySchema::InterfaceV1 => "interface/v1",
+            PeppySchema::PairingV1 => "pairing/v1",
         };
         f.write_str(s)
     }
@@ -39,10 +42,7 @@ impl PeppySchema {
     /// `#[serde(deserialize_with = ...)]` guards, both here and in
     /// daemon-side document parsers (peppyos `daemon-config`); public so
     /// every parser shares this one guard and its error text.
-    pub fn deserialize_expecting<'de, D>(
-        deserializer: D,
-        expected: Self,
-    ) -> Result<Self, D::Error>
+    pub fn deserialize_expecting<'de, D>(deserializer: D, expected: Self) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {

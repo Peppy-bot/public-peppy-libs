@@ -155,6 +155,23 @@ pub enum SlotBinding {
     FromAnyUnbound,
 }
 
+/// State of one pairing slot (a `depends_on.pairings` entry) of a node
+/// instance. Deliberately NOT a [`SlotBinding`] variant: slot bindings feed
+/// the immutable consumer-filter cache, while a pairing slot is live-mutable
+/// over the node's lifetime (the daemon delivers pins via the `peer_update`
+/// service). In boot configs every declared slot is `Unpaired` — all pairs,
+/// including those requested at `node run`, arrive over the live channel
+/// after the instance commits to Running.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PairingSlotBinding {
+    Paired {
+        peer: ProducerRef,
+        peer_link_id: String,
+    },
+    Unpaired,
+}
+
 /// Represents a node instance at runtime. Used by RuntimeConfig to identify the running node and its configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -173,6 +190,15 @@ pub struct NodeInstanceConfig {
     /// [`crate::runtime::ConsumerFilter`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: BTreeMap<String, SlotBinding>,
+    /// Boot-time state of every pairing slot declared in
+    /// `depends_on.pairings`, keyed by slot link_id. Always maps each
+    /// declared slot to [`PairingSlotBinding::Unpaired`] — pairs requested
+    /// via `--pair` / launcher `pairings:` are delivered live over the
+    /// `peer_update` service after the instance commits to Running, so
+    /// there is exactly one delivery mechanism. Empty when the manifest
+    /// declares no pairings.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pairing_slots: BTreeMap<String, PairingSlotBinding>,
 }
 
 impl NodeInstanceConfig {
@@ -186,6 +212,7 @@ impl NodeInstanceConfig {
             arguments: BTreeMap::new(),
             framework: ResolvedFramework::default(),
             slot_bindings: BTreeMap::new(),
+            pairing_slots: BTreeMap::new(),
         }
     }
 }
@@ -727,6 +754,76 @@ mod tests {
                 "half-address payload must fail to parse, but parsed: {payload}"
             );
         }
+    }
+
+    /// Pin the wire contract of `PairingSlotBinding`, mirroring the
+    /// `SlotBinding` contract test: internally tagged on `kind`, snake_case,
+    /// full `(core_node, instance_id)` peer address plus the peer's slot
+    /// link_id. This shape travels boot configs and `stack list` output.
+    #[test]
+    fn pairing_slot_binding_serde_contract() {
+        use serde_json::json;
+
+        let cases = [
+            (
+                PairingSlotBinding::Paired {
+                    peer: ProducerRef::new("core_a", "arm_1"),
+                    peer_link_id: "controller".to_string(),
+                },
+                json!({
+                    "kind": "paired",
+                    "peer": { "core_node": "core_a", "instance_id": "arm_1" },
+                    "peer_link_id": "controller"
+                }),
+            ),
+            (PairingSlotBinding::Unpaired, json!({ "kind": "unpaired" })),
+        ];
+        for (value, expected) in cases {
+            let encoded = serde_json::to_value(&value).expect("serialize PairingSlotBinding");
+            assert_eq!(encoded, expected, "PairingSlotBinding JSON shape changed");
+            let decoded: PairingSlotBinding =
+                serde_json::from_value(expected).expect("deserialize PairingSlotBinding");
+            assert_eq!(decoded, value, "PairingSlotBinding did not round-trip");
+        }
+    }
+
+    /// A runtime config written before `pairing_slots` existed parses with an
+    /// empty map, and an empty map is omitted on serialize so existing
+    /// configs stay byte-identical.
+    #[test]
+    fn pairing_slots_default_and_round_trip() {
+        let legacy = runtime_config_from_json("camera_front").unwrap();
+        assert!(legacy.node_instance.pairing_slots.is_empty());
+        let serialized = serde_json5::to_string(&legacy).unwrap();
+        assert!(
+            !serialized.contains("pairing_slots"),
+            "empty pairing_slots should not be serialized: {serialized}"
+        );
+
+        let with_slots: RuntimeConfig = serde_json5::from_str(
+            r#"{
+                messaging_host: "127.0.0.1",
+                messaging_port: 7448,
+                node_instance: {
+                    instance_id: "ctrl_1",
+                    pairing_slots: { arm: { kind: "unpaired" } }
+                },
+                node_name: "arm_controller",
+                node_tag: "v1",
+                bound_core_node: "core_node"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            with_slots.node_instance.pairing_slots.get("arm"),
+            Some(&PairingSlotBinding::Unpaired)
+        );
+        let reparsed: RuntimeConfig =
+            serde_json5::from_str(&serde_json5::to_string(&with_slots).unwrap()).unwrap();
+        assert_eq!(
+            reparsed.node_instance.pairing_slots,
+            with_slots.node_instance.pairing_slots
+        );
     }
 
     #[test]

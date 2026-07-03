@@ -78,6 +78,7 @@ struct RepoRefreshResult {
     totalNodesFound @2 :UInt32;
     totalLaunchersFound @3 :UInt32;
     totalInterfacesFound @4 :UInt32;
+    totalPairingsFound @5 :UInt32;
 }
 
 # ── Repo List (request-response) ────────────────────────────────

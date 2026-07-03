@@ -1,9 +1,11 @@
 mod builder;
 mod node_runner;
+mod pairing;
 mod processor;
 
 pub use builder::{NodeBuilder, NodeContext, StandaloneConfig};
 pub use node_runner::NodeRunner;
+pub use pairing::{PeerSlot, PeerSubscription, subscribe_peer, subscribe_peer_with_watch};
 pub use processor::Processor;
 
 use std::fmt;

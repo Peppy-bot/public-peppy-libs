@@ -1,14 +1,17 @@
 use std::path::Path;
 
 use crate::error::{Error, ParameterDeserializationError, Result};
+use crate::messaging::{PeerPin, PeerPinState};
 use config::{
     AnyType, NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
     node::{NodeConfig, load_standalone_node_config},
-    runtime::{Name, NodeInstanceConfig, RuntimeConfig},
+    runtime::{Name, NodeInstanceConfig, PairingSlotBinding, RuntimeConfig},
     validate_node_arguments,
 };
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use tokio::sync::watch;
 
 use super::builder::StandaloneConfig;
 
@@ -22,6 +25,13 @@ pub struct Processor {
     /// plus the manifest's `depends_on`; cached so subscribe / poll /
     /// send_goal call sites return a borrowed reference cheaply.
     consumer_filters: BTreeMap<String, crate::messaging::ConsumerFilter>,
+    /// One live pairing-slot channel per `depends_on.pairings` entry, keyed
+    /// by the slot's link_id. The map's key set is fixed at startup (slots
+    /// are declared in the manifest); only the channel values move — the
+    /// daemon mutates them over the `peer_update` service, and per-slot
+    /// `PeerSubscription`s / `PeerSlot`s observe them. Behind an `Arc` so
+    /// `Processor::clone` shares the live channels instead of forking them.
+    pairing_slots: Arc<BTreeMap<String, watch::Sender<PeerPinState>>>,
 }
 
 impl Processor {
@@ -73,11 +83,13 @@ impl Processor {
         )?;
 
         let consumer_filters = build_consumer_filters(&runtime_config, &node_config);
+        let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
 
         Ok(Self {
             runtime_config,
             validated_arguments,
             consumer_filters,
+            pairing_slots,
         })
     }
 
@@ -135,11 +147,30 @@ impl Processor {
         )?;
 
         let consumer_filters = build_consumer_filters(&runtime_config, &node_config);
+        let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
+
+        // Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a
+        // slot as already-paired, standing in for the daemon's live
+        // `peer_update` delivery.
+        for (link_id, pin) in &config.peer_pins {
+            if let Some(sender) = pairing_slots.get(link_id) {
+                let _ = sender.send(PeerPinState {
+                    sequence: 1,
+                    pin: Some(pin.clone()),
+                });
+            } else {
+                tracing::warn!(
+                    link_id = %link_id,
+                    "StandaloneConfig peer pin names an undeclared pairing slot; ignoring"
+                );
+            }
+        }
 
         Ok(Self {
             runtime_config,
             validated_arguments,
             consumer_filters,
+            pairing_slots,
         })
     }
 
@@ -254,6 +285,59 @@ impl Processor {
     pub fn pinned_producer_for(&self, link_id: &str) -> Option<crate::messaging::ProducerRef> {
         self.consumer_filter(link_id).pinned_target().cloned()
     }
+
+    /// The live watch channel for the pairing slot declared at `link_id`, or
+    /// `None` when the manifest declares no such slot. Used by
+    /// [`crate::runtime::NodeRunner::peer`] and the generated
+    /// `subscribe_peer` seam to observe pins; the `peer_update` service uses
+    /// the sender side via [`Self::pairing_slot_senders`].
+    pub(crate) fn peer_pin_watch(&self, link_id: &str) -> Option<watch::Receiver<PeerPinState>> {
+        self.pairing_slots.get(link_id).map(|tx| tx.subscribe())
+    }
+
+    /// Shared handle to all pairing-slot channels, handed to the pre-setup
+    /// `peer_update` service listener.
+    pub(crate) fn pairing_slot_senders(
+        &self,
+    ) -> Arc<BTreeMap<String, watch::Sender<PeerPinState>>> {
+        Arc::clone(&self.pairing_slots)
+    }
+}
+
+/// Seed one watch channel per pairing slot declared in
+/// `depends_on.pairings`. The initial value comes from the boot config's
+/// `pairing_slots` map when present (the daemon always ships `Unpaired` —
+/// pairs arrive live over `peer_update` — but the mapping is honored so the
+/// boot contract stays a plain data translation), defaulting to `Unpaired`.
+fn build_pairing_slots(
+    runtime_config: &RuntimeConfig,
+    node_config: &NodeConfig,
+) -> Arc<BTreeMap<String, watch::Sender<PeerPinState>>> {
+    let mut out = BTreeMap::new();
+    if let Some(deps) = node_config.manifest.depends_on.as_ref() {
+        for dep in &deps.pairings {
+            let initial = match runtime_config
+                .node_instance
+                .pairing_slots
+                .get(dep.link_id.as_str())
+            {
+                Some(PairingSlotBinding::Paired { peer, peer_link_id }) => PeerPinState {
+                    sequence: 0,
+                    pin: Some(PeerPin {
+                        producer: crate::messaging::ProducerRef::new(
+                            peer.core_node.clone(),
+                            peer.instance_id.clone(),
+                        ),
+                        peer_link_id: peer_link_id.clone(),
+                    }),
+                },
+                Some(PairingSlotBinding::Unpaired) | None => PeerPinState::unpaired(),
+            };
+            let (tx, _rx) = watch::channel(initial);
+            out.insert(dep.link_id.clone(), tx);
+        }
+    }
+    Arc::new(out)
 }
 
 /// Pre-resolve a [`ConsumerFilter`] for every `link_id` declared in

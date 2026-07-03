@@ -8,7 +8,7 @@ use capnp::message::Builder;
 use config::node::NodeConfig;
 use config::runtime::SlotBinding;
 
-use crate::graph::{InstanceState, NodeStage};
+use crate::graph::{InstanceState, NodeStage, SerializedPairingSlot};
 use crate::node_capnp;
 use crate::{Payload, Result};
 
@@ -69,6 +69,11 @@ pub struct NodeInstanceInfo {
     /// lets the launcher / CLI cross-check newly-staged binding plans
     /// against what running consumers have already claimed.
     pub slot_bindings: BTreeMap<String, SlotBinding>,
+    /// Live pairing-slot state per `depends_on.pairings` entry, mirroring
+    /// [`crate::graph::SerializedInstance::pairing_slots`]. Empty when the
+    /// node declares no pairings. Lets the CLI's `--pair` preflight see
+    /// which slots of a running instance are already claimed.
+    pub pairing_slots: BTreeMap<String, SerializedPairingSlot>,
 }
 
 /// Body of a successful `node_info` lookup — carries all metadata about a
@@ -153,6 +158,17 @@ impl NodeInfoResponse {
                                 })?
                             };
                             entry.set_slot_bindings_json(&slot_bindings_json);
+                            let pairing_slots_json = if inst.pairing_slots.is_empty() {
+                                String::new()
+                            } else {
+                                serde_json5::to_string(&inst.pairing_slots).map_err(|e| {
+                                    crate::Error::Encoding(format!(
+                                        "failed to serialize pairing_slots for instance `{}`: {}",
+                                        inst.instance_id, e
+                                    ))
+                                })?
+                            };
+                            entry.set_pairing_slots_json(&pairing_slots_json);
                         }
                     }
                     // Only set the field when present; leaving it unset writes
@@ -212,11 +228,24 @@ impl NodeInfoResponse {
                                 ))
                             })?
                         };
+                    let pairing_slots_json = entry.get_pairing_slots_json()?.to_str()?;
+                    let pairing_slots: BTreeMap<String, SerializedPairingSlot> =
+                        if pairing_slots_json.is_empty() {
+                            BTreeMap::new()
+                        } else {
+                            serde_json5::from_str(pairing_slots_json).map_err(|e| {
+                                crate::Error::Decoding(format!(
+                                    "failed to deserialize pairing_slots: {}",
+                                    e
+                                ))
+                            })?
+                        };
                     instances.push(NodeInstanceInfo {
                         instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
                         state,
                         healthy: entry.get_healthy(),
                         slot_bindings,
+                        pairing_slots,
                     });
                 }
                 let add_log_path =
@@ -324,6 +353,33 @@ mod tests {
         ]
         .into_iter()
         .collect();
+        let pairing_slots_a: BTreeMap<String, SerializedPairingSlot> = [
+            (
+                "arm".to_string(),
+                SerializedPairingSlot {
+                    pairing_name: "arm_link".to_string(),
+                    pairing_tag: "v1".to_string(),
+                    role: "controller".to_string(),
+                    optional: false,
+                    binding: config::runtime::PairingSlotBinding::Paired {
+                        peer: ProducerRef::new("core_a", "arm_1"),
+                        peer_link_id: "controller".to_string(),
+                    },
+                },
+            ),
+            (
+                "gripper".to_string(),
+                SerializedPairingSlot {
+                    pairing_name: "gripper_link".to_string(),
+                    pairing_tag: "v1".to_string(),
+                    role: "controller".to_string(),
+                    optional: true,
+                    binding: config::runtime::PairingSlotBinding::Unpaired,
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
         let info = NodeInfo {
             config: sample_config_for_roundtrip(),
             config_integrity: "0".repeat(64),
@@ -334,12 +390,14 @@ mod tests {
                     state: InstanceState::Running,
                     healthy: true,
                     slot_bindings: bindings_a.clone(),
+                    pairing_slots: pairing_slots_a.clone(),
                 },
                 NodeInstanceInfo {
                     instance_id: "inst-no-bindings".to_string(),
                     state: InstanceState::Starting,
                     healthy: false,
                     slot_bindings: BTreeMap::new(),
+                    pairing_slots: BTreeMap::new(),
                 },
             ],
             add_log_path: None,
@@ -364,6 +422,14 @@ mod tests {
                 assert!(
                     info.instances[1].slot_bindings.is_empty(),
                     "empty slot_bindings should round-trip as empty"
+                );
+                assert_eq!(
+                    info.instances[0].pairing_slots, pairing_slots_a,
+                    "pairing_slots should round-trip for the first instance"
+                );
+                assert!(
+                    info.instances[1].pairing_slots.is_empty(),
+                    "empty pairing_slots should round-trip as empty"
                 );
                 assert!(
                     info.instances[0].healthy,

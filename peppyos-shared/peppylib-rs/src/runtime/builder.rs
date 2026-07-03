@@ -11,6 +11,7 @@ use crate::runtime::node_runner::NodeRunner;
 use crate::runtime::processor::Processor;
 use crate::services::clock_offset::listen_for_clock_offset;
 use crate::services::health::listen_for_node_health;
+use crate::services::peer_update::listen_for_peer_update;
 use crate::services::ready::listen_for_node_ready;
 use crate::services::shutdown::listen_for_shutdown;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, NODE_CONFIG_FILE};
@@ -44,6 +45,10 @@ pub struct StandaloneConfig {
     pub messaging_host: Option<String>,
     /// Messaging port (defaults to DEFAULT_ZENOH_PORT)
     pub messaging_port: Option<u16>,
+    /// Daemon-less pairing pins: pre-pair a declared pairing slot (keyed by
+    /// its link_id) to a known peer, standing in for the daemon's live
+    /// `peer_update` delivery during standalone development.
+    pub peer_pins: std::collections::BTreeMap<String, crate::messaging::PeerPin>,
 }
 
 impl StandaloneConfig {
@@ -104,6 +109,31 @@ impl StandaloneConfig {
     pub fn with_messaging(mut self, host: impl Into<String>, port: u16) -> Self {
         self.messaging_host = Some(host.into());
         self.messaging_port = Some(port);
+        self
+    }
+
+    /// Pre-pair the pairing slot at `link_id` to the peer at
+    /// `(peer_core_node, peer_instance_id)` whose complementary slot is
+    /// `peer_link_id`. Standalone-mode stand-in for the daemon's `--pair`
+    /// delivery; ignored (with a warning) if the manifest declares no such
+    /// slot.
+    pub fn with_peer_pin(
+        mut self,
+        link_id: impl Into<String>,
+        peer_core_node: impl Into<String>,
+        peer_instance_id: impl Into<String>,
+        peer_link_id: impl Into<String>,
+    ) -> Self {
+        self.peer_pins.insert(
+            link_id.into(),
+            crate::messaging::PeerPin {
+                producer: crate::messaging::ProducerRef::new(
+                    peer_core_node.into(),
+                    peer_instance_id.into(),
+                ),
+                peer_link_id: peer_link_id.into(),
+            },
+        );
         self
     }
 
@@ -370,6 +400,7 @@ where
                     Arc::clone(&node_runner),
                     pre_setup.ready_handle,
                     pre_setup.shutdown_handle,
+                    pre_setup.peer_update_handle,
                     shutdown_rx,
                     cancellation_token.clone(),
                 )
@@ -501,6 +532,7 @@ fn spawn_signal_to_cancel_bridge(token: CancellationToken) -> TaskHandle<()> {
 struct PreSetupHandles {
     ready_handle: TaskHandle<Result<()>>,
     shutdown_handle: TaskHandle<Result<()>>,
+    peer_update_handle: TaskHandle<Result<()>>,
     shutdown_rx: oneshot::Receiver<()>,
 }
 
@@ -517,6 +549,18 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
     )
     .await?;
 
+    // Pairing delivery must be reachable before (and regardless of) user
+    // setup: a node may block in `setup_fn` forever, and the daemon pushes
+    // pairs the moment the instance commits to Running.
+    let peer_update_handle = listen_for_peer_update(
+        node_runner.messenger(),
+        processor.bound_core_node(),
+        processor.bound_instance_id(),
+        as_identity.clone(),
+        processor.pairing_slot_senders(),
+    )
+    .await?;
+
     let (shutdown_handle, shutdown_rx) = listen_for_shutdown(
         node_runner.messenger(),
         processor.bound_core_node(),
@@ -528,6 +572,7 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
     Ok(PreSetupHandles {
         ready_handle,
         shutdown_handle,
+        peer_update_handle,
         shutdown_rx,
     })
 }
@@ -536,6 +581,7 @@ async fn run_post_setup_services(
     node_runner: Arc<NodeRunner>,
     ready_handle: TaskHandle<Result<()>>,
     shutdown_handle: TaskHandle<Result<()>>,
+    peer_update_handle: TaskHandle<Result<()>>,
     mut shutdown_rx: oneshot::Receiver<()>,
     cancellation_token: CancellationToken,
 ) -> Result<()> {
@@ -577,6 +623,7 @@ async fn run_post_setup_services(
         ready_handle,
         health_handle,
         clock_offset_handle,
+        peer_update_handle,
         shutdown_handle,
     ];
 

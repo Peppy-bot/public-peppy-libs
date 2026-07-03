@@ -22,6 +22,11 @@ fn iface(name: &str, tag: &str) -> SenderTarget {
     SenderTarget::interface(name, tag).expect("test interface target should be valid")
 }
 
+/// Test-local shorthand: build a pairing-shaped target. Panics on invalid input.
+fn pairing(name: &str, tag: &str) -> SenderTarget {
+    SenderTarget::pairing(name, tag).expect("test pairing target should be valid")
+}
+
 /// Test-local shorthand: encoded bytes for a default UserRequest query
 /// attachment (no exclusion set). Lets selector-shape tests focus on
 /// keyexpr parsing without restating the attachment payload at every
@@ -78,6 +83,72 @@ fn topic_publish_with_concrete_link_id() {
         ZenohWireFormat::topic_publish(&sender),
         "*/core_a/*/inst_1/topic/interface/depth_camera/v1/wrist_left_camera/video_stream"
     );
+}
+
+#[test]
+fn topic_publish_pairing_target_stamps_own_slot_link_id() {
+    // Pairing publishers are slot-scoped: the link_id segment carries the
+    // publisher's OWN slot link_id, never the default `_` sentinel.
+    let sender = TopicWireSender {
+        as_core_node: seg("core_a"),
+        as_instance_id: seg("arm_1"),
+        as_target: pairing("arm_link", "v1"),
+        link_id: seg("controller"),
+        as_topic_name: seg("joint_states"),
+    };
+    assert_eq!(
+        ZenohWireFormat::topic_publish(&sender),
+        "*/core_a/*/arm_1/topic/pairing/arm_link/v1/controller/joint_states"
+    );
+}
+
+#[test]
+fn topic_subscribe_pairing_full_triple_pin() {
+    // A paired subscription pins all three peer coordinates: core_node,
+    // instance_id, and the PEER's slot link_id — no wildcard anywhere.
+    let receiver = TopicWireReceiver {
+        as_core_node: seg("core_a"),
+        as_instance_id: seg("ctrl_1"),
+        from_core_node: Some(seg("core_a")),
+        from_instance_id: Some(seg("arm_1")),
+        from_target: Some(pairing("arm_link", "v1")),
+        from_link_id: Some(seg("controller")),
+        to_topic: seg("joint_states"),
+        defers_secondary_drop: false,
+    };
+    assert_eq!(
+        ZenohWireFormat::topic_subscribe(&receiver),
+        "core_a/core_a/ctrl_1/arm_1/topic/pairing/arm_link/v1/controller/joint_states"
+    );
+}
+
+#[test]
+fn topic_pairing_and_interface_keyexprs_never_match() {
+    // Lock-in guard: identical (name, tag, topic) under pairing vs interface
+    // discriminators produce disjoint keyexprs, so a `from_any` interface
+    // subscription (wildcarded elsewhere, `interface` literal at the
+    // discriminator slot) can never receive pairing traffic.
+    let pairing_publish = ZenohWireFormat::topic_publish(&TopicWireSender {
+        as_core_node: seg("core_a"),
+        as_instance_id: seg("arm_1"),
+        as_target: pairing("arm_link", "v1"),
+        link_id: seg("controller"),
+        as_topic_name: seg("joint_states"),
+    });
+    let from_any_subscribe = ZenohWireFormat::topic_subscribe(&TopicWireReceiver {
+        as_core_node: seg("core_a"),
+        as_instance_id: seg("obs_1"),
+        from_core_node: None,
+        from_instance_id: None,
+        from_target: Some(iface("arm_link", "v1")),
+        from_link_id: None,
+        to_topic: seg("joint_states"),
+        defers_secondary_drop: false,
+    });
+    let publish_discriminator = pairing_publish.split('/').nth(5);
+    let subscribe_discriminator = from_any_subscribe.split('/').nth(5);
+    assert_eq!(publish_discriminator, Some("pairing"));
+    assert_eq!(subscribe_discriminator, Some("interface"));
 }
 
 #[test]

@@ -76,8 +76,8 @@ pub mod node {
         DependencySpec, DependsOn, EmittedTopic, Execution, ExposedAction, ExposedService,
         InterfaceConformanceEdge, InterfaceKind, Interfaces, Manifest, MessageFormat,
         MessageSizeEstimate, NodeConfig, NodeConfigParser, NodeDependency, ObjectKind,
-        ObjectSchema, PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces,
-        Toolchain, TopicInterfaces, TypeToken, collect_dependency_specs,
+        ObjectSchema, PairingDependency, PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType,
+        ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, collect_dependency_specs,
         collect_interface_conformance_edges, estimate_serialized_size, is_blocked_mount_source,
         load_standalone_node_config, node_conforms_to, validate_dependency_specs,
     };
@@ -86,8 +86,8 @@ pub mod node {
 // -- runtime --
 pub mod runtime {
     pub use crate::internal::runtime::{
-        DiscoveryConfig, LifecycleRuntimeConfig, Name, NodeInstanceConfig, ProducerRef,
-        ResolvedFramework, RuntimeConfig, SlotBinding,
+        DiscoveryConfig, LifecycleRuntimeConfig, Name, NodeInstanceConfig, PairingSlotBinding,
+        ProducerRef, ResolvedFramework, RuntimeConfig, SlotBinding,
     };
 }
 

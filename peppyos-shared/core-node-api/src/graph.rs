@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use config::runtime::SlotBinding;
+use config::runtime::{PairingSlotBinding, SlotBinding};
 use serde::{Deserialize, Serialize};
 
 /// Per-instance lifecycle state. Wire representation is the lowercase variant
@@ -155,6 +155,30 @@ pub struct SerializedInstance {
     /// parse.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: BTreeMap<String, SlotBinding>,
+    /// Live pairing-slot state for every `depends_on.pairings` entry, keyed
+    /// by the slot's link_id. Overlaid by the daemon from the manifest plus
+    /// its pairing registry when serializing the graph — this is the
+    /// observability surface behind `peppy stack list`'s pairing rows.
+    /// Empty for instances whose manifest declares no pairings; defaulted on
+    /// decode for payloads that predate the field.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pairing_slots: BTreeMap<String, SerializedPairingSlot>,
+}
+
+/// One pairing slot of a [`SerializedInstance`]: the declaring manifest's
+/// pairing identity plus the slot's live binding from the daemon's pairing
+/// registry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SerializedPairingSlot {
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    /// The role this instance plays in the pairing.
+    pub role: String,
+    /// Whether the manifest marks the slot `optional: true` (boots unpaired
+    /// without `--pair`/`--defer-pair` ceremony).
+    #[serde(default)]
+    pub optional: bool,
+    pub binding: PairingSlotBinding,
 }
 
 /// Decode default for [`SerializedInstance::healthy`]: assume healthy when the
@@ -298,6 +322,7 @@ mod tests {
                     state: *st,
                     healthy: true,
                     slot_bindings: BTreeMap::new(),
+                    pairing_slots: BTreeMap::new(),
                 })
                 .collect(),
         }
@@ -448,6 +473,7 @@ mod tests {
             state: InstanceState::Running,
             healthy: true,
             slot_bindings: bindings,
+            pairing_slots: BTreeMap::new(),
         };
 
         let json = serde_json::to_string(&instance).expect("serialize");
@@ -464,6 +490,7 @@ mod tests {
             state: InstanceState::Running,
             healthy: true,
             slot_bindings: BTreeMap::new(),
+            pairing_slots: BTreeMap::new(),
         };
         let json = serde_json::to_string(&instance).expect("serialize");
         assert!(
@@ -476,6 +503,61 @@ mod tests {
         let decoded: SerializedInstance = serde_json::from_str(legacy).expect("decode legacy");
         assert_eq!(decoded, instance);
         assert!(decoded.slot_bindings.is_empty());
+    }
+
+    #[test]
+    fn pairing_slots_round_trip_through_json() {
+        use config::runtime::ProducerRef;
+        let mut pairing_slots = BTreeMap::new();
+        pairing_slots.insert(
+            "arm".to_string(),
+            SerializedPairingSlot {
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+                role: "controller".to_string(),
+                optional: false,
+                binding: PairingSlotBinding::Paired {
+                    peer: ProducerRef::new("core_a", "arm_1"),
+                    peer_link_id: "controller".to_string(),
+                },
+            },
+        );
+        pairing_slots.insert(
+            "spare".to_string(),
+            SerializedPairingSlot {
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+                role: "controller".to_string(),
+                optional: true,
+                binding: PairingSlotBinding::Unpaired,
+            },
+        );
+        let instance = SerializedInstance {
+            instance_id: "ctrl_1".to_string(),
+            state: InstanceState::Running,
+            healthy: true,
+            slot_bindings: BTreeMap::new(),
+            pairing_slots,
+        };
+
+        let json = serde_json::to_string(&instance).expect("serialize");
+        let decoded: SerializedInstance = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, instance);
+
+        // No pairings -> the field is omitted, and legacy payloads decode
+        // with an empty map.
+        let bare = SerializedInstance {
+            pairing_slots: BTreeMap::new(),
+            ..instance
+        };
+        let json = serde_json::to_string(&bare).expect("serialize");
+        assert!(
+            !json.contains("pairing_slots"),
+            "empty pairing_slots must be omitted from the wire form: {json}"
+        );
+        let legacy = r#"{"instance_id":"ctrl_1","state":"running"}"#;
+        let decoded: SerializedInstance = serde_json::from_str(legacy).expect("decode legacy");
+        assert!(decoded.pairing_slots.is_empty());
     }
 
     #[test]

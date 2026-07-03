@@ -81,6 +81,15 @@ pub enum Error {
     #[error("action feedback channel closed unexpectedly")]
     ActionFeedbackChannelClosed,
 
+    // -- pairing
+    #[error(
+        "unknown pairing slot '{link_id}': the manifest declares no depends_on.pairings entry with that link_id"
+    )]
+    UnknownPairingSlot { link_id: String },
+
+    #[error("pairing slot channel closed (runtime torn down while waiting for a peer)")]
+    PairingSlotClosed,
+
     // -- topics/services/actions errors
     #[error(
         "service '{service_name}'{instance_suffix} is unreachable",
