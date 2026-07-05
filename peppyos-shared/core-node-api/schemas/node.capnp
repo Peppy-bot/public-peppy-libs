@@ -194,24 +194,34 @@ struct NodeRunGoal {
     envVars @3 :List(EnvVar);
     # Timeout in seconds for the run operation (used to report remaining time when busy)
     timeoutSecs @4 :UInt64;
-    # Pairing requests from `--pair <link_id>@<peer_instance>[/<peer_link_id>]`:
-    # commands to the daemon, not resolved config. The daemon validates and
-    # reserves each pair BEFORE spawning and delivers it live after the
-    # instance commits to Running.
+    # Pairing requests from `--pair <link_id>@<peer_instance>[/<peer_link_id>]`
+    # or a launch plan: commands to the daemon, not resolved config. The
+    # daemon validates and reserves each pair BEFORE spawning and delivers it
+    # live after the instance commits to Running.
     requestedPairs @5 :List(PairRequest);
-    # Pairing slot link_ids deliberately left unpaired via `--defer-pair`.
-    # Together with requestedPairs these must cover every required pairing
-    # slot of the manifest or the daemon rejects the run.
+    # Pairing slot link_ids deliberately left unpaired via `--defer-pair` /
+    # the launcher's `defer_pairings:`. Together with requestedPairs and
+    # coveredPairs these must cover every required pairing slot of the
+    # manifest or the daemon rejects the run.
     deferredPairs @6 :List(Text);
+    # Pairing slots of this instance that a LATER-starting instance of the
+    # same `stack launch` will claim through its own requestedPairs entry;
+    # each entry names that future peer. A launch-mechanism marker, not user
+    # intent: the slot boots unpaired and needs no action, unlike a
+    # deferredPairs entry which records a deliberate opt-out. Never set by
+    # the CLI.
+    coveredPairs @7 :List(PairRequest);
 }
 
 struct PairRequest {
     # The starting node's own pairing-slot link_id.
     linkId @0 :Text;
-    # The raw peer spec as given on the CLI: "<peer_instance>" or
-    # "<peer_instance>/<peer_link_id>". The daemon resolves it against the
-    # running stack.
-    peerSpec @1 :Text;
+    # The peer instance this slot pairs with.
+    peerInstanceId @1 :Text;
+    # The complementary slot on the peer, when the request pins one. Empty
+    # means unpinned: exactly one available complementary slot must exist on
+    # the peer and the daemon resolves it.
+    peerLinkId @2 :Text;
 }
 
 struct NodeRunGoalResponse {
