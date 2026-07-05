@@ -1,6 +1,6 @@
 # sim_bridge_core
 
-Rust shared library for PeppyOS sim node variants. Handles the translation between peppylib (raw JSON inside the sim process) and peppygen (typed Cap'n Proto messages in PeppyOS), with exponential backoff reconnect and cancellation on every pipeline.
+Rust shared library for Peppy sim node variants. Handles the translation between peppylib (raw JSON inside the sim process) and peppygen (typed Cap'n Proto messages in Peppy), with exponential backoff reconnect and cancellation on every pipeline.
 
 Used by the Isaac Sim and MuJoCo variants of `openarm_backbone`, `openarm_arm`, `openarm_gripper`, and `uvc_camera`. Real variants talk directly to hardware via peppygen and do not depend on this library.
 

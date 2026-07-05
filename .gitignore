@@ -17,6 +17,7 @@ target/
 __pycache__/
 *.py[cod]
 *$py.class
+.pixi
 
 # C extensions.
 *.so

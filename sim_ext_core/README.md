@@ -1,6 +1,6 @@
 # sim_ext_core
 
-Python shared package for PeppyOS Isaac Sim and MuJoCo extensions. Provides the plugin lifecycle base, peppylib transport with reconnect backoff, config loading, and bridge plugins for all sensor types.
+Python shared package for Peppy Isaac Sim and MuJoCo extensions. Provides the plugin lifecycle base, peppylib transport with reconnect backoff, config loading, and bridge plugins for all sensor types.
 
 Used by the Isaac and MuJoCo extension variants of `openarm_backbone`, `openarm_arm`, `openarm_gripper`, and `uvc_camera`. Real variants do not use this package.
 
