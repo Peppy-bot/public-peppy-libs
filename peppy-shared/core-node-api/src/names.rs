@@ -10,8 +10,10 @@ pub const CLOCK: &str = "clock";
 /// Topic the daemon publishes a periodic liveness beat on. Each spawned node
 /// subscribes via its daemon-liveness watchdog and shuts itself down if the
 /// beat goes silent past the configured grace period (uncatchable-death safety
-/// net). Keyed by the core-node name (deterministic per machine), so a
-/// restarted daemon resumes on the same key and nodes survive the restart.
+/// net). Keyed by the core-node name (derived deterministically per machine
+/// unless the operator overrides it via `core_node_name` in
+/// `~/.peppy/conf/peppy_config.json5` or `--core-node-name`), so a restarted
+/// daemon resumes on the same key and nodes survive the restart.
 pub const DAEMON_HEARTBEAT: &str = "daemon_heartbeat";
 pub const INFO: &str = "info";
 pub const PING: &str = "ping";
