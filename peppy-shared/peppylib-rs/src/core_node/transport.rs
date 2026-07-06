@@ -31,8 +31,8 @@ use crate::{ActionMessenger, MessengerHandle, ServiceMessenger};
 /// resolves exactly that daemon's endpoint. The exception is `node_stop`,
 /// whose listener may be hosted by a per-instance node: user node names
 /// are not unique across daemons, so its service root cannot pin the
-/// route by itself and the discovery is additionally scoped to the
-/// caller's bound core node (`ServiceTarget::CoreNode`).
+/// route by itself and the discovery is additionally scoped to the core
+/// node hosting the target instance (`ServiceTarget::CoreNode`).
 struct ServiceRoute<'a> {
     messenger: &'a MessengerHandle,
     bound_core_node: &'a str,
@@ -44,7 +44,7 @@ struct ServiceRoute<'a> {
     service_name: &'a str,
     /// Producer scope of the discovery. `ServiceTarget::Any` for daemon
     /// services (the service root already pins the route); `node_stop`
-    /// narrows it to the bound core node, see the struct doc.
+    /// narrows it to the target's core node, see the struct doc.
     target: ServiceTarget<'a>,
 }
 
@@ -192,16 +192,22 @@ send_goal!(pub send_stack_benchmark, StackBenchmarkGoal, names::STACK_BENCHMARK_
 /// service root alone cannot pin the route: on a multi-daemon network a
 /// wildcard discovery could be won by a same-named listener on a foreign
 /// core node, which would answer "unknown instance" while the right reply
-/// is dropped. The discovery is therefore scoped to `bound_core_node` —
-/// the caller stops an instance through the daemon it is bound to, so its
-/// bound core node is the correct scope for both daemon-hosted and
-/// per-instance listeners.
+/// is dropped. The discovery is therefore scoped to `scope_core_node` —
+/// the core node hosting the instance to stop — which pins the route for
+/// both daemon-hosted and per-instance listeners.
+///
+/// The two core-node parameters play distinct roles: `bound_core_node` is
+/// the caller's identity (the core node it is bound to, riding in the
+/// request's sender address), while `scope_core_node` is the discovery
+/// scope. They coincide when stopping through the local daemon and differ
+/// when targeting a remote one.
 pub async fn poll_node_stop(
     request: &NodeStopRequest,
     messenger: &MessengerHandle,
     bound_core_node: &str,
     as_instance_id: &str,
     to_target: SenderTarget,
+    scope_core_node: &str,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeStopResponse> {
     poll_core_node_service(
@@ -211,7 +217,7 @@ pub async fn poll_node_stop(
             as_instance_id,
             to_target,
             service_name: names::NODE_STOP,
-            target: ServiceTarget::CoreNode(bound_core_node),
+            target: ServiceTarget::CoreNode(scope_core_node),
         },
         request.encode()?,
         NodeStopResponse::decode,

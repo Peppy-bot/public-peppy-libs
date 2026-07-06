@@ -10,5 +10,8 @@ mod datastore;
 #[path = "core_node/info.rs"]
 mod info;
 
+#[path = "core_node/node_stop.rs"]
+mod node_stop;
+
 #[path = "core_node/stack.rs"]
 mod stack;
