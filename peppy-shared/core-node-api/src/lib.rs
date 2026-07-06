@@ -21,6 +21,9 @@
 //!    the JSON shape of every `*_response.graph_json` field, plus query helpers.
 //! 4. **The wire [`Payload`] / [`NonEmptyPayload`] types and the unified
 //!    [`Error`] / [`Result`].**
+//! 5. **Protocol policy constants** ([`env`]): [`FORBIDDEN_ENV_KEYS`], the
+//!    env-var blocklist enforced by the daemon when validating incoming goals
+//!    and by the CLI when filtering the caller environment before sending.
 //!
 //! The capnp schema and the generated `*_capnp` modules are an implementation
 //! detail, sealed behind `pub(crate)` — they never appear in a public signature.
@@ -35,11 +38,13 @@
 
 mod capnp_generated;
 pub mod encoding;
+pub mod env;
 pub mod error;
 pub mod graph;
 pub mod names;
 mod payload;
 
+pub use env::FORBIDDEN_ENV_KEYS;
 pub use error::{Error, Result};
 pub use graph::{
     InstanceState, NodeNotFound, NodeStage, SerializedEdge, SerializedInstance, SerializedNode,
