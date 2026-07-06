@@ -16,7 +16,6 @@ pub const CLOCK: &str = "clock";
 /// daemon resumes on the same key and nodes survive the restart.
 pub const DAEMON_HEARTBEAT: &str = "daemon_heartbeat";
 pub const INFO: &str = "info";
-pub const PING: &str = "ping";
 /// Liveness service the core node exposes for an external prober (the
 /// platform backend polls it over the federated zenoh link). Distinct from the
 /// per-node echo `node_health` in peppylib, which the daemon's watchdog uses to
@@ -62,7 +61,6 @@ mod tests {
         assert_eq!(CLOCK, "clock");
         assert_eq!(DAEMON_HEARTBEAT, "daemon_heartbeat");
         assert_eq!(INFO, "info");
-        assert_eq!(PING, "ping");
         assert_eq!(HEALTH, "health");
 
         assert_eq!(DATASTORE_STORE, "datastore_store");

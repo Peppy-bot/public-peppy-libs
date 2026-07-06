@@ -8,10 +8,6 @@
 
 #![allow(clippy::all)]
 
-pub(crate) mod ping_capnp {
-    include!(concat!(env!("OUT_DIR"), "/ping_capnp.rs"));
-}
-
 pub(crate) mod health_capnp {
     include!(concat!(env!("OUT_DIR"), "/health_capnp.rs"));
 }

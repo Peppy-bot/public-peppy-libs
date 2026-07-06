@@ -7,7 +7,6 @@ mod datastore;
 mod health;
 mod info;
 mod node;
-mod ping;
 mod repo;
 mod stack;
 
@@ -33,7 +32,6 @@ pub use node::{
     run::PairTarget, stop::NodeStopRequest, stop::NodeStopResponse, sync::NodeSyncRequest,
     sync::NodeSyncResponse, sync::RepoResolvedEntry,
 };
-pub use ping::{PingRequest, PingResponse};
 pub use repo::{
     RepoAddRequest, RepoAddResponse, RepoExcludeRequest, RepoExcludeResponse, RepoItemKind,
     RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoRefreshFeedback, RepoRefreshGoal,
