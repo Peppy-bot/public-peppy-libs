@@ -760,6 +760,10 @@ impl ActionWireReceiver {
 
 pub(crate) mod zenoh_format;
 
+/// Public channel-address templates, re-exported at the crate root as
+/// `pmi::templates`. Pure string code — compiled in every feature config.
+pub mod templates;
+
 pub use zenoh_format::{ServiceQueryKind, ServiceReplyKind};
 
 #[cfg(test)]

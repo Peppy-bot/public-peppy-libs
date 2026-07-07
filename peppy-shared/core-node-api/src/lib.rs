@@ -43,6 +43,7 @@ pub mod error;
 pub mod graph;
 pub mod names;
 mod payload;
+pub mod registry;
 
 pub use env::FORBIDDEN_ENV_KEYS;
 pub use error::{Error, Result};

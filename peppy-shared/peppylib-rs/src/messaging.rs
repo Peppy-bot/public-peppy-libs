@@ -76,7 +76,10 @@ pub const SHUTDOWN_SERVICE: &str = "shutdown";
 /// exchange against the core node and reports its measured offset. Used by
 /// `peppy stack benchmark` to normalize cross-host producer timestamps. Like
 /// `node_health`, this triggers no user code.
-pub const CLOCK_OFFSET_SERVICE: &str = "clock_offset";
+///
+/// The string of record lives in `core-node-api`'s method registry; this
+/// aliases it so the wire name exists exactly once across the workspace.
+pub const CLOCK_OFFSET_SERVICE: &str = core_node_api::names::CLOCK_OFFSET;
 /// Framework service every node exposes: the daemon delivers absolute
 /// pairing-slot state (pair, re-pin, clear) over it. Registered pre-setup —
 /// a node may block in its `setup_fn` forever, and pairing delivery must not

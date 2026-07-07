@@ -22,6 +22,13 @@ pub const INFO: &str = "info";
 /// check spawned nodes.
 pub const HEALTH: &str = "health";
 
+/// Framework service every *spawned node* (not the daemon) exposes. The daemon
+/// polls it during `peppy stack benchmark` to measure each producer's clock
+/// offset and normalize cross-host timestamps. The string of record lives here
+/// so the method registry is self-contained; `peppylib`'s `CLOCK_OFFSET_SERVICE`
+/// aliases it.
+pub const CLOCK_OFFSET: &str = "clock_offset";
+
 pub const DATASTORE_STORE: &str = "datastore_store";
 pub const DATASTORE_GET: &str = "datastore_get";
 pub const DATASTORE_LIST: &str = "datastore_list";
@@ -62,6 +69,7 @@ mod tests {
         assert_eq!(DAEMON_HEARTBEAT, "daemon_heartbeat");
         assert_eq!(INFO, "info");
         assert_eq!(HEALTH, "health");
+        assert_eq!(CLOCK_OFFSET, "clock_offset");
 
         assert_eq!(DATASTORE_STORE, "datastore_store");
         assert_eq!(DATASTORE_GET, "datastore_get");

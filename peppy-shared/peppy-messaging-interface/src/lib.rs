@@ -38,6 +38,10 @@ pub use types::{
     PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable, ServiceReply,
     SubscriberBufferSizes, SubscriberQoS, Subscription, TopicMessage,
 };
+/// Channel-address template helpers (`pmi::templates`) that render the zenoh
+/// key-expression grammar with caller-supplied identity slots. Consumed by
+/// `platform-backend`'s AsyncAPI generator; pinned to the real wire builders.
+pub use wire::templates;
 pub use wire::{
     ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, InterfaceIdentifier, NodeIdentifier,
     PairingIdentifier, Segment, SegmentError, SenderTarget, SenderTargetError, ServiceKind,
