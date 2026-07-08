@@ -70,12 +70,11 @@ pub trait Support {
 
 /// A convex polytope GJK primitive: hull vertices and an optional rounding
 /// `radius`. Support is an exact scan over the vertices: fitted hulls carry
-/// tens to a few hundred vertices, where a branch-predictable dot scan is as
-/// fast as a graph walk and, unlike a greedy edge climb, cannot be trapped by
-/// a defective adjacency (repair and clipping can leave the triangle graph
-/// locally non-convex, where a climb sticks at a false summit and GJK then
-/// fabricates a wrong signed distance). Stateless, so a query's answer cannot
-/// depend on the queries before it.
+/// tens to a few hundred vertices, where a branch-predictable dot scan is
+/// fast, its argmax is exact for any vertex set regardless of face-graph
+/// quality (repair and clipping can leave the triangle graph locally
+/// non-convex), and it is stateless, so a query's answer cannot depend on the
+/// queries before it.
 #[derive(Debug)]
 pub struct Hull {
     vertices: Vec<Point3<f64>>,
@@ -156,6 +155,28 @@ impl SubSimplex {
     }
 }
 
+/// Centroid-anchored enclosing sphere of one or more rounded vertex clouds:
+/// the centre is the mean of all core vertices, the radius the farthest vertex
+/// plus its cloud's rounding radius. Single-sourced so the whole-body pair
+/// broadphase and the per-piece prefilter compute the same bound and cannot
+/// drift apart.
+pub(crate) fn enclosing_sphere<'a, I>(clouds: I) -> (Point3<f64>, f64)
+where
+    I: Iterator<Item = (&'a [Point3<f64>], f64)> + Clone,
+{
+    let (sum, count) = clouds
+        .clone()
+        .flat_map(|(points, _)| points)
+        .fold((Vector3::zeros(), 0_usize), |(sum, count), p| {
+            (sum + p.coords, count + 1)
+        });
+    let center = Point3::from(sum / count.max(1) as f64);
+    let radius = clouds
+        .flat_map(|(points, rounding)| points.iter().map(move |p| (p - center).norm() + rounding))
+        .fold(0.0_f64, f64::max);
+    (center, radius)
+}
+
 impl Hull {
     /// A GJK primitive from a computed [`ConvexHull`]. Errors on an empty hull
     /// or an invalid rounding radius: the radius feeds both the query and the
@@ -170,18 +191,8 @@ impl Hull {
                 "hull rounding radius must be finite and non-negative, got {radius}"
             ));
         }
-        let bound_center = Point3::from(
-            hull.vertices
-                .iter()
-                .fold(Vector3::zeros(), |acc, v| acc + v.coords)
-                / hull.vertices.len() as f64,
-        );
-        let bound_radius = hull
-            .vertices
-            .iter()
-            .map(|v| (v - bound_center).norm())
-            .fold(0.0_f64, f64::max)
-            + radius;
+        let (bound_center, bound_radius) =
+            enclosing_sphere(std::iter::once((hull.vertices.as_slice(), radius)));
         Ok(Hull {
             vertices: hull.vertices.clone(),
             faces: hull.faces.clone(),
@@ -220,10 +231,9 @@ impl Hull {
 
 impl Support for Hull {
     fn core_support(&self, dir: &Vector3<f64>) -> Point3<f64> {
-        // Exact argmax over the vertices; see the struct doc for why this
-        // replaces a warm-started graph climb. A plain comparison loop keeps
-        // the scan branch-predictable and NaN-free (a finite dir dotted with
-        // finite vertices), so it optimizes tightly.
+        // Exact argmax over the vertices (see the struct doc). A plain
+        // comparison loop keeps the scan branch-predictable and NaN-free (a
+        // finite dir dotted with finite vertices), so it optimizes tightly.
         let mut best = 0;
         let mut best_dot = f64::NEG_INFINITY;
         for (i, v) in self.vertices.iter().enumerate() {
@@ -589,7 +599,11 @@ fn closest_triangle(a: SupportPoint, b: SupportPoint, c: SupportPoint) -> SubSim
             closest_segment(b, c),
         ]
         .into_iter()
-        .min_by(|x, y| x.closest.norm_squared().total_cmp(&y.closest.norm_squared()))
+        .min_by(|x, y| {
+            x.closest
+                .norm_squared()
+                .total_cmp(&y.closest.norm_squared())
+        })
         .expect("three edges");
     }
 
@@ -668,7 +682,11 @@ fn closest_tetrahedron(
         return faces
             .into_iter()
             .map(|(p, q, r, _)| closest_triangle(p, q, r))
-            .min_by(|x, y| x.closest.norm_squared().total_cmp(&y.closest.norm_squared()))
+            .min_by(|x, y| {
+                x.closest
+                    .norm_squared()
+                    .total_cmp(&y.closest.norm_squared())
+            })
             .expect("four faces");
     }
 
@@ -731,7 +749,12 @@ mod tests {
         // The radius feeds the prefilter's pruning bound; a negative or
         // non-finite value would make that bound unsound rather than erroring.
         let tri = ConvexHull {
-            vertices: vec![pt(0.0, 0.0, 0.0), pt(1.0, 0.0, 0.0), pt(0.0, 1.0, 0.0), pt(0.0, 0.0, 1.0)],
+            vertices: vec![
+                pt(0.0, 0.0, 0.0),
+                pt(1.0, 0.0, 0.0),
+                pt(0.0, 1.0, 0.0),
+                pt(0.0, 0.0, 1.0),
+            ],
             faces: Vec::new(),
         };
         assert!(Hull::new(&tri, -0.001).is_err());
