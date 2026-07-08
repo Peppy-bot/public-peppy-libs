@@ -1,0 +1,68 @@
+name: lerobot_dataset Tests
+
+# CI for the lerobot_dataset crate (public-peppy-libs/lerobot_dataset).
+# The compliance pixi environment provides everything beyond the Rust
+# toolchain: ffmpeg/ffprobe for the crate's video tests, and Python lerobot
+# for the loader compliance gate. Requires pixi (>= 0.72) on the runner.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'lerobot_dataset/**'
+      - '.github/workflows/lerobot-dataset-tests.yml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'lerobot_dataset/**'
+      - '.github/workflows/lerobot-dataset-tests.yml'
+
+concurrency:
+  group: lerobot-dataset-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install compliance environment
+        working-directory: lerobot_dataset/compliance
+        run: pixi install --frozen
+
+      # Unit, golden-schema, and integration tests. The video tests find
+      # ffmpeg in the pixi environment rather than on the system.
+      - name: Run Rust tests
+        working-directory: lerobot_dataset
+        run: |
+          export PATH="$PWD/compliance/.pixi/envs/default/bin:$PATH"
+          cargo test
+
+      - name: Lint
+        working-directory: lerobot_dataset
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+
+      # The acceptance test: a natively written dataset must load in Python
+      # lerobot, frame by frame, video included.
+      - name: Run compliance gate
+        working-directory: lerobot_dataset
+        run: |
+          export PATH="$PWD/compliance/.pixi/envs/default/bin:$PATH"
+          FIXTURE="$RUNNER_TEMP/lerobot-native-fixture"
+          rm -rf "$FIXTURE"
+          cargo run --example generate_fixture -- "$FIXTURE"
+          cd compliance && pixi run check "$FIXTURE"
+
+      - name: Clean up fixture
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/lerobot-native-fixture"
