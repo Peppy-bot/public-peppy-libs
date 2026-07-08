@@ -18,7 +18,7 @@ members = ["peppylib-py", "peppylib-rs", "core-node-api", "build-helpers", "json
 resolver = "3"
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 authors = ["Tuatini Godard <tuatini@peppy.bot>"]
 edition = "2024"
 

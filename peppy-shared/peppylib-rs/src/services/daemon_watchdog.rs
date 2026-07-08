@@ -1,6 +1,6 @@
 //! Node-side daemon-liveness watchdog (the uncatchable-death safety net).
 //!
-//! The daemon publishes a periodic beat on the [`names::DAEMON_HEARTBEAT`]
+//! The daemon publishes a periodic beat on the [`TopicId::DaemonHeartbeat`]
 //! topic (see `core_node::services::clock::publish_daemon_heartbeat`). This
 //! watchdog subscribes and resets a deadline on every beat. If no beat arrives
 //! for the configured grace period, the daemon is presumed dead for good and
@@ -19,7 +19,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node_api::names;
+use core_node_api::TopicId;
 
 use crate::error::Result;
 use crate::messaging::Subscription;
@@ -49,7 +49,8 @@ pub async fn spawn_daemon_watchdog(
     cancellation_token: CancellationToken,
 ) -> Result<TaskHandle<Result<()>>> {
     let subscription =
-        crate::core_node::subscribe_core_topic(&node_runner, names::DAEMON_HEARTBEAT).await?;
+        crate::core_node::subscribe_core_topic(&node_runner, TopicId::DaemonHeartbeat.name())
+            .await?;
     Ok(spawn(run_watchdog(subscription, grace, cancellation_token)))
 }
 

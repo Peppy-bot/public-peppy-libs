@@ -6,8 +6,10 @@
 //!
 //! Each `poll_*` / `send_*` is a one-line macro invocation — the actual
 //! routing lives in [`poll_core_node_service`] and [`send_core_node_goal`].
-//! Add a new service by appending one `poll_service!` / `send_goal!` line
-//! at the bottom of this file.
+//! Wrapper lines are keyed by [`ServiceId`] / [`ActionId`]: when a method is
+//! added to the registry, the exhaustive coverage matches in the tests below
+//! stop compiling until this file decides whether it gets a wrapper line, a
+//! hand-written wrapper, or a documented exclusion.
 
 use std::time::Duration;
 
@@ -15,6 +17,7 @@ use config::node::QoSProfile;
 use core_node_api::Payload;
 use core_node_api::encoding::*;
 use core_node_api::names;
+use core_node_api::{ActionId, ServiceId};
 
 use crate::error::Result;
 use crate::messaging::{ActionGoalHandle, SenderTarget, ServiceTarget};
@@ -119,7 +122,7 @@ macro_rules! poll_service {
                     bound_core_node,
                     as_instance_id,
                     to_target: SenderTarget::node(to_core_node, names::CORE_NODE_TAG)?,
-                    service_name: $service,
+                    service_name: $service.name(),
                     target: ServiceTarget::Any,
                 },
                 request.encode()?,
@@ -148,7 +151,7 @@ macro_rules! send_goal {
                     messenger,
                     as_core_node,
                     as_instance_id,
-                    action_name: $action,
+                    action_name: $action.name(),
                     to_core_node,
                 },
                 goal.encode()?,
@@ -163,10 +166,10 @@ macro_rules! send_goal {
 /// source of truth for both the transport wrappers and a `#[cfg(test)]`
 /// TypeId table. Each `service` line expands to a `poll_service!` invocation
 /// (byte-identical to a hand-written one) and contributes a
-/// `(name, req TypeId, resp TypeId)` row; each `goal` line expands to a
-/// `send_goal!` invocation and contributes a `(name, goal TypeId)` row. The
-/// table is consumed by the tests below to prove the transport surface and
-/// [`core_node_api::registry`] never drift apart. Add a service/action by
+/// `(ServiceId, req TypeId, resp TypeId)` row; each `goal` line expands to a
+/// `send_goal!` invocation and contributes an `(ActionId, goal TypeId)` row.
+/// The table is consumed by the tests below to prove the transport surface
+/// and [`core_node_api::registry`] never drift apart. Add a service/action by
 /// appending one line here — the table follows automatically.
 macro_rules! core_node_transport {
     (
@@ -178,22 +181,23 @@ macro_rules! core_node_transport {
 
         /// Emitted from the same lines that generate the transport wrappers, so
         /// it cannot fall out of sync with them. `node_stop` is hand-written
-        /// (bespoke routing) and is added to the service set by the test.
+        /// (bespoke routing) and contributes its row via the test module's
+        /// `hand_written_rows`.
         #[cfg(test)]
         pub(crate) mod transport_table {
-            // Bring in `names` and the `core_node_api::encoding::*` glob from
-            // the parent module so the captured `$service`/`$req`/`$goal`
+            // Bring in the id enums and the `core_node_api::encoding::*` glob
+            // from the parent module so the captured `$service`/`$req`/`$goal`
             // metavariables resolve here (macro-emitted paths resolve in the
             // module the tokens land in, not the invocation site).
             use super::*;
 
-            /// `(service name, request TypeId, response TypeId)`.
+            /// `(service, request TypeId, response TypeId)`.
             pub(crate) static SERVICES:
-                &[(&str, fn() -> ::std::any::TypeId, fn() -> ::std::any::TypeId)] = &[
+                &[(ServiceId, fn() -> ::std::any::TypeId, fn() -> ::std::any::TypeId)] = &[
                 $( ($service, || ::std::any::TypeId::of::<$req>(), || ::std::any::TypeId::of::<$resp>()), )*
             ];
-            /// `(action name, goal TypeId)`.
-            pub(crate) static GOALS: &[(&str, fn() -> ::std::any::TypeId)] = &[
+            /// `(action, goal TypeId)`.
+            pub(crate) static GOALS: &[(ActionId, fn() -> ::std::any::TypeId)] = &[
                 $( ($action, || ::std::any::TypeId::of::<$goal>()), )*
             ];
         }
@@ -202,30 +206,30 @@ macro_rules! core_node_transport {
 
 core_node_transport! {
     services: [
-        pub poll_clock, ClockRequest, ClockResponse, names::CLOCK;
-        pub poll_info, InfoRequest, InfoResponse, names::INFO;
-        pub poll_stack_list, StackListRequest, StackListResponse, names::STACK_LIST;
-        pub poll_datastore_store, DatastoreStoreRequest, DatastoreStoreResponse, names::DATASTORE_STORE;
-        pub poll_datastore_get, DatastoreGetRequest, DatastoreGetResponse, names::DATASTORE_GET;
-        pub poll_datastore_list, DatastoreListRequest, DatastoreListResponse, names::DATASTORE_LIST;
-        pub poll_datastore_remove, DatastoreRemoveRequest, DatastoreRemoveResponse, names::DATASTORE_REMOVE;
-        pub poll_node_reset, NodeResetRequest, NodeResetResponse, names::STACK_RESET;
-        pub poll_node_init, NodeInitRequest, NodeInitResponse, names::NODE_INIT;
-        pub poll_node_remove, NodeRemoveRequest, NodeRemoveResponse, names::NODE_REMOVE;
-        pub poll_node_sync, NodeSyncRequest, NodeSyncResponse, names::NODE_SYNC;
-        pub poll_node_info, NodeInfoRequest, NodeInfoResponse, names::NODE_INFO;
-        pub poll_repo_list, RepoListRequest, RepoListResponse, names::REPO_LIST;
-        pub poll_repo_add, RepoAddRequest, RepoAddResponse, names::REPO_ADD;
-        pub poll_repo_exclude, RepoExcludeRequest, RepoExcludeResponse, names::REPO_EXCLUDE;
-        pub poll_repo_remove, RepoRemoveRequest, RepoRemoveResponse, names::REPO_REMOVE;
+        pub poll_clock, ClockRequest, ClockResponse, ServiceId::Clock;
+        pub poll_info, InfoRequest, InfoResponse, ServiceId::Info;
+        pub poll_stack_list, StackListRequest, StackListResponse, ServiceId::StackList;
+        pub poll_datastore_store, DatastoreStoreRequest, DatastoreStoreResponse, ServiceId::DatastoreStore;
+        pub poll_datastore_get, DatastoreGetRequest, DatastoreGetResponse, ServiceId::DatastoreGet;
+        pub poll_datastore_list, DatastoreListRequest, DatastoreListResponse, ServiceId::DatastoreList;
+        pub poll_datastore_remove, DatastoreRemoveRequest, DatastoreRemoveResponse, ServiceId::DatastoreRemove;
+        pub poll_node_reset, NodeResetRequest, NodeResetResponse, ServiceId::StackReset;
+        pub poll_node_init, NodeInitRequest, NodeInitResponse, ServiceId::NodeInit;
+        pub poll_node_remove, NodeRemoveRequest, NodeRemoveResponse, ServiceId::NodeRemove;
+        pub poll_node_sync, NodeSyncRequest, NodeSyncResponse, ServiceId::NodeSync;
+        pub poll_node_info, NodeInfoRequest, NodeInfoResponse, ServiceId::NodeInfo;
+        pub poll_repo_list, RepoListRequest, RepoListResponse, ServiceId::RepoList;
+        pub poll_repo_add, RepoAddRequest, RepoAddResponse, ServiceId::RepoAdd;
+        pub poll_repo_exclude, RepoExcludeRequest, RepoExcludeResponse, ServiceId::RepoExclude;
+        pub poll_repo_remove, RepoRemoveRequest, RepoRemoveResponse, ServiceId::RepoRemove;
     ]
     goals: [
-        pub send_launch, LaunchGoal, names::STACK_LAUNCH_ACTION;
-        pub send_node_add, NodeAddGoal, names::NODE_ADD_ACTION;
-        pub send_node_run, NodeRunGoal, names::NODE_RUN_ACTION;
-        pub send_node_build, NodeBuildGoal, names::NODE_BUILD_ACTION;
-        pub send_repo_refresh, RepoRefreshGoal, names::REPO_REFRESH_ACTION;
-        pub send_stack_benchmark, StackBenchmarkGoal, names::STACK_BENCHMARK_ACTION;
+        pub send_launch, LaunchGoal, ActionId::StackLaunch;
+        pub send_node_add, NodeAddGoal, ActionId::NodeAdd;
+        pub send_node_run, NodeRunGoal, ActionId::NodeRun;
+        pub send_node_build, NodeBuildGoal, ActionId::NodeBuild;
+        pub send_repo_refresh, RepoRefreshGoal, ActionId::RepoRefresh;
+        pub send_stack_benchmark, StackBenchmarkGoal, ActionId::StackBenchmark;
     ]
 }
 
@@ -262,7 +266,7 @@ pub async fn poll_node_stop(
             bound_core_node,
             as_instance_id,
             to_target,
-            service_name: names::NODE_STOP,
+            service_name: ServiceId::NodeStop.name(),
             target: ServiceTarget::CoreNode(scope_core_node),
         },
         request.encode()?,
@@ -276,121 +280,183 @@ pub async fn poll_node_stop(
 mod tests {
     use std::any::TypeId;
 
-    use core_node_api::names;
-    use core_node_api::registry::{METHODS, MethodKind, Payloads};
+    use core_node_api::registry::Payloads;
 
     use super::*;
 
-    /// Registry `Service`/`Action` entries that intentionally have no `peppylib`
-    /// transport wrapper: `HEALTH` is polled by the platform backend over the
-    /// federated link, and `clock_offset` is polled via a raw `ServiceMessenger`
-    /// in the daemon benchmark (it is hosted by spawned nodes, not the daemon).
-    const EXCLUDED_SERVICES: &[&str] = &[names::HEALTH, names::CLOCK_OFFSET];
-
-    /// One row of the service drift table: `(name, request TypeId, response TypeId)`.
-    type ServiceRow = (&'static str, fn() -> TypeId, fn() -> TypeId);
-
-    /// The hand-written `poll_node_stop` wrapper contributes its row here, since
-    /// its bespoke routing keeps it out of the `core_node_transport!` list.
-    fn node_stop_row() -> ServiceRow {
-        (
-            names::NODE_STOP,
-            || TypeId::of::<NodeStopRequest>(),
-            || TypeId::of::<NodeStopResponse>(),
-        )
+    /// How `peppylib` covers a registry service. Returned by the exhaustive
+    /// [`service_coverage`] / [`action_coverage`] matches, so a new method
+    /// cannot be added to the registry without deciding its coverage here —
+    /// forgetting is a compile error, not a silently missing wrapper.
+    enum Coverage {
+        /// Has a `core_node_transport!` wrapper line (checked against the
+        /// macro-emitted table).
+        Wrapped,
+        /// Hand-written wrapper outside the macro (bespoke routing) — its row
+        /// is contributed by [`hand_written_rows`] and checked the same way.
+        HandWritten,
+        /// Deliberately no `peppylib` wrapper; records who calls it instead.
+        External(&'static str),
     }
 
-    fn service_rows() -> Vec<ServiceRow> {
-        transport_table::SERVICES
-            .iter()
-            .copied()
-            .chain(std::iter::once(node_stop_row()))
-            .collect()
-    }
-
-    /// Every registry `Service` (bar the documented exclusions) must have a
-    /// transport wrapper whose request/response types are identical — by
-    /// `TypeId`, i.e. exact type identity through the shared `core-node-api`
-    /// path dependency — to the registry's descriptor types.
-    #[test]
-    fn registry_services_match_transport_table() {
-        let rows = service_rows();
-        for m in METHODS {
-            if m.kind() != MethodKind::Service || EXCLUDED_SERVICES.contains(&m.name) {
-                continue;
+    /// Exhaustive on purpose: no wildcard arm, so every new service forces an
+    /// explicit coverage decision in this file.
+    fn service_coverage(id: ServiceId) -> Coverage {
+        match id {
+            ServiceId::Health => {
+                Coverage::External("polled by the platform backend over the federated zenoh link")
             }
-            let Payloads::Service { request, response } = &m.payloads else {
-                unreachable!("kind() said Service")
-            };
-            let row = rows
-                .iter()
-                .find(|(name, _, _)| *name == m.name)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "registry service {:?} has no transport wrapper (add a \
-                         core_node_transport! line or add it to EXCLUDED_SERVICES)",
-                        m.name
-                    )
-                });
-            assert_eq!(
-                (request.rust_type_id)(),
-                (row.1)(),
-                "{}: request type mismatch between registry and transport",
-                m.name
-            );
-            assert_eq!(
-                (response.rust_type_id)(),
-                (row.2)(),
-                "{}: response type mismatch between registry and transport",
-                m.name
-            );
+            ServiceId::ClockOffset => Coverage::External(
+                "hosted by spawned nodes, polled via a raw ServiceMessenger in the daemon benchmark",
+            ),
+            // Bespoke to_target / scope_core_node routing, see poll_node_stop.
+            ServiceId::NodeStop => Coverage::HandWritten,
+            ServiceId::Clock => Coverage::Wrapped,
+            ServiceId::Info => Coverage::Wrapped,
+            ServiceId::DatastoreStore => Coverage::Wrapped,
+            ServiceId::DatastoreGet => Coverage::Wrapped,
+            ServiceId::DatastoreList => Coverage::Wrapped,
+            ServiceId::DatastoreRemove => Coverage::Wrapped,
+            ServiceId::StackReset => Coverage::Wrapped,
+            ServiceId::StackList => Coverage::Wrapped,
+            ServiceId::NodeInit => Coverage::Wrapped,
+            ServiceId::NodeRemove => Coverage::Wrapped,
+            ServiceId::NodeSync => Coverage::Wrapped,
+            ServiceId::NodeInfo => Coverage::Wrapped,
+            ServiceId::RepoAdd => Coverage::Wrapped,
+            ServiceId::RepoExclude => Coverage::Wrapped,
+            ServiceId::RepoList => Coverage::Wrapped,
+            ServiceId::RepoRemove => Coverage::Wrapped,
         }
     }
 
-    /// Every registry `Action`'s goal type must match the `send_goal!` wrapper's
+    /// Exhaustive for the same reason as [`service_coverage`]. Every action
+    /// has a `send_goal!` wrapper today.
+    fn action_coverage(id: ActionId) -> Coverage {
+        match id {
+            ActionId::StackLaunch => Coverage::Wrapped,
+            ActionId::StackBenchmark => Coverage::Wrapped,
+            ActionId::NodeAdd => Coverage::Wrapped,
+            ActionId::NodeBuild => Coverage::Wrapped,
+            ActionId::NodeRun => Coverage::Wrapped,
+            ActionId::RepoRefresh => Coverage::Wrapped,
+        }
+    }
+
+    /// One row of the service drift table: `(id, request TypeId, response TypeId)`.
+    type ServiceRow = (ServiceId, fn() -> TypeId, fn() -> TypeId);
+
+    /// Rows for the `Coverage::HandWritten` wrappers, whose bespoke routing
+    /// keeps them out of the `core_node_transport!` list.
+    fn hand_written_rows() -> Vec<ServiceRow> {
+        vec![(
+            ServiceId::NodeStop,
+            || TypeId::of::<NodeStopRequest>(),
+            || TypeId::of::<NodeStopResponse>(),
+        )]
+    }
+
+    /// A wrapper row's request/response types must be identical — by `TypeId`,
+    /// i.e. exact type identity through the shared `core-node-api` path
+    /// dependency — to the registry descriptor's types.
+    fn assert_row_matches_registry(id: ServiceId, row: &ServiceRow) {
+        let Payloads::Service { request, response } = &id.descriptor().payloads else {
+            unreachable!("ServiceId descriptors are Payloads::Service")
+        };
+        assert_eq!(
+            (request.rust_type_id)(),
+            (row.1)(),
+            "{}: request type mismatch between registry and transport",
+            id.name()
+        );
+        assert_eq!(
+            (response.rust_type_id)(),
+            (row.2)(),
+            "{}: response type mismatch between registry and transport",
+            id.name()
+        );
+    }
+
+    /// Every registry service is covered exactly as [`service_coverage`]
+    /// claims: `Wrapped` ids have exactly one macro-table row with matching
+    /// payload types, `HandWritten` ids have their row in
+    /// [`hand_written_rows`] (and none in the macro table), and `External`
+    /// ids appear in neither.
+    #[test]
+    fn registry_services_match_transport_table() {
+        let hand_written = hand_written_rows();
+        for &id in ServiceId::ALL {
+            let table_rows: Vec<&ServiceRow> = transport_table::SERVICES
+                .iter()
+                .filter(|(rid, _, _)| *rid == id)
+                .collect();
+            match service_coverage(id) {
+                Coverage::Wrapped => {
+                    assert_eq!(
+                        table_rows.len(),
+                        1,
+                        "{}: expected exactly one core_node_transport! line",
+                        id.name()
+                    );
+                    assert_row_matches_registry(id, table_rows[0]);
+                }
+                Coverage::HandWritten => {
+                    assert!(
+                        table_rows.is_empty(),
+                        "{}: is Coverage::HandWritten but also has a \
+                         core_node_transport! line",
+                        id.name()
+                    );
+                    let row = hand_written
+                        .iter()
+                        .find(|(rid, _, _)| *rid == id)
+                        .unwrap_or_else(|| panic!("{}: no hand_written_rows entry", id.name()));
+                    assert_row_matches_registry(id, row);
+                }
+                Coverage::External(caller) => {
+                    assert!(
+                        table_rows.is_empty() && !hand_written.iter().any(|(rid, _, _)| *rid == id),
+                        "{}: documented as external-only ({caller}) but has a \
+                         wrapper row; update service_coverage",
+                        id.name()
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every registry action's goal type must match its `send_goal!` wrapper's
     /// goal type. (Feedback/result/goal-response are not carried by the
     /// transport table — `send_goal!` only encodes the goal — so they are
     /// verified in-crate by `core-node-api`'s own registry tests.)
     #[test]
     fn registry_actions_match_transport_table() {
-        for m in METHODS {
-            if m.kind() != MethodKind::Action {
-                continue;
+        for &id in ActionId::ALL {
+            match action_coverage(id) {
+                Coverage::Wrapped => {}
+                Coverage::HandWritten | Coverage::External(_) => unreachable!(
+                    "no hand-written/external action transport exists today; \
+                     teach this test about it before using those variants"
+                ),
             }
-            let Payloads::Action { goal, .. } = &m.payloads else {
-                unreachable!("kind() said Action")
+            let Payloads::Action { goal, .. } = &id.descriptor().payloads else {
+                unreachable!("ActionId descriptors are Payloads::Action")
             };
-            let row = transport_table::GOALS
+            let rows: Vec<_> = transport_table::GOALS
                 .iter()
-                .find(|(name, _)| *name == m.name)
-                .unwrap_or_else(|| panic!("registry action {:?} has no send_goal wrapper", m.name));
+                .filter(|(rid, _)| *rid == id)
+                .collect();
+            assert_eq!(
+                rows.len(),
+                1,
+                "{}: expected exactly one send_goal! line",
+                id.name()
+            );
             assert_eq!(
                 (goal.rust_type_id)(),
-                (row.1)(),
+                (rows[0].1)(),
                 "{}: goal type mismatch between registry and transport",
-                m.name
-            );
-        }
-    }
-
-    /// The transport table must carry no rows the registry does not know about,
-    /// so a wrapper for a removed/renamed method is caught too.
-    #[test]
-    fn transport_table_has_no_rows_absent_from_registry() {
-        for (name, _, _) in service_rows() {
-            assert!(
-                METHODS
-                    .iter()
-                    .any(|m| m.name == name && m.kind() == MethodKind::Service),
-                "transport service {name:?} is not a registry Service",
-            );
-        }
-        for (name, _) in transport_table::GOALS {
-            assert!(
-                METHODS
-                    .iter()
-                    .any(|m| m.name == *name && m.kind() == MethodKind::Action),
-                "transport goal {name:?} is not a registry Action",
+                id.name()
             );
         }
     }

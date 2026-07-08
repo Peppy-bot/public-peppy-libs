@@ -72,14 +72,6 @@ use tokio::{
 pub const NODE_HEALTH_SERVICE: &str = "node_health";
 pub const NODE_READY_SERVICE: &str = "node_ready";
 pub const SHUTDOWN_SERVICE: &str = "shutdown";
-/// Framework service every node exposes: on request, the node performs a clock
-/// exchange against the core node and reports its measured offset. Used by
-/// `peppy stack benchmark` to normalize cross-host producer timestamps. Like
-/// `node_health`, this triggers no user code.
-///
-/// The string of record lives in `core-node-api`'s method registry; this
-/// aliases it so the wire name exists exactly once across the workspace.
-pub const CLOCK_OFFSET_SERVICE: &str = core_node_api::names::CLOCK_OFFSET;
 /// Framework service every node exposes: the daemon delivers absolute
 /// pairing-slot state (pair, re-pin, clear) over it. Registered pre-setup —
 /// a node may block in its `setup_fn` forever, and pairing delivery must not

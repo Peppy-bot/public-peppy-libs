@@ -14,12 +14,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use core_node_api::ServiceId;
 use core_node_api::encoding::{
     DatastoreGetRequest, DatastoreGetResponse, DatastoreListEntry, DatastoreListRequest,
     DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse, DatastoreStoreRequest,
     DatastoreStoreResponse,
 };
-use core_node_api::names;
 use peppylib::datastore::{self, DatastoreEntry, Encoding, StoredValue};
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use peppylib::runtime::NodeRunner;
@@ -47,7 +47,7 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
-        names::DATASTORE_STORE,
+        ServiceId::DatastoreStore.name(),
     )
     .await
     .expect("listen datastore_store should succeed");
@@ -81,7 +81,7 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
-        names::DATASTORE_GET,
+        ServiceId::DatastoreGet.name(),
     )
     .await
     .expect("listen datastore_get should succeed");
@@ -114,7 +114,7 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
-        names::DATASTORE_LIST,
+        ServiceId::DatastoreList.name(),
     )
     .await
     .expect("listen datastore_list should succeed");
@@ -153,7 +153,7 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
-        names::DATASTORE_REMOVE,
+        ServiceId::DatastoreRemove.name(),
     )
     .await
     .expect("listen datastore_remove should succeed");
@@ -183,10 +183,10 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
 async fn setup_datastore_stub() -> (ZenohdInstance, TempDir, NodeRunner) {
     let (router, temp_dir, node_runner, server) = start_router_and_runner().await;
     spawn_datastore_stub(server).await;
-    wait_until_reachable(node_runner.messenger(), names::DATASTORE_STORE).await;
-    wait_until_reachable(node_runner.messenger(), names::DATASTORE_GET).await;
-    wait_until_reachable(node_runner.messenger(), names::DATASTORE_LIST).await;
-    wait_until_reachable(node_runner.messenger(), names::DATASTORE_REMOVE).await;
+    wait_until_reachable(node_runner.messenger(), ServiceId::DatastoreStore.name()).await;
+    wait_until_reachable(node_runner.messenger(), ServiceId::DatastoreGet.name()).await;
+    wait_until_reachable(node_runner.messenger(), ServiceId::DatastoreList.name()).await;
+    wait_until_reachable(node_runner.messenger(), ServiceId::DatastoreRemove.name()).await;
     (router, temp_dir, node_runner)
 }
 

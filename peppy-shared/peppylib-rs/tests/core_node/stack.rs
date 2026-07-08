@@ -1,7 +1,7 @@
 use std::time::Duration;
 
+use core_node_api::ServiceId;
 use core_node_api::encoding::{StackListRequest, StackListResponse};
-use core_node_api::names;
 use core_node_api::{
     InstanceState, NodeStage, SerializedEdge, SerializedInstance, SerializedNode,
     SerializedNodeGraph,
@@ -25,7 +25,7 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
-        names::STACK_LIST,
+        ServiceId::StackList.name(),
     )
     .await
     .expect("listen should succeed");
@@ -62,7 +62,7 @@ async fn setup_stub(
 ) -> (ZenohdInstance, TempDir, NodeRunner) {
     let (router, temp_dir, node_runner, server) = start_router_and_runner().await;
     spawn_stub_listener(server, graph, dot_graph).await;
-    wait_until_reachable(node_runner.messenger(), names::STACK_LIST).await;
+    wait_until_reachable(node_runner.messenger(), ServiceId::StackList.name()).await;
     (router, temp_dir, node_runner)
 }
 
