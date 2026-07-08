@@ -1,4 +1,4 @@
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroU64};
 
 use crate::error::ConfigError;
 
@@ -81,6 +81,8 @@ pub struct DatasetConfig {
     pub(crate) vectors: Vec<VectorFeature>,
     pub(crate) cameras: Vec<CameraFeature>,
     pub(crate) video: VideoSettings,
+    pub(crate) data_files_size_in_mb: u64,
+    pub(crate) video_files_size_in_mb: u64,
 }
 
 pub struct DatasetConfigBuilder {
@@ -89,6 +91,8 @@ pub struct DatasetConfigBuilder {
     vectors: Vec<VectorFeature>,
     cameras: Vec<CameraFeature>,
     video: VideoSettings,
+    data_files_size_in_mb: u64,
+    video_files_size_in_mb: u64,
 }
 
 impl DatasetConfig {
@@ -99,6 +103,8 @@ impl DatasetConfig {
             vectors: Vec::new(),
             cameras: Vec::new(),
             video: VideoSettings::default(),
+            data_files_size_in_mb: crate::layout::DATA_FILES_SIZE_IN_MB,
+            video_files_size_in_mb: crate::layout::VIDEO_FILES_SIZE_IN_MB,
         }
     }
 
@@ -177,6 +183,14 @@ impl DatasetConfigBuilder {
         self
     }
 
+    /// Overrides the v3 default file rollover thresholds (100 MB data /
+    /// 200 MB video); mainly for tests that force rollover cheaply.
+    pub fn file_size_limits(mut self, data_mb: NonZeroU64, video_mb: NonZeroU64) -> Self {
+        self.data_files_size_in_mb = data_mb.get();
+        self.video_files_size_in_mb = video_mb.get();
+        self
+    }
+
     pub fn build(self) -> Result<DatasetConfig, ConfigError> {
         let mut seen: Vec<&str> = Vec::new();
         for key in self
@@ -227,6 +241,8 @@ impl DatasetConfigBuilder {
             vectors: self.vectors,
             cameras: self.cameras,
             video: self.video,
+            data_files_size_in_mb: self.data_files_size_in_mb,
+            video_files_size_in_mb: self.video_files_size_in_mb,
         })
     }
 }

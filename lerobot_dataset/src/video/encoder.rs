@@ -70,7 +70,8 @@ pub fn output_args(video: &VideoSettings, fps: u32, dest: &Path) -> Vec<String> 
 
 pub struct EpisodeEncoder {
     camera: String,
-    child: Child,
+    /// Some until `finish` consumes the process; Drop kills a leftover child.
+    child: Option<Child>,
     stdin: Option<ChildStdin>,
     temp_path: PathBuf,
     frames: u64,
@@ -99,7 +100,7 @@ impl EpisodeEncoder {
         let stdin = child.stdin.take();
         Ok(Self {
             camera: camera.to_string(),
-            child,
+            child: Some(child),
             stdin,
             temp_path,
             frames: 0,
@@ -119,13 +120,16 @@ impl EpisodeEncoder {
     }
 
     /// Closes stdin, waits for a clean exit, and verifies the frame count.
+    /// On failure the temp output is removed; on success it is handed to the
+    /// caller (concat consumes it).
     pub fn finish(mut self) -> Result<(PathBuf, u64), VideoError> {
         drop(self.stdin.take());
-        let output = self
-            .child
+        let child = self.child.take().expect("finish runs once");
+        let output = child
             .wait_with_output()
             .map_err(VideoError::FfmpegNotFound)?;
         if !output.status.success() {
+            let _ = std::fs::remove_file(&self.temp_path);
             return Err(VideoError::EncoderExited {
                 camera: self.camera.clone(),
                 status: output.status,
@@ -134,6 +138,7 @@ impl EpisodeEncoder {
         }
         let probed = count_frames(&self.camera, &self.temp_path)?;
         if probed != self.frames {
+            let _ = std::fs::remove_file(&self.temp_path);
             return Err(VideoError::FrameCountMismatch {
                 camera: self.camera.clone(),
                 expected: self.frames,
@@ -143,30 +148,40 @@ impl EpisodeEncoder {
         Ok((self.temp_path.clone(), self.frames))
     }
 
-    /// Kills the encoder and removes its temp output. Never fails.
-    pub fn abort(mut self) {
-        drop(self.stdin.take());
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.temp_path);
-    }
-
     /// A failed stdin write means the encoder died; surface its status and stderr.
     fn exit_error(&mut self) -> VideoError {
         drop(self.stdin.take());
-        let _ = self.child.kill();
+        let mut child = self
+            .child
+            .take()
+            .expect("child present while stdin is open");
+        let _ = child.kill();
         let mut stderr = String::new();
-        if let Some(mut pipe) = self.child.stderr.take() {
+        if let Some(mut pipe) = child.stderr.take() {
             use std::io::Read;
             let _ = pipe.read_to_string(&mut stderr);
         }
-        match self.child.wait() {
+        let _ = std::fs::remove_file(&self.temp_path);
+        match child.wait() {
             Ok(status) => VideoError::EncoderExited {
                 camera: self.camera.clone(),
                 status,
                 stderr,
             },
             Err(source) => VideoError::FfmpegNotFound(source),
+        }
+    }
+}
+
+/// An encoder dropped without `finish` is an aborted episode: kill the
+/// process, reap it, and remove the partial temp output.
+impl Drop for EpisodeEncoder {
+    fn drop(&mut self) {
+        drop(self.stdin.take());
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&self.temp_path);
         }
     }
 }

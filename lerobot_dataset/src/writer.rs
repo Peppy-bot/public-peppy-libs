@@ -14,10 +14,7 @@ use crate::config::{CameraId, DatasetConfig, VectorId};
 use crate::data::EpisodeData;
 use crate::error::{Error, FrameError};
 use crate::frame::Frame;
-use crate::layout::{
-    DATA_FILES_SIZE_IN_MB, FileSlot, VIDEO_FILES_SIZE_IN_MB, data_path, episodes_path, mb_to_bytes,
-    video_path,
-};
+use crate::layout::{FileSlot, data_path, episodes_path, mb_to_bytes, video_path};
 use crate::meta::episodes::{EpisodeRow, FeatureStatsEntry, VideoLocation};
 use crate::meta::info::{Totals, build_info_json};
 use crate::meta::stats::{FeatureStats, ImageStatsAccumulator, aggregate, vector_stats};
@@ -58,11 +55,13 @@ pub struct DatasetWriter {
     aggregated: Option<Vec<FeatureStatsEntry>>,
 }
 
+#[derive(Debug)]
 pub struct EpisodeMeta {
     pub episode_index: u64,
     pub length: u64,
 }
 
+#[derive(Debug)]
 pub struct DatasetSummary {
     pub root: PathBuf,
     pub total_episodes: u64,
@@ -141,7 +140,7 @@ impl DatasetWriter {
             ) {
                 Ok(encoder) => encoder,
                 Err(error) => {
-                    encoders.into_iter().for_each(EpisodeEncoder::abort);
+                    drop(encoders);
                     return Err(error.into());
                 }
             };
@@ -167,6 +166,7 @@ impl DatasetWriter {
                 .collect(),
             encoders,
             frames: 0,
+            committed: false,
             dataset: self,
         })
     }
@@ -207,6 +207,8 @@ pub struct EpisodeWriter<'d> {
     image_stats: Vec<ImageStatsAccumulator>,
     encoders: Vec<EpisodeEncoder>,
     frames: u64,
+    /// True once end() or abort() has taken responsibility for the episode.
+    committed: bool,
 }
 
 impl EpisodeWriter<'_> {
@@ -272,34 +274,34 @@ impl EpisodeWriter<'_> {
 
     /// Commits the episode. The dataset on disk is fully valid when this
     /// returns.
-    pub fn end(self) -> Result<EpisodeMeta, Error> {
+    pub fn end(mut self) -> Result<EpisodeMeta, Error> {
+        self.committed = true;
         if self.frames == 0 {
-            self.encoders.into_iter().for_each(EpisodeEncoder::abort);
+            self.encoders.clear();
             return Err(Error::EmptyEpisode);
         }
-        let EpisodeWriter {
-            dataset,
-            episode_index,
-            task,
-            vectors,
-            vector_dims,
-            image_stats,
-            encoders,
-            frames,
-        } = self;
+        let episode_index = self.episode_index;
+        let frames = self.frames;
+        let task = std::mem::take(&mut self.task);
+        let vectors = std::mem::take(&mut self.vectors);
+        let vector_dims = std::mem::take(&mut self.vector_dims);
+        let image_stats = std::mem::take(&mut self.image_stats);
+        let encoders = std::mem::take(&mut self.encoders);
+        let dataset = &mut *self.dataset;
         let fps = dataset.config.fps.get();
 
         let mut episode_videos: Vec<(PathBuf, u64)> = Vec::new();
         let mut open_encoders = encoders.into_iter();
-        while let Some(encoder) = open_encoders.next() {
+        for encoder in open_encoders.by_ref() {
             match encoder.finish() {
                 Ok(done) => episode_videos.push(done),
                 Err(error) => {
-                    open_encoders.for_each(EpisodeEncoder::abort);
+                    drop(open_encoders);
                     return Err(error.into());
                 }
             }
         }
+        drop(open_encoders);
 
         let (task_index, task_is_new) = dataset.tasks.intern(&task);
         if task_is_new {
@@ -326,7 +328,7 @@ impl EpisodeWriter<'_> {
         dataset.data_slot = dataset.roll_if_full(
             dataset.data_slot,
             &data_path(dataset.data_slot),
-            DATA_FILES_SIZE_IN_MB,
+            dataset.config.data_files_size_in_mb,
         );
         let (dataset_from_index, dataset_to_index) = crate::data::append_episode(
             &dataset.root,
@@ -349,7 +351,7 @@ impl EpisodeWriter<'_> {
             let state = &mut dataset.videos[camera_index];
             let current = dataset.root.join(video_path(&key, state.slot));
             let roll = std::fs::metadata(&current)
-                .map(|m| m.len() >= mb_to_bytes(VIDEO_FILES_SIZE_IN_MB))
+                .map(|m| m.len() >= mb_to_bytes(dataset.config.video_files_size_in_mb))
                 .unwrap_or(false);
             if roll {
                 state.slot = state.slot.next();
@@ -374,7 +376,7 @@ impl EpisodeWriter<'_> {
         dataset.episodes_slot = dataset.roll_if_full(
             dataset.episodes_slot,
             &episodes_path(dataset.episodes_slot),
-            DATA_FILES_SIZE_IN_MB,
+            dataset.config.data_files_size_in_mb,
         );
         crate::meta::episodes::append_episode_row(
             &dataset.root,
@@ -422,9 +424,25 @@ impl EpisodeWriter<'_> {
 
     /// Discards the episode: encoders killed, temp files removed, nothing on
     /// disk references it.
-    pub fn abort(self) {
-        self.encoders.into_iter().for_each(EpisodeEncoder::abort);
+    pub fn abort(mut self) {
+        self.committed = true;
+        self.encoders.clear();
         let _ = std::fs::remove_dir_all(self.dataset.root.join(EPISODE_TMP_DIR));
+    }
+}
+
+/// Dropping without `end`/`abort` discards the episode like `abort` (each
+/// encoder's own Drop kills its ffmpeg and removes its temp file) and warns,
+/// since losing frames silently is never intended.
+impl Drop for EpisodeWriter<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            tracing::warn!(
+                episode_index = self.episode_index,
+                frames = self.frames,
+                "episode writer dropped without end() or abort(); episode discarded"
+            );
+        }
     }
 }
 
