@@ -110,6 +110,33 @@ fn rest_pose_clearance_is_stable() {
 }
 
 #[test]
+fn queries_are_order_independent_near_the_torso_regions() {
+    // A stateful support function (a warm-started graph climb) answered this
+    // pose wrong whenever another pair's query ran first: the torso's clipped
+    // slice hulls carry repair artifacts in their triangle graph, a greedy
+    // climb parked on a false summit, and GJK reported the wrist 90 mm INSIDE
+    // a torso slab it was actually 74 mm clear of. The pose sits on the wrists'
+    // natural converging path, so the governor steered on the garbage reading.
+    // Support is an exact scan; pin the true clearance and that repeating the
+    // query after a full model sweep cannot change the answer.
+    let mut m = model();
+    let ql: JointVec = [0.0, 0.0, 0.1075, 0.1575, 0.0, 0.0, 0.0];
+    let qr: JointVec = [0.0, 0.0, -0.1075, 0.1575, 0.0, 0.0, 0.0];
+    let first = m.min_distance(&ql, &qr).expect("query").distance;
+    assert!(
+        first > 0.02,
+        "near-home converging pose must read clear (~+0.024 true), got {first:+.5}"
+    );
+    let (deep_l, deep_r) = wrists_inward(1.2);
+    m.min_distance(&deep_l, &deep_r).expect("query");
+    let again = m.min_distance(&ql, &qr).expect("query").distance;
+    assert!(
+        (first - again).abs() < 1e-12,
+        "query order changed the answer: {first:+.5} then {again:+.5}"
+    );
+}
+
+#[test]
 fn separating_sweep_increases_clearance() {
     // Sweeping j2 outward moves the arms apart, so the nearest-pair clearance only
     // grows (and plateaus once the binding pair stops closing). Stronger than a
@@ -274,3 +301,4 @@ fn query_stays_inside_the_control_tick() {
         );
     }
 }
+
