@@ -81,7 +81,9 @@ fn parse_args() -> Result<Args, String> {
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or(format!("{flag} needs a value"));
         let fraction = |s: &str| -> Result<f64, String> {
-            let f: f64 = s.parse().map_err(|e| format!("bad gripper fraction '{s}': {e}"))?;
+            let f: f64 = s
+                .parse()
+                .map_err(|e| format!("bad gripper fraction '{s}': {e}"))?;
             (0.0..=1.0)
                 .contains(&f)
                 .then_some(f)
