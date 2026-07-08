@@ -937,10 +937,18 @@ impl BimanualCollisionModel {
         let dot_abs = |lever: &JointVec, dq: &JointVec| -> f64 {
             lever.iter().zip(dq).map(|(l, d)| l * d.abs()).sum::<f64>()
         };
-        dot_abs(&self.levers[0], dq_left)
+        let bound = dot_abs(&self.levers[0], dq_left)
             + dot_abs(&self.levers[1], dq_right)
             + self.opening_levers[0] * dopenings[0].abs()
-            + self.opening_levers[1] * dopenings[1].abs()
+            + self.opening_levers[1] * dopenings[1].abs();
+        // A non-finite delta gives no finite bound: return infinity so a caller's
+        // skip predicate (`margin > bound`) can never pass on bad data, rather
+        // than a NaN whose comparison direction the caller must not rely on.
+        if bound.is_finite() {
+            bound
+        } else {
+            f64::INFINITY
+        }
     }
 
     /// Refresh the world pose of the moving bodies from FK. Finger bodies are
@@ -1478,6 +1486,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn step_bound_is_infinite_on_non_finite_deltas() {
+        // The scan-skip predicate compares `margin > bound`; a NaN bound would
+        // make that false by comparison semantics alone, which a caller must not
+        // have to rely on. Bad deltas must yield an explicitly infinite bound.
+        let m = model();
+        let mut dq = [0.0; ARM_DOF];
+        dq[2] = f64::NAN;
+        assert_eq!(
+            m.clearance_step_bound(&dq, &[0.0; ARM_DOF], &[0.0, 0.0]),
+            f64::INFINITY
+        );
+        assert_eq!(
+            m.clearance_step_bound(&[0.0; ARM_DOF], &[0.0; ARM_DOF], &[f64::NAN, 0.0]),
+            f64::INFINITY
+        );
+        assert_eq!(
+            m.clearance_step_bound(&[0.0; ARM_DOF], &[0.0; ARM_DOF], &[0.0, f64::INFINITY]),
+            f64::INFINITY
+        );
     }
 
     #[test]
