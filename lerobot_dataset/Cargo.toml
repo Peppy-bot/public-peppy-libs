@@ -16,3 +16,6 @@ tracing = "0.1"
 tempfile = "3"
 
 [dev-dependencies]
+arrow = "59"
+parquet = { version = "59", features = ["arrow", "snap"], default-features = false }
+tempfile = "3"
