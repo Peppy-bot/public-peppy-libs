@@ -131,7 +131,10 @@ fn mirrored_limit_fingers_place_identically() {
         ),
     ];
     let mirrored = rewrites.iter().fold(urdf.clone(), |acc, (from, to)| {
-        assert!(acc.contains(from), "fixture drifted from the rewrite anchor");
+        assert!(
+            acc.contains(from),
+            "fixture drifted from the rewrite anchor"
+        );
         acc.replacen(from, to, 1)
     });
 
@@ -159,10 +162,10 @@ fn mirrored_limit_fingers_place_identically() {
                 .find(|(n, _)| *n == name)
                 .expect("finger body exists");
             let verts: Vec<_> = ps.iter().flat_map(|p| p.vertices.iter()).collect();
-            verts
-                .iter()
-                .fold(bimanual_collision_model::nalgebra::Vector3::zeros(), |a, v| a + v.coords)
-                / verts.len() as f64
+            verts.iter().fold(
+                bimanual_collision_model::nalgebra::Vector3::zeros(),
+                |a, v| a + v.coords,
+            ) / verts.len() as f64
         };
         (centroid("openarm_right_right_finger") - centroid("openarm_right_left_finger")).norm()
     };
@@ -178,6 +181,38 @@ fn mirrored_limit_fingers_place_identically() {
     assert!(
         separation(&mut flipped, 1.0) > separation(&mut flipped, 0.0) + 0.05,
         "fraction 1.0 must spread the fingers"
+    );
+}
+
+#[test]
+fn mixed_flip_finger_limits_fail_the_build() {
+    // Rewrite only ONE right finger to the mirrored [-x, 0] limit style (its
+    // sibling keeps [0, x]): each finger's own motion is physically unchanged,
+    // but the pair's limit ranges now disagree on a closed-to-open direction, so
+    // the tip separation is equal at both limit extremes and any orientation
+    // would be picked by floating-point noise. The build must refuse loudly
+    // rather than guess and silently place "open" as closed on one finger.
+    let urdf = std::fs::read_to_string(format!("{FIXTURES}/openarm_v10.urdf")).expect("fixture");
+    let from = "<child link=\"openarm_right_left_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 -0.0 0.1025\"/>\n    <axis xyz=\"0 1 0\"/>\n    <limit effort=\"333\" lower=\"0.0\" upper=\"0.044\" velocity=\"10.0\"/>";
+    let to = "<child link=\"openarm_right_left_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 -0.0 0.1025\"/>\n    <axis xyz=\"0 -1 0\"/>\n    <limit effort=\"333\" lower=\"-0.044\" upper=\"0.0\" velocity=\"10.0\"/>";
+    assert!(
+        urdf.contains(from),
+        "fixture drifted from the rewrite anchor"
+    );
+    let mixed = urdf.replacen(from, to, 1);
+    let err = BimanualCollisionModel::builder(
+        &mixed,
+        &format!("{FIXTURES}/meshes"),
+        "openarm_left_link0",
+        "openarm_right_link0",
+    )
+    .regions(openarm::TORSO_BODY, openarm::torso_regions())
+    .build()
+    .err()
+    .expect("a mixed-flip gripper must fail the build");
+    assert!(
+        err.to_string().contains("ambiguous"),
+        "expected the ambiguous-orientation error, got: {err}"
     );
 }
 
@@ -413,4 +448,3 @@ fn query_stays_inside_the_control_tick() {
         );
     }
 }
-

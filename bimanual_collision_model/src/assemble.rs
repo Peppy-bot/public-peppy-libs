@@ -149,7 +149,11 @@ pub(crate) fn fit_bodies(
         });
     }
 
-    Ok(FittedBodies { fixed, links, fingers })
+    Ok(FittedBodies {
+        fixed,
+        links,
+        fingers,
+    })
 }
 
 /// Orient a two-finger gripper's `closed`/`open` joint positions from its
@@ -176,9 +180,10 @@ fn orient_finger_pair(pair: &mut [(FittedFinger, Point3<f64>)]) -> Result<(), Bu
         )));
     };
     let posed = |f: &(FittedFinger, Point3<f64>), q: f64| -> Result<Point3<f64>, BuildError> {
-        let offset = f.0.joint.offset(q).map_err(|e| {
-            BuildError::Geometry(format!("finger '{}': {e}", f.0.name))
-        })?;
+        let offset =
+            f.0.joint
+                .offset(q)
+                .map_err(|e| BuildError::Geometry(format!("finger '{}': {e}", f.0.name)))?;
         Ok(offset * f.1)
     };
     let separation = |qa: f64, qb: f64| -> Result<f64, BuildError> {
@@ -186,6 +191,20 @@ fn orient_finger_pair(pair: &mut [(FittedFinger, Point3<f64>)]) -> Result<(), Bu
     };
     let at_lower = separation(a.0.joint.lower_limit, b.0.joint.lower_limit)?;
     let at_upper = separation(a.0.joint.upper_limit, b.0.joint.upper_limit)?;
+    // A real gripper's tip separation differs by centimetres between its limit
+    // extremes; near-equal separations mean the two joints' limit ranges point
+    // opposite ways (e.g. a half-mirrored export), where a strict comparison
+    // would pick an orientation by floating-point noise. Refuse to guess.
+    const ORIENT_MARGIN_M: f64 = 1e-6;
+    if (at_lower - at_upper).abs() <= ORIENT_MARGIN_M {
+        return Err(BuildError::Geometry(format!(
+            "link '{}': finger travel orientation is ambiguous (tip separation \
+             {at_lower:.6} m at the lower limits vs {at_upper:.6} m at the upper); \
+             the two finger joints' limit ranges do not agree on a closed-to-open \
+             direction",
+            a.0.parent_link
+        )));
+    }
     if at_lower > at_upper {
         for (finger, _) in pair.iter_mut() {
             (finger.closed, finger.open) = (finger.joint.upper_limit, finger.joint.lower_limit);
@@ -199,7 +218,9 @@ fn orient_finger_pair(pair: &mut [(FittedFinger, Point3<f64>)]) -> Result<(), Bu
 fn vertex_centroid(verts: &[Point3<f64>]) -> Point3<f64> {
     let sum = verts
         .iter()
-        .fold(srs_model::nalgebra::Vector3::zeros(), |acc, p| acc + p.coords);
+        .fold(srs_model::nalgebra::Vector3::zeros(), |acc, p| {
+            acc + p.coords
+        });
     Point3::from(sum / verts.len().max(1) as f64)
 }
 
