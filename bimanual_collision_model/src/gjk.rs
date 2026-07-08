@@ -157,10 +157,18 @@ impl SubSimplex {
 }
 
 impl Hull {
-    /// A GJK primitive from a computed [`ConvexHull`]. Errors on an empty hull.
+    /// A GJK primitive from a computed [`ConvexHull`]. Errors on an empty hull
+    /// or an invalid rounding radius: the radius feeds both the query and the
+    /// bounding-sphere prefilter, where a negative or non-finite value would
+    /// make the pruning bound unsound and silently skip the true nearest piece.
     pub fn new(hull: &ConvexHull, radius: f64) -> Result<Hull, String> {
         if hull.vertices.is_empty() {
             return Err("cannot build a hull from zero vertices".into());
+        }
+        if !radius.is_finite() || radius < 0.0 {
+            return Err(format!(
+                "hull rounding radius must be finite and non-negative, got {radius}"
+            ));
         }
         let bound_center = Point3::from(
             hull.vertices
@@ -716,6 +724,20 @@ mod tests {
             a: pt(x, y, z),
             b: pt(0.0, 0.0, 0.0),
         }
+    }
+
+    #[test]
+    fn rejects_an_invalid_rounding_radius() {
+        // The radius feeds the prefilter's pruning bound; a negative or
+        // non-finite value would make that bound unsound rather than erroring.
+        let tri = ConvexHull {
+            vertices: vec![pt(0.0, 0.0, 0.0), pt(1.0, 0.0, 0.0), pt(0.0, 1.0, 0.0), pt(0.0, 0.0, 1.0)],
+            faces: Vec::new(),
+        };
+        assert!(Hull::new(&tri, -0.001).is_err());
+        assert!(Hull::new(&tri, f64::NAN).is_err());
+        assert!(Hull::new(&tri, f64::INFINITY).is_err());
+        assert!(Hull::new(&tri, 0.0).is_ok());
     }
 
     #[test]
