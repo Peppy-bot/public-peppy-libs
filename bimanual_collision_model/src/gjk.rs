@@ -81,6 +81,12 @@ pub struct Hull {
     vertices: Vec<Point3<f64>>,
     faces: Vec<[usize; 3]>,
     radius: f64,
+    /// Bounding sphere of the rounded piece in its own frame (vertex centroid;
+    /// farthest vertex plus the rounding radius). Placing just the centre gives
+    /// a cheap lower bound on any pairwise distance, so a multi-piece narrowphase
+    /// can skip piece pairs that cannot beat the best distance found.
+    bound_center: Point3<f64>,
+    bound_radius: f64,
 }
 
 /// Result of a GJK query: signed surface distance (negative is penetration of
@@ -156,11 +162,35 @@ impl Hull {
         if hull.vertices.is_empty() {
             return Err("cannot build a hull from zero vertices".into());
         }
+        let bound_center = Point3::from(
+            hull.vertices
+                .iter()
+                .fold(Vector3::zeros(), |acc, v| acc + v.coords)
+                / hull.vertices.len() as f64,
+        );
+        let bound_radius = hull
+            .vertices
+            .iter()
+            .map(|v| (v - bound_center).norm())
+            .fold(0.0_f64, f64::max)
+            + radius;
         Ok(Hull {
             vertices: hull.vertices.clone(),
             faces: hull.faces.clone(),
             radius,
+            bound_center,
+            bound_radius,
         })
+    }
+
+    /// Centre of the piece's bounding sphere, in the hull's own frame.
+    pub fn bound_center(&self) -> Point3<f64> {
+        self.bound_center
+    }
+
+    /// Radius of the piece's bounding sphere (rounding included).
+    pub fn bound_radius(&self) -> f64 {
+        self.bound_radius
     }
 
     /// The hull vertices, for placement and rendering.

@@ -635,12 +635,22 @@ impl BimanualCollisionModel {
                 break;
             }
             let pair = &self.pairs[i];
+            let (iso_a, iso_b) = (self.world_iso[pair.a], self.world_iso[pair.b]);
             for ha in &self.bodies[pair.a].local {
+                let center_a = iso_a * ha.bound_center();
                 for hb in &self.bodies[pair.b].local {
-                    let r = gjk::distance(
-                        &Placed::new(ha, self.world_iso[pair.a]),
-                        &Placed::new(hb, self.world_iso[pair.b]),
-                    );
+                    // Piece-level prefilter, same sphere bound as the pair
+                    // broadphase: a piece pair that cannot beat the best
+                    // distance skips its GJK. A multi-piece body (the torso's
+                    // region decomposition) otherwise pays one GJK per piece
+                    // for pieces nowhere near the query.
+                    let gap = (center_a - iso_b * hb.bound_center()).norm()
+                        - ha.bound_radius()
+                        - hb.bound_radius();
+                    if best.as_ref().is_some_and(|c| gap > c.distance) {
+                        continue;
+                    }
+                    let r = gjk::distance(&Placed::new(ha, iso_a), &Placed::new(hb, iso_b));
                     if best.as_ref().is_none_or(|c| r.distance < c.distance) {
                         best = Some(Closest {
                             distance: r.distance,
