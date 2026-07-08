@@ -82,3 +82,4 @@ ENV/
 .vscode/
 *.swp
 /openarm_description/Cargo.lock
+/lerobot_dataset/Cargo.lock

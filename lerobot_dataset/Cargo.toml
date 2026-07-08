@@ -1,0 +1,18 @@
+[package]
+name = "lerobot_dataset"
+version = "0.1.0"
+edition = "2024"
+description = "Native writer for LeRobot v3 datasets: parquet data and metadata via arrow, video via an ffmpeg subprocess. Pure data-in files-out, no robotics framework dependencies. Output is verified against the Python lerobot loader by the compliance harness in compliance/."
+
+[dependencies]
+arrow = "59"
+parquet = { version = "59", features = ["arrow", "snap"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+zune-core = "0.4"
+zune-jpeg = "0.4"
+thiserror = "2"
+tracing = "0.1"
+tempfile = "3"
+
+[dev-dependencies]
