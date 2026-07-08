@@ -1,0 +1,10 @@
+{
+  "avg_frame_rate": "30/1",
+  "codec_name": "av1",
+  "height": 48,
+  "nb_frames": "135",
+  "pix_fmt": "yuv420p",
+  "r_frame_rate": "30/1",
+  "time_base": "1/15360",
+  "width": 64
+}

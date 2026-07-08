@@ -1,0 +1,43 @@
+{
+  "fields": [
+    {
+      "name": "observation.state",
+      "nullable": true,
+      "type": "fixed_size_list<element: float>[4]"
+    },
+    {
+      "name": "action",
+      "nullable": true,
+      "type": "fixed_size_list<element: float>[3]"
+    },
+    {
+      "name": "timestamp",
+      "nullable": true,
+      "type": "float"
+    },
+    {
+      "name": "frame_index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "episode_index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "task_index",
+      "nullable": true,
+      "type": "int64"
+    }
+  ],
+  "metadata": {
+    "huggingface": "{\"info\": {\"features\": {\"observation.state\": {\"feature\": {\"dtype\": \"float32\", \"_type\": \"Value\"}, \"length\": 4, \"_type\": \"List\"}, \"action\": {\"feature\": {\"dtype\": \"float32\", \"_type\": \"Value\"}, \"length\": 3, \"_type\": \"List\"}, \"timestamp\": {\"dtype\": \"float32\", \"_type\": \"Value\"}, \"frame_index\": {\"dtype\": \"int64\", \"_type\": \"Value\"}, \"episode_index\": {\"dtype\": \"int64\", \"_type\": \"Value\"}, \"index\": {\"dtype\": \"int64\", \"_type\": \"Value\"}, \"task_index\": {\"dtype\": \"int64\", \"_type\": \"Value\"}}}, \"fingerprint\": \"a245e53049e2b166\"}"
+  },
+  "source": "file-000.parquet"
+}

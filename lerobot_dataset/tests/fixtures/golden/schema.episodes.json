@@ -1,0 +1,541 @@
+{
+  "fields": [
+    {
+      "name": "episode_index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "tasks",
+      "nullable": true,
+      "type": "list<element: string>"
+    },
+    {
+      "name": "length",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "data/chunk_index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "data/file_index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "dataset_from_index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "dataset_to_index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "videos/observation.images.cam_a/chunk_index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "videos/observation.images.cam_a/file_index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "videos/observation.images.cam_a/from_timestamp",
+      "nullable": true,
+      "type": "double"
+    },
+    {
+      "name": "videos/observation.images.cam_a/to_timestamp",
+      "nullable": true,
+      "type": "double"
+    },
+    {
+      "name": "videos/observation.images.cam_b/chunk_index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "videos/observation.images.cam_b/file_index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "videos/observation.images.cam_b/from_timestamp",
+      "nullable": true,
+      "type": "double"
+    },
+    {
+      "name": "videos/observation.images.cam_b/to_timestamp",
+      "nullable": true,
+      "type": "double"
+    },
+    {
+      "name": "stats/observation.state/min",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/observation.state/max",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/observation.state/mean",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/observation.state/std",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/observation.state/count",
+      "nullable": true,
+      "type": "list<element: int64>"
+    },
+    {
+      "name": "stats/observation.state/q01",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/observation.state/q10",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/observation.state/q50",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/observation.state/q90",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/observation.state/q99",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/action/min",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/action/max",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/action/mean",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/action/std",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/action/count",
+      "nullable": true,
+      "type": "list<element: int64>"
+    },
+    {
+      "name": "stats/action/q01",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/action/q10",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/action/q50",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/action/q90",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/action/q99",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/observation.images.cam_a/min",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_a/max",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_a/mean",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_a/std",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_a/count",
+      "nullable": true,
+      "type": "list<element: int64>"
+    },
+    {
+      "name": "stats/observation.images.cam_a/q01",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_a/q10",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_a/q50",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_a/q90",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_a/q99",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_b/min",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_b/max",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_b/mean",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_b/std",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_b/count",
+      "nullable": true,
+      "type": "list<element: int64>"
+    },
+    {
+      "name": "stats/observation.images.cam_b/q01",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_b/q10",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_b/q50",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_b/q90",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/observation.images.cam_b/q99",
+      "nullable": true,
+      "type": "list<element: list<element: list<element: double>>>"
+    },
+    {
+      "name": "stats/timestamp/min",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/timestamp/max",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/timestamp/mean",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/timestamp/std",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/timestamp/count",
+      "nullable": true,
+      "type": "list<element: int64>"
+    },
+    {
+      "name": "stats/timestamp/q01",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/timestamp/q10",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/timestamp/q50",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/timestamp/q90",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/timestamp/q99",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/frame_index/min",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/frame_index/max",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/frame_index/mean",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/frame_index/std",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/frame_index/count",
+      "nullable": true,
+      "type": "list<element: int64>"
+    },
+    {
+      "name": "stats/frame_index/q01",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/frame_index/q10",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/frame_index/q50",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/frame_index/q90",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/frame_index/q99",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/episode_index/min",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/episode_index/max",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/episode_index/mean",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/episode_index/std",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/episode_index/count",
+      "nullable": true,
+      "type": "list<element: int64>"
+    },
+    {
+      "name": "stats/episode_index/q01",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/episode_index/q10",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/episode_index/q50",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/episode_index/q90",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/episode_index/q99",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/index/min",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/index/max",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/index/mean",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/index/std",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/index/count",
+      "nullable": true,
+      "type": "list<element: int64>"
+    },
+    {
+      "name": "stats/index/q01",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/index/q10",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/index/q50",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/index/q90",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/index/q99",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/task_index/min",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/task_index/max",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/task_index/mean",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/task_index/std",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/task_index/count",
+      "nullable": true,
+      "type": "list<element: int64>"
+    },
+    {
+      "name": "stats/task_index/q01",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/task_index/q10",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/task_index/q50",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/task_index/q90",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "stats/task_index/q99",
+      "nullable": true,
+      "type": "list<element: double>"
+    },
+    {
+      "name": "meta/episodes/chunk_index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "meta/episodes/file_index",
+      "nullable": true,
+      "type": "int64"
+    }
+  ],
+  "metadata": {},
+  "source": "file-000.parquet"
+}

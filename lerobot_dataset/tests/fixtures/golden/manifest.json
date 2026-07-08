@@ -1,0 +1,31 @@
+{
+  "action_dim": 3,
+  "cameras": {
+    "observation.images.cam_a": [
+      48,
+      64
+    ],
+    "observation.images.cam_b": [
+      48,
+      64
+    ]
+  },
+  "episodes": [
+    {
+      "length": 45,
+      "task": "pick up the cube"
+    },
+    {
+      "length": 40,
+      "task": "pick up the cube"
+    },
+    {
+      "length": 50,
+      "task": "place the cube in the bin"
+    }
+  ],
+  "fps": 30,
+  "lerobot_version": "0.6.0",
+  "robot_type": "synthetic_test",
+  "state_dim": 4
+}

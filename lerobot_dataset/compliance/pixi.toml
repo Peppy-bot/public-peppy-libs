@@ -1,0 +1,32 @@
+[workspace]
+name = "lerobot-dataset-compliance"
+version = "0.1.0"
+description = "Dev-time compliance harness: verifies datasets written by the lerobot_dataset crate against the Python lerobot loader"
+channels = ["conda-forge"]
+# Dev machines and the CI runner are linux-64; this env is never shipped.
+platforms = ["linux-64"]
+requires-pixi = ">=0.72"
+
+[dependencies]
+python = ">=3.11,<3.14"
+pip = "*"
+# Provides ffmpeg/ffprobe (and the shared libav* torchcodec dlopens) inside the
+# env, so neither the crate tests nor this harness need a system ffmpeg.
+ffmpeg = "*"
+
+[pypi-dependencies]
+lerobot = { version = "*", extras = ["dataset"] }
+# Used by the harness itself to dump/compare parquet schemas.
+pyarrow = "*"
+# CPU wheels: the harness only loads datasets; CUDA torch is a 2 GB download.
+torch = { version = "*", index = "https://download.pytorch.org/whl/cpu" }
+torchvision = { version = "*", index = "https://download.pytorch.org/whl/cpu" }
+torchcodec = { version = "*", index = "https://download.pytorch.org/whl/cpu" }
+
+[tasks]
+# Regenerates tests/fixtures/golden from a dataset written by Python lerobot
+# itself. Run after bumping the pinned lerobot version.
+dump-golden = { cmd = "python dump_golden_schemas.py --out ../tests/fixtures/golden", env = { HF_HUB_OFFLINE = "1" } }
+# Usage: pixi run check <dataset_root>
+check = { cmd = "python check_dataset.py", env = { HF_HUB_OFFLINE = "1" } }
+lerobot-version = "python -c 'import lerobot; print(lerobot.__version__)'"

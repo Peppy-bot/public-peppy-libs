@@ -1,0 +1,18 @@
+{
+  "fields": [
+    {
+      "name": "task_index",
+      "nullable": true,
+      "type": "int64"
+    },
+    {
+      "name": "task",
+      "nullable": true,
+      "type": "string"
+    }
+  ],
+  "metadata": {
+    "pandas": "{\"index_columns\": [\"task\"], \"column_indexes\": [{\"name\": null, \"field_name\": null, \"pandas_type\": \"unicode\", \"numpy_type\": \"object\", \"metadata\": {\"encoding\": \"UTF-8\"}}], \"columns\": [{\"name\": \"task_index\", \"field_name\": \"task_index\", \"pandas_type\": \"int64\", \"numpy_type\": \"int64\", \"metadata\": null}, {\"name\": \"task\", \"field_name\": \"task\", \"pandas_type\": \"unicode\", \"numpy_type\": \"object\", \"metadata\": null}], \"attributes\": {}, \"creator\": {\"library\": \"pyarrow\", \"version\": \"24.0.0\"}, \"pandas_version\": \"2.3.3\"}"
+  },
+  "source": "tasks.parquet"
+}
