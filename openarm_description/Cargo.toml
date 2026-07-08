@@ -2,7 +2,7 @@
 name = "openarm_description"
 version = "0.1.0"
 edition = "2024"
-description = "The OpenArm robot descriptions (v1.0 and v2.0): the single embedded source of truth for the URDFs (and, behind the `meshes` feature, the collision meshes), plus the constants describing their control margins, selected by HardwareVersion. Pure data, no kinematics or solver deps."
+description = "The OpenArm robot descriptions (v1.0 and v2.0): the single embedded source of truth for the URDFs (and, behind the `meshes` feature, the collision meshes), plus the constants and joint limits describing their control margins, selected by HardwareVersion. Pure data, no solver deps."
 
 [features]
 # Embed the collision meshes and expose `write_meshes_to` (and the `emit_meshes`
@@ -16,5 +16,5 @@ meshes = []
 name = "emit_meshes"
 required-features = ["meshes"]
 
-[dev-dependencies]
+[dependencies]
 urdf-rs = "0.9"

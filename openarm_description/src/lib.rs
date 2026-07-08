@@ -12,15 +12,38 @@
 //!   consumer (the sim) via the `emit_meshes` binary.
 //! - [`HardwareVersion::elbow_singularity_floor_rad`] / [`HardwareVersion::elbow_joint_index`]
 //!   describe the elbow control margin the kinematics consumer applies (see the method docs).
+//! - [`HardwareVersion::joint_limits`] resolves one side's per-joint position limits from the
+//!   bundled URDF with that margin applied: the single clamp source for every node that
+//!   produces joint commands.
 //!
-//! Pure data: this crate carries no kinematics or solver dependency. A consumer that wants
-//! a kinematic model builds it from the URDF and applies the margin itself, e.g.
+//! Pure data: this crate carries no solver dependency. A consumer that wants a kinematic
+//! model builds it from the URDF and applies the margin itself, e.g.
 //! `srs_model::Arm::from_urdf(v.urdf(), base).with_lower_floor(v.elbow_joint_index(),
 //! v.elbow_singularity_floor_rad())`, so the description stays reusable by any consumer (a
 //! viz tool, a sim bridge) without pulling a solver in.
 
 use std::fmt;
 use std::str::FromStr;
+
+/// Joints per arm (j1..j7) in both generations.
+pub const ARM_DOF: usize = 7;
+
+/// An arm side of the bimanual robot, selecting the `openarm_left_*` or
+/// `openarm_right_*` chain in the bundled URDF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+impl Side {
+    fn urdf_prefix(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+}
 
 /// An OpenArm hardware generation. A node parses its `hardware_version` parameter into
 /// this once (parse, don't validate) and then reads the bundled description through it.
@@ -75,6 +98,31 @@ impl HardwareVersion {
             Self::V1 => 0.044,
             Self::V2 => 0.0697,
         }
+    }
+
+    /// Per-joint `[lower, upper]` position limits (rad) for one arm side, j1..j7, from
+    /// the bundled URDF with [`Self::elbow_singularity_floor_rad`] applied to the elbow.
+    /// This is the clamp range a command-producing node (operator panel, leader arm)
+    /// applies before streaming; the hub and the arm clamp again on their side. Panics
+    /// only if the bundled URDF is malformed, which this crate's tests rule out.
+    pub fn joint_limits(self, side: Side) -> [[f64; 2]; ARM_DOF] {
+        let robot = urdf_rs::read_from_string(self.urdf()).expect("bundled URDF must parse");
+        let elbow = self.elbow_joint_index();
+        let floor = self.elbow_singularity_floor_rad();
+        std::array::from_fn(|i| {
+            let name = format!("openarm_{}_joint{}", side.urdf_prefix(), i + 1);
+            let joint = robot
+                .joints
+                .iter()
+                .find(|j| j.name == name)
+                .unwrap_or_else(|| panic!("bundled URDF missing joint {name}"));
+            let lower = if i == elbow {
+                joint.limit.lower.max(floor)
+            } else {
+                joint.limit.lower
+            };
+            [lower, joint.limit.upper]
+        })
     }
 }
 
@@ -172,12 +220,30 @@ const V2_MESHES: &[(&str, &[u8])] = &[
         "base_link.stl",
         include_bytes!("../assets/meshes_v20/base_link.stl"),
     ),
-    ("link1.stl", include_bytes!("../assets/meshes_v20/link1.stl")),
-    ("link2.stl", include_bytes!("../assets/meshes_v20/link2.stl")),
-    ("link3.stl", include_bytes!("../assets/meshes_v20/link3.stl")),
-    ("link4.stl", include_bytes!("../assets/meshes_v20/link4.stl")),
-    ("link5.stl", include_bytes!("../assets/meshes_v20/link5.stl")),
-    ("link6.stl", include_bytes!("../assets/meshes_v20/link6.stl")),
+    (
+        "link1.stl",
+        include_bytes!("../assets/meshes_v20/link1.stl"),
+    ),
+    (
+        "link2.stl",
+        include_bytes!("../assets/meshes_v20/link2.stl"),
+    ),
+    (
+        "link3.stl",
+        include_bytes!("../assets/meshes_v20/link3.stl"),
+    ),
+    (
+        "link4.stl",
+        include_bytes!("../assets/meshes_v20/link4.stl"),
+    ),
+    (
+        "link5.stl",
+        include_bytes!("../assets/meshes_v20/link5.stl"),
+    ),
+    (
+        "link6.stl",
+        include_bytes!("../assets/meshes_v20/link6.stl"),
+    ),
     (
         "ee_base_link.stl",
         include_bytes!("../assets/meshes_v20/ee_base_link.stl"),
@@ -228,7 +294,10 @@ mod tests {
         // Each generation names its per-arm base link differently: v1 `link0`, v2
         // `base_link` (v2 folded the ±90° mount roll into the arm chain).
         let cases = [
-            (HardwareVersion::V1, ["openarm_left_link0", "openarm_right_link0"]),
+            (
+                HardwareVersion::V1,
+                ["openarm_left_link0", "openarm_right_link0"],
+            ),
             (
                 HardwareVersion::V2,
                 ["openarm_left_base_link", "openarm_right_base_link"],
@@ -274,8 +343,14 @@ mod tests {
         // The file carries the vendored `0.0`; the singularity margin is a control policy
         // the consumer applies (elbow_singularity_floor_rad), not baked into the data.
         let cases = [
-            (HardwareVersion::V1, ["openarm_left_joint4", "openarm_right_joint4"]),
-            (HardwareVersion::V2, ["openarm_left_joint4", "openarm_right_joint4"]),
+            (
+                HardwareVersion::V1,
+                ["openarm_left_joint4", "openarm_right_joint4"],
+            ),
+            (
+                HardwareVersion::V2,
+                ["openarm_left_joint4", "openarm_right_joint4"],
+            ),
         ];
         for (v, elbows) in cases {
             let robot = parsed(v);
@@ -285,7 +360,10 @@ mod tests {
                     .iter()
                     .find(|j| j.name == elbow)
                     .unwrap_or_else(|| panic!("{v}: missing elbow joint {elbow}"));
-                assert_eq!(joint.limit.lower, 0.0, "{v}: {elbow} lower limit is mechanical");
+                assert_eq!(
+                    joint.limit.lower, 0.0,
+                    "{v}: {elbow} lower limit is mechanical"
+                );
             }
         }
     }
@@ -304,13 +382,57 @@ mod tests {
         };
         let v1 = j2(HardwareVersion::V1);
         let v2 = j2(HardwareVersion::V2);
-        assert!((v1.upper - v1.lower) < 3.6, "v1 joint2 is the symmetric range");
+        assert!(
+            (v1.upper - v1.lower) < 3.6,
+            "v1 joint2 is the symmetric range"
+        );
         assert!(
             (v2.upper - v2.lower) > 3.4,
             "v2 joint2 widened: got [{}, {}]",
             v2.lower,
             v2.upper
         );
+    }
+
+    #[test]
+    fn joint_limits_are_well_formed_with_the_elbow_floored() {
+        for v in [HardwareVersion::V1, HardwareVersion::V2] {
+            let elbow = v.elbow_joint_index();
+            for side in [Side::Left, Side::Right] {
+                let limits = v.joint_limits(side);
+                for (i, &[lo, hi]) in limits.iter().enumerate() {
+                    assert!(lo < hi, "{v} {side:?} j{}: range [{lo}, {hi}]", i + 1);
+                }
+                assert_eq!(
+                    limits[elbow][0],
+                    v.elbow_singularity_floor_rad(),
+                    "{v} {side:?}: elbow lower must be the singularity floor"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn joint_limits_match_the_urdf_outside_the_elbow() {
+        // Only the elbow lower bound is adjusted; every other bound is the file's.
+        for v in [HardwareVersion::V1, HardwareVersion::V2] {
+            let robot = parsed(v);
+            let elbow = v.elbow_joint_index();
+            for (side, prefix) in [(Side::Left, "left"), (Side::Right, "right")] {
+                let limits = v.joint_limits(side);
+                for (i, &[lo, hi]) in limits.iter().enumerate() {
+                    let joint = robot
+                        .joints
+                        .iter()
+                        .find(|j| j.name == format!("openarm_{prefix}_joint{}", i + 1))
+                        .expect("joint present");
+                    assert_eq!(hi, joint.limit.upper);
+                    if i != elbow {
+                        assert_eq!(lo, joint.limit.lower);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -330,7 +452,10 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             v.write_meshes_to(&dir).expect("materialize meshes");
             for (name, _) in v.meshes() {
-                assert!(dir.join(name).is_file(), "{v}: missing materialized mesh {name}");
+                assert!(
+                    dir.join(name).is_file(),
+                    "{v}: missing materialized mesh {name}"
+                );
             }
             std::fs::remove_dir_all(&dir).expect("cleanup");
         }
