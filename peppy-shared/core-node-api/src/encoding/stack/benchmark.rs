@@ -495,6 +495,22 @@ impl StackBenchmarkResult {
     }
 }
 
+impl crate::encoding::Wire for StackBenchmarkGoal {
+    type Root = crate::benchmark_capnp::stack_benchmark_goal::Owned;
+}
+
+impl crate::encoding::Wire for StackBenchmarkGoalResponse {
+    type Root = crate::benchmark_capnp::stack_benchmark_goal_response::Owned;
+}
+
+impl crate::encoding::Wire for StackBenchmarkFeedback {
+    type Root = crate::benchmark_capnp::stack_benchmark_feedback::Owned;
+}
+
+impl crate::encoding::Wire for StackBenchmarkResult {
+    type Root = crate::benchmark_capnp::stack_benchmark_result::Owned;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

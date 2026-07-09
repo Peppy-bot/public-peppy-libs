@@ -70,6 +70,14 @@ impl NodeResetResponse {
     }
 }
 
+impl crate::encoding::Wire for NodeResetRequest {
+    type Root = crate::node_capnp::node_reset_request::Owned;
+}
+
+impl crate::encoding::Wire for NodeResetResponse {
+    type Root = crate::node_capnp::node_reset_response::Owned;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

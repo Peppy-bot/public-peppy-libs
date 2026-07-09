@@ -209,6 +209,14 @@ impl RepoAddResponse {
     }
 }
 
+impl crate::encoding::Wire for RepoAddRequest {
+    type Root = crate::repo_capnp::repo_add_request::Owned;
+}
+
+impl crate::encoding::Wire for RepoAddResponse {
+    type Root = crate::repo_capnp::repo_add_response::Owned;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

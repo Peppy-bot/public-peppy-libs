@@ -35,6 +35,8 @@ use core::any::TypeId;
 
 use capnp::introspect::{Introspect, Type};
 
+use crate::encoding::Wire;
+
 /// The three interaction styles a core-node method can have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MethodKind {
@@ -135,17 +137,19 @@ impl MethodDescriptor {
     }
 }
 
-/// Build a [`PayloadDescriptor`] from a codec-struct ident, its Cap'n Proto
-/// `Owned` root, and the schema file. `rust_type` is the ident stringified;
-/// `rust_type_id` keys on `crate::encoding::{ident}` (the only public path to
-/// the codec struct, and the same type `peppylib` observes); `introspect`
-/// coerces the generated `Introspect::introspect` associated fn to `fn() -> Type`.
+/// Build a [`PayloadDescriptor`] from a codec-struct ident and the schema
+/// file. `rust_type` is the ident stringified; `rust_type_id` keys on
+/// `crate::encoding::{ident}` (the only public path to the codec struct, and
+/// the same type `peppylib` observes); `introspect` reaches the Cap'n Proto
+/// root through the codec's [`Wire`] impl (declared beside the codec in
+/// `encoding/`) and coerces the generated `Introspect::introspect` associated
+/// fn to `fn() -> Type`.
 macro_rules! pd {
-    ($enc:ident, $owned:ty, $file:literal) => {
+    ($enc:ident, $file:literal) => {
         PayloadDescriptor {
             rust_type: stringify!($enc),
             rust_type_id: || TypeId::of::<crate::encoding::$enc>(),
-            introspect: <$owned as Introspect>::introspect,
+            introspect: <<crate::encoding::$enc as Wire>::Root as Introspect>::introspect,
             schema_file: $file,
         }
     };
@@ -165,8 +169,8 @@ macro_rules! pd {
 /// to the AsyncAPI docs and re-emitted as the variant's first rustdoc line;
 /// doc comments on an entry become extended rustdoc on the variant. Services
 /// carry a `host`; actions and topics are always daemon-hosted today. Payload
-/// lines pair the codec struct in [`crate::encoding`] with its Cap'n Proto
-/// `Owned` root (see [`pd!`]).
+/// lines name the codec struct in [`crate::encoding`]; its Cap'n Proto `Owned`
+/// root comes from the codec's [`Wire`] impl (see [`pd!`]).
 ///
 /// The enums deliberately do **not** get `Display`/`From<..> for &str` impls:
 /// `.name()` at the wire boundary is the only sanctioned way back to a string,
@@ -181,8 +185,8 @@ macro_rules! methods {
                 name: $sname:literal,
                 host: $shost:ident,
                 summary: $ssummary:literal,
-                request: $sreq:ident as $sreq_owned:ty,
-                response: $sresp:ident as $sresp_owned:ty,
+                request: $sreq:ident,
+                response: $sresp:ident,
                 schema: $sschema:literal $(,)?
             } )+
         }
@@ -190,10 +194,10 @@ macro_rules! methods {
             $( $(#[$ameta:meta])* $avar:ident {
                 name: $aname:literal,
                 summary: $asummary:literal,
-                goal: $agoal:ident as $agoal_owned:ty,
-                goal_response: $agoal_resp:ident as $agoal_resp_owned:ty,
-                feedback: $afb:ident as $afb_owned:ty,
-                result: $ares:ident as $ares_owned:ty,
+                goal: $agoal:ident,
+                goal_response: $agoal_resp:ident,
+                feedback: $afb:ident,
+                result: $ares:ident,
                 schema: $aschema:literal $(,)?
             } )+
         }
@@ -201,7 +205,7 @@ macro_rules! methods {
             $( $(#[$tmeta:meta])* $tvar:ident {
                 name: $tname:literal,
                 summary: $tsummary:literal,
-                message: $tmsg:ident as $tmsg_owned:ty,
+                message: $tmsg:ident,
                 schema: $tschema:literal $(,)?
             } )+
         }
@@ -298,8 +302,8 @@ macro_rules! methods {
                 host: Host::$shost,
                 summary: $ssummary,
                 payloads: Payloads::Service {
-                    request: pd!($sreq, $sreq_owned, $sschema),
-                    response: pd!($sresp, $sresp_owned, $sschema),
+                    request: pd!($sreq, $sschema),
+                    response: pd!($sresp, $sschema),
                 },
             }, )+
             $( MethodDescriptor {
@@ -307,10 +311,10 @@ macro_rules! methods {
                 host: Host::CoreNodeDaemon,
                 summary: $asummary,
                 payloads: Payloads::Action {
-                    goal: pd!($agoal, $agoal_owned, $aschema),
-                    goal_response: pd!($agoal_resp, $agoal_resp_owned, $aschema),
-                    feedback: pd!($afb, $afb_owned, $aschema),
-                    result: pd!($ares, $ares_owned, $aschema),
+                    goal: pd!($agoal, $aschema),
+                    goal_response: pd!($agoal_resp, $aschema),
+                    feedback: pd!($afb, $aschema),
+                    result: pd!($ares, $aschema),
                 },
             }, )+
             $( MethodDescriptor {
@@ -318,7 +322,7 @@ macro_rules! methods {
                 host: Host::CoreNodeDaemon,
                 summary: $tsummary,
                 payloads: Payloads::Topic {
-                    message: pd!($tmsg, $tmsg_owned, $tschema),
+                    message: pd!($tmsg, $tschema),
                 },
             }, )+
         ];
@@ -331,16 +335,16 @@ methods! {
             name: "clock",
             host: CoreNodeDaemon,
             summary: "Read the daemon's current wall-clock time snapshot.",
-            request: ClockRequest as crate::clock_capnp::clock_request::Owned,
-            response: ClockResponse as crate::clock_capnp::clock_response::Owned,
+            request: ClockRequest,
+            response: ClockResponse,
             schema: "clock.capnp",
         }
         Info {
             name: "info",
             host: CoreNodeDaemon,
             summary: "Report daemon build/runtime info and its container inventory.",
-            request: InfoRequest as crate::info_capnp::info_request::Owned,
-            response: InfoResponse as crate::info_capnp::info_response::Owned,
+            request: InfoRequest,
+            response: InfoResponse,
             schema: "info.capnp",
         }
         /// Liveness service the core node exposes for an external prober (the
@@ -351,128 +355,128 @@ methods! {
             name: "health",
             host: CoreNodeDaemon,
             summary: "Liveness probe: a well-formed reply is itself the health signal.",
-            request: HealthRequest as crate::health_capnp::health_request::Owned,
-            response: HealthResponse as crate::health_capnp::health_response::Owned,
+            request: HealthRequest,
+            response: HealthResponse,
             schema: "health.capnp",
         }
         DatastoreStore {
             name: "datastore_store",
             host: CoreNodeDaemon,
             summary: "Store a value under a datastore key.",
-            request: DatastoreStoreRequest as crate::datastore_capnp::datastore_store_request::Owned,
-            response: DatastoreStoreResponse as crate::datastore_capnp::datastore_store_response::Owned,
+            request: DatastoreStoreRequest,
+            response: DatastoreStoreResponse,
             schema: "datastore.capnp",
         }
         DatastoreGet {
             name: "datastore_get",
             host: CoreNodeDaemon,
             summary: "Fetch a value by datastore key.",
-            request: DatastoreGetRequest as crate::datastore_capnp::datastore_get_request::Owned,
-            response: DatastoreGetResponse as crate::datastore_capnp::datastore_get_response::Owned,
+            request: DatastoreGetRequest,
+            response: DatastoreGetResponse,
             schema: "datastore.capnp",
         }
         DatastoreList {
             name: "datastore_list",
             host: CoreNodeDaemon,
             summary: "List datastore entries (optionally under a prefix).",
-            request: DatastoreListRequest as crate::datastore_capnp::datastore_list_request::Owned,
-            response: DatastoreListResponse as crate::datastore_capnp::datastore_list_response::Owned,
+            request: DatastoreListRequest,
+            response: DatastoreListResponse,
             schema: "datastore.capnp",
         }
         DatastoreRemove {
             name: "datastore_remove",
             host: CoreNodeDaemon,
             summary: "Remove a datastore entry by key.",
-            request: DatastoreRemoveRequest as crate::datastore_capnp::datastore_remove_request::Owned,
-            response: DatastoreRemoveResponse as crate::datastore_capnp::datastore_remove_response::Owned,
+            request: DatastoreRemoveRequest,
+            response: DatastoreRemoveResponse,
             schema: "datastore.capnp",
         }
         StackReset {
             name: "stack_reset",
             host: CoreNodeDaemon,
             summary: "Tear down the whole node stack back to an empty state.",
-            request: NodeResetRequest as crate::node_capnp::node_reset_request::Owned,
-            response: NodeResetResponse as crate::node_capnp::node_reset_response::Owned,
+            request: NodeResetRequest,
+            response: NodeResetResponse,
             schema: "node.capnp",
         }
         StackList {
             name: "stack_list",
             host: CoreNodeDaemon,
             summary: "List every node in the stack with its lifecycle stage.",
-            request: StackListRequest as crate::node_capnp::node_list_request::Owned,
-            response: StackListResponse as crate::node_capnp::node_list_response::Owned,
+            request: StackListRequest,
+            response: StackListResponse,
             schema: "node.capnp",
         }
         NodeInit {
             name: "node_init",
             host: CoreNodeDaemon,
             summary: "Initialize a node config entry in the stack.",
-            request: NodeInitRequest as crate::node_capnp::node_init_request::Owned,
-            response: NodeInitResponse as crate::node_capnp::node_init_response::Owned,
+            request: NodeInitRequest,
+            response: NodeInitResponse,
             schema: "node.capnp",
         }
         NodeRemove {
             name: "node_remove",
             host: CoreNodeDaemon,
             summary: "Remove a node entry from the stack.",
-            request: NodeRemoveRequest as crate::node_capnp::node_remove_request::Owned,
-            response: NodeRemoveResponse as crate::node_capnp::node_remove_response::Owned,
+            request: NodeRemoveRequest,
+            response: NodeRemoveResponse,
             schema: "node.capnp",
         }
         NodeSync {
             name: "node_sync",
             host: CoreNodeDaemon,
             summary: "Reconcile a node's config against its resolved repo sources.",
-            request: NodeSyncRequest as crate::node_capnp::node_sync_request::Owned,
-            response: NodeSyncResponse as crate::node_capnp::node_sync_response::Owned,
+            request: NodeSyncRequest,
+            response: NodeSyncResponse,
             schema: "node.capnp",
         }
         NodeInfo {
             name: "node_info",
             host: CoreNodeDaemon,
             summary: "Inspect a single node: config, stage, and tracked instances.",
-            request: NodeInfoRequest as crate::node_capnp::node_info_request::Owned,
-            response: NodeInfoResponse as crate::node_capnp::node_info_response::Owned,
+            request: NodeInfoRequest,
+            response: NodeInfoResponse,
             schema: "node.capnp",
         }
         NodeStop {
             name: "node_stop",
             host: CoreNodeDaemon,
             summary: "Stop a running node instance.",
-            request: NodeStopRequest as crate::node_capnp::node_stop_request::Owned,
-            response: NodeStopResponse as crate::node_capnp::node_stop_response::Owned,
+            request: NodeStopRequest,
+            response: NodeStopResponse,
             schema: "node.capnp",
         }
         RepoAdd {
             name: "repo_add",
             host: CoreNodeDaemon,
             summary: "Register a repository source with the daemon.",
-            request: RepoAddRequest as crate::repo_capnp::repo_add_request::Owned,
-            response: RepoAddResponse as crate::repo_capnp::repo_add_response::Owned,
+            request: RepoAddRequest,
+            response: RepoAddResponse,
             schema: "repo.capnp",
         }
         RepoExclude {
             name: "repo_exclude",
             host: CoreNodeDaemon,
             summary: "Mark a repository as excluded from discovery.",
-            request: RepoExcludeRequest as crate::repo_capnp::repo_exclude_request::Owned,
-            response: RepoExcludeResponse as crate::repo_capnp::repo_exclude_response::Owned,
+            request: RepoExcludeRequest,
+            response: RepoExcludeResponse,
             schema: "repo.capnp",
         }
         RepoList {
             name: "repo_list",
             host: CoreNodeDaemon,
             summary: "List registered repositories and their discovered node entries.",
-            request: RepoListRequest as crate::repo_capnp::repo_list_request::Owned,
-            response: RepoListResponse as crate::repo_capnp::repo_list_response::Owned,
+            request: RepoListRequest,
+            response: RepoListResponse,
             schema: "repo.capnp",
         }
         RepoRemove {
             name: "repo_remove",
             host: CoreNodeDaemon,
             summary: "Remove a repository source.",
-            request: RepoRemoveRequest as crate::repo_capnp::repo_remove_request::Owned,
-            response: RepoRemoveResponse as crate::repo_capnp::repo_remove_response::Owned,
+            request: RepoRemoveRequest,
+            response: RepoRemoveResponse,
             schema: "repo.capnp",
         }
         /// Framework service every *spawned node* (not the daemon) exposes.
@@ -483,8 +487,8 @@ methods! {
             host: SpawnedNode,
             summary: "Framework service every spawned node exposes; the daemon polls it \
                       during `peppy stack benchmark` to normalize cross-host timestamps.",
-            request: ClockOffsetRequest as crate::clock_capnp::clock_offset_request::Owned,
-            response: ClockOffsetResponse as crate::clock_capnp::clock_offset_response::Owned,
+            request: ClockOffsetRequest,
+            response: ClockOffsetResponse,
             schema: "clock.capnp",
         }
     }
@@ -492,55 +496,55 @@ methods! {
         StackLaunch {
             name: "stack_launch",
             summary: "Launch a stack from a launcher manifest, streaming per-node progress.",
-            goal: LaunchGoal as crate::launch_capnp::launch_goal::Owned,
-            goal_response: LaunchGoalResponse as crate::launch_capnp::launch_goal_response::Owned,
-            feedback: LaunchFeedback as crate::launch_capnp::launch_feedback::Owned,
-            result: LaunchResult as crate::launch_capnp::launch_result::Owned,
+            goal: LaunchGoal,
+            goal_response: LaunchGoalResponse,
+            feedback: LaunchFeedback,
+            result: LaunchResult,
             schema: "launch.capnp",
         }
         StackBenchmark {
             name: "stack_benchmark",
             summary: "Benchmark interface latencies across the running stack.",
-            goal: StackBenchmarkGoal as crate::benchmark_capnp::stack_benchmark_goal::Owned,
-            goal_response: StackBenchmarkGoalResponse as crate::benchmark_capnp::stack_benchmark_goal_response::Owned,
-            feedback: StackBenchmarkFeedback as crate::benchmark_capnp::stack_benchmark_feedback::Owned,
-            result: StackBenchmarkResult as crate::benchmark_capnp::stack_benchmark_result::Owned,
+            goal: StackBenchmarkGoal,
+            goal_response: StackBenchmarkGoalResponse,
+            feedback: StackBenchmarkFeedback,
+            result: StackBenchmarkResult,
             schema: "benchmark.capnp",
         }
         NodeAdd {
             name: "node_add",
             summary: "Add a node to the stack, streaming resolution and fetch progress.",
-            goal: NodeAddGoal as crate::node_capnp::node_add_goal::Owned,
-            goal_response: NodeAddGoalResponse as crate::node_capnp::node_add_goal_response::Owned,
-            feedback: NodeAddFeedback as crate::node_capnp::node_add_feedback::Owned,
-            result: NodeAddResult as crate::node_capnp::node_add_result::Owned,
+            goal: NodeAddGoal,
+            goal_response: NodeAddGoalResponse,
+            feedback: NodeAddFeedback,
+            result: NodeAddResult,
             schema: "node.capnp",
         }
         NodeBuild {
             name: "node_build",
             summary: "Build a node's container image, streaming build log lines.",
-            goal: NodeBuildGoal as crate::node_capnp::node_build_goal::Owned,
-            goal_response: NodeBuildGoalResponse as crate::node_capnp::node_build_goal_response::Owned,
-            feedback: NodeBuildFeedback as crate::node_capnp::node_build_feedback::Owned,
-            result: NodeBuildResult as crate::node_capnp::node_build_result::Owned,
+            goal: NodeBuildGoal,
+            goal_response: NodeBuildGoalResponse,
+            feedback: NodeBuildFeedback,
+            result: NodeBuildResult,
             schema: "node.capnp",
         }
         NodeRun {
             name: "node_run",
             summary: "Run a node instance, streaming startup progress.",
-            goal: NodeRunGoal as crate::node_capnp::node_run_goal::Owned,
-            goal_response: NodeRunGoalResponse as crate::node_capnp::node_run_goal_response::Owned,
-            feedback: NodeRunFeedback as crate::node_capnp::node_run_feedback::Owned,
-            result: NodeRunResult as crate::node_capnp::node_run_result::Owned,
+            goal: NodeRunGoal,
+            goal_response: NodeRunGoalResponse,
+            feedback: NodeRunFeedback,
+            result: NodeRunResult,
             schema: "node.capnp",
         }
         RepoRefresh {
             name: "repo_refresh",
             summary: "Rescan repositories, streaming each discovered/excluded item.",
-            goal: RepoRefreshGoal as crate::repo_capnp::repo_refresh_goal::Owned,
-            goal_response: RepoRefreshGoalResponse as crate::repo_capnp::repo_refresh_goal_response::Owned,
-            feedback: RepoRefreshFeedback as crate::repo_capnp::repo_refresh_feedback::Owned,
-            result: RepoRefreshResult as crate::repo_capnp::repo_refresh_result::Owned,
+            goal: RepoRefreshGoal,
+            goal_response: RepoRefreshGoalResponse,
+            feedback: RepoRefreshFeedback,
+            result: RepoRefreshResult,
             schema: "repo.capnp",
         }
     }
@@ -548,7 +552,7 @@ methods! {
         Clock {
             name: "clock",
             summary: "Periodic wall-clock snapshot published for time-sync consumers.",
-            message: ClockTick as crate::clock_capnp::clock_tick::Owned,
+            message: ClockTick,
             schema: "clock.capnp",
         }
         /// Topic the daemon publishes a periodic liveness beat on. Each
@@ -563,7 +567,7 @@ methods! {
         DaemonHeartbeat {
             name: "daemon_heartbeat",
             summary: "Daemon liveness beacon; payload is a constant ClockTick(0), only arrival matters.",
-            message: ClockTick as crate::clock_capnp::clock_tick::Owned,
+            message: ClockTick,
             schema: "clock.capnp",
         }
     }

@@ -473,6 +473,22 @@ impl LaunchResult {
     }
 }
 
+impl crate::encoding::Wire for LaunchGoal {
+    type Root = crate::launch_capnp::launch_goal::Owned;
+}
+
+impl crate::encoding::Wire for LaunchGoalResponse {
+    type Root = crate::launch_capnp::launch_goal_response::Owned;
+}
+
+impl crate::encoding::Wire for LaunchFeedback {
+    type Root = crate::launch_capnp::launch_feedback::Owned;
+}
+
+impl crate::encoding::Wire for LaunchResult {
+    type Root = crate::launch_capnp::launch_result::Owned;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

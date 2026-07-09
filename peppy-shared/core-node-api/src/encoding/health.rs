@@ -70,6 +70,14 @@ impl HealthResponse {
     }
 }
 
+impl crate::encoding::Wire for HealthRequest {
+    type Root = crate::health_capnp::health_request::Owned;
+}
+
+impl crate::encoding::Wire for HealthResponse {
+    type Root = crate::health_capnp::health_response::Owned;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
