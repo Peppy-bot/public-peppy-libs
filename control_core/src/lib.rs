@@ -2,7 +2,7 @@
 //!
 //! - [`Pacer`]: fixed-rate pacing for a control loop, with overrun accounting.
 //!
-//! The bimanual coordination hub (openarm_backbone) and the real arm
+//! The bimanual backbone (openarm_backbone) and the real arm
 //! (openarm_arm) both pace their real-time control loops with [`Pacer`]; this is
 //! their one tested implementation. A home for further control primitives as they
 //! are factored out of the nodes.
