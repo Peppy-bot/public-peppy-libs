@@ -5,8 +5,15 @@
 //! cargo run --release --example visualize -- \
 //!     --urdf tests/fixtures/openarm_v10.urdf --meshes tests/fixtures/meshes \
 //!     --left-base openarm_left_link0 --right-base openarm_right_link0 \
-//!     --left 0,0,1.2,0.4,0,0,0 --right 0,0,-1.2,0.4,0,0,0 --wireframes -o scene.html
+//!     --left 0,0,1.2,0.4,0,0,0 --right 0,0,-1.2,0.4,0,0,0 \
+//!     --gripper 0.0 --wireframes -o scene.html
 //! ```
+//!
+//! `--gripper <f>` (or per side `--left-gripper` / `--right-gripper`) sets the
+//! gripper opening as a fraction in `[0, 1]` (0 = closed, 1 = fully open, the
+//! default). The finger hulls, and their `--wireframes` source meshes, are placed
+//! at that opening, so the scene shows the true finger positions rather than the
+//! full swept envelope.
 //!
 //! The rendered solids are the true rounded collision surface, not the bare
 //! cores: each hull piece is drawn as its faces offset outward by the inflation
@@ -44,6 +51,9 @@ struct Args {
     right_base: String,
     left: JointVec,
     right: JointVec,
+    /// Gripper opening per side as a fraction in `[0, 1]` (0 = closed, 1 = open).
+    left_gripper: f64,
+    right_gripper: f64,
     out: String,
     wireframes: bool,
     d_stop: f64,
@@ -59,6 +69,8 @@ fn parse_args() -> Result<Args, String> {
         right_base: String::new(),
         left: [0.0; ARM_DOF],
         right: [0.0; ARM_DOF],
+        left_gripper: 1.0,
+        right_gripper: 1.0,
         out: "scene.html".into(),
         wireframes: false,
         d_stop: 0.01,
@@ -68,6 +80,15 @@ fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or(format!("{flag} needs a value"));
+        let fraction = |s: &str| -> Result<f64, String> {
+            let f: f64 = s
+                .parse()
+                .map_err(|e| format!("bad gripper fraction '{s}': {e}"))?;
+            (0.0..=1.0)
+                .contains(&f)
+                .then_some(f)
+                .ok_or(format!("gripper fraction must be in [0, 1], got {f}"))
+        };
         match flag.as_str() {
             "--urdf" => args.urdf = value()?,
             "--meshes" | "-m" => args.meshes = value()?,
@@ -75,6 +96,13 @@ fn parse_args() -> Result<Args, String> {
             "--right-base" => args.right_base = value()?,
             "--left" | "-l" => args.left = parse_joints(&value()?)?,
             "--right" | "-r" => args.right = parse_joints(&value()?)?,
+            "--gripper" | "-g" => {
+                let f = fraction(&value()?)?;
+                args.left_gripper = f;
+                args.right_gripper = f;
+            }
+            "--left-gripper" => args.left_gripper = fraction(&value()?)?,
+            "--right-gripper" => args.right_gripper = fraction(&value()?)?,
             "--out" | "-o" => args.out = value()?,
             "--wireframes" | "-w" => args.wireframes = true,
             "--d-stop" => args.d_stop = value()?.parse().map_err(|e| format!("{e}"))?,
@@ -135,6 +163,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         builder = builder.regions(openarm::TORSO_BODY, openarm::torso_regions());
     }
     let mut model = builder.build()?;
+    // Place the fingers at the requested opening; every query below then sees the
+    // fingers where they actually are, not their full swept envelope.
+    model.set_gripper_openings(args.left_gripper, args.right_gripper);
 
     let proximity = model.min_distance(&args.left, &args.right)?;
     let (distance, witness) = (
@@ -188,8 +219,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Decimated source-mesh triangles per body in world frame, from the same URDF
-/// and STL pipeline the fit used. Fingers are drawn across their full travel,
-/// matching the worst-case envelope baked into the wrist hull.
+/// and STL pipeline the fit used. Fingers are drawn at the requested opening
+/// ([`Args::left_gripper`] / [`Args::right_gripper`]), matching the live finger
+/// hulls rather than a swept envelope.
 fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
     let urdf = UrdfCollisions::from_file(&args.urdf)?;
     let chain_links: Vec<String> = [&args.left_base, &args.right_base]
@@ -215,9 +247,9 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
             &urdf.fixed_vertices_in_root(&name, &args.meshes)?,
         )));
     }
-    for (base, q) in [
-        (&args.left_base, &args.left),
-        (&args.right_base, &args.right),
+    for (base, q, opening) in [
+        (&args.left_base, &args.left, args.left_gripper),
+        (&args.right_base, &args.right, args.right_gripper),
     ] {
         let mut arm = Arm::from_urdf_file(&args.urdf, base).map_err(|e| e.to_string())?;
         let posed = arm.at(q);
@@ -229,6 +261,9 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
                 .iter()
                 .map(|v| pose * v)
                 .collect();
+            // Fixed children ride with the link; movable children are the
+            // gripper fingers, drawn at the requested opening.
+            let mut fingers: Vec<(String, f64, f64)> = Vec::new();
             for child in urdf.children_of(&name) {
                 if chain_links.contains(&child) || urdf.collisions_of(&child).is_empty() {
                     continue;
@@ -236,18 +271,41 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
                 let joint = urdf
                     .parent_joint(&child)
                     .expect("children_of implies a parent joint");
-                let travel = if joint.is_fixed() {
-                    vec![joint.lower_limit]
-                } else {
-                    vec![joint.lower_limit, joint.upper_limit]
-                };
-                for qc in travel {
+                if joint.is_fixed() {
                     verts.extend(
-                        urdf.child_vertices_in_parent(&child, qc, &args.meshes)?
+                        urdf.child_vertices_in_parent(&child, joint.lower_limit, &args.meshes)?
                             .iter()
                             .map(|v| pose * v),
                     );
+                } else {
+                    fingers.push((child, joint.lower_limit, joint.upper_limit));
                 }
+            }
+            // Orient the finger travel the way the model does (the extreme with
+            // the larger between-finger separation is open; a mirrored gripper
+            // flips the URDF limit order), so the wireframe fingers land on the
+            // same pose as the placed hulls. The model build already rejected
+            // any link whose movable children are not a two-finger pair.
+            if let [fa, fb] = fingers.as_mut_slice() {
+                let centroid = |child: &str, q: f64| -> Result<Point3<f64>, String> {
+                    let vs = urdf.child_vertices_in_parent(child, q, &args.meshes)?;
+                    let sum = vs.iter().fold(Vector3::zeros(), |a, p| a + p.coords);
+                    Ok(Point3::from(sum / vs.len().max(1) as f64))
+                };
+                let sep_lower = (centroid(&fa.0, fa.1)? - centroid(&fb.0, fb.1)?).norm();
+                let sep_upper = (centroid(&fa.0, fa.2)? - centroid(&fb.0, fb.2)?).norm();
+                if sep_lower > sep_upper {
+                    std::mem::swap(&mut fa.1, &mut fa.2);
+                    std::mem::swap(&mut fb.1, &mut fb.2);
+                }
+            }
+            for (child, closed, open) in &fingers {
+                let qc = closed + opening * (open - closed);
+                verts.extend(
+                    urdf.child_vertices_in_parent(child, qc, &args.meshes)?
+                        .iter()
+                        .map(|v| pose * v),
+                );
             }
             out.push(wire_json(decimate(&verts)));
         }

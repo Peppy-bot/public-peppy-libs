@@ -1,9 +1,11 @@
 //! URDF collision extraction for the construction-time fit: which mesh each
 //! link's `<collision>` uses, with what origin and scale, plus the fixed-link
-//! world poses and the prismatic finger transforms the fit composes.
+//! world poses and the 1-DOF joint transforms shared by the fit and the live
+//! finger placement.
 //!
-//! Consumed by `assemble::fit_bodies` when the model is built; runtime
-//! queries see only the fitted hulls.
+//! Consumed by `assemble::fit_bodies` when the model is built; runtime queries
+//! see the fitted hulls, with finger hulls re-posed per query through
+//! [`place_1dof`].
 
 use std::collections::HashMap;
 
@@ -51,9 +53,8 @@ pub struct UrdfCollisions {
 pub enum JointKind {
     Fixed,
     Prismatic,
-    /// A bounded rotation about a single axis: its finite limits bound the swept arc,
-    /// which the fit samples across (a rotation is not a translation, so extremes alone
-    /// do not bound it; see [`UrdfCollisions::child_vertices_in_parent`]).
+    /// A bounded rotation about a single axis; its finite limits delimit the
+    /// travel the live finger placement interpolates across.
     Revolute,
     /// Continuous, planar, floating: motion not bounded to a single finite 1-DOF sweep.
     OtherMovable,
@@ -72,6 +73,52 @@ pub struct ParentJoint {
 impl ParentJoint {
     pub fn is_fixed(&self) -> bool {
         self.kind == JointKind::Fixed
+    }
+
+    /// Placement of the child link in the parent frame at joint position `q`: the
+    /// joint origin for a fixed joint (`q` ignored), the origin composed with a
+    /// translation along the axis for a prismatic joint, and with a rotation about
+    /// the axis for a revolute joint. Continuous/planar/floating joints have no
+    /// finite 1-DOF sweep and are rejected. Pure (no mesh IO), so it is the shared
+    /// transform used both to bake a child at build time
+    /// ([`UrdfCollisions::child_vertices_in_parent`]) and to place a live finger
+    /// hull every tick.
+    pub fn offset(&self, q: f64) -> Result<Isometry3<f64>, String> {
+        match self.kind {
+            JointKind::Fixed => Ok(self.origin),
+            JointKind::Prismatic | JointKind::Revolute => {
+                if self.axis.norm() < ZERO_AXIS_EPS {
+                    return Err("parent joint has a zero axis".into());
+                }
+                // URDF axes are conventionally unit but the spec does not require it.
+                let axis = Unit::new_normalize(self.axis);
+                let revolute = self.kind == JointKind::Revolute;
+                Ok(place_1dof(&self.origin, &axis, revolute, q))
+            }
+            JointKind::OtherMovable => Err("continuous/planar/floating joint has no finite \
+                 1-DOF sweep, so it cannot be bounded. Model it as part of a chain instead."
+                .into()),
+        }
+    }
+}
+
+/// An axis whose norm is below this cannot be normalized into a joint
+/// direction; shared by every joint-axis validation in the crate.
+pub(crate) const ZERO_AXIS_EPS: f64 = 1e-12;
+
+/// Compose a joint `origin` with a 1-DOF motion of `q` about (revolute) or along
+/// (prismatic) the unit `axis`. The shared placement core of [`ParentJoint::offset`]
+/// (build-time baking) and the runtime finger placer, so the two cannot drift.
+pub fn place_1dof(
+    origin: &Isometry3<f64>,
+    axis: &Unit<Vector3<f64>>,
+    revolute: bool,
+    q: f64,
+) -> Isometry3<f64> {
+    if revolute {
+        origin * UnitQuaternion::from_axis_angle(axis, q)
+    } else {
+        origin * Translation3::from(axis.into_inner() * q)
     }
 }
 
@@ -221,47 +268,21 @@ impl UrdfCollisions {
             .collect())
     }
 
-    /// Collision vertices of `child` posed at joint position `q`, mapped into the
-    /// parent link's frame. Fixed (`q` ignored), prismatic (translate along the axis),
-    /// and revolute (rotate about the axis) children are supported. A prismatic travel
-    /// interpolates linearly, so its two extremes bound the sweep; a revolute travel
-    /// sweeps an arc, so the caller must sample several `q` across the range and union
-    /// them (extremes alone under-bound the arc). Continuous/planar/floating joints have
-    /// no finite 1-DOF sweep and are rejected.
+    /// Collision vertices of `child` posed at joint position `q`, mapped into
+    /// the parent link's frame via [`ParentJoint::offset`]: one pose, no sweep.
+    /// Fixed (`q` ignored), prismatic, and revolute children are supported;
+    /// continuous/planar/floating joints cannot be posed and are rejected.
     pub fn child_vertices_in_parent(
         &self,
         child: &str,
         q: f64,
         meshes_dir: &str,
     ) -> Result<Vec<Point3<f64>>, String> {
-        let j = self
+        let pose = self
             .parent_joint(child)
-            .ok_or_else(|| format!("link '{child}' has no parent joint"))?;
-        let pose = match j.kind {
-            JointKind::Fixed => j.origin,
-            JointKind::Prismatic => {
-                let norm = j.axis.norm();
-                if norm < 1e-12 {
-                    return Err(format!("link '{child}' parent joint has a zero axis"));
-                }
-                // URDF axes are conventionally unit but the spec does not require it.
-                j.origin * Translation3::from(j.axis * (q / norm))
-            }
-            JointKind::Revolute => {
-                if j.axis.norm() < 1e-12 {
-                    return Err(format!("link '{child}' parent joint has a zero axis"));
-                }
-                // Rotate about the (normalized) axis by q; the caller samples q across the
-                // joint's limits so the union of poses bounds the swept arc.
-                j.origin * UnitQuaternion::from_axis_angle(&Unit::new_normalize(j.axis), q)
-            }
-            JointKind::OtherMovable => {
-                return Err(format!(
-                    "link '{child}' hangs off a continuous/planar/floating joint with no finite \
-                     1-DOF sweep, so it cannot be bounded. Model it as part of a chain instead."
-                ));
-            }
-        };
+            .ok_or_else(|| format!("link '{child}' has no parent joint"))?
+            .offset(q)
+            .map_err(|e| format!("link '{child}': {e}"))?;
         Ok(self
             .link_vertices(child, meshes_dir)?
             .into_iter()

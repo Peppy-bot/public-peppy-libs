@@ -18,7 +18,6 @@
 //! through contact: separating motion is always distinguishable from
 //! approaching, even from inside an overlap.
 
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use srs_model::nalgebra::{Isometry3, Point3, Vector3};
@@ -47,6 +46,14 @@ const EPA_TOL: f64 = 1e-9;
 /// faces; this backstops a numerical stall.
 const EPA_MAX_ITERS: u32 = 64;
 
+/// Relative degeneracy floor for simplex features: a tetrahedron whose volume
+/// is below this fraction of its edge-scale cubed (or a triangle whose area is
+/// below this fraction of its edge-scale squared) is treated as flat. A flat
+/// feature has no interior, so it can neither enclose the origin nor support
+/// the interior-region arithmetic; the sub-distance falls back to its boundary
+/// features instead.
+const SIMPLEX_DEGEN_REL: f64 = 1e-9;
+
 /// A convex body usable by [`distance`]: its core support function (the
 /// farthest core point along a direction) and an optional rounding radius
 /// swept around that core.
@@ -61,19 +68,24 @@ pub trait Support {
     }
 }
 
-/// A convex polytope GJK primitive: hull vertices, their edge adjacency, and an
-/// optional rounding `radius`. Support is found by hill-climbing the edge graph
-/// (a linear objective on a convex polytope has no local maxima but the global
-/// one), warm-started from the previous query through `hint`, so support costs
-/// amortized O(1) instead of O(vertices). The `hint` makes a `Hull` not `Sync`;
-/// share one per thread.
+/// A convex polytope GJK primitive: hull vertices and an optional rounding
+/// `radius`. Support is an exact scan over the vertices: fitted hulls carry
+/// tens to a few hundred vertices, where a branch-predictable dot scan is
+/// fast, its argmax is exact for any vertex set regardless of face-graph
+/// quality (repair and clipping can leave the triangle graph locally
+/// non-convex), and it is stateless, so a query's answer cannot depend on the
+/// queries before it.
 #[derive(Debug)]
 pub struct Hull {
     vertices: Vec<Point3<f64>>,
     faces: Vec<[usize; 3]>,
-    neighbors: Vec<Vec<u32>>,
     radius: f64,
-    hint: Cell<u32>,
+    /// Bounding sphere of the rounded piece in its own frame (vertex centroid;
+    /// farthest vertex plus the rounding radius). Placing just the centre gives
+    /// a cheap lower bound on any pairwise distance, so a multi-piece narrowphase
+    /// can skip piece pairs that cannot beat the best distance found.
+    bound_center: Point3<f64>,
+    bound_radius: f64,
 }
 
 /// Result of a GJK query: signed surface distance (negative is penetration of
@@ -83,8 +95,8 @@ pub struct GjkDistance {
     pub distance: f64,
     pub on_a: Point3<f64>,
     pub on_b: Point3<f64>,
-    /// Iterations the support walk took to converge. Read only by the tests that
-    /// pin warm-start efficiency; production consumes just the geometry above.
+    /// GJK iterations the query took to converge. Read only by the tests that
+    /// pin convergence behavior; production consumes just the geometry above.
     #[cfg_attr(not(test), allow(dead_code))]
     pub iterations: u32,
 }
@@ -143,31 +155,61 @@ impl SubSimplex {
     }
 }
 
+/// Centroid-anchored enclosing sphere of one or more rounded vertex clouds:
+/// the centre is the mean of all core vertices, the radius the farthest vertex
+/// plus its cloud's rounding radius. Single-sourced so the whole-body pair
+/// broadphase and the per-piece prefilter compute the same bound and cannot
+/// drift apart.
+pub(crate) fn enclosing_sphere<'a, I>(clouds: I) -> (Point3<f64>, f64)
+where
+    I: Iterator<Item = (&'a [Point3<f64>], f64)> + Clone,
+{
+    let (sum, count) = clouds
+        .clone()
+        .flat_map(|(points, _)| points)
+        .fold((Vector3::zeros(), 0_usize), |(sum, count), p| {
+            (sum + p.coords, count + 1)
+        });
+    let center = Point3::from(sum / count.max(1) as f64);
+    let radius = clouds
+        .flat_map(|(points, rounding)| points.iter().map(move |p| (p - center).norm() + rounding))
+        .fold(0.0_f64, f64::max);
+    (center, radius)
+}
+
 impl Hull {
-    /// A GJK primitive from a computed [`ConvexHull`], building the vertex edge
-    /// adjacency its hill-climbing support walks. Errors on an empty hull.
+    /// A GJK primitive from a computed [`ConvexHull`]. Errors on an empty hull
+    /// or an invalid rounding radius: the radius feeds both the query and the
+    /// bounding-sphere prefilter, where a negative or non-finite value would
+    /// make the pruning bound unsound and silently skip the true nearest piece.
     pub fn new(hull: &ConvexHull, radius: f64) -> Result<Hull, String> {
         if hull.vertices.is_empty() {
             return Err("cannot build a hull from zero vertices".into());
         }
-        let mut neighbors = vec![Vec::new(); hull.vertices.len()];
-        for f in &hull.faces {
-            for (a, b) in [(f[0], f[1]), (f[1], f[2]), (f[2], f[0])] {
-                if !neighbors[a].contains(&(b as u32)) {
-                    neighbors[a].push(b as u32);
-                }
-                if !neighbors[b].contains(&(a as u32)) {
-                    neighbors[b].push(a as u32);
-                }
-            }
+        if !radius.is_finite() || radius < 0.0 {
+            return Err(format!(
+                "hull rounding radius must be finite and non-negative, got {radius}"
+            ));
         }
+        let (bound_center, bound_radius) =
+            enclosing_sphere(std::iter::once((hull.vertices.as_slice(), radius)));
         Ok(Hull {
             vertices: hull.vertices.clone(),
             faces: hull.faces.clone(),
-            neighbors,
             radius,
-            hint: Cell::new(0),
+            bound_center,
+            bound_radius,
         })
+    }
+
+    /// Centre of the piece's bounding sphere, in the hull's own frame.
+    pub fn bound_center(&self) -> Point3<f64> {
+        self.bound_center
+    }
+
+    /// Radius of the piece's bounding sphere (rounding included).
+    pub fn bound_radius(&self) -> f64 {
+        self.bound_radius
     }
 
     /// The hull vertices, for placement and rendering.
@@ -189,21 +231,17 @@ impl Hull {
 
 impl Support for Hull {
     fn core_support(&self, dir: &Vector3<f64>) -> Point3<f64> {
-        let mut best = self.hint.get() as usize;
-        let mut best_dot = self.vertices[best].coords.dot(dir);
-        loop {
-            let mut improved = false;
-            for &n in &self.neighbors[best] {
-                let dot = self.vertices[n as usize].coords.dot(dir);
-                if dot > best_dot {
-                    (best, best_dot, improved) = (n as usize, dot, true);
-                }
-            }
-            if !improved {
-                break;
+        // Exact argmax over the vertices (see the struct doc). A plain
+        // comparison loop keeps the scan branch-predictable and NaN-free (a
+        // finite dir dotted with finite vertices), so it optimizes tightly.
+        let mut best = 0;
+        let mut best_dot = f64::NEG_INFINITY;
+        for (i, v) in self.vertices.iter().enumerate() {
+            let dot = v.coords.dot(dir);
+            if dot > best_dot {
+                (best, best_dot) = (i, dot);
             }
         }
-        self.hint.set(best as u32);
         self.vertices[best]
     }
 
@@ -545,6 +583,30 @@ fn closest_triangle(a: SupportPoint, b: SupportPoint, c: SupportPoint) -> SubSim
     let ab = pb - pa;
     let ac = pc - pa;
 
+    // A degenerate (collinear or duplicate-point) triangle has no interior and
+    // its region tests below divide by a vanishing area: its closest feature is
+    // the best of its edges, which are robust to collapsed points. Plateau ties
+    // in the support scan feed such triangles in.
+    let area2 = ab.cross(&ac).norm_squared();
+    let scale2 = ab
+        .norm_squared()
+        .max(ac.norm_squared())
+        .max((pc - pb).norm_squared());
+    if area2 <= SIMPLEX_DEGEN_REL * SIMPLEX_DEGEN_REL * scale2 * scale2 {
+        return [
+            closest_segment(a, b),
+            closest_segment(a, c),
+            closest_segment(b, c),
+        ]
+        .into_iter()
+        .min_by(|x, y| {
+            x.closest
+                .norm_squared()
+                .total_cmp(&y.closest.norm_squared())
+        })
+        .expect("three edges");
+    }
+
     // Vertex regions. `ap = origin - pa = -pa`, and so on.
     let d1 = ab.dot(&-pa);
     let d2 = ac.dot(&-pa);
@@ -599,9 +661,38 @@ fn closest_tetrahedron(
     c: SupportPoint,
     d: SupportPoint,
 ) -> SubSimplex {
+    let faces = [(a, b, c, d), (a, c, d, b), (a, d, b, c), (b, d, c, a)];
+    // A flat tetrahedron (near-coplanar support points, fed in by plateau ties
+    // in the support scan) has no interior, so it cannot enclose the origin,
+    // and its face-plane tests below compare noise against noise: "inside all
+    // faces" would misread as enclosure and hand EPA a simplex that fabricates
+    // a penetration for shapes that are far apart. Its closest feature is the
+    // best of its faces.
+    let (ab, ac, ad) = (b.v - a.v, c.v - a.v, d.v - a.v);
+    let volume = ab.dot(&ac.cross(&ad));
+    let scale = ab
+        .norm_squared()
+        .max(ac.norm_squared())
+        .max(ad.norm_squared())
+        .max((c.v - b.v).norm_squared())
+        .max((d.v - b.v).norm_squared())
+        .max((d.v - c.v).norm_squared())
+        .sqrt();
+    if volume.abs() <= SIMPLEX_DEGEN_REL * scale * scale * scale {
+        return faces
+            .into_iter()
+            .map(|(p, q, r, _)| closest_triangle(p, q, r))
+            .min_by(|x, y| {
+                x.closest
+                    .norm_squared()
+                    .total_cmp(&y.closest.norm_squared())
+            })
+            .expect("four faces");
+    }
+
     let mut best: Option<SubSimplex> = None;
     // Each face listed with the opposite vertex, which fixes the inward side.
-    for (p, q, r, opp) in [(a, b, c, d), (a, c, d, b), (a, d, b, c), (b, d, c, a)] {
+    for (p, q, r, opp) in faces {
         if !origin_outside_plane(p.v, q.v, r.v, opp.v) {
             continue;
         }
@@ -643,6 +734,66 @@ mod tests {
 
     fn pt(x: f64, y: f64, z: f64) -> Point3<f64> {
         Point3::new(x, y, z)
+    }
+
+    fn sp(x: f64, y: f64, z: f64) -> SupportPoint {
+        SupportPoint {
+            v: Vector3::new(x, y, z),
+            a: pt(x, y, z),
+            b: pt(0.0, 0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn rejects_an_invalid_rounding_radius() {
+        // The radius feeds the prefilter's pruning bound; a negative or
+        // non-finite value would make that bound unsound rather than erroring.
+        let tri = ConvexHull {
+            vertices: vec![
+                pt(0.0, 0.0, 0.0),
+                pt(1.0, 0.0, 0.0),
+                pt(0.0, 1.0, 0.0),
+                pt(0.0, 0.0, 1.0),
+            ],
+            faces: Vec::new(),
+        };
+        assert!(Hull::new(&tri, -0.001).is_err());
+        assert!(Hull::new(&tri, f64::NAN).is_err());
+        assert!(Hull::new(&tri, f64::INFINITY).is_err());
+        assert!(Hull::new(&tri, 0.0).is_ok());
+    }
+
+    #[test]
+    fn a_flat_tetrahedron_does_not_enclose_the_origin() {
+        // Four near-coplanar support points a metre from the origin: with no
+        // interior, "inside all four face planes" is vacuously true and the
+        // enclosure fallback would hand EPA a garbage simplex claiming deep
+        // penetration. The degeneracy guard must return the true face-feature
+        // distance instead.
+        let flat = closest_tetrahedron(
+            sp(-0.1, -0.1, 1.0),
+            sp(0.2, -0.1, 1.0),
+            sp(0.0, 0.15, 1.0),
+            sp(0.01, 0.02, 1.0 + 1e-13),
+        );
+        assert!(
+            (flat.closest.norm() - 1.0).abs() < 1e-9,
+            "flat tetra must yield the plane distance, got {}",
+            flat.closest.norm()
+        );
+    }
+
+    #[test]
+    fn a_degenerate_triangle_falls_back_to_its_edges() {
+        // Collinear points (a repeated support direction under plateau ties):
+        // the interior-region arithmetic divides by a vanishing area, so the
+        // guard must reduce to the best edge, here the segment through x=0.4.
+        let tri = closest_triangle(sp(0.4, -1.0, 0.0), sp(0.4, 1.0, 0.0), sp(0.4, 0.0, 0.0));
+        assert!(
+            (tri.closest - Vector3::new(0.4, 0.0, 0.0)).norm() < 1e-12,
+            "collinear triangle must project onto its segment, got {:?}",
+            tri.closest
+        );
     }
 
     /// Axis-aligned box of half-extent `h` centered at `c`, as eight vertices.

@@ -16,14 +16,14 @@
 
 use std::collections::HashMap;
 
-use srs_model::nalgebra::{Isometry3, Point3, Vector3};
+use srs_model::nalgebra::{Isometry3, Point3, Unit, Vector3};
 use srs_model::{ARM_DOF, Arm, JointVec};
 
 use crate::assemble::fit_bodies;
 use crate::clip::ClipRegion;
 use crate::gjk::{self, Hull, Placed};
 use crate::pairs::PairSpec;
-use crate::urdf_collision::UrdfCollisions;
+use crate::urdf_collision::{JointKind, ParentJoint, UrdfCollisions, ZERO_AXIS_EPS, place_1dof};
 use crate::{BuildError, CollisionError};
 
 /// How a body's hulls reach the world frame.
@@ -47,16 +47,8 @@ struct BoundingSphere {
 
 impl BoundingSphere {
     fn of(hulls: &[Hull]) -> BoundingSphere {
-        let verts: Vec<&Point3<f64>> = hulls.iter().flat_map(|h| h.vertices()).collect();
-        let center = Point3::from(
-            verts.iter().fold(Vector3::zeros(), |a, p| a + p.coords) / verts.len() as f64,
-        );
-        let mut radius = 0.0_f64;
-        for h in hulls {
-            for v in h.vertices() {
-                radius = radius.max((v - center).norm() + h.inflation());
-            }
-        }
+        let (center, radius) =
+            gjk::enclosing_sphere(hulls.iter().map(|h| (h.vertices(), h.inflation())));
         BoundingSphere { center, radius }
     }
 }
@@ -67,6 +59,114 @@ struct Body {
     local: Vec<Hull>,
     placement: Placement,
     bound: BoundingSphere,
+    /// For a gripper finger: how its hull hangs off its host chain link, so it
+    /// can be placed at the live opening. `None` for every ordinary body (whose
+    /// hulls sit directly in the link frame).
+    finger: Option<Finger>,
+}
+
+impl Body {
+    /// World pose of this body given its host chain link's world pose and its
+    /// side's gripper opening: the link pose directly for an ordinary body, or
+    /// composed with the finger offset at `opening` for a gripper finger.
+    fn place_on(&self, link_world: Isometry3<f64>, opening: f64) -> Isometry3<f64> {
+        match &self.finger {
+            Some(f) => link_world * f.offset(opening),
+            None => link_world,
+        }
+    }
+}
+
+/// A gripper finger's parent joint, parsed at build into an infallible placer:
+/// the joint origin, its unit axis, whether it rotates (revolute) or slides
+/// (prismatic), and the finger-joint travel oriented closed-to-open by the
+/// build's mesh-separation check (see `assemble::orient_finger_pair`).
+/// Validated once here (bounded 1-DOF, non-zero axis) so placing it at any
+/// opening cannot fail in the per-tick hot path.
+#[derive(Clone, Copy)]
+struct Finger {
+    origin: Isometry3<f64>,
+    axis: Unit<Vector3<f64>>,
+    revolute: bool,
+    /// Finger-joint position (URDF joint units) at fully closed and fully open.
+    closed: f64,
+    open: f64,
+}
+
+impl Finger {
+    /// Parse a finger's parent joint into a validated placer, the single gate
+    /// for finger-joint kinds: only a prismatic or revolute finger can be
+    /// placed, and its axis must normalize. `closed`/`open` are the
+    /// mesh-oriented travel extremes from the fit.
+    fn from_joint(
+        name: &str,
+        joint: &ParentJoint,
+        closed: f64,
+        open: f64,
+    ) -> Result<Self, BuildError> {
+        let revolute = match joint.kind {
+            JointKind::Revolute => true,
+            JointKind::Prismatic => false,
+            _ => {
+                return Err(BuildError::Geometry(format!(
+                    "finger '{name}' joint kind {:?} is not a placeable 1-DOF finger",
+                    joint.kind
+                )));
+            }
+        };
+        if joint.axis.norm() < ZERO_AXIS_EPS {
+            return Err(BuildError::Geometry(format!(
+                "finger '{name}' parent joint has a zero axis"
+            )));
+        }
+        Ok(Finger {
+            origin: joint.origin,
+            axis: Unit::new_normalize(joint.axis),
+            revolute,
+            closed,
+            open,
+        })
+    }
+
+    /// Placement of the finger hull in its host link's frame at opening `fraction`
+    /// in `[0, 1]` (0 = fully closed, 1 = fully open), linearly interpolating the
+    /// finger-joint travel. The published gripper width is a linear proxy for this
+    /// fraction (`width / jaw_open_m`), exact at both extremes for the prismatic
+    /// (v1) and revolute (v2) grippers alike.
+    fn offset(&self, fraction: f64) -> Isometry3<f64> {
+        let q = self.closed + fraction.clamp(0.0, 1.0) * (self.open - self.closed);
+        place_1dof(&self.origin, &self.axis, self.revolute, q)
+    }
+
+    /// World velocity of a point riding this finger per unit opening fraction,
+    /// given the host link's world pose. The joint frame's world rotation and
+    /// origin are invariant under the finger's own motion (a joint moves about
+    /// its own axis), so the field needs no current fraction: a slide moves every
+    /// point along the world axis; a rotation swings the point about the joint
+    /// origin. Both scale by the joint travel per unit fraction.
+    fn point_velocity_per_fraction(
+        &self,
+        link_world: &Isometry3<f64>,
+        point: &Point3<f64>,
+    ) -> Vector3<f64> {
+        let joint_world = link_world * self.origin;
+        let axis_world = joint_world.rotation * self.axis.into_inner();
+        let travel = self.open - self.closed;
+        if self.revolute {
+            (axis_world * travel).cross(&(point.coords - joint_world.translation.vector))
+        } else {
+            axis_world * travel
+        }
+    }
+}
+
+/// The parts of a [`Body`] the gradient needs, copied out so the arm's FK can
+/// be borrowed mutably while they are in hand: which chain the body rides and,
+/// for a gripper finger, its live placer.
+#[derive(Clone, Copy)]
+struct BodyKinematics {
+    placement: Placement,
+    finger: Option<Finger>,
 }
 
 /// One checked pair, resolved to body indices.
@@ -98,16 +198,19 @@ pub struct Proximity<'a> {
 }
 
 /// The nearest-pair [`Proximity`] at one configuration plus the gradient of its
-/// surface distance with respect to each arm's joints. `grad_left[j]` is
-/// `d(distance)/d(q_left[j])`; separating motion has a positive gradient. Computed
-/// analytically from the nearest pair's witness points (the gradient of the active
-/// pair, by the envelope theorem), so it costs one distance query plus two point
-/// Jacobians.
+/// surface distance with respect to each arm's joints and each gripper's opening
+/// fraction. `grad_left[j]` is `d(distance)/d(q_left[j])`; `grad_openings[s]` is
+/// `d(distance)/d(opening_s)` for side `s` (0 = left, 1 = right), nonzero only
+/// when a finger body carries a witness; separating motion has a positive
+/// gradient. Computed analytically from the nearest pair's witness points (the
+/// gradient of the active pair, by the envelope theorem), so it costs one
+/// distance query plus two point Jacobians.
 #[derive(Debug, Clone)]
 pub struct DistanceGradient<'a> {
     pub proximity: Proximity<'a>,
     pub grad_left: JointVec,
     pub grad_right: JointVec,
+    pub grad_openings: [f64; 2],
 }
 
 /// Witness separation below which the surface normal is ill-defined (deep
@@ -138,6 +241,26 @@ pub struct BimanualCollisionModel {
     /// Per-body world pose, refreshed by [`place`](Self::place). Fixed bodies
     /// keep the identity (their hulls are already in world frame).
     world_iso: Vec<Isometry3<f64>>,
+    /// Gripper opening per side (0 = left, 1 = right) as a fraction in `[0, 1]`
+    /// (0 = fully closed, 1 = fully open), set by
+    /// [`set_gripper_openings`](Self::set_gripper_openings). Finger bodies are
+    /// placed at this opening every query. Defaults to fully open, the widest
+    /// outboard envelope; it is not a full substitute for the real opening
+    /// (closed fingers occupy between-jaws space the open placement vacates),
+    /// so a caller governing near closed jaws must feed the measured opening
+    /// before trusting the clearance.
+    openings: [f64; 2],
+    /// Per-side, per-joint Lipschitz levers of the min surface distance (m/rad):
+    /// the max over checked pairs of the sum of both bodies' per-joint reach
+    /// bounds on that side (a same-side pair moves both witnesses with one
+    /// arm's joints; see [`body_reaches`]). Rebuilt whenever the pair list
+    /// changes; feeds [`clearance_step_bound`](Self::clearance_step_bound).
+    levers: [JointVec; 2],
+    /// Per-side Lipschitz levers of the min surface distance per unit opening
+    /// fraction (m): the max over checked pairs of the paired finger bodies'
+    /// surface speed bounds under their own joint travel. Rebuilt with `levers`;
+    /// feeds [`clearance_step_bound`](Self::clearance_step_bound).
+    opening_levers: [f64; 2],
 }
 
 /// Configures and builds a [`BimanualCollisionModel`]; start from
@@ -330,6 +453,7 @@ impl BimanualCollisionModel {
                     local: hulls,
                     placement: Placement::Fixed,
                     bound,
+                    finger: None,
                 },
             )?;
         }
@@ -351,9 +475,31 @@ impl BimanualCollisionModel {
                         local: hulls,
                         placement,
                         bound,
+                        finger: None,
                     },
                 )?;
             }
+        }
+        // Finger bodies hang off their host chain link's FK segment (so they share
+        // its lineage: not checked against their own hand or sibling finger, but
+        // checked cross-arm and against the torso) and carry a `Finger` placer so
+        // each query positions them at the live opening.
+        for finger in fitted.fingers {
+            let placement = chain_segment(&left_names, &right_names, &finger.parent_link)
+                .expect("fit_bodies only emits fingers hosted on a chain link");
+            let placer =
+                Finger::from_joint(&finger.name, &finger.joint, finger.closed, finger.open)?;
+            let bound = BoundingSphere::of(&finger.hulls);
+            push_body(
+                &mut bodies,
+                Body {
+                    name: finger.name,
+                    local: finger.hulls,
+                    placement,
+                    bound,
+                    finger: Some(placer),
+                },
+            )?;
         }
 
         let world_iso = vec![Isometry3::identity(); bodies.len()];
@@ -364,6 +510,9 @@ impl BimanualCollisionModel {
             pairs: Vec::new(),
             excluded: Vec::new(),
             world_iso,
+            openings: [1.0, 1.0],
+            levers: [[0.0; ARM_DOF]; 2],
+            opening_levers: [0.0; 2],
         })
     }
 
@@ -383,6 +532,7 @@ impl BimanualCollisionModel {
                     .push((self.bodies[a].name.clone(), self.bodies[b].name.clone()));
             }
         }
+        self.recompute_levers();
         Ok(())
     }
 
@@ -423,7 +573,77 @@ impl BimanualCollisionModel {
                 Ok(Pair { a, b })
             })
             .collect::<Result<Vec<_>, BuildError>>()?;
+        self.recompute_levers();
         Ok(())
+    }
+
+    /// Rebuild the per-side Lipschitz levers from the checked pairs: for each
+    /// side and joint, the max over pairs of the sum of both bodies' reaches on
+    /// that side. Summing per pair is what keeps the bound sound for a same-side
+    /// pair, whose two witnesses both move with that arm's joints. Called
+    /// whenever the pair list changes (build-time only, so recomputing the
+    /// per-body reaches here is free).
+    fn recompute_levers(&mut self) {
+        let reaches = body_reaches(&mut self.left, &mut self.right, &self.bodies);
+        let side_reach = |body: usize, side: usize, j: usize| -> f64 {
+            let on_side = match self.bodies[body].placement {
+                Placement::Left(_) => side == 0,
+                Placement::Right(_) => side == 1,
+                Placement::Fixed => false,
+            };
+            if on_side { reaches[body][j] } else { 0.0 }
+        };
+        self.levers = std::array::from_fn(|side| {
+            std::array::from_fn(|j| {
+                self.pairs
+                    .iter()
+                    .map(|p| side_reach(p.a, side, j) + side_reach(p.b, side, j))
+                    .fold(0.0, f64::max)
+            })
+        });
+        // A finger body's surface moves at most `opening_reach` metres per unit
+        // opening fraction: the full joint travel, times (revolute only) the
+        // farthest hull point's distance from the joint axis (the axis passes
+        // through the finger frame origin along `axis`, so the lever arm of a
+        // local point is its component perpendicular to the axis) plus the
+        // inflation radius. Non-finger bodies do not move with an opening.
+        let opening_reach = |body: &Body| -> f64 {
+            let Some(f) = &body.finger else { return 0.0 };
+            let travel = (f.open - f.closed).abs();
+            if !f.revolute {
+                return travel;
+            }
+            let r_max = body
+                .local
+                .iter()
+                .flat_map(|h| {
+                    let radius = h.inflation();
+                    h.vertices().iter().map(move |p| {
+                        let along = p.coords.dot(&f.axis);
+                        (p.coords - f.axis.into_inner() * along).norm() + radius
+                    })
+                })
+                .fold(0.0, f64::max);
+            travel * r_max
+        };
+        let side_opening_reach = |body: usize, side: usize| -> f64 {
+            let on_side = match self.bodies[body].placement {
+                Placement::Left(_) => side == 0,
+                Placement::Right(_) => side == 1,
+                Placement::Fixed => false,
+            };
+            if on_side {
+                opening_reach(&self.bodies[body])
+            } else {
+                0.0
+            }
+        };
+        self.opening_levers = std::array::from_fn(|side| {
+            self.pairs
+                .iter()
+                .map(|p| side_opening_reach(p.a, side) + side_opening_reach(p.b, side))
+                .fold(0.0, f64::max)
+        });
     }
 
     /// Link-local hull pieces of a body (fixed bodies are in the root frame).
@@ -490,12 +710,27 @@ impl BimanualCollisionModel {
                 break;
             }
             let pair = &self.pairs[i];
+            let (iso_a, iso_b) = (self.world_iso[pair.a], self.world_iso[pair.b]);
+            // The transformed piece centres of body b are constant across body
+            // a's pieces; place them once per pair, not once per (ha, hb).
+            let centers_b: Vec<Point3<f64>> = self.bodies[pair.b]
+                .local
+                .iter()
+                .map(|hb| iso_b * hb.bound_center())
+                .collect();
             for ha in &self.bodies[pair.a].local {
-                for hb in &self.bodies[pair.b].local {
-                    let r = gjk::distance(
-                        &Placed::new(ha, self.world_iso[pair.a]),
-                        &Placed::new(hb, self.world_iso[pair.b]),
-                    );
+                let center_a = iso_a * ha.bound_center();
+                for (hb, center_b) in self.bodies[pair.b].local.iter().zip(&centers_b) {
+                    // Piece-level prefilter, same sphere bound as the pair
+                    // broadphase: a piece pair that cannot beat the best
+                    // distance skips its GJK. A multi-piece body (the torso's
+                    // region decomposition) otherwise pays one GJK per piece
+                    // for pieces nowhere near the query.
+                    let gap = (center_a - center_b).norm() - ha.bound_radius() - hb.bound_radius();
+                    if best.as_ref().is_some_and(|c| gap > c.distance) {
+                        continue;
+                    }
+                    let r = gjk::distance(&Placed::new(ha, iso_a), &Placed::new(hb, iso_b));
                     if best.as_ref().is_none_or(|c| r.distance < c.distance) {
                         best = Some(Closest {
                             distance: r.distance,
@@ -558,11 +793,15 @@ impl BimanualCollisionModel {
         // checked against central differences in
         // `distance_gradient_matches_finite_difference`.
         let normal = separation / norm;
-        let (place_a, place_b) = (self.bodies[c.a].placement, self.bodies[c.b].placement);
-        let (left_a, right_a) =
-            self.gradient_contribution(place_a, &c.on_a, &normal, 1.0, q_left, q_right);
-        let (left_b, right_b) =
-            self.gradient_contribution(place_b, &c.on_b, &normal, -1.0, q_left, q_right);
+        let kinematics = |body: &Body| BodyKinematics {
+            placement: body.placement,
+            finger: body.finger,
+        };
+        let (kin_a, kin_b) = (kinematics(&self.bodies[c.a]), kinematics(&self.bodies[c.b]));
+        let (left_a, right_a, open_a) =
+            self.gradient_contribution(kin_a, &c.on_a, &normal, 1.0, q_left, q_right);
+        let (left_b, right_b, open_b) =
+            self.gradient_contribution(kin_b, &c.on_b, &normal, -1.0, q_left, q_right);
         Ok(DistanceGradient {
             proximity: Proximity {
                 distance: c.distance,
@@ -573,32 +812,48 @@ impl BimanualCollisionModel {
             },
             grad_left: std::array::from_fn(|j| left_a[j] + left_b[j]),
             grad_right: std::array::from_fn(|j| right_a[j] + right_b[j]),
+            grad_openings: [open_a[0] + open_b[0], open_a[1] + open_b[1]],
         })
     }
 
-    /// One body's contribution to the per-arm distance gradient: the witness
-    /// `normal` projected through the witness `point`'s velocity Jacobian, on the
-    /// arm the body belongs to. `sign` is +1 for body a's witness and -1 for body
-    /// b's (the convention that yields d(distance)/dq; see `distance_gradient` and
-    /// its finite-difference test). A world-fixed body (torso) contributes nothing.
+    /// One body's contribution to the distance gradient: the witness `normal`
+    /// projected through the witness `point`'s velocity Jacobian on the arm the
+    /// body belongs to, plus, for a finger body, through the point's velocity per
+    /// unit opening fraction on that side's opening column. `sign` is +1 for body
+    /// a's witness and -1 for body b's (the convention that yields
+    /// d(distance)/dq; see `distance_gradient` and its finite-difference test). A
+    /// world-fixed body (torso) contributes nothing.
     fn gradient_contribution(
         &mut self,
-        placement: Placement,
+        kinematics: BodyKinematics,
         point: &Point3<f64>,
         normal: &Vector3<f64>,
         sign: f64,
         q_left: &JointVec,
         q_right: &JointVec,
-    ) -> (JointVec, JointVec) {
+    ) -> (JointVec, JointVec, [f64; 2]) {
+        let BodyKinematics { placement, finger } = kinematics;
         let zero: JointVec = [0.0; ARM_DOF];
-        let project = |arm: &mut Arm, q: &JointVec, segment: usize| -> JointVec {
-            let cols = arm.at(q).point_world_jacobian(point, segment);
-            std::array::from_fn(|j| sign * normal.dot(&cols[j]))
+        let contribution = |arm: &mut Arm, q: &JointVec, segment: usize| -> (JointVec, f64) {
+            let posed = arm.at(q);
+            let cols = posed.point_world_jacobian(point, segment);
+            let joints = std::array::from_fn(|j| sign * normal.dot(&cols[j]));
+            let opening = finger.map_or(0.0, |f| {
+                let v = f.point_velocity_per_fraction(&posed.link_pose_world(segment), point);
+                sign * normal.dot(&v)
+            });
+            (joints, opening)
         };
         match placement {
-            Placement::Fixed => (zero, zero),
-            Placement::Left(s) => (project(&mut self.left, q_left, s), zero),
-            Placement::Right(s) => (zero, project(&mut self.right, q_right, s)),
+            Placement::Fixed => (zero, zero, [0.0; 2]),
+            Placement::Left(s) => {
+                let (joints, opening) = contribution(&mut self.left, q_left, s);
+                (joints, zero, [opening, 0.0])
+            }
+            Placement::Right(s) => {
+                let (joints, opening) = contribution(&mut self.right, q_right, s);
+                (zero, joints, [0.0, opening])
+            }
         }
     }
 
@@ -646,18 +901,79 @@ impl BimanualCollisionModel {
             .collect())
     }
 
-    /// Refresh the world pose of the moving bodies from FK.
+    /// Set the gripper opening per side as a fraction in `[0, 1]` (0 = fully
+    /// closed, 1 = fully open); values are clamped. Finger bodies are placed at
+    /// this opening on every subsequent query, so the reported clearance follows
+    /// the fingers' true positions instead of their full swept envelope. A
+    /// non-finite value is ignored for that side (the last good opening stands),
+    /// so a bad reading never poisons the placement.
+    pub fn set_gripper_openings(&mut self, left: f64, right: f64) {
+        if left.is_finite() {
+            self.openings[0] = left.clamp(0.0, 1.0);
+        }
+        if right.is_finite() {
+            self.openings[1] = right.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Upper bound (m) on how much the minimum surface distance can change over a
+    /// step of `dq_left` / `dq_right` on the arm joints and `dopenings` on the
+    /// gripper opening fractions, valid along the whole straight segment in that
+    /// combined space: `sum_j levers[side][j] * |dq[j]|` over both arms plus
+    /// `opening_levers[side] * |dopenings[side]|` over both grippers. Each lever
+    /// bounds, over all poses and openings, the worst per-unit closing rate of
+    /// any checked pair (summing both witnesses' travel when a pair's bodies
+    /// share a side), and a minimum of Lipschitz functions is Lipschitz, so a
+    /// segment whose start clearance exceeds a floor by more than this bound
+    /// cannot cross that floor anywhere along the step. Deliberately loose
+    /// (chain-length bounds), so it is sound for a caller skipping an exact scan,
+    /// never tight.
+    pub fn clearance_step_bound(
+        &self,
+        dq_left: &JointVec,
+        dq_right: &JointVec,
+        dopenings: &[f64; 2],
+    ) -> f64 {
+        let dot_abs = |lever: &JointVec, dq: &JointVec| -> f64 {
+            lever.iter().zip(dq).map(|(l, d)| l * d.abs()).sum::<f64>()
+        };
+        let bound = dot_abs(&self.levers[0], dq_left)
+            + dot_abs(&self.levers[1], dq_right)
+            + self.opening_levers[0] * dopenings[0].abs()
+            + self.opening_levers[1] * dopenings[1].abs();
+        // A non-finite delta gives no finite bound: return infinity so a caller's
+        // skip predicate (`margin > bound`) can never pass on bad data, rather
+        // than a NaN whose comparison direction the caller must not rely on.
+        if bound.is_finite() {
+            bound
+        } else {
+            f64::INFINITY
+        }
+    }
+
+    /// Refresh the world pose of the moving bodies from FK. Finger bodies are
+    /// additionally offset by their host link pose at the side's current opening.
     fn place(&mut self, q_left: &JointVec, q_right: &JointVec) {
         let poses_l = link_poses(&mut self.left, q_left);
         let poses_r = link_poses(&mut self.right, q_right);
+        let openings = self.openings;
         for (body, iso) in self.bodies.iter().zip(self.world_iso.iter_mut()) {
             *iso = match body.placement {
                 Placement::Fixed => continue,
-                Placement::Left(i) => poses_l[i],
-                Placement::Right(i) => poses_r[i],
+                Placement::Left(i) => body.place_on(poses_l[i], openings[0]),
+                Placement::Right(i) => body.place_on(poses_r[i], openings[1]),
             };
         }
     }
+}
+
+/// The [`Placement`] of a body hanging off chain link `parent`: `Left`/`Right`
+/// with the link's FK segment index, or `None` if `parent` is not a chain link.
+fn chain_segment(left: &[String], right: &[String], parent: &str) -> Option<Placement> {
+    if let Some(i) = left.iter().position(|n| n == parent) {
+        return Some(Placement::Left(i));
+    }
+    right.iter().position(|n| n == parent).map(Placement::Right)
 }
 
 /// Where a body sits in the kinematic tree, for the structural pair rules:
@@ -670,6 +986,53 @@ enum Lineage {
 fn link_poses(arm: &mut Arm, q: &JointVec) -> [Isometry3<f64>; ARM_DOF] {
     let posed = arm.at(q);
     std::array::from_fn(|i| posed.link_pose_world(i))
+}
+
+/// Per-body, per-joint surface-speed bounds (m/rad). A point rigidly attached
+/// distal of revolute joint `j` moves at most `r * |dq_j|`, with `r` its distance
+/// from the joint axis; that distance is bounded, over all poses, by the chain
+/// hops from joint `j`'s origin out to the body's link origin (each hop's norm is
+/// pose invariant: a rigid link separates consecutive joint origins) plus the
+/// body's own reach: bounding-sphere centre offset + radius, and for a finger the
+/// worst translation its joint offset can add across the travel (a prismatic
+/// slide adds the full travel; a revolute offset only rotates about its origin).
+/// Rows are zero for fixed bodies and for joints distal of the body.
+fn body_reaches(left: &mut Arm, right: &mut Arm, bodies: &[Body]) -> Vec<JointVec> {
+    let home = [0.0; ARM_DOF];
+    let hops = |arm: &mut Arm| -> [f64; ARM_DOF - 1] {
+        let poses = link_poses(arm, &home);
+        std::array::from_fn(|k| {
+            (poses[k + 1].translation.vector - poses[k].translation.vector).norm()
+        })
+    };
+    let hops = [hops(left), hops(right)];
+
+    bodies
+        .iter()
+        .map(|body| {
+            let (side, seg) = match body.placement {
+                Placement::Fixed => return [0.0; ARM_DOF], // never moved by a joint
+                Placement::Left(s) => (0, s),
+                Placement::Right(s) => (1, s),
+            };
+            let finger_reach = body.finger.as_ref().map_or(0.0, |f| {
+                let travel = if f.revolute {
+                    0.0
+                } else {
+                    f.closed.abs().max(f.open.abs())
+                };
+                f.origin.translation.vector.norm() + travel
+            });
+            let reach = finger_reach + body.bound.center.coords.norm() + body.bound.radius;
+            std::array::from_fn(|j| {
+                if j <= seg {
+                    hops[side][j..seg].iter().sum::<f64>() + reach
+                } else {
+                    0.0 // a joint distal of the body does not move it
+                }
+            })
+        })
+        .collect()
 }
 
 /// Reject NaN/inf joint values so queries fail safe instead of comparing
@@ -730,11 +1093,17 @@ mod tests {
     fn distance_gradient_matches_finite_difference() {
         let mut m = model();
         let h = 1e-5;
+        // Mid-travel openings so the finger bodies participate in the check with
+        // a nontrivial live offset (the opening is a constant across each FD
+        // perturbation, exactly as it is across one governor tick).
+        m.set_gripper_openings(0.6, 0.6);
         // Wrists folded inward but ASYMMETRICALLY, so one moving cross-arm pair is
         // unambiguously nearest. A left/right-symmetric pose sits on a pair-switch
         // tie where the single-pair analytic gradient and the straddling central
-        // difference legitimately disagree, so it would not be a valid check.
-        let configs: [(JointVec, JointVec); 3] = [
+        // difference legitimately disagree, so it would not be a valid check. The
+        // last config drives the wrists close enough that a finger body is the
+        // nearest pair, covering the finger placement path with the same loop.
+        let configs: [(JointVec, JointVec); 4] = [
             (
                 [0.15, 0.1, 0.85, 0.5, -0.2, 0.1, 0.0],
                 [-0.05, -0.25, -0.45, 0.35, 0.1, -0.1, 0.0],
@@ -747,10 +1116,47 @@ mod tests {
                 [0.25, -0.1, 0.6, 0.65, 0.0, 0.2, 0.1],
                 [-0.1, 0.05, -0.7, 0.3, 0.0, -0.2, 0.0],
             ),
+            (
+                [0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2],
+                [0.0, 0.0, -1.05, 0.4, -0.1, 0.1, 0.0],
+            ),
         ];
+        {
+            let (ql, qr) = &configs[3];
+            let p = m.min_distance(ql, qr).expect("query");
+            assert!(
+                p.link_a.contains("finger") || p.link_b.contains("finger"),
+                "setup: the finger config's nearest pair should involve a finger, got {} vs {}",
+                p.link_a,
+                p.link_b
+            );
+        }
         for (ql, qr) in configs {
             let grad = m.distance_gradient(&ql, &qr).expect("gradient defined");
             let (analytic_left, analytic_right) = (grad.grad_left, grad.grad_right);
+            let analytic_openings = grad.grad_openings;
+            // Opening columns against central differences on the fractions, the
+            // same envelope-theorem check as the joints below.
+            for s in 0..2 {
+                let openings_at = |frac: f64| -> [f64; 2] {
+                    let mut o = [0.6, 0.6];
+                    o[s] = frac;
+                    o
+                };
+                let probe = |m: &mut BimanualCollisionModel, frac: f64| -> f64 {
+                    let o = openings_at(frac);
+                    m.set_gripper_openings(o[0], o[1]);
+                    let d = m.min_distance(&ql, &qr).unwrap().distance;
+                    m.set_gripper_openings(0.6, 0.6);
+                    d
+                };
+                let fd = (probe(&mut m, 0.6 + h) - probe(&mut m, 0.6 - h)) / (2.0 * h);
+                assert!(
+                    (analytic_openings[s] - fd).abs() < 3e-3,
+                    "opening {s}: analytic {} fd {fd}",
+                    analytic_openings[s]
+                );
+            }
             for j in 0..ARM_DOF {
                 let mut lp = ql;
                 let mut lm = ql;
@@ -854,6 +1260,59 @@ mod tests {
     }
 
     #[test]
+    fn fingers_are_their_own_bodies_not_baked_into_the_wrist() {
+        // Each gripper finger is fit as its own single-hull body (in its finger
+        // frame); the wrist hull covers only the wrist mesh and fixed children.
+        let m = model();
+        for finger in [
+            "openarm_left_left_finger",
+            "openarm_left_right_finger",
+            "openarm_right_left_finger",
+            "openarm_right_right_finger",
+        ] {
+            assert_eq!(
+                m.local_hulls(finger)
+                    .unwrap_or_else(|| panic!("finger body {finger} missing"))
+                    .len(),
+                1,
+                "{finger} should be one auto-fit hull"
+            );
+        }
+    }
+
+    #[test]
+    fn finger_pairs_check_across_arms_but_not_own_hand_or_sibling() {
+        let m = model();
+        let checked: Vec<(String, String)> = m
+            .checked_pairs()
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        let has = |a: &str, b: &str| {
+            checked
+                .iter()
+                .any(|(x, y)| (x == a && y == b) || (x == b && y == a))
+        };
+        // The whole point: a left finger is checked against the right gripper's
+        // fingers and hand, and against the torso, so the arms cannot drive their
+        // grippers into each other undetected.
+        assert!(has(
+            "openarm_left_right_finger",
+            "openarm_right_right_finger"
+        ));
+        assert!(has("openarm_left_right_finger", "openarm_right_link7"));
+        assert!(has("openarm_left_right_finger", "openarm_body_link0"));
+        // A finger shares its wrist link's lineage, so it is not checked against
+        // its own hand or its sibling finger (they touch by construction as the
+        // jaws close on an object).
+        assert!(!has("openarm_left_right_finger", "openarm_left_link7"));
+        assert!(!has(
+            "openarm_left_right_finger",
+            "openarm_left_left_finger"
+        ));
+    }
+
+    #[test]
     fn supplied_regions_replace_the_auto_fit() {
         let m = BimanualCollisionModel::builder(
             URDF,
@@ -954,6 +1413,100 @@ mod tests {
         assert!(
             matches!(&e, CollisionError::Build(BuildError::EmptyRegions { .. })),
             "{e}"
+        );
+    }
+
+    #[test]
+    fn clearance_step_bound_dominates_the_real_change() {
+        // The scan-skip soundness contract: over a joint step, the real change in
+        // min surface distance never exceeds clearance_step_bound. Sampled across
+        // poses (clear, in-band, near-contact), directions, magnitudes, and
+        // openings; each segment is also probed at interior points, since the
+        // bound must hold along the whole segment, not just at its ends.
+        let mut m = model();
+        let poses: [(JointVec, JointVec); 3] = [
+            (
+                [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0],
+            ),
+            (
+                [0.15, 0.1, 0.85, 0.5, -0.2, 0.1, 0.0],
+                [-0.05, -0.25, -0.45, 0.35, 0.1, -0.1, 0.0],
+            ),
+            (
+                [0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2],
+                [0.0, 0.0, -1.05, 0.4, -0.1, 0.1, 0.0],
+            ),
+        ];
+        // A deterministic spread of step directions: single joints, all joints,
+        // and mixed-sign combinations, at a small and a large magnitude.
+        let dirs: Vec<(JointVec, JointVec)> = {
+            let mut d: Vec<(JointVec, JointVec)> = Vec::new();
+            for j in 0..ARM_DOF {
+                let mut l = [0.0; ARM_DOF];
+                l[j] = 1.0;
+                d.push((l, [0.0; ARM_DOF]));
+                d.push(([0.0; ARM_DOF], l));
+            }
+            d.push(([1.0; ARM_DOF], [-1.0; ARM_DOF]));
+            d.push((
+                std::array::from_fn(|i| if i % 2 == 0 { 1.0 } else { -1.0 }),
+                std::array::from_fn(|i| if i % 3 == 0 { -1.0 } else { 1.0 }),
+            ));
+            d
+        };
+        // Opening deltas ride the same segment: the bound must dominate a step
+        // that slides/swings the fingers too, not only the arm joints.
+        for (open_l, open_r, dopen) in [
+            (1.0, 1.0, [0.0, 0.0]),
+            (0.3, 0.8, [0.7, -0.8]),
+            (0.0, 0.0, [1.0, 1.0]),
+        ] {
+            for (ql, qr) in &poses {
+                m.set_gripper_openings(open_l, open_r);
+                let d0 = m.min_distance(ql, qr).expect("query").distance;
+                for (dl, dr) in &dirs {
+                    for mag in [0.02, 0.2] {
+                        let sl: JointVec = std::array::from_fn(|i| dl[i] * mag);
+                        let sr: JointVec = std::array::from_fn(|i| dr[i] * mag);
+                        let bound = m.clearance_step_bound(&sl, &sr, &dopen);
+                        for t in [0.25, 0.5, 1.0] {
+                            let qlt: JointVec = std::array::from_fn(|i| ql[i] + t * sl[i]);
+                            let qrt: JointVec = std::array::from_fn(|i| qr[i] + t * sr[i]);
+                            m.set_gripper_openings(open_l + t * dopen[0], open_r + t * dopen[1]);
+                            let dt = m.min_distance(&qlt, &qrt).expect("query").distance;
+                            assert!(
+                                (dt - d0).abs() <= bound + 1e-9,
+                                "step bound violated: |{dt:+.5} - {d0:+.5}| > {bound:.5} \
+                                 (mag {mag}, t {t}, dopen {dopen:?})"
+                            );
+                        }
+                        m.set_gripper_openings(open_l, open_r);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn step_bound_is_infinite_on_non_finite_deltas() {
+        // The scan-skip predicate compares `margin > bound`; a NaN bound would
+        // make that false by comparison semantics alone, which a caller must not
+        // have to rely on. Bad deltas must yield an explicitly infinite bound.
+        let m = model();
+        let mut dq = [0.0; ARM_DOF];
+        dq[2] = f64::NAN;
+        assert_eq!(
+            m.clearance_step_bound(&dq, &[0.0; ARM_DOF], &[0.0, 0.0]),
+            f64::INFINITY
+        );
+        assert_eq!(
+            m.clearance_step_bound(&[0.0; ARM_DOF], &[0.0; ARM_DOF], &[f64::NAN, 0.0]),
+            f64::INFINITY
+        );
+        assert_eq!(
+            m.clearance_step_bound(&[0.0; ARM_DOF], &[0.0; ARM_DOF], &[0.0, f64::INFINITY]),
+            f64::INFINITY
         );
     }
 

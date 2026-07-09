@@ -63,9 +63,156 @@ fn wrists_converging_monotonically_reach_collision() {
         d < 0.0,
         "fully wrapped wrists should interpenetrate, got {d:+.4}"
     );
+    // The gripper region: the wrist link (link7) or one of its finger bodies. A
+    // wrapped wrist drives its outstretched finger into contact, so the deepest
+    // witness is typically a finger rather than the bare wrist hull.
+    let gripper_region = |l: &str| l.contains("link7") || l.contains("finger");
     assert!(
-        a.contains("link7") || b.contains("link7"),
-        "deepest pair should involve a wrist, got {a} vs {b}"
+        gripper_region(&a) || gripper_region(&b),
+        "deepest pair should involve a wrist or its finger, got {a} vs {b}"
+    );
+}
+
+#[test]
+fn closing_the_gripper_recovers_clearance() {
+    // The core reason per-finger live hulls exist: when the two grippers approach,
+    // closing the fingers pulls them back from the fat fully-open envelope, so the
+    // reported clearance grows and the arms can come closer before the governor
+    // stops them. Same pose, only the opening changes.
+    let mut m = model();
+    let (ql, qr) = wrists_inward(0.9);
+
+    m.set_gripper_openings(1.0, 1.0); // fully open: widest finger envelope
+    let (open, open_a, open_b) = {
+        let p = m.min_distance(&ql, &qr).expect("query");
+        (p.distance, p.link_a.to_string(), p.link_b.to_string())
+    };
+    assert!(
+        open_a.contains("finger") || open_b.contains("finger"),
+        "setup: a finger should be the nearest body when open, got {open_a} vs {open_b}"
+    );
+
+    m.set_gripper_openings(0.0, 0.0); // fully closed: fingers retract
+    let closed = m.min_distance(&ql, &qr).expect("query").distance;
+
+    assert!(
+        closed > open + 1e-4,
+        "closing the fingers should recover clearance: open {open:+.4}, closed {closed:+.4}"
+    );
+
+    // Out-of-range openings clamp to the travel: same placement as the extremes.
+    m.set_gripper_openings(-0.5, -0.5);
+    let clamped = m.min_distance(&ql, &qr).expect("query").distance;
+    assert!(
+        (clamped - closed).abs() < 1e-12,
+        "an out-of-range opening should clamp to the nearest extreme"
+    );
+}
+
+#[test]
+fn mirrored_limit_fingers_place_identically() {
+    // OpenArm v2 mirrors its right gripper by flipping the finger joints' limit
+    // range ([-x, 0] instead of [0, x]) rather than the axis sign, so on that
+    // side the LOWER limit is the open end. Rewrite the fixture's right fingers
+    // in that style (limits negated, axes flipped: the identical physical
+    // motion) and pin that live placement matches the original at every
+    // opening: the model must read the open end off the meshes, not off the
+    // URDF limit order, or "fully open" parks the mirrored side's fingers
+    // closed.
+    let urdf = std::fs::read_to_string(format!("{FIXTURES}/openarm_v10.urdf")).expect("fixture");
+    let rewrites = [
+        (
+            "<child link=\"openarm_right_right_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 0.0 0.1025\"/>\n    <axis xyz=\"0 -1 0\"/>\n    <limit effort=\"333\" lower=\"0.0\" upper=\"0.044\" velocity=\"10.0\"/>",
+            "<child link=\"openarm_right_right_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 0.0 0.1025\"/>\n    <axis xyz=\"0 1 0\"/>\n    <limit effort=\"333\" lower=\"-0.044\" upper=\"0.0\" velocity=\"10.0\"/>",
+        ),
+        (
+            "<child link=\"openarm_right_left_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 -0.0 0.1025\"/>\n    <axis xyz=\"0 1 0\"/>\n    <limit effort=\"333\" lower=\"0.0\" upper=\"0.044\" velocity=\"10.0\"/>",
+            "<child link=\"openarm_right_left_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 -0.0 0.1025\"/>\n    <axis xyz=\"0 -1 0\"/>\n    <limit effort=\"333\" lower=\"-0.044\" upper=\"0.0\" velocity=\"10.0\"/>",
+        ),
+    ];
+    let mirrored = rewrites.iter().fold(urdf.clone(), |acc, (from, to)| {
+        assert!(
+            acc.contains(from),
+            "fixture drifted from the rewrite anchor"
+        );
+        acc.replacen(from, to, 1)
+    });
+
+    let build = |urdf: &str| {
+        BimanualCollisionModel::builder(
+            urdf,
+            &format!("{FIXTURES}/meshes"),
+            "openarm_left_link0",
+            "openarm_right_link0",
+        )
+        .regions(openarm::TORSO_BODY, openarm::torso_regions())
+        .build()
+        .expect("model")
+    };
+    let mut original = build(&urdf);
+    let mut flipped = build(&mirrored);
+
+    // Separation of the two right-finger body centroids in world frame.
+    let separation = |m: &mut BimanualCollisionModel, fraction: f64| -> f64 {
+        m.set_gripper_openings(fraction, fraction);
+        let pieces = m.world_pieces(&HOME, &HOME).expect("pieces");
+        let centroid = |name: &str| {
+            let (_, ps) = pieces
+                .iter()
+                .find(|(n, _)| *n == name)
+                .expect("finger body exists");
+            let verts: Vec<_> = ps.iter().flat_map(|p| p.vertices.iter()).collect();
+            verts.iter().fold(
+                bimanual_collision_model::nalgebra::Vector3::zeros(),
+                |a, v| a + v.coords,
+            ) / verts.len() as f64
+        };
+        (centroid("openarm_right_right_finger") - centroid("openarm_right_left_finger")).norm()
+    };
+
+    for fraction in [0.0, 0.5, 1.0] {
+        let a = separation(&mut original, fraction);
+        let b = separation(&mut flipped, fraction);
+        assert!(
+            (a - b).abs() < 1e-9,
+            "mirrored-limit placement diverged at fraction {fraction}: {a:.5} vs {b:.5}"
+        );
+    }
+    assert!(
+        separation(&mut flipped, 1.0) > separation(&mut flipped, 0.0) + 0.05,
+        "fraction 1.0 must spread the fingers"
+    );
+}
+
+#[test]
+fn mixed_flip_finger_limits_fail_the_build() {
+    // Rewrite only ONE right finger to the mirrored [-x, 0] limit style (its
+    // sibling keeps [0, x]): each finger's own motion is physically unchanged,
+    // but the pair's limit ranges now disagree on a closed-to-open direction, so
+    // the tip separation is equal at both limit extremes and any orientation
+    // would be picked by floating-point noise. The build must refuse loudly
+    // rather than guess and silently place "open" as closed on one finger.
+    let urdf = std::fs::read_to_string(format!("{FIXTURES}/openarm_v10.urdf")).expect("fixture");
+    let from = "<child link=\"openarm_right_left_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 -0.0 0.1025\"/>\n    <axis xyz=\"0 1 0\"/>\n    <limit effort=\"333\" lower=\"0.0\" upper=\"0.044\" velocity=\"10.0\"/>";
+    let to = "<child link=\"openarm_right_left_finger\"/>\n    <origin rpy=\"0 0 0\" xyz=\"0.0 -0.0 0.1025\"/>\n    <axis xyz=\"0 -1 0\"/>\n    <limit effort=\"333\" lower=\"-0.044\" upper=\"0.0\" velocity=\"10.0\"/>";
+    assert!(
+        urdf.contains(from),
+        "fixture drifted from the rewrite anchor"
+    );
+    let mixed = urdf.replacen(from, to, 1);
+    let err = BimanualCollisionModel::builder(
+        &mixed,
+        &format!("{FIXTURES}/meshes"),
+        "openarm_left_link0",
+        "openarm_right_link0",
+    )
+    .regions(openarm::TORSO_BODY, openarm::torso_regions())
+    .build()
+    .err()
+    .expect("a mixed-flip gripper must fail the build");
+    assert!(
+        err.to_string().contains("ambiguous"),
+        "expected the ambiguous-orientation error, got: {err}"
     );
 }
 
@@ -106,6 +253,33 @@ fn rest_pose_clearance_is_stable() {
         (p.distance - REST_CLEARANCE_M).abs() < TOLERANCE_M,
         "rest clearance {:+.5} drifted from {REST_CLEARANCE_M} (tol {TOLERANCE_M})",
         p.distance
+    );
+}
+
+#[test]
+fn queries_are_order_independent_near_the_torso_regions() {
+    // A stateful support function (a warm-started graph climb) answered this
+    // pose wrong whenever another pair's query ran first: the torso's clipped
+    // slice hulls carry repair artifacts in their triangle graph, a greedy
+    // climb parked on a false summit, and GJK reported the wrist 90 mm INSIDE
+    // a torso slab it was actually 74 mm clear of. The pose sits on the wrists'
+    // natural converging path, so the governor steered on the garbage reading.
+    // Support is an exact scan; pin the true clearance and that repeating the
+    // query after a full model sweep cannot change the answer.
+    let mut m = model();
+    let ql: JointVec = [0.0, 0.0, 0.1075, 0.1575, 0.0, 0.0, 0.0];
+    let qr: JointVec = [0.0, 0.0, -0.1075, 0.1575, 0.0, 0.0, 0.0];
+    let first = m.min_distance(&ql, &qr).expect("query").distance;
+    assert!(
+        first > 0.02,
+        "near-home converging pose must read clear (~+0.024 true), got {first:+.5}"
+    );
+    let (deep_l, deep_r) = wrists_inward(1.2);
+    m.min_distance(&deep_l, &deep_r).expect("query");
+    let again = m.min_distance(&ql, &qr).expect("query").distance;
+    assert!(
+        (first - again).abs() < 1e-12,
+        "query order changed the answer: {first:+.5} then {again:+.5}"
     );
 }
 
