@@ -168,6 +168,26 @@ impl ClockTick {
     }
 }
 
+impl crate::encoding::Wire for ClockRequest {
+    type Root = crate::clock_capnp::clock_request::Owned;
+}
+
+impl crate::encoding::Wire for ClockResponse {
+    type Root = crate::clock_capnp::clock_response::Owned;
+}
+
+impl crate::encoding::Wire for ClockOffsetRequest {
+    type Root = crate::clock_capnp::clock_offset_request::Owned;
+}
+
+impl crate::encoding::Wire for ClockOffsetResponse {
+    type Root = crate::clock_capnp::clock_offset_response::Owned;
+}
+
+impl crate::encoding::Wire for ClockTick {
+    type Root = crate::clock_capnp::clock_tick::Owned;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

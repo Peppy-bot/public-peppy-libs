@@ -1,13 +1,18 @@
 //! Transport shims that bridge the capnp wire types in
 //! [`core_node_api::encoding`] to the peppylib messenger.
 //!
-//! `core-node-api` holds the pure wire types (no peppylib dep). This
-//! module exposes `poll_*` / `send_*` free functions over those types.
+//! `core-node-api` holds the pure wire types (no peppylib dep) and, emitted
+//! from each registry entry, the [`ServiceRequest`] / [`ActionGoal`] impl
+//! pairing a request/goal codec with its response type and wire id. The
+//! generic [`poll`] and [`send_goal`] here are bounded on those impls, so a
+//! method added to the registry is callable through this module with no
+//! per-method wrapper — and a wrong request/response pairing is
+//! unrepresentable rather than merely tested for.
 //!
-//! Each `poll_*` / `send_*` is a one-line macro invocation — the actual
-//! routing lives in [`poll_core_node_service`] and [`send_core_node_goal`].
-//! Add a new service by appending one `poll_service!` / `send_goal!` line
-//! at the bottom of this file.
+//! The exclusions are declared in the registry itself and get no impl:
+//! `SpawnedNode`-hosted services (their queryable doesn't live under the
+//! daemon's service root) and `routing: bespoke` entries — of those,
+//! `node_stop` keeps the hand-written [`poll_node_stop`] below.
 
 use std::time::Duration;
 
@@ -15,6 +20,7 @@ use config::node::QoSProfile;
 use core_node_api::Payload;
 use core_node_api::encoding::*;
 use core_node_api::names;
+use core_node_api::{ActionGoal, ServiceId, ServiceRequest};
 
 use crate::error::Result;
 use crate::messaging::{ActionGoalHandle, SenderTarget, ServiceTarget};
@@ -101,87 +107,58 @@ async fn send_core_node_goal(
     .await
 }
 
-/// Defines a `poll_*` wrapper that encodes `$req`, polls the service named
-/// `$service` on the target core node, and decodes the response into `$resp`.
-macro_rules! poll_service {
-    ($vis:vis $name:ident, $req:ty, $resp:ty, $service:expr) => {
-        $vis async fn $name(
-            request: &$req,
-            messenger: &MessengerHandle,
-            bound_core_node: &str,
-            as_instance_id: &str,
-            to_core_node: &str,
-            response_timeout: impl Into<Option<Duration>> + Send,
-        ) -> Result<$resp> {
-            poll_core_node_service(
-                ServiceRoute {
-                    messenger,
-                    bound_core_node,
-                    as_instance_id,
-                    to_target: SenderTarget::node(to_core_node, names::CORE_NODE_TAG)?,
-                    service_name: $service,
-                    target: ServiceTarget::Any,
-                },
-                request.encode()?,
-                <$resp>::decode,
-                response_timeout,
-            )
-            .await
-        }
-    };
+/// Polls a daemon-hosted core-node service. The request codec's
+/// [`ServiceRequest`] impl (emitted by the registry) supplies the wire name
+/// and the response type, so the request argument alone determines the
+/// method: `poll(&StackListRequest::new(), …)` returns a `StackListResponse`.
+pub async fn poll<R: ServiceRequest>(
+    request: &R,
+    messenger: &MessengerHandle,
+    bound_core_node: &str,
+    as_instance_id: &str,
+    to_core_node: &str,
+    response_timeout: impl Into<Option<Duration>> + Send,
+) -> Result<R::Response> {
+    poll_core_node_service(
+        ServiceRoute {
+            messenger,
+            bound_core_node,
+            as_instance_id,
+            to_target: SenderTarget::node(to_core_node, names::CORE_NODE_TAG)?,
+            service_name: R::ID.name(),
+            target: ServiceTarget::Any,
+        },
+        request.encode_request()?,
+        R::decode_response,
+        response_timeout,
+    )
+    .await
 }
 
-/// Defines a `send_*` wrapper that encodes `$goal` and sends it as the action
-/// named `$action` to the target core node.
-macro_rules! send_goal {
-    ($vis:vis $name:ident, $goal:ty, $action:expr) => {
-        $vis async fn $name(
-            goal: &$goal,
-            messenger: &MessengerHandle,
-            as_core_node: &str,
-            as_instance_id: &str,
-            to_core_node: Option<&str>,
-            goal_timeout: Duration,
-        ) -> Result<ActionGoalHandle> {
-            send_core_node_goal(
-                GoalRoute {
-                    messenger,
-                    as_core_node,
-                    as_instance_id,
-                    action_name: $action,
-                    to_core_node,
-                },
-                goal.encode()?,
-                goal_timeout,
-            )
-            .await
-        }
-    };
+/// Sends a goal to a daemon-hosted core-node action. The goal codec's
+/// [`ActionGoal`] impl (emitted by the registry) supplies the wire name:
+/// `send_goal(&LaunchGoal { … }, …)` starts a `stack_launch`.
+pub async fn send_goal<G: ActionGoal>(
+    goal: &G,
+    messenger: &MessengerHandle,
+    as_core_node: &str,
+    as_instance_id: &str,
+    to_core_node: Option<&str>,
+    goal_timeout: Duration,
+) -> Result<ActionGoalHandle> {
+    send_core_node_goal(
+        GoalRoute {
+            messenger,
+            as_core_node,
+            as_instance_id,
+            action_name: G::ID.name(),
+            to_core_node,
+        },
+        goal.encode_goal()?,
+        goal_timeout,
+    )
+    .await
 }
-
-poll_service!(pub poll_clock, ClockRequest, ClockResponse, names::CLOCK);
-poll_service!(pub poll_info, InfoRequest, InfoResponse, names::INFO);
-poll_service!(pub poll_stack_list, StackListRequest, StackListResponse, names::STACK_LIST);
-poll_service!(pub poll_datastore_store, DatastoreStoreRequest, DatastoreStoreResponse, names::DATASTORE_STORE);
-poll_service!(pub poll_datastore_get, DatastoreGetRequest, DatastoreGetResponse, names::DATASTORE_GET);
-poll_service!(pub poll_datastore_list, DatastoreListRequest, DatastoreListResponse, names::DATASTORE_LIST);
-poll_service!(pub poll_datastore_remove, DatastoreRemoveRequest, DatastoreRemoveResponse, names::DATASTORE_REMOVE);
-poll_service!(pub poll_node_reset, NodeResetRequest, NodeResetResponse, names::STACK_RESET);
-poll_service!(pub poll_node_init, NodeInitRequest, NodeInitResponse, names::NODE_INIT);
-poll_service!(pub poll_node_remove, NodeRemoveRequest, NodeRemoveResponse, names::NODE_REMOVE);
-poll_service!(pub poll_node_sync, NodeSyncRequest, NodeSyncResponse, names::NODE_SYNC);
-poll_service!(pub poll_node_info, NodeInfoRequest, NodeInfoResponse, names::NODE_INFO);
-poll_service!(pub poll_repo_list, RepoListRequest, RepoListResponse, names::REPO_LIST);
-poll_service!(pub poll_repo_add, RepoAddRequest, RepoAddResponse, names::REPO_ADD);
-poll_service!(pub poll_repo_exclude, RepoExcludeRequest, RepoExcludeResponse, names::REPO_EXCLUDE);
-poll_service!(pub poll_repo_remove, RepoRemoveRequest, RepoRemoveResponse, names::REPO_REMOVE);
-
-send_goal!(pub send_launch, LaunchGoal, names::STACK_LAUNCH_ACTION);
-send_goal!(pub send_node_add, NodeAddGoal, names::NODE_ADD_ACTION);
-send_goal!(pub send_node_run, NodeRunGoal, names::NODE_RUN_ACTION);
-send_goal!(pub send_node_build, NodeBuildGoal, names::NODE_BUILD_ACTION);
-send_goal!(pub send_repo_refresh, RepoRefreshGoal, names::REPO_REFRESH_ACTION);
-send_goal!(pub send_stack_benchmark, StackBenchmarkGoal, names::STACK_BENCHMARK_ACTION);
 
 /// `node_stop` is the only service whose listener may be hosted by a
 /// per-instance node rather than the daemon, so it routes by an explicit
@@ -216,7 +193,7 @@ pub async fn poll_node_stop(
             bound_core_node,
             as_instance_id,
             to_target,
-            service_name: names::NODE_STOP,
+            service_name: ServiceId::NodeStop.name(),
             target: ServiceTarget::CoreNode(scope_core_node),
         },
         request.encode()?,

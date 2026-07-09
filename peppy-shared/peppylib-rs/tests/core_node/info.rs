@@ -1,7 +1,7 @@
 use std::time::Duration;
 
+use core_node_api::ServiceId;
 use core_node_api::encoding::{ContainerInfo, InfoRequest, InfoResponse};
-use core_node_api::names;
 use peppylib::info;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use peppylib::runtime::NodeRunner;
@@ -19,7 +19,7 @@ async fn spawn_stub_listener(server: MessengerHandle, response: InfoResponse) {
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
-        names::INFO,
+        ServiceId::Info.name(),
     )
     .await
     .expect("listen should succeed");
@@ -43,7 +43,7 @@ async fn spawn_stub_listener(server: MessengerHandle, response: InfoResponse) {
 async fn setup_stub(response: InfoResponse) -> (ZenohdInstance, TempDir, NodeRunner) {
     let (router, temp_dir, node_runner, server) = start_router_and_runner().await;
     spawn_stub_listener(server, response).await;
-    wait_until_reachable(node_runner.messenger(), names::INFO).await;
+    wait_until_reachable(node_runner.messenger(), ServiceId::Info.name()).await;
     (router, temp_dir, node_runner)
 }
 

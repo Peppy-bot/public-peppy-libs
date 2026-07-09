@@ -110,6 +110,14 @@ impl InfoResponse {
     }
 }
 
+impl crate::encoding::Wire for InfoRequest {
+    type Root = crate::info_capnp::info_request::Owned;
+}
+
+impl crate::encoding::Wire for InfoResponse {
+    type Root = crate::info_capnp::info_response::Owned;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

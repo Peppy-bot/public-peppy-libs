@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use config::node::QoSProfile;
 use core_node_api::encoding::{ClockResponse, ClockTick};
-use core_node_api::names;
+use core_node_api::{ServiceId, TopicId};
 use peppylib::clock;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use pmi::ZenohdInstance;
@@ -22,7 +22,7 @@ async fn spawn_clock_stub_listener(server: MessengerHandle, response: ClockRespo
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
-        names::CLOCK,
+        ServiceId::Clock.name(),
     )
     .await
     .expect("listen should succeed");
@@ -45,7 +45,7 @@ async fn setup_synchronize_stub(
 ) -> (ZenohdInstance, TempDir, peppylib::runtime::NodeRunner) {
     let (router, temp_dir, node_runner, server) = start_router_and_runner().await;
     spawn_clock_stub_listener(server, response).await;
-    wait_until_reachable(node_runner.messenger(), names::CLOCK).await;
+    wait_until_reachable(node_runner.messenger(), ServiceId::Clock.name()).await;
     (router, temp_dir, node_runner)
 }
 
@@ -90,7 +90,7 @@ async fn subscribe_clock_yields_typed_ticks() {
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
-        names::CLOCK,
+        TopicId::Clock.name(),
     )
     .await;
 
@@ -100,7 +100,7 @@ async fn subscribe_clock_yields_typed_ticks() {
         CORE_NODE,
         SERVER_INSTANCE,
         test_node_target(CORE_NODE),
-        names::CLOCK,
+        TopicId::Clock.name(),
         QoSProfile::SensorData,
         canned.encode().expect("encode tick"),
     )

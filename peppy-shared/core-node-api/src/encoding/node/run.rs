@@ -409,6 +409,22 @@ impl NodeRunResult {
     }
 }
 
+impl crate::encoding::Wire for NodeRunGoal {
+    type Root = crate::node_capnp::node_run_goal::Owned;
+}
+
+impl crate::encoding::Wire for NodeRunGoalResponse {
+    type Root = crate::node_capnp::node_run_goal_response::Owned;
+}
+
+impl crate::encoding::Wire for NodeRunFeedback {
+    type Root = crate::node_capnp::node_run_feedback::Owned;
+}
+
+impl crate::encoding::Wire for NodeRunResult {
+    type Root = crate::node_capnp::node_run_result::Owned;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

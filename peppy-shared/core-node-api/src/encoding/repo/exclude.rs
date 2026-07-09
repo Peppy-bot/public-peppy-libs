@@ -120,6 +120,14 @@ impl RepoExcludeResponse {
     }
 }
 
+impl crate::encoding::Wire for RepoExcludeRequest {
+    type Root = crate::repo_capnp::repo_exclude_request::Owned;
+}
+
+impl crate::encoding::Wire for RepoExcludeResponse {
+    type Root = crate::repo_capnp::repo_exclude_response::Owned;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

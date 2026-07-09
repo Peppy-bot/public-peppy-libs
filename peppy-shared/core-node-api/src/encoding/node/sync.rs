@@ -171,6 +171,14 @@ impl NodeSyncResponse {
     }
 }
 
+impl crate::encoding::Wire for NodeSyncRequest {
+    type Root = crate::node_capnp::node_sync_request::Owned;
+}
+
+impl crate::encoding::Wire for NodeSyncResponse {
+    type Root = crate::node_capnp::node_sync_response::Owned;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

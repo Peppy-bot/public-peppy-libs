@@ -6,7 +6,7 @@
 //! measures. Callers that want a "core-node-aligned" timestamp use
 //! `local_now() + sync.offset_ns`.
 //!
-//! Unlike [`crate::core_node::transport::poll_clock`], which returns the raw
+//! Unlike a raw [`crate::core_node::transport::poll`], which returns the
 //! wire response and requires the caller to thread routing parameters and
 //! timestamp stamping through by hand, this layer takes a [`NodeRunner`]
 //! directly and performs the t0/t3 stamping itself.
@@ -15,10 +15,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use core_node_api::TopicId;
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
-use core_node_api::names;
 
-use crate::core_node::transport::poll_clock;
+use crate::core_node::transport::poll;
 use crate::error::{Error, Result};
 use crate::messaging::Subscription;
 use crate::runtime::{NodeRunner, TaskHandle, spawn};
@@ -59,7 +59,7 @@ pub async fn synchronize(
     let core_node = processor.bound_core_node();
 
     let t0 = wall_now_ns()?;
-    let response = poll_clock(
+    let response = poll(
         &ClockRequest::new(t0),
         node_runner.messenger(),
         core_node,
@@ -198,7 +198,7 @@ pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
 
 /// Subscribe to the periodic `clock` topic on `node_runner`'s bound core node.
 pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
-    let inner = crate::core_node::subscribe_core_topic(node_runner, names::CLOCK).await?;
+    let inner = crate::core_node::subscribe_core_topic(node_runner, TopicId::Clock.name()).await?;
     Ok(ClockSubscription { inner })
 }
 

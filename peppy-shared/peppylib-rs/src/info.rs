@@ -1,6 +1,6 @@
 //! High-level wrapper around the `INFO` service.
 //!
-//! Unlike [`crate::core_node::transport::poll_info`], which returns the raw
+//! Unlike a raw [`crate::core_node::transport::poll`], which returns the
 //! wire response and requires the caller to thread routing parameters through
 //! by hand, this layer takes a [`NodeRunner`] directly. The response is
 //! already fully typed, so it is returned as-is.
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use core_node_api::encoding::{InfoRequest, InfoResponse};
 
-use crate::core_node::transport::poll_info;
+use crate::core_node::transport::poll;
 use crate::error::Result;
 use crate::runtime::NodeRunner;
 
@@ -23,7 +23,7 @@ pub async fn info(
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
 
-    poll_info(
+    poll(
         &InfoRequest::new(),
         node_runner.messenger(),
         core_node,

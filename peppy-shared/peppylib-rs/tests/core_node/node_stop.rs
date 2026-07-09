@@ -4,8 +4,8 @@
 
 use std::time::{Duration, Instant};
 
+use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
-use core_node_api::names;
 use peppylib::core_node::transport::poll_node_stop;
 use peppylib::messaging::{MessengerHandle, SenderTarget, ServiceMessenger, ServiceTarget};
 use pmi::ZenohAdapter;
@@ -37,7 +37,7 @@ async fn spawn_node_stop_stub_listener(
         host_core_node,
         instance_id,
         stop_target(),
-        names::NODE_STOP,
+        ServiceId::NodeStop.name(),
     )
     .await
     .expect("listen should succeed");
@@ -145,7 +145,7 @@ async fn node_stop_does_not_fall_back_to_bound_core_node() {
             BOUND_CORE,
             CLIENT_INSTANCE,
             stop_target(),
-            names::NODE_STOP,
+            ServiceId::NodeStop.name(),
             ServiceTarget::CoreNode(BOUND_CORE),
         )
         .await

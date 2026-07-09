@@ -278,6 +278,14 @@ impl NodeInfoResponse {
     }
 }
 
+impl crate::encoding::Wire for NodeInfoRequest {
+    type Root = crate::node_capnp::node_info_request::Owned;
+}
+
+impl crate::encoding::Wire for NodeInfoResponse {
+    type Root = crate::node_capnp::node_info_response::Owned;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

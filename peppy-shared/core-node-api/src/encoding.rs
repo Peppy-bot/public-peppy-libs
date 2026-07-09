@@ -50,11 +50,23 @@ pub use stack::launch::{
 pub use stack::list::{StackListRequest, StackListResponse};
 pub use stack::reset::{NodeResetRequest, NodeResetResponse};
 
+use capnp::introspect::Introspect;
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use capnp::serialize;
 use std::path::PathBuf;
 
 use crate::{Payload, Result};
+
+/// Ties a codec struct to the Cap'n Proto wire root it encodes.
+///
+/// Implemented next to each codec, in the same file whose `encode`/`decode`
+/// bodies name that root — the one place the pairing is a checkable fact.
+/// The method registry ([`crate::registry`]) resolves a payload's reflection
+/// handle through this trait, so registry entries name only the codec struct.
+pub trait Wire {
+    /// The generated `Owned` marker of this codec's wire root struct.
+    type Root: Introspect;
+}
 
 /// Converts an empty Cap'n Proto text field to `None`, non-empty to `Some(String)`.
 pub(crate) fn optional_text(s: &str) -> Option<String> {

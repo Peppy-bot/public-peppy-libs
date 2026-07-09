@@ -12,10 +12,11 @@
 
 use std::sync::Arc;
 
+use core_node_api::ServiceId;
 use core_node_api::encoding::{ClockOffsetRequest, ClockOffsetResponse};
 use tracing::debug;
 
-use crate::messaging::{CLOCK_OFFSET_SERVICE, SenderTarget, ServiceRequestContext};
+use crate::messaging::{SenderTarget, ServiceRequestContext};
 use crate::runtime::{NodeRunner, TaskHandle};
 use crate::types::Payload;
 use crate::{PeppyError, PeppyResult, ServiceMessenger};
@@ -33,7 +34,7 @@ pub async fn listen_for_clock_offset(
             processor.bound_core_node(),
             processor.bound_instance_id(),
             as_identity,
-            CLOCK_OFFSET_SERVICE,
+            ServiceId::ClockOffset.name(),
         )
         .await?
     };

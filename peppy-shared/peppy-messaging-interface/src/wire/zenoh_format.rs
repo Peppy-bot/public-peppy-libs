@@ -354,7 +354,15 @@ fn extract_caller_segment(
 /// Builds the service_root segment. For action sub-services, appends the
 /// `goal` / `cancel` / `result` suffix. The `link_id` segment slots between
 /// the producer `(name, tag)` pair and the service / action `name`.
-fn service_root(target: &SenderTarget, link_id: &str, name: &str, kind: ServiceKind) -> String {
+///
+/// `pub(crate)` so [`crate::wire::templates`] can render the same grammar
+/// (the shared root is the single source of truth for the service-root shape).
+pub(crate) fn service_root(
+    target: &SenderTarget,
+    link_id: &str,
+    name: &str,
+    kind: ServiceKind,
+) -> String {
     let suffix = kind.suffix().map(|s| format!("/{s}")).unwrap_or_default();
     format!(
         "{}/{}/{}/{}/{link_id}/{name}{suffix}",
@@ -367,7 +375,9 @@ fn service_root(target: &SenderTarget, link_id: &str, name: &str, kind: ServiceK
 
 /// Builds the action_root segment
 /// (`action/{discriminator}/{name}/{tag}/{link_id}/{action}`).
-fn action_root(target: &SenderTarget, link_id: &str, action: &str) -> String {
+///
+/// `pub(crate)` so [`crate::wire::templates`] can render the same grammar.
+pub(crate) fn action_root(target: &SenderTarget, link_id: &str, action: &str) -> String {
     format!(
         "action/{}/{}/{}/{link_id}/{action}",
         target.discriminator(),

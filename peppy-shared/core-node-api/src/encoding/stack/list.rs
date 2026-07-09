@@ -79,6 +79,14 @@ impl StackListResponse {
     }
 }
 
+impl crate::encoding::Wire for StackListRequest {
+    type Root = crate::node_capnp::node_list_request::Owned;
+}
+
+impl crate::encoding::Wire for StackListResponse {
+    type Root = crate::node_capnp::node_list_response::Owned;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

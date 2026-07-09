@@ -10,8 +10,11 @@
 //! `node-stack-internal`) see exactly four categories of public items, and
 //! nothing else:
 //!
-//! 1. **Wire identifiers** ([`names`]): `&'static str` service/topic/tag
-//!    constants. Publish and subscribe sides key on the same constant.
+//! 1. **Wire identifiers**: the [`ServiceId`] / [`ActionId`] / [`TopicId`]
+//!    enums from the method [`registry`] — one variant per wire method, with
+//!    `.name()` as the only enum-to-string step — plus the single non-method
+//!    constant [`names::CORE_NODE_TAG`]. Publish and subscribe sides key on
+//!    the same declaration.
 //! 2. **Message codecs** ([`encoding`]): one hand-written struct per message,
 //!    each with a pure constructor (`new` / `try_new` / builder methods) and a
 //!    symmetric `encode() -> Result<Payload>` / `decode(&[u8]) -> Result<Self>`
@@ -43,6 +46,7 @@ pub mod error;
 pub mod graph;
 pub mod names;
 mod payload;
+pub mod registry;
 
 pub use env::FORBIDDEN_ENV_KEYS;
 pub use error::{Error, Result};
@@ -51,6 +55,7 @@ pub use graph::{
     SerializedNodeGraph, SerializedPairingSlot,
 };
 pub use payload::{EmptyPayloadError, NonEmptyPayload, Payload};
+pub use registry::{ActionGoal, ActionId, ServiceId, ServiceRequest, TopicId};
 
 // The generated Cap'n Proto modules must be reachable at the crate root as
 // `crate::*_capnp` because capnpc emits crate-root-relative paths. They live in
