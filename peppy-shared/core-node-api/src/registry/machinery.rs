@@ -31,6 +31,43 @@ pub enum Host {
     SpawnedNode,
 }
 
+/// Ties a service's request codec to its response codec and [`ServiceId`],
+/// implemented by the `methods!` expansion for every daemon-hosted service
+/// with default routing. Client transports (peppylib's generic
+/// `transport::poll`) are bounded on this, so a request/response pairing
+/// declared once in the registry is the only pairing a caller can express —
+/// there is no second per-method list to keep in sync.
+///
+/// Not implemented for [`Host::SpawnedNode`] services (their queryable does
+/// not live under the daemon's service root) nor for `routing: bespoke`
+/// entries (their route cannot be pinned by daemon-root discovery alone; see
+/// the `methods!` docs).
+///
+/// [`ServiceId`]: crate::registry::ServiceId
+pub trait ServiceRequest {
+    /// The response codec paired with this request in the registry.
+    type Response;
+    /// The service this request belongs to.
+    const ID: crate::registry::ServiceId;
+    /// Encode `self` as the service's request payload.
+    fn encode_request(&self) -> crate::Result<crate::Payload>;
+    /// Decode the service's response payload.
+    fn decode_response(data: &[u8]) -> crate::Result<Self::Response>;
+}
+
+/// Ties an action's goal codec to its [`ActionId`], implemented by the
+/// `methods!` expansion for every action. The counterpart of
+/// [`ServiceRequest`] for streaming goals; only the goal payload is carried
+/// (feedback/result decoding happens on the goal handle, past the send).
+///
+/// [`ActionId`]: crate::registry::ActionId
+pub trait ActionGoal {
+    /// The action this goal belongs to.
+    const ID: crate::registry::ActionId;
+    /// Encode `self` as the action's goal payload.
+    fn encode_goal(&self) -> crate::Result<crate::Payload>;
+}
+
 /// Everything the registry knows about a single Cap'n Proto payload.
 ///
 /// `PartialEq` is intentionally not derived: the struct holds function
@@ -41,7 +78,8 @@ pub struct PayloadDescriptor {
     /// Human-facing name of the Rust codec struct, e.g. `"ClockRequest"`.
     pub rust_type: &'static str,
     /// `TypeId` of the codec struct (`core_node_api::encoding::{rust_type}`).
-    /// Used by the `peppylib` transport sync test for exact type identity.
+    /// Sanity-checked by the registry tests; kept public for downstream
+    /// identity checks.
     pub rust_type_id: fn() -> TypeId,
     /// Runtime Cap'n Proto reflection handle for the payload's wire root.
     pub introspect: fn() -> Type,
@@ -121,13 +159,35 @@ impl MethodDescriptor {
 macro_rules! pd {
     ($enc:ident, $file:literal) => {
         PayloadDescriptor {
-                    rust_type: stringify!($enc),
-                    rust_type_id: || ::core::any::TypeId::of::<crate::encoding::$enc>(),
-                    introspect: <<crate::encoding::$enc as crate::encoding::Wire>::Root
-                        as ::capnp::introspect::Introspect>::introspect,
-                    schema_file: $file,
-                }
+                            rust_type: stringify!($enc),
+                            rust_type_id: || ::core::any::TypeId::of::<crate::encoding::$enc>(),
+                            introspect: <<crate::encoding::$enc as crate::encoding::Wire>::Root
+                                as ::capnp::introspect::Introspect>::introspect,
+                            schema_file: $file,
+                        }
     };
+}
+
+/// Emits the [`ServiceRequest`] impl for one `methods!` service entry — or
+/// nothing, when the generic client transport cannot route the service:
+/// [`Host::SpawnedNode`] queryables don't live under the daemon's service
+/// root, and `routing: bespoke` entries need discovery scoping no generic
+/// signature can express. The first rule (daemon host, no routing override)
+/// is the only emitting one; everything else falls through to the empty rule.
+macro_rules! service_request_impl {
+    ((CoreNodeDaemon) () $svar:ident, $sreq:ident, $sresp:ident) => {
+        impl crate::registry::ServiceRequest for crate::encoding::$sreq {
+            type Response = crate::encoding::$sresp;
+            const ID: crate::registry::ServiceId = crate::registry::ServiceId::$svar;
+            fn encode_request(&self) -> crate::Result<crate::Payload> {
+                self.encode()
+            }
+            fn decode_response(data: &[u8]) -> crate::Result<Self::Response> {
+                crate::encoding::$sresp::decode(data)
+            }
+        }
+    };
+    (($shost:ident) ($($srouting:ident)?) $svar:ident, $sreq:ident, $sresp:ident) => {};
 }
 
 /// Expands the one declaration point for every core-node wire method (the
@@ -151,6 +211,16 @@ macro_rules! pd {
 /// [`crate::encoding`]; its Cap'n Proto `Owned` root comes from the codec's
 /// [`Wire`](crate::encoding::Wire) impl (see [`pd!`]).
 ///
+/// Each service entry also emits a [`ServiceRequest`] impl on its request
+/// codec, and each action entry an [`ActionGoal`] impl on its goal codec —
+/// the hooks generic client transports are bounded on, so a method declared
+/// here is callable with no per-method wrapper anywhere. A service may opt
+/// out with `routing: bespoke` (after `host`) when daemon-root discovery
+/// alone cannot pin its route — `node_stop`'s listener may be hosted by a
+/// per-instance node, so its discovery must additionally be scoped to the
+/// hosting core node and its peppylib wrapper stays hand-written. Emission
+/// is gated by [`service_request_impl!`].
+///
 /// The enums deliberately do **not** get `Display`/`From<..> for &str` impls:
 /// `.name()` at the wire boundary is the only sanctioned way back to a string,
 /// so stringly-typed plumbing cannot quietly reappear. They are also not
@@ -163,6 +233,7 @@ macro_rules! methods {
             $( $(#[$smeta:meta])* $svar:ident {
                 name: $sname:literal,
                 host: $shost:ident,
+                $( routing: $srouting:ident, )?
                 summary: $ssummary:literal,
                 request: $sreq:ident,
                 response: $sresp:ident,
@@ -220,6 +291,8 @@ macro_rules! methods {
             }
         }
 
+        $( service_request_impl!(($shost) ($($srouting)?) $svar, $sreq, $sresp); )+
+
         /// Every core-node **action** (streaming goal/feedback/result), one
         /// variant per method. Generated by `methods!`; match exhaustively
         /// (no wildcard arm) wherever a per-action decision is made.
@@ -244,6 +317,13 @@ macro_rules! methods {
                 &METHODS[ServiceId::ALL.len() + self as usize]
             }
         }
+
+        $( impl crate::registry::ActionGoal for crate::encoding::$agoal {
+            const ID: crate::registry::ActionId = crate::registry::ActionId::$avar;
+            fn encode_goal(&self) -> crate::Result<crate::Payload> {
+                self.encode()
+            }
+        } )+
 
         /// Every core-node **topic** (one-way publish), one variant per
         /// method. Generated by `methods!`; match exhaustively (no wildcard
@@ -310,5 +390,8 @@ macro_rules! methods {
 
 // `macro_rules!` items are textually scoped; these re-exports turn them into
 // path-based items so the invocation site can `use machinery::{methods, pd}`.
+// `service_request_impl` rides along because `methods!` expands calls to it
+// at that same invocation site.
 pub(crate) use methods;
 pub(crate) use pd;
+pub(crate) use service_request_impl;

@@ -1,11 +1,10 @@
 //! High-level wrappers around the `DATASTORE_STORE` / `DATASTORE_GET` services.
 //!
-//! Unlike [`crate::core_node::transport::poll_datastore_store`] /
-//! [`poll_datastore_get`](crate::core_node::transport::poll_datastore_get),
-//! which return the raw wire response and require the caller to thread routing
-//! parameters through by hand, this layer takes a [`NodeRunner`] directly. The
-//! get wrapper also folds the response's `found` flag into an `Option`, so a
-//! missing key reads as `None` rather than a struct with an empty value.
+//! Unlike a raw [`crate::core_node::transport::poll`], which returns the wire
+//! response and requires the caller to thread routing parameters through by
+//! hand, this layer takes a [`NodeRunner`] directly. The get wrapper also
+//! folds the response's `found` flag into an `Option`, so a missing key reads
+//! as `None` rather than a struct with an empty value.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -15,9 +14,7 @@ use core_node_api::encoding::{
     DatastoreGetRequest, DatastoreListRequest, DatastoreRemoveRequest, DatastoreStoreRequest,
 };
 
-use crate::core_node::transport::{
-    poll_datastore_get, poll_datastore_list, poll_datastore_remove, poll_datastore_store,
-};
+use crate::core_node::transport::poll;
 use crate::error::Result;
 use crate::runtime::NodeRunner;
 
@@ -132,7 +129,7 @@ pub async fn store(
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
 
-    poll_datastore_store(
+    poll(
         &request,
         node_runner.messenger(),
         core_node,
@@ -160,7 +157,7 @@ pub async fn get(
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
 
-    let response = poll_datastore_get(
+    let response = poll(
         &request,
         node_runner.messenger(),
         core_node,
@@ -189,7 +186,7 @@ pub async fn list(
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
 
-    let response = poll_datastore_list(
+    let response = poll(
         &DatastoreListRequest::new(),
         node_runner.messenger(),
         core_node,
@@ -225,7 +222,7 @@ pub async fn remove(
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
 
-    let response = poll_datastore_remove(
+    let response = poll(
         &request,
         node_runner.messenger(),
         core_node,

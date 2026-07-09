@@ -8,8 +8,12 @@
 //!
 //! * the [`ServiceId`] / [`ActionId`] / [`TopicId`] enums — the handles every
 //!   consumer that must make a per-method decision (daemon registration,
-//!   peppylib wrapper coverage, wire-name pinning, doc tagging) matches on
-//!   **exhaustively**, so forgetting a new method is a compile error there;
+//!   wire-name pinning, doc tagging) matches on **exhaustively**, so
+//!   forgetting a new method is a compile error there;
+//! * a [`ServiceRequest`] impl per routable service request codec and an
+//!   [`ActionGoal`] impl per goal codec — the hooks `peppylib`'s generic
+//!   `transport::poll` / `transport::send_goal` are bounded on, so a method
+//!   declared here needs no per-method client wrapper anywhere;
 //! * the [`METHODS`] descriptor slice, in declaration order, which the
 //!   `platform-backend` AsyncAPI generator walks.
 //!
@@ -17,8 +21,8 @@
 //!
 //! * a display name ([`PayloadDescriptor::rust_type`]),
 //! * a [`TypeId`](core::any::TypeId) of the codec struct
-//!   ([`PayloadDescriptor::rust_type_id`]) — used by `peppylib`'s cross-crate
-//!   sync test to prove the registry and the transport table stay in step, and
+//!   ([`PayloadDescriptor::rust_type_id`]) — a stable identity handle,
+//!   sanity-checked by this module's tests, and
 //! * a runtime Cap'n Proto reflection handle ([`PayloadDescriptor::introspect`])
 //!   plus the originating `.capnp` file — consumed by the `platform-backend`
 //!   AsyncAPI generator, which walks the type into JSON Schema.
@@ -39,8 +43,10 @@ mod machinery;
 #[cfg(test)]
 mod tests;
 
-pub use machinery::{Host, MethodDescriptor, MethodKind, PayloadDescriptor, Payloads};
-use machinery::{methods, pd};
+pub use machinery::{
+    ActionGoal, Host, MethodDescriptor, MethodKind, PayloadDescriptor, Payloads, ServiceRequest,
+};
+use machinery::{methods, pd, service_request_impl};
 
 methods! {
     services {
@@ -152,9 +158,17 @@ methods! {
             response: NodeInfoResponse,
             schema: "node.capnp",
         }
+        /// The one service whose listener may be hosted by a per-instance
+        /// node rather than the daemon: user node names are not unique
+        /// across daemons, so daemon-root discovery alone cannot pin the
+        /// route and `routing: bespoke` opts it out of the generated
+        /// [`ServiceRequest`] impl. peppylib hosts its hand-written wrapper
+        /// (`poll_node_stop`), which scopes discovery to the hosting core
+        /// node.
         NodeStop {
             name: "node_stop",
             host: CoreNodeDaemon,
+            routing: bespoke,
             summary: "Stop a running node instance.",
             request: NodeStopRequest,
             response: NodeStopResponse,

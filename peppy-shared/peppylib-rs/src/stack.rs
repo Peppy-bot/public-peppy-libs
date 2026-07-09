@@ -1,7 +1,7 @@
 //! High-level wrapper around the `STACK_LIST` service.
 //!
-//! Unlike [`crate::core_node::transport::poll_stack_list`], which returns the
-//! raw wire response and requires the caller to thread routing parameters
+//! Unlike a raw [`crate::core_node::transport::poll`], which returns the
+//! wire response and requires the caller to thread routing parameters
 //! through by hand, this layer takes a [`NodeRunner`] directly and parses
 //! `graph_json` into a [`SerializedNodeGraph`], so callers don't have to think
 //! about the JSON-on-capnp shape.
@@ -11,7 +11,7 @@ use std::time::Duration;
 use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::StackListRequest;
 
-use crate::core_node::transport::poll_stack_list;
+use crate::core_node::transport::poll;
 use crate::error::{Error, Result};
 use crate::runtime::NodeRunner;
 
@@ -34,7 +34,7 @@ pub async fn list(
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
 
-    let response = poll_stack_list(
+    let response = poll(
         &StackListRequest::new(with_dot_graph),
         node_runner.messenger(),
         core_node,
