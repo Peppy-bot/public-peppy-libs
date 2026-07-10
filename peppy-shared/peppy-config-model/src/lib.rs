@@ -87,7 +87,7 @@ pub mod node {
 pub mod runtime {
     pub use crate::internal::runtime::{
         DiscoveryConfig, LifecycleRuntimeConfig, Name, NodeInstanceConfig, PairingSlotBinding,
-        ProducerRef, ResolvedFramework, RuntimeConfig,
+        ProducerRef, ResolvedFramework, RuntimeConfig, SlotBindings,
     };
 }
 

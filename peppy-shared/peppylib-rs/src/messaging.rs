@@ -261,7 +261,9 @@ impl std::future::IntoFuture for MessengerConnect {
             };
             let adapter = adapter.with_namespace(Some(self.namespace));
             let messenger = MessengerHandle::new_session(adapter).await?;
-            Ok(MessengerHandle::from_messenger(messenger))
+            Ok(MessengerHandle::from_shared(Arc::new(Mutex::new(
+                messenger,
+            ))))
         })
     }
 }
@@ -273,15 +275,6 @@ impl MessengerHandle {
     /// builder is the normal path for opening a fresh session.
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
         Self { messenger }
-    }
-
-    /// Wrap a freshly-opened `Messenger` in the shared-handle state. Shared by
-    /// the [`connect`](Self::connect) builder so the handle's field
-    /// initialization lives in one place.
-    fn from_messenger(messenger: Messenger) -> Self {
-        Self {
-            messenger: Arc::new(Mutex::new(messenger)),
-        }
     }
 
     /// Pre-bind a per-topic publisher. Locks the messenger once at

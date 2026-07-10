@@ -305,7 +305,8 @@ struct NodeInstanceInfo {
     instanceId @0 :Text;
     # Per-instance state: "starting" or "running"
     state @1 :Text;
-    # JSON-encoded `BTreeMap<String, SlotBinding>` mirroring
+    # JSON-encoded `BTreeMap<String, Vec<ProducerRef>>` (link_id → bound
+    # producer list) mirroring
     # `RuntimeConfig.node_instance.slot_bindings`. Empty string when the
     # node has no `depends_on` slots. Surfacing this lets the launcher /
     # CLI cross-check newly-staged binding plans against what running

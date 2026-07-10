@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use config::runtime::{PairingSlotBinding, ProducerRef};
+use config::runtime::{PairingSlotBinding, SlotBindings};
 use serde::{Deserialize, Serialize};
 
 /// Per-instance lifecycle state. Wire representation is the lowercase variant
@@ -154,7 +154,7 @@ pub struct SerializedInstance {
     /// on decode so `graph_json` payloads from producers that predate this
     /// field still parse.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub slot_bindings: BTreeMap<String, Vec<ProducerRef>>,
+    pub slot_bindings: SlotBindings,
     /// Live pairing-slot state for every `depends_on.pairings` entry, keyed
     /// by the slot's link_id. Overlaid by the daemon from the manifest plus
     /// its pairing registry when serializing the graph — this is the
@@ -307,6 +307,7 @@ impl SerializedNodeGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::runtime::ProducerRef;
 
     fn make_node(name: &str, tag: &str, instances: &[(&str, InstanceState)]) -> SerializedNode {
         SerializedNode {
@@ -499,7 +500,6 @@ mod tests {
 
     #[test]
     fn pairing_slots_round_trip_through_json() {
-        use config::runtime::ProducerRef;
         let mut pairing_slots = BTreeMap::new();
         pairing_slots.insert(
             "arm".to_string(),

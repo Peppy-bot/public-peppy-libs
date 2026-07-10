@@ -191,12 +191,7 @@ impl MessengerBackend for MockAdapter {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
-        // Mirrors the Zenoh adapter: wildcard-link_id subscribers drop the
-        // secondary publishes a multi-link `emit` produces; pinned
-        // subscribers don't, since their keyexpr already selects a single
-        // publish per emit. See the matching comment in
-        // [`super::zenoh::ZenohAdapter::subscribe_topic`].
-        let drop_secondary = recv.from_link_id.is_none();
+        let drop_secondary = recv.drops_secondary_publishes();
         self.subscribe_keyexpr(&ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }

@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use capnp::message::Builder;
 use config::node::NodeConfig;
-use config::runtime::ProducerRef;
+use config::runtime::SlotBindings;
 
 use crate::graph::{InstanceState, NodeStage, SerializedPairingSlot};
 use crate::node_capnp;
@@ -69,7 +69,7 @@ pub struct NodeInstanceInfo {
     /// Empty when the node has no `depends_on` slots. Surfacing this
     /// lets the launcher / CLI cross-check newly-staged binding plans
     /// against what running consumers have already claimed.
-    pub slot_bindings: BTreeMap<String, Vec<ProducerRef>>,
+    pub slot_bindings: SlotBindings,
     /// Live pairing-slot state per `depends_on.pairings` entry, mirroring
     /// [`crate::graph::SerializedInstance::pairing_slots`]. Empty when the
     /// node declares no pairings. Lets the CLI's `--pair` preflight see
@@ -218,17 +218,16 @@ impl NodeInfoResponse {
                     let state = InstanceState::from_str(state_str)
                         .map_err(|e| crate::Error::Decoding(e.to_string()))?;
                     let slot_bindings_json = entry.get_slot_bindings_json()?.to_str()?;
-                    let slot_bindings: BTreeMap<String, Vec<ProducerRef>> =
-                        if slot_bindings_json.is_empty() {
-                            BTreeMap::new()
-                        } else {
-                            serde_json5::from_str(slot_bindings_json).map_err(|e| {
-                                crate::Error::Decoding(format!(
-                                    "failed to deserialize slot_bindings: {}",
-                                    e
-                                ))
-                            })?
-                        };
+                    let slot_bindings: SlotBindings = if slot_bindings_json.is_empty() {
+                        BTreeMap::new()
+                    } else {
+                        serde_json5::from_str(slot_bindings_json).map_err(|e| {
+                            crate::Error::Decoding(format!(
+                                "failed to deserialize slot_bindings: {}",
+                                e
+                            ))
+                        })?
+                    };
                     let pairing_slots_json = entry.get_pairing_slots_json()?.to_str()?;
                     let pairing_slots: BTreeMap<String, SerializedPairingSlot> =
                         if pairing_slots_json.is_empty() {
@@ -291,6 +290,7 @@ impl crate::encoding::Wire for NodeInfoResponse {
 mod tests {
     use super::*;
     use config::node::NodeConfigParser;
+    use config::runtime::ProducerRef;
 
     #[test]
     fn node_info_request_roundtrips_name_tag() {

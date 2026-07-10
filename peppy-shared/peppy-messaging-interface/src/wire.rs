@@ -492,6 +492,16 @@ impl TopicWireReceiver {
             to_topic: Segment::try_from(to_topic)?,
         })
     }
+
+    /// Wire rule shared by every adapter: wildcard-link_id subscribers
+    /// (`from_link_id: None`) match every per-link_id publish a multi-link
+    /// `emit` produces and must drop the secondaries — see the
+    /// topic-attachment block in `wire::zenoh_format`. Pinned subscribers
+    /// ignore the attachment because their keyexpr already selects a single
+    /// publish per emit.
+    pub fn drops_secondary_publishes(&self) -> bool {
+        self.from_link_id.is_none()
+    }
 }
 
 // ─── Services ────────────────────────────────────────────────────────────────

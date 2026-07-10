@@ -7,27 +7,6 @@ use pmi::{MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// In-process acceptance set applied by [`Subscription::on_next_message`]
-/// above the wire layer: only messages whose source
-/// `(core_node, instance_id)` is in the set surface to user code.
-/// Synthesized from a [`ConsumerFilter`] bound to more than one producer
-/// (the wire subscription then wildcards both producer slots). The set
-/// holds full pairs — instance_id alone is not a producer identity on the
-/// wire, and comparing only half of it would let a same-instance_id
-/// producer on another core_node leak through.
-#[derive(Debug)]
-struct AcceptanceFilter(HashSet<ProducerRef>);
-
-impl AcceptanceFilter {
-    fn accepts(&self, core_node: &str, instance_id: &str) -> bool {
-        // Allocation-free pair lookup would need a borrowed key type;
-        // filters are smallish and topic rates moderate, so a stack
-        // ProducerRef per message is acceptable. Revisit if profiling
-        // disagrees.
-        self.0.contains(&ProducerRef::new(core_node, instance_id))
-    }
-}
-
 /// Wire backing of a [`Subscription`]. A slot bound to no producer opens
 /// no wire subscription at all: [`Inner::Silent`] never yields a message,
 /// mirroring an unpaired pairing slot rather than a closed channel, so a
@@ -39,11 +18,16 @@ enum Inner {
 
 pub struct Subscription {
     inner: Inner,
-    /// In-process acceptance set applied to incoming messages before they
-    /// surface to user code. `None` when the wire-layer pin already
-    /// captures the consumer's filter (single-producer slots) and for
-    /// silent slots.
-    accept_filter: Option<AcceptanceFilter>,
+    /// In-process acceptance set applied above the wire layer: only
+    /// messages whose source `(core_node, instance_id)` is in the set
+    /// surface to user code. Synthesized from a [`ConsumerFilter`] bound to
+    /// more than one producer (the wire subscription then wildcards both
+    /// producer slots); `None` when the wire-layer pin already captures the
+    /// consumer's filter (single-producer slots) and for silent slots. The
+    /// set holds full pairs — instance_id alone is not a producer identity
+    /// on the wire, and comparing only half of it would let a
+    /// same-instance_id producer on another core_node leak through.
+    accept_filter: Option<HashSet<ProducerRef>>,
 }
 
 impl Subscription {
@@ -63,24 +47,32 @@ impl Subscription {
         }
     }
 
-    fn with_accept_filter(mut self, filter: AcceptanceFilter) -> Self {
-        self.accept_filter = Some(filter);
-        self
+    /// `true` when the message's source producer may surface to user code.
+    /// Associated (not `&self`) so callers holding a mutable borrow of
+    /// [`Self::inner`] can still consult the filter.
+    fn accepted_by(accept_filter: &Option<HashSet<ProducerRef>>, msg: &Message) -> bool {
+        // Allocation-free pair lookup would need a borrowed key type;
+        // filters are smallish and topic rates moderate, so a stack
+        // ProducerRef per message is acceptable. Revisit if profiling
+        // disagrees.
+        accept_filter
+            .as_ref()
+            .is_none_or(|set| set.contains(&ProducerRef::new(msg.core_node(), msg.instance_id())))
     }
 
     pub async fn on_next_message(&mut self) -> Option<Message> {
-        let inner = match &mut self.inner {
+        let Self {
+            inner,
+            accept_filter,
+        } = self;
+        let inner = match inner {
             Inner::Wire(inner) => inner,
             Inner::Silent => return std::future::pending().await,
         };
         loop {
             let raw = inner.rx.recv_async().await.ok()?;
             let msg = Message::from(raw);
-            if self
-                .accept_filter
-                .as_ref()
-                .is_none_or(|f| f.accepts(msg.core_node(), msg.instance_id()))
-            {
+            if Self::accepted_by(accept_filter, &msg) {
                 return Some(msg);
             }
         }
@@ -89,7 +81,11 @@ impl Subscription {
     pub(crate) fn try_on_next_message(
         &mut self,
     ) -> std::result::Result<Message, crate::types::TryRecvError> {
-        let inner = match &mut self.inner {
+        let Self {
+            inner,
+            accept_filter,
+        } = self;
+        let inner = match inner {
             Inner::Wire(inner) => inner,
             Inner::Silent => return Err(crate::types::TryRecvError::Empty),
         };
@@ -97,11 +93,7 @@ impl Subscription {
             match inner.rx.try_recv() {
                 Ok(raw) => {
                     let msg = Message::from(raw);
-                    if self
-                        .accept_filter
-                        .as_ref()
-                        .is_none_or(|f| f.accepts(msg.core_node(), msg.instance_id()))
-                    {
+                    if Self::accepted_by(accept_filter, &msg) {
                         return Ok(msg);
                     }
                     // Filtered out — loop for the next message.
@@ -141,10 +133,7 @@ impl TopicMessenger {
             match filter.producers() {
                 [] => return Ok(Subscription::silent()),
                 [producer] => (Some(producer), None),
-                producers => (
-                    None,
-                    Some(AcceptanceFilter(producers.iter().cloned().collect())),
-                ),
+                producers => (None, Some(producers.iter().cloned().collect())),
             };
 
         let recv = TopicWireReceiver::new(
@@ -157,11 +146,10 @@ impl TopicMessenger {
             to_topic,
         )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
-        let mut subscription = Subscription::new(subscription);
-        if let Some(filter) = accept_filter {
-            subscription = subscription.with_accept_filter(filter);
-        }
-        Ok(subscription)
+        Ok(Subscription {
+            inner: Inner::Wire(subscription),
+            accept_filter,
+        })
     }
 
     /// Subscribe to a framework infra topic, scoped by the publisher's

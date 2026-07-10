@@ -50,11 +50,6 @@ impl ConsumerFilter {
         &self.producers
     }
 
-    /// `true` when the slot is bound to no producer.
-    pub fn is_silent(&self) -> bool {
-        self.producers.is_empty()
-    }
-
     /// Service / action call sites (and the pinned-subscription fast path)
     /// address a single fully-pinned producer. Returns `Some(producer)`
     /// when the slot is bound to exactly one producer; `None` for silent
@@ -64,12 +59,6 @@ impl ConsumerFilter {
             [producer] => Some(producer),
             _ => None,
         }
-    }
-}
-
-impl From<&[ProducerRef]> for ConsumerFilter {
-    fn from(producers: &[ProducerRef]) -> Self {
-        Self::new(producers.to_vec())
     }
 }
 
@@ -89,7 +78,6 @@ mod tests {
     #[test]
     fn silent_filter_has_no_producers_and_no_pin() {
         let filter = ConsumerFilter::silent();
-        assert!(filter.is_silent());
         assert!(filter.producers().is_empty());
         assert_eq!(filter.pinned_target(), None);
     }
@@ -97,14 +85,12 @@ mod tests {
     #[test]
     fn single_producer_filter_pins_that_producer() {
         let filter = ConsumerFilter::new(vec![pref("cam1")]);
-        assert!(!filter.is_silent());
         assert_eq!(filter.pinned_target(), Some(&pref("cam1")));
     }
 
     #[test]
     fn multi_producer_filter_keeps_order_and_never_pins() {
         let filter = ConsumerFilter::new(vec![pref("cam1"), pref("cam2")]);
-        assert!(!filter.is_silent());
         assert_eq!(filter.producers(), &[pref("cam1"), pref("cam2")]);
         assert_eq!(filter.pinned_target(), None);
     }

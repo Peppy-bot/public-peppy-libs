@@ -134,6 +134,13 @@ impl ProducerRef {
     }
 }
 
+/// The slot-binding map that travels boot configs, `node_info` responses,
+/// and the daemon graph: consumer slot `link_id` → the producers explicitly
+/// bound to that slot, in binding order and duplicate-free. A slot bound to
+/// no producer maps to an empty list and stays silent (there is no wildcard
+/// fallback).
+pub type SlotBindings = BTreeMap<String, Vec<ProducerRef>>;
+
 /// State of one pairing slot (a `depends_on.pairings` entry) of a node
 /// instance. Deliberately NOT part of `slot_bindings`: slot bindings feed
 /// the immutable consumer-filter cache, while a pairing slot is live-mutable
@@ -165,14 +172,11 @@ pub struct NodeInstanceConfig {
     /// from the launcher / CLI binding map — each target stamped with the
     /// launching daemon's `core_node` — so the spawned node does no
     /// re-resolution work and always holds wire-complete producer
-    /// addresses. A slot maps to the producers explicitly bound to it, in
-    /// binding order and duplicate-free; a slot bound to no producer maps
-    /// to an empty list and stays silent (there is no wildcard fallback).
-    /// Empty when the manifest has no `depends_on` entries. Read by the
-    /// generated subscribe / poll / send_goal call sites via the runtime's
-    /// per-slot consumer filters.
+    /// addresses. Empty when the manifest has no `depends_on` entries.
+    /// Read by the generated subscribe / poll / send_goal call sites via
+    /// the runtime's per-slot consumer filters.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub slot_bindings: BTreeMap<String, Vec<ProducerRef>>,
+    pub slot_bindings: SlotBindings,
     /// Boot-time state of every pairing slot declared in
     /// `depends_on.pairings`, keyed by slot link_id. Always maps each
     /// declared slot to [`PairingSlotBinding::Unpaired`] — pairs requested
@@ -727,10 +731,11 @@ mod tests {
         }
     }
 
-    /// Pin the wire contract of `PairingSlotBinding`, mirroring the
-    /// `SlotBinding` contract test: internally tagged on `kind`, snake_case,
-    /// full `(core_node, instance_id)` peer address plus the peer's slot
-    /// link_id. This shape travels boot configs and `stack list` output.
+    /// Pin the wire contract of `PairingSlotBinding` (contrast with the
+    /// plain-array `slot_bindings` shape pinned above): internally tagged on
+    /// `kind`, snake_case, full `(core_node, instance_id)` peer address plus
+    /// the peer's slot link_id. This shape travels boot configs and
+    /// `stack list` output.
     #[test]
     fn pairing_slot_binding_serde_contract() {
         use serde_json::json;

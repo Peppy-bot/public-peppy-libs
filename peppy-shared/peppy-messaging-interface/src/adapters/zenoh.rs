@@ -763,12 +763,7 @@ impl MessengerBackend for ZenohAdapter {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
-        // Wildcard-link_id subscribers (from_link_id: None) match every
-        // per-link_id publish a multi-link `emit` produces and must drop
-        // secondaries — see the topic-attachment block in
-        // `wire::zenoh_format`. Pinned subscribers ignore the attachment
-        // because their keyexpr already selects a single publish per emit.
-        let drop_secondary = recv.from_link_id.is_none();
+        let drop_secondary = recv.drops_secondary_publishes();
         self.subscribe_keyexpr(ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }
@@ -804,7 +799,7 @@ impl MessengerBackend for ZenohAdapter {
         // One queryable per listen call. The declared keyexpr has `*` at the
         // link_id slot so a single queryable absorbs every bound link_id —
         // `process_inbound_query` does the dispatch by parsing the selector.
-        // Two queryables for one process would let a `from_any` consumer's
+        // Two queryables for one process would let a caller's wildcard
         // `*` selector double-deliver via `QueryTarget::All`.
         let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
         let recv_clone = recv.clone();
