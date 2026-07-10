@@ -223,8 +223,12 @@ async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
     );
 }
 
+/// The target-scoped infra subscription (`clock` / `daemon_heartbeat`
+/// shape): the producer's per-boot `(core_node, instance_id)` pair stays
+/// wildcarded on the wire and the publisher is matched by its target
+/// identity alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topic_publish_subscribe_no_from_instance_id() {
+async fn topic_publish_subscribe_target_scoped() {
     let router = TestRouterContext::start().await;
 
     let qos = QoSProfile::Reliable;
@@ -235,14 +239,12 @@ async fn topic_publish_subscribe_no_from_instance_id() {
     let subscriber_core_node = "core_node_subscribe";
     let subscriber_handle = router.messenger().await;
     let subscriber_instance_id = "subscriber_instance";
-    let mut subscription = TopicMessenger::subscribe(
+    let mut subscription = TopicMessenger::subscribe_target_scoped(
         &subscriber_handle,
         subscriber_core_node,
         subscriber_instance_id,
-        Some(test_node_target(node_name)),
-        true, // from_any pattern
+        test_node_target(node_name),
         topic,
-        &ConsumerFilter::Any,
         qos.clone(),
     )
     .await
@@ -310,13 +312,15 @@ async fn topic_publish_subscribe_with_from_instance_id() {
     let subscriber_handle = router.messenger().await;
 
     let subscriber_instance_id1 = "subscriber_instance1";
-    let filter1 = ConsumerFilter::Pin(ProducerRef::new(emitter_core_node, emitter_instance_id1));
+    let filter1 = ConsumerFilter::new(vec![ProducerRef::new(
+        emitter_core_node,
+        emitter_instance_id1,
+    )]);
     let mut subscription1 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_core_node,
         subscriber_instance_id1,
         Some(test_node_target(node_name)),
-        false,
         topic,
         &filter1,
         qos.clone(),
@@ -326,13 +330,15 @@ async fn topic_publish_subscribe_with_from_instance_id() {
 
     // Only this subscriber will receive a message
     let subscriber_instance_id2 = "subscriber_instance2";
-    let filter2 = ConsumerFilter::Pin(ProducerRef::new(emitter_core_node, emitter_instance_id2));
+    let filter2 = ConsumerFilter::new(vec![ProducerRef::new(
+        emitter_core_node,
+        emitter_instance_id2,
+    )]);
     let mut subscription2 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_core_node,
         subscriber_instance_id2,
         Some(test_node_target(node_name)),
-        false,
         topic,
         &filter2,
         qos.clone(),
@@ -408,14 +414,15 @@ async fn topic_publish_subscribe_with_from_core_node() {
     let subscriber_handle = router.messenger().await;
 
     let subscriber_core_node1 = "core_node_subscribe1";
-    let filter_core1 =
-        ConsumerFilter::Pin(ProducerRef::new(emitter_core_node1, emitter_instance_id));
+    let filter_core1 = ConsumerFilter::new(vec![ProducerRef::new(
+        emitter_core_node1,
+        emitter_instance_id,
+    )]);
     let mut subscription1 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_core_node1,
         subscriber_instance_id,
         Some(test_node_target(node_name)),
-        false,
         topic,
         &filter_core1,
         qos.clone(),
@@ -425,14 +432,15 @@ async fn topic_publish_subscribe_with_from_core_node() {
 
     // Only this subscriber will receive a message
     let subscriber_core_node2 = "core_node_subscribe2";
-    let filter_core2 =
-        ConsumerFilter::Pin(ProducerRef::new(emitter_core_node2, emitter_instance_id));
+    let filter_core2 = ConsumerFilter::new(vec![ProducerRef::new(
+        emitter_core_node2,
+        emitter_instance_id,
+    )]);
     let mut subscription2 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_core_node2,
         subscriber_instance_id,
         Some(test_node_target(node_name)),
-        false,
         topic,
         &filter_core2,
         qos.clone(),
@@ -486,18 +494,16 @@ async fn topic_publish_subscribe_with_from_core_node() {
     router.shutdown().await;
 }
 
-/// `ConsumerFilter::OnlyFrom(set)` resolves at the messaging layer to a
-/// wire wildcard + an in-process accept set. The subscriber must only
-/// surface messages from producers whose `instance_id` is in the set,
-/// while wire-level reception happens for every matching `(name, tag)`
-/// publisher.
+/// A multi-producer [`ConsumerFilter`] resolves at the messaging layer to
+/// a wire wildcard + an in-process accept set. The subscriber must only
+/// surface messages from the bound producers, while wire-level reception
+/// happens for every matching `(name, tag)` publisher.
 ///
-/// Spec coverage: `FromAnyBound` consumer slot under the new dispatch
-/// model — `from_any: true` slot bound via free-form keys to producers
-/// P1 and P2. A third producer P3 of the same `(name, tag)` must not
-/// reach the consumer.
+/// Spec coverage: a slot bound to producers P1 and P2. A third producer
+/// P3 of the same `(name, tag)` must not reach the consumer — there is no
+/// wildcard fallback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn consumer_filter_only_from_set_admits_listed_producers_and_drops_others() {
+async fn multi_producer_filter_admits_bound_producers_and_drops_others() {
     let router = TestRouterContext::start().await;
 
     let qos = QoSProfile::Reliable;
@@ -510,14 +516,12 @@ async fn consumer_filter_only_from_set_admits_listed_producers_and_drops_others(
     let p3 = "cam_p3";
 
     let subscriber_handle = router.messenger().await;
-    let filter =
-        ConsumerFilter::OnlyFrom(vec![ProducerRef::new(core, p1), ProducerRef::new(core, p2)]);
+    let filter = ConsumerFilter::new(vec![ProducerRef::new(core, p1), ProducerRef::new(core, p2)]);
     let mut sub = TopicMessenger::subscribe(
         &subscriber_handle,
         core,
         "consumer_inst",
         Some(test_node_target(node_name)),
-        true,
         topic,
         &filter,
         qos.clone(),
@@ -528,8 +532,9 @@ async fn consumer_filter_only_from_set_admits_listed_producers_and_drops_others(
     let emitter_handle = router.messenger().await;
     // Deterministically wait until the subscriber is known to this fresh emitter
     // peer before publishing, so the first emits are not dropped during peer-mode
-    // discovery propagation. The from_any subscriber matches any producer, so
-    // waiting on one producer's key expression confirms it is reachable.
+    // discovery propagation. The multi-producer subscription wildcards the
+    // producer slots on the wire, so waiting on one producer's key expression
+    // confirms it is reachable.
     TopicMessenger::wait_for_subscriber(
         &emitter_handle,
         core,
@@ -584,96 +589,7 @@ async fn consumer_filter_only_from_set_admits_listed_producers_and_drops_others(
             (p1.to_string(), b"from-p1".to_vec()),
             (p2.to_string(), b"from-p2".to_vec()),
         ],
-        "OnlyFrom must accept only listed producers; P3 must be dropped",
-    );
-
-    router.shutdown().await;
-}
-
-/// `ConsumerFilter::AnyExcept(set)` is the unbound `from_any` slot's
-/// wire wildcard with an in-process reject set populated from sibling
-/// claims. The subscriber must drop messages from producers in the set
-/// (claimed by pinned or from_any-explicit siblings) while still
-/// receiving from any other matching producer.
-///
-/// Spec coverage: Statement 3 precedence — pinned-bound or
-/// from_any-explicit siblings preempt unbound from_any per `(name,
-/// tag)`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn consumer_filter_any_except_drops_excluded_and_admits_rest() {
-    let router = TestRouterContext::start().await;
-
-    let qos = QoSProfile::Reliable;
-    let node_name = "uvc_camera";
-    let topic = "video_stream";
-    let core = "shared_core";
-
-    // P1 is claimed by a pinned sibling (simulated here as the
-    // exclusion set on the unbound from_any consumer). P2 is unclaimed
-    // and must reach the wildcard fallback.
-    let claimed = "cam_pinned_claim";
-    let unclaimed = "cam_unclaimed";
-
-    let subscriber_handle = router.messenger().await;
-    let filter = ConsumerFilter::AnyExcept(vec![ProducerRef::new(core, claimed)]);
-    let mut sub = TopicMessenger::subscribe(
-        &subscriber_handle,
-        core,
-        "consumer_inst",
-        Some(test_node_target(node_name)),
-        true,
-        topic,
-        &filter,
-        qos.clone(),
-    )
-    .await
-    .expect("subscribe should succeed");
-
-    let emitter_handle = router.messenger().await;
-    // Wait until the subscriber is known to this fresh emitter peer before
-    // publishing (peer-mode discovery is not instantaneous). The from_any
-    // subscription matches any producer, so waiting on one suffices.
-    TopicMessenger::wait_for_subscriber(
-        &emitter_handle,
-        core,
-        unclaimed,
-        test_node_target(node_name),
-        topic,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("subscriber should become reachable");
-
-    for (producer, body) in [
-        (claimed, b"from-claimed".as_ref()),
-        (unclaimed, b"from-unclaimed"),
-    ] {
-        publish_once(
-            &emitter_handle,
-            core,
-            producer,
-            test_node_target(node_name),
-            topic,
-            qos.clone(),
-            Payload::from(body.to_vec()),
-        )
-        .await
-        .expect("emit should succeed");
-    }
-
-    let received = tokio::time::timeout(Duration::from_secs(2), sub.on_next_message())
-        .await
-        .expect("at least one message should reach the wildcard fallback")
-        .expect("subscription should not close");
-    assert_eq!(received.instance_id(), unclaimed);
-    assert_eq!(received.payload().as_ref(), b"from-unclaimed");
-
-    // No further message should arrive — the claimed producer's emit is
-    // dropped by the in-process filter.
-    let extra = tokio::time::timeout(Duration::from_millis(500), sub.on_next_message()).await;
-    assert!(
-        extra.is_err(),
-        "claimed producer must not reach unbound from_any; got: {extra:?}",
+        "the accept set must admit only bound producers; P3 must be dropped",
     );
 
     router.shutdown().await;
@@ -692,22 +608,25 @@ async fn topic_publish_reliable_5000hz_messages() {
 
     let subscriber_core_node = "core_node_subscribe";
     let subscriber_instance_id = "subscriber_instance";
+    let emitter_core_node = "emitter_core_node";
+    let emitter_instance_id = "emitter_instance";
+    let filter = ConsumerFilter::new(vec![ProducerRef::new(
+        emitter_core_node,
+        emitter_instance_id,
+    )]);
     let mut subscription = TopicMessenger::subscribe(
         &receiver_handle,
         subscriber_core_node,
         subscriber_instance_id,
         Some(test_node_target(node_name)),
-        true,
         topic,
-        &ConsumerFilter::Any,
+        &filter,
         qos.clone(),
     )
     .await
     .expect("Should subscribe to the topic");
 
     let message_count = 5000;
-    let emitter_core_node = "emitter_core_node";
-    let emitter_instance_id = "emitter_instance";
     let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
     // Fixed seed so a failure reproduces the same id ordering run to run, while
     // still exercising out-of-order payload contents.
@@ -3082,140 +3001,11 @@ async fn single_action_communication_multiple_polls() {
     router.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn topic_duplicate_from_any_subscription_is_rejected() {
-    // The wire-level dedupe for wildcard topic subscribers (the
-    // primary/secondary attachment plus the sibling-exclusion filter)
-    // depends on the manifest validator's "at most one from_any consumer
-    // per (name, tag)" invariant. Anything that bypasses the validator
-    // (a test, a tooling integration, a future runtime-deps feature) can
-    // install state that violates it and corrupt aggregator state with
-    // silent duplicate deliveries.
-    //
-    // This asserts the runtime guard at `MessengerHandle::subscribe`
-    // catches the violation: two from_any topic subscriptions on the same
-    // `(name, tag)` cannot coexist. After dropping the first the slot is
-    // released so a later subscription succeeds, and the surviving
-    // from_any subscription still receives exactly one delivery per
-    // multi-link emit (proving the existing dedupe still works under the
-    // enforced invariant).
-    let router = TestRouterContext::start().await;
-    let subscriber_handle = router.messenger().await;
-
-    let target = || SenderTarget::interface("depth_camera", "v1").expect("iface target");
-
-    let sub_one = TopicMessenger::subscribe(
-        &subscriber_handle,
-        "sub_core",
-        "sub_inst_one",
-        Some(target()),
-        true,
-        "frames",
-        &ConsumerFilter::Any,
-        QoSProfile::Reliable,
-    )
-    .await
-    .expect("first from_any subscribe should succeed");
-
-    let second = TopicMessenger::subscribe(
-        &subscriber_handle,
-        "sub_core",
-        "sub_inst_two",
-        Some(target()),
-        true,
-        "frames",
-        &ConsumerFilter::Any,
-        QoSProfile::Reliable,
-    )
-    .await;
-    match second {
-        Err(Error::DuplicateFromAnyConsumer { ref name, ref tag })
-            if name == "depth_camera" && tag == "v1" => {}
-        Err(other) => panic!("unexpected error rejecting second from_any: {other:?}"),
-        Ok(_) => panic!("second from_any subscribe must be rejected, got Ok"),
-    }
-
-    // A pinned subscription on the same (name, tag) is unaffected — only
-    // from_any subs take the slot.
-    let pinned_filter = ConsumerFilter::Pin(ProducerRef::new("pub_core", "left_emitter"));
-    let _sub_pinned = TopicMessenger::subscribe(
-        &subscriber_handle,
-        "sub_core",
-        "sub_inst_pinned",
-        Some(target()),
-        false,
-        "frames",
-        &pinned_filter,
-        QoSProfile::Reliable,
-    )
-    .await
-    .expect("pinned subscribe on same (name, tag) must coexist with from_any");
-
-    // Drop the first from_any sub; its guard releases the slot and the
-    // next from_any subscribe should succeed.
-    drop(sub_one);
-
-    let mut sub_three = TopicMessenger::subscribe(
-        &subscriber_handle,
-        "sub_core",
-        "sub_inst_three",
-        Some(target()),
-        true,
-        "frames",
-        &ConsumerFilter::Any,
-        QoSProfile::Reliable,
-    )
-    .await
-    .expect("from_any subscribe should succeed after the first guard dropped");
-
-    let emitter_handle = router.messenger().await;
-    // Deterministically wait for the surviving from_any subscriber before the
-    // publish so it is not dropped during peer-mode discovery propagation.
-    TopicMessenger::wait_for_subscriber(
-        &emitter_handle,
-        "pub_core",
-        "pub_inst",
-        target(),
-        "frames",
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("subscriber should become reachable");
-    publish_once(
-        &emitter_handle,
-        "pub_core",
-        "pub_inst",
-        target(),
-        "frames",
-        QoSProfile::Reliable,
-        Payload::from_static(b"frame-0"),
-    )
-    .await
-    .expect("emit should succeed");
-
-    // Exactly one delivery on the surviving from_any sub. The degenerate
-    // sibling map intentionally fails to claim either bound link_id, so
-    // the existing dedupe (primary/secondary attachment) must do the work
-    // alone — and the runtime guard ensures it isn't asked to do more.
-    let first = tokio::time::timeout(Duration::from_secs(2), sub_three.on_next_message())
-        .await
-        .expect("from_any subscriber should not time out")
-        .expect("from_any subscriber should receive a message");
-    assert_eq!(first.payload().as_ref(), b"frame-0");
-    let dup = tokio::time::timeout(Duration::from_millis(300), sub_three.on_next_message()).await;
-    assert!(
-        dup.is_err(),
-        "from_any subscriber must not receive a duplicate (got {:?})",
-        dup.ok().flatten().map(|m| m.payload().as_ref().to_vec())
-    );
-
-    router.shutdown().await;
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn action_from_any_send_goal_runs_handler_on_winner_only() {
+async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
     // Two producer processes expose the same action and a consumer sends
-    // a wildcard goal. With discover-then-pin, only ONE producer's goal
+    // a wildcard goal (the infra discover-then-pin path; generated dep
+    // slots always pin). With discover-then-pin, only ONE producer's goal
     // handler must run — the one that responds first to the discovery
     // probe. The loser sees the probe (filtered internally, no handler
     // invocation) but never sees the real goal. The subsequent
@@ -4460,18 +4250,15 @@ async fn topic_pinned_and_filtered_subscriptions_compare_full_pairs() {
     let payload_b = Payload::from_static(b"from_core_b");
 
     // Subscribers first so the emit loops publish into live subscriptions.
-    // Each subscriber gets its own messenger handle: the wildcard filters
-    // are from_any slots, and one messenger allows at most one live
-    // from_any subscription per producer pin and `(name, tag)`.
     let pin_handle = router.messenger().await;
+    let pin_filter = ConsumerFilter::new(vec![ProducerRef::new(core_a, shared_inst)]);
     let mut pin_sub = TopicMessenger::subscribe(
         &pin_handle,
         "sub_pin_core",
         "sub_pin_inst",
         Some(test_node_target(node_name)),
-        false,
         topic,
-        &ConsumerFilter::Pin(ProducerRef::new(core_a, shared_inst)),
+        &pin_filter,
         qos.clone(),
     )
     .await
@@ -4480,38 +4267,22 @@ async fn topic_pinned_and_filtered_subscriptions_compare_full_pairs() {
     // Two-entry set forces the wire-wildcard + in-process allow-set path
     // (a single-entry set would collapse to a wire pin); the second entry
     // names a producer that never publishes.
-    let only_from_handle = router.messenger().await;
-    let only_from_filter = ConsumerFilter::OnlyFrom(vec![
+    let allow_set_handle = router.messenger().await;
+    let allow_set_filter = ConsumerFilter::new(vec![
         ProducerRef::new(core_a, shared_inst),
         ProducerRef::new(core_a, "inst2"),
     ]);
-    let mut only_from_sub = TopicMessenger::subscribe(
-        &only_from_handle,
+    let mut allow_set_sub = TopicMessenger::subscribe(
+        &allow_set_handle,
         "sub_only_core",
         "sub_only_inst",
         Some(test_node_target(node_name)),
-        true,
         topic,
-        &only_from_filter,
+        &allow_set_filter,
         qos.clone(),
     )
     .await
-    .expect("only_from subscribe should succeed");
-
-    let any_except_handle = router.messenger().await;
-    let any_except_filter = ConsumerFilter::AnyExcept(vec![ProducerRef::new(core_a, shared_inst)]);
-    let mut any_except_sub = TopicMessenger::subscribe(
-        &any_except_handle,
-        "sub_except_core",
-        "sub_except_inst",
-        Some(test_node_target(node_name)),
-        true,
-        topic,
-        &any_except_filter,
-        qos.clone(),
-    )
-    .await
-    .expect("any_except subscribe should succeed");
+    .expect("allow-set subscribe should succeed");
 
     // Emit loops: each producer publishes every 50ms until stopped, so the
     // assertions below never depend on a single publish surviving
@@ -4566,37 +4337,20 @@ async fn topic_pinned_and_filtered_subscriptions_compare_full_pairs() {
         assert_eq!(msg.payload(), &payload_a);
     }
 
-    // OnlyFrom: the wire wildcard receives both producers; the in-process
-    // allow set must admit only the listed (core_a, inst1) pair.
+    // Allow set: the wire wildcard receives both producers; the in-process
+    // accept set must admit only the listed (core_a, inst1) pair.
     for _ in 0..3 {
-        let msg = tokio::time::timeout(Duration::from_secs(5), only_from_sub.on_next_message())
+        let msg = tokio::time::timeout(Duration::from_secs(5), allow_set_sub.on_next_message())
             .await
-            .expect("only_from subscriber timed out waiting for a message")
-            .expect("only_from subscription closed");
+            .expect("allow-set subscriber timed out waiting for a message")
+            .expect("allow-set subscription closed");
         assert_eq!(
             msg.core_node(),
             core_a,
-            "OnlyFrom must compare full pairs, not instance_id alone",
+            "the accept set must compare full pairs, not instance_id alone",
         );
         assert_eq!(msg.instance_id(), shared_inst);
         assert_eq!(msg.payload(), &payload_a);
-    }
-
-    // AnyExcept: the deny set lists (core_a, inst1); the same-instance_id
-    // producer on core_b must NOT be rejected, while core_a's must be.
-    for _ in 0..3 {
-        let msg = tokio::time::timeout(Duration::from_secs(5), any_except_sub.on_next_message())
-            .await
-            .expect("any_except subscriber timed out waiting for a message")
-            .expect("any_except subscription closed");
-        assert_eq!(
-            msg.core_node(),
-            core_b,
-            "AnyExcept must reject only the listed pair — a shared \
-             instance_id on another core must pass",
-        );
-        assert_eq!(msg.instance_id(), shared_inst);
-        assert_eq!(msg.payload(), &payload_b);
     }
 
     // Stop the emit loops before tearing the router down so no emit races

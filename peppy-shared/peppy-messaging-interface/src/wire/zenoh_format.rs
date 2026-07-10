@@ -103,10 +103,10 @@ impl ZenohWireFormat {
     // Services and action sub-services (goal / cancel / result) ride on
     // Zenoh queryables. The producer declares exactly one queryable per
     // `listen_service` call with `*` at the link_id slot. Producers always
-    // advertise under the reserved default `_` link_id; the adapter
-    // [`ParsedInboundQuery::claim`] accepts either `*` (from `from_any`
-    // consumers) or `_` (post-binding-map consumers) at the link_id slot
-    // and drops anything else defensively.
+    // advertise under the reserved default `_` link_id; callers always
+    // wildcard the link_id slot, so the adapter [`ParsedInboundQuery::claim`]
+    // accepts either `*` or the `_` literal there and drops anything else
+    // defensively.
 
     /// Producer-side queryable keyexpr, declared once per `listen_service`.
     /// Layout `{bound_core}/*/{as_inst}/*/{service_root}` — the `*` slots
@@ -175,7 +175,7 @@ impl ZenohWireFormat {
     /// delivered to the producer via `query.key_expr()`) to extract the
     /// caller's identity slots and the link_id slot. The producer's single
     /// queryable declares `*` at the link_id position, so the selector
-    /// carries either `*` (from `from_any` consumers) or `_` (the default
+    /// carries either `*` (the shape every caller emits) or `_` (the default
     /// literal) — [`ParsedInboundQuery::claim`] confirms it's one of the two
     /// and resolves to the default `_` segment.
     pub(crate) fn parse_inbound_query(
@@ -610,8 +610,8 @@ pub(crate) struct ParsedInboundQuery {
     pub(crate) caller_core: String,
     pub(crate) caller_inst: String,
     /// Raw value of the link_id slot in the selector. Either the
-    /// single-chunk wildcard `*` (a `from_any` consumer) or the default
-    /// `_` literal (a pinned consumer, post-binding-map era).
+    /// single-chunk wildcard `*` (the shape every caller emits) or the
+    /// default `_` literal.
     pub(crate) link_id: String,
     /// Whether this query is a real user request or a discovery probe.
     /// Decoded from the mandatory query attachment.

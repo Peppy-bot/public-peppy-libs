@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use capnp::message::Builder;
 use config::node::NodeConfig;
-use config::runtime::SlotBinding;
+use config::runtime::ProducerRef;
 
 use crate::graph::{InstanceState, NodeStage, SerializedPairingSlot};
 use crate::node_capnp;
@@ -63,12 +63,13 @@ pub struct NodeInstanceInfo {
     /// is visible without a separate health round-trip. Decodes to `true` when
     /// absent (an older producer) rather than flagging the instance unhealthy.
     pub healthy: bool,
-    /// Pre-resolved per-slot bindings for this consumer instance,
-    /// mirroring [`config::runtime::NodeInstanceConfig::slot_bindings`].
+    /// Producers bound to each of this consumer instance's `depends_on`
+    /// slots, mirroring
+    /// [`config::runtime::NodeInstanceConfig::slot_bindings`].
     /// Empty when the node has no `depends_on` slots. Surfacing this
     /// lets the launcher / CLI cross-check newly-staged binding plans
     /// against what running consumers have already claimed.
-    pub slot_bindings: BTreeMap<String, SlotBinding>,
+    pub slot_bindings: BTreeMap<String, Vec<ProducerRef>>,
     /// Live pairing-slot state per `depends_on.pairings` entry, mirroring
     /// [`crate::graph::SerializedInstance::pairing_slots`]. Empty when the
     /// node declares no pairings. Lets the CLI's `--pair` preflight see
@@ -217,7 +218,7 @@ impl NodeInfoResponse {
                     let state = InstanceState::from_str(state_str)
                         .map_err(|e| crate::Error::Decoding(e.to_string()))?;
                     let slot_bindings_json = entry.get_slot_bindings_json()?.to_str()?;
-                    let slot_bindings: BTreeMap<String, SlotBinding> =
+                    let slot_bindings: BTreeMap<String, Vec<ProducerRef>> =
                         if slot_bindings_json.is_empty() {
                             BTreeMap::new()
                         } else {
@@ -340,24 +341,19 @@ mod tests {
 
     #[test]
     fn node_info_response_roundtrips_instance_slot_bindings() {
-        use config::runtime::ProducerRef;
-        let bindings_a: BTreeMap<String, SlotBinding> = [
+        let bindings_a: BTreeMap<String, Vec<ProducerRef>> = [
             (
                 "wrist_left_camera".to_string(),
-                SlotBinding::Pinned {
-                    producer: ProducerRef::new("core_a", "cam1"),
-                },
+                vec![ProducerRef::new("core_a", "cam1")],
             ),
             (
                 "extra_cam".to_string(),
-                SlotBinding::FromAnyBound {
-                    producers: vec![
-                        ProducerRef::new("core_a", "cam2"),
-                        ProducerRef::new("core_a", "cam3"),
-                    ],
-                },
+                vec![
+                    ProducerRef::new("core_a", "cam2"),
+                    ProducerRef::new("core_a", "cam3"),
+                ],
             ),
-            ("spare".to_string(), SlotBinding::FromAnyUnbound),
+            ("spare".to_string(), Vec::new()),
         ]
         .into_iter()
         .collect();

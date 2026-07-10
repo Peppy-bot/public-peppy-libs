@@ -546,8 +546,6 @@ pub struct NodeDependency {
     pub tag: String,
     #[serde(deserialize_with = "deserialize_node_dependency_link_id")]
     pub link_id: String,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub from_any: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -559,8 +557,6 @@ pub struct InterfaceDependency {
     pub link_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub from_any: bool,
 }
 
 /// One pairing slot of a node: the node participates in the named pairing as

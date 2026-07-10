@@ -763,24 +763,12 @@ impl MessengerBackend for ZenohAdapter {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
-        // Wildcard subscribers (from_link_id: None) match every per-link_id
-        // publish a multi-link `emit` produces and must drop secondaries —
-        // see the topic-attachment block in `wire::zenoh_format`. Pinned
-        // subscribers ignore the attachment because their keyexpr already
-        // selects a single publish per emit.
-        //
-        // The exclusion bypass: when the consumer has registered a
-        // sibling-pinned set, peppylib filters by `link_id()` above the
-        // adapter (the primary may be excluded and the secondary may be
-        // the one to keep). Dropping secondaries here would silence the
-        // only acceptable publish in that case. The peppylib filter then
-        // dedupes alone — relying on "at most one bound link_id is not in
-        // the excluded set" — which holds because peppylib's
-        // `MessengerHandle::reserve_from_any_topic` rejects a second
-        // from_any subscription on the same `(name, tag)` at subscribe
-        // time, making it the runtime enforcer of the manifest validator's
-        // invariant.
-        let drop_secondary = recv.from_link_id.is_none() && !recv.defers_secondary_drop;
+        // Wildcard-link_id subscribers (from_link_id: None) match every
+        // per-link_id publish a multi-link `emit` produces and must drop
+        // secondaries — see the topic-attachment block in
+        // `wire::zenoh_format`. Pinned subscribers ignore the attachment
+        // because their keyexpr already selects a single publish per emit.
+        let drop_secondary = recv.from_link_id.is_none();
         self.subscribe_keyexpr(ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }

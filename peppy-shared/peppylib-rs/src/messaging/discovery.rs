@@ -7,9 +7,10 @@ use tokio::time::{Duration, Instant};
 
 /// Resolves a wildcard service or action target to a single concrete
 /// producer [`ProducerRef`] before the real request is dispatched. Only
-/// genuine wildcards (`from_any` slots not bound to exactly one producer)
-/// reach this path — pinned targets carry their full
-/// `(core_node, instance_id)` and never discover.
+/// genuine wildcards (core-node infra calls scoped wider than one
+/// producer) reach this path — pinned targets carry their full
+/// `(core_node, instance_id)` and never discover; generated dep-slot call
+/// sites always pin.
 ///
 /// Sends a probe (empty payload, `ServiceQueryKind::Probe` on the
 /// attachment) to `probe_sender`; the producer-side transport adapter

@@ -259,26 +259,26 @@ impl Processor {
     }
 
     /// Resolved [`crate::messaging::ConsumerFilter`] for the consumer
-    /// slot declared at `link_id`. The filter is computed once at
-    /// startup from the daemon-supplied `slot_bindings` plus the
-    /// manifest's `depends_on` (so the pinned-claims-from_any
-    /// precedence rule is applied a single time) and cached on the
-    /// processor for the lifetime of the node.
+    /// slot declared at `link_id`: the producers the daemon-supplied
+    /// `slot_bindings` bind to that slot, cached once at startup for the
+    /// lifetime of the node. A `link_id` with no binding entry resolves
+    /// to the silent filter — the slot receives nothing.
     ///
     /// Generated subscribe / poll / send_goal call sites splice
     /// `node_runner.processor().consumer_filter(<link_id>)` at the
     /// consumer-filter argument slot.
     pub fn consumer_filter(&self, link_id: &str) -> &crate::messaging::ConsumerFilter {
-        const ANY: crate::messaging::ConsumerFilter = crate::messaging::ConsumerFilter::Any;
-        self.consumer_filters.get(link_id).unwrap_or(&ANY)
+        static SILENT: crate::messaging::ConsumerFilter =
+            crate::messaging::ConsumerFilter::silent();
+        self.consumer_filters.get(link_id).unwrap_or(&SILENT)
     }
 
     /// Convenience for service / action call sites: returns the single
-    /// producer this slot pins (`ConsumerFilter::Pin`) as an owned
-    /// [`crate::messaging::ProducerRef`], or `None` for every other
-    /// variant. The owned form crosses the PyO3 boundary cleanly; native
-    /// Rust call sites can either use this or
-    /// [`Self::consumer_filter`]`.pinned_target()` (the latter borrows
+    /// producer bound to this slot as an owned
+    /// [`crate::messaging::ProducerRef`], or `None` when the slot is
+    /// bound to zero or several producers. The owned form crosses the
+    /// PyO3 boundary cleanly; native Rust call sites can either use this
+    /// or [`Self::consumer_filter`]`.pinned_target()` (the latter borrows
     /// from the cached filter).
     ///
     /// Deliberately renamed from the pre-`ProducerRef` `pinned_target_for`
@@ -343,31 +343,26 @@ fn build_pairing_slots(
 }
 
 /// Pre-resolve a [`ConsumerFilter`] for every `link_id` declared in
-/// the consumer manifest's `depends_on`. Called once during
+/// the consumer manifest's `depends_on`: the slot's bound producers from
+/// the daemon-supplied `slot_bindings`, or the silent filter when the
+/// daemon shipped no entry for it. Called once during
 /// [`Processor::new_daemon`] / [`Processor::new_standalone`] so the
 /// per-link_id accessor is a borrow into a stable cache.
 fn build_consumer_filters(
     runtime_config: &RuntimeConfig,
     node_config: &NodeConfig,
 ) -> BTreeMap<String, crate::messaging::ConsumerFilter> {
-    let depends_on = node_config.manifest.depends_on.as_ref();
     let mut out = BTreeMap::new();
-    if let Some(deps) = depends_on {
-        for dep in &deps.nodes {
-            let filter = crate::messaging::resolve_consumer_filter(
-                dep.link_id.as_str(),
-                &runtime_config.node_instance.slot_bindings,
-                depends_on,
+    if let Some(deps) = node_config.manifest.depends_on.as_ref() {
+        let slot_bindings = &runtime_config.node_instance.slot_bindings;
+        let node_links = deps.nodes.iter().map(|dep| &dep.link_id);
+        let interface_links = deps.interfaces.iter().map(|dep| &dep.link_id);
+        for link_id in node_links.chain(interface_links) {
+            let producers = slot_bindings.get(link_id).cloned().unwrap_or_default();
+            out.insert(
+                link_id.clone(),
+                crate::messaging::ConsumerFilter::new(producers),
             );
-            out.insert(dep.link_id.clone(), filter);
-        }
-        for dep in &deps.interfaces {
-            let filter = crate::messaging::resolve_consumer_filter(
-                dep.link_id.as_str(),
-                &runtime_config.node_instance.slot_bindings,
-                depends_on,
-            );
-            out.insert(dep.link_id.clone(), filter);
         }
     }
     out

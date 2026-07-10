@@ -13,17 +13,12 @@ pub(crate) async fn subscribe_core_topic(
 ) -> crate::error::Result<crate::messaging::Subscription> {
     let processor = node_runner.processor();
     let core_node = processor.bound_core_node();
-    crate::messaging::TopicMessenger::subscribe(
+    crate::messaging::TopicMessenger::subscribe_target_scoped(
         node_runner.messenger(),
         core_node,
         processor.bound_instance_id(),
-        Some(crate::messaging::SenderTarget::node(
-            core_node,
-            core_node_api::names::CORE_NODE_TAG,
-        )?),
-        false,
+        crate::messaging::SenderTarget::node(core_node, core_node_api::names::CORE_NODE_TAG)?,
         topic,
-        &crate::messaging::ConsumerFilter::Any,
         config::node::QoSProfile::SensorData,
     )
     .await

@@ -22,7 +22,7 @@ NODE_TAG = "v1"
 def test_producer_ref_is_structured_and_hashable():
     """`ProducerRef` exposes named fields and works as a dict key.
 
-    A `from_any` consumer keys per-producer state on the returned identity, so
+    A multi-producer slot keys per-producer state on the returned identity, so
     the type must be hashable and compare by value (mirrors the Rust
     `HashMap<ProducerRef, _>` idiom).
     """
@@ -59,14 +59,14 @@ async def test_messenger_communication():
         receiver_handle = await MessengerHandle.from_host_port(router.host, router.port)
         sender_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
-        # Subscribe to the topic first
+        # Subscribe to the topic first, bound to the publishing producer.
         subscription = await TopicMessenger.subscribe(
             receiver_handle,
             core_node,
             instance_id,
             SenderTarget.node(node_name, NODE_TAG),
             topic_name,
-            None,  # Accept messages from any producer (discover-then-pin)
+            [ProducerRef(core_node, instance_id)],
             qos,
         )
 

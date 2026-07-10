@@ -194,10 +194,9 @@ impl MessengerBackend for MockAdapter {
         // Mirrors the Zenoh adapter: wildcard-link_id subscribers drop the
         // secondary publishes a multi-link `emit` produces; pinned
         // subscribers don't, since their keyexpr already selects a single
-        // publish per emit. The sibling-exclusion path bypasses the
-        // secondary drop and defers to peppylib's `link_id()` filter; see
-        // the matching comment in [`super::zenoh::ZenohAdapter::subscribe_topic`].
-        let drop_secondary = recv.from_link_id.is_none() && !recv.defers_secondary_drop;
+        // publish per emit. See the matching comment in
+        // [`super::zenoh::ZenohAdapter::subscribe_topic`].
+        let drop_secondary = recv.from_link_id.is_none();
         self.subscribe_keyexpr(&ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }
@@ -894,9 +893,8 @@ mod tests {
         // Direct exercise of the mock's queryable plumbing: a producer declares
         // a queryable on a concrete keyexpr; a `get` selector with a Zenoh
         // wildcard at one slot must still match and deliver the query, and the
-        // responder must be able to push a reply that the caller observes.
-        // This is the in-process counterpart to the `from_any` regression
-        // test in peppylib — without going through a real zenohd.
+        // responder must be able to push a reply that the caller observes —
+        // without going through a real zenohd.
         use crate::wire::{
             SenderTarget, ServiceKind, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
             ServiceWireSender,

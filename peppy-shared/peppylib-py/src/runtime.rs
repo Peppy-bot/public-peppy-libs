@@ -897,15 +897,12 @@ impl PyNodeRunner {
         self.inner.processor().node_tag()
     }
 
-    /// The [`ProducerRef`](peppylib::messaging::ProducerRef) pinned for
-    /// `link_id`, when the consumer's slot resolves to a single producer
-    /// ([`peppylib::messaging::ConsumerFilter::Pin`]); `None` for every
-    /// other variant (multi-pin, wildcard-with-excludes, pure wildcard).
-    /// Python codegen splices this at consumed subscribe / poll /
-    /// send_goal call sites as the single `target` / `from_producer`
-    /// argument; pinned slots therefore address their producer directly
-    /// and skip discovery, while multi-bound and unbound `from_any` slots
-    /// resolve to `None` and fall back to wildcard discovery. The same
+    /// The [`ProducerRef`](peppylib::messaging::ProducerRef) bound to
+    /// `link_id`, when the slot is bound to exactly one producer; `None`
+    /// when it is bound to zero or several. Python codegen splices this at
+    /// consumed poll / send_goal call sites as the single `target`
+    /// argument (after raising when it is `None` — service and action
+    /// slots must be bound to exactly one producer). The same
     /// `ProducerRef` type is what consumed-topic callbacks return, so a
     /// received identity can be passed straight back here.
     ///
@@ -917,6 +914,21 @@ impl PyNodeRunner {
             .processor()
             .pinned_producer_for(link_id)
             .map(PyProducerRef::from)
+    }
+
+    /// Every producer bound to the consumer slot at `link_id`, in binding
+    /// order; empty when the slot is unbound (the subscription then stays
+    /// silent). Python codegen splices this at consumed subscribe call
+    /// sites as the `from_producers` argument.
+    fn bound_producers_for(&self, link_id: &str) -> Vec<PyProducerRef> {
+        self.inner
+            .processor()
+            .consumer_filter(link_id)
+            .producers()
+            .iter()
+            .cloned()
+            .map(PyProducerRef::from)
+            .collect()
     }
 
     /// Handle onto the pairing slot declared at `link_id` in

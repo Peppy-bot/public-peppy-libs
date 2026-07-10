@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use config::runtime::{PairingSlotBinding, SlotBinding};
+use config::runtime::{PairingSlotBinding, ProducerRef};
 use serde::{Deserialize, Serialize};
 
 /// Per-instance lifecycle state. Wire representation is the lowercase variant
@@ -146,15 +146,15 @@ pub struct SerializedInstance {
     /// field is not read as spuriously unhealthy.
     #[serde(default = "default_instance_healthy")]
     pub healthy: bool,
-    /// Validator-resolved per-slot bindings for this instance, keyed by the
-    /// consumer manifest's `depends_on` link id. Mirrors
-    /// [`config::runtime::NodeInstanceConfig::slot_bindings`] and the
-    /// `TrackedNodeInstance` this is produced from. Empty for instances whose
-    /// manifest declares no `depends_on` slots. Defaulted on decode so
-    /// `graph_json` payloads from producers that predate this field still
-    /// parse.
+    /// Validator-resolved producers bound to each of this instance's
+    /// `depends_on` slots, keyed by the consumer manifest's link id.
+    /// Mirrors [`config::runtime::NodeInstanceConfig::slot_bindings`] and
+    /// the `TrackedNodeInstance` this is produced from. Empty for
+    /// instances whose manifest declares no `depends_on` slots. Defaulted
+    /// on decode so `graph_json` payloads from producers that predate this
+    /// field still parse.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub slot_bindings: BTreeMap<String, SlotBinding>,
+    pub slot_bindings: BTreeMap<String, Vec<ProducerRef>>,
     /// Live pairing-slot state for every `depends_on.pairings` entry, keyed
     /// by the slot's link_id. Overlaid by the daemon from the manifest plus
     /// its pairing registry when serializing the graph — this is the
@@ -451,22 +451,14 @@ mod tests {
 
     #[test]
     fn slot_bindings_round_trip_through_json() {
-        use config::runtime::ProducerRef;
         let mut bindings = BTreeMap::new();
-        bindings.insert(
-            "arm".to_string(),
-            SlotBinding::Pinned {
-                producer: ProducerRef::new("core_a", "arm-1"),
-            },
-        );
+        bindings.insert("arm".to_string(), vec![ProducerRef::new("core_a", "arm-1")]);
         bindings.insert(
             "sensors".to_string(),
-            SlotBinding::FromAnyBound {
-                producers: vec![
-                    ProducerRef::new("core_a", "cam-1"),
-                    ProducerRef::new("core_a", "cam-2"),
-                ],
-            },
+            vec![
+                ProducerRef::new("core_a", "cam-1"),
+                ProducerRef::new("core_a", "cam-2"),
+            ],
         );
         let instance = SerializedInstance {
             instance_id: "i1".to_string(),

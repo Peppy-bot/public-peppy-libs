@@ -161,7 +161,7 @@ pub(crate) const NODE_DISCRIMINATOR: &str = "node";
 
 /// Wire discriminator placed before the name/tag pair on senders whose target
 /// is a pairing (a `depends_on.pairings` slot). Distinct from `interface` so
-/// pairing traffic can never match a `from_any` interface subscription.
+/// pairing traffic can never match an interface subscription.
 pub(crate) const PAIRING_DISCRIMINATOR: &str = "pairing";
 
 /// Hyphen-to-underscore normalization applied at construction time to any tag
@@ -454,16 +454,12 @@ impl TopicWireSender {
 /// Subscriber-side addressing for a topic. `from_core_node` / `from_instance_id` /
 /// `from_target` identify the publisher whose messages we want to receive;
 /// `None` means "any" (translated to the transport's single-chunk wildcard).
+/// A consumer slot bound to a single producer pins both `from_core_node` and
+/// `from_instance_id`; a slot bound to several producers subscribes with both
+/// slots wildcarded and peppylib's `Subscription` wrapper filters incoming
+/// messages against the bound producer set above the adapter.
 /// `from_link_id` follows the same rule: `Some` pins to a producer's specific
-/// link_id, `None` matches any (used for `from_any: true` consumers).
-///
-/// `defers_secondary_drop` tells the adapter that peppylib's `Subscription`
-/// wrapper applies its own per-link_id filter above the adapter, so the
-/// adapter must stop dropping the secondary publishes of a multi-link
-/// `emit` (which is its default behavior for wildcard subscribers). Set by
-/// peppylib whenever the consumer has registered sibling-pinned link_ids
-/// for this `(name, tag)`; the actual filter values live on
-/// [`crate::Subscription`].
+/// link_id (pairing subscriptions), `None` matches any.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopicWireReceiver {
     pub(crate) as_core_node: Segment,
@@ -473,7 +469,6 @@ pub struct TopicWireReceiver {
     pub(crate) from_target: Option<SenderTarget>,
     pub(crate) from_link_id: Option<Segment>,
     pub(crate) to_topic: Segment,
-    pub(crate) defers_secondary_drop: bool,
 }
 
 impl TopicWireReceiver {
@@ -495,17 +490,7 @@ impl TopicWireReceiver {
             from_target,
             from_link_id: from_link_id.map(Segment::try_link_id).transpose()?,
             to_topic: Segment::try_from(to_topic)?,
-            defers_secondary_drop: false,
         })
-    }
-
-    /// Tells the adapter to skip its built-in secondary-publish drop because
-    /// peppylib will apply a sibling-pinned link_id filter above it. Set to
-    /// `true` only when the consumer's manifest registers sibling-pinned
-    /// link_ids for this `(name, tag)`.
-    pub fn with_defers_secondary_drop(mut self, defers: bool) -> Self {
-        self.defers_secondary_drop = defers;
-        self
     }
 }
 
@@ -576,8 +561,9 @@ impl ServiceWireSender {
 
 /// Server-side addressing for a service. Producers always advertise their
 /// queryables under the reserved default `_` segment at the link_id wire
-/// slot; inbound queries carry either `*` (from `from_any` consumers) or
-/// `_`, and the dispatch filter at the adapter accepts both.
+/// slot; inbound queries carry `*` (callers always wildcard the link_id
+/// slot) or the `_` literal, and the dispatch filter at the adapter
+/// accepts both.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceWireReceiver {
     pub(crate) bound_core_node: Segment,

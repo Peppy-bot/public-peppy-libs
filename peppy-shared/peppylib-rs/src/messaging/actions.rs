@@ -668,11 +668,13 @@ impl ActionMessenger {
     /// in [`Self::expose`].
     ///
     /// `target` is the producer's full `(core_node, instance_id)` wire
-    /// address. `Some(target)` — a pinned slot, or a `from_any` slot bound
-    /// to exactly one producer — addresses that producer directly: **no
-    /// discovery probe is issued and no discovery timeout applies**; the
-    /// goal request has the caller's whole `goal_timeout` to itself.
-    /// `None` is a genuine wildcard (`from_any`): a discover-then-pin
+    /// address. `Some(target)` — a dep slot bound to exactly one
+    /// producer, or an infra caller that already knows the full address —
+    /// addresses that producer directly: **no discovery probe is issued
+    /// and no discovery timeout applies**; the goal request has the
+    /// caller's whole `goal_timeout` to itself.
+    /// `None` is a genuine wildcard (core-node infra goals only;
+    /// generated dep-slot call sites always pin): a discover-then-pin
     /// sequence probes the goal sub-service to identify a single
     /// responding producer, then delivers the real goal pinned to it. The
     /// probe is answered by the transport adapter before the user handler

@@ -134,29 +134,8 @@ impl ProducerRef {
     }
 }
 
-/// Resolved per-slot binding for one of this consumer instance's declared
-/// `depends_on` entries. The validator translates a launcher / CLI `(KEY,
-/// VALUE)` binding map into this slot-keyed view — stamping each producer
-/// with the launching daemon's `core_node` — before serializing into
-/// `NodeInstanceConfig`, so the spawned node does no re-resolution work
-/// and always holds wire-complete producer addresses.
-///
-/// `Pinned` corresponds to a `depends_on` entry with `from_any: false`;
-/// it must be bound (the validator rejects pinned-unbound). `FromAnyBound`
-/// is a `from_any: true` slot for which the user supplied one or more
-/// bindings via free-form keys. `FromAnyUnbound` is a `from_any: true`
-/// slot the user left bindless — the wildcard fallback for producers no
-/// sibling slot has claimed.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SlotBinding {
-    Pinned { producer: ProducerRef },
-    FromAnyBound { producers: Vec<ProducerRef> },
-    FromAnyUnbound,
-}
-
 /// State of one pairing slot (a `depends_on.pairings` entry) of a node
-/// instance. Deliberately NOT a [`SlotBinding`] variant: slot bindings feed
+/// instance. Deliberately NOT part of `slot_bindings`: slot bindings feed
 /// the immutable consumer-filter cache, while a pairing slot is live-mutable
 /// over the node's lifetime (the daemon delivers pins via the `peer_update`
 /// service). In boot configs every declared slot is `Unpaired` — all pairs,
@@ -181,15 +160,19 @@ pub struct NodeInstanceConfig {
     pub arguments: BTreeMap<String, AnyType>,
     #[serde(default)]
     pub framework: ResolvedFramework,
-    /// Pre-resolved per-slot bindings for every `link_id` declared in the
-    /// consumer manifest's `depends_on`. Built by the validator from the
-    /// launcher / CLI raw binding map plus the manifest depends_on (which
-    /// distinguishes pinned vs `from_any` slots). Empty when the manifest
-    /// has no `depends_on` entries. Read by the generated subscribe /
-    /// poll / send_goal call sites via
-    /// [`crate::runtime::ConsumerFilter`].
+    /// Pre-resolved producers for every `link_id` declared in the consumer
+    /// manifest's `depends_on.{nodes,interfaces}`. Built by the validator
+    /// from the launcher / CLI binding map — each target stamped with the
+    /// launching daemon's `core_node` — so the spawned node does no
+    /// re-resolution work and always holds wire-complete producer
+    /// addresses. A slot maps to the producers explicitly bound to it, in
+    /// binding order and duplicate-free; a slot bound to no producer maps
+    /// to an empty list and stays silent (there is no wildcard fallback).
+    /// Empty when the manifest has no `depends_on` entries. Read by the
+    /// generated subscribe / poll / send_goal call sites via the runtime's
+    /// per-slot consumer filters.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub slot_bindings: BTreeMap<String, SlotBinding>,
+    pub slot_bindings: BTreeMap<String, Vec<ProducerRef>>,
     /// Boot-time state of every pairing slot declared in
     /// `depends_on.pairings`, keyed by slot link_id. Always maps each
     /// declared slot to [`PairingSlotBinding::Unpaired`] — pairs requested
@@ -675,83 +658,71 @@ mod tests {
         assert!(parsed.node_instance.arguments.is_empty());
     }
 
-    /// Pin the wire contract of `SlotBinding`: it is internally tagged on
-    /// `kind` with snake_case variants and field names, and every producer
-    /// reference is the full `(core_node, instance_id)` pair. A rename or
-    /// tag change here is a `graph_json` / launch-config wire break, so
-    /// assert the exact JSON shape and that each variant round-trips back
-    /// to itself.
+    /// Pin the wire contract of `slot_bindings`: each slot maps its
+    /// `link_id` to a plain array of full `(core_node, instance_id)`
+    /// producer pairs, an unbound slot to an empty array. A shape change
+    /// here is a `graph_json` / launch-config wire break, so assert the
+    /// exact JSON and that it round-trips.
     #[test]
-    fn slot_binding_serde_contract() {
+    fn slot_bindings_serde_contract() {
         use serde_json::json;
 
-        let cases = [
+        let bindings: BTreeMap<String, Vec<ProducerRef>> = [
+            ("main".to_string(), vec![ProducerRef::new("core_a", "p1")]),
             (
-                SlotBinding::Pinned {
-                    producer: ProducerRef::new("core_a", "p1"),
-                },
-                json!({
-                    "kind": "pinned",
-                    "producer": { "core_node": "core_a", "instance_id": "p1" }
-                }),
+                "extra_cam".to_string(),
+                vec![
+                    ProducerRef::new("core_a", "p3"),
+                    ProducerRef::new("core_a", "p4"),
+                ],
             ),
-            (
-                SlotBinding::FromAnyBound {
-                    producers: vec![
-                        ProducerRef::new("core_a", "p3"),
-                        ProducerRef::new("core_a", "p4"),
-                    ],
-                },
-                json!({
-                    "kind": "from_any_bound",
-                    "producers": [
-                        { "core_node": "core_a", "instance_id": "p3" },
-                        { "core_node": "core_a", "instance_id": "p4" }
-                    ]
-                }),
-            ),
-            (
-                SlotBinding::FromAnyUnbound,
-                json!({ "kind": "from_any_unbound" }),
-            ),
-        ];
-        for (value, expected) in cases {
-            let encoded = serde_json::to_value(&value).expect("serialize SlotBinding");
-            assert_eq!(encoded, expected, "SlotBinding JSON shape changed");
-            let decoded: SlotBinding =
-                serde_json::from_value(expected).expect("deserialize SlotBinding");
-            assert_eq!(decoded, value, "SlotBinding did not round-trip");
-        }
+            ("spare".to_string(), Vec::new()),
+        ]
+        .into_iter()
+        .collect();
+
+        let expected = json!({
+            "extra_cam": [
+                { "core_node": "core_a", "instance_id": "p3" },
+                { "core_node": "core_a", "instance_id": "p4" }
+            ],
+            "main": [
+                { "core_node": "core_a", "instance_id": "p1" }
+            ],
+            "spare": []
+        });
+
+        let encoded = serde_json::to_value(&bindings).expect("serialize slot_bindings");
+        assert_eq!(encoded, expected, "slot_bindings JSON shape changed");
+        let decoded: BTreeMap<String, Vec<ProducerRef>> =
+            serde_json::from_value(expected).expect("deserialize slot_bindings");
+        assert_eq!(decoded, bindings, "slot_bindings did not round-trip");
     }
 
-    /// Half-addresses must be unrepresentable at the parse boundary: the
-    /// pre-`ProducerRef` serialized shapes (instance_id-only) and a
-    /// `producer` object missing `core_node` are hard parse errors, not
-    /// defaulted values. No compatibility shims.
+    /// Half-addresses and the retired `kind`-tagged `SlotBinding` shapes
+    /// must be hard parse errors, not defaulted values. No compatibility
+    /// shims.
     #[test]
-    fn slot_binding_rejects_half_address_payloads() {
+    fn slot_bindings_reject_half_address_and_legacy_payloads() {
         use serde_json::json;
 
         let rejected = [
-            // Old pinned shape: instance_id without a core_node.
-            json!({ "kind": "pinned", "producer_instance_id": "p1" }),
-            // Old from_any_bound shape.
-            json!({ "kind": "from_any_bound", "producer_instance_ids": ["p3", "p4"] }),
-            // New field name but half an address.
-            json!({ "kind": "pinned", "producer": { "instance_id": "p1" } }),
-            json!({ "kind": "pinned", "producer": { "core_node": "core_a" } }),
+            // Retired kind-tagged shapes (pre-removal `SlotBinding`).
+            json!({ "kind": "pinned", "producer": { "core_node": "core_a", "instance_id": "p1" } }),
+            json!({ "kind": "from_any_bound", "producers": [] }),
+            json!({ "kind": "from_any_unbound" }),
+            // Half an address inside the array.
+            json!([{ "instance_id": "p1" }]),
+            json!([{ "core_node": "core_a" }]),
             // Unknown extra field on the pair.
-            json!({
-                "kind": "pinned",
-                "producer": { "core_node": "core_a", "instance_id": "p1", "extra": 1 }
-            }),
+            json!([{ "core_node": "core_a", "instance_id": "p1", "extra": 1 }]),
         ];
         for payload in rejected {
-            let result: std::result::Result<SlotBinding, _> =
+            let result: std::result::Result<Vec<ProducerRef>, _> =
                 serde_json::from_value(payload.clone());
             assert!(
                 result.is_err(),
-                "half-address payload must fail to parse, but parsed: {payload}"
+                "payload must fail to parse as a slot's producers, but parsed: {payload}"
             );
         }
     }

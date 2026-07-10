@@ -15,7 +15,7 @@ use crate::error::{MissingInterface, ParsingError};
 use crate::node::{InterfaceKind, Interfaces, Manifest, NodeConfig};
 
 /// Minimal `(name, tag)` view of a single `depends_on.nodes` entry,
-/// stripped of the link_id / from_any noise that callers don't need
+/// stripped of the link_id noise that callers don't need
 /// once dependency resolution has already happened. Used by
 /// [`collect_dependency_specs`] so callers can walk the dep set without
 /// re-deriving it from the manifest.
