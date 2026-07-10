@@ -232,9 +232,17 @@ pub enum Error {
     #[error(
         "another from_any topic subscription for `{name}` (tag `{tag}`) is \
          already active on this messenger; at most one from_any subscription \
-         per (name, tag) is allowed (the sibling-exclusion dedupe depends on it)"
+         per (name, tag) is allowed (the manifest's ConflictingFromAny rule \
+         guarantees this at config time — this is the runtime guard)"
     )]
     DuplicateFromAnyConsumer { name: String, tag: String },
+
+    #[error(
+        "`{name}` targets an unbound from_any consumer slot: no producers \
+         are bound, so the call cannot be delivered (bind the slot in the \
+         launcher or via --bind to enable it)"
+    )]
+    UnboundConsumerSlot { name: String },
 }
 
 struct InstanceSuffix<'a>(Option<&'a str>);

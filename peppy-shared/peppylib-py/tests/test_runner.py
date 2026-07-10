@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from peppylib import (
+    ConsumerFilter,
     MessengerHandle,
     ProducerRef,
     QoSProfile,
@@ -74,7 +75,7 @@ async def _wait_for_service(
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
-        ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+        ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID)),
         runner_thread,
         error_queue,
         timeout_secs,
@@ -160,7 +161,7 @@ async def test_daemon_runner_succeed(monkeypatch):
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 NODE_HEALTH_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+                ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID)),
                 b"health",
                 2.0,)
             assert health_response is not None
@@ -172,7 +173,7 @@ async def test_daemon_runner_succeed(monkeypatch):
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+                ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID)),
                 b"shutdown",
                 2.0,)
             # Wait for runner to exit
@@ -570,7 +571,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 NODE_READY_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+                ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID)),
                 b"ready",
                 2.0,)
             assert ready_response.payload == b"ready"
@@ -591,7 +592,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 NODE_HEALTH_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),)
+                ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID)),)
             assert not health_reachable, (
                 "Health service should not be reachable while setup is blocked"
             )
@@ -604,7 +605,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                     SHUTDOWN_SENDER_INSTANCE_ID,
                     SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                     NODE_HEALTH_SERVICE,
-                    ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+                    ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID)),
                     b"health",
                     0.2,)
 
@@ -626,7 +627,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 NODE_HEALTH_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+                ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID)),
                 b"health",
                 2.0,)
             assert health_response is not None
@@ -638,7 +639,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+                ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID)),
                 b"shutdown",
                 2.0,)
             # Wait for runner to exit
@@ -720,7 +721,7 @@ async def test_daemon_cancellation_token_cancelled_on_shutdown(monkeypatch):
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+                ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID)),
                 b"shutdown",
                 2.0,)
 
@@ -809,7 +810,7 @@ async def test_daemon_shutdown_during_setup_exits_after_setup_completes(monkeypa
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+                ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID)),
                 b"shutdown",
                 2.0,)
 
@@ -910,7 +911,7 @@ async def test_daemon_shutdown_interrupts_blocked_async_setup(monkeypatch):
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+                ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID)),
                 b"shutdown",
                 2.0,
             )
@@ -1422,7 +1423,7 @@ async def test_daemon_shutdown_hooks_run_lifo_with_messaging(monkeypatch):
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+                ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID)),
                 b"shutdown",
                 2.0,
             )
@@ -1533,7 +1534,7 @@ async def test_async_node_shuts_down_promptly_not_at_grace_boundary(monkeypatch)
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 SenderTarget.node(TEST_NODE_NAME, TEST_NODE_TAG),
                 SHUTDOWN_SERVICE,
-                ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID),
+                ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE, TEST_INSTANCE_ID)),
                 b"shutdown",
                 2.0,
             )

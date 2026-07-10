@@ -260,9 +260,8 @@ impl Processor {
 
     /// Resolved [`crate::messaging::ConsumerFilter`] for the consumer
     /// slot declared at `link_id`. The filter is computed once at
-    /// startup from the daemon-supplied `slot_bindings` plus the
-    /// manifest's `depends_on` (so the pinned-claims-from_any
-    /// precedence rule is applied a single time) and cached on the
+    /// startup from the daemon-supplied `slot_bindings` (a pure per-slot
+    /// map — sibling slots never influence each other) and cached on the
     /// processor for the lifetime of the node.
     ///
     /// Generated subscribe / poll / send_goal call sites splice
@@ -350,24 +349,19 @@ fn build_consumer_filters(
     runtime_config: &RuntimeConfig,
     node_config: &NodeConfig,
 ) -> BTreeMap<String, crate::messaging::ConsumerFilter> {
-    let depends_on = node_config.manifest.depends_on.as_ref();
     let mut out = BTreeMap::new();
-    if let Some(deps) = depends_on {
-        for dep in &deps.nodes {
+    if let Some(deps) = node_config.manifest.depends_on.as_ref() {
+        for dep in deps
+            .nodes
+            .iter()
+            .map(|dep| &dep.link_id)
+            .chain(deps.interfaces.iter().map(|dep| &dep.link_id))
+        {
             let filter = crate::messaging::resolve_consumer_filter(
-                dep.link_id.as_str(),
+                dep.as_str(),
                 &runtime_config.node_instance.slot_bindings,
-                depends_on,
             );
-            out.insert(dep.link_id.clone(), filter);
-        }
-        for dep in &deps.interfaces {
-            let filter = crate::messaging::resolve_consumer_filter(
-                dep.link_id.as_str(),
-                &runtime_config.node_instance.slot_bindings,
-                depends_on,
-            );
-            out.insert(dep.link_id.clone(), filter);
+            out.insert(dep.clone(), filter);
         }
     }
     out

@@ -1,6 +1,6 @@
 use peppylib::messaging::{
-    InterfaceIdentifier, NodeIdentifier, PairingIdentifier, ProducerRef, SenderTarget,
-    SenderTargetError,
+    ConsumerFilter, InterfaceIdentifier, NodeIdentifier, PairingIdentifier, ProducerRef,
+    SenderTarget, SenderTargetError,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -171,6 +171,113 @@ impl PyProducerRef {
 
 impl From<ProducerRef> for PyProducerRef {
     fn from(inner: ProducerRef) -> Self {
+        Self { inner }
+    }
+}
+
+/// Python wrapper for the per-slot
+/// [`ConsumerFilter`](peppylib::messaging::ConsumerFilter): which
+/// producers a consumer slot receives from / calls into. Opaque by
+/// design — generated code obtains it from
+/// `NodeRunner.consumer_filter(link_id)` (the daemon-resolved binding for
+/// that slot) and passes it straight to topic `subscribe`, service
+/// `poll` / `is_reachable`, and action `send_goal` / `is_reachable`. The
+/// only constructor exposed here is the [`any()`](Self::any) wildcard,
+/// for standalone fixtures and tests.
+#[pyclass(name = "ConsumerFilter", frozen, from_py_object)]
+#[derive(Clone)]
+pub struct PyConsumerFilter {
+    pub(crate) inner: ConsumerFilter,
+}
+
+#[pymethods]
+impl PyConsumerFilter {
+    /// Pure-wildcard filter: matches any producer, exactly like a slot
+    /// with no daemon-resolved binding (standalone mode). Fixture / test
+    /// default — daemon-launched nodes always read the real filter via
+    /// `NodeRunner.consumer_filter(link_id)`.
+    #[staticmethod]
+    fn any() -> Self {
+        Self {
+            inner: ConsumerFilter::Any,
+        }
+    }
+
+    /// Pin a single producer by its full `(core_node, instance_id)`
+    /// identity — e.g. to pass a `ProducerRef` received alongside a
+    /// consumed message straight back into a call site. Daemon-resolved
+    /// pinned slots arrive in this shape via `consumer_filter(link_id)`.
+    #[staticmethod]
+    fn pin(producer: PyProducerRef) -> Self {
+        Self {
+            inner: ConsumerFilter::Pin(producer.into_inner()),
+        }
+    }
+
+    /// Restrict to an explicit producer set: receive from / discover
+    /// among all of them and only them. Mirrors a bound multi-producer
+    /// `from_any` slot.
+    #[staticmethod]
+    fn only_from(producers: Vec<PyProducerRef>) -> Self {
+        Self {
+            inner: ConsumerFilter::OnlyFrom(
+                producers
+                    .into_iter()
+                    .map(PyProducerRef::into_inner)
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The deliberately-unbound shape: no subscription, calls fail before
+    /// any wire work. Mirrors an unbound `from_any` slot.
+    #[staticmethod]
+    fn silent() -> Self {
+        Self {
+            inner: ConsumerFilter::Silent,
+        }
+    }
+
+    /// Every producer this slot is explicitly bound to (empty for silent
+    /// and wildcard filters). Mirrors the Rust `bound_producers()`; lets
+    /// node code enumerate the bound set to key per-producer state.
+    #[getter]
+    fn bound_producers(&self) -> Vec<PyProducerRef> {
+        self.inner
+            .bound_producers()
+            .iter()
+            .cloned()
+            .map(PyProducerRef::from)
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.inner {
+            ConsumerFilter::Pin(producer) => format!(
+                "ConsumerFilter.pin(({:?}, {:?}))",
+                producer.core_node, producer.instance_id
+            ),
+            ConsumerFilter::OnlyFrom(producers) => {
+                let refs: Vec<String> = producers
+                    .iter()
+                    .map(|p| format!("({:?}, {:?})", p.core_node, p.instance_id))
+                    .collect();
+                format!("ConsumerFilter.only_from([{}])", refs.join(", "))
+            }
+            ConsumerFilter::Silent => "ConsumerFilter.silent()".to_string(),
+            ConsumerFilter::Any => "ConsumerFilter.any()".to_string(),
+        }
+    }
+}
+
+impl PyConsumerFilter {
+    pub(crate) fn into_inner(self) -> ConsumerFilter {
+        self.inner
+    }
+}
+
+impl From<ConsumerFilter> for PyConsumerFilter {
+    fn from(inner: ConsumerFilter) -> Self {
         Self { inner }
     }
 }

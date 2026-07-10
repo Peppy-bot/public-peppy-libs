@@ -1,4 +1,4 @@
-use crate::messaging::{PyMessengerHandle, PyProducerRef};
+use crate::messaging::{PyConsumerFilter, PyMessengerHandle};
 use peppylib::runtime::CancellationToken;
 use peppylib::runtime::{NodeBuilder, NodeRunner, Processor, StandaloneConfig};
 use pyo3::exceptions::PyRuntimeError;
@@ -897,26 +897,21 @@ impl PyNodeRunner {
         self.inner.processor().node_tag()
     }
 
-    /// The [`ProducerRef`](peppylib::messaging::ProducerRef) pinned for
-    /// `link_id`, when the consumer's slot resolves to a single producer
-    /// ([`peppylib::messaging::ConsumerFilter::Pin`]); `None` for every
-    /// other variant (multi-pin, wildcard-with-excludes, pure wildcard).
-    /// Python codegen splices this at consumed subscribe / poll /
-    /// send_goal call sites as the single `target` / `from_producer`
-    /// argument; pinned slots therefore address their producer directly
-    /// and skip discovery, while multi-bound and unbound `from_any` slots
-    /// resolve to `None` and fall back to wildcard discovery. The same
-    /// `ProducerRef` type is what consumed-topic callbacks return, so a
-    /// received identity can be passed straight back here.
+    /// The daemon-resolved
+    /// [`ConsumerFilter`](peppylib::messaging::ConsumerFilter) for the
+    /// consumer slot declared at `link_id`: which producers the slot
+    /// receives from / calls into (pinned, multi-pinned, silent, or the
+    /// standalone wildcard). Python codegen splices this at consumed
+    /// subscribe / poll / send_goal call sites as the `filter` argument —
+    /// the messaging layer derives the wire shape from it, so node code
+    /// never re-resolves bindings.
     ///
-    /// Renamed from the pre-`ProducerRef` `pinned_target_for` (which
-    /// returned the instance_id alone) so stale generated Python fails
-    /// loudly with `AttributeError` instead of silently half-addressing.
-    fn pinned_producer_for(&self, link_id: &str) -> Option<PyProducerRef> {
-        self.inner
-            .processor()
-            .pinned_producer_for(link_id)
-            .map(PyProducerRef::from)
+    /// Replaces `pinned_producer_for`, which is deliberately deleted (not
+    /// deprecated) so stale generated Python fails loudly with
+    /// `AttributeError` instead of silently keeping the old
+    /// wildcard-discovery behavior.
+    fn consumer_filter(&self, link_id: &str) -> PyConsumerFilter {
+        PyConsumerFilter::from(self.inner.processor().consumer_filter(link_id).clone())
     }
 
     /// Handle onto the pairing slot declared at `link_id` in

@@ -1,8 +1,11 @@
-use super::discovery::discover_producer;
+use super::discovery::{
+    discover_producer, discover_producer_among, probe_any_reachable, probe_fastest_round_trip,
+};
 use super::generate_short_id;
 use super::topics::Subscription;
 use super::{
-    DISCOVERY_TIMEOUT, MessengerHandle, ServiceEndpoint, ServiceResponder, TopicPublisher,
+    DISCOVERY_TIMEOUT, MessengerHandle, ServiceEndpoint, ServiceResponder, ServiceTarget,
+    TopicPublisher,
 };
 use crate::error::{Error, Result};
 use crate::messaging::ProducerRef;
@@ -579,6 +582,61 @@ pub struct ActionCreation {
     pub liveliness_token: ActionLivelinessToken,
 }
 
+/// The single goal-service probe sender for a `Producer` / `Any` /
+/// `CoreNode` scope: actions are built on the goal/cancel/result services,
+/// and discovery / reachability probes always target the goal sub-service.
+/// `OneOf` / `Unbound` never reach here (they fan out via
+/// [`goal_probe_senders`] or fail before any wire work).
+fn goal_probe_sender(
+    target: ServiceTarget<'_>,
+    bound_core_node: &str,
+    as_instance_id: &str,
+    to_target: SenderTarget,
+    to_action_name: &str,
+) -> Result<pmi::ServiceWireSender> {
+    let pinned = match target {
+        ServiceTarget::Producer(producer) => Some(producer),
+        _ => None,
+    };
+    let sender = ActionWireSender::new(
+        bound_core_node,
+        as_instance_id,
+        pinned,
+        to_target,
+        to_action_name,
+    )?
+    .goal_service();
+    match target {
+        ServiceTarget::CoreNode(core_node) => Ok(sender.scoped_to_core_node(core_node)?),
+        _ => Ok(sender),
+    }
+}
+
+/// One fully-pinned goal-service probe sender per producer in `producers`
+/// — the probe set for [`ServiceTarget::OneOf`]'s restricted discovery.
+fn goal_probe_senders(
+    producers: &[ProducerRef],
+    bound_core_node: &str,
+    as_instance_id: &str,
+    to_target: &SenderTarget,
+    to_action_name: &str,
+) -> Result<Vec<pmi::ServiceWireSender>> {
+    producers
+        .iter()
+        .map(|producer| {
+            ActionWireSender::new(
+                bound_core_node,
+                as_instance_id,
+                Some(producer),
+                to_target.clone(),
+                to_action_name,
+            )
+            .map(|sender| sender.goal_service())
+            .map_err(Error::from)
+        })
+        .collect()
+}
+
 impl ActionMessenger {
     /// Expose an action server. The producer declares its queryables under
     /// the reserved default `_` link_id segment; consumers pin a specific
@@ -597,24 +655,43 @@ impl ActionMessenger {
         messenger.expose_action(&recv).await
     }
 
-    /// Probe an action service (`target`: `Some` = a full
-    /// `(core_node, instance_id)` pin, `None` = any matching producer).
+    /// Probe an action service within the [`ServiceTarget`] scope (a full
+    /// producer pin, a bound producer set, one core node, or any matching
+    /// producer). [`ServiceTarget::Unbound`] reports `false` without
+    /// probing; [`ServiceTarget::OneOf`] races one pinned probe per bound
+    /// producer and reports `true` as soon as any answers.
     pub async fn is_reachable(
         messenger: &MessengerHandle,
         bound_core_node: &str,
         as_instance_id: &str,
         to_target: SenderTarget,
         to_action_name: &str,
-        target: Option<&ProducerRef>,
+        target: ServiceTarget<'_>,
     ) -> Result<bool> {
-        let sender = ActionWireSender::new(
-            bound_core_node,
-            as_instance_id,
-            target,
-            to_target,
-            to_action_name,
-        )?;
-        super::discovery::probe_reachable(messenger, &sender.goal_service()).await
+        match target {
+            ServiceTarget::Unbound => Ok(false),
+            ServiceTarget::OneOf([]) => Ok(false),
+            ServiceTarget::OneOf(producers) => {
+                let senders = goal_probe_senders(
+                    producers,
+                    bound_core_node,
+                    as_instance_id,
+                    &to_target,
+                    to_action_name,
+                )?;
+                probe_any_reachable(messenger, &senders).await
+            }
+            ServiceTarget::Any | ServiceTarget::CoreNode(_) | ServiceTarget::Producer(_) => {
+                let sender = goal_probe_sender(
+                    target,
+                    bound_core_node,
+                    as_instance_id,
+                    to_target,
+                    to_action_name,
+                )?;
+                super::discovery::probe_reachable(messenger, &sender).await
+            }
+        }
     }
 
     /// Measure the round-trip latency of a single `Probe`-kind query to an
@@ -638,26 +715,55 @@ impl ActionMessenger {
         as_instance_id: &str,
         to_target: SenderTarget,
         to_action_name: &str,
-        target: Option<&ProducerRef>,
+        target: ServiceTarget<'_>,
         response_timeout: Duration,
         request_size: usize,
         response_size: u32,
     ) -> Result<(Duration, usize)> {
-        let sender = ActionWireSender::new(
-            bound_core_node,
-            as_instance_id,
-            target,
-            to_target,
-            to_action_name,
-        )?;
-        super::discovery::probe_round_trip(
-            messenger,
-            &sender.goal_service(),
-            request_size,
-            response_size,
-            response_timeout,
-        )
-        .await
+        match target {
+            // An unbound slot cannot yield a latency sample — fail before
+            // any wire work.
+            ServiceTarget::Unbound => Err(Error::UnboundConsumerSlot {
+                name: to_action_name.to_string(),
+            }),
+            ServiceTarget::OneOf([]) => Err(Error::UnboundConsumerSlot {
+                name: to_action_name.to_string(),
+            }),
+            ServiceTarget::OneOf(producers) => {
+                let senders = goal_probe_senders(
+                    producers,
+                    bound_core_node,
+                    as_instance_id,
+                    &to_target,
+                    to_action_name,
+                )?;
+                probe_fastest_round_trip(
+                    messenger,
+                    &senders,
+                    request_size,
+                    response_size,
+                    response_timeout,
+                )
+                .await
+            }
+            ServiceTarget::Any | ServiceTarget::CoreNode(_) | ServiceTarget::Producer(_) => {
+                let sender = goal_probe_sender(
+                    target,
+                    bound_core_node,
+                    as_instance_id,
+                    to_target,
+                    to_action_name,
+                )?;
+                super::discovery::probe_round_trip(
+                    messenger,
+                    &sender,
+                    request_size,
+                    response_size,
+                    response_timeout,
+                )
+                .await
+            }
+        }
     }
 
     /// Send a goal to an action server. Generates a fresh `goal_id`,
@@ -667,19 +773,25 @@ impl ActionMessenger {
     /// `to_target` must match the [`SenderTarget`] the action server used
     /// in [`Self::expose`].
     ///
-    /// `target` is the producer's full `(core_node, instance_id)` wire
-    /// address. `Some(target)` — a pinned slot, or a `from_any` slot bound
-    /// to exactly one producer — addresses that producer directly: **no
-    /// discovery probe is issued and no discovery timeout applies**; the
-    /// goal request has the caller's whole `goal_timeout` to itself.
-    /// `None` is a genuine wildcard (`from_any`): a discover-then-pin
-    /// sequence probes the goal sub-service to identify a single
-    /// responding producer, then delivers the real goal pinned to it. The
-    /// probe is answered by the transport adapter before the user handler
-    /// runs, so non-winning producers never execute the goal handler.
-    /// Without that, every matching producer would run the handler
-    /// concurrently; for actions with side effects (motor commands, file
-    /// writes) that is a real-world safety hazard.
+    /// `target` scopes which producer runs the goal.
+    /// [`ServiceTarget::Producer`] — a pinned slot, or a `from_any` slot
+    /// bound to exactly one producer — addresses that producer directly:
+    /// **no discovery probe is issued and no discovery timeout applies**;
+    /// the goal request has the caller's whole `goal_timeout` to itself.
+    /// [`ServiceTarget::OneOf`] — a `from_any` slot bound to two or more
+    /// producers — runs restricted discovery: one pinned probe per bound
+    /// producer, first success wins, and the goal runs on the winner only.
+    /// The goal can never leave the bound set.
+    /// [`ServiceTarget::Unbound`] fails with
+    /// [`Error::UnboundConsumerSlot`] before any wire work.
+    /// [`ServiceTarget::Any`] is a genuine wildcard (standalone mode): a
+    /// discover-then-pin sequence probes the goal sub-service to identify
+    /// a single responding producer, then delivers the real goal pinned to
+    /// it. The probe is answered by the transport adapter before the user
+    /// handler runs, so non-winning producers never execute the goal
+    /// handler. Without that, every matching producer would run the
+    /// handler concurrently; for actions with side effects (motor
+    /// commands, file writes) that is a real-world safety hazard.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
@@ -687,7 +799,7 @@ impl ActionMessenger {
         as_instance_id: &str,
         to_target: SenderTarget,
         to_action_name: &str,
-        target: Option<&ProducerRef>,
+        target: ServiceTarget<'_>,
         user_payload: Payload,
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
@@ -698,25 +810,52 @@ impl ActionMessenger {
         // Discover a single producer only when the caller did not pin one.
         // The probe is answered by the transport adapter without invoking
         // the goal handler; only the discovered producer receives the real
-        // goal request.
+        // goal request. Discovery is capped at DISCOVERY_TIMEOUT or the
+        // caller's goal budget, whichever is shorter: a tight
+        // `goal_timeout` still fails fast against unreachable producers,
+        // while a generous one lets peer-mode gossip discovery settle (see
+        // `discover_producer`).
         let started_at = Instant::now();
+        let discovery_timeout = goal_timeout.min(DISCOVERY_TIMEOUT);
         let resolved: ProducerRef = match target {
-            Some(producer) => producer.clone(),
-            None => {
-                let probe_sender = ActionWireSender::new(
+            ServiceTarget::Unbound => {
+                return Err(Error::UnboundConsumerSlot {
+                    name: to_action_name.to_string(),
+                });
+            }
+            // Defensive: the filter layer never produces an empty bound
+            // set (it resolves to Silent → Unbound instead).
+            ServiceTarget::OneOf([]) => {
+                return Err(Error::UnboundConsumerSlot {
+                    name: to_action_name.to_string(),
+                });
+            }
+            ServiceTarget::Producer(producer) => producer.clone(),
+            ServiceTarget::OneOf(producers) => {
+                let probe_senders = goal_probe_senders(
+                    producers,
                     as_core_node,
                     as_instance_id,
-                    None,
+                    &to_target,
+                    to_action_name,
+                )?;
+                discover_producer_among(
+                    messenger,
+                    &probe_senders,
+                    discovery_timeout,
+                    to_action_name,
+                )
+                .await?
+            }
+            ServiceTarget::Any | ServiceTarget::CoreNode(_) => {
+                let probe_sender = goal_probe_sender(
+                    target,
+                    as_core_node,
+                    as_instance_id,
                     to_target.clone(),
                     to_action_name,
                 )?;
-                // Cap discovery at DISCOVERY_TIMEOUT or the caller's goal budget,
-                // whichever is shorter: a tight `goal_timeout` still fails fast
-                // against unreachable producers, while a generous one lets
-                // peer-mode gossip discovery settle (see `discover_producer`).
-                let discovery_timeout = goal_timeout.min(DISCOVERY_TIMEOUT);
-                discover_producer(messenger, &probe_sender.goal_service(), discovery_timeout)
-                    .await?
+                discover_producer(messenger, &probe_sender, discovery_timeout).await?
             }
         };
 

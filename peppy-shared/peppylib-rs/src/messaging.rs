@@ -89,14 +89,14 @@ pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// settle instead of failing the moment it runs ahead of it.
 pub(crate) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Key in [`MessengerHandle::active_from_any_topics`]. Two from_any topic
-/// subscriptions conflict only when they would observe the same producer
-/// publishes — i.e. they share the producer-side wire pin (the full
-/// `(core_node, instance_id)` pair, or `None` for a wildcard) and
-/// `(producer_name, producer_tag)`. Two subscriptions on the same
-/// `(name, tag)` but pinned to different producers target disjoint
-/// producers, do not share dedupe scope, and must be allowed to coexist.
-type ActiveFromAnyKey = (Option<filter::ProducerRef>, String, String);
+/// Key in [`MessengerHandle::active_from_any_topics`]: the
+/// `(producer_name, producer_tag)` of the from_any slot. The manifest's
+/// `ConflictingFromAny` rule allows at most one from_any `depends_on`
+/// entry per `(name, tag)`, so one reservation per pair is exactly the
+/// config-time contract — the key needs no producer component. Every
+/// from_any subscribe reserves it, whether the slot resolved to a bound
+/// set, a collapsed single pin, or silence.
+type ActiveFromAnyKey = (String, String);
 
 #[derive(Clone)]
 pub struct MessengerHandle {
@@ -322,24 +322,21 @@ impl MessengerHandle {
         }
     }
 
-    /// Reserve a `(from_producer, producer_name, producer_tag)` slot in
-    /// the active from_any topic set. Returns a guard that releases the
-    /// slot on drop, or [`Error::DuplicateFromAnyConsumer`] if a from_any
-    /// topic subscription matching the same producer-side pin is already
-    /// live on this messenger. The pin is part of the key because two
-    /// from_any subs scoped to different producers do not share dedupe
-    /// scope and must coexist; the failure mode the guard prevents is two
-    /// from_any subs observing the *same* producer's emits, which is
-    /// exactly when their `(name, tag)` exclusion sets and
-    /// primary/secondary filtering need to give one (and only one)
-    /// delivery per emit.
+    /// Reserve the `(producer_name, producer_tag)` slot in the active
+    /// from_any topic set. Returns a guard that releases the slot on
+    /// drop, or [`Error::DuplicateFromAnyConsumer`] if a from_any topic
+    /// subscription for the same `(name, tag)` is already live on this
+    /// messenger. The manifest's `ConflictingFromAny` rule promises at
+    /// most one from_any slot per `(name, tag)` at config time; this is
+    /// the runtime guard against bypasses via direct messenger calls —
+    /// taken once per from_any subscribe regardless of how the slot
+    /// resolved (bound set, collapsed single pin, or silent).
     pub(crate) fn reserve_from_any_topic(
         &self,
-        from_producer: Option<&filter::ProducerRef>,
         name: &str,
         tag: &str,
     ) -> Result<FromAnyTopicGuard> {
-        let key: ActiveFromAnyKey = (from_producer.cloned(), name.to_string(), tag.to_string());
+        let key: ActiveFromAnyKey = (name.to_string(), tag.to_string());
         let mut guard = self
             .active_from_any_topics
             .lock()

@@ -135,18 +135,23 @@ impl ProducerRef {
 }
 
 /// Resolved per-slot binding for one of this consumer instance's declared
-/// `depends_on` entries. The validator translates a launcher / CLI `(KEY,
-/// VALUE)` binding map into this slot-keyed view — stamping each producer
-/// with the launching daemon's `core_node` — before serializing into
-/// `NodeInstanceConfig`, so the spawned node does no re-resolution work
-/// and always holds wire-complete producer addresses.
+/// `depends_on` entries. The validator translates the launcher / CLI
+/// binding map — keyed by the slot's `link_id`, valued with one instance
+/// id or an array of instance ids — into this slot-keyed view, stamping
+/// each producer with the launching daemon's `core_node` before
+/// serializing into `NodeInstanceConfig`, so the spawned node does no
+/// re-resolution work and always holds wire-complete producer addresses.
 ///
 /// `Pinned` corresponds to a `depends_on` entry with `from_any: false`;
-/// it must be bound (the validator rejects pinned-unbound). `FromAnyBound`
-/// is a `from_any: true` slot for which the user supplied one or more
-/// bindings via free-form keys. `FromAnyUnbound` is a `from_any: true`
-/// slot the user left bindless — the wildcard fallback for producers no
-/// sibling slot has claimed.
+/// it must be bound to exactly one producer (the validator rejects
+/// pinned-unbound and pinned-multi). `FromAnyBound` is a `from_any: true`
+/// slot explicitly bound to one or more producers; `producers` is
+/// non-empty by construction (an empty binding materializes as
+/// `FromAnyUnbound`) and the node subscribes to all of them and only
+/// them, producer-pinned on the wire. `FromAnyUnbound` is a
+/// `from_any: true` slot deliberately left unbound — a valid, **silent**
+/// slot: the node creates no subscription for it and service / action
+/// calls on it fail before any wire work. There is no wildcard fallback.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SlotBinding {
@@ -182,12 +187,13 @@ pub struct NodeInstanceConfig {
     #[serde(default)]
     pub framework: ResolvedFramework,
     /// Pre-resolved per-slot bindings for every `link_id` declared in the
-    /// consumer manifest's `depends_on`. Built by the validator from the
-    /// launcher / CLI raw binding map plus the manifest depends_on (which
-    /// distinguishes pinned vs `from_any` slots). Empty when the manifest
+    /// consumer manifest's `depends_on` — the validator materializes an
+    /// entry for **every** declared slot (pinned or `from_any`, bound or
+    /// not), so a missing entry means "no daemon resolved bindings"
+    /// (standalone mode), never "unbound". Built from the launcher / CLI
+    /// binding map, which is keyed by link_id. Empty when the manifest
     /// has no `depends_on` entries. Read by the generated subscribe /
-    /// poll / send_goal call sites via
-    /// [`crate::runtime::ConsumerFilter`].
+    /// poll / send_goal call sites via peppylib's `ConsumerFilter`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: BTreeMap<String, SlotBinding>,
     /// Boot-time state of every pairing slot declared in

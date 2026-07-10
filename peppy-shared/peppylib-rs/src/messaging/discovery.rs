@@ -5,11 +5,12 @@ use crate::types::Payload;
 use pmi::{ServiceQueryKind, ServiceWireSender};
 use tokio::time::{Duration, Instant};
 
-/// Resolves a wildcard service or action target to a single concrete
+/// Resolves a service or action probe selector to a single concrete
 /// producer [`ProducerRef`] before the real request is dispatched. Only
-/// genuine wildcards (`from_any` slots not bound to exactly one producer)
-/// reach this path — pinned targets carry their full
-/// `(core_node, instance_id)` and never discover.
+/// non-pinned call scopes reach this path — a fully pinned target carries
+/// its `(core_node, instance_id)` and never discovers. The selector is
+/// either a genuine wildcard (`ServiceTarget::Any` / `CoreNode`) or one of
+/// [`discover_producer_among`]'s per-producer pinned probes.
 ///
 /// Sends a probe (empty payload, `ServiceQueryKind::Probe` on the
 /// attachment) to `probe_sender`; the producer-side transport adapter
@@ -50,6 +51,111 @@ pub(super) async fn discover_producer(
         response.core_node(),
         response.instance_id(),
     ))
+}
+
+/// Restricted discovery for a `from_any` slot bound to two or more
+/// producers ([`ServiceTarget::OneOf`](super::ServiceTarget::OneOf)): one
+/// fully-pinned probe per bound producer, raced with `select_ok` — the
+/// first producer to answer wins the pin and the real call is delivered
+/// pinned to it. Because every probe is pinned, a producer outside the
+/// bound set can never win, no matter what else conforms on the wire.
+///
+/// All probes failing means no bound producer answered within
+/// `discovery_timeout` → [`Error::ServiceUnreachable`] (no instance_id:
+/// there is no single producer to blame).
+pub(super) async fn discover_producer_among(
+    messenger: &MessengerHandle,
+    probe_senders: &[ServiceWireSender],
+    discovery_timeout: Duration,
+    service_name: &str,
+) -> Result<ProducerRef> {
+    debug_assert!(
+        !probe_senders.is_empty(),
+        "discover_producer_among requires at least one bound producer"
+    );
+    let probes: Vec<_> = probe_senders
+        .iter()
+        .map(|sender| Box::pin(discover_producer(messenger, sender, discovery_timeout)))
+        .collect();
+    if probes.is_empty() {
+        return Err(Error::ServiceUnreachable {
+            instance_id: None,
+            service_name: service_name.to_string(),
+        });
+    }
+    match futures::future::select_ok(probes).await {
+        // Losers' in-flight probes are dropped here; late replies fall on
+        // the floor exactly like wildcard discovery's non-winning replies.
+        Ok((producer, _losers)) => Ok(producer),
+        Err(_) => Err(Error::ServiceUnreachable {
+            instance_id: None,
+            service_name: service_name.to_string(),
+        }),
+    }
+}
+
+/// [`probe_reachable`] over a bound producer set: race one pinned probe
+/// per producer and report `true` as soon as any answers. `false` only
+/// when every bound producer is unreachable; a hard (non-reachability)
+/// error surfaces only if no producer answered `true`.
+pub(super) async fn probe_any_reachable(
+    messenger: &MessengerHandle,
+    senders: &[ServiceWireSender],
+) -> Result<bool> {
+    let mut probes: Vec<_> = senders
+        .iter()
+        .map(|sender| Box::pin(probe_reachable(messenger, sender)))
+        .collect();
+    let mut first_error = None;
+    while !probes.is_empty() {
+        let (result, _index, rest) = futures::future::select_all(probes).await;
+        match result {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            Err(err) => {
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+        }
+        probes = rest;
+    }
+    match first_error {
+        Some(err) => Err(err),
+        None => Ok(false),
+    }
+}
+
+/// [`probe_round_trip`] over a bound producer set: race one pinned sized
+/// probe per producer and return the first successful sample — the
+/// round-trip of whichever bound producer answers first, i.e. the one
+/// restricted discovery would pin. If every probe fails, the last error
+/// propagates (there is no usable latency sample).
+pub(super) async fn probe_fastest_round_trip(
+    messenger: &MessengerHandle,
+    senders: &[ServiceWireSender],
+    request_size: usize,
+    response_size: u32,
+    response_timeout: Duration,
+) -> Result<(Duration, usize)> {
+    debug_assert!(
+        !senders.is_empty(),
+        "probe_fastest_round_trip requires at least one bound producer"
+    );
+    let probes: Vec<_> = senders
+        .iter()
+        .map(|sender| {
+            Box::pin(probe_round_trip(
+                messenger,
+                sender,
+                request_size,
+                response_size,
+                response_timeout,
+            ))
+        })
+        .collect();
+    let (sample, _losers) = futures::future::select_ok(probes).await?;
+    Ok(sample)
 }
 
 /// Probe `sender` once and classify reachability. The probe is auto-answered by

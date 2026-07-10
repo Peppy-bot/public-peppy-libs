@@ -4,59 +4,72 @@ use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
-/// In-process acceptance / rejection filter applied by
-/// [`Subscription::on_next_message`] above the wire layer. Synthesized
-/// from a [`ConsumerFilter`] whose variant cannot be expressed as a
-/// single wire-side producer pin. Sets hold full
-/// `(core_node, instance_id)` pairs — instance_id alone is not a producer
-/// identity on the wire, and comparing only half of it would let a
-/// same-instance_id producer on another core_node leak through.
-#[derive(Debug)]
-enum AcceptanceFilter {
-    /// Accept only messages whose source `(core_node, instance_id)` is in
-    /// the set. Built from [`ConsumerFilter::OnlyFrom`] with more than one
-    /// producer (single-producer collapses to a wire pin).
-    Allow(HashSet<ProducerRef>),
-    /// Drop messages whose source `(core_node, instance_id)` is in the
-    /// set. Built from [`ConsumerFilter::AnyExcept`] with a non-empty set.
-    Deny(HashSet<ProducerRef>),
-}
-
-impl AcceptanceFilter {
-    fn accepts(&self, core_node: &str, instance_id: &str) -> bool {
-        // Allocation-free pair lookup would need a borrowed key type;
-        // filters are smallish and topic rates moderate, so a stack
-        // ProducerRef per message is acceptable. Revisit if profiling
-        // disagrees.
-        let source = ProducerRef::new(core_node, instance_id);
-        match self {
-            AcceptanceFilter::Allow(set) => set.contains(&source),
-            AcceptanceFilter::Deny(set) => !set.contains(&source),
-        }
-    }
-}
-
+/// Caller-side handle for one consumer slot's topic stream. Depending on
+/// the slot's [`ConsumerFilter`] this merges over zero, one, or N
+/// underlying wire subscriptions:
+///
+/// - Pin / Any: a single wire subscription (producer-pinned or wildcard).
+/// - OnlyFrom: one **producer-pinned** wire subscription per bound
+///   producer — the merge delivers from all N and only N; nothing else
+///   traverses the wire. Per-producer FIFO order is preserved (each inner
+///   is its own channel); arrival order *across* producers is arbitrary,
+///   with a rotating sweep so a chatty producer cannot starve siblings.
+/// - Silent (unbound from_any slot): **no wire subscription at all**.
+///   [`Self::on_next_message`] pends forever — it never returns `None`,
+///   because node receive loops treat a closed stream as shutdown, and an
+///   unbound slot is a valid steady state, not a teardown.
+///
+/// `None` from [`Self::on_next_message`] means every inner wire channel
+/// disconnected — i.e. real teardown.
 pub struct Subscription {
-    inner: pmi::Subscription,
+    /// The merged wire subscriptions. Disconnected inners are pruned as
+    /// they are observed; empty (for a non-silent subscription) means
+    /// torn down.
+    inners: Vec<pmi::Subscription>,
+    /// Deliberately-silent slot: constructed with no wire subscriptions,
+    /// pends forever instead of reporting a closed stream.
+    silent: bool,
+    /// Fair-merge cursor: each sweep starts after the inner that yielded
+    /// the previous message.
+    cursor: usize,
     /// Live for the subscription's full lifetime when this is a from_any
     /// topic sub; releases the messenger's per-`(name, tag)` reservation
     /// on drop. `None` for pinned subs and target-less subscriptions.
     _from_any_guard: Option<FromAnyTopicGuard>,
-    /// In-process filter applied to incoming messages before they
-    /// surface to user code. `None` when the wire-layer pin already
-    /// captures the consumer's filter (Pin / Any cases).
-    accept_filter: Option<AcceptanceFilter>,
 }
 
 impl Subscription {
     pub(crate) fn new(inner: pmi::Subscription) -> Self {
         Self {
-            inner,
+            inners: vec![inner],
+            silent: false,
+            cursor: 0,
             _from_any_guard: None,
-            accept_filter: None,
+        }
+    }
+
+    /// Merge over one producer-pinned wire subscription per bound
+    /// producer ([`ConsumerFilter::OnlyFrom`]).
+    pub(crate) fn multi(inners: Vec<pmi::Subscription>) -> Self {
+        Self {
+            inners,
+            silent: false,
+            cursor: 0,
+            _from_any_guard: None,
+        }
+    }
+
+    /// A deliberately-silent subscription for an unbound from_any slot:
+    /// no wire work was done and none will be; `on_next_message` pends
+    /// forever and `try_on_next_message` reports `Empty`.
+    pub(crate) fn silent() -> Self {
+        Self {
+            inners: Vec::new(),
+            silent: true,
+            cursor: 0,
+            _from_any_guard: None,
         }
     }
 
@@ -65,21 +78,63 @@ impl Subscription {
         self
     }
 
-    fn with_accept_filter(mut self, filter: AcceptanceFilter) -> Self {
-        self.accept_filter = Some(filter);
-        self
-    }
-
+    /// Next message from any of the merged wire subscriptions, or `None`
+    /// once every one of them has disconnected (teardown).
+    ///
+    /// A silent subscription pends forever instead of returning `None`:
+    /// node receive loops treat a closed stream as shutdown, and an
+    /// unbound slot must idle, not stop the node.
     pub async fn on_next_message(&mut self) -> Option<Message> {
+        if self.silent {
+            return std::future::pending().await;
+        }
         loop {
-            let raw = self.inner.rx.recv_async().await.ok()?;
-            let msg = Message::from(raw);
-            if self
-                .accept_filter
-                .as_ref()
-                .is_none_or(|f| f.accepts(msg.core_node(), msg.instance_id()))
-            {
-                return Some(msg);
+            if self.inners.is_empty() {
+                return None;
+            }
+            // Ready sweep first: serve already-buffered messages in
+            // rotation so one producer's backlog cannot starve the rest.
+            let count = self.inners.len();
+            for offset in 0..count {
+                let index = (self.cursor + offset) % count;
+                match self.inners[index].rx.try_recv() {
+                    Ok(raw) => {
+                        self.cursor = index + 1;
+                        return Some(Message::from(raw));
+                    }
+                    // Disconnections surface through the blocking merge
+                    // below (recv_async fails immediately on a closed
+                    // channel), which also prunes the inner.
+                    Err(flume::TryRecvError::Empty | flume::TryRecvError::Disconnected) => {}
+                }
+            }
+            // Nothing buffered: await the first arrival on any inner.
+            // flume's recv_async is cancel-safe, so dropping the losing
+            // futures (and this whole call, e.g. under `select!`) loses no
+            // messages.
+            let (result, index) = {
+                let recvs: Vec<_> = self
+                    .inners
+                    .iter()
+                    .map(|inner| Box::pin(inner.rx.recv_async()))
+                    .collect();
+                let (result, index, losers) = futures::future::select_all(recvs).await;
+                // The losing futures borrow `self.inners`; end those
+                // borrows before the disconnect arm mutates it.
+                drop(losers);
+                (result, index)
+            };
+            match result {
+                Ok(raw) => {
+                    self.cursor = index + 1;
+                    return Some(Message::from(raw));
+                }
+                Err(_) => {
+                    // This producer's channel closed; keep serving the
+                    // rest. `None` only when all of them are gone.
+                    self.inners.remove(index);
+                    self.cursor = 0;
+                }
             }
         }
     }
@@ -87,21 +142,32 @@ impl Subscription {
     pub(crate) fn try_on_next_message(
         &mut self,
     ) -> std::result::Result<Message, crate::types::TryRecvError> {
-        loop {
-            match self.inner.rx.try_recv() {
+        if self.silent {
+            // An unbound slot never has a message, and must not report
+            // `Disconnected` — that reads as teardown to the callers.
+            return Err(crate::types::TryRecvError::Empty);
+        }
+        if self.inners.is_empty() {
+            return Err(crate::types::TryRecvError::Disconnected);
+        }
+        let count = self.inners.len();
+        let mut disconnected = 0;
+        for offset in 0..count {
+            let index = (self.cursor + offset) % count;
+            match self.inners[index].rx.try_recv() {
                 Ok(raw) => {
-                    let msg = Message::from(raw);
-                    if self
-                        .accept_filter
-                        .as_ref()
-                        .is_none_or(|f| f.accepts(msg.core_node(), msg.instance_id()))
-                    {
-                        return Ok(msg);
-                    }
-                    // Filtered out — loop for the next message.
+                    self.cursor = index + 1;
+                    return Ok(Message::from(raw));
                 }
-                Err(err) => return Err(crate::types::TryRecvError::from(err)),
+                Err(flume::TryRecvError::Empty) => {}
+                Err(flume::TryRecvError::Disconnected) => disconnected += 1,
             }
+        }
+        if disconnected == count {
+            self.inners.clear();
+            Err(crate::types::TryRecvError::Disconnected)
+        } else {
+            Err(crate::types::TryRecvError::Empty)
         }
     }
 }
@@ -113,11 +179,23 @@ impl TopicMessenger {
     /// `Some(SenderTarget)` filters on the publisher's identity; `None`
     /// wildcards the target segment (any node or interface emits a match).
     /// `is_from_any` marks this subscription as a `from_any: true` slot,
-    /// gating the messenger's per-`(name, tag)` reservation. The
-    /// [`ConsumerFilter`] selects whether the wire pins a producer's full
-    /// `(core_node, instance_id)` or wildcards plus an in-process pair
-    /// filter; see the enum's variants. There is no separate core_node
-    /// parameter — producer identity always travels as the whole pair.
+    /// gating the messenger's per-`(name, tag)` reservation (taken for
+    /// every from_any subscribe — bound, collapsed-to-pin, or silent).
+    ///
+    /// The [`ConsumerFilter`] decides the wire shape:
+    /// - `Pin` — one wire subscription pinning the producer's full
+    ///   `(core_node, instance_id)`.
+    /// - `OnlyFrom` — one producer-pinned wire subscription **per** bound
+    ///   producer; no wildcard subscriber exists, so nothing outside the
+    ///   bound set traverses the wire.
+    /// - `Silent` — **no wire work at all**: the returned subscription
+    ///   pends forever (an unbound slot idles; it is not torn down).
+    /// - `Any` — one wildcard subscription (standalone mode / fixtures).
+    ///
+    /// All shapes keep the wire's producer-side link_id segment (seg-8)
+    /// wildcarded — pinning is by producer identity, not by the
+    /// producer's emit slot. There is no separate core_node parameter —
+    /// producer identity always travels as the whole pair.
     #[allow(clippy::too_many_arguments)]
     pub async fn subscribe(
         messenger: &MessengerHandle,
@@ -129,53 +207,68 @@ impl TopicMessenger {
         filter: &ConsumerFilter,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        // Translate the ConsumerFilter into the wire-side producer pin
-        // (both keyexpr slots) plus an optional in-process pair filter.
-        let (wire_from_producer, accept_filter): (Option<&ProducerRef>, _) = match filter {
-            ConsumerFilter::Pin(producer) => (Some(producer), None),
-            ConsumerFilter::OnlyFrom(producers) if producers.len() == 1 => {
-                (Some(&producers[0]), None)
-            }
-            ConsumerFilter::OnlyFrom(producers) => (
-                None,
-                Some(AcceptanceFilter::Allow(producers.iter().cloned().collect())),
-            ),
-            ConsumerFilter::AnyExcept(producers) if producers.is_empty() => (None, None),
-            ConsumerFilter::AnyExcept(producers) => (
-                None,
-                Some(AcceptanceFilter::Deny(producers.iter().cloned().collect())),
-            ),
-            ConsumerFilter::Any => (None, None),
-        };
-
         // Reserve the from_any `(name, tag)` slot before any wire work.
         // The manifest validator enforces "at most one from_any topic
         // sub per (name, tag) per messenger" at config time; this is
-        // the runtime guard at the wire's trust boundary.
+        // the runtime guard at the wire's trust boundary. Silent slots
+        // take the guard under the same condition so a sibling live
+        // subscribe on the same (name, tag) still errors, while
+        // target-less fixtures stay unguarded.
         let from_any_guard = match (&from_target, is_from_any) {
-            (Some(target), true) => Some(messenger.reserve_from_any_topic(
-                wire_from_producer,
-                target.name(),
-                target.tag(),
-            )?),
+            (Some(target), true) => {
+                Some(messenger.reserve_from_any_topic(target.name(), target.tag())?)
+            }
             _ => None,
         };
-        let recv = TopicWireReceiver::new(
-            as_core_node,
-            as_instance_id,
-            wire_from_producer.map(|p| p.core_node.as_str()),
-            wire_from_producer.map(|p| p.instance_id.as_str()),
-            from_target,
-            None,
-            to_topic,
-        )?;
-        let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
-        let mut subscription = Subscription::new(subscription);
+
+        // One pinned receiver per producer the wire should admit; `None`
+        // pins nothing (wildcard). The from_link_id slot (seg-8) stays
+        // `None` for every interface subscription.
+        let pinned_receiver = |producer: &ProducerRef| {
+            TopicWireReceiver::new(
+                as_core_node,
+                as_instance_id,
+                Some(producer.core_node.as_str()),
+                Some(producer.instance_id.as_str()),
+                from_target.clone(),
+                None,
+                to_topic,
+            )
+        };
+
+        let mut subscription = match filter {
+            ConsumerFilter::Pin(producer) => {
+                let recv = pinned_receiver(producer)?;
+                Subscription::new(messenger.subscribe_to_topic(&recv, qos).await?)
+            }
+            // Defensive: the filter layer never produces an empty bound
+            // set (it resolves to Silent instead) — treat one as silent
+            // rather than as an already-closed stream.
+            ConsumerFilter::OnlyFrom(producers) if producers.is_empty() => Subscription::silent(),
+            ConsumerFilter::OnlyFrom(producers) => {
+                let mut inners = Vec::with_capacity(producers.len());
+                for producer in producers {
+                    let recv = pinned_receiver(producer)?;
+                    inners.push(messenger.subscribe_to_topic(&recv, qos.clone()).await?);
+                }
+                Subscription::multi(inners)
+            }
+            ConsumerFilter::Silent => Subscription::silent(),
+            ConsumerFilter::Any => {
+                let recv = TopicWireReceiver::new(
+                    as_core_node,
+                    as_instance_id,
+                    None,
+                    None,
+                    from_target.clone(),
+                    None,
+                    to_topic,
+                )?;
+                Subscription::new(messenger.subscribe_to_topic(&recv, qos).await?)
+            }
+        };
         if let Some(guard) = from_any_guard {
             subscription = subscription.with_from_any_guard(guard);
-        }
-        if let Some(filter) = accept_filter {
-            subscription = subscription.with_accept_filter(filter);
         }
         Ok(subscription)
     }

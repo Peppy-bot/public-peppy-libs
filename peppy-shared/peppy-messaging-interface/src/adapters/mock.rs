@@ -148,6 +148,21 @@ impl MockAdapter {
                 && entries.iter().any(|entry| !entry.tx.is_disconnected())
         })
     }
+
+    /// Test introspection: every declared keyexpr pattern with at least one
+    /// LIVE subscriber entry. Lets integration tests assert the *wire
+    /// shape* of a subscription set — e.g. a bound `from_any` slot declares
+    /// N producer-pinned patterns and no producer-wildcard pattern, a
+    /// silent slot declares nothing — rather than only its delivery
+    /// behavior (which a wildcard-plus-local-filter shape would fake).
+    pub fn subscribed_keyexprs(&self) -> Vec<String> {
+        let subscriptions = self.subscriptions.lock().unwrap();
+        subscriptions
+            .iter()
+            .filter(|(_, entries)| entries.iter().any(|entry| !entry.tx.is_disconnected()))
+            .map(|(declared, _)| declared.clone())
+            .collect()
+    }
 }
 
 impl MessengerBackend for MockAdapter {
@@ -191,13 +206,13 @@ impl MessengerBackend for MockAdapter {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
-        // Mirrors the Zenoh adapter: wildcard-link_id subscribers drop the
-        // secondary publishes a multi-link `emit` produces; pinned
-        // subscribers don't, since their keyexpr already selects a single
-        // publish per emit. The sibling-exclusion path bypasses the
-        // secondary drop and defers to peppylib's `link_id()` filter; see
-        // the matching comment in [`super::zenoh::ZenohAdapter::subscribe_topic`].
-        let drop_secondary = recv.from_link_id.is_none() && !recv.defers_secondary_drop;
+        // Mirrors the Zenoh adapter: subscribers with a wildcard link_id
+        // segment (every interface subscription) drop the secondary
+        // publishes a multi-link `emit` produces; link_id-pinned
+        // subscribers (pairing) don't, since their keyexpr already selects
+        // a single publish per emit. See the matching comment in
+        // [`super::zenoh::ZenohAdapter::subscribe_topic`].
+        let drop_secondary = recv.from_link_id.is_none();
         self.subscribe_keyexpr(&ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }

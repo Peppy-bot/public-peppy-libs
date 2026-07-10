@@ -11,6 +11,7 @@ import gc
 import pytest
 
 from peppylib import (
+    ConsumerFilter,
     ActionMessenger,
     ConcurrentAction,
     MessengerHandle,
@@ -74,7 +75,7 @@ async def test_action_messenger_communication():
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,
-            ProducerRef(CORE_NODE, INSTANCE_ID),
+            ConsumerFilter.pin(ProducerRef(CORE_NODE, INSTANCE_ID)),
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
             2.0,)
@@ -137,7 +138,7 @@ async def test_cancel_goal_concurrent_with_feedback():
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,
-            ProducerRef(CORE_NODE, INSTANCE_ID),
+            ConsumerFilter.pin(ProducerRef(CORE_NODE, INSTANCE_ID)),
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
             2.0,)
@@ -209,7 +210,7 @@ async def test_producer_gone_unblocks_feedback_and_yields_abandoned():
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,
-            ProducerRef(CORE_NODE, INSTANCE_ID),
+            ConsumerFilter.pin(ProducerRef(CORE_NODE, INSTANCE_ID)),
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
             2.0,)
@@ -263,7 +264,7 @@ async def test_send_goal_rejects_invalid_timeout():
                 INSTANCE_ID,
                 SenderTarget.node(NODE_NAME, NODE_TAG),
                 ACTION_NAME,
-                ProducerRef(CORE_NODE, INSTANCE_ID),
+                ConsumerFilter.pin(ProducerRef(CORE_NODE, INSTANCE_ID)),
                 GOAL_PAYLOAD,
                 QoSProfile.Reliable,
                 -1.0,)
@@ -307,7 +308,7 @@ async def test_send_goal_honors_target_pair():
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             ACTION_NAME,
-            ProducerRef(CORE_NODE, INSTANCE_ID),
+            ConsumerFilter.pin(ProducerRef(CORE_NODE, INSTANCE_ID)),
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
             2.0,)
@@ -324,7 +325,7 @@ async def test_send_goal_honors_target_pair():
                 INSTANCE_ID,
                 SenderTarget.node(NODE_NAME, NODE_TAG),
                 ACTION_NAME,
-                ProducerRef("wrong_core", INSTANCE_ID),
+                ConsumerFilter.pin(ProducerRef("wrong_core", INSTANCE_ID)),
                 GOAL_PAYLOAD,
                 QoSProfile.Reliable,
                 0.5,)
@@ -381,7 +382,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             INSTANCE_ID,
             SenderTarget.node(NODE_NAME, NODE_TAG),
             "move",
-            ProducerRef(CORE_NODE, INSTANCE_ID),
+            ConsumerFilter.pin(ProducerRef(CORE_NODE, INSTANCE_ID)),
             b"native_goal",
             QoSProfile.Reliable,
             2.0,
@@ -394,7 +395,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             INSTANCE_ID,
             SenderTarget.interface("arm", "v1"),
             "move",
-            ProducerRef(CORE_NODE, INSTANCE_ID),
+            ConsumerFilter.pin(ProducerRef(CORE_NODE, INSTANCE_ID)),
             b"iface_goal",
             QoSProfile.Reliable,
             2.0,
@@ -453,7 +454,7 @@ async def test_reject_then_accept_through_concurrent_action():
                 INSTANCE_ID,
                 SenderTarget.node(NODE_NAME, NODE_TAG),
                 ACTION_NAME,
-                ProducerRef(CORE_NODE, INSTANCE_ID),
+                ConsumerFilter.pin(ProducerRef(CORE_NODE, INSTANCE_ID)),
                 payload,
                 QoSProfile.Reliable,
                 2.0,

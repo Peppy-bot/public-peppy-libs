@@ -1,4 +1,4 @@
-use super::iface::{PyProducerRef, PySenderTarget};
+use super::iface::{PyConsumerFilter, PyProducerRef, PySenderTarget};
 use super::{PyMessengerHandle, future_into_py_unit, to_py_err};
 use crate::config::PyQoSProfile;
 use peppylib::messaging::{Subscription, TopicMessenger, TopicPublisher};
@@ -88,12 +88,14 @@ impl PyTopicMessenger {
     /// `SenderTarget.interface(name, tag)` to match the publisher's target,
     /// or `None` to match any publisher. `is_from_any` marks the slot as
     /// `from_any: true` (gates the messenger's per-`(name, tag)`
-    /// reservation). `from_producer` pins a single producer by its full
-    /// [`ProducerRef`](peppylib::messaging::ProducerRef) identity; `None`
-    /// wildcards. Generated code splices
-    /// `node_runner.pinned_producer_for(link_id)` here.
+    /// reservation). `filter` is the slot's
+    /// [`ConsumerFilter`](peppylib::messaging::ConsumerFilter) — generated
+    /// code splices `node_runner.consumer_filter(link_id)` here, so the
+    /// wire shape (pinned / multi-pinned / silent) follows the daemon's
+    /// binding resolution; `None` falls back to the pure wildcard
+    /// (standalone fixtures).
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_producer, qos, is_from_any=false))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, filter, qos, is_from_any=false))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
@@ -102,17 +104,15 @@ impl PyTopicMessenger {
         as_instance_id: String,
         from_target: Option<PySenderTarget>,
         to_topic: String,
-        from_producer: Option<PyProducerRef>,
+        filter: Option<PyConsumerFilter>,
         qos: PyQoSProfile,
         is_from_any: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let from_target = from_target.map(|t| t.into_inner());
         crate::py_future::future_into_py(py, async move {
-            let filter = match from_producer {
-                Some(producer) => peppylib::messaging::ConsumerFilter::Pin(producer.into_inner()),
-                None => peppylib::messaging::ConsumerFilter::Any,
-            };
+            let filter =
+                filter.map_or(peppylib::messaging::ConsumerFilter::Any, |f| f.into_inner());
             let subscription = TopicMessenger::subscribe(
                 &handle,
                 &as_core_node,

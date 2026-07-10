@@ -546,6 +546,14 @@ pub struct NodeDependency {
     pub tag: String,
     #[serde(deserialize_with = "deserialize_node_dependency_link_id")]
     pub link_id: String,
+    /// `false` (a *pinned* slot): the launcher must bind exactly one
+    /// producer instance, and launch fails without it. `true` (a
+    /// *from_any* slot): the launcher may bind zero, one, or several
+    /// producer instances under this slot's `link_id`; the node receives
+    /// from all bound producers and only them, and an unbound slot is
+    /// valid but **silent** (no subscription, no traffic). from_any slots
+    /// contribute no DAG edge; at most one from_any slot per
+    /// `(name, tag)` (see `ConflictingFromAny`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub from_any: bool,
 }
@@ -559,6 +567,9 @@ pub struct InterfaceDependency {
     pub link_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+    /// Same contract as [`NodeDependency::from_any`]: pinned slots bind
+    /// exactly one conforming producer; from_any slots bind an explicit
+    /// set (zero bindings = valid, silent slot — no wildcard fallback).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub from_any: bool,
 }

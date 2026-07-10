@@ -1,12 +1,12 @@
 use peppylib::ServiceMessenger;
-use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext, ServiceTarget};
+use peppylib::messaging::{ConsumerFilter, ServiceEndpoint, ServiceRequestContext};
 use peppylib::types::Payload;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::iface::{PyProducerRef, PySenderTarget};
+use super::iface::{PyConsumerFilter, PySenderTarget};
 use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
 
 /// Python wrapper for a service request received by a listener.
@@ -197,11 +197,13 @@ impl PyServiceMessenger {
         })
     }
 
-    /// Check whether a service producer is reachable. `target` is the
-    /// producer's full `(core_node, instance_id)` pair (`None` probes any
-    /// matching producer).
+    /// Check whether a service producer is reachable within the slot's
+    /// [`ConsumerFilter`](peppylib::messaging::ConsumerFilter) scope
+    /// (`None` probes any matching producer). A silent (unbound) filter
+    /// reports `False` without probing; a multi-bound one reports `True`
+    /// as soon as any bound producer answers.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, target=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, filter=None))]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -209,21 +211,19 @@ impl PyServiceMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_service_name: String,
-        target: Option<PyProducerRef>,
+        filter: Option<PyConsumerFilter>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         crate::py_future::future_into_py(py, async move {
-            let target = target.map(PyProducerRef::into_inner);
+            let filter = filter.map_or(ConsumerFilter::Any, PyConsumerFilter::into_inner);
             let reachable = ServiceMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 to_target,
                 &to_service_name,
-                target
-                    .as_ref()
-                    .map_or(ServiceTarget::Any, ServiceTarget::Producer),
+                filter.call_target(),
             )
             .await
             .map_err(to_py_err)?;
@@ -231,12 +231,15 @@ impl PyServiceMessenger {
         })
     }
 
-    /// Send a request to a service and wait for a response. `target` is the
-    /// producer's full `(core_node, instance_id)` pair — `Some` pins it (no
-    /// discovery), `None` is a genuine wildcard (discover-then-pin).
-    /// Generated code splices `node_runner.pinned_producer_for(link_id)`.
+    /// Send a request to a service and wait for a response. `filter` is
+    /// the slot's [`ConsumerFilter`](peppylib::messaging::ConsumerFilter)
+    /// — a pinned slot addresses its producer directly (no discovery), a
+    /// multi-bound slot discovers among its bound producers only, a
+    /// silent (unbound) slot raises before any wire work, and `None`
+    /// falls back to full wildcard discovery (standalone fixtures).
+    /// Generated code splices `node_runner.consumer_filter(link_id)`.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, target=None, request_payload=vec![], response_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, filter=None, request_payload=vec![], response_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn poll<'py>(
         py: Python<'py>,
@@ -245,7 +248,7 @@ impl PyServiceMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_service_name: String,
-        target: Option<PyProducerRef>,
+        filter: Option<PyConsumerFilter>,
         request_payload: Vec<u8>,
         response_timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -254,16 +257,14 @@ impl PyServiceMessenger {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         crate::py_future::future_into_py(py, async move {
-            let target = target.map(PyProducerRef::into_inner);
+            let filter = filter.map_or(ConsumerFilter::Any, PyConsumerFilter::into_inner);
             let response = ServiceMessenger::poll(
                 &handle,
                 &bound_core_node,
                 &as_instance_id,
                 to_target,
                 &to_service_name,
-                target
-                    .as_ref()
-                    .map_or(ServiceTarget::Any, ServiceTarget::Producer),
+                filter.call_target(),
                 Payload::from(request_payload),
                 response_timeout,
             )

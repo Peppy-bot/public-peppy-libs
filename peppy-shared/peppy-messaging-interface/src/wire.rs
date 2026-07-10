@@ -455,15 +455,13 @@ impl TopicWireSender {
 /// `from_target` identify the publisher whose messages we want to receive;
 /// `None` means "any" (translated to the transport's single-chunk wildcard).
 /// `from_link_id` follows the same rule: `Some` pins to a producer's specific
-/// link_id, `None` matches any (used for `from_any: true` consumers).
+/// link_id, `None` matches any (interface subscriptions always leave it
+/// `None`; only pairing subscriptions pin it).
 ///
-/// `defers_secondary_drop` tells the adapter that peppylib's `Subscription`
-/// wrapper applies its own per-link_id filter above the adapter, so the
-/// adapter must stop dropping the secondary publishes of a multi-link
-/// `emit` (which is its default behavior for wildcard subscribers). Set by
-/// peppylib whenever the consumer has registered sibling-pinned link_ids
-/// for this `(name, tag)`; the actual filter values live on
-/// [`crate::Subscription`].
+/// Subscribers whose `from_link_id` is `None` receive only the *primary*
+/// publish of a multi-link `emit` — the adapters drop the secondary
+/// publishes so one emit is one delivery regardless of how many link_ids
+/// the producer emitted under.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopicWireReceiver {
     pub(crate) as_core_node: Segment,
@@ -473,7 +471,6 @@ pub struct TopicWireReceiver {
     pub(crate) from_target: Option<SenderTarget>,
     pub(crate) from_link_id: Option<Segment>,
     pub(crate) to_topic: Segment,
-    pub(crate) defers_secondary_drop: bool,
 }
 
 impl TopicWireReceiver {
@@ -495,17 +492,7 @@ impl TopicWireReceiver {
             from_target,
             from_link_id: from_link_id.map(Segment::try_link_id).transpose()?,
             to_topic: Segment::try_from(to_topic)?,
-            defers_secondary_drop: false,
         })
-    }
-
-    /// Tells the adapter to skip its built-in secondary-publish drop because
-    /// peppylib will apply a sibling-pinned link_id filter above it. Set to
-    /// `true` only when the consumer's manifest registers sibling-pinned
-    /// link_ids for this `(name, tag)`.
-    pub fn with_defers_secondary_drop(mut self, defers: bool) -> Self {
-        self.defers_secondary_drop = defers;
-        self
     }
 }
 

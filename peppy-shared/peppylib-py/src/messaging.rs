@@ -4,7 +4,7 @@ mod pairing;
 mod services;
 mod topics;
 
-pub(crate) use iface::{PyProducerRef, PySenderTarget};
+pub(crate) use iface::{PyConsumerFilter, PyProducerRef, PySenderTarget};
 pub(crate) use pairing::{PyPeerInfo, PyPeerSlot, PyPeerSubscription};
 
 use config::org::resolve_session_namespace;
@@ -248,6 +248,7 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     messaging_module.add_class::<PyTopicPublisher>()?;
     messaging_module.add_class::<PySenderTarget>()?;
     messaging_module.add_class::<PyProducerRef>()?;
+    messaging_module.add_class::<PyConsumerFilter>()?;
     messaging_module.add_class::<PyPeerInfo>()?;
     messaging_module.add_class::<PyPeerSlot>()?;
     messaging_module.add_class::<PyPeerSubscription>()?;

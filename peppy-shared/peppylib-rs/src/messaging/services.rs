@@ -1,4 +1,4 @@
-use super::discovery::discover_producer;
+use super::discovery::{discover_producer, discover_producer_among, probe_any_reachable};
 use super::{DISCOVERY_TIMEOUT, MessengerHandle, generate_short_id};
 use crate::error::{Error, Result};
 use crate::messaging::ProducerRef;
@@ -47,16 +47,19 @@ async fn deliver_outcome(responder: ServiceResponder, outcome: HandlerOutcome) -
 pub struct ServiceMessenger;
 
 /// Producer scope of a [`ServiceMessenger::poll`] / [`ServiceMessenger::is_reachable`]
-/// / [`ServiceMessenger::probe_latency`] call: how much of the producer's
-/// `(core_node, instance_id)` wire address the caller pins up front. Maps
-/// onto [`ServiceWireSender`]'s two independent target slots; an enum rather
-/// than two `Option`s so the invalid "instance without core" half-address is
-/// unrepresentable.
+/// / [`ServiceMessenger::probe_latency`] call (and the action equivalents):
+/// which producers the caller allows to answer. Generated call sites derive
+/// it from the slot's [`crate::messaging::ConsumerFilter`] via
+/// [`ConsumerFilter::call_target`](crate::messaging::ConsumerFilter::call_target);
+/// an enum rather than raw `Option`s so the invalid "instance without core"
+/// half-address is unrepresentable. Borrows from the processor's cached
+/// filter and stays `Copy`.
 #[derive(Debug, Clone, Copy)]
 pub enum ServiceTarget<'a> {
     /// Genuine wildcard: any producer whose service root matches answers.
     /// `poll` runs a discover-then-pin sequence so only one producer's user
-    /// handler ever sees the request.
+    /// handler ever sees the request. Standalone mode and fixtures only —
+    /// a daemon-resolved slot is always one of the other variants.
     Any,
     /// Scope to producers hosted by this core node, leaving the instance
     /// slot wildcarded. For callers that know which core node must answer
@@ -68,13 +71,24 @@ pub enum ServiceTarget<'a> {
     /// Full `(core_node, instance_id)` pin: addresses that producer
     /// directly, no discovery probe and no discovery timeout.
     Producer(&'a ProducerRef),
+    /// Restricted discovery among an explicitly bound producer set (a
+    /// `from_any` slot bound to two or more producers): one pinned probe
+    /// per listed producer, first success wins, and the call is delivered
+    /// pinned to the winner. Producers outside the set can never win —
+    /// calls never leave the bound set.
+    OneOf(&'a [ProducerRef]),
+    /// A deliberately unbound `from_any` slot: the call fails with
+    /// [`Error::UnboundConsumerSlot`] (probes report unreachable) before
+    /// any wire work.
+    Unbound,
 }
 
 impl ServiceTarget<'_> {
-    /// Builds the wire sender for this scope, mapping the enum onto
-    /// [`ServiceWireSender`]'s two target slots:
-    /// `Any` → `(None, None)`, `CoreNode` → `(Some, None)`,
-    /// `Producer` → `(Some, Some)`.
+    /// Builds the single wire sender for a scope that maps onto one
+    /// selector: `Any` → `(None, None)`, `CoreNode` → `(Some, None)`,
+    /// `Producer` → `(Some, Some)`. `OneOf` fans out to one pinned sender
+    /// per bound producer (see [`Self::pinned_wire_senders`]) and
+    /// `Unbound` never reaches the wire; both are rejected here.
     fn wire_sender(
         &self,
         bound_core_node: &str,
@@ -85,6 +99,12 @@ impl ServiceTarget<'_> {
         let pinned = match self {
             ServiceTarget::Producer(producer) => Some(*producer),
             ServiceTarget::Any | ServiceTarget::CoreNode(_) => None,
+            ServiceTarget::OneOf(_) | ServiceTarget::Unbound => {
+                debug_assert!(false, "OneOf/Unbound scopes have no single wire sender");
+                return Err(Error::UnboundConsumerSlot {
+                    name: to_service_name.to_string(),
+                });
+            }
         };
         let sender = ServiceWireSender::new(
             bound_core_node,
@@ -96,8 +116,33 @@ impl ServiceTarget<'_> {
         )?;
         match self {
             ServiceTarget::CoreNode(core_node) => Ok(sender.scoped_to_core_node(core_node)?),
-            ServiceTarget::Any | ServiceTarget::Producer(_) => Ok(sender),
+            _ => Ok(sender),
         }
+    }
+
+    /// One fully-pinned wire sender per producer in `producers` — the
+    /// probe set for [`ServiceTarget::OneOf`]'s restricted discovery.
+    fn pinned_wire_senders(
+        producers: &[ProducerRef],
+        bound_core_node: &str,
+        as_instance_id: &str,
+        to_target: &SenderTarget,
+        to_service_name: &str,
+    ) -> Result<Vec<ServiceWireSender>> {
+        producers
+            .iter()
+            .map(|producer| {
+                ServiceWireSender::new(
+                    bound_core_node,
+                    as_instance_id,
+                    Some(producer),
+                    to_target.clone(),
+                    to_service_name,
+                    ServiceKind::Service,
+                )
+                .map_err(Error::from)
+            })
+            .collect()
     }
 }
 
@@ -384,7 +429,14 @@ impl ServiceMessenger {
     /// bound to exactly one producer — addresses that producer directly:
     /// **no discovery probe is issued and no discovery timeout applies**;
     /// the call has the caller's whole `response_timeout` to itself.
-    /// [`ServiceTarget::Any`] is a genuine wildcard (`from_any`): a
+    /// [`ServiceTarget::OneOf`] — a `from_any` slot bound to two or more
+    /// producers — runs restricted discovery: one pinned probe per bound
+    /// producer, first success wins, and the request is delivered pinned
+    /// to the winner. The call can never leave the bound set.
+    /// [`ServiceTarget::Unbound`] — a deliberately unbound `from_any`
+    /// slot — fails with [`Error::UnboundConsumerSlot`] before any wire
+    /// work.
+    /// [`ServiceTarget::Any`] is a genuine wildcard (standalone mode): a
     /// discover-then-pin sequence sends a lightweight probe to identify a
     /// single responding producer, then delivers the real request pinned
     /// to it. The probe is answered by the transport adapter before the
@@ -409,8 +461,44 @@ impl ServiceMessenger {
         let response_timeout: Option<Duration> = response_timeout.into();
 
         let started_at = Instant::now();
+        // Discovery is capped at DISCOVERY_TIMEOUT or the caller's
+        // response budget, whichever is shorter; a tight
+        // `response_timeout` still fails fast against unreachable
+        // targets, while a generous one lets peer-mode gossip discovery
+        // settle (see `discover_producer`).
+        let discovery_timeout = response_timeout
+            .map(|t| t.min(DISCOVERY_TIMEOUT))
+            .unwrap_or(DISCOVERY_TIMEOUT);
         let resolved: ProducerRef = match target {
+            ServiceTarget::Unbound => {
+                return Err(Error::UnboundConsumerSlot {
+                    name: to_service_name.to_string(),
+                });
+            }
+            // Defensive: the filter layer never produces an empty bound
+            // set (it resolves to Silent → Unbound instead).
+            ServiceTarget::OneOf([]) => {
+                return Err(Error::UnboundConsumerSlot {
+                    name: to_service_name.to_string(),
+                });
+            }
             ServiceTarget::Producer(producer) => producer.clone(),
+            ServiceTarget::OneOf(producers) => {
+                let probe_senders = ServiceTarget::pinned_wire_senders(
+                    producers,
+                    bound_core_node,
+                    as_instance_id,
+                    &to_target,
+                    to_service_name,
+                )?;
+                discover_producer_among(
+                    messenger,
+                    &probe_senders,
+                    discovery_timeout,
+                    to_service_name,
+                )
+                .await?
+            }
             ServiceTarget::Any | ServiceTarget::CoreNode(_) => {
                 let probe_sender = target.wire_sender(
                     bound_core_node,
@@ -418,14 +506,6 @@ impl ServiceMessenger {
                     to_target.clone(),
                     to_service_name,
                 )?;
-                // Discovery is capped at DISCOVERY_TIMEOUT or the caller's
-                // response budget, whichever is shorter; a tight
-                // `response_timeout` still fails fast against unreachable
-                // targets, while a generous one lets peer-mode gossip discovery
-                // settle (see `discover_producer`).
-                let discovery_timeout = response_timeout
-                    .map(|t| t.min(DISCOVERY_TIMEOUT))
-                    .unwrap_or(DISCOVERY_TIMEOUT);
                 discover_producer(messenger, &probe_sender, discovery_timeout).await?
             }
         };
@@ -485,9 +565,31 @@ impl ServiceMessenger {
         to_service_name: &str,
         target: ServiceTarget<'_>,
     ) -> Result<bool> {
-        let sender =
-            target.wire_sender(bound_core_node, as_instance_id, to_target, to_service_name)?;
-        super::discovery::probe_reachable(messenger, &sender).await
+        match target {
+            // An unbound slot has nothing to reach — report so without
+            // touching the wire.
+            ServiceTarget::Unbound => Ok(false),
+            ServiceTarget::OneOf([]) => Ok(false),
+            ServiceTarget::OneOf(producers) => {
+                let senders = ServiceTarget::pinned_wire_senders(
+                    producers,
+                    bound_core_node,
+                    as_instance_id,
+                    &to_target,
+                    to_service_name,
+                )?;
+                probe_any_reachable(messenger, &senders).await
+            }
+            ServiceTarget::Any | ServiceTarget::CoreNode(_) | ServiceTarget::Producer(_) => {
+                let sender = target.wire_sender(
+                    bound_core_node,
+                    as_instance_id,
+                    to_target,
+                    to_service_name,
+                )?;
+                super::discovery::probe_reachable(messenger, &sender).await
+            }
+        }
     }
 
     /// Measure the round-trip latency of a single `Probe`-kind query to a
@@ -521,15 +623,51 @@ impl ServiceMessenger {
         request_size: usize,
         response_size: u32,
     ) -> Result<(Duration, usize)> {
-        let sender =
-            target.wire_sender(bound_core_node, as_instance_id, to_target, to_service_name)?;
-        super::discovery::probe_round_trip(
-            messenger,
-            &sender,
-            request_size,
-            response_size,
-            response_timeout,
-        )
-        .await
+        match target {
+            // An unbound slot cannot yield a latency sample — fail before
+            // any wire work.
+            ServiceTarget::Unbound => Err(Error::UnboundConsumerSlot {
+                name: to_service_name.to_string(),
+            }),
+            ServiceTarget::OneOf([]) => Err(Error::UnboundConsumerSlot {
+                name: to_service_name.to_string(),
+            }),
+            // Race one pinned probe per bound producer; the sample is the
+            // round-trip of whichever bound producer answers first — the
+            // same producer restricted discovery would pin.
+            ServiceTarget::OneOf(producers) => {
+                let senders = ServiceTarget::pinned_wire_senders(
+                    producers,
+                    bound_core_node,
+                    as_instance_id,
+                    &to_target,
+                    to_service_name,
+                )?;
+                super::discovery::probe_fastest_round_trip(
+                    messenger,
+                    &senders,
+                    request_size,
+                    response_size,
+                    response_timeout,
+                )
+                .await
+            }
+            ServiceTarget::Any | ServiceTarget::CoreNode(_) | ServiceTarget::Producer(_) => {
+                let sender = target.wire_sender(
+                    bound_core_node,
+                    as_instance_id,
+                    to_target,
+                    to_service_name,
+                )?;
+                super::discovery::probe_round_trip(
+                    messenger,
+                    &sender,
+                    request_size,
+                    response_size,
+                    response_timeout,
+                )
+                .await
+            }
+        }
     }
 }

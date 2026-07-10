@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from peppylib import (
+    ConsumerFilter,
     MessengerHandle,
     NodeRunner,
     ProducerRef,
@@ -52,7 +53,7 @@ async def wait_until_reachable(messenger, service_name: str) -> None:
             CLIENT_INSTANCE,
             SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
             service_name,
-            ProducerRef(CORE_NODE, SERVER_INSTANCE),):
+            ConsumerFilter.pin(ProducerRef(CORE_NODE, SERVER_INSTANCE)),):
             return
         if asyncio.get_event_loop().time() >= deadline:
             pytest.fail(f"{service_name} stub did not become reachable within 5s")

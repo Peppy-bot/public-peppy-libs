@@ -9,6 +9,7 @@ import asyncio
 import pytest
 
 from peppylib import (
+    ConsumerFilter,
     MessengerHandle,
     ProducerRef,
     SenderTarget,
@@ -47,7 +48,7 @@ async def test_ready_node():
 
         # The ready service should accept both valid targeting modes
         target_combinations = [
-            ("pinned", ProducerRef(TEST_CORE_NODE_NAME, TEST_INSTANCE_ID)),
+            ("pinned", ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE_NAME, TEST_INSTANCE_ID))),
             ("broadcast", None),
         ]
 

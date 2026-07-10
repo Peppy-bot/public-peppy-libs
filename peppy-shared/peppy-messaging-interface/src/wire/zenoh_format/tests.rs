@@ -114,7 +114,6 @@ fn topic_subscribe_pairing_full_triple_pin() {
         from_target: Some(pairing("arm_link", "v1")),
         from_link_id: Some(seg("controller")),
         to_topic: seg("joint_states"),
-        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -143,7 +142,6 @@ fn topic_pairing_and_interface_keyexprs_never_match() {
         from_target: Some(iface("arm_link", "v1")),
         from_link_id: None,
         to_topic: seg("joint_states"),
-        defers_secondary_drop: false,
     });
     let publish_discriminator = pairing_publish.split('/').nth(5);
     let subscribe_discriminator = from_any_subscribe.split('/').nth(5);
@@ -161,7 +159,6 @@ fn topic_subscribe_targeted_node() {
         from_target: Some(node("uvc_camera", "v1")),
         from_link_id: None,
         to_topic: seg("video_stream"),
-        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -179,7 +176,6 @@ fn topic_subscribe_with_concrete_link_id() {
         from_target: Some(iface("depth_camera", "v1")),
         from_link_id: Some(seg("wrist_left_camera")),
         to_topic: seg("video_stream"),
-        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -197,7 +193,6 @@ fn topic_subscribe_untargeted_publisher_core_uses_wildcard() {
         from_target: Some(node("uvc_camera", "v1")),
         from_link_id: None,
         to_topic: seg("video_stream"),
-        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -215,7 +210,6 @@ fn topic_subscribe_interface_target() {
         from_target: Some(iface("manipulator", "v1")),
         from_link_id: None,
         to_topic: seg("joint_states"),
-        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -233,7 +227,6 @@ fn topic_subscribe_fully_untargeted_wildcards_all_slots() {
         from_target: None,
         from_link_id: None,
         to_topic: seg("video_stream"),
-        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -830,7 +823,6 @@ fn topic_subscribe_node_only_segment_does_not_match_interface_publisher() {
         from_target: Some(node("widget", "v1")),
         from_link_id: None,
         to_topic: seg("frames"),
-        defers_secondary_drop: false,
     };
     let publisher_as_node = TopicWireSender {
         as_core_node: seg("core_a"),
@@ -876,7 +868,6 @@ fn topic_subscribe_interface_only_segment_does_not_match_node_publisher() {
         from_target: Some(iface("widget", "v1")),
         from_link_id: None,
         to_topic: seg("frames"),
-        defers_secondary_drop: false,
     };
     let sub_key = ZenohWireFormat::topic_subscribe(&receiver);
     assert!(sub_key.contains("/topic/interface/widget/v1/*/frames"));
@@ -897,7 +888,6 @@ fn topic_subscribe_untargeted_wildcards_discriminator_too() {
         from_target: None,
         from_link_id: None,
         to_topic: seg("frames"),
-        defers_secondary_drop: false,
     };
     let key = ZenohWireFormat::topic_subscribe(&receiver);
     assert!(
