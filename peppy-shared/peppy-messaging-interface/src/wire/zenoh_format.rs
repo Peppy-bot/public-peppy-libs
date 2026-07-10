@@ -74,6 +74,33 @@ impl ZenohWireFormat {
         })
     }
 
+    /// Parses the producer-pin slots out of a subscriber-side topic keyexpr
+    /// — the structured inverse of [`Self::topic_subscribe`]'s
+    /// `{from_core|*}` / `{from_inst|*}` / `{link_id|*}` slots, with the
+    /// single-chunk wildcard mapping back to `None`. Exposed through
+    /// [`crate::adapters::mock::MockAdapter::subscribed_topic_pins`] so
+    /// tests can assert which producer a subscription pins without indexing
+    /// keyexpr segments themselves; the segment layout stays private to
+    /// this module.
+    pub(crate) fn parse_topic_subscribe_pins(
+        keyexpr: &str,
+    ) -> Result<TopicSubscriptionPin, ZenohWireParseError> {
+        let segments: Vec<&str> = keyexpr.split('/').collect();
+        let pin = |index: usize, field: &'static str| {
+            let value = segments
+                .get(index)
+                .copied()
+                .filter(|s| !s.is_empty())
+                .ok_or(ZenohWireParseError::MissingSegment(field))?;
+            Ok((value != SINGLE_CHUNK_WILDCARD).then(|| value.to_string()))
+        };
+        Ok(TopicSubscriptionPin {
+            from_core_node: pin(1, "from_core_node")?,
+            from_instance_id: pin(3, "from_instance_id")?,
+            from_link_id: pin(8, "from_link_id")?,
+        })
+    }
+
     /// `*/{as_core}/*/{as_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{as_topic}`
     pub(crate) fn topic_publish(s: &TopicWireSender) -> String {
         let (discriminator, name, tag) = target_segments(Some(&s.as_target));
@@ -418,6 +445,18 @@ pub(crate) struct ParsedTopicKey {
     pub(crate) core_node: String,
     pub(crate) instance_id: String,
     pub(crate) link_id: String,
+}
+
+/// The producer-pin slots of one subscriber-side topic keyexpr, parsed by
+/// [`ZenohWireFormat::parse_topic_subscribe_pins`]. `None` means the slot
+/// is wildcarded (matches any producer / any emit slot); `Some` is the
+/// pinned literal. Test-introspection counterpart of
+/// [`crate::wire::TopicWireReceiver`]'s `from_*` fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopicSubscriptionPin {
+    pub from_core_node: Option<String>,
+    pub from_instance_id: Option<String>,
+    pub from_link_id: Option<String>,
 }
 
 /// Topic-publish attachment marker. See the comment block in the topic

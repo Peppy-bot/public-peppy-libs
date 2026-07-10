@@ -751,7 +751,7 @@ pub(crate) mod zenoh_format;
 /// `pmi::templates`. Pure string code — compiled in every feature config.
 pub mod templates;
 
-pub use zenoh_format::{ServiceQueryKind, ServiceReplyKind};
+pub use zenoh_format::{ServiceQueryKind, ServiceReplyKind, TopicSubscriptionPin};
 
 #[cfg(test)]
 mod tests;

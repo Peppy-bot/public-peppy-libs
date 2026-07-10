@@ -702,6 +702,13 @@ async fn topic_subscribe_wire_shape_pins_producers_and_silences_unbound() {
             _ => unreachable!("test uses the mock adapter"),
         }
     };
+    let pins = |messenger: &std::sync::Arc<tokio::sync::Mutex<pmi::Messenger>>| {
+        let guard = messenger.try_lock().expect("messenger uncontended in test");
+        match &guard.adapter {
+            pmi::MessengerAdapter::Mock(mock) => mock.subscribed_topic_pins(),
+            _ => unreachable!("test uses the mock adapter"),
+        }
+    };
 
     let node_name = "uvc_camera";
     let topic = "video_stream";
@@ -728,10 +735,8 @@ async fn topic_subscribe_wire_shape_pins_producers_and_silences_unbound() {
     );
     drop(silent_sub);
 
-    // Bound slot: one pinned keyexpr per bound producer, no wildcard.
-    // Subscriber-side topic keyexpr layout (see zenoh_format):
-    // `{as_core}/{from_core|*}/{as_inst}/{from_inst|*}/topic/...` —
-    // the producer pin lives at segments 1 and 3.
+    // Bound slot: one producer-pinned subscription per bound producer, no
+    // wildcard.
     let bound_sub = TopicMessenger::subscribe(
         &handle,
         "sub_core",
@@ -744,26 +749,30 @@ async fn topic_subscribe_wire_shape_pins_producers_and_silences_unbound() {
     )
     .await
     .expect("bound subscribe");
-    let mut declared = keyexprs(&messenger);
-    declared.sort();
+    let mut declared = pins(&messenger);
+    declared.sort_by(|a, b| a.from_instance_id.cmp(&b.from_instance_id));
     assert_eq!(
         declared.len(),
         2,
         "a two-producer bound slot must declare exactly two wire subscriptions, got {declared:?}",
     );
-    for (keyexpr, producer) in declared.iter().zip([&p1, &p2]) {
-        let segments: Vec<&str> = keyexpr.split('/').collect();
+    for (pin, producer) in declared.iter().zip([&p1, &p2]) {
         assert_eq!(
-            segments[1], producer.core_node,
-            "segment 1 must pin the producer core_node literally: {keyexpr}",
+            pin.from_core_node.as_deref(),
+            Some(producer.core_node.as_str()),
+            "the subscription must pin the producer core_node literally: {pin:?}",
         );
         assert_eq!(
-            segments[3], producer.instance_id,
-            "segment 3 must pin the producer instance_id literally: {keyexpr}",
+            pin.from_instance_id.as_deref(),
+            Some(producer.instance_id.as_str()),
+            "the subscription must pin the producer instance_id literally: {pin:?}",
         );
-        // Producer-side link_id (seg-8) stays a wildcard by design —
+        // The producer-side link_id slot stays a wildcard by design —
         // pinning is by producer identity, not emit slot.
-        assert_eq!(segments[8], "*", "seg-8 link_id stays wildcard: {keyexpr}");
+        assert_eq!(
+            pin.from_link_id, None,
+            "the producer link_id slot stays wildcard: {pin:?}",
+        );
     }
     drop(bound_sub);
 }

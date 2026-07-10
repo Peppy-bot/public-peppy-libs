@@ -163,6 +163,21 @@ impl MockAdapter {
             .collect()
     }
 
+    /// Test introspection: the producer-pin slots of every LIVE topic
+    /// subscription — [`Self::subscribed_keyexprs`] parsed back through
+    /// the wire-format module, so tests assert which producer identity
+    /// each subscription pins without indexing keyexpr segments
+    /// themselves.
+    pub fn subscribed_topic_pins(&self) -> Vec<crate::wire::TopicSubscriptionPin> {
+        self.subscribed_keyexprs()
+            .iter()
+            .map(|keyexpr| {
+                ZenohWireFormat::parse_topic_subscribe_pins(keyexpr)
+                    .expect("mock subscriptions are declared via ZenohWireFormat::topic_subscribe")
+            })
+            .collect()
+    }
+
     /// Whether any entry under a declared keyexpr still receives. Dropped
     /// subscriptions leave stale senders in the map by design (see
     /// `subscribe_keyexpr`); every liveness question must exclude them.

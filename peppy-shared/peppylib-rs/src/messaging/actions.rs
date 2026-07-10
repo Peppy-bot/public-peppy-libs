@@ -1,6 +1,3 @@
-use super::discovery::{
-    discover_producer, discover_producer_among, probe_any_reachable, probe_fastest_round_trip,
-};
 use super::generate_short_id;
 use super::topics::Subscription;
 use super::{
@@ -613,32 +610,16 @@ impl ActionMessenger {
         to_action_name: &str,
         target: ServiceTarget<'_>,
     ) -> Result<bool> {
-        match target {
-            // (`OneOf([])` is defensive; the filter layer normalizes an
-            // empty bound set to Unbound.)
-            ServiceTarget::Unbound | ServiceTarget::OneOf([]) => Ok(false),
-            ServiceTarget::OneOf(producers) => {
-                let senders = ServiceTarget::pinned_wire_senders(
-                    producers,
-                    bound_core_node,
-                    as_instance_id,
-                    &to_target,
-                    to_action_name,
-                    ServiceKind::ActionGoal,
-                )?;
-                probe_any_reachable(messenger, &senders).await
-            }
-            ServiceTarget::Any | ServiceTarget::CoreNode(_) | ServiceTarget::Producer(_) => {
-                let sender = target.wire_sender(
-                    bound_core_node,
-                    as_instance_id,
-                    to_target,
-                    to_action_name,
-                    ServiceKind::ActionGoal,
-                )?;
-                super::discovery::probe_reachable(messenger, &sender).await
-            }
-        }
+        target
+            .probe_reachable(
+                messenger,
+                bound_core_node,
+                as_instance_id,
+                &to_target,
+                to_action_name,
+                ServiceKind::ActionGoal,
+            )
+            .await
     }
 
     /// Measure the round-trip latency of a single `Probe`-kind query to an
@@ -667,49 +648,19 @@ impl ActionMessenger {
         request_size: usize,
         response_size: u32,
     ) -> Result<(Duration, usize)> {
-        match target {
-            // An unbound slot cannot yield a latency sample — fail before
-            // any wire work. (`OneOf([])` is defensive; the filter layer
-            // normalizes an empty bound set to Unbound.)
-            ServiceTarget::Unbound | ServiceTarget::OneOf([]) => Err(Error::UnboundConsumerSlot {
-                name: to_action_name.to_string(),
-            }),
-            ServiceTarget::OneOf(producers) => {
-                let senders = ServiceTarget::pinned_wire_senders(
-                    producers,
-                    bound_core_node,
-                    as_instance_id,
-                    &to_target,
-                    to_action_name,
-                    ServiceKind::ActionGoal,
-                )?;
-                probe_fastest_round_trip(
-                    messenger,
-                    &senders,
-                    request_size,
-                    response_size,
-                    response_timeout,
-                )
-                .await
-            }
-            ServiceTarget::Any | ServiceTarget::CoreNode(_) | ServiceTarget::Producer(_) => {
-                let sender = target.wire_sender(
-                    bound_core_node,
-                    as_instance_id,
-                    to_target,
-                    to_action_name,
-                    ServiceKind::ActionGoal,
-                )?;
-                super::discovery::probe_round_trip(
-                    messenger,
-                    &sender,
-                    request_size,
-                    response_size,
-                    response_timeout,
-                )
-                .await
-            }
-        }
+        target
+            .probe_round_trip(
+                messenger,
+                bound_core_node,
+                as_instance_id,
+                &to_target,
+                to_action_name,
+                ServiceKind::ActionGoal,
+                response_timeout,
+                request_size,
+                response_size,
+            )
+            .await
     }
 
     /// Send a goal to an action server. Generates a fresh `goal_id`,
@@ -763,43 +714,17 @@ impl ActionMessenger {
         // `discover_producer`).
         let started_at = Instant::now();
         let discovery_timeout = goal_timeout.min(DISCOVERY_TIMEOUT);
-        let resolved: ProducerRef = match target {
-            // The `OneOf([])` arm is defensive: the filter layer never
-            // produces an empty bound set (it normalizes to Unbound).
-            ServiceTarget::Unbound | ServiceTarget::OneOf([]) => {
-                return Err(Error::UnboundConsumerSlot {
-                    name: to_action_name.to_string(),
-                });
-            }
-            ServiceTarget::Producer(producer) => producer.clone(),
-            ServiceTarget::OneOf(producers) => {
-                let probe_senders = ServiceTarget::pinned_wire_senders(
-                    producers,
-                    as_core_node,
-                    as_instance_id,
-                    &to_target,
-                    to_action_name,
-                    ServiceKind::ActionGoal,
-                )?;
-                discover_producer_among(
-                    messenger,
-                    &probe_senders,
-                    discovery_timeout,
-                    to_action_name,
-                )
-                .await?
-            }
-            ServiceTarget::Any | ServiceTarget::CoreNode(_) => {
-                let probe_sender = target.wire_sender(
-                    as_core_node,
-                    as_instance_id,
-                    to_target.clone(),
-                    to_action_name,
-                    ServiceKind::ActionGoal,
-                )?;
-                discover_producer(messenger, &probe_sender, discovery_timeout).await?
-            }
-        };
+        let resolved: ProducerRef = target
+            .resolve_producer(
+                messenger,
+                as_core_node,
+                as_instance_id,
+                &to_target,
+                to_action_name,
+                ServiceKind::ActionGoal,
+                discovery_timeout,
+            )
+            .await?;
 
         let sender = ActionWireSender::new(
             as_core_node,

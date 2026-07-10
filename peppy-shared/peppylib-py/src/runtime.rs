@@ -794,6 +794,12 @@ pub struct PyNodeRunner {
     /// The node's persistent asyncio loop, filled once async setup starts.
     /// Read by shutdown hooks to run hook coroutines on the node's loop.
     event_loop_slot: SharedEventLoopSlot,
+    /// Per-link_id cache of the wrapped daemon-resolved filters. The
+    /// processor computes its filter map once at startup and never mutates
+    /// it, and the Python `ConsumerFilter` class is `frozen`, so every
+    /// `consumer_filter(link_id)` call can hand back the same object — a
+    /// refcount bump instead of a per-call deep clone of the bound set.
+    consumer_filter_cache: Mutex<std::collections::HashMap<String, Py<PyConsumerFilter>>>,
 }
 
 impl PyNodeRunner {
@@ -812,6 +818,7 @@ impl PyNodeRunner {
             inner: node_runner,
             cached_messenger,
             event_loop_slot,
+            consumer_filter_cache: Mutex::new(std::collections::HashMap::new()),
         }
     }
 }
@@ -910,8 +917,20 @@ impl PyNodeRunner {
     /// deprecated) so stale generated Python fails loudly with
     /// `AttributeError` instead of silently keeping the old
     /// wildcard-discovery behavior.
-    fn consumer_filter(&self, link_id: &str) -> PyConsumerFilter {
-        PyConsumerFilter::from(self.inner.processor().consumer_filter(link_id).clone())
+    fn consumer_filter(&self, py: Python<'_>, link_id: &str) -> PyResult<Py<PyConsumerFilter>> {
+        let mut cache = self
+            .consumer_filter_cache
+            .lock()
+            .expect("consumer filter cache poisoned");
+        if let Some(cached) = cache.get(link_id) {
+            return Ok(cached.clone_ref(py));
+        }
+        let filter = Py::new(
+            py,
+            PyConsumerFilter::from(self.inner.processor().consumer_filter(link_id).clone()),
+        )?;
+        cache.insert(link_id.to_string(), filter.clone_ref(py));
+        Ok(filter)
     }
 
     /// Handle onto the pairing slot declared at `link_id` in
