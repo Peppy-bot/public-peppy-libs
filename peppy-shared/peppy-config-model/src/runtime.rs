@@ -134,6 +134,74 @@ impl ProducerRef {
     }
 }
 
+/// The explicit producer set of a [`SlotBinding::FromAnyBound`] slot,
+/// non-empty by construction: "bound to nothing" is a distinct slot state
+/// ([`SlotBinding::FromAnyUnbound`]), not an empty set, so emptiness is
+/// refused at construction and at the parse boundary instead of being
+/// handled defensively by every consumer. Serializes transparently as the
+/// plain `producers` array.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct BoundProducers(Vec<ProducerRef>);
+
+impl BoundProducers {
+    /// Parses an explicit bound set; `None` when `producers` is empty.
+    /// Use [`SlotBinding::from_any`] when an empty set should resolve to
+    /// the unbound slot state rather than be handled by the caller.
+    pub fn new(producers: Vec<ProducerRef>) -> Option<Self> {
+        if producers.is_empty() {
+            None
+        } else {
+            Some(Self(producers))
+        }
+    }
+
+    pub fn as_slice(&self) -> &[ProducerRef] {
+        &self.0
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, ProducerRef> {
+        self.0.iter()
+    }
+
+    /// The first bound producer and the remaining ones. Infallible: the
+    /// set is non-empty by construction, so callers that special-case the
+    /// single-producer form need no empty arm.
+    pub fn split_first(&self) -> (&ProducerRef, &[ProducerRef]) {
+        self.0
+            .split_first()
+            .expect("BoundProducers is non-empty by construction")
+    }
+
+    pub fn to_vec(&self) -> Vec<ProducerRef> {
+        self.0.clone()
+    }
+}
+
+impl<'a> IntoIterator for &'a BoundProducers {
+    type Item = &'a ProducerRef;
+    type IntoIter = std::slice::Iter<'a, ProducerRef>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<'de> Deserialize<'de> for BoundProducers {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let producers = Vec::<ProducerRef>::deserialize(deserializer)?;
+        BoundProducers::new(producers).ok_or_else(|| {
+            serde::de::Error::custom(
+                "`producers` must list at least one producer; an unbound \
+                 from_any slot is `{\"kind\": \"from_any_unbound\"}`",
+            )
+        })
+    }
+}
+
 /// Resolved per-slot binding for one of this consumer instance's declared
 /// `depends_on` entries. The validator translates the launcher / CLI
 /// binding map — keyed by the slot's `link_id`, valued with one instance
@@ -145,19 +213,37 @@ impl ProducerRef {
 /// `Pinned` corresponds to a `depends_on` entry with `from_any: false`;
 /// it must be bound to exactly one producer (the validator rejects
 /// pinned-unbound and pinned-multi). `FromAnyBound` is a `from_any: true`
-/// slot explicitly bound to one or more producers; `producers` is
-/// non-empty by construction (an empty binding materializes as
-/// `FromAnyUnbound`) and the node subscribes to all of them and only
-/// them, producer-pinned on the wire. `FromAnyUnbound` is a
-/// `from_any: true` slot deliberately left unbound — a valid, **silent**
-/// slot: the node creates no subscription for it and service / action
-/// calls on it fail before any wire work. There is no wildcard fallback.
+/// slot explicitly bound to one or more producers; the node subscribes to
+/// all of them and only them, producer-pinned on the wire.
+/// `FromAnyUnbound` is a `from_any: true` slot deliberately left unbound
+/// — a valid, **silent** slot: the node creates no subscription for it
+/// and service / action calls on it fail before any wire work. There is
+/// no wildcard fallback.
+///
+/// "Bound to nothing" has exactly one representation: `FromAnyUnbound`.
+/// [`BoundProducers`] is non-empty by construction, so
+/// `FromAnyBound { [] }` can be neither built nor parsed; resolve a
+/// possibly empty set with [`SlotBinding::from_any`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SlotBinding {
     Pinned { producer: ProducerRef },
-    FromAnyBound { producers: Vec<ProducerRef> },
+    FromAnyBound { producers: BoundProducers },
     FromAnyUnbound,
+}
+
+impl SlotBinding {
+    /// Resolves a `from_any` slot's explicit binding: one or more
+    /// producers bind the slot, an empty set is the deliberately-unbound
+    /// (silent) slot. This is the single place the "empty means unbound"
+    /// rule is encoded, so a validator cannot materialize an empty bound
+    /// set.
+    pub fn from_any(producers: Vec<ProducerRef>) -> Self {
+        match BoundProducers::new(producers) {
+            Some(producers) => SlotBinding::FromAnyBound { producers },
+            None => SlotBinding::FromAnyUnbound,
+        }
+    }
 }
 
 /// State of one pairing slot (a `depends_on.pairings` entry) of a node
@@ -702,12 +788,10 @@ mod tests {
                 }),
             ),
             (
-                SlotBinding::FromAnyBound {
-                    producers: vec![
-                        ProducerRef::new("core_a", "p3"),
-                        ProducerRef::new("core_a", "p4"),
-                    ],
-                },
+                SlotBinding::from_any(vec![
+                    ProducerRef::new("core_a", "p3"),
+                    ProducerRef::new("core_a", "p4"),
+                ]),
                 json!({
                     "kind": "from_any_bound",
                     "producers": [
@@ -728,6 +812,28 @@ mod tests {
                 serde_json::from_value(expected).expect("deserialize SlotBinding");
             assert_eq!(decoded, value, "SlotBinding did not round-trip");
         }
+    }
+
+    /// "Bound to nothing" has exactly one wire shape (`from_any_unbound`):
+    /// an explicit empty `producers` array is a hard parse error, and the
+    /// [`SlotBinding::from_any`] constructor resolves an empty set to
+    /// `FromAnyUnbound` instead of ever building an empty bound set.
+    #[test]
+    fn from_any_empty_set_is_unrepresentable() {
+        use serde_json::json;
+
+        assert_eq!(SlotBinding::from_any(vec![]), SlotBinding::FromAnyUnbound);
+        assert_eq!(
+            SlotBinding::from_any(vec![ProducerRef::new("core_a", "p1")]),
+            SlotBinding::FromAnyBound {
+                producers: BoundProducers::new(vec![ProducerRef::new("core_a", "p1")])
+                    .expect("one producer is a valid bound set"),
+            }
+        );
+
+        let empty = json!({ "kind": "from_any_bound", "producers": [] });
+        let result: std::result::Result<SlotBinding, _> = serde_json::from_value(empty);
+        assert!(result.is_err(), "empty producers array must fail to parse");
     }
 
     /// Half-addresses must be unrepresentable at the parse boundary: the

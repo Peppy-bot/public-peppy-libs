@@ -106,10 +106,10 @@ impl ConsumerFilter {
 ///   sites pin the wire and skip discovery, exactly like an explicitly
 ///   pinned slot.
 /// - `FromAnyBound` with two or more producers → [`ConsumerFilter::OnlyFrom`].
-/// - `FromAnyBound` with zero producers → [`ConsumerFilter::Silent`]
-///   (defensive: the validator materializes an empty binding as
-///   `FromAnyUnbound`, never as an empty bound set).
-/// - `FromAnyUnbound` → [`ConsumerFilter::Silent`].
+/// - `FromAnyUnbound` → [`ConsumerFilter::Silent`]. An empty bound set
+///   needs no arm here: [`config::runtime::BoundProducers`] is non-empty
+///   by construction, so an empty binding can only arrive as
+///   `FromAnyUnbound`.
 ///
 /// A `link_id` missing from `slot_bindings` resolves to
 /// [`ConsumerFilter::Any`]. This is the standalone contract: the daemon
@@ -124,10 +124,9 @@ pub fn resolve_consumer_filter(
     match slot_bindings.get(link_id) {
         None => ConsumerFilter::Any,
         Some(SlotBinding::Pinned { producer }) => ConsumerFilter::Pin(producer.clone()),
-        Some(SlotBinding::FromAnyBound { producers }) => match producers.as_slice() {
-            [] => ConsumerFilter::Silent,
-            [single] => ConsumerFilter::Pin(single.clone()),
-            _ => ConsumerFilter::OnlyFrom(producers.clone()),
+        Some(SlotBinding::FromAnyBound { producers }) => match producers.split_first() {
+            (single, []) => ConsumerFilter::Pin(single.clone()),
+            _ => ConsumerFilter::OnlyFrom(producers.to_vec()),
         },
         Some(SlotBinding::FromAnyUnbound) => ConsumerFilter::Silent,
     }
@@ -170,12 +169,7 @@ mod tests {
     /// slots exactly like explicitly pinned ones.
     #[test]
     fn from_any_bound_to_single_producer_collapses_to_pin() {
-        let bindings = slot_map(vec![(
-            "extra",
-            SlotBinding::FromAnyBound {
-                producers: vec![pref("cam1")],
-            },
-        )]);
+        let bindings = slot_map(vec![("extra", SlotBinding::from_any(vec![pref("cam1")]))]);
         let filter = resolve_consumer_filter("extra", &bindings);
         assert_eq!(filter, ConsumerFilter::Pin(pref("cam1")));
     }
@@ -184,9 +178,7 @@ mod tests {
     fn from_any_bound_to_multiple_producers_resolves_to_only_from() {
         let bindings = slot_map(vec![(
             "extra",
-            SlotBinding::FromAnyBound {
-                producers: vec![pref("cam1"), pref("cam2")],
-            },
+            SlotBinding::from_any(vec![pref("cam1"), pref("cam2")]),
         )]);
         let filter = resolve_consumer_filter("extra", &bindings);
         assert_eq!(
@@ -209,9 +201,7 @@ mod tests {
             ),
             (
                 "extra",
-                SlotBinding::FromAnyBound {
-                    producers: vec![pref("cam1"), pref("cam2")],
-                },
+                SlotBinding::from_any(vec![pref("cam1"), pref("cam2")]),
             ),
         ]);
         let filter = resolve_consumer_filter("extra", &bindings);
@@ -240,15 +230,13 @@ mod tests {
         assert!(filter.bound_producers().is_empty());
     }
 
-    /// Defensive: the validator never materializes `FromAnyBound { [] }`
-    /// (an empty binding becomes `FromAnyUnbound`), but if one arrives it
-    /// means "bound to nothing" — silent, not wildcard.
+    /// An empty explicit binding resolves through [`SlotBinding::from_any`]
+    /// to `FromAnyUnbound`, so "bound to nothing" reaches this layer as the
+    /// silent slot state, never as an empty bound set (which the type makes
+    /// unrepresentable).
     #[test]
-    fn from_any_bound_to_empty_set_is_silent() {
-        let bindings = slot_map(vec![(
-            "extra",
-            SlotBinding::FromAnyBound { producers: vec![] },
-        )]);
+    fn from_any_resolved_from_empty_set_is_silent() {
+        let bindings = slot_map(vec![("extra", SlotBinding::from_any(vec![]))]);
         let filter = resolve_consumer_filter("extra", &bindings);
         assert_eq!(filter, ConsumerFilter::Silent);
     }

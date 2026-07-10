@@ -461,12 +461,10 @@ mod tests {
         );
         bindings.insert(
             "sensors".to_string(),
-            SlotBinding::FromAnyBound {
-                producers: vec![
-                    ProducerRef::new("core_a", "cam-1"),
-                    ProducerRef::new("core_a", "cam-2"),
-                ],
-            },
+            SlotBinding::from_any(vec![
+                ProducerRef::new("core_a", "cam-1"),
+                ProducerRef::new("core_a", "cam-2"),
+            ]),
         );
         let instance = SerializedInstance {
             instance_id: "i1".to_string(),

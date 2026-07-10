@@ -350,12 +350,10 @@ mod tests {
             ),
             (
                 "extra_cam".to_string(),
-                SlotBinding::FromAnyBound {
-                    producers: vec![
-                        ProducerRef::new("core_a", "cam2"),
-                        ProducerRef::new("core_a", "cam3"),
-                    ],
-                },
+                SlotBinding::from_any(vec![
+                    ProducerRef::new("core_a", "cam2"),
+                    ProducerRef::new("core_a", "cam3"),
+                ]),
             ),
             ("spare".to_string(), SlotBinding::FromAnyUnbound),
         ]
