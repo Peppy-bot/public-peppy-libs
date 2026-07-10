@@ -103,7 +103,7 @@ impl HardwareVersion {
     /// Per-joint `[lower, upper]` position limits (rad) for one arm side, j1..j7, from
     /// the bundled URDF with [`Self::elbow_singularity_floor_rad`] applied to the elbow.
     /// This is the clamp range a command-producing node (operator panel, leader arm)
-    /// applies before streaming; the hub and the arm clamp again on their side. Panics
+    /// applies before streaming; the backbone and the arm clamp again on their side. Panics
     /// only if the bundled URDF is malformed, which this crate's tests rule out.
     pub fn joint_limits(self, side: Side) -> [[f64; 2]; ARM_DOF] {
         let robot = urdf_rs::read_from_string(self.urdf()).expect("bundled URDF must parse");
