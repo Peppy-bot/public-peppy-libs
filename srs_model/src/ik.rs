@@ -26,7 +26,9 @@
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use k::nalgebra::{Isometry3, Matrix3, Rotation3, Unit, Vector3};
+use k::nalgebra::{Isometry3, Matrix3, Rotation3, Unit, Vector3, Vector6};
+
+use crate::jacobian::{Jacobian, manipulability};
 
 use crate::model::ArmModel;
 use crate::{ARM_DOF, JointVec, Limit, PARALLEL_SIN_EPS};
@@ -38,6 +40,13 @@ pub enum ArmAnglePolicy {
     FromSeed,
     /// Use this exact arm angle (radians). Infeasible if it violates a limit.
     Fixed(f64),
+    /// Start from the seed's arm angle (like `FromSeed`) and step at most
+    /// `max_step_rad` toward higher manipulability, so a solve chain steers the
+    /// elbow away from singular postures instead of freezing it. The bounded step
+    /// keeps consecutive solutions continuous; a chain of solves follows the local
+    /// manipulability ridge as the target moves. `max_step_rad = 0` reduces to
+    /// `FromSeed`. Solvable exactly when `FromSeed` is.
+    MaxManipulability { max_step_rad: f64 },
 }
 
 /// One inverse-kinematics solution.
@@ -335,9 +344,16 @@ pub(crate) fn solve(
 
     // The elbow circle depends only on the wrist center, so compute it once and
     // reuse it across all arm angles.
-    let circle = circle_frame(model, p_w);
+    let ctx = PsiSolve {
+        model,
+        r_d,
+        p_w,
+        theta4,
+        circle: circle_frame(model, p_w),
+    };
     match arm_angle {
-        ArmAnglePolicy::Fixed(psi) => solve_at_psi(model, &r_d, &p_w, theta4, psi, seed, &circle)
+        ArmAnglePolicy::Fixed(psi) => ctx
+            .solve_at_psi(psi, seed)
             .map(|q| Solution { q, arm_angle: psi }),
         ArmAnglePolicy::FromSeed => {
             // The redundancy circle is resolved analytically: every joint angle is
@@ -345,83 +361,183 @@ pub(crate) fn solve(
             // feasible-psi interval. Pick the feasible psi nearest the seed's arm
             // angle for continuity, then build q there.
             let preferred = seed_arm_angle(model, seed).unwrap_or(0.0);
-            let intervals = feasible_psi_intervals(model, &r_d, &p_w, theta4, seed, &circle);
+            let intervals = ctx.feasible_psi_intervals(seed);
             let psi = nearest_feasible_psi(&intervals, preferred)?;
-            solve_at_psi(model, &r_d, &p_w, theta4, psi, seed, &circle)
+            ctx.solve_at_psi(psi, seed)
                 .map(|q| Solution { q, arm_angle: psi })
         }
-    }
-}
-
-/// The shoulder rotation `R_s(psi)` (home upper-arm frame to the target one) and
-/// the residual wrist rotation `R_w(psi)` left to invert, for one arm angle.
-/// Both are smooth functions of `psi`: [`solve_at_psi`] decomposes them into
-/// joint angles, and [`feasible_psi_intervals`] samples them to recover the
-/// per-joint `psi` dependence in closed form. `None` at the straight-arm pose,
-/// where the arm plane (and so `R_s`) is undefined.
-fn shoulder_wrist_rotations(
-    model: &ArmModel,
-    r_d: &Rotation3<f64>,
-    p_w: &Vector3<f64>,
-    theta4: f64,
-    psi: f64,
-    circle: &Circle,
-) -> Option<(Rotation3<f64>, Rotation3<f64>)> {
-    let elbow = circle.elbow(psi);
-
-    // Upper-arm / forearm directions and the arm-plane normal.
-    let e_t = (elbow - model.shoulder) / model.l_su;
-    let f_t = (*p_w - elbow) / model.l_uw;
-    let n_plane = e_t.cross(&f_t); // |.| = sin(angle between upper arm and forearm)
-    if n_plane.norm() < PARALLEL_SIN_EPS {
-        return None; // straight arm: arm plane undefined
-    }
-    let n_plane = n_plane.normalize();
-
-    // Shoulder rotation R_s maps the home upper-arm frame to the target one.
-    let u0 = (model.elbow_home - model.shoulder) / model.l_su;
-    let a4 = model.axes[3];
-    let r_s = frame_map(u0, a4, e_t, n_plane);
-
-    // Rotation through joint 4, then the residual wrist rotation to invert.
-    let r_upto4 = r_s * exp_so3(a4, theta4);
-    let r_home = model.home_ee.rotation.to_rotation_matrix();
-    let r_w = r_upto4.inverse() * r_d * r_home.inverse();
-    Some((r_s, r_w))
-}
-
-/// Best in-limit joint solution for a fixed arm angle `psi`, or `None` if no
-/// branch is in limits. Reach and `theta4` are already established by [`solve`].
-fn solve_at_psi(
-    model: &ArmModel,
-    r_d: &Rotation3<f64>,
-    p_w: &Vector3<f64>,
-    theta4: f64,
-    psi: f64,
-    seed: &JointVec,
-    circle: &Circle,
-) -> Option<JointVec> {
-    let (r_s, r_w) = shoulder_wrist_rotations(model, r_d, p_w, theta4, psi, circle)?;
-
-    let shoulders = decompose_three_axes(&r_s, model.axes[0], model.axes[1], model.axes[2]);
-    let wrists = decompose_three_axes(&r_w, model.axes[4], model.axes[5], model.axes[6]);
-
-    // Keep the in-limits branch nearest the seed. Each joint is normalized into
-    // its limit window so the returned value itself respects the declared limits
-    // (not merely a 2π-equivalent of it).
-    let mut best: Option<(f64, JointVec)> = None;
-    for &(t1, t2, t3) in &shoulders {
-        for &(t5, t6, t7) in &wrists {
-            let Some(q) = normalize_into_limits(model, &[t1, t2, t3, theta4, t5, t6, t7]) else {
-                continue;
-            };
-            let cost = seed_distance(&q, seed);
-            if best.as_ref().is_none_or(|(c, _)| cost < *c) {
-                best = Some((cost, q));
-            }
+        ArmAnglePolicy::MaxManipulability { max_step_rad } => {
+            // Anchor at the FromSeed angle (continuity, guaranteed feasible), then
+            // step within the bounded window toward higher manipulability.
+            let preferred = seed_arm_angle(model, seed).unwrap_or(0.0);
+            let intervals = ctx.feasible_psi_intervals(seed);
+            let psi0 = nearest_feasible_psi(&intervals, preferred)?;
+            let (psi, q) = ctx.max_manipulability_step(psi0, max_step_rad, seed)?;
+            Some(Solution {
+                q,
+                arm_angle: wrap_pi(psi),
+            })
         }
     }
-    best.map(|(_, q)| q)
+}
+
+/// Everything about one solve that is fixed once the target passes the reach
+/// check: the model, the decomposed target (rotation and wrist center), the elbow
+/// flex, and the redundancy circle. The per-psi machinery hangs off it as
+/// methods, so each varies only its psi/seed rather than rethreading the target.
+struct PsiSolve<'a> {
+    model: &'a ArmModel,
+    r_d: Rotation3<f64>,
+    p_w: Vector3<f64>,
+    theta4: f64,
+    circle: Circle,
+}
+
+impl PsiSolve<'_> {
+    /// The arm angle within `max_step_rad` of `psi0` with the highest
+    /// manipulability, and its joint solution. Evaluates the window's endpoints
+    /// and center, refines once with a parabolic fit through them, and keeps the
+    /// best solvable candidate; `psi0` itself is always a candidate, so this
+    /// returns `None` only if `psi0` has no in-limit branch (which the caller's
+    /// feasibility selection rules out).
+    fn max_manipulability_step(
+        &self,
+        psi0: f64,
+        max_step_rad: f64,
+        seed: &JointVec,
+    ) -> Option<(f64, JointVec)> {
+        // A non-finite or negative step degenerates to FromSeed rather than
+        // poisoning the candidate angles.
+        let h = if max_step_rad.is_finite() {
+            max_step_rad.max(0.0)
+        } else {
+            0.0
+        };
+        let eval = |psi: f64| {
+            self.solve_at_psi(psi, seed)
+                .map(|q| (psi, manipulability(&jacobian_poe(self.model, &q)), q))
+        };
+        let center = eval(psi0)?;
+        let below = eval(psi0 - h);
+        let above = eval(psi0 + h);
+        // With all three samples, a concave parabola through them estimates the
+        // peak; clamped into the window so the step bound holds regardless of fit
+        // quality.
+        let vertex = match (&below, &above) {
+            (Some((_, w_lo, _)), Some((_, w_hi, _))) => {
+                let curvature = w_lo - 2.0 * center.1 + w_hi;
+                if curvature < 0.0 {
+                    let offset = 0.5 * h * (w_lo - w_hi) / curvature;
+                    eval(psi0 + offset.clamp(-h, h))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        // Strict improvement over the center keeps the chain anchored on plateaus
+        // (no drift when manipulability is locally flat).
+        let best = [below, above, vertex]
+            .into_iter()
+            .flatten()
+            .fold(center, |acc, c| if c.1 > acc.1 { c } else { acc });
+        Some((best.0, best.2))
+    }
+}
+
+/// Geometric Jacobian of configuration `q` from the PoE screw data: column `i` is
+/// `[z x (p_ee - p); z]` with joint `i`'s axis `z` and axis point `p` carried
+/// through joints `1..i-1`, matching [`Posed::jacobian`]'s layout (rows 0..3
+/// linear, 3..6 angular, arm base frame, EE origin reference; the two agree, see
+/// tests). Lets the solver score manipulability without the FK chain's `&mut`.
+///
+/// [`Posed::jacobian`]: crate::fk::Posed::jacobian
+fn jacobian_poe(model: &ArmModel, q: &JointVec) -> Jacobian {
+    let p_ee = fk_poe_position(model, q);
+    // Accumulate the affine map of joints 1..i-1 (p -> r_acc p + t_acc); joint i's
+    // current axis and axis point are its home screw carried through it.
+    let mut r_acc = Rotation3::identity();
+    let mut t_acc = Vector3::zeros();
+    let mut cols = [Vector6::zeros(); ARM_DOF];
+    for i in 0..ARM_DOF {
+        let z = r_acc * model.axes[i];
+        let p = r_acc * model.points[i] + t_acc;
+        let linear = z.cross(&(p_ee - p));
+        cols[i] = Vector6::new(linear.x, linear.y, linear.z, z.x, z.y, z.z);
+        let r_i = exp_so3(model.axes[i], q[i]);
+        t_acc += r_acc * (model.points[i] - r_i * model.points[i]);
+        r_acc *= r_i;
+    }
+    Jacobian::from_columns(&cols)
+}
+
+impl PsiSolve<'_> {
+    /// The shoulder rotation `R_s(psi)` (home upper-arm frame to the target one)
+    /// and the residual wrist rotation `R_w(psi)` left to invert, for one arm
+    /// angle. Both are smooth functions of `psi`:
+    /// [`solve_at_psi`](Self::solve_at_psi) decomposes them into joint angles, and
+    /// [`feasible_psi_intervals`](Self::feasible_psi_intervals) samples them to
+    /// recover the per-joint `psi` dependence in closed form. `None` at the
+    /// straight-arm pose, where the arm plane (and so `R_s`) is undefined.
+    fn shoulder_wrist_rotations(&self, psi: f64) -> Option<(Rotation3<f64>, Rotation3<f64>)> {
+        let PsiSolve {
+            model,
+            r_d,
+            p_w,
+            theta4,
+            circle,
+        } = self;
+        let elbow = circle.elbow(psi);
+
+        // Upper-arm / forearm directions and the arm-plane normal.
+        let e_t = (elbow - model.shoulder) / model.l_su;
+        let f_t = (*p_w - elbow) / model.l_uw;
+        let n_plane = e_t.cross(&f_t); // |.| = sin(angle between upper arm and forearm)
+        if n_plane.norm() < PARALLEL_SIN_EPS {
+            return None; // straight arm: arm plane undefined
+        }
+        let n_plane = n_plane.normalize();
+
+        // Shoulder rotation R_s maps the home upper-arm frame to the target one.
+        let u0 = (model.elbow_home - model.shoulder) / model.l_su;
+        let a4 = model.axes[3];
+        let r_s = frame_map(u0, a4, e_t, n_plane);
+
+        // Rotation through joint 4, then the residual wrist rotation to invert.
+        let r_upto4 = r_s * exp_so3(a4, *theta4);
+        let r_home = model.home_ee.rotation.to_rotation_matrix();
+        let r_w = r_upto4.inverse() * r_d * r_home.inverse();
+        Some((r_s, r_w))
+    }
+
+    /// Best in-limit joint solution for a fixed arm angle `psi`, or `None` if no
+    /// branch is in limits. Reach and `theta4` are already established by
+    /// [`solve`].
+    fn solve_at_psi(&self, psi: f64, seed: &JointVec) -> Option<JointVec> {
+        let model = self.model;
+        let (r_s, r_w) = self.shoulder_wrist_rotations(psi)?;
+
+        let shoulders = decompose_three_axes(&r_s, model.axes[0], model.axes[1], model.axes[2]);
+        let wrists = decompose_three_axes(&r_w, model.axes[4], model.axes[5], model.axes[6]);
+
+        // Keep the in-limits branch nearest the seed. Each joint is normalized
+        // into its limit window so the returned value itself respects the
+        // declared limits (not merely a 2π-equivalent of it).
+        let mut best: Option<(f64, JointVec)> = None;
+        for &(t1, t2, t3) in &shoulders {
+            for &(t5, t6, t7) in &wrists {
+                let Some(q) = normalize_into_limits(model, &[t1, t2, t3, self.theta4, t5, t6, t7])
+                else {
+                    continue;
+                };
+                let cost = seed_distance(&q, seed);
+                if best.as_ref().is_none_or(|(c, _)| cost < *c) {
+                    best = Some((cost, q));
+                }
+            }
+        }
+        best.map(|(_, q)| q)
+    }
 }
 
 /// The seed's arm angle, or `None` only at the exact straight-arm singularity
@@ -541,50 +657,44 @@ fn limb_event_angles(
 /// in radians (`end` may exceed `pi` for the wrap-around arc). Empty if no arm
 /// angle is feasible (including the straight-arm pose, where `R_s` is undefined
 /// for every `psi`).
-fn feasible_psi_intervals(
-    model: &ArmModel,
-    r_d: &Rotation3<f64>,
-    p_w: &Vector3<f64>,
-    theta4: f64,
-    seed: &JointVec,
-    circle: &Circle,
-) -> Vec<(f64, f64)> {
-    // Sample R_s / R_w at psi = 0, ±pi/2 to recover their exact sinusoidal form.
-    let sample = |psi: f64| shoulder_wrist_rotations(model, r_d, p_w, theta4, psi, circle);
-    let (Some((rs0, rw0)), Some((rsp, rwp)), Some((rsn, rwn))) =
-        (sample(0.0), sample(FRAC_PI_2), sample(-FRAC_PI_2))
-    else {
-        return Vec::new(); // straight arm: feasibility is "none" for every psi
-    };
+impl PsiSolve<'_> {
+    fn feasible_psi_intervals(&self, seed: &JointVec) -> Vec<(f64, f64)> {
+        let model = self.model;
+        // Sample R_s / R_w at psi = 0, ±pi/2 to recover their exact sinusoidal form.
+        let sample = |psi: f64| self.shoulder_wrist_rotations(psi);
+        let (Some((rs0, rw0)), Some((rsp, rwp)), Some((rsn, rwn))) =
+            (sample(0.0), sample(FRAC_PI_2), sample(-FRAC_PI_2))
+        else {
+            return Vec::new(); // straight arm: feasibility is "none" for every psi
+        };
 
-    let bs = Matrix3::from_columns(&[model.axes[0], model.axes[1], model.axes[2]]);
-    let bw = Matrix3::from_columns(&[model.axes[4], model.axes[5], model.axes[6]]);
-    let (sa_s, cb_s, cc_s) = euler_matrix_coeffs(&bs, &rs0, &rsp, &rsn);
-    let (sa_w, cb_w, cc_w) = euler_matrix_coeffs(&bw, &rw0, &rwp, &rwn);
+        let bs = Matrix3::from_columns(&[model.axes[0], model.axes[1], model.axes[2]]);
+        let bw = Matrix3::from_columns(&[model.axes[4], model.axes[5], model.axes[6]]);
+        let (sa_s, cb_s, cc_s) = euler_matrix_coeffs(&bs, &rs0, &rsp, &rsn);
+        let (sa_w, cb_w, cc_w) = euler_matrix_coeffs(&bw, &rw0, &rwp, &rwn);
 
-    let mut events = Vec::new();
-    let shoulder_limits = [model.limits[0], model.limits[1], model.limits[2]];
-    let wrist_limits = [model.limits[4], model.limits[5], model.limits[6]];
-    limb_event_angles(
-        &sa_s,
-        &cb_s,
-        &cc_s,
-        bs.determinant(),
-        shoulder_limits,
-        &mut events,
-    );
-    limb_event_angles(
-        &sa_w,
-        &cb_w,
-        &cc_w,
-        bw.determinant(),
-        wrist_limits,
-        &mut events,
-    );
+        let mut events = Vec::new();
+        let shoulder_limits = [model.limits[0], model.limits[1], model.limits[2]];
+        let wrist_limits = [model.limits[4], model.limits[5], model.limits[6]];
+        limb_event_angles(
+            &sa_s,
+            &cb_s,
+            &cc_s,
+            bs.determinant(),
+            shoulder_limits,
+            &mut events,
+        );
+        limb_event_angles(
+            &sa_w,
+            &cb_w,
+            &cc_w,
+            bw.determinant(),
+            wrist_limits,
+            &mut events,
+        );
 
-    intervals_from_events(events, |psi| {
-        solve_at_psi(model, r_d, p_w, theta4, psi, seed, circle).is_some()
-    })
+        intervals_from_events(events, |psi| self.solve_at_psi(psi, seed).is_some())
+    }
 }
 
 /// Partition the circle at `events` and keep the arcs whose interior is feasible.
@@ -981,8 +1091,14 @@ mod tests {
             let cos4 = ((d * d - m.l_su * m.l_su - m.l_uw * m.l_uw) / (2.0 * m.l_su * m.l_uw))
                 .clamp(-1.0, 1.0);
             let theta4 = cos4.acos();
-            let circle = circle_frame(&m, p_w);
-            let intervals = feasible_psi_intervals(&m, &r_d, &p_w, theta4, &seed, &circle);
+            let ctx = PsiSolve {
+                model: &m,
+                r_d,
+                p_w,
+                theta4,
+                circle: circle_frame(&m, p_w),
+            };
+            let intervals = ctx.feasible_psi_intervals(&seed);
             assert!(
                 !intervals.is_empty(),
                 "no feasible psi for a reachable target"
@@ -990,7 +1106,7 @@ mod tests {
 
             for k in 0..GRID {
                 let psi = -PI + k as f64 * step;
-                let brute = solve_at_psi(&m, &r_d, &p_w, theta4, psi, &seed, &circle).is_some();
+                let brute = ctx.solve_at_psi(psi, &seed).is_some();
                 let analytic = in_intervals(&intervals, psi);
                 if brute != analytic {
                     assert!(
@@ -1324,5 +1440,125 @@ mod tests {
             return; // verified on the first multi-branch target
         }
         panic!("no target with >=2 distinct branches found");
+    }
+
+    #[test]
+    fn poe_jacobian_matches_chain_jacobian() {
+        // The PoE Jacobian scoring manipulability must agree with the k-chain
+        // geometric Jacobian entrywise, for both mirror arms.
+        let mut rng = StdRng::seed_from_u64(11);
+        for side in ["left", "right"] {
+            let mut fk = v1_fk(side);
+            let m = ArmModel::from_fk(&mut fk).unwrap();
+            for _ in 0..25 {
+                let q = sample_q(&mut rng, &m);
+                let poe = jacobian_poe(&m, &q);
+                let chain = fk.at(&q).jacobian();
+                let err = (poe - chain).abs().max();
+                assert!(err < 1e-9, "{side}: Jacobians disagree by {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn max_manipulability_zero_step_matches_from_seed() {
+        let mut rng = StdRng::seed_from_u64(12);
+        let mut fk = v1_fk("left");
+        let m = ArmModel::from_fk(&mut fk).unwrap();
+        for _ in 0..25 {
+            let q = sample_q(&mut rng, &m);
+            let target = pose(&mut fk, &q);
+            let seed = sample_q(&mut rng, &m);
+            let from_seed = solve(&m, &target, ArmAnglePolicy::FromSeed, &seed);
+            let zero_step = solve(
+                &m,
+                &target,
+                ArmAnglePolicy::MaxManipulability { max_step_rad: 0.0 },
+                &seed,
+            );
+            match (from_seed, zero_step) {
+                (None, None) => {}
+                (Some(a), Some(b)) => {
+                    assert!((0..ARM_DOF).all(|i| (a.q[i] - b.q[i]).abs() < 1e-9));
+                }
+                (a, b) => panic!("solvability diverged: {a:?} vs {b:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn max_manipulability_tracks_the_target_and_never_scores_below_from_seed() {
+        // Across random targets: the optimized solve hits the pose exactly, moves
+        // psi at most the step bound from the FromSeed anchor, and never returns a
+        // posture with lower manipulability than FromSeed's.
+        let mut rng = StdRng::seed_from_u64(13);
+        let mut fk = v1_fk("left");
+        let m = ArmModel::from_fk(&mut fk).unwrap();
+        let step = 0.05;
+        let mut solved = 0;
+        for _ in 0..40 {
+            let q = sample_q(&mut rng, &m);
+            let target = pose(&mut fk, &q);
+            let seed = sample_q(&mut rng, &m);
+            let Some(anchor) = solve(&m, &target, ArmAnglePolicy::FromSeed, &seed) else {
+                continue;
+            };
+            let sol = solve(
+                &m,
+                &target,
+                ArmAnglePolicy::MaxManipulability { max_step_rad: step },
+                &seed,
+            )
+            .expect("solvable exactly when FromSeed is");
+            let got = pose(&mut fk, &sol.q);
+            assert!((got.translation.vector - target.translation.vector).norm() < 1e-6);
+            assert!(got.rotation.angle_to(&target.rotation) < 1e-6);
+            assert!(
+                wrap_pi(sol.arm_angle - anchor.arm_angle).abs() <= step + 1e-9,
+                "psi stepped past the bound"
+            );
+            let w_anchor = manipulability(&jacobian_poe(&m, &anchor.q));
+            let w_opt = manipulability(&jacobian_poe(&m, &sol.q));
+            assert!(
+                w_opt >= w_anchor - 1e-12,
+                "manipulability regressed: {w_opt} < {w_anchor}"
+            );
+            solved += 1;
+        }
+        assert!(solved > 20, "too few solvable samples ({solved}) to trust");
+    }
+
+    #[test]
+    fn max_manipulability_chain_converges_and_climbs() {
+        // Chaining solves at a fixed target (seeding each with the previous
+        // solution, as the planner and the servo loop do) must climb toward a
+        // manipulability ridge and settle there, not oscillate.
+        let mut fk = v1_fk("left");
+        let m = ArmModel::from_fk(&mut fk).unwrap();
+        let q0 = [0.2, -0.3, 0.3, 1.0, -0.4, 0.5, 0.3];
+        let target = pose(&mut fk, &q0);
+        let mut seed = q0;
+        let mut w_prev = manipulability(&jacobian_poe(&m, &q0));
+        let mut psi_prev = arm_angle_of(&m, &q0).unwrap();
+        let mut last_delta = f64::INFINITY;
+        for _ in 0..60 {
+            let sol = solve(
+                &m,
+                &target,
+                ArmAnglePolicy::MaxManipulability { max_step_rad: 0.05 },
+                &seed,
+            )
+            .expect("fixed reachable target stays solvable");
+            let w = manipulability(&jacobian_poe(&m, &sol.q));
+            assert!(w >= w_prev - 1e-12, "climb must be monotone");
+            last_delta = wrap_pi(sol.arm_angle - psi_prev).abs();
+            psi_prev = sol.arm_angle;
+            w_prev = w;
+            seed = sol.q;
+        }
+        assert!(
+            last_delta < 1e-3,
+            "psi still moving {last_delta} rad after 60 chained solves"
+        );
     }
 }
