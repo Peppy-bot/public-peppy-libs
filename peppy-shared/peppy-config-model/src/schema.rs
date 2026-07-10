@@ -4,13 +4,13 @@ use serde::{
 };
 use std::fmt;
 
-/// Schema identifier embedded at the root of node, launcher, and interface
+/// Schema identifier embedded at the root of node, launcher, and contract
 /// `.json5` documents. The schema tag tells the daemon which document shape it
 /// is reading so the strict deserializer can reject mixed-up files (e.g. a
 /// launcher that claims to be a node config). Node files are always named
 /// `peppy.json5`; launcher files conventionally use `peppy_launcher.json5`
 /// for standalone projects but may use any `.json5` filename when discovered
-/// through a repository. Interface files are filename-agnostic and identified
+/// through a repository. Contract files are filename-agnostic and identified
 /// solely by their schema tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeppySchema {
@@ -18,8 +18,8 @@ pub enum PeppySchema {
     NodeV1,
     #[serde(rename = "launcher/v1")]
     LauncherV1,
-    #[serde(rename = "interface/v1")]
-    InterfaceV1,
+    #[serde(rename = "contract/v1")]
+    ContractV1,
     #[serde(rename = "pairing/v1")]
     PairingV1,
 }
@@ -29,7 +29,7 @@ impl fmt::Display for PeppySchema {
         let s = match self {
             PeppySchema::NodeV1 => "node/v1",
             PeppySchema::LauncherV1 => "launcher/v1",
-            PeppySchema::InterfaceV1 => "interface/v1",
+            PeppySchema::ContractV1 => "contract/v1",
             PeppySchema::PairingV1 => "pairing/v1",
         };
         f.write_str(s)

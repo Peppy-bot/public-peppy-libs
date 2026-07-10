@@ -73,13 +73,13 @@ pub mod node {
     pub use crate::internal::node::{
         ActionInterfaces, ActionServiceEndpoint, ActionTopicEndpoint, ArrayKind, ArraySchema,
         ConformsToItem, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
-        DependencySpec, DependsOn, EmittedTopic, Execution, ExposedAction, ExposedService,
-        InterfaceConformanceEdge, InterfaceKind, Interfaces, Manifest, MessageFormat,
-        MessageSizeEstimate, NodeConfig, NodeConfigParser, NodeDependency, ObjectKind,
-        ObjectSchema, PairingDependency, PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType,
-        ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, collect_dependency_specs,
-        collect_interface_conformance_edges, estimate_serialized_size, is_blocked_mount_source,
-        load_standalone_node_config, node_conforms_to, validate_dependency_specs,
+        ContractConformanceEdge, DependencySpec, DependsOn, EmittedTopic, Execution, ExposedAction,
+        ExposedService, InterfaceKind, Interfaces, Manifest, MessageFormat, MessageSizeEstimate,
+        NodeConfig, NodeConfigParser, NodeDependency, ObjectKind, ObjectSchema, PairingDependency,
+        PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces, Toolchain,
+        TopicInterfaces, TypeToken, collect_contract_conformance_edges, collect_dependency_specs,
+        estimate_serialized_size, is_blocked_mount_source, load_standalone_node_config,
+        node_conforms_to, validate_dependency_specs,
     };
 }
 

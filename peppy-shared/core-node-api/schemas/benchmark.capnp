@@ -87,10 +87,10 @@ struct InterfaceLatency {
     # The consumer's dependency link this edge was measured through. Disambiguates
     # rows that share the same producer + interface but are wired via distinct links.
     linkId @14 :Text;
-    # "name:tag" of the interface this edge was resolved through when the
-    # dependency is an interface-conformance edge (consumer `depends_on.interfaces`,
+    # "name:tag" of the contract this edge was resolved through when the
+    # dependency is a contract-conformance edge (consumer `depends_on.interfaces`,
     # producer `conforms_to`); empty for a direct `depends_on.nodes` edge.
-    viaInterface @15 :Text;
+    viaContract @15 :Text;
 }
 
 struct StackBenchmarkResult {
