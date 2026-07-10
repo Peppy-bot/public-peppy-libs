@@ -49,8 +49,10 @@ pub enum ConsumerFilter {
     /// receives from all of them and only them; nothing else traverses the
     /// wire. Service / action calls discover among the listed producers
     /// only. Built from `FromAnyBound` with two or more producers (a
-    /// single producer collapses to [`ConsumerFilter::Pin`]); non-empty by
-    /// construction.
+    /// single producer collapses to [`ConsumerFilter::Pin`]); non-empty
+    /// and duplicate-free by construction — each listed producer fans out
+    /// one pinned wire subscription, so a repeated entry would subscribe
+    /// (and deliver) twice.
     OnlyFrom(Vec<ProducerRef>),
     /// Deliberately unbound from_any slot: no wire subscription is created
     /// (zero wire traffic) and service / action calls fail before any wire

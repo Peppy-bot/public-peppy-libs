@@ -49,7 +49,7 @@ async def test_ready_node():
         # The ready service should accept both valid targeting modes
         target_combinations = [
             ("pinned", ConsumerFilter.pin(ProducerRef(TEST_CORE_NODE_NAME, TEST_INSTANCE_ID))),
-            ("broadcast", None),
+            ("broadcast", ConsumerFilter.any()),
         ]
 
         # Each poll uses a fresh MessengerHandle (Zenoh session) because

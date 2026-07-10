@@ -335,11 +335,12 @@ impl PyActionMessenger {
     /// [`ConsumerFilter`](peppylib::messaging::ConsumerFilter) — a pinned
     /// slot addresses its producer directly (no discovery), a multi-bound
     /// slot discovers among its bound producers only (the goal runs on the
-    /// winner), a silent (unbound) slot raises before any wire work, and
-    /// `None` falls back to full wildcard discovery (standalone fixtures).
+    /// winner), and a silent (unbound) slot raises before any wire work.
+    /// The filter is required: standalone fixtures that want full wildcard
+    /// discovery pass `ConsumerFilter.any()` explicitly.
     /// Generated code splices `node_runner.consumer_filter(link_id)`.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, filter=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, filter, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn send_goal<'py>(
         py: Python<'py>,
@@ -348,7 +349,7 @@ impl PyActionMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_action_name: String,
-        filter: Option<PyConsumerFilter>,
+        filter: PyConsumerFilter,
         user_payload: Vec<u8>,
         feedback_qos: PyQoSProfile,
         goal_timeout_secs: f64,
@@ -357,7 +358,7 @@ impl PyActionMessenger {
         let to_target = to_target.into_inner();
         let handle = messenger.inner.clone();
         crate::py_future::future_into_py(py, async move {
-            let filter = PyConsumerFilter::inner_or_any(filter);
+            let filter = filter.into_inner();
             let goal_handle = ActionMessenger::send_goal(
                 &handle,
                 &as_core_node,
@@ -460,11 +461,11 @@ impl PyActionMessenger {
 
     /// Check whether an action server is reachable within the slot's
     /// [`ConsumerFilter`](peppylib::messaging::ConsumerFilter) scope
-    /// (`None` probes any matching producer). A silent (unbound) filter
-    /// reports `False` without probing; a multi-bound one reports `True`
-    /// as soon as any bound producer answers.
+    /// (`ConsumerFilter.any()` probes any matching producer). A silent
+    /// (unbound) filter reports `False` without probing; a multi-bound
+    /// one reports `True` as soon as any bound producer answers.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_action_name, filter=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_action_name, filter))]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
@@ -472,12 +473,12 @@ impl PyActionMessenger {
         as_instance_id: String,
         to_target: PySenderTarget,
         to_action_name: String,
-        filter: Option<PyConsumerFilter>,
+        filter: PyConsumerFilter,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         crate::py_future::future_into_py(py, async move {
-            let filter = PyConsumerFilter::inner_or_any(filter);
+            let filter = filter.into_inner();
             let reachable = ActionMessenger::is_reachable(
                 &handle,
                 &bound_core_node,

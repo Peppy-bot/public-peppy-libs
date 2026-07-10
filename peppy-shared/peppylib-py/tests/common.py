@@ -110,7 +110,7 @@ async def wait_for_service(
     bound_core_node: str,
     as_instance_id: str,
     target_node_name: str,
-    target: "ConsumerFilter | None",
+    target: "ConsumerFilter",
     runner_thread: threading.Thread,
     error_queue: queue.Queue,
     timeout_secs: float = 10.0,
@@ -118,8 +118,8 @@ async def wait_for_service(
     """Poll until a service becomes reachable, or fail.
 
     `target` is the slot's `ConsumerFilter` (e.g.
-    `ConsumerFilter.pin(ProducerRef(core, inst))`), or `None` to probe
-    any matching producer.
+    `ConsumerFilter.pin(ProducerRef(core, inst))`), or
+    `ConsumerFilter.any()` to probe any matching producer.
     """
     deadline = asyncio.get_event_loop().time() + timeout_secs
     while True:

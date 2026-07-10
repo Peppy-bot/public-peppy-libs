@@ -184,13 +184,18 @@ impl From<ProducerRef> for PyProducerRef {
 
 /// Python wrapper for the per-slot
 /// [`ConsumerFilter`](peppylib::messaging::ConsumerFilter): which
-/// producers a consumer slot receives from / calls into. Opaque by
-/// design — generated code obtains it from
-/// `NodeRunner.consumer_filter(link_id)` (the daemon-resolved binding for
-/// that slot) and passes it straight to topic `subscribe`, service
-/// `poll` / `is_reachable`, and action `send_goal` / `is_reachable`. The
-/// only constructor exposed here is the [`any()`](Self::any) wildcard,
-/// for standalone fixtures and tests.
+/// producers a consumer slot receives from / calls into. Generated code
+/// obtains it from `NodeRunner.consumer_filter(link_id)` (the
+/// daemon-resolved binding for that slot) and passes it straight to topic
+/// `subscribe`, service `poll` / `is_reachable`, and action `send_goal` /
+/// `is_reachable`. The filter argument is required at every such entry
+/// point; there is no implicit default. Every filter shape is also
+/// constructible directly:
+/// [`any()`](Self::any) is the pure wildcard for standalone fixtures and
+/// tests, [`pin()`](Self::pin) pins one producer (e.g. a `ProducerRef`
+/// received alongside a consumed message), [`only_from()`](Self::only_from)
+/// restricts to an explicit producer set, and [`silent()`](Self::silent)
+/// is the deliberately-unbound shape.
 #[pyclass(name = "ConsumerFilter", frozen, from_py_object)]
 #[derive(Clone)]
 pub struct PyConsumerFilter {
@@ -200,9 +205,9 @@ pub struct PyConsumerFilter {
 #[pymethods]
 impl PyConsumerFilter {
     /// Pure-wildcard filter: matches any producer, exactly like a slot
-    /// with no daemon-resolved binding (standalone mode). Fixture / test
-    /// default — daemon-launched nodes always read the real filter via
-    /// `NodeRunner.consumer_filter(link_id)`.
+    /// with no daemon-resolved binding (standalone mode). The explicit
+    /// opt-in for standalone fixtures and tests; daemon-launched nodes
+    /// always read the real filter via `NodeRunner.consumer_filter(link_id)`.
     #[staticmethod]
     fn any() -> Self {
         Self {
@@ -223,16 +228,22 @@ impl PyConsumerFilter {
 
     /// Restrict to an explicit producer set: receive from / discover
     /// among all of them and only them. Mirrors a bound multi-producer
-    /// `from_any` slot.
+    /// `from_any` slot. Duplicate producers are canonicalized away (the
+    /// first occurrence keeps its position) — daemon-resolved bound sets
+    /// are duplicate-free by construction, and this direct constructor
+    /// upholds the same invariant so a repeated entry can never fan out
+    /// duplicate pinned subscriptions.
     #[staticmethod]
     fn only_from(producers: Vec<PyProducerRef>) -> Self {
+        let mut unique: Vec<ProducerRef> = Vec::with_capacity(producers.len());
+        for producer in producers {
+            let producer = producer.into_inner();
+            if !unique.contains(&producer) {
+                unique.push(producer);
+            }
+        }
         Self {
-            inner: ConsumerFilter::OnlyFrom(
-                producers
-                    .into_iter()
-                    .map(PyProducerRef::into_inner)
-                    .collect(),
-            ),
+            inner: ConsumerFilter::OnlyFrom(unique),
         }
     }
 
@@ -276,14 +287,6 @@ impl PyConsumerFilter {
 impl PyConsumerFilter {
     pub(crate) fn into_inner(self) -> ConsumerFilter {
         self.inner
-    }
-
-    /// The binding-layer default for every entry point that takes
-    /// `filter=None`: a missing filter means the standalone wildcard —
-    /// deliberately `Any`, never `Silent` (see the module docs on
-    /// [`ConsumerFilter`]).
-    pub(crate) fn inner_or_any(filter: Option<Self>) -> ConsumerFilter {
-        filter.map_or(ConsumerFilter::Any, Self::into_inner)
     }
 }
 

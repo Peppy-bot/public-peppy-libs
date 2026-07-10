@@ -129,18 +129,25 @@ pub(super) async fn probe_any_reachable(
 /// probe per producer and return the first successful sample — the
 /// round-trip of whichever bound producer answers first, i.e. the one
 /// restricted discovery would pin. If every probe fails, the last error
-/// propagates (there is no usable latency sample).
+/// propagates (there is no usable latency sample). An empty set reports
+/// [`Error::ServiceUnreachable`], exactly like [`discover_producer_among`].
 pub(super) async fn probe_fastest_round_trip(
     messenger: &MessengerHandle,
     senders: &[ServiceWireSender],
+    service_name: &str,
     request_size: usize,
     response_size: u32,
     response_timeout: Duration,
 ) -> Result<(Duration, usize)> {
-    debug_assert!(
-        !senders.is_empty(),
-        "probe_fastest_round_trip requires at least one bound producer"
-    );
+    // Callers guarantee a non-empty set (an empty bound set never leaves
+    // the filter layer); handle it gracefully anyway — `select_ok` panics
+    // on an empty iterator.
+    if senders.is_empty() {
+        return Err(Error::ServiceUnreachable {
+            instance_id: None,
+            service_name: service_name.to_string(),
+        });
+    }
     let probes: Vec<_> = senders
         .iter()
         .map(|sender| {

@@ -8,6 +8,7 @@ import uuid
 import pytest
 
 from peppylib import (
+    ConsumerFilter,
     MessengerHandle,
     ProducerRef,
     QoSProfile,
@@ -66,7 +67,7 @@ async def test_messenger_communication():
             instance_id,
             SenderTarget.node(node_name, NODE_TAG),
             topic_name,
-            None,  # Accept messages from any producer (discover-then-pin)
+            ConsumerFilter.any(),  # Accept messages from any producer
             qos,
         )
 

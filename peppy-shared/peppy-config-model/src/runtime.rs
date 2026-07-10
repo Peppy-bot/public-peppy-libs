@@ -135,24 +135,36 @@ impl ProducerRef {
 }
 
 /// The explicit producer set of a [`SlotBinding::FromAnyBound`] slot,
-/// non-empty by construction: "bound to nothing" is a distinct slot state
-/// ([`SlotBinding::FromAnyUnbound`]), not an empty set, so emptiness is
-/// refused at construction and at the parse boundary instead of being
-/// handled defensively by every consumer. Serializes transparently as the
-/// plain `producers` array.
+/// non-empty and duplicate-free by construction: "bound to nothing" is a
+/// distinct slot state ([`SlotBinding::FromAnyUnbound`]), not an empty
+/// set, so emptiness is refused at construction and at the parse boundary
+/// instead of being handled defensively by every consumer, and a repeated
+/// producer address is canonicalized away so one producer can never claim
+/// two pinned subscriptions on the same slot. Serializes transparently as
+/// the plain `producers` array.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct BoundProducers(Vec<ProducerRef>);
 
 impl BoundProducers {
     /// Parses an explicit bound set; `None` when `producers` is empty.
-    /// Use [`SlotBinding::from_any`] when an empty set should resolve to
+    /// Duplicate producer addresses are canonicalized away (the first
+    /// occurrence keeps its position), so every path that materializes a
+    /// bound set — this constructor, [`SlotBinding::from_any`], and serde
+    /// deserialization — yields a duplicate-free set. Use
+    /// [`SlotBinding::from_any`] when an empty set should resolve to
     /// the unbound slot state rather than be handled by the caller.
     pub fn new(producers: Vec<ProducerRef>) -> Option<Self> {
-        if producers.is_empty() {
+        let mut unique: Vec<ProducerRef> = Vec::with_capacity(producers.len());
+        for producer in producers {
+            if !unique.contains(&producer) {
+                unique.push(producer);
+            }
+        }
+        if unique.is_empty() {
             None
         } else {
-            Some(Self(producers))
+            Some(Self(unique))
         }
     }
 
@@ -834,6 +846,70 @@ mod tests {
         let empty = json!({ "kind": "from_any_bound", "producers": [] });
         let result: std::result::Result<SlotBinding, _> = serde_json::from_value(empty);
         assert!(result.is_err(), "empty producers array must fail to parse");
+    }
+
+    /// A bound set is duplicate-free by construction: a repeated producer
+    /// address is canonicalized away (first occurrence keeps its position)
+    /// by the constructor, by [`SlotBinding::from_any`], and at the serde
+    /// parse boundary, so a duplicated binding can never fan out duplicate
+    /// pinned subscriptions.
+    #[test]
+    fn bound_producers_deduplicate() {
+        use serde_json::json;
+
+        let deduped = BoundProducers::new(vec![
+            ProducerRef::new("core_a", "p1"),
+            ProducerRef::new("core_a", "p2"),
+            ProducerRef::new("core_a", "p1"),
+        ])
+        .expect("two distinct producers remain");
+        assert_eq!(
+            deduped.as_slice(),
+            [
+                ProducerRef::new("core_a", "p1"),
+                ProducerRef::new("core_a", "p2"),
+            ]
+        );
+
+        // The full `(core_node, instance_id)` pair is the identity: the
+        // same instance_id under another core_node is a distinct producer,
+        // not a duplicate.
+        let distinct = BoundProducers::new(vec![
+            ProducerRef::new("core_a", "p1"),
+            ProducerRef::new("core_b", "p1"),
+        ])
+        .expect("distinct pairs are kept");
+        assert_eq!(distinct.as_slice().len(), 2);
+
+        // `from_any` routes through the constructor, so a fully-duplicated
+        // set collapses to one bound producer (not to the unbound state).
+        assert_eq!(
+            SlotBinding::from_any(vec![
+                ProducerRef::new("core_a", "p1"),
+                ProducerRef::new("core_a", "p1"),
+            ]),
+            SlotBinding::FromAnyBound {
+                producers: BoundProducers::new(vec![ProducerRef::new("core_a", "p1")])
+                    .expect("one producer is a valid bound set"),
+            }
+        );
+
+        let parsed: SlotBinding = serde_json::from_value(json!({
+            "kind": "from_any_bound",
+            "producers": [
+                { "core_node": "core_a", "instance_id": "p1" },
+                { "core_node": "core_a", "instance_id": "p1" },
+                { "core_node": "core_a", "instance_id": "p2" }
+            ]
+        }))
+        .expect("duplicated producers parse to the canonical set");
+        assert_eq!(
+            parsed,
+            SlotBinding::from_any(vec![
+                ProducerRef::new("core_a", "p1"),
+                ProducerRef::new("core_a", "p2"),
+            ])
+        );
     }
 
     /// Half-addresses must be unrepresentable at the parse boundary: the

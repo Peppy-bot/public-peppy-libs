@@ -292,6 +292,7 @@ impl ServiceTarget<'_> {
                 super::discovery::probe_fastest_round_trip(
                     messenger,
                     &senders,
+                    to_service_name,
                     request_size,
                     response_size,
                     response_timeout,

@@ -16,6 +16,17 @@ use std::fmt;
 /// Single-chunk wildcard. Matches exactly one path segment.
 const SINGLE_CHUNK_WILDCARD: &str = "*";
 
+/// Producer-identity segment indices of the topic keyexpr. The publish
+/// shape ([`ZenohWireFormat::topic_publish`]) and the subscribe shape
+/// ([`ZenohWireFormat::topic_subscribe`]) align on these slots by
+/// construction — that alignment is what lets a pinned subscription match
+/// exactly its producer's publishes — so both parsers
+/// ([`ZenohWireFormat::parse_topic_keyexpr`] and
+/// [`ZenohWireFormat::parse_topic_subscribe_pins`]) read the same indices.
+const TOPIC_PRODUCER_CORE_NODE_SEGMENT: usize = 1;
+const TOPIC_PRODUCER_INSTANCE_ID_SEGMENT: usize = 3;
+const TOPIC_PRODUCER_LINK_ID_SEGMENT: usize = 8;
+
 /// Returns the three wire segments `(discriminator, name, tag)` for a target.
 /// When the target is `None` (untargeted receiver), all three become the
 /// single-chunk wildcard so the keyexpr matches any publisher's emission.
@@ -41,28 +52,34 @@ impl ZenohWireFormat {
     /// addressing. Inverse of [`Self::topic_publish`].
     ///
     /// The publish shape is
-    /// `*/{caller_core}/*/{caller_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{topic}`:
-    /// caller_core is segment index 1, caller_inst is segment index 3,
-    /// link_id is segment index 8. The link_id segment is surfaced so
-    /// consumer-side filters can drop messages whose producer link_id is
-    /// already claimed by a sibling pinned subscription.
+    /// `*/{caller_core}/*/{caller_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{topic}`;
+    /// the caller-identity and link_id slots sit at the shared
+    /// `TOPIC_PRODUCER_*_SEGMENT` indices. The link_id segment is surfaced
+    /// so consumer-side filters can drop messages whose producer link_id
+    /// is already claimed by a sibling pinned subscription.
     pub(crate) fn parse_topic_keyexpr(
         keyexpr: &str,
     ) -> Result<ParsedTopicKey, ZenohWireParseError> {
         let segments: Vec<&str> = keyexpr.split('/').collect();
-        let core_node = extract_caller_segment(segments.get(1).copied(), "caller_core_node")?;
-        let instance_id = extract_caller_segment(segments.get(3).copied(), "caller_instance_id")?;
-        // link_id sits at index 8 in the topic publish shape and is the
-        // signal the consumer-side sibling-precedence filter consults when
-        // dropping wildcard topic messages whose producer link_id is
-        // already claimed by a pinned subscription. Service reply keyexprs
-        // also carry a literal at this index (it's the link_id the
-        // responder claimed via `ParsedInboundQuery::claim`), so segment 8
-        // is populated there too; an empty value would only appear for a
-        // truncated wire shape and is treated as "no link_id" since it can
-        // never match a pinned literal.
+        let core_node = extract_caller_segment(
+            segments.get(TOPIC_PRODUCER_CORE_NODE_SEGMENT).copied(),
+            "caller_core_node",
+        )?;
+        let instance_id = extract_caller_segment(
+            segments.get(TOPIC_PRODUCER_INSTANCE_ID_SEGMENT).copied(),
+            "caller_instance_id",
+        )?;
+        // The link_id slot is the signal the consumer-side
+        // sibling-precedence filter consults when dropping wildcard topic
+        // messages whose producer link_id is already claimed by a pinned
+        // subscription. Service reply keyexprs also carry a literal at
+        // this index (it's the link_id the responder claimed via
+        // `ParsedInboundQuery::claim`), so the slot is populated there
+        // too; an empty value would only appear for a truncated wire
+        // shape and is treated as "no link_id" since it can never match a
+        // pinned literal.
         let link_id = segments
-            .get(8)
+            .get(TOPIC_PRODUCER_LINK_ID_SEGMENT)
             .copied()
             .filter(|s| !s.is_empty())
             .unwrap_or_default()
@@ -95,9 +112,9 @@ impl ZenohWireFormat {
             Ok((value != SINGLE_CHUNK_WILDCARD).then(|| value.to_string()))
         };
         Ok(TopicSubscriptionPin {
-            from_core_node: pin(1, "from_core_node")?,
-            from_instance_id: pin(3, "from_instance_id")?,
-            from_link_id: pin(8, "from_link_id")?,
+            from_core_node: pin(TOPIC_PRODUCER_CORE_NODE_SEGMENT, "from_core_node")?,
+            from_instance_id: pin(TOPIC_PRODUCER_INSTANCE_ID_SEGMENT, "from_instance_id")?,
+            from_link_id: pin(TOPIC_PRODUCER_LINK_ID_SEGMENT, "from_link_id")?,
         })
     }
 
@@ -433,8 +450,9 @@ fn reject_target_mismatch(
 /// Result of parsing the publisher half of a topic keyexpr — extracts the
 /// caller's `core_node` and `instance_id` so the adapter can build a
 /// [`crate::types::TopicMessage`] without re-parsing the wire string.
-/// `link_id` is the producer's bound link_id (segment 8 of the publish
-/// shape), surfaced so the consumer-side sibling-precedence filter can
+/// `link_id` is the producer's bound link_id (the
+/// `TOPIC_PRODUCER_LINK_ID_SEGMENT` slot of the publish shape), surfaced
+/// so the consumer-side sibling-precedence filter can
 /// drop wildcard topic messages whose link_id is claimed by a sibling
 /// pinned subscription on the same `(name, tag)`. Service reply keyexprs
 /// also populate this slot (with the responder's claimed link_id inside

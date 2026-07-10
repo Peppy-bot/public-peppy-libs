@@ -92,8 +92,8 @@ impl PyTopicMessenger {
     /// [`ConsumerFilter`](peppylib::messaging::ConsumerFilter) — generated
     /// code splices `node_runner.consumer_filter(link_id)` here, so the
     /// wire shape (pinned / multi-pinned / silent) follows the daemon's
-    /// binding resolution; `None` falls back to the pure wildcard
-    /// (standalone fixtures).
+    /// binding resolution. The filter is required: standalone fixtures
+    /// that want open discovery pass `ConsumerFilter.any()` explicitly.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, filter, qos, is_from_any=false))]
     #[allow(clippy::too_many_arguments)]
@@ -104,14 +104,14 @@ impl PyTopicMessenger {
         as_instance_id: String,
         from_target: Option<PySenderTarget>,
         to_topic: String,
-        filter: Option<PyConsumerFilter>,
+        filter: PyConsumerFilter,
         qos: PyQoSProfile,
         is_from_any: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let from_target = from_target.map(|t| t.into_inner());
         crate::py_future::future_into_py(py, async move {
-            let filter = PyConsumerFilter::inner_or_any(filter);
+            let filter = filter.into_inner();
             let subscription = TopicMessenger::subscribe(
                 &handle,
                 &as_core_node,
