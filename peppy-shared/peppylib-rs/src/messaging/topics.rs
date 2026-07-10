@@ -42,12 +42,7 @@ pub struct Subscription {
 
 impl Subscription {
     pub(crate) fn new(inner: pmi::Subscription) -> Self {
-        Self {
-            inners: vec![inner],
-            silent: false,
-            cursor: 0,
-            _from_any_guard: None,
-        }
+        Self::multi(vec![inner])
     }
 
     /// Merge over one producer-pinned wire subscription per bound
@@ -91,6 +86,20 @@ impl Subscription {
         loop {
             if self.inners.is_empty() {
                 return None;
+            }
+            // Single-inner fast path (Pin / Any / feedback — the common
+            // shape, and OnlyFrom once pruned to its last producer): a
+            // plain allocation-free receive. Semantically identical to
+            // the merge below, which would build a Vec + boxed future per
+            // await for a one-entry select.
+            if self.inners.len() == 1 {
+                return match self.inners[0].rx.recv_async().await {
+                    Ok(raw) => Some(Message::from(raw)),
+                    Err(_) => {
+                        self.inners.clear();
+                        None
+                    }
+                };
             }
             // Ready sweep first: serve already-buffered messages in
             // rotation so one producer's backlog cannot starve the rest.
@@ -221,15 +230,15 @@ impl TopicMessenger {
             _ => None,
         };
 
-        // One pinned receiver per producer the wire should admit; `None`
-        // pins nothing (wildcard). The from_link_id slot (seg-8) stays
-        // `None` for every interface subscription.
-        let pinned_receiver = |producer: &ProducerRef| {
+        // One receiver per producer the wire should admit; `None` pins
+        // nothing (wildcard). The from_link_id slot (seg-8) stays `None`
+        // for every interface subscription.
+        let receiver = |producer: Option<&ProducerRef>| {
             TopicWireReceiver::new(
                 as_core_node,
                 as_instance_id,
-                Some(producer.core_node.as_str()),
-                Some(producer.instance_id.as_str()),
+                producer.map(|p| p.core_node.as_str()),
+                producer.map(|p| p.instance_id.as_str()),
                 from_target.clone(),
                 None,
                 to_topic,
@@ -238,7 +247,7 @@ impl TopicMessenger {
 
         let mut subscription = match filter {
             ConsumerFilter::Pin(producer) => {
-                let recv = pinned_receiver(producer)?;
+                let recv = receiver(Some(producer))?;
                 Subscription::new(messenger.subscribe_to_topic(&recv, qos).await?)
             }
             // Defensive: the filter layer never produces an empty bound
@@ -248,22 +257,14 @@ impl TopicMessenger {
             ConsumerFilter::OnlyFrom(producers) => {
                 let mut inners = Vec::with_capacity(producers.len());
                 for producer in producers {
-                    let recv = pinned_receiver(producer)?;
+                    let recv = receiver(Some(producer))?;
                     inners.push(messenger.subscribe_to_topic(&recv, qos.clone()).await?);
                 }
                 Subscription::multi(inners)
             }
             ConsumerFilter::Silent => Subscription::silent(),
             ConsumerFilter::Any => {
-                let recv = TopicWireReceiver::new(
-                    as_core_node,
-                    as_instance_id,
-                    None,
-                    None,
-                    from_target.clone(),
-                    None,
-                    to_topic,
-                )?;
+                let recv = receiver(None)?;
                 Subscription::new(messenger.subscribe_to_topic(&recv, qos).await?)
             }
         };

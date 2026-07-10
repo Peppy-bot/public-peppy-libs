@@ -1,8 +1,8 @@
 use bytes::Bytes;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle, ActionMessenger,
-    ActionWireSender, ConcurrentAction, ConsumerFilter, GoalContext, NonEmptyPayload, PendingGoal,
-    ServiceEndpoint, decode_cancel_ack,
+    ActionWireSender, ConcurrentAction, GoalContext, NonEmptyPayload, PendingGoal, ServiceEndpoint,
+    decode_cancel_ack,
 };
 use peppylib::types::Payload;
 use pyo3::exceptions::PyValueError;
@@ -357,7 +357,7 @@ impl PyActionMessenger {
         let to_target = to_target.into_inner();
         let handle = messenger.inner.clone();
         crate::py_future::future_into_py(py, async move {
-            let filter = filter.map_or(ConsumerFilter::Any, PyConsumerFilter::into_inner);
+            let filter = PyConsumerFilter::inner_or_any(filter);
             let goal_handle = ActionMessenger::send_goal(
                 &handle,
                 &as_core_node,
@@ -477,7 +477,7 @@ impl PyActionMessenger {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         crate::py_future::future_into_py(py, async move {
-            let filter = filter.map_or(ConsumerFilter::Any, PyConsumerFilter::into_inner);
+            let filter = PyConsumerFilter::inner_or_any(filter);
             let reachable = ActionMessenger::is_reachable(
                 &handle,
                 &bound_core_node,

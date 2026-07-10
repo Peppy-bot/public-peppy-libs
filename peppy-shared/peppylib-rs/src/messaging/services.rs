@@ -89,12 +89,17 @@ impl ServiceTarget<'_> {
     /// `Producer` → `(Some, Some)`. `OneOf` fans out to one pinned sender
     /// per bound producer (see [`Self::pinned_wire_senders`]) and
     /// `Unbound` never reaches the wire; both are rejected here.
-    fn wire_sender(
+    ///
+    /// `kind` selects the wire discriminator: plain services pass
+    /// [`ServiceKind::Service`]; actions probe their goal sub-service with
+    /// [`ServiceKind::ActionGoal`].
+    pub(super) fn wire_sender(
         &self,
         bound_core_node: &str,
         as_instance_id: &str,
         to_target: SenderTarget,
         to_service_name: &str,
+        kind: ServiceKind,
     ) -> Result<ServiceWireSender> {
         let pinned = match self {
             ServiceTarget::Producer(producer) => Some(*producer),
@@ -112,7 +117,7 @@ impl ServiceTarget<'_> {
             pinned,
             to_target,
             to_service_name,
-            ServiceKind::Service,
+            kind,
         )?;
         match self {
             ServiceTarget::CoreNode(core_node) => Ok(sender.scoped_to_core_node(core_node)?),
@@ -122,12 +127,15 @@ impl ServiceTarget<'_> {
 
     /// One fully-pinned wire sender per producer in `producers` — the
     /// probe set for [`ServiceTarget::OneOf`]'s restricted discovery.
-    fn pinned_wire_senders(
+    /// `kind` selects the wire discriminator exactly as in
+    /// [`Self::wire_sender`].
+    pub(super) fn pinned_wire_senders(
         producers: &[ProducerRef],
         bound_core_node: &str,
         as_instance_id: &str,
         to_target: &SenderTarget,
         to_service_name: &str,
+        kind: ServiceKind,
     ) -> Result<Vec<ServiceWireSender>> {
         producers
             .iter()
@@ -138,7 +146,7 @@ impl ServiceTarget<'_> {
                     Some(producer),
                     to_target.clone(),
                     to_service_name,
-                    ServiceKind::Service,
+                    kind,
                 )
                 .map_err(Error::from)
             })
@@ -470,14 +478,9 @@ impl ServiceMessenger {
             .map(|t| t.min(DISCOVERY_TIMEOUT))
             .unwrap_or(DISCOVERY_TIMEOUT);
         let resolved: ProducerRef = match target {
-            ServiceTarget::Unbound => {
-                return Err(Error::UnboundConsumerSlot {
-                    name: to_service_name.to_string(),
-                });
-            }
-            // Defensive: the filter layer never produces an empty bound
-            // set (it resolves to Silent → Unbound instead).
-            ServiceTarget::OneOf([]) => {
+            // The `OneOf([])` arm is defensive: the filter layer never
+            // produces an empty bound set (it normalizes to Unbound).
+            ServiceTarget::Unbound | ServiceTarget::OneOf([]) => {
                 return Err(Error::UnboundConsumerSlot {
                     name: to_service_name.to_string(),
                 });
@@ -490,6 +493,7 @@ impl ServiceMessenger {
                     as_instance_id,
                     &to_target,
                     to_service_name,
+                    ServiceKind::Service,
                 )?;
                 discover_producer_among(
                     messenger,
@@ -505,6 +509,7 @@ impl ServiceMessenger {
                     as_instance_id,
                     to_target.clone(),
                     to_service_name,
+                    ServiceKind::Service,
                 )?;
                 discover_producer(messenger, &probe_sender, discovery_timeout).await?
             }
@@ -533,6 +538,7 @@ impl ServiceMessenger {
             as_instance_id,
             to_target,
             to_service_name,
+            ServiceKind::Service,
         )?;
         messenger
             .poll_service(
@@ -567,9 +573,9 @@ impl ServiceMessenger {
     ) -> Result<bool> {
         match target {
             // An unbound slot has nothing to reach — report so without
-            // touching the wire.
-            ServiceTarget::Unbound => Ok(false),
-            ServiceTarget::OneOf([]) => Ok(false),
+            // touching the wire. (`OneOf([])` is defensive; the filter
+            // layer normalizes an empty bound set to Unbound.)
+            ServiceTarget::Unbound | ServiceTarget::OneOf([]) => Ok(false),
             ServiceTarget::OneOf(producers) => {
                 let senders = ServiceTarget::pinned_wire_senders(
                     producers,
@@ -577,6 +583,7 @@ impl ServiceMessenger {
                     as_instance_id,
                     &to_target,
                     to_service_name,
+                    ServiceKind::Service,
                 )?;
                 probe_any_reachable(messenger, &senders).await
             }
@@ -586,6 +593,7 @@ impl ServiceMessenger {
                     as_instance_id,
                     to_target,
                     to_service_name,
+                    ServiceKind::Service,
                 )?;
                 super::discovery::probe_reachable(messenger, &sender).await
             }
@@ -625,11 +633,9 @@ impl ServiceMessenger {
     ) -> Result<(Duration, usize)> {
         match target {
             // An unbound slot cannot yield a latency sample — fail before
-            // any wire work.
-            ServiceTarget::Unbound => Err(Error::UnboundConsumerSlot {
-                name: to_service_name.to_string(),
-            }),
-            ServiceTarget::OneOf([]) => Err(Error::UnboundConsumerSlot {
+            // any wire work. (`OneOf([])` is defensive; the filter layer
+            // normalizes an empty bound set to Unbound.)
+            ServiceTarget::Unbound | ServiceTarget::OneOf([]) => Err(Error::UnboundConsumerSlot {
                 name: to_service_name.to_string(),
             }),
             // Race one pinned probe per bound producer; the sample is the
@@ -642,6 +648,7 @@ impl ServiceMessenger {
                     as_instance_id,
                     &to_target,
                     to_service_name,
+                    ServiceKind::Service,
                 )?;
                 super::discovery::probe_fastest_round_trip(
                     messenger,
@@ -658,6 +665,7 @@ impl ServiceMessenger {
                     as_instance_id,
                     to_target,
                     to_service_name,
+                    ServiceKind::Service,
                 )?;
                 super::discovery::probe_round_trip(
                     messenger,

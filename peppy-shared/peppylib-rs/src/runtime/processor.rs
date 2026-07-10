@@ -272,21 +272,6 @@ impl Processor {
         self.consumer_filters.get(link_id).unwrap_or(&ANY)
     }
 
-    /// Convenience for service / action call sites: returns the single
-    /// producer this slot pins (`ConsumerFilter::Pin`) as an owned
-    /// [`crate::messaging::ProducerRef`], or `None` for every other
-    /// variant. The owned form crosses the PyO3 boundary cleanly; native
-    /// Rust call sites can either use this or
-    /// [`Self::consumer_filter`]`.pinned_target()` (the latter borrows
-    /// from the cached filter).
-    ///
-    /// Deliberately renamed from the pre-`ProducerRef` `pinned_target_for`
-    /// so generated Python built against the instance_id-only shape fails
-    /// loudly with `AttributeError` instead of silently misaddressing.
-    pub fn pinned_producer_for(&self, link_id: &str) -> Option<crate::messaging::ProducerRef> {
-        self.consumer_filter(link_id).pinned_target().cloned()
-    }
-
     /// The live watch channel for the pairing slot declared at `link_id`, or
     /// `None` when the manifest declares no such slot. Used by
     /// [`crate::runtime::NodeRunner::peer`] and the generated

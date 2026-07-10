@@ -156,11 +156,18 @@ impl PyProducerRef {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "ProducerRef({:?}, {:?})",
-            self.inner.core_node, self.inner.instance_id
-        )
+        producer_repr(&self.inner)
     }
+}
+
+/// The one `ProducerRef` rendering, shared by [`PyProducerRef`] and
+/// [`PyConsumerFilter`] reprs so both round-trip through the constructor
+/// syntax.
+fn producer_repr(producer: &ProducerRef) -> String {
+    format!(
+        "ProducerRef({:?}, {:?})",
+        producer.core_node, producer.instance_id
+    )
 }
 
 impl PyProducerRef {
@@ -253,15 +260,11 @@ impl PyConsumerFilter {
 
     fn __repr__(&self) -> String {
         match &self.inner {
-            ConsumerFilter::Pin(producer) => format!(
-                "ConsumerFilter.pin(({:?}, {:?}))",
-                producer.core_node, producer.instance_id
-            ),
+            ConsumerFilter::Pin(producer) => {
+                format!("ConsumerFilter.pin({})", producer_repr(producer))
+            }
             ConsumerFilter::OnlyFrom(producers) => {
-                let refs: Vec<String> = producers
-                    .iter()
-                    .map(|p| format!("({:?}, {:?})", p.core_node, p.instance_id))
-                    .collect();
+                let refs: Vec<String> = producers.iter().map(producer_repr).collect();
                 format!("ConsumerFilter.only_from([{}])", refs.join(", "))
             }
             ConsumerFilter::Silent => "ConsumerFilter.silent()".to_string(),
@@ -273,6 +276,14 @@ impl PyConsumerFilter {
 impl PyConsumerFilter {
     pub(crate) fn into_inner(self) -> ConsumerFilter {
         self.inner
+    }
+
+    /// The binding-layer default for every entry point that takes
+    /// `filter=None`: a missing filter means the standalone wildcard —
+    /// deliberately `Any`, never `Silent` (see the module docs on
+    /// [`ConsumerFilter`]).
+    pub(crate) fn inner_or_any(filter: Option<Self>) -> ConsumerFilter {
+        filter.map_or(ConsumerFilter::Any, Self::into_inner)
     }
 }
 

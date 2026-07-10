@@ -15,7 +15,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use config::node::QoSProfile;
 use pmi::{
     ActionLivelinessEvent, ActionLivelinessToken, ActionLivelinessWatch, ActionWireReceiver,
-    ActionWireSender, PublisherQoS, SenderTarget, ServiceQueryKind,
+    ActionWireSender, PublisherQoS, SenderTarget, ServiceKind, ServiceQueryKind,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -582,61 +582,6 @@ pub struct ActionCreation {
     pub liveliness_token: ActionLivelinessToken,
 }
 
-/// The single goal-service probe sender for a `Producer` / `Any` /
-/// `CoreNode` scope: actions are built on the goal/cancel/result services,
-/// and discovery / reachability probes always target the goal sub-service.
-/// `OneOf` / `Unbound` never reach here (they fan out via
-/// [`goal_probe_senders`] or fail before any wire work).
-fn goal_probe_sender(
-    target: ServiceTarget<'_>,
-    bound_core_node: &str,
-    as_instance_id: &str,
-    to_target: SenderTarget,
-    to_action_name: &str,
-) -> Result<pmi::ServiceWireSender> {
-    let pinned = match target {
-        ServiceTarget::Producer(producer) => Some(producer),
-        _ => None,
-    };
-    let sender = ActionWireSender::new(
-        bound_core_node,
-        as_instance_id,
-        pinned,
-        to_target,
-        to_action_name,
-    )?
-    .goal_service();
-    match target {
-        ServiceTarget::CoreNode(core_node) => Ok(sender.scoped_to_core_node(core_node)?),
-        _ => Ok(sender),
-    }
-}
-
-/// One fully-pinned goal-service probe sender per producer in `producers`
-/// — the probe set for [`ServiceTarget::OneOf`]'s restricted discovery.
-fn goal_probe_senders(
-    producers: &[ProducerRef],
-    bound_core_node: &str,
-    as_instance_id: &str,
-    to_target: &SenderTarget,
-    to_action_name: &str,
-) -> Result<Vec<pmi::ServiceWireSender>> {
-    producers
-        .iter()
-        .map(|producer| {
-            ActionWireSender::new(
-                bound_core_node,
-                as_instance_id,
-                Some(producer),
-                to_target.clone(),
-                to_action_name,
-            )
-            .map(|sender| sender.goal_service())
-            .map_err(Error::from)
-        })
-        .collect()
-}
-
 impl ActionMessenger {
     /// Expose an action server. The producer declares its queryables under
     /// the reserved default `_` link_id segment; consumers pin a specific
@@ -669,25 +614,27 @@ impl ActionMessenger {
         target: ServiceTarget<'_>,
     ) -> Result<bool> {
         match target {
-            ServiceTarget::Unbound => Ok(false),
-            ServiceTarget::OneOf([]) => Ok(false),
+            // (`OneOf([])` is defensive; the filter layer normalizes an
+            // empty bound set to Unbound.)
+            ServiceTarget::Unbound | ServiceTarget::OneOf([]) => Ok(false),
             ServiceTarget::OneOf(producers) => {
-                let senders = goal_probe_senders(
+                let senders = ServiceTarget::pinned_wire_senders(
                     producers,
                     bound_core_node,
                     as_instance_id,
                     &to_target,
                     to_action_name,
+                    ServiceKind::ActionGoal,
                 )?;
                 probe_any_reachable(messenger, &senders).await
             }
             ServiceTarget::Any | ServiceTarget::CoreNode(_) | ServiceTarget::Producer(_) => {
-                let sender = goal_probe_sender(
-                    target,
+                let sender = target.wire_sender(
                     bound_core_node,
                     as_instance_id,
                     to_target,
                     to_action_name,
+                    ServiceKind::ActionGoal,
                 )?;
                 super::discovery::probe_reachable(messenger, &sender).await
             }
@@ -722,20 +669,19 @@ impl ActionMessenger {
     ) -> Result<(Duration, usize)> {
         match target {
             // An unbound slot cannot yield a latency sample — fail before
-            // any wire work.
-            ServiceTarget::Unbound => Err(Error::UnboundConsumerSlot {
-                name: to_action_name.to_string(),
-            }),
-            ServiceTarget::OneOf([]) => Err(Error::UnboundConsumerSlot {
+            // any wire work. (`OneOf([])` is defensive; the filter layer
+            // normalizes an empty bound set to Unbound.)
+            ServiceTarget::Unbound | ServiceTarget::OneOf([]) => Err(Error::UnboundConsumerSlot {
                 name: to_action_name.to_string(),
             }),
             ServiceTarget::OneOf(producers) => {
-                let senders = goal_probe_senders(
+                let senders = ServiceTarget::pinned_wire_senders(
                     producers,
                     bound_core_node,
                     as_instance_id,
                     &to_target,
                     to_action_name,
+                    ServiceKind::ActionGoal,
                 )?;
                 probe_fastest_round_trip(
                     messenger,
@@ -747,12 +693,12 @@ impl ActionMessenger {
                 .await
             }
             ServiceTarget::Any | ServiceTarget::CoreNode(_) | ServiceTarget::Producer(_) => {
-                let sender = goal_probe_sender(
-                    target,
+                let sender = target.wire_sender(
                     bound_core_node,
                     as_instance_id,
                     to_target,
                     to_action_name,
+                    ServiceKind::ActionGoal,
                 )?;
                 super::discovery::probe_round_trip(
                     messenger,
@@ -818,26 +764,22 @@ impl ActionMessenger {
         let started_at = Instant::now();
         let discovery_timeout = goal_timeout.min(DISCOVERY_TIMEOUT);
         let resolved: ProducerRef = match target {
-            ServiceTarget::Unbound => {
-                return Err(Error::UnboundConsumerSlot {
-                    name: to_action_name.to_string(),
-                });
-            }
-            // Defensive: the filter layer never produces an empty bound
-            // set (it resolves to Silent → Unbound instead).
-            ServiceTarget::OneOf([]) => {
+            // The `OneOf([])` arm is defensive: the filter layer never
+            // produces an empty bound set (it normalizes to Unbound).
+            ServiceTarget::Unbound | ServiceTarget::OneOf([]) => {
                 return Err(Error::UnboundConsumerSlot {
                     name: to_action_name.to_string(),
                 });
             }
             ServiceTarget::Producer(producer) => producer.clone(),
             ServiceTarget::OneOf(producers) => {
-                let probe_senders = goal_probe_senders(
+                let probe_senders = ServiceTarget::pinned_wire_senders(
                     producers,
                     as_core_node,
                     as_instance_id,
                     &to_target,
                     to_action_name,
+                    ServiceKind::ActionGoal,
                 )?;
                 discover_producer_among(
                     messenger,
@@ -848,12 +790,12 @@ impl ActionMessenger {
                 .await?
             }
             ServiceTarget::Any | ServiceTarget::CoreNode(_) => {
-                let probe_sender = goal_probe_sender(
-                    target,
+                let probe_sender = target.wire_sender(
                     as_core_node,
                     as_instance_id,
                     to_target.clone(),
                     to_action_name,
+                    ServiceKind::ActionGoal,
                 )?;
                 discover_producer(messenger, &probe_sender, discovery_timeout).await?
             }

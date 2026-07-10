@@ -111,8 +111,7 @@ impl PyTopicMessenger {
         let handle = messenger.inner.clone();
         let from_target = from_target.map(|t| t.into_inner());
         crate::py_future::future_into_py(py, async move {
-            let filter =
-                filter.map_or(peppylib::messaging::ConsumerFilter::Any, |f| f.into_inner());
+            let filter = PyConsumerFilter::inner_or_any(filter);
             let subscription = TopicMessenger::subscribe(
                 &handle,
                 &as_core_node,

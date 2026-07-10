@@ -64,17 +64,6 @@ pub enum ConsumerFilter {
 }
 
 impl ConsumerFilter {
-    /// Service / action call sites use a single fully-pinned target per
-    /// call. Returns `Some(producer)` when the filter targets exactly one
-    /// producer ([`ConsumerFilter::Pin`]) — the call site then addresses
-    /// it directly and skips discovery entirely; otherwise `None`.
-    pub fn pinned_target(&self) -> Option<&ProducerRef> {
-        match self {
-            ConsumerFilter::Pin(producer) => Some(producer),
-            _ => None,
-        }
-    }
-
     /// The [`ServiceTarget`] scope for a service / action call on this
     /// slot: a pinned slot addresses its producer directly, a multi-bound
     /// slot restricts discovery to the bound set, a silent slot refuses
@@ -83,6 +72,11 @@ impl ConsumerFilter {
     pub fn call_target(&self) -> ServiceTarget<'_> {
         match self {
             ConsumerFilter::Pin(producer) => ServiceTarget::Producer(producer),
+            // `OnlyFrom` is non-empty by construction from the binding
+            // resolver, but nothing stops direct construction (e.g. the
+            // Python `only_from([])`); normalize here so downstream call
+            // sites never see an empty bound set.
+            ConsumerFilter::OnlyFrom(producers) if producers.is_empty() => ServiceTarget::Unbound,
             ConsumerFilter::OnlyFrom(producers) => ServiceTarget::OneOf(producers),
             ConsumerFilter::Silent => ServiceTarget::Unbound,
             ConsumerFilter::Any => ServiceTarget::Any,
@@ -169,7 +163,6 @@ mod tests {
         )]);
         let filter = resolve_consumer_filter("main", &bindings);
         assert_eq!(filter, ConsumerFilter::Pin(pref("cam1")));
-        assert_eq!(filter.pinned_target(), Some(&pref("cam1")));
     }
 
     /// The single-producer collapse yields a full `ProducerRef`, which is
@@ -185,7 +178,6 @@ mod tests {
         )]);
         let filter = resolve_consumer_filter("extra", &bindings);
         assert_eq!(filter, ConsumerFilter::Pin(pref("cam1")));
-        assert_eq!(filter.pinned_target(), Some(&pref("cam1")));
     }
 
     #[test]
@@ -201,7 +193,6 @@ mod tests {
             filter,
             ConsumerFilter::OnlyFrom(vec![pref("cam1"), pref("cam2")])
         );
-        assert_eq!(filter.pinned_target(), None);
     }
 
     /// Resolution is a pure per-slot map: a sibling slot pinned to one of
@@ -246,7 +237,6 @@ mod tests {
         ]);
         let filter = resolve_consumer_filter("extra", &bindings);
         assert_eq!(filter, ConsumerFilter::Silent);
-        assert_eq!(filter.pinned_target(), None);
         assert!(filter.bound_producers().is_empty());
     }
 

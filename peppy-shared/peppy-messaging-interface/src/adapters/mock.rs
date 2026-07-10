@@ -144,8 +144,7 @@ impl MockAdapter {
         let publish_keyexpr = ZenohWireFormat::topic_publish(sender);
         let subscriptions = map.lock().unwrap();
         subscriptions.iter().any(|(declared, entries)| {
-            Self::key_exprs_intersect(declared, &publish_keyexpr)
-                && entries.iter().any(|entry| !entry.tx.is_disconnected())
+            Self::key_exprs_intersect(declared, &publish_keyexpr) && Self::has_live_entry(entries)
         })
     }
 
@@ -159,9 +158,16 @@ impl MockAdapter {
         let subscriptions = self.subscriptions.lock().unwrap();
         subscriptions
             .iter()
-            .filter(|(_, entries)| entries.iter().any(|entry| !entry.tx.is_disconnected()))
+            .filter(|(_, entries)| Self::has_live_entry(entries))
             .map(|(declared, _)| declared.clone())
             .collect()
+    }
+
+    /// Whether any entry under a declared keyexpr still receives. Dropped
+    /// subscriptions leave stale senders in the map by design (see
+    /// `subscribe_keyexpr`); every liveness question must exclude them.
+    fn has_live_entry(entries: &[MockSubscription]) -> bool {
+        entries.iter().any(|entry| !entry.tx.is_disconnected())
     }
 }
 

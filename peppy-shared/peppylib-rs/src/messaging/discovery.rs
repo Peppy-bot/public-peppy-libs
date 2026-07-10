@@ -69,20 +69,19 @@ pub(super) async fn discover_producer_among(
     discovery_timeout: Duration,
     service_name: &str,
 ) -> Result<ProducerRef> {
-    debug_assert!(
-        !probe_senders.is_empty(),
-        "discover_producer_among requires at least one bound producer"
-    );
-    let probes: Vec<_> = probe_senders
-        .iter()
-        .map(|sender| Box::pin(discover_producer(messenger, sender, discovery_timeout)))
-        .collect();
-    if probes.is_empty() {
+    // Callers guarantee a non-empty set (an empty bound set never leaves
+    // the filter layer); handle it gracefully anyway — `select_ok` panics
+    // on an empty iterator.
+    if probe_senders.is_empty() {
         return Err(Error::ServiceUnreachable {
             instance_id: None,
             service_name: service_name.to_string(),
         });
     }
+    let probes: Vec<_> = probe_senders
+        .iter()
+        .map(|sender| Box::pin(discover_producer(messenger, sender, discovery_timeout)))
+        .collect();
     match futures::future::select_ok(probes).await {
         // Losers' in-flight probes are dropped here; late replies fall on
         // the floor exactly like wildcard discovery's non-winning replies.

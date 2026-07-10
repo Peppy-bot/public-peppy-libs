@@ -1,5 +1,5 @@
 use peppylib::ServiceMessenger;
-use peppylib::messaging::{ConsumerFilter, ServiceEndpoint, ServiceRequestContext};
+use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext};
 use peppylib::types::Payload;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -216,7 +216,7 @@ impl PyServiceMessenger {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         crate::py_future::future_into_py(py, async move {
-            let filter = filter.map_or(ConsumerFilter::Any, PyConsumerFilter::into_inner);
+            let filter = PyConsumerFilter::inner_or_any(filter);
             let reachable = ServiceMessenger::is_reachable(
                 &handle,
                 &bound_core_node,
@@ -257,7 +257,7 @@ impl PyServiceMessenger {
         let handle = messenger.inner.clone();
         let to_target = to_target.into_inner();
         crate::py_future::future_into_py(py, async move {
-            let filter = filter.map_or(ConsumerFilter::Any, PyConsumerFilter::into_inner);
+            let filter = PyConsumerFilter::inner_or_any(filter);
             let response = ServiceMessenger::poll(
                 &handle,
                 &bound_core_node,
