@@ -95,7 +95,7 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
         edges: vec![SerializedEdge {
             from: brain,
             to: sensor,
-            via_interface: None,
+            via_contract: None,
         }],
     };
 
@@ -148,7 +148,7 @@ async fn stack_list_returns_none_dot_graph_when_not_requested() {
         edges: vec![SerializedEdge {
             from: brain,
             to: sensor,
-            via_interface: None,
+            via_contract: None,
         }],
     };
 

@@ -8,7 +8,7 @@ use std::path::Path;
 
 /// Validates `manifest.depends_on`:
 ///
-/// - Rejects duplicate `link_id`s across the combined nodes/interfaces/pairings
+/// - Rejects duplicate `link_id`s across the combined nodes/contracts/pairings
 ///   set. `link_id` is the shared identity for all three: consumed
 ///   topics/services/actions resolve their producer by `link_id` alone, and
 ///   pairing slots are addressed by `link_id` in `--pair`/`pairings:`, so a
@@ -17,7 +17,7 @@ use std::path::Path;
 ///   `(name, tag)` pair. `from_any` marks a dependency as a wildcard producer;
 ///   two wildcards for the same `(name, tag)` would be ambiguous at resolution.
 /// - Rejects pairing link_ids that are not wire-safe segments: unlike
-///   node/interface link_ids (local resolution names), a pairing slot link_id
+///   node/contract link_ids (local resolution names), a pairing slot link_id
 ///   is stamped verbatim into the producer-side link_id segment of every
 ///   publish keyexpr.
 fn validate_depends_on(manifest: &Manifest) -> Result<()> {
@@ -34,7 +34,7 @@ fn validate_depends_on(manifest: &Manifest) -> Result<()> {
             n.from_any,
         )
     });
-    let interfaces = depends_on.interfaces.iter().map(|i| {
+    let contracts = depends_on.contracts.iter().map(|i| {
         (
             i.link_id.as_str(),
             i.name.as_str(),
@@ -46,7 +46,7 @@ fn validate_depends_on(manifest: &Manifest) -> Result<()> {
         .pairings
         .iter()
         .map(|p| (p.link_id.as_str(), p.name.as_str(), p.tag.as_str(), false));
-    for (link_id, name, tag, from_any) in nodes.chain(interfaces).chain(pairings) {
+    for (link_id, name, tag, from_any) in nodes.chain(contracts).chain(pairings) {
         if !seen_link_ids.insert(link_id) {
             return Err(ParsingError::DuplicateLinkId(link_id.to_owned()).into());
         }
@@ -337,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_link_id_across_nodes_and_interfaces_rejected() {
+    fn test_duplicate_link_id_across_nodes_and_contracts_rejected() {
         let json5 = r#"{
             peppy_schema: "node/v1",
             manifest: {
@@ -347,7 +347,7 @@ mod tests {
                     nodes: [
                         { name: "alpha", tag: "v1", link_id: "shared" },
                     ],
-                    interfaces: [
+                    contracts: [
                         { name: "depth_camera", tag: "v1", link_id: "shared" },
                     ],
                 },
@@ -363,7 +363,7 @@ mod tests {
                 result.as_ref().unwrap_err(),
                 Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
             ),
-            "expected DuplicateLinkId(\"shared\") across nodes+interfaces, got: {:?}",
+            "expected DuplicateLinkId(\"shared\") across nodes+contracts, got: {:?}",
             result.unwrap_err()
         );
     }
@@ -419,7 +419,7 @@ mod tests {
                     nodes: [
                         { name: "alpha", tag: "v1", link_id: "a" },
                     ],
-                    interfaces: [
+                    contracts: [
                         { name: "beta", tag: "v1", link_id: "b" },
                     ],
                 },
@@ -432,20 +432,20 @@ mod tests {
         let config = NodeConfigParser::from_content(json5).unwrap();
         let deps = config.manifest.depends_on.unwrap();
         assert!(!deps.nodes[0].from_any);
-        assert!(!deps.interfaces[0].from_any);
+        assert!(!deps.contracts[0].from_any);
     }
 
     #[test]
     fn test_from_any_explicit_true_parses() {
         // A single `from_any: true` node entry alongside three plain
-        // interface entries with the same (name, tag).
+        // contract entries with the same (name, tag).
         let json5 = r#"{
             peppy_schema: "node/v1",
             manifest: {
                 name: "openarm01_backbone",
                 tag: "v1",
                 depends_on: {
-                    interfaces: [
+                    contracts: [
                         { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
                         { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
                         { name: "depth_camera", tag: "v1", link_id: "torso_camera" },
@@ -464,13 +464,13 @@ mod tests {
         let deps = config.manifest.depends_on.unwrap();
         assert_eq!(deps.nodes.len(), 1);
         assert!(deps.nodes[0].from_any);
-        assert_eq!(deps.interfaces.len(), 3);
-        assert!(deps.interfaces.iter().all(|i| !i.from_any));
+        assert_eq!(deps.contracts.len(), 3);
+        assert!(deps.contracts.iter().all(|i| !i.from_any));
     }
 
     #[test]
-    fn test_from_any_explicit_true_on_interface_with_node_duplicate() {
-        // The wildcard is on an interface entry; a plain node entry shares
+    fn test_from_any_explicit_true_on_contract_with_node_duplicate() {
+        // The wildcard is on a contract entry; a plain node entry shares
         // (name, tag).
         let json5 = r#"{
             peppy_schema: "node/v1",
@@ -478,7 +478,7 @@ mod tests {
                 name: "openarm01_backbone",
                 tag: "v1",
                 depends_on: {
-                    interfaces: [
+                    contracts: [
                         { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
                         { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
                         { name: "depth_camera", tag: "v1", link_id: "torso_camera", from_any: true },
@@ -496,7 +496,7 @@ mod tests {
         let config = NodeConfigParser::from_content(json5).unwrap();
         let deps = config.manifest.depends_on.unwrap();
         assert!(!deps.nodes[0].from_any);
-        let from_any_count = deps.interfaces.iter().filter(|i| i.from_any).count();
+        let from_any_count = deps.contracts.iter().filter(|i| i.from_any).count();
         assert_eq!(from_any_count, 1);
     }
 
@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn test_conflicting_from_any_two_interfaces_rejected() {
+    fn test_conflicting_from_any_two_contracts_rejected() {
         let json5 = r#"{
             peppy_schema: "node/v1",
             manifest: {
@@ -540,7 +540,7 @@ mod tests {
                 tag: "v1",
                 depends_on: {
                     nodes: [],
-                    interfaces: [
+                    contracts: [
                         { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
                         { name: "depth_camera", tag: "v1", link_id: "b", from_any: true },
                     ],
@@ -564,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn test_conflicting_from_any_across_node_and_interface_rejected() {
+    fn test_conflicting_from_any_across_node_and_contract_rejected() {
         let json5 = r#"{
             peppy_schema: "node/v1",
             manifest: {
@@ -574,7 +574,7 @@ mod tests {
                     nodes: [
                         { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
                     ],
-                    interfaces: [
+                    contracts: [
                         { name: "depth_camera", tag: "v1", link_id: "b", from_any: true },
                     ],
                 },
@@ -591,7 +591,7 @@ mod tests {
                 Error::Parsing(ParsingError::ConflictingFromAny { name, tag })
                     if name == "depth_camera" && tag == "v1"
             ),
-            "expected ConflictingFromAny across nodes+interfaces, got: {:?}",
+            "expected ConflictingFromAny across nodes+contracts, got: {:?}",
             result.unwrap_err()
         );
     }
@@ -699,14 +699,14 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_link_id_across_interfaces_and_pairings_rejected() {
+    fn test_duplicate_link_id_across_contracts_and_pairings_rejected() {
         let json5 = r#"{
             peppy_schema: "node/v1",
             manifest: {
                 name: "dup_node",
                 tag: "v1",
                 depends_on: {
-                    interfaces: [
+                    contracts: [
                         { name: "depth_camera", tag: "v1", link_id: "shared" },
                     ],
                     pairings: [
@@ -725,14 +725,14 @@ mod tests {
                 result.as_ref().unwrap_err(),
                 Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
             ),
-            "expected DuplicateLinkId(\"shared\") across interfaces+pairings, got: {:?}",
+            "expected DuplicateLinkId(\"shared\") across contracts+pairings, got: {:?}",
             result.unwrap_err()
         );
     }
 
     #[test]
     fn test_pairing_link_id_with_at_sign_rejected_as_wire_unsafe() {
-        // Node/interface link_ids never travel the wire, but a pairing slot
+        // Node/contract link_ids never travel the wire, but a pairing slot
         // link_id is stamped into publish keyexprs, so wire-unsafe characters
         // must be rejected at parse time.
         let json5 = r#"{
@@ -832,7 +832,7 @@ mod tests {
 
     #[test]
     fn test_pairing_entry_with_unknown_field_rejected() {
-        // `from_any` belongs to node/interface deps; pairing entries are
+        // `from_any` belongs to node/contract deps; pairing entries are
         // deny_unknown_fields so it must not silently pass.
         let json5 = r#"{
             peppy_schema: "node/v1",

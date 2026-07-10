@@ -361,7 +361,7 @@ fn build_consumer_filters(
             );
             out.insert(dep.link_id.clone(), filter);
         }
-        for dep in &deps.interfaces {
+        for dep in &deps.contracts {
             let filter = crate::messaging::resolve_consumer_filter(
                 dep.link_id.as_str(),
                 &runtime_config.node_instance.slot_bindings,

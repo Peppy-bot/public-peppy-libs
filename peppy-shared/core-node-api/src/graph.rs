@@ -242,12 +242,12 @@ pub struct SerializedEdge {
     pub from: SerializedNode,
     pub to: SerializedNode,
     /// `Some("name:tag")` when this edge is a dependency resolved through
-    /// interface conformance (the consumer declares `depends_on.interfaces` and
-    /// `to` is a node that `conforms_to` that interface); `None` for a direct
+    /// contract conformance (the consumer declares `depends_on.contracts` and
+    /// `to` is a node that `conforms_to` that contract); `None` for a direct
     /// `depends_on.nodes` edge. Defaulted on decode so payloads from producers
     /// that predate this field still parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub via_interface: Option<String>,
+    pub via_contract: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -703,15 +703,15 @@ mod tests {
     }
 
     #[test]
-    fn edge_via_interface_defaults_to_none_and_is_omitted_when_absent() {
+    fn edge_via_contract_defaults_to_none_and_is_omitted_when_absent() {
         let edge = SerializedEdge {
             from: make_node("a", "v1", &[]),
             to: make_node("b", "v1", &[]),
-            via_interface: None,
+            via_contract: None,
         };
         let json = serde_json::to_string(&edge).expect("serialize");
         assert!(
-            !json.contains("via_interface"),
+            !json.contains("via_contract"),
             "None must be omitted from the wire form: {json}"
         );
         let decoded: SerializedEdge = serde_json::from_str(&json).expect("decode");
@@ -719,7 +719,7 @@ mod tests {
 
         // And a populated interface round-trips.
         let via = SerializedEdge {
-            via_interface: Some("camera:v1".to_owned()),
+            via_contract: Some("camera:v1".to_owned()),
             ..edge
         };
         let json = serde_json::to_string(&via).expect("serialize");

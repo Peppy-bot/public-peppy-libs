@@ -135,14 +135,14 @@ pub fn resolve_consumer_filter(
 }
 
 /// Normalize each `DependsOn` entry to a `(name, tag, link_id,
-/// from_any)` tuple so node and interface dep lists can be walked
+/// from_any)` tuple so node and contract dep lists can be walked
 /// uniformly.
 fn iter_deps(depends_on: Option<&DependsOn>) -> Vec<(&str, &str, &str, bool)> {
     let Some(deps) = depends_on else {
         return Vec::new();
     };
     let mut out: Vec<(&str, &str, &str, bool)> =
-        Vec::with_capacity(deps.nodes.len() + deps.interfaces.len());
+        Vec::with_capacity(deps.nodes.len() + deps.contracts.len());
     for dep in &deps.nodes {
         out.push((
             dep.name.as_str(),
@@ -151,7 +151,7 @@ fn iter_deps(depends_on: Option<&DependsOn>) -> Vec<(&str, &str, &str, bool)> {
             dep.from_any,
         ));
     }
-    for dep in &deps.interfaces {
+    for dep in &deps.contracts {
         out.push((
             dep.name.as_str(),
             dep.tag.as_str(),
@@ -254,7 +254,7 @@ mod tests {
                     from_any,
                 })
                 .collect(),
-            interfaces: vec![],
+            contracts: vec![],
             pairings: vec![],
         }
     }

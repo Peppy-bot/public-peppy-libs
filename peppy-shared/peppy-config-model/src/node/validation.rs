@@ -40,10 +40,10 @@ pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
         .collect()
 }
 
-/// Does this node declare conformance to interface `(name, tag)`? Interface
+/// Does this node declare conformance to contract `(name, tag)`? Contract
 /// providers are matched solely by `conforms_to`, never by node-name identity,
 /// consistent with the binding validator's `slot_matches_producer`. This is the
-/// one source of truth for "node X provides interface Y", shared by the node
+/// one source of truth for "node X provides contract Y", shared by the node
 /// stack, the benchmark, and the service/action cycle check.
 pub fn node_conforms_to(node: &NodeConfig, name: &str, tag: &str) -> bool {
     node.interfaces
@@ -54,47 +54,45 @@ pub fn node_conforms_to(node: &NodeConfig, name: &str, tag: &str) -> bool {
         .any(|item| item.name.as_str() == name && item.tag == tag)
 }
 
-/// One resolved interface-conformance dependency edge: `consumer` declares
-/// `depends_on.interfaces` for `interface`, and `provider` declares
-/// `conforms_to` that interface. Distinct from a direct node dependency
-/// (captured by [`collect_dependency_specs`]) — interface deps are deliberately
+/// One resolved contract-conformance dependency edge: `consumer` declares
+/// `depends_on.contracts` for `contract`, and `provider` declares
+/// `conforms_to` that contract. Distinct from a direct node dependency
+/// (captured by [`collect_dependency_specs`]) — contract deps are deliberately
 /// kept out of the node-dependency DAG, so this is the only place they surface
 /// for display/measurement purposes.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InterfaceConformanceEdge {
+pub struct ContractConformanceEdge {
     pub consumer_name: String,
     pub consumer_tag: String,
     pub provider_name: String,
     pub provider_tag: String,
-    pub interface_name: String,
-    pub interface_tag: String,
+    pub contract_name: String,
+    pub contract_tag: String,
 }
 
-/// Resolve every interface-conformance edge among `configs`: for each consumer's
-/// `depends_on.interfaces` entry, emit one edge per config that
-/// [`node_conforms_to`] that interface. An interface dep with no provider in the
+/// Resolve every contract-conformance edge among `configs`: for each consumer's
+/// `depends_on.contracts` entry, emit one edge per config that
+/// [`node_conforms_to`] that contract. A contract dep with no provider in the
 /// set yields no edge (mirroring how a node dep absent from the graph produces
-/// no edge); an interface with several conformers fans out to all of them.
-pub fn collect_interface_conformance_edges(
-    configs: &[&NodeConfig],
-) -> Vec<InterfaceConformanceEdge> {
+/// no edge); a contract with several conformers fans out to all of them.
+pub fn collect_contract_conformance_edges(configs: &[&NodeConfig]) -> Vec<ContractConformanceEdge> {
     let mut edges = Vec::new();
     for consumer in configs {
         let Some(depends_on) = consumer.manifest.depends_on.as_ref() else {
             continue;
         };
-        for dep in &depends_on.interfaces {
-            let iface_name = dep.name.as_str();
-            let iface_tag = dep.tag.as_str();
+        for dep in &depends_on.contracts {
+            let contract_name = dep.name.as_str();
+            let contract_tag = dep.tag.as_str();
             for provider in configs {
-                if node_conforms_to(provider, iface_name, iface_tag) {
-                    edges.push(InterfaceConformanceEdge {
+                if node_conforms_to(provider, contract_name, contract_tag) {
+                    edges.push(ContractConformanceEdge {
                         consumer_name: consumer.manifest.name.as_str().to_owned(),
                         consumer_tag: consumer.manifest.tag.clone(),
                         provider_name: provider.manifest.name.as_str().to_owned(),
                         provider_tag: provider.manifest.tag.clone(),
-                        interface_name: iface_name.to_owned(),
-                        interface_tag: iface_tag.to_owned(),
+                        contract_name: contract_name.to_owned(),
+                        contract_tag: contract_tag.to_owned(),
                     });
                 }
             }
@@ -111,9 +109,9 @@ pub fn collect_interface_conformance_edges(
 /// Validation is two-phase:
 /// 1. **Node existence**: Each entry in `manifest.depends_on.nodes` must resolve to an existing node.
 /// 2. **Interface exposure**: Each consumed/expected interface must reference a valid `link_id`
-///    declared in either `depends_on.nodes` or `depends_on.interfaces`. For node-backed
-///    link_ids the producer must expose the required interface; interface-backed link_ids
-///    are validated against their parsed interface contract at parse time and only need
+///    declared in either `depends_on.nodes` or `depends_on.contracts`. For node-backed
+///    link_ids the producer must expose the required interface; contract-backed link_ids
+///    are validated against their parsed contract at parse time and only need
 ///    the link_id declaration check here.
 pub fn validate_dependency_specs(
     manifest: &Manifest,
@@ -146,7 +144,7 @@ pub fn validate_dependency_specs(
     }
 
     // Collect all declared link_ids so we can distinguish "declared but unresolved"
-    // (already has a MissingDependency error or is an interface-backed dep validated
+    // (already has a MissingDependency error or is a contract-backed dep validated
     // at parse time) from "never declared" (typo).
     let declared_link_ids: HashSet<&str> = manifest
         .depends_on
@@ -155,7 +153,7 @@ pub fn validate_dependency_specs(
             d.nodes
                 .iter()
                 .map(|n| n.link_id.as_str())
-                .chain(d.interfaces.iter().map(|i| i.link_id.as_str()))
+                .chain(d.contracts.iter().map(|i| i.link_id.as_str()))
                 .collect()
         })
         .unwrap_or_default();
@@ -372,7 +370,7 @@ mod tests {
         NodeConfigParser::from_content(content).expect("parse node config")
     }
 
-    /// A node that conforms to the `uvc_camera:v1` interface (the provider).
+    /// A node that conforms to the `uvc_camera:v1` contract (the provider).
     fn camera_mock() -> NodeConfig {
         parse(
             r#"{
@@ -384,7 +382,7 @@ mod tests {
         )
     }
 
-    /// A node that depends on the `uvc_camera:v1` interface (the consumer),
+    /// A node that depends on the `uvc_camera:v1` contract (the consumer),
     /// consuming it as both a topic and a service over link `camera`.
     fn brain() -> NodeConfig {
         parse(
@@ -393,7 +391,7 @@ mod tests {
                 manifest: {
                     name: "brain", tag: "v1",
                     depends_on: {
-                        interfaces: [ { name: "uvc_camera", tag: "v1", link_id: "camera" } ]
+                        contracts: [ { name: "uvc_camera", tag: "v1", link_id: "camera" } ]
                     }
                 },
                 execution: { language: "rust", run_cmd: ["brain"] },
@@ -455,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn node_conforms_to_matches_declared_interface_only() {
+    fn node_conforms_to_matches_declared_contract_only() {
         let cam = camera_mock();
         assert!(node_conforms_to(&cam, "uvc_camera", "v1"));
         assert!(!node_conforms_to(&cam, "uvc_camera", "v2"));
@@ -471,18 +469,18 @@ mod tests {
         let other = unrelated();
         let configs = [&brain, &cam, &other];
 
-        let edges = collect_interface_conformance_edges(&configs);
+        let edges = collect_contract_conformance_edges(&configs);
 
-        // One edge despite the consumer using the interface as two artifacts:
-        // the edge is per (consumer, interface dep, provider), not per artifact.
+        // One edge despite the consumer using the contract as two artifacts:
+        // the edge is per (consumer, contract dep, provider), not per artifact.
         assert_eq!(edges.len(), 1, "edges: {edges:?}");
         let e = &edges[0];
         assert_eq!(e.consumer_name, "brain");
         assert_eq!(e.consumer_tag, "v1");
         assert_eq!(e.provider_name, "uvc_camera_python_mock");
         assert_eq!(e.provider_tag, "v1");
-        assert_eq!(e.interface_name, "uvc_camera");
-        assert_eq!(e.interface_tag, "v1");
+        assert_eq!(e.contract_name, "uvc_camera");
+        assert_eq!(e.contract_tag, "v1");
     }
 
     #[test]
@@ -490,7 +488,7 @@ mod tests {
         let brain = brain();
         let other = unrelated();
         let configs = [&brain, &other];
-        assert!(collect_interface_conformance_edges(&configs).is_empty());
+        assert!(collect_contract_conformance_edges(&configs).is_empty());
     }
 
     #[test]
@@ -507,7 +505,7 @@ mod tests {
             }"#,
         );
         let configs = [&brain, &cam, &cam2];
-        let edges = collect_interface_conformance_edges(&configs);
+        let edges = collect_contract_conformance_edges(&configs);
         assert_eq!(
             edges.len(),
             2,

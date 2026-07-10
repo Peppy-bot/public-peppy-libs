@@ -477,11 +477,11 @@ where
     deserialize_non_empty_identifier(deserializer, "NodeDependency.link_id")
 }
 
-fn deserialize_interface_dependency_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_contract_dependency_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "InterfaceDependency.link_id")
+    deserialize_non_empty_identifier(deserializer, "ContractDependency.link_id")
 }
 
 fn deserialize_pairing_dependency_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -552,10 +552,10 @@ pub struct NodeDependency {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct InterfaceDependency {
+pub struct ContractDependency {
     pub name: Name,
     pub tag: String,
-    #[serde(deserialize_with = "deserialize_interface_dependency_link_id")]
+    #[serde(deserialize_with = "deserialize_contract_dependency_link_id")]
     pub link_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
@@ -566,7 +566,7 @@ pub struct InterfaceDependency {
 /// One pairing slot of a node: the node participates in the named pairing as
 /// `role`, addressable in code and CLI flags via `link_id`. One entry covers
 /// both directions of the conversation — the topics the role emits AND the
-/// counterpart-role topics it consumes. Like interface dependencies, pairings
+/// counterpart-role topics it consumes. Like contract dependencies, pairings
 /// contribute no DAG edge. `optional: true` marks a slot the node functions
 /// meaningfully without (it boots unpaired with no `--pair`/`--defer-pair`
 /// ceremony); a required slot must be paired or explicitly deferred at start.
@@ -591,7 +591,7 @@ pub struct DependsOn {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<NodeDependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub interfaces: Vec<InterfaceDependency>,
+    pub contracts: Vec<ContractDependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pairings: Vec<PairingDependency>,
 }
@@ -1565,71 +1565,71 @@ mod tests {
         assert_eq!(deps.nodes[0].link_id, "lidar");
         assert_eq!(deps.nodes[1].name.as_str(), "nav_system");
         assert_eq!(deps.nodes[1].link_id, "navigation");
-        assert!(deps.interfaces.is_empty());
+        assert!(deps.contracts.is_empty());
     }
 
     #[test]
-    fn depends_on_with_interfaces_full() {
+    fn depends_on_with_contracts_full() {
         let json5 = r#"{
             nodes: [],
-            interfaces: [
+            contracts: [
                 { name: "depth_camera", tag: "v1", sha256: "aaa", link_id: "depth_camera" }
             ]
         }"#;
         let deps: DependsOn = serde_json5::from_str(json5).expect("should parse");
         assert!(deps.nodes.is_empty());
-        assert_eq!(deps.interfaces.len(), 1);
-        assert_eq!(deps.interfaces[0].name.as_str(), "depth_camera");
-        assert_eq!(deps.interfaces[0].tag, "v1");
-        assert_eq!(deps.interfaces[0].link_id, "depth_camera");
-        assert_eq!(deps.interfaces[0].sha256.as_deref(), Some("aaa"));
+        assert_eq!(deps.contracts.len(), 1);
+        assert_eq!(deps.contracts[0].name.as_str(), "depth_camera");
+        assert_eq!(deps.contracts[0].tag, "v1");
+        assert_eq!(deps.contracts[0].link_id, "depth_camera");
+        assert_eq!(deps.contracts[0].sha256.as_deref(), Some("aaa"));
     }
 
     #[test]
-    fn depends_on_with_interfaces_no_sha256() {
+    fn depends_on_with_contracts_no_sha256() {
         let json5 = r#"{
             nodes: [],
-            interfaces: [
+            contracts: [
                 { name: "depth_camera", tag: "v1", link_id: "depth_camera" }
             ]
         }"#;
         let deps: DependsOn = serde_json5::from_str(json5).expect("should parse");
-        assert_eq!(deps.interfaces.len(), 1);
-        assert!(deps.interfaces[0].sha256.is_none());
+        assert_eq!(deps.contracts.len(), 1);
+        assert!(deps.contracts[0].sha256.is_none());
     }
 
     #[test]
-    fn depends_on_interfaces_requires_name() {
+    fn depends_on_contracts_requires_name() {
         let json5 = r#"{
             nodes: [],
-            interfaces: [{ tag: "v1", link_id: "depth_camera" }]
+            contracts: [{ tag: "v1", link_id: "depth_camera" }]
         }"#;
         assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
     }
 
     #[test]
-    fn depends_on_interfaces_requires_tag() {
+    fn depends_on_contracts_requires_tag() {
         let json5 = r#"{
             nodes: [],
-            interfaces: [{ name: "depth_camera", link_id: "depth_camera" }]
+            contracts: [{ name: "depth_camera", link_id: "depth_camera" }]
         }"#;
         assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
     }
 
     #[test]
-    fn depends_on_interfaces_requires_link_id() {
+    fn depends_on_contracts_requires_link_id() {
         let json5 = r#"{
             nodes: [],
-            interfaces: [{ name: "depth_camera", tag: "v1" }]
+            contracts: [{ name: "depth_camera", tag: "v1" }]
         }"#;
         assert!(serde_json5::from_str::<DependsOn>(json5).is_err());
     }
 
     #[test]
-    fn depends_on_interfaces_rejects_unknown_fields() {
+    fn depends_on_contracts_rejects_unknown_fields() {
         let json5 = r#"{
             nodes: [],
-            interfaces: [
+            contracts: [
                 { name: "depth_camera", tag: "v1", link_id: "depth_camera", extra: "bad" }
             ]
         }"#;
@@ -1637,16 +1637,16 @@ mod tests {
     }
 
     #[test]
-    fn depends_on_with_only_interfaces() {
+    fn depends_on_with_only_contracts() {
         let json5 = r#"{
-            interfaces: [
+            contracts: [
                 { name: "uvc_camera", tag: "v1", link_id: "camera" }
             ]
         }"#;
         let deps: DependsOn = serde_json5::from_str(json5).expect("nodes should be optional");
         assert!(deps.nodes.is_empty());
-        assert_eq!(deps.interfaces.len(), 1);
-        assert_eq!(deps.interfaces[0].link_id, "camera");
+        assert_eq!(deps.contracts.len(), 1);
+        assert_eq!(deps.contracts[0].link_id, "camera");
     }
 
     #[test]

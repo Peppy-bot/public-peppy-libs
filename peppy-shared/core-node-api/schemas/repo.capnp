@@ -44,9 +44,9 @@ struct RepoRefreshGoalResponse {
 
 struct RepoRefreshFeedback {
     payload :union {
-        # A discovered node, launcher, or interface manifest.
+        # A discovered node, launcher, or contract manifest.
         discovered :group {
-            # Kind of item being reported: "node", "launcher", or "interface".
+            # Kind of item being reported: "node", "launcher", or "contract".
             kind @0 :Text;
             # Name of the discovered item.
             itemName @1 :Text;
@@ -77,7 +77,7 @@ struct RepoRefreshResult {
     errorMessage @1 :Text;
     totalNodesFound @2 :UInt32;
     totalLaunchersFound @3 :UInt32;
-    totalInterfacesFound @4 :UInt32;
+    totalContractsFound @4 :UInt32;
     totalPairingsFound @5 :UInt32;
 }
 
