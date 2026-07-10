@@ -108,8 +108,10 @@ pub struct TopicMessenger;
 
 impl TopicMessenger {
     /// Subscribe to a topic published by a specific target. `from_target`
-    /// `Some(SenderTarget)` filters on the publisher's identity; `None`
-    /// wildcards the target segment (any node or interface emits a match).
+    /// filters on the publisher's identity — consumer dep slots always
+    /// know the producer's node / interface target; a stream with no
+    /// target to consult is an infra topic and goes through
+    /// [`Self::subscribe_target_scoped`].
     /// The [`ConsumerFilter`] carries the slot's bound producers and
     /// selects the wire strategy: an empty filter opens no wire
     /// subscription at all (the slot is silent), a single producer pins
@@ -122,7 +124,7 @@ impl TopicMessenger {
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
-        from_target: Option<SenderTarget>,
+        from_target: SenderTarget,
         to_topic: &str,
         filter: &ConsumerFilter,
         qos: QoSProfile,
@@ -141,7 +143,7 @@ impl TopicMessenger {
             as_instance_id,
             wire_from_producer.map(|p| p.core_node.as_str()),
             wire_from_producer.map(|p| p.instance_id.as_str()),
-            from_target,
+            Some(from_target),
             None,
             to_topic,
         )?;

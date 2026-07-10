@@ -288,6 +288,27 @@ impl Processor {
         self.consumer_filter(link_id).pinned_target().cloned()
     }
 
+    /// The single producer bound to the service / action slot at `link_id`,
+    /// or [`Error::ServiceSlotNotPinned`](crate::error::Error::ServiceSlotNotPinned)
+    /// when the slot is bound to zero or several producers. The single home
+    /// of the "service and action calls address exactly one producer"
+    /// invariant: generated poll / send_goal call sites splice this (Rust
+    /// directly, Python via `NodeRunner.require_pinned_producer`) instead of
+    /// re-deriving the error. Borrows from the cached filter, so the
+    /// resolution allocates only on the error path.
+    pub fn require_pinned_producer(
+        &self,
+        link_id: &str,
+    ) -> crate::error::Result<&crate::messaging::ProducerRef> {
+        let filter = self.consumer_filter(link_id);
+        filter
+            .pinned_target()
+            .ok_or_else(|| crate::error::Error::ServiceSlotNotPinned {
+                link_id: link_id.to_string(),
+                bound: filter.producers().len(),
+            })
+    }
+
     /// The live watch channel for the pairing slot declared at `link_id`, or
     /// `None` when the manifest declares no such slot. Used by
     /// [`crate::runtime::NodeRunner::peer`] and the generated

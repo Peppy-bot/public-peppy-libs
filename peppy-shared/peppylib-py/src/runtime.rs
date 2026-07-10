@@ -899,12 +899,11 @@ impl PyNodeRunner {
 
     /// The [`ProducerRef`](peppylib::messaging::ProducerRef) bound to
     /// `link_id`, when the slot is bound to exactly one producer; `None`
-    /// when it is bound to zero or several. Python codegen splices this at
-    /// consumed poll / send_goal call sites as the single `target`
-    /// argument (after raising when it is `None` — service and action
-    /// slots must be bound to exactly one producer). The same
-    /// `ProducerRef` type is what consumed-topic callbacks return, so a
-    /// received identity can be passed straight back here.
+    /// when it is bound to zero or several. Non-raising sibling of
+    /// [`Self::require_pinned_producer`] for callers that want to branch on
+    /// the binding state themselves. The same `ProducerRef` type is what
+    /// consumed-topic callbacks return, so a received identity can be
+    /// passed straight back here.
     ///
     /// Renamed from the pre-`ProducerRef` `pinned_target_for` (which
     /// returned the instance_id alone) so stale generated Python fails
@@ -914,6 +913,19 @@ impl PyNodeRunner {
             .processor()
             .pinned_producer_for(link_id)
             .map(PyProducerRef::from)
+    }
+
+    /// The single producer bound to the service / action slot at `link_id`.
+    /// Raises `RuntimeError` (peppylib's `ServiceSlotNotPinned`) when the
+    /// slot is bound to zero or several producers — service and action
+    /// calls address exactly one. Python codegen splices this at consumed
+    /// poll / send_goal call sites as the single `target` argument.
+    fn require_pinned_producer(&self, link_id: &str) -> PyResult<PyProducerRef> {
+        self.inner
+            .processor()
+            .require_pinned_producer(link_id)
+            .map(|producer| PyProducerRef::from(producer.clone()))
+            .map_err(crate::messaging::to_py_err)
     }
 
     /// Every producer bound to the consumer slot at `link_id`, in binding

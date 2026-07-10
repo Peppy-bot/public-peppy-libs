@@ -85,13 +85,12 @@ pub struct PyTopicMessenger;
 #[pymethods]
 impl PyTopicMessenger {
     /// Subscribe to a topic. Pass `SenderTarget.node(name, tag)` or
-    /// `SenderTarget.interface(name, tag)` to match the publisher's target,
-    /// or `None` to match any publisher. `from_producers` is the slot's
-    /// bound producer list, each a full
-    /// [`ProducerRef`](peppylib::messaging::ProducerRef) identity: an empty
-    /// list yields a silent subscription (the slot receives nothing), one
-    /// producer pins it on the wire, several producers install an
-    /// in-process acceptance set. Generated code splices
+    /// `SenderTarget.interface(name, tag)` to match the publisher's
+    /// target. `from_producers` is the slot's bound producer list, each a
+    /// full [`ProducerRef`](peppylib::messaging::ProducerRef) identity: an
+    /// empty list yields a silent subscription (the slot receives
+    /// nothing), one producer pins it on the wire, several producers
+    /// install an in-process acceptance set. Generated code splices
     /// `node_runner.bound_producers_for(link_id)` here.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_producers, qos))]
@@ -101,13 +100,13 @@ impl PyTopicMessenger {
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
-        from_target: Option<PySenderTarget>,
+        from_target: PySenderTarget,
         to_topic: String,
         from_producers: Vec<PyProducerRef>,
         qos: PyQoSProfile,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
-        let from_target = from_target.map(|t| t.into_inner());
+        let from_target = from_target.into_inner();
         crate::py_future::future_into_py(py, async move {
             let filter = peppylib::messaging::ConsumerFilter::new(
                 from_producers
