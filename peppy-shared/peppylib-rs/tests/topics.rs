@@ -1,8 +1,8 @@
 mod common;
 
-use common::{publish_once, test_node_target, wait_for_topic_subscriber};
+use common::{bound_filter, publish_once, test_node_target, wait_for_topic_subscriber};
 use config::node::QoSProfile;
-use peppylib::messaging::{ConsumerFilter, MessengerHandle, ProducerRef, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, ProducerRef, TopicMessenger};
 use peppylib::types::Payload;
 use pmi::{MessengerBackend, ZenohAdapter};
 use std::time::Duration;
@@ -28,7 +28,7 @@ async fn topic_messenger_communication() {
         .expect("failed to create sender handle");
 
     // Subscribe to the topic first, bound to the publishing producer.
-    let filter = ConsumerFilter::new(vec![ProducerRef::new(core_node, instance_id)]);
+    let filter = bound_filter(vec![ProducerRef::new(core_node, instance_id)]);
     let mut subscription = TopicMessenger::subscribe(
         &receiver_handle,
         core_node,
@@ -97,7 +97,7 @@ async fn node_session_recovers_after_router_restart() {
         .reconnecting()
         .await
         .expect("failed to create reconnecting receiver handle");
-    let filter = ConsumerFilter::new(vec![ProducerRef::new(core_node, instance_id)]);
+    let filter = bound_filter(vec![ProducerRef::new(core_node, instance_id)]);
     let mut subscription = TopicMessenger::subscribe(
         &receiver_handle,
         core_node,
@@ -229,7 +229,7 @@ async fn bidirectional_bound_topics_with_late_bound_producer() {
 
     // arm_controller consumes joint_states from both bound robot_arm
     // instances; arm_2 is bound now but joins the mesh later.
-    let controller_filter = ConsumerFilter::new(vec![
+    let controller_filter = bound_filter(vec![
         ProducerRef::new(core_node, "arm_1"),
         ProducerRef::new(core_node, "arm_2"),
     ]);
@@ -246,7 +246,7 @@ async fn bidirectional_bound_topics_with_late_bound_producer() {
     .expect("arm_controller subscription should succeed");
 
     // robot_arm consumes joint_commands from its bound arm_controller.
-    let arm_filter = ConsumerFilter::new(vec![ProducerRef::new(core_node, "ctrl_1")]);
+    let arm_filter = bound_filter(vec![ProducerRef::new(core_node, "ctrl_1")]);
     let mut arm_sub = TopicMessenger::subscribe(
         &arm_handle,
         core_node,

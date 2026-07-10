@@ -29,6 +29,15 @@ fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, "v1").expect("test node target")
 }
 
+/// Builds a [`ConsumerFilter`] from a producer list. Panics on an empty
+/// list — a slot bound to zero producers is unrepresentable, and these
+/// tests only construct bound slots.
+fn bound_filter(producers: Vec<ProducerRef>) -> ConsumerFilter {
+    ConsumerFilter::new(
+        config::runtime::BoundProducers::new(producers).expect("test filters are non-empty"),
+    )
+}
+
 /// Declares a publisher and publishes a single payload. The publisher is the
 /// only topic-publish path, so a test that publishes once just declares then
 /// publishes; the arguments mirror the old one-shot emit.
@@ -312,7 +321,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
     let subscriber_handle = router.messenger().await;
 
     let subscriber_instance_id1 = "subscriber_instance1";
-    let filter1 = ConsumerFilter::new(vec![ProducerRef::new(
+    let filter1 = bound_filter(vec![ProducerRef::new(
         emitter_core_node,
         emitter_instance_id1,
     )]);
@@ -330,7 +339,7 @@ async fn topic_publish_subscribe_with_from_instance_id() {
 
     // Only this subscriber will receive a message
     let subscriber_instance_id2 = "subscriber_instance2";
-    let filter2 = ConsumerFilter::new(vec![ProducerRef::new(
+    let filter2 = bound_filter(vec![ProducerRef::new(
         emitter_core_node,
         emitter_instance_id2,
     )]);
@@ -414,7 +423,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
     let subscriber_handle = router.messenger().await;
 
     let subscriber_core_node1 = "core_node_subscribe1";
-    let filter_core1 = ConsumerFilter::new(vec![ProducerRef::new(
+    let filter_core1 = bound_filter(vec![ProducerRef::new(
         emitter_core_node1,
         emitter_instance_id,
     )]);
@@ -432,7 +441,7 @@ async fn topic_publish_subscribe_with_from_core_node() {
 
     // Only this subscriber will receive a message
     let subscriber_core_node2 = "core_node_subscribe2";
-    let filter_core2 = ConsumerFilter::new(vec![ProducerRef::new(
+    let filter_core2 = bound_filter(vec![ProducerRef::new(
         emitter_core_node2,
         emitter_instance_id,
     )]);
@@ -516,7 +525,7 @@ async fn multi_producer_filter_admits_bound_producers_and_drops_others() {
     let p3 = "cam_p3";
 
     let subscriber_handle = router.messenger().await;
-    let filter = ConsumerFilter::new(vec![ProducerRef::new(core, p1), ProducerRef::new(core, p2)]);
+    let filter = bound_filter(vec![ProducerRef::new(core, p1), ProducerRef::new(core, p2)]);
     let mut sub = TopicMessenger::subscribe(
         &subscriber_handle,
         core,
@@ -610,7 +619,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     let subscriber_instance_id = "subscriber_instance";
     let emitter_core_node = "emitter_core_node";
     let emitter_instance_id = "emitter_instance";
-    let filter = ConsumerFilter::new(vec![ProducerRef::new(
+    let filter = bound_filter(vec![ProducerRef::new(
         emitter_core_node,
         emitter_instance_id,
     )]);
@@ -4251,7 +4260,7 @@ async fn topic_pinned_and_filtered_subscriptions_compare_full_pairs() {
 
     // Subscribers first so the emit loops publish into live subscriptions.
     let pin_handle = router.messenger().await;
-    let pin_filter = ConsumerFilter::new(vec![ProducerRef::new(core_a, shared_inst)]);
+    let pin_filter = bound_filter(vec![ProducerRef::new(core_a, shared_inst)]);
     let mut pin_sub = TopicMessenger::subscribe(
         &pin_handle,
         "sub_pin_core",
@@ -4268,7 +4277,7 @@ async fn topic_pinned_and_filtered_subscriptions_compare_full_pairs() {
     // (a single-entry set would collapse to a wire pin); the second entry
     // names a producer that never publishes.
     let allow_set_handle = router.messenger().await;
-    let allow_set_filter = ConsumerFilter::new(vec![
+    let allow_set_filter = bound_filter(vec![
         ProducerRef::new(core_a, shared_inst),
         ProducerRef::new(core_a, "inst2"),
     ]);

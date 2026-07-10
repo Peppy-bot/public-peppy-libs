@@ -105,3 +105,28 @@ async def test_messenger_communication():
         assert message.producer == ProducerRef(core_node, instance_id)
         assert message.producer.core_node == core_node
         assert message.producer.instance_id == instance_id
+
+
+@pytest.mark.asyncio
+async def test_subscribe_rejects_empty_producer_list():
+    """An empty `from_producers` list raises `ValueError`.
+
+    A slot bound to zero producers is unrepresentable — the launcher
+    validator rejects unbound slots at plan time and node startup rejects
+    them again — so the messaging layer refuses to build the filter instead
+    of silently subscribing to nothing.
+    """
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        test_id = uuid.uuid4().hex[:8]
+        handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        with pytest.raises(ValueError, match="zero producers"):
+            await TopicMessenger.subscribe(
+                handle,
+                f"test_core_{test_id}",
+                f"test_instance_{test_id}",
+                SenderTarget.node(f"test_node_{test_id}", NODE_TAG),
+                f"test_topic_{test_id}",
+                [],
+                QoSProfile.Reliable,
+            )

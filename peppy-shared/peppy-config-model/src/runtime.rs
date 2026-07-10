@@ -134,12 +134,58 @@ impl ProducerRef {
     }
 }
 
+/// The producers bound to one consumer slot: non-empty by construction,
+/// in binding order and duplicate-free. An unbound slot is unrepresentable
+/// — the launcher validator rejects it before a boot config is ever
+/// written, and an empty array in a boot config is a hard parse error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<ProducerRef>", into = "Vec<ProducerRef>")]
+pub struct BoundProducers(Vec<ProducerRef>);
+
+impl BoundProducers {
+    /// Wraps a producer list, rejecting the empty one. Duplicate-target
+    /// rejection stays in the launcher validator, where the error can name
+    /// the owning instance; this type guarantees non-emptiness only.
+    pub fn new(producers: Vec<ProducerRef>) -> std::result::Result<Self, ParsingError> {
+        if producers.is_empty() {
+            return Err(ParsingError::EmptyBoundProducers);
+        }
+        Ok(Self(producers))
+    }
+
+    pub fn as_slice(&self) -> &[ProducerRef] {
+        &self.0
+    }
+
+    /// `Some(producer)` iff exactly one producer is bound.
+    pub fn single(&self) -> Option<&ProducerRef> {
+        match self.0.as_slice() {
+            [single] => Some(single),
+            _ => None,
+        }
+    }
+}
+
+impl TryFrom<Vec<ProducerRef>> for BoundProducers {
+    type Error = ParsingError;
+
+    fn try_from(producers: Vec<ProducerRef>) -> std::result::Result<Self, Self::Error> {
+        Self::new(producers)
+    }
+}
+
+impl From<BoundProducers> for Vec<ProducerRef> {
+    fn from(v: BoundProducers) -> Self {
+        v.0
+    }
+}
+
 /// The slot-binding map that travels boot configs, `node_info` responses,
 /// and the daemon graph: consumer slot `link_id` → the producers explicitly
-/// bound to that slot, in binding order and duplicate-free. A slot bound to
-/// no producer maps to an empty list and stays silent (there is no wildcard
-/// fallback).
-pub type SlotBindings = BTreeMap<String, Vec<ProducerRef>>;
+/// bound to that slot. Every declared slot is bound — the launcher
+/// validator rejects unbound slots at plan time — so an entry always
+/// carries at least one producer (there is no wildcard fallback).
+pub type SlotBindings = BTreeMap<String, BoundProducers>;
 
 /// State of one pairing slot (a `depends_on.pairings` entry) of a node
 /// instance. Deliberately NOT part of `slot_bindings`: slot bindings feed
@@ -663,24 +709,27 @@ mod tests {
     }
 
     /// Pin the wire contract of `slot_bindings`: each slot maps its
-    /// `link_id` to a plain array of full `(core_node, instance_id)`
-    /// producer pairs, an unbound slot to an empty array. A shape change
-    /// here is a `graph_json` / launch-config wire break, so assert the
-    /// exact JSON and that it round-trips.
+    /// `link_id` to a plain non-empty array of full
+    /// `(core_node, instance_id)` producer pairs. A shape change here is a
+    /// `graph_json` / launch-config wire break, so assert the exact JSON
+    /// and that it round-trips.
     #[test]
     fn slot_bindings_serde_contract() {
         use serde_json::json;
 
-        let bindings: BTreeMap<String, Vec<ProducerRef>> = [
-            ("main".to_string(), vec![ProducerRef::new("core_a", "p1")]),
+        let bindings: SlotBindings = [
+            (
+                "main".to_string(),
+                BoundProducers::new(vec![ProducerRef::new("core_a", "p1")]).unwrap(),
+            ),
             (
                 "extra_cam".to_string(),
-                vec![
+                BoundProducers::new(vec![
                     ProducerRef::new("core_a", "p3"),
                     ProducerRef::new("core_a", "p4"),
-                ],
+                ])
+                .unwrap(),
             ),
-            ("spare".to_string(), Vec::new()),
         ]
         .into_iter()
         .collect();
@@ -692,18 +741,28 @@ mod tests {
             ],
             "main": [
                 { "core_node": "core_a", "instance_id": "p1" }
-            ],
-            "spare": []
+            ]
         });
 
         let encoded = serde_json::to_value(&bindings).expect("serialize slot_bindings");
         assert_eq!(encoded, expected, "slot_bindings JSON shape changed");
-        let decoded: BTreeMap<String, Vec<ProducerRef>> =
+        let decoded: SlotBindings =
             serde_json::from_value(expected).expect("deserialize slot_bindings");
         assert_eq!(decoded, bindings, "slot_bindings did not round-trip");
     }
 
-    /// Half-addresses and the retired `kind`-tagged `SlotBinding` shapes
+    /// The unbound-slot state cannot be constructed in code either — the
+    /// serde boundary below and `BoundProducers::new` share one gate.
+    #[test]
+    fn bound_producers_reject_empty_construction() {
+        assert!(matches!(
+            BoundProducers::new(Vec::new()),
+            Err(ParsingError::EmptyBoundProducers)
+        ));
+    }
+
+    /// Empty producer arrays (the retired unbound-slot state),
+    /// half-addresses, and the retired `kind`-tagged `SlotBinding` shapes
     /// must be hard parse errors, not defaulted values. No compatibility
     /// shims.
     #[test]
@@ -711,6 +770,9 @@ mod tests {
         use serde_json::json;
 
         let rejected = [
+            // The retired unbound-slot state: a slot bound to zero
+            // producers is unrepresentable.
+            json!([]),
             // Retired kind-tagged shapes (pre-removal `SlotBinding`).
             json!({ "kind": "pinned", "producer": { "core_node": "core_a", "instance_id": "p1" } }),
             json!({ "kind": "from_any_bound", "producers": [] }),
@@ -722,7 +784,7 @@ mod tests {
             json!([{ "core_node": "core_a", "instance_id": "p1", "extra": 1 }]),
         ];
         for payload in rejected {
-            let result: std::result::Result<Vec<ProducerRef>, _> =
+            let result: std::result::Result<BoundProducers, _> =
                 serde_json::from_value(payload.clone());
             assert!(
                 result.is_err(),

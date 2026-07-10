@@ -13,52 +13,41 @@
 //! construction.
 //!
 //! A slot receives messages ONLY from the producers bound to it — there is
-//! no wildcard subscription. The filter's cardinality selects the wire
-//! strategy:
-//! - empty — the slot is silent: no wire subscription is opened at all.
+//! no wildcard subscription, and no unbound state: every declared slot is
+//! bound to at least one producer ([`BoundProducers`] is non-empty by
+//! construction; the launcher validator rejects unbound slots at plan
+//! time). The filter's cardinality selects the wire strategy:
 //! - one producer — wire-layer pin of both `from_core_node` and
 //!   `from_instance_id`; no in-process filtering and no discovery.
 //! - several producers — wire wildcards plus an in-process acceptance set
 //!   that admits exactly the bound producers.
 
-pub use config::runtime::ProducerRef;
+pub use config::runtime::{BoundProducers, ProducerRef};
 
 /// The producers explicitly bound to one consumer slot, in binding order
-/// and duplicate-free. Built by [`crate::runtime::Processor`] from the
-/// daemon-supplied `slot_bindings`; an unbound slot yields
-/// [`ConsumerFilter::silent`].
+/// and duplicate-free — non-empty by construction ([`BoundProducers`]
+/// cannot hold zero producers). Built by [`crate::runtime::Processor`]
+/// from the daemon-supplied `slot_bindings`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsumerFilter {
-    producers: Vec<ProducerRef>,
+    producers: BoundProducers,
 }
 
 impl ConsumerFilter {
-    /// Filter of a slot bound to no producer: subscriptions stay silent and
-    /// service / action calls fail as unpinned. Also the fallback for a
-    /// `link_id` the daemon shipped no binding entry for.
-    pub const fn silent() -> Self {
-        Self {
-            producers: Vec::new(),
-        }
-    }
-
-    pub fn new(producers: Vec<ProducerRef>) -> Self {
+    pub fn new(producers: BoundProducers) -> Self {
         Self { producers }
     }
 
     pub fn producers(&self) -> &[ProducerRef] {
-        &self.producers
+        self.producers.as_slice()
     }
 
     /// Service / action call sites (and the pinned-subscription fast path)
     /// address a single fully-pinned producer. Returns `Some(producer)`
-    /// when the slot is bound to exactly one producer; `None` for silent
-    /// and multi-producer slots.
+    /// when the slot is bound to exactly one producer; `None` for
+    /// multi-producer slots.
     pub fn pinned_target(&self) -> Option<&ProducerRef> {
-        match self.producers.as_slice() {
-            [producer] => Some(producer),
-            _ => None,
-        }
+        self.producers.single()
     }
 }
 
@@ -75,22 +64,19 @@ mod tests {
         ProducerRef::new(CORE, instance_id)
     }
 
-    #[test]
-    fn silent_filter_has_no_producers_and_no_pin() {
-        let filter = ConsumerFilter::silent();
-        assert!(filter.producers().is_empty());
-        assert_eq!(filter.pinned_target(), None);
+    fn filter(producers: Vec<ProducerRef>) -> ConsumerFilter {
+        ConsumerFilter::new(BoundProducers::new(producers).expect("test filters are non-empty"))
     }
 
     #[test]
     fn single_producer_filter_pins_that_producer() {
-        let filter = ConsumerFilter::new(vec![pref("cam1")]);
+        let filter = filter(vec![pref("cam1")]);
         assert_eq!(filter.pinned_target(), Some(&pref("cam1")));
     }
 
     #[test]
     fn multi_producer_filter_keeps_order_and_never_pins() {
-        let filter = ConsumerFilter::new(vec![pref("cam1"), pref("cam2")]);
+        let filter = filter(vec![pref("cam1"), pref("cam2")]);
         assert_eq!(filter.producers(), &[pref("cam1"), pref("cam2")]);
         assert_eq!(filter.pinned_target(), None);
     }
@@ -100,7 +86,7 @@ mod tests {
     /// filter never collapses them into a single pin.
     #[test]
     fn same_instance_id_on_different_core_nodes_stays_multi() {
-        let filter = ConsumerFilter::new(vec![pref("cam1"), ProducerRef::new("core_b", "cam1")]);
+        let filter = filter(vec![pref("cam1"), ProducerRef::new("core_b", "cam1")]);
         assert_eq!(filter.pinned_target(), None);
         assert_eq!(filter.producers().len(), 2);
     }

@@ -307,7 +307,7 @@ impl SerializedNodeGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::runtime::ProducerRef;
+    use config::runtime::{BoundProducers, ProducerRef};
 
     fn make_node(name: &str, tag: &str, instances: &[(&str, InstanceState)]) -> SerializedNode {
         SerializedNode {
@@ -453,13 +453,17 @@ mod tests {
     #[test]
     fn slot_bindings_round_trip_through_json() {
         let mut bindings = BTreeMap::new();
-        bindings.insert("arm".to_string(), vec![ProducerRef::new("core_a", "arm-1")]);
+        bindings.insert(
+            "arm".to_string(),
+            BoundProducers::new(vec![ProducerRef::new("core_a", "arm-1")]).unwrap(),
+        );
         bindings.insert(
             "sensors".to_string(),
-            vec![
+            BoundProducers::new(vec![
                 ProducerRef::new("core_a", "cam-1"),
                 ProducerRef::new("core_a", "cam-2"),
-            ],
+            ])
+            .unwrap(),
         );
         let instance = SerializedInstance {
             instance_id: "i1".to_string(),

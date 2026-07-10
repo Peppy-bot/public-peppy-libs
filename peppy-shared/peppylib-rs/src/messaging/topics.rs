@@ -7,42 +7,26 @@ use pmi::{MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// Wire backing of a [`Subscription`]. A slot bound to no producer opens
-/// no wire subscription at all: [`Inner::Silent`] never yields a message,
-/// mirroring an unpaired pairing slot rather than a closed channel, so a
-/// consumer loop keeps waiting instead of exiting.
-enum Inner {
-    Wire(pmi::Subscription),
-    Silent,
-}
-
+/// A consumer-side topic subscription: the wire subscription plus an
+/// optional in-process acceptance set applied above it.
 pub struct Subscription {
-    inner: Inner,
+    inner: pmi::Subscription,
     /// In-process acceptance set applied above the wire layer: only
     /// messages whose source `(core_node, instance_id)` is in the set
     /// surface to user code. Synthesized from a [`ConsumerFilter`] bound to
     /// more than one producer (the wire subscription then wildcards both
     /// producer slots); `None` when the wire-layer pin already captures the
-    /// consumer's filter (single-producer slots) and for silent slots. The
-    /// set holds full pairs — instance_id alone is not a producer identity
-    /// on the wire, and comparing only half of it would let a
-    /// same-instance_id producer on another core_node leak through.
+    /// consumer's filter (single-producer slots). The set holds full pairs
+    /// — instance_id alone is not a producer identity on the wire, and
+    /// comparing only half of it would let a same-instance_id producer on
+    /// another core_node leak through.
     accept_filter: Option<HashSet<ProducerRef>>,
 }
 
 impl Subscription {
     pub(crate) fn new(inner: pmi::Subscription) -> Self {
         Self {
-            inner: Inner::Wire(inner),
-            accept_filter: None,
-        }
-    }
-
-    /// Subscription of a slot bound to no producer: yields nothing for the
-    /// node's whole lifetime.
-    pub(crate) fn silent() -> Self {
-        Self {
-            inner: Inner::Silent,
+            inner,
             accept_filter: None,
         }
     }
@@ -65,10 +49,6 @@ impl Subscription {
             inner,
             accept_filter,
         } = self;
-        let inner = match inner {
-            Inner::Wire(inner) => inner,
-            Inner::Silent => return std::future::pending().await,
-        };
         loop {
             let raw = inner.rx.recv_async().await.ok()?;
             let msg = Message::from(raw);
@@ -85,10 +65,6 @@ impl Subscription {
             inner,
             accept_filter,
         } = self;
-        let inner = match inner {
-            Inner::Wire(inner) => inner,
-            Inner::Silent => return Err(crate::types::TryRecvError::Empty),
-        };
         loop {
             match inner.rx.try_recv() {
                 Ok(raw) => {
@@ -112,11 +88,10 @@ impl TopicMessenger {
     /// know the producer's node / interface target; a stream with no
     /// target to consult is an infra topic and goes through
     /// [`Self::subscribe_target_scoped`].
-    /// The [`ConsumerFilter`] carries the slot's bound producers and
-    /// selects the wire strategy: an empty filter opens no wire
-    /// subscription at all (the slot is silent), a single producer pins
-    /// its full `(core_node, instance_id)` on the wire, and several
-    /// producers subscribe with wire wildcards plus an in-process
+    /// The [`ConsumerFilter`] carries the slot's bound producers —
+    /// non-empty by construction — and selects the wire strategy: a single
+    /// producer pins its full `(core_node, instance_id)` on the wire, and
+    /// several producers subscribe with wire wildcards plus an in-process
     /// acceptance set admitting exactly the bound pairs. There is no
     /// separate core_node parameter — producer identity always travels as
     /// the whole pair.
@@ -132,10 +107,9 @@ impl TopicMessenger {
         // Translate the ConsumerFilter into the wire-side producer pin
         // (both keyexpr slots) plus an optional in-process pair filter.
         let (wire_from_producer, accept_filter): (Option<&ProducerRef>, _) =
-            match filter.producers() {
-                [] => return Ok(Subscription::silent()),
-                [producer] => (Some(producer), None),
-                producers => (None, Some(producers.iter().cloned().collect())),
+            match filter.pinned_target() {
+                Some(producer) => (Some(producer), None),
+                None => (None, Some(filter.producers().iter().cloned().collect())),
             };
 
         let recv = TopicWireReceiver::new(
@@ -149,7 +123,7 @@ impl TopicMessenger {
         )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         Ok(Subscription {
-            inner: Inner::Wire(subscription),
+            inner: subscription,
             accept_filter,
         })
     }

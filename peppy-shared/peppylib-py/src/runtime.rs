@@ -897,29 +897,13 @@ impl PyNodeRunner {
         self.inner.processor().node_tag()
     }
 
-    /// The [`ProducerRef`](peppylib::messaging::ProducerRef) bound to
-    /// `link_id`, when the slot is bound to exactly one producer; `None`
-    /// when it is bound to zero or several. Non-raising sibling of
-    /// [`Self::require_pinned_producer`] for callers that want to branch on
-    /// the binding state themselves. The same `ProducerRef` type is what
-    /// consumed-topic callbacks return, so a received identity can be
-    /// passed straight back here.
-    ///
-    /// Renamed from the pre-`ProducerRef` `pinned_target_for` (which
-    /// returned the instance_id alone) so stale generated Python fails
-    /// loudly with `AttributeError` instead of silently half-addressing.
-    fn pinned_producer_for(&self, link_id: &str) -> Option<PyProducerRef> {
-        self.inner
-            .processor()
-            .pinned_producer_for(link_id)
-            .map(PyProducerRef::from)
-    }
-
     /// The single producer bound to the service / action slot at `link_id`.
     /// Raises `RuntimeError` (peppylib's `ServiceSlotNotPinned`) when the
-    /// slot is bound to zero or several producers — service and action
-    /// calls address exactly one. Python codegen splices this at consumed
-    /// poll / send_goal call sites as the single `target` argument.
+    /// slot is bound to more than one producer — service and action calls
+    /// address exactly one, and a slot bound to zero producers cannot
+    /// exist (launch and startup both reject it). Python codegen splices
+    /// this at consumed poll / send_goal call sites as the single `target`
+    /// argument.
     fn require_pinned_producer(&self, link_id: &str) -> PyResult<PyProducerRef> {
         self.inner
             .processor()
@@ -929,9 +913,9 @@ impl PyNodeRunner {
     }
 
     /// Every producer bound to the consumer slot at `link_id`, in binding
-    /// order; empty when the slot is unbound (the subscription then stays
-    /// silent). Python codegen splices this at consumed subscribe call
-    /// sites as the `from_producers` argument.
+    /// order; never empty — a declared slot with no bound producers fails
+    /// node startup. Python codegen splices this at consumed subscribe
+    /// call sites as the `from_producers` argument.
     fn bound_producers_for(&self, link_id: &str) -> Vec<PyProducerRef> {
         self.inner
             .processor()
