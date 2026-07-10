@@ -356,8 +356,8 @@ fn build_consumer_filters(
     if let Some(deps) = node_config.manifest.depends_on.as_ref() {
         let slot_bindings = &runtime_config.node_instance.slot_bindings;
         let node_links = deps.nodes.iter().map(|dep| &dep.link_id);
-        let interface_links = deps.interfaces.iter().map(|dep| &dep.link_id);
-        for link_id in node_links.chain(interface_links) {
+        let contract_links = deps.contracts.iter().map(|dep| &dep.link_id);
+        for link_id in node_links.chain(contract_links) {
             let producers = slot_bindings.get(link_id).cloned().unwrap_or_default();
             out.insert(
                 link_id.clone(),

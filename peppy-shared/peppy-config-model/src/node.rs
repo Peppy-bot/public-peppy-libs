@@ -16,6 +16,6 @@ pub use types::{
     TopicInterfaces, TypeToken, is_blocked_mount_source,
 };
 pub use validation::{
-    DependencySpec, InterfaceConformanceEdge, collect_dependency_specs,
-    collect_interface_conformance_edges, node_conforms_to, validate_dependency_specs,
+    ContractConformanceEdge, DependencySpec, collect_contract_conformance_edges,
+    collect_dependency_specs, node_conforms_to, validate_dependency_specs,
 };

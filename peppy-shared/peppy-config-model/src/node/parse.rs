@@ -8,13 +8,13 @@ use std::path::Path;
 
 /// Validates `manifest.depends_on`:
 ///
-/// - Rejects duplicate `link_id`s across the combined nodes/interfaces/pairings
+/// - Rejects duplicate `link_id`s across the combined nodes/contracts/pairings
 ///   set. `link_id` is the shared identity for all three: consumed
 ///   topics/services/actions resolve their producer by `link_id` alone, and
 ///   pairing slots are addressed by `link_id` in `--pair`/`pairings:`, so a
 ///   collision either silently overwrites a resolution or binds the wrong slot.
 /// - Rejects pairing link_ids that are not wire-safe segments: unlike
-///   node/interface link_ids (local resolution names), a pairing slot link_id
+///   node/contract link_ids (local resolution names), a pairing slot link_id
 ///   is stamped verbatim into the producer-side link_id segment of every
 ///   publish keyexpr.
 fn validate_depends_on(manifest: &Manifest) -> Result<()> {
@@ -23,9 +23,9 @@ fn validate_depends_on(manifest: &Manifest) -> Result<()> {
     };
     let mut seen_link_ids: HashSet<&str> = HashSet::new();
     let nodes = depends_on.nodes.iter().map(|n| n.link_id.as_str());
-    let interfaces = depends_on.interfaces.iter().map(|i| i.link_id.as_str());
+    let contracts = depends_on.contracts.iter().map(|i| i.link_id.as_str());
     let pairings = depends_on.pairings.iter().map(|p| p.link_id.as_str());
-    for link_id in nodes.chain(interfaces).chain(pairings) {
+    for link_id in nodes.chain(contracts).chain(pairings) {
         if !seen_link_ids.insert(link_id) {
             return Err(ParsingError::DuplicateLinkId(link_id.to_owned()).into());
         }
@@ -309,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_link_id_across_nodes_and_interfaces_rejected() {
+    fn test_duplicate_link_id_across_nodes_and_contracts_rejected() {
         let json5 = r#"{
             peppy_schema: "node/v1",
             manifest: {
@@ -319,7 +319,7 @@ mod tests {
                     nodes: [
                         { name: "alpha", tag: "v1", link_id: "shared" },
                     ],
-                    interfaces: [
+                    contracts: [
                         { name: "depth_camera", tag: "v1", link_id: "shared" },
                     ],
                 },
@@ -335,7 +335,7 @@ mod tests {
                 result.as_ref().unwrap_err(),
                 Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
             ),
-            "expected DuplicateLinkId(\"shared\") across nodes+interfaces, got: {:?}",
+            "expected DuplicateLinkId(\"shared\") across nodes+contracts, got: {:?}",
             result.unwrap_err()
         );
     }
@@ -387,7 +387,7 @@ mod tests {
         // carrying the flag must fail loudly instead of silently parsing.
         for deps_block in [
             r#"nodes: [{ name: "alpha", tag: "v1", link_id: "a", from_any: true }]"#,
-            r#"interfaces: [{ name: "beta", tag: "v1", link_id: "b", from_any: true }]"#,
+            r#"contracts: [{ name: "beta", tag: "v1", link_id: "b", from_any: true }]"#,
         ] {
             let json5 = format!(
                 r#"{{
@@ -488,14 +488,14 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_link_id_across_interfaces_and_pairings_rejected() {
+    fn test_duplicate_link_id_across_contracts_and_pairings_rejected() {
         let json5 = r#"{
             peppy_schema: "node/v1",
             manifest: {
                 name: "dup_node",
                 tag: "v1",
                 depends_on: {
-                    interfaces: [
+                    contracts: [
                         { name: "depth_camera", tag: "v1", link_id: "shared" },
                     ],
                     pairings: [
@@ -514,14 +514,14 @@ mod tests {
                 result.as_ref().unwrap_err(),
                 Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
             ),
-            "expected DuplicateLinkId(\"shared\") across interfaces+pairings, got: {:?}",
+            "expected DuplicateLinkId(\"shared\") across contracts+pairings, got: {:?}",
             result.unwrap_err()
         );
     }
 
     #[test]
     fn test_pairing_link_id_with_at_sign_rejected_as_wire_unsafe() {
-        // Node/interface link_ids never travel the wire, but a pairing slot
+        // Node/contract link_ids never travel the wire, but a pairing slot
         // link_id is stamped into publish keyexprs, so wire-unsafe characters
         // must be rejected at parse time.
         let json5 = r#"{

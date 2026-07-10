@@ -100,7 +100,7 @@ pub enum ParsingError {
     #[error("Empty name")]
     EmptyName,
     #[error(
-        "Duplicate link_id `{0}` in manifest.depends_on (link_ids must be unique across nodes and interfaces)"
+        "Duplicate link_id `{0}` in manifest.depends_on (link_ids must be unique across nodes, contracts, and pairings)"
     )]
     DuplicateLinkId(String),
     #[error(
