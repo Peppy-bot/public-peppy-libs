@@ -17,7 +17,10 @@ fn builds_v2_srs_chain_for_both_arms() {
 
         let limits = arm.limits();
         assert_eq!(limits.len(), ARM_DOF);
-        assert_eq!(limits[3].lo, 0.0, "{base}: elbow (j4) mechanical lower is 0.0");
+        assert_eq!(
+            limits[3].lo, 0.0,
+            "{base}: elbow (j4) mechanical lower is 0.0"
+        );
 
         // The feedforward path the real arm runs each control tick: gravity + Coriolis
         // from the posed chain must evaluate to finite torques for the v2 model.
