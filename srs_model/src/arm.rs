@@ -3,10 +3,11 @@
 //! handle. Build it once and everything hangs off it; the underlying FK chain and
 //! SRS model are internal.
 
-use k::nalgebra::Isometry3;
+use k::nalgebra::{Isometry3, Vector3, Vector6};
 
 use crate::fk::{ForwardKinematics, Posed};
 use crate::ik::{self, ArmAnglePolicy, Solution};
+use crate::jacobian::damped_pseudo_inverse;
 use crate::model::ArmModel;
 use crate::{ARM_DOF, JointVec, Limit, SrsError};
 
@@ -98,6 +99,46 @@ impl Arm {
     pub fn base_from_world(&self) -> Isometry3<f64> {
         self.fk.base_from_world()
     }
+
+    /// One damped resolved-rate joint step at `q` toward a world-frame task
+    /// increment: `dp_world` metres of end-effector translation and `dw_world`
+    /// axis-angle radians of rotation, either of which may be zero to softly
+    /// hold that component. The caller caps the increments to its speed budgets;
+    /// this rotates them into the arm base frame, solves
+    /// `dq = J⁺(λ) ξ` with the damped pseudo-inverse (bounded through
+    /// singularities), scales `dq` so every joint respects its velocity budget
+    /// over `dt_s` while preserving direction, and clamps the result into the
+    /// position limits. The step the operator streaming jog and the backbone's
+    /// guarded servo both run, shared so the two control paths cannot drift.
+    pub fn rate_step(
+        &mut self,
+        q: &JointVec,
+        dp_world: Vector3<f64>,
+        dw_world: Vector3<f64>,
+        max_joint_velocity_rad_s: &JointVec,
+        dt_s: f64,
+        lambda: f64,
+    ) -> JointVec {
+        let to_base = self.base_from_world().rotation;
+        let dp = to_base * dp_world;
+        let dw = to_base * dw_world;
+        let twist = Vector6::new(dp.x, dp.y, dp.z, dw.x, dw.y, dw.z);
+        let jacobian = self.at(q).jacobian();
+        let mut dq = damped_pseudo_inverse(&jacobian, lambda) * twist;
+        let scale = (0..ARM_DOF)
+            .map(|i| {
+                let cap = max_joint_velocity_rad_s[i] * dt_s;
+                if dq[i].abs() > cap {
+                    cap / dq[i].abs()
+                } else {
+                    1.0
+                }
+            })
+            .fold(1.0_f64, f64::min);
+        dq *= scale;
+        let limits = self.limits();
+        std::array::from_fn(|i| (q[i] + dq[i]).clamp(limits[i].lo, limits[i].hi))
+    }
 }
 
 #[cfg(test)]
@@ -162,5 +203,79 @@ mod tests {
             matches!(&err, SrsError::UrdfRead { path, .. } if path == "/no/such/file.urdf"),
             "error should name the path: {err}"
         );
+    }
+
+    const RATE_Q: JointVec = [0.3, 0.1, 0.2, 0.8, 0.3, 0.2, 0.15];
+    const RATE_V_MAX: JointVec = [3.0; ARM_DOF];
+    const RATE_DT: f64 = 0.01;
+    const RATE_LAMBDA: f64 = 0.05;
+
+    fn rate_arm() -> Arm {
+        Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture")
+    }
+
+    fn ee_world(arm: &mut Arm, q: &JointVec) -> Isometry3<f64> {
+        let base = arm.at(q).ee_pose();
+        arm.world_pose(&base)
+    }
+
+    #[test]
+    fn rate_step_moves_the_ee_along_the_commanded_direction() {
+        let mut arm = rate_arm();
+        let before = ee_world(&mut arm, &RATE_Q);
+        let dp = Vector3::new(3e-3, 0.0, 0.0);
+        let q = arm.rate_step(
+            &RATE_Q,
+            dp,
+            Vector3::zeros(),
+            &RATE_V_MAX,
+            RATE_DT,
+            RATE_LAMBDA,
+        );
+        let after = ee_world(&mut arm, &q);
+        let moved = after.translation.vector - before.translation.vector;
+        assert!(
+            moved.dot(&dp) / dp.norm_squared() > 0.5,
+            "step must realize most of the commanded translation, got {moved:?}"
+        );
+        assert!(
+            after.rotation.angle_to(&before.rotation) < 5e-3,
+            "an untasked orientation is softly held"
+        );
+    }
+
+    #[test]
+    fn rate_step_respects_the_velocity_budget_and_limits() {
+        let mut arm = rate_arm();
+        // An absurd demand: the scaling must keep every joint inside its budget.
+        let dp = Vector3::new(1.0, -1.0, 0.5);
+        let q = arm.rate_step(
+            &RATE_Q,
+            dp,
+            Vector3::zeros(),
+            &RATE_V_MAX,
+            RATE_DT,
+            RATE_LAMBDA,
+        );
+        let limits = arm.limits();
+        for i in 0..ARM_DOF {
+            let v = (q[i] - RATE_Q[i]).abs() / RATE_DT;
+            assert!(v <= RATE_V_MAX[i] * 1.0001, "joint {i} at {v:.2} rad/s");
+            assert!(q[i] >= limits[i].lo && q[i] <= limits[i].hi);
+        }
+    }
+
+    #[test]
+    fn rate_step_holds_still_on_a_zero_task() {
+        let mut arm = rate_arm();
+        let q = arm.rate_step(
+            &RATE_Q,
+            Vector3::zeros(),
+            Vector3::zeros(),
+            &RATE_V_MAX,
+            RATE_DT,
+            RATE_LAMBDA,
+        );
+        assert_eq!(q, RATE_Q, "zero task must not move any joint");
     }
 }
