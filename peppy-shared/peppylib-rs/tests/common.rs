@@ -48,17 +48,6 @@ pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
 }
 
-/// Builds a [`ConsumerFilter`] from a producer list. Panics on an empty
-/// list — a slot bound to zero producers is unrepresentable, and these
-/// tests only construct bound slots.
-pub fn bound_filter(
-    producers: Vec<peppylib::messaging::ProducerRef>,
-) -> peppylib::messaging::ConsumerFilter {
-    peppylib::messaging::ConsumerFilter::new(
-        config::runtime::BoundProducers::new(producers).expect("test filters are non-empty"),
-    )
-}
-
 /// Declares a publisher and publishes a single payload. The publisher is the
 /// only topic-publish path, so a test that publishes once just declares then
 /// publishes; the arguments mirror the old one-shot emit.

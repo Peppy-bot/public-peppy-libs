@@ -40,7 +40,7 @@ impl PyTopicMessage {
 
     /// The publisher's full `(core_node, instance_id)` identity as a structured
     /// [`PyProducerRef`]. This is what generated consumed-topic callbacks return
-    /// alongside the message; a multi-producer slot keys per-producer state on it.
+    /// alongside the message; consumers key per-slot state on it.
     #[getter]
     fn producer(&self) -> PyProducerRef {
         PyProducerRef::new(self.core_node.clone(), self.instance_id.clone())
@@ -86,15 +86,14 @@ pub struct PyTopicMessenger;
 impl PyTopicMessenger {
     /// Subscribe to a topic. Pass `SenderTarget.node(name, tag)` or
     /// `SenderTarget.interface(name, tag)` to match the publisher's
-    /// target. `from_producers` is the slot's bound producer list, each a
-    /// full [`ProducerRef`](peppylib::messaging::ProducerRef) identity: it
-    /// must be non-empty (an unbound slot cannot exist — launch and node
-    /// startup both reject it; an empty list raises `ValueError`), one
-    /// producer pins it on the wire, several producers install an
-    /// in-process acceptance set. Generated code splices
-    /// `node_runner.bound_producers_for(link_id)` here.
+    /// target. `from_producer` is the slot's one bound producer, a full
+    /// [`ProducerRef`](peppylib::messaging::ProducerRef) identity pinned
+    /// on the wire — only that producer's publishes reach the
+    /// subscription; fan-in is N declared slots, never N producers on one
+    /// slot. Generated code splices `node_runner.bound_producer(link_id)`
+    /// here.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_producers, qos))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_producer, qos))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
@@ -103,27 +102,19 @@ impl PyTopicMessenger {
         as_instance_id: String,
         from_target: PySenderTarget,
         to_topic: String,
-        from_producers: Vec<PyProducerRef>,
+        from_producer: PyProducerRef,
         qos: PyQoSProfile,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         let from_target = from_target.into_inner();
         crate::py_future::future_into_py(py, async move {
-            let bound = config::runtime::BoundProducers::new(
-                from_producers
-                    .into_iter()
-                    .map(PyProducerRef::into_inner)
-                    .collect(),
-            )
-            .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?;
-            let filter = peppylib::messaging::ConsumerFilter::new(bound);
             let subscription = TopicMessenger::subscribe(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
                 from_target,
                 &to_topic,
-                &filter,
+                &from_producer.into_inner(),
                 qos.into(),
             )
             .await

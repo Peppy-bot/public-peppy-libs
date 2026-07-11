@@ -1,6 +1,6 @@
 mod common;
 
-use common::{bound_filter, publish_once, test_node_target, wait_for_topic_subscriber};
+use common::{publish_once, test_node_target, wait_for_topic_subscriber};
 use config::node::QoSProfile;
 use peppylib::messaging::{MessengerHandle, ProducerRef, TopicMessenger};
 use peppylib::types::Payload;
@@ -27,15 +27,15 @@ async fn topic_messenger_communication() {
         .await
         .expect("failed to create sender handle");
 
-    // Subscribe to the topic first, bound to the publishing producer.
-    let filter = bound_filter(vec![ProducerRef::new(core_node, instance_id)]);
+    // Subscribe to the topic first, pinned to the publishing producer.
+    let producer = ProducerRef::new(core_node, instance_id);
     let mut subscription = TopicMessenger::subscribe(
         &receiver_handle,
         core_node,
         instance_id,
         test_node_target(node_name),
         topic_name,
-        &filter,
+        &producer,
         QoSProfile::Reliable,
     )
     .await
@@ -97,14 +97,14 @@ async fn node_session_recovers_after_router_restart() {
         .reconnecting()
         .await
         .expect("failed to create reconnecting receiver handle");
-    let filter = bound_filter(vec![ProducerRef::new(core_node, instance_id)]);
+    let producer = ProducerRef::new(core_node, instance_id);
     let mut subscription = TopicMessenger::subscribe(
         &receiver_handle,
         core_node,
         instance_id,
         test_node_target(node_name),
         topic_name,
-        &filter,
+        &producer,
         QoSProfile::Reliable,
     )
     .await
@@ -200,14 +200,16 @@ async fn node_session_recovers_after_router_restart() {
 }
 
 /// Bidirectional explicit bindings at the wire layer: two consumers each
-/// subscribe to the other's topic through their slot's bound producer set,
-/// exactly as a generated consumed-topic module does. Messages flow
+/// subscribe to the other's topic through their slot's one bound producer,
+/// exactly as a generated consumed-topic module does. The controller wants
+/// two arms, so it declares two slots — one pinned subscription per slot,
+/// never one subscription over several producers. Messages flow
 /// independently in both directions, and a producer that joins *after* the
-/// consumer is already listening is received because it was BOUND up front
-/// (the launcher's multi-producer array form), distinguished by its
-/// `instance_id`. A producer that was never bound is dropped — there is no
-/// wildcard fallback. This is the runtime counterpart to the launch-time
-/// binding materialization checked in `crates/peppy/tests/stack_launch.rs`.
+/// consumer is already listening is received because its slot was BOUND up
+/// front — a wire pin does not require the producer to exist at subscribe
+/// time. A producer that was never bound is dropped — there is no wildcard
+/// fallback. This is the runtime counterpart to the launch-time binding
+/// materialization checked in `crates/peppy/tests/stack_launch.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bidirectional_bound_topics_with_late_bound_producer() {
     let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -227,33 +229,43 @@ async fn bidirectional_bound_topics_with_late_bound_producer() {
         .await
         .expect("failed to create robot_arm handle");
 
-    // arm_controller consumes joint_states from both bound robot_arm
-    // instances; arm_2 is bound now but joins the mesh later.
-    let controller_filter = bound_filter(vec![
-        ProducerRef::new(core_node, "arm_1"),
-        ProducerRef::new(core_node, "arm_2"),
-    ]);
-    let mut controller_sub = TopicMessenger::subscribe(
+    // arm_controller consumes joint_states from two robot_arm instances
+    // through two declared slots, one pinned subscription each; arm_2's
+    // slot is bound now but the producer joins the mesh later.
+    let arm_1_producer = ProducerRef::new(core_node, "arm_1");
+    let mut controller_sub_arm_1 = TopicMessenger::subscribe(
         &controller_handle,
         core_node,
         "ctrl_1",
         test_node_target("robot_arm"),
         joint_states,
-        &controller_filter,
+        &arm_1_producer,
         QoSProfile::Reliable,
     )
     .await
-    .expect("arm_controller subscription should succeed");
+    .expect("arm_controller arm_1-slot subscription should succeed");
+    let arm_2_producer = ProducerRef::new(core_node, "arm_2");
+    let mut controller_sub_arm_2 = TopicMessenger::subscribe(
+        &controller_handle,
+        core_node,
+        "ctrl_1",
+        test_node_target("robot_arm"),
+        joint_states,
+        &arm_2_producer,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("arm_controller arm_2-slot subscription should succeed");
 
     // robot_arm consumes joint_commands from its bound arm_controller.
-    let arm_filter = bound_filter(vec![ProducerRef::new(core_node, "ctrl_1")]);
+    let ctrl_producer = ProducerRef::new(core_node, "ctrl_1");
     let mut arm_sub = TopicMessenger::subscribe(
         &arm_handle,
         core_node,
         "arm_1",
         test_node_target("arm_controller"),
         joint_commands,
-        &arm_filter,
+        &ctrl_producer,
         QoSProfile::Reliable,
     )
     .await
@@ -292,10 +304,13 @@ async fn bidirectional_bound_topics_with_late_bound_producer() {
     .await
     .expect("robot_arm emit should succeed");
 
-    let msg = tokio::time::timeout(Duration::from_secs(2), controller_sub.on_next_message())
-        .await
-        .expect("arm_controller should receive joint_states within timeout")
-        .expect("message should not be None");
+    let msg = tokio::time::timeout(
+        Duration::from_secs(2),
+        controller_sub_arm_1.on_next_message(),
+    )
+    .await
+    .expect("arm_controller should receive joint_states within timeout")
+    .expect("message should not be None");
     assert_eq!(msg.payload(), &state_payload);
     assert_eq!(msg.instance_id(), "arm_1");
     assert_eq!(msg.core_node(), core_node);
@@ -322,10 +337,10 @@ async fn bidirectional_bound_topics_with_late_bound_producer() {
     assert_eq!(msg.payload(), &command_payload);
     assert_eq!(msg.instance_id(), "ctrl_1");
 
-    // The second bound robot_arm instance joins *after* arm_controller is
-    // already subscribed. Because arm_2 is in the slot's bound set, the
-    // subscription picks it up; only the returned instance_id
-    // distinguishes it from the first producer.
+    // The second robot_arm instance joins *after* arm_controller is
+    // already subscribed. Because its slot was bound (the arm_2-pinned
+    // subscription already exists), the pin picks it up as soon as it
+    // publishes.
     let late_arm_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create late robot_arm handle");
@@ -351,32 +366,43 @@ async fn bidirectional_bound_topics_with_late_bound_producer() {
     .await
     .expect("late robot_arm emit should succeed");
 
-    let msg = tokio::time::timeout(Duration::from_secs(2), controller_sub.on_next_message())
-        .await
-        .expect("arm_controller should receive the late bound producer within timeout")
-        .expect("message should not be None");
+    let msg = tokio::time::timeout(
+        Duration::from_secs(2),
+        controller_sub_arm_2.on_next_message(),
+    )
+    .await
+    .expect("arm_controller should receive the late bound producer within timeout")
+    .expect("message should not be None");
     assert_eq!(msg.payload(), &late_payload);
     assert_eq!(
         msg.instance_id(),
         "arm_2",
-        "the late bound producer must be picked up through the same subscription, \
-         distinguished only by its instance_id",
+        "the late bound producer must be picked up through its slot's pinned subscription",
     );
 
     // An UNBOUND robot_arm (arm_3) publishing the same topic must never
-    // reach the consumer: explicit bindings are the whole contract, with
-    // no wildcard fallback.
+    // reach the consumer on either slot: explicit bindings are the whole
+    // contract, with no wildcard fallback. Stronger still, no subscription
+    // matches arm_3 on the wire at all — both of the consumer's
+    // subscriptions pin another producer's keyexpr — so the publisher sees
+    // no matching subscriber.
     let unbound_arm_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("failed to create unbound robot_arm handle");
-    wait_for_topic_subscriber(
+    let matched = TopicMessenger::wait_for_subscriber(
         &unbound_arm_handle,
         core_node,
         "arm_3",
         test_node_target("robot_arm"),
         joint_states,
+        Duration::from_millis(500),
     )
-    .await;
+    .await
+    .expect("wait_for_subscriber should not error");
+    assert!(
+        !matched,
+        "an unbound producer must have no matching subscriber on the wire",
+    );
     publish_once(
         &unbound_arm_handle,
         core_node,
@@ -389,14 +415,15 @@ async fn bidirectional_bound_topics_with_late_bound_producer() {
     .await
     .expect("unbound robot_arm emit should succeed");
 
-    let unbound =
-        tokio::time::timeout(Duration::from_millis(500), controller_sub.on_next_message()).await;
-    assert!(
-        unbound.is_err(),
-        "an unbound producer must not reach the consumer; got: {:?}",
-        unbound
-            .ok()
-            .flatten()
-            .map(|m| m.payload().as_ref().to_vec()),
-    );
+    for sub in [&mut controller_sub_arm_1, &mut controller_sub_arm_2] {
+        let unbound = tokio::time::timeout(Duration::from_millis(500), sub.on_next_message()).await;
+        assert!(
+            unbound.is_err(),
+            "an unbound producer must not reach the consumer; got: {:?}",
+            unbound
+                .ok()
+                .flatten()
+                .map(|m| m.payload().as_ref().to_vec()),
+        );
+    }
 }

@@ -107,10 +107,6 @@ pub enum ParsingError {
         "Pairing link_id `{0}` in manifest.depends_on.pairings is not a valid wire segment (must not contain '/' or '@', and must not collide with a reserved sentinel) — pairing slot link_ids appear on the wire as the producer-side link_id segment"
     )]
     PairingSentinelLinkId(String),
-    #[error(
-        "slot bound to zero producers — every declared depends_on slot must be bound to at least one producer"
-    )]
-    EmptyBoundProducers,
 
     // -- build system
     #[error("Invalid toolchain {0}")]

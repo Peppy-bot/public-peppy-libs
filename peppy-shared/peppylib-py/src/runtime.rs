@@ -897,34 +897,15 @@ impl PyNodeRunner {
         self.inner.processor().node_tag()
     }
 
-    /// The single producer bound to the service / action slot at `link_id`.
-    /// Raises `RuntimeError` (peppylib's `ServiceSlotNotPinned`) when the
-    /// slot is bound to more than one producer — service and action calls
-    /// address exactly one, and a slot bound to zero producers cannot
-    /// exist (launch and startup both reject it). Python codegen splices
-    /// this at consumed poll / send_goal call sites as the single `target`
-    /// argument.
-    fn require_pinned_producer(&self, link_id: &str) -> PyResult<PyProducerRef> {
-        self.inner
-            .processor()
-            .require_pinned_producer(link_id)
-            .map(|producer| PyProducerRef::from(producer.clone()))
-            .map_err(crate::messaging::to_py_err)
-    }
-
-    /// Every producer bound to the consumer slot at `link_id`, in binding
-    /// order; never empty — a declared slot with no bound producers fails
-    /// node startup. Python codegen splices this at consumed subscribe
-    /// call sites as the `from_producers` argument.
-    fn bound_producers_for(&self, link_id: &str) -> Vec<PyProducerRef> {
-        self.inner
-            .processor()
-            .consumer_filter(link_id)
-            .producers()
-            .iter()
-            .cloned()
-            .map(PyProducerRef::from)
-            .collect()
+    /// The one producer bound to the consumer slot at `link_id` — a
+    /// declared slot is always bound to exactly one producer (launch and
+    /// node startup both reject anything else), so this cannot fail for a
+    /// generated `link_id`; a miss means the generated code and the
+    /// manifest disagree (stale codegen) and panics. Python codegen
+    /// splices this at consumed subscribe / poll / send_goal call sites
+    /// as the producer argument.
+    fn bound_producer(&self, link_id: &str) -> PyProducerRef {
+        PyProducerRef::from(self.inner.processor().bound_producer(link_id).clone())
     }
 
     /// Handle onto the pairing slot declared at `link_id` in

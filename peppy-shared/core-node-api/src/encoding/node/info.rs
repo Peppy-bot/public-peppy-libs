@@ -344,16 +344,11 @@ mod tests {
         let bindings_a: config::runtime::SlotBindings = [
             (
                 "wrist_left_camera".to_string(),
-                config::runtime::BoundProducers::new(vec![ProducerRef::new("core_a", "cam1")])
-                    .unwrap(),
+                ProducerRef::new("core_a", "cam1"),
             ),
             (
-                "extra_cam".to_string(),
-                config::runtime::BoundProducers::new(vec![
-                    ProducerRef::new("core_a", "cam2"),
-                    ProducerRef::new("core_a", "cam3"),
-                ])
-                .unwrap(),
+                "wrist_right_camera".to_string(),
+                ProducerRef::new("core_a", "cam2"),
             ),
         ]
         .into_iter()

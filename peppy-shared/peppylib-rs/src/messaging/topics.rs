@@ -1,81 +1,36 @@
-use super::{ConsumerFilter, MessengerHandle, ProducerRef};
+use super::{MessengerHandle, ProducerRef};
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
-/// A consumer-side topic subscription: the wire subscription plus an
-/// optional in-process acceptance set applied above it.
+/// A consumer-side topic subscription. Producer selection happens entirely
+/// on the wire — a dep-slot subscription pins the bound producer's full
+/// `(core_node, instance_id)` pair in the keyexpr, and infra subscriptions
+/// deliberately wildcard it — so every message the wire delivers surfaces
+/// to user code; there is no in-process producer filtering.
 pub struct Subscription {
     inner: pmi::Subscription,
-    /// In-process acceptance set applied above the wire layer: only
-    /// messages whose source `(core_node, instance_id)` is in the set
-    /// surface to user code. Synthesized from a [`ConsumerFilter`] bound to
-    /// more than one producer (the wire subscription then wildcards both
-    /// producer slots); `None` when the wire-layer pin already captures the
-    /// consumer's filter (single-producer slots). The set holds full pairs
-    /// — instance_id alone is not a producer identity on the wire, and
-    /// comparing only half of it would let a same-instance_id producer on
-    /// another core_node leak through.
-    accept_filter: Option<HashSet<ProducerRef>>,
 }
 
 impl Subscription {
     pub(crate) fn new(inner: pmi::Subscription) -> Self {
-        Self {
-            inner,
-            accept_filter: None,
-        }
-    }
-
-    /// `true` when the message's source producer may surface to user code.
-    /// Associated (not `&self`) so callers holding a mutable borrow of
-    /// [`Self::inner`] can still consult the filter.
-    fn accepted_by(accept_filter: &Option<HashSet<ProducerRef>>, msg: &Message) -> bool {
-        // Allocation-free pair lookup would need a borrowed key type;
-        // filters are smallish and topic rates moderate, so a stack
-        // ProducerRef per message is acceptable. Revisit if profiling
-        // disagrees.
-        accept_filter
-            .as_ref()
-            .is_none_or(|set| set.contains(&ProducerRef::new(msg.core_node(), msg.instance_id())))
+        Self { inner }
     }
 
     pub async fn on_next_message(&mut self) -> Option<Message> {
-        let Self {
-            inner,
-            accept_filter,
-        } = self;
-        loop {
-            let raw = inner.rx.recv_async().await.ok()?;
-            let msg = Message::from(raw);
-            if Self::accepted_by(accept_filter, &msg) {
-                return Some(msg);
-            }
-        }
+        let raw = self.inner.rx.recv_async().await.ok()?;
+        Some(Message::from(raw))
     }
 
     pub(crate) fn try_on_next_message(
         &mut self,
     ) -> std::result::Result<Message, crate::types::TryRecvError> {
-        let Self {
-            inner,
-            accept_filter,
-        } = self;
-        loop {
-            match inner.rx.try_recv() {
-                Ok(raw) => {
-                    let msg = Message::from(raw);
-                    if Self::accepted_by(accept_filter, &msg) {
-                        return Ok(msg);
-                    }
-                    // Filtered out — loop for the next message.
-                }
-                Err(err) => return Err(crate::types::TryRecvError::from(err)),
-            }
+        match self.inner.rx.try_recv() {
+            Ok(raw) => Ok(Message::from(raw)),
+            Err(err) => Err(crate::types::TryRecvError::from(err)),
         }
     }
 }
@@ -88,44 +43,32 @@ impl TopicMessenger {
     /// know the producer's node / interface target; a stream with no
     /// target to consult is an infra topic and goes through
     /// [`Self::subscribe_target_scoped`].
-    /// The [`ConsumerFilter`] carries the slot's bound producers —
-    /// non-empty by construction — and selects the wire strategy: a single
-    /// producer pins its full `(core_node, instance_id)` on the wire, and
-    /// several producers subscribe with wire wildcards plus an in-process
-    /// acceptance set admitting exactly the bound pairs. There is no
+    /// `from_producer` is the slot's one bound producer: its full
+    /// `(core_node, instance_id)` pair is pinned on the wire, so only that
+    /// producer's publishes ever reach this subscription. There is no
     /// separate core_node parameter — producer identity always travels as
-    /// the whole pair.
+    /// the whole pair — and no fan-in: a consumer that needs several
+    /// producers declares several slots.
     pub async fn subscribe(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
         from_target: SenderTarget,
         to_topic: &str,
-        filter: &ConsumerFilter,
+        from_producer: &ProducerRef,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        // Translate the ConsumerFilter into the wire-side producer pin
-        // (both keyexpr slots) plus an optional in-process pair filter.
-        let (wire_from_producer, accept_filter): (Option<&ProducerRef>, _) =
-            match filter.pinned_target() {
-                Some(producer) => (Some(producer), None),
-                None => (None, Some(filter.producers().iter().cloned().collect())),
-            };
-
         let recv = TopicWireReceiver::new(
             as_core_node,
             as_instance_id,
-            wire_from_producer.map(|p| p.core_node.as_str()),
-            wire_from_producer.map(|p| p.instance_id.as_str()),
+            Some(from_producer.core_node.as_str()),
+            Some(from_producer.instance_id.as_str()),
             Some(from_target),
             None,
             to_topic,
         )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
-        Ok(Subscription {
-            inner: subscription,
-            accept_filter,
-        })
+        Ok(Subscription::new(subscription))
     }
 
     /// Subscribe to a framework infra topic, scoped by the publisher's

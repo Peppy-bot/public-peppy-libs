@@ -19,23 +19,14 @@ use tokio::sync::oneshot;
 
 use crate::error::Error;
 use crate::messaging::{
-    ActionMessenger, ConsumerFilter, MessengerHandle, ProducerRef, ResultStatus, SenderTarget,
-    ServiceMessenger, ServiceTarget, TopicMessenger,
+    ActionMessenger, MessengerHandle, ProducerRef, ResultStatus, SenderTarget, ServiceMessenger,
+    ServiceTarget, TopicMessenger,
 };
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on
 /// invalid names — tests use known-good values only.
 fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, "v1").expect("test node target")
-}
-
-/// Builds a [`ConsumerFilter`] from a producer list. Panics on an empty
-/// list — a slot bound to zero producers is unrepresentable, and these
-/// tests only construct bound slots.
-fn bound_filter(producers: Vec<ProducerRef>) -> ConsumerFilter {
-    ConsumerFilter::new(
-        config::runtime::BoundProducers::new(producers).expect("test filters are non-empty"),
-    )
 }
 
 /// Declares a publisher and publishes a single payload. The publisher is the
@@ -321,17 +312,14 @@ async fn topic_publish_subscribe_with_from_instance_id() {
     let subscriber_handle = router.messenger().await;
 
     let subscriber_instance_id1 = "subscriber_instance1";
-    let filter1 = bound_filter(vec![ProducerRef::new(
-        emitter_core_node,
-        emitter_instance_id1,
-    )]);
+    let producer1 = ProducerRef::new(emitter_core_node, emitter_instance_id1);
     let mut subscription1 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_core_node,
         subscriber_instance_id1,
         test_node_target(node_name),
         topic,
-        &filter1,
+        &producer1,
         qos.clone(),
     )
     .await
@@ -339,17 +327,14 @@ async fn topic_publish_subscribe_with_from_instance_id() {
 
     // Only this subscriber will receive a message
     let subscriber_instance_id2 = "subscriber_instance2";
-    let filter2 = bound_filter(vec![ProducerRef::new(
-        emitter_core_node,
-        emitter_instance_id2,
-    )]);
+    let producer2 = ProducerRef::new(emitter_core_node, emitter_instance_id2);
     let mut subscription2 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_core_node,
         subscriber_instance_id2,
         test_node_target(node_name),
         topic,
-        &filter2,
+        &producer2,
         qos.clone(),
     )
     .await
@@ -423,17 +408,14 @@ async fn topic_publish_subscribe_with_from_core_node() {
     let subscriber_handle = router.messenger().await;
 
     let subscriber_core_node1 = "core_node_subscribe1";
-    let filter_core1 = bound_filter(vec![ProducerRef::new(
-        emitter_core_node1,
-        emitter_instance_id,
-    )]);
+    let producer_core1 = ProducerRef::new(emitter_core_node1, emitter_instance_id);
     let mut subscription1 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_core_node1,
         subscriber_instance_id,
         test_node_target(node_name),
         topic,
-        &filter_core1,
+        &producer_core1,
         qos.clone(),
     )
     .await
@@ -441,17 +423,14 @@ async fn topic_publish_subscribe_with_from_core_node() {
 
     // Only this subscriber will receive a message
     let subscriber_core_node2 = "core_node_subscribe2";
-    let filter_core2 = bound_filter(vec![ProducerRef::new(
-        emitter_core_node2,
-        emitter_instance_id,
-    )]);
+    let producer_core2 = ProducerRef::new(emitter_core_node2, emitter_instance_id);
     let mut subscription2 = TopicMessenger::subscribe(
         &subscriber_handle,
         subscriber_core_node2,
         subscriber_instance_id,
         test_node_target(node_name),
         topic,
-        &filter_core2,
+        &producer_core2,
         qos.clone(),
     )
     .await
@@ -503,16 +482,13 @@ async fn topic_publish_subscribe_with_from_core_node() {
     router.shutdown().await;
 }
 
-/// A multi-producer [`ConsumerFilter`] resolves at the messaging layer to
-/// a wire wildcard + an in-process accept set. The subscriber must only
-/// surface messages from the bound producers, while wire-level reception
-/// happens for every matching `(name, tag)` publisher.
-///
-/// Spec coverage: a slot bound to producers P1 and P2. A third producer
-/// P3 of the same `(name, tag)` must not reach the consumer — there is no
-/// wildcard fallback.
+/// Fan-in is N declared slots, each wire-pinned to its own producer: a
+/// consumer wanting P1 and P2 holds two subscriptions, and each surfaces
+/// only its bound producer's messages. A third producer P3 of the same
+/// `(name, tag)` reaches neither — there is no wildcard fallback and no
+/// in-process filtering; the wire pin is the whole mechanism.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn multi_producer_filter_admits_bound_producers_and_drops_others() {
+async fn per_slot_pinned_subscriptions_isolate_producers() {
     let router = TestRouterContext::start().await;
 
     let qos = QoSProfile::Reliable;
@@ -525,35 +501,49 @@ async fn multi_producer_filter_admits_bound_producers_and_drops_others() {
     let p3 = "cam_p3";
 
     let subscriber_handle = router.messenger().await;
-    let filter = bound_filter(vec![ProducerRef::new(core, p1), ProducerRef::new(core, p2)]);
-    let mut sub = TopicMessenger::subscribe(
+    // One subscription per declared slot, each pinned to one producer.
+    let producer1 = ProducerRef::new(core, p1);
+    let mut sub1 = TopicMessenger::subscribe(
         &subscriber_handle,
         core,
         "consumer_inst",
         test_node_target(node_name),
         topic,
-        &filter,
+        &producer1,
+        qos.clone(),
+    )
+    .await
+    .expect("subscribe should succeed");
+    let producer2 = ProducerRef::new(core, p2);
+    let mut sub2 = TopicMessenger::subscribe(
+        &subscriber_handle,
+        core,
+        "consumer_inst",
+        test_node_target(node_name),
+        topic,
+        &producer2,
         qos.clone(),
     )
     .await
     .expect("subscribe should succeed");
 
     let emitter_handle = router.messenger().await;
-    // Deterministically wait until the subscriber is known to this fresh emitter
-    // peer before publishing, so the first emits are not dropped during peer-mode
-    // discovery propagation. The multi-producer subscription wildcards the
-    // producer slots on the wire, so waiting on one producer's key expression
-    // confirms it is reachable.
-    TopicMessenger::wait_for_subscriber(
-        &emitter_handle,
-        core,
-        p1,
-        test_node_target(node_name),
-        topic,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("subscriber should become reachable");
+    // Deterministically wait until the subscribers are known to this fresh
+    // emitter peer before publishing, so the first emits are not dropped
+    // during peer-mode discovery propagation. Each pinned subscription has
+    // its own producer keyexpr, so wait on both.
+    for producer in [p1, p2] {
+        TopicMessenger::wait_for_subscriber(
+            &emitter_handle,
+            core,
+            producer,
+            test_node_target(node_name),
+            topic,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("subscriber should become reachable");
+    }
 
     for (producer, body) in [
         (p1, b"from-p1".as_ref()),
@@ -573,33 +563,31 @@ async fn multi_producer_filter_admits_bound_producers_and_drops_others() {
         .expect("emit should succeed");
     }
 
-    // Collect every message that arrives within a generous budget; the
-    // local accept set must drop P3 silently.
-    let mut got: Vec<(String, Vec<u8>)> = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_millis(250), sub.on_next_message()).await {
-            Ok(Some(msg)) => got.push((
-                msg.instance_id().to_string(),
-                msg.payload().as_ref().to_vec(),
-            )),
-            Ok(None) => break,
-            Err(_) => break,
-        }
-        if got.len() >= 2 {
-            break;
-        }
-    }
-    got.sort();
+    // Each slot's subscription surfaces exactly its bound producer's
+    // message; P3's publish reaches neither (wire-pinned keyexprs never
+    // match it).
+    let msg1 = tokio::time::timeout(Duration::from_secs(2), sub1.on_next_message())
+        .await
+        .expect("slot 1 timed out waiting for its producer's message")
+        .expect("slot 1 subscription closed");
+    assert_eq!(msg1.instance_id(), p1);
+    assert_eq!(msg1.payload().as_ref(), b"from-p1");
 
-    assert_eq!(
-        got,
-        vec![
-            (p1.to_string(), b"from-p1".to_vec()),
-            (p2.to_string(), b"from-p2".to_vec()),
-        ],
-        "the accept set must admit only bound producers; P3 must be dropped",
-    );
+    let msg2 = tokio::time::timeout(Duration::from_secs(2), sub2.on_next_message())
+        .await
+        .expect("slot 2 timed out waiting for its producer's message")
+        .expect("slot 2 subscription closed");
+    assert_eq!(msg2.instance_id(), p2);
+    assert_eq!(msg2.payload().as_ref(), b"from-p2");
+
+    // Nothing further surfaces on either slot: P3 was never deliverable.
+    for sub in [&mut sub1, &mut sub2] {
+        let extra = tokio::time::timeout(Duration::from_millis(500), sub.on_next_message()).await;
+        assert!(
+            extra.is_err(),
+            "an unbound producer's publish must never surface on a pinned slot",
+        );
+    }
 
     router.shutdown().await;
 }
@@ -619,17 +607,14 @@ async fn topic_publish_reliable_5000hz_messages() {
     let subscriber_instance_id = "subscriber_instance";
     let emitter_core_node = "emitter_core_node";
     let emitter_instance_id = "emitter_instance";
-    let filter = bound_filter(vec![ProducerRef::new(
-        emitter_core_node,
-        emitter_instance_id,
-    )]);
+    let producer = ProducerRef::new(emitter_core_node, emitter_instance_id);
     let mut subscription = TopicMessenger::subscribe(
         &receiver_handle,
         subscriber_core_node,
         subscriber_instance_id,
         test_node_target(node_name),
         topic,
-        &filter,
+        &producer,
         qos.clone(),
     )
     .await
@@ -4234,19 +4219,13 @@ async fn pinned_calls_issue_zero_probes() {
 }
 
 /// Acceptance criterion 2 — the cross-core same-`instance_id` leak is
-/// closed: topic subscriptions pin and filter on the full
-/// `(core_node, instance_id)` pair, never on `instance_id` alone. Two
-/// producers share `instance_id` "inst1" on different core_nodes:
-///
-/// - `Pin` pins both wire slots, so the same-instance_id producer on the
-///   other core never matches on the wire;
-/// - a multi-producer `OnlyFrom` rides a wire wildcard plus an in-process
-///   allow set that must compare full pairs;
-/// - `AnyExcept` rides a wire wildcard plus an in-process deny set that
-///   must reject only the listed pair — pre-fix, comparing `instance_id`
-///   alone also dropped the same-instance_id producer on the other core.
+/// closed: topic subscriptions pin the full `(core_node, instance_id)`
+/// pair on the wire, never `instance_id` alone. Two producers share
+/// `instance_id` "inst1" on different core_nodes; the subscription bound
+/// to `(core_a, inst1)` must never surface core_b's publishes even though
+/// they carry the same instance_id on the same topic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topic_pinned_and_filtered_subscriptions_compare_full_pairs() {
+async fn topic_pinned_subscription_compares_full_pairs() {
     let router = TestRouterContext::start().await;
 
     let qos = QoSProfile::Reliable;
@@ -4258,40 +4237,20 @@ async fn topic_pinned_and_filtered_subscriptions_compare_full_pairs() {
     let payload_a = Payload::from_static(b"from_core_a");
     let payload_b = Payload::from_static(b"from_core_b");
 
-    // Subscribers first so the emit loops publish into live subscriptions.
+    // Subscriber first so the emit loops publish into a live subscription.
     let pin_handle = router.messenger().await;
-    let pin_filter = bound_filter(vec![ProducerRef::new(core_a, shared_inst)]);
+    let pin_producer = ProducerRef::new(core_a, shared_inst);
     let mut pin_sub = TopicMessenger::subscribe(
         &pin_handle,
         "sub_pin_core",
         "sub_pin_inst",
         test_node_target(node_name),
         topic,
-        &pin_filter,
+        &pin_producer,
         qos.clone(),
     )
     .await
     .expect("pin subscribe should succeed");
-
-    // Two-entry set forces the wire-wildcard + in-process allow-set path
-    // (a single-entry set would collapse to a wire pin); the second entry
-    // names a producer that never publishes.
-    let allow_set_handle = router.messenger().await;
-    let allow_set_filter = bound_filter(vec![
-        ProducerRef::new(core_a, shared_inst),
-        ProducerRef::new(core_a, "inst2"),
-    ]);
-    let mut allow_set_sub = TopicMessenger::subscribe(
-        &allow_set_handle,
-        "sub_only_core",
-        "sub_only_inst",
-        test_node_target(node_name),
-        topic,
-        &allow_set_filter,
-        qos.clone(),
-    )
-    .await
-    .expect("allow-set subscribe should succeed");
 
     // Emit loops: each producer publishes every 50ms until stopped, so the
     // assertions below never depend on a single publish surviving
@@ -4329,7 +4288,7 @@ async fn topic_pinned_and_filtered_subscriptions_compare_full_pairs() {
     let emitter_a = spawn_emitter(router.messenger().await, core_a, payload_a.clone());
     let emitter_b = spawn_emitter(router.messenger().await, core_b, payload_b.clone());
 
-    // Pin: both wire slots are pinned to (core_a, inst1) — every delivered
+    // Both wire slots are pinned to (core_a, inst1) — every delivered
     // message must carry that pair even though core_b publishes the same
     // instance_id on the same topic throughout.
     for _ in 0..3 {
@@ -4340,23 +4299,7 @@ async fn topic_pinned_and_filtered_subscriptions_compare_full_pairs() {
         assert_eq!(
             msg.core_node(),
             core_a,
-            "Pin must reject the same-instance_id producer on another core",
-        );
-        assert_eq!(msg.instance_id(), shared_inst);
-        assert_eq!(msg.payload(), &payload_a);
-    }
-
-    // Allow set: the wire wildcard receives both producers; the in-process
-    // accept set must admit only the listed (core_a, inst1) pair.
-    for _ in 0..3 {
-        let msg = tokio::time::timeout(Duration::from_secs(5), allow_set_sub.on_next_message())
-            .await
-            .expect("allow-set subscriber timed out waiting for a message")
-            .expect("allow-set subscription closed");
-        assert_eq!(
-            msg.core_node(),
-            core_a,
-            "the accept set must compare full pairs, not instance_id alone",
+            "the pin must reject the same-instance_id producer on another core",
         );
         assert_eq!(msg.instance_id(), shared_inst);
         assert_eq!(msg.payload(), &payload_a);

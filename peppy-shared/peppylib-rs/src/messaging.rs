@@ -24,8 +24,13 @@ pub use services::{
 };
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
-mod filter;
-pub use filter::{ConsumerFilter, ProducerRef};
+// Fully-qualified producer address, re-exported from the config model: the
+// wire addresses a producer by the `(core_node, instance_id)` pair. Every
+// consumer dep slot is bound to exactly one producer (the launcher validator
+// resolves and stamps it at plan time), so subscribe / poll / send_goal call
+// sites all take a single `ProducerRef` — there is no per-slot filter type
+// and no in-process producer filtering.
+pub use config::runtime::ProducerRef;
 
 // Curated pmi re-exports. peppylib is a thin layer over PMI, so these types are
 // the shared vocabulary of its public messaging API rather than hidden

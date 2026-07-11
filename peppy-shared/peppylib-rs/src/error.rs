@@ -232,23 +232,12 @@ pub enum Error {
     /// means version skew or a hand-edited boot config.
     #[error(
         "consumer slot `{link_id}` is unbound: the boot config carries no \
-         producers for it, but every declared depends_on slot must be \
-         bound. Fix the launcher / daemon that produced the boot config \
-         (or, in standalone mode, seed the slot via \
-         `StandaloneConfig::with_bound_producer`)"
+         producer for it, but every declared depends_on slot must be \
+         bound to exactly one producer. Fix the launcher / daemon that \
+         produced the boot config (or, in standalone mode, seed the slot \
+         via `StandaloneConfig::with_bound_producer`)"
     )]
     SlotUnbound { link_id: String },
-
-    /// `bound` is always ≥ 2: a slot bound to zero producers is rejected
-    /// at launch (and again at processor startup as
-    /// [`Error::SlotUnbound`]), so only multi-producer fan-in slots can
-    /// fail the exactly-one rule at call time.
-    #[error(
-        "slot `{link_id}` is bound to {bound} producers, but service and \
-         action calls require exactly one; bind a single producer to \
-         `{link_id}`"
-    )]
-    ServiceSlotNotPinned { link_id: String, bound: usize },
 
     #[error("message format for `{context}` is not available in the generator")]
     MessageFormatUnavailable { context: String },
