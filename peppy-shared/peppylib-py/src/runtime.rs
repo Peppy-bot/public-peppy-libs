@@ -897,26 +897,15 @@ impl PyNodeRunner {
         self.inner.processor().node_tag()
     }
 
-    /// The [`ProducerRef`](peppylib::messaging::ProducerRef) pinned for
-    /// `link_id`, when the consumer's slot resolves to a single producer
-    /// ([`peppylib::messaging::ConsumerFilter::Pin`]); `None` for every
-    /// other variant (multi-pin, wildcard-with-excludes, pure wildcard).
-    /// Python codegen splices this at consumed subscribe / poll /
-    /// send_goal call sites as the single `target` / `from_producer`
-    /// argument; pinned slots therefore address their producer directly
-    /// and skip discovery, while multi-bound and unbound `from_any` slots
-    /// resolve to `None` and fall back to wildcard discovery. The same
-    /// `ProducerRef` type is what consumed-topic callbacks return, so a
-    /// received identity can be passed straight back here.
-    ///
-    /// Renamed from the pre-`ProducerRef` `pinned_target_for` (which
-    /// returned the instance_id alone) so stale generated Python fails
-    /// loudly with `AttributeError` instead of silently half-addressing.
-    fn pinned_producer_for(&self, link_id: &str) -> Option<PyProducerRef> {
-        self.inner
-            .processor()
-            .pinned_producer_for(link_id)
-            .map(PyProducerRef::from)
+    /// The one producer bound to the consumer slot at `link_id` — a
+    /// declared slot is always bound to exactly one producer (launch and
+    /// node startup both reject anything else), so this cannot fail for a
+    /// generated `link_id`; a miss means the generated code and the
+    /// manifest disagree (stale codegen) and panics. Python codegen
+    /// splices this at consumed subscribe / poll / send_goal call sites
+    /// as the producer argument.
+    fn bound_producer(&self, link_id: &str) -> PyProducerRef {
+        PyProducerRef::from(self.inner.processor().bound_producer(link_id).clone())
     }
 
     /// Handle onto the pairing slot declared at `link_id` in

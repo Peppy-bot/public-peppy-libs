@@ -104,10 +104,6 @@ pub enum ParsingError {
     )]
     DuplicateLinkId(String),
     #[error(
-        "Conflicting `from_any: true` for dependency `{name}` (tag `{tag}`) in manifest.depends_on: only one entry per (name, tag) may set from_any=true"
-    )]
-    ConflictingFromAny { name: String, tag: String },
-    #[error(
         "Pairing link_id `{0}` in manifest.depends_on.pairings is not a valid wire segment (must not contain '/' or '@', and must not collide with a reserved sentinel) — pairing slot link_ids appear on the wire as the producer-side link_id segment"
     )]
     PairingSentinelLinkId(String),

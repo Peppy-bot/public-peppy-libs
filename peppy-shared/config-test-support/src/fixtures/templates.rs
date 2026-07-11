@@ -1,71 +1,11 @@
 use askama::Template;
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, fs, path::Path};
 
 pub const WEB_VIDEO_STREAM_NODE_NAME: &str = "web_video_stream";
 pub const BRAIN_NODE_NAME: &str = "brain";
 pub const CONTROLLER_NODE_NAME: &str = "controller";
 pub const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
 pub const LIDAR_SENSOR_NODE_NAME: &str = "lidar_sensor";
-
-#[derive(Template)]
-#[template(path = "config_example_1/peppy_launcher.json5.j2")]
-pub struct PeppyConfigTemplateExample1<'a> {
-    pub lidar_sensor_github_repo: &'a str,
-    // The path to the node inside the repository
-    pub lidar_sensor_github_repo_path: &'a str,
-    // The git ref (tag/commit/branch)
-    pub lidar_sensor_github_ref: &'a str,
-
-    pub uvc_camera_github_repo: &'a str,
-    pub uvc_camera_github_repo_path: &'a str,
-
-    pub web_video_stream_node_name: &'a str,
-
-    pub brain_node_name: &'a str,
-
-    pub controller_node_name: &'a str,
-}
-
-#[derive(Template)]
-#[template(path = "config_example_2/peppy_launcher.json5.j2")]
-pub struct PeppyConfigTemplateExample2<'a> {
-    pub lidar_sensor_github_repo: &'a str,
-    // The path to the node inside the repository
-    pub lidar_sensor_github_repo_path: &'a str,
-}
-
-#[derive(Template)]
-#[template(path = "config_example_3/peppy_launcher.json5.j2")]
-pub struct PeppyConfigTemplateExample3<'a> {
-    pub lidar_sensor_url: &'a str,
-    pub lidar_sensor_sha256: &'a str,
-}
-
-#[derive(Template)]
-#[template(path = "config_example_4/peppy_launcher.json5.j2")]
-pub struct PeppyConfigTemplateExample4<'a> {
-    pub lidar_sensor_github_repo: &'a str,
-    pub lidar_sensor_github_repo_path: &'a str,
-}
-
-pub fn render_peppy_config_template<T>(to_path: impl AsRef<Path>, template: T) -> PathBuf
-where
-    T: Template,
-{
-    let root_content = template.render().expect("failed to render root template");
-
-    let dir_path = to_path.as_ref();
-    let file_path = dir_path.join("peppy_launcher.json5");
-
-    fs::create_dir_all(dir_path).expect("failed to create parent directory");
-    fs::write(&file_path, root_content).expect("failed to write peppy config content");
-
-    file_path
-}
 
 #[derive(Template)]
 #[template(path = "nodes/uvc_camera/peppy.json5.j2")]

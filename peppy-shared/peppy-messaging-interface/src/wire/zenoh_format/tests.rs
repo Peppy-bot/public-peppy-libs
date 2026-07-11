@@ -114,7 +114,6 @@ fn topic_subscribe_pairing_full_triple_pin() {
         from_target: Some(pairing("arm_link", "v1")),
         from_link_id: Some(seg("controller")),
         to_topic: seg("joint_states"),
-        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -125,9 +124,9 @@ fn topic_subscribe_pairing_full_triple_pin() {
 #[test]
 fn topic_pairing_and_interface_keyexprs_never_match() {
     // Lock-in guard: identical (name, tag, topic) under pairing vs interface
-    // discriminators produce disjoint keyexprs, so a `from_any` interface
-    // subscription (wildcarded elsewhere, `interface` literal at the
-    // discriminator slot) can never receive pairing traffic.
+    // discriminators produce disjoint keyexprs, so a fully-wildcarded
+    // interface subscription (wildcarded elsewhere, `interface` literal at
+    // the discriminator slot) can never receive pairing traffic.
     let pairing_publish = ZenohWireFormat::topic_publish(&TopicWireSender {
         as_core_node: seg("core_a"),
         as_instance_id: seg("arm_1"),
@@ -135,7 +134,7 @@ fn topic_pairing_and_interface_keyexprs_never_match() {
         link_id: seg("controller"),
         as_topic_name: seg("joint_states"),
     });
-    let from_any_subscribe = ZenohWireFormat::topic_subscribe(&TopicWireReceiver {
+    let wildcard_subscribe = ZenohWireFormat::topic_subscribe(&TopicWireReceiver {
         as_core_node: seg("core_a"),
         as_instance_id: seg("obs_1"),
         from_core_node: None,
@@ -143,10 +142,9 @@ fn topic_pairing_and_interface_keyexprs_never_match() {
         from_target: Some(iface("arm_link", "v1")),
         from_link_id: None,
         to_topic: seg("joint_states"),
-        defers_secondary_drop: false,
     });
     let publish_discriminator = pairing_publish.split('/').nth(5);
-    let subscribe_discriminator = from_any_subscribe.split('/').nth(5);
+    let subscribe_discriminator = wildcard_subscribe.split('/').nth(5);
     assert_eq!(publish_discriminator, Some("pairing"));
     assert_eq!(subscribe_discriminator, Some("interface"));
 }
@@ -161,7 +159,6 @@ fn topic_subscribe_targeted_node() {
         from_target: Some(node("uvc_camera", "v1")),
         from_link_id: None,
         to_topic: seg("video_stream"),
-        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -179,7 +176,6 @@ fn topic_subscribe_with_concrete_link_id() {
         from_target: Some(iface("depth_camera", "v1")),
         from_link_id: Some(seg("wrist_left_camera")),
         to_topic: seg("video_stream"),
-        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -197,7 +193,6 @@ fn topic_subscribe_untargeted_publisher_core_uses_wildcard() {
         from_target: Some(node("uvc_camera", "v1")),
         from_link_id: None,
         to_topic: seg("video_stream"),
-        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -215,7 +210,6 @@ fn topic_subscribe_interface_target() {
         from_target: Some(iface("manipulator", "v1")),
         from_link_id: None,
         to_topic: seg("joint_states"),
-        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -233,7 +227,6 @@ fn topic_subscribe_fully_untargeted_wildcards_all_slots() {
         from_target: None,
         from_link_id: None,
         to_topic: seg("video_stream"),
-        defers_secondary_drop: false,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -336,8 +329,8 @@ fn sample_service_receiver(kind: ServiceKind) -> ServiceWireReceiver {
 #[test]
 fn service_queryable_declare_node_identity_plain_service() {
     // One queryable per `listen_service`. The link_id slot is `*` so the
-    // queryable absorbs both `*` (from `from_any` consumers) and `_` (the
-    // default literal post-binding-map) at that wire slot.
+    // queryable absorbs both `*` (callers always wildcard the link_id slot)
+    // and `_` (the default literal post-binding-map) at that wire slot.
     let recv = sample_service_receiver(ServiceKind::Service);
     let key = ZenohWireFormat::service_queryable_declare(&recv);
     assert_eq!(
@@ -525,11 +518,11 @@ fn parse_inbound_query_extracts_caller_identity_and_literal_link_id() {
 
 #[test]
 fn parse_inbound_query_accepts_wildcard_in_target_slots_and_link_id() {
-    // A `from_any` consumer's selector wildcards the to_core/to_inst slots
-    // and the link_id slot with Zenoh `*`. The producer-side parser
-    // surfaces the `*` at the link_id slot so the adapter's dispatcher can
-    // claim a bound link_id; wildcard target slots remain acceptable to
-    // every producer that Zenoh matched.
+    // A consumer's selector may wildcard the to_core/to_inst slots and the
+    // link_id slot with Zenoh `*`. The producer-side parser surfaces the
+    // `*` at the link_id slot so the adapter's dispatcher can claim a bound
+    // link_id; wildcard target slots remain acceptable to every producer
+    // that Zenoh matched.
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query = "*/caller_core/*/caller_inst/service/node/robot_arm/v1/*/ping";
     let parsed =
@@ -539,7 +532,7 @@ fn parse_inbound_query_accepts_wildcard_in_target_slots_and_link_id() {
     assert_eq!(parsed.caller_inst, "caller_inst");
     assert_eq!(
         parsed.link_id, "*",
-        "from_any consumer's selector should surface `*` at the link_id slot"
+        "wildcard-link_id selector should surface `*` at the link_id slot"
     );
 }
 
@@ -830,7 +823,6 @@ fn topic_subscribe_node_only_segment_does_not_match_interface_publisher() {
         from_target: Some(node("widget", "v1")),
         from_link_id: None,
         to_topic: seg("frames"),
-        defers_secondary_drop: false,
     };
     let publisher_as_node = TopicWireSender {
         as_core_node: seg("core_a"),
@@ -876,7 +868,6 @@ fn topic_subscribe_interface_only_segment_does_not_match_node_publisher() {
         from_target: Some(iface("widget", "v1")),
         from_link_id: None,
         to_topic: seg("frames"),
-        defers_secondary_drop: false,
     };
     let sub_key = ZenohWireFormat::topic_subscribe(&receiver);
     assert!(sub_key.contains("/topic/interface/widget/v1/*/frames"));
@@ -897,7 +888,6 @@ fn topic_subscribe_untargeted_wildcards_discriminator_too() {
         from_target: None,
         from_link_id: None,
         to_topic: seg("frames"),
-        defers_secondary_drop: false,
     };
     let key = ZenohWireFormat::topic_subscribe(&receiver);
     assert!(

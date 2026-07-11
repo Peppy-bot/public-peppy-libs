@@ -226,15 +226,21 @@ pub enum Error {
     #[error("subscription to `{topic_name}` closed without yielding a message")]
     SubscriptionClosed { topic_name: String },
 
+    /// Startup backstop for the launch-time rule "every declared
+    /// depends_on slot must be bound": a daemon that validates bindings
+    /// never ships a boot config missing a slot's entry, so hitting this
+    /// means version skew or a hand-edited boot config.
+    #[error(
+        "consumer slot `{link_id}` is unbound: the boot config carries no \
+         producer for it, but every declared depends_on slot must be \
+         bound to exactly one producer. Fix the launcher / daemon that \
+         produced the boot config (or, in standalone mode, seed the slot \
+         via `StandaloneConfig::with_bound_producer`)"
+    )]
+    SlotUnbound { link_id: String },
+
     #[error("message format for `{context}` is not available in the generator")]
     MessageFormatUnavailable { context: String },
-
-    #[error(
-        "another from_any topic subscription for `{name}` (tag `{tag}`) is \
-         already active on this messenger; at most one from_any subscription \
-         per (name, tag) is allowed (the sibling-exclusion dedupe depends on it)"
-    )]
-    DuplicateFromAnyConsumer { name: String, tag: String },
 }
 
 struct InstanceSuffix<'a>(Option<&'a str>);

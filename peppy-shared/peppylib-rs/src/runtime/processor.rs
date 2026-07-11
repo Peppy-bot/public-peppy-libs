@@ -20,11 +20,11 @@ use super::builder::StandaloneConfig;
 pub struct Processor {
     runtime_config: RuntimeConfig,
     validated_arguments: NodeArguments,
-    /// Pre-resolved per-`link_id` [`crate::messaging::ConsumerFilter`].
-    /// Computed once at startup from the daemon-supplied `slot_bindings`
-    /// plus the manifest's `depends_on`; cached so subscribe / poll /
-    /// send_goal call sites return a borrowed reference cheaply.
-    consumer_filters: BTreeMap<String, crate::messaging::ConsumerFilter>,
+    /// The one bound producer per declared `link_id`. Computed once at
+    /// startup from the daemon-supplied `slot_bindings` plus the manifest's
+    /// `depends_on`; cached so subscribe / poll / send_goal call sites
+    /// return a borrowed reference cheaply.
+    bound_producers: BTreeMap<String, crate::messaging::ProducerRef>,
     /// One live pairing-slot channel per `depends_on.pairings` entry, keyed
     /// by the slot's link_id. The map's key set is fixed at startup (slots
     /// are declared in the manifest); only the channel values move — the
@@ -82,13 +82,13 @@ impl Processor {
             &node_config.execution.parameters,
         )?;
 
-        let consumer_filters = build_consumer_filters(&runtime_config, &node_config);
+        let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
 
         Ok(Self {
             runtime_config,
             validated_arguments,
-            consumer_filters,
+            bound_producers,
             pairing_slots,
         })
     }
@@ -137,16 +137,49 @@ impl Processor {
                 reason: e.to_string(),
             })?;
 
+        // Daemon-less development: `StandaloneConfig::with_bound_producer`
+        // seeds a consumer slot's producer, standing in for the launcher's
+        // validated binding map. Undeclared link_ids are ignored with a
+        // warning (mirroring `peer_pins` below); a declared slot left
+        // unseeded fails `build_bound_producers`, exactly like a daemon
+        // boot config missing a binding.
+        let mut slot_bindings = config::runtime::SlotBindings::new();
+        let declared_slots: std::collections::BTreeSet<&str> = node_config
+            .manifest
+            .depends_on
+            .as_ref()
+            .map(|deps| {
+                deps.nodes
+                    .iter()
+                    .map(|dep| dep.link_id.as_str())
+                    .chain(deps.contracts.iter().map(|dep| dep.link_id.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (link_id, producer) in &config.bound_producers {
+            if !declared_slots.contains(link_id.as_str()) {
+                tracing::warn!(
+                    link_id = %link_id,
+                    "StandaloneConfig bound producer names an undeclared consumer slot; ignoring"
+                );
+                continue;
+            }
+            slot_bindings.insert(link_id.clone(), producer.clone());
+        }
+
         let runtime_config = RuntimeConfig::new(
             &messaging_host,
             messaging_port,
-            NodeInstanceConfig::new(instance_id_name),
+            NodeInstanceConfig {
+                slot_bindings,
+                ..NodeInstanceConfig::new(instance_id_name)
+            },
             &node_name,
             node_config.manifest.tag.as_str(),
             "standalone-core",
         )?;
 
-        let consumer_filters = build_consumer_filters(&runtime_config, &node_config);
+        let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
 
         // Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a
@@ -171,7 +204,7 @@ impl Processor {
         Ok(Self {
             runtime_config,
             validated_arguments,
-            consumer_filters,
+            bound_producers,
             pairing_slots,
         })
     }
@@ -258,34 +291,26 @@ impl Processor {
         self.runtime_config.node_instance.framework.use_sim_time
     }
 
-    /// Resolved [`crate::messaging::ConsumerFilter`] for the consumer
-    /// slot declared at `link_id`. The filter is computed once at
-    /// startup from the daemon-supplied `slot_bindings` plus the
-    /// manifest's `depends_on` (so the pinned-claims-from_any
-    /// precedence rule is applied a single time) and cached on the
-    /// processor for the lifetime of the node.
+    /// The one producer bound to the consumer slot declared at `link_id`,
+    /// from the daemon-supplied `slot_bindings`, cached once at startup for
+    /// the lifetime of the node. Serves topic subscribes and service /
+    /// action calls alike — every interface kind addresses the same single
+    /// bound producer. Startup fails on a declared slot with no binding, so
+    /// every declared `link_id` is in the cache; a cache miss means the
+    /// generated code and the manifest disagree (version skew / stale
+    /// codegen) — a bug, not a user error — and panics.
     ///
     /// Generated subscribe / poll / send_goal call sites splice
-    /// `node_runner.processor().consumer_filter(<link_id>)` at the
-    /// consumer-filter argument slot.
-    pub fn consumer_filter(&self, link_id: &str) -> &crate::messaging::ConsumerFilter {
-        const ANY: crate::messaging::ConsumerFilter = crate::messaging::ConsumerFilter::Any;
-        self.consumer_filters.get(link_id).unwrap_or(&ANY)
-    }
-
-    /// Convenience for service / action call sites: returns the single
-    /// producer this slot pins (`ConsumerFilter::Pin`) as an owned
-    /// [`crate::messaging::ProducerRef`], or `None` for every other
-    /// variant. The owned form crosses the PyO3 boundary cleanly; native
-    /// Rust call sites can either use this or
-    /// [`Self::consumer_filter`]`.pinned_target()` (the latter borrows
-    /// from the cached filter).
-    ///
-    /// Deliberately renamed from the pre-`ProducerRef` `pinned_target_for`
-    /// so generated Python built against the instance_id-only shape fails
-    /// loudly with `AttributeError` instead of silently misaddressing.
-    pub fn pinned_producer_for(&self, link_id: &str) -> Option<crate::messaging::ProducerRef> {
-        self.consumer_filter(link_id).pinned_target().cloned()
+    /// `node_runner.processor().bound_producer(<link_id>)` at the
+    /// producer argument slot.
+    pub fn bound_producer(&self, link_id: &str) -> &crate::messaging::ProducerRef {
+        self.bound_producers.get(link_id).unwrap_or_else(|| {
+            panic!(
+                "consumer slot `{link_id}` has no cached producer: the generated code and the \
+                 manifest disagree (version skew / stale codegen) — regenerate bindings for \
+                 this node"
+            )
+        })
     }
 
     /// The live watch channel for the pairing slot declared at `link_id`, or
@@ -342,35 +367,35 @@ fn build_pairing_slots(
     Arc::new(out)
 }
 
-/// Pre-resolve a [`ConsumerFilter`] for every `link_id` declared in
-/// the consumer manifest's `depends_on`. Called once during
+/// Pre-resolve the one bound producer for every `link_id` declared in
+/// the consumer manifest's `depends_on`, from the daemon-supplied
+/// `slot_bindings`. A declared slot the boot config carries no binding
+/// for is a hard startup error ([`Error::SlotUnbound`]) — the launcher
+/// validator rejects unbound slots at plan time, so reaching it means
+/// version skew or a hand-edited boot config. Called once during
 /// [`Processor::new_daemon`] / [`Processor::new_standalone`] so the
 /// per-link_id accessor is a borrow into a stable cache.
-fn build_consumer_filters(
+fn build_bound_producers(
     runtime_config: &RuntimeConfig,
     node_config: &NodeConfig,
-) -> BTreeMap<String, crate::messaging::ConsumerFilter> {
-    let depends_on = node_config.manifest.depends_on.as_ref();
+) -> Result<BTreeMap<String, crate::messaging::ProducerRef>> {
     let mut out = BTreeMap::new();
-    if let Some(deps) = depends_on {
-        for dep in &deps.nodes {
-            let filter = crate::messaging::resolve_consumer_filter(
-                dep.link_id.as_str(),
-                &runtime_config.node_instance.slot_bindings,
-                depends_on,
-            );
-            out.insert(dep.link_id.clone(), filter);
-        }
-        for dep in &deps.contracts {
-            let filter = crate::messaging::resolve_consumer_filter(
-                dep.link_id.as_str(),
-                &runtime_config.node_instance.slot_bindings,
-                depends_on,
-            );
-            out.insert(dep.link_id.clone(), filter);
+    if let Some(deps) = node_config.manifest.depends_on.as_ref() {
+        let slot_bindings = &runtime_config.node_instance.slot_bindings;
+        let node_links = deps.nodes.iter().map(|dep| &dep.link_id);
+        let contract_links = deps.contracts.iter().map(|dep| &dep.link_id);
+        for link_id in node_links.chain(contract_links) {
+            let producer =
+                slot_bindings
+                    .get(link_id)
+                    .cloned()
+                    .ok_or_else(|| Error::SlotUnbound {
+                        link_id: link_id.clone(),
+                    })?;
+            out.insert(link_id.clone(), producer);
         }
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1154,5 +1179,157 @@ mod tests {
         // the inner map directly — this is a compile-time guarantee.
         let json = serde_json::to_value(&validated).expect("should serialize");
         assert_eq!(json.get("x"), Some(&serde_json::json!(1)));
+    }
+
+    /// Manifest fixture declaring one consumer slot (`main`), shared by the
+    /// unbound-slot startup tests below.
+    const CONSUMER_PEPPY_CONFIG: &str = r#"{
+        peppy_schema: "node/v1",
+        manifest: {
+            name: "consumer_node",
+            tag: "v1",
+            depends_on: {
+                nodes: [{ name: "camera", tag: "v1", link_id: "main" }]
+            }
+        },
+        execution: { language: "rust", run_cmd: ["./target/debug/consumer_node"] },
+    }"#;
+
+    /// The runtime backstop of the launch-time rule "every declared slot
+    /// must be bound": a boot config missing a declared slot's binding
+    /// entry fails processor construction, not lazily at first call.
+    #[test]
+    fn fails_at_startup_when_declared_slot_has_no_binding() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&peppy_config_path, CONSUMER_PEPPY_CONFIG)
+            .expect("peppy config should be written");
+        config::fingerprint::create_codegen_fingerprint(
+            &peppy_config_path,
+            Path::new(PEPPYGEN_OUTPUT_PATH),
+        );
+
+        // No `slot_bindings` at all — the declared `main` slot is unbound.
+        let json5_config = r#"{
+            messaging_host: "127.0.0.1",
+            messaging_port: 7448,
+            node_instance: { instance_id: "consumer_1" },
+            node_name: "consumer_node",
+            node_tag: "v1",
+            bound_core_node: "core-1234"
+        }"#;
+        let runtime_config: RuntimeConfig =
+            serde_json5::from_str(json5_config).expect("runtime config should parse");
+        let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
+        runtime_config
+            .save_json5_launch_config(&runtime_config_path)
+            .expect("runtime config should be saved");
+
+        let Err(err) = Processor::new_daemon_from_path(
+            &peppy_config_path,
+            runtime_config_path.to_str().unwrap(),
+        ) else {
+            panic!("expected unbound-slot startup error");
+        };
+        assert!(
+            matches!(&err, crate::error::Error::SlotUnbound { link_id } if link_id == "main"),
+            "expected SlotUnbound for `main`, got: {err}"
+        );
+    }
+
+    /// Happy path of the same rule: a bound slot's producer reaches the
+    /// startup cache verbatim.
+    #[test]
+    fn daemon_boot_config_binding_reaches_bound_producer_cache() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&peppy_config_path, CONSUMER_PEPPY_CONFIG)
+            .expect("peppy config should be written");
+        config::fingerprint::create_codegen_fingerprint(
+            &peppy_config_path,
+            Path::new(PEPPYGEN_OUTPUT_PATH),
+        );
+
+        let json5_config = r#"{
+            messaging_host: "127.0.0.1",
+            messaging_port: 7448,
+            node_instance: {
+                instance_id: "consumer_1",
+                slot_bindings: {
+                    main: { core_node: "core-1234", instance_id: "camera_1" }
+                }
+            },
+            node_name: "consumer_node",
+            node_tag: "v1",
+            bound_core_node: "core-1234"
+        }"#;
+        let runtime_config: RuntimeConfig =
+            serde_json5::from_str(json5_config).expect("runtime config should parse");
+        let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
+        runtime_config
+            .save_json5_launch_config(&runtime_config_path)
+            .expect("runtime config should be saved");
+
+        let processor = Processor::new_daemon_from_path(
+            &peppy_config_path,
+            runtime_config_path.to_str().unwrap(),
+        )
+        .expect("bound slot should construct");
+        let expected = config::runtime::ProducerRef::new("core-1234", "camera_1");
+        assert_eq!(processor.bound_producer("main"), &expected);
+    }
+
+    /// A boot config carrying an array value for a slot binding must fail
+    /// to parse — multi-producer bindings are unrepresentable on the wire,
+    /// not merely rejected by the launcher validator.
+    #[test]
+    fn boot_config_with_array_slot_binding_fails_to_parse() {
+        let json5_config = r#"{
+            messaging_host: "127.0.0.1",
+            messaging_port: 7448,
+            node_instance: {
+                instance_id: "consumer_1",
+                slot_bindings: {
+                    main: [{ core_node: "core-1234", instance_id: "camera_1" }]
+                }
+            },
+            node_name: "consumer_node",
+            node_tag: "v1",
+            bound_core_node: "core-1234"
+        }"#;
+        let result: std::result::Result<RuntimeConfig, _> = serde_json5::from_str(json5_config);
+        assert!(
+            result.is_err(),
+            "array-valued slot binding must be a hard parse error"
+        );
+    }
+
+    /// Standalone runs enforce the same rule via
+    /// `StandaloneConfig::with_bound_producer`: a declared slot left
+    /// unseeded fails startup; seeding it stands in for the launcher's
+    /// validated binding map.
+    #[test]
+    fn standalone_declared_slot_requires_bound_producer() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&peppy_config_path, CONSUMER_PEPPY_CONFIG)
+            .expect("peppy config should be written");
+
+        let unseeded = StandaloneConfig::new();
+        let Err(err) = Processor::new_standalone(&peppy_config_path, &unseeded) else {
+            panic!("expected unbound-slot startup error");
+        };
+        assert!(
+            matches!(&err, crate::error::Error::SlotUnbound { link_id } if link_id == "main"),
+            "expected SlotUnbound for `main`, got: {err}"
+        );
+
+        let seeded = StandaloneConfig::new().with_bound_producer("main", "core_x", "camera_1");
+        let processor = Processor::new_standalone(&peppy_config_path, &seeded)
+            .expect("seeded slot should construct");
+        assert_eq!(
+            processor.bound_producer("main"),
+            &config::runtime::ProducerRef::new("core_x", "camera_1")
+        );
     }
 }

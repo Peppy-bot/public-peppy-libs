@@ -22,8 +22,8 @@ NODE_TAG = "v1"
 def test_producer_ref_is_structured_and_hashable():
     """`ProducerRef` exposes named fields and works as a dict key.
 
-    A `from_any` consumer keys per-producer state on the returned identity, so
-    the type must be hashable and compare by value (mirrors the Rust
+    Consumers key per-slot state on the returned identity, so the type must
+    be hashable and compare by value (mirrors the Rust
     `HashMap<ProducerRef, _>` idiom).
     """
     producer = ProducerRef("core_a", "inst_1")
@@ -59,14 +59,14 @@ async def test_messenger_communication():
         receiver_handle = await MessengerHandle.from_host_port(router.host, router.port)
         sender_handle = await MessengerHandle.from_host_port(router.host, router.port)
 
-        # Subscribe to the topic first
+        # Subscribe to the topic first, pinned to the publishing producer.
         subscription = await TopicMessenger.subscribe(
             receiver_handle,
             core_node,
             instance_id,
             SenderTarget.node(node_name, NODE_TAG),
             topic_name,
-            None,  # Accept messages from any producer (discover-then-pin)
+            ProducerRef(core_node, instance_id),
             qos,
         )
 
@@ -105,3 +105,30 @@ async def test_messenger_communication():
         assert message.producer == ProducerRef(core_node, instance_id)
         assert message.producer.core_node == core_node
         assert message.producer.instance_id == instance_id
+
+
+@pytest.mark.asyncio
+async def test_subscribe_rejects_producer_list():
+    """A list of producers raises `TypeError`.
+
+    A slot binds exactly one producer; fan-in is N declared slots. The
+    subscribe seam takes a single `ProducerRef`, so a list — even a
+    single-element one — must fail loudly instead of silently degrading.
+    """
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        test_id = uuid.uuid4().hex[:8]
+        handle = await MessengerHandle.from_host_port(router.host, router.port)
+        core_node = f"test_core_{test_id}"
+        instance_id = f"test_instance_{test_id}"
+
+        for producers in ([], [ProducerRef(core_node, instance_id)]):
+            with pytest.raises(TypeError):
+                await TopicMessenger.subscribe(
+                    handle,
+                    core_node,
+                    instance_id,
+                    SenderTarget.node(f"test_node_{test_id}", NODE_TAG),
+                    f"test_topic_{test_id}",
+                    producers,
+                    QoSProfile.Reliable,
+                )

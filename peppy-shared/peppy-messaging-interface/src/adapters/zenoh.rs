@@ -763,24 +763,7 @@ impl MessengerBackend for ZenohAdapter {
         recv: &TopicWireReceiver,
         qos: SubscriberQoS,
     ) -> Result<Subscription> {
-        // Wildcard subscribers (from_link_id: None) match every per-link_id
-        // publish a multi-link `emit` produces and must drop secondaries —
-        // see the topic-attachment block in `wire::zenoh_format`. Pinned
-        // subscribers ignore the attachment because their keyexpr already
-        // selects a single publish per emit.
-        //
-        // The exclusion bypass: when the consumer has registered a
-        // sibling-pinned set, peppylib filters by `link_id()` above the
-        // adapter (the primary may be excluded and the secondary may be
-        // the one to keep). Dropping secondaries here would silence the
-        // only acceptable publish in that case. The peppylib filter then
-        // dedupes alone — relying on "at most one bound link_id is not in
-        // the excluded set" — which holds because peppylib's
-        // `MessengerHandle::reserve_from_any_topic` rejects a second
-        // from_any subscription on the same `(name, tag)` at subscribe
-        // time, making it the runtime enforcer of the manifest validator's
-        // invariant.
-        let drop_secondary = recv.from_link_id.is_none() && !recv.defers_secondary_drop;
+        let drop_secondary = recv.drops_secondary_publishes();
         self.subscribe_keyexpr(ZenohWireFormat::topic_subscribe(recv), qos, drop_secondary)
             .await
     }
@@ -816,7 +799,7 @@ impl MessengerBackend for ZenohAdapter {
         // One queryable per listen call. The declared keyexpr has `*` at the
         // link_id slot so a single queryable absorbs every bound link_id —
         // `process_inbound_query` does the dispatch by parsing the selector.
-        // Two queryables for one process would let a `from_any` consumer's
+        // Two queryables for one process would let a caller's wildcard
         // `*` selector double-deliver via `QueryTarget::All`.
         let declare_keyexpr = ZenohWireFormat::service_queryable_declare(recv);
         let recv_clone = recv.clone();

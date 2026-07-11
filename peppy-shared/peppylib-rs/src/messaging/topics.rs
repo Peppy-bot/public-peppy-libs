@@ -1,107 +1,36 @@
-use super::{ConsumerFilter, FromAnyTopicGuard, MessengerHandle, ProducerRef};
+use super::{MessengerHandle, ProducerRef};
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
-/// In-process acceptance / rejection filter applied by
-/// [`Subscription::on_next_message`] above the wire layer. Synthesized
-/// from a [`ConsumerFilter`] whose variant cannot be expressed as a
-/// single wire-side producer pin. Sets hold full
-/// `(core_node, instance_id)` pairs — instance_id alone is not a producer
-/// identity on the wire, and comparing only half of it would let a
-/// same-instance_id producer on another core_node leak through.
-#[derive(Debug)]
-enum AcceptanceFilter {
-    /// Accept only messages whose source `(core_node, instance_id)` is in
-    /// the set. Built from [`ConsumerFilter::OnlyFrom`] with more than one
-    /// producer (single-producer collapses to a wire pin).
-    Allow(HashSet<ProducerRef>),
-    /// Drop messages whose source `(core_node, instance_id)` is in the
-    /// set. Built from [`ConsumerFilter::AnyExcept`] with a non-empty set.
-    Deny(HashSet<ProducerRef>),
-}
-
-impl AcceptanceFilter {
-    fn accepts(&self, core_node: &str, instance_id: &str) -> bool {
-        // Allocation-free pair lookup would need a borrowed key type;
-        // filters are smallish and topic rates moderate, so a stack
-        // ProducerRef per message is acceptable. Revisit if profiling
-        // disagrees.
-        let source = ProducerRef::new(core_node, instance_id);
-        match self {
-            AcceptanceFilter::Allow(set) => set.contains(&source),
-            AcceptanceFilter::Deny(set) => !set.contains(&source),
-        }
-    }
-}
-
+/// A consumer-side topic subscription. Producer selection happens entirely
+/// on the wire — a dep-slot subscription pins the bound producer's full
+/// `(core_node, instance_id)` pair in the keyexpr, and infra subscriptions
+/// deliberately wildcard it — so every message the wire delivers surfaces
+/// to user code; there is no in-process producer filtering.
 pub struct Subscription {
     inner: pmi::Subscription,
-    /// Live for the subscription's full lifetime when this is a from_any
-    /// topic sub; releases the messenger's per-`(name, tag)` reservation
-    /// on drop. `None` for pinned subs and target-less subscriptions.
-    _from_any_guard: Option<FromAnyTopicGuard>,
-    /// In-process filter applied to incoming messages before they
-    /// surface to user code. `None` when the wire-layer pin already
-    /// captures the consumer's filter (Pin / Any cases).
-    accept_filter: Option<AcceptanceFilter>,
 }
 
 impl Subscription {
     pub(crate) fn new(inner: pmi::Subscription) -> Self {
-        Self {
-            inner,
-            _from_any_guard: None,
-            accept_filter: None,
-        }
-    }
-
-    pub(crate) fn with_from_any_guard(mut self, guard: FromAnyTopicGuard) -> Self {
-        self._from_any_guard = Some(guard);
-        self
-    }
-
-    fn with_accept_filter(mut self, filter: AcceptanceFilter) -> Self {
-        self.accept_filter = Some(filter);
-        self
+        Self { inner }
     }
 
     pub async fn on_next_message(&mut self) -> Option<Message> {
-        loop {
-            let raw = self.inner.rx.recv_async().await.ok()?;
-            let msg = Message::from(raw);
-            if self
-                .accept_filter
-                .as_ref()
-                .is_none_or(|f| f.accepts(msg.core_node(), msg.instance_id()))
-            {
-                return Some(msg);
-            }
-        }
+        let raw = self.inner.rx.recv_async().await.ok()?;
+        Some(Message::from(raw))
     }
 
     pub(crate) fn try_on_next_message(
         &mut self,
     ) -> std::result::Result<Message, crate::types::TryRecvError> {
-        loop {
-            match self.inner.rx.try_recv() {
-                Ok(raw) => {
-                    let msg = Message::from(raw);
-                    if self
-                        .accept_filter
-                        .as_ref()
-                        .is_none_or(|f| f.accepts(msg.core_node(), msg.instance_id()))
-                    {
-                        return Ok(msg);
-                    }
-                    // Filtered out — loop for the next message.
-                }
-                Err(err) => return Err(crate::types::TryRecvError::from(err)),
-            }
+        match self.inner.rx.try_recv() {
+            Ok(raw) => Ok(Message::from(raw)),
+            Err(err) => Err(crate::types::TryRecvError::from(err)),
         }
     }
 }
@@ -110,74 +39,68 @@ pub struct TopicMessenger;
 
 impl TopicMessenger {
     /// Subscribe to a topic published by a specific target. `from_target`
-    /// `Some(SenderTarget)` filters on the publisher's identity; `None`
-    /// wildcards the target segment (any node or interface emits a match).
-    /// `is_from_any` marks this subscription as a `from_any: true` slot,
-    /// gating the messenger's per-`(name, tag)` reservation. The
-    /// [`ConsumerFilter`] selects whether the wire pins a producer's full
-    /// `(core_node, instance_id)` or wildcards plus an in-process pair
-    /// filter; see the enum's variants. There is no separate core_node
-    /// parameter — producer identity always travels as the whole pair.
-    #[allow(clippy::too_many_arguments)]
+    /// filters on the publisher's identity — consumer dep slots always
+    /// know the producer's node / interface target; a stream with no
+    /// target to consult is an infra topic and goes through
+    /// [`Self::subscribe_target_scoped`].
+    /// `from_producer` is the slot's one bound producer: its full
+    /// `(core_node, instance_id)` pair is pinned on the wire, so only that
+    /// producer's publishes ever reach this subscription. There is no
+    /// separate core_node parameter — producer identity always travels as
+    /// the whole pair — and no fan-in: a consumer that needs several
+    /// producers declares several slots.
     pub async fn subscribe(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
-        from_target: Option<SenderTarget>,
-        is_from_any: bool,
+        from_target: SenderTarget,
         to_topic: &str,
-        filter: &ConsumerFilter,
+        from_producer: &ProducerRef,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        // Translate the ConsumerFilter into the wire-side producer pin
-        // (both keyexpr slots) plus an optional in-process pair filter.
-        let (wire_from_producer, accept_filter): (Option<&ProducerRef>, _) = match filter {
-            ConsumerFilter::Pin(producer) => (Some(producer), None),
-            ConsumerFilter::OnlyFrom(producers) if producers.len() == 1 => {
-                (Some(&producers[0]), None)
-            }
-            ConsumerFilter::OnlyFrom(producers) => (
-                None,
-                Some(AcceptanceFilter::Allow(producers.iter().cloned().collect())),
-            ),
-            ConsumerFilter::AnyExcept(producers) if producers.is_empty() => (None, None),
-            ConsumerFilter::AnyExcept(producers) => (
-                None,
-                Some(AcceptanceFilter::Deny(producers.iter().cloned().collect())),
-            ),
-            ConsumerFilter::Any => (None, None),
-        };
-
-        // Reserve the from_any `(name, tag)` slot before any wire work.
-        // The manifest validator enforces "at most one from_any topic
-        // sub per (name, tag) per messenger" at config time; this is
-        // the runtime guard at the wire's trust boundary.
-        let from_any_guard = match (&from_target, is_from_any) {
-            (Some(target), true) => Some(messenger.reserve_from_any_topic(
-                wire_from_producer,
-                target.name(),
-                target.tag(),
-            )?),
-            _ => None,
-        };
         let recv = TopicWireReceiver::new(
             as_core_node,
             as_instance_id,
-            wire_from_producer.map(|p| p.core_node.as_str()),
-            wire_from_producer.map(|p| p.instance_id.as_str()),
-            from_target,
+            Some(from_producer.core_node.as_str()),
+            Some(from_producer.instance_id.as_str()),
+            Some(from_target),
             None,
             to_topic,
         )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
-        let mut subscription = Subscription::new(subscription);
-        if let Some(guard) = from_any_guard {
-            subscription = subscription.with_from_any_guard(guard);
-        }
-        if let Some(filter) = accept_filter {
-            subscription = subscription.with_accept_filter(filter);
-        }
-        Ok(subscription)
+        Ok(Subscription::new(subscription))
+    }
+
+    /// Subscribe to a framework infra topic, scoped by the publisher's
+    /// target identity alone while its per-boot `(core_node, instance_id)`
+    /// pair stays wildcarded on the wire. Used for streams whose producer
+    /// identity is unknowable or deliberately open: a node following its
+    /// daemon's `clock` / `daemon_heartbeat` (a daemon's node name IS its
+    /// core_node name, so the target pins which daemon matches), the
+    /// daemon's own name-collision watch (the point is to hear foreign
+    /// publishers), an external simulator's clock, and the benchmark
+    /// prober. Deliberately separate from [`Self::subscribe`]: consumer
+    /// dep slots only ever receive from explicitly bound producers, while
+    /// infra topics have no binding to consult.
+    pub async fn subscribe_target_scoped(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        from_target: SenderTarget,
+        to_topic: &str,
+        qos: QoSProfile,
+    ) -> Result<Subscription> {
+        let recv = TopicWireReceiver::new(
+            as_core_node,
+            as_instance_id,
+            None,
+            None,
+            Some(from_target),
+            None,
+            to_topic,
+        )?;
+        let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
+        Ok(Subscription::new(subscription))
     }
 
     /// Subscribe to one topic of a pairing, pinned to the current peer's full
@@ -185,8 +108,7 @@ impl TopicMessenger {
     /// own slot (the producer-side link_id segment of its publishes). Unlike
     /// [`Self::subscribe`], the link_id slot is a literal, never a wildcard —
     /// an unpaired slot has no wire subscription at all, so there is no
-    /// wildcard shape to build. The `from_any` reservation machinery is
-    /// deliberately not involved: pairing traffic rides the `pairing` wire
+    /// wildcard shape to build. Pairing traffic rides the `pairing` wire
     /// discriminator, which no interface subscription can match.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn subscribe_peer_pinned(

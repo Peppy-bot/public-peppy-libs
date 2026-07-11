@@ -334,7 +334,7 @@ impl PyActionMessenger {
     /// `target` is the producer's full `(core_node, instance_id)` pair —
     /// `Some` pins it (no discovery), `None` is a genuine wildcard
     /// (discover-then-pin). Generated code splices
-    /// `node_runner.pinned_producer_for(link_id)` here.
+    /// `node_runner.bound_producer(link_id)` here.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_target, to_action_name, target=None, user_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]

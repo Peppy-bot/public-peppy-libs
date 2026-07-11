@@ -24,10 +24,13 @@ pub use services::{
 };
 pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
-mod filter;
-pub use filter::{ConsumerFilter, ProducerRef};
-// Used only by the processor at startup to pre-resolve per-link_id filters.
-pub(crate) use filter::resolve_consumer_filter;
+// Fully-qualified producer address, re-exported from the config model: the
+// wire addresses a producer by the `(core_node, instance_id)` pair. Every
+// consumer dep slot is bound to exactly one producer (the launcher validator
+// resolves and stamps it at plan time), so subscribe / poll / send_goal call
+// sites all take a single `ProducerRef` — there is no per-slot filter type
+// and no in-process producer filtering.
+pub use config::runtime::ProducerRef;
 
 // Curated pmi re-exports. peppylib is a thin layer over PMI, so these types are
 // the shared vocabulary of its public messaging API rather than hidden
@@ -57,9 +60,8 @@ use pmi::{
     TopicWireReceiver, TopicWireSender, ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
 use std::sync::{
-    Arc, Mutex as StdMutex,
+    Arc,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -81,49 +83,18 @@ pub const PEER_UPDATE_SERVICE: &str = "peer_update";
 /// Timeout for a single reachability probe sent by `is_reachable`.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Budget for the wildcard / from_any discover-then-pin step (capped by the
-/// caller's own timeout). Larger than [`PROBE_TIMEOUT`] because a
-/// freshly-connected peer learns producers' queryables via gossip, which is not
-/// instantaneous like the old client/router star — `discover_producer` re-probes
-/// within this budget so a from_any `poll`/`send_goal` waits for discovery to
-/// settle instead of failing the moment it runs ahead of it.
+/// Budget for the wildcard discover-then-pin step of core-node infra calls
+/// (capped by the caller's own timeout). Larger than [`PROBE_TIMEOUT`]
+/// because a freshly-connected peer learns producers' queryables via gossip,
+/// which is not instantaneous like the old client/router star —
+/// `discover_producer` re-probes within this budget so a discovery-scoped
+/// `poll` waits for discovery to settle instead of failing the moment it
+/// runs ahead of it.
 pub(crate) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Key in [`MessengerHandle::active_from_any_topics`]. Two from_any topic
-/// subscriptions conflict only when they would observe the same producer
-/// publishes — i.e. they share the producer-side wire pin (the full
-/// `(core_node, instance_id)` pair, or `None` for a wildcard) and
-/// `(producer_name, producer_tag)`. Two subscriptions on the same
-/// `(name, tag)` but pinned to different producers target disjoint
-/// producers, do not share dedupe scope, and must be allowed to coexist.
-type ActiveFromAnyKey = (Option<filter::ProducerRef>, String, String);
 
 #[derive(Clone)]
 pub struct MessengerHandle {
     messenger: Arc<Mutex<Messenger>>,
-    /// Live from_any topic subscriptions per `(producer_name, producer_tag)`.
-    /// [`topics::TopicMessenger::subscribe`] reserves a key here on the
-    /// from_any path; [`FromAnyTopicGuard`] releases it on drop. The manifest
-    /// validator already rejects duplicate from_any consumers, but this
-    /// guards against bypasses via direct messenger calls.
-    active_from_any_topics: Arc<StdMutex<HashSet<ActiveFromAnyKey>>>,
-}
-
-/// RAII reservation in [`MessengerHandle::active_from_any_topics`]. Held by
-/// a [`topics::Subscription`] for its full lifetime; the slot is released
-/// when the subscription is dropped, freeing the `(name, tag)` for a future
-/// from_any subscription.
-pub(crate) struct FromAnyTopicGuard {
-    key: ActiveFromAnyKey,
-    set: Arc<StdMutex<HashSet<ActiveFromAnyKey>>>,
-}
-
-impl Drop for FromAnyTopicGuard {
-    fn drop(&mut self) {
-        if let Ok(mut guard) = self.set.lock() {
-            guard.remove(&self.key);
-        }
-    }
 }
 
 /// 16 hex chars (64 bits) of correlation entropy, salted with `domain` so
@@ -295,7 +266,9 @@ impl std::future::IntoFuture for MessengerConnect {
             };
             let adapter = adapter.with_namespace(Some(self.namespace));
             let messenger = MessengerHandle::new_session(adapter).await?;
-            Ok(MessengerHandle::from_messenger(messenger))
+            Ok(MessengerHandle::from_shared(Arc::new(Mutex::new(
+                messenger,
+            ))))
         })
     }
 }
@@ -306,54 +279,7 @@ impl MessengerHandle {
     /// themselves (peppy and core-node-internal both do); the [`connect`](Self::connect)
     /// builder is the normal path for opening a fresh session.
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
-        Self {
-            messenger,
-            active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
-        }
-    }
-
-    /// Wrap a freshly-opened `Messenger` in the shared-handle state. Shared by
-    /// the [`connect`](Self::connect) builder so the handle's field
-    /// initialization lives in one place.
-    fn from_messenger(messenger: Messenger) -> Self {
-        Self {
-            messenger: Arc::new(Mutex::new(messenger)),
-            active_from_any_topics: Arc::new(StdMutex::new(HashSet::new())),
-        }
-    }
-
-    /// Reserve a `(from_producer, producer_name, producer_tag)` slot in
-    /// the active from_any topic set. Returns a guard that releases the
-    /// slot on drop, or [`Error::DuplicateFromAnyConsumer`] if a from_any
-    /// topic subscription matching the same producer-side pin is already
-    /// live on this messenger. The pin is part of the key because two
-    /// from_any subs scoped to different producers do not share dedupe
-    /// scope and must coexist; the failure mode the guard prevents is two
-    /// from_any subs observing the *same* producer's emits, which is
-    /// exactly when their `(name, tag)` exclusion sets and
-    /// primary/secondary filtering need to give one (and only one)
-    /// delivery per emit.
-    pub(crate) fn reserve_from_any_topic(
-        &self,
-        from_producer: Option<&filter::ProducerRef>,
-        name: &str,
-        tag: &str,
-    ) -> Result<FromAnyTopicGuard> {
-        let key: ActiveFromAnyKey = (from_producer.cloned(), name.to_string(), tag.to_string());
-        let mut guard = self
-            .active_from_any_topics
-            .lock()
-            .expect("active_from_any_topics mutex poisoned");
-        if !guard.insert(key.clone()) {
-            return Err(Error::DuplicateFromAnyConsumer {
-                name: name.to_string(),
-                tag: tag.to_string(),
-            });
-        }
-        Ok(FromAnyTopicGuard {
-            key,
-            set: Arc::clone(&self.active_from_any_topics),
-        })
+        Self { messenger }
     }
 
     /// Pre-bind a per-topic publisher. Locks the messenger once at

@@ -439,9 +439,10 @@ impl ServiceReply {
 /// Caller-side reply stream returned by [`MessengerBackend::call_service`]. A
 /// single in-flight service call may receive multiple replies — at minimum an
 /// ACK followed by the real response, plus additional replies from sibling
-/// producers in `from_any` / broadcast scenarios. Each [`ServiceReply`]
-/// carries the producer-set kind on its attachment so peppylib can
-/// discriminate without inspecting payload bytes.
+/// producers when a wildcard-scoped call (a discovery probe or a
+/// core-node-scoped infra call) reaches several producers. Each
+/// [`ServiceReply`] carries the producer-set kind on its attachment so
+/// peppylib can discriminate without inspecting payload bytes.
 pub struct ReplyStream {
     pub rx: tokio::sync::mpsc::Receiver<ServiceReply>,
     _guard: Option<Guard>,

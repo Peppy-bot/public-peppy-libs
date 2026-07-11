@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use capnp::message::Builder;
 use config::node::NodeConfig;
-use config::runtime::SlotBinding;
+use config::runtime::SlotBindings;
 
 use crate::graph::{InstanceState, NodeStage, SerializedPairingSlot};
 use crate::node_capnp;
@@ -63,12 +63,13 @@ pub struct NodeInstanceInfo {
     /// is visible without a separate health round-trip. Decodes to `true` when
     /// absent (an older producer) rather than flagging the instance unhealthy.
     pub healthy: bool,
-    /// Pre-resolved per-slot bindings for this consumer instance,
-    /// mirroring [`config::runtime::NodeInstanceConfig::slot_bindings`].
+    /// Producers bound to each of this consumer instance's `depends_on`
+    /// slots, mirroring
+    /// [`config::runtime::NodeInstanceConfig::slot_bindings`].
     /// Empty when the node has no `depends_on` slots. Surfacing this
     /// lets the launcher / CLI cross-check newly-staged binding plans
     /// against what running consumers have already claimed.
-    pub slot_bindings: BTreeMap<String, SlotBinding>,
+    pub slot_bindings: SlotBindings,
     /// Live pairing-slot state per `depends_on.pairings` entry, mirroring
     /// [`crate::graph::SerializedInstance::pairing_slots`]. Empty when the
     /// node declares no pairings. Lets the CLI's `--pair` preflight see
@@ -217,17 +218,16 @@ impl NodeInfoResponse {
                     let state = InstanceState::from_str(state_str)
                         .map_err(|e| crate::Error::Decoding(e.to_string()))?;
                     let slot_bindings_json = entry.get_slot_bindings_json()?.to_str()?;
-                    let slot_bindings: BTreeMap<String, SlotBinding> =
-                        if slot_bindings_json.is_empty() {
-                            BTreeMap::new()
-                        } else {
-                            serde_json5::from_str(slot_bindings_json).map_err(|e| {
-                                crate::Error::Decoding(format!(
-                                    "failed to deserialize slot_bindings: {}",
-                                    e
-                                ))
-                            })?
-                        };
+                    let slot_bindings: SlotBindings = if slot_bindings_json.is_empty() {
+                        BTreeMap::new()
+                    } else {
+                        serde_json5::from_str(slot_bindings_json).map_err(|e| {
+                            crate::Error::Decoding(format!(
+                                "failed to deserialize slot_bindings: {}",
+                                e
+                            ))
+                        })?
+                    };
                     let pairing_slots_json = entry.get_pairing_slots_json()?.to_str()?;
                     let pairing_slots: BTreeMap<String, SerializedPairingSlot> =
                         if pairing_slots_json.is_empty() {
@@ -290,6 +290,7 @@ impl crate::encoding::Wire for NodeInfoResponse {
 mod tests {
     use super::*;
     use config::node::NodeConfigParser;
+    use config::runtime::ProducerRef;
 
     #[test]
     fn node_info_request_roundtrips_name_tag() {
@@ -340,24 +341,15 @@ mod tests {
 
     #[test]
     fn node_info_response_roundtrips_instance_slot_bindings() {
-        use config::runtime::ProducerRef;
-        let bindings_a: BTreeMap<String, SlotBinding> = [
+        let bindings_a: config::runtime::SlotBindings = [
             (
                 "wrist_left_camera".to_string(),
-                SlotBinding::Pinned {
-                    producer: ProducerRef::new("core_a", "cam1"),
-                },
+                ProducerRef::new("core_a", "cam1"),
             ),
             (
-                "extra_cam".to_string(),
-                SlotBinding::FromAnyBound {
-                    producers: vec![
-                        ProducerRef::new("core_a", "cam2"),
-                        ProducerRef::new("core_a", "cam3"),
-                    ],
-                },
+                "wrist_right_camera".to_string(),
+                ProducerRef::new("core_a", "cam2"),
             ),
-            ("spare".to_string(), SlotBinding::FromAnyUnbound),
         ]
         .into_iter()
         .collect();

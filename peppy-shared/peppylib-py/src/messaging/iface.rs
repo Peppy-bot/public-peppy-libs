@@ -126,7 +126,7 @@ impl PySenderTarget {
 /// subscribe, service poll, action send_goal) so a consumer can pass the
 /// identity it received straight back. `instance_id` alone is only unique
 /// within one stack, so the pair is what distinguishes producers across the
-/// whole mesh; a `from_any` consumer keys per-producer state on it.
+/// whole mesh; consumers key per-slot state on it.
 /// `frozen, eq, hash` make it usable directly as a `dict` key, mirroring the
 /// Rust `HashMap<ProducerRef, _>` idiom. `from_py_object` lets it be extracted
 /// as a call argument.

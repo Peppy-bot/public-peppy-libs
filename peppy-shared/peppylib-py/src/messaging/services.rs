@@ -234,7 +234,7 @@ impl PyServiceMessenger {
     /// Send a request to a service and wait for a response. `target` is the
     /// producer's full `(core_node, instance_id)` pair — `Some` pins it (no
     /// discovery), `None` is a genuine wildcard (discover-then-pin).
-    /// Generated code splices `node_runner.pinned_producer_for(link_id)`.
+    /// Generated code splices `node_runner.bound_producer(link_id)`.
     #[staticmethod]
     #[pyo3(signature = (messenger, bound_core_node, as_instance_id, to_target, to_service_name, target=None, request_payload=vec![], response_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]

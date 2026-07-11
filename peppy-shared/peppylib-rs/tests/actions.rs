@@ -1398,13 +1398,13 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
 /// The other receives only the discovery probe (filtered server-side) and
 /// never executes the user goal handler.
 ///
-/// This is the action analog of `service_from_any_poll_runs_handler_on_winner_only`
+/// This is the action analog of `service_wildcard_poll_runs_handler_on_winner_only`
 /// in `tests/services.rs`. It exists because actions are state-changing and
 /// long-running: without discovery, every matching producer would run its
 /// handler concurrently (e.g. two manipulators both moving to pick up the
 /// same object).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn action_from_any_send_goal_runs_handler_on_winner_only() {
+async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::oneshot;
@@ -1516,7 +1516,7 @@ async fn action_from_any_send_goal_runs_handler_on_winner_only() {
         .await
         .expect("caller connect");
 
-    // send_goal performs a from_any discover-then-pin internally. In peer mode
+    // send_goal performs a wildcard discover-then-pin internally. In peer mode
     // discover_producer re-probes within its budget until the producers'
     // queryables propagate to this freshly-connected caller, so no external
     // readiness gate is needed — this exercises that cold-start retry directly.

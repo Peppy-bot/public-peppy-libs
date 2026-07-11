@@ -269,7 +269,7 @@ async fn service_iface_tag_hyphen_normalized() {
 /// give this guarantee — `QueryTarget::All` broadcasts the request — so it
 /// is enforced by `ServiceMessenger::poll`'s discover-then-pin sequence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn service_from_any_poll_runs_handler_on_winner_only() {
+async fn service_wildcard_poll_runs_handler_on_winner_only() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -377,7 +377,7 @@ async fn service_from_any_poll_runs_handler_on_winner_only() {
         .await
         .expect("caller connect");
 
-    // poll performs a from_any discover-then-pin internally. In peer mode
+    // poll performs a wildcard discover-then-pin internally. In peer mode
     // discover_producer re-probes within its budget until the producers'
     // queryables propagate to this freshly-connected caller, so no external
     // readiness gate is needed — this exercises that cold-start retry directly.

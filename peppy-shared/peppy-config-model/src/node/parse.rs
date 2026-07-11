@@ -13,9 +13,6 @@ use std::path::Path;
 ///   topics/services/actions resolve their producer by `link_id` alone, and
 ///   pairing slots are addressed by `link_id` in `--pair`/`pairings:`, so a
 ///   collision either silently overwrites a resolution or binds the wrong slot.
-/// - Rejects more than one entry with `from_any: true` for the same
-///   `(name, tag)` pair. `from_any` marks a dependency as a wildcard producer;
-///   two wildcards for the same `(name, tag)` would be ambiguous at resolution.
 /// - Rejects pairing link_ids that are not wire-safe segments: unlike
 ///   node/contract link_ids (local resolution names), a pairing slot link_id
 ///   is stamped verbatim into the producer-side link_id segment of every
@@ -25,37 +22,12 @@ fn validate_depends_on(manifest: &Manifest) -> Result<()> {
         return Ok(());
     };
     let mut seen_link_ids: HashSet<&str> = HashSet::new();
-    let mut seen_from_any: HashSet<(&str, &str)> = HashSet::new();
-    let nodes = depends_on.nodes.iter().map(|n| {
-        (
-            n.link_id.as_str(),
-            n.name.as_str(),
-            n.tag.as_str(),
-            n.from_any,
-        )
-    });
-    let contracts = depends_on.contracts.iter().map(|i| {
-        (
-            i.link_id.as_str(),
-            i.name.as_str(),
-            i.tag.as_str(),
-            i.from_any,
-        )
-    });
-    let pairings = depends_on
-        .pairings
-        .iter()
-        .map(|p| (p.link_id.as_str(), p.name.as_str(), p.tag.as_str(), false));
-    for (link_id, name, tag, from_any) in nodes.chain(contracts).chain(pairings) {
+    let nodes = depends_on.nodes.iter().map(|n| n.link_id.as_str());
+    let contracts = depends_on.contracts.iter().map(|i| i.link_id.as_str());
+    let pairings = depends_on.pairings.iter().map(|p| p.link_id.as_str());
+    for link_id in nodes.chain(contracts).chain(pairings) {
         if !seen_link_ids.insert(link_id) {
             return Err(ParsingError::DuplicateLinkId(link_id.to_owned()).into());
-        }
-        if from_any && !seen_from_any.insert((name, tag)) {
-            return Err(ParsingError::ConflictingFromAny {
-                name: name.to_owned(),
-                tag: tag.to_owned(),
-            }
-            .into());
         }
     }
     for pairing in &depends_on.pairings {
@@ -409,217 +381,34 @@ mod tests {
     }
 
     #[test]
-    fn test_from_any_defaults_to_false() {
-        let json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "default_node",
-                tag: "v1",
-                depends_on: {
-                    nodes: [
-                        { name: "alpha", tag: "v1", link_id: "a" },
-                    ],
-                    contracts: [
-                        { name: "beta", tag: "v1", link_id: "b" },
-                    ],
-                },
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["./bin"],
-            },
-        }"#;
-        let config = NodeConfigParser::from_content(json5).unwrap();
-        let deps = config.manifest.depends_on.unwrap();
-        assert!(!deps.nodes[0].from_any);
-        assert!(!deps.contracts[0].from_any);
-    }
-
-    #[test]
-    fn test_from_any_explicit_true_parses() {
-        // A single `from_any: true` node entry alongside three plain
-        // contract entries with the same (name, tag).
-        let json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "openarm01_backbone",
-                tag: "v1",
-                depends_on: {
-                    contracts: [
-                        { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
-                        { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
-                        { name: "depth_camera", tag: "v1", link_id: "torso_camera" },
-                    ],
-                    nodes: [
-                        { name: "depth_camera", tag: "v1", link_id: "extra_camera", from_any: true },
-                    ],
-                },
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["./bin"],
-            },
-        }"#;
-        let config = NodeConfigParser::from_content(json5).unwrap();
-        let deps = config.manifest.depends_on.unwrap();
-        assert_eq!(deps.nodes.len(), 1);
-        assert!(deps.nodes[0].from_any);
-        assert_eq!(deps.contracts.len(), 3);
-        assert!(deps.contracts.iter().all(|i| !i.from_any));
-    }
-
-    #[test]
-    fn test_from_any_explicit_true_on_contract_with_node_duplicate() {
-        // The wildcard is on a contract entry; a plain node entry shares
-        // (name, tag).
-        let json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "openarm01_backbone",
-                tag: "v1",
-                depends_on: {
-                    contracts: [
-                        { name: "depth_camera", tag: "v1", link_id: "wrist_left_camera" },
-                        { name: "depth_camera", tag: "v1", link_id: "wrist_right_camera" },
-                        { name: "depth_camera", tag: "v1", link_id: "torso_camera", from_any: true },
-                    ],
-                    nodes: [
-                        { name: "depth_camera", tag: "v1", link_id: "extra_camera" },
-                    ],
-                },
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["./bin"],
-            },
-        }"#;
-        let config = NodeConfigParser::from_content(json5).unwrap();
-        let deps = config.manifest.depends_on.unwrap();
-        assert!(!deps.nodes[0].from_any);
-        let from_any_count = deps.contracts.iter().filter(|i| i.from_any).count();
-        assert_eq!(from_any_count, 1);
-    }
-
-    #[test]
-    fn test_conflicting_from_any_two_nodes_rejected() {
-        let json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "dup_from_any_node",
-                tag: "v1",
-                depends_on: {
-                    nodes: [
-                        { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
-                        { name: "depth_camera", tag: "v1", link_id: "b", from_any: true },
-                    ],
-                },
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["./bin"],
-            },
-        }"#;
-        let result = NodeConfigParser::from_content(json5);
-        assert!(
-            matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::ConflictingFromAny { name, tag })
-                    if name == "depth_camera" && tag == "v1"
-            ),
-            "expected ConflictingFromAny for (depth_camera, v1), got: {:?}",
-            result.unwrap_err()
-        );
-    }
-
-    #[test]
-    fn test_conflicting_from_any_two_contracts_rejected() {
-        let json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "dup_from_any_iface",
-                tag: "v1",
-                depends_on: {
-                    nodes: [],
-                    contracts: [
-                        { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
-                        { name: "depth_camera", tag: "v1", link_id: "b", from_any: true },
-                    ],
-                },
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["./bin"],
-            },
-        }"#;
-        let result = NodeConfigParser::from_content(json5);
-        assert!(
-            matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::ConflictingFromAny { name, tag })
-                    if name == "depth_camera" && tag == "v1"
-            ),
-            "expected ConflictingFromAny for (depth_camera, v1), got: {:?}",
-            result.unwrap_err()
-        );
-    }
-
-    #[test]
-    fn test_conflicting_from_any_across_node_and_contract_rejected() {
-        let json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "dup_from_any_mixed",
-                tag: "v1",
-                depends_on: {
-                    nodes: [
-                        { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
-                    ],
-                    contracts: [
-                        { name: "depth_camera", tag: "v1", link_id: "b", from_any: true },
-                    ],
-                },
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["./bin"],
-            },
-        }"#;
-        let result = NodeConfigParser::from_content(json5);
-        assert!(
-            matches!(
-                result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::ConflictingFromAny { name, tag })
-                    if name == "depth_camera" && tag == "v1"
-            ),
-            "expected ConflictingFromAny across nodes+contracts, got: {:?}",
-            result.unwrap_err()
-        );
-    }
-
-    #[test]
-    fn test_from_any_true_allowed_for_distinct_name_tag_pairs() {
-        // Different (name, tag) pairs may each carry their own from_any=true.
-        let json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "distinct_from_any",
-                tag: "v1",
-                depends_on: {
-                    nodes: [
-                        { name: "depth_camera", tag: "v1", link_id: "a", from_any: true },
-                        { name: "imu_sensor",   tag: "v1", link_id: "b", from_any: true },
-                    ],
-                },
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["./bin"],
-            },
-        }"#;
-        let config = NodeConfigParser::from_content(json5)
-            .expect("distinct (name, tag) pairs each with from_any=true should parse");
-        let deps = config.manifest.depends_on.unwrap();
-        assert!(deps.nodes.iter().all(|n| n.from_any));
+    fn test_dependency_entry_with_from_any_rejected() {
+        // `from_any` was removed from the schema: a dependency slot only ever
+        // receives from producers the launcher binds to it. A manifest still
+        // carrying the flag must fail loudly instead of silently parsing.
+        for deps_block in [
+            r#"nodes: [{ name: "alpha", tag: "v1", link_id: "a", from_any: true }]"#,
+            r#"contracts: [{ name: "beta", tag: "v1", link_id: "b", from_any: true }]"#,
+        ] {
+            let json5 = format!(
+                r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{
+                    name: "stale_node",
+                    tag: "v1",
+                    depends_on: {{ {deps_block} }},
+                }},
+                execution: {{
+                    language: "rust",
+                    run_cmd: ["./bin"],
+                }},
+            }}"#
+            );
+            let result = NodeConfigParser::from_content(&json5);
+            assert!(
+                result.is_err(),
+                "`from_any` must be rejected as an unknown field in: {deps_block}"
+            );
+        }
     }
 
     #[test]
@@ -832,8 +621,8 @@ mod tests {
 
     #[test]
     fn test_pairing_entry_with_unknown_field_rejected() {
-        // `from_any` belongs to node/contract deps; pairing entries are
-        // deny_unknown_fields so it must not silently pass.
+        // Pairing entries are deny_unknown_fields; a stray key must not
+        // silently pass.
         let json5 = r#"{
             peppy_schema: "node/v1",
             manifest: {
@@ -841,7 +630,7 @@ mod tests {
                 tag: "v1",
                 depends_on: {
                     pairings: [
-                        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller", from_any: true },
+                        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller", extra: true },
                     ],
                 },
             },
