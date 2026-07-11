@@ -692,29 +692,23 @@ mod tests {
         assert_eq!(decoded, bindings, "slot_bindings did not round-trip");
     }
 
-    /// Array payloads (the retired multi-producer shape), empty arrays
-    /// (the retired unbound-slot state), half-addresses, and the retired
-    /// `kind`-tagged `SlotBinding` shapes must be hard parse errors, not
-    /// defaulted values. No compatibility shims. The array cases are the
-    /// compat tripwire: a slot binds exactly one producer.
+    /// Array payloads (of any length, single-element and empty included),
+    /// half-addresses, and payloads with unknown fields must be hard parse
+    /// errors, not defaulted values: a slot binds exactly one full
+    /// `(core_node, instance_id)` producer pair.
     #[test]
-    fn slot_bindings_reject_arrays_half_addresses_and_legacy_payloads() {
+    fn slot_bindings_reject_arrays_half_addresses_and_unknown_fields() {
         use serde_json::json;
 
         let rejected = [
-            // The retired multi-producer shape: an array of producers,
-            // even a single-element one, is unrepresentable.
+            // An array of producers, even a single-element or empty one,
+            // is unrepresentable: a slot binds exactly one producer.
             json!([
                 { "core_node": "core_a", "instance_id": "p3" },
                 { "core_node": "core_a", "instance_id": "p4" }
             ]),
             json!([{ "core_node": "core_a", "instance_id": "p1" }]),
-            // The retired unbound-slot state.
             json!([]),
-            // Retired kind-tagged shapes (pre-removal `SlotBinding`).
-            json!({ "kind": "pinned", "producer": { "core_node": "core_a", "instance_id": "p1" } }),
-            json!({ "kind": "from_any_bound", "producers": [] }),
-            json!({ "kind": "from_any_unbound" }),
             // Half an address.
             json!({ "instance_id": "p1" }),
             json!({ "core_node": "core_a" }),

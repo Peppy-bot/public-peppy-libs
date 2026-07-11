@@ -109,12 +109,11 @@ async def test_messenger_communication():
 
 @pytest.mark.asyncio
 async def test_subscribe_rejects_producer_list():
-    """A list of producers (the retired multi-producer form) raises `TypeError`.
+    """A list of producers raises `TypeError`.
 
     A slot binds exactly one producer; fan-in is N declared slots. The
-    subscribe seam takes a single `ProducerRef`, so the retired list shape
-    — even a single-element one — must fail loudly instead of silently
-    degrading.
+    subscribe seam takes a single `ProducerRef`, so a list — even a
+    single-element one — must fail loudly instead of silently degrading.
     """
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         test_id = uuid.uuid4().hex[:8]

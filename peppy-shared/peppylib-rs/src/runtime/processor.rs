@@ -1279,9 +1279,9 @@ mod tests {
         assert_eq!(processor.bound_producer("main"), &expected);
     }
 
-    /// A boot config carrying the retired array shape for a slot binding
-    /// must fail to parse — multi-producer bindings are unrepresentable on
-    /// the wire, not merely rejected by the launcher validator.
+    /// A boot config carrying an array value for a slot binding must fail
+    /// to parse — multi-producer bindings are unrepresentable on the wire,
+    /// not merely rejected by the launcher validator.
     #[test]
     fn boot_config_with_array_slot_binding_fails_to_parse() {
         let json5_config = r#"{
