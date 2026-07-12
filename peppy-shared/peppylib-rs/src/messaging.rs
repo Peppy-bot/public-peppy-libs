@@ -36,7 +36,7 @@ pub use config::runtime::ProducerRef;
 // the shared vocabulary of its public messaging API rather than hidden
 // implementation details (every consumer also depends on pmi directly).
 // `SenderTarget` / `SenderTargetError` appear in nearly every messaging
-// signature and are emitted by the code generator. `InterfaceIdentifier` /
+// signature and are emitted by the code generator. `ContractIdentifier` /
 // `NodeIdentifier` / `ActionWireSender` / `ActionLivelinessToken` are surfaced
 // for the Python bindings, which cache an `ActionWireSender` to drive
 // cancel / result calls without re-locking and name `ActionLivelinessToken` as
@@ -45,8 +45,8 @@ pub use config::runtime::ProducerRef;
 // peppylib's own messaging implementation; each submodule imports them directly
 // from `pmi::`.
 pub use pmi::{
-    ActionLivelinessToken, ActionWireSender, InterfaceIdentifier, NodeIdentifier,
-    PairingIdentifier, SenderTarget, SenderTargetError,
+    ActionLivelinessToken, ActionWireSender, ContractIdentifier, NodeIdentifier, PairingIdentifier,
+    SenderTarget, SenderTargetError,
 };
 
 use crate::error::{Error, Result};

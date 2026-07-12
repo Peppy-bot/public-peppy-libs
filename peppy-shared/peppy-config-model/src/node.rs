@@ -9,13 +9,14 @@ pub use message_size::{MessageSizeEstimate, estimate_serialized_size};
 pub use parse::{NodeConfigParser, load_standalone_node_config};
 pub use types::{
     ActionInterfaces, ActionServiceEndpoint, ActionTopicEndpoint, ArrayKind, ArraySchema,
-    ConformsToItem, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig, DependsOn,
-    EmittedTopic, Execution, ExposedAction, ExposedService, InterfaceKind, Interfaces, Manifest,
-    MessageFormat, NodeConfig, NodeDependency, ObjectKind, ObjectSchema, PairingDependency,
+    ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig, ContractBackedEntry,
+    DependsOn, EmittedTopic, Execution, ExposedAction, ExposedService, ImplementsEntry,
+    InterfaceKind, Interfaces, Manifest, MessageFormat, NativeEmittedTopic, NativeExposedAction,
+    NativeExposedService, NodeConfig, NodeDependency, ObjectKind, ObjectSchema, PairingDependency,
     PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces, Toolchain,
     TopicInterfaces, TypeToken, is_blocked_mount_source,
 };
 pub use validation::{
-    ContractConformanceEdge, DependencySpec, collect_contract_conformance_edges,
-    collect_dependency_specs, node_conforms_to, validate_dependency_specs,
+    ContractImplementationEdge, DependencySpec, collect_contract_implementation_edges,
+    collect_dependency_specs, node_implements, validate_dependency_specs,
 };

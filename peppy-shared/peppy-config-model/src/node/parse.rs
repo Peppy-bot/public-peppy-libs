@@ -1,38 +1,186 @@
-use super::types::{Execution, Manifest, NodeConfig};
+use super::types::{DependsOn, Execution, InterfaceKind, Interfaces, Manifest, NodeConfig};
 use crate::{
+    consts::normalize_tag,
     error::{ParsingError, Result},
     parsing::read_non_empty_file,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-/// Validates `manifest.depends_on`:
+/// Validates the manifest's link namespace and implements claims:
 ///
-/// - Rejects duplicate `link_id`s across the combined nodes/contracts/pairings
-///   set. `link_id` is the shared identity for all three: consumed
-///   topics/services/actions resolve their producer by `link_id` alone, and
-///   pairing slots are addressed by `link_id` in `--pair`/`pairings:`, so a
-///   collision either silently overwrites a resolution or binds the wrong slot.
+/// - Rejects duplicate `link_id`s across the combined
+///   nodes/contracts/pairings/implements set. `link_id` is the shared
+///   identity for all four: consumed topics/services/actions resolve their
+///   producer by `link_id` alone, produced entries resolve their implements
+///   slot the same way, and pairing slots are addressed by `link_id` in
+///   `--pair`/`pairings:`, so a collision either silently overwrites a
+///   resolution or binds the wrong slot.
 /// - Rejects pairing link_ids that are not wire-safe segments: unlike
-///   node/contract link_ids (local resolution names), a pairing slot link_id
-///   is stamped verbatim into the producer-side link_id segment of every
-///   publish keyexpr.
-fn validate_depends_on(manifest: &Manifest) -> Result<()> {
-    let Some(depends_on) = &manifest.depends_on else {
-        return Ok(());
-    };
+///   node/contract/implements link_ids (local resolution names), a pairing
+///   slot link_id is stamped verbatim into the producer-side link_id segment
+///   of every publish keyexpr.
+/// - Rejects duplicate `(name, tag)` pairs in `manifest.implements`
+///   (including tag-sanitization collisions like `v1` vs `v-1`): wire keys
+///   embed only `contract/{name}/{tag}` plus the `_` sentinel link slot, so
+///   two instances of one contract in one node would collide on the wire.
+fn validate_manifest_links(manifest: &Manifest) -> Result<()> {
     let mut seen_link_ids: HashSet<&str> = HashSet::new();
-    let nodes = depends_on.nodes.iter().map(|n| n.link_id.as_str());
-    let contracts = depends_on.contracts.iter().map(|i| i.link_id.as_str());
-    let pairings = depends_on.pairings.iter().map(|p| p.link_id.as_str());
-    for link_id in nodes.chain(contracts).chain(pairings) {
+    let implements = manifest.implements.iter().map(|e| e.link_id.as_str());
+    let depends = manifest.depends_on.iter().flat_map(|d| {
+        d.nodes
+            .iter()
+            .map(|n| n.link_id.as_str())
+            .chain(d.contracts.iter().map(|c| c.link_id.as_str()))
+            .chain(d.pairings.iter().map(|p| p.link_id.as_str()))
+    });
+    for link_id in depends.chain(implements) {
         if !seen_link_ids.insert(link_id) {
             return Err(ParsingError::DuplicateLinkId(link_id.to_owned()).into());
         }
     }
-    for pairing in &depends_on.pairings {
-        if !is_wire_safe_link_id(&pairing.link_id) {
-            return Err(ParsingError::PairingSentinelLinkId(pairing.link_id.clone()).into());
+
+    if let Some(depends_on) = &manifest.depends_on {
+        for pairing in &depends_on.pairings {
+            if !is_wire_safe_link_id(&pairing.link_id) {
+                return Err(ParsingError::PairingSentinelLinkId(pairing.link_id.clone()).into());
+            }
+        }
+    }
+
+    let mut seen_contracts: HashMap<(&str, String), &str> = HashMap::new();
+    for entry in &manifest.implements {
+        let key = (entry.name.as_str(), normalize_tag(&entry.tag));
+        if let Some(prev_tag) = seen_contracts.insert(key, entry.tag.as_str()) {
+            if prev_tag == entry.tag {
+                return Err(ParsingError::DuplicateImplementsContract {
+                    name: entry.name.as_str().to_owned(),
+                    tag: entry.tag.clone(),
+                }
+                .into());
+            }
+            return Err(ParsingError::ImplementsTagSanitizationCollision {
+                name: entry.name.as_str().to_owned(),
+                tag_a: prev_tag.to_owned(),
+                tag_b: entry.tag.clone(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Validates the link_id direction rules and duplicate keys of the
+/// produced/consumed interface entries:
+///
+/// - A produced (emits/exposes) entry's `link_id` must name a
+///   `manifest.implements` slot — naming a `depends_on` slot or nothing at
+///   all gets a dedicated error each.
+/// - A consumed entry's `link_id` must not name an implements slot (those
+///   are produced, not consumed); resolution against `depends_on` stays in
+///   `validate_dependency_specs`, which runs where dependencies resolve.
+/// - Native entries are unique by `name` per section; contract-backed
+///   entries are unique by `(link_id, name)` per section. A native and a
+///   contract-backed entry may share a name (they are namespaced apart in
+///   modules, schema keys, and wire keys).
+fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<()> {
+    const KINDS: [(InterfaceKind, &str); 3] = [
+        (InterfaceKind::Topic, super::types::EmittedTopic::SECTION),
+        (
+            InterfaceKind::Service,
+            super::types::ExposedService::SECTION,
+        ),
+        (InterfaceKind::Action, super::types::ExposedAction::SECTION),
+    ];
+
+    let implements_link_ids: HashSet<&str> = manifest
+        .implements
+        .iter()
+        .map(|e| e.link_id.as_str())
+        .collect();
+
+    for (kind, section) in KINDS {
+        validate_produced_section(
+            section,
+            interfaces.produced(kind),
+            &implements_link_ids,
+            manifest.depends_on.as_ref(),
+        )?;
+    }
+
+    for (kind, _) in KINDS {
+        for (link_id, _) in interfaces.consumed(kind) {
+            if implements_link_ids.contains(link_id) {
+                return Err(ParsingError::ConsumedItemReferencesImplementsLinkId {
+                    link_id: link_id.to_owned(),
+                }
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Which `depends_on` list (if any) declares `link_id`. Only consulted on
+/// the error path, so a linear scan of the (tiny) lists beats prebuilding
+/// a lookup map that valid configs never read.
+fn depends_list_containing(depends_on: Option<&DependsOn>, link_id: &str) -> Option<&'static str> {
+    let d = depends_on?;
+    if d.nodes.iter().any(|n| n.link_id == link_id) {
+        return Some("nodes");
+    }
+    if d.contracts.iter().any(|c| c.link_id == link_id) {
+        return Some("contracts");
+    }
+    if d.pairings.iter().any(|p| p.link_id == link_id) {
+        return Some("pairings");
+    }
+    None
+}
+
+fn validate_produced_section<'a>(
+    section: &'static str,
+    entries: impl Iterator<Item = (Option<&'a str>, &'a str)>,
+    implements_link_ids: &HashSet<&str>,
+    depends_on: Option<&DependsOn>,
+) -> Result<()> {
+    let mut seen_native: HashSet<&str> = HashSet::new();
+    let mut seen_contract: HashSet<(&str, &str)> = HashSet::new();
+    for (link_id, name) in entries {
+        match link_id {
+            Some(link_id) => {
+                if !implements_link_ids.contains(link_id) {
+                    if let Some(found_in) = depends_list_containing(depends_on, link_id) {
+                        return Err(ParsingError::EmitsLinkIdNotImplements {
+                            section: section.to_owned(),
+                            link_id: link_id.to_owned(),
+                            found_in: found_in.to_owned(),
+                        }
+                        .into());
+                    }
+                    return Err(ParsingError::UndeclaredEmitsLinkId {
+                        section: section.to_owned(),
+                        link_id: link_id.to_owned(),
+                    }
+                    .into());
+                }
+                if !seen_contract.insert((link_id, name)) {
+                    return Err(ParsingError::DuplicateInterfaceEntry {
+                        section: section.to_owned(),
+                        key: format!("{link_id}:{name}"),
+                    }
+                    .into());
+                }
+            }
+            None => {
+                if !seen_native.insert(name) {
+                    return Err(ParsingError::DuplicateInterfaceEntry {
+                        section: section.to_owned(),
+                        key: name.to_owned(),
+                    }
+                    .into());
+                }
+            }
         }
     }
     Ok(())
@@ -97,7 +245,8 @@ impl NodeConfigParser {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
         let config: NodeConfig = crate::error::deserialize_json5_with_path(content)?;
         validate_execution(&config.execution)?;
-        validate_depends_on(&config.manifest)?;
+        validate_manifest_links(&config.manifest)?;
+        validate_interfaces(&config.manifest, &config.interfaces)?;
         Ok(config)
     }
 }
@@ -1100,5 +1249,337 @@ mod tests {
             execution.run_cmd.as_deref(),
             Some(["./target/debug/my_node".to_string()].as_slice())
         );
+    }
+
+    // ─── manifest.implements + produced-entry Tier A validation ─────────────
+
+    /// Wraps an implements list + interfaces block in a minimal node config.
+    fn node_with(implements: &str, interfaces: &str) -> String {
+        format!(
+            r#"{{
+            peppy_schema: "node/v1",
+            manifest: {{
+                name: "camera_node",
+                tag: "v1",
+                implements: [{implements}],
+            }},
+            interfaces: {interfaces},
+            execution: {{
+                language: "rust",
+                run_cmd: ["./bin"],
+            }},
+        }}"#
+        )
+    }
+
+    #[test]
+    fn test_implements_with_full_coverage_entries_parses() {
+        let json5 = node_with(
+            r#"{ name: "uvc_camera", tag: "v1", link_id: "cam" }"#,
+            r#"{
+                topics: { emits: [{ link_id: "cam", name: "video_stream" }] },
+                services: { exposes: [{ link_id: "cam", name: "video_stream_info" }] },
+            }"#,
+        );
+        let config = NodeConfigParser::from_content(&json5).expect("should parse");
+        assert_eq!(config.manifest.implements.len(), 1);
+        assert_eq!(config.manifest.implements[0].link_id, "cam");
+    }
+
+    #[test]
+    fn test_old_conforms_to_manifest_rejected_as_unknown_field() {
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "old_node", tag: "v1" },
+            interfaces: {
+                conforms_to: [{ name: "uvc_camera", tag: "v1" }],
+            },
+            execution: { language: "rust", run_cmd: ["./bin"] },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        let Error::Parsing(ParsingError::CannotParseConfig(msg)) = result.unwrap_err() else {
+            panic!("expected plain serde unknown-field rejection");
+        };
+        assert!(
+            msg.contains("conforms_to"),
+            "error should name the unknown field, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_implements_contract_rejected() {
+        let json5 = node_with(
+            r#"{ name: "uvc_camera", tag: "v1", link_id: "cam_a" },
+               { name: "uvc_camera", tag: "v1", link_id: "cam_b" }"#,
+            r#"{}"#,
+        );
+        let result = NodeConfigParser::from_content(&json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::DuplicateImplementsContract { name, tag })
+                    if name == "uvc_camera" && tag == "v1"
+            ),
+            "expected DuplicateImplementsContract, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_implements_sanitized_tag_collision_rejected() {
+        let json5 = node_with(
+            r#"{ name: "uvc_camera", tag: "v-1", link_id: "cam_a" },
+               { name: "uvc_camera", tag: "v_1", link_id: "cam_b" }"#,
+            r#"{}"#,
+        );
+        let result = NodeConfigParser::from_content(&json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::ImplementsTagSanitizationCollision { name, .. })
+                    if name == "uvc_camera"
+            ),
+            "expected ImplementsTagSanitizationCollision, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_implements_link_id_collides_with_depends_on_link_id() {
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "dup_node",
+                tag: "v1",
+                implements: [{ name: "uvc_camera", tag: "v1", link_id: "shared" }],
+                depends_on: {
+                    nodes: [{ name: "alpha", tag: "v1", link_id: "shared" }],
+                },
+            },
+            execution: { language: "rust", run_cmd: ["./bin"] },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::DuplicateLinkId(id)) if id == "shared"
+            ),
+            "expected DuplicateLinkId across implements+depends_on, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_emits_link_id_naming_depends_on_slot_rejected() {
+        for (deps_block, found_in) in [
+            (
+                r#"nodes: [{ name: "alpha", tag: "v1", link_id: "dep" }]"#,
+                "nodes",
+            ),
+            (
+                r#"contracts: [{ name: "uvc_camera", tag: "v1", link_id: "dep" }]"#,
+                "contracts",
+            ),
+            (
+                r#"pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "dep" }]"#,
+                "pairings",
+            ),
+        ] {
+            let json5 = format!(
+                r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{
+                    name: "wrong_direction",
+                    tag: "v1",
+                    depends_on: {{ {deps_block} }},
+                }},
+                interfaces: {{
+                    topics: {{ emits: [{{ link_id: "dep", name: "video_stream" }}] }},
+                }},
+                execution: {{ language: "rust", run_cmd: ["./bin"] }},
+            }}"#
+            );
+            let result = NodeConfigParser::from_content(&json5);
+            assert!(
+                matches!(
+                    result.as_ref().unwrap_err(),
+                    Error::Parsing(ParsingError::EmitsLinkIdNotImplements { link_id, found_in: f, .. })
+                        if link_id == "dep" && f == found_in
+                ),
+                "expected EmitsLinkIdNotImplements({found_in}), got: {:?}",
+                result.unwrap_err()
+            );
+        }
+    }
+
+    #[test]
+    fn test_emits_link_id_matching_nothing_rejected() {
+        let json5 = node_with(
+            r#"{ name: "uvc_camera", tag: "v1", link_id: "cam" }"#,
+            r#"{ topics: { emits: [{ link_id: "typo", name: "video_stream" }] } }"#,
+        );
+        let result = NodeConfigParser::from_content(&json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::UndeclaredEmitsLinkId { link_id, .. })
+                    if link_id == "typo"
+            ),
+            "expected UndeclaredEmitsLinkId, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_consumed_item_referencing_implements_link_id_rejected() {
+        let json5 = node_with(
+            r#"{ name: "uvc_camera", tag: "v1", link_id: "cam" }"#,
+            r#"{
+                topics: {
+                    emits: [{ link_id: "cam", name: "video_stream" }],
+                    consumes: [{ link_id: "cam", name: "video_stream" }],
+                },
+            }"#,
+        );
+        let result = NodeConfigParser::from_content(&json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::ConsumedItemReferencesImplementsLinkId { link_id })
+                    if link_id == "cam"
+            ),
+            "expected ConsumedItemReferencesImplementsLinkId, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_duplicate_native_emit_name_rejected() {
+        let json5 = node_with(
+            "",
+            r#"{
+                topics: { emits: [
+                    { name: "stream", message_format: { x: "f64" } },
+                    { name: "stream", message_format: { y: "f64" } },
+                ] },
+            }"#,
+        );
+        let result = NodeConfigParser::from_content(&json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::DuplicateInterfaceEntry { key, .. })
+                    if key == "stream"
+            ),
+            "expected DuplicateInterfaceEntry, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_duplicate_contract_backed_entry_rejected() {
+        let json5 = node_with(
+            r#"{ name: "uvc_camera", tag: "v1", link_id: "cam" }"#,
+            r#"{
+                topics: { emits: [
+                    { link_id: "cam", name: "video_stream" },
+                    { link_id: "cam", name: "video_stream" },
+                ] },
+            }"#,
+        );
+        let result = NodeConfigParser::from_content(&json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::DuplicateInterfaceEntry { key, .. })
+                    if key == "cam:video_stream"
+            ),
+            "expected DuplicateInterfaceEntry, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_native_and_contract_backed_same_name_coexist() {
+        // Allowed on the producer: the two are namespaced apart in modules,
+        // schema keys, and wire keys, and node-dep consumers resolve only the
+        // native one (contract-backed interfaces are consumed via
+        // depends_on.contracts).
+        let json5 = node_with(
+            r#"{ name: "uvc_camera", tag: "v1", link_id: "cam" }"#,
+            r#"{
+                topics: { emits: [
+                    { link_id: "cam", name: "video_stream" },
+                    { name: "video_stream", message_format: { x: "f64" } },
+                ] },
+            }"#,
+        );
+        NodeConfigParser::from_content(&json5)
+            .expect("native + contract-backed same-name coexistence must parse");
+    }
+
+    #[test]
+    fn test_contract_backed_entry_with_inline_shape_rejected() {
+        let json5 = node_with(
+            r#"{ name: "uvc_camera", tag: "v1", link_id: "cam" }"#,
+            r#"{
+                topics: { emits: [
+                    { link_id: "cam", name: "video_stream", qos_profile: "sensor_data" },
+                ] },
+            }"#,
+        );
+        let result = NodeConfigParser::from_content(&json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::ContractBackedEntryWithInlineShape { field, .. })
+                    if field == "qos_profile"
+            ),
+            "expected ContractBackedEntryWithInlineShape, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_empty_interface_name_rejected_via_structured_error() {
+        let json5 = node_with(
+            "",
+            r#"{ topics: { emits: [{ message_format: { x: "f64" } }] } }"#,
+        );
+        let result = NodeConfigParser::from_content(&json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::EmptyInterfaceName { section })
+                    if section == "topics.emits"
+            ),
+            "expected EmptyInterfaceName, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_relay_shape_parses() {
+        // Implementing AND depending on the same contract (name, tag) under
+        // distinct link_ids is legal (relay shape).
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "relay",
+                tag: "v1",
+                implements: [{ name: "uvc_camera", tag: "v1", link_id: "cam_out" }],
+                depends_on: {
+                    contracts: [{ name: "uvc_camera", tag: "v1", link_id: "cam_in" }],
+                },
+            },
+            interfaces: {
+                topics: {
+                    emits: [{ link_id: "cam_out", name: "video_stream" }],
+                    consumes: [{ link_id: "cam_in", name: "video_stream" }],
+                },
+            },
+            execution: { language: "rust", run_cmd: ["./bin"] },
+        }"#;
+        NodeConfigParser::from_content(json5).expect("relay shape must parse");
     }
 }

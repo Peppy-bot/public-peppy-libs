@@ -901,7 +901,7 @@ mod tests {
         let receiver = ServiceWireReceiver::new(
             "server_core",
             "server_inst",
-            SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+            SenderTarget::contract("depth_camera", "v1").expect("contract target"),
             "ping",
             ServiceKind::Service,
         )
@@ -916,7 +916,7 @@ mod tests {
                 "server_core",
                 "server_inst",
             )),
-            SenderTarget::interface("depth_camera", "v1").expect("iface target"),
+            SenderTarget::contract("depth_camera", "v1").expect("contract target"),
             "ping",
             ServiceKind::Service,
         )
@@ -1171,7 +1171,7 @@ mod tests {
         let mut adapter = MockAdapter::default();
         adapter.start_session().await.expect("session should start");
 
-        let target = SenderTarget::interface("depth_camera", "v1").expect("iface target");
+        let target = SenderTarget::contract("depth_camera", "v1").expect("contract target");
 
         let sender_left = TopicWireSender::new(
             "pub_core",
@@ -1287,7 +1287,7 @@ mod tests {
             .await
             .expect("session should start");
 
-        let target = SenderTarget::interface("depth_camera", "v1").expect("iface target");
+        let target = SenderTarget::contract("depth_camera", "v1").expect("contract target");
         let sender = TopicWireSender::new(
             "pub_core",
             "pub_inst",

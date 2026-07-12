@@ -22,6 +22,19 @@ pub const ALLOWED_CONFIG_CHARS: &str =
 /// config layer share one source of truth.
 pub const DEFAULT_LINK_ID_SENTINEL: &str = "_";
 
+/// Hyphen-to-underscore normalization applied to tag segments by the
+/// generator (module paths) and the wire format (keyexpr segments). The
+/// wire layer (`pmi::wire`) and the parse-time implements-collision check
+/// both call this one definition, so the parse-time prediction of wire
+/// behavior cannot drift from the wire itself.
+pub fn normalize_tag(tag: &str) -> String {
+    if tag.contains('-') {
+        tag.replace('-', "_")
+    } else {
+        tag.to_string()
+    }
+}
+
 /// Minimum Python version required by peppylib and peppygen projects (e.g. "3.11").
 ///
 /// NOTE: When updating, also update the static files in `peppylib-py/`

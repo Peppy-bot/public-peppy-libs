@@ -1,11 +1,11 @@
 mod actions;
-mod iface;
 mod pairing;
 mod services;
+mod target;
 mod topics;
 
-pub(crate) use iface::{PyProducerRef, PySenderTarget};
 pub(crate) use pairing::{PyPeerInfo, PyPeerSlot, PyPeerSubscription};
+pub(crate) use target::{PyProducerRef, PySenderTarget};
 
 use config::org::resolve_session_namespace;
 use peppylib::PeppyError;

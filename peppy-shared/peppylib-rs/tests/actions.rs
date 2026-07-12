@@ -1256,12 +1256,12 @@ async fn concurrent_action_cancel_after_terminal_is_already_terminal() {
     drop(server_handle);
 }
 
-/// A single node exposes the *same* action name under two distinct iface
-/// scopes (native + a conformed interface). Their goal services must wire to
+/// A single node exposes the *same* action name under two distinct contract
+/// scopes (native + an implemented contract). Their goal services must wire to
 /// distinct paths, so a `send_goal` targeting one scope must only ever hit
 /// the matching server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn action_iface_scoped_native_and_conformed_do_not_collide() {
+async fn action_contract_scoped_native_and_implemented_do_not_collide() {
     use peppylib::messaging::ActionFeedbackPublisherFactory;
     use tokio::sync::oneshot;
 
@@ -1274,18 +1274,18 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
     let instance_id = "test_instance";
     let node_name = "test_node";
     let action_name = "move";
-    let iface_name = "arm";
-    let iface_tag = "v1";
+    let contract_name = "arm";
+    let contract_tag = "v1";
 
     let native_response = Payload::from_static(b"native_ack");
-    let iface_response = Payload::from_static(b"iface_ack");
+    let contract_response = Payload::from_static(b"contract_ack");
 
     let native_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("native handle");
-    let iface_handle = MessengerHandle::connect(&host, port)
+    let contract_handle = MessengerHandle::connect(&host, port)
         .await
-        .expect("iface handle");
+        .expect("contract handle");
     let caller_handle = MessengerHandle::connect(&host, port)
         .await
         .expect("caller handle");
@@ -1300,15 +1300,15 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
     )
     .await
     .expect("native expose");
-    let iface_action = ActionMessenger::expose(
-        &iface_handle,
+    let contract_action = ActionMessenger::expose(
+        &contract_handle,
         core_node,
         instance_id,
-        SenderTarget::interface(iface_name, iface_tag).expect("test target"),
+        SenderTarget::contract(contract_name, contract_tag).expect("test target"),
         action_name,
     )
     .await
-    .expect("iface expose");
+    .expect("contract expose");
 
     fn run_goal_handler(
         mut action: peppylib::messaging::ActionCreation,
@@ -1346,7 +1346,8 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
     }
 
     let (native_task, native_done) = run_goal_handler(native_action, native_response.clone());
-    let (iface_task, iface_done) = run_goal_handler(iface_action, iface_response.clone());
+    let (contract_task, contract_done) =
+        run_goal_handler(contract_action, contract_response.clone());
 
     let native_goal = ActionMessenger::send_goal(
         &caller_handle,
@@ -1367,29 +1368,31 @@ async fn action_iface_scoped_native_and_conformed_do_not_collide() {
         "native send_goal must hit the native goal handler",
     );
 
-    let iface_goal = ActionMessenger::send_goal(
+    let contract_goal = ActionMessenger::send_goal(
         &caller_handle,
         core_node,
         instance_id,
-        SenderTarget::interface(iface_name, iface_tag).expect("test target"),
+        SenderTarget::contract(contract_name, contract_tag).expect("test target"),
         action_name,
         Some(&ProducerRef::new(core_node, instance_id)),
-        Payload::from_static(b"iface_goal"),
+        Payload::from_static(b"contract_goal"),
         QoSProfile::Reliable,
         Duration::from_secs(2),
     )
     .await
-    .expect("iface send_goal");
+    .expect("contract send_goal");
     assert_eq!(
-        iface_goal.goal_response().payload(),
-        &iface_response,
-        "iface send_goal must hit the iface goal handler",
+        contract_goal.goal_response().payload(),
+        &contract_response,
+        "contract send_goal must hit the contract goal handler",
     );
 
     native_done.await.expect("native handler signaled ready");
-    iface_done.await.expect("iface handler signaled ready");
+    contract_done
+        .await
+        .expect("contract handler signaled ready");
     native_task.await.expect("native task");
-    iface_task.await.expect("iface task");
+    contract_task.await.expect("contract task");
 }
 
 /// Discover-then-pin safety: when a consumer issues a wildcard
@@ -1414,7 +1417,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
         .expect("failed to start zenoh router for test");
     let (host, port) = (instance.host.clone(), instance.port);
 
-    let action_target = SenderTarget::interface("manipulator", "v1").expect("iface target");
+    let action_target = SenderTarget::contract("manipulator", "v1").expect("contract target");
     let action_name = "pick_up";
     let producer_a_core = "producer_a_core";
     let producer_a_inst = "producer_a";

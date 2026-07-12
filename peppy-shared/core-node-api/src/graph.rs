@@ -242,8 +242,8 @@ pub struct SerializedEdge {
     pub from: SerializedNode,
     pub to: SerializedNode,
     /// `Some("name:tag")` when this edge is a dependency resolved through
-    /// contract conformance (the consumer declares `depends_on.contracts` and
-    /// `to` is a node that `conforms_to` that contract); `None` for a direct
+    /// contract implementation (the consumer declares `depends_on.contracts` and
+    /// `to` is a node whose `manifest.implements` names that contract); `None` for a direct
     /// `depends_on.nodes` edge. Defaulted on decode so payloads from producers
     /// that predate this field still parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
