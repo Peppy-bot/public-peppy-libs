@@ -22,8 +22,7 @@ fn contract_new_preserves_alphanumeric_tag() {
 
 #[test]
 fn contract_new_normalizes_hyphenated_tag() {
-    let contract =
-        ContractIdentifier::new("camera_driver", "v1-beta-2").expect("valid contract");
+    let contract = ContractIdentifier::new("camera_driver", "v1-beta-2").expect("valid contract");
     assert_eq!(contract.tag(), "v1_beta_2");
 }
 

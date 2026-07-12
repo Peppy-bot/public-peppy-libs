@@ -164,20 +164,13 @@ pub(crate) const NODE_DISCRIMINATOR: &str = "node";
 /// pairing traffic can never match a contract subscription.
 pub(crate) const PAIRING_DISCRIMINATOR: &str = "pairing";
 
-/// Hyphen-to-underscore normalization applied at construction time to any tag
-/// segment. The generator emits tags with hyphens (config-side identifier rule);
-/// the wire form requires identifier-safe segments.
-fn normalize_tag(tag: &str) -> String {
-    if tag.contains('-') {
-        tag.replace('-', "_")
-    } else {
-        tag.to_string()
-    }
-}
-
 fn validated_name_tag(name: &str, tag: &str) -> Result<(Segment, Segment), SenderTargetError> {
     let name_segment = Segment::try_from(name)?;
-    let normalized_tag = normalize_tag(tag);
+    // Hyphen-to-underscore tag normalization: the generator emits tags with
+    // hyphens (config-side identifier rule); the wire form requires
+    // identifier-safe segments. Shared with the config layer's parse-time
+    // implements-collision check, which predicts this exact transformation.
+    let normalized_tag = config::consts::normalize_tag(tag);
     let tag_segment = Segment::try_from(normalized_tag.as_str())?;
     Ok((name_segment, tag_segment))
 }

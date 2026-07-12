@@ -1,18 +1,11 @@
-use super::types::{Execution, Interfaces, Manifest, NodeConfig};
+use super::types::{DependsOn, Execution, InterfaceKind, Interfaces, Manifest, NodeConfig};
 use crate::{
+    consts::normalize_tag,
     error::{ParsingError, Result},
     parsing::read_non_empty_file,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-
-/// Tag sanitization applied by the generator (module paths) and the wire
-/// format (keyexpr segments): hyphens become underscores. Two implements
-/// entries whose tags collide after sanitization would produce colliding
-/// modules and wire keys, so the collision is rejected at parse time.
-fn sanitize_tag(tag: &str) -> String {
-    tag.replace('-', "_")
-}
 
 /// Validates the manifest's link namespace and implements claims:
 ///
@@ -34,16 +27,13 @@ fn sanitize_tag(tag: &str) -> String {
 fn validate_manifest_links(manifest: &Manifest) -> Result<()> {
     let mut seen_link_ids: HashSet<&str> = HashSet::new();
     let implements = manifest.implements.iter().map(|e| e.link_id.as_str());
-    let depends: Box<dyn Iterator<Item = &str>> = match &manifest.depends_on {
-        Some(d) => Box::new(
-            d.nodes
-                .iter()
-                .map(|n| n.link_id.as_str())
-                .chain(d.contracts.iter().map(|c| c.link_id.as_str()))
-                .chain(d.pairings.iter().map(|p| p.link_id.as_str())),
-        ),
-        None => Box::new(std::iter::empty()),
-    };
+    let depends = manifest.depends_on.iter().flat_map(|d| {
+        d.nodes
+            .iter()
+            .map(|n| n.link_id.as_str())
+            .chain(d.contracts.iter().map(|c| c.link_id.as_str()))
+            .chain(d.pairings.iter().map(|p| p.link_id.as_str()))
+    });
     for link_id in depends.chain(implements) {
         if !seen_link_ids.insert(link_id) {
             return Err(ParsingError::DuplicateLinkId(link_id.to_owned()).into());
@@ -60,7 +50,7 @@ fn validate_manifest_links(manifest: &Manifest) -> Result<()> {
 
     let mut seen_contracts: HashMap<(&str, String), &str> = HashMap::new();
     for entry in &manifest.implements {
-        let key = (entry.name.as_str(), sanitize_tag(&entry.tag));
+        let key = (entry.name.as_str(), normalize_tag(&entry.tag));
         if let Some(prev_tag) = seen_contracts.insert(key, entry.tag.as_str()) {
             if prev_tag == entry.tag {
                 return Err(ParsingError::DuplicateImplementsContract {
@@ -94,94 +84,65 @@ fn validate_manifest_links(manifest: &Manifest) -> Result<()> {
 ///   contract-backed entry may share a name (they are namespaced apart in
 ///   modules, schema keys, and wire keys).
 fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<()> {
+    const KINDS: [(InterfaceKind, &str); 3] = [
+        (InterfaceKind::Topic, super::types::EmittedTopic::SECTION),
+        (
+            InterfaceKind::Service,
+            super::types::ExposedService::SECTION,
+        ),
+        (InterfaceKind::Action, super::types::ExposedAction::SECTION),
+    ];
+
     let implements_link_ids: HashSet<&str> = manifest
         .implements
         .iter()
         .map(|e| e.link_id.as_str())
         .collect();
-    let mut depends_lists: HashMap<&str, &'static str> = HashMap::new();
-    if let Some(d) = &manifest.depends_on {
-        for n in &d.nodes {
-            depends_lists.insert(n.link_id.as_str(), "nodes");
-        }
-        for c in &d.contracts {
-            depends_lists.insert(c.link_id.as_str(), "contracts");
-        }
-        for p in &d.pairings {
-            depends_lists.insert(p.link_id.as_str(), "pairings");
-        }
+
+    for (kind, section) in KINDS {
+        validate_produced_section(
+            section,
+            interfaces.produced(kind),
+            &implements_link_ids,
+            manifest.depends_on.as_ref(),
+        )?;
     }
 
-    let topics = interfaces.topics.as_ref();
-    let services = interfaces.services.as_ref();
-    let actions = interfaces.actions.as_ref();
-
-    validate_produced_section(
-        super::types::EmittedTopic::SECTION,
-        topics
-            .and_then(|t| t.emits.as_deref())
-            .unwrap_or_default()
-            .iter()
-            .map(|e| (e.link_id(), e.name())),
-        &implements_link_ids,
-        &depends_lists,
-    )?;
-    validate_produced_section(
-        super::types::ExposedService::SECTION,
-        services
-            .and_then(|s| s.exposes.as_deref())
-            .unwrap_or_default()
-            .iter()
-            .map(|e| (e.link_id(), e.name())),
-        &implements_link_ids,
-        &depends_lists,
-    )?;
-    validate_produced_section(
-        super::types::ExposedAction::SECTION,
-        actions
-            .and_then(|a| a.exposes.as_deref())
-            .unwrap_or_default()
-            .iter()
-            .map(|e| (e.link_id(), e.name())),
-        &implements_link_ids,
-        &depends_lists,
-    )?;
-
-    let consumed_link_ids = topics
-        .and_then(|t| t.consumes.as_deref())
-        .unwrap_or_default()
-        .iter()
-        .map(|c| c.link_id.as_str())
-        .chain(
-            services
-                .and_then(|s| s.consumes.as_deref())
-                .unwrap_or_default()
-                .iter()
-                .map(|c| c.link_id.as_str()),
-        )
-        .chain(
-            actions
-                .and_then(|a| a.consumes.as_deref())
-                .unwrap_or_default()
-                .iter()
-                .map(|c| c.link_id.as_str()),
-        );
-    for link_id in consumed_link_ids {
-        if implements_link_ids.contains(link_id) {
-            return Err(ParsingError::ConsumedItemReferencesImplementsLinkId {
-                link_id: link_id.to_owned(),
+    for (kind, _) in KINDS {
+        for (link_id, _) in interfaces.consumed(kind) {
+            if implements_link_ids.contains(link_id) {
+                return Err(ParsingError::ConsumedItemReferencesImplementsLinkId {
+                    link_id: link_id.to_owned(),
+                }
+                .into());
             }
-            .into());
         }
     }
     Ok(())
+}
+
+/// Which `depends_on` list (if any) declares `link_id`. Only consulted on
+/// the error path, so a linear scan of the (tiny) lists beats prebuilding
+/// a lookup map that valid configs never read.
+fn depends_list_containing(depends_on: Option<&DependsOn>, link_id: &str) -> Option<&'static str> {
+    let d = depends_on?;
+    if d.nodes.iter().any(|n| n.link_id == link_id) {
+        return Some("nodes");
+    }
+    if d.contracts.iter().any(|c| c.link_id == link_id) {
+        return Some("contracts");
+    }
+    if d.pairings.iter().any(|p| p.link_id == link_id) {
+        return Some("pairings");
+    }
+    None
 }
 
 fn validate_produced_section<'a>(
     section: &'static str,
     entries: impl Iterator<Item = (Option<&'a str>, &'a str)>,
     implements_link_ids: &HashSet<&str>,
-    depends_lists: &HashMap<&str, &'static str>,
+    depends_on: Option<&DependsOn>,
 ) -> Result<()> {
     let mut seen_native: HashSet<&str> = HashSet::new();
     let mut seen_contract: HashSet<(&str, &str)> = HashSet::new();
@@ -189,11 +150,11 @@ fn validate_produced_section<'a>(
         match link_id {
             Some(link_id) => {
                 if !implements_link_ids.contains(link_id) {
-                    if let Some(found_in) = depends_lists.get(link_id) {
+                    if let Some(found_in) = depends_list_containing(depends_on, link_id) {
                         return Err(ParsingError::EmitsLinkIdNotImplements {
                             section: section.to_owned(),
                             link_id: link_id.to_owned(),
-                            found_in: (*found_in).to_owned(),
+                            found_in: found_in.to_owned(),
                         }
                         .into());
                     }
@@ -1411,7 +1372,10 @@ mod tests {
     #[test]
     fn test_emits_link_id_naming_depends_on_slot_rejected() {
         for (deps_block, found_in) in [
-            (r#"nodes: [{ name: "alpha", tag: "v1", link_id: "dep" }]"#, "nodes"),
+            (
+                r#"nodes: [{ name: "alpha", tag: "v1", link_id: "dep" }]"#,
+                "nodes",
+            ),
             (
                 r#"contracts: [{ name: "uvc_camera", tag: "v1", link_id: "dep" }]"#,
                 "contracts",

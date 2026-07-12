@@ -180,53 +180,14 @@ pub fn validate_dependency_specs(
 
     // Phase 2: Validate consumed interfaces reference valid link_ids
     // and that the dependency exposes the required interface
-    if let Some(topics) = &interfaces.topics
-        && let Some(consumes) = &topics.consumes
-    {
-        let items = consumes
-            .iter()
-            .map(|t| (t.link_id.as_str(), t.name.as_str()));
+    for kind in [
+        InterfaceKind::Topic,
+        InterfaceKind::Service,
+        InterfaceKind::Action,
+    ] {
         validate_consumed_items(
-            items,
-            InterfaceKind::Topic,
-            &resolved_deps,
-            &declared_link_ids,
-            &pairing_link_ids,
-            &implements_link_ids,
-            dependant_name,
-            dependant_tag,
-            &mut errors,
-        );
-    }
-
-    if let Some(services) = &interfaces.services
-        && let Some(consumes) = &services.consumes
-    {
-        let items = consumes
-            .iter()
-            .map(|s| (s.link_id.as_str(), s.name.as_str()));
-        validate_consumed_items(
-            items,
-            InterfaceKind::Service,
-            &resolved_deps,
-            &declared_link_ids,
-            &pairing_link_ids,
-            &implements_link_ids,
-            dependant_name,
-            dependant_tag,
-            &mut errors,
-        );
-    }
-
-    if let Some(actions) = &interfaces.actions
-        && let Some(consumes) = &actions.consumes
-    {
-        let items = consumes
-            .iter()
-            .map(|a| (a.link_id.as_str(), a.name.as_str()));
-        validate_consumed_items(
-            items,
-            InterfaceKind::Action,
+            interfaces.consumed(kind),
+            kind,
             &resolved_deps,
             &declared_link_ids,
             &pairing_link_ids,
@@ -377,44 +338,10 @@ enum Exposure<'a> {
 }
 
 fn find_exposure<'a>(node: &'a NodeConfig, requirement: &InterfaceRequirement) -> Exposure<'a> {
-    let (native_match, contract_link_id) = match requirement.kind() {
-        InterfaceKind::Topic => {
-            let entries = node
-                .interfaces
-                .topics
-                .as_ref()
-                .and_then(|t| t.emits.as_deref())
-                .unwrap_or_default();
-            scan_entries(
-                entries.iter().map(|e| (e.link_id(), e.name())),
-                requirement.name(),
-            )
-        }
-        InterfaceKind::Service => {
-            let entries = node
-                .interfaces
-                .services
-                .as_ref()
-                .and_then(|s| s.exposes.as_deref())
-                .unwrap_or_default();
-            scan_entries(
-                entries.iter().map(|e| (e.link_id(), e.name())),
-                requirement.name(),
-            )
-        }
-        InterfaceKind::Action => {
-            let entries = node
-                .interfaces
-                .actions
-                .as_ref()
-                .and_then(|a| a.exposes.as_deref())
-                .unwrap_or_default();
-            scan_entries(
-                entries.iter().map(|e| (e.link_id(), e.name())),
-                requirement.name(),
-            )
-        }
-    };
+    let (native_match, contract_link_id) = scan_entries(
+        node.interfaces.produced(requirement.kind()),
+        requirement.name(),
+    );
 
     if native_match {
         return Exposure::Native;
@@ -690,7 +617,10 @@ mod tests {
         );
         assert_eq!(errors.len(), 1, "errors: {errors:?}");
         let ParsingError::ConsumedInterfaceOnlyContractBacked(payload) = &errors[0] else {
-            panic!("expected ConsumedInterfaceOnlyContractBacked, got: {:?}", errors[0]);
+            panic!(
+                "expected ConsumedInterfaceOnlyContractBacked, got: {:?}",
+                errors[0]
+            );
         };
         assert_eq!(payload.contract_name, "uvc_camera");
         assert_eq!(payload.contract_tag, "v1");

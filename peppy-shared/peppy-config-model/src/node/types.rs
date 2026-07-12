@@ -432,8 +432,22 @@ pub enum ExposedAction {
     Native(NativeExposedAction),
 }
 
+/// Generates the shared surface of one produced-entry enum: accessors,
+/// `Serialize`, and the discriminating `Deserialize`. The native shape
+/// fields are declared once here — the raw mirror struct, the
+/// inline-shape reject list, and the `Native` constructor are all derived
+/// from that single list, so they cannot drift apart. Each field's mode
+/// picks how a missing value materializes on a native entry: `default`
+/// applies `unwrap_or_default()`, `keep` stores the `Option` as-is.
 macro_rules! impl_produced_entry {
-    ($entry:ident, $native:ident, $section:literal) => {
+    (@native_field default $value:expr) => {
+        $value.unwrap_or_default()
+    };
+    (@native_field keep $value:expr) => {
+        $value
+    };
+    ($entry:ident, $native:ident, $section:literal,
+     { $($field:ident : $ty:ty => $mode:tt),+ $(,)? }) => {
         impl $entry {
             /// Interface name: the contract member selector for
             /// contract-backed entries, the declared name for native ones.
@@ -488,12 +502,60 @@ macro_rules! impl_produced_entry {
                 }
             }
         }
+
+        impl<'de> Deserialize<'de> for $entry {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Raw {
+                    link_id: Option<String>,
+                    name: Option<String>,
+                    $($field: $ty,)+
+                }
+
+                let raw = Raw::deserialize(deserializer)?;
+                let name = require_interface_name(raw.name, $entry::SECTION)?;
+                match raw.link_id {
+                    Some(link_id) => {
+                        let link_id = validate_non_empty_identifier(
+                            &link_id,
+                            concat!(stringify!($entry), ".link_id"),
+                        )
+                        .map_err(de::Error::custom)?;
+                        reject_inline_shape(
+                            $entry::SECTION,
+                            &link_id,
+                            &name,
+                            &[$((stringify!($field), raw.$field.is_some()),)+],
+                        )?;
+                        Ok(Self::Contract(ContractBackedEntry { link_id, name }))
+                    }
+                    None => Ok(Self::Native($native {
+                        name,
+                        $($field: impl_produced_entry!(@native_field $mode raw.$field),)+
+                    })),
+                }
+            }
+        }
     };
 }
 
-impl_produced_entry!(EmittedTopic, NativeEmittedTopic, "topics.emits");
-impl_produced_entry!(ExposedService, NativeExposedService, "services.exposes");
-impl_produced_entry!(ExposedAction, NativeExposedAction, "actions.exposes");
+impl_produced_entry!(EmittedTopic, NativeEmittedTopic, "topics.emits", {
+    qos_profile: Option<QoSProfile> => default,
+    message_format: Option<MessageFormat> => keep,
+});
+impl_produced_entry!(ExposedService, NativeExposedService, "services.exposes", {
+    request_message_format: Option<MessageFormat> => keep,
+    response_message_format: Option<MessageFormat> => keep,
+});
+impl_produced_entry!(ExposedAction, NativeExposedAction, "actions.exposes", {
+    goal_service: Option<ActionServiceEndpoint> => keep,
+    feedback_topic: Option<ActionTopicEndpoint> => keep,
+    result_service: Option<ActionServiceEndpoint> => keep,
+});
 
 /// Validates the (required, non-empty) `name` of a produced-interface entry,
 /// surfacing a [`StructuredError::EmptyInterfaceName`] through the serde
@@ -502,17 +564,14 @@ fn require_interface_name<E: de::Error>(
     name: Option<String>,
     section: &'static str,
 ) -> Result<String, E> {
-    let raw = name.unwrap_or_default();
-    let trimmed = raw.trim();
-    if trimmed.is_empty() || !trimmed.chars().any(|ch| ch.is_ascii_alphanumeric()) {
-        return Err(E::custom(
+    validate_non_empty_identifier(name.as_deref().unwrap_or_default(), section).map_err(|_| {
+        E::custom(
             crate::error::StructuredError::EmptyInterfaceName {
                 section: section.to_owned(),
             }
             .json5_message(),
-        ));
-    }
-    Ok(trimmed.to_owned())
+        )
+    })
 }
 
 /// Rejects inline shape/QoS fields on a contract-backed entry: the shape
@@ -538,135 +597,6 @@ fn reject_inline_shape<E: de::Error>(
         }
     }
     Ok(())
-}
-
-impl<'de> Deserialize<'de> for EmittedTopic {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct RawEmittedTopic {
-            link_id: Option<String>,
-            name: Option<String>,
-            qos_profile: Option<QoSProfile>,
-            message_format: Option<MessageFormat>,
-        }
-
-        let raw = RawEmittedTopic::deserialize(deserializer)?;
-        let name = require_interface_name(raw.name, EmittedTopic::SECTION)?;
-        match raw.link_id {
-            Some(link_id) => {
-                let link_id = validate_non_empty_identifier(&link_id, "EmittedTopic.link_id")
-                    .map_err(de::Error::custom)?;
-                reject_inline_shape(
-                    EmittedTopic::SECTION,
-                    &link_id,
-                    &name,
-                    &[
-                        ("qos_profile", raw.qos_profile.is_some()),
-                        ("message_format", raw.message_format.is_some()),
-                    ],
-                )?;
-                Ok(Self::Contract(ContractBackedEntry { link_id, name }))
-            }
-            None => Ok(Self::Native(NativeEmittedTopic {
-                name,
-                qos_profile: raw.qos_profile.unwrap_or_default(),
-                message_format: raw.message_format,
-            })),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for ExposedService {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct RawExposedService {
-            link_id: Option<String>,
-            name: Option<String>,
-            request_message_format: Option<MessageFormat>,
-            response_message_format: Option<MessageFormat>,
-        }
-
-        let raw = RawExposedService::deserialize(deserializer)?;
-        let name = require_interface_name(raw.name, ExposedService::SECTION)?;
-        match raw.link_id {
-            Some(link_id) => {
-                let link_id = validate_non_empty_identifier(&link_id, "ExposedService.link_id")
-                    .map_err(de::Error::custom)?;
-                reject_inline_shape(
-                    ExposedService::SECTION,
-                    &link_id,
-                    &name,
-                    &[
-                        (
-                            "request_message_format",
-                            raw.request_message_format.is_some(),
-                        ),
-                        (
-                            "response_message_format",
-                            raw.response_message_format.is_some(),
-                        ),
-                    ],
-                )?;
-                Ok(Self::Contract(ContractBackedEntry { link_id, name }))
-            }
-            None => Ok(Self::Native(NativeExposedService {
-                name,
-                request_message_format: raw.request_message_format,
-                response_message_format: raw.response_message_format,
-            })),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for ExposedAction {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct RawExposedAction {
-            link_id: Option<String>,
-            name: Option<String>,
-            goal_service: Option<ActionServiceEndpoint>,
-            feedback_topic: Option<ActionTopicEndpoint>,
-            result_service: Option<ActionServiceEndpoint>,
-        }
-
-        let raw = RawExposedAction::deserialize(deserializer)?;
-        let name = require_interface_name(raw.name, ExposedAction::SECTION)?;
-        match raw.link_id {
-            Some(link_id) => {
-                let link_id = validate_non_empty_identifier(&link_id, "ExposedAction.link_id")
-                    .map_err(de::Error::custom)?;
-                reject_inline_shape(
-                    ExposedAction::SECTION,
-                    &link_id,
-                    &name,
-                    &[
-                        ("goal_service", raw.goal_service.is_some()),
-                        ("feedback_topic", raw.feedback_topic.is_some()),
-                        ("result_service", raw.result_service.is_some()),
-                    ],
-                )?;
-                Ok(Self::Contract(ContractBackedEntry { link_id, name }))
-            }
-            None => Ok(Self::Native(NativeExposedAction {
-                name,
-                goal_service: raw.goal_service,
-                feedback_topic: raw.feedback_topic,
-                result_service: raw.result_service,
-            })),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1081,6 +1011,87 @@ pub struct Interfaces {
     pub services: Option<ServiceInterfaces>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actions: Option<ActionInterfaces>,
+}
+
+impl Interfaces {
+    /// The produced (emits/exposes) entries of `kind`, projected to
+    /// `(link_id, name)` pairs — the shared traversal used by parse-time
+    /// and plan-phase validation. Only the requested kind's section
+    /// contributes entries; the chain over all three exists to give the
+    /// arms a single concrete iterator type.
+    pub fn produced(&self, kind: InterfaceKind) -> impl Iterator<Item = (Option<&str>, &str)> {
+        let topics: &[EmittedTopic] = match kind {
+            InterfaceKind::Topic => self
+                .topics
+                .as_ref()
+                .and_then(|t| t.emits.as_deref())
+                .unwrap_or_default(),
+            _ => &[],
+        };
+        let services: &[ExposedService] = match kind {
+            InterfaceKind::Service => self
+                .services
+                .as_ref()
+                .and_then(|s| s.exposes.as_deref())
+                .unwrap_or_default(),
+            _ => &[],
+        };
+        let actions: &[ExposedAction] = match kind {
+            InterfaceKind::Action => self
+                .actions
+                .as_ref()
+                .and_then(|a| a.exposes.as_deref())
+                .unwrap_or_default(),
+            _ => &[],
+        };
+        topics
+            .iter()
+            .map(|e| (e.link_id(), e.name()))
+            .chain(services.iter().map(|e| (e.link_id(), e.name())))
+            .chain(actions.iter().map(|e| (e.link_id(), e.name())))
+    }
+
+    /// The consumed entries of `kind`, projected to `(link_id, name)`
+    /// pairs. Same shape as [`Interfaces::produced`].
+    pub fn consumed(&self, kind: InterfaceKind) -> impl Iterator<Item = (&str, &str)> {
+        let topics: &[ConsumedTopic] = match kind {
+            InterfaceKind::Topic => self
+                .topics
+                .as_ref()
+                .and_then(|t| t.consumes.as_deref())
+                .unwrap_or_default(),
+            _ => &[],
+        };
+        let services: &[ConsumedService] = match kind {
+            InterfaceKind::Service => self
+                .services
+                .as_ref()
+                .and_then(|s| s.consumes.as_deref())
+                .unwrap_or_default(),
+            _ => &[],
+        };
+        let actions: &[ConsumedAction] = match kind {
+            InterfaceKind::Action => self
+                .actions
+                .as_ref()
+                .and_then(|a| a.consumes.as_deref())
+                .unwrap_or_default(),
+            _ => &[],
+        };
+        topics
+            .iter()
+            .map(|c| (c.link_id.as_str(), c.name.as_str()))
+            .chain(
+                services
+                    .iter()
+                    .map(|c| (c.link_id.as_str(), c.name.as_str())),
+            )
+            .chain(
+                actions
+                    .iter()
+                    .map(|c| (c.link_id.as_str(), c.name.as_str())),
+            )
+    }
 }
 
 /// Puts a value into canonical form so that derived `PartialEq` becomes
@@ -1993,9 +2004,7 @@ mod tests {
             r#"{ name: "depth_camera", tag: "v1", link_id: "" }"#,
             r#"{ name: "depth_camera", tag: "v1", link_id: "--" }"#,
         ] {
-            let json5 = format!(
-                r#"{{ name: "n", tag: "v1", implements: [{entry}] }}"#
-            );
+            let json5 = format!(r#"{{ name: "n", tag: "v1", implements: [{entry}] }}"#);
             assert!(
                 serde_json5::from_str::<Manifest>(&json5).is_err(),
                 "implements entry should be rejected: {entry}"
@@ -2106,10 +2115,8 @@ mod tests {
             serde_json5::from_str(&serde_json5::to_string(&svc).unwrap()).unwrap();
         assert_eq!(svc, reparsed);
 
-        let action: ExposedAction = serde_json5::from_str(
-            r#"{ link_id: "arm", name: "do_move" }"#,
-        )
-        .expect("should parse");
+        let action: ExposedAction =
+            serde_json5::from_str(r#"{ link_id: "arm", name: "do_move" }"#).expect("should parse");
         let reparsed: ExposedAction =
             serde_json5::from_str(&serde_json5::to_string(&action).unwrap()).unwrap();
         assert_eq!(action, reparsed);

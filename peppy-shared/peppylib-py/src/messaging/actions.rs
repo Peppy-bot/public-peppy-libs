@@ -11,8 +11,8 @@ use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::target::{PyProducerRef, PySenderTarget};
 use super::services::PyServiceEndpoint;
+use super::target::{PyProducerRef, PySenderTarget};
 use super::{
     PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, future_into_py_unit, to_py_err,
 };

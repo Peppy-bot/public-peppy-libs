@@ -45,8 +45,8 @@ pub use config::runtime::ProducerRef;
 // peppylib's own messaging implementation; each submodule imports them directly
 // from `pmi::`.
 pub use pmi::{
-    ActionLivelinessToken, ActionWireSender, ContractIdentifier, NodeIdentifier,
-    PairingIdentifier, SenderTarget, SenderTargetError,
+    ActionLivelinessToken, ActionWireSender, ContractIdentifier, NodeIdentifier, PairingIdentifier,
+    SenderTarget, SenderTargetError,
 };
 
 use crate::error::{Error, Result};

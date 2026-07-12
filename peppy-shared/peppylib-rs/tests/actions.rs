@@ -1346,7 +1346,8 @@ async fn action_contract_scoped_native_and_implemented_do_not_collide() {
     }
 
     let (native_task, native_done) = run_goal_handler(native_action, native_response.clone());
-    let (contract_task, contract_done) = run_goal_handler(contract_action, contract_response.clone());
+    let (contract_task, contract_done) =
+        run_goal_handler(contract_action, contract_response.clone());
 
     let native_goal = ActionMessenger::send_goal(
         &caller_handle,
@@ -1387,7 +1388,9 @@ async fn action_contract_scoped_native_and_implemented_do_not_collide() {
     );
 
     native_done.await.expect("native handler signaled ready");
-    contract_done.await.expect("contract handler signaled ready");
+    contract_done
+        .await
+        .expect("contract handler signaled ready");
     native_task.await.expect("native task");
     contract_task.await.expect("contract task");
 }

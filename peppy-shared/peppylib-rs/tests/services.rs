@@ -190,7 +190,9 @@ async fn service_contract_scoped_native_and_implemented_do_not_collide() {
     );
 
     native_handler.await.expect("native handler task panicked");
-    contract_handler.await.expect("contract handler task panicked");
+    contract_handler
+        .await
+        .expect("contract handler task panicked");
 }
 
 /// Hyphens in `contract_tag` must be normalized to underscores at the wire-format
