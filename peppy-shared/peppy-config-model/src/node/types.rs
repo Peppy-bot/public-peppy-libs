@@ -425,11 +425,13 @@ pub struct NativeExposedAction {
 }
 
 /// One entry of `interfaces.actions.exposes`. See [`EmittedTopic`] for the
-/// `link_id` discriminator rule.
+/// `link_id` discriminator rule. The native payload is boxed: its three
+/// optional endpoints dwarf `ContractBackedEntry`, and boxing keeps the enum
+/// small for the common contract-backed case.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExposedAction {
     Contract(ContractBackedEntry),
-    Native(NativeExposedAction),
+    Native(Box<NativeExposedAction>),
 }
 
 /// Generates the shared surface of one produced-entry enum: accessors,
@@ -439,6 +441,9 @@ pub enum ExposedAction {
 /// from that single list, so they cannot drift apart. Each field's mode
 /// picks how a missing value materializes on a native entry: `default`
 /// applies `unwrap_or_default()`, `keep` stores the `Option` as-is.
+/// The wrap mode before the native type says how the `Native` variant holds
+/// its payload: `plain` stores the struct inline, `boxed` stores it behind a
+/// `Box` (for payloads large enough to trip `clippy::large_enum_variant`).
 macro_rules! impl_produced_entry {
     (@native_field default $value:expr) => {
         $value.unwrap_or_default()
@@ -446,7 +451,19 @@ macro_rules! impl_produced_entry {
     (@native_field keep $value:expr) => {
         $value
     };
-    ($entry:ident, $native:ident, $section:literal,
+    (@native_ref plain $native:expr) => {
+        $native
+    };
+    (@native_ref boxed $native:expr) => {
+        &**$native
+    };
+    (@native_wrap plain $value:expr) => {
+        $value
+    };
+    (@native_wrap boxed $value:expr) => {
+        Box::new($value)
+    };
+    ($entry:ident, $wrap:tt $native:ident, $section:literal,
      { $($field:ident : $ty:ty => $mode:tt),+ $(,)? }) => {
         impl $entry {
             /// Interface name: the contract member selector for
@@ -477,7 +494,7 @@ macro_rules! impl_produced_entry {
             pub fn as_native(&self) -> Option<&$native> {
                 match self {
                     Self::Contract(_) => None,
-                    Self::Native(n) => Some(n),
+                    Self::Native(n) => Some(impl_produced_entry!(@native_ref $wrap n)),
                 }
             }
 
@@ -533,25 +550,25 @@ macro_rules! impl_produced_entry {
                         )?;
                         Ok(Self::Contract(ContractBackedEntry { link_id, name }))
                     }
-                    None => Ok(Self::Native($native {
+                    None => Ok(Self::Native(impl_produced_entry!(@native_wrap $wrap $native {
                         name,
                         $($field: impl_produced_entry!(@native_field $mode raw.$field),)+
-                    })),
+                    }))),
                 }
             }
         }
     };
 }
 
-impl_produced_entry!(EmittedTopic, NativeEmittedTopic, "topics.emits", {
+impl_produced_entry!(EmittedTopic, plain NativeEmittedTopic, "topics.emits", {
     qos_profile: Option<QoSProfile> => default,
     message_format: Option<MessageFormat> => keep,
 });
-impl_produced_entry!(ExposedService, NativeExposedService, "services.exposes", {
+impl_produced_entry!(ExposedService, plain NativeExposedService, "services.exposes", {
     request_message_format: Option<MessageFormat> => keep,
     response_message_format: Option<MessageFormat> => keep,
 });
-impl_produced_entry!(ExposedAction, NativeExposedAction, "actions.exposes", {
+impl_produced_entry!(ExposedAction, boxed NativeExposedAction, "actions.exposes", {
     goal_service: Option<ActionServiceEndpoint> => keep,
     feedback_topic: Option<ActionTopicEndpoint> => keep,
     result_service: Option<ActionServiceEndpoint> => keep,
@@ -1091,6 +1108,74 @@ impl Interfaces {
                     .iter()
                     .map(|c| (c.link_id.as_str(), c.name.as_str())),
             )
+    }
+
+    /// The natively-declared entries of `topics.emits`: the node owns these
+    /// shapes. Contract-backed entries are skipped — their shapes live in
+    /// the contract documents and resolve through `manifest.implements`.
+    pub fn native_emits(&self) -> impl Iterator<Item = &NativeEmittedTopic> {
+        self.topics
+            .as_ref()
+            .and_then(|t| t.emits.as_deref())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|e| e.as_native())
+    }
+
+    /// The natively-declared entries of `services.exposes`. Same
+    /// native-only contract as [`Interfaces::native_emits`].
+    pub fn native_service_exposes(&self) -> impl Iterator<Item = &NativeExposedService> {
+        self.services
+            .as_ref()
+            .and_then(|s| s.exposes.as_deref())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|e| e.as_native())
+    }
+
+    /// The natively-declared entries of `actions.exposes`. Same
+    /// native-only contract as [`Interfaces::native_emits`].
+    pub fn native_action_exposes(&self) -> impl Iterator<Item = &NativeExposedAction> {
+        self.actions
+            .as_ref()
+            .and_then(|a| a.exposes.as_deref())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|e| e.as_native())
+    }
+
+    /// Every contract-backed produced entry across the three sections,
+    /// tagged with the [`InterfaceKind`] it is declared under — the single
+    /// traversal for the `manifest.implements` resolution and coverage
+    /// checks.
+    pub fn contract_backed_entries(
+        &self,
+    ) -> impl Iterator<Item = (InterfaceKind, &ContractBackedEntry)> {
+        let topics = self
+            .topics
+            .as_ref()
+            .and_then(|t| t.emits.as_deref())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|e| e.as_contract())
+            .map(|e| (InterfaceKind::Topic, e));
+        let services = self
+            .services
+            .as_ref()
+            .and_then(|s| s.exposes.as_deref())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|e| e.as_contract())
+            .map(|e| (InterfaceKind::Service, e));
+        let actions = self
+            .actions
+            .as_ref()
+            .and_then(|a| a.exposes.as_deref())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|e| e.as_contract())
+            .map(|e| (InterfaceKind::Action, e));
+        topics.chain(services).chain(actions)
     }
 }
 
