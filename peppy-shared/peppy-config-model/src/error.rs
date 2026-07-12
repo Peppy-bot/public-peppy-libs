@@ -145,7 +145,9 @@ impl std::fmt::Display for ContractCoverageMismatch {
             ("wrong kind", &self.wrong_kind),
         ] {
             if !items.is_empty() {
-                write!(f, "; {label}: [{}]", items.join(", "))?;
+                write!(f, "; {label}: [")?;
+                write_string_list(f, items)?;
+                write!(f, "]")?;
             }
         }
         Ok(())
@@ -153,6 +155,16 @@ impl std::fmt::Display for ContractCoverageMismatch {
 }
 
 impl std::error::Error for ContractCoverageMismatch {}
+
+fn write_string_list(f: &mut std::fmt::Formatter<'_>, items: &[String]) -> std::fmt::Result {
+    for (idx, item) in items.iter().enumerate() {
+        if idx > 0 {
+            write!(f, ", ")?;
+        }
+        write!(f, "{item}")?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, Error, Clone)]
 pub enum ParsingError {

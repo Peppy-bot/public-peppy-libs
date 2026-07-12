@@ -109,17 +109,23 @@ pub enum Payloads {
 impl Payloads {
     /// All payload descriptors in a stable, style-defined order
     /// (request, response / goal, goal_response, feedback, result / message).
-    pub fn descriptors(&self) -> Vec<&PayloadDescriptor> {
-        match self {
-            Payloads::Service { request, response } => vec![request, response],
+    pub fn descriptors(&self) -> impl Iterator<Item = &PayloadDescriptor> {
+        let descriptors = match self {
+            Payloads::Service { request, response } => [Some(request), Some(response), None, None],
             Payloads::Action {
                 goal,
                 goal_response,
                 feedback,
                 result,
-            } => vec![goal, goal_response, feedback, result],
-            Payloads::Topic { message } => vec![message],
-        }
+            } => [
+                Some(goal),
+                Some(goal_response),
+                Some(feedback),
+                Some(result),
+            ],
+            Payloads::Topic { message } => [Some(message), None, None, None],
+        };
+        descriptors.into_iter().flatten()
     }
 }
 
