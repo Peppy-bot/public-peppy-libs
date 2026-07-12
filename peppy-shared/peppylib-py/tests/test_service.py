@@ -124,7 +124,7 @@ async def test_service_handler_exception_returns_service_error():
 
 @pytest.mark.asyncio
 async def test_service_iface_scoped_native_and_conformed_do_not_collide():
-    """Same service name exposed natively AND under a conformed interface must wire to distinct paths."""
+    """Same service name exposed natively AND under an implemented contract must wire to distinct paths."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         native_handle = await MessengerHandle.from_host_port(router.host, router.port)
         iface_handle = await MessengerHandle.from_host_port(router.host, router.port)
@@ -144,7 +144,7 @@ async def test_service_iface_scoped_native_and_conformed_do_not_collide():
             iface_handle,
             CORE_NODE,
             INSTANCE_ID,
-            SenderTarget.interface("camera", "v1"),
+            SenderTarget.contract("camera", "v1"),
             "control",
         )
 
@@ -169,12 +169,12 @@ async def test_service_iface_scoped_native_and_conformed_do_not_collide():
         )
         assert from_native.payload == native_response
 
-        # Interface poll → interface handler.
+        # Contract poll → contract handler.
         from_iface = await ServiceMessenger.poll(
             caller_handle,
             CORE_NODE,
             INSTANCE_ID,
-            SenderTarget.interface("camera", "v1"),
+            SenderTarget.contract("camera", "v1"),
             "control",
             ProducerRef(CORE_NODE, INSTANCE_ID),
             b"ping_iface",

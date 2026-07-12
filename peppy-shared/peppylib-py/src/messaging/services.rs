@@ -6,7 +6,7 @@ use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::iface::{PyProducerRef, PySenderTarget};
+use super::target::{PyProducerRef, PySenderTarget};
 use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
 
 /// Python wrapper for a service request received by a listener.

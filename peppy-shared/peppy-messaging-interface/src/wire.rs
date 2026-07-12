@@ -152,16 +152,16 @@ impl fmt::Display for SegmentError {
 impl std::error::Error for SegmentError {}
 
 /// Wire discriminator placed before the name/tag pair on senders whose target
-/// is an interface (a `conforms_to`-bearing declaration).
-pub(crate) const INTERFACE_DISCRIMINATOR: &str = "interface";
+/// is a contract (a `manifest.implements`-backed declaration).
+pub(crate) const CONTRACT_DISCRIMINATOR: &str = "contract";
 
 /// Wire discriminator placed before the name/tag pair on senders whose target
-/// is a node (no `conforms_to`).
+/// is a node (a native declaration, no `manifest.implements` slot).
 pub(crate) const NODE_DISCRIMINATOR: &str = "node";
 
 /// Wire discriminator placed before the name/tag pair on senders whose target
-/// is a pairing (a `depends_on.pairings` slot). Distinct from `interface` so
-/// pairing traffic can never match an interface subscription.
+/// is a pairing (a `depends_on.pairings` slot). Distinct from `contract` so
+/// pairing traffic can never match a contract subscription.
 pub(crate) const PAIRING_DISCRIMINATOR: &str = "pairing";
 
 /// Hyphen-to-underscore normalization applied at construction time to any tag
@@ -182,29 +182,29 @@ fn validated_name_tag(name: &str, tag: &str) -> Result<(Segment, Segment), Sende
     Ok((name_segment, tag_segment))
 }
 
-/// Identifier of an interface declared via `conforms_to`. Carries the
-/// interface's name and tag. Used as one variant of [`SenderTarget`].
+/// Identifier of a contract declared via `manifest.implements`. Carries the
+/// contract's name and tag. Used as one variant of [`SenderTarget`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct InterfaceIdentifier {
-    interface_name: Segment,
-    interface_tag: Segment,
+pub struct ContractIdentifier {
+    contract_name: Segment,
+    contract_tag: Segment,
 }
 
-impl InterfaceIdentifier {
+impl ContractIdentifier {
     pub fn new(name: &str, tag: &str) -> Result<Self, SenderTargetError> {
-        let (interface_name, interface_tag) = validated_name_tag(name, tag)?;
+        let (contract_name, contract_tag) = validated_name_tag(name, tag)?;
         Ok(Self {
-            interface_name,
-            interface_tag,
+            contract_name,
+            contract_tag,
         })
     }
 
     pub fn name(&self) -> &str {
-        self.interface_name.as_str()
+        self.contract_name.as_str()
     }
 
     pub fn tag(&self) -> &str {
-        self.interface_tag.as_str()
+        self.contract_tag.as_str()
     }
 }
 
@@ -234,8 +234,8 @@ impl PairingIdentifier {
     }
 }
 
-/// Identifier of a node (no `conforms_to`). Carries the node's name and tag
-/// (from `manifest.tag`). Used as one variant of [`SenderTarget`].
+/// Identifier of a node (a native declaration). Carries the node's name and
+/// tag (from `manifest.tag`). Used as one variant of [`SenderTarget`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NodeIdentifier {
     node_name: Segment,
@@ -271,21 +271,21 @@ impl NodeIdentifier {
 }
 
 /// Addressing target carried by a sender (or matched by a receiver). Each
-/// emission is **either** an interface, a node, **or** a pairing — never more
-/// than one. The wire format embeds an `interface`|`node`|`pairing`
+/// emission is **either** a contract, a node, **or** a pairing — never more
+/// than one. The wire format embeds a `contract`|`node`|`pairing`
 /// discriminator so the three identifier spaces cannot collide.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SenderTarget {
-    Interface(InterfaceIdentifier),
+    Contract(ContractIdentifier),
     Node(NodeIdentifier),
     Pairing(PairingIdentifier),
 }
 
 impl SenderTarget {
-    /// Shortcut: `SenderTarget::interface("manipulator", "v1")` instead of
-    /// `SenderTarget::Interface(InterfaceIdentifier::new("manipulator", "v1")?)`.
-    pub fn interface(name: &str, tag: &str) -> Result<Self, SenderTargetError> {
-        InterfaceIdentifier::new(name, tag).map(Self::Interface)
+    /// Shortcut: `SenderTarget::contract("manipulator", "v1")` instead of
+    /// `SenderTarget::Contract(ContractIdentifier::new("manipulator", "v1")?)`.
+    pub fn contract(name: &str, tag: &str) -> Result<Self, SenderTargetError> {
+        ContractIdentifier::new(name, tag).map(Self::Contract)
     }
 
     /// Shortcut: `SenderTarget::node("uvc_camera", "v1")` instead of
@@ -309,7 +309,7 @@ impl SenderTarget {
 
     pub(crate) fn discriminator(&self) -> &'static str {
         match self {
-            Self::Interface(_) => INTERFACE_DISCRIMINATOR,
+            Self::Contract(_) => CONTRACT_DISCRIMINATOR,
             Self::Node(_) => NODE_DISCRIMINATOR,
             Self::Pairing(_) => PAIRING_DISCRIMINATOR,
         }
@@ -317,7 +317,7 @@ impl SenderTarget {
 
     pub fn name(&self) -> &str {
         match self {
-            Self::Interface(i) => i.name(),
+            Self::Contract(c) => c.name(),
             Self::Node(n) => n.name(),
             Self::Pairing(p) => p.name(),
         }
@@ -325,14 +325,14 @@ impl SenderTarget {
 
     pub fn tag(&self) -> &str {
         match self {
-            Self::Interface(i) => i.tag(),
+            Self::Contract(c) => c.tag(),
             Self::Node(n) => n.tag(),
             Self::Pairing(p) => p.tag(),
         }
     }
 
-    pub fn is_interface(&self) -> bool {
-        matches!(self, Self::Interface(_))
+    pub fn is_contract(&self) -> bool {
+        matches!(self, Self::Contract(_))
     }
 
     pub fn is_node(&self) -> bool {
@@ -344,8 +344,8 @@ impl SenderTarget {
     }
 }
 
-/// Returned by [`InterfaceIdentifier::new`] / [`NodeIdentifier::new`] /
-/// [`SenderTarget::interface`] / [`SenderTarget::node`] when a name or tag
+/// Returned by [`ContractIdentifier::new`] / [`NodeIdentifier::new`] /
+/// [`SenderTarget::contract`] / [`SenderTarget::node`] when a name or tag
 /// segment fails validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SenderTargetError {

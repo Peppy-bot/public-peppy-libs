@@ -43,7 +43,8 @@ pub use common::{
 
 // -- error --
 pub use error::{
-    Error as ConfigError, MissingInterface, ParsingError, deserialize_json5_with_structured_errors,
+    ConsumedInterfaceOnlyContractBacked, ContractCoverageMismatch, Error as ConfigError,
+    MissingInterface, ParsingError, deserialize_json5_with_structured_errors,
 };
 
 // -- consts --
@@ -72,14 +73,16 @@ pub mod fingerprint {
 pub mod node {
     pub use crate::internal::node::{
         ActionInterfaces, ActionServiceEndpoint, ActionTopicEndpoint, ArrayKind, ArraySchema,
-        ConformsToItem, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
-        ContractConformanceEdge, DependencySpec, DependsOn, EmittedTopic, Execution, ExposedAction,
-        ExposedService, InterfaceKind, Interfaces, Manifest, MessageFormat, MessageSizeEstimate,
-        NodeConfig, NodeConfigParser, NodeDependency, ObjectKind, ObjectSchema, PairingDependency,
-        PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces, Toolchain,
-        TopicInterfaces, TypeToken, collect_contract_conformance_edges, collect_dependency_specs,
-        estimate_serialized_size, is_blocked_mount_source, load_standalone_node_config,
-        node_conforms_to, validate_dependency_specs,
+        ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig, ContractBackedEntry,
+        ContractImplementationEdge, DependencySpec, DependsOn, EmittedTopic, Execution,
+        ExposedAction, ExposedService, ImplementsEntry, InterfaceKind, Interfaces, Manifest,
+        MessageFormat, MessageSizeEstimate, NativeEmittedTopic, NativeExposedAction,
+        NativeExposedService, NodeConfig, NodeConfigParser, NodeDependency, ObjectKind,
+        ObjectSchema, PairingDependency, PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType,
+        ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken,
+        collect_contract_implementation_edges, collect_dependency_specs, estimate_serialized_size,
+        is_blocked_mount_source, load_standalone_node_config, node_implements,
+        validate_dependency_specs,
     };
 }
 

@@ -184,7 +184,7 @@ async fn live_pair_starts_delivery_without_resubscribe() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn foreign_identity_on_same_keyexpr_shape_is_never_delivered() {
-    // Lock-in proof: a third conforming-shape node publishing on the same
+    // Lock-in proof: a third contract-shape node publishing on the same
     // pairing (name, tag, slot link_id, topic) with a different instance
     // identity must not reach a consumer paired to someone else.
     let (client, shared) = get_client_server().await;

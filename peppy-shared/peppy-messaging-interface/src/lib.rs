@@ -43,7 +43,7 @@ pub use types::{
 /// `platform-backend`'s AsyncAPI generator; pinned to the real wire builders.
 pub use wire::templates;
 pub use wire::{
-    ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, InterfaceIdentifier, NodeIdentifier,
+    ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, ContractIdentifier, NodeIdentifier,
     PairingIdentifier, Segment, SegmentError, SenderTarget, SenderTargetError, ServiceKind,
     ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver, ServiceWireSender, TopicWireReceiver,
     TopicWireSender,

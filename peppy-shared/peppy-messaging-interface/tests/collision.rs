@@ -1,7 +1,7 @@
 //! End-to-end collision safety tests for the wire refactor. Validates that a
 //! publisher emitting as `SenderTarget::Node(name, tag)` is never matched by a
-//! subscriber pinned on `SenderTarget::Interface(name, tag)` (or vice-versa),
-//! even when both share the same name and tag. The `interface` / `node`
+//! subscriber pinned on `SenderTarget::Contract(name, tag)` (or vice-versa),
+//! even when both share the same name and tag. The `contract` / `node`
 //! discriminator embedded in the wire format is the protocol-level guarantee
 //! that makes the two identifier namespaces disjoint.
 //!
@@ -57,11 +57,11 @@ async fn expect_no_payload(sub: &mut Subscription, label: &str) {
     }
 }
 
-/// Two publishers (one Node, one Interface) emit on the same topic with the
+/// Two publishers (one Node, one Contract) emit on the same topic with the
 /// same name+tag. Two subscribers pin on each form. Each subscriber must
 /// receive ONLY its matching publisher's payload.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn topic_node_vs_interface_no_collision() {
+async fn topic_node_vs_contract_no_collision() {
     let _lock = ZENOH_SERIAL.lock().await;
     let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -76,10 +76,10 @@ async fn topic_node_vs_interface_no_collision() {
         "frames",
     )
     .unwrap();
-    let iface_sender = TopicWireSender::new(
+    let contract_sender = TopicWireSender::new(
         "core_pub",
-        "pub_inst_iface",
-        SenderTarget::interface("widget", "v1").expect("valid interface target"),
+        "pub_inst_contract",
+        SenderTarget::contract("widget", "v1").expect("valid contract target"),
         None,
         "frames",
     )
@@ -95,12 +95,12 @@ async fn topic_node_vs_interface_no_collision() {
         "frames",
     )
     .unwrap();
-    let iface_receiver = TopicWireReceiver::new(
+    let contract_receiver = TopicWireReceiver::new(
         "core_sub",
-        "sub_inst_iface",
+        "sub_inst_contract",
         Some("core_pub"),
         None,
-        Some(SenderTarget::interface("widget", "v1").expect("valid interface target")),
+        Some(SenderTarget::contract("widget", "v1").expect("valid contract target")),
         None,
         "frames",
     )
@@ -111,15 +111,15 @@ async fn topic_node_vs_interface_no_collision() {
         .subscribe_topic(&node_receiver, SubscriberQoS::Standard)
         .await
         .unwrap();
-    let mut iface_sub = instance
+    let mut contract_sub = instance
         .messenger()
-        .subscribe_topic(&iface_receiver, SubscriberQoS::Standard)
+        .subscribe_topic(&contract_receiver, SubscriberQoS::Standard)
         .await
         .unwrap();
     wait_for_subscriber_discovery().await;
 
     let node_payload = Bytes::from_static(b"from_node_emission");
-    let iface_payload = Bytes::from_static(b"from_iface_emission");
+    let contract_payload = Bytes::from_static(b"from_contract_emission");
 
     instance
         .messenger()
@@ -134,8 +134,8 @@ async fn topic_node_vs_interface_no_collision() {
     instance
         .messenger()
         .publish_topic(
-            &iface_sender,
-            Payload::from_bytes(iface_payload.clone()),
+            &contract_sender,
+            Payload::from_bytes(contract_payload.clone()),
             PublisherQoS::Standard,
             true,
         )
@@ -144,22 +144,22 @@ async fn topic_node_vs_interface_no_collision() {
 
     expect_payload(&mut node_sub, &node_payload, "node-pinned subscriber").await;
     expect_payload(
-        &mut iface_sub,
-        &iface_payload,
-        "interface-pinned subscriber",
+        &mut contract_sub,
+        &contract_payload,
+        "contract-pinned subscriber",
     )
     .await;
 
     // Drain any stragglers: each subscriber should now have nothing more.
     expect_no_payload(&mut node_sub, "node-pinned subscriber (post-drain)").await;
-    expect_no_payload(&mut iface_sub, "interface-pinned subscriber (post-drain)").await;
+    expect_no_payload(&mut contract_sub, "contract-pinned subscriber (post-drain)").await;
 }
 
 /// An untargeted subscriber (`from_target: None`) matches BOTH a node-shaped
-/// and an interface-shaped publisher with the same name+tag. This locks in
+/// and an contract-shaped publisher with the same name+tag. This locks in
 /// the wildcard semantic for the discriminator segment.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
+async fn topic_untargeted_subscriber_matches_both_node_and_contract() {
     let _lock = ZENOH_SERIAL.lock().await;
     let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -174,10 +174,10 @@ async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
         "frames",
     )
     .unwrap();
-    let iface_sender = TopicWireSender::new(
+    let contract_sender = TopicWireSender::new(
         "core_pub",
-        "pub_inst_iface",
-        SenderTarget::interface("widget", "v1").unwrap(),
+        "pub_inst_contract",
+        SenderTarget::contract("widget", "v1").unwrap(),
         None,
         "frames",
     )
@@ -202,7 +202,7 @@ async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
     wait_for_subscriber_discovery().await;
 
     let node_payload = Bytes::from_static(b"untargeted_sees_node");
-    let iface_payload = Bytes::from_static(b"untargeted_sees_iface");
+    let contract_payload = Bytes::from_static(b"untargeted_sees_contract");
 
     instance
         .messenger()
@@ -217,8 +217,8 @@ async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
     instance
         .messenger()
         .publish_topic(
-            &iface_sender,
-            Payload::from_bytes(iface_payload.clone()),
+            &contract_sender,
+            Payload::from_bytes(contract_payload.clone()),
             PublisherQoS::Standard,
             true,
         )
@@ -239,16 +239,16 @@ async fn topic_untargeted_subscriber_matches_both_node_and_interface() {
         "untargeted subscriber missed the node publisher's payload"
     );
     assert!(
-        seen.iter().any(|p| p == &iface_payload),
-        "untargeted subscriber missed the interface publisher's payload"
+        seen.iter().any(|p| p == &contract_payload),
+        "untargeted subscriber missed the contract publisher's payload"
     );
 }
 
 /// Two service servers bind to the same name+tag — one as Node, one as
-/// Interface. A caller targeting Node must reach only the node server, and a
-/// caller targeting Interface must reach only the interface server.
+/// Contract. A caller targeting Node must reach only the node server, and a
+/// caller targeting Contract must reach only the contract server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn service_node_vs_interface_no_collision() {
+async fn service_node_vs_contract_no_collision() {
     let _lock = ZENOH_SERIAL.lock().await;
     let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -263,10 +263,10 @@ async fn service_node_vs_interface_no_collision() {
         ServiceKind::Service,
     )
     .unwrap();
-    let iface_server_receiver = ServiceWireReceiver::new(
+    let contract_server_receiver = ServiceWireReceiver::new(
         "server_core",
-        "server_inst_iface",
-        SenderTarget::interface("widget", "v1").unwrap(),
+        "server_inst_contract",
+        SenderTarget::contract("widget", "v1").unwrap(),
         "ping",
         ServiceKind::Service,
     )
@@ -277,14 +277,14 @@ async fn service_node_vs_interface_no_collision() {
         .listen_service(&node_server_receiver)
         .await
         .unwrap();
-    let mut iface_server_queryable = instance
+    let mut contract_server_queryable = instance
         .messenger()
-        .listen_service(&iface_server_receiver)
+        .listen_service(&contract_server_receiver)
         .await
         .unwrap();
     wait_for_subscriber_discovery().await;
 
-    // Full-wildcard targets: the SenderTarget kind (node vs interface) must
+    // Full-wildcard targets: the SenderTarget kind (node vs contract) must
     // be the only thing routing each call to its matching server, which is
     // exactly the collision this test guards against.
     let node_caller_sender = ServiceWireSender::new(
@@ -296,11 +296,11 @@ async fn service_node_vs_interface_no_collision() {
         ServiceKind::Service,
     )
     .unwrap();
-    let iface_caller_sender = ServiceWireSender::new(
+    let contract_caller_sender = ServiceWireSender::new(
         "caller_core",
         "caller_inst",
         None,
-        SenderTarget::interface("widget", "v1").unwrap(),
+        SenderTarget::contract("widget", "v1").unwrap(),
         "ping",
         ServiceKind::Service,
     )
@@ -310,7 +310,7 @@ async fn service_node_vs_interface_no_collision() {
     // test so dropping the reply stream doesn't cancel the query before the
     // server side has a chance to observe it.
     let node_request_payload = Bytes::from_static(b"to_node_server");
-    let iface_request_payload = Bytes::from_static(b"to_iface_server");
+    let contract_request_payload = Bytes::from_static(b"to_contract_server");
     let _node_replies = instance
         .messenger()
         .call_service(
@@ -321,11 +321,11 @@ async fn service_node_vs_interface_no_collision() {
         )
         .await
         .unwrap();
-    let _iface_replies = instance
+    let _contract_replies = instance
         .messenger()
         .call_service(
-            &iface_caller_sender,
-            Payload::from_bytes(iface_request_payload.clone()),
+            &contract_caller_sender,
+            Payload::from_bytes(contract_request_payload.clone()),
             ServiceQueryKind::UserRequest,
             Some(RECV_TIMEOUT),
         )
@@ -343,16 +343,16 @@ async fn service_node_vs_interface_no_collision() {
     );
     assert_no_further_query(&mut node_server_queryable, "node server").await;
 
-    // The interface server must receive ONLY the interface-shaped query.
-    let iface_request = recv_first_query(&mut iface_server_queryable)
+    // The contract server must receive ONLY the contract-shaped query.
+    let contract_request = recv_first_query(&mut contract_server_queryable)
         .await
-        .expect("interface server should receive its caller's query");
+        .expect("contract server should receive its caller's query");
     assert_eq!(
-        iface_request.payload.to_bytes(),
-        iface_request_payload,
-        "interface server received the wrong payload (collision)"
+        contract_request.payload.to_bytes(),
+        contract_request_payload,
+        "contract server received the wrong payload (collision)"
     );
-    assert_no_further_query(&mut iface_server_queryable, "interface server").await;
+    assert_no_further_query(&mut contract_server_queryable, "contract server").await;
 }
 
 /// Waits for the first inbound request on the service queryable's fan-in

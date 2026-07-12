@@ -11,7 +11,7 @@ use pyo3::types::PyBytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::iface::{PyProducerRef, PySenderTarget};
+use super::target::{PyProducerRef, PySenderTarget};
 use super::services::PyServiceEndpoint;
 use super::{
     PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, future_into_py_unit, to_py_err,
@@ -291,7 +291,7 @@ impl PyActionMessenger {
     /// Expose an action server, returning the goal, cancel, result services and feedback publisher.
     ///
     /// Pass `SenderTarget.node(name, tag)` for nodes or
-    /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
+    /// `SenderTarget.contract(name, tag)` for contract-implemented actions.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, as_action_name))]
     fn expose<'py>(
@@ -330,7 +330,7 @@ impl PyActionMessenger {
     /// handle via `goal_id`.
     ///
     /// Pass `SenderTarget.node(name, tag)` for nodes or
-    /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
+    /// `SenderTarget.contract(name, tag)` for contract-implemented actions.
     /// `target` is the producer's full `(core_node, instance_id)` pair —
     /// `Some` pins it (no discovery), `None` is a genuine wildcard
     /// (discover-then-pin). Generated code splices
@@ -510,7 +510,7 @@ impl PyConcurrentAction {
     ///
     /// `has_feedback` must reflect whether the action declares a feedback
     /// topic. Pass `SenderTarget.node(name, tag)` for nodes or
-    /// `SenderTarget.interface(name, tag)` for `conforms_to` actions.
+    /// `SenderTarget.contract(name, tag)` for contract-implemented actions.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_identity, as_action_name, has_feedback))]
     fn expose<'py>(

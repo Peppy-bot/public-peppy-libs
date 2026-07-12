@@ -129,6 +129,7 @@ mod tests {
             .into_iter()
             .next()
             .unwrap();
+        let svc = svc.as_native().expect("no link_id means native").clone();
         (
             svc.request_message_format.unwrap(),
             svc.response_message_format.unwrap(),

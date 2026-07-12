@@ -88,8 +88,8 @@ struct InterfaceLatency {
     # rows that share the same producer + interface but are wired via distinct links.
     linkId @14 :Text;
     # "name:tag" of the contract this edge was resolved through when the
-    # dependency is a contract-conformance edge (consumer `depends_on.interfaces`,
-    # producer `conforms_to`); empty for a direct `depends_on.nodes` edge.
+    # dependency is a contract-implementation edge (consumer `depends_on.contracts`,
+    # producer `manifest.implements`); empty for a direct `depends_on.nodes` edge.
     viaContract @15 :Text;
 }
 

@@ -11,8 +11,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{MissingInterface, ParsingError};
-use crate::node::{InterfaceKind, Interfaces, Manifest, NodeConfig};
+use crate::error::{ConsumedInterfaceOnlyContractBacked, MissingInterface, ParsingError};
+use crate::node::{ImplementsEntry, InterfaceKind, Interfaces, Manifest, NodeConfig};
 
 /// Minimal `(name, tag)` view of a single `depends_on.nodes` entry,
 /// stripped of the link_id noise that callers don't need
@@ -40,28 +40,26 @@ pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
         .collect()
 }
 
-/// Does this node declare conformance to contract `(name, tag)`? Contract
-/// providers are matched solely by `conforms_to`, never by node-name identity,
-/// consistent with the binding validator's `slot_matches_producer`. This is the
-/// one source of truth for "node X provides contract Y", shared by the node
-/// stack, the benchmark, and the service/action cycle check.
-pub fn node_conforms_to(node: &NodeConfig, name: &str, tag: &str) -> bool {
-    node.interfaces
-        .conforms_to
-        .as_deref()
-        .unwrap_or(&[])
+/// Does this node claim to implement contract `(name, tag)`? Contract
+/// providers are matched solely by `manifest.implements`, never by node-name
+/// identity, consistent with the binding validator's `slot_matches_producer`.
+/// This is the one source of truth for "node X provides contract Y", shared by
+/// the node stack, the benchmark, and the service/action cycle check.
+pub fn node_implements(node: &NodeConfig, name: &str, tag: &str) -> bool {
+    node.manifest
+        .implements
         .iter()
         .any(|item| item.name.as_str() == name && item.tag == tag)
 }
 
-/// One resolved contract-conformance dependency edge: `consumer` declares
-/// `depends_on.contracts` for `contract`, and `provider` declares
-/// `conforms_to` that contract. Distinct from a direct node dependency
+/// One resolved contract-implementation dependency edge: `consumer` declares
+/// `depends_on.contracts` for `contract`, and `provider` declares that
+/// contract in `manifest.implements`. Distinct from a direct node dependency
 /// (captured by [`collect_dependency_specs`]) — contract deps are deliberately
 /// kept out of the node-dependency DAG, so this is the only place they surface
 /// for display/measurement purposes.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContractConformanceEdge {
+pub struct ContractImplementationEdge {
     pub consumer_name: String,
     pub consumer_tag: String,
     pub provider_name: String,
@@ -70,12 +68,14 @@ pub struct ContractConformanceEdge {
     pub contract_tag: String,
 }
 
-/// Resolve every contract-conformance edge among `configs`: for each consumer's
-/// `depends_on.contracts` entry, emit one edge per config that
-/// [`node_conforms_to`] that contract. A contract dep with no provider in the
+/// Resolve every contract-implementation edge among `configs`: for each
+/// consumer's `depends_on.contracts` entry, emit one edge per config that
+/// [`node_implements`] that contract. A contract dep with no provider in the
 /// set yields no edge (mirroring how a node dep absent from the graph produces
-/// no edge); a contract with several conformers fans out to all of them.
-pub fn collect_contract_conformance_edges(configs: &[&NodeConfig]) -> Vec<ContractConformanceEdge> {
+/// no edge); a contract with several implementers fans out to all of them.
+pub fn collect_contract_implementation_edges(
+    configs: &[&NodeConfig],
+) -> Vec<ContractImplementationEdge> {
     let mut edges = Vec::new();
     for consumer in configs {
         let Some(depends_on) = consumer.manifest.depends_on.as_ref() else {
@@ -85,8 +85,8 @@ pub fn collect_contract_conformance_edges(configs: &[&NodeConfig]) -> Vec<Contra
             let contract_name = dep.name.as_str();
             let contract_tag = dep.tag.as_str();
             for provider in configs {
-                if node_conforms_to(provider, contract_name, contract_tag) {
-                    edges.push(ContractConformanceEdge {
+                if node_implements(provider, contract_name, contract_tag) {
+                    edges.push(ContractImplementationEdge {
                         consumer_name: consumer.manifest.name.as_str().to_owned(),
                         consumer_tag: consumer.manifest.tag.clone(),
                         provider_name: provider.manifest.name.as_str().to_owned(),
@@ -168,6 +168,16 @@ pub fn validate_dependency_specs(
         .map(|d| d.pairings.iter().map(|p| p.link_id.as_str()).collect())
         .unwrap_or_default();
 
+    // Implements slots are produced, not consumed — a consumed item naming
+    // one gets a dedicated error too. Parse-time validation already rejects
+    // this for configs that went through `NodeConfigParser`, but this
+    // validator also runs on programmatically assembled configs.
+    let implements_link_ids: HashSet<&str> = manifest
+        .implements
+        .iter()
+        .map(|e| e.link_id.as_str())
+        .collect();
+
     // Phase 2: Validate consumed interfaces reference valid link_ids
     // and that the dependency exposes the required interface
     if let Some(topics) = &interfaces.topics
@@ -182,6 +192,7 @@ pub fn validate_dependency_specs(
             &resolved_deps,
             &declared_link_ids,
             &pairing_link_ids,
+            &implements_link_ids,
             dependant_name,
             dependant_tag,
             &mut errors,
@@ -200,6 +211,7 @@ pub fn validate_dependency_specs(
             &resolved_deps,
             &declared_link_ids,
             &pairing_link_ids,
+            &implements_link_ids,
             dependant_name,
             dependant_tag,
             &mut errors,
@@ -218,6 +230,7 @@ pub fn validate_dependency_specs(
             &resolved_deps,
             &declared_link_ids,
             &pairing_link_ids,
+            &implements_link_ids,
             dependant_name,
             dependant_tag,
             &mut errors,
@@ -259,6 +272,7 @@ fn validate_consumed_items<'a>(
     resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
     declared_link_ids: &HashSet<&str>,
     pairing_link_ids: &HashSet<&str>,
+    implements_link_ids: &HashSet<&str>,
     dependant_name: &str,
     dependant_tag: &str,
     errors: &mut Vec<ParsingError>,
@@ -268,6 +282,12 @@ fn validate_consumed_items<'a>(
             errors.push(ParsingError::ConsumedItemReferencesPairingLinkId {
                 dependant: dependant_name.to_owned(),
                 dependant_tag: dependant_tag.to_owned(),
+                link_id: link_id.to_owned(),
+            });
+            continue;
+        }
+        if implements_link_ids.contains(link_id) {
+            errors.push(ParsingError::ConsumedItemReferencesImplementsLinkId {
                 link_id: link_id.to_owned(),
             });
             continue;
@@ -295,7 +315,10 @@ fn validate_consumed_items<'a>(
 }
 
 /// Validates that a consumed interface's `link_id` resolves to a dependency
-/// that exposes the required interface.
+/// that natively exposes the required interface. Node dependencies expose
+/// native interfaces only: a name the producer provides solely as part of an
+/// implemented contract gets a dedicated error pointing at
+/// `depends_on.contracts` instead of a generic "not exposed".
 fn validate_consumed_interface(
     link_id: &str,
     interface_name: &str,
@@ -314,51 +337,118 @@ fn validate_consumed_interface(
     };
 
     let requirement = InterfaceRequirement::new(kind, interface_name);
-    if !exposes_interface(dep_config, &requirement) {
-        errors.push(ParsingError::MissingInterface(Box::new(MissingInterface {
-            dependant: dependant_name.to_owned(),
-            dependant_tag: dependant_tag.to_owned(),
-            dependency: dep_name.clone(),
-            dependency_tag: dep_tag.clone(),
-            interface_kind: kind.label().to_owned(),
-            interface_name: interface_name.to_owned(),
-        })));
+    match find_exposure(dep_config, &requirement) {
+        Exposure::Native => {}
+        Exposure::ContractBackedOnly(entry) => {
+            errors.push(ParsingError::ConsumedInterfaceOnlyContractBacked(Box::new(
+                ConsumedInterfaceOnlyContractBacked {
+                    dependant: dependant_name.to_owned(),
+                    dependant_tag: dependant_tag.to_owned(),
+                    dependency: dep_name.clone(),
+                    dependency_tag: dep_tag.clone(),
+                    interface_kind: kind.label().to_owned(),
+                    interface_name: interface_name.to_owned(),
+                    link_id: link_id.to_owned(),
+                    contract_name: entry.name.as_str().to_owned(),
+                    contract_tag: entry.tag.clone(),
+                },
+            )));
+        }
+        Exposure::None => {
+            errors.push(ParsingError::MissingInterface(Box::new(MissingInterface {
+                dependant: dependant_name.to_owned(),
+                dependant_tag: dependant_tag.to_owned(),
+                dependency: dep_name.clone(),
+                dependency_tag: dep_tag.clone(),
+                interface_kind: kind.label().to_owned(),
+                interface_name: interface_name.to_owned(),
+            })));
+        }
     }
 }
 
-fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) -> bool {
-    match requirement.kind() {
-        InterfaceKind::Topic => node
-            .interfaces
-            .topics
-            .as_ref()
-            .and_then(|t| t.emits.as_ref())
-            .is_some_and(|topics| {
-                topics
-                    .iter()
-                    .any(|topic| topic.name.trim() == requirement.name())
-            }),
-        InterfaceKind::Service => node
-            .interfaces
-            .services
-            .as_ref()
-            .and_then(|s| s.exposes.as_ref())
-            .is_some_and(|services| {
-                services
-                    .iter()
-                    .any(|service| service.name.trim() == requirement.name())
-            }),
-        InterfaceKind::Action => node
-            .interfaces
-            .actions
-            .as_ref()
-            .and_then(|a| a.exposes.as_ref())
-            .is_some_and(|actions| {
-                actions
-                    .iter()
-                    .any(|action| action.name.trim() == requirement.name())
-            }),
+/// How (and whether) a producer provides a required interface to node-dep
+/// consumers. `ContractBackedOnly` carries the implements slot the matching
+/// contract-backed entry references, for the dedicated error's payload.
+enum Exposure<'a> {
+    Native,
+    ContractBackedOnly(&'a ImplementsEntry),
+    None,
+}
+
+fn find_exposure<'a>(node: &'a NodeConfig, requirement: &InterfaceRequirement) -> Exposure<'a> {
+    let (native_match, contract_link_id) = match requirement.kind() {
+        InterfaceKind::Topic => {
+            let entries = node
+                .interfaces
+                .topics
+                .as_ref()
+                .and_then(|t| t.emits.as_deref())
+                .unwrap_or_default();
+            scan_entries(
+                entries.iter().map(|e| (e.link_id(), e.name())),
+                requirement.name(),
+            )
+        }
+        InterfaceKind::Service => {
+            let entries = node
+                .interfaces
+                .services
+                .as_ref()
+                .and_then(|s| s.exposes.as_deref())
+                .unwrap_or_default();
+            scan_entries(
+                entries.iter().map(|e| (e.link_id(), e.name())),
+                requirement.name(),
+            )
+        }
+        InterfaceKind::Action => {
+            let entries = node
+                .interfaces
+                .actions
+                .as_ref()
+                .and_then(|a| a.exposes.as_deref())
+                .unwrap_or_default();
+            scan_entries(
+                entries.iter().map(|e| (e.link_id(), e.name())),
+                requirement.name(),
+            )
+        }
+    };
+
+    if native_match {
+        return Exposure::Native;
     }
+    if let Some(link_id) = contract_link_id
+        && let Some(entry) = node
+            .manifest
+            .implements
+            .iter()
+            .find(|e| e.link_id == link_id)
+    {
+        return Exposure::ContractBackedOnly(entry);
+    }
+    Exposure::None
+}
+
+/// Scans produced entries of one kind for `name`: returns whether a native
+/// entry matches, and the link_id of a matching contract-backed entry (if
+/// any) for the dedicated-error payload.
+fn scan_entries<'a>(
+    entries: impl Iterator<Item = (Option<&'a str>, &'a str)>,
+    name: &str,
+) -> (bool, Option<&'a str>) {
+    let mut contract_link_id = None;
+    for (link_id, entry_name) in entries {
+        if entry_name.trim() != name {
+            continue;
+        }
+        match link_id {
+            None => return (true, None),
+            Some(id) => contract_link_id = Some(id),
+        }
+    }
+    (false, contract_link_id)
 }
 
 #[cfg(test)]
@@ -370,14 +460,20 @@ mod tests {
         NodeConfigParser::from_content(content).expect("parse node config")
     }
 
-    /// A node that conforms to the `uvc_camera:v1` contract (the provider).
+    /// A node that implements the `uvc_camera:v1` contract (the provider).
     fn camera_mock() -> NodeConfig {
         parse(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "uvc_camera_python_mock", tag: "v1" },
+                manifest: {
+                    name: "uvc_camera_python_mock", tag: "v1",
+                    implements: [ { name: "uvc_camera", tag: "v1", link_id: "cam" } ]
+                },
                 execution: { language: "rust", run_cmd: ["camera"] },
-                interfaces: { conforms_to: [ { name: "uvc_camera", tag: "v1" } ] }
+                interfaces: {
+                    topics: { emits: [ { link_id: "cam", name: "video_stream" } ] },
+                    services: { exposes: [ { link_id: "cam", name: "video_stream_info" } ] }
+                }
             }"#,
         )
     }
@@ -453,23 +549,23 @@ mod tests {
     }
 
     #[test]
-    fn node_conforms_to_matches_declared_contract_only() {
+    fn node_implements_matches_declared_contract_only() {
         let cam = camera_mock();
-        assert!(node_conforms_to(&cam, "uvc_camera", "v1"));
-        assert!(!node_conforms_to(&cam, "uvc_camera", "v2"));
-        assert!(!node_conforms_to(&cam, "other_iface", "v1"));
-        // A node that declares no `conforms_to` matches nothing.
-        assert!(!node_conforms_to(&unrelated(), "uvc_camera", "v1"));
+        assert!(node_implements(&cam, "uvc_camera", "v1"));
+        assert!(!node_implements(&cam, "uvc_camera", "v2"));
+        assert!(!node_implements(&cam, "other_contract", "v1"));
+        // A node that declares no `implements` matches nothing.
+        assert!(!node_implements(&unrelated(), "uvc_camera", "v1"));
     }
 
     #[test]
-    fn conformance_edges_resolve_consumer_to_conforming_provider() {
+    fn implementation_edges_resolve_consumer_to_implementing_provider() {
         let brain = brain();
         let cam = camera_mock();
         let other = unrelated();
         let configs = [&brain, &cam, &other];
 
-        let edges = collect_contract_conformance_edges(&configs);
+        let edges = collect_contract_implementation_edges(&configs);
 
         // One edge despite the consumer using the contract as two artifacts:
         // the edge is per (consumer, contract dep, provider), not per artifact.
@@ -484,32 +580,37 @@ mod tests {
     }
 
     #[test]
-    fn conformance_edges_empty_when_no_provider_present() {
+    fn implementation_edges_empty_when_no_provider_present() {
         let brain = brain();
         let other = unrelated();
         let configs = [&brain, &other];
-        assert!(collect_contract_conformance_edges(&configs).is_empty());
+        assert!(collect_contract_implementation_edges(&configs).is_empty());
     }
 
     #[test]
-    fn conformance_edges_fan_out_to_every_conforming_provider() {
+    fn implementation_edges_fan_out_to_every_implementing_provider() {
         let brain = brain();
         let cam = camera_mock();
-        // A second, differently-named node that also conforms to uvc_camera:v1.
+        // A second, differently-named node that also implements uvc_camera:v1.
         let cam2 = parse(
             r#"{
                 peppy_schema: "node/v1",
-                manifest: { name: "uvc_camera_other_mock", tag: "v1" },
+                manifest: {
+                    name: "uvc_camera_other_mock", tag: "v1",
+                    implements: [ { name: "uvc_camera", tag: "v1", link_id: "cam" } ]
+                },
                 execution: { language: "rust", run_cmd: ["camera2"] },
-                interfaces: { conforms_to: [ { name: "uvc_camera", tag: "v1" } ] }
+                interfaces: {
+                    topics: { emits: [ { link_id: "cam", name: "video_stream" } ] }
+                }
             }"#,
         );
         let configs = [&brain, &cam, &cam2];
-        let edges = collect_contract_conformance_edges(&configs);
+        let edges = collect_contract_implementation_edges(&configs);
         assert_eq!(
             edges.len(),
             2,
-            "should fan out to both conformers: {edges:?}"
+            "should fan out to both implementers: {edges:?}"
         );
         assert!(
             edges
@@ -521,5 +622,125 @@ mod tests {
                 .iter()
                 .any(|e| e.provider_name == "uvc_camera_other_mock")
         );
+    }
+
+    /// A producer with one native topic and one contract-backed topic.
+    fn hybrid_producer() -> NodeConfig {
+        parse(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: {
+                    name: "hybrid", tag: "v1",
+                    implements: [ { name: "uvc_camera", tag: "v1", link_id: "cam" } ]
+                },
+                execution: { language: "rust", run_cmd: ["hybrid"] },
+                interfaces: {
+                    topics: { emits: [
+                        { link_id: "cam", name: "video_stream" },
+                        { name: "debug_stream", message_format: { x: "f64" } }
+                    ] }
+                }
+            }"#,
+        )
+    }
+
+    /// A consumer of `producer_topic` over a `depends_on.nodes` slot.
+    fn node_dep_consumer(topic: &str) -> NodeConfig {
+        parse(&format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{
+                    name: "consumer", tag: "v1",
+                    depends_on: {{
+                        nodes: [ {{ name: "hybrid", tag: "v1", link_id: "producer" }} ]
+                    }}
+                }},
+                execution: {{ language: "rust", run_cmd: ["consumer"] }},
+                interfaces: {{
+                    topics: {{ consumes: [ {{ link_id: "producer", name: "{topic}" }} ] }}
+                }}
+            }}"#
+        ))
+    }
+
+    #[test]
+    fn node_dep_consumer_of_native_interface_passes() {
+        let consumer = node_dep_consumer("debug_stream");
+        let producer = hybrid_producer();
+        let errors = validate_dependency_specs(
+            &consumer.manifest,
+            &consumer.interfaces,
+            "consumer",
+            "v1",
+            |name, _| (name == "hybrid").then(|| producer.clone()),
+        );
+        assert!(errors.is_empty(), "errors: {errors:?}");
+    }
+
+    #[test]
+    fn node_dep_consumer_of_contract_backed_only_interface_gets_dedicated_error() {
+        let consumer = node_dep_consumer("video_stream");
+        let producer = hybrid_producer();
+        let errors = validate_dependency_specs(
+            &consumer.manifest,
+            &consumer.interfaces,
+            "consumer",
+            "v1",
+            |name, _| (name == "hybrid").then(|| producer.clone()),
+        );
+        assert_eq!(errors.len(), 1, "errors: {errors:?}");
+        let ParsingError::ConsumedInterfaceOnlyContractBacked(payload) = &errors[0] else {
+            panic!("expected ConsumedInterfaceOnlyContractBacked, got: {:?}", errors[0]);
+        };
+        assert_eq!(payload.contract_name, "uvc_camera");
+        assert_eq!(payload.contract_tag, "v1");
+        assert_eq!(payload.interface_name, "video_stream");
+    }
+
+    #[test]
+    fn node_dep_consumer_of_missing_interface_still_gets_missing_interface() {
+        let consumer = node_dep_consumer("nonexistent");
+        let producer = hybrid_producer();
+        let errors = validate_dependency_specs(
+            &consumer.manifest,
+            &consumer.interfaces,
+            "consumer",
+            "v1",
+            |name, _| (name == "hybrid").then(|| producer.clone()),
+        );
+        assert_eq!(errors.len(), 1, "errors: {errors:?}");
+        assert!(matches!(&errors[0], ParsingError::MissingInterface(_)));
+    }
+
+    /// Producer providing the same name both natively and contract-backed:
+    /// node-dep consumers resolve the native one by scope (no precedence rule
+    /// involved), so validation passes.
+    #[test]
+    fn node_dep_consumer_resolves_native_when_producer_has_both() {
+        let producer = parse(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: {
+                    name: "hybrid", tag: "v1",
+                    implements: [ { name: "uvc_camera", tag: "v1", link_id: "cam" } ]
+                },
+                execution: { language: "rust", run_cmd: ["hybrid"] },
+                interfaces: {
+                    topics: { emits: [
+                        { link_id: "cam", name: "video_stream" },
+                        { name: "video_stream", message_format: { x: "f64" } }
+                    ] }
+                }
+            }"#,
+        );
+        let consumer = node_dep_consumer("video_stream");
+        let errors = validate_dependency_specs(
+            &consumer.manifest,
+            &consumer.interfaces,
+            "consumer",
+            "v1",
+            |name, _| (name == "hybrid").then(|| producer.clone()),
+        );
+        assert!(errors.is_empty(), "errors: {errors:?}");
     }
 }

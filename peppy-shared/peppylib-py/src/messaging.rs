@@ -1,10 +1,10 @@
 mod actions;
-mod iface;
+mod target;
 mod pairing;
 mod services;
 mod topics;
 
-pub(crate) use iface::{PyProducerRef, PySenderTarget};
+pub(crate) use target::{PyProducerRef, PySenderTarget};
 pub(crate) use pairing::{PyPeerInfo, PyPeerSlot, PyPeerSubscription};
 
 use config::org::resolve_session_namespace;

@@ -84,6 +84,76 @@ pub struct MissingInterface {
     pub interface_name: String,
 }
 
+/// Payload for [`ParsingError::ConsumedInterfaceOnlyContractBacked`]: a
+/// node-dependency consumer asked for an interface its producer provides only
+/// as part of an implemented contract. Node dependencies expose native
+/// interfaces only; contract-backed interfaces are consumable solely through
+/// `depends_on.contracts`.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "`{dependant}`:{dependant_tag} consumes {interface_kind} `{interface_name}` from \
+     `{dependency}`:{dependency_tag} via node link_id `{link_id}`, but the producer provides \
+     it only as part of contract `{contract_name}:{contract_tag}` — consume it through a \
+     `depends_on.contracts` slot for `{contract_name}:{contract_tag}` instead"
+)]
+pub struct ConsumedInterfaceOnlyContractBacked {
+    pub dependant: String,
+    pub dependant_tag: String,
+    pub dependency: String,
+    pub dependency_tag: String,
+    pub interface_kind: String,
+    pub interface_name: String,
+    pub link_id: String,
+    pub contract_name: String,
+    pub contract_tag: String,
+}
+
+/// Payload for [`ParsingError::ContractCoverageMismatch`]: the Tier B
+/// set-diff between one `manifest.implements` slot and the contract-backed
+/// entries referencing it. Aggregates every discrepancy for the slot in one
+/// error instead of failing on the first.
+#[derive(Debug, Clone)]
+pub struct ContractCoverageMismatch {
+    pub contract_name: String,
+    pub contract_tag: String,
+    pub link_id: String,
+    /// Contract members with no manifest entry.
+    pub missing: Vec<String>,
+    /// Manifest entries naming no contract member (of any kind).
+    pub unknown: Vec<String>,
+    /// Contract members referenced by more than one manifest entry.
+    pub duplicated: Vec<String>,
+    /// Manifest entries whose name matches a contract member of a different
+    /// kind (e.g. a contract topic listed under `services.exposes`),
+    /// rendered as `name (declared as X, contract declares Y)`.
+    pub wrong_kind: Vec<String>,
+}
+
+impl std::fmt::Display for ContractCoverageMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "contract `{}:{}` (implements slot `{}`) is not fully implemented: \
+             every contract member needs exactly one contract-backed entry in \
+             `interfaces` referencing link_id `{}`",
+            self.contract_name, self.contract_tag, self.link_id, self.link_id
+        )?;
+        for (label, items) in [
+            ("missing", &self.missing),
+            ("unknown", &self.unknown),
+            ("duplicated", &self.duplicated),
+            ("wrong kind", &self.wrong_kind),
+        ] {
+            if !items.is_empty() {
+                write!(f, "; {label}: [{}]", items.join(", "))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ContractCoverageMismatch {}
+
 #[derive(Debug, Error, Clone)]
 pub enum ParsingError {
     // -- General yaml syntax
@@ -100,7 +170,7 @@ pub enum ParsingError {
     #[error("Empty name")]
     EmptyName,
     #[error(
-        "Duplicate link_id `{0}` in manifest.depends_on (link_ids must be unique across nodes, contracts, and pairings)"
+        "Duplicate link_id `{0}` in manifest (link_ids share one flat namespace across depends_on.nodes, depends_on.contracts, depends_on.pairings, and manifest.implements)"
     )]
     DuplicateLinkId(String),
     #[error(
@@ -164,11 +234,74 @@ pub enum ParsingError {
     /// `clippy::result_large_err` threshold.
     #[error(transparent)]
     MissingInterface(Box<MissingInterface>),
+
+    // -- manifest.implements + produced-interface entries
+    #[error(
+        "Contract-backed entry `{name}` (link_id `{link_id}`) in `{section}` must not carry `{field}` — shape and QoS come from the contract document; a contract-backed entry is exactly `{{link_id, name}}`"
+    )]
+    ContractBackedEntryWithInlineShape {
+        section: String,
+        link_id: String,
+        name: String,
+        field: String,
+    },
+    #[error("Entries in `{section}` require a non-empty `name`")]
+    EmptyInterfaceName { section: String },
+    #[error(
+        "Duplicate contract `{name}:{tag}` in manifest.implements — a node implements each contract at most once; multiplicity is the job of node instances/pairings"
+    )]
+    DuplicateImplementsContract { name: String, tag: String },
+    #[error(
+        "Contracts `{name}:{tag_a}` and `{name}:{tag_b}` in manifest.implements collide after tag sanitization (`-` becomes `_` in generated code and on the wire)"
+    )]
+    ImplementsTagSanitizationCollision {
+        name: String,
+        tag_a: String,
+        tag_b: String,
+    },
+    #[error(
+        "Entry in `{section}` references link_id `{link_id}`, which is declared in `depends_on.{found_in}` — produced-interface entries may only reference `manifest.implements` slots; consumed interfaces belong in the `consumes` lists"
+    )]
+    EmitsLinkIdNotImplements {
+        section: String,
+        link_id: String,
+        found_in: String,
+    },
+    #[error(
+        "Entry in `{section}` references link_id `{link_id}`, which matches no `manifest.implements` slot"
+    )]
+    UndeclaredEmitsLinkId { section: String, link_id: String },
+    #[error(
+        "Consumed interface references implements link_id `{link_id}` — `manifest.implements` slots are produced, not consumed; to consume a contract, declare it under `depends_on.contracts`"
+    )]
+    ConsumedItemReferencesImplementsLinkId { link_id: String },
+    #[error("Duplicate entry `{key}` in `{section}`")]
+    DuplicateInterfaceEntry { section: String, key: String },
+
+    /// Tier B: aggregated per-slot coverage diff, raised where contract
+    /// documents resolve (node add/sync). Boxed for the same size reason as
+    /// [`ParsingError::MissingInterface`].
+    #[error(transparent)]
+    ContractCoverageMismatch(Box<ContractCoverageMismatch>),
+    /// Tier B: a node-dependency consumer asked for a producer interface
+    /// that exists only contract-backed. Boxed for the same size reason as
+    /// [`ParsingError::MissingInterface`].
+    #[error(transparent)]
+    ConsumedInterfaceOnlyContractBacked(Box<ConsumedInterfaceOnlyContractBacked>),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum StructuredError {
     MissingExecutionLanguage,
+    ContractBackedEntryWithInlineShape {
+        section: String,
+        link_id: String,
+        name: String,
+        field: String,
+    },
+    EmptyInterfaceName {
+        section: String,
+    },
 }
 
 impl StructuredError {
@@ -181,6 +314,20 @@ impl From<StructuredError> for ParsingError {
     fn from(s: StructuredError) -> Self {
         match s {
             StructuredError::MissingExecutionLanguage => ParsingError::MissingExecutionLanguage,
+            StructuredError::ContractBackedEntryWithInlineShape {
+                section,
+                link_id,
+                name,
+                field,
+            } => ParsingError::ContractBackedEntryWithInlineShape {
+                section,
+                link_id,
+                name,
+                field,
+            },
+            StructuredError::EmptyInterfaceName { section } => {
+                ParsingError::EmptyInterfaceName { section }
+            }
         }
     }
 }

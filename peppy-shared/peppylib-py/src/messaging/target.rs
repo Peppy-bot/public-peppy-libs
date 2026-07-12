@@ -1,5 +1,5 @@
 use peppylib::messaging::{
-    InterfaceIdentifier, NodeIdentifier, PairingIdentifier, ProducerRef, SenderTarget,
+    ContractIdentifier, NodeIdentifier, PairingIdentifier, ProducerRef, SenderTarget,
     SenderTargetError,
 };
 use pyo3::exceptions::PyValueError;
@@ -10,9 +10,9 @@ fn sender_target_error_to_py(err: SenderTargetError) -> PyErr {
 }
 
 /// Python wrapper for [`SenderTarget`]. Mirrors the Rust API: construct via
-/// the `node(name, tag)` / `interface(name, tag)` static methods. Each
-/// emission addresses either a node or an interface — never both. The wire
-/// format embeds an `interface` / `node` discriminator so the two namespaces
+/// the `node(name, tag)` / `contract(name, tag)` static methods. Each
+/// emission addresses either a node or a contract — never both. The wire
+/// format embeds a `contract` / `node` discriminator so the two namespaces
 /// cannot collide.
 ///
 /// Subscribers that should match any publisher pass `None` for `from_target`
@@ -38,14 +38,14 @@ impl PySenderTarget {
             .map_err(sender_target_error_to_py)
     }
 
-    /// Build an interface-shaped target. Used for topics / services / actions
-    /// pulled in via `interfaces.conforms_to`. Raises `ValueError` if either
+    /// Build a contract-shaped target. Used for topics / services / actions
+    /// backed by a `manifest.implements` slot. Raises `ValueError` if either
     /// segment fails validation.
     #[staticmethod]
-    fn interface(name: &str, tag: &str) -> PyResult<Self> {
-        InterfaceIdentifier::new(name, tag)
+    fn contract(name: &str, tag: &str) -> PyResult<Self> {
+        ContractIdentifier::new(name, tag)
             .map(|inner| Self {
-                inner: SenderTarget::Interface(inner),
+                inner: SenderTarget::Contract(inner),
             })
             .map_err(sender_target_error_to_py)
     }
@@ -68,8 +68,8 @@ impl PySenderTarget {
     }
 
     #[getter]
-    fn is_interface(&self) -> bool {
-        self.inner.is_interface()
+    fn is_contract(&self) -> bool {
+        self.inner.is_contract()
     }
 
     #[getter]
@@ -96,9 +96,9 @@ impl PySenderTarget {
                     self.inner.tag()
                 )
             }
-            SenderTarget::Interface(_) => {
+            SenderTarget::Contract(_) => {
                 format!(
-                    "SenderTarget.interface({:?}, {:?})",
+                    "SenderTarget.contract({:?}, {:?})",
                     self.inner.name(),
                     self.inner.tag()
                 )

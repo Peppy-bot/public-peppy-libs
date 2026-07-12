@@ -3011,7 +3011,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
     let server_a_inst = "server_a_inst";
     let server_b_core = "server_b_core";
     let server_b_inst = "server_b_inst";
-    let action_target = SenderTarget::interface("manipulator", "v1").expect("iface target");
+    let action_target = SenderTarget::contract("manipulator", "v1").expect("contract target");
     let action_name = "abort_safe";
 
     struct ProducerSpec {
@@ -3343,7 +3343,7 @@ async fn service_communication_poll_full_wildcard_discovers() {
 async fn action_send_goal_full_wildcard_discovers() {
     let router = TestRouterContext::start().await;
 
-    let action_target = SenderTarget::interface("manipulator", "v1").expect("iface target");
+    let action_target = SenderTarget::contract("manipulator", "v1").expect("contract target");
     let action_name = "abort_safe";
 
     // Same instance_id on both servers; different core_nodes.

@@ -17,9 +17,9 @@ fn node(name: &str, tag: &str) -> SenderTarget {
     SenderTarget::node(name, tag).expect("test node target should be valid")
 }
 
-/// Test-local shorthand: build an interface-shaped target. Panics on invalid input.
-fn iface(name: &str, tag: &str) -> SenderTarget {
-    SenderTarget::interface(name, tag).expect("test interface target should be valid")
+/// Test-local shorthand: build a contract-shaped target. Panics on invalid input.
+fn contract_target(name: &str, tag: &str) -> SenderTarget {
+    SenderTarget::contract(name, tag).expect("test contract target should be valid")
 }
 
 /// Test-local shorthand: build a pairing-shaped target. Panics on invalid input.
@@ -56,17 +56,17 @@ fn topic_publish_node_target() {
 }
 
 #[test]
-fn topic_publish_with_interface_normalizes_tag() {
+fn topic_publish_with_contract_normalizes_tag() {
     let sender = TopicWireSender {
         as_core_node: seg("core_a"),
         as_instance_id: seg("inst_1"),
-        as_target: iface("manipulator", "v1-beta-2"),
+        as_target: contract_target("manipulator", "v1-beta-2"),
         link_id: Segment::default_link_id(),
         as_topic_name: seg("joint_states"),
     };
     assert_eq!(
         ZenohWireFormat::topic_publish(&sender),
-        "*/core_a/*/inst_1/topic/interface/manipulator/v1_beta_2/_/joint_states"
+        "*/core_a/*/inst_1/topic/contract/manipulator/v1_beta_2/_/joint_states"
     );
 }
 
@@ -75,13 +75,13 @@ fn topic_publish_with_concrete_link_id() {
     let sender = TopicWireSender {
         as_core_node: seg("core_a"),
         as_instance_id: seg("inst_1"),
-        as_target: iface("depth_camera", "v1"),
+        as_target: contract_target("depth_camera", "v1"),
         link_id: seg("wrist_left_camera"),
         as_topic_name: seg("video_stream"),
     };
     assert_eq!(
         ZenohWireFormat::topic_publish(&sender),
-        "*/core_a/*/inst_1/topic/interface/depth_camera/v1/wrist_left_camera/video_stream"
+        "*/core_a/*/inst_1/topic/contract/depth_camera/v1/wrist_left_camera/video_stream"
     );
 }
 
@@ -122,10 +122,10 @@ fn topic_subscribe_pairing_full_triple_pin() {
 }
 
 #[test]
-fn topic_pairing_and_interface_keyexprs_never_match() {
-    // Lock-in guard: identical (name, tag, topic) under pairing vs interface
+fn topic_pairing_and_contract_keyexprs_never_match() {
+    // Lock-in guard: identical (name, tag, topic) under pairing vs contract
     // discriminators produce disjoint keyexprs, so a fully-wildcarded
-    // interface subscription (wildcarded elsewhere, `interface` literal at
+    // contract subscription (wildcarded elsewhere, `contract` literal at
     // the discriminator slot) can never receive pairing traffic.
     let pairing_publish = ZenohWireFormat::topic_publish(&TopicWireSender {
         as_core_node: seg("core_a"),
@@ -139,14 +139,14 @@ fn topic_pairing_and_interface_keyexprs_never_match() {
         as_instance_id: seg("obs_1"),
         from_core_node: None,
         from_instance_id: None,
-        from_target: Some(iface("arm_link", "v1")),
+        from_target: Some(contract_target("arm_link", "v1")),
         from_link_id: None,
         to_topic: seg("joint_states"),
     });
     let publish_discriminator = pairing_publish.split('/').nth(5);
     let subscribe_discriminator = wildcard_subscribe.split('/').nth(5);
     assert_eq!(publish_discriminator, Some("pairing"));
-    assert_eq!(subscribe_discriminator, Some("interface"));
+    assert_eq!(subscribe_discriminator, Some("contract"));
 }
 
 #[test]
@@ -173,13 +173,13 @@ fn topic_subscribe_with_concrete_link_id() {
         as_instance_id: seg("sub_inst"),
         from_core_node: None,
         from_instance_id: None,
-        from_target: Some(iface("depth_camera", "v1")),
+        from_target: Some(contract_target("depth_camera", "v1")),
         from_link_id: Some(seg("wrist_left_camera")),
         to_topic: seg("video_stream"),
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
-        "core_subscriber/*/sub_inst/*/topic/interface/depth_camera/v1/wrist_left_camera/video_stream"
+        "core_subscriber/*/sub_inst/*/topic/contract/depth_camera/v1/wrist_left_camera/video_stream"
     );
 }
 
@@ -201,19 +201,19 @@ fn topic_subscribe_untargeted_publisher_core_uses_wildcard() {
 }
 
 #[test]
-fn topic_subscribe_interface_target() {
+fn topic_subscribe_contract_target() {
     let receiver = TopicWireReceiver {
         as_core_node: seg("core_subscriber"),
         as_instance_id: seg("sub_inst"),
         from_core_node: Some(seg("core_publisher")),
         from_instance_id: None,
-        from_target: Some(iface("manipulator", "v1")),
+        from_target: Some(contract_target("manipulator", "v1")),
         from_link_id: None,
         to_topic: seg("joint_states"),
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
-        "core_subscriber/core_publisher/sub_inst/*/topic/interface/manipulator/v1/*/joint_states"
+        "core_subscriber/core_publisher/sub_inst/*/topic/contract/manipulator/v1/*/joint_states"
     );
 }
 
@@ -356,18 +356,18 @@ fn service_queryable_declare_action_goal_appends_suffix() {
 }
 
 #[test]
-fn service_queryable_declare_interface_identity_normalizes_tag() {
+fn service_queryable_declare_contract_identity_normalizes_tag() {
     let recv = ServiceWireReceiver::new(
         "server_core",
         "server_inst",
-        iface("manipulator", "v2-beta"),
+        contract_target("manipulator", "v2-beta"),
         "ping",
         ServiceKind::Service,
     )
     .expect("valid receiver");
     assert_eq!(
         ZenohWireFormat::service_queryable_declare(&recv),
-        "server_core/*/server_inst/*/service/interface/manipulator/v2_beta/*/ping"
+        "server_core/*/server_inst/*/service/contract/manipulator/v2_beta/*/ping"
     );
 }
 
@@ -487,14 +487,14 @@ fn service_reply_keyexpr_action_result_appends_suffix() {
     let receiver = ServiceWireReceiver::new(
         "server_core",
         "server_inst",
-        iface("manipulator", "v1"),
+        contract_target("manipulator", "v1"),
         "pick_place",
         ServiceKind::ActionResult,
     )
     .expect("valid receiver");
     assert_eq!(
         ZenohWireFormat::service_reply_keyexpr(&receiver, "_", "caller_core", "caller_inst"),
-        "caller_core/server_core/caller_inst/server_inst/action/interface/manipulator/v1/_/pick_place/result"
+        "caller_core/server_core/caller_inst/server_inst/action/contract/manipulator/v1/_/pick_place/result"
     );
 }
 
@@ -630,11 +630,11 @@ fn parse_inbound_query_rejects_service_root_mismatch() {
 
 #[test]
 fn parse_inbound_query_rejects_discriminator_mismatch() {
-    // Receiver expects `node/robot_arm/v1`; query uses `interface/robot_arm/v1`.
+    // Receiver expects `node/robot_arm/v1`; query uses `contract/robot_arm/v1`.
     // The wire format's service_root parse catches the collision.
     let receiver = sample_service_receiver(ServiceKind::Service);
     let query =
-        "server_core/caller_core/server_inst/caller_inst/service/interface/robot_arm/v1/_/ping";
+        "server_core/caller_core/server_inst/caller_inst/service/contract/robot_arm/v1/_/ping";
     let err =
         ZenohWireFormat::parse_inbound_query(&receiver, query, &user_request_attachment_bytes())
             .unwrap_err();
@@ -686,12 +686,12 @@ fn action_feedback_publish_node_identity() {
 }
 
 #[test]
-fn action_feedback_publish_normalizes_interface_tag() {
+fn action_feedback_publish_normalizes_contract_tag() {
     let mut recv = sample_action_receiver();
-    recv.as_identity = iface("manipulator", "v1-rc1");
+    recv.as_identity = contract_target("manipulator", "v1-rc1");
     assert_eq!(
         ZenohWireFormat::action_feedback_publish(&recv, "_", "goal_xyz"),
-        "*/server_core/*/server_inst/action/interface/manipulator/v1_rc1/_/pick_place/feedback/server_inst/goal_xyz"
+        "*/server_core/*/server_inst/action/contract/manipulator/v1_rc1/_/pick_place/feedback/server_inst/goal_xyz"
     );
 }
 
@@ -726,16 +726,16 @@ fn action_feedback_subscribe_partial_target_uses_wildcard_only_for_missing() {
     );
 }
 
-// ─── Collision safety: node vs interface with overlapping name+tag ────────
+// ─── Collision safety: node vs contract with overlapping name+tag ────────
 //
 // Core property the refactor exists to guarantee: a `NodeIdentifier { name, tag }`
-// must never share a wire key with an `InterfaceIdentifier { name, tag }` even
+// must never share a wire key with an `ContractIdentifier { name, tag }` even
 // when both carry the same `name` and `tag`. The wire format embeds an
-// `interface` | `node` discriminator immediately before the name/tag pair to
+// `contract` | `node` discriminator immediately before the name/tag pair to
 // prevent the two identifier namespaces from colliding.
 
 #[test]
-fn topic_publish_distinguishes_node_and_interface_with_same_name_tag() {
+fn topic_publish_distinguishes_node_and_contract_with_same_name_tag() {
     let common = TopicWireSender {
         as_core_node: seg("core_a"),
         as_instance_id: seg("inst_1"),
@@ -746,25 +746,25 @@ fn topic_publish_distinguishes_node_and_interface_with_same_name_tag() {
     };
     let mut as_node = common.clone();
     as_node.as_target = node("widget", "v1");
-    let mut as_iface = common;
-    as_iface.as_target = iface("widget", "v1");
+    let mut as_contract = common;
+    as_contract.as_target = contract_target("widget", "v1");
 
     let node_key = ZenohWireFormat::topic_publish(&as_node);
-    let iface_key = ZenohWireFormat::topic_publish(&as_iface);
+    let contract_key = ZenohWireFormat::topic_publish(&as_contract);
 
-    assert_ne!(node_key, iface_key);
+    assert_ne!(node_key, contract_key);
     assert!(
         node_key.contains("/topic/node/widget/v1/_/"),
         "node-shaped publish should carry the `node` discriminator: {node_key}"
     );
     assert!(
-        iface_key.contains("/topic/interface/widget/v1/_/"),
-        "interface-shaped publish should carry the `interface` discriminator: {iface_key}"
+        contract_key.contains("/topic/contract/widget/v1/_/"),
+        "contract-shaped publish should carry the `contract` discriminator: {contract_key}"
     );
 }
 
 #[test]
-fn service_get_selector_distinguishes_node_and_interface_with_same_name_tag() {
+fn service_get_selector_distinguishes_node_and_contract_with_same_name_tag() {
     let base = ServiceWireSender {
         bound_core_node: seg("caller_core"),
         as_instance_id: seg("caller_inst"),
@@ -776,19 +776,19 @@ fn service_get_selector_distinguishes_node_and_interface_with_same_name_tag() {
     };
     let mut as_node = base.clone();
     as_node.to_target = node("widget", "v1");
-    let mut as_iface = base;
-    as_iface.to_target = iface("widget", "v1");
+    let mut as_contract = base;
+    as_contract.to_target = contract_target("widget", "v1");
 
     let node_key = ZenohWireFormat::service_get_selector(&as_node);
-    let iface_key = ZenohWireFormat::service_get_selector(&as_iface);
+    let contract_key = ZenohWireFormat::service_get_selector(&as_contract);
 
-    assert_ne!(node_key, iface_key);
+    assert_ne!(node_key, contract_key);
     assert!(node_key.contains("/service/node/widget/v1/*/ping"));
-    assert!(iface_key.contains("/service/interface/widget/v1/*/ping"));
+    assert!(contract_key.contains("/service/contract/widget/v1/*/ping"));
 }
 
 #[test]
-fn action_feedback_distinguishes_node_and_interface_with_same_name_tag() {
+fn action_feedback_distinguishes_node_and_contract_with_same_name_tag() {
     let base = ActionWireReceiver {
         bound_core_node: seg("server_core"),
         as_instance_id: seg("server_inst"),
@@ -797,23 +797,23 @@ fn action_feedback_distinguishes_node_and_interface_with_same_name_tag() {
     };
     let mut as_node = base.clone();
     as_node.as_identity = node("widget", "v1");
-    let mut as_iface = base;
-    as_iface.as_identity = iface("widget", "v1");
+    let mut as_contract = base;
+    as_contract.as_identity = contract_target("widget", "v1");
 
     let node_key = ZenohWireFormat::action_feedback_publish(&as_node, "_", "goal_xyz");
-    let iface_key = ZenohWireFormat::action_feedback_publish(&as_iface, "_", "goal_xyz");
+    let contract_key = ZenohWireFormat::action_feedback_publish(&as_contract, "_", "goal_xyz");
 
-    assert_ne!(node_key, iface_key);
+    assert_ne!(node_key, contract_key);
     assert!(node_key.contains("/action/node/widget/v1/_/pick_place/"));
-    assert!(iface_key.contains("/action/interface/widget/v1/_/pick_place/"));
+    assert!(contract_key.contains("/action/contract/widget/v1/_/pick_place/"));
 }
 
 #[test]
-fn topic_subscribe_node_only_segment_does_not_match_interface_publisher() {
+fn topic_subscribe_node_only_segment_does_not_match_contract_publisher() {
     // A subscriber that pins on a node target should ONLY match publishers
-    // emitting under the node discriminator, not interface publishers with the
+    // emitting under the node discriminator, not contract publishers with the
     // same name+tag. The discriminator literal in the keyexpr enforces this:
-    // `topic/node/widget/v1/...` and `topic/interface/widget/v1/...` differ on
+    // `topic/node/widget/v1/...` and `topic/contract/widget/v1/...` differ on
     // a literal segment (no wildcard intersection).
     let receiver = TopicWireReceiver {
         as_core_node: seg("core_a"),
@@ -831,46 +831,46 @@ fn topic_subscribe_node_only_segment_does_not_match_interface_publisher() {
         link_id: Segment::default_link_id(),
         as_topic_name: seg("frames"),
     };
-    let publisher_as_iface = TopicWireSender {
+    let publisher_as_contract = TopicWireSender {
         as_core_node: seg("core_a"),
         as_instance_id: seg("inst_2"),
-        as_target: iface("widget", "v1"),
+        as_target: contract_target("widget", "v1"),
         link_id: Segment::default_link_id(),
         as_topic_name: seg("frames"),
     };
 
     let sub_key = ZenohWireFormat::topic_subscribe(&receiver);
     let node_pub_key = ZenohWireFormat::topic_publish(&publisher_as_node);
-    let iface_pub_key = ZenohWireFormat::topic_publish(&publisher_as_iface);
+    let contract_pub_key = ZenohWireFormat::topic_publish(&publisher_as_contract);
 
     // The subscriber keyexpr has `topic/node/widget/v1/*/frames` in its tail.
     // The node-shaped publisher key matches segment-by-segment (after the
-    // per-`*` caller-side wildcards) while the interface-shaped one differs
+    // per-`*` caller-side wildcards) while the contract-shaped one differs
     // on the discriminator literal. We verify by checking the discriminator
     // segments appear distinct in the rendered strings.
     assert!(sub_key.contains("/topic/node/widget/v1/*/frames"));
     assert!(node_pub_key.contains("/topic/node/widget/v1/_/frames"));
-    assert!(iface_pub_key.contains("/topic/interface/widget/v1/_/frames"));
-    // Cross-check: the iface publisher's tail must NOT appear inside the
+    assert!(contract_pub_key.contains("/topic/contract/widget/v1/_/frames"));
+    // Cross-check: the contract publisher's tail must NOT appear inside the
     // node-pinned subscriber's keyexpr.
-    assert!(!sub_key.contains("/topic/interface/"));
+    assert!(!sub_key.contains("/topic/contract/"));
 }
 
 #[test]
-fn topic_subscribe_interface_only_segment_does_not_match_node_publisher() {
-    // Mirror of the previous test: a subscriber pinned on an interface target
+fn topic_subscribe_contract_only_segment_does_not_match_node_publisher() {
+    // Mirror of the previous test: a subscriber pinned on a contract target
     // must not match a node-shaped publisher with the same name+tag.
     let receiver = TopicWireReceiver {
         as_core_node: seg("core_a"),
         as_instance_id: seg("inst_1"),
         from_core_node: None,
         from_instance_id: None,
-        from_target: Some(iface("widget", "v1")),
+        from_target: Some(contract_target("widget", "v1")),
         from_link_id: None,
         to_topic: seg("frames"),
     };
     let sub_key = ZenohWireFormat::topic_subscribe(&receiver);
-    assert!(sub_key.contains("/topic/interface/widget/v1/*/frames"));
+    assert!(sub_key.contains("/topic/contract/widget/v1/*/frames"));
     assert!(!sub_key.contains("/topic/node/"));
 }
 
@@ -878,7 +878,7 @@ fn topic_subscribe_interface_only_segment_does_not_match_node_publisher() {
 fn topic_subscribe_untargeted_wildcards_discriminator_too() {
     // `from_target: None` must wildcard all three target segments
     // (discriminator + name + tag) so a subscriber matches both node-shaped
-    // and interface-shaped publishers. Without this, an untargeted subscriber
+    // and contract-shaped publishers. Without this, an untargeted subscriber
     // would silently miss one of the two namespaces.
     let receiver = TopicWireReceiver {
         as_core_node: seg("core_a"),
@@ -897,9 +897,9 @@ fn topic_subscribe_untargeted_wildcards_discriminator_too() {
 }
 
 #[test]
-fn parse_inbound_query_node_receiver_rejects_interface_shaped_query() {
+fn parse_inbound_query_node_receiver_rejects_contract_shaped_query() {
     // A server bound as a `Node` must not handle a query addressed under the
-    // `Interface` discriminator with the same name+tag (and vice-versa). The
+    // `Contract` discriminator with the same name+tag (and vice-versa). The
     // wire format's service_root parse catches the mismatch.
     let node_receiver = ServiceWireReceiver::new(
         "server_core",
@@ -909,11 +909,11 @@ fn parse_inbound_query_node_receiver_rejects_interface_shaped_query() {
         ServiceKind::Service,
     )
     .expect("valid receiver");
-    let iface_shaped_query =
-        "server_core/caller_core/server_inst/caller_inst/service/interface/widget/v1/_/ping";
+    let contract_shaped_query =
+        "server_core/caller_core/server_inst/caller_inst/service/contract/widget/v1/_/ping";
     let err = ZenohWireFormat::parse_inbound_query(
         &node_receiver,
-        iface_shaped_query,
+        contract_shaped_query,
         &user_request_attachment_bytes(),
     )
     .unwrap_err();
@@ -922,10 +922,10 @@ fn parse_inbound_query_node_receiver_rejects_interface_shaped_query() {
         ZenohWireParseError::ServiceRootMismatch { .. }
     ));
 
-    let iface_receiver = ServiceWireReceiver::new(
+    let contract_receiver = ServiceWireReceiver::new(
         "server_core",
         "server_inst",
-        iface("widget", "v1"),
+        contract_target("widget", "v1"),
         "ping",
         ServiceKind::Service,
     )
@@ -933,7 +933,7 @@ fn parse_inbound_query_node_receiver_rejects_interface_shaped_query() {
     let node_shaped_query =
         "server_core/caller_core/server_inst/caller_inst/service/node/widget/v1/_/ping";
     let err = ZenohWireFormat::parse_inbound_query(
-        &iface_receiver,
+        &contract_receiver,
         node_shaped_query,
         &user_request_attachment_bytes(),
     )

@@ -11,37 +11,37 @@ fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, "v1").expect("test node target")
 }
 
-// ─── InterfaceIdentifier ──────────────────────────────────────────────────
+// ─── ContractIdentifier ──────────────────────────────────────────────────
 
 #[test]
-fn interface_new_preserves_alphanumeric_tag() {
-    let interface = InterfaceIdentifier::new("camera_driver", "v1").expect("valid interface");
-    assert_eq!(interface.name(), "camera_driver");
-    assert_eq!(interface.tag(), "v1");
+fn contract_new_preserves_alphanumeric_tag() {
+    let contract = ContractIdentifier::new("camera_driver", "v1").expect("valid contract");
+    assert_eq!(contract.name(), "camera_driver");
+    assert_eq!(contract.tag(), "v1");
 }
 
 #[test]
-fn interface_new_normalizes_hyphenated_tag() {
-    let interface =
-        InterfaceIdentifier::new("camera_driver", "v1-beta-2").expect("valid interface");
-    assert_eq!(interface.tag(), "v1_beta_2");
+fn contract_new_normalizes_hyphenated_tag() {
+    let contract =
+        ContractIdentifier::new("camera_driver", "v1-beta-2").expect("valid contract");
+    assert_eq!(contract.tag(), "v1_beta_2");
 }
 
 #[test]
-fn interface_new_does_not_touch_underscored_tag() {
-    let interface = InterfaceIdentifier::new("nav", "v2_stable").expect("valid interface");
-    assert_eq!(interface.tag(), "v2_stable");
+fn contract_new_does_not_touch_underscored_tag() {
+    let contract = ContractIdentifier::new("nav", "v2_stable").expect("valid contract");
+    assert_eq!(contract.tag(), "v2_stable");
 }
 
 #[test]
-fn interface_new_rejects_segment_with_slash() {
-    let err = InterfaceIdentifier::new("nav/sub", "v1").unwrap_err();
+fn contract_new_rejects_segment_with_slash() {
+    let err = ContractIdentifier::new("nav/sub", "v1").unwrap_err();
     assert!(matches!(err, SenderTargetError::InvalidSegment(_)));
 }
 
 #[test]
-fn interface_new_rejects_reserved_sentinel() {
-    let err = InterfaceIdentifier::new("_", "v1").unwrap_err();
+fn contract_new_rejects_reserved_sentinel() {
+    let err = ContractIdentifier::new("_", "v1").unwrap_err();
     assert!(matches!(err, SenderTargetError::InvalidSegment(_)));
 }
 
@@ -101,12 +101,12 @@ fn node_new_rejects_segment_with_slash() {
 // ─── SenderTarget ─────────────────────────────────────────────────────────
 
 #[test]
-fn sender_target_interface_discriminator_is_interface() {
-    let target = SenderTarget::interface("manipulator", "v1").expect("valid interface target");
-    assert_eq!(target.discriminator(), "interface");
+fn sender_target_contract_discriminator_is_contract() {
+    let target = SenderTarget::contract("manipulator", "v1").expect("valid contract target");
+    assert_eq!(target.discriminator(), "contract");
     assert_eq!(target.name(), "manipulator");
     assert_eq!(target.tag(), "v1");
-    assert!(target.is_interface());
+    assert!(target.is_contract());
     assert!(!target.is_node());
 }
 
@@ -117,15 +117,15 @@ fn sender_target_node_discriminator_is_node() {
     assert_eq!(target.name(), "uvc_camera");
     assert_eq!(target.tag(), "v1");
     assert!(target.is_node());
-    assert!(!target.is_interface());
+    assert!(!target.is_contract());
 }
 
 #[test]
-fn sender_target_interface_and_node_with_same_name_tag_are_distinct() {
-    let interface = SenderTarget::interface("widget", "v1").expect("valid interface target");
+fn sender_target_contract_and_node_with_same_name_tag_are_distinct() {
+    let contract = SenderTarget::contract("widget", "v1").expect("valid contract target");
     let node = test_node_target("widget");
-    assert_ne!(interface, node);
-    assert_ne!(interface.discriminator(), node.discriminator());
+    assert_ne!(contract, node);
+    assert_ne!(contract.discriminator(), node.discriminator());
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn sender_target_pairing_discriminator_is_pairing() {
     assert_eq!(target.name(), "arm_link");
     assert_eq!(target.tag(), "v1");
     assert!(target.is_pairing());
-    assert!(!target.is_interface());
+    assert!(!target.is_contract());
     assert!(!target.is_node());
 }
 
@@ -146,13 +146,13 @@ fn sender_target_pairing_normalizes_hyphenated_tag() {
 }
 
 #[test]
-fn sender_target_pairing_and_interface_with_same_name_tag_are_distinct() {
+fn sender_target_pairing_and_contract_with_same_name_tag_are_distinct() {
     // The load-bearing lock-in property: pairing traffic can never match an
-    // interface subscription because the wire discriminators differ.
+    // contract subscription because the wire discriminators differ.
     let pairing = SenderTarget::pairing("widget", "v1").expect("valid pairing target");
-    let interface = SenderTarget::interface("widget", "v1").expect("valid interface target");
-    assert_ne!(pairing, interface);
-    assert_ne!(pairing.discriminator(), interface.discriminator());
+    let contract = SenderTarget::contract("widget", "v1").expect("valid contract target");
+    assert_ne!(pairing, contract);
+    assert_ne!(pairing.discriminator(), contract.discriminator());
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn sample_action_receiver() -> ActionWireReceiver {
     ActionWireReceiver {
         bound_core_node: seg("server_core"),
         as_instance_id: seg("server_inst"),
-        as_identity: SenderTarget::interface("manipulator", "v1").expect("valid interface target"),
+        as_identity: SenderTarget::contract("manipulator", "v1").expect("valid contract target"),
         as_action_name: seg("pick_place"),
     }
 }
@@ -270,7 +270,7 @@ fn action_receiver_goal_service_threads_kind_and_name() {
     assert_eq!(goal.bound_core_node, "server_core");
     assert_eq!(goal.as_instance_id, "server_inst");
     assert_eq!(goal.as_identity.name(), "manipulator");
-    assert!(goal.as_identity.is_interface());
+    assert!(goal.as_identity.is_contract());
 }
 
 #[test]

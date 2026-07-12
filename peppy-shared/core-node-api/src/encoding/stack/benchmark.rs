@@ -354,7 +354,7 @@ pub struct InterfaceLatency {
     /// can share producer + interface but differ only by this link.
     pub link_id: String,
     /// `Some("name:tag")` when this edge was resolved through contract
-    /// conformance (consumer `depends_on.contracts`, producer `conforms_to`);
+    /// implementation (consumer `depends_on.contracts`, producer `manifest.implements`);
     /// `None` for a direct `depends_on.nodes` edge.
     pub via_contract: Option<String>,
     pub kind: InterfaceKind,
@@ -370,7 +370,7 @@ pub struct InterfaceLatency {
 
 impl InterfaceLatency {
     /// A short `from:tag {arrow} to:tag/interface` label for rendering. The
-    /// arrow distinguishes the dependency kind: `➔` for a contract-conformance
+    /// arrow distinguishes the dependency kind: `➔` for a contract-implementation
     /// edge (matching `stack list`), `→` for a direct node dependency.
     pub fn edge_label(&self) -> String {
         let arrow = if self.via_contract.is_some() {

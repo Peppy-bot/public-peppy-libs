@@ -359,10 +359,23 @@ pub enum QoSProfile {
     Critical,
 }
 
+/// A contract-backed produced-interface entry: `{link_id, name}` where
+/// `link_id` names a `manifest.implements` slot and `name` selects one member
+/// of that contract (byte-equal). Shape and QoS come from the contract
+/// document, so inline `message_format` / `qos_profile` / endpoint fields are
+/// rejected at parse time. Shared by topics.emits, services.exposes, and
+/// actions.exposes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ContractBackedEntry {
+    pub link_id: String,
+    pub name: String,
+}
+
+/// A natively-declared emitted topic (no `link_id`): the node owns the shape.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct EmittedTopic {
-    #[serde(default)]
+pub struct NativeEmittedTopic {
     pub name: String,
     #[serde(default)]
     pub qos_profile: QoSProfile,
@@ -370,10 +383,19 @@ pub struct EmittedTopic {
     pub message_format: Option<MessageFormat>,
 }
 
+/// One entry of `interfaces.topics.emits`. Discriminated by the presence of
+/// `link_id` (mirroring the consumes convention): with `link_id` the entry is
+/// contract-backed, without it the entry is native and carries its own shape.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EmittedTopic {
+    Contract(ContractBackedEntry),
+    Native(NativeEmittedTopic),
+}
+
+/// A natively-declared exposed service (no `link_id`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ExposedService {
-    #[serde(default)]
+pub struct NativeExposedService {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_message_format: Option<MessageFormat>,
@@ -381,10 +403,18 @@ pub struct ExposedService {
     pub response_message_format: Option<MessageFormat>,
 }
 
+/// One entry of `interfaces.services.exposes`. See [`EmittedTopic`] for the
+/// `link_id` discriminator rule.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExposedService {
+    Contract(ContractBackedEntry),
+    Native(NativeExposedService),
+}
+
+/// A natively-declared exposed action (no `link_id`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ExposedAction {
-    #[serde(default)]
+pub struct NativeExposedAction {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_service: Option<ActionServiceEndpoint>,
@@ -392,6 +422,251 @@ pub struct ExposedAction {
     pub feedback_topic: Option<ActionTopicEndpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_service: Option<ActionServiceEndpoint>,
+}
+
+/// One entry of `interfaces.actions.exposes`. See [`EmittedTopic`] for the
+/// `link_id` discriminator rule.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExposedAction {
+    Contract(ContractBackedEntry),
+    Native(NativeExposedAction),
+}
+
+macro_rules! impl_produced_entry {
+    ($entry:ident, $native:ident, $section:literal) => {
+        impl $entry {
+            /// Interface name: the contract member selector for
+            /// contract-backed entries, the declared name for native ones.
+            pub fn name(&self) -> &str {
+                match self {
+                    Self::Contract(e) => &e.name,
+                    Self::Native(n) => &n.name,
+                }
+            }
+
+            /// The `manifest.implements` slot this entry references, or
+            /// `None` for a native entry.
+            pub fn link_id(&self) -> Option<&str> {
+                match self {
+                    Self::Contract(e) => Some(&e.link_id),
+                    Self::Native(_) => None,
+                }
+            }
+
+            pub fn as_contract(&self) -> Option<&ContractBackedEntry> {
+                match self {
+                    Self::Contract(e) => Some(e),
+                    Self::Native(_) => None,
+                }
+            }
+
+            pub fn as_native(&self) -> Option<&$native> {
+                match self {
+                    Self::Contract(_) => None,
+                    Self::Native(n) => Some(n),
+                }
+            }
+
+            pub fn is_native(&self) -> bool {
+                matches!(self, Self::Native(_))
+            }
+
+            /// The manifest section this entry type lives in, for error
+            /// payloads (`"topics.emits"`, `"services.exposes"`,
+            /// `"actions.exposes"`).
+            pub const SECTION: &'static str = $section;
+        }
+
+        impl Serialize for $entry {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                match self {
+                    Self::Contract(e) => e.serialize(serializer),
+                    Self::Native(n) => n.serialize(serializer),
+                }
+            }
+        }
+    };
+}
+
+impl_produced_entry!(EmittedTopic, NativeEmittedTopic, "topics.emits");
+impl_produced_entry!(ExposedService, NativeExposedService, "services.exposes");
+impl_produced_entry!(ExposedAction, NativeExposedAction, "actions.exposes");
+
+/// Validates the (required, non-empty) `name` of a produced-interface entry,
+/// surfacing a [`StructuredError::EmptyInterfaceName`] through the serde
+/// bridge on failure.
+fn require_interface_name<E: de::Error>(
+    name: Option<String>,
+    section: &'static str,
+) -> Result<String, E> {
+    let raw = name.unwrap_or_default();
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || !trimmed.chars().any(|ch| ch.is_ascii_alphanumeric()) {
+        return Err(E::custom(
+            crate::error::StructuredError::EmptyInterfaceName {
+                section: section.to_owned(),
+            }
+            .json5_message(),
+        ));
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// Rejects inline shape/QoS fields on a contract-backed entry: the shape
+/// comes from the contract document, never from the manifest. `fields` pairs
+/// each field name with whether it was present in the raw entry.
+fn reject_inline_shape<E: de::Error>(
+    section: &'static str,
+    link_id: &str,
+    name: &str,
+    fields: &[(&'static str, bool)],
+) -> Result<(), E> {
+    for (field, present) in fields {
+        if *present {
+            return Err(E::custom(
+                crate::error::StructuredError::ContractBackedEntryWithInlineShape {
+                    section: section.to_owned(),
+                    link_id: link_id.to_owned(),
+                    name: name.to_owned(),
+                    field: (*field).to_owned(),
+                }
+                .json5_message(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl<'de> Deserialize<'de> for EmittedTopic {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawEmittedTopic {
+            link_id: Option<String>,
+            name: Option<String>,
+            qos_profile: Option<QoSProfile>,
+            message_format: Option<MessageFormat>,
+        }
+
+        let raw = RawEmittedTopic::deserialize(deserializer)?;
+        let name = require_interface_name(raw.name, EmittedTopic::SECTION)?;
+        match raw.link_id {
+            Some(link_id) => {
+                let link_id = validate_non_empty_identifier(&link_id, "EmittedTopic.link_id")
+                    .map_err(de::Error::custom)?;
+                reject_inline_shape(
+                    EmittedTopic::SECTION,
+                    &link_id,
+                    &name,
+                    &[
+                        ("qos_profile", raw.qos_profile.is_some()),
+                        ("message_format", raw.message_format.is_some()),
+                    ],
+                )?;
+                Ok(Self::Contract(ContractBackedEntry { link_id, name }))
+            }
+            None => Ok(Self::Native(NativeEmittedTopic {
+                name,
+                qos_profile: raw.qos_profile.unwrap_or_default(),
+                message_format: raw.message_format,
+            })),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ExposedService {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawExposedService {
+            link_id: Option<String>,
+            name: Option<String>,
+            request_message_format: Option<MessageFormat>,
+            response_message_format: Option<MessageFormat>,
+        }
+
+        let raw = RawExposedService::deserialize(deserializer)?;
+        let name = require_interface_name(raw.name, ExposedService::SECTION)?;
+        match raw.link_id {
+            Some(link_id) => {
+                let link_id = validate_non_empty_identifier(&link_id, "ExposedService.link_id")
+                    .map_err(de::Error::custom)?;
+                reject_inline_shape(
+                    ExposedService::SECTION,
+                    &link_id,
+                    &name,
+                    &[
+                        (
+                            "request_message_format",
+                            raw.request_message_format.is_some(),
+                        ),
+                        (
+                            "response_message_format",
+                            raw.response_message_format.is_some(),
+                        ),
+                    ],
+                )?;
+                Ok(Self::Contract(ContractBackedEntry { link_id, name }))
+            }
+            None => Ok(Self::Native(NativeExposedService {
+                name,
+                request_message_format: raw.request_message_format,
+                response_message_format: raw.response_message_format,
+            })),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ExposedAction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawExposedAction {
+            link_id: Option<String>,
+            name: Option<String>,
+            goal_service: Option<ActionServiceEndpoint>,
+            feedback_topic: Option<ActionTopicEndpoint>,
+            result_service: Option<ActionServiceEndpoint>,
+        }
+
+        let raw = RawExposedAction::deserialize(deserializer)?;
+        let name = require_interface_name(raw.name, ExposedAction::SECTION)?;
+        match raw.link_id {
+            Some(link_id) => {
+                let link_id = validate_non_empty_identifier(&link_id, "ExposedAction.link_id")
+                    .map_err(de::Error::custom)?;
+                reject_inline_shape(
+                    ExposedAction::SECTION,
+                    &link_id,
+                    &name,
+                    &[
+                        ("goal_service", raw.goal_service.is_some()),
+                        ("feedback_topic", raw.feedback_topic.is_some()),
+                        ("result_service", raw.result_service.is_some()),
+                    ],
+                )?;
+                Ok(Self::Contract(ContractBackedEntry { link_id, name }))
+            }
+            None => Ok(Self::Native(NativeExposedAction {
+                name,
+                goal_service: raw.goal_service,
+                feedback_topic: raw.feedback_topic,
+                result_service: raw.result_service,
+            })),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -491,6 +766,13 @@ where
     deserialize_non_empty_identifier(deserializer, "PairingDependency.link_id")
 }
 
+fn deserialize_implements_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_empty_identifier(deserializer, "ImplementsEntry.link_id")
+}
+
 fn deserialize_pairing_dependency_role<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -554,6 +836,24 @@ pub struct ContractDependency {
     pub name: Name,
     pub tag: String,
     #[serde(deserialize_with = "deserialize_contract_dependency_link_id")]
+    pub link_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+/// One bindable contract-implementation claim in `manifest.implements`: this
+/// node satisfies `{name}:{tag}` slots. Produced-interface entries reference
+/// the slot via `link_id`, which shares one flat namespace with
+/// `depends_on.{nodes,contracts,pairings}` link_ids. `sha256` optionally pins
+/// the contract document, with the same semantics as
+/// [`ContractDependency::sha256`]. Shape-identical to [`ContractDependency`]
+/// but deliberately a distinct type — the two point in opposite directions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ImplementsEntry {
+    pub name: Name,
+    pub tag: String,
+    #[serde(deserialize_with = "deserialize_implements_link_id")]
     pub link_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
@@ -647,6 +947,8 @@ pub struct Manifest {
     pub tag: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implements: Vec<ImplementsEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depends_on: Option<DependsOn>,
 }
@@ -770,15 +1072,6 @@ fn parameter_spec_display(spec: &ParameterSpec) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ConformsToItem {
-    pub name: Name,
-    pub tag: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha256: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Interfaces {
@@ -788,8 +1081,6 @@ pub struct Interfaces {
     pub services: Option<ServiceInterfaces>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actions: Option<ActionInterfaces>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub conforms_to: Option<Vec<ConformsToItem>>,
 }
 
 /// Puts a value into canonical form so that derived `PartialEq` becomes
@@ -864,7 +1155,9 @@ impl Normalize for MessageFormat {
 
 impl Normalize for EmittedTopic {
     fn normalize(&mut self) {
-        normalize_opt(&mut self.message_format);
+        if let Self::Native(native) = self {
+            normalize_opt(&mut native.message_format);
+        }
     }
 }
 
@@ -872,14 +1165,12 @@ impl Normalize for ConsumedTopic {
     fn normalize(&mut self) {}
 }
 
-impl Normalize for ConformsToItem {
-    fn normalize(&mut self) {}
-}
-
 impl Normalize for ExposedService {
     fn normalize(&mut self) {
-        normalize_opt(&mut self.request_message_format);
-        normalize_opt(&mut self.response_message_format);
+        if let Self::Native(native) = self {
+            normalize_opt(&mut native.request_message_format);
+            normalize_opt(&mut native.response_message_format);
+        }
     }
 }
 
@@ -906,14 +1197,16 @@ impl Normalize for ActionTopicEndpoint {
 
 impl Normalize for ExposedAction {
     fn normalize(&mut self) {
-        if let Some(gs) = &mut self.goal_service {
-            gs.normalize();
-        }
-        if let Some(ft) = &mut self.feedback_topic {
-            ft.normalize();
-        }
-        if let Some(rs) = &mut self.result_service {
-            rs.normalize();
+        if let Self::Native(native) = self {
+            if let Some(gs) = &mut native.goal_service {
+                gs.normalize();
+            }
+            if let Some(ft) = &mut native.feedback_topic {
+                ft.normalize();
+            }
+            if let Some(rs) = &mut native.result_service {
+                rs.normalize();
+            }
         }
     }
 }
@@ -921,8 +1214,8 @@ impl Normalize for ExposedAction {
 impl Normalize for TopicInterfaces {
     fn normalize(&mut self) {
         normalize_opt_vec(&mut self.emits, |a, b| {
-            a.name
-                .cmp(&b.name)
+            a.name()
+                .cmp(b.name())
                 .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
         });
         normalize_opt_vec(&mut self.consumes, |a, b| {
@@ -934,8 +1227,8 @@ impl Normalize for TopicInterfaces {
 impl Normalize for ServiceInterfaces {
     fn normalize(&mut self) {
         normalize_opt_vec(&mut self.exposes, |a, b| {
-            a.name
-                .cmp(&b.name)
+            a.name()
+                .cmp(b.name())
                 .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
         });
         normalize_opt_vec(&mut self.consumes, |a, b| {
@@ -947,8 +1240,8 @@ impl Normalize for ServiceInterfaces {
 impl Normalize for ActionInterfaces {
     fn normalize(&mut self) {
         normalize_opt_vec(&mut self.exposes, |a, b| {
-            a.name
-                .cmp(&b.name)
+            a.name()
+                .cmp(b.name())
                 .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
         });
         normalize_opt_vec(&mut self.consumes, |a, b| {
@@ -962,13 +1255,6 @@ impl Normalize for Interfaces {
         normalize_opt_default(&mut self.topics);
         normalize_opt_default(&mut self.services);
         normalize_opt_default(&mut self.actions);
-        normalize_opt_vec(&mut self.conforms_to, |a, b| {
-            a.name
-                .as_str()
-                .cmp(b.name.as_str())
-                .then_with(|| a.tag.cmp(&b.tag))
-                .then_with(|| a.sha256.cmp(&b.sha256))
-        });
     }
 }
 
@@ -1144,7 +1430,8 @@ mod tests {
         let action: ExposedAction =
             serde_json5::from_str(json5).expect("action with omitted optional payloads must parse");
 
-        assert_eq!(action.name, "move_arm");
+        assert_eq!(action.name(), "move_arm");
+        let action = action.as_native().expect("no link_id means native");
         assert!(
             action.feedback_topic.is_none(),
             "feedback_topic is optional"
@@ -1183,7 +1470,12 @@ mod tests {
 
         let action: ExposedAction =
             serde_json5::from_str(json5).expect("empty `{}` message format must parse");
-        let goal = action.goal_service.expect("goal_service is present");
+        let goal = action
+            .as_native()
+            .expect("no link_id means native")
+            .goal_service
+            .clone()
+            .expect("goal_service is present");
         let request = goal
             .request_message_format
             .expect("request_message_format is Some when `{}` is given explicitly");
@@ -1656,99 +1948,171 @@ mod tests {
     }
 
     #[test]
-    fn interfaces_with_conforms_to_full() {
+    fn manifest_with_implements_full() {
         let json5 = r#"{
-            conforms_to: [
-                { name: "depth_camera", tag: "v1", sha256: "aaaa" }
+            name: "camera_node",
+            tag: "v1",
+            implements: [
+                { name: "depth_camera", tag: "v1", link_id: "cam", sha256: "aaaa" }
             ]
         }"#;
-        let interfaces: Interfaces = serde_json5::from_str(json5).expect("should parse");
-        let items = interfaces.conforms_to.expect("conforms_to should be Some");
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].name.as_str(), "depth_camera");
-        assert_eq!(items[0].tag, "v1");
-        assert_eq!(items[0].sha256.as_deref(), Some("aaaa"));
+        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
+        assert_eq!(manifest.implements.len(), 1);
+        assert_eq!(manifest.implements[0].name.as_str(), "depth_camera");
+        assert_eq!(manifest.implements[0].tag, "v1");
+        assert_eq!(manifest.implements[0].link_id, "cam");
+        assert_eq!(manifest.implements[0].sha256.as_deref(), Some("aaaa"));
     }
 
     #[test]
-    fn interfaces_with_conforms_to_no_sha256() {
+    fn manifest_implements_no_sha256() {
+        let json5 = r#"{
+            name: "camera_node",
+            tag: "v1",
+            implements: [
+                { name: "depth_camera", tag: "v1", link_id: "cam" }
+            ]
+        }"#;
+        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
+        assert!(manifest.implements[0].sha256.is_none());
+    }
+
+    #[test]
+    fn manifest_without_implements_defaults_empty() {
+        let json5 = r#"{ name: "plain_node", tag: "v1" }"#;
+        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
+        assert!(manifest.implements.is_empty());
+    }
+
+    #[test]
+    fn implements_requires_name_tag_and_link_id() {
+        for entry in [
+            r#"{ tag: "v1", link_id: "cam" }"#,
+            r#"{ name: "depth_camera", link_id: "cam" }"#,
+            r#"{ name: "depth_camera", tag: "v1" }"#,
+            r#"{ name: "depth_camera", tag: "v1", link_id: "" }"#,
+            r#"{ name: "depth_camera", tag: "v1", link_id: "--" }"#,
+        ] {
+            let json5 = format!(
+                r#"{{ name: "n", tag: "v1", implements: [{entry}] }}"#
+            );
+            assert!(
+                serde_json5::from_str::<Manifest>(&json5).is_err(),
+                "implements entry should be rejected: {entry}"
+            );
+        }
+    }
+
+    #[test]
+    fn implements_rejects_unknown_fields() {
+        let json5 = r#"{
+            name: "n",
+            tag: "v1",
+            implements: [
+                { name: "depth_camera", tag: "v1", link_id: "cam", extra: "bad" }
+            ]
+        }"#;
+        assert!(serde_json5::from_str::<Manifest>(json5).is_err());
+    }
+
+    #[test]
+    fn interfaces_rejects_conforms_to_as_unknown_field() {
+        // The old field is not recognized at all — plain serde unknown-field
+        // rejection is the intended UX (no alias, no friendlier error).
         let json5 = r#"{
             conforms_to: [
                 { name: "depth_camera", tag: "v1" }
             ]
         }"#;
-        let interfaces: Interfaces = serde_json5::from_str(json5).expect("should parse");
-        let items = interfaces.conforms_to.expect("conforms_to should be Some");
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].name.as_str(), "depth_camera");
-        assert_eq!(items[0].tag, "v1");
-        assert!(items[0].sha256.is_none());
-    }
-
-    #[test]
-    fn interfaces_without_conforms_to() {
-        let json5 = r#"{}"#;
-        let interfaces: Interfaces = serde_json5::from_str(json5).expect("should parse");
-        assert!(interfaces.conforms_to.is_none());
-    }
-
-    #[test]
-    fn interfaces_conforms_to_requires_name() {
-        let json5 = r#"{
-            conforms_to: [
-                { tag: "v1" }
-            ]
-        }"#;
         assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
     }
 
     #[test]
-    fn interfaces_conforms_to_requires_tag() {
-        let json5 = r#"{
-            conforms_to: [
-                { name: "depth_camera" }
-            ]
-        }"#;
-        assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
+    fn emitted_topic_two_variants_parse() {
+        let contract: EmittedTopic =
+            serde_json5::from_str(r#"{ link_id: "cam", name: "video_stream" }"#)
+                .expect("contract-backed emit should parse");
+        assert_eq!(contract.name(), "video_stream");
+        assert_eq!(contract.link_id(), Some("cam"));
+        assert!(!contract.is_native());
+
+        let native: EmittedTopic = serde_json5::from_str(
+            r#"{ name: "debug_stream", qos_profile: "sensor_data", message_format: { x: "f64" } }"#,
+        )
+        .expect("native emit should parse");
+        assert_eq!(native.name(), "debug_stream");
+        assert!(native.link_id().is_none());
+        let native = native.as_native().unwrap();
+        assert_eq!(native.qos_profile, QoSProfile::SensorData);
+        assert!(native.message_format.is_some());
     }
 
     #[test]
-    fn interfaces_conforms_to_rejects_unknown_fields() {
-        let json5 = r#"{
-            conforms_to: [
-                { name: "depth_camera", tag: "v1", extra: "bad" }
-            ]
-        }"#;
-        assert!(serde_json5::from_str::<Interfaces>(json5).is_err());
+    fn contract_backed_emit_rejects_inline_shape() {
+        for entry in [
+            r#"{ link_id: "cam", name: "video_stream", message_format: { x: "f64" } }"#,
+            r#"{ link_id: "cam", name: "video_stream", qos_profile: "sensor_data" }"#,
+        ] {
+            assert!(
+                serde_json5::from_str::<EmittedTopic>(entry).is_err(),
+                "inline shape on contract-backed emit should be rejected: {entry}"
+            );
+        }
     }
 
     #[test]
-    fn interfaces_conforms_to_normalization_sorts_by_name() {
-        let item_a = ConformsToItem {
-            name: Name::new("alpha").unwrap(),
-            tag: "v1".into(),
-            sha256: None,
-        };
-        let item_b = ConformsToItem {
-            name: Name::new("beta").unwrap(),
-            tag: "v1".into(),
-            sha256: Some("aaaa".into()),
-        };
+    fn contract_backed_service_and_action_reject_inline_shape() {
+        assert!(
+            serde_json5::from_str::<ExposedService>(
+                r#"{ link_id: "cam", name: "is_ready", request_message_format: {} }"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json5::from_str::<ExposedAction>(
+                r#"{ link_id: "arm", name: "do_move", goal_service: {} }"#
+            )
+            .is_err()
+        );
+    }
 
-        let interfaces_a = Interfaces {
-            topics: None,
-            services: None,
-            actions: None,
-            conforms_to: Some(vec![item_a.clone(), item_b.clone()]),
-        };
-        let interfaces_b = Interfaces {
-            topics: None,
-            services: None,
-            actions: None,
-            conforms_to: Some(vec![item_b, item_a]),
-        };
+    #[test]
+    fn produced_entries_require_non_empty_name() {
+        assert!(serde_json5::from_str::<EmittedTopic>(r#"{ name: "" }"#).is_err());
+        assert!(serde_json5::from_str::<EmittedTopic>(r#"{}"#).is_err());
+        assert!(serde_json5::from_str::<EmittedTopic>(r#"{ link_id: "cam", name: "" }"#).is_err());
+        assert!(serde_json5::from_str::<ExposedService>(r#"{ name: "   " }"#).is_err());
+        assert!(serde_json5::from_str::<ExposedAction>(r#"{ name: "" }"#).is_err());
+    }
 
-        assert!(interfaces_a.matches_unordered(&interfaces_b));
+    #[test]
+    fn produced_entries_round_trip_both_variants() {
+        for source in [
+            r#"{ link_id: "cam", name: "video_stream" }"#,
+            r#"{ name: "debug_stream", qos_profile: "sensor_data", message_format: { x: "f64" } }"#,
+        ] {
+            let parsed: EmittedTopic = serde_json5::from_str(source).expect("should parse");
+            let serialized = serde_json5::to_string(&parsed).expect("should serialize");
+            let reparsed: EmittedTopic =
+                serde_json5::from_str(&serialized).expect("round-trip should re-parse");
+            assert_eq!(parsed, reparsed, "round-trip mismatch for {source}");
+        }
+
+        let svc: ExposedService = serde_json5::from_str(
+            r#"{ name: "native_svc", request_message_format: {}, response_message_format: { ok: "bool" } }"#,
+        )
+        .expect("should parse");
+        let reparsed: ExposedService =
+            serde_json5::from_str(&serde_json5::to_string(&svc).unwrap()).unwrap();
+        assert_eq!(svc, reparsed);
+
+        let action: ExposedAction = serde_json5::from_str(
+            r#"{ link_id: "arm", name: "do_move" }"#,
+        )
+        .expect("should parse");
+        let reparsed: ExposedAction =
+            serde_json5::from_str(&serde_json5::to_string(&action).unwrap()).unwrap();
+        assert_eq!(action, reparsed);
     }
 
     #[test]

@@ -104,14 +104,14 @@ async fn topic_native_roundtrip() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn topic_iface_roundtrip() {
+async fn topic_contract_roundtrip() {
     let _lock = ZENOH_SERIAL.lock().await;
     let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .unwrap();
     instance.messenger().start_session().await.unwrap();
 
-    let target = SenderTarget::interface("manipulator", "v1-rc2").expect("valid target");
+    let target = SenderTarget::contract("manipulator", "v1-rc2").expect("valid target");
     let sender = TopicWireSender::new("core_pub", "pub_inst", target.clone(), None, "joint_states")
         .expect("valid wire fields");
     let receiver = TopicWireReceiver::new(
@@ -144,7 +144,7 @@ async fn topic_iface_roundtrip() {
         .await
         .unwrap();
 
-    let received = recv_or_timeout(&mut sub, "topic_iface_roundtrip sub").await;
+    let received = recv_or_timeout(&mut sub, "topic_contract_roundtrip sub").await;
     assert_eq!(received.payload(), &body);
 }
 

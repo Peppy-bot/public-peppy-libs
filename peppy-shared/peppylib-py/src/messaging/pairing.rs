@@ -2,7 +2,7 @@
 //! of the peer paired on a slot), [`PyPeerSlot`] (observe a slot's pin state),
 //! and [`PyPeerSubscription`] (receive the paired peer's publishes).
 
-use super::iface::PyProducerRef;
+use super::target::PyProducerRef;
 use super::topics::PyTopicMessage;
 use peppylib::messaging::PeerInfo;
 use peppylib::runtime::{PeerSlot, PeerSubscription};

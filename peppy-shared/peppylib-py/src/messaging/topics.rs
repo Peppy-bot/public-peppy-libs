@@ -1,4 +1,4 @@
-use super::iface::{PyProducerRef, PySenderTarget};
+use super::target::{PyProducerRef, PySenderTarget};
 use super::{PyMessengerHandle, future_into_py_unit, to_py_err};
 use crate::config::PyQoSProfile;
 use peppylib::messaging::{Subscription, TopicMessenger, TopicPublisher};
