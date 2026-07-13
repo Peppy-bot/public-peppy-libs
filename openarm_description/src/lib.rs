@@ -15,10 +15,12 @@
 //! - [`HardwareVersion::joint_limits`] resolves one side's per-joint position limits from the
 //!   bundled URDF with that margin applied: the single clamp source for every node that
 //!   produces joint commands.
+//! - [`HardwareVersion::base_link`] names one side's chain base link in the bundled URDF:
+//!   the single source for the link a kinematics chain is walked out from.
 //!
 //! Pure data: this crate carries no solver dependency. A consumer that wants a kinematic
-//! model builds it from the URDF and applies the margin itself, e.g.
-//! `srs_model::Arm::from_urdf(v.urdf(), base).with_lower_floor(v.elbow_joint_index(),
+//! model builds it from these, e.g. `srs_model::Arm::from_urdf(v.urdf(),
+//! v.base_link(side)).with_lower_floor(v.elbow_joint_index(),
 //! v.elbow_singularity_floor_rad())`, so the description stays reusable by any consumer (a
 //! viz tool, a sim bridge) without pulling a solver in.
 
@@ -123,6 +125,20 @@ impl HardwareVersion {
             };
             [lower, joint.limit.upper]
         })
+    }
+
+    /// The chain base link naming one side's 7-DOF arm in the bundled URDF: the link
+    /// the kinematics chain is walked out from. The generations name it differently
+    /// (v1 `openarm_{side}_link0`; v2 folded the mount roll into the chain and named
+    /// it `openarm_{side}_base_link`), so it is a property of the generation's data,
+    /// resolved here rather than configured per node.
+    pub fn base_link(self, side: Side) -> &'static str {
+        match (self, side) {
+            (Self::V1, Side::Left) => "openarm_left_link0",
+            (Self::V1, Side::Right) => "openarm_right_link0",
+            (Self::V2, Side::Left) => "openarm_left_base_link",
+            (Self::V2, Side::Right) => "openarm_right_base_link",
+        }
     }
 }
 
@@ -290,27 +306,24 @@ mod tests {
     }
 
     #[test]
-    fn both_urdfs_parse_and_carry_their_chain_bases() {
-        // Each generation names its per-arm base link differently: v1 `link0`, v2
-        // `base_link` (v2 folded the ±90° mount roll into the arm chain).
+    fn base_link_names_the_exact_link_each_urdf_carries() {
+        // Pin the exact per-side base link (v1 `link0`, v2 `base_link`, after v2 folded
+        // the ±90° mount roll into the arm chain), and separately confirm that name is a
+        // link the bundled URDF actually carries. The expected names are explicit, not
+        // derived from the mapping under test, so a wrong mapping onto some other
+        // existing link cannot pass.
         let cases = [
-            (
-                HardwareVersion::V1,
-                ["openarm_left_link0", "openarm_right_link0"],
-            ),
-            (
-                HardwareVersion::V2,
-                ["openarm_left_base_link", "openarm_right_base_link"],
-            ),
+            (HardwareVersion::V1, Side::Left, "openarm_left_link0"),
+            (HardwareVersion::V1, Side::Right, "openarm_right_link0"),
+            (HardwareVersion::V2, Side::Left, "openarm_left_base_link"),
+            (HardwareVersion::V2, Side::Right, "openarm_right_base_link"),
         ];
-        for (v, bases) in cases {
-            let robot = parsed(v);
-            for base in bases {
-                assert!(
-                    robot.links.iter().any(|l| l.name == base),
-                    "{v}: missing base link {base}"
-                );
-            }
+        for (v, side, expected) in cases {
+            assert_eq!(v.base_link(side), expected, "{v} {side:?}: base link name");
+            assert!(
+                parsed(v).links.iter().any(|l| l.name == expected),
+                "{v}: bundled URDF missing link {expected}"
+            );
         }
     }
 
