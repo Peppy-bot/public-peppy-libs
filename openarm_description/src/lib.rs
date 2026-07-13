@@ -306,19 +306,24 @@ mod tests {
     }
 
     #[test]
-    fn both_urdfs_carry_the_base_link_each_reports() {
-        // Each generation names its per-arm base link differently (v1 `link0`, v2
-        // `base_link`, after v2 folded the ±90° mount roll into the arm chain); the
-        // link `base_link` reports must exist in that generation's bundled URDF.
-        for v in [HardwareVersion::V1, HardwareVersion::V2] {
-            let robot = parsed(v);
-            for side in [Side::Left, Side::Right] {
-                let base = v.base_link(side);
-                assert!(
-                    robot.links.iter().any(|l| l.name == base),
-                    "{v} {side:?}: missing base link {base}"
-                );
-            }
+    fn base_link_names_the_exact_link_each_urdf_carries() {
+        // Pin the exact per-side base link (v1 `link0`, v2 `base_link`, after v2 folded
+        // the ±90° mount roll into the arm chain), and separately confirm that name is a
+        // link the bundled URDF actually carries. The expected names are explicit, not
+        // derived from the mapping under test, so a wrong mapping onto some other
+        // existing link cannot pass.
+        let cases = [
+            (HardwareVersion::V1, Side::Left, "openarm_left_link0"),
+            (HardwareVersion::V1, Side::Right, "openarm_right_link0"),
+            (HardwareVersion::V2, Side::Left, "openarm_left_base_link"),
+            (HardwareVersion::V2, Side::Right, "openarm_right_base_link"),
+        ];
+        for (v, side, expected) in cases {
+            assert_eq!(v.base_link(side), expected, "{v} {side:?}: base link name");
+            assert!(
+                parsed(v).links.iter().any(|l| l.name == expected),
+                "{v}: bundled URDF missing link {expected}"
+            );
         }
     }
 
