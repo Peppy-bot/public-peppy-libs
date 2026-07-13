@@ -15,10 +15,12 @@
 //! - [`HardwareVersion::joint_limits`] resolves one side's per-joint position limits from the
 //!   bundled URDF with that margin applied: the single clamp source for every node that
 //!   produces joint commands.
+//! - [`HardwareVersion::base_link`] names one side's chain base link in the bundled URDF:
+//!   the single source for the link a kinematics chain is walked out from.
 //!
 //! Pure data: this crate carries no solver dependency. A consumer that wants a kinematic
-//! model builds it from the URDF and applies the margin itself, e.g.
-//! `srs_model::Arm::from_urdf(v.urdf(), base).with_lower_floor(v.elbow_joint_index(),
+//! model builds it from these, e.g. `srs_model::Arm::from_urdf(v.urdf(),
+//! v.base_link(side)).with_lower_floor(v.elbow_joint_index(),
 //! v.elbow_singularity_floor_rad())`, so the description stays reusable by any consumer (a
 //! viz tool, a sim bridge) without pulling a solver in.
 
@@ -123,6 +125,20 @@ impl HardwareVersion {
             };
             [lower, joint.limit.upper]
         })
+    }
+
+    /// The chain base link naming one side's 7-DOF arm in the bundled URDF: the link
+    /// the kinematics chain is walked out from. The generations name it differently
+    /// (v1 `openarm_{side}_link0`; v2 folded the mount roll into the chain and named
+    /// it `openarm_{side}_base_link`), so it is a property of the generation's data,
+    /// resolved here rather than configured per node.
+    pub fn base_link(self, side: Side) -> &'static str {
+        match (self, side) {
+            (Self::V1, Side::Left) => "openarm_left_link0",
+            (Self::V1, Side::Right) => "openarm_right_link0",
+            (Self::V2, Side::Left) => "openarm_left_base_link",
+            (Self::V2, Side::Right) => "openarm_right_base_link",
+        }
     }
 }
 
@@ -290,25 +306,17 @@ mod tests {
     }
 
     #[test]
-    fn both_urdfs_parse_and_carry_their_chain_bases() {
-        // Each generation names its per-arm base link differently: v1 `link0`, v2
-        // `base_link` (v2 folded the ±90° mount roll into the arm chain).
-        let cases = [
-            (
-                HardwareVersion::V1,
-                ["openarm_left_link0", "openarm_right_link0"],
-            ),
-            (
-                HardwareVersion::V2,
-                ["openarm_left_base_link", "openarm_right_base_link"],
-            ),
-        ];
-        for (v, bases) in cases {
+    fn both_urdfs_carry_the_base_link_each_reports() {
+        // Each generation names its per-arm base link differently (v1 `link0`, v2
+        // `base_link`, after v2 folded the ±90° mount roll into the arm chain); the
+        // link `base_link` reports must exist in that generation's bundled URDF.
+        for v in [HardwareVersion::V1, HardwareVersion::V2] {
             let robot = parsed(v);
-            for base in bases {
+            for side in [Side::Left, Side::Right] {
+                let base = v.base_link(side);
                 assert!(
                     robot.links.iter().any(|l| l.name == base),
-                    "{v}: missing base link {base}"
+                    "{v} {side:?}: missing base link {base}"
                 );
             }
         }
