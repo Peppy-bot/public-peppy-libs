@@ -255,16 +255,19 @@ async fn topic_publish_subscribe_target_scoped() {
     let emitter_handle = router.messenger().await;
     // Deterministically wait for the subscriber before the first publish so it
     // is not dropped during peer-mode discovery propagation.
-    TopicMessenger::wait_for_subscriber(
-        &emitter_handle,
-        emitter_core_node,
-        emitter_instance_id,
-        test_node_target(node_name),
-        topic,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("subscriber should become reachable");
+    assert!(
+        TopicMessenger::wait_for_subscriber(
+            &emitter_handle,
+            emitter_core_node,
+            emitter_instance_id,
+            test_node_target(node_name),
+            topic,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("subscriber should become reachable"),
+        "a subscriber must be matched before publishing"
+    );
     publish_once(
         &emitter_handle,
         emitter_core_node,
@@ -343,16 +346,19 @@ async fn topic_publish_subscribe_with_from_instance_id() {
     let emitter_handle1 = router.messenger().await;
     // Deterministically wait for the matching subscriber (subscription2) before
     // the first publish so it is not dropped during peer-mode discovery.
-    TopicMessenger::wait_for_subscriber(
-        &emitter_handle1,
-        emitter_core_node,
-        emitter_instance_id2,
-        test_node_target(node_name),
-        topic,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("subscriber should become reachable");
+    assert!(
+        TopicMessenger::wait_for_subscriber(
+            &emitter_handle1,
+            emitter_core_node,
+            emitter_instance_id2,
+            test_node_target(node_name),
+            topic,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("subscriber should become reachable"),
+        "a subscriber must be matched before publishing"
+    );
     publish_once(
         &emitter_handle1,
         emitter_core_node,
@@ -439,16 +445,19 @@ async fn topic_publish_subscribe_with_from_core_node() {
     let emitter_handle1 = router.messenger().await;
     // Deterministically wait for the matching subscriber (subscription2) before
     // the first publish so it is not dropped during peer-mode discovery.
-    TopicMessenger::wait_for_subscriber(
-        &emitter_handle1,
-        emitter_core_node2,
-        emitter_instance_id,
-        test_node_target(node_name),
-        topic,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("subscriber should become reachable");
+    assert!(
+        TopicMessenger::wait_for_subscriber(
+            &emitter_handle1,
+            emitter_core_node2,
+            emitter_instance_id,
+            test_node_target(node_name),
+            topic,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("subscriber should become reachable"),
+        "a subscriber must be matched before publishing"
+    );
     publish_once(
         &emitter_handle1,
         emitter_core_node2,
@@ -533,16 +542,19 @@ async fn per_slot_pinned_subscriptions_isolate_producers() {
     // during peer-mode discovery propagation. Each pinned subscription has
     // its own producer keyexpr, so wait on both.
     for producer in [p1, p2] {
-        TopicMessenger::wait_for_subscriber(
-            &emitter_handle,
-            core,
-            producer,
-            test_node_target(node_name),
-            topic,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("subscriber should become reachable");
+        assert!(
+            TopicMessenger::wait_for_subscriber(
+                &emitter_handle,
+                core,
+                producer,
+                test_node_target(node_name),
+                topic,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("subscriber should become reachable"),
+            "a subscriber must be matched before publishing"
+        );
     }
 
     for (producer, body) in [
@@ -592,6 +604,324 @@ async fn per_slot_pinned_subscriptions_isolate_producers() {
     router.shutdown().await;
 }
 
+/// A multi-cardinality slot's merged subscription: one pinned wire
+/// subscription per bound producer, merged behind one `on_next_message`
+/// yielding `(producer, message)`. Messages from an unbound same-contract
+/// producer never surface (the producer segments are never wildcarded).
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn bound_set_subscription_merges_bound_producers_and_excludes_unbound() {
+    let router = TestRouterContext::start().await;
+
+    let qos = QoSProfile::Reliable;
+    let node_name = "uvc_camera";
+    let topic = "video_stream";
+    let core = "shared_core";
+    let front = "front_camera";
+    let rear = "rear_camera";
+    let unbound = "ghost_camera";
+
+    let subscriber_handle = router.messenger().await;
+    let bound = [ProducerRef::new(core, front), ProducerRef::new(core, rear)];
+    let shutdown = crate::runtime::CancellationToken::new();
+    let mut subscription = TopicMessenger::subscribe_bound_set(
+        &subscriber_handle,
+        core,
+        "consumer_inst",
+        test_node_target(node_name),
+        topic,
+        &bound,
+        qos.clone(),
+        shutdown.clone(),
+    )
+    .await
+    .expect("bound-set subscribe should succeed");
+
+    let emitter_handle = router.messenger().await;
+    for producer in [front, rear] {
+        assert!(
+            TopicMessenger::wait_for_subscriber(
+                &emitter_handle,
+                core,
+                producer,
+                test_node_target(node_name),
+                topic,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("subscriber should become reachable"),
+            "a subscriber must be matched before publishing"
+        );
+    }
+
+    for (producer, body) in [
+        (front, b"from-front".as_ref()),
+        (unbound, b"from-ghost"),
+        (rear, b"from-rear"),
+    ] {
+        publish_once(
+            &emitter_handle,
+            core,
+            producer,
+            test_node_target(node_name),
+            topic,
+            qos.clone(),
+            Payload::from(body.to_vec()),
+        )
+        .await
+        .expect("emit should succeed");
+    }
+
+    // Exactly the two bound producers' messages surface, each tagged with
+    // its producer; merge order across producers is unspecified.
+    let mut received: HashMap<String, Vec<u8>> = HashMap::new();
+    for _ in 0..2 {
+        let (producer, message) =
+            tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
+                .await
+                .expect("timed out waiting for a bound producer's message")
+                .expect("subscription closed early");
+        assert_eq!(
+            producer.instance_id,
+            message.instance_id(),
+            "the yielded producer tag must match the wire message's producer"
+        );
+        received.insert(producer.instance_id.clone(), message.payload().to_vec());
+    }
+    assert_eq!(received.len(), 2, "one message per bound producer");
+    assert_eq!(received[front], b"from-front");
+    assert_eq!(received[rear], b"from-rear");
+
+    let extra =
+        tokio::time::timeout(Duration::from_millis(500), subscription.on_next_message()).await;
+    assert!(
+        extra.is_err(),
+        "an unbound producer's publish must never surface on the bound set"
+    );
+
+    router.shutdown().await;
+}
+
+/// Per-producer order is preserved through the merge, and a backlog from a
+/// busy producer cannot starve another ready producer: the rotating poll
+/// order surfaces the quiet producer's message long before the busy
+/// producer's backlog drains.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn bound_set_subscription_preserves_per_producer_order_and_is_fair() {
+    let router = TestRouterContext::start().await;
+
+    let qos = QoSProfile::Reliable;
+    let node_name = "uvc_camera";
+    let topic = "video_stream";
+    let core = "shared_core";
+    let busy = "busy_camera";
+    let quiet = "quiet_camera";
+    const BUSY_BACKLOG: usize = 50;
+
+    let subscriber_handle = router.messenger().await;
+    let bound = [ProducerRef::new(core, busy), ProducerRef::new(core, quiet)];
+    let shutdown = crate::runtime::CancellationToken::new();
+    let mut subscription = TopicMessenger::subscribe_bound_set(
+        &subscriber_handle,
+        core,
+        "consumer_inst",
+        test_node_target(node_name),
+        topic,
+        &bound,
+        qos.clone(),
+        shutdown.clone(),
+    )
+    .await
+    .expect("bound-set subscribe should succeed");
+
+    let emitter_handle = router.messenger().await;
+    for producer in [busy, quiet] {
+        assert!(
+            TopicMessenger::wait_for_subscriber(
+                &emitter_handle,
+                core,
+                producer,
+                test_node_target(node_name),
+                topic,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("subscriber should become reachable"),
+            "a subscriber must be matched before publishing"
+        );
+    }
+
+    // Queue a large backlog from the busy producer first, then one message
+    // from the quiet producer, and let delivery settle before reading.
+    let busy_publisher = TopicMessenger::declare_publisher(
+        &emitter_handle,
+        core,
+        busy,
+        test_node_target(node_name),
+        None,
+        topic,
+        qos.clone(),
+    )
+    .await
+    .expect("declare busy publisher");
+    for idx in 0..BUSY_BACKLOG {
+        busy_publisher
+            .publish(Payload::from(format!("busy-{idx}").into_bytes()))
+            .await
+            .expect("busy publish should succeed");
+    }
+    publish_once(
+        &emitter_handle,
+        core,
+        quiet,
+        test_node_target(node_name),
+        topic,
+        qos.clone(),
+        Payload::from(b"quiet-0".to_vec()),
+    )
+    .await
+    .expect("quiet publish should succeed");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let mut busy_seen = Vec::new();
+    let mut quiet_position = None;
+    for position in 0..=BUSY_BACKLOG {
+        let (producer, message) =
+            tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
+                .await
+                .expect("timed out draining the merged subscription")
+                .expect("subscription closed early");
+        let body = String::from_utf8(message.payload().to_vec()).expect("utf8 payload");
+        if producer.instance_id == quiet {
+            quiet_position = Some(position);
+        } else {
+            busy_seen.push(body);
+        }
+    }
+
+    let quiet_position = quiet_position.expect("the quiet producer's message must surface");
+    assert!(
+        quiet_position <= 4,
+        "fair merging must surface the quiet producer within the first few reads, \
+         not after the busy backlog; surfaced at read {quiet_position}"
+    );
+    let expected_busy_prefix: Vec<String> = (0..busy_seen.len())
+        .map(|idx| format!("busy-{idx}"))
+        .collect();
+    assert_eq!(
+        busy_seen, expected_busy_prefix,
+        "the busy producer's messages must stay in publish order through the merge"
+    );
+
+    router.shutdown().await;
+}
+
+/// The empty bound set of a `zero_or_more` slot: `on_next_message` stays
+/// pending until the node's cancellation token fires, then returns `None`.
+/// A non-empty subscription drains queued messages before honoring an
+/// already-fired token.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn bound_set_subscription_empty_set_pends_until_shutdown_and_drains_before_none() {
+    let router = TestRouterContext::start().await;
+
+    let qos = QoSProfile::Reliable;
+    let node_name = "uvc_camera";
+    let topic = "video_stream";
+    let core = "shared_core";
+    let front = "front_camera";
+
+    // Empty set: pending until shutdown, then None.
+    let subscriber_handle = router.messenger().await;
+    let shutdown = crate::runtime::CancellationToken::new();
+    let mut empty_subscription = TopicMessenger::subscribe_bound_set(
+        &subscriber_handle,
+        core,
+        "consumer_inst",
+        test_node_target(node_name),
+        topic,
+        &[],
+        qos.clone(),
+        shutdown.clone(),
+    )
+    .await
+    .expect("empty bound-set subscribe should succeed");
+
+    let pending = tokio::time::timeout(
+        Duration::from_millis(300),
+        empty_subscription.on_next_message(),
+    )
+    .await;
+    assert!(
+        pending.is_err(),
+        "an empty bound set must stay pending, not yield or close"
+    );
+
+    shutdown.cancel();
+    let closed = tokio::time::timeout(Duration::from_secs(1), empty_subscription.on_next_message())
+        .await
+        .expect("shutdown must release the pending wait");
+    assert!(closed.is_none(), "shutdown must surface as end-of-stream");
+
+    // Non-empty set with a queued message: the message drains before the
+    // already-fired token is honored.
+    let bound = [ProducerRef::new(core, front)];
+    let shutdown = crate::runtime::CancellationToken::new();
+    let mut subscription = TopicMessenger::subscribe_bound_set(
+        &subscriber_handle,
+        core,
+        "consumer_inst",
+        test_node_target(node_name),
+        topic,
+        &bound,
+        qos.clone(),
+        shutdown.clone(),
+    )
+    .await
+    .expect("bound-set subscribe should succeed");
+
+    let emitter_handle = router.messenger().await;
+    assert!(
+        TopicMessenger::wait_for_subscriber(
+            &emitter_handle,
+            core,
+            front,
+            test_node_target(node_name),
+            topic,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("subscriber should become reachable"),
+        "a subscriber must be matched before publishing"
+    );
+    publish_once(
+        &emitter_handle,
+        core,
+        front,
+        test_node_target(node_name),
+        topic,
+        qos.clone(),
+        Payload::from(b"queued-before-shutdown".to_vec()),
+    )
+    .await
+    .expect("emit should succeed");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    shutdown.cancel();
+    let (producer, message) =
+        tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
+            .await
+            .expect("queued message must still surface")
+            .expect("queued message must win over the fired token");
+    assert_eq!(producer.instance_id, front);
+    assert_eq!(message.payload().as_ref(), b"queued-before-shutdown");
+
+    let closed = tokio::time::timeout(Duration::from_secs(1), subscription.on_next_message())
+        .await
+        .expect("drained subscription must honor shutdown");
+    assert!(closed.is_none(), "shutdown must surface as end-of-stream");
+
+    router.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn topic_publish_reliable_5000hz_messages() {
     let router = TestRouterContext::start().await;
@@ -629,16 +959,19 @@ async fn topic_publish_reliable_5000hz_messages() {
 
     // Deterministically wait for the subscriber before the publish loop so the
     // first messages are not dropped during peer-mode discovery propagation.
-    TopicMessenger::wait_for_subscriber(
-        &sender_handle,
-        emitter_core_node,
-        emitter_instance_id,
-        test_node_target(node_name),
-        topic,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("subscriber should become reachable");
+    assert!(
+        TopicMessenger::wait_for_subscriber(
+            &sender_handle,
+            emitter_core_node,
+            emitter_instance_id,
+            test_node_target(node_name),
+            topic,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("subscriber should become reachable"),
+        "a subscriber must be matched before publishing"
+    );
 
     // Drain concurrently with publishing. Peer mode removes the router buffer
     // that used to sit between publisher and subscriber, so publishing all

@@ -452,16 +452,24 @@ mod tests {
 
     #[test]
     fn slot_bindings_round_trip_through_json() {
+        use config::runtime::BoundProducers;
+
         let mut bindings = BTreeMap::new();
-        bindings.insert("arm".to_string(), ProducerRef::new("core_a", "arm-1"));
         bindings.insert(
-            "left_camera".to_string(),
-            ProducerRef::new("core_a", "cam-1"),
+            "arm".to_string(),
+            BoundProducers::from(ProducerRef::new("core_a", "arm-1")),
         );
+        // A multi-cardinality slot's ordered set and a zero_or_more slot's
+        // empty set both round-trip.
         bindings.insert(
-            "right_camera".to_string(),
-            ProducerRef::new("core_a", "cam-2"),
+            "cameras".to_string(),
+            BoundProducers::try_from(vec![
+                ProducerRef::new("core_a", "cam-1"),
+                ProducerRef::new("core_a", "cam-2"),
+            ])
+            .expect("distinct producers"),
         );
+        bindings.insert("spare_cameras".to_string(), BoundProducers::default());
         let instance = SerializedInstance {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,

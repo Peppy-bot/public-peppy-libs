@@ -167,6 +167,10 @@ impl PyProducerRef {
     pub(crate) fn into_inner(self) -> ProducerRef {
         self.inner
     }
+
+    pub(crate) fn as_inner(&self) -> &ProducerRef {
+        &self.inner
+    }
 }
 
 impl From<ProducerRef> for PyProducerRef {

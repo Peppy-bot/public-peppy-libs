@@ -49,12 +49,13 @@ pub struct StandaloneConfig {
     /// its link_id) to a known peer, standing in for the daemon's live
     /// `peer_update` delivery during standalone development.
     pub peer_pins: std::collections::BTreeMap<String, crate::messaging::PeerPin>,
-    /// Daemon-less consumer-slot bindings: the one producer bound to each
-    /// declared `depends_on` slot (keyed by its link_id), standing in for
-    /// the launcher's validated binding map during standalone development.
-    /// Every declared slot must be bound — startup fails on an unbound
-    /// slot, exactly as a daemon launch would have failed validation.
-    pub bound_producers: std::collections::BTreeMap<String, crate::messaging::ProducerRef>,
+    /// Daemon-less consumer-slot bindings: the ordered producer set bound
+    /// to each declared `depends_on` slot (keyed by its link_id), standing
+    /// in for the launcher's validated binding map during standalone
+    /// development. Each slot's set must satisfy the slot's declared
+    /// cardinality at startup, exactly as a daemon launch would have
+    /// enforced at plan time.
+    pub bound_producers: std::collections::BTreeMap<String, Vec<crate::messaging::ProducerRef>>,
 }
 
 impl StandaloneConfig {
@@ -143,28 +144,28 @@ impl StandaloneConfig {
         self
     }
 
-    /// Bind the consumer slot at `link_id` to the producer at
-    /// `(producer_core_node, producer_instance_id)`. A slot binds exactly
-    /// one producer — a repeat call with the same `link_id` replaces the
-    /// previous binding (standard builder-setter semantics); a consumer
-    /// that needs several producers declares several slots. Standalone-mode
-    /// stand-in for the launcher's validated binding map: every declared
-    /// `depends_on` slot must be bound this way or processor startup fails
-    /// with [`Error::SlotUnbound`](crate::error::Error::SlotUnbound);
-    /// ignored (with a warning) if the manifest declares no such slot.
+    /// Append the producer at `(producer_core_node, producer_instance_id)`
+    /// to the bound set of the consumer slot at `link_id`. Repeat calls
+    /// with the same `link_id` accumulate in call order, mirroring how
+    /// repeated `--bind KEY@instance` flags accumulate: the resulting set
+    /// must satisfy the slot's declared cardinality at startup (exactly one
+    /// for `one`, at least one for `one_or_more`; a `zero_or_more` slot may
+    /// be left unseeded for an empty set). Standalone-mode stand-in for the
+    /// launcher's validated binding map; ignored (with a warning) if the
+    /// manifest declares no such slot.
     pub fn with_bound_producer(
         mut self,
         link_id: impl Into<String>,
         producer_core_node: impl Into<String>,
         producer_instance_id: impl Into<String>,
     ) -> Self {
-        self.bound_producers.insert(
-            link_id.into(),
-            crate::messaging::ProducerRef::new(
+        self.bound_producers
+            .entry(link_id.into())
+            .or_default()
+            .push(crate::messaging::ProducerRef::new(
                 producer_core_node.into(),
                 producer_instance_id.into(),
-            ),
-        );
+            ));
         self
     }
 

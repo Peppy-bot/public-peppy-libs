@@ -73,10 +73,10 @@ pub mod fingerprint {
 pub mod node {
     pub use crate::internal::node::{
         ActionInterfaces, ActionServiceEndpoint, ActionTopicEndpoint, ArrayKind, ArraySchema,
-        ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig, ContractBackedEntry,
-        ContractImplementationEdge, DependencySpec, DependsOn, EmittedTopic, Execution,
-        ExposedAction, ExposedService, ImplementsEntry, InterfaceKind, Interfaces, Manifest,
-        MessageFormat, MessageSizeEstimate, NativeEmittedTopic, NativeExposedAction,
+        Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
+        ContractBackedEntry, ContractImplementationEdge, DependencySpec, DependsOn, EmittedTopic,
+        Execution, ExposedAction, ExposedService, ImplementsEntry, InterfaceKind, Interfaces,
+        Manifest, MessageFormat, MessageSizeEstimate, NativeEmittedTopic, NativeExposedAction,
         NativeExposedService, NodeConfig, NodeConfigParser, NodeDependency, ObjectKind,
         ObjectSchema, PairingDependency, PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType,
         ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken,
@@ -89,8 +89,8 @@ pub mod node {
 // -- runtime --
 pub mod runtime {
     pub use crate::internal::runtime::{
-        DiscoveryConfig, LifecycleRuntimeConfig, Name, NodeInstanceConfig, PairingSlotBinding,
-        ProducerRef, ResolvedFramework, RuntimeConfig, SlotBindings,
+        BoundProducers, DiscoveryConfig, LifecycleRuntimeConfig, Name, NodeInstanceConfig,
+        PairingSlotBinding, ProducerRef, ResolvedFramework, RuntimeConfig, SlotBindings,
     };
 }
 

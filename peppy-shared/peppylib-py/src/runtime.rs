@@ -757,6 +757,15 @@ pub struct PyCancellationToken {
     inner: CancellationToken,
 }
 
+impl PyCancellationToken {
+    /// Clone of the wrapped token, for bindings that thread it into
+    /// runtime primitives (e.g. the bound-set subscription's shutdown
+    /// signal).
+    pub(crate) fn inner_token(&self) -> CancellationToken {
+        self.inner.clone()
+    }
+}
+
 #[pymethods]
 impl PyCancellationToken {
     /// Returns true if the token has been cancelled.
@@ -897,15 +906,46 @@ impl PyNodeRunner {
         self.inner.processor().node_tag()
     }
 
-    /// The one producer bound to the consumer slot at `link_id` — a
-    /// declared slot is always bound to exactly one producer (launch and
-    /// node startup both reject anything else), so this cannot fail for a
-    /// generated `link_id`; a miss means the generated code and the
-    /// manifest disagree (stale codegen) and panics. Python codegen
-    /// splices this at consumed subscribe / poll / send_goal call sites
-    /// as the producer argument.
+    /// The runtime-resolved, immutable, ordered producer set bound to the
+    /// consumer slot at `link_id`, in application declaration order. Its
+    /// validated size is the slot's declared cardinality (at least one for
+    /// `one_or_more`, possibly empty only for `zero_or_more`); node startup
+    /// rejects anything else, so this cannot fail for a generated `link_id`
+    /// — a miss means the generated code and the manifest disagree (stale
+    /// codegen) and panics. Python codegen splices this behind the
+    /// generated `bound_producers()` module functions of `one_or_more` and
+    /// `zero_or_more` slots; `one` slots use the singular
+    /// [`bound_producer`](Self::bound_producer).
+    fn bound_producers(&self, link_id: &str) -> Vec<PyProducerRef> {
+        self.inner
+            .processor()
+            .bound_producers(link_id)
+            .iter()
+            .map(|producer| PyProducerRef::from(producer.clone()))
+            .collect()
+    }
+
+    /// The sole producer bound to the `cardinality: "one"` consumer slot
+    /// at `link_id`. Node startup validated the slot's set size, so
+    /// exactly one member exists; a miss or any other size means the
+    /// generated code and the manifest disagree (stale codegen) and
+    /// panics, exactly like [`bound_producers`](Self::bound_producers) on
+    /// an unknown `link_id`. Python codegen splices this behind the
+    /// generated `bound_producer()` module function of every `one` slot.
     fn bound_producer(&self, link_id: &str) -> PyProducerRef {
-        PyProducerRef::from(self.inner.processor().bound_producer(link_id).clone())
+        PyProducerRef::from(self.inner.processor().sole_bound_producer(link_id).clone())
+    }
+
+    /// Checks that `target` is a member of the bound set of the slot at
+    /// `link_id`, raising the membership error otherwise. Generated
+    /// consumed service / action wrappers call this before anything
+    /// reaches the wire; membership is per slot, so a producer bound to a
+    /// different slot of the same consumer is rejected all the same.
+    fn ensure_target_bound(&self, link_id: &str, target: &PyProducerRef) -> PyResult<()> {
+        self.inner
+            .processor()
+            .ensure_target_bound(link_id, target.as_inner())
+            .map_err(crate::messaging::to_py_err)
     }
 
     /// Handle onto the pairing slot declared at `link_id` in
