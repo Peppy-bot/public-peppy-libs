@@ -23,4 +23,6 @@ pub enum Error {
     ZeroPacerPeriod,
     #[error("low-pass cutoff and sample period must be finite and positive")]
     InvalidLowPass,
+    #[error("Butterworth cutoff and sample period must be finite, positive, and below Nyquist")]
+    InvalidButterworth,
 }
