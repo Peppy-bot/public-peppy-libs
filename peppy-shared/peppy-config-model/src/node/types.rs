@@ -768,6 +768,57 @@ fn default_action_service_qos_profile() -> QoSProfile {
     QoSProfile::Reliable
 }
 
+/// How many producers a `depends_on.{nodes,contracts}` slot binds at the
+/// application layer. Cardinality constrains only the size of the
+/// application-selected bound set, validated at plan time and fixed when the
+/// node starts; it never permits undeclared or unbound launched instances,
+/// and it is not live discovery. Pairing slots have no cardinality: a
+/// pairing is strictly 1:1 and expresses absence with its `optional` flag.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Cardinality {
+    /// The slot binds exactly one producer (the default when omitted).
+    #[default]
+    One,
+    /// The slot binds one or more producers; an empty set is a binding error.
+    OneOrMore,
+    /// The slot binds zero or more producers; an empty set is valid and
+    /// simply produces no bound edge.
+    ZeroOrMore,
+}
+
+impl Cardinality {
+    pub fn is_one(&self) -> bool {
+        matches!(self, Cardinality::One)
+    }
+
+    /// Whether an empty bound set satisfies the slot.
+    pub fn allows_empty(&self) -> bool {
+        matches!(self, Cardinality::ZeroOrMore)
+    }
+
+    /// Whether the slot may bind more than one producer.
+    pub fn allows_many(&self) -> bool {
+        !self.is_one()
+    }
+
+    /// The manifest spelling (`one`, `one_or_more`, `zero_or_more`), for
+    /// error messages.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Cardinality::One => "one",
+            Cardinality::OneOrMore => "one_or_more",
+            Cardinality::ZeroOrMore => "zero_or_more",
+        }
+    }
+}
+
+impl fmt::Display for Cardinality {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeDependency {
@@ -775,6 +826,11 @@ pub struct NodeDependency {
     pub tag: String,
     #[serde(deserialize_with = "deserialize_node_dependency_link_id")]
     pub link_id: String,
+    /// Size constraint on the slot's application-bound producer set.
+    /// Serialized only when non-default so manifests written before the
+    /// field existed stay byte-identical on round-trip.
+    #[serde(default, skip_serializing_if = "Cardinality::is_one")]
+    pub cardinality: Cardinality,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -786,6 +842,12 @@ pub struct ContractDependency {
     pub link_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+    /// Size constraint on the slot's application-bound producer set. Same
+    /// values and default as [`NodeDependency::cardinality`]; the only
+    /// per-kind difference is the conformance rule applied per bound target
+    /// (contract implementation instead of `(name, tag)` identity).
+    #[serde(default, skip_serializing_if = "Cardinality::is_one")]
+    pub cardinality: Cardinality,
 }
 
 /// One bindable contract-implementation claim in `manifest.implements`: this
@@ -813,19 +875,63 @@ pub struct ImplementsEntry {
 /// contribute no DAG edge. `optional: true` marks a slot the node functions
 /// meaningfully without (it boots unpaired with no `--pair`/`--defer-pair`
 /// ceremony); a required slot must be paired or explicitly deferred at start.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Deliberately carries no `cardinality`: a pairing is strictly 1:1 between
+/// two complementary slots and expresses absence with `optional`. The custom
+/// `Deserialize` below turns a `cardinality` key into a targeted manifest
+/// error instead of a generic unknown-field message.
+#[derive(Debug, Clone, Serialize)]
 pub struct PairingDependency {
     pub name: Name,
     pub tag: String,
-    #[serde(deserialize_with = "deserialize_pairing_dependency_role")]
     pub role: String,
-    #[serde(deserialize_with = "deserialize_pairing_dependency_link_id")]
     pub link_id: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for PairingDependency {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawPairingDependency {
+            name: Name,
+            tag: String,
+            #[serde(deserialize_with = "deserialize_pairing_dependency_role")]
+            role: String,
+            #[serde(deserialize_with = "deserialize_pairing_dependency_link_id")]
+            link_id: String,
+            #[serde(default)]
+            optional: bool,
+            sha256: Option<String>,
+            /// Captured only to reject it with a targeted message; the type
+            /// is irrelevant, presence alone is the error.
+            cardinality: Option<serde::de::IgnoredAny>,
+        }
+
+        let raw = RawPairingDependency::deserialize(deserializer)?;
+        if raw.cardinality.is_some() {
+            return Err(de::Error::custom(
+                crate::error::StructuredError::CardinalityOnPairingSlot {
+                    link_id: raw.link_id.clone(),
+                }
+                .json5_message(),
+            ));
+        }
+        Ok(PairingDependency {
+            name: raw.name,
+            tag: raw.tag,
+            role: raw.role,
+            link_id: raw.link_id,
+            optional: raw.optional,
+            sha256: raw.sha256,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2031,6 +2137,116 @@ mod tests {
         assert!(deps.nodes.is_empty());
         assert_eq!(deps.contracts.len(), 1);
         assert_eq!(deps.contracts[0].link_id, "camera");
+    }
+
+    /// `cardinality` parses on both dependency kinds, with the same values
+    /// and the same default of `one` when omitted.
+    #[test]
+    fn depends_on_cardinality_parses_on_nodes_and_contracts() {
+        let json5 = r#"{
+            nodes: [
+                { name: "robot_arm", tag: "v1", link_id: "arms", cardinality: "one_or_more" },
+                { name: "logger", tag: "v1", link_id: "log" }
+            ],
+            contracts: [
+                { name: "uvc_camera", tag: "v1", link_id: "camera", cardinality: "zero_or_more" },
+                { name: "depth_camera", tag: "v1", link_id: "depth", cardinality: "one" }
+            ]
+        }"#;
+        let deps: DependsOn = serde_json5::from_str(json5).expect("should parse");
+        assert_eq!(deps.nodes[0].cardinality, Cardinality::OneOrMore);
+        assert_eq!(
+            deps.nodes[1].cardinality,
+            Cardinality::One,
+            "omitted cardinality defaults to one"
+        );
+        assert_eq!(deps.contracts[0].cardinality, Cardinality::ZeroOrMore);
+        assert_eq!(deps.contracts[1].cardinality, Cardinality::One);
+    }
+
+    /// Only the three defined spellings parse; `zero_or_one` is
+    /// intentionally not a cardinality.
+    #[test]
+    fn depends_on_cardinality_rejects_unknown_values() {
+        for value in ["zero_or_one", "many", "two", "ONE_OR_MORE", ""] {
+            let json5 = format!(
+                r#"{{
+                    contracts: [
+                        {{ name: "uvc_camera", tag: "v1", link_id: "camera", cardinality: "{value}" }}
+                    ]
+                }}"#
+            );
+            assert!(
+                serde_json5::from_str::<DependsOn>(&json5).is_err(),
+                "cardinality `{value}` should be rejected"
+            );
+        }
+    }
+
+    /// An omitted cardinality is not serialized (existing manifests stay
+    /// byte-identical) and an explicit non-default value round-trips.
+    #[test]
+    fn depends_on_cardinality_serialization_round_trip() {
+        let default_dep: NodeDependency =
+            serde_json5::from_str(r#"{ name: "logger", tag: "v1", link_id: "log" }"#).unwrap();
+        let serialized = serde_json5::to_string(&default_dep).unwrap();
+        assert!(
+            !serialized.contains("cardinality"),
+            "default cardinality must not be serialized: {serialized}"
+        );
+
+        let multi_dep: ContractDependency = serde_json5::from_str(
+            r#"{ name: "uvc_camera", tag: "v1", link_id: "camera", cardinality: "one_or_more" }"#,
+        )
+        .unwrap();
+        let serialized = serde_json5::to_string(&multi_dep).unwrap();
+        assert!(
+            serialized.contains("\"cardinality\":\"one_or_more\""),
+            "non-default cardinality must round-trip: {serialized}"
+        );
+        let reparsed: ContractDependency = serde_json5::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.cardinality, Cardinality::OneOrMore);
+    }
+
+    /// A `cardinality` key on a pairing entry is a manifest error with a
+    /// targeted message: a pairing is strictly 1:1 and expresses absence
+    /// with `optional`.
+    #[test]
+    fn pairing_entry_rejects_cardinality_with_targeted_error() {
+        let json5 = r#"{
+            pairings: [
+                { name: "arm_link", tag: "v1", role: "controller", link_id: "arm", cardinality: "one_or_more" }
+            ]
+        }"#;
+        let err = serde_json5::from_str::<DependsOn>(json5)
+            .expect_err("cardinality on a pairing entry must be rejected");
+        let parsing_err = crate::error::ParsingError::from(err);
+        let crate::error::ParsingError::CardinalityOnPairingSlot { link_id } = &parsing_err else {
+            panic!("expected CardinalityOnPairingSlot, got {parsing_err:?}");
+        };
+        assert_eq!(link_id, "arm");
+        let msg = parsing_err.to_string();
+        assert!(
+            msg.contains("strictly 1:1") && msg.contains("optional"),
+            "message should explain the pairing model: {msg}"
+        );
+
+        // Other unknown keys still get the plain unknown-field rejection.
+        let other_unknown = r#"{
+            pairings: [
+                { name: "arm_link", tag: "v1", role: "controller", link_id: "arm", extra: true }
+            ]
+        }"#;
+        assert!(serde_json5::from_str::<DependsOn>(other_unknown).is_err());
+
+        // A well-formed pairing entry still parses.
+        let valid = r#"{
+            pairings: [
+                { name: "arm_link", tag: "v1", role: "controller", link_id: "arm", optional: true }
+            ]
+        }"#;
+        let deps: DependsOn = serde_json5::from_str(valid).expect("valid pairing should parse");
+        assert!(deps.pairings[0].optional);
     }
 
     #[test]

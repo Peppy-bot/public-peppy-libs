@@ -227,17 +227,51 @@ pub enum Error {
     SubscriptionClosed { topic_name: String },
 
     /// Startup backstop for the launch-time rule "every declared
-    /// depends_on slot must be bound": a daemon that validates bindings
-    /// never ships a boot config missing a slot's entry, so hitting this
-    /// means version skew or a hand-edited boot config.
+    /// depends_on slot with cardinality `one` / `one_or_more` must be
+    /// bound": a daemon that validates bindings never ships a boot config
+    /// missing such a slot's entry, so hitting this means version skew or
+    /// a hand-edited boot config.
     #[error(
-        "consumer slot `{link_id}` is unbound: the boot config carries no \
-         producer for it, but every declared depends_on slot must be \
-         bound to exactly one producer. Fix the launcher / daemon that \
-         produced the boot config (or, in standalone mode, seed the slot \
-         via `StandaloneConfig::with_bound_producer`)"
+        "consumer slot `{link_id}` (cardinality `{cardinality}`) is unbound: the boot config \
+         carries no producer set for it, but only a `zero_or_more` slot may be left unbound. \
+         Fix the launcher / daemon that produced the boot config (or, in standalone mode, \
+         seed the slot via `StandaloneConfig::with_bound_producer`)"
     )]
-    SlotUnbound { link_id: String },
+    SlotUnbound {
+        link_id: String,
+        cardinality: &'static str,
+    },
+
+    /// Startup backstop for the launch-time cardinality size rules: the
+    /// boot config carries a bound set whose size the slot's declared
+    /// cardinality does not allow (for example two producers on a `one`
+    /// slot, or an empty set on a `one_or_more` slot).
+    #[error(
+        "consumer slot `{link_id}` declares cardinality `{cardinality}` but the boot config \
+         binds {bound} producer(s) — the launcher validator enforces this at plan time, so \
+         this boot config was produced by an incompatible component version or edited by hand"
+    )]
+    SlotCardinalityViolated {
+        link_id: String,
+        cardinality: &'static str,
+        bound: usize,
+    },
+
+    /// A directed service / action call named a producer outside the
+    /// slot's bound set. Every `poll` / `fire_goal` target must be a
+    /// member of the slot's own `bound_producers()` set: an out-of-set
+    /// instance was never checked by plan-time binding validation, and
+    /// membership is per slot, so a producer bound to a different slot of
+    /// the same consumer is rejected all the same.
+    #[error(
+        "target `{instance_id}@{core_node}` is not in the bound set of consumer slot \
+         `{link_id}` — pass a member of this slot's `bound_producers()`"
+    )]
+    TargetNotBound {
+        link_id: String,
+        core_node: String,
+        instance_id: String,
+    },
 
     #[error("message format for `{context}` is not available in the generator")]
     MessageFormatUnavailable { context: String },

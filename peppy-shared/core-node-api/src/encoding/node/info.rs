@@ -344,11 +344,16 @@ mod tests {
         let bindings_a: config::runtime::SlotBindings = [
             (
                 "wrist_left_camera".to_string(),
-                ProducerRef::new("core_a", "cam1"),
+                config::runtime::BoundProducers::from(ProducerRef::new("core_a", "cam1")),
             ),
+            // A multi-cardinality slot's ordered set must survive the trip.
             (
                 "wrist_right_camera".to_string(),
-                ProducerRef::new("core_a", "cam2"),
+                config::runtime::BoundProducers::try_from(vec![
+                    ProducerRef::new("core_a", "cam2"),
+                    ProducerRef::new("core_a", "cam3"),
+                ])
+                .expect("distinct producers"),
             ),
         ]
         .into_iter()

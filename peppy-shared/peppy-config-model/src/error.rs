@@ -189,6 +189,13 @@ pub enum ParsingError {
         "Pairing link_id `{0}` in manifest.depends_on.pairings is not a valid wire segment (must not contain '/' or '@', and must not collide with a reserved sentinel) — pairing slot link_ids appear on the wire as the producer-side link_id segment"
     )]
     PairingSentinelLinkId(String),
+    #[error(
+        "Duplicate producer `{instance_id}@{core_node}` in a slot's bound set — bound producers must be unique within a slot"
+    )]
+    DuplicateBoundProducer {
+        core_node: String,
+        instance_id: String,
+    },
 
     // -- build system
     #[error("Invalid toolchain {0}")]
@@ -287,6 +294,10 @@ pub enum ParsingError {
         "Consumed interface references implements link_id `{link_id}` — `manifest.implements` slots are produced, not consumed; to consume a contract, declare it under `depends_on.contracts`"
     )]
     ConsumedItemReferencesImplementsLinkId { link_id: String },
+    #[error(
+        "Pairing slot `{link_id}` in depends_on.pairings carries a `cardinality` key — a pairing is strictly 1:1 between two complementary slots; use `optional: true` to express absence. `cardinality` is valid only on depends_on.nodes and depends_on.contracts entries"
+    )]
+    CardinalityOnPairingSlot { link_id: String },
     #[error("Duplicate entry `{key}` in `{section}`")]
     DuplicateInterfaceEntry { section: String, key: String },
 
@@ -314,6 +325,9 @@ pub enum StructuredError {
     EmptyInterfaceName {
         section: String,
     },
+    CardinalityOnPairingSlot {
+        link_id: String,
+    },
 }
 
 impl StructuredError {
@@ -339,6 +353,9 @@ impl From<StructuredError> for ParsingError {
             },
             StructuredError::EmptyInterfaceName { section } => {
                 ParsingError::EmptyInterfaceName { section }
+            }
+            StructuredError::CardinalityOnPairingSlot { link_id } => {
+                ParsingError::CardinalityOnPairingSlot { link_id }
             }
         }
     }

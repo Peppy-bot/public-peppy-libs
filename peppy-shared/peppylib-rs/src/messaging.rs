@@ -22,14 +22,16 @@ pub use pairing::{PeerInfo, PeerPin, PeerPinState};
 pub use services::{
     ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder, ServiceTarget,
 };
-pub use topics::{Subscription, TopicMessenger, TopicPublisher};
+pub use topics::{BoundSetSubscription, Subscription, TopicMessenger, TopicPublisher};
 
 // Fully-qualified producer address, re-exported from the config model: the
 // wire addresses a producer by the `(core_node, instance_id)` pair. Every
-// consumer dep slot is bound to exactly one producer (the launcher validator
-// resolves and stamps it at plan time), so subscribe / poll / send_goal call
-// sites all take a single `ProducerRef` — there is no per-slot filter type
-// and no in-process producer filtering.
+// consumer dep slot is bound to an ordered producer set sized by its
+// declared cardinality (the launcher validator resolves and stamps each
+// member at plan time). Wire operations stay per-producer: a bound-set
+// topic subscription opens one pinned subscription per member, and poll /
+// send_goal take the single selected member — there is no per-slot filter
+// type and no in-process producer filtering.
 pub use config::runtime::ProducerRef;
 
 // Curated pmi re-exports. peppylib is a thin layer over PMI, so these types are
