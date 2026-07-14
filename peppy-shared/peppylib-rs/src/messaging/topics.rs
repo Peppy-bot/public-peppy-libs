@@ -59,8 +59,8 @@ struct BoundSource {
 /// - Ready producers are merged fairly (rotating poll order), so one busy
 ///   producer cannot indefinitely starve another.
 /// - A source whose channel fails is dropped with a warning naming the
-///   producer; unrelated sources keep delivering, and the slot's
-///   `bound_producers()` set is never mutated.
+///   producer; unrelated sources keep delivering, and the slot's bound
+///   set is never mutated.
 /// - Queued messages drain before shutdown is honored; once the node's
 ///   cancellation token fires and no message is ready, `on_next_message`
 ///   returns `None`. An empty `zero_or_more` set therefore stays pending

@@ -114,14 +114,14 @@ pub struct PyTopicMessenger;
 
 #[pymethods]
 impl PyTopicMessenger {
-    /// Subscribe to a topic. Pass `SenderTarget.node(name, tag)` or
-    /// `SenderTarget.interface(name, tag)` to match the publisher's
-    /// target. `from_producer` is the slot's one bound producer, a full
+    /// Subscribe to a topic from one producer. Pass
+    /// `SenderTarget.node(name, tag)` or `SenderTarget.interface(name, tag)`
+    /// to match the publisher's target. `from_producer` is a full
     /// [`ProducerRef`](peppylib::messaging::ProducerRef) identity pinned
     /// on the wire — only that producer's publishes reach the
-    /// subscription; fan-in is N declared slots, never N producers on one
-    /// slot. Generated code splices `node_runner.bound_producer(link_id)`
-    /// here.
+    /// subscription. Generated consumed topics never splice this: they go
+    /// through [`subscribe_bound_set`](Self::subscribe_bound_set), which
+    /// covers the slot's complete bound set for every cardinality.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_producer, qos))]
     #[allow(clippy::too_many_arguments)]

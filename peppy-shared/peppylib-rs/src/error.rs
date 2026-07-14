@@ -258,14 +258,17 @@ pub enum Error {
     },
 
     /// A directed service / action call named a producer outside the
-    /// slot's bound set. Every `poll` / `fire_goal` target must be a
-    /// member of the slot's own `bound_producers()` set: an out-of-set
-    /// instance was never checked by plan-time binding validation, and
-    /// membership is per slot, so a producer bound to a different slot of
-    /// the same consumer is rejected all the same.
+    /// slot's bound set. Every `poll` / `fire_goal` target must come from
+    /// the slot's own bound set, exposed by the slot's cardinality-typed
+    /// accessor (`bound_producer()` for `one`, `bound_producers()` for the
+    /// multi cardinalities): an out-of-set instance was never checked by
+    /// plan-time binding validation, and membership is per slot, so a
+    /// producer bound to a different slot of the same consumer is rejected
+    /// all the same.
     #[error(
         "target `{instance_id}@{core_node}` is not in the bound set of consumer slot \
-         `{link_id}` — pass a member of this slot's `bound_producers()`"
+         `{link_id}`: pass a producer from this slot's own generated accessor \
+         (`bound_producer()` / `bound_producers()`)"
     )]
     TargetNotBound {
         link_id: String,

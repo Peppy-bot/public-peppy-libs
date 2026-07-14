@@ -908,13 +908,14 @@ impl PyNodeRunner {
 
     /// The runtime-resolved, immutable, ordered producer set bound to the
     /// consumer slot at `link_id`, in application declaration order. Its
-    /// validated size is the slot's declared cardinality (exactly one for
-    /// `one`, at least one for `one_or_more`, possibly empty only for
-    /// `zero_or_more`); node startup rejects anything else, so this cannot
-    /// fail for a generated `link_id` — a miss means the generated code and
-    /// the manifest disagree (stale codegen) and panics. Python codegen
-    /// splices this behind every generated `bound_producers()` module
-    /// function.
+    /// validated size is the slot's declared cardinality (at least one for
+    /// `one_or_more`, possibly empty only for `zero_or_more`); node startup
+    /// rejects anything else, so this cannot fail for a generated `link_id`
+    /// — a miss means the generated code and the manifest disagree (stale
+    /// codegen) and panics. Python codegen splices this behind the
+    /// generated `bound_producers()` module functions of `one_or_more` and
+    /// `zero_or_more` slots; `one` slots use the singular
+    /// [`bound_producer`](Self::bound_producer).
     fn bound_producers(&self, link_id: &str) -> Vec<PyProducerRef> {
         self.inner
             .processor()
@@ -922,6 +923,17 @@ impl PyNodeRunner {
             .iter()
             .map(|producer| PyProducerRef::from(producer.clone()))
             .collect()
+    }
+
+    /// The sole producer bound to the `cardinality: "one"` consumer slot
+    /// at `link_id`. Node startup validated the slot's set size, so
+    /// exactly one member exists; a miss or any other size means the
+    /// generated code and the manifest disagree (stale codegen) and
+    /// panics, exactly like [`bound_producers`](Self::bound_producers) on
+    /// an unknown `link_id`. Python codegen splices this behind the
+    /// generated `bound_producer()` module function of every `one` slot.
+    fn bound_producer(&self, link_id: &str) -> PyProducerRef {
+        PyProducerRef::from(self.inner.processor().sole_bound_producer(link_id).clone())
     }
 
     /// Checks that `target` is a member of the bound set of the slot at

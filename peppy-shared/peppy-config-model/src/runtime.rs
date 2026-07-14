@@ -137,8 +137,9 @@ impl ProducerRef {
 /// The runtime-resolved, immutable, ordered producer set bound to one
 /// consumer slot. Order is the application declaration order (launcher
 /// array order / CLI flag occurrence order), preserved verbatim from the
-/// validator through boot configs to `bound_producers()` so `.first()` is
-/// deterministic. Duplicates are rejected rather than removed or
+/// validator through boot configs to the generated bound-producer
+/// accessors, so selecting the first member is deterministic. Duplicates
+/// are rejected rather than removed or
 /// reordered. The set's validated size is the slot's declared
 /// `cardinality`: exactly one for `one` (the default), one or more for
 /// `one_or_more`, zero or more for `zero_or_more`; an empty set is a

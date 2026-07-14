@@ -310,8 +310,12 @@ impl Processor {
     /// miss means the generated code and the manifest disagree (version
     /// skew / stale codegen) — a bug, not a user error — and panics.
     ///
-    /// Generated `bound_producers()` module functions splice
-    /// `node_runner.processor().bound_producers(<link_id>)`.
+    /// The generated accessors are cardinality-typed: only `zero_or_more`
+    /// slots' `bound_producers()` splice this plain, possibly empty slice
+    /// directly. `one` slots go through [`Self::sole_bound_producer`] and
+    /// `one_or_more` slots through [`Self::non_empty_bound_producers`];
+    /// every generated `subscribe()` passes this slice to
+    /// `subscribe_bound_set` regardless of cardinality.
     pub fn bound_producers(&self, link_id: &str) -> &[crate::messaging::ProducerRef] {
         self.bound_producers.get(link_id).unwrap_or_else(|| {
             panic!(
@@ -320,6 +324,54 @@ impl Processor {
                  for this node"
             )
         })
+    }
+
+    /// The sole producer bound to a `cardinality: "one"` consumer slot.
+    /// Startup validated every slot's set size against its declared
+    /// cardinality, so exactly one member exists; any other size here means
+    /// the generated code and the manifest disagree (version skew / stale
+    /// codegen), a bug rather than a user error, and panics just like an
+    /// unknown `link_id` in [`Self::bound_producers`].
+    ///
+    /// Generated `bound_producer()` module functions of `one` slots splice
+    /// `node_runner.processor().sole_bound_producer(<link_id>)`.
+    pub fn sole_bound_producer(&self, link_id: &str) -> &crate::messaging::ProducerRef {
+        match self.bound_producers(link_id) {
+            [sole] => sole,
+            set => panic!(
+                "consumer slot `{link_id}` is bound to {} producers but the generated accessor \
+                 expects cardinality `one`: the generated code and the manifest disagree \
+                 (version skew / stale codegen); regenerate bindings for this node",
+                set.len()
+            ),
+        }
+    }
+
+    /// The producer set bound to a `cardinality: "one_or_more"` consumer
+    /// slot, as a [`NonEmptyProducers`](crate::messaging::NonEmptyProducers)
+    /// view whose `first()` is infallible. Startup validated the set as
+    /// non-empty; an empty set here means the generated code and the
+    /// manifest disagree (version skew / stale codegen), a bug rather than
+    /// a user error, and panics just like an unknown `link_id` in
+    /// [`Self::bound_producers`].
+    ///
+    /// Generated `bound_producers()` module functions of `one_or_more`
+    /// slots splice
+    /// `node_runner.processor().non_empty_bound_producers(<link_id>)`.
+    pub fn non_empty_bound_producers(
+        &self,
+        link_id: &str,
+    ) -> crate::messaging::NonEmptyProducers<'_> {
+        crate::messaging::NonEmptyProducers::new(self.bound_producers(link_id)).unwrap_or_else(
+            || {
+                panic!(
+                    "consumer slot `{link_id}` is bound to an empty set but the generated \
+                     accessor expects cardinality `one_or_more`: the generated code and the \
+                     manifest disagree (version skew / stale codegen); regenerate bindings for \
+                     this node"
+                )
+            },
+        )
     }
 
     /// Checks that `target` is a member of the bound set of the slot
@@ -1340,12 +1392,11 @@ mod tests {
         );
     }
 
-    /// Happy path: each slot's bound set reaches the startup cache with
-    /// member order preserved, and `ensure_target_bound` enforces per-slot
-    /// membership.
-    #[test]
-    fn daemon_boot_config_bindings_reach_bound_producer_cache() {
-        let processor = daemon_processor_with_bindings(
+    /// Daemon processor over [`MULTI_SLOT_PEPPY_CONFIG`] with the standard
+    /// bindings: `main` (one) -> camera_1, `arms` (one_or_more) ->
+    /// [right_arm, left_arm], `spare_cameras` (zero_or_more) -> [].
+    fn multi_slot_processor() -> Processor {
+        daemon_processor_with_bindings(
             MULTI_SLOT_PEPPY_CONFIG,
             Some(
                 r#"{
@@ -1358,7 +1409,15 @@ mod tests {
                 }"#,
             ),
         )
-        .expect("valid bindings should construct");
+        .expect("valid bindings should construct")
+    }
+
+    /// Happy path: each slot's bound set reaches the startup cache with
+    /// member order preserved, and `ensure_target_bound` enforces per-slot
+    /// membership.
+    #[test]
+    fn daemon_boot_config_bindings_reach_bound_producer_cache() {
+        let processor = multi_slot_processor();
 
         assert_eq!(
             instance_ids(processor.bound_producers("main")),
@@ -1388,6 +1447,51 @@ mod tests {
             ),
             "expected TargetNotBound, got: {err}"
         );
+    }
+
+    /// The cardinality-typed accessors expose exactly the guarantee startup
+    /// validation established: `sole_bound_producer` returns a `one` slot's
+    /// single member directly, and `non_empty_bound_producers` a
+    /// `one_or_more` slot's ordered set with an infallible `first()`.
+    #[test]
+    fn cardinality_typed_accessors_return_the_validated_shapes() {
+        let processor = multi_slot_processor();
+
+        assert_eq!(
+            processor.sole_bound_producer("main").instance_id,
+            "camera_1"
+        );
+
+        let arms = processor.non_empty_bound_producers("arms");
+        assert_eq!(
+            arms.first().instance_id,
+            "right_arm",
+            "first() follows binding declaration order"
+        );
+        assert_eq!(instance_ids(arms.as_slice()), ["right_arm", "left_arm"]);
+        assert_eq!(
+            arms.as_slice(),
+            processor.bound_producers("arms"),
+            "the typed view exposes the same cached set as the plain slice"
+        );
+    }
+
+    /// A typed accessor whose guarantee the cached set does not meet is
+    /// codegen / runtime skew (the accessor and the startup validation come
+    /// from the same manifest), so it panics like an unknown `link_id`
+    /// rather than returning an error the caller could mishandle.
+    #[test]
+    #[should_panic(expected = "expects cardinality `one`")]
+    fn sole_bound_producer_panics_on_a_multi_member_set() {
+        let _ = multi_slot_processor().sole_bound_producer("arms");
+    }
+
+    /// See [`sole_bound_producer_panics_on_a_multi_member_set`]: the
+    /// non-empty view refuses an empty `zero_or_more` set the same way.
+    #[test]
+    #[should_panic(expected = "expects cardinality `one_or_more`")]
+    fn non_empty_bound_producers_panics_on_an_empty_set() {
+        let _ = multi_slot_processor().non_empty_bound_producers("spare_cameras");
     }
 
     /// A boot config carrying the removed pre-cardinality single-producer

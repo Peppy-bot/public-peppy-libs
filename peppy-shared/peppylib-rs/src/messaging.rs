@@ -2,6 +2,7 @@
 mod tests;
 
 mod actions;
+mod bound_set;
 mod discovery;
 mod pairing;
 mod services;
@@ -18,6 +19,7 @@ pub use actions::{
     encode_cancel_ack, generate_goal_id, unwrap_goal_payload, wrap_goal_payload,
     wrap_result_outcome,
 };
+pub use bound_set::NonEmptyProducers;
 pub use pairing::{PeerInfo, PeerPin, PeerPinState};
 pub use services::{
     ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder, ServiceTarget,
