@@ -1,17 +1,17 @@
 //! Shared control-loop primitives for the openarm control nodes.
 //!
 //! - [`Pacer`]: fixed-rate pacing for a control loop, with overrun accounting.
-//! - [`LowPassFilter`]: first-order smoothing of a noisy scalar signal.
+//! - [`filters`]: scalar signal smoothers ([`LowPassFilter`](filters::LowPassFilter),
+//!   [`ButterworthFilter`](filters::ButterworthFilter)).
 //!
 //! The bimanual backbone (openarm_backbone) and the real arm
 //! (openarm_arm) both pace their real-time control loops with [`Pacer`]; this is
 //! their one tested implementation. A home for further control primitives as they
 //! are factored out of the nodes.
 
-mod lowpass;
+pub mod filters;
 mod pacer;
 
-pub use lowpass::LowPassFilter;
 pub use pacer::Pacer;
 
 use thiserror::Error;
@@ -23,4 +23,6 @@ pub enum Error {
     ZeroPacerPeriod,
     #[error("low-pass cutoff and sample period must be finite and positive")]
     InvalidLowPass,
+    #[error("Butterworth cutoff and sample period must be finite, positive, and below Nyquist")]
+    InvalidButterworth,
 }

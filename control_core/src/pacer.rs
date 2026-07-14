@@ -84,7 +84,10 @@ impl Pacer {
         if self.overruns == 0 || now.duration_since(self.last_report) < OVERRUN_REPORT_PERIOD {
             return None;
         }
-        let report = OverrunReport { count: self.overruns, worst: self.worst_late };
+        let report = OverrunReport {
+            count: self.overruns,
+            worst: self.worst_late,
+        };
         self.overruns = 0;
         self.worst_late = Duration::ZERO;
         self.last_report = now;
@@ -110,7 +113,10 @@ mod tests {
 
     #[test]
     fn new_rejects_a_zero_period() {
-        assert!(matches!(Pacer::new(Duration::ZERO), Err(Error::ZeroPacerPeriod)));
+        assert!(matches!(
+            Pacer::new(Duration::ZERO),
+            Err(Error::ZeroPacerPeriod)
+        ));
     }
 
     #[test]
@@ -170,7 +176,13 @@ mod tests {
         // Interval not yet elapsed: deferred.
         assert_eq!(p.due_report(t0 + OVERRUN_REPORT_PERIOD / 2), None);
         // Interval elapsed: tally returned and reset.
-        assert_eq!(p.due_report(t0 + OVERRUN_REPORT_PERIOD), Some(OverrunReport { count: 1, worst: PERIOD }));
+        assert_eq!(
+            p.due_report(t0 + OVERRUN_REPORT_PERIOD),
+            Some(OverrunReport {
+                count: 1,
+                worst: PERIOD
+            })
+        );
         assert_eq!(p.overruns, 0);
         assert_eq!(p.due_report(t0 + 2 * OVERRUN_REPORT_PERIOD), None);
     }
