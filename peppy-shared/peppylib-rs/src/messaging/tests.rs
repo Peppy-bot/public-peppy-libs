@@ -255,16 +255,19 @@ async fn topic_publish_subscribe_target_scoped() {
     let emitter_handle = router.messenger().await;
     // Deterministically wait for the subscriber before the first publish so it
     // is not dropped during peer-mode discovery propagation.
-    TopicMessenger::wait_for_subscriber(
-        &emitter_handle,
-        emitter_core_node,
-        emitter_instance_id,
-        test_node_target(node_name),
-        topic,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("subscriber should become reachable");
+    assert!(
+        TopicMessenger::wait_for_subscriber(
+            &emitter_handle,
+            emitter_core_node,
+            emitter_instance_id,
+            test_node_target(node_name),
+            topic,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("subscriber should become reachable"),
+        "a subscriber must be matched before publishing"
+    );
     publish_once(
         &emitter_handle,
         emitter_core_node,
@@ -343,16 +346,19 @@ async fn topic_publish_subscribe_with_from_instance_id() {
     let emitter_handle1 = router.messenger().await;
     // Deterministically wait for the matching subscriber (subscription2) before
     // the first publish so it is not dropped during peer-mode discovery.
-    TopicMessenger::wait_for_subscriber(
-        &emitter_handle1,
-        emitter_core_node,
-        emitter_instance_id2,
-        test_node_target(node_name),
-        topic,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("subscriber should become reachable");
+    assert!(
+        TopicMessenger::wait_for_subscriber(
+            &emitter_handle1,
+            emitter_core_node,
+            emitter_instance_id2,
+            test_node_target(node_name),
+            topic,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("subscriber should become reachable"),
+        "a subscriber must be matched before publishing"
+    );
     publish_once(
         &emitter_handle1,
         emitter_core_node,
@@ -439,16 +445,19 @@ async fn topic_publish_subscribe_with_from_core_node() {
     let emitter_handle1 = router.messenger().await;
     // Deterministically wait for the matching subscriber (subscription2) before
     // the first publish so it is not dropped during peer-mode discovery.
-    TopicMessenger::wait_for_subscriber(
-        &emitter_handle1,
-        emitter_core_node2,
-        emitter_instance_id,
-        test_node_target(node_name),
-        topic,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("subscriber should become reachable");
+    assert!(
+        TopicMessenger::wait_for_subscriber(
+            &emitter_handle1,
+            emitter_core_node2,
+            emitter_instance_id,
+            test_node_target(node_name),
+            topic,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("subscriber should become reachable"),
+        "a subscriber must be matched before publishing"
+    );
     publish_once(
         &emitter_handle1,
         emitter_core_node2,
@@ -533,16 +542,19 @@ async fn per_slot_pinned_subscriptions_isolate_producers() {
     // during peer-mode discovery propagation. Each pinned subscription has
     // its own producer keyexpr, so wait on both.
     for producer in [p1, p2] {
-        TopicMessenger::wait_for_subscriber(
-            &emitter_handle,
-            core,
-            producer,
-            test_node_target(node_name),
-            topic,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("subscriber should become reachable");
+        assert!(
+            TopicMessenger::wait_for_subscriber(
+                &emitter_handle,
+                core,
+                producer,
+                test_node_target(node_name),
+                topic,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("subscriber should become reachable"),
+            "a subscriber must be matched before publishing"
+        );
     }
 
     for (producer, body) in [
@@ -626,16 +638,19 @@ async fn bound_set_subscription_merges_bound_producers_and_excludes_unbound() {
 
     let emitter_handle = router.messenger().await;
     for producer in [front, rear] {
-        TopicMessenger::wait_for_subscriber(
-            &emitter_handle,
-            core,
-            producer,
-            test_node_target(node_name),
-            topic,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("subscriber should become reachable");
+        assert!(
+            TopicMessenger::wait_for_subscriber(
+                &emitter_handle,
+                core,
+                producer,
+                test_node_target(node_name),
+                topic,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("subscriber should become reachable"),
+            "a subscriber must be matched before publishing"
+        );
     }
 
     for (producer, body) in [
@@ -720,16 +735,19 @@ async fn bound_set_subscription_preserves_per_producer_order_and_is_fair() {
 
     let emitter_handle = router.messenger().await;
     for producer in [busy, quiet] {
-        TopicMessenger::wait_for_subscriber(
-            &emitter_handle,
-            core,
-            producer,
-            test_node_target(node_name),
-            topic,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("subscriber should become reachable");
+        assert!(
+            TopicMessenger::wait_for_subscriber(
+                &emitter_handle,
+                core,
+                producer,
+                test_node_target(node_name),
+                topic,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("subscriber should become reachable"),
+            "a subscriber must be matched before publishing"
+        );
     }
 
     // Queue a large backlog from the busy producer first, then one message
@@ -861,16 +879,19 @@ async fn bound_set_subscription_empty_set_pends_until_shutdown_and_drains_before
     .expect("bound-set subscribe should succeed");
 
     let emitter_handle = router.messenger().await;
-    TopicMessenger::wait_for_subscriber(
-        &emitter_handle,
-        core,
-        front,
-        test_node_target(node_name),
-        topic,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("subscriber should become reachable");
+    assert!(
+        TopicMessenger::wait_for_subscriber(
+            &emitter_handle,
+            core,
+            front,
+            test_node_target(node_name),
+            topic,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("subscriber should become reachable"),
+        "a subscriber must be matched before publishing"
+    );
     publish_once(
         &emitter_handle,
         core,
@@ -938,16 +959,19 @@ async fn topic_publish_reliable_5000hz_messages() {
 
     // Deterministically wait for the subscriber before the publish loop so the
     // first messages are not dropped during peer-mode discovery propagation.
-    TopicMessenger::wait_for_subscriber(
-        &sender_handle,
-        emitter_core_node,
-        emitter_instance_id,
-        test_node_target(node_name),
-        topic,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("subscriber should become reachable");
+    assert!(
+        TopicMessenger::wait_for_subscriber(
+            &sender_handle,
+            emitter_core_node,
+            emitter_instance_id,
+            test_node_target(node_name),
+            topic,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("subscriber should become reachable"),
+        "a subscriber must be matched before publishing"
+    );
 
     // Drain concurrently with publishing. Peer mode removes the router buffer
     // that used to sit between publisher and subscriber, so publishing all
