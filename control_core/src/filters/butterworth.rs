@@ -178,7 +178,7 @@ mod tests {
     // a tone more than the first-order low-pass at the same cutoff.
     #[test]
     fn rolls_off_steeper_than_first_order() {
-        use crate::LowPassFilter;
+        use crate::filters::LowPassFilter;
         let fc = 10.0;
         let f_tone = 40.0; // two octaves above cutoff
         let amp = |bw: bool| {

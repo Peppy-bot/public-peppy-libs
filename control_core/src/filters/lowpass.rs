@@ -64,10 +64,22 @@ mod tests {
 
     #[test]
     fn from_cutoff_rejects_non_positive_or_non_finite() {
-        assert!(matches!(LowPassFilter::from_cutoff(0.0, TS), Err(Error::InvalidLowPass)));
-        assert!(matches!(LowPassFilter::from_cutoff(-1.0, TS), Err(Error::InvalidLowPass)));
-        assert!(matches!(LowPassFilter::from_cutoff(90.0, 0.0), Err(Error::InvalidLowPass)));
-        assert!(matches!(LowPassFilter::from_cutoff(f64::NAN, TS), Err(Error::InvalidLowPass)));
+        assert!(matches!(
+            LowPassFilter::from_cutoff(0.0, TS),
+            Err(Error::InvalidLowPass)
+        ));
+        assert!(matches!(
+            LowPassFilter::from_cutoff(-1.0, TS),
+            Err(Error::InvalidLowPass)
+        ));
+        assert!(matches!(
+            LowPassFilter::from_cutoff(90.0, 0.0),
+            Err(Error::InvalidLowPass)
+        ));
+        assert!(matches!(
+            LowPassFilter::from_cutoff(f64::NAN, TS),
+            Err(Error::InvalidLowPass)
+        ));
         assert!(matches!(
             LowPassFilter::from_cutoff(90.0, f64::INFINITY),
             Err(Error::InvalidLowPass)
@@ -77,7 +89,11 @@ mod tests {
     #[test]
     fn first_sample_seeds_the_state() {
         let mut f = LowPassFilter::from_cutoff(90.0, TS).unwrap();
-        assert_eq!(f.filter(3.0), 3.0, "the first sample passes through, no transient from zero");
+        assert_eq!(
+            f.filter(3.0),
+            3.0,
+            "the first sample passes through, no transient from zero"
+        );
     }
 
     #[test]
@@ -115,6 +131,10 @@ mod tests {
         f.filter(0.0);
         f.filter(1.0);
         f.reset();
-        assert_eq!(f.filter(9.0), 9.0, "after reset the next sample seeds again");
+        assert_eq!(
+            f.filter(9.0),
+            9.0,
+            "after reset the next sample seeds again"
+        );
     }
 }
