@@ -2,7 +2,7 @@ use crate::common::AnyType;
 use crate::consts::ALLOWED_CONFIG_CHARS;
 use crate::error::{ParsingError, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -189,14 +189,17 @@ impl TryFrom<Vec<ProducerRef>> for BoundProducers {
 
     fn try_from(producers: Vec<ProducerRef>) -> std::result::Result<Self, Self::Error> {
         // The first duplicated producer in declaration order names the error.
-        if let Some(duplicate) = producers
-            .iter()
-            .enumerate()
-            .find_map(|(idx, producer)| producers[..idx].contains(producer).then_some(producer))
-        {
+        let duplicate = {
+            let mut seen = HashSet::with_capacity(producers.len());
+            producers
+                .iter()
+                .find(|producer| !seen.insert(*producer))
+                .cloned()
+        };
+        if let Some(duplicate) = duplicate {
             return Err(ParsingError::DuplicateBoundProducer {
-                core_node: duplicate.core_node.clone(),
-                instance_id: duplicate.instance_id.clone(),
+                core_node: duplicate.core_node,
+                instance_id: duplicate.instance_id,
             });
         }
         Ok(Self(producers))

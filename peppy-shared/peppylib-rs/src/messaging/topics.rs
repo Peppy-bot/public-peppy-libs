@@ -144,6 +144,9 @@ impl BoundSetSubscription {
                         "bound producer's subscription channel closed; \
                          continuing with the remaining bound producers"
                     );
+                    if self.sources.is_empty() {
+                        return None;
+                    }
                 }
             }
         }
