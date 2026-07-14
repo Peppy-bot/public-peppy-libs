@@ -797,9 +797,16 @@ impl Cardinality {
         matches!(self, Cardinality::ZeroOrMore)
     }
 
-    /// Whether the slot may bind more than one producer.
-    pub fn allows_many(&self) -> bool {
-        !self.is_one()
+    /// Whether a bound set of `len` producers satisfies the slot: exactly
+    /// one for `one`, at least one for `one_or_more`, any size for
+    /// `zero_or_more`. The one size-admission rule, shared by plan-time
+    /// binding validation and the node runtime's startup re-check.
+    pub fn admits(&self, len: usize) -> bool {
+        match self {
+            Cardinality::One => len == 1,
+            Cardinality::OneOrMore => len >= 1,
+            Cardinality::ZeroOrMore => true,
+        }
     }
 
     /// The manifest spelling (`one`, `one_or_more`, `zero_or_more`), for

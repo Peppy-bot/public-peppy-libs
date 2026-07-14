@@ -239,7 +239,7 @@ pub enum Error {
     )]
     SlotUnbound {
         link_id: String,
-        cardinality: &'static str,
+        cardinality: config::node::Cardinality,
     },
 
     /// Startup backstop for the launch-time cardinality size rules: the
@@ -253,7 +253,7 @@ pub enum Error {
     )]
     SlotCardinalityViolated {
         link_id: String,
-        cardinality: &'static str,
+        cardinality: config::node::Cardinality,
         bound: usize,
     },
 

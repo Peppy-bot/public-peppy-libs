@@ -20,13 +20,16 @@ use super::builder::StandaloneConfig;
 pub struct Processor {
     runtime_config: RuntimeConfig,
     validated_arguments: NodeArguments,
-    /// The ordered bound producer set per declared `link_id`, sized per the
-    /// slot's declared cardinality. Computed once at startup from the
-    /// daemon-supplied `slot_bindings` plus the manifest's `depends_on`;
-    /// immutable for the node's lifetime (a producer disconnecting never
-    /// shrinks it), and cached so subscribe / poll / send_goal call sites
-    /// return a borrowed slice cheaply.
-    bound_producers: BTreeMap<String, Vec<crate::messaging::ProducerRef>>,
+    /// The validated bound producer set per declared `link_id`, sized per
+    /// the slot's declared cardinality (the [`BoundProducers`] value type
+    /// carries the ordered / duplicate-free invariants). Computed once at
+    /// startup from the daemon-supplied `slot_bindings` plus the manifest's
+    /// `depends_on`; immutable for the node's lifetime (a producer
+    /// disconnecting never shrinks it), and cached so subscribe / poll /
+    /// send_goal call sites return a borrowed slice cheaply.
+    ///
+    /// [`BoundProducers`]: config::runtime::BoundProducers
+    bound_producers: BTreeMap<String, config::runtime::BoundProducers>,
     /// One live pairing-slot channel per `depends_on.pairings` entry, keyed
     /// by the slot's link_id. The map's key set is fixed at startup (slots
     /// are declared in the manifest); only the channel values move — the
@@ -317,13 +320,16 @@ impl Processor {
     /// every generated `subscribe()` passes this slice to
     /// `subscribe_bound_set` regardless of cardinality.
     pub fn bound_producers(&self, link_id: &str) -> &[crate::messaging::ProducerRef] {
-        self.bound_producers.get(link_id).unwrap_or_else(|| {
-            panic!(
-                "consumer slot `{link_id}` has no cached producer set: the generated code and \
-                 the manifest disagree (version skew / stale codegen) — regenerate bindings \
-                 for this node"
-            )
-        })
+        self.bound_producers
+            .get(link_id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "consumer slot `{link_id}` has no cached producer set: the generated code \
+                     and the manifest disagree (version skew / stale codegen) — regenerate \
+                     bindings for this node"
+                )
+            })
+            .as_slice()
     }
 
     /// The sole producer bound to a `cardinality: "one"` consumer slot.
@@ -473,7 +479,7 @@ fn build_pairing_slots(
 fn build_bound_producers(
     runtime_config: &RuntimeConfig,
     node_config: &NodeConfig,
-) -> Result<BTreeMap<String, Vec<crate::messaging::ProducerRef>>> {
+) -> Result<BTreeMap<String, config::runtime::BoundProducers>> {
     let mut out = BTreeMap::new();
     if let Some(deps) = node_config.manifest.depends_on.as_ref() {
         let slot_bindings = &runtime_config.node_instance.slot_bindings;
@@ -483,29 +489,24 @@ fn build_bound_producers(
             .iter()
             .map(|dep| (&dep.link_id, dep.cardinality));
         for (link_id, cardinality) in node_slots.chain(contract_slots) {
-            let producers: Vec<crate::messaging::ProducerRef> = match slot_bindings.get(link_id) {
-                Some(bound) => bound.iter().cloned().collect(),
-                None if cardinality.allows_empty() => Vec::new(),
+            let bound = match slot_bindings.get(link_id) {
+                Some(bound) => bound.clone(),
+                None if cardinality.allows_empty() => config::runtime::BoundProducers::default(),
                 None => {
                     return Err(Error::SlotUnbound {
                         link_id: link_id.clone(),
-                        cardinality: cardinality.as_str(),
+                        cardinality,
                     });
                 }
             };
-            let size_ok = match cardinality {
-                config::node::Cardinality::One => producers.len() == 1,
-                config::node::Cardinality::OneOrMore => !producers.is_empty(),
-                config::node::Cardinality::ZeroOrMore => true,
-            };
-            if !size_ok {
+            if !cardinality.admits(bound.len()) {
                 return Err(Error::SlotCardinalityViolated {
                     link_id: link_id.clone(),
-                    cardinality: cardinality.as_str(),
-                    bound: producers.len(),
+                    cardinality,
+                    bound: bound.len(),
                 });
             }
-            out.insert(link_id.clone(), producers);
+            out.insert(link_id.clone(), bound);
         }
     }
     Ok(out)
@@ -515,7 +516,7 @@ fn build_bound_producers(
 mod tests {
     use super::{PEPPYGEN_OUTPUT_PATH, Processor};
     use crate::runtime::builder::StandaloneConfig;
-    use config::node::TypeToken;
+    use config::node::{Cardinality, TypeToken};
     use config::{
         AnyType, ParameterSchema, ParameterSpec, runtime::RuntimeConfig, validate_node_arguments,
     };
@@ -1386,7 +1387,7 @@ mod tests {
             matches!(
                 &err,
                 crate::error::Error::SlotUnbound { link_id, cardinality }
-                    if link_id == "main" && *cardinality == "one"
+                    if link_id == "main" && *cardinality == Cardinality::One
             ),
             "expected SlotUnbound for `main`, got: {err}"
         );
@@ -1545,7 +1546,7 @@ mod tests {
             matches!(
                 &two_on_a_one_slot,
                 crate::error::Error::SlotCardinalityViolated { link_id, cardinality, bound }
-                    if link_id == "main" && *cardinality == "one" && *bound == 2
+                    if link_id == "main" && *cardinality == Cardinality::One && *bound == 2
             ),
             "expected SlotCardinalityViolated for `main`, got: {two_on_a_one_slot}"
         );
@@ -1567,7 +1568,7 @@ mod tests {
             matches!(
                 &empty_one_or_more,
                 crate::error::Error::SlotCardinalityViolated { link_id, cardinality, bound }
-                    if link_id == "arms" && *cardinality == "one_or_more" && *bound == 0
+                    if link_id == "arms" && *cardinality == Cardinality::OneOrMore && *bound == 0
             ),
             "expected SlotCardinalityViolated for `arms`, got: {empty_one_or_more}"
         );

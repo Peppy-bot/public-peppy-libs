@@ -170,21 +170,6 @@ impl BoundProducers {
     pub fn first(&self) -> Option<&ProducerRef> {
         self.0.first()
     }
-
-    pub fn contains(&self, producer: &ProducerRef) -> bool {
-        self.0.contains(producer)
-    }
-
-    /// The first duplicated producer in declaration order, if any. Shared
-    /// by the deserializer and [`BoundProducers::try_from`] so both
-    /// boundaries reject the same sets.
-    fn find_duplicate(producers: &[ProducerRef]) -> Option<&ProducerRef> {
-        producers
-            .iter()
-            .enumerate()
-            .find(|(idx, producer)| producers[..*idx].contains(producer))
-            .map(|(_, producer)| producer)
-    }
 }
 
 /// A one-producer set, for `cardinality: "one"` slots and tests.
@@ -195,13 +180,20 @@ impl From<ProducerRef> for BoundProducers {
 }
 
 /// Ordered construction from an already-collected target list, rejecting
-/// duplicates. This is the programmatic mirror of the deserializer, used
-/// by the launcher validator when it materializes a slot's set.
+/// duplicates. The single construction gate: the deserializer delegates
+/// here, and the launcher validator calls it when it materializes a
+/// slot's set, so every boundary rejects the same sets with the same
+/// error.
 impl TryFrom<Vec<ProducerRef>> for BoundProducers {
     type Error = ParsingError;
 
     fn try_from(producers: Vec<ProducerRef>) -> std::result::Result<Self, Self::Error> {
-        if let Some(duplicate) = Self::find_duplicate(&producers) {
+        // The first duplicated producer in declaration order names the error.
+        if let Some(duplicate) = producers
+            .iter()
+            .enumerate()
+            .find_map(|(idx, producer)| producers[..idx].contains(producer).then_some(producer))
+        {
             return Err(ParsingError::DuplicateBoundProducer {
                 core_node: duplicate.core_node.clone(),
                 instance_id: duplicate.instance_id.clone(),
@@ -249,14 +241,7 @@ impl<'de> Deserialize<'de> for BoundProducers {
                 while let Some(producer) = seq.next_element::<ProducerRef>()? {
                     producers.push(producer);
                 }
-                if let Some(duplicate) = BoundProducers::find_duplicate(&producers) {
-                    return Err(serde::de::Error::custom(format!(
-                        "duplicate producer `{}@{}` in a slot's bound set: bound producers \
-                         must be unique within a slot",
-                        duplicate.instance_id, duplicate.core_node,
-                    )));
-                }
-                Ok(BoundProducers(producers))
+                BoundProducers::try_from(producers).map_err(serde::de::Error::custom)
             }
 
             fn visit_map<A>(self, _map: A) -> std::result::Result<Self::Value, A::Error>

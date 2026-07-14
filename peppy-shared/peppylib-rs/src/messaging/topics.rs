@@ -93,23 +93,36 @@ impl BoundSetSubscription {
             let start = self.next_start % len;
             self.next_start = self.next_start.wrapping_add(1);
 
-            // First-ready-wins over the rotated source order. flume's
-            // `recv_async` is cancel-safe, so the losing futures drop
-            // without consuming a message.
-            let outcome = {
+            // This is the per-message receive path of every consumed topic,
+            // so it allocates no boxed futures: flume's `RecvFut` is `Unpin`
+            // (it goes into `select_all` as-is) and cancel-safe (the losing
+            // futures drop without consuming a message). `biased` polls the
+            // sources before the shutdown token in both arms, so queued
+            // messages drain before a fired cancellation is honored.
+            let outcome = if len == 1 {
+                // The ubiquitous single-producer slot: recv on the sole
+                // source directly, with no future collection at all.
+                tokio::select! {
+                    biased;
+                    received = self.sources[0].subscription.rx.recv_async() => {
+                        Some((0, received))
+                    }
+                    _ = self.shutdown.cancelled() => None,
+                }
+            } else {
+                // First-ready-wins over the rotated source order.
                 let recvs: Vec<_> = (0..len)
                     .map(|offset| {
-                        let idx = (start + offset) % len;
-                        let rx = &self.sources[idx].subscription.rx;
-                        Box::pin(async move { (idx, rx.recv_async().await) })
+                        self.sources[(start + offset) % len]
+                            .subscription
+                            .rx
+                            .recv_async()
                     })
                     .collect();
                 tokio::select! {
-                    // Poll the sources before the shutdown token so queued
-                    // messages drain before a fired cancellation is honored.
                     biased;
-                    ((idx, received), _, _) = futures::future::select_all(recvs) => {
-                        Some((idx, received))
+                    (received, position, _) = futures::future::select_all(recvs) => {
+                        Some(((start + position) % len, received))
                     }
                     _ = self.shutdown.cancelled() => None,
                 }
@@ -145,12 +158,13 @@ impl TopicMessenger {
     /// know the producer's node / interface target; a stream with no
     /// target to consult is an infra topic and goes through
     /// [`Self::subscribe_target_scoped`].
-    /// `from_producer` is the slot's one bound producer: its full
-    /// `(core_node, instance_id)` pair is pinned on the wire, so only that
-    /// producer's publishes ever reach this subscription. There is no
-    /// separate core_node parameter — producer identity always travels as
-    /// the whole pair — and no fan-in: a consumer that needs several
-    /// producers declares several slots.
+    /// `from_producer` is one producer: its full `(core_node, instance_id)`
+    /// pair is pinned on the wire, so only that producer's publishes ever
+    /// reach this subscription. There is no separate core_node parameter —
+    /// producer identity always travels as the whole pair. Generated
+    /// consumed topics never splice this: they go through
+    /// [`Self::subscribe_bound_set`], which covers the slot's complete
+    /// bound set for every cardinality.
     pub async fn subscribe(
         messenger: &MessengerHandle,
         as_core_node: &str,
@@ -160,6 +174,33 @@ impl TopicMessenger {
         from_producer: &ProducerRef,
         qos: QoSProfile,
     ) -> Result<Subscription> {
+        let subscription = Self::subscribe_pinned(
+            messenger,
+            as_core_node,
+            as_instance_id,
+            from_target,
+            to_topic,
+            from_producer,
+            qos,
+        )
+        .await?;
+        Ok(Subscription::new(subscription))
+    }
+
+    /// One producer-pinned wire subscription: the single wire rule shared
+    /// by [`Self::subscribe`] and [`Self::subscribe_bound_set`]. The
+    /// producer's full `(core_node, instance_id)` pair is pinned in the
+    /// keyexpr — never wildcarded — so only that producer's publishes ever
+    /// reach the subscription.
+    async fn subscribe_pinned(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        from_target: SenderTarget,
+        to_topic: &str,
+        from_producer: &ProducerRef,
+        qos: QoSProfile,
+    ) -> Result<pmi::Subscription> {
         let recv = TopicWireReceiver::new(
             as_core_node,
             as_instance_id,
@@ -169,8 +210,7 @@ impl TopicMessenger {
             None,
             to_topic,
         )?;
-        let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
-        Ok(Subscription::new(subscription))
+        messenger.subscribe_to_topic(&recv, qos).await
     }
 
     /// Subscribe to a topic across a dep slot's complete bound producer
@@ -201,16 +241,16 @@ impl TopicMessenger {
     ) -> Result<BoundSetSubscription> {
         let mut sources = Vec::with_capacity(bound_producers.len());
         for producer in bound_producers {
-            let recv = TopicWireReceiver::new(
+            let subscription = Self::subscribe_pinned(
+                messenger,
                 as_core_node,
                 as_instance_id,
-                Some(producer.core_node.as_str()),
-                Some(producer.instance_id.as_str()),
-                Some(from_target.clone()),
-                None,
+                from_target.clone(),
                 to_topic,
-            )?;
-            let subscription = messenger.subscribe_to_topic(&recv, qos.clone()).await?;
+                producer,
+                qos.clone(),
+            )
+            .await?;
             sources.push(BoundSource {
                 producer: producer.clone(),
                 subscription,
