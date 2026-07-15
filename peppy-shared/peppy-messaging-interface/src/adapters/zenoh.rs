@@ -1036,12 +1036,14 @@ impl MessengerBackend for ZenohAdapter {
                     return Err(Error::BackendError(format!(
                         "zenohd.path is set, so peppy will not start a zenoh router, but nothing \
                          is serving {}://{}:{}; start your router first, for example: \
-                         {} -l tcp/127.0.0.1:{}   (or set zenohd.path to null in \
+                         {} -l {}/{}:{}   (or set zenohd.path to null in \
                          peppy_config.json5 to let peppy manage its own)",
                         ep.protocol,
                         ep.host,
                         ep.port,
                         path.display(),
+                        ep.protocol,
+                        ep.host,
                         ep.port,
                     )));
                 }
