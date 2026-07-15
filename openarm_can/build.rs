@@ -1,9 +1,5 @@
 fn main() {
     use std::env;
-    use std::path::PathBuf;
-
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let bindings_path = out_path.join("bindings.rs");
 
     // `openarm_sdk` is set when the C++ SDK is present and the wrapper is built;
     // lib.rs gates the FFI on it. Declare it so `#[cfg(openarm_sdk)]` never warns.
@@ -28,7 +24,7 @@ fn main() {
                  libopenarm-can-dev or set OPENARM_CAN_INCLUDE_DIR to enable hardware."
             );
         }
-        // bindings.rs is only `include!`d under cfg(openarm_sdk), so nothing to emit.
+        // The FFI extern block in lib.rs is only compiled under cfg(openarm_sdk).
         return;
     }
 
@@ -45,17 +41,6 @@ fn main() {
 
     println!("cargo:rerun-if-changed=wrapper.h");
     println!("cargo:rerun-if-changed=wrapper.cpp");
-
-    bindgen::Builder::default()
-        .header("wrapper.h")
-        .allowlist_function("openarm_.*")
-        .allowlist_type("OpenArmHandle")
-        .rust_edition(bindgen::RustEdition::Edition2024)
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .generate()
-        .expect("Failed to generate bindings from wrapper.h")
-        .write_to_file(&bindings_path)
-        .expect("Failed to write bindings.rs");
 }
 
 /// True if the openarm_can SDK header can be found, so the C++ wrapper will compile.

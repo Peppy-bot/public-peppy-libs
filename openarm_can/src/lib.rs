@@ -134,22 +134,83 @@ pub enum CanError {
 
 pub type Result<T> = std::result::Result<T, CanError>;
 
+// FFI to the openarm_can C++ wrapper (see wrapper.h). The surface is small and uses only
+// primitive types, so the `extern "C"` block is declared by hand rather than via bindgen.
+// build.rs compiles wrapper.cpp and sets `openarm_sdk` when the C++ SDK is present.
 #[cfg(openarm_sdk)]
 mod inner {
-    #![allow(
-        non_upper_case_globals,
-        non_camel_case_types,
-        non_snake_case,
-        dead_code
-    )]
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+    use std::os::raw::{c_char, c_void};
+
+    pub type OpenArmHandle = *mut c_void;
+
+    unsafe extern "C" {
+        pub fn openarm_create(can_interface: *const c_char, enable_fd: bool) -> OpenArmHandle;
+        pub fn openarm_destroy(h: OpenArmHandle);
+        pub fn openarm_init_arm_motors(
+            h: OpenArmHandle,
+            motor_types: *const u8,
+            send_can_ids: *const u32,
+            recv_can_ids: *const u32,
+            count: i32,
+        );
+        pub fn openarm_enable_all(h: OpenArmHandle);
+        pub fn openarm_disable_all(h: OpenArmHandle);
+        pub fn openarm_recv_all(h: OpenArmHandle, first_timeout_us: i32);
+        pub fn openarm_refresh_all(h: OpenArmHandle);
+        pub fn openarm_set_callback_mode_all(h: OpenArmHandle, mode: i32);
+        pub fn openarm_arm_mit_control(
+            h: OpenArmHandle,
+            kp: *const f64,
+            kd: *const f64,
+            q: *const f64,
+            dq: *const f64,
+            tau: *const f64,
+            count: i32,
+        );
+        pub fn openarm_arm_get_state(
+            h: OpenArmHandle,
+            positions: *mut f64,
+            velocities: *mut f64,
+            torques: *mut f64,
+            count: i32,
+        );
+        pub fn openarm_init_gripper_motor(
+            h: OpenArmHandle,
+            motor_type: u8,
+            send_can_id: u32,
+            recv_can_id: u32,
+        );
+        pub fn openarm_init_gripper_motor_mode(
+            h: OpenArmHandle,
+            motor_type: u8,
+            send_can_id: u32,
+            recv_can_id: u32,
+            control_mode: u8,
+        );
+        pub fn openarm_gripper_mit_control(
+            h: OpenArmHandle,
+            kp: f64,
+            kd: f64,
+            q: f64,
+            dq: f64,
+            tau: f64,
+        );
+        pub fn openarm_gripper_pos_force_control(h: OpenArmHandle, q: f64, dq: f64, i: f64);
+        pub fn openarm_gripper_get_state(
+            h: OpenArmHandle,
+            position: *mut f64,
+            velocity: *mut f64,
+            torque: *mut f64,
+        );
+    }
 }
 
 // Stub FFI used when the openarm_can C++ SDK is absent (dev machines / CI without
 // the hardware library; see build.rs). `openarm_create` returns null so
 // `CanHandle::new` fails with `CanError::OpenFailed`, which makes the other entry
-// points unreachable — they exist only so the crate links and the pure-Rust API
-// and tests compile. Build against the real SDK for hardware support.
+// points unreachable. They exist only so the crate links and the pure-Rust API
+// and tests compile. Build against the real SDK for hardware support. Signatures
+// mirror the `openarm_sdk` extern block above so the wrapper code compiles against both.
 #[cfg(not(openarm_sdk))]
 mod inner {
     #![allow(dead_code, unused_variables)]
