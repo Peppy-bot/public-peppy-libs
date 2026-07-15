@@ -130,9 +130,9 @@ impl Finger {
 
     /// Placement of the finger hull in its host link's frame at opening `fraction`
     /// in `[0, 1]` (0 = fully closed, 1 = fully open), linearly interpolating the
-    /// finger-joint travel. The published gripper width is a linear proxy for this
-    /// fraction (`width / jaw_open_m`), exact at both extremes for the prismatic
-    /// (v1) and revolute (v2) grippers alike.
+    /// finger-joint travel. The whole opening pipeline is fraction-native, so the
+    /// fraction maps straight onto the joint's own travel for the prismatic (v1)
+    /// and revolute (v2) grippers alike.
     fn offset(&self, fraction: f64) -> Isometry3<f64> {
         let q = self.closed + fraction.clamp(0.0, 1.0) * (self.open - self.closed);
         place_1dof(&self.origin, &self.axis, self.revolute, q)
