@@ -28,5 +28,6 @@ torchcodec = { version = "*", index = "https://download.pytorch.org/whl/cpu" }
 # itself. Run after bumping the pinned lerobot version.
 dump-golden = { cmd = "python dump_golden_schemas.py --out ../tests/fixtures/golden", env = { HF_HUB_OFFLINE = "1" } }
 # Usage: pixi run check <dataset_root>
+check-depth = { cmd = "python check_depth.py", env = { HF_HUB_OFFLINE = "1" } }
 check = { cmd = "python check_dataset.py", env = { HF_HUB_OFFLINE = "1" } }
 lerobot-version = "python -c 'import lerobot; print(lerobot.__version__)'"

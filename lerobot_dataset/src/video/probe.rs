@@ -18,19 +18,28 @@ pub fn codec_name(codec: VideoCodec) -> &'static str {
     }
 }
 
-/// Fails fast if ffmpeg/ffprobe are missing or ffmpeg lacks the requested encoder.
-pub fn probe_toolchain(codec: VideoCodec) -> Result<(), VideoError> {
+/// Fails fast if ffmpeg/ffprobe are missing or ffmpeg lacks a required
+/// encoder (the color codec, and libx265 when depth cameras are present).
+pub fn probe_toolchain(codec: VideoCodec, needs_depth: bool) -> Result<(), VideoError> {
     let encoders = Command::new("ffmpeg")
         .args(["-hide_banner", "-encoders"])
         .output()
         .map_err(VideoError::FfmpegNotFound)?;
     let listing = String::from_utf8_lossy(&encoders.stdout);
-    let name = encoder_name(codec);
-    if !listing
-        .lines()
-        .any(|l| l.split_whitespace().nth(1) == Some(name))
-    {
-        return Err(VideoError::EncoderUnavailable(name));
+    let has_encoder = |name: &str| {
+        listing
+            .lines()
+            .any(|l| l.split_whitespace().nth(1) == Some(name))
+    };
+
+    let color = encoder_name(codec);
+    if !has_encoder(color) {
+        return Err(VideoError::EncoderUnavailable(color));
+    }
+    if needs_depth && !has_encoder(crate::video::encoder::DEPTH_ENCODER) {
+        return Err(VideoError::EncoderUnavailable(
+            crate::video::encoder::DEPTH_ENCODER,
+        ));
     }
     Command::new("ffprobe")
         .arg("-version")

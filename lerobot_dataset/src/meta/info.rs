@@ -26,9 +26,8 @@ pub fn build_info_json(config: &DatasetConfig, totals: &Totals) -> Value {
     }
     for camera in &config.cameras {
         let (w, h) = (camera.spec.width.get(), camera.spec.height.get());
-        features.insert(
-            camera.key.clone(),
-            json!({
+        let feature = match &camera.depth {
+            None => json!({
                 "dtype": "video",
                 "shape": [h, w, 3],
                 "names": ["height", "width", "channels"],
@@ -46,7 +45,37 @@ pub fn build_info_json(config: &DatasetConfig, totals: &Totals) -> Value {
                     "is_depth_map": false,
                 },
             }),
-        );
+            // Matches lerobot 0.6's depth feature: single-channel gray12le
+            // HEVC-lossless, with the quantization params the loader needs to
+            // dequantize back to millimetres.
+            Some(depth) => json!({
+                "dtype": "video",
+                "shape": [h, w, 1],
+                "names": ["height", "width", "channels"],
+                "info": {
+                    "is_depth_map": true,
+                    "depth_unit": "mm",
+                    "video.height": h,
+                    "video.width": w,
+                    "video.codec": "hevc",
+                    "video.pix_fmt": "gray12le",
+                    "video.fps": config.fps.get(),
+                    "video.channels": 1,
+                    "has_audio": false,
+                    "video.g": 2,
+                    "video.crf": 30,
+                    "video.preset": null,
+                    "video.fast_decode": 0,
+                    "video.video_backend": "pyav",
+                    "video.extra_options": {},
+                    "video.depth_min": depth.quantization.depth_min_m,
+                    "video.depth_max": depth.quantization.depth_max_m,
+                    "video.shift": depth.quantization.shift_m,
+                    "video.use_log": depth.quantization.use_log,
+                },
+            }),
+        };
+        features.insert(camera.key.clone(), feature);
     }
     features.insert(
         "timestamp".into(),

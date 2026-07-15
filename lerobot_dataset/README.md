@@ -21,11 +21,20 @@ recorder process.
   per-episode stats and video time offsets, and per-camera shared mp4s with
   episodes concatenated via stream copy.
 
+## Depth cameras
+
+`depth_camera(key, DepthSpec)` records a depth stream as a single-channel
+`gray12le` HEVC-lossless video with `is_depth_map` set, matching lerobot 0.6.
+The caller feeds raw `z16` codes (`PixelFrame::z16`); the crate scales them to
+millimetres via `depth_unit_m` and log-quantizes to 12-bit exactly as lerobot
+does, so the Python loader dequantizes back to metres. Stats are kept in
+millimetres (not normalized). The compliance harness verifies round-trip.
+
 ## Requirements
 
-`ffmpeg` and `ffprobe` on PATH, with `libx264` (default codec) or
-`libsvtav1` (opt-in). The writer probes at `DatasetWriter::create` and fails
-fast with an actionable error.
+`ffmpeg` and `ffprobe` on PATH, with `libx264` (default color codec) or
+`libsvtav1` (opt-in), and `libx265` when recording depth cameras. The writer
+probes at `DatasetWriter::create` and fails fast with an actionable error.
 
 ## Crash contract
 

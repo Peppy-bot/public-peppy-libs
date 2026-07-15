@@ -44,6 +44,9 @@ pub fn downsampled_rgb(spec: &CameraSpec, frame: &PixelFrame<'_>) -> Result<Vec<
         SourceEncoding::Rgb8 => Ok(stride_pixels(frame.bytes, w, h, |px| [px[0], px[1], px[2]])),
         SourceEncoding::Bgr8 => Ok(stride_pixels(frame.bytes, w, h, |px| [px[2], px[1], px[0]])),
         SourceEncoding::Yuyv => Ok(stride_yuyv(frame.bytes, w, h)),
+        // Depth (z16) frames never reach the color stats path; the writer
+        // routes them to the depth accumulator.
+        SourceEncoding::Z16 => unreachable!("depth frames are not color-sampled"),
     }
 }
 

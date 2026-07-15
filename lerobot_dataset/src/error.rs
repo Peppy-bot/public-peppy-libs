@@ -17,6 +17,12 @@ pub enum ConfigError {
     MissingAction,
     #[error("camera key {0:?} must match observation.images.<name> with <name> in [a-z0-9_]+")]
     InvalidCameraKey(String),
+    #[error("depth camera {0:?} has a non-positive depth_unit_m")]
+    InvalidDepthUnit(String),
+    #[error(
+        "depth camera {0:?} has an invalid depth range (need 0 < min < max, and min+shift > 0 for log)"
+    )]
+    InvalidDepthRange(String),
     #[error("video crf {0} is out of the encoder range 0..=63")]
     CrfOutOfRange(u8),
     #[error("video gop must be non-zero")]
@@ -50,6 +56,10 @@ pub enum FrameError {
     DuplicateValue(String),
     #[error("frame is missing camera {0:?}")]
     MissingCamera(String),
+    #[error(
+        "camera {0:?} kind mismatch: a depth camera needs a z16 frame, a color camera a non-z16 frame"
+    )]
+    CameraKindMismatch(String),
     #[error("value provided for a feature or camera the dataset does not declare")]
     UndeclaredValue,
 }

@@ -17,11 +17,14 @@ use crate::frame::Frame;
 use crate::layout::{FileSlot, data_path, episodes_path, mb_to_bytes, video_path};
 use crate::meta::episodes::{EpisodeRow, FeatureStatsEntry, VideoLocation};
 use crate::meta::info::{Totals, build_info_json};
-use crate::meta::stats::{FeatureStats, ImageStatsAccumulator, aggregate, vector_stats};
+use crate::meta::stats::{
+    DepthStatsAccumulator, FeatureStats, ImageStatsAccumulator, VideoStatsAccumulator, aggregate,
+    vector_stats,
+};
 use crate::meta::tasks::TaskTable;
 use crate::meta::{build_stats_json, write_info, write_stats};
 use crate::video::concat::append_or_start;
-use crate::video::encoder::EpisodeEncoder;
+use crate::video::encoder::{EncodeMode, EpisodeEncoder};
 use crate::video::probe::probe_toolchain;
 use crate::video::sample::downsampled_rgb;
 
@@ -87,12 +90,11 @@ impl DatasetWriter {
         {
             return Err(Error::RootNotEmpty(root));
         }
-        if config.cameras.is_empty() {
-            std::fs::create_dir_all(&root).map_err(Error::io(&root))?;
-        } else {
-            probe_toolchain(config.video.codec)?;
-            std::fs::create_dir_all(&root).map_err(Error::io(&root))?;
+        if !config.cameras.is_empty() {
+            let needs_depth = config.cameras.iter().any(|c| c.is_depth());
+            probe_toolchain(config.video.codec, needs_depth)?;
         }
+        std::fs::create_dir_all(&root).map_err(Error::io(&root))?;
 
         let videos = config
             .cameras
@@ -136,13 +138,11 @@ impl DatasetWriter {
         let mut encoders = Vec::new();
         for camera in &self.config.cameras {
             let temp = tmp_dir.join(format!("{}.mp4", camera.key));
-            let encoder = match EpisodeEncoder::spawn(
-                &camera.key,
-                &camera.spec,
-                &self.config.video,
-                fps,
-                temp,
-            ) {
+            let mode = match camera.depth {
+                Some(depth) => EncodeMode::Depth(depth),
+                None => EncodeMode::Color(self.config.video),
+            };
+            let encoder = match EpisodeEncoder::spawn(&camera.key, &camera.spec, &mode, fps, temp) {
                 Ok(encoder) => encoder,
                 Err(error) => {
                     drop(encoders);
@@ -167,7 +167,13 @@ impl DatasetWriter {
                 .config
                 .cameras
                 .iter()
-                .map(|_| ImageStatsAccumulator::new())
+                .map(|camera| match &camera.depth {
+                    None => VideoStatsAccumulator::Color(ImageStatsAccumulator::new()),
+                    Some(depth) => VideoStatsAccumulator::Depth(DepthStatsAccumulator::new(
+                        depth.quantization.depth_min_m * 1000.0,
+                        depth.quantization.depth_max_m * 1000.0,
+                    )),
+                })
                 .collect(),
             encoders,
             frames: 0,
@@ -209,7 +215,7 @@ pub struct EpisodeWriter<'d> {
     /// Frame-major flattened values per vector feature.
     vectors: Vec<Vec<f32>>,
     vector_dims: Vec<usize>,
-    image_stats: Vec<ImageStatsAccumulator>,
+    image_stats: Vec<VideoStatsAccumulator>,
     encoders: Vec<EpisodeEncoder>,
     frames: u64,
     /// True once end() or abort() has taken responsibility for the episode.
@@ -249,13 +255,19 @@ impl EpisodeWriter<'_> {
         }
 
         let mut image_seen = vec![false; config.cameras.len()];
-        for (id, _) in frame.images {
+        for (id, pixels) in frame.images {
             let CameraId(index) = *id;
             if index >= image_seen.len() {
                 return Err(FrameError::UndeclaredValue.into());
             }
             if std::mem::replace(&mut image_seen[index], true) {
                 return Err(FrameError::DuplicateValue(config.cameras[index].key.clone()).into());
+            }
+            let is_z16 = pixels.encoding() == crate::config::SourceEncoding::Z16;
+            if is_z16 != config.cameras[index].is_depth() {
+                return Err(
+                    FrameError::CameraKindMismatch(config.cameras[index].key.clone()).into(),
+                );
             }
         }
         if let Some(missing) = image_seen.iter().position(|seen| !seen) {
@@ -266,9 +278,19 @@ impl EpisodeWriter<'_> {
             self.vectors[*index].extend_from_slice(values);
         }
         for (CameraId(index), pixels) in frame.images {
-            let spec = config.cameras[*index].spec;
-            let rgb = downsampled_rgb(&spec, pixels)?;
-            self.image_stats[*index].add_frame(&rgb);
+            let camera = &config.cameras[*index];
+            match (&mut self.image_stats[*index], &camera.depth) {
+                (VideoStatsAccumulator::Color(stats), None) => {
+                    stats.add_frame(&downsampled_rgb(&camera.spec, pixels)?);
+                }
+                (VideoStatsAccumulator::Depth(stats), Some(depth)) => {
+                    stats.add_frame(crate::video::depth::z16_to_mm(
+                        pixels.bytes,
+                        depth.depth_unit_m,
+                    ));
+                }
+                _ => unreachable!("stats variant is built to match camera kind"),
+            }
             self.encoders[*index].write_frame(pixels)?;
         }
 
@@ -474,7 +496,7 @@ fn build_episode_stats(
     config: &DatasetConfig,
     vectors: &[Vec<f32>],
     vector_dims: &[usize],
-    image_stats: Vec<ImageStatsAccumulator>,
+    image_stats: Vec<VideoStatsAccumulator>,
     timestamps: &[f32],
     episode_index: i64,
     first_global_index: i64,

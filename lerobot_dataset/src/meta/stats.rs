@@ -258,6 +258,92 @@ impl ImageStatsAccumulator {
     }
 }
 
+/// Streaming single-channel depth stats over every frame's millimetre values.
+/// Depth is not normalized (lerobot divides by 1.0, not 255), and stats stay
+/// in the recorded unit (millimetres). The histogram spans the configured
+/// depth range so quantile resolution is set by the physical bounds.
+pub struct DepthStatsAccumulator {
+    min: f64,
+    max: f64,
+    sum: f64,
+    sum_sq: f64,
+    pixel_count: u64,
+    frame_count: u64,
+    hist: Histogram,
+}
+
+impl DepthStatsAccumulator {
+    pub fn new(min_mm: f64, max_mm: f64) -> Self {
+        Self {
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+            sum: 0.0,
+            sum_sq: 0.0,
+            pixel_count: 0,
+            frame_count: 0,
+            hist: Histogram::new(1, min_mm - EDGE_PADDING, max_mm + EDGE_PADDING),
+        }
+    }
+
+    /// Adds one frame's millimetre depth values.
+    pub fn add_frame(&mut self, mm: impl Iterator<Item = f64>) {
+        let mut pixels = 0u64;
+        for v in mm {
+            self.min = self.min.min(v);
+            self.max = self.max.max(v);
+            self.sum += v;
+            self.sum_sq += v * v;
+            self.hist.add(0, v);
+            pixels += 1;
+        }
+        self.pixel_count += pixels;
+        self.frame_count += 1;
+    }
+
+    /// Final single-channel stats in millimetres; `count` = frames seen.
+    pub fn finish(mut self) -> FeatureStats {
+        if self.pixel_count == 0 {
+            return FeatureStats {
+                min: vec![0.0],
+                max: vec![0.0],
+                mean: vec![0.0],
+                std: vec![0.0],
+                count: 0,
+                quantiles: std::array::from_fn(|_| vec![0.0]),
+            };
+        }
+        let n = self.pixel_count as f64;
+        self.hist.total = self.pixel_count;
+        let mean = self.sum / n;
+        let std = (self.sum_sq / n - mean * mean).max(0.0).sqrt();
+        let quantiles = std::array::from_fn(|qi| vec![self.hist.quantile(0, QUANTILES[qi])]);
+        FeatureStats {
+            min: vec![self.min],
+            max: vec![self.max],
+            mean: vec![mean],
+            std: vec![std],
+            count: self.frame_count,
+            quantiles,
+        }
+    }
+}
+
+/// Per-camera stats accumulator: color (3-channel, [0,1]) or depth
+/// (1-channel, millimetres). One writer path feeds whichever a camera is.
+pub enum VideoStatsAccumulator {
+    Color(ImageStatsAccumulator),
+    Depth(DepthStatsAccumulator),
+}
+
+impl VideoStatsAccumulator {
+    pub fn finish(self) -> FeatureStats {
+        match self {
+            VideoStatsAccumulator::Color(a) => a.finish(),
+            VideoStatsAccumulator::Depth(a) => a.finish(),
+        }
+    }
+}
+
 /// lerobot's `aggregate_feature_stats`: count-weighted mean, parallel
 /// (Chan) variance, elementwise min/max, count-weighted quantile average.
 pub fn aggregate(stats: &[&FeatureStats]) -> FeatureStats {

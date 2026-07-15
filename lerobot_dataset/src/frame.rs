@@ -45,6 +45,12 @@ impl<'a> PixelFrame<'a> {
         })
     }
 
+    /// A depth frame of little-endian `z16` codes (2 bytes per pixel), for a
+    /// camera declared with [`crate::DatasetConfigBuilder::depth_camera`].
+    pub fn z16(width: NonZeroU32, height: NonZeroU32, bytes: &'a [u8]) -> Result<Self, FrameError> {
+        Self::sized(SourceEncoding::Z16, "z16", width, height, 2, bytes)
+    }
+
     pub fn encoding(&self) -> SourceEncoding {
         self.encoding
     }

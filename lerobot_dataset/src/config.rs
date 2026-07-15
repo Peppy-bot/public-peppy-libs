@@ -22,6 +22,9 @@ pub enum SourceEncoding {
     Bgr8,
     Yuyv,
     Mjpeg,
+    /// 16-bit little-endian depth codes (one `u16` per pixel), quantized and
+    /// encoded as `gray12le`. Only produced by [`DatasetConfigBuilder::depth_camera`].
+    Z16,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -29,6 +32,37 @@ pub struct CameraSpec {
     pub width: NonZeroU32,
     pub height: NonZeroU32,
     pub source: SourceEncoding,
+}
+
+/// Log-space depth quantization parameters. Defaults match lerobot 0.6's
+/// `DepthEncoderConfig` (metres); the depth range is mapped to a 12-bit code.
+#[derive(Debug, Clone, Copy)]
+pub struct DepthQuantization {
+    pub depth_min_m: f64,
+    pub depth_max_m: f64,
+    pub shift_m: f64,
+    pub use_log: bool,
+}
+
+impl Default for DepthQuantization {
+    fn default() -> Self {
+        Self {
+            depth_min_m: 0.01,
+            depth_max_m: 10.0,
+            shift_m: 3.5,
+            use_log: true,
+        }
+    }
+}
+
+/// A depth camera: raw `z16` codes scaled to millimetres by `depth_unit_m`
+/// (metres per LSB, from the camera), then log-quantized per `quantization`.
+#[derive(Debug, Clone, Copy)]
+pub struct DepthSpec {
+    pub width: NonZeroU32,
+    pub height: NonZeroU32,
+    pub depth_unit_m: f64,
+    pub quantization: DepthQuantization,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +106,14 @@ pub(crate) struct VectorFeature {
 pub(crate) struct CameraFeature {
     pub key: String,
     pub spec: CameraSpec,
+    /// Present iff this is a depth camera (spec.source is then `Z16`).
+    pub depth: Option<DepthSpec>,
+}
+
+impl CameraFeature {
+    pub fn is_depth(&self) -> bool {
+        self.depth.is_some()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +185,14 @@ impl DatasetConfig {
     pub fn camera_spec(&self, id: CameraId) -> CameraSpec {
         self.cameras[id.0].spec
     }
+
+    pub fn camera_is_depth(&self, id: CameraId) -> bool {
+        self.cameras[id.0].is_depth()
+    }
+
+    pub fn camera_depth(&self, id: CameraId) -> Option<DepthSpec> {
+        self.cameras[id.0].depth
+    }
 }
 
 impl DatasetConfigBuilder {
@@ -169,11 +219,27 @@ impl DatasetConfigBuilder {
         self
     }
 
-    /// Declares a camera; `key` must be `observation.images.<name>`.
+    /// Declares a color camera; `key` must be `observation.images.<name>`.
     pub fn camera(mut self, key: impl Into<String>, spec: CameraSpec) -> Self {
         self.cameras.push(CameraFeature {
             key: key.into(),
             spec,
+            depth: None,
+        });
+        self
+    }
+
+    /// Declares a depth camera; `key` must be `observation.images.<name>`.
+    /// Stored as a single-channel `gray12le` video with `is_depth_map` set.
+    pub fn depth_camera(mut self, key: impl Into<String>, spec: DepthSpec) -> Self {
+        self.cameras.push(CameraFeature {
+            key: key.into(),
+            spec: CameraSpec {
+                width: spec.width,
+                height: spec.height,
+                source: SourceEncoding::Z16,
+            },
+            depth: Some(spec),
         });
         self
     }
@@ -227,6 +293,21 @@ impl DatasetConfigBuilder {
             });
             if !valid {
                 return Err(ConfigError::InvalidCameraKey(camera.key.clone()));
+            }
+            if let Some(depth) = &camera.depth {
+                let q = &depth.quantization;
+                if !(depth.depth_unit_m.is_finite() && depth.depth_unit_m > 0.0) {
+                    return Err(ConfigError::InvalidDepthUnit(camera.key.clone()));
+                }
+                let range_ok = q.depth_min_m.is_finite()
+                    && q.depth_max_m.is_finite()
+                    && q.shift_m.is_finite()
+                    && q.depth_min_m < q.depth_max_m
+                    && q.depth_min_m > 0.0
+                    && (!q.use_log || q.depth_min_m + q.shift_m > 0.0);
+                if !range_ok {
+                    return Err(ConfigError::InvalidDepthRange(camera.key.clone()));
+                }
             }
         }
         if self.video.crf > 63 {

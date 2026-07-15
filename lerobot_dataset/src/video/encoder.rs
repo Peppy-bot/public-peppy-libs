@@ -9,10 +9,22 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 
-use crate::config::{CameraSpec, SourceEncoding, VideoSettings};
+use crate::config::{CameraSpec, DepthSpec, SourceEncoding, VideoSettings};
 use crate::error::VideoError;
 use crate::frame::PixelFrame;
+use crate::video::depth::z16_to_gray12le;
 use crate::video::probe::{count_frames, encoder_name};
+
+pub const DEPTH_ENCODER: &str = "libx265";
+
+/// How one camera's frames are encoded.
+#[derive(Debug, Clone, Copy)]
+pub enum EncodeMode {
+    /// Color: RGB/BGR/YUYV/MJPEG in, `yuv420p` H.264/AV1 out.
+    Color(VideoSettings),
+    /// Depth: `z16` in, quantized to `gray12le` and encoded lossless with HEVC.
+    Depth(DepthSpec),
+}
 
 pub fn track_timescale(fps: u32) -> u32 {
     fps * 512
@@ -20,11 +32,15 @@ pub fn track_timescale(fps: u32) -> u32 {
 
 pub fn input_args(spec: &CameraSpec, fps: u32) -> Vec<String> {
     let mut args: Vec<String> = match spec.source {
-        SourceEncoding::Rgb8 | SourceEncoding::Bgr8 | SourceEncoding::Yuyv => {
+        SourceEncoding::Rgb8
+        | SourceEncoding::Bgr8
+        | SourceEncoding::Yuyv
+        | SourceEncoding::Z16 => {
             let pix_fmt = match spec.source {
                 SourceEncoding::Rgb8 => "rgb24",
                 SourceEncoding::Bgr8 => "bgr24",
                 SourceEncoding::Yuyv => "yuyv422",
+                SourceEncoding::Z16 => "gray12le",
                 SourceEncoding::Mjpeg => unreachable!(),
             };
             vec![
@@ -47,17 +63,29 @@ pub fn input_args(spec: &CameraSpec, fps: u32) -> Vec<String> {
     args
 }
 
-pub fn output_args(video: &VideoSettings, fps: u32, dest: &Path) -> Vec<String> {
-    vec![
-        "-an".into(),
-        "-c:v".into(),
-        encoder_name(video.codec).into(),
-        "-pix_fmt".into(),
-        "yuv420p".into(),
-        "-crf".into(),
-        video.crf.to_string(),
-        "-g".into(),
-        video.gop.to_string(),
+pub fn output_args(mode: &EncodeMode, fps: u32, dest: &Path) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-an".into(), "-c:v".into()];
+    match mode {
+        EncodeMode::Color(video) => args.extend([
+            encoder_name(video.codec).into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-crf".into(),
+            video.crf.to_string(),
+            "-g".into(),
+            video.gop.to_string(),
+        ]),
+        EncodeMode::Depth(_) => args.extend([
+            DEPTH_ENCODER.into(),
+            "-pix_fmt".into(),
+            "gray12le".into(),
+            "-x265-params".into(),
+            "lossless=1:log-level=none".into(),
+            "-g".into(),
+            "2".into(),
+        ]),
+    }
+    args.extend([
         "-video_track_timescale".into(),
         track_timescale(fps).to_string(),
         "-movflags".into(),
@@ -65,7 +93,8 @@ pub fn output_args(video: &VideoSettings, fps: u32, dest: &Path) -> Vec<String> 
         "-f".into(),
         "mp4".into(),
         dest.to_string_lossy().into_owned(),
-    ]
+    ]);
+    args
 }
 
 pub struct EpisodeEncoder {
@@ -75,13 +104,15 @@ pub struct EpisodeEncoder {
     stdin: Option<ChildStdin>,
     temp_path: PathBuf,
     frames: u64,
+    /// Depth frames are quantized to `gray12le` before hitting ffmpeg stdin.
+    depth: Option<DepthSpec>,
 }
 
 impl EpisodeEncoder {
     pub fn spawn(
         camera: &str,
         spec: &CameraSpec,
-        video: &VideoSettings,
+        mode: &EncodeMode,
         fps: u32,
         temp_path: PathBuf,
     ) -> Result<Self, VideoError> {
@@ -92,7 +123,7 @@ impl EpisodeEncoder {
         command
             .args(["-hide_banner", "-loglevel", "error", "-y"])
             .args(input_args(spec, fps))
-            .args(output_args(video, fps, &temp_path))
+            .args(output_args(mode, fps, &temp_path))
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
@@ -104,15 +135,27 @@ impl EpisodeEncoder {
             stdin,
             temp_path,
             frames: 0,
+            depth: match mode {
+                EncodeMode::Color(_) => None,
+                EncodeMode::Depth(spec) => Some(*spec),
+            },
         })
     }
 
     pub fn write_frame(&mut self, frame: &PixelFrame<'_>) -> Result<(), VideoError> {
+        let quantized;
+        let bytes: &[u8] = match &self.depth {
+            None => frame.bytes,
+            Some(depth) => {
+                quantized = z16_to_gray12le(frame.bytes, depth.depth_unit_m, &depth.quantization);
+                &quantized
+            }
+        };
         let stdin = self
             .stdin
             .as_mut()
             .expect("stdin taken only in finish/abort");
-        if stdin.write_all(frame.bytes).is_err() {
+        if stdin.write_all(bytes).is_err() {
             return Err(self.exit_error());
         }
         self.frames += 1;
@@ -228,18 +271,54 @@ mod tests {
     }
 
     #[test]
-    fn output_args_pin_timescale_and_codec() {
+    fn color_output_args_pin_timescale_and_codec() {
         let video = VideoSettings {
             codec: VideoCodec::Av1SvtAv1,
             crf: 30,
             gop: 2,
         };
-        let args = output_args(&video, 30, Path::new("/tmp/x.mp4"));
+        let args = output_args(&EncodeMode::Color(video), 30, Path::new("/tmp/x.mp4"));
         let joined = args.join(" ");
         assert!(joined.contains("-c:v libsvtav1"));
         assert!(joined.contains("-crf 30"));
         assert!(joined.contains("-g 2"));
         assert!(joined.contains("-video_track_timescale 15360"));
         assert!(joined.ends_with("/tmp/x.mp4"));
+    }
+
+    #[test]
+    fn depth_output_args_are_lossless_hevc_gray12le() {
+        let depth = crate::config::DepthSpec {
+            width: NonZeroU32::new(64).unwrap(),
+            height: NonZeroU32::new(48).unwrap(),
+            depth_unit_m: 0.001,
+            quantization: crate::config::DepthQuantization::default(),
+        };
+        let args = output_args(&EncodeMode::Depth(depth), 30, Path::new("/tmp/d.mp4"));
+        let joined = args.join(" ");
+        assert!(joined.contains("-c:v libx265"));
+        assert!(joined.contains("-pix_fmt gray12le"));
+        assert!(joined.contains("lossless=1"));
+        assert!(joined.contains("-video_track_timescale 15360"));
+    }
+
+    #[test]
+    fn z16_input_is_gray12le_rawvideo() {
+        let args = input_args(&spec(SourceEncoding::Z16), 30);
+        assert_eq!(
+            args,
+            [
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray12le",
+                "-s",
+                "64x48",
+                "-framerate",
+                "30",
+                "-i",
+                "pipe:0"
+            ]
+        );
     }
 }

@@ -21,8 +21,8 @@ mod video;
 mod writer;
 
 pub use config::{
-    CameraId, CameraSpec, DatasetConfig, DatasetConfigBuilder, SourceEncoding, VectorId,
-    VideoCodec, VideoSettings,
+    CameraId, CameraSpec, DatasetConfig, DatasetConfigBuilder, DepthQuantization, DepthSpec,
+    SourceEncoding, VectorId, VideoCodec, VideoSettings,
 };
 pub use error::{ConfigError, Error, FrameError, VideoError};
 pub use frame::{Frame, PixelFrame};

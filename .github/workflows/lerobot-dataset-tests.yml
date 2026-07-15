@@ -53,16 +53,18 @@ jobs:
           cargo clippy --all-targets -- -D warnings
 
       # The acceptance test: a natively written dataset must load in Python
-      # lerobot, frame by frame, video included.
+      # lerobot, frame by frame, video included (color, then depth).
       - name: Run compliance gate
         working-directory: lerobot_dataset
         run: |
           export PATH="$PWD/compliance/.pixi/envs/default/bin:$PATH"
           FIXTURE="$RUNNER_TEMP/lerobot-native-fixture"
-          rm -rf "$FIXTURE"
+          DEPTH_FIXTURE="$RUNNER_TEMP/lerobot-depth-fixture"
+          rm -rf "$FIXTURE" "$DEPTH_FIXTURE"
           cargo run --example generate_fixture -- "$FIXTURE"
-          cd compliance && pixi run check "$FIXTURE"
+          cargo run --example generate_depth_fixture -- "$DEPTH_FIXTURE"
+          cd compliance && pixi run check "$FIXTURE" && pixi run check-depth "$DEPTH_FIXTURE"
 
-      - name: Clean up fixture
+      - name: Clean up fixtures
         if: always()
-        run: rm -rf "$RUNNER_TEMP/lerobot-native-fixture"
+        run: rm -rf "$RUNNER_TEMP/lerobot-native-fixture" "$RUNNER_TEMP/lerobot-depth-fixture"
