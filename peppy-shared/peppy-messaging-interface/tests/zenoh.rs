@@ -891,6 +891,7 @@ mod zenoh_tests {
             SubscriberBufferSizes::default(),
             Vec::new(),
             None,
+            None,
         )
         .unwrap();
         let (host, adapter_port) = adapter.client_endpoint();

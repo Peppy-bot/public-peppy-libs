@@ -82,6 +82,7 @@ mod zenoh_tls_tests {
             SubscriberBufferSizes::default(),
             Vec::new(),
             Some(TlsConfig::server(certs.cert.clone(), certs.key.clone())),
+            None,
         )
         .expect("build tls router adapter");
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
@@ -126,6 +127,7 @@ mod zenoh_tls_tests {
             // `localhost` while we dial `127.0.0.1` — the CA-trust check stays on).
             vec![format!("tls/127.0.0.1:{remote_port}")],
             Some(trusting_client_tls(certs)),
+            None,
         )
         .expect("build federated router adapter");
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
