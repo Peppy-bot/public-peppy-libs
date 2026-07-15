@@ -32,18 +32,22 @@ pub struct EpisodeData {
 }
 
 pub fn data_schema(config: &DatasetConfig) -> Schema {
+    // lerobot stores a 1-D feature as a scalar column (matching a `shape: [1]`
+    // Value); only multi-element features become fixed-size lists.
     let mut fields: Vec<Field> = config
         .vectors
         .iter()
         .map(|feature| {
-            Field::new(
-                &feature.key,
+            let dim = feature.dim_names.len();
+            let data_type = if dim == 1 {
+                DataType::Float32
+            } else {
                 DataType::FixedSizeList(
                     Arc::new(Field::new("element", DataType::Float32, true)),
-                    feature.dim_names.len() as i32,
-                ),
-                true,
-            )
+                    dim as i32,
+                )
+            };
+            Field::new(&feature.key, data_type, true)
         })
         .collect();
     fields.push(Field::new("timestamp", DataType::Float32, true));
@@ -59,13 +63,16 @@ fn episode_batch(config: &DatasetConfig, episode: &EpisodeData) -> Result<Record
     for (feature, values) in config.vectors.iter().zip(&episode.vectors) {
         let dim = feature.dim_names.len();
         assert_eq!(values.len(), frames * dim);
-        let list = FixedSizeListArray::new(
-            Arc::new(Field::new("element", DataType::Float32, true)),
-            dim as i32,
-            Arc::new(Float32Array::from(values.clone())),
-            None,
-        );
-        columns.push(Arc::new(list));
+        if dim == 1 {
+            columns.push(Arc::new(Float32Array::from(values.clone())));
+        } else {
+            columns.push(Arc::new(FixedSizeListArray::new(
+                Arc::new(Field::new("element", DataType::Float32, true)),
+                dim as i32,
+                Arc::new(Float32Array::from(values.clone())),
+                None,
+            )));
+        }
     }
     columns.push(Arc::new(Float32Array::from(episode.timestamps.clone())));
     columns.push(Arc::new(Int64Array::from(episode.frame_indices.clone())));
