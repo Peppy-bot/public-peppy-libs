@@ -58,6 +58,8 @@ fn zenohd_log_excerpt(log_path: &Path) -> String {
 /// This facade allows calling the binary in the background.
 pub struct ZenohdFacade {
     zenohd_path: Option<String>,
+    external_zenohd: Option<PathBuf>,
+    adopted: bool,
     pub zenohd_config_path: PathBuf,
     /// Whether `zenohd_config_path` is an operator-pinned `ZENOH_CONFIG` file,
     /// captured once when the router is built (the env is process-global and does
@@ -75,9 +77,19 @@ pub struct ZenohdFacade {
 }
 
 impl ZenohdFacade {
-    /// Creates a new ZenohdFacade instance with a working directory
-    pub fn new(zenohd_config_path: impl AsRef<Path>) -> Result<Self> {
-        let zenohd_path = ZenohdFacade::get_zenohd_binary();
+    /// Creates a new ZenohdFacade instance with a working directory.
+    ///
+    /// The rendered config file is still used to derive the router endpoint and
+    /// client config in external mode. The operator-managed router never reads it.
+    pub fn new(
+        zenohd_config_path: impl AsRef<Path>,
+        external_zenohd: Option<PathBuf>,
+    ) -> Result<Self> {
+        let zenohd_path = if external_zenohd.is_some() {
+            None
+        } else {
+            Self::get_zenohd_binary()
+        };
         let zenoh_endpoint = ZenohdFacade::get_endpoint_from_config(&zenohd_config_path)?;
         let zenohd_config_path = zenohd_config_path.as_ref().to_path_buf();
         // The router is operator-pinned when it runs the `ZENOH_CONFIG` file
@@ -94,6 +106,8 @@ impl ZenohdFacade {
             .join(format!("zenohd_{}.log", zenoh_endpoint.port));
         Ok(Self {
             zenohd_path,
+            external_zenohd,
+            adopted: false,
             zenohd_config_path,
             pinned,
             zenohd_log_path,
@@ -103,14 +117,7 @@ impl ZenohdFacade {
     }
 
     fn get_zenohd_binary() -> Option<String> {
-        // 1) Runtime override for packaged installs / system configuration.
-        if let Ok(path) = env::var("PEPPY_ZENOHD_PATH").map(|path| path.trim().to_string())
-            && !path.is_empty()
-        {
-            return Some(path);
-        }
-
-        // 2) Prefer a `zenohd` binary placed next to the current executable.
+        // 1) Prefer a `zenohd` binary placed next to the current executable.
         // This is important for `sudo peppy ...` where PATH may be restricted by `secure_path`.
         if let Ok(exe_path) = env::current_exe()
             && let Some(exe_dir) = exe_path.parent()
@@ -121,7 +128,7 @@ impl ZenohdFacade {
             }
         }
 
-        // 3) Compile-time path injected by build script (may be stale for packaged/cargo-installed binaries).
+        // 2) Compile-time path injected by build script (may be stale for packaged/cargo-installed binaries).
         if let Some(path) = option_env!("ZENOHD_BINARY_PATH") {
             // If this looks like a path, verify it exists to avoid "os error 2" at spawn-time.
             if (path.contains('/') || path.contains('\\')) && !Path::new(path).is_file() {
@@ -131,7 +138,7 @@ impl ZenohdFacade {
             }
         }
 
-        // 4) Fallback to searching PATH.
+        // 3) Fallback to searching PATH.
         if let Some(path_var) = env::var_os("PATH") {
             for dir in env::split_paths(&path_var) {
                 let candidate = dir.join("zenohd");
@@ -142,6 +149,43 @@ impl ZenohdFacade {
         }
 
         None
+    }
+
+    fn connect_addr(&self) -> String {
+        let connect_host = if self.zenoh_endpoint.host == "0.0.0.0" {
+            "127.0.0.1"
+        } else {
+            self.zenoh_endpoint.host.as_str()
+        };
+        format!("{connect_host}:{}", self.zenoh_endpoint.port)
+    }
+
+    fn tcp_based(&self) -> bool {
+        matches!(
+            self.zenoh_endpoint.protocol,
+            ZenohNetProtocol::Tcp | ZenohNetProtocol::Tls
+        )
+    }
+
+    pub(crate) fn router_endpoint_in_use(&self) -> bool {
+        self.tcp_based() && TcpStream::connect(self.connect_addr()).is_ok()
+    }
+
+    pub fn is_adopted(&self) -> bool {
+        self.adopted
+    }
+
+    pub(crate) fn external_router_configured(&self) -> Option<&Path> {
+        self.external_zenohd.as_deref()
+    }
+
+    pub(crate) fn adopt_external_router(&mut self) {
+        self.adopted = true;
+        tracing::info!(
+            "Adopted external zenoh router at {}://{}; peppy will not manage its lifecycle",
+            self.zenoh_endpoint.protocol,
+            self.connect_addr()
+        );
     }
 
     fn get_endpoint_from_config(zenohd_config_path: impl AsRef<Path>) -> Result<ZenohEndpoint> {
@@ -198,27 +242,18 @@ impl ZenohdFacade {
     pub fn start_router(&mut self) -> Result<()> {
         let zenohd_path = self.zenohd_path.as_ref().ok_or_else(|| {
             Error::ZenohdError(
-                "Zenohd binary not found. Install `zenohd` (or place it next to the `peppy` binary), or set PEPPY_ZENOHD_PATH."
+                "Zenohd binary not found. Install `zenohd` next to the `peppy` binary or make it available on PATH."
                     .to_string(),
             )
         })?;
 
-        let connect_host = if self.zenoh_endpoint.host == "0.0.0.0" {
-            "127.0.0.1"
-        } else {
-            self.zenoh_endpoint.host.as_str()
-        };
-        let connect_addr = format!("{connect_host}:{}", self.zenoh_endpoint.port);
-
         // `Tls` is TLS-over-TCP, so the plain TCP probes below apply to it too:
         // the listening socket accepts TCP before the TLS handshake, which is all
         // a "port already bound / accepting yet?" check needs.
-        let tcp_based = matches!(
-            self.zenoh_endpoint.protocol,
-            ZenohNetProtocol::Tcp | ZenohNetProtocol::Tls
-        );
+        let tcp_based = self.tcp_based();
+        let connect_addr = self.connect_addr();
 
-        if tcp_based && TcpStream::connect(&connect_addr).is_ok() {
+        if self.router_endpoint_in_use() {
             return Err(Error::BackendError(format!(
                 "Zenoh router port already in use: {}",
                 connect_addr
@@ -298,6 +333,11 @@ impl ZenohdFacade {
     }
 
     pub fn stop_router(&mut self) -> Result<()> {
+        if self.adopted {
+            tracing::info!("leaving adopted external zenoh router running");
+            return Ok(());
+        }
+
         // Terminate the zenohd router process if it's running
         if let Some(mut child) = self.router_process.take() {
             // Try to kill the process gracefully
@@ -354,7 +394,7 @@ mod tests {
         )
         .expect("Failed to write config");
 
-        let facade = ZenohdFacade::new(config_file.path());
+        let facade = ZenohdFacade::new(config_file.path(), None);
         assert!(facade.is_ok(), "Error creating facade: {:?}", facade.err());
 
         let facade = facade.unwrap();
@@ -395,7 +435,8 @@ mod tests {
         )
         .expect("Failed to write config");
 
-        let mut facade = ZenohdFacade::new(config_file.path()).expect("Failed to create facade");
+        let mut facade =
+            ZenohdFacade::new(config_file.path(), None).expect("Failed to create facade");
 
         // First stop should succeed (no process to stop)
         assert!(facade.stop_router().is_ok());
@@ -404,6 +445,73 @@ mod tests {
         assert!(facade.stop_router().is_ok());
 
         // Process should remain None
+        assert!(facade.router_process.is_none());
+    }
+
+    #[test]
+    fn external_router_path_is_not_checked_or_executed_at_construction() {
+        use std::io::Write;
+        use tempfile::Builder;
+
+        let mut config_file = Builder::new()
+            .suffix(".json5")
+            .tempfile()
+            .expect("Failed to create temp file");
+        writeln!(
+            config_file,
+            r#"{{
+                "listen": {{
+                    "endpoints": {{
+                        "router": ["tcp/127.0.0.1:7447"]
+                    }}
+                }}
+            }}"#
+        )
+        .expect("Failed to write config");
+
+        let dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let nonexistent = dir.path().join("zenohd-that-does-not-exist");
+        assert!(!nonexistent.exists());
+
+        let facade = ZenohdFacade::new(config_file.path(), Some(nonexistent.clone()))
+            .expect("an external router path is only a lifecycle hint");
+        assert_eq!(
+            facade.external_router_configured(),
+            Some(nonexistent.as_path())
+        );
+        assert!(!facade.is_adopted());
+        assert!(facade.router_process.is_none());
+    }
+
+    #[test]
+    fn stop_router_is_an_idempotent_no_op_for_an_adopted_router() {
+        use std::io::Write;
+        use tempfile::Builder;
+
+        let mut config_file = Builder::new()
+            .suffix(".json5")
+            .tempfile()
+            .expect("Failed to create temp file");
+        writeln!(
+            config_file,
+            r#"{{
+                "listen": {{
+                    "endpoints": {{
+                        "router": ["tcp/127.0.0.1:7447"]
+                    }}
+                }}
+            }}"#
+        )
+        .expect("Failed to write config");
+
+        let mut facade =
+            ZenohdFacade::new(config_file.path(), Some(PathBuf::from("/operator/zenohd")))
+                .expect("Failed to create facade");
+        facade.adopt_external_router();
+
+        assert!(facade.is_adopted());
+        assert!(facade.stop_router().is_ok());
+        assert!(facade.stop_router().is_ok());
         assert!(facade.router_process.is_none());
     }
 

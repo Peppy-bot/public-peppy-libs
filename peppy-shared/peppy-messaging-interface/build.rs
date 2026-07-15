@@ -172,8 +172,7 @@ mod zenoh_build {
                 "Failed to compile zenohd {} for target '{}'. \
                  Build zenohd from source with \
                  `cargo build --release --target {}` \
-                 from the zenoh {} source tree, then place the built binary next to peppy \
-                 or point PEPPY_ZENOHD_PATH to it.",
+                 from the zenoh {} source tree, then place the built binary next to peppy.",
                 release_tag, target, target, release_tag
             ),
         }

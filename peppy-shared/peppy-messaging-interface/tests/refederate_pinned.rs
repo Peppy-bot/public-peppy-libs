@@ -49,6 +49,7 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
         SubscriberBufferSizes::default(),
         Vec::new(),
         None,
+        None,
     )
     .expect("build a router adapter from the operator-pinned config");
 

@@ -55,8 +55,13 @@ use crate::{MessengerBackend, Subscription};
 use std::net::SocketAddr;
 #[cfg(feature = "router")]
 use std::net::TcpListener;
+#[cfg(feature = "router")]
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
+
+#[cfg(feature = "router")]
+const ADOPTION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Zenoh-specific QoS settings derived from a `PublisherQoS` level.
 struct ZenohQoS {
@@ -189,11 +194,17 @@ pub struct ZenohAdapter {
 }
 
 impl ZenohAdapter {
-    /// Creates a ZenohAdapter that owns and manages its own zenohd router.
-    /// Use this when you need to start a new router instance. `gossip` selects
+    /// Creates a ZenohAdapter for the daemon's zenoh router. `gossip` selects
     /// the daemon session's own routing model (peer vs router-relay) and
     /// `buffer_sizes` its subscriber channel capacities, both resolved from
     /// `peppy_config.json5`.
+    ///
+    /// With `external_zenohd = None`, the adapter spawns the bundled zenohd and
+    /// reports an error if its port is already busy. With `Some(path)`, the
+    /// router is operator-managed: peppy only adopts a responsive router already
+    /// serving the endpoint and never spawns one. The path is a lifecycle-mode
+    /// hint and is never executed. Adoption's port probe is TCP-based because
+    /// the daemon router endpoint is always `tcp/`.
     ///
     /// `connect_endpoints` *federates* the spawned router to upstream routers it
     /// dials (`<proto>/<host>:<port>` each) — e.g. the daemon's plaintext loopback
@@ -203,6 +214,7 @@ impl ZenohAdapter {
     /// written into the zenohd config only and is inert for the daemon's own
     /// plaintext loopback session.
     #[cfg(feature = "router")]
+    #[allow(clippy::too_many_arguments)]
     pub fn with_router(
         protocol: ZenohNetProtocol,
         host: &str,
@@ -211,10 +223,11 @@ impl ZenohAdapter {
         buffer_sizes: SubscriberBufferSizes,
         connect_endpoints: Vec<String>,
         tls: Option<TlsConfig>,
+        external_zenohd: Option<PathBuf>,
     ) -> Result<Self> {
         let zenohd_config_path =
             zenohd::router_config_path(protocol, host, port, connect_endpoints, tls.clone())?;
-        let facade = zenohd::ZenohdFacade::new(zenohd_config_path)?;
+        let facade = zenohd::ZenohdFacade::new(zenohd_config_path, external_zenohd)?;
         let client_config =
             Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, tls)?;
 
@@ -237,10 +250,10 @@ impl ZenohAdapter {
     ///
     /// Returns whether the config was actually rewritten: `Ok(true)` when a new
     /// config was rendered (the caller must restart zenohd to apply it),
-    /// `Ok(false)` when a `ZENOH_CONFIG`-overridden config is in effect — that
-    /// file is operator-owned and left untouched, so re-rendering is a no-op and
-    /// there is nothing for the caller to restart for. Errors if the adapter owns
-    /// no router.
+    /// `Ok(false)` when a `ZENOH_CONFIG`-overridden config is in effect or the
+    /// router was adopted. Both are operator-owned and left untouched. An
+    /// adopted router never read peppy's rendered config, so there is nothing to
+    /// rewrite or restart. Errors if the adapter owns no router.
     #[cfg(feature = "router")]
     pub fn refederate(
         &mut self,
@@ -250,11 +263,11 @@ impl ZenohAdapter {
         let facade = self.zenohd.as_ref().ok_or_else(|| {
             Error::BackendError("refederate called on an adapter that owns no router".to_string())
         })?;
-        // An operator-pinned `ZENOH_CONFIG` (captured when the router was built) is
-        // never rendered over, so re-rendering would change nothing. Report the
-        // no-op so the caller skips the restart it would otherwise do to apply a
-        // change that cannot take effect here.
-        if facade.pinned {
+        // Operator-owned routers are never rendered over. A pinned
+        // `ZENOH_CONFIG` file stays untouched, and an adopted router never read
+        // the rendered file at all. Report the no-op so the caller skips a
+        // restart that peppy must not perform.
+        if facade.pinned || facade.is_adopted() {
             return Ok(false);
         }
         let ep = &facade.zenoh_endpoint;
@@ -425,6 +438,7 @@ impl ZenohAdapter {
                 buffer_sizes,
                 Vec::new(),
                 None,
+                None,
             )?
             .with_namespace(namespace.clone());
             // A lightweight client probe (no listener, no peer discovery) is the
@@ -493,6 +507,11 @@ impl ZenohAdapter {
             self.client_config.tls.clone(),
         );
         zenohd::RouterHealthChecker::new(probe_config)
+    }
+
+    #[cfg(feature = "router")]
+    pub fn router_is_adopted(&self) -> bool {
+        self.zenohd.as_ref().is_some_and(|z| z.is_adopted())
     }
 
     /// Resolves the `ZENOH_SESSION_CONFIG` operator override into an optional
@@ -1006,10 +1025,42 @@ impl MessengerBackend for ZenohAdapter {
     async fn start_router(&mut self) -> Result<()> {
         #[cfg(feature = "router")]
         {
+            let health_checker = self.router_health_checker();
             let zenohd = self
                 .zenohd
                 .as_mut()
                 .ok_or(Error::ZenohDConfigurationNotFound)?;
+            if let Some(path) = zenohd.external_router_configured() {
+                let ep = &zenohd.zenoh_endpoint;
+                if !zenohd.router_endpoint_in_use() {
+                    return Err(Error::BackendError(format!(
+                        "zenohd.path is set, so peppy will not start a zenoh router, but nothing \
+                         is serving {}://{}:{}; start your router first, for example: \
+                         {} -l {}/{}:{}   (or set zenohd.path to null in \
+                         peppy_config.json5 to let peppy manage its own)",
+                        ep.protocol,
+                        ep.host,
+                        ep.port,
+                        path.display(),
+                        ep.protocol,
+                        ep.host,
+                        ep.port,
+                    )));
+                }
+                if !health_checker
+                    .is_router_responsive(ADOPTION_PROBE_TIMEOUT)
+                    .await
+                {
+                    return Err(Error::BackendError(format!(
+                        "the messaging endpoint {}://{}:{} is in use, but not by a \
+                         responsive zenoh router; stop the process holding the port, or set \
+                         zenohd.path to null in peppy_config.json5",
+                        ep.protocol, ep.host, ep.port,
+                    )));
+                }
+                zenohd.adopt_external_router();
+                return Ok(());
+            }
             zenohd.start_router()?;
             Ok(())
         }
@@ -1495,6 +1546,7 @@ mod tests {
             SubscriberBufferSizes::default(),
             Vec::new(),
             None,
+            None,
         )
         .expect("build standalone router adapter");
 
@@ -1532,6 +1584,51 @@ mod tests {
         let mut clientish = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, "127.0.0.1", port)
             .expect("build client adapter");
         assert!(clientish.refederate(Vec::new(), None).is_err());
+
+        let _ = std::fs::remove_file(&cfg_path);
+    }
+
+    #[cfg(feature = "router")]
+    #[test]
+    fn refederate_is_a_no_op_for_an_adopted_router() {
+        let port = 59248;
+        let mut adapter = ZenohAdapter::with_router(
+            ZenohNetProtocol::Tcp,
+            "127.0.0.1",
+            port,
+            false,
+            SubscriberBufferSizes::default(),
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("build standalone router adapter");
+
+        let cfg_path = adapter
+            .zenohd
+            .as_ref()
+            .expect("router adapter owns a facade")
+            .zenohd_config_path
+            .clone();
+        let before = std::fs::read(&cfg_path).expect("read rendered config");
+
+        adapter
+            .zenohd
+            .as_mut()
+            .expect("router adapter owns a facade")
+            .adopt_external_router();
+        assert!(adapter.router_is_adopted());
+
+        let rewrote = adapter
+            .refederate(
+                vec!["tls/cap.zenoh.localhost:7443".to_string()],
+                Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
+            )
+            .expect("refederate succeeds as a no-op for an adopted router");
+        assert!(!rewrote);
+
+        let after = std::fs::read(&cfg_path).expect("read config after refederate");
+        assert_eq!(before, after, "the rendered config must remain unchanged");
 
         let _ = std::fs::remove_file(&cfg_path);
     }
