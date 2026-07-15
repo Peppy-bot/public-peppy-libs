@@ -93,8 +93,8 @@ pub mod v20 {
 
     // The gripper motor closes at 0 rad and opens toward GRIPPER_OPEN_RAD. This is the
     // motor-frame open angle used by enactic's POS_FORCE reference (test_gripper_posforce
-    // commands 0..π/2); the URDF finger joints travel 0..0.7854 rad, so the motor↔finger
-    // ratio is resolved (and calibrated on hardware) in the gripper node's geometry.
+    // commands 0..π/2); each finger joint travels π/2 rad (the right hand's URDF range
+    // mirrored to -π/2..0), so the motor↔finger ratio is 1:1.
     #[allow(clippy::approx_constant)]
     pub const GRIPPER_OPEN_RAD: f64 = std::f64::consts::FRAC_PI_2;
 }
@@ -277,13 +277,7 @@ mod inner {
         tau: f64,
     ) {
     }
-    pub unsafe fn openarm_gripper_pos_force_control(
-        h: OpenArmHandle,
-        q: f64,
-        dq: f64,
-        i: f64,
-    ) {
-    }
+    pub unsafe fn openarm_gripper_pos_force_control(h: OpenArmHandle, q: f64, dq: f64, i: f64) {}
     pub unsafe fn openarm_gripper_get_state(
         h: OpenArmHandle,
         position: *mut f64,
@@ -445,7 +439,12 @@ impl GripperCan {
     /// Command it with [`mit_control`](Self::mit_control).
     pub fn init_motor(&mut self, motor_type: MotorType, send_id: u32, recv_id: u32) {
         unsafe {
-            inner::openarm_init_gripper_motor(self.handle.handle, motor_type as u8, send_id, recv_id);
+            inner::openarm_init_gripper_motor(
+                self.handle.handle,
+                motor_type as u8,
+                send_id,
+                recv_id,
+            );
         }
         self.mode = Some(ControlMode::Mit);
     }
@@ -508,7 +507,12 @@ impl GripperCan {
             "torque_pu must be per-unit in 0..=1, got {torque_pu}"
         );
         unsafe {
-            inner::openarm_gripper_pos_force_control(self.handle.handle, q_rad, speed_rad_s, torque_pu)
+            inner::openarm_gripper_pos_force_control(
+                self.handle.handle,
+                q_rad,
+                speed_rad_s,
+                torque_pu,
+            )
         }
     }
 

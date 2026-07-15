@@ -88,20 +88,6 @@ impl HardwareVersion {
         }
     }
 
-    /// Full-open jaw width (m) of the generation's gripper; closed is 0. This is
-    /// the aperture the shared gripper interfaces carry: measured between the
-    /// finger pad faces (the flat gripping surfaces), which is where an object's
-    /// fit is decided. It is gripper-linkage data, not a URDF joint limit, so it
-    /// lives here. The v2 value is the pad gap at the finger joints' full
-    /// travel computed from the URDF pivots and the finger meshes' pad faces,
-    /// pending confirmation by one measurement on hardware.
-    pub fn jaw_open_m(self) -> f64 {
-        match self {
-            Self::V1 => 0.044,
-            Self::V2 => 0.0697,
-        }
-    }
-
     /// Per-joint `[lower, upper]` position limits (rad) for one arm side, j1..j7, from
     /// the bundled URDF with [`Self::elbow_singularity_floor_rad`] applied to the elbow.
     /// This is the clamp range a command-producing node (operator panel, leader arm)
@@ -336,12 +322,6 @@ mod tests {
                 "{v}: missing shared torso link"
             );
         }
-    }
-
-    #[test]
-    fn jaw_widths_are_positive_and_v2_opens_wider() {
-        assert!(HardwareVersion::V1.jaw_open_m() > 0.0);
-        assert!(HardwareVersion::V2.jaw_open_m() > HardwareVersion::V1.jaw_open_m());
     }
 
     #[cfg(feature = "meshes")]
