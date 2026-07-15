@@ -605,14 +605,14 @@ impl ZenohAdapter {
         buffer_sizes: SubscriberBufferSizes,
         tls: Option<TlsConfig>,
     ) -> Result<ZenohClientConfig> {
-        // The daemon joins the mesh it hosts, seeded by its own router, so peers
-        // can reach its core-node/daemon services. `gossip` (from
-        // `peppy_config.json5`) selects whether that session is a peer (direct
-        // links) or a client (router relay); router mode makes the daemon a
-        // plain client of its own loopback router. Its long-lived session is
-        // rebuilt as reconnecting in `start_session` when `reconnect_session` is
-        // set; the readiness probe in `start_router_ephemeral` builds its own
-        // client probe config.
+        // Build the adapter session from the router endpoint carried by the
+        // facade. `with_router` supplies a Peppy-managed router, while
+        // `with_external_router` may supply a remote, operator-owned router.
+        // `gossip` selects whether the session is a peer (direct links) or a
+        // client (router relay). The long-lived session is rebuilt as
+        // reconnecting in `start_session` when `reconnect_session` is set; the
+        // readiness probe in `start_router_ephemeral` builds its own client
+        // probe config.
         Ok(Self::create_client_config(
             zenohd.zenoh_endpoint.protocol(),
             zenohd.zenoh_endpoint.host(),
@@ -622,8 +622,8 @@ impl ZenohAdapter {
             gossip,
             buffer_sizes,
             tls,
-            // The daemon applies its org namespace via [`Self::with_namespace`]
-            // after `with_router`, so the initial derive is namespace-free.
+            // Both router constructors derive a namespace-free session; callers
+            // apply org isolation afterward via [`Self::with_namespace`].
             None,
         ))
     }
