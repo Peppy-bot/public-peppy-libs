@@ -7,9 +7,10 @@ use pmi::{
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 
-fn unused_ephemeral_port() -> u16 {
+fn unused_ephemeral_port() -> (u16, TcpListener) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve an ephemeral port");
-    listener.local_addr().expect("read local address").port()
+    let port = listener.local_addr().expect("read local address").port();
+    (port, listener)
 }
 
 fn router_adapter(port: u16, external_zenohd: Option<PathBuf>) -> ZenohAdapter {
@@ -77,17 +78,35 @@ async fn rejects_a_non_zenoh_process_holding_the_router_port() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fails_loud_when_the_configured_external_router_is_not_running() {
-    let port = unused_ephemeral_port();
-    let configured_path = PathBuf::from("/definitely/not/a/real/zenohd");
-    let mut adapter = router_adapter(port, Some(configured_path.clone()));
+    const MAX_PORT_ATTEMPTS: usize = 32;
 
-    let error = adapter
-        .start_router()
-        .await
-        .expect_err("external mode must not spawn a missing router");
+    let configured_path = PathBuf::from("/definitely/not/a/real/zenohd");
+    let mut attempt = 0;
+    let (port, adapter, start_result, listener) = loop {
+        attempt += 1;
+        let (port, reservation) = unused_ephemeral_port();
+        let mut adapter = router_adapter(port, Some(configured_path.clone()));
+
+        drop(reservation);
+        let start_result = adapter.start_router().await;
+
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => break (port, adapter, start_result, listener),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::AddrInUse && attempt < MAX_PORT_ATTEMPTS =>
+            {
+                continue;
+            }
+            Err(err) => {
+                panic!("could not reclaim sampled port {port} after {attempt} attempts: {err}")
+            }
+        }
+    };
+
+    let error = start_result.expect_err("external mode must not spawn a missing router");
     let message = error.to_string();
     assert!(
-        message.contains("nothing is serving"),
+        message.contains(&format!("nothing is serving tcp://127.0.0.1:{port}")),
         "unexpected error: {error}"
     );
     assert!(
@@ -96,8 +115,6 @@ async fn fails_loud_when_the_configured_external_router_is_not_running() {
     );
     assert!(!adapter.router_is_adopted());
 
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .expect("peppy did not spawn any router on the free port");
     drop(listener);
 }
 
