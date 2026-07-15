@@ -93,8 +93,8 @@ pub mod v20 {
 
     // The gripper motor closes at 0 rad and opens toward GRIPPER_OPEN_RAD. This is the
     // motor-frame open angle used by enactic's POS_FORCE reference (test_gripper_posforce
-    // commands 0..π/2); the URDF finger joints travel the same 0..π/2 rad, so the
-    // motor↔finger ratio is 1:1.
+    // commands 0..π/2); each finger joint travels π/2 rad (the right hand's URDF range
+    // mirrored to -π/2..0), so the motor↔finger ratio is 1:1.
     #[allow(clippy::approx_constant)]
     pub const GRIPPER_OPEN_RAD: f64 = std::f64::consts::FRAC_PI_2;
 }
