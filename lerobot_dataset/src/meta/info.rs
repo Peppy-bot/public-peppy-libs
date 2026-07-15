@@ -81,7 +81,7 @@ pub fn build_info_json(config: &DatasetConfig, totals: &Totals) -> Value {
         "timestamp".into(),
         json!({"dtype": "float32", "shape": [1], "names": null}),
     );
-    for name in ["frame_index", "episode_index", "index", "task_index"] {
+    for name in layout::INT64_BOOKKEEPING_COLUMNS {
         features.insert(
             name.into(),
             json!({"dtype": "int64", "shape": [1], "names": null}),

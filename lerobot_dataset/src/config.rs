@@ -6,15 +6,6 @@ pub const STATE_KEY: &str = "observation.state";
 pub const ACTION_KEY: &str = "action";
 pub const CAMERA_KEY_PREFIX: &str = "observation.images.";
 
-/// Bookkeeping columns the writer produces itself; user features may not shadow them.
-pub const RESERVED_COLUMNS: [&str; 5] = [
-    "timestamp",
-    "frame_index",
-    "episode_index",
-    "index",
-    "task_index",
-];
-
 /// Pixel layout of the buffers the caller will feed for a camera.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceEncoding {
@@ -89,10 +80,16 @@ impl Default for VideoSettings {
 }
 
 /// Handle to a declared vector feature; obtained from [`DatasetConfig`].
+///
+/// Only valid against the [`DatasetConfig`] that produced it; used with a
+/// different config it indexes an unrelated feature or an out-of-range slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VectorId(pub(crate) usize);
 
 /// Handle to a declared camera; obtained from [`DatasetConfig`].
+///
+/// Only valid against the [`DatasetConfig`] that produced it; used with a
+/// different config it indexes an unrelated camera or an out-of-range slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CameraId(pub(crate) usize);
 
@@ -265,7 +262,7 @@ impl DatasetConfigBuilder {
             .map(|f| f.key.as_str())
             .chain(self.cameras.iter().map(|c| c.key.as_str()))
         {
-            if RESERVED_COLUMNS.contains(&key) {
+            if crate::layout::BOOKKEEPING_COLUMNS.contains(&key) {
                 return Err(ConfigError::ReservedFeature(key.to_string()));
             }
             if seen.contains(&key) {

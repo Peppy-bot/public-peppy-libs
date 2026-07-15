@@ -7,6 +7,21 @@ pub const CHUNKS_SIZE: u64 = 1000;
 pub const DATA_FILES_SIZE_IN_MB: u64 = 100;
 pub const VIDEO_FILES_SIZE_IN_MB: u64 = 200;
 
+/// The int64 bookkeeping columns the writer appends after `timestamp`, in
+/// canonical (info.json and parquet) order.
+pub(crate) const INT64_BOOKKEEPING_COLUMNS: [&str; 4] =
+    ["frame_index", "episode_index", "index", "task_index"];
+
+/// All bookkeeping columns the writer appends after the declared features, in
+/// canonical order: the float32 `timestamp` then [`INT64_BOOKKEEPING_COLUMNS`].
+pub(crate) const BOOKKEEPING_COLUMNS: [&str; 5] = [
+    "timestamp",
+    INT64_BOOKKEEPING_COLUMNS[0],
+    INT64_BOOKKEEPING_COLUMNS[1],
+    INT64_BOOKKEEPING_COLUMNS[2],
+    INT64_BOOKKEEPING_COLUMNS[3],
+];
+
 pub const INFO_PATH: &str = "meta/info.json";
 pub const STATS_PATH: &str = "meta/stats.json";
 pub const TASKS_PATH: &str = "meta/tasks.parquet";

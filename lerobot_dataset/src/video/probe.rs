@@ -50,6 +50,10 @@ pub fn probe_toolchain(codec: VideoCodec, needs_depth: bool) -> Result<(), Video
 
 /// Frame count of the (single) video stream, via packet count.
 pub fn count_frames(camera: &str, video: &Path) -> Result<u64, VideoError> {
+    let probe_failed = |detail: String| VideoError::ProbeFailed {
+        camera: camera.to_string(),
+        detail,
+    };
     let output = Command::new("ffprobe")
         .args([
             "-v",
@@ -64,13 +68,17 @@ pub fn count_frames(camera: &str, video: &Path) -> Result<u64, VideoError> {
         ])
         .arg(video)
         .output()
-        .map_err(VideoError::FfprobeNotFound)?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.trim()
-        .parse()
-        .map_err(|_| VideoError::FrameCountMismatch {
-            camera: camera.to_string(),
-            expected: 0,
-            probed: 0,
-        })
+        .map_err(|source| probe_failed(source.to_string()))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.trim().parse().map_err(|_| {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = match stderr.trim() {
+            "" => format!(
+                "ffprobe returned an unparseable packet count {:?}",
+                stdout.trim()
+            ),
+            message => message.to_string(),
+        };
+        probe_failed(detail)
+    })
 }

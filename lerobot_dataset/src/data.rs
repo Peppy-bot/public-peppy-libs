@@ -25,10 +25,14 @@ pub struct EpisodeData {
     /// Per vector feature (config order): frame-major flattened values.
     pub vectors: Vec<Vec<f32>>,
     pub timestamps: Vec<f32>,
-    pub frame_indices: Vec<i64>,
     pub episode_index: i64,
     pub first_global_index: i64,
     pub task_index: i64,
+}
+
+/// The `element` child field arrow uses for list and fixed-size-list columns.
+pub(crate) fn element(data_type: DataType) -> Field {
+    Field::new("element", data_type, true)
 }
 
 pub fn data_schema(config: &DatasetConfig) -> Schema {
@@ -42,16 +46,13 @@ pub fn data_schema(config: &DatasetConfig) -> Schema {
             let data_type = if dim == 1 {
                 DataType::Float32
             } else {
-                DataType::FixedSizeList(
-                    Arc::new(Field::new("element", DataType::Float32, true)),
-                    dim as i32,
-                )
+                DataType::FixedSizeList(Arc::new(element(DataType::Float32)), dim as i32)
             };
             Field::new(&feature.key, data_type, true)
         })
         .collect();
     fields.push(Field::new("timestamp", DataType::Float32, true));
-    for name in ["frame_index", "episode_index", "index", "task_index"] {
+    for name in crate::layout::INT64_BOOKKEEPING_COLUMNS {
         fields.push(Field::new(name, DataType::Int64, true));
     }
     Schema::new(fields)
@@ -67,7 +68,7 @@ fn episode_batch(config: &DatasetConfig, episode: &EpisodeData) -> Result<Record
             columns.push(Arc::new(Float32Array::from(values.clone())));
         } else {
             columns.push(Arc::new(FixedSizeListArray::new(
-                Arc::new(Field::new("element", DataType::Float32, true)),
+                Arc::new(element(DataType::Float32)),
                 dim as i32,
                 Arc::new(Float32Array::from(values.clone())),
                 None,
@@ -75,7 +76,7 @@ fn episode_batch(config: &DatasetConfig, episode: &EpisodeData) -> Result<Record
         }
     }
     columns.push(Arc::new(Float32Array::from(episode.timestamps.clone())));
-    columns.push(Arc::new(Int64Array::from(episode.frame_indices.clone())));
+    columns.push(Arc::new(Int64Array::from_iter_values(0..frames as i64)));
     columns.push(Arc::new(Int64Array::from(vec![
         episode.episode_index;
         frames
@@ -159,7 +160,6 @@ mod tests {
                 (0..frames).map(|i| -(i as f32)).collect(),
             ],
             timestamps: (0..frames).map(|i| i as f32 / 30.0).collect(),
-            frame_indices: (0..frames as i64).collect(),
             episode_index: index,
             first_global_index: first_global,
             task_index: 0,

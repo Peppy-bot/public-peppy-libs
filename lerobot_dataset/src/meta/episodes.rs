@@ -9,6 +9,7 @@ use arrow::array::builder::{Float64Builder, Int64Builder, ListBuilder, StringBui
 use arrow::array::{ArrayRef, Int64Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
 
+use crate::data::element;
 use crate::error::Error;
 use crate::layout::{FileSlot, episodes_path};
 use crate::meta::stats::{FeatureStats, QUANTILE_KEYS};
@@ -41,10 +42,6 @@ pub struct EpisodeRow {
     /// Canonical feature order: vectors, cameras, then default columns.
     pub stats: Vec<FeatureStatsEntry>,
     pub episodes_slot: FileSlot,
-}
-
-fn element(data_type: DataType) -> Field {
-    Field::new("element", data_type, true)
 }
 
 fn list_of(data_type: DataType) -> DataType {

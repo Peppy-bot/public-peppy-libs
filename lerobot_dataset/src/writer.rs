@@ -30,15 +30,6 @@ use crate::video::sample::downsampled_rgb;
 
 const EPISODE_TMP_DIR: &str = ".episode-tmp";
 
-/// Names of the bookkeeping features, in canonical (info.json) order.
-const DEFAULT_FEATURE_KEYS: [&str; 5] = [
-    "timestamp",
-    "frame_index",
-    "episode_index",
-    "index",
-    "task_index",
-];
-
 struct VideoFileState {
     slot: FileSlot,
     /// Frames already committed to the file at `slot`.
@@ -201,11 +192,21 @@ impl DatasetWriter {
     }
 
     fn roll_if_full(&self, slot: FileSlot, relative: &Path, limit_mb: u64) -> FileSlot {
-        let full = std::fs::metadata(self.root.join(relative))
-            .map(|m| m.len() >= mb_to_bytes(limit_mb))
-            .unwrap_or(false);
-        if full { slot.next() } else { slot }
+        if is_full(&self.root.join(relative), limit_mb) {
+            slot.next()
+        } else {
+            slot
+        }
     }
+}
+
+/// True when the file at `path` has reached the `limit_mb` rollover threshold.
+/// A missing or unreadable file is treated as not full (rollover only after a
+/// committed write grows the file).
+fn is_full(path: &Path, limit_mb: u64) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.len() >= mb_to_bytes(limit_mb))
+        .unwrap_or(false)
 }
 
 pub struct EpisodeWriter<'d> {
@@ -305,6 +306,7 @@ impl EpisodeWriter<'_> {
         self.committed = true;
         if self.frames == 0 {
             self.encoders.clear();
+            let _ = std::fs::remove_dir_all(self.dataset.root.join(EPISODE_TMP_DIR));
             return Err(Error::EmptyEpisode);
         }
         let episode_index = self.episode_index;
@@ -338,7 +340,6 @@ impl EpisodeWriter<'_> {
         let timestamps: Vec<f32> = (0..frames)
             .map(|k| (k as f64 / fps as f64) as f32)
             .collect();
-        let frame_indices: Vec<i64> = (0..frames as i64).collect();
         let first_global_index = dataset.total_frames as i64;
 
         let episode_stats = build_episode_stats(
@@ -369,7 +370,6 @@ impl EpisodeWriter<'_> {
             &EpisodeData {
                 vectors,
                 timestamps: timestamps.clone(),
-                frame_indices: frame_indices.clone(),
                 episode_index: episode_index as i64,
                 first_global_index,
                 task_index,
@@ -382,10 +382,7 @@ impl EpisodeWriter<'_> {
             let key = dataset.config.cameras[camera_index].key.clone();
             let state = &mut dataset.videos[camera_index];
             let current = dataset.root.join(video_path(&key, state.slot));
-            let roll = std::fs::metadata(&current)
-                .map(|m| m.len() >= mb_to_bytes(dataset.config.video_files_size_in_mb))
-                .unwrap_or(false);
-            if roll {
+            if is_full(&current, dataset.config.video_files_size_in_mb) {
                 finalized_files.push(video_path(&key, state.slot));
                 state.slot = state.slot.next();
                 state.frames = 0;
@@ -529,7 +526,7 @@ fn build_episode_stats(
         scalar_stats((0..frames as i64).map(|i| (first_global_index + i) as f64)),
         scalar_stats(std::iter::repeat_n(task_index as f64, frames)),
     ];
-    for (key, stats) in DEFAULT_FEATURE_KEYS.iter().zip(default_stats) {
+    for (key, stats) in crate::layout::BOOKKEEPING_COLUMNS.iter().zip(default_stats) {
         entries.push(FeatureStatsEntry {
             key: (*key).to_string(),
             is_image: false,
