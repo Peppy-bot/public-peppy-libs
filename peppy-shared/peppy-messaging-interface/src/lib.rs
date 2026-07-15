@@ -58,7 +58,7 @@ pub use adapters::zenoh::ZenohdInstance;
 #[cfg(feature = "router")]
 pub use zenohd::RouterHealthChecker;
 #[cfg(feature = "zenoh")]
-pub use zenohd::ZenohNetProtocol;
+pub use zenohd::{ZenohEndpoint, ZenohNetProtocol};
 // TLS material + the out-of-process router-config renderer. Available under the
 // base `zenoh` feature (no zenohd binary needed) so a client/orchestrator that
 // only renders configs and opens TLS sessions can use them.

@@ -863,6 +863,16 @@ impl Messenger {
         self.get_host().port()
     }
 
+    /// Returns the complete Zenoh locator used by this messenger, including its
+    /// transport protocol. Mock messengers have no network locator.
+    #[cfg(feature = "zenoh")]
+    pub fn messaging_locator(&self) -> Option<crate::ZenohEndpoint> {
+        match &self.adapter {
+            MessengerAdapter::Zenoh(adapter) => Some(adapter.client_locator()),
+            MessengerAdapter::Mock(_) => None,
+        }
+    }
+
     /// Returns a lock-free [`RouterHealthChecker`] for the router watchdog, or
     /// `None` for backends without a Zenoh router (e.g. the mock).
     #[cfg(feature = "router")]
@@ -888,7 +898,7 @@ impl Messenger {
     /// actually rewritten: `Ok(true)` ⇒ the change takes effect on the next
     /// [`stop_router`](MessengerBackend::stop_router) /
     /// [`start_router`](MessengerBackend::start_router) cycle (callers re-render
-    /// then restart); `Ok(false)` ⇒ a `ZENOH_CONFIG` override or adopted router is
+    /// then restart); `Ok(false)` ⇒ a `ZENOH_CONFIG` override or external router is
     /// in effect (or this is the mock backend), so nothing was rendered and there
     /// is nothing to restart for. Lets the daemon (de)federate its local router to
     /// the user's per-user cloud router live (login/logout) without a full process

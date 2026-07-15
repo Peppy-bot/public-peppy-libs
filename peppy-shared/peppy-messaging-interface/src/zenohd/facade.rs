@@ -1,5 +1,5 @@
 use super::super::error::{Error, Result};
-use super::ZenohNetProtocol;
+use super::{ZenohEndpoint, ZenohNetProtocol};
 use std::env;
 use std::fs::File;
 use std::net::TcpStream;
@@ -7,11 +7,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use zenoh::config::Config;
 
-/// This structure stores the Zenoh endpoint to be reused by clients by extracting it from the config file
-pub struct ZenohEndpoint {
-    pub host: String,
-    pub port: u16,
-    pub protocol: ZenohNetProtocol,
+enum RouterOwnership {
+    /// A router spawned and supervised by peppy from a rendered (or
+    /// operator-pinned) config file.
+    Managed {
+        zenohd_path: Option<String>,
+        zenohd_config_path: PathBuf,
+        pinned: bool,
+        zenohd_log_path: PathBuf,
+    },
+    /// An already-running router that peppy only probes and uses. No binary or
+    /// router config belongs to peppy in this mode.
+    External,
 }
 
 /// Checks whether a child process has exited prematurely.
@@ -57,39 +64,16 @@ fn zenohd_log_excerpt(log_path: &Path) -> String {
 /// The Zenoh daemon binary facade. Zenohd is not accessible via the Rust API (or in a very limited fashion).
 /// This facade allows calling the binary in the background.
 pub struct ZenohdFacade {
-    zenohd_path: Option<String>,
-    external_zenohd: Option<PathBuf>,
+    ownership: RouterOwnership,
     adopted: bool,
-    pub zenohd_config_path: PathBuf,
-    /// Whether `zenohd_config_path` is an operator-pinned `ZENOH_CONFIG` file,
-    /// captured once when the router is built (the env is process-global and does
-    /// not change at runtime). peppy never rewrites a pinned config, so
-    /// [`refederate`](crate::ZenohAdapter::refederate) is a no-op for such a router
-    /// and the caller skips a pointless zenohd restart.
-    pub(crate) pinned: bool,
-    /// File that receives zenohd's stdout+stderr. These streams must be drained
-    /// for the process's lifetime; an unread pipe deadlocks the router once its
-    /// buffer fills (a zenohd thread blocks in `write` and stops servicing
-    /// sockets). A file sink is bounded by disk and never blocks.
-    zenohd_log_path: PathBuf,
     pub router_process: Option<Child>,
     pub zenoh_endpoint: ZenohEndpoint,
 }
 
 impl ZenohdFacade {
-    /// Creates a new ZenohdFacade instance with a working directory.
-    ///
-    /// The rendered config file is still used to derive the router endpoint and
-    /// client config in external mode. The operator-managed router never reads it.
-    pub fn new(
-        zenohd_config_path: impl AsRef<Path>,
-        external_zenohd: Option<PathBuf>,
-    ) -> Result<Self> {
-        let zenohd_path = if external_zenohd.is_some() {
-            None
-        } else {
-            Self::get_zenohd_binary()
-        };
+    /// Creates a facade for a peppy-managed zenohd process. The router endpoint
+    /// is extracted from the exact config that will be passed to zenohd.
+    pub fn managed(zenohd_config_path: impl AsRef<Path>) -> Result<Self> {
         let zenoh_endpoint = ZenohdFacade::get_endpoint_from_config(&zenohd_config_path)?;
         let zenohd_config_path = zenohd_config_path.as_ref().to_path_buf();
         // The router is operator-pinned when it runs the `ZENOH_CONFIG` file
@@ -103,17 +87,30 @@ impl ZenohdFacade {
         let zenohd_log_path = zenohd_config_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
-            .join(format!("zenohd_{}.log", zenoh_endpoint.port));
+            .join(format!("zenohd_{}.log", zenoh_endpoint.port()));
         Ok(Self {
-            zenohd_path,
-            external_zenohd,
+            ownership: RouterOwnership::Managed {
+                zenohd_path: Self::get_zenohd_binary(),
+                zenohd_config_path,
+                pinned,
+                zenohd_log_path,
+            },
             adopted: false,
-            zenohd_config_path,
-            pinned,
-            zenohd_log_path,
             router_process: None,
             zenoh_endpoint,
         })
+    }
+
+    /// Creates a facade for a router whose process and configuration are owned
+    /// by the operator. The endpoint has already been validated as a dialable
+    /// TCP locator by [`ZenohAdapter::with_external_router`](crate::ZenohAdapter::with_external_router).
+    pub fn external(zenoh_endpoint: ZenohEndpoint) -> Self {
+        Self {
+            ownership: RouterOwnership::External,
+            adopted: false,
+            router_process: None,
+            zenoh_endpoint,
+        }
     }
 
     fn get_zenohd_binary() -> Option<String> {
@@ -152,17 +149,17 @@ impl ZenohdFacade {
     }
 
     fn connect_addr(&self) -> String {
-        let connect_host = if self.zenoh_endpoint.host == "0.0.0.0" {
+        let connect_host = if self.zenoh_endpoint.host() == "0.0.0.0" {
             "127.0.0.1"
         } else {
-            self.zenoh_endpoint.host.as_str()
+            self.zenoh_endpoint.host()
         };
-        format!("{connect_host}:{}", self.zenoh_endpoint.port)
+        format!("{connect_host}:{}", self.zenoh_endpoint.port())
     }
 
     fn tcp_based(&self) -> bool {
         matches!(
-            self.zenoh_endpoint.protocol,
+            self.zenoh_endpoint.protocol(),
             ZenohNetProtocol::Tcp | ZenohNetProtocol::Tls
         )
     }
@@ -171,20 +168,57 @@ impl ZenohdFacade {
         self.tcp_based() && TcpStream::connect(self.connect_addr()).is_ok()
     }
 
+    /// Asynchronously checks whether the configured TCP endpoint accepts a
+    /// connection within `timeout`.
+    ///
+    /// External endpoints may require DNS resolution or route to a remote
+    /// network. Using Tokio's connect future keeps that work off the async
+    /// startup thread, while the outer timeout prevents an unreachable endpoint
+    /// from stalling adoption indefinitely. This is intentionally only a socket
+    /// reachability check; the caller performs a separate Zenoh handshake so it
+    /// can distinguish an absent endpoint from a non-Zenoh service.
+    pub(crate) async fn router_endpoint_reachable(&self, timeout: std::time::Duration) -> bool {
+        if !self.tcp_based() {
+            return false;
+        }
+
+        matches!(
+            tokio::time::timeout(timeout, tokio::net::TcpStream::connect(self.connect_addr()))
+                .await,
+            Ok(Ok(_))
+        )
+    }
+
     pub fn is_adopted(&self) -> bool {
         self.adopted
     }
 
-    pub(crate) fn external_router_configured(&self) -> Option<&Path> {
-        self.external_zenohd.as_deref()
+    pub(crate) fn is_external(&self) -> bool {
+        matches!(&self.ownership, RouterOwnership::External)
+    }
+
+    pub(crate) fn is_pinned(&self) -> bool {
+        matches!(
+            &self.ownership,
+            RouterOwnership::Managed { pinned: true, .. }
+        )
+    }
+
+    pub(crate) fn managed_config_path(&self) -> Option<&Path> {
+        match &self.ownership {
+            RouterOwnership::Managed {
+                zenohd_config_path, ..
+            } => Some(zenohd_config_path),
+            RouterOwnership::External => None,
+        }
     }
 
     pub(crate) fn adopt_external_router(&mut self) {
+        debug_assert!(self.is_external());
         self.adopted = true;
         tracing::info!(
-            "Adopted external zenoh router at {}://{}; peppy will not manage its lifecycle",
-            self.zenoh_endpoint.protocol,
-            self.connect_addr()
+            "Adopted external zenoh router at {}; peppy will not manage its lifecycle",
+            self.zenoh_endpoint
         );
     }
 
@@ -204,43 +238,24 @@ impl ZenohdFacade {
             Error::ConfigurationError("No router endpoint found in config".to_string())
         })?;
 
-        let (protocol_str, host_port) = endpoint_str.split_once('/').ok_or_else(|| {
-            Error::ConfigurationError(format!("Invalid endpoint format: {}", endpoint_str))
-        })?;
-
-        let protocol = match protocol_str {
-            "tcp" => ZenohNetProtocol::Tcp,
-            "udp" => ZenohNetProtocol::Udp,
-            "quic" => ZenohNetProtocol::Quic,
-            "ws" => ZenohNetProtocol::Ws,
-            "tls" => ZenohNetProtocol::Tls,
-            _ => {
-                return Err(Error::ConfigurationError(format!(
-                    "Unknown protocol: {}",
-                    protocol_str
-                )));
-            }
-        };
-
-        let (host, port_str) = host_port.split_once(':').ok_or_else(|| {
-            Error::ConfigurationError(format!("Invalid host:port format: {}", host_port))
-        })?;
-
-        let port = port_str
-            .parse::<u16>()
-            .map_err(|_| Error::ConfigurationError(format!("Invalid port number: {}", port_str)))?;
-
-        Ok(ZenohEndpoint {
-            host: host.to_string(),
-            port,
-            protocol,
-        })
+        endpoint_str.parse()
     }
 
     /// Starts a zenohd process, using std::process::Command is the recommended way as using the
     /// rust crate directly prevents the user from using plugins/adminspace
     pub fn start_router(&mut self) -> Result<()> {
-        let zenohd_path = self.zenohd_path.as_ref().ok_or_else(|| {
+        let RouterOwnership::Managed {
+            zenohd_path,
+            zenohd_config_path,
+            zenohd_log_path,
+            ..
+        } = &self.ownership
+        else {
+            return Err(Error::BackendError(
+                "cannot spawn an operator-managed external Zenoh router".to_string(),
+            ));
+        };
+        let zenohd_path = zenohd_path.as_ref().ok_or_else(|| {
             Error::ZenohdError(
                 "Zenohd binary not found. Install `zenohd` next to the `peppy` binary or make it available on PATH."
                     .to_string(),
@@ -264,10 +279,10 @@ impl ZenohdFacade {
         // pipe buffer blocks a zenohd thread in `write` and deadlocks the whole
         // router. Pin the log level too, so a verbose inherited `RUST_LOG`
         // can't flood the file (override with `PEPPY_ZENOHD_LOG`).
-        let log_file = File::create(&self.zenohd_log_path).map_err(|e| {
+        let log_file = File::create(zenohd_log_path).map_err(|e| {
             Error::BackendError(format!(
                 "Failed to create zenohd log file {}: {}",
-                self.zenohd_log_path.display(),
+                zenohd_log_path.display(),
                 e
             ))
         })?;
@@ -278,10 +293,10 @@ impl ZenohdFacade {
             env::var("PEPPY_ZENOHD_LOG").unwrap_or_else(|_| "zenoh=warn".to_string());
 
         let mut child = Command::new(zenohd_path)
-            .env("ZENOH_CONFIG", self.zenohd_config_path.as_os_str())
+            .env("ZENOH_CONFIG", zenohd_config_path.as_os_str())
             .env("RUST_LOG", zenohd_log_level)
             .arg("-c")
-            .arg(&self.zenohd_config_path)
+            .arg(zenohd_config_path)
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(stderr_file))
             .spawn()
@@ -290,7 +305,7 @@ impl ZenohdFacade {
         if tcp_based {
             tracing::info!(
                 "Waiting for Zenoh router to accept connections at {}://{}",
-                self.zenoh_endpoint.protocol,
+                self.zenoh_endpoint.protocol(),
                 connect_addr
             );
             let start = std::time::Instant::now();
@@ -299,7 +314,7 @@ impl ZenohdFacade {
             let max_backoff = std::time::Duration::from_millis(500);
 
             loop {
-                child = check_process_alive(child, &self.zenohd_log_path)?;
+                child = check_process_alive(child, zenohd_log_path)?;
 
                 match TcpStream::connect(&connect_addr) {
                     Ok(_) => break,
@@ -317,13 +332,13 @@ impl ZenohdFacade {
                 }
             }
         } else {
-            child = check_process_alive(child, &self.zenohd_log_path)?;
+            child = check_process_alive(child, zenohd_log_path)?;
         }
 
         tracing::info!(
             "Zenoh router started (config {}, logs {})",
-            self.zenohd_config_path.display(),
-            self.zenohd_log_path.display()
+            zenohd_config_path.display(),
+            zenohd_log_path.display()
         );
 
         // Store the child process handle
@@ -333,8 +348,8 @@ impl ZenohdFacade {
     }
 
     pub fn stop_router(&mut self) -> Result<()> {
-        if self.adopted {
-            tracing::info!("leaving adopted external zenoh router running");
+        if self.is_external() {
+            tracing::info!("leaving operator-managed external zenoh router running");
             return Ok(());
         }
 
@@ -394,23 +409,27 @@ mod tests {
         )
         .expect("Failed to write config");
 
-        let facade = ZenohdFacade::new(config_file.path(), None);
+        let facade = ZenohdFacade::managed(config_file.path());
         assert!(facade.is_ok(), "Error creating facade: {:?}", facade.err());
 
         let facade = facade.unwrap();
-        assert_eq!(facade.zenoh_endpoint.host, expected_host);
-        assert_eq!(facade.zenoh_endpoint.port, expected_port);
-        assert_eq!(facade.zenoh_endpoint.protocol, ZenohNetProtocol::Tcp);
+        assert_eq!(facade.zenoh_endpoint.host(), expected_host);
+        assert_eq!(facade.zenoh_endpoint.port(), expected_port);
+        assert_eq!(facade.zenoh_endpoint.protocol(), ZenohNetProtocol::Tcp);
 
         // The log file sits next to the config, named per router port.
-        assert_eq!(
-            facade.zenohd_log_path,
-            config_file
-                .path()
-                .parent()
-                .unwrap()
-                .join(format!("zenohd_{expected_port}.log"))
-        );
+        let RouterOwnership::Managed {
+            zenohd_log_path, ..
+        } = &facade.ownership
+        else {
+            panic!("expected a managed router facade");
+        };
+        let expected_log_path = config_file
+            .path()
+            .parent()
+            .unwrap()
+            .join(format!("zenohd_{expected_port}.log"));
+        assert_eq!(zenohd_log_path, &expected_log_path);
     }
 
     #[test]
@@ -436,7 +455,7 @@ mod tests {
         .expect("Failed to write config");
 
         let mut facade =
-            ZenohdFacade::new(config_file.path(), None).expect("Failed to create facade");
+            ZenohdFacade::managed(config_file.path()).expect("Failed to create facade");
 
         // First stop should succeed (no process to stop)
         assert!(facade.stop_router().is_ok());
@@ -449,70 +468,60 @@ mod tests {
     }
 
     #[test]
-    fn external_router_path_is_not_checked_or_executed_at_construction() {
-        use std::io::Write;
-        use tempfile::Builder;
+    fn external_router_has_no_binary_or_config_path() {
+        let endpoint = "tcp/zenoh-router.internal:17447"
+            .parse()
+            .expect("parse external endpoint");
+        let facade = ZenohdFacade::external(endpoint);
 
-        let mut config_file = Builder::new()
-            .suffix(".json5")
-            .tempfile()
-            .expect("Failed to create temp file");
-        writeln!(
-            config_file,
-            r#"{{
-                "listen": {{
-                    "endpoints": {{
-                        "router": ["tcp/127.0.0.1:7447"]
-                    }}
-                }}
-            }}"#
-        )
-        .expect("Failed to write config");
-
-        let dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let nonexistent = dir.path().join("zenohd-that-does-not-exist");
-        assert!(!nonexistent.exists());
-
-        let facade = ZenohdFacade::new(config_file.path(), Some(nonexistent.clone()))
-            .expect("an external router path is only a lifecycle hint");
+        assert!(facade.is_external());
         assert_eq!(
-            facade.external_router_configured(),
-            Some(nonexistent.as_path())
+            facade.zenoh_endpoint.to_string(),
+            "tcp/zenoh-router.internal:17447"
         );
+        assert!(facade.managed_config_path().is_none());
         assert!(!facade.is_adopted());
         assert!(facade.router_process.is_none());
     }
 
     #[test]
     fn stop_router_is_an_idempotent_no_op_for_an_adopted_router() {
-        use std::io::Write;
-        use tempfile::Builder;
-
-        let mut config_file = Builder::new()
-            .suffix(".json5")
-            .tempfile()
-            .expect("Failed to create temp file");
-        writeln!(
-            config_file,
-            r#"{{
-                "listen": {{
-                    "endpoints": {{
-                        "router": ["tcp/127.0.0.1:7447"]
-                    }}
-                }}
-            }}"#
-        )
-        .expect("Failed to write config");
-
-        let mut facade =
-            ZenohdFacade::new(config_file.path(), Some(PathBuf::from("/operator/zenohd")))
-                .expect("Failed to create facade");
+        let endpoint = "tcp/127.0.0.1:7447"
+            .parse()
+            .expect("parse external endpoint");
+        let mut facade = ZenohdFacade::external(endpoint);
         facade.adopt_external_router();
 
         assert!(facade.is_adopted());
         assert!(facade.stop_router().is_ok());
         assert!(facade.stop_router().is_ok());
         assert!(facade.router_process.is_none());
+    }
+
+    #[tokio::test]
+    async fn external_reachability_probe_distinguishes_listening_and_closed_endpoints() {
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind external endpoint");
+        let port = listener.local_addr().expect("read listener address").port();
+        let endpoint = format!("tcp/127.0.0.1:{port}")
+            .parse()
+            .expect("parse external endpoint");
+        let facade = ZenohdFacade::external(endpoint);
+
+        assert!(
+            facade
+                .router_endpoint_reachable(std::time::Duration::from_secs(1))
+                .await,
+            "a listening TCP endpoint must be reachable"
+        );
+
+        drop(listener);
+        assert!(
+            !facade
+                .router_endpoint_reachable(std::time::Duration::from_secs(1))
+                .await,
+            "a closed TCP endpoint must not be reachable"
+        );
     }
 
     #[test]

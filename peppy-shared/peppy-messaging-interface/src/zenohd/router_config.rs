@@ -41,12 +41,12 @@ pub(crate) fn router_config_path(
 /// Renders the router config and writes it to `config_path`, *bypassing* the
 /// `ZENOH_CONFIG` override resolution that [`router_config_path`] does. The
 /// refederation path ([`crate::ZenohAdapter::refederate`]) uses this to rewrite
-/// the file captured by [`ZenohdFacade::new`](super::ZenohdFacade::new) in place:
+/// the file captured by [`ZenohdFacade::managed`](super::ZenohdFacade::managed) in place:
 /// going back through `router_config_path` would re-read the process-global
 /// `ZENOH_CONFIG`, which — if it changed after startup — could redirect the write
 /// to a different path or skip it entirely (the override early-return), leaving
 /// the running router's actual config file stale. (The operator-pinned case is
-/// already filtered out by `facade.pinned` before this is reached.)
+/// already filtered out by `facade.is_pinned()` before this is reached.)
 pub(crate) fn render_router_config_to_path(
     config_path: &Path,
     protocol: ZenohNetProtocol,
