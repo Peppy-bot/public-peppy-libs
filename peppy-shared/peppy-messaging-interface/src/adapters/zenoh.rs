@@ -39,7 +39,7 @@ use crate::zenoh_config::{
     SessionMode, TlsConfig, ZenohConfigSpec, connectable_host, loopback_listen_endpoint,
     render_config,
 };
-use config::org::{LOCAL_NAMESPACE, OrgNamespace};
+use config::org::OrgNamespace;
 // `render_probe_config` and the `zenohd` module (facade/health/config-path) are
 // only used by the router-management paths; a `zenoh`-without-`router` build (the
 // backend, which only renders configs and opens client sessions) does not see them.
@@ -47,7 +47,7 @@ use config::org::{LOCAL_NAMESPACE, OrgNamespace};
 use crate::zenoh_config::render_probe_config;
 #[cfg(feature = "router")]
 use crate::zenohd;
-use crate::zenohd::ZenohNetProtocol;
+use crate::zenohd::{ZenohEndpoint, ZenohNetProtocol};
 #[cfg(feature = "router")]
 use crate::{Messenger, MessengerAdapter};
 use crate::{MessengerBackend, Subscription};
@@ -55,8 +55,6 @@ use crate::{MessengerBackend, Subscription};
 use std::net::SocketAddr;
 #[cfg(feature = "router")]
 use std::net::TcpListener;
-#[cfg(feature = "router")]
-use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 
@@ -163,12 +161,6 @@ pub struct ZenohClientConfig {
     gossip: bool,
     /// Per-QoS subscriber channel buffer sizes for this session.
     buffer_sizes: SubscriberBufferSizes,
-    /// Operator override (`ZENOH_SESSION_CONFIG`), resolved once at the
-    /// constructor boundary. `Some` replaces the rendered config wholesale,
-    /// including on the reconnecting-session rebuild in `start_session`, so the
-    /// operator file wins regardless of the routing model. `None` renders from
-    /// the fields above.
-    override_config: Option<zenoh::config::Config>,
     /// Client TLS material for a `tls/` endpoint (`None` for plaintext). Retained
     /// (not just baked into `zenoh_config`) so the reconnecting-session rebuild
     /// in `start_session` re-renders with the same TLS settings.
@@ -194,17 +186,10 @@ pub struct ZenohAdapter {
 }
 
 impl ZenohAdapter {
-    /// Creates a ZenohAdapter for the daemon's zenoh router. `gossip` selects
-    /// the daemon session's own routing model (peer vs router-relay) and
-    /// `buffer_sizes` its subscriber channel capacities, both resolved from
-    /// `peppy_config.json5`.
-    ///
-    /// With `external_zenohd = None`, the adapter spawns the bundled zenohd and
-    /// reports an error if its port is already busy. With `Some(path)`, the
-    /// router is operator-managed: peppy only adopts a responsive router already
-    /// serving the endpoint and never spawns one. The path is a lifecycle-mode
-    /// hint and is never executed. Adoption's port probe is TCP-based because
-    /// the daemon router endpoint is always `tcp/`.
+    /// Creates a ZenohAdapter that owns and manages a zenohd router. `gossip`
+    /// selects the daemon session's own routing model (peer vs router-relay) and
+    /// `buffer_sizes` its subscriber channel capacities. The adapter renders the
+    /// router config, spawns zenohd, and reports an error if its port is busy.
     ///
     /// `connect_endpoints` *federates* the spawned router to upstream routers it
     /// dials (`<proto>/<host>:<port>` each) — e.g. the daemon's plaintext loopback
@@ -223,13 +208,41 @@ impl ZenohAdapter {
         buffer_sizes: SubscriberBufferSizes,
         connect_endpoints: Vec<String>,
         tls: Option<TlsConfig>,
-        external_zenohd: Option<PathBuf>,
     ) -> Result<Self> {
         let zenohd_config_path =
             zenohd::router_config_path(protocol, host, port, connect_endpoints, tls.clone())?;
-        let facade = zenohd::ZenohdFacade::new(zenohd_config_path, external_zenohd)?;
+        let facade = zenohd::ZenohdFacade::managed(zenohd_config_path)?;
         let client_config =
             Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, tls)?;
+
+        Ok(Self {
+            zenohd: Some(facade),
+            client_config,
+            session: None,
+            reconnect_session: false,
+        })
+    }
+
+    /// Creates a ZenohAdapter that adopts an already-running, operator-managed
+    /// Zenoh router at `endpoint`.
+    ///
+    /// The endpoint is a dial locator in `tcp/<host>:<port>` form. Listen
+    /// wildcards such as `tcp/0.0.0.0:7447` are rejected because clients cannot
+    /// dial them. Peppy renders no router config, discovers no binary, and never
+    /// starts, stops, restarts, or refederates this router. [`start_router`](MessengerBackend::start_router)
+    /// verifies that the socket belongs to a responsive Zenoh router before
+    /// marking it adopted.
+    #[cfg(feature = "router")]
+    pub fn with_external_router(
+        endpoint: &str,
+        gossip: bool,
+        buffer_sizes: SubscriberBufferSizes,
+    ) -> Result<Self> {
+        let endpoint: ZenohEndpoint = endpoint.parse()?;
+        endpoint.validate_external_tcp()?;
+        let facade = zenohd::ZenohdFacade::external(endpoint);
+        let client_config =
+            Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, None)?;
 
         Ok(Self {
             zenohd: Some(facade),
@@ -251,9 +264,9 @@ impl ZenohAdapter {
     /// Returns whether the config was actually rewritten: `Ok(true)` when a new
     /// config was rendered (the caller must restart zenohd to apply it),
     /// `Ok(false)` when a `ZENOH_CONFIG`-overridden config is in effect or the
-    /// router was adopted. Both are operator-owned and left untouched. An
-    /// adopted router never read peppy's rendered config, so there is nothing to
-    /// rewrite or restart. Errors if the adapter owns no router.
+    /// router is external. Both are operator-owned and left untouched. An
+    /// external router never read peppy's rendered config, so there is nothing
+    /// to rewrite or restart. Errors if the adapter owns no router.
     #[cfg(feature = "router")]
     pub fn refederate(
         &mut self,
@@ -264,10 +277,10 @@ impl ZenohAdapter {
             Error::BackendError("refederate called on an adapter that owns no router".to_string())
         })?;
         // Operator-owned routers are never rendered over. A pinned
-        // `ZENOH_CONFIG` file stays untouched, and an adopted router never read
+        // `ZENOH_CONFIG` file stays untouched, and an external router never read
         // the rendered file at all. Report the no-op so the caller skips a
         // restart that peppy must not perform.
-        if facade.pinned || facade.is_adopted() {
+        if facade.is_pinned() || facade.is_external() {
             return Ok(false);
         }
         let ep = &facade.zenoh_endpoint;
@@ -276,10 +289,12 @@ impl ZenohAdapter {
         // changed after startup) could redirect this write elsewhere or skip it
         // via the override early-return, leaving the running router's file stale.
         zenohd::render_router_config_to_path(
-            &facade.zenohd_config_path,
-            ep.protocol,
-            &ep.host,
-            ep.port,
+            facade
+                .managed_config_path()
+                .expect("a non-external facade has a managed config path"),
+            ep.protocol(),
+            ep.host(),
+            ep.port(),
             connect_endpoints,
             tls,
         )?;
@@ -342,7 +357,6 @@ impl ZenohAdapter {
         buffer_sizes: SubscriberBufferSizes,
         tls: Option<TlsConfig>,
     ) -> Result<Self> {
-        let override_config = Self::resolve_session_config_override()?;
         let client_config = Self::create_client_config(
             protocol,
             host,
@@ -351,7 +365,6 @@ impl ZenohAdapter {
             seed_peers,
             gossip,
             buffer_sizes,
-            override_config,
             tls,
             // Namespace-free by default; callers apply org-id isolation with
             // [`Self::with_namespace`] (e.g. peppylib's `MessengerHandle::connect`
@@ -438,7 +451,6 @@ impl ZenohAdapter {
                 buffer_sizes,
                 Vec::new(),
                 None,
-                None,
             )?
             .with_namespace(namespace.clone());
             // A lightweight client probe (no listener, no peer discovery) is the
@@ -493,6 +505,17 @@ impl ZenohAdapter {
         (self.client_config.host.as_str(), self.client_config.port)
     }
 
+    /// Returns the complete locator used by this adapter's client session.
+    /// Unlike [`client_endpoint`](Self::client_endpoint), this retains the
+    /// transport protocol and can be persisted directly in daemon state.
+    pub fn client_locator(&self) -> ZenohEndpoint {
+        ZenohEndpoint::new(
+            self.client_config.protocol,
+            self.client_config.host.clone(),
+            self.client_config.port,
+        )
+    }
+
     /// Builds a lock-free [`RouterHealthChecker`] bound to this adapter's router
     /// endpoint, for the router watchdog to probe liveness without holding the
     /// central messenger lock.
@@ -514,39 +537,9 @@ impl ZenohAdapter {
         self.zenohd.as_ref().is_some_and(|z| z.is_adopted())
     }
 
-    /// Resolves the `ZENOH_SESSION_CONFIG` operator override into an optional
-    /// parsed config. When the env var names a non-empty path the file is
-    /// loaded, and an unreadable or invalid file becomes an
-    /// [`Error::ConfigurationError`] rather than a panic. `Ok(None)` when the
-    /// var is unset or blank, in which case the session config is rendered from
-    /// the explicit constructor arguments. Resolved once at the constructor
-    /// boundary so [`create_client_config`](Self::create_client_config) stays a
-    /// pure, env-free builder; mirrors the router's `ZENOH_CONFIG` resolution in
-    /// `zenohd::router_config_path`.
-    fn resolve_session_config_override() -> Result<Option<zenoh::config::Config>> {
-        match std::env::var("ZENOH_SESSION_CONFIG") {
-            Ok(path) if !path.trim().is_empty() => {
-                let path = path.trim();
-                zenoh::config::Config::from_file(path)
-                    .map(Some)
-                    .map_err(|e| {
-                        Error::ConfigurationError(format!(
-                            "ZENOH_SESSION_CONFIG ({path}) is not a readable zenoh config: {e}"
-                        ))
-                    })
-            }
-            _ => Ok(None),
-        }
-    }
-
     /// Builds a peer-session config seeded by `host:port` (or `seed_peers` when
-    /// non-empty). Pure: the operator override is resolved by the caller via
-    /// [`Self::resolve_session_config_override`] and passed in as
-    /// `override_config`. When present it replaces the rendered config wholesale
-    /// (including the `gossip`/mode rendering below), so the operator file wins
-    /// on routing model. The override does NOT affect `buffer_sizes`, which are
-    /// applied later at the flume/mpsc layer (subscribe / listen / call), so
-    /// peer-mode buffer tuning from `peppy_config.json5` still takes effect.
+    /// non-empty). `buffer_sizes` are applied later at the flume/mpsc layer
+    /// (subscribe / listen / call).
     #[allow(clippy::too_many_arguments)]
     fn create_client_config(
         protocol: ZenohNetProtocol,
@@ -556,7 +549,6 @@ impl ZenohAdapter {
         seed_peers: Vec<String>,
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
-        override_config: Option<zenoh::config::Config>,
         tls: Option<TlsConfig>,
         namespace: Option<OrgNamespace>,
     ) -> ZenohClientConfig {
@@ -567,17 +559,10 @@ impl ZenohAdapter {
             seed_peers
         };
 
-        let zenoh_config = match &override_config {
-            Some(config) => config.clone(),
-            // `gossip` selects the routing model. Enabled: a `peer` that binds a
-            // loopback listener and forms direct peer-to-peer links via gossip.
-            // Disabled: a plain `client` that routes only through the router (no
-            // listener, no peer discovery). Nodes that cannot form direct
-            // loopback links with their peers (e.g. container nodes in a
-            // separate network namespace) use the client path so they reach the
-            // rest of the system through the router instead of advertising an
-            // unreachable loopback locator and churning on failed autoconnects.
-            None if gossip => render_config(&ZenohConfigSpec {
+        let zenoh_config = if gossip {
+            // A `peer` binds a loopback listener and forms direct peer-to-peer
+            // links via gossip.
+            render_config(&ZenohConfigSpec {
                 mode: SessionMode::Peer,
                 connect_endpoints: seeds.clone(),
                 listen_endpoints: vec![loopback_listen_endpoint(protocol)],
@@ -585,8 +570,11 @@ impl ZenohAdapter {
                 gossip: true,
                 tls: tls.clone(),
                 namespace: namespace.clone(),
-            }),
-            None => render_config(&ZenohConfigSpec {
+            })
+        } else {
+            // A plain `client` routes only through the selected router (no
+            // listener or peer discovery).
+            render_config(&ZenohConfigSpec {
                 mode: SessionMode::Client,
                 connect_endpoints: seeds.clone(),
                 listen_endpoints: Vec::new(),
@@ -594,7 +582,7 @@ impl ZenohAdapter {
                 gossip: false,
                 tls: tls.clone(),
                 namespace: namespace.clone(),
-            }),
+            })
         };
 
         ZenohClientConfig {
@@ -605,7 +593,6 @@ impl ZenohAdapter {
             seed_peers: seeds,
             gossip,
             buffer_sizes,
-            override_config,
             tls,
             namespace,
         }
@@ -618,27 +605,25 @@ impl ZenohAdapter {
         buffer_sizes: SubscriberBufferSizes,
         tls: Option<TlsConfig>,
     ) -> Result<ZenohClientConfig> {
-        // The daemon joins the mesh it hosts, seeded by its own router, so peers
-        // can reach its core-node/daemon services. `gossip` (from
-        // `peppy_config.json5`) selects whether that session is a peer (direct
-        // links) or a client (router relay); router mode makes the daemon a
-        // plain client of its own loopback router. Its long-lived session is
-        // rebuilt as reconnecting in `start_session` when `reconnect_session` is
-        // set; the readiness probe in `start_router_ephemeral` builds its own
-        // client probe config.
-        let override_config = Self::resolve_session_config_override()?;
+        // Build the adapter session from the router endpoint carried by the
+        // facade. `with_router` supplies a Peppy-managed router, while
+        // `with_external_router` may supply a remote, operator-owned router.
+        // `gossip` selects whether the session is a peer (direct links) or a
+        // client (router relay). The long-lived session is rebuilt as
+        // reconnecting in `start_session` when `reconnect_session` is set; the
+        // readiness probe in `start_router_ephemeral` builds its own client
+        // probe config.
         Ok(Self::create_client_config(
-            zenohd.zenoh_endpoint.protocol,
-            &zenohd.zenoh_endpoint.host,
-            zenohd.zenoh_endpoint.port,
+            zenohd.zenoh_endpoint.protocol(),
+            zenohd.zenoh_endpoint.host(),
+            zenohd.zenoh_endpoint.port(),
             false,
             Vec::new(),
             gossip,
             buffer_sizes,
-            override_config,
             tls,
-            // The daemon applies its org namespace via [`Self::with_namespace`]
-            // after `with_router`, so the initial derive is namespace-free.
+            // Both router constructors derive a namespace-free session; callers
+            // apply org isolation afterward via [`Self::with_namespace`].
             None,
         ))
     }
@@ -652,8 +637,7 @@ impl ZenohAdapter {
     ///
     /// There is intentionally no in-process namespace *swap* once a session is
     /// open: zenoh captures the namespace once at session build, so a change
-    /// requires a fresh session (the daemon rebuilds its whole generation). The
-    /// fail-closed check against an operator override runs at `start_session`.
+    /// requires a fresh session (the daemon rebuilds its whole generation).
     pub fn with_namespace(mut self, namespace: Option<OrgNamespace>) -> Self {
         let protocol = self.client_config.protocol;
         let host = self.client_config.host.clone();
@@ -661,7 +645,6 @@ impl ZenohAdapter {
         let seed_peers = self.client_config.seed_peers.clone();
         let gossip = self.client_config.gossip;
         let buffer_sizes = self.client_config.buffer_sizes;
-        let override_config = self.client_config.override_config.clone();
         let tls = self.client_config.tls.clone();
         self.client_config = Self::create_client_config(
             protocol,
@@ -671,64 +654,15 @@ impl ZenohAdapter {
             seed_peers,
             gossip,
             buffer_sizes,
-            override_config,
             tls,
             namespace,
         );
         self
     }
-
-    /// Fail closed if an operator `ZENOH_SESSION_CONFIG` override would drop or
-    /// change the org namespace on a session that federates. The override
-    /// replaces the rendered config wholesale, so a federating session whose
-    /// override carries no (or a different) namespace would emit unprefixed keys
-    /// and accept everything -- a cross-tenant leak. A `local` (logged-out)
-    /// session does not federate, so a missing/divergent namespace there is only
-    /// warned about, not refused.
-    fn ensure_override_preserves_namespace(&self) -> Result<()> {
-        let (Some(expected), Some(override_cfg)) = (
-            self.client_config.namespace.as_ref(),
-            self.client_config.override_config.as_ref(),
-        ) else {
-            return Ok(());
-        };
-        // Read the override's session-level `namespace` by serializing it (the
-        // public `Config` is a transparent newtype over the inner validated
-        // config, so its `namespace` field surfaces as a top-level JSON key).
-        // This avoids depending on the visibility of the macro-generated getter.
-        let override_json = serde_json::to_value(override_cfg).unwrap_or(serde_json::Value::Null);
-        let override_ns = override_json.get("namespace").and_then(|v| v.as_str());
-        if override_ns == Some(expected.as_str()) {
-            return Ok(());
-        }
-        // The override does not declare the expected namespace.
-        if expected.as_str() == LOCAL_NAMESPACE {
-            tracing::warn!(
-                expected = %expected.as_str(),
-                override_namespace = ?override_ns,
-                "ZENOH_SESSION_CONFIG overrides the local-namespace session config; \
-                 proceeding because a logged-out session does not federate"
-            );
-            return Ok(());
-        }
-        Err(Error::ConfigurationError(format!(
-            "ZENOH_SESSION_CONFIG drops or changes the organization namespace \
-             (expected `{}`, override has `{}`); refusing to open a federating session \
-             that would route across tenants",
-            expected.as_str(),
-            override_ns.unwrap_or("<none>"),
-        )))
-    }
 }
 
 impl MessengerBackend for ZenohAdapter {
     async fn start_session(&mut self) -> Result<()> {
-        // Fail closed before opening: an operator `ZENOH_SESSION_CONFIG` override
-        // replaces the rendered config wholesale (namespace included), so a
-        // federating session whose override carries no org namespace would leak
-        // across tenants. Refuse rather than silently downgrade.
-        self.ensure_override_preserves_namespace()?;
-
         // The daemon's long-lived session uses a reconnecting config so it
         // re-establishes itself (and re-declares its subscriptions/queryables)
         // if the router is restarted under it — e.g. by the router watchdog.
@@ -742,7 +676,6 @@ impl MessengerBackend for ZenohAdapter {
                 self.client_config.seed_peers.clone(),
                 self.client_config.gossip,
                 self.client_config.buffer_sizes,
-                self.client_config.override_config.clone(),
                 self.client_config.tls.clone(),
                 self.client_config.namespace.clone(),
             )
@@ -1030,21 +963,15 @@ impl MessengerBackend for ZenohAdapter {
                 .zenohd
                 .as_mut()
                 .ok_or(Error::ZenohDConfigurationNotFound)?;
-            if let Some(path) = zenohd.external_router_configured() {
+            if zenohd.is_external() {
                 let ep = &zenohd.zenoh_endpoint;
-                if !zenohd.router_endpoint_in_use() {
+                if !zenohd
+                    .router_endpoint_reachable(ADOPTION_PROBE_TIMEOUT)
+                    .await
+                {
                     return Err(Error::BackendError(format!(
-                        "zenohd.path is set, so peppy will not start a zenoh router, but nothing \
-                         is serving {}://{}:{}; start your router first, for example: \
-                         {} -l {}/{}:{}   (or set zenohd.path to null in \
-                         peppy_config.json5 to let peppy manage its own)",
-                        ep.protocol,
-                        ep.host,
-                        ep.port,
-                        path.display(),
-                        ep.protocol,
-                        ep.host,
-                        ep.port,
+                        "external Zenoh router endpoint `{ep}` is not accepting TCP connections; \
+                         start the router at that endpoint or configure peppy to manage zenohd"
                     )));
                 }
                 if !health_checker
@@ -1052,10 +979,8 @@ impl MessengerBackend for ZenohAdapter {
                     .await
                 {
                     return Err(Error::BackendError(format!(
-                        "the messaging endpoint {}://{}:{} is in use, but not by a \
-                         responsive zenoh router; stop the process holding the port, or set \
-                         zenohd.path to null in peppy_config.json5",
-                        ep.protocol, ep.host, ep.port,
+                        "external Zenoh router endpoint `{ep}` accepts TCP connections, but is not \
+                         a responsive Zenoh router; verify the configured endpoint"
                     )));
                 }
                 zenohd.adopt_external_router();
@@ -1091,7 +1016,15 @@ impl MessengerBackend for ZenohAdapter {
     fn get_host(&self) -> SocketAddr {
         let host = &self.client_config.host;
         let port = self.client_config.port;
-        let ip = host
+        // Zenoh locators bracket IPv6 literals (`tcp/[::1]:7448`), while
+        // `IpAddr::from_str` expects the bare address. Preserve this legacy
+        // socket accessor for IPv6 callers even though `client_locator()` is the
+        // authoritative endpoint representation.
+        let ip_host = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
+        let ip = ip_host
             .parse()
             .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
         SocketAddr::new(ip, port)
@@ -1483,8 +1416,7 @@ mod tests {
     #[test]
     fn create_client_config_rewrites_wildcard_host_and_defaults_the_seed() {
         // `0.0.0.0` must be rewritten to a connectable loopback host, and an
-        // empty seed list falls back to the single `host:port` endpoint. A
-        // malformed config would panic here (parse is `.expect()`).
+        // empty seed list falls back to the single `host:port` endpoint.
         let reconnecting = ZenohAdapter::create_client_config(
             ZenohNetProtocol::Tcp,
             "0.0.0.0",
@@ -1493,7 +1425,6 @@ mod tests {
             Vec::new(),
             true,
             SubscriberBufferSizes::default(),
-            None,
             None,
             None,
         );
@@ -1518,7 +1449,6 @@ mod tests {
                 standard: 64,
                 high_throughput: 4096,
             },
-            None,
             None,
             None,
         );
@@ -1546,7 +1476,6 @@ mod tests {
             SubscriberBufferSizes::default(),
             Vec::new(),
             None,
-            None,
         )
         .expect("build standalone router adapter");
 
@@ -1554,8 +1483,9 @@ mod tests {
             .zenohd
             .as_ref()
             .expect("router adapter owns a facade")
-            .zenohd_config_path
-            .clone();
+            .managed_config_path()
+            .expect("managed router owns a config path")
+            .to_path_buf();
         let before = std::fs::read_to_string(&cfg_path).expect("read rendered config");
         assert!(
             !before.contains("tls/cap.zenoh.localhost:7443"),
@@ -1590,46 +1520,39 @@ mod tests {
 
     #[cfg(feature = "router")]
     #[test]
-    fn refederate_is_a_no_op_for_an_adopted_router() {
+    fn refederate_is_a_no_op_for_an_external_router() {
         let port = 59248;
-        let mut adapter = ZenohAdapter::with_router(
-            ZenohNetProtocol::Tcp,
-            "127.0.0.1",
-            port,
+        let mut adapter = ZenohAdapter::with_external_router(
+            &format!("tcp/127.0.0.1:{port}"),
             false,
             SubscriberBufferSizes::default(),
-            Vec::new(),
-            None,
-            None,
         )
-        .expect("build standalone router adapter");
-
-        let cfg_path = adapter
-            .zenohd
-            .as_ref()
-            .expect("router adapter owns a facade")
-            .zenohd_config_path
-            .clone();
-        let before = std::fs::read(&cfg_path).expect("read rendered config");
-
-        adapter
-            .zenohd
-            .as_mut()
-            .expect("router adapter owns a facade")
-            .adopt_external_router();
-        assert!(adapter.router_is_adopted());
+        .expect("build external router adapter");
+        assert!(!adapter.router_is_adopted());
 
         let rewrote = adapter
             .refederate(
                 vec!["tls/cap.zenoh.localhost:7443".to_string()],
                 Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
             )
-            .expect("refederate succeeds as a no-op for an adopted router");
+            .expect("refederate succeeds as a no-op for an external router");
         assert!(!rewrote);
+    }
 
-        let after = std::fs::read(&cfg_path).expect("read config after refederate");
-        assert_eq!(before, after, "the rendered config must remain unchanged");
+    #[cfg(feature = "router")]
+    #[test]
+    fn external_ipv6_locator_preserves_the_legacy_socket_address() {
+        let adapter = ZenohAdapter::with_external_router(
+            "tcp/[::1]:17448",
+            false,
+            SubscriberBufferSizes::default(),
+        )
+        .expect("build IPv6 external router adapter");
 
-        let _ = std::fs::remove_file(&cfg_path);
+        assert_eq!(
+            adapter.get_host(),
+            "[::1]:17448".parse().expect("parse expected socket")
+        );
+        assert_eq!(adapter.client_locator().to_string(), "tcp/[::1]:17448");
     }
 }

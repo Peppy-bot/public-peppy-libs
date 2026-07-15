@@ -459,8 +459,6 @@ pub fn render_router_config(
 
 /// The loopback ephemeral listen endpoint a peer binds. Loopback-only by design:
 /// it keeps the new inbound socket off the network (co-located peering only).
-/// Cross-host peering is a deliberate opt-in that lives behind a custom
-/// `ZENOH_SESSION_CONFIG`, not this default.
 pub(crate) fn loopback_listen_endpoint(protocol: ZenohNetProtocol) -> String {
     format!("{protocol}/127.0.0.1:0")
 }
