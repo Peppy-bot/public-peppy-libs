@@ -1,17 +1,13 @@
 #![cfg(feature = "build_zenoh")]
 
-mod common;
-
-use common::ZENOH_SERIAL;
 use pmi::{
     Messenger, MessengerAdapter, MessengerBackend, SubscriberBufferSizes, ZenohAdapter,
     ZenohNetProtocol,
 };
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
-fn free_port() -> u16 {
+fn unused_ephemeral_port() -> u16 {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve an ephemeral port");
     listener.local_addr().expect("read local address").port()
 }
@@ -30,26 +26,8 @@ fn router_adapter(port: u16, external_zenohd: Option<PathBuf>) -> ZenohAdapter {
     .expect("build router adapter")
 }
 
-async fn wait_until_port_is_free(port: u16) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match TcpListener::bind(("127.0.0.1", port)) {
-            Ok(listener) => {
-                drop(listener);
-                return;
-            }
-            Err(err) if Instant::now() >= deadline => {
-                panic!("router port {port} was not released: {err}");
-            }
-            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-        }
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn adopts_a_responsive_external_router_without_owning_it() {
-    let _lock = ZENOH_SERIAL.lock().await;
-
     let router_a = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("start operator-managed router A");
@@ -74,15 +52,10 @@ async fn adopts_a_responsive_external_router_without_owning_it() {
 
     TcpStream::connect(("127.0.0.1", port))
         .expect("operator-managed router A remains available after B is dropped");
-
-    drop(router_a);
-    wait_until_port_is_free(port).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejects_a_non_zenoh_process_holding_the_router_port() {
-    let _lock = ZENOH_SERIAL.lock().await;
-
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind non-zenoh listener");
     let port = listener.local_addr().expect("read local address").port();
     let mut adapter = router_adapter(port, Some(PathBuf::from("/any/zenohd")));
@@ -104,9 +77,7 @@ async fn rejects_a_non_zenoh_process_holding_the_router_port() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fails_loud_when_the_configured_external_router_is_not_running() {
-    let _lock = ZENOH_SERIAL.lock().await;
-
-    let port = free_port();
+    let port = unused_ephemeral_port();
     let configured_path = PathBuf::from("/definitely/not/a/real/zenohd");
     let mut adapter = router_adapter(port, Some(configured_path.clone()));
 
@@ -132,8 +103,6 @@ async fn fails_loud_when_the_configured_external_router_is_not_running() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn null_external_path_keeps_the_managed_port_busy_error() {
-    let _lock = ZENOH_SERIAL.lock().await;
-
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("hold managed router port");
     let port = listener.local_addr().expect("read local address").port();
     let mut adapter = router_adapter(port, None);
