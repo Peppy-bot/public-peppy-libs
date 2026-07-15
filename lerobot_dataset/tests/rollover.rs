@@ -34,6 +34,7 @@ fn episodes_roll_into_new_data_files() {
     let action_id = writer.config().vector_id("action").unwrap();
 
     let mut rng = Lcg(7);
+    let mut reported_finalized: Vec<std::path::PathBuf> = Vec::new();
     for _ in 0..EPISODES {
         let mut episode = writer.begin_episode("roll").unwrap();
         for _ in 0..FRAMES_PER_EPISODE {
@@ -46,10 +47,32 @@ fn episodes_roll_into_new_data_files() {
                 })
                 .unwrap();
         }
-        episode.end().unwrap();
+        reported_finalized.extend(episode.end().unwrap().finalized_files);
     }
     let summary = writer.finalize().unwrap();
     assert_eq!(summary.total_frames as usize, EPISODES * FRAMES_PER_EPISODE);
+
+    // Every data file except the last (still open at finalize) must have been
+    // reported immutable exactly once, so a mirror can upload it on rollover.
+    let last_data_file = (0..EPISODES)
+        .map(|i| format!("data/chunk-000/file-{i:03}.parquet"))
+        .rfind(|p| root.join(p).exists())
+        .unwrap();
+    for i in 0..EPISODES {
+        let rel = std::path::PathBuf::from(format!("data/chunk-000/file-{i:03}.parquet"));
+        if root.join(&rel).exists() && rel.to_str().unwrap() != last_data_file {
+            assert!(
+                reported_finalized.contains(&rel),
+                "rolled-over {rel:?} must be reported as finalized"
+            );
+        }
+    }
+    assert!(
+        !reported_finalized
+            .iter()
+            .any(|p| p.to_str() == Some(last_data_file.as_str())),
+        "the still-open last data file must not be reported finalized"
+    );
 
     // ~410 KB of incompressible floats per episode against a 1 MB limit:
     // the third episode must have rolled into a second file.

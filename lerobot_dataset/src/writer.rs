@@ -59,6 +59,11 @@ pub struct DatasetWriter {
 pub struct EpisodeMeta {
     pub episode_index: u64,
     pub length: u64,
+    /// Root-relative paths of chunk files that became immutable during this
+    /// episode's commit (a data/video/episodes chunk rolled over, so the
+    /// prior file is final and will never be rewritten). A mirror can upload
+    /// exactly these; empty on episodes that did not trigger a rollover.
+    pub finalized_files: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -325,11 +330,16 @@ impl EpisodeWriter<'_> {
             task_index,
         );
 
+        let mut finalized_files: Vec<PathBuf> = Vec::new();
+        let previous_data_slot = dataset.data_slot;
         dataset.data_slot = dataset.roll_if_full(
             dataset.data_slot,
             &data_path(dataset.data_slot),
             dataset.config.data_files_size_in_mb,
         );
+        if dataset.data_slot != previous_data_slot {
+            finalized_files.push(data_path(previous_data_slot));
+        }
         let (dataset_from_index, dataset_to_index) = crate::data::append_episode(
             &dataset.root,
             &dataset.config,
@@ -354,6 +364,7 @@ impl EpisodeWriter<'_> {
                 .map(|m| m.len() >= mb_to_bytes(dataset.config.video_files_size_in_mb))
                 .unwrap_or(false);
             if roll {
+                finalized_files.push(video_path(&key, state.slot));
                 state.slot = state.slot.next();
                 state.frames = 0;
             }
@@ -373,11 +384,15 @@ impl EpisodeWriter<'_> {
         }
         let _ = std::fs::remove_dir_all(dataset.root.join(EPISODE_TMP_DIR));
 
+        let previous_episodes_slot = dataset.episodes_slot;
         dataset.episodes_slot = dataset.roll_if_full(
             dataset.episodes_slot,
             &episodes_path(dataset.episodes_slot),
             dataset.config.data_files_size_in_mb,
         );
+        if dataset.episodes_slot != previous_episodes_slot {
+            finalized_files.push(episodes_path(previous_episodes_slot));
+        }
         crate::meta::episodes::append_episode_row(
             &dataset.root,
             &EpisodeRow {
@@ -419,6 +434,7 @@ impl EpisodeWriter<'_> {
         Ok(EpisodeMeta {
             episode_index,
             length: frames,
+            finalized_files,
         })
     }
 
