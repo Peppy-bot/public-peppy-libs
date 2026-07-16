@@ -452,7 +452,12 @@ impl CoreNodePresenceList {
     pub async fn collect(self) -> Result<Vec<CoreNodePresence>> {
         let mut presences = Vec::new();
         while let Ok(presence) = self.rx.recv_async().await {
-            presences.push(presence?);
+            match presence {
+                Ok(presence) => presences.push(presence),
+                Err(err) => {
+                    tracing::error!(%err, "dropping malformed core-node presence result");
+                }
+            }
         }
         Ok(presences)
     }
@@ -1201,7 +1206,11 @@ impl MessengerBackend for Messenger {
 
 #[cfg(test)]
 mod tests {
-    use super::{Payload, ServiceReply, SubscriberBufferSizes, SubscriberQoS, TopicMessage};
+    use super::{
+        CoreNodePresence, CoreNodePresenceList, Payload, ServiceReply, SubscriberBufferSizes,
+        SubscriberQoS, TopicMessage, ZenohWireFormat,
+    };
+    use crate::error::Error;
     use crate::wire::ServiceReplyKind;
 
     /// The default buffer sizes must match the historical hardcoded values, so
@@ -1281,5 +1290,29 @@ mod tests {
         // ...then into_message() hands ownership to the caller.
         let consumed = reply.into_message();
         assert_eq!(consumed.payload().as_bytes().as_ref(), b"pong");
+    }
+
+    #[tokio::test]
+    async fn core_node_presence_list_skips_malformed_entries() {
+        let (tx, rx) = flume::unbounded();
+        tx.send(Ok(CoreNodePresence::new("daemon_a", "generation_1")))
+            .expect("first presence should send");
+        tx.send(ZenohWireFormat::parse_core_node_presence("malformed").map_err(Error::from))
+            .expect("malformed presence should send");
+        tx.send(Ok(CoreNodePresence::new("daemon_b", "generation_2")))
+            .expect("second presence should send");
+        drop(tx);
+
+        let presences = CoreNodePresenceList::new(rx)
+            .collect()
+            .await
+            .expect("malformed entries should not fail collection");
+        assert_eq!(
+            presences,
+            vec![
+                CoreNodePresence::new("daemon_a", "generation_1"),
+                CoreNodePresence::new("daemon_b", "generation_2"),
+            ]
+        );
     }
 }

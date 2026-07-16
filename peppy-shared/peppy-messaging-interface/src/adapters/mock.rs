@@ -176,14 +176,21 @@ impl MessengerBackend for MockAdapter {
         self.queryables.lock().unwrap().clear();
 
         // Mirror Zenoh: closing the session removes every liveliness token
-        // it declared, and watchers observe the removals as Gone events.
+        // it declared, and watchers observe the removals as Gone events. A
+        // fresh state isolates the next session from guards created by this
+        // one.
+        let previous_liveliness = std::mem::replace(
+            &mut self.liveliness,
+            Arc::new(Mutex::new(MockLivelinessState::default())),
+        );
         {
-            let mut liveliness = self.liveliness.lock().unwrap();
+            let mut liveliness = previous_liveliness.lock().unwrap();
             let keyexprs: Vec<String> = liveliness.tokens.keys().cloned().collect();
             liveliness.tokens.clear();
             for keyexpr in keyexprs {
                 Self::notify_liveliness_watchers(&liveliness, &keyexpr, LivelinessEvent::Gone(()));
             }
+            liveliness.watchers.clear();
         }
 
         Ok(())
@@ -1213,9 +1220,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mock_stop_session_reports_tokens_gone() {
-        // Closing the session removes its tokens and watchers observe Gone —
-        // the in-process stand-in for hard producer death.
+    async fn mock_stop_start_session_isolates_liveliness_generations() {
+        // Closing the session removes its tokens, reports Gone, and retires
+        // the old watches and token guards before a new session starts.
         use crate::wire::{ActionWireReceiver, ActionWireSender, SenderTarget};
 
         let mut adapter = MockAdapter::default();
@@ -1237,22 +1244,63 @@ mod tests {
         )
         .expect("valid sender");
 
-        let _token = adapter
+        let old_token = adapter
             .declare_action_liveliness(&receiver)
             .await
             .expect("token should declare");
-        let watch = adapter
+        let old_watch = adapter
             .watch_action_producer(&sender)
             .await
             .expect("watch should declare");
         assert_eq!(
-            watch.rx.recv_async().await.expect("initial event"),
+            old_watch.rx.recv_async().await.expect("initial event"),
             LivelinessEvent::Alive(())
         );
 
         adapter.stop_session().await.expect("session should stop");
         assert_eq!(
-            watch.rx.recv_async().await.expect("gone event"),
+            old_watch.rx.recv_async().await.expect("gone event"),
+            LivelinessEvent::Gone(())
+        );
+        assert!(
+            matches!(
+                old_watch.rx.try_recv(),
+                Err(flume::TryRecvError::Disconnected)
+            ),
+            "the stopped session's watch should be retired"
+        );
+
+        adapter
+            .start_session()
+            .await
+            .expect("session should restart");
+        let new_watch = adapter
+            .watch_action_producer(&sender)
+            .await
+            .expect("new watch should declare");
+        let new_token = adapter
+            .declare_action_liveliness(&receiver)
+            .await
+            .expect("new token should declare");
+        assert_eq!(
+            new_watch.rx.recv_async().await.expect("new alive event"),
+            LivelinessEvent::Alive(())
+        );
+
+        drop(old_token);
+        assert!(
+            matches!(new_watch.rx.try_recv(), Err(flume::TryRecvError::Empty)),
+            "an old token guard must not remove the restarted session's token"
+        );
+        let probe = adapter
+            .probe_action_producer(&sender, std::time::Duration::from_secs(1))
+            .await
+            .expect("probe should issue");
+        assert!(probe.resolve().await, "the new token should remain alive");
+
+        drop(new_token);
+        assert_eq!(
+            new_watch.rx.recv_async().await.expect("new gone event"),
             LivelinessEvent::Gone(())
         );
     }
