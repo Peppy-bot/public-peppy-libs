@@ -9,6 +9,15 @@ pub const PEPPYGEN_OUTPUT_PATH: &str = ".peppy/libs/peppygen";
 /// (`PeppyDirs::root`).
 pub const PEPPY_HOME_ENV: &str = "PEPPY_HOME";
 
+/// Overrides the daemon-global config document (peppy_config.json5).
+/// When set and non-empty, the value is tried as a path to a config file
+/// first; if no file can be read, it is parsed as an inline JSON5 document.
+/// The source is loaded read-only: nothing is created, completed, or
+/// rewritten, and a value that cannot be read, does not parse, fails
+/// validation, or omits settings the running release defines is a startup
+/// error. Empty or unset means the normal on-disk flow.
+pub const PEPPY_CONFIG_ENV: &str = "PEPPY_CONFIG";
+
 pub const DEFAULT_MESSAGING_HOST: &str = "127.0.0.1";
 pub const DEFAULT_MESSAGING_PORT: u16 = 7448;
 
