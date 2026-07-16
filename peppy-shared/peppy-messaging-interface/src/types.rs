@@ -269,14 +269,17 @@ pub trait MessengerBackend {
         core_node: Option<&Segment>,
     ) -> impl Future<Output = Result<LivelinessWatch<CoreNodePresence>>> + Send;
 
-    /// Returns every currently live daemon token, optionally restricted to one
-    /// core-node name. Multiple instance ids for one name are intentionally
-    /// preserved so callers can detect active name collisions.
+    /// Enumerates every currently live daemon token, optionally restricted to
+    /// one core-node name. Multiple instance ids for one name are intentionally
+    /// preserved so callers can detect active name collisions. Issuing the
+    /// query is fast; the replies are awaited via
+    /// [`CoreNodePresenceList::collect`], so callers can release any shared
+    /// lock before waiting out the query `timeout`.
     fn list_core_node_presence(
         &self,
         core_node: Option<&Segment>,
         timeout: std::time::Duration,
-    ) -> impl Future<Output = Result<Vec<CoreNodePresence>>> + Send;
+    ) -> impl Future<Output = Result<CoreNodePresenceList>> + Send;
 
     // ─── Router lifecycle ─────────────────────────────────────────────────
 
@@ -363,10 +366,19 @@ impl LivelinessToken {
 /// One live core-node daemon generation advertised through the presence
 /// primitive. The core-node name is the identity; `instance_id` distinguishes
 /// concurrent claims of that name and successive daemon generations.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CoreNodePresence {
     pub core_node: String,
     pub instance_id: String,
+}
+
+impl CoreNodePresence {
+    pub fn new(core_node: impl Into<String>, instance_id: impl Into<String>) -> Self {
+        Self {
+            core_node: core_node.into(),
+            instance_id: instance_id.into(),
+        }
+    }
 }
 
 /// A liveliness transition and the transport-neutral value represented by the
@@ -418,6 +430,31 @@ impl ActionLivelinessProbe {
     /// issued with (the transport finalizes the query then).
     pub async fn resolve(self) -> bool {
         self.rx.recv_async().await.is_ok()
+    }
+}
+
+/// In-flight presence enumeration issued by
+/// [`MessengerBackend::list_core_node_presence`]. The transport sends one
+/// parsed token per reply and drops its sender when the query finalizes,
+/// so [`collect`](Self::collect) ends exactly when every reply was
+/// delivered.
+pub struct CoreNodePresenceList {
+    rx: flume::Receiver<Result<CoreNodePresence>>,
+}
+
+impl CoreNodePresenceList {
+    pub(crate) fn new(rx: flume::Receiver<Result<CoreNodePresence>>) -> Self {
+        Self { rx }
+    }
+
+    /// Waits for the enumeration's replies. Bounded by the `timeout` the
+    /// query was issued with (the transport finalizes the query then).
+    pub async fn collect(self) -> Result<Vec<CoreNodePresence>> {
+        let mut presences = Vec::new();
+        while let Ok(presence) = self.rx.recv_async().await {
+            presences.push(presence?);
+        }
+        Ok(presences)
     }
 }
 
@@ -1145,7 +1182,7 @@ impl MessengerBackend for Messenger {
         &self,
         core_node: Option<&Segment>,
         timeout: std::time::Duration,
-    ) -> Result<Vec<CoreNodePresence>> {
+    ) -> Result<CoreNodePresenceList> {
         dispatch!(&self.adapter, list_core_node_presence, core_node, timeout)
     }
 

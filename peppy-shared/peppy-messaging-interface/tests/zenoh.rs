@@ -803,10 +803,7 @@ mod zenoh_tests {
 
         let core_node = Segment::try_from("daemon_a").expect("valid core-node segment");
         let instance_id = Segment::try_from("generation_1").expect("valid instance segment");
-        let expected = CoreNodePresence {
-            core_node: "daemon_a".to_string(),
-            instance_id: "generation_1".to_string(),
-        };
+        let expected = CoreNodePresence::new("daemon_a", "generation_1");
         let _token = producer
             .declare_core_node_presence(&core_node, &instance_id)
             .await
@@ -826,6 +823,9 @@ mod zenoh_tests {
             observer
                 .list_core_node_presence(None, Duration::from_secs(2))
                 .await
+                .expect("presence list should issue")
+                .collect()
+                .await
                 .expect("presence list should succeed"),
             vec![expected.clone()]
         );
@@ -842,6 +842,9 @@ mod zenoh_tests {
         assert!(
             observer
                 .list_core_node_presence(None, Duration::from_secs(2))
+                .await
+                .expect("presence list should issue after token removal")
+                .collect()
                 .await
                 .expect("presence list should succeed after token removal")
                 .is_empty()
@@ -1202,21 +1205,21 @@ mod zenoh_tests {
             org_a
                 .list_core_node_presence(None, Duration::from_secs(2))
                 .await
+                .expect("org-a presence list should issue")
+                .collect()
+                .await
                 .expect("org-a presence list should succeed"),
-            vec![CoreNodePresence {
-                core_node: "daemon_a".to_string(),
-                instance_id: "generation_a".to_string(),
-            }]
+            vec![CoreNodePresence::new("daemon_a", "generation_a")]
         );
         assert_eq!(
             org_b
                 .list_core_node_presence(None, Duration::from_secs(2))
                 .await
+                .expect("org-b presence list should issue")
+                .collect()
+                .await
                 .expect("org-b presence list should succeed"),
-            vec![CoreNodePresence {
-                core_node: "daemon_b".to_string(),
-                instance_id: "generation_b".to_string(),
-            }]
+            vec![CoreNodePresence::new("daemon_b", "generation_b")]
         );
     }
 

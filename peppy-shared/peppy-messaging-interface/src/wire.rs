@@ -51,6 +51,13 @@ impl Segment {
             None => Ok(Self::default_link_id()),
         }
     }
+
+    /// Non-allocating equivalent of `Segment::try_from(s).is_ok()`, for wire
+    /// parsers that classify observed keyexpr segments without needing an
+    /// owned `Segment`.
+    pub(crate) fn is_valid(s: &str) -> bool {
+        validate_segment_chars(s).is_ok() && !is_reserved_sentinel(s)
+    }
 }
 
 /// Wire literal used at the `link_id` slot when a producer is run without
@@ -84,11 +91,17 @@ impl TryFrom<&str> for Segment {
 
     fn try_from(s: &str) -> Result<Self, SegmentError> {
         validate_segment_chars(s)?;
-        if matches!(s, "*" | "**") || s == DEFAULT_LINK_ID {
+        if is_reserved_sentinel(s) {
             return Err(SegmentError::ReservedSentinel(s.to_string()));
         }
         Ok(Self(s.to_string()))
     }
+}
+
+/// The full sentinel set rejected by [`Segment::try_from`] (unlike
+/// [`Segment::try_link_id`], which admits the link_id default `_`).
+fn is_reserved_sentinel(s: &str) -> bool {
+    matches!(s, "*" | "**") || s == DEFAULT_LINK_ID
 }
 
 /// Shared char-level validation: non-empty, no `/`, no `@`. The reserved

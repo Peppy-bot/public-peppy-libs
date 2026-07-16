@@ -1,10 +1,10 @@
 use super::super::error::{Error, Result};
 use super::super::types::{
-    AbortOnDrop, ActionLivelinessProbe, CoreNodePresence, IncomingRequest, LivelinessEvent,
-    LivelinessToken, LivelinessWatch, Message, Messenger, MessengerAdapter, MessengerBackend,
-    MockResponseToken, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken,
-    ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS, Subscription,
-    TopicMessage,
+    AbortOnDrop, ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, IncomingRequest,
+    LivelinessEvent, LivelinessToken, LivelinessWatch, Message, Messenger, MessengerAdapter,
+    MessengerBackend, MockResponseToken, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream,
+    ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS,
+    Subscription, TopicMessage,
 };
 use super::super::wire::zenoh_format::ZenohWireFormat;
 use super::super::wire::{
@@ -91,7 +91,7 @@ type QueryableMap = Arc<Mutex<HashMap<String, Vec<mpsc::Sender<MockQuery>>>>>;
 /// In-process stand-in for Zenoh's liveliness space. `tokens` counts the
 /// live tokens per declared keyexpr (a count, not a set, so two declares
 /// on the same keyexpr need two drops to go Gone — mirroring Zenoh, where
-/// each token is independent). `watchers` holds the event channels of
+/// each token is independent). `watchers` holds the fan-out callbacks of
 /// active [`LivelinessWatch`]es keyed by their watch pattern; a
 /// declare/drop notifies every watcher whose pattern intersects the
 /// token's keyexpr.
@@ -101,16 +101,12 @@ struct MockLivelinessState {
     watchers: HashMap<String, Vec<MockLivelinessWatcher>>,
 }
 
-enum MockLivelinessWatcher {
-    Action(flume::Sender<LivelinessEvent>),
-    CoreNodePresence(flume::Sender<LivelinessEvent<CoreNodePresence>>),
-}
-
-#[derive(Clone, Copy)]
-enum MockLivelinessTransition {
-    Alive,
-    Gone,
-}
+/// Registration-time callback that types and forwards one liveliness
+/// transition to its watch channel. Each watch domain owns its event
+/// mapping (action watches forward the `()` event as-is, presence watches
+/// parse the token keyexpr), mirroring how the zenoh adapter's subscriber
+/// callbacks own theirs — the shared notifier stays domain-blind.
+type MockLivelinessWatcher = Box<dyn Fn(&str, LivelinessEvent) + Send>;
 
 type LivelinessState = Arc<Mutex<MockLivelinessState>>;
 
@@ -186,11 +182,7 @@ impl MessengerBackend for MockAdapter {
             let keyexprs: Vec<String> = liveliness.tokens.keys().cloned().collect();
             liveliness.tokens.clear();
             for keyexpr in keyexprs {
-                Self::notify_liveliness_watchers(
-                    &liveliness,
-                    &keyexpr,
-                    MockLivelinessTransition::Gone,
-                );
+                Self::notify_liveliness_watchers(&liveliness, &keyexpr, LivelinessEvent::Gone(()));
             }
         }
 
@@ -334,25 +326,7 @@ impl MessengerBackend for MockAdapter {
         &self,
         recv: &ActionWireReceiver,
     ) -> Result<LivelinessToken> {
-        if !self.is_session_connected {
-            return Err(Error::MessagingSessionError(
-                "Session not initialized".to_string(),
-            ));
-        }
-        let keyexpr = ZenohWireFormat::action_liveliness_token(recv);
-        {
-            let mut liveliness = self.liveliness.lock().unwrap();
-            *liveliness.tokens.entry(keyexpr.clone()).or_insert(0) += 1;
-            Self::notify_liveliness_watchers(
-                &liveliness,
-                &keyexpr,
-                MockLivelinessTransition::Alive,
-            );
-        }
-        Ok(LivelinessToken::new(Box::new(MockLivelinessGuard {
-            keyexpr,
-            state: Arc::clone(&self.liveliness),
-        })))
+        self.declare_liveliness(ZenohWireFormat::action_liveliness_token(recv))
     }
 
     async fn watch_action_producer(&self, sender: &ActionWireSender) -> Result<LivelinessWatch> {
@@ -367,20 +341,21 @@ impl MessengerBackend for MockAdapter {
             let mut liveliness = self.liveliness.lock().unwrap();
             // History emulation: a token that already exists is replayed as
             // an initial Alive, matching the Zenoh watch's `history(true)`.
-            let alive = liveliness
-                .tokens
-                .iter()
-                .any(|(keyexpr, count)| *count > 0 && Self::key_exprs_intersect(keyexpr, &pattern));
-            if alive {
+            if Self::live_keys_matching(&liveliness, &pattern)
+                .next()
+                .is_some()
+            {
                 let _ = tx.send(LivelinessEvent::Alive(()));
             }
             liveliness
                 .watchers
                 .entry(pattern)
                 .or_default()
-                .push(MockLivelinessWatcher::Action(tx));
+                .push(Box::new(move |_keyexpr, event| {
+                    let _ = tx.send(event);
+                }));
         }
-        // Stale watcher senders in the map are benign (notify ignores send
+        // Stale watcher callbacks in the map are benign (they ignore send
         // errors), mirroring the topic SubscriptionMap convention.
         Ok(LivelinessWatch::new(rx, Box::new(())))
     }
@@ -398,10 +373,9 @@ impl MessengerBackend for MockAdapter {
         let pattern = ZenohWireFormat::action_liveliness_watch(sender);
         let alive = {
             let liveliness = self.liveliness.lock().unwrap();
-            liveliness
-                .tokens
-                .iter()
-                .any(|(keyexpr, count)| *count > 0 && Self::key_exprs_intersect(keyexpr, &pattern))
+            Self::live_keys_matching(&liveliness, &pattern)
+                .next()
+                .is_some()
         };
         // The mock answers instantly: send the alive marker (or don't) and
         // drop the sender so `resolve` returns without waiting.
@@ -418,25 +392,10 @@ impl MessengerBackend for MockAdapter {
         core_node: &Segment,
         instance_id: &Segment,
     ) -> Result<LivelinessToken> {
-        if !self.is_session_connected {
-            return Err(Error::MessagingSessionError(
-                "Session not initialized".to_string(),
-            ));
-        }
-        let keyexpr = ZenohWireFormat::core_node_presence_token(core_node, instance_id);
-        {
-            let mut liveliness = self.liveliness.lock().unwrap();
-            *liveliness.tokens.entry(keyexpr.clone()).or_insert(0) += 1;
-            Self::notify_liveliness_watchers(
-                &liveliness,
-                &keyexpr,
-                MockLivelinessTransition::Alive,
-            );
-        }
-        Ok(LivelinessToken::new(Box::new(MockLivelinessGuard {
-            keyexpr,
-            state: Arc::clone(&self.liveliness),
-        })))
+        self.declare_liveliness(ZenohWireFormat::core_node_presence_token(
+            core_node,
+            instance_id,
+        ))
     }
 
     async fn watch_core_node_presence(
@@ -454,10 +413,7 @@ impl MessengerBackend for MockAdapter {
             let mut liveliness = self.liveliness.lock().unwrap();
             // History must replay every concrete token, not merely one event
             // per name: duplicate instance ids are the collision signal.
-            for (keyexpr, count) in liveliness.tokens.iter() {
-                if *count == 0 || !Self::key_exprs_intersect(keyexpr, &pattern) {
-                    continue;
-                }
+            for keyexpr in Self::live_keys_matching(&liveliness, &pattern) {
                 if let Ok(presence) = ZenohWireFormat::parse_core_node_presence(keyexpr) {
                     let _ = tx.send(LivelinessEvent::Alive(presence));
                 }
@@ -466,7 +422,15 @@ impl MessengerBackend for MockAdapter {
                 .watchers
                 .entry(pattern)
                 .or_default()
-                .push(MockLivelinessWatcher::CoreNodePresence(tx));
+                .push(Box::new(move |keyexpr, event| {
+                    let Ok(presence) = ZenohWireFormat::parse_core_node_presence(keyexpr) else {
+                        return;
+                    };
+                    let _ = tx.send(match event {
+                        LivelinessEvent::Alive(()) => LivelinessEvent::Alive(presence),
+                        LivelinessEvent::Gone(()) => LivelinessEvent::Gone(presence),
+                    });
+                }));
         }
         Ok(LivelinessWatch::new(rx, Box::new(())))
     }
@@ -475,22 +439,25 @@ impl MessengerBackend for MockAdapter {
         &self,
         core_node: Option<&Segment>,
         _timeout: std::time::Duration,
-    ) -> Result<Vec<CoreNodePresence>> {
+    ) -> Result<CoreNodePresenceList> {
         if !self.is_session_connected {
             return Err(Error::MessagingSessionError(
                 "Session not initialized".to_string(),
             ));
         }
         let pattern = ZenohWireFormat::core_node_presence_filter(core_node);
-        let liveliness = self.liveliness.lock().unwrap();
-        liveliness
-            .tokens
-            .iter()
-            .filter(|(keyexpr, count)| **count > 0 && Self::key_exprs_intersect(keyexpr, &pattern))
-            .map(|(keyexpr, _)| {
-                ZenohWireFormat::parse_core_node_presence(keyexpr).map_err(Into::into)
-            })
-            .collect()
+        // The mock answers instantly: pre-fill the reply channel and drop
+        // the sender so `collect` returns without waiting.
+        let (tx, rx) = flume::unbounded::<Result<CoreNodePresence>>();
+        {
+            let liveliness = self.liveliness.lock().unwrap();
+            for keyexpr in Self::live_keys_matching(&liveliness, &pattern) {
+                let _ =
+                    tx.send(ZenohWireFormat::parse_core_node_presence(keyexpr).map_err(Into::into));
+            }
+        }
+        drop(tx);
+        Ok(CoreNodePresenceList::new(rx))
     }
 
     async fn start_router(&mut self) -> Result<()> {
@@ -534,48 +501,65 @@ impl Drop for MockLivelinessGuard {
             MockAdapter::notify_liveliness_watchers(
                 &liveliness,
                 &self.keyexpr,
-                MockLivelinessTransition::Gone,
+                LivelinessEvent::Gone(()),
             );
         }
     }
 }
 
 impl MockAdapter {
-    /// Fan a liveliness event out to every watcher whose pattern intersects
-    /// `keyexpr`. Send errors (dropped watches) are ignored, mirroring the
+    /// Fan a liveliness transition out to every watcher whose pattern
+    /// intersects `keyexpr`. Each watcher callback attaches its own domain's
+    /// event value; send errors (dropped watches) are ignored, mirroring the
     /// topic `SubscriptionMap` convention.
     fn notify_liveliness_watchers(
         liveliness: &MockLivelinessState,
         keyexpr: &str,
-        transition: MockLivelinessTransition,
+        event: LivelinessEvent,
     ) {
-        let presence = ZenohWireFormat::parse_core_node_presence(keyexpr).ok();
         for (pattern, watchers) in liveliness.watchers.iter() {
             if !Self::key_exprs_intersect(pattern, keyexpr) {
                 continue;
             }
             for watcher in watchers {
-                match watcher {
-                    MockLivelinessWatcher::Action(tx) => {
-                        let event = match transition {
-                            MockLivelinessTransition::Alive => LivelinessEvent::Alive(()),
-                            MockLivelinessTransition::Gone => LivelinessEvent::Gone(()),
-                        };
-                        let _ = tx.send(event);
-                    }
-                    MockLivelinessWatcher::CoreNodePresence(tx) => {
-                        let Some(presence) = presence.clone() else {
-                            continue;
-                        };
-                        let event = match transition {
-                            MockLivelinessTransition::Alive => LivelinessEvent::Alive(presence),
-                            MockLivelinessTransition::Gone => LivelinessEvent::Gone(presence),
-                        };
-                        let _ = tx.send(event);
-                    }
-                }
+                watcher(keyexpr, event);
             }
         }
+    }
+
+    /// Shared body of the liveliness declaration methods: bumps the live
+    /// count for `keyexpr`, notifies intersecting watchers, and returns a
+    /// token whose drop reverses both.
+    fn declare_liveliness(&self, keyexpr: String) -> Result<LivelinessToken> {
+        if !self.is_session_connected {
+            return Err(Error::MessagingSessionError(
+                "Session not initialized".to_string(),
+            ));
+        }
+        {
+            let mut liveliness = self.liveliness.lock().unwrap();
+            *liveliness.tokens.entry(keyexpr.clone()).or_insert(0) += 1;
+            Self::notify_liveliness_watchers(&liveliness, &keyexpr, LivelinessEvent::Alive(()));
+        }
+        Ok(LivelinessToken::new(Box::new(MockLivelinessGuard {
+            keyexpr,
+            state: Arc::clone(&self.liveliness),
+        })))
+    }
+
+    /// Keyexprs of the currently live tokens intersecting `pattern` — the
+    /// mock-side equivalent of a liveliness query.
+    fn live_keys_matching<'a>(
+        liveliness: &'a MockLivelinessState,
+        pattern: &'a str,
+    ) -> impl Iterator<Item = &'a str> {
+        liveliness
+            .tokens
+            .iter()
+            .filter(move |(keyexpr, count)| {
+                **count > 0 && Self::key_exprs_intersect(keyexpr, pattern)
+            })
+            .map(|(keyexpr, _)| keyexpr.as_str())
     }
 
     /// Creates a new MockAdapter, wraps it in a Messenger, starts the router,
@@ -1273,102 +1257,83 @@ mod tests {
         );
     }
 
+    fn seg(value: &str) -> Segment {
+        Segment::try_from(value).expect("valid keyexpr segment")
+    }
+
+    /// Issues and collects a presence list (the mock answers instantly, so
+    /// the timeout is irrelevant).
+    async fn list_presence(
+        adapter: &MockAdapter,
+        core_node: Option<&Segment>,
+    ) -> Vec<CoreNodePresence> {
+        adapter
+            .list_core_node_presence(core_node, std::time::Duration::from_secs(1))
+            .await
+            .expect("presence list should issue")
+            .collect()
+            .await
+            .expect("presence list should collect")
+    }
+
     #[tokio::test]
     async fn mock_core_node_presence_lifecycle_drives_history_watch_and_list() {
         let mut adapter = MockAdapter::default();
         adapter.start_session().await.expect("session should start");
-        let core_node = Segment::try_from("daemon_a").expect("valid core-node segment");
-        let instance_id = Segment::try_from("generation_1").expect("valid instance segment");
 
         let token = adapter
-            .declare_core_node_presence(&core_node, &instance_id)
+            .declare_core_node_presence(&seg("daemon_a"), &seg("generation_1"))
             .await
             .expect("presence token should declare");
         let watch = adapter
-            .watch_core_node_presence(Some(&core_node))
+            .watch_core_node_presence(Some(&seg("daemon_a")))
             .await
             .expect("presence watch should declare");
-        let expected = CoreNodePresence {
-            core_node: "daemon_a".to_string(),
-            instance_id: "generation_1".to_string(),
-        };
+        let expected = CoreNodePresence::new("daemon_a", "generation_1");
         assert_eq!(
             watch.rx.recv_async().await.expect("history event"),
             LivelinessEvent::Alive(expected.clone())
         );
-        assert_eq!(
-            adapter
-                .list_core_node_presence(None, std::time::Duration::from_secs(1))
-                .await
-                .expect("presence list should succeed"),
-            vec![expected.clone()]
-        );
+        assert_eq!(list_presence(&adapter, None).await, vec![expected.clone()]);
 
         drop(token);
         assert_eq!(
             watch.rx.recv_async().await.expect("gone event"),
             LivelinessEvent::Gone(expected)
         );
-        assert!(
-            adapter
-                .list_core_node_presence(None, std::time::Duration::from_secs(1))
-                .await
-                .expect("presence list should succeed")
-                .is_empty()
-        );
+        assert!(list_presence(&adapter, None).await.is_empty());
     }
 
     #[tokio::test]
     async fn mock_core_node_presence_list_filters_and_preserves_collision_shape() {
         let mut adapter = MockAdapter::default();
         adapter.start_session().await.expect("session should start");
-        let daemon_a = Segment::try_from("daemon_a").expect("valid core-node segment");
-        let daemon_b = Segment::try_from("daemon_b").expect("valid core-node segment");
-        let generation_1 = Segment::try_from("generation_1").expect("valid instance segment");
-        let generation_2 = Segment::try_from("generation_2").expect("valid instance segment");
-        let generation_3 = Segment::try_from("generation_3").expect("valid instance segment");
 
         let _a1 = adapter
-            .declare_core_node_presence(&daemon_a, &generation_1)
+            .declare_core_node_presence(&seg("daemon_a"), &seg("generation_1"))
             .await
             .expect("first token should declare");
         let _a2 = adapter
-            .declare_core_node_presence(&daemon_a, &generation_2)
+            .declare_core_node_presence(&seg("daemon_a"), &seg("generation_2"))
             .await
             .expect("collision token should declare");
         let _b = adapter
-            .declare_core_node_presence(&daemon_b, &generation_3)
+            .declare_core_node_presence(&seg("daemon_b"), &seg("generation_3"))
             .await
             .expect("other token should declare");
 
-        let mut all = adapter
-            .list_core_node_presence(None, std::time::Duration::from_secs(1))
-            .await
-            .expect("unfiltered presence list should succeed");
-        all.sort_by(|a, b| (&a.core_node, &a.instance_id).cmp(&(&b.core_node, &b.instance_id)));
+        let mut all = list_presence(&adapter, None).await;
+        all.sort();
         assert_eq!(
             all,
             vec![
-                CoreNodePresence {
-                    core_node: "daemon_a".to_string(),
-                    instance_id: "generation_1".to_string(),
-                },
-                CoreNodePresence {
-                    core_node: "daemon_a".to_string(),
-                    instance_id: "generation_2".to_string(),
-                },
-                CoreNodePresence {
-                    core_node: "daemon_b".to_string(),
-                    instance_id: "generation_3".to_string(),
-                },
+                CoreNodePresence::new("daemon_a", "generation_1"),
+                CoreNodePresence::new("daemon_a", "generation_2"),
+                CoreNodePresence::new("daemon_b", "generation_3"),
             ]
         );
 
-        let mut daemon_a_only = adapter
-            .list_core_node_presence(Some(&daemon_a), std::time::Duration::from_secs(1))
-            .await
-            .expect("filtered presence list should succeed");
-        daemon_a_only.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+        let daemon_a_only = list_presence(&adapter, Some(&seg("daemon_a"))).await;
         assert_eq!(daemon_a_only.len(), 2, "both colliding tokens must remain");
         assert!(
             daemon_a_only
@@ -1381,20 +1346,15 @@ mod tests {
     async fn mock_stop_session_reports_core_node_presence_gone() {
         let mut adapter = MockAdapter::default();
         adapter.start_session().await.expect("session should start");
-        let core_node = Segment::try_from("daemon_a").expect("valid core-node segment");
-        let instance_id = Segment::try_from("generation_1").expect("valid instance segment");
         let _token = adapter
-            .declare_core_node_presence(&core_node, &instance_id)
+            .declare_core_node_presence(&seg("daemon_a"), &seg("generation_1"))
             .await
             .expect("presence token should declare");
         let watch = adapter
-            .watch_core_node_presence(Some(&core_node))
+            .watch_core_node_presence(Some(&seg("daemon_a")))
             .await
             .expect("presence watch should declare");
-        let expected = CoreNodePresence {
-            core_node: "daemon_a".to_string(),
-            instance_id: "generation_1".to_string(),
-        };
+        let expected = CoreNodePresence::new("daemon_a", "generation_1");
         assert_eq!(
             watch.rx.recv_async().await.expect("history event"),
             LivelinessEvent::Alive(expected.clone())

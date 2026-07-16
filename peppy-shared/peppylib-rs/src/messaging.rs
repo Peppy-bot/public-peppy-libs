@@ -691,15 +691,22 @@ impl MessengerHandle {
             .map_err(Error::PeppyMessagingInterface)
     }
 
+    /// Enumerates live core-node daemon tokens. The central messenger lock
+    /// is held only for query issuance; the wait for the replies (bounded by
+    /// `timeout`) happens after it is released, mirroring
+    /// [`probe_action_producer`](Self::probe_action_producer).
     pub(crate) async fn list_core_node_presence(
         &self,
         core_node: Option<&Segment>,
         timeout: Duration,
     ) -> Result<Vec<CoreNodePresence>> {
-        let messenger = self.messenger.lock().await;
-        messenger
-            .list_core_node_presence(core_node, timeout)
-            .await
-            .map_err(Error::PeppyMessagingInterface)
+        let list = {
+            let messenger = self.messenger.lock().await;
+            messenger
+                .list_core_node_presence(core_node, timeout)
+                .await
+                .map_err(Error::PeppyMessagingInterface)?
+        };
+        list.collect().await.map_err(Error::PeppyMessagingInterface)
     }
 }

@@ -356,24 +356,25 @@ impl ZenohWireFormat {
     pub(crate) fn parse_core_node_presence(
         keyexpr: &str,
     ) -> Result<CoreNodePresence, ZenohWireParseError> {
-        let segments: Vec<&str> = keyexpr.split('/').collect();
-        let [root, core_node, instance_id] = segments.as_slice() else {
+        // Runs inside transport callbacks, so the happy path allocates only
+        // the two result strings (no segment Vec, no throwaway `Segment`s).
+        let mut segments = keyexpr.split('/');
+        let (Some("core_node_presence"), Some(core_node), Some(instance_id), None) = (
+            segments.next(),
+            segments.next(),
+            segments.next(),
+            segments.next(),
+        ) else {
             return Err(ZenohWireParseError::InvalidCoreNodePresenceKey(
                 keyexpr.to_string(),
             ));
         };
-        if *root != "core_node_presence"
-            || Segment::try_from(*core_node).is_err()
-            || Segment::try_from(*instance_id).is_err()
-        {
+        if !Segment::is_valid(core_node) || !Segment::is_valid(instance_id) {
             return Err(ZenohWireParseError::InvalidCoreNodePresenceKey(
                 keyexpr.to_string(),
             ));
         }
-        Ok(CoreNodePresence {
-            core_node: (*core_node).to_string(),
-            instance_id: (*instance_id).to_string(),
-        })
+        Ok(CoreNodePresence::new(core_node, instance_id))
     }
 }
 

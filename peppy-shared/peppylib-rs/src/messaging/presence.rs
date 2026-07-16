@@ -10,6 +10,12 @@ use crate::error::Result;
 pub struct CoreNodePresenceMessenger;
 
 impl CoreNodePresenceMessenger {
+    /// Recommended [`Self::list_live`] bound: liveliness state is answered
+    /// from the router's current view, normally immediately, so the timeout
+    /// only protects callers from a stalled transport. Callers pass their own
+    /// bound when they know better (e.g. tests on an in-process mock).
+    pub const LIST_TIMEOUT: Duration = Duration::from_secs(2);
+
     /// Advertise one daemon generation until the returned token or its
     /// messenger session is dropped.
     pub async fn declare(

@@ -27,10 +27,7 @@ async fn presence_facade_declares_watches_and_lists_with_name_filtering() {
             .await
             .expect("history event timeout")
             .expect("history event channel"),
-        LivelinessEvent::Alive(CoreNodePresence {
-            core_node: "core-a".to_string(),
-            instance_id: "instance-1".to_string(),
-        })
+        LivelinessEvent::Alive(CoreNodePresence::new("core-a", "instance-1"))
     );
 
     let second = CoreNodePresenceMessenger::declare(&client.caller_handle, "core-a", "instance-2")
@@ -45,38 +42,25 @@ async fn presence_facade_declares_watches_and_lists_with_name_filtering() {
             .await
             .expect("live event timeout")
             .expect("live event channel"),
-        LivelinessEvent::Alive(CoreNodePresence {
-            core_node: "core-a".to_string(),
-            instance_id: "instance-2".to_string(),
-        })
+        LivelinessEvent::Alive(CoreNodePresence::new("core-a", "instance-2"))
     );
 
     let mut all = CoreNodePresenceMessenger::list_live(&observer, None, TIMEOUT)
         .await
         .expect("list all presence");
-    all.sort_by(|a, b| (&a.core_node, &a.instance_id).cmp(&(&b.core_node, &b.instance_id)));
+    all.sort();
     assert_eq!(
         all,
         vec![
-            CoreNodePresence {
-                core_node: "core-a".to_string(),
-                instance_id: "instance-1".to_string(),
-            },
-            CoreNodePresence {
-                core_node: "core-a".to_string(),
-                instance_id: "instance-2".to_string(),
-            },
-            CoreNodePresence {
-                core_node: "core-b".to_string(),
-                instance_id: "instance-3".to_string(),
-            },
+            CoreNodePresence::new("core-a", "instance-1"),
+            CoreNodePresence::new("core-a", "instance-2"),
+            CoreNodePresence::new("core-b", "instance-3"),
         ]
     );
 
-    let mut core_a = CoreNodePresenceMessenger::list_live(&observer, Some("core-a"), TIMEOUT)
+    let core_a = CoreNodePresenceMessenger::list_live(&observer, Some("core-a"), TIMEOUT)
         .await
         .expect("list core-a presence");
-    core_a.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
     assert_eq!(core_a.len(), 2);
     assert!(core_a.iter().all(|presence| presence.core_node == "core-a"));
 
@@ -86,10 +70,7 @@ async fn presence_facade_declares_watches_and_lists_with_name_filtering() {
             .await
             .expect("gone event timeout")
             .expect("gone event channel"),
-        LivelinessEvent::Gone(CoreNodePresence {
-            core_node: "core-a".to_string(),
-            instance_id: "instance-1".to_string(),
-        })
+        LivelinessEvent::Gone(CoreNodePresence::new("core-a", "instance-1"))
     );
 
     drop(second);
@@ -142,10 +123,7 @@ async fn presence_facade_round_trips_over_zenoh() {
             .await
             .expect("alive event timeout")
             .expect("alive event channel"),
-        LivelinessEvent::Alive(CoreNodePresence {
-            core_node: "core-a".to_string(),
-            instance_id: "instance-1".to_string(),
-        })
+        LivelinessEvent::Alive(CoreNodePresence::new("core-a", "instance-1"))
     );
 
     let both = wait_for_presence_count(&observer, 2).await;
@@ -158,19 +136,13 @@ async fn presence_facade_round_trips_over_zenoh() {
             .await
             .expect("gone event timeout")
             .expect("gone event channel"),
-        LivelinessEvent::Gone(CoreNodePresence {
-            core_node: "core-a".to_string(),
-            instance_id: "instance-1".to_string(),
-        })
+        LivelinessEvent::Gone(CoreNodePresence::new("core-a", "instance-1"))
     );
 
     let remaining = wait_for_presence_count(&observer, 1).await;
     assert_eq!(
         remaining,
-        vec![CoreNodePresence {
-            core_node: "core-b".to_string(),
-            instance_id: "instance-2".to_string(),
-        }]
+        vec![CoreNodePresence::new("core-b", "instance-2")]
     );
 
     drop(second);
