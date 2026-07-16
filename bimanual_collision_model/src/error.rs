@@ -15,8 +15,9 @@ pub enum CollisionError {
     #[error("no checked pairs to evaluate")]
     NoPairs,
 
-    /// Deep penetration: the nearest pair's witness points coincide, so the
-    /// surface normal, and thus the distance gradient, is undefined.
+    /// The nearest pair's hull cores touch degenerately (the rounded surfaces
+    /// overlap by the summed radii), so no separating direction, and thus no
+    /// distance gradient, is defined.
     #[error("witnesses coincide (d={distance:+.4}); distance gradient undefined")]
     WitnessesCoincide { distance: f64 },
 

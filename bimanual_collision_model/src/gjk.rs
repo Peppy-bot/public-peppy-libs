@@ -20,7 +20,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use srs_model::nalgebra::{Isometry3, Point3, Vector3};
+use srs_model::nalgebra::{Isometry3, Point3, Unit, Vector3};
 
 use crate::hull::ConvexHull;
 
@@ -95,6 +95,13 @@ pub struct GjkDistance {
     pub distance: f64,
     pub on_a: Point3<f64>,
     pub on_b: Point3<f64>,
+    /// Unit direction along which translating body `a` increases the signed
+    /// distance (`b` decreases it). Carried explicitly: the witness difference
+    /// `on_b - on_a` reverses sense with the sign of the distance, so it cannot
+    /// serve as a gradient direction. `None` only for degenerate core contact
+    /// (the surfaces then overlap by the summed radii), where no direction is
+    /// defined.
+    pub normal: Option<Unit<Vector3<f64>>>,
     /// GJK iterations the query took to converge. Read only by the tests that
     /// pin convergence behavior; production consumes just the geometry above.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -322,16 +329,23 @@ pub fn distance(a: &impl Support, b: &impl Support) -> GjkDistance {
     let core_a = weighted_point(&simplex, &weights, |s| s.a);
     let core_b = weighted_point(&simplex, &weights, |s| s.b);
     let core_dist = v.norm();
-    let (on_a, on_b) = if core_dist > ORIGIN_EPS2.sqrt() {
+    // `v` points from b's core witness toward a's: the separating direction,
+    // whether the rounded surfaces are clear or in shallow overlap.
+    let (on_a, on_b, normal) = if core_dist > ORIGIN_EPS2.sqrt() {
         let n = v / core_dist;
-        (core_a - n * ra, core_b + n * rb)
+        (
+            core_a - n * ra,
+            core_b + n * rb,
+            Some(Unit::new_unchecked(n)),
+        )
     } else {
-        (core_a, core_b)
+        (core_a, core_b, None)
     };
     GjkDistance {
         distance: core_dist - ra - rb,
         on_a,
         on_b,
+        normal,
         iterations,
     }
 }
@@ -455,6 +469,7 @@ fn touch(kept: &[SupportPoint], ra: f64, rb: f64) -> GjkDistance {
         distance: -ra - rb,
         on_a: kept[0].a,
         on_b: kept[0].b,
+        normal: None,
         iterations: 0,
     }
 }
@@ -513,10 +528,12 @@ fn epa_result(
     let [l0, l1, l2] = barycentric(face.normal * face.dist, pa.v, pb.v, pc.v);
     let on_a = Point3::from(pa.a.coords * l0 + pb.a.coords * l1 + pc.a.coords * l2);
     let on_b = Point3::from(pa.b.coords * l0 + pb.b.coords * l1 + pc.b.coords * l2);
+    // The face normal deepens the overlap for a; a separates along its negation.
     GjkDistance {
         distance: -face.dist - ra - rb,
         on_a: on_a - face.normal * ra,
         on_b: on_b + face.normal * rb,
+        normal: Some(Unit::new_unchecked(-face.normal)),
         iterations,
     }
 }

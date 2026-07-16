@@ -182,6 +182,8 @@ struct Closest {
     b: usize,
     on_a: Point3<f64>,
     on_b: Point3<f64>,
+    /// Separating direction for body `a`; `None` on degenerate core contact.
+    normal: Option<Unit<Vector3<f64>>>,
 }
 
 /// The closest approach over all checked pairs at one configuration. `distance`
@@ -212,10 +214,6 @@ pub struct DistanceGradient<'a> {
     pub grad_right: JointVec,
     pub grad_openings: [f64; 2],
 }
-
-/// Witness separation below which the surface normal is ill-defined (deep
-/// penetration where the two witnesses coincide); the gradient query fails there.
-const WITNESS_MIN_SEPARATION: f64 = 1e-9;
 
 /// One hull piece placed in the world: the vertices, the face triangles
 /// indexing them, and the inflation `radius` swept around the core to recover
@@ -738,6 +736,7 @@ impl BimanualCollisionModel {
                             b: pair.b,
                             on_a: r.on_a,
                             on_b: r.on_b,
+                            normal: r.normal,
                         });
                     }
                 }
@@ -767,11 +766,12 @@ impl BimanualCollisionModel {
 
     /// The nearest-pair [`Proximity`] and the analytic gradient of its distance
     /// with respect to each arm's joints (see [`DistanceGradient`]). The gradient
-    /// is the nearest pair's witness normal projected through each witness point's
-    /// velocity Jacobian, so it reflects the same min-over-pairs distance
+    /// is the nearest pair's separating direction projected through each witness
+    /// point's velocity Jacobian, so it reflects the same min-over-pairs distance
     /// `min_distance` returns at one distance query's cost. Fails on a non-finite
-    /// configuration, or when the witnesses coincide (deep penetration) and the
-    /// normal is undefined; a velocity-barrier caller holds there.
+    /// configuration, or on degenerate core contact (the rounded surfaces then
+    /// overlap by the summed radii) where no separating direction is defined; a
+    /// velocity-barrier caller holds there.
     pub fn distance_gradient(
         &mut self,
         q_left: &JointVec,
@@ -779,20 +779,14 @@ impl BimanualCollisionModel {
     ) -> Result<DistanceGradient<'_>, CollisionError> {
         ensure_finite(q_left, q_right)?;
         let c = self.closest(q_left, q_right)?;
-        let separation = c.on_b - c.on_a;
-        let norm = separation.norm();
-        if norm < WITNESS_MIN_SEPARATION {
+        // GJK carries the separating direction explicitly (the witness difference
+        // reverses sense with the sign of the distance); the +1/-1 signs below
+        // sum the projected witness velocities to d(distance)/dq.
+        let Some(normal) = c.normal.map(Unit::into_inner) else {
             return Err(CollisionError::WitnessesCoincide {
                 distance: c.distance,
             });
-        }
-        // Unit normal along the witness separation (points a -> b). Each witness
-        // moves only its own arm; a world-fixed witness (torso) contributes nothing.
-        // The per-body signs below (+1 on a, -1 on b) are the convention that makes
-        // the projected witness velocities sum to d(distance)/dq; the result is
-        // checked against central differences in
-        // `distance_gradient_matches_finite_difference`.
-        let normal = separation / norm;
+        };
         let kinematics = |body: &Body| BodyKinematics {
             placement: body.placement,
             finger: body.finger,
@@ -816,13 +810,12 @@ impl BimanualCollisionModel {
         })
     }
 
-    /// One body's contribution to the distance gradient: the witness `normal`
-    /// projected through the witness `point`'s velocity Jacobian on the arm the
-    /// body belongs to, plus, for a finger body, through the point's velocity per
-    /// unit opening fraction on that side's opening column. `sign` is +1 for body
-    /// a's witness and -1 for body b's (the convention that yields
-    /// d(distance)/dq; see `distance_gradient` and its finite-difference test). A
-    /// world-fixed body (torso) contributes nothing.
+    /// One body's contribution to the distance gradient: the pair's separating
+    /// direction `normal` projected through the witness `point`'s velocity
+    /// Jacobian, plus, for a finger body, through the point's velocity per unit
+    /// opening fraction. `sign` is +1 for body a and -1 for body b (`normal`
+    /// increases the distance for a, decreases it for b). A world-fixed body
+    /// (torso) contributes nothing.
     fn gradient_contribution(
         &mut self,
         kinematics: BodyKinematics,
@@ -1089,20 +1082,81 @@ mod tests {
         )
     }
 
-    #[test]
-    fn distance_gradient_matches_finite_difference() {
-        let mut m = model();
+    /// Check every analytic gradient column (both arms' joints and both opening
+    /// fractions) against central differences at one configuration, with the
+    /// grippers at mid-travel 0.6 so the finger bodies participate with a
+    /// nontrivial live offset (the opening is a constant across each FD
+    /// perturbation, exactly as it is across one governor tick).
+    fn assert_gradient_matches_finite_difference(
+        m: &mut BimanualCollisionModel,
+        ql: &JointVec,
+        qr: &JointVec,
+    ) {
         let h = 1e-5;
-        // Mid-travel openings so the finger bodies participate in the check with
-        // a nontrivial live offset (the opening is a constant across each FD
-        // perturbation, exactly as it is across one governor tick).
+        m.set_gripper_openings(0.6, 0.6);
+        let grad = m.distance_gradient(ql, qr).expect("gradient defined");
+        let (analytic_left, analytic_right) = (grad.grad_left, grad.grad_right);
+        let analytic_openings = grad.grad_openings;
+        // Opening columns against central differences on the fractions, the
+        // same envelope-theorem check as the joints below.
+        for s in 0..2 {
+            let openings_at = |frac: f64| -> [f64; 2] {
+                let mut o = [0.6, 0.6];
+                o[s] = frac;
+                o
+            };
+            let probe = |m: &mut BimanualCollisionModel, frac: f64| -> f64 {
+                let o = openings_at(frac);
+                m.set_gripper_openings(o[0], o[1]);
+                let d = m.min_distance(ql, qr).unwrap().distance;
+                m.set_gripper_openings(0.6, 0.6);
+                d
+            };
+            let fd = (probe(m, 0.6 + h) - probe(m, 0.6 - h)) / (2.0 * h);
+            assert!(
+                (analytic_openings[s] - fd).abs() < 3e-3,
+                "opening {s}: analytic {} fd {fd}",
+                analytic_openings[s]
+            );
+        }
+        for j in 0..ARM_DOF {
+            let mut lp = *ql;
+            let mut lm = *ql;
+            lp[j] += h;
+            lm[j] -= h;
+            let fd_left = (m.min_distance(&lp, qr).unwrap().distance
+                - m.min_distance(&lm, qr).unwrap().distance)
+                / (2.0 * h);
+            let mut rp = *qr;
+            let mut rm = *qr;
+            rp[j] += h;
+            rm[j] -= h;
+            let fd_right = (m.min_distance(ql, &rp).unwrap().distance
+                - m.min_distance(ql, &rm).unwrap().distance)
+                / (2.0 * h);
+            assert!(
+                (analytic_left[j] - fd_left).abs() < 3e-3,
+                "left j{j}: analytic {} fd {fd_left}",
+                analytic_left[j]
+            );
+            assert!(
+                (analytic_right[j] - fd_right).abs() < 3e-3,
+                "right j{j}: analytic {} fd {fd_right}",
+                analytic_right[j]
+            );
+        }
+    }
+
+    #[test]
+    fn distance_gradient_matches_finite_difference_in_penetration() {
+        let mut m = model();
         m.set_gripper_openings(0.6, 0.6);
         // Wrists folded inward but ASYMMETRICALLY, so one moving cross-arm pair is
-        // unambiguously nearest. A left/right-symmetric pose sits on a pair-switch
-        // tie where the single-pair analytic gradient and the straddling central
-        // difference legitimately disagree, so it would not be a valid check. The
-        // last config drives the wrists close enough that a finger body is the
-        // nearest pair, covering the finger placement path with the same loop.
+        // unambiguously nearest (a symmetric pose sits on a pair-switch tie where
+        // the analytic gradient and a straddling central difference legitimately
+        // disagree). Every config penetrates this model's auto-fit torso hull
+        // (asserted below), covering deep EPA; the companion test below walks
+        // through contact. The last config has a finger body nearest.
         let configs: [(JointVec, JointVec); 4] = [
             (
                 [0.15, 0.1, 0.85, 0.5, -0.2, 0.1, 0.0],
@@ -1132,58 +1186,66 @@ mod tests {
             );
         }
         for (ql, qr) in configs {
-            let grad = m.distance_gradient(&ql, &qr).expect("gradient defined");
-            let (analytic_left, analytic_right) = (grad.grad_left, grad.grad_right);
-            let analytic_openings = grad.grad_openings;
-            // Opening columns against central differences on the fractions, the
-            // same envelope-theorem check as the joints below.
-            for s in 0..2 {
-                let openings_at = |frac: f64| -> [f64; 2] {
-                    let mut o = [0.6, 0.6];
-                    o[s] = frac;
-                    o
-                };
-                let probe = |m: &mut BimanualCollisionModel, frac: f64| -> f64 {
-                    let o = openings_at(frac);
-                    m.set_gripper_openings(o[0], o[1]);
-                    let d = m.min_distance(&ql, &qr).unwrap().distance;
-                    m.set_gripper_openings(0.6, 0.6);
-                    d
-                };
-                let fd = (probe(&mut m, 0.6 + h) - probe(&mut m, 0.6 - h)) / (2.0 * h);
-                assert!(
-                    (analytic_openings[s] - fd).abs() < 3e-3,
-                    "opening {s}: analytic {} fd {fd}",
-                    analytic_openings[s]
-                );
-            }
-            for j in 0..ARM_DOF {
-                let mut lp = ql;
-                let mut lm = ql;
-                lp[j] += h;
-                lm[j] -= h;
-                let fd_left = (m.min_distance(&lp, &qr).unwrap().distance
-                    - m.min_distance(&lm, &qr).unwrap().distance)
-                    / (2.0 * h);
-                let mut rp = qr;
-                let mut rm = qr;
-                rp[j] += h;
-                rm[j] -= h;
-                let fd_right = (m.min_distance(&ql, &rp).unwrap().distance
-                    - m.min_distance(&ql, &rm).unwrap().distance)
-                    / (2.0 * h);
-                assert!(
-                    (analytic_left[j] - fd_left).abs() < 3e-3,
-                    "left j{j}: analytic {} fd {fd_left}",
-                    analytic_left[j]
-                );
-                assert!(
-                    (analytic_right[j] - fd_right).abs() < 3e-3,
-                    "right j{j}: analytic {} fd {fd_right}",
-                    analytic_right[j]
-                );
+            let d = m.min_distance(&ql, &qr).expect("query").distance;
+            assert!(d < 0.0, "setup: expected a penetrating config, got d={d}");
+            assert_gradient_matches_finite_difference(&mut m, &ql, &qr);
+        }
+    }
+
+    #[test]
+    fn distance_gradient_matches_finite_difference_across_contact() {
+        // The default model's auto-fit torso hull swallows every reachable pose,
+        // so the test above only ever sees deep penetration. Restrict the pairs
+        // to cross-arm wrist and finger bodies and walk an asymmetric
+        // wrists-inward family from clearance through contact into shallow
+        // overlap, the regimes where the witness separation reverses sense.
+        let mut cross_pairs = Vec::new();
+        for a in ["link6", "link7", "left_finger", "right_finger"] {
+            for b in ["link6", "link7", "left_finger", "right_finger"] {
+                cross_pairs.push(PairSpec::new(
+                    format!("openarm_left_{a}"),
+                    format!("openarm_right_{b}"),
+                ));
             }
         }
+        let mut m = BimanualCollisionModel::with_pairs(
+            URDF,
+            MESHES,
+            "openarm_left_link0",
+            "openarm_right_link0",
+            &cross_pairs,
+        )
+        .expect("cross-arm model");
+        m.set_gripper_openings(0.6, 0.6);
+        let pose_at = |t: f64| -> (JointVec, JointVec) {
+            (
+                [0.1, 0.05, t, 0.45, -0.1, 0.05, 0.0],
+                [-0.05, -0.1, -t - 0.08, 0.4, 0.1, -0.05, 0.0],
+            )
+        };
+        let (mut separated, mut penetrating) = (0, 0);
+        let mut finger_pair_covered = false;
+        for i in 0..=60 {
+            let (ql, qr) = pose_at(i as f64 * 0.02);
+            let p = m.min_distance(&ql, &qr).expect("query");
+            // Stop before the nearest pair switches bodies (a pair-switch tie
+            // would make the central difference straddle two gradients).
+            if p.distance <= -0.03 {
+                break;
+            }
+            if p.distance > 0.0 {
+                separated += 1;
+            } else {
+                penetrating += 1;
+            }
+            finger_pair_covered |= p.link_a.contains("finger") || p.link_b.contains("finger");
+            assert_gradient_matches_finite_difference(&mut m, &ql, &qr);
+        }
+        assert!(
+            separated >= 3 && penetrating >= 3 && finger_pair_covered,
+            "setup: expected configs on both sides of contact with a finger pair nearest, \
+             got {separated} separated / {penetrating} penetrating (finger: {finger_pair_covered})"
+        );
     }
 
     #[test]
