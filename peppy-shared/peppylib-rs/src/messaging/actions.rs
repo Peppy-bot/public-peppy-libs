@@ -11,8 +11,8 @@ use crate::types::{Message, Payload};
 use bytes::{BufMut, Bytes, BytesMut};
 use config::node::QoSProfile;
 use pmi::{
-    ActionLivelinessEvent, ActionLivelinessToken, ActionLivelinessWatch, ActionWireReceiver,
-    ActionWireSender, PublisherQoS, SenderTarget, ServiceQueryKind,
+    ActionWireReceiver, ActionWireSender, LivelinessEvent, LivelinessToken, LivelinessWatch,
+    PublisherQoS, SenderTarget, ServiceQueryKind,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -355,7 +355,7 @@ async fn confirm_producer_gone(messenger: &MessengerHandle, sender: &ActionWireS
 /// Background policy task behind [`ProducerGoneWatch`]: turns the raw
 /// liveliness event stream into a single confirmed "producer gone" latch.
 async fn run_producer_liveliness_watch(
-    watch: ActionLivelinessWatch,
+    watch: LivelinessWatch,
     messenger: MessengerHandle,
     sender: ActionWireSender,
     gone: Arc<AtomicBool>,
@@ -372,8 +372,8 @@ async fn run_producer_liveliness_watch(
     // producer died in the gap — confirm by probing rather than trusting
     // propagation timing.
     match tokio::time::timeout(LIVELINESS_RESOLVE_TIMEOUT, watch.rx.recv_async()).await {
-        Ok(Ok(ActionLivelinessEvent::Alive)) => {}
-        Ok(Ok(ActionLivelinessEvent::Gone)) | Err(_) => {
+        Ok(Ok(LivelinessEvent::Alive(()))) => {}
+        Ok(Ok(LivelinessEvent::Gone(()))) | Err(_) => {
             if confirm_producer_gone(&messenger, &sender).await {
                 return declare_gone();
             }
@@ -387,8 +387,8 @@ async fn run_producer_liveliness_watch(
     // flaps (a router bounce deletes and re-announces tokens).
     loop {
         match watch.rx.recv_async().await {
-            Ok(ActionLivelinessEvent::Alive) => {}
-            Ok(ActionLivelinessEvent::Gone) => {
+            Ok(LivelinessEvent::Alive(())) => {}
+            Ok(LivelinessEvent::Gone(())) => {
                 if confirm_producer_gone(&messenger, &sender).await {
                     return declare_gone();
                 }
@@ -410,11 +410,7 @@ struct ProducerGoneWatch {
 }
 
 impl ProducerGoneWatch {
-    fn spawn(
-        watch: ActionLivelinessWatch,
-        messenger: MessengerHandle,
-        sender: ActionWireSender,
-    ) -> Self {
+    fn spawn(watch: LivelinessWatch, messenger: MessengerHandle, sender: ActionWireSender) -> Self {
         let gone = Arc::new(AtomicBool::new(false));
         let notify = Arc::new(Notify::new());
         let task = spawn(run_producer_liveliness_watch(
@@ -576,7 +572,7 @@ pub struct ActionCreation {
     /// with the session on hard process death) consumers observe the
     /// producer as gone and fail their feedback drains over to
     /// [`Error::ActionFeedbackProducerGone`].
-    pub liveliness_token: ActionLivelinessToken,
+    pub liveliness_token: LivelinessToken,
 }
 
 impl ActionMessenger {
@@ -1418,7 +1414,7 @@ pub struct ConcurrentAction {
     /// Producer-instance liveliness advertisement, held so consumers see
     /// this producer as alive for exactly as long as the engine can route
     /// goals/cancels/results.
-    _liveliness_token: ActionLivelinessToken,
+    _liveliness_token: LivelinessToken,
 }
 
 impl ConcurrentAction {

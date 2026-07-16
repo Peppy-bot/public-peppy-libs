@@ -7,8 +7,9 @@
 //! different wire form (MQTT, DDS, etc.), add a sibling module rather than
 //! diverging this one.
 
+use crate::types::CoreNodePresence;
 use crate::wire::{
-    ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, SenderTarget, ServiceKind,
+    ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, Segment, SenderTarget, ServiceKind,
     ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 use std::fmt;
@@ -330,6 +331,50 @@ impl ZenohWireFormat {
             s.to_action_name,
         )
     }
+
+    // ─── Core-node presence ──────────────────────────────────────
+
+    /// Concrete daemon-generation token:
+    /// `core_node_presence/{core_node}/{instance_id}`.
+    pub(crate) fn core_node_presence_token(core_node: &Segment, instance_id: &Segment) -> String {
+        format!("core_node_presence/{core_node}/{instance_id}")
+    }
+
+    /// Presence watch/list selector. `None` enumerates every core-node name;
+    /// `Some(name)` restricts the selector to that one name. The instance-id
+    /// slot always remains wildcarded so simultaneous claims stay visible.
+    pub(crate) fn core_node_presence_filter(core_node: Option<&Segment>) -> String {
+        let core_node = core_node
+            .map(Segment::as_str)
+            .unwrap_or(SINGLE_CHUNK_WILDCARD);
+        format!("core_node_presence/{core_node}/{SINGLE_CHUNK_WILDCARD}")
+    }
+
+    /// Parses a concrete presence-token key back into its public identity.
+    /// This is deliberately colocated with the builders so the declared and
+    /// observed grammar cannot drift.
+    pub(crate) fn parse_core_node_presence(
+        keyexpr: &str,
+    ) -> Result<CoreNodePresence, ZenohWireParseError> {
+        let segments: Vec<&str> = keyexpr.split('/').collect();
+        let [root, core_node, instance_id] = segments.as_slice() else {
+            return Err(ZenohWireParseError::InvalidCoreNodePresenceKey(
+                keyexpr.to_string(),
+            ));
+        };
+        if *root != "core_node_presence"
+            || Segment::try_from(*core_node).is_err()
+            || Segment::try_from(*instance_id).is_err()
+        {
+            return Err(ZenohWireParseError::InvalidCoreNodePresenceKey(
+                keyexpr.to_string(),
+            ));
+        }
+        Ok(CoreNodePresence {
+            core_node: (*core_node).to_string(),
+            instance_id: (*instance_id).to_string(),
+        })
+    }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -642,6 +687,7 @@ impl ParsedInboundQuery {
 pub(crate) enum ZenohWireParseError {
     MissingSegment(&'static str),
     WildcardInCallerSegment(&'static str),
+    InvalidCoreNodePresenceKey(String),
     TargetSlotMismatch {
         field: &'static str,
         expected: String,
@@ -681,6 +727,9 @@ impl fmt::Display for ZenohWireParseError {
                 f,
                 "caller segment `{segment}` must not be the single-chunk wildcard `*`"
             ),
+            Self::InvalidCoreNodePresenceKey(keyexpr) => {
+                write!(f, "invalid core-node presence token keyexpr `{keyexpr}`")
+            }
             Self::TargetSlotMismatch {
                 field,
                 expected,

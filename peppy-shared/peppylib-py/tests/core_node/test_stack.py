@@ -18,6 +18,7 @@ def _sample_graph_json() -> str:
     brain = {
         "name": "brain",
         "tag": "v1",
+        "core_node": "core",
         "config_path": "/tmp/brain.json5",
         "artifact_path": None,
         "stage": "Ready",
@@ -26,6 +27,7 @@ def _sample_graph_json() -> str:
     sensor = {
         "name": "sensor",
         "tag": "v1",
+        "core_node": "core",
         "config_path": "/tmp/sensor.json5",
         "artifact_path": None,
         "stage": "Added",
@@ -39,10 +41,10 @@ def _sample_graph_json() -> str:
 
 
 @pytest.mark.asyncio
-async def test_stack_list_parses_graph_and_includes_dot_graph_when_requested(tmp_path):
-    """`stack.list(..., with_dot_graph=True)` returns both graph and dot_graph."""
+async def test_stack_list_parses_graph_and_includes_host_name(tmp_path):
+    """`stack.list(...)` returns both the graph and serving daemon hostname."""
     graph_json = _sample_graph_json()
-    response_bytes = StackListResponse(graph_json, "digraph {}").encode()
+    response_bytes = StackListResponse(graph_json, "robo-a").encode()
 
     router, node_runner, server_handle = await start_router_and_runner(tmp_path)
     try:
@@ -51,7 +53,7 @@ async def test_stack_list_parses_graph_and_includes_dot_graph_when_requested(tmp
         )
         await wait_until_reachable(node_runner.messenger(), "stack_list")
 
-        result = await stack.list(node_runner, True, 3.0)
+        result = await stack.list(node_runner, 3.0)
 
         await handler
     finally:
@@ -60,6 +62,7 @@ async def test_stack_list_parses_graph_and_includes_dot_graph_when_requested(tmp
     graph = result.graph
     assert [n["name"] for n in graph["nodes"]] == ["brain", "sensor"]
     brain = next(n for n in graph["nodes"] if n["name"] == "brain")
+    assert brain["core_node"] == "core"
     assert brain["stage"] == "Ready"
     assert len(brain["instances"]) == 1
     assert brain["instances"][0]["instance_id"] == "i1"
@@ -67,32 +70,7 @@ async def test_stack_list_parses_graph_and_includes_dot_graph_when_requested(tmp
     assert len(graph["edges"]) == 1
     assert graph["edges"][0]["from"]["name"] == "brain"
     assert graph["edges"][0]["to"]["name"] == "sensor"
-    assert result.dot_graph == "digraph {}"
-
-
-@pytest.mark.asyncio
-async def test_stack_list_returns_none_dot_graph_when_not_requested(tmp_path):
-    """`stack.list(..., with_dot_graph=False)` leaves dot_graph as None."""
-    graph_json = _sample_graph_json()
-    response_bytes = StackListResponse(graph_json, None).encode()
-
-    router, node_runner, server_handle = await start_router_and_runner(tmp_path)
-    try:
-        handler = await spawn_stub_listener(
-            server_handle, "stack_list", response_bytes
-        )
-        await wait_until_reachable(node_runner.messenger(), "stack_list")
-
-        result = await stack.list(node_runner, False, 3.0)
-
-        await handler
-    finally:
-        await router.stop()
-
-    brain = next(n for n in result.graph["nodes"] if n["name"] == "brain")
-    assert brain["stage"] == "Ready"
-    assert brain["instances"][0]["state"] == "running"
-    assert result.dot_graph is None
+    assert result.host_name == "robo-a"
 
 
 def _mixed_state_graph_json() -> str:
@@ -101,6 +79,7 @@ def _mixed_state_graph_json() -> str:
     router = {
         "name": "router",
         "tag": "v1",
+        "core_node": "core",
         "config_path": "/tmp/router.json5",
         "artifact_path": None,
         "stage": "Ready",
@@ -113,6 +92,7 @@ def _mixed_state_graph_json() -> str:
     warming = {
         "name": "warming",
         "tag": "v1",
+        "core_node": "core",
         "config_path": "/tmp/warming.json5",
         "artifact_path": None,
         "stage": "Ready",
@@ -122,14 +102,14 @@ def _mixed_state_graph_json() -> str:
 
 
 async def _stack_list_with_mixed_state(tmp_path):
-    response_bytes = StackListResponse(_mixed_state_graph_json(), None).encode()
+    response_bytes = StackListResponse(_mixed_state_graph_json(), "robo-a").encode()
     router, node_runner, server_handle = await start_router_and_runner(tmp_path)
     try:
         handler = await spawn_stub_listener(
             server_handle, "stack_list", response_bytes
         )
         await wait_until_reachable(node_runner.messenger(), "stack_list")
-        result = await stack.list(node_runner, False, 3.0)
+        result = await stack.list(node_runner, 3.0)
         await handler
     finally:
         await router.stop()

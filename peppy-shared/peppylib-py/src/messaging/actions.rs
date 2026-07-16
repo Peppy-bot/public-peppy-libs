@@ -244,7 +244,7 @@ pub struct PyActionCreation {
     /// Producer-instance liveliness advertisement. Held (not Python-visible)
     /// so the producer stays observable as alive for exactly as long as this
     /// creation — and with it the action endpoint — exists.
-    _liveliness_token: peppylib::messaging::ActionLivelinessToken,
+    _liveliness_token: peppylib::messaging::LivelinessToken,
 }
 
 #[pymethods]

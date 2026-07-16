@@ -17,9 +17,9 @@ use super::common::{
 };
 
 /// Spins up a single-shot `STACK_LIST` listener that returns `graph` serialized
-/// as JSON, and `dot_graph` only when the inbound request asked for it.
-async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph, dot_graph: &str) {
-    let dot_graph = dot_graph.to_string();
+/// as JSON along with the serving daemon's hostname.
+async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph, host_name: &str) {
+    let host_name = host_name.to_string();
     let mut endpoint = ServiceMessenger::listen(
         &server,
         CORE_NODE,
@@ -36,14 +36,10 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
                 let payload = request.message().payload();
                 let inbound =
                     StackListRequest::decode(payload.as_ref()).expect("decode StackListRequest");
-                let dot = if inbound.with_dot_graph() {
-                    Some(dot_graph.clone())
-                } else {
-                    None
-                };
+                assert_eq!(inbound, StackListRequest::new());
                 let graph_json =
                     serde_json::to_string(&graph).expect("serialize SerializedNodeGraph");
-                Ok(StackListResponse::new(dot, graph_json)
+                Ok(StackListResponse::new(graph_json, host_name)
                     .encode()
                     .expect("encode StackListResponse"))
             })
@@ -58,19 +54,20 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
 /// fabric / config file.
 async fn setup_stub(
     graph: SerializedNodeGraph,
-    dot_graph: &str,
+    host_name: &str,
 ) -> (ZenohdInstance, TempDir, NodeRunner) {
     let (router, temp_dir, node_runner, server) = start_router_and_runner().await;
-    spawn_stub_listener(server, graph, dot_graph).await;
+    spawn_stub_listener(server, graph, host_name).await;
     wait_until_reachable(node_runner.messenger(), ServiceId::StackList.name()).await;
     (router, temp_dir, node_runner)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
+async fn stack_list_parses_graph_and_includes_host_name() {
     let brain = SerializedNode {
         name: "brain".to_string(),
         tag: "v1".to_string(),
+        core_node: CORE_NODE.to_string(),
         config_path: "/tmp/brain.json5".to_string(),
         artifact_path: None,
         stage: Some(NodeStage::Ready),
@@ -85,6 +82,7 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
     let sensor = SerializedNode {
         name: "sensor".to_string(),
         tag: "v1".to_string(),
+        core_node: CORE_NODE.to_string(),
         config_path: "/tmp/sensor.json5".to_string(),
         artifact_path: None,
         stage: Some(NodeStage::Added),
@@ -99,9 +97,9 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
         }],
     };
 
-    let (_router, _temp_dir, node_runner) = setup_stub(graph.clone(), "digraph {}").await;
+    let (_router, _temp_dir, node_runner) = setup_stub(graph.clone(), "robo-a").await;
 
-    let result = stack::list(&node_runner, true, Duration::from_secs(3))
+    let result = stack::list(&node_runner, Duration::from_secs(3))
         .await
         .expect("stack_list should succeed");
 
@@ -112,62 +110,10 @@ async fn stack_list_parses_graph_and_includes_dot_graph_when_requested() {
         .iter()
         .find(|n| n.name == "brain")
         .expect("brain node should be present in the returned stack");
+    assert_eq!(brain.core_node, CORE_NODE);
     assert_eq!(brain.stage, Some(NodeStage::Ready));
     assert_eq!(brain.instances.len(), 1);
     assert_eq!(brain.instances[0].instance_id, "i1");
     assert_eq!(brain.instances[0].state, InstanceState::Running);
-    assert_eq!(result.dot_graph.as_deref(), Some("digraph {}"));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stack_list_returns_none_dot_graph_when_not_requested() {
-    let brain = SerializedNode {
-        name: "brain".to_string(),
-        tag: "v1".to_string(),
-        config_path: "/tmp/brain.json5".to_string(),
-        artifact_path: None,
-        stage: Some(NodeStage::Ready),
-        instances: vec![SerializedInstance {
-            instance_id: "i1".to_string(),
-            state: InstanceState::Running,
-            healthy: true,
-            slot_bindings: std::collections::BTreeMap::new(),
-            pairing_slots: std::collections::BTreeMap::new(),
-        }],
-    };
-    let sensor = SerializedNode {
-        name: "sensor".to_string(),
-        tag: "v1".to_string(),
-        config_path: "/tmp/sensor.json5".to_string(),
-        artifact_path: None,
-        stage: Some(NodeStage::Added),
-        instances: vec![],
-    };
-    let graph = SerializedNodeGraph {
-        nodes: vec![brain.clone(), sensor.clone()],
-        edges: vec![SerializedEdge {
-            from: brain,
-            to: sensor,
-            via_contract: None,
-        }],
-    };
-
-    let (_router, _temp_dir, node_runner) = setup_stub(graph.clone(), "digraph {}").await;
-
-    let result = stack::list(&node_runner, false, Duration::from_secs(3))
-        .await
-        .expect("stack_list should succeed");
-
-    assert_eq!(result.graph, graph);
-    let brain = result
-        .graph
-        .nodes
-        .iter()
-        .find(|n| n.name == "brain")
-        .expect("brain node should be present in the returned stack");
-    assert_eq!(brain.stage, Some(NodeStage::Ready));
-    assert_eq!(brain.instances.len(), 1);
-    assert_eq!(brain.instances[0].instance_id, "i1");
-    assert_eq!(brain.instances[0].state, InstanceState::Running);
-    assert!(result.dot_graph.is_none());
+    assert_eq!(result.host_name, "robo-a");
 }

@@ -25,15 +25,15 @@
 
 use crate::error::{Error, Result};
 use crate::types::{
-    ActionLivelinessEvent, ActionLivelinessProbe, ActionLivelinessToken, ActionLivelinessWatch,
-    IncomingRequest, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken,
+    ActionLivelinessProbe, CoreNodePresence, IncomingRequest, LivelinessEvent, LivelinessToken,
+    LivelinessWatch, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream, ResponseToken,
     ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS, TopicMessage,
     ZenohResponseToken,
 };
 use crate::wire::zenoh_format::{ServiceReplyAttachment, TopicAttachment, ZenohWireFormat};
 use crate::wire::{
-    ActionWireReceiver, ActionWireSender, ServiceQueryKind, ServiceWireReceiver, ServiceWireSender,
-    TopicWireReceiver, TopicWireSender,
+    ActionWireReceiver, ActionWireSender, Segment, ServiceQueryKind, ServiceWireReceiver,
+    ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 use crate::zenoh_config::{
     SessionMode, TlsConfig, ZenohConfigSpec, connectable_host, loopback_listen_endpoint,
@@ -879,7 +879,7 @@ impl MessengerBackend for ZenohAdapter {
     async fn declare_action_liveliness(
         &self,
         recv: &ActionWireReceiver,
-    ) -> Result<ActionLivelinessToken> {
+    ) -> Result<LivelinessToken> {
         let session = self
             .session
             .as_ref()
@@ -890,13 +890,10 @@ impl MessengerBackend for ZenohAdapter {
             .declare_token(keyexpr)
             .await
             .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
-        Ok(ActionLivelinessToken::new(Box::new(token)))
+        Ok(LivelinessToken::new(Box::new(token)))
     }
 
-    async fn watch_action_producer(
-        &self,
-        sender: &ActionWireSender,
-    ) -> Result<ActionLivelinessWatch> {
+    async fn watch_action_producer(&self, sender: &ActionWireSender) -> Result<LivelinessWatch> {
         let session = self
             .session
             .as_ref()
@@ -905,7 +902,7 @@ impl MessengerBackend for ZenohAdapter {
         // router flaps) and the callback runs on a zenoh worker thread that
         // must never block. See the module-level "Why callback handlers,
         // not FIFO" doc.
-        let (tx, rx) = flume::unbounded::<ActionLivelinessEvent>();
+        let (tx, rx) = flume::unbounded::<LivelinessEvent>();
         let keyexpr = ZenohWireFormat::action_liveliness_watch(sender);
         // `history(true)` replays a token that was declared before this
         // watch existed as an initial PUT, so "producer already alive" and
@@ -916,14 +913,14 @@ impl MessengerBackend for ZenohAdapter {
             .history(true)
             .callback(move |sample| {
                 let event = match sample.kind() {
-                    SampleKind::Put => ActionLivelinessEvent::Alive,
-                    SampleKind::Delete => ActionLivelinessEvent::Gone,
+                    SampleKind::Put => LivelinessEvent::Alive(()),
+                    SampleKind::Delete => LivelinessEvent::Gone(()),
                 };
                 let _ = tx.send(event);
             })
             .await
             .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
-        Ok(ActionLivelinessWatch::new(rx, Box::new(subscriber)))
+        Ok(LivelinessWatch::new(rx, Box::new(subscriber)))
     }
 
     async fn probe_action_producer(
@@ -953,6 +950,93 @@ impl MessengerBackend for ZenohAdapter {
             .await
             .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
         Ok(ActionLivelinessProbe::new(rx))
+    }
+
+    async fn declare_core_node_presence(
+        &self,
+        core_node: &Segment,
+        instance_id: &Segment,
+    ) -> Result<LivelinessToken> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let keyexpr = ZenohWireFormat::core_node_presence_token(core_node, instance_id);
+        let token = session
+            .liveliness()
+            .declare_token(keyexpr)
+            .await
+            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+        Ok(LivelinessToken::new(Box::new(token)))
+    }
+
+    async fn watch_core_node_presence(
+        &self,
+        core_node: Option<&Segment>,
+    ) -> Result<LivelinessWatch<CoreNodePresence>> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let (tx, rx) = flume::unbounded::<LivelinessEvent<CoreNodePresence>>();
+        let keyexpr = ZenohWireFormat::core_node_presence_filter(core_node);
+        let subscriber = session
+            .liveliness()
+            .declare_subscriber(&keyexpr)
+            .history(true)
+            .callback(move |sample| {
+                let keyexpr = sample.key_expr().as_str();
+                let Ok(presence) = ZenohWireFormat::parse_core_node_presence(keyexpr) else {
+                    tracing::error!(%keyexpr, "failed to parse core-node presence keyexpr");
+                    return;
+                };
+                let event = match sample.kind() {
+                    SampleKind::Put => LivelinessEvent::Alive(presence),
+                    SampleKind::Delete => LivelinessEvent::Gone(presence),
+                };
+                let _ = tx.send(event);
+            })
+            .await
+            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+        Ok(LivelinessWatch::new(rx, Box::new(subscriber)))
+    }
+
+    async fn list_core_node_presence(
+        &self,
+        core_node: Option<&Segment>,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<CoreNodePresence>> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
+        let keyexpr = ZenohWireFormat::core_node_presence_filter(core_node);
+        // Use a callback rather than Zenoh's default FIFO handler (see the
+        // module-level rationale). The callback-owned sender is dropped when
+        // the query finalizes, closing `rx` after every reply was delivered.
+        let (tx, rx) = flume::unbounded::<Result<CoreNodePresence>>();
+        session
+            .liveliness()
+            .get(&keyexpr)
+            .timeout(timeout)
+            .callback(move |reply| {
+                let presence = reply
+                    .into_result()
+                    .map_err(|err| Error::BackendError(err.to_string()))
+                    .and_then(|sample| {
+                        ZenohWireFormat::parse_core_node_presence(sample.key_expr().as_str())
+                            .map_err(Into::into)
+                    });
+                let _ = tx.send(presence);
+            })
+            .await
+            .map_err(|e| Error::MessagingSessionError(e.to_string()))?;
+
+        let mut presences = Vec::new();
+        while let Ok(presence) = rx.recv_async().await {
+            presences.push(presence?);
+        }
+        Ok(presences)
     }
 
     async fn start_router(&mut self) -> Result<()> {

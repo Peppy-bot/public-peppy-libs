@@ -159,10 +159,9 @@ pub struct PyStackListResponse {
 #[pymethods]
 impl PyStackListResponse {
     #[new]
-    #[pyo3(signature = (graph_json, dot_graph=None))]
-    fn new(graph_json: String, dot_graph: Option<String>) -> Self {
+    fn new(graph_json: String, host_name: String) -> Self {
         Self {
-            inner: StackListResponse::new(dot_graph, graph_json),
+            inner: StackListResponse::new(graph_json, host_name),
         }
     }
 
@@ -172,8 +171,8 @@ impl PyStackListResponse {
     }
 
     #[getter]
-    fn dot_graph(&self) -> Option<&str> {
-        self.inner.dot_graph.as_deref()
+    fn host_name(&self) -> &str {
+        &self.inner.host_name
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
@@ -194,7 +193,7 @@ impl PyStackListResponse {
 #[pyclass(name = "StackList")]
 pub struct PyStackList {
     graph: SerializedNodeGraph,
-    dot_graph: Option<String>,
+    host_name: String,
 }
 
 #[pymethods]
@@ -207,8 +206,8 @@ impl PyStackList {
     }
 
     #[getter]
-    fn dot_graph(&self) -> Option<&str> {
-        self.dot_graph.as_deref()
+    fn host_name(&self) -> &str {
+        &self.host_name
     }
 
     /// Externally visible instance ids for the node identified by
@@ -250,22 +249,21 @@ fn info<'py>(
 ///
 /// Python equivalent of `peppylib::stack::list`.
 #[pyfunction]
-#[pyo3(signature = (node_runner, with_dot_graph, response_timeout_secs=None))]
+#[pyo3(signature = (node_runner, response_timeout_secs=None))]
 fn stack_list<'py>(
     py: Python<'py>,
     node_runner: &PyNodeRunner,
-    with_dot_graph: bool,
     response_timeout_secs: Option<f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let runner = node_runner.inner.clone();
     let timeout = optional_timeout("response_timeout_secs", response_timeout_secs)?;
     crate::py_future::future_into_py(py, async move {
-        let result = peppylib::stack::list(&runner, with_dot_graph, timeout)
+        let result = peppylib::stack::list(&runner, timeout)
             .await
             .map_err(to_py_err)?;
         Ok(PyStackList {
             graph: result.graph,
-            dot_graph: result.dot_graph,
+            host_name: result.host_name,
         })
     })
 }

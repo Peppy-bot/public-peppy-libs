@@ -33,8 +33,8 @@ pub use probe::{MAX_PROBE_REPLY_SIZE, build_sized_probe_request};
 // (reached only through `ResponseToken`'s methods), so naming them directly is
 // not part of the crate's public surface.
 pub use types::{
-    ActionLivelinessEvent, ActionLivelinessProbe, ActionLivelinessToken, ActionLivelinessWatch,
-    IncomingRequest, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher, Payload,
+    ActionLivelinessProbe, CoreNodePresence, IncomingRequest, LivelinessEvent, LivelinessToken,
+    LivelinessWatch, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher, Payload,
     PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable, ServiceReply,
     SubscriberBufferSizes, SubscriberQoS, Subscription, TopicMessage,
 };

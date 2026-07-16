@@ -2,8 +2,8 @@ use super::adapters::mock::{MockAdapter, MockPublisher};
 use super::error::Result;
 use super::wire::zenoh_format::{ServiceReplyAttachment, ZenohWireFormat};
 use super::wire::{
-    ActionWireReceiver, ActionWireSender, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
-    ServiceWireSender, TopicWireReceiver, TopicWireSender,
+    ActionWireReceiver, ActionWireSender, Segment, ServiceQueryKind, ServiceReplyKind,
+    ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 use config::node::QoSProfile;
 use std::borrow::Cow;
@@ -223,21 +223,21 @@ pub trait MessengerBackend {
     /// when the producing session closes — gracefully or by hard process
     /// death — which is what lets consumers detect a producer that died
     /// without closing its goals. Dropping the returned
-    /// [`ActionLivelinessToken`] undeclares it explicitly.
+    /// [`LivelinessToken`] undeclares it explicitly.
     fn declare_action_liveliness(
         &self,
         recv: &ActionWireReceiver,
-    ) -> impl Future<Output = Result<ActionLivelinessToken>> + Send;
+    ) -> impl Future<Output = Result<LivelinessToken>> + Send;
 
     /// Watch the liveliness of the producer instance `sender` targets.
     /// The returned watch immediately reports
-    /// [`ActionLivelinessEvent::Alive`] for a token that already exists
+    /// [`LivelinessEvent::Alive`] for a token that already exists
     /// (history), then streams `Alive` / `Gone` transitions as the
     /// producer's token appears and disappears.
     fn watch_action_producer(
         &self,
         sender: &ActionWireSender,
-    ) -> impl Future<Output = Result<ActionLivelinessWatch>> + Send;
+    ) -> impl Future<Output = Result<LivelinessWatch>> + Send;
 
     /// One-shot probe: is the liveliness token of the producer instance
     /// `sender` targets currently present? Issuing the query is fast (the
@@ -249,6 +249,34 @@ pub trait MessengerBackend {
         sender: &ActionWireSender,
         timeout: std::time::Duration,
     ) -> impl Future<Output = Result<ActionLivelinessProbe>> + Send;
+
+    // ─── Core-node presence ──────────────────────────────────────
+
+    /// Declares a liveliness token for one daemon generation. Holding the
+    /// returned token advertises `(core_node, instance_id)` until the token is
+    /// dropped or the declaring session disappears.
+    fn declare_core_node_presence(
+        &self,
+        core_node: &Segment,
+        instance_id: &Segment,
+    ) -> impl Future<Output = Result<LivelinessToken>> + Send;
+
+    /// Watches daemon presence, optionally restricted to one core-node name.
+    /// Existing tokens are replayed as [`LivelinessEvent::Alive`] before live
+    /// transitions are streamed.
+    fn watch_core_node_presence(
+        &self,
+        core_node: Option<&Segment>,
+    ) -> impl Future<Output = Result<LivelinessWatch<CoreNodePresence>>> + Send;
+
+    /// Returns every currently live daemon token, optionally restricted to one
+    /// core-node name. Multiple instance ids for one name are intentionally
+    /// preserved so callers can detect active name collisions.
+    fn list_core_node_presence(
+        &self,
+        core_node: Option<&Segment>,
+        timeout: std::time::Duration,
+    ) -> impl Future<Output = Result<Vec<CoreNodePresence>>> + Send;
 
     // ─── Router lifecycle ─────────────────────────────────────────────────
 
@@ -318,45 +346,55 @@ impl Subscription {
     }
 }
 
-/// Producer-side liveliness token declared by
-/// [`MessengerBackend::declare_action_liveliness`]. Holding it keeps the
-/// token advertised; dropping it (or losing the producing session, however
-/// that happens) removes the token, which consumers observe as
-/// [`ActionLivelinessEvent::Gone`].
-pub struct ActionLivelinessToken {
+/// Opaque liveliness token returned by declaration APIs. Holding it keeps the
+/// token advertised; dropping it (or losing the declaring session, however
+/// that happens) removes the token, which watchers observe as
+/// [`LivelinessEvent::Gone`].
+pub struct LivelinessToken {
     _guard: Guard,
 }
 
-impl ActionLivelinessToken {
+impl LivelinessToken {
     pub(crate) fn new(guard: Guard) -> Self {
         Self { _guard: guard }
     }
 }
 
-/// Liveliness transition observed by an [`ActionLivelinessWatch`].
+/// One live core-node daemon generation advertised through the presence
+/// primitive. The core-node name is the identity; `instance_id` distinguishes
+/// concurrent claims of that name and successive daemon generations.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CoreNodePresence {
+    pub core_node: String,
+    pub instance_id: String,
+}
+
+/// A liveliness transition and the transport-neutral value represented by the
+/// token. Action-producer watches use the default `T = ()`; core-node presence
+/// watches carry a [`CoreNodePresence`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActionLivelinessEvent {
-    /// The producer's token is (or became) present.
-    Alive,
-    /// The producer's token disappeared. Raw transport signal — peppylib
+pub enum LivelinessEvent<T = ()> {
+    /// The token is (or became) present.
+    Alive(T),
+    /// The token disappeared. For action producers this is a raw transport
+    /// signal — peppylib
     /// confirms with [`MessengerBackend::probe_action_producer`] before
     /// declaring the producer dead, since a router bounce can surface a
     /// transient `Gone` for a still-alive producer.
-    Gone,
+    Gone(T),
 }
 
-/// Consumer-side liveliness watch returned by
-/// [`MessengerBackend::watch_action_producer`]. The channel is unbounded:
+/// Consumer-side liveliness watch. The channel is unbounded:
 /// liveliness transitions are rare (bounded by producer restarts and router
 /// flaps) and the producing side runs inside the transport's reception
 /// callback, which must never block.
-pub struct ActionLivelinessWatch {
-    pub rx: flume::Receiver<ActionLivelinessEvent>,
+pub struct LivelinessWatch<T = ()> {
+    pub rx: flume::Receiver<LivelinessEvent<T>>,
     _guard: Guard,
 }
 
-impl ActionLivelinessWatch {
-    pub(crate) fn new(rx: flume::Receiver<ActionLivelinessEvent>, guard: Guard) -> Self {
+impl<T> LivelinessWatch<T> {
+    pub(crate) fn new(rx: flume::Receiver<LivelinessEvent<T>>, guard: Guard) -> Self {
         Self { rx, _guard: guard }
     }
 }
@@ -1067,14 +1105,11 @@ impl MessengerBackend for Messenger {
     async fn declare_action_liveliness(
         &self,
         recv: &ActionWireReceiver,
-    ) -> Result<ActionLivelinessToken> {
+    ) -> Result<LivelinessToken> {
         dispatch!(&self.adapter, declare_action_liveliness, recv)
     }
 
-    async fn watch_action_producer(
-        &self,
-        sender: &ActionWireSender,
-    ) -> Result<ActionLivelinessWatch> {
+    async fn watch_action_producer(&self, sender: &ActionWireSender) -> Result<LivelinessWatch> {
         dispatch!(&self.adapter, watch_action_producer, sender)
     }
 
@@ -1084,6 +1119,34 @@ impl MessengerBackend for Messenger {
         timeout: std::time::Duration,
     ) -> Result<ActionLivelinessProbe> {
         dispatch!(&self.adapter, probe_action_producer, sender, timeout)
+    }
+
+    async fn declare_core_node_presence(
+        &self,
+        core_node: &Segment,
+        instance_id: &Segment,
+    ) -> Result<LivelinessToken> {
+        dispatch!(
+            &self.adapter,
+            declare_core_node_presence,
+            core_node,
+            instance_id
+        )
+    }
+
+    async fn watch_core_node_presence(
+        &self,
+        core_node: Option<&Segment>,
+    ) -> Result<LivelinessWatch<CoreNodePresence>> {
+        dispatch!(&self.adapter, watch_core_node_presence, core_node)
+    }
+
+    async fn list_core_node_presence(
+        &self,
+        core_node: Option<&Segment>,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<CoreNodePresence>> {
+        dispatch!(&self.adapter, list_core_node_presence, core_node, timeout)
     }
 
     async fn start_router(&mut self) -> Result<()> {

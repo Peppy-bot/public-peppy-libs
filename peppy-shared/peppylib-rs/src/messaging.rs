@@ -5,6 +5,7 @@ mod actions;
 mod bound_set;
 mod discovery;
 mod pairing;
+mod presence;
 mod services;
 mod topics;
 
@@ -21,6 +22,7 @@ pub use actions::{
 };
 pub use bound_set::NonEmptyProducers;
 pub use pairing::{PeerInfo, PeerPin, PeerPinState};
+pub use presence::CoreNodePresenceMessenger;
 pub use services::{
     ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder, ServiceTarget,
 };
@@ -41,16 +43,16 @@ pub use config::runtime::ProducerRef;
 // implementation details (every consumer also depends on pmi directly).
 // `SenderTarget` / `SenderTargetError` appear in nearly every messaging
 // signature and are emitted by the code generator. `ContractIdentifier` /
-// `NodeIdentifier` / `ActionWireSender` / `ActionLivelinessToken` are surfaced
+// `NodeIdentifier` / `ActionWireSender` / `LivelinessToken` are surfaced
 // for the Python bindings, which cache an `ActionWireSender` to drive
-// cancel / result calls without re-locking and name `ActionLivelinessToken` as
+// cancel / result calls without re-locking and name `LivelinessToken` as
 // the type of the public `ActionCreation::liveliness_token` field. The other
 // wire structs (TopicWire*, ServiceWire*, ActionWireReceiver) are internal to
 // peppylib's own messaging implementation; each submodule imports them directly
 // from `pmi::`.
 pub use pmi::{
-    ActionLivelinessToken, ActionWireSender, ContractIdentifier, NodeIdentifier, PairingIdentifier,
-    SenderTarget, SenderTargetError,
+    ActionWireSender, ContractIdentifier, CoreNodePresence, LivelinessEvent, LivelinessToken,
+    LivelinessWatch, NodeIdentifier, PairingIdentifier, SenderTarget, SenderTargetError,
 };
 
 use crate::error::{Error, Result};
@@ -58,10 +60,10 @@ use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use config::org::resolve_session_namespace;
 use pmi::{
-    ActionLivelinessWatch, ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend,
-    MessengerPublisher, OrgNamespace, PublisherQoS, ServiceQueryKind, ServiceReplyKind,
-    ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription as PmiSubscription,
-    TopicWireReceiver, TopicWireSender, ZenohAdapter, ZenohNetProtocol,
+    ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
+    OrgNamespace, PublisherQoS, Segment, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
+    ServiceWireSender, SubscriberQoS, Subscription as PmiSubscription, TopicWireReceiver,
+    TopicWireSender, ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::sync::{
@@ -629,7 +631,7 @@ impl MessengerHandle {
     pub(crate) async fn declare_action_liveliness(
         &self,
         recv: &ActionWireReceiver,
-    ) -> Result<ActionLivelinessToken> {
+    ) -> Result<LivelinessToken> {
         let messenger = self.messenger.lock().await;
         messenger
             .declare_action_liveliness(recv)
@@ -640,7 +642,7 @@ impl MessengerHandle {
     pub(crate) async fn watch_action_producer(
         &self,
         sender: &ActionWireSender,
-    ) -> Result<ActionLivelinessWatch> {
+    ) -> Result<LivelinessWatch> {
         let messenger = self.messenger.lock().await;
         messenger
             .watch_action_producer(sender)
@@ -664,5 +666,40 @@ impl MessengerHandle {
                 .map_err(Error::PeppyMessagingInterface)?
         };
         Ok(probe.resolve().await)
+    }
+
+    pub(crate) async fn declare_core_node_presence(
+        &self,
+        core_node: &Segment,
+        instance_id: &Segment,
+    ) -> Result<LivelinessToken> {
+        let messenger = self.messenger.lock().await;
+        messenger
+            .declare_core_node_presence(core_node, instance_id)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
+    }
+
+    pub(crate) async fn watch_core_node_presence(
+        &self,
+        core_node: Option<&Segment>,
+    ) -> Result<LivelinessWatch<CoreNodePresence>> {
+        let messenger = self.messenger.lock().await;
+        messenger
+            .watch_core_node_presence(core_node)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
+    }
+
+    pub(crate) async fn list_core_node_presence(
+        &self,
+        core_node: Option<&Segment>,
+        timeout: Duration,
+    ) -> Result<Vec<CoreNodePresence>> {
+        let messenger = self.messenger.lock().await;
+        messenger
+            .list_core_node_presence(core_node, timeout)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
     }
 }

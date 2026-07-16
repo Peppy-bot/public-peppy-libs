@@ -18,16 +18,15 @@ use crate::runtime::NodeRunner;
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Deserialized form of `StackListResponse`: `graph_json` parsed into a
-/// `SerializedNodeGraph`, with the optional DOT rendering preserved.
+/// `SerializedNodeGraph`, with the serving daemon's hostname preserved.
 #[derive(Debug, Clone)]
 pub struct StackList {
     pub graph: SerializedNodeGraph,
-    pub dot_graph: Option<String>,
+    pub host_name: String,
 }
 
 pub async fn list(
     node_runner: &NodeRunner,
-    with_dot_graph: bool,
     response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<StackList> {
     let timeout = response_timeout.into().unwrap_or(DEFAULT_RESPONSE_TIMEOUT);
@@ -35,7 +34,7 @@ pub async fn list(
     let core_node = processor.bound_core_node();
 
     let response = poll(
-        &StackListRequest::new(with_dot_graph),
+        &StackListRequest::new(),
         node_runner.messenger(),
         core_node,
         processor.bound_instance_id(),
@@ -49,6 +48,6 @@ pub async fn list(
 
     Ok(StackList {
         graph,
-        dot_graph: response.dot_graph,
+        host_name: response.host_name,
     })
 }
