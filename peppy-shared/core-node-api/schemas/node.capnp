@@ -18,6 +18,10 @@ struct NodeListResponse {
     graphJson @0 :Text;
     # Hostname of the daemon serving this stack
     hostName @1 :Text;
+    # Presence identity of the serving daemon: its core-node name and
+    # daemon-generation instance id, matching its core-node presence token.
+    coreNode @2 :Text;
+    instanceId @3 :Text;
 }
 
 # Node Add Action (streaming version with feedback)

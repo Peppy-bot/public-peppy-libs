@@ -41,10 +41,10 @@ def _sample_graph_json() -> str:
 
 
 @pytest.mark.asyncio
-async def test_stack_list_parses_graph_and_includes_host_name(tmp_path):
-    """`stack.list(...)` returns both the graph and serving daemon hostname."""
+async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
+    """`stack.list(...)` returns the graph and the serving daemon's identity."""
     graph_json = _sample_graph_json()
-    response_bytes = StackListResponse(graph_json, "robo-a").encode()
+    response_bytes = StackListResponse(graph_json, "core", "gen-1", "robo-a").encode()
 
     router, node_runner, server_handle = await start_router_and_runner(tmp_path)
     try:
@@ -70,6 +70,8 @@ async def test_stack_list_parses_graph_and_includes_host_name(tmp_path):
     assert len(graph["edges"]) == 1
     assert graph["edges"][0]["from"]["name"] == "brain"
     assert graph["edges"][0]["to"]["name"] == "sensor"
+    assert result.core_node == "core"
+    assert result.instance_id == "gen-1"
     assert result.host_name == "robo-a"
 
 
@@ -102,7 +104,9 @@ def _mixed_state_graph_json() -> str:
 
 
 async def _stack_list_with_mixed_state(tmp_path):
-    response_bytes = StackListResponse(_mixed_state_graph_json(), "robo-a").encode()
+    response_bytes = StackListResponse(
+        _mixed_state_graph_json(), "core", "gen-1", "robo-a"
+    ).encode()
     router, node_runner, server_handle = await start_router_and_runner(tmp_path)
     try:
         handler = await spawn_stub_listener(

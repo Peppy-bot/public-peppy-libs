@@ -159,15 +159,25 @@ pub struct PyStackListResponse {
 #[pymethods]
 impl PyStackListResponse {
     #[new]
-    fn new(graph_json: String, host_name: String) -> Self {
+    fn new(graph_json: String, core_node: String, instance_id: String, host_name: String) -> Self {
         Self {
-            inner: StackListResponse::new(graph_json, host_name),
+            inner: StackListResponse::new(graph_json, core_node, instance_id, host_name),
         }
     }
 
     #[getter]
     fn graph_json(&self) -> &str {
         &self.inner.graph_json
+    }
+
+    #[getter]
+    fn core_node(&self) -> &str {
+        &self.inner.core_node
+    }
+
+    #[getter]
+    fn instance_id(&self) -> &str {
+        &self.inner.instance_id
     }
 
     #[getter]
@@ -193,6 +203,8 @@ impl PyStackListResponse {
 #[pyclass(name = "StackList")]
 pub struct PyStackList {
     graph: SerializedNodeGraph,
+    core_node: String,
+    instance_id: String,
     host_name: String,
 }
 
@@ -203,6 +215,16 @@ impl PyStackList {
         pythonize(py, &self.graph).map_err(|e| {
             PyRuntimeError::new_err(format!("failed to convert graph to Python dict: {e}"))
         })
+    }
+
+    #[getter]
+    fn core_node(&self) -> &str {
+        &self.core_node
+    }
+
+    #[getter]
+    fn instance_id(&self) -> &str {
+        &self.instance_id
     }
 
     #[getter]
@@ -263,6 +285,8 @@ fn stack_list<'py>(
             .map_err(to_py_err)?;
         Ok(PyStackList {
             graph: result.graph,
+            core_node: result.core_node,
+            instance_id: result.instance_id,
             host_name: result.host_name,
         })
     })

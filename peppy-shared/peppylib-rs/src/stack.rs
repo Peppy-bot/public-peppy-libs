@@ -18,10 +18,15 @@ use crate::runtime::NodeRunner;
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Deserialized form of `StackListResponse`: `graph_json` parsed into a
-/// `SerializedNodeGraph`, with the serving daemon's hostname preserved.
+/// `SerializedNodeGraph`, with the serving daemon's identity preserved.
 #[derive(Debug, Clone)]
 pub struct StackList {
     pub graph: SerializedNodeGraph,
+    /// Presence identity of the serving daemon: its core-node name and
+    /// daemon-generation instance id, matching its core-node presence token.
+    pub core_node: String,
+    pub instance_id: String,
+    /// Hostname of the machine the serving daemon runs on.
     pub host_name: String,
 }
 
@@ -48,6 +53,8 @@ pub async fn list(
 
     Ok(StackList {
         graph,
+        core_node: response.core_node,
+        instance_id: response.instance_id,
         host_name: response.host_name,
     })
 }

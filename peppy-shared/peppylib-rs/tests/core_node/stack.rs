@@ -17,7 +17,8 @@ use super::common::{
 };
 
 /// Spins up a single-shot `STACK_LIST` listener that returns `graph` serialized
-/// as JSON along with the serving daemon's hostname.
+/// as JSON along with the serving daemon's identity. Like the real daemon, the
+/// stub self-reports the `(core_node, instance_id)` it listens as.
 async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph, host_name: &str) {
     let host_name = host_name.to_string();
     let mut endpoint = ServiceMessenger::listen(
@@ -39,9 +40,11 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
                 assert_eq!(inbound, StackListRequest::new());
                 let graph_json =
                     serde_json::to_string(&graph).expect("serialize SerializedNodeGraph");
-                Ok(StackListResponse::new(graph_json, host_name)
-                    .encode()
-                    .expect("encode StackListResponse"))
+                Ok(
+                    StackListResponse::new(graph_json, CORE_NODE, SERVER_INSTANCE, host_name)
+                        .encode()
+                        .expect("encode StackListResponse"),
+                )
             })
             .await
             .expect("handle_next_request should succeed");
@@ -63,7 +66,7 @@ async fn setup_stub(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stack_list_parses_graph_and_includes_host_name() {
+async fn stack_list_parses_graph_and_includes_daemon_identity() {
     let brain = SerializedNode {
         name: "brain".to_string(),
         tag: "v1".to_string(),
@@ -115,5 +118,7 @@ async fn stack_list_parses_graph_and_includes_host_name() {
     assert_eq!(brain.instances.len(), 1);
     assert_eq!(brain.instances[0].instance_id, "i1");
     assert_eq!(brain.instances[0].state, InstanceState::Running);
+    assert_eq!(result.core_node, CORE_NODE);
+    assert_eq!(result.instance_id, SERVER_INSTANCE);
     assert_eq!(result.host_name, "robo-a");
 }

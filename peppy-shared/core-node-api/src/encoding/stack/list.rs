@@ -36,13 +36,25 @@ impl StackListRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackListResponse {
     pub graph_json: String,
+    /// Presence identity of the serving daemon: its core-node name and
+    /// daemon-generation instance id, matching its core-node presence token.
+    pub core_node: String,
+    pub instance_id: String,
+    /// Hostname of the machine the serving daemon runs on.
     pub host_name: String,
 }
 
 impl StackListResponse {
-    pub fn new(graph_json: impl Into<String>, host_name: impl Into<String>) -> Self {
+    pub fn new(
+        graph_json: impl Into<String>,
+        core_node: impl Into<String>,
+        instance_id: impl Into<String>,
+        host_name: impl Into<String>,
+    ) -> Self {
         Self {
             graph_json: graph_json.into(),
+            core_node: core_node.into(),
+            instance_id: instance_id.into(),
             host_name: host_name.into(),
         }
     }
@@ -52,6 +64,8 @@ impl StackListResponse {
         {
             let mut response = builder.init_root::<node_capnp::node_list_response::Builder>();
             response.set_graph_json(&self.graph_json);
+            response.set_core_node(&self.core_node);
+            response.set_instance_id(&self.instance_id);
             response.set_host_name(&self.host_name);
         }
         encode_message(&builder)
@@ -62,6 +76,8 @@ impl StackListResponse {
         let response = reader.get_root::<node_capnp::node_list_response::Reader>()?;
         Ok(Self {
             graph_json: response.get_graph_json()?.to_str()?.to_owned(),
+            core_node: response.get_core_node()?.to_str()?.to_owned(),
+            instance_id: response.get_instance_id()?.to_str()?.to_owned(),
             host_name: response.get_host_name()?.to_str()?.to_owned(),
         })
     }
@@ -114,9 +130,13 @@ mod tests {
     }
 
     #[test]
-    fn response_round_trips_graph_json_and_host_name() {
-        let response =
-            StackListResponse::new(r#"{"nodes":["a","b"],"edges":[["a","b"]]}"#, "robo-a");
+    fn response_round_trips_graph_json_and_daemon_identity() {
+        let response = StackListResponse::new(
+            r#"{"nodes":["a","b"],"edges":[["a","b"]]}"#,
+            "core_a",
+            "generation_1",
+            "robo-a",
+        );
         let payload = response.encode().expect("encode");
         let decoded = StackListResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
@@ -124,16 +144,20 @@ mod tests {
             decoded.graph_json,
             r#"{"nodes":["a","b"],"edges":[["a","b"]]}"#
         );
+        assert_eq!(decoded.core_node, "core_a");
+        assert_eq!(decoded.instance_id, "generation_1");
         assert_eq!(decoded.host_name, "robo-a");
     }
 
     #[test]
-    fn response_round_trips_empty_graph_json() {
-        let response = StackListResponse::new("", "");
+    fn response_round_trips_empty_fields() {
+        let response = StackListResponse::new("", "", "", "");
         let payload = response.encode().expect("encode");
         let decoded = StackListResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
         assert!(decoded.graph_json.is_empty());
+        assert!(decoded.core_node.is_empty());
+        assert!(decoded.instance_id.is_empty());
         assert!(decoded.host_name.is_empty());
     }
 
