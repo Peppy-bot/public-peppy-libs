@@ -13,7 +13,8 @@ pub mod runtime;
 pub mod services;
 pub use error::{Error as PeppyError, ParameterDeserializationError, Result as PeppyResult};
 pub use messaging::{
-    ActionMessenger, MessengerHandle, ServiceMessenger, SessionScope, TopicMessenger,
+    ActionMessenger, CoreNodePresence, CoreNodePresenceMessenger, LivelinessEvent, LivelinessToken,
+    LivelinessWatch, MessengerHandle, ServiceMessenger, SessionScope, TopicMessenger,
     TopicPublisher,
 };
 pub mod config;

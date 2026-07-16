@@ -726,6 +726,86 @@ fn action_feedback_subscribe_partial_target_uses_wildcard_only_for_missing() {
     );
 }
 
+// ─── Liveliness ───────────────────────────────────────────────────
+
+#[test]
+fn action_liveliness_token_uses_concrete_producer_identity() {
+    let receiver = sample_action_receiver();
+    assert_eq!(
+        ZenohWireFormat::action_liveliness_token(&receiver),
+        "action_liveliness/server_core/server_inst/node/robot_arm/v1/pick_place"
+    );
+}
+
+#[test]
+fn action_liveliness_watch_uses_pinned_target_identity() {
+    let sender = sample_action_sender();
+    assert_eq!(
+        ZenohWireFormat::action_liveliness_watch(&sender),
+        "action_liveliness/server_core/server_inst/node/robot_arm/v1/pick_place"
+    );
+}
+
+#[test]
+fn action_liveliness_watch_wildcards_unpinned_producer_slots() {
+    let mut sender = sample_action_sender();
+    sender.target_core_node = None;
+    sender.target_instance_id = None;
+    assert_eq!(
+        ZenohWireFormat::action_liveliness_watch(&sender),
+        "action_liveliness/*/*/node/robot_arm/v1/pick_place"
+    );
+}
+
+#[test]
+fn core_node_presence_token_and_filters_pin_the_wire_grammar() {
+    let core_node = seg("daemon_a");
+    let instance_id = seg("generation_42");
+    assert_eq!(
+        ZenohWireFormat::core_node_presence_token(&core_node, &instance_id),
+        "core_node_presence/daemon_a/generation_42"
+    );
+    assert_eq!(
+        ZenohWireFormat::core_node_presence_filter(Some(&core_node)),
+        "core_node_presence/daemon_a/*"
+    );
+    assert_eq!(
+        ZenohWireFormat::core_node_presence_filter(None),
+        "core_node_presence/*/*"
+    );
+}
+
+#[test]
+fn core_node_presence_parser_roundtrips_token_builder() {
+    let core_node = seg("daemon_a");
+    let instance_id = seg("generation_42");
+    let keyexpr = ZenohWireFormat::core_node_presence_token(&core_node, &instance_id);
+    let parsed =
+        ZenohWireFormat::parse_core_node_presence(&keyexpr).expect("presence token should parse");
+    assert_eq!(parsed.core_node, core_node.as_str());
+    assert_eq!(parsed.instance_id, instance_id.as_str());
+}
+
+#[test]
+fn core_node_presence_parser_rejects_non_concrete_or_wrong_shape_keys() {
+    for malformed in [
+        "other_root/daemon_a/generation_42",
+        "core_node_presence/daemon_a",
+        "core_node_presence/daemon_a/generation_42/extra",
+        "core_node_presence/*/generation_42",
+        "core_node_presence/daemon_a/_",
+        "core_node_presence/daemon@a/generation_42",
+    ] {
+        assert!(
+            matches!(
+                ZenohWireFormat::parse_core_node_presence(malformed),
+                Err(ZenohWireParseError::InvalidCoreNodePresenceKey(_))
+            ),
+            "malformed key should be rejected: {malformed}"
+        );
+    }
+}
+
 // ─── Collision safety: node vs contract with overlapping name+tag ────────
 //
 // Core property the refactor exists to guarantee: a `NodeIdentifier { name, tag }`

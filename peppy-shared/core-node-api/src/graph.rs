@@ -192,6 +192,8 @@ fn default_instance_healthy() -> bool {
 pub struct SerializedNode {
     pub name: String,
     pub tag: String,
+    /// Core node whose stack owns this node.
+    pub core_node: String,
     pub config_path: String,
     pub artifact_path: Option<String>,
     /// Lifecycle stage name. `None` only for payloads produced by versions
@@ -313,6 +315,7 @@ mod tests {
         SerializedNode {
             name: name.into(),
             tag: tag.into(),
+            core_node: "test_core".into(),
             config_path: String::new(),
             artifact_path: None,
             stage: Some(NodeStage::Ready),
@@ -602,6 +605,7 @@ mod tests {
         let legacy = SerializedNode {
             name: "a".into(),
             tag: "v1".into(),
+            core_node: "test_core".into(),
             config_path: String::new(),
             artifact_path: None,
             stage: None,
@@ -693,14 +697,24 @@ mod tests {
     }
 
     #[test]
-    fn node_decodes_legacy_payload_without_stage_or_instances() {
+    fn node_decodes_payload_without_stage_or_instances() {
         // Producers that predate `stage`/`instances` omit both; serde defaults
         // them to `None`/empty rather than failing to parse.
-        let legacy = r#"{"name":"n","tag":"v1","config_path":"","artifact_path":null}"#;
+        let legacy =
+            r#"{"name":"n","tag":"v1","core_node":"core-a","config_path":"","artifact_path":null}"#;
         let decoded: SerializedNode = serde_json::from_str(legacy).expect("decode legacy node");
+        assert_eq!(decoded.core_node, "core-a");
         assert_eq!(decoded.stage, None);
         assert!(decoded.instances.is_empty());
         assert_eq!(decoded.stage_label(), "Unknown");
+    }
+
+    #[test]
+    fn node_rejects_payload_without_required_core_node() {
+        let pre_change = r#"{"name":"n","tag":"v1","config_path":"","artifact_path":null}"#;
+        let error = serde_json::from_str::<SerializedNode>(pre_change)
+            .expect_err("core_node is a required wire field");
+        assert!(error.to_string().contains("core_node"), "got: {error}");
     }
 
     #[test]

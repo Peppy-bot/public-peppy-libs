@@ -697,7 +697,7 @@ mod zenoh_tests {
     /// `Gone` event and an absent probe.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn action_liveliness_token_observed_across_sessions() {
-        use pmi::{ActionLivelinessEvent, ActionWireReceiver, ActionWireSender, SenderTarget};
+        use pmi::{ActionWireReceiver, ActionWireSender, LivelinessEvent, SenderTarget};
 
         let _lock = ZENOH_SERIAL.lock().await;
         let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -747,7 +747,7 @@ mod zenoh_tests {
             .await
             .expect("timed out waiting for the initial liveliness event")
             .expect("liveliness watch closed unexpectedly");
-        assert_eq!(initial, ActionLivelinessEvent::Alive);
+        assert_eq!(initial, LivelinessEvent::Alive(()));
 
         let probe = consumer
             .probe_action_producer(&sender, Duration::from_secs(2))
@@ -764,13 +764,91 @@ mod zenoh_tests {
             .await
             .expect("timed out waiting for the Gone liveliness event")
             .expect("liveliness watch closed unexpectedly");
-        assert_eq!(gone, ActionLivelinessEvent::Gone);
+        assert_eq!(gone, LivelinessEvent::Gone(()));
 
         let probe = consumer
             .probe_action_producer(&sender, Duration::from_secs(2))
             .await
             .expect("probe should issue");
         assert!(!probe.resolve().await, "token should be observed gone");
+    }
+
+    /// Core-node presence over real zenoh: a token declared on one session is
+    /// replayed to a late watcher and returned by a collecting list query on a
+    /// second session. Closing the declaring session emits the identity-bearing
+    /// `Gone` event and removes it from subsequent lists.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn core_node_presence_lifecycle_observed_across_sessions() {
+        use pmi::{CoreNodePresence, LivelinessEvent, Segment};
+
+        let _lock = ZENOH_SERIAL.lock().await;
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("Failed to start zenohd process");
+        let host = instance.host.clone();
+        let port = instance.port;
+
+        let mut producer =
+            ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port).expect("producer adapter");
+        producer
+            .start_session()
+            .await
+            .expect("producer start_session");
+        let mut observer =
+            ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port).expect("observer adapter");
+        observer
+            .start_session()
+            .await
+            .expect("observer start_session");
+
+        let core_node = Segment::try_from("daemon_a").expect("valid core-node segment");
+        let instance_id = Segment::try_from("generation_1").expect("valid instance segment");
+        let expected = CoreNodePresence::new("daemon_a", "generation_1");
+        let _token = producer
+            .declare_core_node_presence(&core_node, &instance_id)
+            .await
+            .expect("presence token should declare");
+        wait_for_subscriber_discovery().await;
+
+        let watch = observer
+            .watch_core_node_presence(Some(&core_node))
+            .await
+            .expect("presence watch should declare");
+        let initial = tokio::time::timeout(RECV_TIMEOUT, watch.rx.recv_async())
+            .await
+            .expect("timed out waiting for initial presence event")
+            .expect("presence watch closed unexpectedly");
+        assert_eq!(initial, LivelinessEvent::Alive(expected.clone()));
+        assert_eq!(
+            observer
+                .list_core_node_presence(None, Duration::from_secs(2))
+                .await
+                .expect("presence list should issue")
+                .collect()
+                .await
+                .expect("presence list should succeed"),
+            vec![expected.clone()]
+        );
+
+        producer
+            .stop_session()
+            .await
+            .expect("producer stop_session");
+        let gone = tokio::time::timeout(RECV_TIMEOUT, watch.rx.recv_async())
+            .await
+            .expect("timed out waiting for Gone presence event")
+            .expect("presence watch closed unexpectedly");
+        assert_eq!(gone, LivelinessEvent::Gone(expected));
+        assert!(
+            observer
+                .list_core_node_presence(None, Duration::from_secs(2))
+                .await
+                .expect("presence list should issue after token removal")
+                .collect()
+                .await
+                .expect("presence list should succeed after token removal")
+                .is_empty()
+        );
     }
 
     /// Probe hardening over real zenoh: `ServiceQueryKind::Probe` queries
@@ -1091,6 +1169,58 @@ mod zenoh_tests {
                 .expect("other-namespace publish");
             assert_no_delivery(&mut subscription.rx, "different org").await;
         }
+    }
+
+    /// Session namespaces apply to liveliness declarations and queries just as
+    /// they do ordinary pub/sub keys. Each organization therefore enumerates
+    /// only its own core-node tokens even when sessions share one router.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn core_node_presence_is_isolated_by_namespace() {
+        use pmi::{CoreNodePresence, Segment};
+
+        let _lock = ZENOH_SERIAL.lock().await;
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("router");
+        let host = instance.host.clone();
+        let port = instance.port;
+
+        let org_a = open_namespaced(&host, port, "org-a").await;
+        let org_b = open_namespaced(&host, port, "org-b").await;
+        let daemon_a = Segment::try_from("daemon_a").expect("valid core-node segment");
+        let daemon_b = Segment::try_from("daemon_b").expect("valid core-node segment");
+        let generation_a = Segment::try_from("generation_a").expect("valid instance segment");
+        let generation_b = Segment::try_from("generation_b").expect("valid instance segment");
+        let _token_a = org_a
+            .declare_core_node_presence(&daemon_a, &generation_a)
+            .await
+            .expect("org-a token should declare");
+        let _token_b = org_b
+            .declare_core_node_presence(&daemon_b, &generation_b)
+            .await
+            .expect("org-b token should declare");
+        wait_for_subscriber_discovery().await;
+
+        assert_eq!(
+            org_a
+                .list_core_node_presence(None, Duration::from_secs(2))
+                .await
+                .expect("org-a presence list should issue")
+                .collect()
+                .await
+                .expect("org-a presence list should succeed"),
+            vec![CoreNodePresence::new("daemon_a", "generation_a")]
+        );
+        assert_eq!(
+            org_b
+                .list_core_node_presence(None, Duration::from_secs(2))
+                .await
+                .expect("org-b presence list should issue")
+                .collect()
+                .await
+                .expect("org-b presence list should succeed"),
+            vec![CoreNodePresence::new("daemon_b", "generation_b")]
+        );
     }
 
     /// A logged-out (`local`) session and an org session sharing one router are

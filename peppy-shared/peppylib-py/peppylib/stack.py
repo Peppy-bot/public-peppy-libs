@@ -1,8 +1,8 @@
 """Stack inspection helpers: read the live node graph from the core node.
 
 This module is the Python face of `peppylib::stack`. `list` polls the core
-node's ``STACK_LIST`` service and returns a `StackList` (the node graph plus an
-optional Graphviz DOT rendering).
+node's ``STACK_LIST`` service and returns a `StackList` (the node graph plus the
+serving daemon's identity: core-node name, instance id, and hostname).
 """
 
 from __future__ import annotations

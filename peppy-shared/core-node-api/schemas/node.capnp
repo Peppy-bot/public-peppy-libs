@@ -11,16 +11,17 @@ enum FeedbackStream {
 }
 
 # Node List service
-struct NodeListRequest {
-    # If true, include DOT graph representation in the response
-    withDotGraph @0 :Bool;
-}
+struct NodeListRequest {}
 
 struct NodeListResponse {
-    # DOT graph representation of the node stack
-    dotGraph @0 :Text;
     # JSON-serialized graph representation (SerializedNodeGraph)
-    graphJson @1 :Text;
+    graphJson @0 :Text;
+    # Hostname of the daemon serving this stack
+    hostName @1 :Text;
+    # Presence identity of the serving daemon: its core-node name and
+    # daemon-generation instance id, matching its core-node presence token.
+    coreNode @2 :Text;
+    instanceId @3 :Text;
 }
 
 # Node Add Action (streaming version with feedback)
