@@ -1,8 +1,8 @@
-name: peppyos-shared Tests
+name: peppy-shared Tests
 
-# Standalone CI for the `peppyos-shared` virtual workspace
-# (public-peppy-libs/peppyos-shared). The workspace is now self-contained: every
-# path dependency resolves to a sibling crate within peppyos-shared (config,
+# Standalone CI for the `peppy-shared` virtual workspace
+# (public-peppy-libs/peppy-shared). The workspace is now self-contained: every
+# path dependency resolves to a sibling crate within peppy-shared (config,
 # core-node-api, peppy-messaging-interface, build-helpers, peppylib-rs), so it no
 # longer needs the superproject checkout to build and can be tested here, in the
 # repo that owns the code.
@@ -11,16 +11,16 @@ on:
   push:
     branches: [main]
     paths:
-      - 'peppyos-shared/**'
-      - '.github/workflows/peppyos-shared-tests.yml'
+      - 'peppy-shared/**'
+      - '.github/workflows/peppy-shared-tests.yml'
   pull_request:
     branches: [main, dev]
     paths:
-      - 'peppyos-shared/**'
-      - '.github/workflows/peppyos-shared-tests.yml'
+      - 'peppy-shared/**'
+      - '.github/workflows/peppy-shared-tests.yml'
 
 concurrency:
-  group: peppyos-shared-tests-${{ github.event.pull_request.number || github.ref }}
+  group: peppy-shared-tests-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -55,7 +55,7 @@ jobs:
       # despite its tests being excluded) and fails the build if the lock is stale —
       # surfacing dependency drift in CI instead of silently re-resolving.
       - name: Run Rust tests
-        working-directory: peppyos-shared
+        working-directory: peppy-shared
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           cargo test --workspace --exclude peppylib-py --locked
@@ -64,7 +64,7 @@ jobs:
       # native module with `maturin develop` and runs the pytest suite. Requires
       # pixi + a Python toolchain on the runner.
       - name: Run peppylib-py Python tests
-        working-directory: peppyos-shared/peppylib-py
+        working-directory: peppy-shared/peppylib-py
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           pixi run test
