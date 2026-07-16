@@ -98,7 +98,9 @@ pub struct GjkDistance {
     /// Unit direction along which translating body `a` increases the signed
     /// distance (`b` decreases it). Carried explicitly: the witness difference
     /// `on_b - on_a` reverses sense with the sign of the distance, so it cannot
-    /// serve as a gradient direction. `None` only for a degenerate exact touch.
+    /// serve as a gradient direction. `None` only for degenerate core contact
+    /// (the surfaces then overlap by the summed radii), where no direction is
+    /// defined.
     pub normal: Option<Unit<Vector3<f64>>>,
     /// GJK iterations the query took to converge. Read only by the tests that
     /// pin convergence behavior; production consumes just the geometry above.

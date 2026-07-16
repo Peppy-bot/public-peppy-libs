@@ -182,7 +182,7 @@ struct Closest {
     b: usize,
     on_a: Point3<f64>,
     on_b: Point3<f64>,
-    /// Separating direction for body `a`; `None` on a degenerate exact touch.
+    /// Separating direction for body `a`; `None` on degenerate core contact.
     normal: Option<Unit<Vector3<f64>>>,
 }
 
@@ -769,8 +769,9 @@ impl BimanualCollisionModel {
     /// is the nearest pair's separating direction projected through each witness
     /// point's velocity Jacobian, so it reflects the same min-over-pairs distance
     /// `min_distance` returns at one distance query's cost. Fails on a non-finite
-    /// configuration, or on a degenerate exact touch where no separating
-    /// direction is defined; a velocity-barrier caller holds there.
+    /// configuration, or on degenerate core contact (the rounded surfaces then
+    /// overlap by the summed radii) where no separating direction is defined; a
+    /// velocity-barrier caller holds there.
     pub fn distance_gradient(
         &mut self,
         q_left: &JointVec,
