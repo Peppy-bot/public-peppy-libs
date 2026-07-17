@@ -532,6 +532,29 @@ impl ZenohAdapter {
         zenohd::RouterHealthChecker::new(probe_config)
     }
 
+    /// Builds a lock-free [`zenohd::RouterLinksProbe`] over this adapter's
+    /// *managed* router: the bounded wait for the router's configured `connect`
+    /// links (operator-pinned federation, an applied cloud upstream) to
+    /// establish, run by the daemon before its boot-time presence check so the
+    /// check sees the wired mesh instead of racing zenohd's dials. `None` when
+    /// there is nothing to wait for: no router, an external/adopted router
+    /// (its config — and so its links — belong to the operator), or a managed
+    /// config with no connect endpoints (the standalone default).
+    #[cfg(feature = "router")]
+    pub fn router_links_probe(&self) -> Option<zenohd::RouterLinksProbe> {
+        let zenohd = self.zenohd.as_ref()?;
+        if zenohd.is_external() {
+            return None;
+        }
+        let probe_config = render_probe_config(
+            self.client_config.protocol,
+            &self.client_config.host,
+            self.client_config.port,
+            self.client_config.tls.clone(),
+        );
+        zenohd::RouterLinksProbe::new(probe_config, zenohd.configured_connect_endpoints())
+    }
+
     #[cfg(feature = "router")]
     pub fn router_is_adopted(&self) -> bool {
         self.zenohd.as_ref().is_some_and(|z| z.is_adopted())

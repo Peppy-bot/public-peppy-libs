@@ -16,7 +16,7 @@ use zenoh::bytes::ZBytes;
 #[cfg(feature = "zenoh")]
 use super::adapters::zenoh::{ZenohAdapter, ZenohPublisher};
 #[cfg(feature = "router")]
-use super::zenohd::RouterHealthChecker;
+use super::zenohd::{RouterHealthChecker, RouterLinksProbe};
 
 /// QoS settings for publishing messages
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -966,6 +966,19 @@ impl Messenger {
     pub fn router_health_checker(&self) -> Option<RouterHealthChecker> {
         match &self.adapter {
             MessengerAdapter::Zenoh(adapter) => Some(adapter.router_health_checker()),
+            MessengerAdapter::Mock(_) => None,
+        }
+    }
+
+    /// Returns a lock-free [`RouterLinksProbe`] waiting on the managed router's
+    /// configured `connect` links, or `None` when there is nothing to wait for
+    /// (mock backend, no/external router, or no connect endpoints configured).
+    /// The daemon runs it — bounded, fail-open — before its boot-time presence
+    /// check so the check sees the wired mesh instead of racing zenohd's dials.
+    #[cfg(feature = "router")]
+    pub fn router_links_probe(&self) -> Option<RouterLinksProbe> {
+        match &self.adapter {
+            MessengerAdapter::Zenoh(adapter) => adapter.router_links_probe(),
             MessengerAdapter::Mock(_) => None,
         }
     }

@@ -58,6 +58,8 @@ pub use adapters::zenoh::ZenohAdapter;
 pub use adapters::zenoh::ZenohdInstance;
 #[cfg(feature = "router")]
 pub use zenohd::RouterHealthChecker;
+#[cfg(feature = "router")]
+pub use zenohd::RouterLinksProbe;
 #[cfg(feature = "zenoh")]
 pub use zenohd::{ZenohEndpoint, ZenohNetProtocol};
 // TLS material + the out-of-process router-config renderer. Available under the

@@ -213,6 +213,49 @@ impl ZenohdFacade {
         }
     }
 
+    /// The `connect.endpoints` of the active managed router config (rendered or
+    /// operator-pinned) — the links the router dials on startup, which
+    /// [`super::RouterLinksProbe`] waits on before the boot presence check.
+    /// Empty for an external router (its config is the operator's, unknown to
+    /// peppy) and for a standalone managed router; also empty — with a warning —
+    /// when the config cannot be read, so a broken read degrades to "nothing to
+    /// wait for" rather than an error on the startup path (zenohd itself already
+    /// parsed the same file to boot).
+    ///
+    /// Endpoints are accepted in both config shapes: a plain array (what peppy
+    /// renders) and the per-mode `{ router: [...] }` map an operator may pin.
+    pub(crate) fn configured_connect_endpoints(&self) -> Vec<String> {
+        let Some(config_path) = self.managed_config_path() else {
+            return Vec::new();
+        };
+        let connect = Config::from_file(config_path)
+            .map_err(|e| e.to_string())
+            .and_then(|config| config.get_json("connect").map_err(|e| e.to_string()))
+            .and_then(|json| {
+                serde_json::from_str::<serde_json::Value>(&json).map_err(|e| e.to_string())
+            });
+        let connect = match connect {
+            Ok(connect) => connect,
+            Err(error) => {
+                tracing::warn!(
+                    config = %config_path.display(),
+                    error,
+                    "failed to read the router config's connect endpoints"
+                );
+                return Vec::new();
+            }
+        };
+        let endpoints = &connect["endpoints"];
+        let list = endpoints
+            .as_array()
+            .or_else(|| endpoints["router"].as_array());
+        list.into_iter()
+            .flatten()
+            .filter_map(|endpoint| endpoint.as_str())
+            .map(str::to_string)
+            .collect()
+    }
+
     pub(crate) fn adopt_external_router(&mut self) {
         debug_assert!(self.is_external());
         self.adopted = true;
