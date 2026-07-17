@@ -73,8 +73,9 @@ pub enum SubscriberQoS {
 /// `Default` equals the historical hardcoded behavior (`Standard` = 128,
 /// `HighThroughput` = 1024), so a session built without explicit sizes is
 /// unchanged. The daemon overrides these from `peppy_config.json5`, mainly to
-/// tune backpressure in peer mode where there is no router relay to buffer
-/// between a publisher and a subscriber.
+/// tune local sessions under either managed topology. The setting matters most
+/// in peer mode, where there is no router relay to buffer between a publisher
+/// and a subscriber.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SubscriberBufferSizes {
     pub standard: usize,
@@ -103,11 +104,11 @@ impl SubscriberBufferSizes {
 // The daemon resolves buffer sizes as config types (config must not
 // depend on pmi), so the field mapping lives here on pmi's side of the boundary
 // instead of being re-inlined at each session-construction call site.
-impl From<config::peppy_config::PeerConfig> for SubscriberBufferSizes {
-    fn from(peer: config::peppy_config::PeerConfig) -> Self {
+impl From<config::peppy_config::SubscriberBufferConfig> for SubscriberBufferSizes {
+    fn from(config: config::peppy_config::SubscriberBufferConfig) -> Self {
         Self {
-            standard: peer.standard_buffer_size,
-            high_throughput: peer.high_throughput_buffer_size,
+            standard: config.standard_buffer_size,
+            high_throughput: config.high_throughput_buffer_size,
         }
     }
 }
@@ -1231,6 +1232,16 @@ mod tests {
         };
         assert_eq!(sizes.size_for(SubscriberQoS::Standard), 64);
         assert_eq!(sizes.size_for(SubscriberQoS::HighThroughput), 4096);
+    }
+
+    #[test]
+    fn subscriber_buffer_config_maps_each_qos_capacity() {
+        let sizes = SubscriberBufferSizes::from(config::peppy_config::SubscriberBufferConfig {
+            standard_buffer_size: 17,
+            high_throughput_buffer_size: 2049,
+        });
+        assert_eq!(sizes.size_for(SubscriberQoS::Standard), 17);
+        assert_eq!(sizes.size_for(SubscriberQoS::HighThroughput), 2049);
     }
 
     #[test]

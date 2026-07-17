@@ -108,7 +108,7 @@ pub mod peppy_config {
     pub use crate::internal::peppy_config::{
         DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
         DEFAULT_SHUTDOWN_GRACE_SECS, DEFAULT_STANDARD_BUFFER_SIZE, EVENT_LOOP_JOIN_BUDGET_SECS,
-        PeerConfig, RUNTIME_FINALIZE_MARGIN_SECS,
+        RUNTIME_FINALIZE_MARGIN_SECS, SubscriberBufferConfig,
     };
 }
 
