@@ -7,6 +7,7 @@ use super::wire::{
 };
 use config::node::QoSProfile;
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::future::Future;
 use std::net::SocketAddr;
 #[cfg(feature = "zenoh")]
@@ -450,11 +451,16 @@ impl CoreNodePresenceList {
 
     /// Waits for the enumeration's replies. Bounded by the `timeout` the
     /// query was issued with (the transport finalizes the query then).
+    /// Duplicate replies for the same logical token are collapsed: a routed
+    /// liveliness query can observe one declaration through multiple matching
+    /// paths, but presence is a set rather than a multiset.
     pub async fn collect(self) -> Result<Vec<CoreNodePresence>> {
         let mut presences = Vec::new();
+        let mut seen = HashSet::new();
         while let Ok(presence) = self.rx.recv_async().await {
             match presence {
-                Ok(presence) => presences.push(presence),
+                Ok(presence) if seen.insert(presence.clone()) => presences.push(presence),
+                Ok(_) => {}
                 Err(err) => {
                     tracing::error!(%err, "dropping malformed core-node presence result");
                 }
@@ -1325,5 +1331,25 @@ mod tests {
                 CoreNodePresence::new("daemon_b", "generation_2"),
             ]
         );
+    }
+
+    /// A router may deliver the same liveliness token through more than one
+    /// matching route. Presence is a set of logical tokens, so callers must not
+    /// mistake duplicate transport replies for simultaneous daemon claims.
+    #[tokio::test]
+    async fn core_node_presence_list_deduplicates_logical_tokens() {
+        let (tx, rx) = flume::unbounded();
+        let candidate = CoreNodePresence::new("daemon_a", ".claim.generation_1");
+        tx.send(Ok(candidate.clone()))
+            .expect("first route should send");
+        tx.send(Ok(candidate.clone()))
+            .expect("duplicate route should send");
+        drop(tx);
+
+        let presences = CoreNodePresenceList::new(rx)
+            .collect()
+            .await
+            .expect("presence collection should succeed");
+        assert_eq!(presences, vec![candidate]);
     }
 }

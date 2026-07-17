@@ -42,7 +42,8 @@ impl CoreNodePresenceMessenger {
 
     /// List all live daemon tokens, optionally restricted to one core-node
     /// name. Duplicate names remain distinct by instance id so callers can
-    /// surface active collisions.
+    /// surface active collisions; duplicate transport replies for the same
+    /// `(core_node, instance_id)` token are collapsed by the messaging layer.
     pub async fn list_live(
         messenger: &MessengerHandle,
         core_node: Option<&str>,
