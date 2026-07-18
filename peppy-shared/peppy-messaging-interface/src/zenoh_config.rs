@@ -19,7 +19,7 @@
 use crate::zenohd::ZenohNetProtocol;
 use config::org::OrgNamespace;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// TLS material for a `tls/` (or `quic/`) session, rendered into the zenoh
 /// `transport.link.tls` block. One type serves both roles: a router/listener
@@ -64,6 +64,30 @@ impl Default for TlsConfig {
     }
 }
 
+/// Reads a PEM file fully, labeling any error with `what` and the path.
+fn read_pem_file(path: &Path, what: &str) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| format!("read {what} `{}` failed: {e}", path.display()))
+}
+
+/// Parses every certificate from the PEM file at `path`. Errors if the file is
+/// unreadable, any block fails to parse, or no certificate is present.
+fn read_pem_certs(
+    path: &Path,
+    what: &str,
+) -> Result<Vec<tokio_rustls::rustls::pki_types::CertificateDer<'static>>, String> {
+    let bytes = read_pem_file(path, what)?;
+    let certs = rustls_pemfile::certs(&mut &bytes[..])
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("parse {what} `{}` failed: {e}", path.display()))?;
+    if certs.is_empty() {
+        return Err(format!(
+            "{what} `{}` contained no certificates",
+            path.display()
+        ));
+    }
+    Ok(certs)
+}
+
 fn build_probe_client_config(
     tls: &TlsConfig,
 ) -> Result<tokio_rustls::rustls::ClientConfig, String> {
@@ -74,22 +98,10 @@ fn build_probe_client_config(
     let mut roots = RootCertStore::empty();
     match &tls.root_ca_certificate {
         Some(path) => {
-            let bytes = std::fs::read(path)
-                .map_err(|e| format!("read root CA `{}` failed: {e}", path.display()))?;
-            let mut added = 0usize;
-            for cert in rustls_pemfile::certs(&mut &bytes[..]) {
-                let cert =
-                    cert.map_err(|e| format!("parse root CA `{}` failed: {e}", path.display()))?;
+            for cert in read_pem_certs(path, "root CA")? {
                 roots
                     .add(cert)
                     .map_err(|e| format!("add root CA `{}` failed: {e}", path.display()))?;
-                added += 1;
-            }
-            if added == 0 {
-                return Err(format!(
-                    "root CA `{}` contained no certificates",
-                    path.display()
-                ));
             }
         }
         None => {
@@ -130,33 +142,9 @@ fn build_probe_client_config(
             "mTLS probe requires a connect private key (`connect_private_key`)".to_string()
         })?;
 
-        let certificate_bytes = std::fs::read(certificate_path).map_err(|e| {
-            format!(
-                "read connect certificate `{}` failed: {e}",
-                certificate_path.display()
-            )
-        })?;
-        let certificate_chain = rustls_pemfile::certs(&mut &certificate_bytes[..])
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                format!(
-                    "parse connect certificate `{}` failed: {e}",
-                    certificate_path.display()
-                )
-            })?;
-        if certificate_chain.is_empty() {
-            return Err(format!(
-                "connect certificate `{}` contained no certificates",
-                certificate_path.display()
-            ));
-        }
+        let certificate_chain = read_pem_certs(certificate_path, "connect certificate")?;
 
-        let private_key_bytes = std::fs::read(private_key_path).map_err(|e| {
-            format!(
-                "read connect private key `{}` failed: {e}",
-                private_key_path.display()
-            )
-        })?;
+        let private_key_bytes = read_pem_file(private_key_path, "connect private key")?;
         let private_key = rustls_pemfile::private_key(&mut &private_key_bytes[..])
             .map_err(|e| {
                 format!(
@@ -221,21 +209,13 @@ pub async fn probe_tls_reachable(
     // the network phases, so a slow mounted identity cannot wedge federation.
     let deadline = tokio::time::Instant::now() + timeout;
     let tls = tls.clone();
-    let config = match tokio::time::timeout_at(
+    let config = tokio::time::timeout_at(
         deadline,
         tokio::task::spawn_blocking(move || build_probe_client_config(&tls)),
     )
     .await
-    {
-        Err(_) => {
-            return Err(format!(
-                "loading TLS material for {host}:{port} timed out after {timeout:?}"
-            ));
-        }
-        Ok(Err(error)) => return Err(format!("TLS material task failed: {error}")),
-        Ok(Ok(Err(error))) => return Err(error),
-        Ok(Ok(Ok(config))) => config,
-    };
+    .map_err(|_| format!("loading TLS material for {host}:{port} timed out after {timeout:?}"))?
+    .map_err(|error| format!("TLS material task failed: {error}"))??;
 
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|e| format!("invalid server name `{host}`: {e}"))?;
@@ -304,6 +284,22 @@ impl TlsConfig {
         Self {
             root_ca_certificate: Some(root_ca_certificate),
             ..Self::default()
+        }
+    }
+
+    /// Mutual-TLS client: [`client`](Self::client) trust in `root_ca_certificate`
+    /// plus a `certificate`/`private_key` identity presented to a listener that
+    /// requires client certificates.
+    pub fn mtls_client(
+        root_ca_certificate: PathBuf,
+        certificate: PathBuf,
+        private_key: PathBuf,
+    ) -> Self {
+        Self {
+            connect_certificate: Some(certificate),
+            connect_private_key: Some(private_key),
+            enable_mtls: true,
+            ..Self::client(root_ca_certificate)
         }
     }
 }

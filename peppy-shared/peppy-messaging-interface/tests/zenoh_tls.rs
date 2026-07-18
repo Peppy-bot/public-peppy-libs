@@ -59,7 +59,8 @@ mod zenoh_tls_tests {
 
     /// Materializes a self-signed identity that the fixture CA does not trust.
     /// It is used to prove the fragment-configured listener rejects a client
-    /// certificate from the wrong CA.
+    /// certificate from the wrong CA. Self-signed means the leaf is its own
+    /// trust root, so one file serves as both `ca` and `cert`.
     fn write_rogue_identity() -> Certs {
         let dir = tempfile::tempdir().expect("create rogue cert tempdir");
         let CertifiedKey { cert, signing_key } =
@@ -70,19 +71,13 @@ mod zenoh_tls_tests {
             std::fs::write(&path, contents).expect("write rogue identity file");
             path
         };
-        let ca = put("rogue-ca.pem", &cert.pem());
         let cert = put("rogue.pem", &cert.pem());
         let key = put("rogue.key", &signing_key.serialize_pem());
-        Certs { dir, ca, cert, key }
-    }
-
-    fn mtls_client(certs: &Certs) -> TlsConfig {
-        TlsConfig {
-            root_ca_certificate: Some(certs.ca.clone()),
-            connect_certificate: Some(certs.cert.clone()),
-            connect_private_key: Some(certs.key.clone()),
-            enable_mtls: true,
-            ..TlsConfig::default()
+        Certs {
+            dir,
+            ca: cert.clone(),
+            cert,
+            key,
         }
     }
 
@@ -230,7 +225,8 @@ mod zenoh_tls_tests {
         router.start_router().await.expect("start fragment router");
 
         let plaintext_client = open_plaintext_client(primary_port).await;
-        let right_client = mtls_client(&certs);
+        let right_client =
+            TlsConfig::mtls_client(certs.ca.clone(), certs.cert.clone(), certs.key.clone());
         let mut last_error = None;
         for _ in 0..20 {
             match probe_tls_reachable("localhost", tls_port, &right_client, Duration::from_secs(1))
@@ -251,13 +247,10 @@ mod zenoh_tls_tests {
             "right-CA client did not reach the fragment listener: {last_error:?}"
         );
 
-        let wrong_client = TlsConfig {
-            root_ca_certificate: Some(certs.ca.clone()),
-            connect_certificate: Some(rogue.cert.clone()),
-            connect_private_key: Some(rogue.key.clone()),
-            enable_mtls: true,
-            ..TlsConfig::default()
-        };
+        // Trusts the genuine server CA but presents the rogue (untrusted-CA)
+        // client identity.
+        let wrong_client =
+            TlsConfig::mtls_client(certs.ca.clone(), rogue.cert.clone(), rogue.key.clone());
         let error =
             probe_tls_reachable("localhost", tls_port, &wrong_client, Duration::from_secs(2))
                 .await

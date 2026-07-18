@@ -7,6 +7,7 @@ use super::ZenohNetProtocol;
 use crate::error::{Error, Result};
 use crate::zenoh_config::{TlsConfig, render_config_string, router_spec};
 use std::path::{Path, PathBuf};
+use zenoh::config::Config;
 
 /// Resolves the zenohd router config path. Honors a `ZENOH_CONFIG` override;
 /// otherwise renders a router config to a temp file keyed by messaging port and
@@ -73,6 +74,15 @@ pub(crate) fn render_router_config_to_path(
         extra_listen_endpoints,
         tls,
     ));
+
+    // The endpoint lists arrive as raw locator strings (possibly carrying
+    // `#key=val` fragments), so a malformed one renders into a config zenohd
+    // cannot parse. Validate before writing: the refederation path rewrites the
+    // running router's only config file in place, and a bad input must fail here
+    // rather than clobber the known-good config and surface at the next restart.
+    Config::from_json5(&config_content).map_err(|e| {
+        Error::ConfigurationError(format!("rendered zenohd config is invalid: {e}"))
+    })?;
 
     std::fs::write(config_path, config_content)
         .map_err(|e| Error::ConfigurationError(format!("Failed to write zenohd config: {}", e)))?;

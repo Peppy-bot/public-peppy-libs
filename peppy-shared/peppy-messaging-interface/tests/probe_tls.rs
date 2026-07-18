@@ -23,13 +23,13 @@ mod probe_tls_tests {
 
     const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-    /// Writes the embedded CA PEM to a tempfile and returns it. `TlsConfig::client`
-    /// takes a filesystem path, so the fixture bytes are materialized. The returned
-    /// `TempPath` keeps the file alive until dropped at end of test.
-    fn ca_tempfile() -> tempfile::TempPath {
-        let mut f = tempfile::NamedTempFile::new().expect("create CA tempfile");
-        f.write_all(CA_PEM).expect("write CA tempfile");
-        f.flush().expect("flush CA tempfile");
+    /// Writes embedded fixture PEM bytes to a tempfile and returns it.
+    /// `TlsConfig` takes filesystem paths, so the fixture bytes are materialized.
+    /// The returned `TempPath` keeps the file alive until dropped at end of test.
+    fn pem_tempfile(bytes: &[u8]) -> tempfile::TempPath {
+        let mut f = tempfile::NamedTempFile::new().expect("create PEM tempfile");
+        f.write_all(bytes).expect("write PEM tempfile");
+        f.flush().expect("flush PEM tempfile");
         f.into_temp_path()
     }
 
@@ -105,7 +105,7 @@ mod probe_tls_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn correct_ca_and_name_succeeds() {
         let port = start_tls_server(false).await;
-        let ca = ca_tempfile();
+        let ca = pem_tempfile(CA_PEM);
         let tls = TlsConfig::client(PathBuf::from(&*ca));
 
         let result = probe_tls_reachable("localhost", port, &tls, PROBE_TIMEOUT).await;
@@ -131,7 +131,7 @@ mod probe_tls_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn name_mismatch_fails() {
         let port = start_tls_server(false).await;
-        let ca = ca_tempfile();
+        let ca = pem_tempfile(CA_PEM);
         let tls = TlsConfig::client(PathBuf::from(&*ca));
 
         let result = probe_tls_reachable("127.0.0.1", port, &tls, PROBE_TIMEOUT).await;
@@ -147,24 +147,14 @@ mod probe_tls_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mtls_connect_identity_succeeds() {
         let port = start_tls_server(true).await;
-        let ca = ca_tempfile();
-        let mut certificate = tempfile::NamedTempFile::new().expect("create cert tempfile");
-        certificate
-            .write_all(SERVER_CERT_PEM)
-            .expect("write client cert tempfile");
-        certificate.flush().expect("flush client cert tempfile");
-        let mut private_key = tempfile::NamedTempFile::new().expect("create key tempfile");
-        private_key
-            .write_all(SERVER_KEY_PEM)
-            .expect("write client key tempfile");
-        private_key.flush().expect("flush client key tempfile");
-        let tls = TlsConfig {
-            root_ca_certificate: Some(PathBuf::from(&*ca)),
-            connect_certificate: Some(certificate.path().to_path_buf()),
-            connect_private_key: Some(private_key.path().to_path_buf()),
-            enable_mtls: true,
-            ..TlsConfig::default()
-        };
+        let ca = pem_tempfile(CA_PEM);
+        let certificate = pem_tempfile(SERVER_CERT_PEM);
+        let private_key = pem_tempfile(SERVER_KEY_PEM);
+        let tls = TlsConfig::mtls_client(
+            PathBuf::from(&*ca),
+            PathBuf::from(&*certificate),
+            PathBuf::from(&*private_key),
+        );
 
         let result = probe_tls_reachable("localhost", port, &tls, PROBE_TIMEOUT).await;
         assert!(result.is_ok(), "expected Ok, got {result:?}");
@@ -189,7 +179,7 @@ mod probe_tls_tests {
             }
         });
 
-        let ca = ca_tempfile();
+        let ca = pem_tempfile(CA_PEM);
         let tls = TlsConfig::client(PathBuf::from(&*ca));
 
         let timeout = Duration::from_secs(1);
@@ -220,7 +210,7 @@ mod probe_tls_tests {
         let port = listener.local_addr().expect("local addr").port();
         drop(listener);
 
-        let ca = ca_tempfile();
+        let ca = pem_tempfile(CA_PEM);
         let tls = TlsConfig::client(PathBuf::from(&*ca));
 
         let result = probe_tls_reachable("127.0.0.1", port, &tls, Duration::from_secs(2)).await;
