@@ -248,6 +248,11 @@ pub async fn probe_tls_reachable(
     use tokio_rustls::TlsConnector;
     use tokio_rustls::rustls::pki_types::ServerName;
 
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+
     // Certificate files and native-root discovery are synchronous operations.
     // Keep them off async workers and include them in the same total deadline as
     // the network phases, so a slow mounted identity cannot wedge federation.
@@ -307,10 +312,14 @@ pub async fn probe_tls_reachable(
     // data is expected from a healthy Zenoh listener, so reaching the grace
     // deadline is success.
     const POST_HANDSHAKE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
-    let grace_deadline =
-        std::cmp::min(deadline, tokio::time::Instant::now() + POST_HANDSHAKE_GRACE);
+    let full_grace_deadline = tokio::time::Instant::now() + POST_HANDSHAKE_GRACE;
+    let grace_was_clipped = full_grace_deadline > deadline;
+    let grace_deadline = std::cmp::min(deadline, full_grace_deadline);
     let mut byte = [0u8; 1];
     match tokio::time::timeout_at(grace_deadline, stream.read(&mut byte)).await {
+        Err(_) if grace_was_clipped => Err(format!(
+            "TLS post-handshake check to {host}:{port} timed out after {timeout:?}"
+        )),
         Err(_) => Ok(()),
         Ok(Ok(0)) => Err(format!(
             "TLS peer {host}:{port} closed the connection immediately after the handshake"

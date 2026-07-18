@@ -293,17 +293,31 @@ impl ZenohdFacade {
     /// listening socket accepts TCP before the TLS handshake, which is all a
     /// "port already bound / accepting yet?" check needs.
     pub(crate) async fn start_router(&mut self) -> Result<()> {
-        // Pre-flight (managed routers only — the external case falls through to
-        // `spawn_router_process`'s ownership error): refuse to spawn onto a port
-        // something is already listening on.
-        if !self.is_external() && self.router_endpoint_reachable(ROUTER_PROBE_TIMEOUT).await {
-            return Err(Error::BackendError(format!(
-                "Zenoh router port already in use: {}",
-                self.connect_addr()
-            )));
-        }
-
-        let (zenohd_config_path, zenohd_log_path) = self.spawn_router_process()?;
+        let existing_process_paths = match (&self.ownership, self.router_process.is_some()) {
+            (
+                RouterOwnership::Managed {
+                    zenohd_config_path,
+                    zenohd_log_path,
+                    ..
+                },
+                true,
+            ) => Some((zenohd_config_path.clone(), zenohd_log_path.clone())),
+            _ => None,
+        };
+        let (zenohd_config_path, zenohd_log_path) = if let Some(paths) = existing_process_paths {
+            paths
+        } else {
+            // Pre-flight (managed routers only — the external case falls through
+            // to `spawn_router_process`'s ownership error): refuse to spawn onto a
+            // port something is already listening on.
+            if !self.is_external() && self.router_endpoint_reachable(ROUTER_PROBE_TIMEOUT).await {
+                return Err(Error::BackendError(format!(
+                    "Zenoh router port already in use: {}",
+                    self.connect_addr()
+                )));
+            }
+            self.spawn_router_process()?
+        };
         if self.tcp_based() {
             tracing::info!(
                 "Waiting for Zenoh router to accept connections at {}://{}",
@@ -350,6 +364,12 @@ impl ZenohdFacade {
     }
 
     fn spawn_router_process(&mut self) -> Result<(PathBuf, PathBuf)> {
+        if self.router_process.is_some() {
+            return Err(Error::BackendError(
+                "refusing to replace an existing managed zenohd process".to_string(),
+            ));
+        }
+
         let (zenohd_path, zenohd_config_path, zenohd_log_path) = match &self.ownership {
             RouterOwnership::Managed {
                 zenohd_path,
@@ -611,6 +631,51 @@ mod tests {
                 .router_endpoint_reachable(std::time::Duration::from_secs(1))
                 .await,
             "a closed TCP endpoint must not be reachable"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_start_keeps_an_existing_unready_managed_child() {
+        use std::io::Write;
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
+        let port = listener.local_addr().expect("reserved addr").port();
+        drop(listener);
+        let mut config_file = tempfile::Builder::new()
+            .suffix(".json5")
+            .tempfile()
+            .expect("create config");
+        writeln!(
+            config_file,
+            r#"{{
+                "listen": {{
+                    "endpoints": {{
+                        "router": ["tcp/127.0.0.1:{port}"]
+                    }}
+                }}
+            }}"#
+        )
+        .expect("write config");
+
+        let mut facade = ZenohdFacade::managed(config_file.path()).expect("create facade");
+        let child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn placeholder child");
+        let child_id = child.id();
+        facade.router_process = Some(child);
+
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), facade.start_router()).await;
+
+        assert!(
+            result.is_err(),
+            "start should keep waiting for the existing child"
+        );
+        assert_eq!(
+            facade.router_process.as_ref().map(Child::id),
+            Some(child_id),
+            "a repeated start must not replace the original child handle"
         );
     }
 

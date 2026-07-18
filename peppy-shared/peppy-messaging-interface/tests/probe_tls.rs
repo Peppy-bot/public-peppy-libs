@@ -170,6 +170,30 @@ mod probe_tls_tests {
         );
     }
 
+    /// If the probe's overall deadline leaves less than the full grace interval,
+    /// expiring that shortened interval is a probe timeout, not proof that the
+    /// server accepted the client certificate.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn truncated_post_handshake_grace_fails() {
+        let port = start_tls_server(true).await;
+        let ca = pem_tempfile(CA_PEM);
+        let certificate = pem_tempfile(SERVER_CERT_PEM);
+        let private_key = pem_tempfile(SERVER_KEY_PEM);
+        let tls = TlsConfig::mtls_client(
+            PathBuf::from(&*ca),
+            PathBuf::from(&*certificate),
+            PathBuf::from(&*private_key),
+        );
+
+        let result = probe_tls_reachable("localhost", port, &tls, Duration::from_millis(200)).await;
+
+        let error = result.expect_err("a truncated post-handshake grace must time out");
+        assert!(
+            error.contains("post-handshake check"),
+            "unexpected truncated-grace error: {error}"
+        );
+    }
+
     /// A probe with no client identity against a listener that REQUIRES client
     /// certificates. In TLS 1.3 the client sends an empty Certificate and
     /// completes its side of the handshake before the server's
@@ -268,6 +292,28 @@ mod probe_tls_tests {
         assert!(
             result.is_err(),
             "expected Err (unreachable port), got {result:?}"
+        );
+    }
+
+    /// Zenoh endpoint parsing retains brackets around IPv6 literals. The raw TLS
+    /// probe must remove them before both rustls name parsing and TCP dialing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bracketed_ipv6_host_is_normalized() {
+        let Ok(listener) = tokio::net::TcpListener::bind(("::1", 0)).await else {
+            return;
+        };
+        let port = listener.local_addr().expect("local IPv6 addr").port();
+        drop(listener);
+        let ca = pem_tempfile(CA_PEM);
+        let tls = TlsConfig::client(PathBuf::from(&*ca));
+
+        let error = probe_tls_reachable("[::1]", port, &tls, Duration::from_secs(1))
+            .await
+            .expect_err("released IPv6 port must be unreachable");
+
+        assert!(
+            error.contains(&format!("to ::1:{port}")),
+            "probe did not use the normalized IPv6 host: {error}"
         );
     }
 }
