@@ -20,6 +20,11 @@ use crate::zenohd::ZenohNetProtocol;
 use config::org::OrgNamespace;
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio_rustls::rustls::SignatureScheme;
+use tokio_rustls::rustls::client::ResolvesClientCert;
+use tokio_rustls::rustls::sign::CertifiedKey;
 
 /// TLS material for a `tls/` (or `quic/`) session, rendered into the zenoh
 /// `transport.link.tls` block. One type serves both roles: a router/listener
@@ -88,10 +93,41 @@ fn read_pem_certs(
     Ok(certs)
 }
 
+/// A [`ResolvesClientCert`] wrapper that records whether the server requested a
+/// client certificate. rustls consults the resolver exactly when a
+/// `CertificateRequest` arrives — whether or not an identity is configured — so
+/// after the handshake the flag tells [`probe_tls_reachable`] whether a
+/// post-handshake client-auth verdict can still be in flight.
+#[derive(Debug)]
+struct ClientAuthObserver {
+    inner: Arc<dyn ResolvesClientCert>,
+    client_auth_requested: Arc<AtomicBool>,
+}
+
+impl ResolvesClientCert for ClientAuthObserver {
+    fn resolve(
+        &self,
+        root_hint_subjects: &[&[u8]],
+        sigschemes: &[SignatureScheme],
+    ) -> Option<Arc<CertifiedKey>> {
+        self.client_auth_requested.store(true, Ordering::Relaxed);
+        self.inner.resolve(root_hint_subjects, sigschemes)
+    }
+
+    fn only_raw_public_keys(&self) -> bool {
+        self.inner.only_raw_public_keys()
+    }
+
+    fn has_certs(&self) -> bool {
+        self.inner.has_certs()
+    }
+}
+
+/// Builds the rustls client config for [`probe_tls_reachable`], plus the flag
+/// its [`ClientAuthObserver`] sets when the server engages client-cert auth.
 fn build_probe_client_config(
     tls: &TlsConfig,
-) -> Result<tokio_rustls::rustls::ClientConfig, String> {
-    use std::sync::Arc;
+) -> Result<(tokio_rustls::rustls::ClientConfig, Arc<AtomicBool>), String> {
     use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
     // Build the trust anchors: either an explicit private CA, or the OS roots.
@@ -134,7 +170,7 @@ fn build_probe_client_config(
     .map_err(|e| format!("TLS provider setup failed: {e}"))?
     .with_root_certificates(roots);
 
-    if tls.enable_mtls {
+    let mut config = if tls.enable_mtls {
         let certificate_path = tls.connect_certificate.as_ref().ok_or_else(|| {
             "mTLS probe requires a connect certificate (`connect_certificate`)".to_string()
         })?;
@@ -161,10 +197,17 @@ fn build_probe_client_config(
 
         config_builder
             .with_client_auth_cert(certificate_chain, private_key)
-            .map_err(|e| format!("configure mTLS client identity failed: {e}"))
+            .map_err(|e| format!("configure mTLS client identity failed: {e}"))?
     } else {
-        Ok(config_builder.with_no_client_auth())
-    }
+        config_builder.with_no_client_auth()
+    };
+
+    let client_auth_requested = Arc::new(AtomicBool::new(false));
+    config.client_auth_cert_resolver = Arc::new(ClientAuthObserver {
+        inner: config.client_auth_cert_resolver.clone(),
+        client_auth_requested: client_auth_requested.clone(),
+    });
+    Ok((config, client_auth_requested))
 }
 
 /// Verify that a TLS endpoint at `host:port` is reachable AND that its
@@ -173,7 +216,9 @@ fn build_probe_client_config(
 /// handshake, and short post-handshake rejection check share one deadline, so
 /// the whole call is bounded by `timeout` (not `timeout` per phase). The caller
 /// relies on this single bound to keep the probe inside its federation ack
-/// budget.
+/// budget. The rejection check runs only when the server engaged
+/// client-certificate auth; a plain-TLS handshake returns as soon as it
+/// validates.
 ///
 /// ## Why a raw handshake and not `zenoh::open`
 ///
@@ -199,7 +244,6 @@ pub async fn probe_tls_reachable(
     tls: &TlsConfig,
     timeout: std::time::Duration,
 ) -> Result<(), String> {
-    use std::sync::Arc;
     use tokio::io::AsyncReadExt;
     use tokio_rustls::TlsConnector;
     use tokio_rustls::rustls::pki_types::ServerName;
@@ -209,7 +253,7 @@ pub async fn probe_tls_reachable(
     // the network phases, so a slow mounted identity cannot wedge federation.
     let deadline = tokio::time::Instant::now() + timeout;
     let tls = tls.clone();
-    let config = tokio::time::timeout_at(
+    let (config, client_auth_requested) = tokio::time::timeout_at(
         deadline,
         tokio::task::spawn_blocking(move || build_probe_client_config(&tls)),
     )
@@ -248,10 +292,20 @@ pub async fn probe_tls_reachable(
             Ok(Ok(stream)) => stream,
         };
 
-    // In TLS 1.3 the client can finish its side of the handshake before it
-    // receives the server's client-certificate rejection alert. Give that alert
-    // a short bounded window to arrive. No application data is expected from a
-    // healthy Zenoh listener, so reaching the grace deadline is success.
+    // In TLS 1.3 the server's client-certificate verdict lands only after the
+    // client has already finished its side of the handshake: a missing identity
+    // draws `certificate_required` and an untrusted one `bad certificate`, both
+    // as post-Finished alerts. Only a server that engaged client auth (it sent a
+    // CertificateRequest, observed via the wrapped cert resolver) can still have
+    // such a verdict in flight; for any other server the handshake outcome above
+    // is final, so return without taxing every healthy probe with the wait.
+    if !client_auth_requested.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+
+    // Give the pending verdict a short bounded window to arrive. No application
+    // data is expected from a healthy Zenoh listener, so reaching the grace
+    // deadline is success.
     const POST_HANDSHAKE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
     let grace_deadline =
         std::cmp::min(deadline, tokio::time::Instant::now() + POST_HANDSHAKE_GRACE);
@@ -302,6 +356,33 @@ impl TlsConfig {
             ..Self::client(root_ca_certificate)
         }
     }
+}
+
+/// How a router wires into the mesh beyond its primary listener: the upstream
+/// routers it dials (federation), any extra listeners it binds, and the TLS
+/// material those links share. One value carried through every router-config
+/// entry point ([`crate::ZenohAdapter::with_router`],
+/// [`refederate`](crate::ZenohAdapter::refederate), [`render_router_config`])
+/// instead of three adjacent parameters whose two endpoint lists would
+/// otherwise be silently swappable. `Default` is the standalone plaintext
+/// router.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RouterLinks {
+    /// Upstream routers this router *federates* to (dials),
+    /// `<proto>/<host>:<port>` each — distinct from gossip, which is peer
+    /// auto-discovery. Empty is a standalone router. Non-empty turns on
+    /// reconnect/keep-alive so an unreachable or restarted upstream is
+    /// recovered transparently and never stops the router serving its own
+    /// nodes.
+    pub connect_endpoints: Vec<String>,
+    /// Listeners appended after the primary `<protocol>/<host>:<port>`
+    /// endpoint; each may carry per-endpoint `#key=val;...` config fragments.
+    pub extra_listen_endpoints: Vec<String>,
+    /// TLS material for the links: the listener certificate/key
+    /// ([`TlsConfig::server`]) when a listener speaks `tls/`, and/or the
+    /// connect-side trust root ([`TlsConfig::client`]) for a `tls/` upstream.
+    /// Ignored by plaintext endpoints.
+    pub tls: Option<TlsConfig>,
 }
 
 /// The Zenoh roles this codebase generates configs for.
@@ -495,27 +576,20 @@ pub(crate) fn render_probe_config(
 /// by the in-process spawn path ([`crate::zenohd::router_config_path`]) and the
 /// out-of-process render path ([`render_router_config`]) so both produce an
 /// identical router config. `gossip` seeds the peer mesh (the daemon wants it on;
-/// an isolated per-user router wants it off so routers cannot mesh).
-///
-/// `connect_endpoints` makes this router *federate* to other zenohd routers it
-/// dials (`<proto>/<host>:<port>` each) — distinct from gossip, which is peer
-/// auto-discovery. Empty is the standalone router (today's behavior); a non-empty
-/// list (e.g. the daemon's local router dialing a remote `tls/` router) turns the
-/// retry/keep-alive on (`reconnect`) so an unreachable or restarted upstream is
-/// recovered transparently and never stops the local router serving its own
-/// nodes. `extra_listen_endpoints` are appended after the primary listener and
-/// may carry per-endpoint config fragments. The connect-side TLS for that link
-/// rides in `tls` (a [`TlsConfig::client`]); it is ignored on a plaintext listen
-/// endpoint.
+/// an isolated per-user router wants it off so routers cannot mesh). `links`
+/// carries the federation wiring — see [`RouterLinks`].
 pub(crate) fn router_spec(
     protocol: ZenohNetProtocol,
     host: &str,
     port: u16,
     gossip: bool,
-    connect_endpoints: Vec<String>,
-    extra_listen_endpoints: Vec<String>,
-    tls: Option<TlsConfig>,
+    links: RouterLinks,
 ) -> ZenohConfigSpec {
+    let RouterLinks {
+        connect_endpoints,
+        extra_listen_endpoints,
+        tls,
+    } = links;
     let mut listen_endpoints = vec![format!("{protocol}/{host}:{port}")];
     listen_endpoints.extend(extra_listen_endpoints);
 
@@ -537,30 +611,20 @@ pub(crate) fn router_spec(
 /// Renders a zenohd router config to a JSON5 string, for callers that run the
 /// router out of process (e.g. a container) rather than spawning it via
 /// [`crate::ZenohAdapter::with_router`]. With `protocol = Tls` and a server
-/// [`TlsConfig`] this emits the `transport.link.tls` listener block; a non-empty
-/// `connect_endpoints` emits a `connect` block so the router federates to those
-/// upstreams, and `extra_listen_endpoints` adds listeners after the primary one
-/// (see [`router_spec`]). Available under the base `zenoh` feature (no
-/// `router`/zenohd binary needed) because rendering a config is independent of
-/// spawning a process.
+/// [`TlsConfig`] in `links` this emits the `transport.link.tls` listener block;
+/// non-empty `links.connect_endpoints` emit a `connect` block so the router
+/// federates to those upstreams, and `links.extra_listen_endpoints` add
+/// listeners after the primary one (see [`RouterLinks`]). Available under the
+/// base `zenoh` feature (no `router`/zenohd binary needed) because rendering a
+/// config is independent of spawning a process.
 pub fn render_router_config(
     protocol: ZenohNetProtocol,
     host: &str,
     port: u16,
     gossip: bool,
-    connect_endpoints: Vec<String>,
-    extra_listen_endpoints: Vec<String>,
-    tls: Option<TlsConfig>,
+    links: RouterLinks,
 ) -> String {
-    render_config_string(&router_spec(
-        protocol,
-        host,
-        port,
-        gossip,
-        connect_endpoints,
-        extra_listen_endpoints,
-        tls,
-    ))
+    render_config_string(&router_spec(protocol, host, port, gossip, links))
 }
 
 /// The loopback ephemeral listen endpoint a peer binds. Loopback-only by design:
@@ -719,12 +783,13 @@ mod tests {
             "0.0.0.0",
             7447,
             false,
-            Vec::new(),
-            Vec::new(),
-            Some(TlsConfig::server(
-                PathBuf::from("/certs/leaf.pem"),
-                PathBuf::from("/certs/leaf.key"),
-            )),
+            RouterLinks {
+                tls: Some(TlsConfig::server(
+                    PathBuf::from("/certs/leaf.pem"),
+                    PathBuf::from("/certs/leaf.key"),
+                )),
+                ..RouterLinks::default()
+            },
         );
         let cfg = build_zenoh_config(&spec);
 
@@ -771,12 +836,13 @@ mod tests {
             "0.0.0.0",
             7447,
             false,
-            Vec::new(),
-            Vec::new(),
-            Some(TlsConfig::server(
-                PathBuf::from("/certs/leaf.pem"),
-                PathBuf::from("/certs/leaf.key"),
-            )),
+            RouterLinks {
+                tls: Some(TlsConfig::server(
+                    PathBuf::from("/certs/leaf.pem"),
+                    PathBuf::from("/certs/leaf.key"),
+                )),
+                ..RouterLinks::default()
+            },
         );
         zenoh::config::Config::from_json5(&s).expect("rendered tls router config parses");
         assert!(s.contains("tls/0.0.0.0:7447"));
@@ -793,9 +859,11 @@ mod tests {
             "0.0.0.0",
             7448,
             true,
-            vec!["tls/cap.zenoh.localhost:7443".to_string()],
-            Vec::new(),
-            Some(TlsConfig::client(PathBuf::from("/certs/ca.pem"))),
+            RouterLinks {
+                connect_endpoints: vec!["tls/cap.zenoh.localhost:7443".to_string()],
+                tls: Some(TlsConfig::client(PathBuf::from("/certs/ca.pem"))),
+                ..RouterLinks::default()
+            },
         );
         let cfg: serde_json::Value =
             serde_json::from_str(&s).expect("rendered federated router config is JSON");
@@ -837,9 +905,10 @@ mod tests {
             "0.0.0.0",
             7448,
             true,
-            Vec::new(),
-            vec![fragment_listener.clone()],
-            None,
+            RouterLinks {
+                extra_listen_endpoints: vec![fragment_listener.clone()],
+                ..RouterLinks::default()
+            },
         );
         let rendered: serde_json::Value =
             serde_json::from_str(&s).expect("rendered router config is JSON");

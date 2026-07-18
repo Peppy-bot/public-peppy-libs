@@ -12,7 +12,10 @@
 
 #![cfg(feature = "router")]
 
-use pmi::{SubscriberBufferSizes, TlsConfig, ZenohAdapter, ZenohNetProtocol, render_router_config};
+use pmi::{
+    RouterLinks, SubscriberBufferSizes, TlsConfig, ZenohAdapter, ZenohNetProtocol,
+    render_router_config,
+};
 
 #[test]
 fn refederate_is_a_no_op_under_an_operator_pinned_config() {
@@ -26,9 +29,7 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
         "127.0.0.1",
         port,
         false,
-        Vec::new(),
-        Vec::new(),
-        None,
+        RouterLinks::default(),
     );
     let cfg_path = std::env::temp_dir().join(format!("peppy_pinned_router_{port}.json5"));
     std::fs::write(&cfg_path, &pinned_config).expect("write the operator-pinned config");
@@ -48,9 +49,7 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
         port,
         false,
         SubscriberBufferSizes::default(),
-        Vec::new(),
-        Vec::new(),
-        None,
+        RouterLinks::default(),
     )
     .expect("build a router adapter from the operator-pinned config");
     assert!(
@@ -61,11 +60,11 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
     let before = std::fs::read_to_string(&cfg_path).expect("read the pinned config");
 
     let rewrote = adapter
-        .refederate(
-            vec!["tls/cap.zenoh.localhost:7443".to_string()],
-            Vec::new(),
-            Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
-        )
+        .refederate(RouterLinks {
+            connect_endpoints: vec!["tls/cap.zenoh.localhost:7443".to_string()],
+            tls: Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
+            ..RouterLinks::default()
+        })
         .expect("refederate under a pinned config succeeds as a no-op");
 
     assert!(

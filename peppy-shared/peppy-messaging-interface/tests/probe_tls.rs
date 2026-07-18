@@ -156,8 +156,59 @@ mod probe_tls_tests {
             PathBuf::from(&*private_key),
         );
 
+        let start = tokio::time::Instant::now();
         let result = probe_tls_reachable("localhost", port, &tls, PROBE_TIMEOUT).await;
+        let elapsed = start.elapsed();
+
         assert!(result.is_ok(), "expected Ok, got {result:?}");
+        // The server engaged client auth, so its verdict on our certificate can
+        // arrive after the handshake — the probe must sit out the full 250ms
+        // post-handshake grace window before declaring the link good.
+        assert!(
+            elapsed >= Duration::from_millis(250),
+            "a client-auth probe must keep the post-handshake grace, took {elapsed:?}"
+        );
+    }
+
+    /// A probe with no client identity against a listener that REQUIRES client
+    /// certificates. In TLS 1.3 the client sends an empty Certificate and
+    /// completes its side of the handshake before the server's
+    /// `certificate_required` alert arrives, so only the post-handshake grace
+    /// read can surface the rejection. Guards the silent-failure class the
+    /// grace exists for — gating it on our local mTLS setting (instead of on
+    /// the server engaging client auth) would report this link as validating.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plain_probe_against_client_auth_server_fails() {
+        let port = start_tls_server(true).await;
+        let ca = pem_tempfile(CA_PEM);
+        let tls = TlsConfig::client(PathBuf::from(&*ca));
+
+        let result = probe_tls_reachable("localhost", port, &tls, PROBE_TIMEOUT).await;
+        assert!(
+            result.is_err(),
+            "expected Err (client certificate required), got {result:?}"
+        );
+    }
+
+    /// A server that never engaged client-certificate auth cannot reject after
+    /// the handshake, so the probe returns as soon as the handshake validates
+    /// instead of sitting out the 250ms post-handshake grace (the server here
+    /// holds every accepted connection open for 400ms, past that window).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plain_tls_probe_returns_without_the_post_handshake_grace() {
+        let port = start_tls_server(false).await;
+        let ca = pem_tempfile(CA_PEM);
+        let tls = TlsConfig::client(PathBuf::from(&*ca));
+
+        let start = tokio::time::Instant::now();
+        let result = probe_tls_reachable("localhost", port, &tls, PROBE_TIMEOUT).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "a no-client-auth probe must skip the grace wait, took {elapsed:?}"
+        );
     }
 
     /// A peer that completes the TCP accept but never drives the TLS handshake

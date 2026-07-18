@@ -1004,7 +1004,7 @@ impl Messenger {
     }
 
     /// Re-renders the owned router's zenohd config in place with new federation
-    /// `connect_endpoints`, `extra_listen_endpoints`, and connect-side `tls`.
+    /// [`RouterLinks`](crate::RouterLinks).
     /// Returns whether the config was actually rewritten: `Ok(true)` ⇒ the
     /// change takes effect on the next
     /// [`stop_router`](MessengerBackend::stop_router) /
@@ -1015,16 +1015,9 @@ impl Messenger {
     /// the user's per-user cloud router live (login/logout) without a full process
     /// restart. See [`crate::ZenohAdapter::refederate`].
     #[cfg(feature = "router")]
-    pub fn refederate(
-        &mut self,
-        connect_endpoints: Vec<String>,
-        extra_listen_endpoints: Vec<String>,
-        tls: Option<crate::zenoh_config::TlsConfig>,
-    ) -> Result<bool> {
+    pub fn refederate(&mut self, links: crate::zenoh_config::RouterLinks) -> Result<bool> {
         match &mut self.adapter {
-            MessengerAdapter::Zenoh(adapter) => {
-                adapter.refederate(connect_endpoints, extra_listen_endpoints, tls)
-            }
+            MessengerAdapter::Zenoh(adapter) => adapter.refederate(links),
             // No owned router to re-render, so there is nothing to restart for.
             MessengerAdapter::Mock(_) => Ok(false),
         }

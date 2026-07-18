@@ -5,41 +5,28 @@
 
 use super::ZenohNetProtocol;
 use crate::error::{Error, Result};
-use crate::zenoh_config::{TlsConfig, render_config_string, router_spec};
+use crate::zenoh_config::{RouterLinks, render_config_string, router_spec};
 use std::path::{Path, PathBuf};
 use zenoh::config::Config;
 
 /// Resolves the zenohd router config path. Honors a `ZENOH_CONFIG` override;
 /// otherwise renders a router config to a temp file keyed by messaging port and
-/// returns its path. `tls` (when the protocol is `Tls`, or when a `tls/`
-/// `connect_endpoint` is present) carries the listener's certificate/key and/or
-/// the connect-side trust root; `None` renders a plaintext listener unchanged.
-/// `connect_endpoints` federates this router to those upstream routers (empty for
-/// a standalone router). `extra_listen_endpoints` appends listeners after the
-/// primary endpoint and preserves any per-endpoint fragments; see
-/// [`crate::zenoh_config::router_spec`].
+/// returns its path. `links` carries the federation wiring — upstream connect
+/// endpoints, extra listeners (per-endpoint fragments preserved), and their TLS
+/// material; see [`RouterLinks`]. `RouterLinks::default()` renders a standalone
+/// plaintext listener unchanged.
 pub(crate) fn router_config_path(
     protocol: ZenohNetProtocol,
     host: &str,
     messaging_port: u16,
-    connect_endpoints: Vec<String>,
-    extra_listen_endpoints: Vec<String>,
-    tls: Option<TlsConfig>,
+    links: RouterLinks,
 ) -> Result<PathBuf> {
     if let Some(config_path) = config_override() {
         return Ok(config_path);
     }
 
     let config_path = std::env::temp_dir().join(format!("zenohd_config_{}.json5", messaging_port));
-    render_router_config_to_path(
-        &config_path,
-        protocol,
-        host,
-        messaging_port,
-        connect_endpoints,
-        extra_listen_endpoints,
-        tls,
-    )?;
+    render_router_config_to_path(&config_path, protocol, host, messaging_port, links)?;
     Ok(config_path)
 }
 
@@ -57,23 +44,14 @@ pub(crate) fn render_router_config_to_path(
     protocol: ZenohNetProtocol,
     host: &str,
     messaging_port: u16,
-    connect_endpoints: Vec<String>,
-    extra_listen_endpoints: Vec<String>,
-    tls: Option<TlsConfig>,
+    links: RouterLinks,
 ) -> Result<()> {
     // The router seeds gossip discovery for the peer mesh, so gossip stays on;
     // multicast is off everywhere (see `crate::zenoh_config`). The router listens
     // on `host` as given (typically `0.0.0.0`) so nodes can reach it. Shares
     // `router_spec` with the out-of-process render path (`render_router_config`).
-    let config_content = render_config_string(&router_spec(
-        protocol,
-        host,
-        messaging_port,
-        true,
-        connect_endpoints,
-        extra_listen_endpoints,
-        tls,
-    ));
+    let config_content =
+        render_config_string(&router_spec(protocol, host, messaging_port, true, links));
 
     // The endpoint lists arrive as raw locator strings (possibly carrying
     // `#key=val` fragments), so a malformed one renders into a config zenohd

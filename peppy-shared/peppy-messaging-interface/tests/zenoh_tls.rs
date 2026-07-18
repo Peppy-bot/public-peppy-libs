@@ -19,7 +19,7 @@ mod zenoh_tls_tests {
     };
     use bytes::Bytes;
     use pmi::{
-        Messenger, MessengerAdapter, MessengerBackend, Payload, PublisherQoS,
+        Messenger, MessengerAdapter, MessengerBackend, Payload, PublisherQoS, RouterLinks,
         SubscriberBufferSizes, SubscriberQoS, TlsConfig, ZenohAdapter, ZenohNetProtocol,
         probe_tls_reachable,
     };
@@ -106,9 +106,10 @@ mod zenoh_tls_tests {
             port,
             false,
             SubscriberBufferSizes::default(),
-            Vec::new(),
-            Vec::new(),
-            Some(TlsConfig::server(certs.cert.clone(), certs.key.clone())),
+            RouterLinks {
+                tls: Some(TlsConfig::server(certs.cert.clone(), certs.key.clone())),
+                ..RouterLinks::default()
+            },
         )
         .expect("build tls router adapter");
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
@@ -151,9 +152,11 @@ mod zenoh_tls_tests {
             // Federate to the remote TLS router, trusting it via the same CA the
             // TLS clients use (name verification off because the leaf's SAN is
             // `localhost` while we dial `127.0.0.1` — the CA-trust check stays on).
-            vec![format!("tls/127.0.0.1:{remote_port}")],
-            Vec::new(),
-            Some(trusting_client_tls(certs)),
+            RouterLinks {
+                connect_endpoints: vec![format!("tls/127.0.0.1:{remote_port}")],
+                tls: Some(trusting_client_tls(certs)),
+                ..RouterLinks::default()
+            },
         )
         .expect("build federated router adapter");
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
@@ -216,9 +219,10 @@ mod zenoh_tls_tests {
             primary_port,
             false,
             SubscriberBufferSizes::default(),
-            Vec::new(),
-            vec![fragment_listener],
-            None,
+            RouterLinks {
+                extra_listen_endpoints: vec![fragment_listener],
+                ..RouterLinks::default()
+            },
         )
         .expect("build router with fragment mTLS listener");
         let mut router = Messenger::new(MessengerAdapter::Zenoh(adapter));

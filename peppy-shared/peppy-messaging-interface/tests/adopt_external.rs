@@ -1,8 +1,8 @@
 #![cfg(feature = "build_zenoh")]
 
 use pmi::{
-    Messenger, MessengerAdapter, MessengerBackend, SubscriberBufferSizes, ZenohAdapter,
-    ZenohNetProtocol,
+    Messenger, MessengerAdapter, MessengerBackend, RouterLinks, SubscriberBufferSizes,
+    ZenohAdapter, ZenohNetProtocol,
 };
 use std::net::{TcpListener, TcpStream};
 
@@ -28,9 +28,7 @@ fn managed_router_adapter(port: u16) -> ZenohAdapter {
         port,
         false,
         SubscriberBufferSizes::default(),
-        Vec::new(),
-        Vec::new(),
-        None,
+        RouterLinks::default(),
     )
     .expect("build managed router adapter")
 }

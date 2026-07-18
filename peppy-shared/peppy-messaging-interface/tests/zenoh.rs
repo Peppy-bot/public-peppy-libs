@@ -954,7 +954,7 @@ mod zenoh_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_with_router_creates_adapter_with_router() {
         let _lock = ZENOH_SERIAL.lock().await;
-        use pmi::{Messenger, MessengerAdapter, ZenohNetProtocol};
+        use pmi::{Messenger, MessengerAdapter, RouterLinks, ZenohNetProtocol};
 
         // Reserve a port first to ensure we have an available one
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -967,9 +967,7 @@ mod zenoh_tests {
             port,
             true,
             SubscriberBufferSizes::default(),
-            Vec::new(),
-            Vec::new(),
-            None,
+            RouterLinks::default(),
         )
         .unwrap();
         let (host, adapter_port) = adapter.client_endpoint();
