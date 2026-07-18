@@ -14,12 +14,15 @@ use std::path::{Path, PathBuf};
 /// `connect_endpoint` is present) carries the listener's certificate/key and/or
 /// the connect-side trust root; `None` renders a plaintext listener unchanged.
 /// `connect_endpoints` federates this router to those upstream routers (empty for
-/// a standalone router); see [`crate::zenoh_config::router_spec`].
+/// a standalone router). `extra_listen_endpoints` appends listeners after the
+/// primary endpoint and preserves any per-endpoint fragments; see
+/// [`crate::zenoh_config::router_spec`].
 pub(crate) fn router_config_path(
     protocol: ZenohNetProtocol,
     host: &str,
     messaging_port: u16,
     connect_endpoints: Vec<String>,
+    extra_listen_endpoints: Vec<String>,
     tls: Option<TlsConfig>,
 ) -> Result<PathBuf> {
     if let Some(config_path) = config_override() {
@@ -33,6 +36,7 @@ pub(crate) fn router_config_path(
         host,
         messaging_port,
         connect_endpoints,
+        extra_listen_endpoints,
         tls,
     )?;
     Ok(config_path)
@@ -53,6 +57,7 @@ pub(crate) fn render_router_config_to_path(
     host: &str,
     messaging_port: u16,
     connect_endpoints: Vec<String>,
+    extra_listen_endpoints: Vec<String>,
     tls: Option<TlsConfig>,
 ) -> Result<()> {
     // The router seeds gossip discovery for the peer mesh, so gossip stays on;
@@ -65,6 +70,7 @@ pub(crate) fn render_router_config_to_path(
         messaging_port,
         true,
         connect_endpoints,
+        extra_listen_endpoints,
         tls,
     ));
 

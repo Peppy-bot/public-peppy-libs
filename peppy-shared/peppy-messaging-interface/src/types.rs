@@ -983,6 +983,16 @@ impl Messenger {
         }
     }
 
+    /// Returns whether the managed Zenoh router is owned by an
+    /// operator-pinned `ZENOH_CONFIG`. Mock backends are never pinned.
+    #[cfg(feature = "router")]
+    pub fn router_config_is_pinned(&self) -> bool {
+        match &self.adapter {
+            MessengerAdapter::Zenoh(adapter) => adapter.router_config_is_pinned(),
+            MessengerAdapter::Mock(_) => false,
+        }
+    }
+
     /// Returns whether the Zenoh router was adopted from an operator-managed
     /// process. Mock backends never adopt a router.
     #[cfg(feature = "router")]
@@ -994,8 +1004,9 @@ impl Messenger {
     }
 
     /// Re-renders the owned router's zenohd config in place with new federation
-    /// `connect_endpoints` (+ connect-side `tls`). Returns whether the config was
-    /// actually rewritten: `Ok(true)` ⇒ the change takes effect on the next
+    /// `connect_endpoints`, `extra_listen_endpoints`, and connect-side `tls`.
+    /// Returns whether the config was actually rewritten: `Ok(true)` ⇒ the
+    /// change takes effect on the next
     /// [`stop_router`](MessengerBackend::stop_router) /
     /// [`start_router`](MessengerBackend::start_router) cycle (callers re-render
     /// then restart); `Ok(false)` ⇒ a `ZENOH_CONFIG` override or external router is
@@ -1007,10 +1018,13 @@ impl Messenger {
     pub fn refederate(
         &mut self,
         connect_endpoints: Vec<String>,
+        extra_listen_endpoints: Vec<String>,
         tls: Option<crate::zenoh_config::TlsConfig>,
     ) -> Result<bool> {
         match &mut self.adapter {
-            MessengerAdapter::Zenoh(adapter) => adapter.refederate(connect_endpoints, tls),
+            MessengerAdapter::Zenoh(adapter) => {
+                adapter.refederate(connect_endpoints, extra_listen_endpoints, tls)
+            }
             // No owned router to re-render, so there is nothing to restart for.
             MessengerAdapter::Mock(_) => Ok(false),
         }

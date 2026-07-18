@@ -21,7 +21,9 @@ mod zenoh_tls_tests {
     use pmi::{
         Messenger, MessengerAdapter, MessengerBackend, Payload, PublisherQoS,
         SubscriberBufferSizes, SubscriberQoS, TlsConfig, ZenohAdapter, ZenohNetProtocol,
+        probe_tls_reachable,
     };
+    use rcgen::{CertifiedKey, generate_simple_self_signed};
     use std::io::Write;
     use std::path::PathBuf;
     use std::time::Duration;
@@ -55,6 +57,35 @@ mod zenoh_tls_tests {
         Certs { dir, ca, cert, key }
     }
 
+    /// Materializes a self-signed identity that the fixture CA does not trust.
+    /// It is used to prove the fragment-configured listener rejects a client
+    /// certificate from the wrong CA.
+    fn write_rogue_identity() -> Certs {
+        let dir = tempfile::tempdir().expect("create rogue cert tempdir");
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(vec!["rogue.local".to_string()])
+                .expect("generate rogue identity");
+        let put = |name: &str, contents: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, contents).expect("write rogue identity file");
+            path
+        };
+        let ca = put("rogue-ca.pem", &cert.pem());
+        let cert = put("rogue.pem", &cert.pem());
+        let key = put("rogue.key", &signing_key.serialize_pem());
+        Certs { dir, ca, cert, key }
+    }
+
+    fn mtls_client(certs: &Certs) -> TlsConfig {
+        TlsConfig {
+            root_ca_certificate: Some(certs.ca.clone()),
+            connect_certificate: Some(certs.cert.clone()),
+            connect_private_key: Some(certs.key.clone()),
+            enable_mtls: true,
+            ..TlsConfig::default()
+        }
+    }
+
     /// The server leaf's SAN is `localhost`, but we dial `127.0.0.1` (no DNS
     /// resolution ambiguity), so name verification is off — exactly how zenoh's
     /// own TLS test uses these fixtures. The CA-trust check stays on, which is
@@ -80,6 +111,7 @@ mod zenoh_tls_tests {
             port,
             false,
             SubscriberBufferSizes::default(),
+            Vec::new(),
             Vec::new(),
             Some(TlsConfig::server(certs.cert.clone(), certs.key.clone())),
         )
@@ -125,6 +157,7 @@ mod zenoh_tls_tests {
             // TLS clients use (name verification off because the leaf's SAN is
             // `localhost` while we dial `127.0.0.1` — the CA-trust check stays on).
             vec![format!("tls/127.0.0.1:{remote_port}")],
+            Vec::new(),
             Some(trusting_client_tls(certs)),
         )
         .expect("build federated router adapter");
@@ -149,6 +182,93 @@ mod zenoh_tls_tests {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         panic!("could not open a plaintext client session on 127.0.0.1:{port}");
+    }
+
+    /// A real zenohd keeps per-endpoint TLS fragments local to the TLS listener:
+    /// its primary listener remains plaintext, the fragment listener requires a
+    /// client certificate, and no global TLS block is needed. This pins Zenoh
+    /// 1.9's endpoint-fragment merge behavior used by federation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fragment_mtls_listener_accepts_right_cert_and_rejects_wrong_ca() {
+        let _lock = ZENOH_SERIAL.lock().await;
+        let certs = write_certs();
+        let rogue = write_rogue_identity();
+
+        let primary_listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve primary port");
+        let primary_port = primary_listener.local_addr().expect("primary addr").port();
+        let tls_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve TLS port");
+        let tls_port = tls_listener.local_addr().expect("TLS addr").port();
+        drop(primary_listener);
+        drop(tls_listener);
+
+        let fragment_listener = format!(
+            concat!(
+                "tls/127.0.0.1:{tls_port}#",
+                "root_ca_certificate_file={ca};",
+                "listen_certificate_file={cert};",
+                "listen_private_key_file={key};",
+                "enable_mtls=true"
+            ),
+            tls_port = tls_port,
+            ca = certs.ca.display(),
+            cert = certs.cert.display(),
+            key = certs.key.display(),
+        );
+        let adapter = ZenohAdapter::with_router(
+            ZenohNetProtocol::Tcp,
+            "127.0.0.1",
+            primary_port,
+            false,
+            SubscriberBufferSizes::default(),
+            Vec::new(),
+            vec![fragment_listener],
+            None,
+        )
+        .expect("build router with fragment mTLS listener");
+        let mut router = Messenger::new(MessengerAdapter::Zenoh(adapter));
+        router.start_router().await.expect("start fragment router");
+
+        let plaintext_client = open_plaintext_client(primary_port).await;
+        let right_client = mtls_client(&certs);
+        let mut last_error = None;
+        for _ in 0..20 {
+            match probe_tls_reachable("localhost", tls_port, &right_client, Duration::from_secs(1))
+                .await
+            {
+                Ok(()) => {
+                    last_error = None;
+                    break;
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+        assert!(
+            last_error.is_none(),
+            "right-CA client did not reach the fragment listener: {last_error:?}"
+        );
+
+        let wrong_client = TlsConfig {
+            root_ca_certificate: Some(certs.ca.clone()),
+            connect_certificate: Some(rogue.cert.clone()),
+            connect_private_key: Some(rogue.key.clone()),
+            enable_mtls: true,
+            ..TlsConfig::default()
+        };
+        let error =
+            probe_tls_reachable("localhost", tls_port, &wrong_client, Duration::from_secs(2))
+                .await
+                .expect_err("wrong-CA client certificate must be rejected");
+        assert!(
+            error.contains("handshake") || error.contains("rejected") || error.contains("closed"),
+            "unexpected wrong-CA rejection: {error}"
+        );
+
+        drop(plaintext_client);
+        router.stop_router().await.expect("stop fragment router");
     }
 
     /// Positive path: a TLS router + two TLS clients complete the handshake and

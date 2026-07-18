@@ -58,6 +58,9 @@ serde_json5 = "0.2"
 # process-wide tracing subscriber that counts `zenoh::api::handlers::fifo`
 # ERROR events. Already in the dependency tree transitively via zenoh.
 tracing-subscriber = "0.3"
+# Generates an untrusted client identity for the real-zenohd mTLS rejection
+# test. Exact-pinned to the version already resolved through zenoh 1.9.
+rcgen = "=0.14.8"
 
 [features]
 # `router` is on by default so the daemon build is unchanged; a client-only

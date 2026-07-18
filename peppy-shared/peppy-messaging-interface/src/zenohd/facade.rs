@@ -284,37 +284,87 @@ impl ZenohdFacade {
         endpoint_str.parse()
     }
 
-    /// Starts a zenohd process, using std::process::Command is the recommended way as using the
-    /// rust crate directly prevents the user from using plugins/adminspace
-    pub fn start_router(&mut self) -> Result<()> {
-        let RouterOwnership::Managed {
-            zenohd_path,
-            zenohd_config_path,
-            zenohd_log_path,
-            ..
-        } = &self.ownership
-        else {
-            return Err(Error::BackendError(
-                "cannot spawn an operator-managed external Zenoh router".to_string(),
-            ));
+    /// Starts a managed zenohd process without blocking the async runtime during
+    /// readiness. The child is stored before the first await, so cancellation
+    /// leaves it supervised by the facade.
+    pub(crate) async fn start_router(&mut self) -> Result<()> {
+        let (tcp_based, connect_addr, zenohd_config_path, zenohd_log_path) =
+            self.spawn_router_process()?;
+        if tcp_based {
+            tracing::info!(
+                "Waiting for Zenoh router to accept connections at {}://{}",
+                self.zenoh_endpoint.protocol(),
+                connect_addr
+            );
+            let start = tokio::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(30);
+            let mut backoff = std::time::Duration::from_millis(10);
+            let max_backoff = std::time::Duration::from_millis(500);
+
+            loop {
+                self.check_spawned_process(&zenohd_log_path)?;
+
+                match tokio::net::TcpStream::connect(&connect_addr).await {
+                    Ok(_) => break,
+                    Err(_) if start.elapsed() >= timeout => {
+                        if let Err(error) = self.stop_router_async().await {
+                            tracing::warn!(
+                                "Failed to stop zenohd after its readiness timeout: {}",
+                                error
+                            );
+                        }
+                        return Err(Error::BackendError(format!(
+                            "zenohd readiness timeout after {}s (TCP {})",
+                            timeout.as_secs(),
+                            connect_addr
+                        )));
+                    }
+                    Err(_) => {
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(max_backoff);
+                    }
+                }
+            }
+        } else {
+            self.check_spawned_process(&zenohd_log_path)?;
+        }
+
+        Self::log_router_started(&zenohd_config_path, &zenohd_log_path);
+        Ok(())
+    }
+
+    fn spawn_router_process(&mut self) -> Result<(bool, String, PathBuf, PathBuf)> {
+        let (zenohd_path, zenohd_config_path, zenohd_log_path) = match &self.ownership {
+            RouterOwnership::Managed {
+                zenohd_path,
+                zenohd_config_path,
+                zenohd_log_path,
+                ..
+            } => (
+                zenohd_path.clone().ok_or_else(|| {
+                    Error::ZenohdError(
+                        "Zenohd binary not found. Install `zenohd` next to the `peppy` binary or make it available on PATH."
+                            .to_string(),
+                    )
+                })?,
+                zenohd_config_path.clone(),
+                zenohd_log_path.clone(),
+            ),
+            RouterOwnership::External => {
+                return Err(Error::BackendError(
+                    "cannot spawn an operator-managed external Zenoh router".to_string(),
+                ));
+            }
         };
-        let zenohd_path = zenohd_path.as_ref().ok_or_else(|| {
-            Error::ZenohdError(
-                "Zenohd binary not found. Install `zenohd` next to the `peppy` binary or make it available on PATH."
-                    .to_string(),
-            )
-        })?;
 
         // `Tls` is TLS-over-TCP, so the plain TCP probes below apply to it too:
         // the listening socket accepts TCP before the TLS handshake, which is all
         // a "port already bound / accepting yet?" check needs.
         let tcp_based = self.tcp_based();
         let connect_addr = self.connect_addr();
-
         if self.router_endpoint_in_use() {
             return Err(Error::BackendError(format!(
-                "Zenoh router port already in use: {}",
-                connect_addr
+                "Zenoh router port already in use: {connect_addr}"
             )));
         }
 
@@ -322,7 +372,7 @@ impl ZenohdFacade {
         // pipe buffer blocks a zenohd thread in `write` and deadlocks the whole
         // router. Pin the log level too, so a verbose inherited `RUST_LOG`
         // can't flood the file (override with `PEPPY_ZENOHD_LOG`).
-        let log_file = File::create(zenohd_log_path).map_err(|e| {
+        let log_file = File::create(&zenohd_log_path).map_err(|e| {
             Error::BackendError(format!(
                 "Failed to create zenohd log file {}: {}",
                 zenohd_log_path.display(),
@@ -331,87 +381,89 @@ impl ZenohdFacade {
         })?;
         let stderr_file = log_file
             .try_clone()
-            .map_err(|e| Error::BackendError(format!("Failed to set up zenohd log file: {}", e)))?;
+            .map_err(|e| Error::BackendError(format!("Failed to set up zenohd log file: {e}")))?;
         let zenohd_log_level =
             env::var("PEPPY_ZENOHD_LOG").unwrap_or_else(|_| "zenoh=warn".to_string());
 
-        let mut child = Command::new(zenohd_path)
+        let child = Command::new(zenohd_path)
             .env("ZENOH_CONFIG", zenohd_config_path.as_os_str())
             .env("RUST_LOG", zenohd_log_level)
             .arg("-c")
-            .arg(zenohd_config_path)
+            .arg(&zenohd_config_path)
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(stderr_file))
             .spawn()
-            .map_err(|e| Error::BackendError(format!("Failed to start zenohd: {}", e)))?;
+            .map_err(|e| Error::BackendError(format!("Failed to start zenohd: {e}")))?;
 
-        if tcp_based {
-            tracing::info!(
-                "Waiting for Zenoh router to accept connections at {}://{}",
-                self.zenoh_endpoint.protocol(),
-                connect_addr
-            );
-            let start = std::time::Instant::now();
-            let timeout = std::time::Duration::from_secs(30);
-            let mut backoff = std::time::Duration::from_millis(10);
-            let max_backoff = std::time::Duration::from_millis(500);
+        // Store the child before any async readiness wait. If the caller's
+        // timeout cancels that wait, Drop or the next stop/start still owns it.
+        self.router_process = Some(child);
+        Ok((tcp_based, connect_addr, zenohd_config_path, zenohd_log_path))
+    }
 
-            loop {
-                child = check_process_alive(child, zenohd_log_path)?;
+    fn check_spawned_process(&mut self, zenohd_log_path: &Path) -> Result<()> {
+        let child = self.router_process.take().ok_or_else(|| {
+            Error::BackendError("zenohd process handle disappeared during startup".to_string())
+        })?;
+        let child = check_process_alive(child, zenohd_log_path)?;
+        self.router_process = Some(child);
+        Ok(())
+    }
 
-                match TcpStream::connect(&connect_addr) {
-                    Ok(_) => break,
-                    Err(_) if start.elapsed() >= timeout => {
-                        return Err(Error::BackendError(format!(
-                            "zenohd readiness timeout after {}s (TCP {})",
-                            timeout.as_secs(),
-                            connect_addr
-                        )));
-                    }
-                    Err(_) => {
-                        std::thread::sleep(backoff);
-                        backoff = (backoff * 2).min(max_backoff);
-                    }
-                }
-            }
-        } else {
-            child = check_process_alive(child, zenohd_log_path)?;
-        }
-
+    fn log_router_started(zenohd_config_path: &Path, zenohd_log_path: &Path) {
         tracing::info!(
             "Zenoh router started (config {}, logs {})",
             zenohd_config_path.display(),
             zenohd_log_path.display()
         );
-
-        // Store the child process handle
-        self.router_process = Some(child);
-
-        Ok(())
     }
 
     pub fn stop_router(&mut self) -> Result<()> {
+        let Some(child) = self.take_router_process_for_stop() else {
+            return Ok(());
+        };
+        Self::terminate_router_process(child);
+        Ok(())
+    }
+
+    /// Stops a managed router without running `Child::wait` on an async worker.
+    ///
+    /// The child moves into the blocking task before the first await. If a
+    /// caller bounds or cancels this future, that task keeps ownership and
+    /// finishes reaping the process in the background.
+    pub(crate) async fn stop_router_async(&mut self) -> Result<()> {
+        let Some(child) = self.take_router_process_for_stop() else {
+            return Ok(());
+        };
+        tokio::task::spawn_blocking(move || Self::terminate_router_process(child))
+            .await
+            .map_err(|error| {
+                Error::BackendError(format!("zenohd process-reaper task failed: {error}"))
+            })?;
+        Ok(())
+    }
+
+    fn take_router_process_for_stop(&mut self) -> Option<std::process::Child> {
         if self.is_external() {
             tracing::info!("leaving operator-managed external zenoh router running");
-            return Ok(());
+            return None;
         }
 
-        // Terminate the zenohd router process if it's running
-        if let Some(mut child) = self.router_process.take() {
-            // Try to kill the process gracefully
-            if let Err(e) = child.kill() {
-                tracing::warn!("Failed to terminate zenohd router process: {}", e);
-            } else {
-                tracing::info!("Zenohd router process terminated");
-            }
+        self.router_process.take()
+    }
 
-            // Wait for the process to actually exit and log any error
-            if let Err(e) = child.wait() {
-                tracing::warn!("Error waiting for zenohd process to exit: {}", e);
-            }
+    fn terminate_router_process(mut child: std::process::Child) {
+        // Try to kill the process gracefully.
+        if let Err(e) = child.kill() {
+            tracing::warn!("Failed to terminate zenohd router process: {}", e);
+        } else {
+            tracing::info!("Zenohd router process terminated");
         }
 
-        Ok(())
+        // Reap it so a managed router never leaves a zombie process behind.
+        if let Err(e) = child.wait() {
+            tracing::warn!("Error waiting for zenohd process to exit: {}", e);
+        }
     }
 }
 

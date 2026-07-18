@@ -29,6 +29,7 @@ fn managed_router_adapter(port: u16) -> ZenohAdapter {
         false,
         SubscriberBufferSizes::default(),
         Vec::new(),
+        Vec::new(),
         None,
     )
     .expect("build managed router adapter")

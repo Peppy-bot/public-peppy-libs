@@ -14,7 +14,8 @@ mod probe_tls_tests {
     use std::sync::Arc;
     use std::time::Duration;
     use tokio_rustls::TlsAcceptor;
-    use tokio_rustls::rustls::ServerConfig;
+    use tokio_rustls::rustls::server::WebPkiClientVerifier;
+    use tokio_rustls::rustls::{RootCertStore, ServerConfig};
 
     const CA_PEM: &[u8] = include_bytes!("fixtures/minica_ca.pem");
     const SERVER_CERT_PEM: &[u8] = include_bytes!("fixtures/server_localhost.pem");
@@ -34,7 +35,7 @@ mod probe_tls_tests {
 
     /// Builds a tokio-rustls `TlsAcceptor` serving the `localhost` server leaf and
     /// its key (loaded from the embedded fixtures).
-    fn server_acceptor() -> TlsAcceptor {
+    fn server_acceptor(require_client_auth: bool) -> TlsAcceptor {
         let chain = rustls_pemfile::certs(&mut &SERVER_CERT_PEM[..])
             .collect::<Result<Vec<_>, _>>()
             .expect("parse server cert chain");
@@ -44,22 +45,35 @@ mod probe_tls_tests {
         // Name the `ring` crypto provider explicitly: rustls is built with both
         // its `ring` and `aws-lc-rs` features in this tree, so it cannot pick a
         // process-default provider and a bare `ServerConfig::builder()` panics.
-        let config = ServerConfig::builder_with_provider(Arc::new(
-            tokio_rustls::rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .expect("default protocol versions")
-        .with_no_client_auth()
-        .with_single_cert(chain, key)
-        .expect("build server config");
+        let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
+        let builder = ServerConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .expect("default protocol versions");
+        let builder = if require_client_auth {
+            let mut roots = RootCertStore::empty();
+            for cert in rustls_pemfile::certs(&mut &CA_PEM[..]) {
+                roots
+                    .add(cert.expect("parse client CA"))
+                    .expect("add client CA");
+            }
+            let verifier = WebPkiClientVerifier::builder_with_provider(roots.into(), provider)
+                .build()
+                .expect("build client verifier");
+            builder.with_client_cert_verifier(verifier)
+        } else {
+            builder.with_no_client_auth()
+        };
+        let config = builder
+            .with_single_cert(chain, key)
+            .expect("build server config");
         TlsAcceptor::from(Arc::new(config))
     }
 
     /// Binds a TLS acceptor on `127.0.0.1:0`, spawns an accept loop that performs
     /// the TLS handshake on each connection (then drops it), and returns the bound
     /// port. The loop task lives for the duration of the test process.
-    async fn start_tls_server() -> u16 {
-        let acceptor = server_acceptor();
+    async fn start_tls_server(require_client_auth: bool) -> u16 {
+        let acceptor = server_acceptor(require_client_auth);
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("bind tls test listener");
@@ -71,9 +85,14 @@ mod probe_tls_tests {
                 };
                 let acceptor = acceptor.clone();
                 tokio::spawn(async move {
-                    // Complete the handshake, then drop — the probe only needs the
-                    // handshake to finish to consider the link validated.
-                    let _ = acceptor.accept(stream).await;
+                    // Keep an accepted TLS connection open beyond the probe's
+                    // post-handshake alert grace window. A healthy long-lived
+                    // Zenoh listener does the same while it waits for protocol
+                    // traffic from the client.
+                    if let Ok(stream) = acceptor.accept(stream).await {
+                        tokio::time::sleep(Duration::from_millis(400)).await;
+                        drop(stream);
+                    }
                 });
             }
         });
@@ -85,7 +104,7 @@ mod probe_tls_tests {
     /// while still matching the leaf's SAN.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn correct_ca_and_name_succeeds() {
-        let port = start_tls_server().await;
+        let port = start_tls_server(false).await;
         let ca = ca_tempfile();
         let tls = TlsConfig::client(PathBuf::from(&*ca));
 
@@ -97,7 +116,7 @@ mod probe_tls_tests {
     /// chain cannot be validated.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn untrusted_system_roots_fails() {
-        let port = start_tls_server().await;
+        let port = start_tls_server(false).await;
         let tls = TlsConfig::default();
 
         let result = probe_tls_reachable("localhost", port, &tls, PROBE_TIMEOUT).await;
@@ -111,7 +130,7 @@ mod probe_tls_tests {
     /// SAN (`localhost`) → name verification (always on) rejects it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn name_mismatch_fails() {
-        let port = start_tls_server().await;
+        let port = start_tls_server(false).await;
         let ca = ca_tempfile();
         let tls = TlsConfig::client(PathBuf::from(&*ca));
 
@@ -120,6 +139,35 @@ mod probe_tls_tests {
             result.is_err(),
             "expected Err (name mismatch), got {result:?}"
         );
+    }
+
+    /// An mTLS probe presents its configured connect certificate and key. The
+    /// server trusts the fixture CA and accepts the dual-EKU fixture leaf as a
+    /// client identity.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mtls_connect_identity_succeeds() {
+        let port = start_tls_server(true).await;
+        let ca = ca_tempfile();
+        let mut certificate = tempfile::NamedTempFile::new().expect("create cert tempfile");
+        certificate
+            .write_all(SERVER_CERT_PEM)
+            .expect("write client cert tempfile");
+        certificate.flush().expect("flush client cert tempfile");
+        let mut private_key = tempfile::NamedTempFile::new().expect("create key tempfile");
+        private_key
+            .write_all(SERVER_KEY_PEM)
+            .expect("write client key tempfile");
+        private_key.flush().expect("flush client key tempfile");
+        let tls = TlsConfig {
+            root_ca_certificate: Some(PathBuf::from(&*ca)),
+            connect_certificate: Some(certificate.path().to_path_buf()),
+            connect_private_key: Some(private_key.path().to_path_buf()),
+            enable_mtls: true,
+            ..TlsConfig::default()
+        };
+
+        let result = probe_tls_reachable("localhost", port, &tls, PROBE_TIMEOUT).await;
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
     }
 
     /// A peer that completes the TCP accept but never drives the TLS handshake

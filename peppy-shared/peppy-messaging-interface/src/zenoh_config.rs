@@ -64,40 +64,10 @@ impl Default for TlsConfig {
     }
 }
 
-/// Verify that a TLS endpoint at `host:port` is reachable AND that its
-/// certificate actually validates against the trust configured in `tls`,
-/// completing a real TLS handshake within `timeout` *total* — the TCP connect
-/// and the TLS handshake share one deadline, so the whole call is bounded by
-/// `timeout` (not `timeout` per phase). The caller relies on this single bound
-/// to keep the probe inside its federation ack budget.
-///
-/// ## Why a raw handshake and not `zenoh::open`
-///
-/// In zenoh *client* mode `zenoh::open` returns `Ok` as soon as the local
-/// session is created — even if the configured connect endpoint cannot be
-/// reached or its certificate cannot be validated. The link failure is
-/// asynchronous and silent (no data ever flows, but nothing errors), so a
-/// successful `open` is NOT a usable "the federation link validates" signal.
-/// The only deterministic way to know the link is good is to perform the TLS
-/// handshake ourselves and observe the result. This probe does exactly that
-/// with rustls directly (no zenoh session involved): a TCP connect followed by
-/// a full TLS handshake that trusts the configured roots and verifies the
-/// server name. `Ok(())` is returned iff the chain is trusted and the server
-/// name matches; any other outcome returns a human-readable `Err` naming
-/// `host:port` (it is surfaced into a user-facing CLI error).
-///
-/// Name verification is intentionally left ON (rustls's default) regardless of
-/// `tls.verify_name_on_connect`: this probe is the authoritative "does the link
-/// validate" check, so it always validates fully.
-pub async fn probe_tls_reachable(
-    host: &str,
-    port: u16,
+fn build_probe_client_config(
     tls: &TlsConfig,
-    timeout: std::time::Duration,
-) -> Result<(), String> {
+) -> Result<tokio_rustls::rustls::ClientConfig, String> {
     use std::sync::Arc;
-    use tokio_rustls::TlsConnector;
-    use tokio_rustls::rustls::pki_types::ServerName;
     use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
     // Build the trust anchors: either an explicit private CA, or the OS roots.
@@ -145,21 +115,130 @@ pub async fn probe_tls_reachable(
     // cannot auto-determine a single default provider and a bare
     // `ClientConfig::builder()` would panic. tokio-rustls's default features
     // guarantee `ring` is available, so we name it directly.
-    let config = ClientConfig::builder_with_provider(Arc::new(
+    let config_builder = ClientConfig::builder_with_provider(Arc::new(
         tokio_rustls::rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()
     .map_err(|e| format!("TLS provider setup failed: {e}"))?
-    .with_root_certificates(roots)
-    .with_no_client_auth();
+    .with_root_certificates(roots);
+
+    if tls.enable_mtls {
+        let certificate_path = tls.connect_certificate.as_ref().ok_or_else(|| {
+            "mTLS probe requires a connect certificate (`connect_certificate`)".to_string()
+        })?;
+        let private_key_path = tls.connect_private_key.as_ref().ok_or_else(|| {
+            "mTLS probe requires a connect private key (`connect_private_key`)".to_string()
+        })?;
+
+        let certificate_bytes = std::fs::read(certificate_path).map_err(|e| {
+            format!(
+                "read connect certificate `{}` failed: {e}",
+                certificate_path.display()
+            )
+        })?;
+        let certificate_chain = rustls_pemfile::certs(&mut &certificate_bytes[..])
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                format!(
+                    "parse connect certificate `{}` failed: {e}",
+                    certificate_path.display()
+                )
+            })?;
+        if certificate_chain.is_empty() {
+            return Err(format!(
+                "connect certificate `{}` contained no certificates",
+                certificate_path.display()
+            ));
+        }
+
+        let private_key_bytes = std::fs::read(private_key_path).map_err(|e| {
+            format!(
+                "read connect private key `{}` failed: {e}",
+                private_key_path.display()
+            )
+        })?;
+        let private_key = rustls_pemfile::private_key(&mut &private_key_bytes[..])
+            .map_err(|e| {
+                format!(
+                    "parse connect private key `{}` failed: {e}",
+                    private_key_path.display()
+                )
+            })?
+            .ok_or_else(|| {
+                format!(
+                    "connect private key `{}` contained no private key",
+                    private_key_path.display()
+                )
+            })?;
+
+        config_builder
+            .with_client_auth_cert(certificate_chain, private_key)
+            .map_err(|e| format!("configure mTLS client identity failed: {e}"))
+    } else {
+        Ok(config_builder.with_no_client_auth())
+    }
+}
+
+/// Verify that a TLS endpoint at `host:port` is reachable AND that its
+/// certificate actually validates against the trust configured in `tls`,
+/// completing a real TLS handshake within `timeout` total. The TCP connect, TLS
+/// handshake, and short post-handshake rejection check share one deadline, so
+/// the whole call is bounded by `timeout` (not `timeout` per phase). The caller
+/// relies on this single bound to keep the probe inside its federation ack
+/// budget.
+///
+/// ## Why a raw handshake and not `zenoh::open`
+///
+/// In zenoh *client* mode `zenoh::open` returns `Ok` as soon as the local
+/// session is created, even if the configured connect endpoint cannot be
+/// reached or its certificate cannot be validated. The link failure is
+/// asynchronous and silent (no data ever flows, but nothing errors), so a
+/// successful `open` is NOT a usable "the federation link validates" signal.
+/// The only deterministic way to know the link is good is to perform the TLS
+/// handshake ourselves and observe the result. This probe does exactly that
+/// with rustls directly (no zenoh session involved): a TCP connect followed by
+/// a full TLS handshake that trusts the configured roots and verifies the
+/// server name. `Ok(())` is returned iff the chain is trusted and the server
+/// name matches; any other outcome returns a human-readable `Err` naming
+/// `host:port` (it is surfaced into a user-facing CLI error).
+///
+/// Name verification is intentionally left ON (rustls's default) regardless of
+/// `tls.verify_name_on_connect`: this probe is the authoritative "does the link
+/// validate" check, so it always validates fully.
+pub async fn probe_tls_reachable(
+    host: &str,
+    port: u16,
+    tls: &TlsConfig,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    use std::sync::Arc;
+    use tokio::io::AsyncReadExt;
+    use tokio_rustls::TlsConnector;
+    use tokio_rustls::rustls::pki_types::ServerName;
+
+    // Certificate files and native-root discovery are synchronous operations.
+    // Keep them off async workers and include them in the same total deadline as
+    // the network phases, so a slow mounted identity cannot wedge federation.
+    let deadline = tokio::time::Instant::now() + timeout;
+    let tls = tls.clone();
+    let config = match tokio::time::timeout_at(
+        deadline,
+        tokio::task::spawn_blocking(move || build_probe_client_config(&tls)),
+    )
+    .await
+    {
+        Err(_) => {
+            return Err(format!(
+                "loading TLS material for {host}:{port} timed out after {timeout:?}"
+            ));
+        }
+        Ok(Err(error)) => return Err(format!("TLS material task failed: {error}")),
+        Ok(Ok(Err(error))) => return Err(error),
+        Ok(Ok(Ok(config))) => config,
+    };
 
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|e| format!("invalid server name `{host}`: {e}"))?;
-
-    // One deadline for the whole probe (TCP connect + TLS handshake), so a peer
-    // that accepts the TCP connection but stalls the handshake cannot stretch the
-    // call to ~2x `timeout` — the total stays bounded by `timeout`.
-    let deadline = tokio::time::Instant::now() + timeout;
 
     let tcp = match tokio::time::timeout_at(deadline, tokio::net::TcpStream::connect((host, port)))
         .await
@@ -178,12 +257,34 @@ pub async fn probe_tls_reachable(
     // io::Error whose message contains the rustls reason, so `{e}` carries the
     // cause.
     let connector = TlsConnector::from(Arc::new(config));
-    match tokio::time::timeout_at(deadline, connector.connect(server_name, tcp)).await {
-        Err(_) => Err(format!(
-            "TLS handshake to {host}:{port} timed out after {timeout:?}"
+    let mut stream =
+        match tokio::time::timeout_at(deadline, connector.connect(server_name, tcp)).await {
+            Err(_) => {
+                return Err(format!(
+                    "TLS handshake to {host}:{port} timed out after {timeout:?}"
+                ));
+            }
+            Ok(Err(e)) => return Err(format!("TLS handshake to {host}:{port} failed: {e}")),
+            Ok(Ok(stream)) => stream,
+        };
+
+    // In TLS 1.3 the client can finish its side of the handshake before it
+    // receives the server's client-certificate rejection alert. Give that alert
+    // a short bounded window to arrive. No application data is expected from a
+    // healthy Zenoh listener, so reaching the grace deadline is success.
+    const POST_HANDSHAKE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+    let grace_deadline =
+        std::cmp::min(deadline, tokio::time::Instant::now() + POST_HANDSHAKE_GRACE);
+    let mut byte = [0u8; 1];
+    match tokio::time::timeout_at(grace_deadline, stream.read(&mut byte)).await {
+        Err(_) => Ok(()),
+        Ok(Ok(0)) => Err(format!(
+            "TLS peer {host}:{port} closed the connection immediately after the handshake"
         )),
-        Ok(Err(e)) => Err(format!("TLS handshake to {host}:{port} failed: {e}")),
-        Ok(Ok(_stream)) => Ok(()),
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(format!(
+            "TLS peer {host}:{port} rejected the connection after the handshake: {e}"
+        )),
     }
 }
 
@@ -406,21 +507,27 @@ pub(crate) fn render_probe_config(
 /// list (e.g. the daemon's local router dialing a remote `tls/` router) turns the
 /// retry/keep-alive on (`reconnect`) so an unreachable or restarted upstream is
 /// recovered transparently and never stops the local router serving its own
-/// nodes. The connect-side TLS for that link rides in `tls` (a
-/// [`TlsConfig::client`]); it is ignored on a plaintext listen endpoint.
+/// nodes. `extra_listen_endpoints` are appended after the primary listener and
+/// may carry per-endpoint config fragments. The connect-side TLS for that link
+/// rides in `tls` (a [`TlsConfig::client`]); it is ignored on a plaintext listen
+/// endpoint.
 pub(crate) fn router_spec(
     protocol: ZenohNetProtocol,
     host: &str,
     port: u16,
     gossip: bool,
     connect_endpoints: Vec<String>,
+    extra_listen_endpoints: Vec<String>,
     tls: Option<TlsConfig>,
 ) -> ZenohConfigSpec {
+    let mut listen_endpoints = vec![format!("{protocol}/{host}:{port}")];
+    listen_endpoints.extend(extra_listen_endpoints);
+
     ZenohConfigSpec {
         mode: SessionMode::Router,
         reconnect: !connect_endpoints.is_empty(),
         connect_endpoints,
-        listen_endpoints: vec![format!("{protocol}/{host}:{port}")],
+        listen_endpoints,
         gossip,
         tls,
         // A router is never namespaced: it only forwards between transport faces
@@ -436,7 +543,8 @@ pub(crate) fn router_spec(
 /// [`crate::ZenohAdapter::with_router`]. With `protocol = Tls` and a server
 /// [`TlsConfig`] this emits the `transport.link.tls` listener block; a non-empty
 /// `connect_endpoints` emits a `connect` block so the router federates to those
-/// upstreams (see [`router_spec`]). Available under the base `zenoh` feature (no
+/// upstreams, and `extra_listen_endpoints` adds listeners after the primary one
+/// (see [`router_spec`]). Available under the base `zenoh` feature (no
 /// `router`/zenohd binary needed) because rendering a config is independent of
 /// spawning a process.
 pub fn render_router_config(
@@ -445,6 +553,7 @@ pub fn render_router_config(
     port: u16,
     gossip: bool,
     connect_endpoints: Vec<String>,
+    extra_listen_endpoints: Vec<String>,
     tls: Option<TlsConfig>,
 ) -> String {
     render_config_string(&router_spec(
@@ -453,6 +562,7 @@ pub fn render_router_config(
         port,
         gossip,
         connect_endpoints,
+        extra_listen_endpoints,
         tls,
     ))
 }
@@ -614,6 +724,7 @@ mod tests {
             7447,
             false,
             Vec::new(),
+            Vec::new(),
             Some(TlsConfig::server(
                 PathBuf::from("/certs/leaf.pem"),
                 PathBuf::from("/certs/leaf.key"),
@@ -665,6 +776,7 @@ mod tests {
             7447,
             false,
             Vec::new(),
+            Vec::new(),
             Some(TlsConfig::server(
                 PathBuf::from("/certs/leaf.pem"),
                 PathBuf::from("/certs/leaf.key"),
@@ -686,6 +798,7 @@ mod tests {
             7448,
             true,
             vec!["tls/cap.zenoh.localhost:7443".to_string()],
+            Vec::new(),
             Some(TlsConfig::client(PathBuf::from("/certs/ca.pem"))),
         );
         let cfg: serde_json::Value =
@@ -711,6 +824,60 @@ mod tests {
 
         // And the whole thing is a config zenoh accepts.
         zenoh::config::Config::from_json5(&s).expect("federated router config parses");
+    }
+
+    #[test]
+    fn router_config_appends_fragment_listener_without_global_transport() {
+        let fragment_listener = concat!(
+            "tls/0.0.0.0:7449#",
+            "root_ca_certificate_file=/certs/ca.pem;",
+            "listen_certificate_file=/certs/leaf.pem;",
+            "listen_private_key_file=/certs/leaf.key;",
+            "enable_mtls=true"
+        )
+        .to_string();
+        let s = render_router_config(
+            ZenohNetProtocol::Tcp,
+            "0.0.0.0",
+            7448,
+            true,
+            Vec::new(),
+            vec![fragment_listener.clone()],
+            None,
+        );
+        let rendered: serde_json::Value =
+            serde_json::from_str(&s).expect("rendered router config is JSON");
+
+        assert_eq!(
+            rendered["listen"]["endpoints"]["router"],
+            json!(["tcp/0.0.0.0:7448", fragment_listener])
+        );
+        assert!(
+            rendered.get("transport").is_none(),
+            "endpoint-local TLS fragments must not emit a global transport block"
+        );
+
+        let config =
+            zenoh::config::Config::from_json5(&s).expect("fragment listener config parses");
+        let listen: serde_json::Value = serde_json::from_str(
+            &config
+                .get_json("listen")
+                .expect("read listeners back from zenoh config"),
+        )
+        .expect("listeners deserialize");
+        assert_eq!(
+            listen["endpoints"]["router"],
+            json!([
+                "tcp/0.0.0.0:7448",
+                concat!(
+                    "tls/0.0.0.0:7449#",
+                    "enable_mtls=true;",
+                    "listen_certificate_file=/certs/leaf.pem;",
+                    "listen_private_key_file=/certs/leaf.key;",
+                    "root_ca_certificate_file=/certs/ca.pem"
+                )
+            ])
+        );
     }
 
     // ---- Org-id session namespace rendering ----

@@ -197,7 +197,8 @@ impl ZenohAdapter {
     /// network. Empty is a standalone router (today's behavior). The connect-side
     /// trust for a `tls/` upstream rides in `tls` (a [`TlsConfig::client`]); it is
     /// written into the zenohd config only and is inert for the daemon's own
-    /// plaintext loopback session.
+    /// plaintext loopback session. `extra_listen_endpoints` are appended after
+    /// the primary listener and may carry per-endpoint config fragments.
     #[cfg(feature = "router")]
     #[allow(clippy::too_many_arguments)]
     pub fn with_router(
@@ -207,10 +208,17 @@ impl ZenohAdapter {
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
         connect_endpoints: Vec<String>,
+        extra_listen_endpoints: Vec<String>,
         tls: Option<TlsConfig>,
     ) -> Result<Self> {
-        let zenohd_config_path =
-            zenohd::router_config_path(protocol, host, port, connect_endpoints, tls.clone())?;
+        let zenohd_config_path = zenohd::router_config_path(
+            protocol,
+            host,
+            port,
+            connect_endpoints,
+            extra_listen_endpoints,
+            tls.clone(),
+        )?;
         let facade = zenohd::ZenohdFacade::managed(zenohd_config_path)?;
         let client_config =
             Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, tls)?;
@@ -253,9 +261,9 @@ impl ZenohAdapter {
     }
 
     /// Re-renders the owned router's zenohd config file *in place* with new
-    /// federation `connect_endpoints` (+ connect-side `tls`) — same protocol /
-    /// host / port as it was spawned with, only the upstream connect block (and
-    /// its TLS trust) change. The new config takes effect on the next
+    /// federation `connect_endpoints`, `extra_listen_endpoints`, and connect-side
+    /// `tls`. The primary protocol, host, and port stay as spawned. The new config
+    /// takes effect on the next
     /// `stop_router` / `start_router`; this call does not itself restart zenohd.
     ///
     /// Used by the daemon to (de)federate its local router to the user's per-user
@@ -271,6 +279,7 @@ impl ZenohAdapter {
     pub fn refederate(
         &mut self,
         connect_endpoints: Vec<String>,
+        extra_listen_endpoints: Vec<String>,
         tls: Option<TlsConfig>,
     ) -> Result<bool> {
         let facade = self.zenohd.as_ref().ok_or_else(|| {
@@ -296,6 +305,7 @@ impl ZenohAdapter {
             ep.host(),
             ep.port(),
             connect_endpoints,
+            extra_listen_endpoints,
             tls,
         )?;
         Ok(true)
@@ -450,6 +460,7 @@ impl ZenohAdapter {
                 gossip,
                 buffer_sizes,
                 Vec::new(),
+                Vec::new(),
                 None,
             )?
             .with_namespace(namespace.clone());
@@ -553,6 +564,17 @@ impl ZenohAdapter {
             self.client_config.tls.clone(),
         );
         zenohd::RouterLinksProbe::new(probe_config, zenohd.configured_connect_endpoints())
+    }
+
+    /// Returns whether this managed router was built from an operator-pinned
+    /// `ZENOH_CONFIG` file. The value is captured when the adapter is created,
+    /// so later environment changes cannot alter ownership of the running
+    /// router.
+    #[cfg(feature = "router")]
+    pub fn router_config_is_pinned(&self) -> bool {
+        self.zenohd
+            .as_ref()
+            .is_some_and(|zenohd| zenohd.is_pinned())
     }
 
     #[cfg(feature = "router")]
@@ -1042,7 +1064,7 @@ impl MessengerBackend for ZenohAdapter {
                 zenohd.adopt_external_router();
                 return Ok(());
             }
-            zenohd.start_router()?;
+            zenohd.start_router().await?;
             Ok(())
         }
         // Client-only build: router management was not compiled in.
@@ -1059,8 +1081,7 @@ impl MessengerBackend for ZenohAdapter {
                 .zenohd
                 .as_mut()
                 .ok_or(Error::ZenohDConfigurationNotFound)?;
-            zenohd.stop_router()?;
-            Ok(())
+            zenohd.stop_router_async().await
         }
         // Client-only build: router management was not compiled in.
         #[cfg(not(feature = "router"))]
@@ -1575,7 +1596,7 @@ mod tests {
     /// zenohd process), so this is a pure file check.
     #[cfg(feature = "router")]
     #[test]
-    fn refederate_rewrites_the_router_config_with_the_upstream_and_trust() {
+    fn refederate_rewrites_the_router_config_with_the_upstream_listener_and_trust() {
         // A port unlikely to collide with other config-rendering tests (the
         // rendered config path is keyed by port).
         let port = 59247;
@@ -1585,6 +1606,7 @@ mod tests {
             port,
             false,
             SubscriberBufferSizes::default(),
+            Vec::new(),
             Vec::new(),
             None,
         )
@@ -1606,6 +1628,7 @@ mod tests {
         let rewrote = adapter
             .refederate(
                 vec!["tls/cap.zenoh.localhost:7443".to_string()],
+                vec!["tls/0.0.0.0:7449#enable_mtls=true".to_string()],
                 Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
             )
             .expect("refederate rewrites the config in place");
@@ -1620,11 +1643,15 @@ mod tests {
             after.contains("/certs/ca.pem"),
             "connect-side CA trust is now present"
         );
+        assert!(
+            after.contains("tls/0.0.0.0:7449#enable_mtls=true"),
+            "extra listener endpoint is now present"
+        );
 
         // refederate on an adapter that owns no router (a client) is an error.
         let mut clientish = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, "127.0.0.1", port)
             .expect("build client adapter");
-        assert!(clientish.refederate(Vec::new(), None).is_err());
+        assert!(clientish.refederate(Vec::new(), Vec::new(), None).is_err());
 
         let _ = std::fs::remove_file(&cfg_path);
     }
@@ -1644,6 +1671,7 @@ mod tests {
         let rewrote = adapter
             .refederate(
                 vec!["tls/cap.zenoh.localhost:7443".to_string()],
+                Vec::new(),
                 Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
             )
             .expect("refederate succeeds as a no-op for an external router");

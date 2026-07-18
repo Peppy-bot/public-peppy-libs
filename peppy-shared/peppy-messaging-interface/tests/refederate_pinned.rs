@@ -27,6 +27,7 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
         port,
         false,
         Vec::new(),
+        Vec::new(),
         None,
     );
     let cfg_path = std::env::temp_dir().join(format!("peppy_pinned_router_{port}.json5"));
@@ -48,15 +49,21 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
         false,
         SubscriberBufferSizes::default(),
         Vec::new(),
+        Vec::new(),
         None,
     )
     .expect("build a router adapter from the operator-pinned config");
+    assert!(
+        adapter.router_config_is_pinned(),
+        "the adapter must expose the ownership captured from ZENOH_CONFIG"
+    );
 
     let before = std::fs::read_to_string(&cfg_path).expect("read the pinned config");
 
     let rewrote = adapter
         .refederate(
             vec!["tls/cap.zenoh.localhost:7443".to_string()],
+            Vec::new(),
             Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
         )
         .expect("refederate under a pinned config succeeds as a no-op");

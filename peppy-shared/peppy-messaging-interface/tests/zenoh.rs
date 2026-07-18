@@ -968,6 +968,7 @@ mod zenoh_tests {
             true,
             SubscriberBufferSizes::default(),
             Vec::new(),
+            Vec::new(),
             None,
         )
         .unwrap();
