@@ -91,48 +91,56 @@ mod zenoh_tls_tests {
         }
     }
 
-    /// Starts a `zenohd` router listening on `tls/127.0.0.1:<port>` with the
-    /// server leaf/key. Returns the owning `Messenger` (drop it to stop zenohd)
-    /// and the port. `gossip = false`: the router seeds nothing extra here.
-    async fn start_tls_router(certs: &Certs) -> (Messenger, u16) {
+    /// Reserves an ephemeral port, builds a router adapter on it with `links`,
+    /// and starts the `zenohd` process. `gossip = false` throughout: no router
+    /// in these tests seeds a peer mesh. Returns the owning `Messenger` (drop
+    /// it to stop zenohd) and the port. `what` labels the panic on failure.
+    async fn start_router_with(
+        protocol: ZenohNetProtocol,
+        links: RouterLinks,
+        what: &str,
+    ) -> (Messenger, u16) {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
         let port = listener.local_addr().expect("local addr").port();
         drop(listener);
 
         let adapter = ZenohAdapter::with_router(
-            ZenohNetProtocol::Tls,
+            protocol,
             "127.0.0.1",
             port,
             false,
             SubscriberBufferSizes::default(),
-            RouterLinks {
-                upstream: None,
-                tls: Some(TlsConfig::server(certs.cert.clone(), certs.key.clone())),
-            },
+            links,
         )
-        .expect("build tls router adapter");
+        .unwrap_or_else(|e| panic!("build {what} adapter: {e}"));
         let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
         messenger
             .start_router()
             .await
-            .expect("start tls zenohd router");
+            .unwrap_or_else(|e| panic!("start {what}: {e}"));
         (messenger, port)
+    }
+
+    /// Starts a `zenohd` router listening on `tls/127.0.0.1:<port>` with the
+    /// server leaf/key.
+    async fn start_tls_router(certs: &Certs) -> (Messenger, u16) {
+        start_router_with(
+            ZenohNetProtocol::Tls,
+            RouterLinks {
+                upstream: None,
+                tls: Some(TlsConfig::server(certs.cert.clone(), certs.key.clone())),
+            },
+            "tls router",
+        )
+        .await
     }
 
     /// Starts a `zenohd` router shaped like the platform hub: a `tls/` listener
     /// that REQUIRES a client certificate chained to the test CA (mTLS), the
     /// same posture as platform-backend's shared router.
     async fn start_mtls_hub_router(certs: &Certs) -> (Messenger, u16) {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
-        let port = listener.local_addr().expect("local addr").port();
-        drop(listener);
-
-        let adapter = ZenohAdapter::with_router(
+        start_router_with(
             ZenohNetProtocol::Tls,
-            "127.0.0.1",
-            port,
-            false,
-            SubscriberBufferSizes::default(),
             RouterLinks {
                 upstream: None,
                 tls: Some(TlsConfig {
@@ -141,14 +149,9 @@ mod zenoh_tls_tests {
                     ..TlsConfig::server(certs.cert.clone(), certs.key.clone())
                 }),
             },
+            "mTLS hub router",
         )
-        .expect("build mTLS hub router adapter");
-        let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-        messenger
-            .start_router()
-            .await
-            .expect("start mTLS hub zenohd router");
-        (messenger, port)
+        .await
     }
 
     /// Opens a `tls/` client session, retrying briefly while the router's TLS
@@ -170,16 +173,8 @@ mod zenoh_tls_tests {
     /// peppy daemon's shape in the per-user-router design: local nodes speak
     /// plaintext loopback, and only the inter-router hop is encrypted.
     async fn start_federated_router(certs: &Certs, remote_port: u16) -> (Messenger, u16) {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
-        let port = listener.local_addr().expect("local addr").port();
-        drop(listener);
-
-        let adapter = ZenohAdapter::with_router(
+        start_router_with(
             ZenohNetProtocol::Tcp,
-            "127.0.0.1",
-            port,
-            false,
-            SubscriberBufferSizes::default(),
             // Federate to the remote TLS router, trusting it via the same CA the
             // TLS clients use (name verification off because the leaf's SAN is
             // `localhost` while we dial `127.0.0.1` — the CA-trust check stays on).
@@ -187,14 +182,9 @@ mod zenoh_tls_tests {
                 upstream: Some(format!("tls/127.0.0.1:{remote_port}")),
                 tls: Some(trusting_client_tls(certs)),
             },
+            "federated router",
         )
-        .expect("build federated router adapter");
-        let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-        messenger
-            .start_router()
-            .await
-            .expect("start federated zenohd router");
-        (messenger, port)
+        .await
     }
 
     /// Opens a plaintext `tcp/` client session to a local router, retrying while
@@ -251,33 +241,32 @@ mod zenoh_tls_tests {
             )
         };
 
-        let start_local = |upstream: String| async {
-            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
-            let port = listener.local_addr().expect("local addr").port();
-            drop(listener);
-            let adapter = ZenohAdapter::with_router(
+        let start_local = |upstream: String| {
+            start_router_with(
                 ZenohNetProtocol::Tcp,
-                "127.0.0.1",
-                port,
-                false,
-                SubscriberBufferSizes::default(),
                 RouterLinks {
                     upstream: Some(upstream),
                     tls: None,
                 },
+                "fragment-upstream local router",
             )
-            .expect("build local router with fragment mTLS upstream");
-            let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
-            messenger.start_router().await.expect("start local router");
-            (messenger, port)
         };
 
         let (mut good_local, good_port) = start_local(upstream_with(&certs.cert, &certs.key)).await;
         let (mut rogue_local, rogue_port) =
             start_local(upstream_with(&rogue.cert, &rogue.key)).await;
-        // Give the local routers a moment to dial the hub (the good one
-        // establishes; the rogue one is rejected by the hub's client-cert check).
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Wait for the good router's upstream link to the hub to establish
+        // (event-driven, no blind sleep). The rogue router's link never
+        // establishes — the hub rejects its client certificate — which the
+        // no-delivery assertion below covers.
+        assert!(
+            good_local
+                .router_links_probe()
+                .expect("fragment upstream parses into a links probe")
+                .wait_established(Duration::from_secs(10))
+                .await,
+            "the good client identity's upstream link must establish"
+        );
 
         let good_subscriber = open_plaintext_client(good_port).await;
         let good_subscription = good_subscriber

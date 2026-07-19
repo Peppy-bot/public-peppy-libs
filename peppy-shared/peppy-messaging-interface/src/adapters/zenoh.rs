@@ -1087,11 +1087,7 @@ impl MessengerBackend for ZenohAdapter {
         // `IpAddr::from_str` expects the bare address. Preserve this legacy
         // socket accessor for IPv6 callers even though `client_locator()` is the
         // authoritative endpoint representation.
-        let ip_host = host
-            .strip_prefix('[')
-            .and_then(|host| host.strip_suffix(']'))
-            .unwrap_or(host);
-        let ip = ip_host
+        let ip = crate::zenohd::unbracket(host)
             .parse()
             .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
         SocketAddr::new(ip, port)

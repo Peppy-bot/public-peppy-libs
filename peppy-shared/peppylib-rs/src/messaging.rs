@@ -142,9 +142,11 @@ enum Transport {
 
 /// Discovery parameters pulled from a node's
 /// [`DiscoveryConfig`](config::runtime::DiscoveryConfig) by
-/// [`SessionScope::Discovery`]: the gossip seed list, the gossip toggle, and
-/// subscriber buffer sizing. The namespace travels on [`MessengerConnect`]
-/// itself (taken from the config's stamped workspace namespace), not here.
+/// [`SessionScope::Discovery`]: the gossip seed list, the *requested* gossip
+/// toggle (whether the session may actually gossip is decided at assembly by
+/// [`MessengerConnect::gossip_allowed`]), and subscriber buffer sizing. The
+/// namespace travels on [`MessengerConnect`] itself (taken from the config's
+/// stamped workspace namespace), not here.
 struct DiscoveryParams {
     seed_peers: Vec<String>,
     gossip: bool,
@@ -158,9 +160,11 @@ struct DiscoveryParams {
 /// by a node's discovery config, never both.
 pub enum SessionScope<'a> {
     /// Open the session under an explicit workspace namespace (routing
-    /// isolation) instead of the `local` default, with no gossip discovery. Used
-    /// by a CLI control session so it reaches the daemon/node services under the
-    /// same namespace the daemon runs.
+    /// isolation) instead of the `local` default, with no config-driven
+    /// discovery. Used by a CLI control session so it reaches the daemon/node
+    /// services under the same namespace the daemon runs. Like every scope, a
+    /// non-local namespace forces the session into no-gossip client
+    /// (router-relay) mode.
     Namespace(Namespace),
     /// Apply the node's [`DiscoveryConfig`](config::runtime::DiscoveryConfig): an
     /// explicit gossip seed list (falling back to `host:port`), the gossip
@@ -228,17 +232,27 @@ impl MessengerConnect {
                 self.namespace = cfg.namespace.clone().unwrap_or_else(Namespace::local);
                 self.discovery = Some(DiscoveryParams {
                     seed_peers: cfg.seed_peers.clone(),
-                    // A workspace-namespaced session never gossips: gossip
-                    // would form direct peer links that bypass the enforced
-                    // platform-hub relay, so under a non-local namespace the
-                    // session is forced into client (router-relay) mode
-                    // regardless of the configured toggle.
-                    gossip: cfg.gossip && self.namespace.is_local(),
+                    // The topology as requested; whether the session may
+                    // actually gossip is decided once at assembly
+                    // ([`Self::gossip_allowed`]), so every scope obeys the
+                    // same workspace-namespace policy.
+                    gossip: cfg.gossip,
                     buffer_sizes: pmi::SubscriberBufferSizes::from(cfg),
                 });
             }
         }
         self
+    }
+
+    /// Whether this session's topology may gossip. A workspace-namespaced
+    /// session never gossips: gossip would form direct peer links that bypass
+    /// the enforced platform-hub relay, so under a non-local namespace the
+    /// session is forced into client (router-relay) mode regardless of the
+    /// requested topology. Applied at assembly (`into_future`) so every scope
+    /// — an explicit [`SessionScope::Namespace`] as much as a node's
+    /// [`SessionScope::Discovery`] — obeys the same policy.
+    fn gossip_allowed(&self) -> bool {
+        self.namespace.is_local()
     }
 }
 
@@ -249,10 +263,20 @@ impl std::future::IntoFuture for MessengerConnect {
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
+            let gossip_allowed = self.gossip_allowed();
             let adapter = match (self.transport, self.discovery) {
-                (Transport::Tcp, None) => {
-                    ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &self.host, self.port)?
-                }
+                // The default-discovery equivalent of `ZenohAdapter::connect_to`
+                // (gossip peer, seed = `host:port`), with the gossip bit under
+                // the namespace policy.
+                (Transport::Tcp, None) => ZenohAdapter::connect_to_with_discovery(
+                    ZenohNetProtocol::Tcp,
+                    &self.host,
+                    self.port,
+                    Vec::new(),
+                    gossip_allowed,
+                    pmi::SubscriberBufferSizes::default(),
+                    None,
+                )?,
                 (Transport::Tls(tls), None) => {
                     ZenohAdapter::connect_to_tls(&self.host, self.port, tls)?
                 }
@@ -261,7 +285,7 @@ impl std::future::IntoFuture for MessengerConnect {
                     &self.host,
                     self.port,
                     d.seed_peers,
-                    d.gossip,
+                    d.gossip && gossip_allowed,
                     d.buffer_sizes,
                     None,
                 )?,
@@ -749,14 +773,28 @@ mod scope_tests {
     fn a_workspace_namespace_forces_the_session_into_no_gossip_relay() {
         // Even with gossip requested, a workspace-namespaced node session must
         // relay through the router: direct peer links would bypass the
-        // enforced platform hub.
+        // enforced platform hub. The policy lives at assembly
+        // (`gossip_allowed`), so it covers every scope.
         let cfg = discovery_config(Some(WORKSPACE), true);
         let connect =
             MessengerHandle::connect("127.0.0.1", 7448).scope(SessionScope::Discovery(&cfg));
-        let discovery = connect.discovery.expect("discovery params are set");
+        let discovery = connect
+            .discovery
+            .as_ref()
+            .expect("discovery params are set");
         assert!(
-            !discovery.gossip,
+            !(discovery.gossip && connect.gossip_allowed()),
             "a workspace-namespaced session must never gossip"
+        );
+
+        // An explicit Namespace scope (a CLI control session) obeys the same
+        // policy — it must not open a gossiping peer session either.
+        let namespaced = MessengerHandle::connect("127.0.0.1", 7448).scope(
+            SessionScope::Namespace(Namespace::parse(WORKSPACE).expect("valid test namespace")),
+        );
+        assert!(
+            !namespaced.gossip_allowed(),
+            "an explicit workspace namespace must never gossip"
         );
     }
 
@@ -766,9 +804,13 @@ mod scope_tests {
             let cfg = discovery_config(None, configured);
             let connect =
                 MessengerHandle::connect("127.0.0.1", 7448).scope(SessionScope::Discovery(&cfg));
-            let discovery = connect.discovery.expect("discovery params are set");
+            let discovery = connect
+                .discovery
+                .as_ref()
+                .expect("discovery params are set");
             assert_eq!(
-                discovery.gossip, configured,
+                discovery.gossip && connect.gossip_allowed(),
+                configured,
                 "logged-out operation keeps its configured local topology"
             );
         }

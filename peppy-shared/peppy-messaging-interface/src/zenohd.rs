@@ -87,12 +87,7 @@ impl ZenohEndpoint {
             ));
         }
 
-        let unbracketed_host = self
-            .host
-            .strip_prefix('[')
-            .and_then(|host| host.strip_suffix(']'))
-            .unwrap_or(&self.host);
-        let unspecified_ip = unbracketed_host
+        let unspecified_ip = unbracket(&self.host)
             .parse::<IpAddr>()
             .is_ok_and(|address| address.is_unspecified());
         if unspecified_ip || self.host == "*" {
@@ -102,6 +97,16 @@ impl ZenohEndpoint {
         }
         Ok(())
     }
+}
+
+/// Strips the brackets from a bracketed IPv6 literal (`[::1]` → `::1`),
+/// leaving any other host untouched. [`ZenohEndpoint`] keeps brackets so a
+/// formatted locator round-trips; bare-host APIs (rustls server names,
+/// `(host, port)` socket addresses, `IpAddr` parsing) need them stripped.
+pub(crate) fn unbracket(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host)
 }
 
 impl fmt::Display for ZenohEndpoint {

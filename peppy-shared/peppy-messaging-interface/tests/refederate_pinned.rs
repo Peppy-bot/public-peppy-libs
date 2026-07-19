@@ -30,7 +30,8 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
         port,
         false,
         RouterLinks::default(),
-    );
+    )
+    .expect("render the pinned router config");
     let cfg_path = std::env::temp_dir().join(format!("peppy_pinned_router_{port}.json5"));
     std::fs::write(&cfg_path, &pinned_config).expect("write the operator-pinned config");
 

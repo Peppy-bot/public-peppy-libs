@@ -293,31 +293,34 @@ impl ZenohdFacade {
     /// listening socket accepts TCP before the TLS handshake, which is all a
     /// "port already bound / accepting yet?" check needs.
     pub(crate) async fn start_router(&mut self) -> Result<()> {
-        let existing_process_paths = match (&self.ownership, self.router_process.is_some()) {
-            (
-                RouterOwnership::Managed {
-                    zenohd_config_path,
-                    zenohd_log_path,
-                    ..
-                },
-                true,
-            ) => Some((zenohd_config_path.clone(), zenohd_log_path.clone())),
-            _ => None,
-        };
-        let (zenohd_config_path, zenohd_log_path) = if let Some(paths) = existing_process_paths {
-            paths
-        } else {
-            // Pre-flight (managed routers only — the external case falls through
-            // to `spawn_router_process`'s ownership error): refuse to spawn onto a
-            // port something is already listening on.
-            if !self.is_external() && self.router_endpoint_reachable(ROUTER_PROBE_TIMEOUT).await {
-                return Err(Error::BackendError(format!(
-                    "Zenoh router port already in use: {}",
-                    self.connect_addr()
-                )));
-            }
-            self.spawn_router_process()?
-        };
+        let (zenohd_config_path, zenohd_log_path) =
+            match (&self.ownership, self.router_process.is_some()) {
+                // A managed child already exists (an earlier, e.g. timed-out,
+                // start spawned it): resume waiting on that child instead of
+                // spawning a replacement.
+                (
+                    RouterOwnership::Managed {
+                        zenohd_config_path,
+                        zenohd_log_path,
+                        ..
+                    },
+                    true,
+                ) => (zenohd_config_path.clone(), zenohd_log_path.clone()),
+                _ => {
+                    // Pre-flight (managed routers only — the external case falls
+                    // through to `spawn_router_process`'s ownership error): refuse
+                    // to spawn onto a port something is already listening on.
+                    if !self.is_external()
+                        && self.router_endpoint_reachable(ROUTER_PROBE_TIMEOUT).await
+                    {
+                        return Err(Error::BackendError(format!(
+                            "Zenoh router port already in use: {}",
+                            self.connect_addr()
+                        )));
+                    }
+                    self.spawn_router_process()?
+                }
+            };
         if self.tcp_based() {
             tracing::info!(
                 "Waiting for Zenoh router to accept connections at {}://{}",
@@ -370,28 +373,25 @@ impl ZenohdFacade {
             ));
         }
 
-        let (zenohd_path, zenohd_config_path, zenohd_log_path) = match &self.ownership {
-            RouterOwnership::Managed {
-                zenohd_path,
-                zenohd_config_path,
-                zenohd_log_path,
-                ..
-            } => (
-                zenohd_path.clone().ok_or_else(|| {
-                    Error::ZenohdError(
-                        "Zenohd binary not found. Install `zenohd` next to the `peppy` binary or make it available on PATH."
-                            .to_string(),
-                    )
-                })?,
-                zenohd_config_path.clone(),
-                zenohd_log_path.clone(),
-            ),
-            RouterOwnership::External => {
-                return Err(Error::BackendError(
-                    "cannot spawn an operator-managed external Zenoh router".to_string(),
-                ));
-            }
+        let RouterOwnership::Managed {
+            zenohd_path,
+            zenohd_config_path,
+            zenohd_log_path,
+            ..
+        } = &self.ownership
+        else {
+            return Err(Error::BackendError(
+                "cannot spawn an operator-managed external Zenoh router".to_string(),
+            ));
         };
+        let zenohd_path = zenohd_path.clone().ok_or_else(|| {
+            Error::ZenohdError(
+                "Zenohd binary not found. Install `zenohd` next to the `peppy` binary or make it available on PATH."
+                    .to_string(),
+            )
+        })?;
+        let zenohd_config_path = zenohd_config_path.clone();
+        let zenohd_log_path = zenohd_log_path.clone();
 
         // Redirect stdout+stderr to a log file instead of unread pipes: a full
         // pipe buffer blocks a zenohd thread in `write` and deadlocks the whole

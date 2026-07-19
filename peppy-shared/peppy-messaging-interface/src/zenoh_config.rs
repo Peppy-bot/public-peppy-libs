@@ -248,38 +248,38 @@ pub async fn probe_tls_reachable(
     use tokio_rustls::TlsConnector;
     use tokio_rustls::rustls::pki_types::ServerName;
 
-    let host = host
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host);
+    let host = crate::zenohd::unbracket(host);
 
     // Certificate files and native-root discovery are synchronous operations.
     // Keep them off async workers and include them in the same total deadline as
     // the network phases, so a slow mounted identity cannot wedge federation.
+    // The material load and the TCP dial are independent, so they run
+    // concurrently: the deadline pays max(load, connect), not their sum.
     let deadline = tokio::time::Instant::now() + timeout;
     let tls = tls.clone();
-    let (config, client_auth_requested) = tokio::time::timeout_at(
-        deadline,
-        tokio::task::spawn_blocking(move || build_probe_client_config(&tls)),
-    )
-    .await
-    .map_err(|_| format!("loading TLS material for {host}:{port} timed out after {timeout:?}"))?
-    .map_err(|error| format!("TLS material task failed: {error}"))??;
+    let load_material = async {
+        tokio::time::timeout_at(
+            deadline,
+            tokio::task::spawn_blocking(move || build_probe_client_config(&tls)),
+        )
+        .await
+        .map_err(|_| format!("loading TLS material for {host}:{port} timed out after {timeout:?}"))?
+        .map_err(|error| format!("TLS material task failed: {error}"))?
+    };
+    let dial = async {
+        match tokio::time::timeout_at(deadline, tokio::net::TcpStream::connect((host, port))).await
+        {
+            Err(_) => Err(format!(
+                "connect to {host}:{port} timed out after {timeout:?}"
+            )),
+            Ok(Err(e)) => Err(format!("connect to {host}:{port} failed: {e}")),
+            Ok(Ok(tcp)) => Ok(tcp),
+        }
+    };
+    let ((config, client_auth_requested), tcp) = tokio::try_join!(load_material, dial)?;
 
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|e| format!("invalid server name `{host}`: {e}"))?;
-
-    let tcp = match tokio::time::timeout_at(deadline, tokio::net::TcpStream::connect((host, port)))
-        .await
-    {
-        Err(_) => {
-            return Err(format!(
-                "connect to {host}:{port} timed out after {timeout:?}"
-            ));
-        }
-        Ok(Err(e)) => return Err(format!("connect to {host}:{port} failed: {e}")),
-        Ok(Ok(tcp)) => tcp,
-    };
 
     // Finish the handshake under the same deadline. tokio-rustls surfaces
     // validation failures (UnknownIssuer / unknown CA / bad server name) as an
@@ -615,14 +615,25 @@ pub(crate) fn router_spec(
 /// upstream (see [`RouterLinks`]). Available under the base `zenoh` feature
 /// (no `router`/zenohd binary needed) because rendering a config is
 /// independent of spawning a process.
+///
+/// The `links` endpoints arrive as raw locator strings (possibly carrying
+/// `#key=val;...` fragments), so a malformed one renders into a config zenohd
+/// cannot parse. Every render therefore validates the output here, at the
+/// single boundary both the in-process spawn path and the out-of-process
+/// callers share, so a bad locator fails at render time instead of when
+/// zenohd next boots.
 pub fn render_router_config(
     protocol: ZenohNetProtocol,
     host: &str,
     port: u16,
     gossip: bool,
     links: RouterLinks,
-) -> String {
-    render_config_string(&router_spec(protocol, host, port, gossip, links))
+) -> Result<String, crate::error::Error> {
+    let config_content = render_config_string(&router_spec(protocol, host, port, gossip, links));
+    zenoh::config::Config::from_json5(&config_content).map_err(|e| {
+        crate::error::Error::ConfigurationError(format!("rendered zenohd config is invalid: {e}"))
+    })?;
+    Ok(config_content)
 }
 
 /// The loopback ephemeral listen endpoint a peer binds. Loopback-only by design:
@@ -753,6 +764,8 @@ mod tests {
         // surface as a panic at session/router open.
         render_config(&peer_spec(true, true));
         render_config(&peer_spec(false, true));
+        // Gated like `render_probe_config` itself: only `router` paths probe.
+        #[cfg(feature = "router")]
         render_probe_config(ZenohNetProtocol::Tcp, "0.0.0.0", 7448, None);
     }
 
@@ -826,9 +839,10 @@ mod tests {
 
     #[test]
     fn rendered_tls_router_config_parses_as_zenoh_config() {
-        // The authoritative schema check: zenoh must accept the rendered
-        // `transport.link.tls` block (a wrong key would be silently dropped, so
-        // the real validation is the handshake integration test in tests/zenoh.rs).
+        // The schema check: `render_router_config` validates its own output, so
+        // an accepted render proves zenoh takes the `transport.link.tls` block
+        // (a wrong key would be silently dropped, so the real validation is the
+        // handshake integration test in tests/zenoh.rs).
         let s = render_router_config(
             ZenohNetProtocol::Tls,
             "0.0.0.0",
@@ -841,8 +855,8 @@ mod tests {
                     PathBuf::from("/certs/leaf.key"),
                 )),
             },
-        );
-        zenoh::config::Config::from_json5(&s).expect("rendered tls router config parses");
+        )
+        .expect("rendered tls router config parses");
         assert!(s.contains("tls/0.0.0.0:7447"));
     }
 
@@ -861,7 +875,8 @@ mod tests {
                 upstream: Some("tls/cap.zenoh.localhost:7443".to_string()),
                 tls: Some(TlsConfig::client(PathBuf::from("/certs/ca.pem"))),
             },
-        );
+        )
+        .expect("federated router config renders and parses");
         let cfg: serde_json::Value =
             serde_json::from_str(&s).expect("rendered federated router config is JSON");
 
@@ -882,9 +897,6 @@ mod tests {
         assert_eq!(tls["root_ca_certificate"], "/certs/ca.pem");
         assert_eq!(tls["verify_name_on_connect"], true);
         assert!(tls.get("listen_certificate").is_none());
-
-        // And the whole thing is a config zenoh accepts.
-        zenoh::config::Config::from_json5(&s).expect("federated router config parses");
     }
 
     #[test]
@@ -909,7 +921,8 @@ mod tests {
                 upstream: Some(fragment_upstream.clone()),
                 tls: None,
             },
-        );
+        )
+        .expect("fragment upstream config renders and parses");
         let rendered: serde_json::Value =
             serde_json::from_str(&s).expect("rendered router config is JSON");
 
@@ -918,7 +931,6 @@ mod tests {
             rendered.get("transport").is_none(),
             "endpoint-local TLS fragments must not emit a global transport block"
         );
-        zenoh::config::Config::from_json5(&s).expect("fragment upstream config parses");
     }
 
     // ---- Workspace session namespace rendering ----

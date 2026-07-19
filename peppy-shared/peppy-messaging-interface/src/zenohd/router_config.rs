@@ -5,9 +5,8 @@
 
 use super::ZenohNetProtocol;
 use crate::error::{Error, Result};
-use crate::zenoh_config::{RouterLinks, render_config_string, router_spec};
+use crate::zenoh_config::{RouterLinks, render_router_config};
 use std::path::{Path, PathBuf};
-use zenoh::config::Config;
 
 /// Resolves the zenohd router config path. Honors a `ZENOH_CONFIG` override;
 /// otherwise renders a router config to a temp file keyed by messaging port and
@@ -54,19 +53,14 @@ pub(crate) fn render_router_config_to_path(
     // router holds a platform upstream (nothing consumes gossip then, and it
     // would only advertise locators over the federation link). Multicast is
     // off everywhere (see `crate::zenoh_config`). The router listens on `host`
-    // as given (typically `0.0.0.0`) so nodes can reach it. Shares
-    // `router_spec` with the out-of-process render path (`render_router_config`).
-    let config_content =
-        render_config_string(&router_spec(protocol, host, messaging_port, gossip, links));
-
-    // The endpoint lists arrive as raw locator strings (possibly carrying
-    // `#key=val` fragments), so a malformed one renders into a config zenohd
-    // cannot parse. Validate before writing: the refederation path rewrites the
-    // running router's only config file in place, and a bad input must fail here
-    // rather than clobber the known-good config and surface at the next restart.
-    Config::from_json5(&config_content).map_err(|e| {
-        Error::ConfigurationError(format!("rendered zenohd config is invalid: {e}"))
-    })?;
+    // as given (typically `0.0.0.0`) so nodes can reach it.
+    //
+    // `render_router_config` (shared with the out-of-process render path) also
+    // validates the rendered config, which matters most right here: the
+    // refederation path rewrites the running router's only config file in
+    // place, and a malformed locator must fail before it clobbers the
+    // known-good file and surfaces at the next restart.
+    let config_content = render_router_config(protocol, host, messaging_port, gossip, links)?;
 
     std::fs::write(config_path, config_content)
         .map_err(|e| Error::ConfigurationError(format!("Failed to write zenohd config: {}", e)))?;
