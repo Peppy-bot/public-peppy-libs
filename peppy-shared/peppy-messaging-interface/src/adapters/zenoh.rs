@@ -1611,20 +1611,19 @@ mod tests {
 
         let rewrote = adapter
             .refederate(RouterLinks {
-                upstream: Some("tls/cap.zenoh.localhost:7443".to_string()),
-                tls: Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
+                upstream: Some(crate::zenoh_config::UpstreamLink {
+                    endpoint: "tls/cap.zenoh.localhost:7443".to_string(),
+                    tls: TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem")),
+                }),
+                tls: None,
             })
             .expect("refederate rewrites the config in place");
         assert!(rewrote, "a rendered config reports it was rewritten");
 
         let after = std::fs::read_to_string(&cfg_path).expect("read refederated config");
         assert!(
-            after.contains("tls/cap.zenoh.localhost:7443"),
-            "upstream connect endpoint is now present"
-        );
-        assert!(
-            after.contains("/certs/ca.pem"),
-            "connect-side CA trust is now present"
+            after.contains("tls/cap.zenoh.localhost:7443#root_ca_certificate_file=/certs/ca.pem"),
+            "upstream connect endpoint carries its trust as an endpoint fragment: {after}"
         );
 
         // refederate on an adapter that owns no router (a client) is an error.
@@ -1649,8 +1648,11 @@ mod tests {
 
         let rewrote = adapter
             .refederate(RouterLinks {
-                upstream: Some("tls/cap.zenoh.localhost:7443".to_string()),
-                tls: Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
+                upstream: Some(crate::zenoh_config::UpstreamLink {
+                    endpoint: "tls/cap.zenoh.localhost:7443".to_string(),
+                    tls: TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem")),
+                }),
+                tls: None,
             })
             .expect("refederate succeeds as a no-op for an external router");
         assert!(!rewrote);

@@ -367,25 +367,127 @@ impl TlsConfig {
     }
 }
 
+/// The upstream router a managed router federates to: the dial endpoint plus
+/// the connect-side TLS material for exactly that link.
+///
+/// The material is rendered onto the endpoint as per-endpoint `#key=val;...`
+/// config fragments (zenoh's `*_file` endpoint keys), never as the router's
+/// global `transport.link.tls` block: the global block would also apply to the
+/// router's own (typically plaintext) listener. This type owns that rendering,
+/// so a new [`TlsConfig`] field is wired up next to the fields it renders
+/// instead of in every consumer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamLink {
+    /// The upstream's `<proto>/<host>:<port>` dial endpoint, carrying no
+    /// config or metadata suffix (the fragment is rendered from `tls`).
+    pub endpoint: String,
+    /// Connect-side TLS material for this link. [`TlsConfig::default`]
+    /// renders no fragment, so the locator stays unfragmented and inherits
+    /// zenoh defaults (plaintext, or one-way TLS against the system store).
+    pub tls: TlsConfig,
+}
+
+impl UpstreamLink {
+    /// Renders the full connect locator: the endpoint plus this link's TLS
+    /// material as `#key=val;...` fragments. Defaults are omitted so a link
+    /// with default material stays an unfragmented locator.
+    pub(crate) fn locator(&self) -> Result<String, crate::error::Error> {
+        if self.endpoint.contains(['?', '#']) {
+            return Err(crate::error::Error::ConfigurationError(format!(
+                "upstream endpoint {:?} must not carry a config or metadata suffix; \
+                 the TLS material renders the fragment",
+                self.endpoint
+            )));
+        }
+        let mut entries = Vec::new();
+        push_fragment_path(
+            &mut entries,
+            "root_ca_certificate_file",
+            self.tls.root_ca_certificate.as_deref(),
+        )?;
+        push_fragment_path(
+            &mut entries,
+            "listen_certificate_file",
+            self.tls.listen_certificate.as_deref(),
+        )?;
+        push_fragment_path(
+            &mut entries,
+            "listen_private_key_file",
+            self.tls.listen_private_key.as_deref(),
+        )?;
+        push_fragment_path(
+            &mut entries,
+            "connect_certificate_file",
+            self.tls.connect_certificate.as_deref(),
+        )?;
+        push_fragment_path(
+            &mut entries,
+            "connect_private_key_file",
+            self.tls.connect_private_key.as_deref(),
+        )?;
+        if self.tls.enable_mtls {
+            entries.push("enable_mtls=true".to_string());
+        }
+        if !self.tls.verify_name_on_connect {
+            entries.push("verify_name_on_connect=false".to_string());
+        }
+
+        let fragment = entries.join(";");
+        if fragment.is_empty() {
+            Ok(self.endpoint.clone())
+        } else {
+            Ok(format!("{}#{fragment}", self.endpoint))
+        }
+    }
+}
+
+/// Appends `key=<path>` to the fragment entries when the path is set,
+/// rejecting paths a zenoh locator fragment cannot carry (its `#`/`;`/`=`
+/// delimiters, or non-UTF-8).
+fn push_fragment_path(
+    entries: &mut Vec<String>,
+    key: &str,
+    path: Option<&Path>,
+) -> Result<(), crate::error::Error> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    let Some(text) = path.to_str() else {
+        return Err(crate::error::Error::ConfigurationError(format!(
+            "TLS material path {} is not valid UTF-8, so it cannot be embedded in a \
+             zenoh endpoint fragment",
+            path.display()
+        )));
+    };
+    if let Some(delimiter) = text.chars().find(|c| ['#', ';', '='].contains(c)) {
+        return Err(crate::error::Error::ConfigurationError(format!(
+            "TLS material path {text:?} contains the reserved locator delimiter \
+             {delimiter:?}; use a path without `#`, `;`, or `=`"
+        )));
+    }
+    entries.push(format!("{key}={text}"));
+    Ok(())
+}
+
 /// How a router wires into the platform federation beyond its primary
-/// listener: at most one upstream router it dials, plus the TLS material for
-/// that link and/or its own listener. One value carried through every
-/// router-config entry point ([`crate::ZenohAdapter::with_router`],
+/// listener: at most one upstream router it dials (with the TLS material for
+/// that link), plus the TLS material for its own listener. One value carried
+/// through every router-config entry point
+/// ([`crate::ZenohAdapter::with_router`],
 /// [`refederate`](crate::ZenohAdapter::refederate), [`render_router_config`]).
 /// `Default` is the standalone plaintext router.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RouterLinks {
-    /// The single upstream router this router *federates* to (dials),
-    /// `<proto>/<host>:<port>`, optionally carrying per-endpoint `#key=val;...`
-    /// config fragments. `None` is a standalone router. `Some` turns on
-    /// reconnect/keep-alive so an unreachable or restarted upstream is
-    /// recovered transparently and never stops the router serving its own
+    /// The single upstream router this router *federates* to (dials), with
+    /// its connect-side TLS material. `None` is a standalone router. `Some`
+    /// turns on reconnect/keep-alive so an unreachable or restarted upstream
+    /// is recovered transparently and never stops the router serving its own
     /// nodes.
-    pub upstream: Option<String>,
-    /// TLS material for the links: the listener certificate/key
-    /// ([`TlsConfig::server`]) when the primary listener speaks `tls/`, and/or
-    /// the connect-side trust root ([`TlsConfig::client`]) for a `tls/`
-    /// upstream. Ignored by plaintext endpoints.
+    pub upstream: Option<UpstreamLink>,
+    /// TLS material for the router's own primary listener
+    /// ([`TlsConfig::server`]) when it speaks `tls/`; rendered into the
+    /// global `transport.link.tls` block. Upstream connect material never
+    /// goes here (it rides the upstream endpoint's fragment instead).
     pub tls: Option<TlsConfig>,
 }
 
@@ -582,20 +684,25 @@ pub(crate) fn render_probe_config(
 /// identical router config. `gossip` seeds the peer mesh (a logged-out daemon in
 /// peer topology wants it on; a federated or hub router wants it off so nothing
 /// gossips locators over the federation link). `links` carries the platform
-/// upstream and TLS material — see [`RouterLinks`].
+/// upstream and TLS material — see [`RouterLinks`]. Errors when the upstream's
+/// TLS material cannot be rendered into its endpoint fragment.
 pub(crate) fn router_spec(
     protocol: ZenohNetProtocol,
     host: &str,
     port: u16,
     gossip: bool,
     links: RouterLinks,
-) -> ZenohConfigSpec {
+) -> Result<ZenohConfigSpec, crate::error::Error> {
     let RouterLinks { upstream, tls } = links;
+    let connect_endpoints = match &upstream {
+        Some(link) => vec![link.locator()?],
+        None => Vec::new(),
+    };
 
-    ZenohConfigSpec {
+    Ok(ZenohConfigSpec {
         mode: SessionMode::Router,
         reconnect: upstream.is_some(),
-        connect_endpoints: upstream.into_iter().collect(),
+        connect_endpoints,
         listen_endpoints: vec![format!("{protocol}/{host}:{port}")],
         gossip,
         tls,
@@ -604,24 +711,24 @@ pub(crate) fn router_spec(
         // would not prefix forwarded/federated traffic. Isolation is enforced on
         // the application sessions instead.
         namespace: None,
-    }
+    })
 }
 
 /// Renders a zenohd router config to a JSON5 string, for callers that run the
 /// router out of process (e.g. a container) rather than spawning it via
 /// [`crate::ZenohAdapter::with_router`]. With `protocol = Tls` and a server
 /// [`TlsConfig`] in `links` this emits the `transport.link.tls` listener block;
-/// a `links.upstream` emits a `connect` block so the router federates to that
-/// upstream (see [`RouterLinks`]). Available under the base `zenoh` feature
+/// a `links.upstream` emits a `connect` block (its TLS material rendered as
+/// per-endpoint fragments) so the router federates to that upstream (see
+/// [`RouterLinks`]). Available under the base `zenoh` feature
 /// (no `router`/zenohd binary needed) because rendering a config is
 /// independent of spawning a process.
 ///
-/// The `links` endpoints arrive as raw locator strings (possibly carrying
-/// `#key=val;...` fragments), so a malformed one renders into a config zenohd
-/// cannot parse. Every render therefore validates the output here, at the
-/// single boundary both the in-process spawn path and the out-of-process
-/// callers share, so a bad locator fails at render time instead of when
-/// zenohd next boots.
+/// The upstream endpoint arrives as a raw locator string, so a malformed one
+/// renders into a config zenohd cannot parse. Every render therefore
+/// validates the output here, at the single boundary both the in-process
+/// spawn path and the out-of-process callers share, so a bad locator fails at
+/// render time instead of when zenohd next boots.
 pub fn render_router_config(
     protocol: ZenohNetProtocol,
     host: &str,
@@ -629,7 +736,7 @@ pub fn render_router_config(
     gossip: bool,
     links: RouterLinks,
 ) -> Result<String, crate::error::Error> {
-    let config_content = render_config_string(&router_spec(protocol, host, port, gossip, links));
+    let config_content = render_config_string(&router_spec(protocol, host, port, gossip, links)?);
     zenoh::config::Config::from_json5(&config_content).map_err(|e| {
         crate::error::Error::ConfigurationError(format!("rendered zenohd config is invalid: {e}"))
     })?;
@@ -801,7 +908,8 @@ mod tests {
                     PathBuf::from("/certs/leaf.key"),
                 )),
             },
-        );
+        )
+        .expect("listener-only links render");
         let cfg = build_zenoh_config(&spec);
 
         // The endpoint scheme is `tls/`, driven by the protocol's Display.
@@ -872,8 +980,11 @@ mod tests {
             7448,
             false,
             RouterLinks {
-                upstream: Some("tls/cap.zenoh.localhost:7443".to_string()),
-                tls: Some(TlsConfig::client(PathBuf::from("/certs/ca.pem"))),
+                upstream: Some(UpstreamLink {
+                    endpoint: "tls/cap.zenoh.localhost:7443".to_string(),
+                    tls: TlsConfig::client(PathBuf::from("/certs/ca.pem")),
+                }),
+                tls: None,
             },
         )
         .expect("federated router config renders and parses");
@@ -885,52 +996,101 @@ mod tests {
         assert_eq!(cfg["listen"]["endpoints"]["router"][0], "tcp/0.0.0.0:7448");
         // It federates out to the remote router over TLS, and keeps retrying so a
         // remote restart/reprovision is recovered (reconnect ⇒ `timeout_ms: -1`).
+        // The connect-side trust rides the endpoint as a fragment, scoped to
+        // exactly this link.
         assert_eq!(
             cfg["connect"]["endpoints"][0],
-            "tls/cap.zenoh.localhost:7443"
+            "tls/cap.zenoh.localhost:7443#root_ca_certificate_file=/certs/ca.pem"
         );
         assert_eq!(cfg["connect"]["timeout_ms"], -1);
         assert_eq!(cfg["connect"]["exit_on_failure"], false);
-        // Connect-side trust only (verify the remote router's cert); no listener
-        // identity, since the local listener is plaintext.
-        let tls = &cfg["transport"]["link"]["tls"];
-        assert_eq!(tls["root_ca_certificate"], "/certs/ca.pem");
-        assert_eq!(tls["verify_name_on_connect"], true);
-        assert!(tls.get("listen_certificate").is_none());
+        // No global transport block: it would also apply to the plaintext
+        // listener local nodes dial.
+        assert!(cfg.get("transport").is_none());
     }
 
     #[test]
-    fn router_config_upstream_may_carry_endpoint_fragments() {
-        // The upstream locator may carry per-endpoint `#key=val;...` config
-        // fragments (how the daemon attaches the platform link's mTLS material)
-        // without emitting a global transport block.
-        let fragment_upstream = concat!(
-            "tls/hub.example:7447#",
-            "root_ca_certificate_file=/certs/ca.pem;",
-            "connect_certificate_file=/certs/client.pem;",
-            "connect_private_key_file=/certs/client.key;",
-            "enable_mtls=true"
-        )
-        .to_string();
+    fn upstream_tls_material_renders_as_endpoint_fragments() {
+        // The full mTLS shape the daemon applies for the platform link, pinned
+        // exactly: every set field lands as a `*_file`/flag fragment, defaults
+        // are omitted, and no global transport block is emitted.
+        let link = UpstreamLink {
+            endpoint: "tls/hub.example:7447".to_string(),
+            tls: TlsConfig {
+                root_ca_certificate: Some("/backend/ca.pem".into()),
+                connect_certificate: Some("/backend/cert.pem".into()),
+                connect_private_key: Some("/backend/key.pem".into()),
+                enable_mtls: true,
+                verify_name_on_connect: false,
+                ..TlsConfig::default()
+            },
+        };
+        assert_eq!(
+            link.locator().expect("material renders"),
+            "tls/hub.example:7447#root_ca_certificate_file=/backend/ca.pem;connect_certificate_file=/backend/cert.pem;connect_private_key_file=/backend/key.pem;enable_mtls=true;verify_name_on_connect=false"
+        );
+
         let s = render_router_config(
             ZenohNetProtocol::Tcp,
             "0.0.0.0",
             7448,
             false,
             RouterLinks {
-                upstream: Some(fragment_upstream.clone()),
+                upstream: Some(link),
                 tls: None,
             },
         )
         .expect("fragment upstream config renders and parses");
         let rendered: serde_json::Value =
             serde_json::from_str(&s).expect("rendered router config is JSON");
-
-        assert_eq!(rendered["connect"]["endpoints"], json!([fragment_upstream]));
         assert!(
             rendered.get("transport").is_none(),
             "endpoint-local TLS fragments must not emit a global transport block"
         );
+    }
+
+    #[test]
+    fn upstream_with_default_tls_stays_an_unfragmented_locator() {
+        let link = UpstreamLink {
+            endpoint: "tls/api.example:7448".to_string(),
+            tls: TlsConfig::default(),
+        };
+        assert_eq!(
+            link.locator().expect("defaults render"),
+            "tls/api.example:7448"
+        );
+    }
+
+    #[test]
+    fn fragment_delimiters_in_tls_paths_are_rejected() {
+        let link = UpstreamLink {
+            endpoint: "tls/api.example:7448".to_string(),
+            tls: TlsConfig {
+                root_ca_certificate: Some("/backend/bad#ca.pem".into()),
+                ..TlsConfig::default()
+            },
+        };
+        let error = link
+            .locator()
+            .expect_err("a fragment delimiter in a path must be rejected");
+        assert!(
+            error.to_string().contains("reserved locator delimiter"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn upstream_endpoint_carrying_a_suffix_is_rejected() {
+        // The fragment is rendered from the TLS material; an endpoint that
+        // already carries one would produce a double-fragment locator.
+        let link = UpstreamLink {
+            endpoint: "tls/hub.example:7447#enable_mtls=true".to_string(),
+            tls: TlsConfig::default(),
+        };
+        let error = link
+            .locator()
+            .expect_err("a pre-fragmented endpoint must be rejected");
+        assert!(error.to_string().contains("must not carry"), "{error}");
     }
 
     // ---- Workspace session namespace rendering ----

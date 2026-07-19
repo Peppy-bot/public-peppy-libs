@@ -20,7 +20,8 @@ mod zenoh_tls_tests {
     use bytes::Bytes;
     use pmi::{
         Messenger, MessengerAdapter, MessengerBackend, Payload, PublisherQoS, RouterLinks,
-        SubscriberBufferSizes, SubscriberQoS, TlsConfig, ZenohAdapter, ZenohNetProtocol,
+        SubscriberBufferSizes, SubscriberQoS, TlsConfig, UpstreamLink, ZenohAdapter,
+        ZenohNetProtocol,
     };
     use rcgen::{CertifiedKey, generate_simple_self_signed};
     use std::io::Write;
@@ -178,9 +179,13 @@ mod zenoh_tls_tests {
             // Federate to the remote TLS router, trusting it via the same CA the
             // TLS clients use (name verification off because the leaf's SAN is
             // `localhost` while we dial `127.0.0.1` — the CA-trust check stays on).
+            // The trust rides the upstream link itself, scoped to that one hop.
             RouterLinks {
-                upstream: Some(format!("tls/127.0.0.1:{remote_port}")),
-                tls: Some(trusting_client_tls(certs)),
+                upstream: Some(UpstreamLink {
+                    endpoint: format!("tls/127.0.0.1:{remote_port}"),
+                    tls: trusting_client_tls(certs),
+                }),
+                tls: None,
             },
             "federated router",
         )
@@ -219,29 +224,20 @@ mod zenoh_tls_tests {
 
         let (_hub, hub_port) = start_mtls_hub_router(&certs).await;
 
-        let upstream_with = |cert: &std::path::Path, key: &std::path::Path| {
+        let upstream_with = |cert: &std::path::Path, key: &std::path::Path| UpstreamLink {
             // Dial `127.0.0.1` (macOS resolves `localhost` to `[::1]` first,
             // where the IPv4-only hub does not listen), so name verification is
-            // off in the fragment — the same `verify_name_on_connect=false` key
-            // the daemon's locator builder emits — while CA trust and the
+            // off (rendered as the same `verify_name_on_connect=false` fragment
+            // key the daemon's platform link carries), while CA trust and the
             // client identity the hub verifies stay on.
-            format!(
-                concat!(
-                    "tls/127.0.0.1:{hub_port}#",
-                    "root_ca_certificate_file={ca};",
-                    "connect_certificate_file={cert};",
-                    "connect_private_key_file={key};",
-                    "enable_mtls=true;",
-                    "verify_name_on_connect=false"
-                ),
-                hub_port = hub_port,
-                ca = certs.ca.display(),
-                cert = cert.display(),
-                key = key.display(),
-            )
+            endpoint: format!("tls/127.0.0.1:{hub_port}"),
+            tls: TlsConfig {
+                verify_name_on_connect: false,
+                ..TlsConfig::mtls_client(certs.ca.clone(), cert.to_path_buf(), key.to_path_buf())
+            },
         };
 
-        let start_local = |upstream: String| {
+        let start_local = |upstream: UpstreamLink| {
             start_router_with(
                 ZenohNetProtocol::Tcp,
                 RouterLinks {

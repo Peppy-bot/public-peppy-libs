@@ -13,7 +13,7 @@
 #![cfg(feature = "router")]
 
 use pmi::{
-    RouterLinks, SubscriberBufferSizes, TlsConfig, ZenohAdapter, ZenohNetProtocol,
+    RouterLinks, SubscriberBufferSizes, TlsConfig, UpstreamLink, ZenohAdapter, ZenohNetProtocol,
     render_router_config,
 };
 
@@ -62,8 +62,11 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
 
     let rewrote = adapter
         .refederate(RouterLinks {
-            upstream: Some("tls/cap.zenoh.localhost:7443".to_string()),
-            tls: Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
+            upstream: Some(UpstreamLink {
+                endpoint: "tls/cap.zenoh.localhost:7443".to_string(),
+                tls: TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem")),
+            }),
+            tls: None,
         })
         .expect("refederate under a pinned config succeeds as a no-op");
 
