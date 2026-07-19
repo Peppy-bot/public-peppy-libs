@@ -61,9 +61,8 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
 
     let rewrote = adapter
         .refederate(RouterLinks {
-            connect_endpoints: vec!["tls/cap.zenoh.localhost:7443".to_string()],
+            upstream: Some("tls/cap.zenoh.localhost:7443".to_string()),
             tls: Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
-            ..RouterLinks::default()
         })
         .expect("refederate under a pinned config succeeds as a no-op");
 

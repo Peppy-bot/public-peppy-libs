@@ -17,7 +17,7 @@
 //! and with a known seed it adds nothing gossip does not already cover.
 
 use crate::zenohd::ZenohNetProtocol;
-use config::org::OrgNamespace;
+use config::namespace::Namespace;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -367,30 +367,25 @@ impl TlsConfig {
     }
 }
 
-/// How a router wires into the mesh beyond its primary listener: the upstream
-/// routers it dials (federation), any extra listeners it binds, and the TLS
-/// material those links share. One value carried through every router-config
-/// entry point ([`crate::ZenohAdapter::with_router`],
-/// [`refederate`](crate::ZenohAdapter::refederate), [`render_router_config`])
-/// instead of three adjacent parameters whose two endpoint lists would
-/// otherwise be silently swappable. `Default` is the standalone plaintext
-/// router.
+/// How a router wires into the platform federation beyond its primary
+/// listener: at most one upstream router it dials, plus the TLS material for
+/// that link and/or its own listener. One value carried through every
+/// router-config entry point ([`crate::ZenohAdapter::with_router`],
+/// [`refederate`](crate::ZenohAdapter::refederate), [`render_router_config`]).
+/// `Default` is the standalone plaintext router.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RouterLinks {
-    /// Upstream routers this router *federates* to (dials),
-    /// `<proto>/<host>:<port>` each — distinct from gossip, which is peer
-    /// auto-discovery. Empty is a standalone router. Non-empty turns on
+    /// The single upstream router this router *federates* to (dials),
+    /// `<proto>/<host>:<port>`, optionally carrying per-endpoint `#key=val;...`
+    /// config fragments. `None` is a standalone router. `Some` turns on
     /// reconnect/keep-alive so an unreachable or restarted upstream is
     /// recovered transparently and never stops the router serving its own
     /// nodes.
-    pub connect_endpoints: Vec<String>,
-    /// Listeners appended after the primary `<protocol>/<host>:<port>`
-    /// endpoint; each may carry per-endpoint `#key=val;...` config fragments.
-    pub extra_listen_endpoints: Vec<String>,
+    pub upstream: Option<String>,
     /// TLS material for the links: the listener certificate/key
-    /// ([`TlsConfig::server`]) when a listener speaks `tls/`, and/or the
-    /// connect-side trust root ([`TlsConfig::client`]) for a `tls/` upstream.
-    /// Ignored by plaintext endpoints.
+    /// ([`TlsConfig::server`]) when the primary listener speaks `tls/`, and/or
+    /// the connect-side trust root ([`TlsConfig::client`]) for a `tls/`
+    /// upstream. Ignored by plaintext endpoints.
     pub tls: Option<TlsConfig>,
 }
 
@@ -426,12 +421,12 @@ pub(crate) struct ZenohConfigSpec {
     /// (`tcp/`, …), in which case no `transport.link.tls` block is rendered and
     /// the output is byte-identical to a pre-TLS config.
     pub tls: Option<TlsConfig>,
-    /// Organization namespace for an application session (org-id routing
-    /// isolation). Rendered into the session-level `namespace` field for
-    /// `Peer`/`Client` sessions only; `None` for the router and for liveness
-    /// probes. Zenoh prepends `<ns>/` to every declared key on egress and strips
-    /// it on ingress, so two sessions interoperate iff their namespaces match.
-    pub namespace: Option<OrgNamespace>,
+    /// Workspace namespace for an application session (routing isolation).
+    /// Rendered into the session-level `namespace` field for `Peer`/`Client`
+    /// sessions only; `None` for the router and for liveness probes. Zenoh
+    /// prepends `<ns>/` to every declared key on egress and strips it on
+    /// ingress, so two sessions interoperate iff their namespaces match.
+    pub namespace: Option<Namespace>,
 }
 
 /// Builds the JSON5-equivalent config value for a session or the router.
@@ -584,9 +579,10 @@ pub(crate) fn render_probe_config(
 /// The config spec for a zenohd router listening on `protocol/host:port`. Shared
 /// by the in-process spawn path ([`crate::zenohd::router_config_path`]) and the
 /// out-of-process render path ([`render_router_config`]) so both produce an
-/// identical router config. `gossip` seeds the peer mesh (the daemon wants it on;
-/// an isolated per-user router wants it off so routers cannot mesh). `links`
-/// carries the federation wiring — see [`RouterLinks`].
+/// identical router config. `gossip` seeds the peer mesh (a logged-out daemon in
+/// peer topology wants it on; a federated or hub router wants it off so nothing
+/// gossips locators over the federation link). `links` carries the platform
+/// upstream and TLS material — see [`RouterLinks`].
 pub(crate) fn router_spec(
     protocol: ZenohNetProtocol,
     host: &str,
@@ -594,19 +590,13 @@ pub(crate) fn router_spec(
     gossip: bool,
     links: RouterLinks,
 ) -> ZenohConfigSpec {
-    let RouterLinks {
-        connect_endpoints,
-        extra_listen_endpoints,
-        tls,
-    } = links;
-    let mut listen_endpoints = vec![format!("{protocol}/{host}:{port}")];
-    listen_endpoints.extend(extra_listen_endpoints);
+    let RouterLinks { upstream, tls } = links;
 
     ZenohConfigSpec {
         mode: SessionMode::Router,
-        reconnect: !connect_endpoints.is_empty(),
-        connect_endpoints,
-        listen_endpoints,
+        reconnect: upstream.is_some(),
+        connect_endpoints: upstream.into_iter().collect(),
+        listen_endpoints: vec![format!("{protocol}/{host}:{port}")],
         gossip,
         tls,
         // A router is never namespaced: it only forwards between transport faces
@@ -621,11 +611,10 @@ pub(crate) fn router_spec(
 /// router out of process (e.g. a container) rather than spawning it via
 /// [`crate::ZenohAdapter::with_router`]. With `protocol = Tls` and a server
 /// [`TlsConfig`] in `links` this emits the `transport.link.tls` listener block;
-/// non-empty `links.connect_endpoints` emit a `connect` block so the router
-/// federates to those upstreams, and `links.extra_listen_endpoints` add
-/// listeners after the primary one (see [`RouterLinks`]). Available under the
-/// base `zenoh` feature (no `router`/zenohd binary needed) because rendering a
-/// config is independent of spawning a process.
+/// a `links.upstream` emits a `connect` block so the router federates to that
+/// upstream (see [`RouterLinks`]). Available under the base `zenoh` feature
+/// (no `router`/zenohd binary needed) because rendering a config is
+/// independent of spawning a process.
 pub fn render_router_config(
     protocol: ZenohNetProtocol,
     host: &str,
@@ -793,11 +782,11 @@ mod tests {
             7447,
             false,
             RouterLinks {
+                upstream: None,
                 tls: Some(TlsConfig::server(
                     PathBuf::from("/certs/leaf.pem"),
                     PathBuf::from("/certs/leaf.key"),
                 )),
-                ..RouterLinks::default()
             },
         );
         let cfg = build_zenoh_config(&spec);
@@ -846,11 +835,11 @@ mod tests {
             7447,
             false,
             RouterLinks {
+                upstream: None,
                 tls: Some(TlsConfig::server(
                     PathBuf::from("/certs/leaf.pem"),
                     PathBuf::from("/certs/leaf.key"),
                 )),
-                ..RouterLinks::default()
             },
         );
         zenoh::config::Config::from_json5(&s).expect("rendered tls router config parses");
@@ -858,20 +847,19 @@ mod tests {
     }
 
     #[test]
-    fn federated_router_config_emits_connect_block_and_connect_tls() {
+    fn router_config_renders_a_single_tls_upstream() {
         // The daemon's local router: a plaintext `tcp/` listener for its own
-        // nodes, PLUS a `tls/` connect endpoint federating it to a remote router,
-        // trusting that router via a client CA. This is the peppy-side shape of
-        // the per-user-router design.
+        // nodes, PLUS a single `tls/` connect endpoint federating it to the
+        // platform hub, trusting that hub via a client CA. This is the
+        // peppy-side shape of the platform-only federation design.
         let s = render_router_config(
             ZenohNetProtocol::Tcp,
             "0.0.0.0",
             7448,
-            true,
+            false,
             RouterLinks {
-                connect_endpoints: vec!["tls/cap.zenoh.localhost:7443".to_string()],
+                upstream: Some("tls/cap.zenoh.localhost:7443".to_string()),
                 tls: Some(TlsConfig::client(PathBuf::from("/certs/ca.pem"))),
-                ..RouterLinks::default()
             },
         );
         let cfg: serde_json::Value =
@@ -900,12 +888,15 @@ mod tests {
     }
 
     #[test]
-    fn router_config_appends_fragment_listener_without_global_transport() {
-        let fragment_listener = concat!(
-            "tls/0.0.0.0:7449#",
+    fn router_config_upstream_may_carry_endpoint_fragments() {
+        // The upstream locator may carry per-endpoint `#key=val;...` config
+        // fragments (how the daemon attaches the platform link's mTLS material)
+        // without emitting a global transport block.
+        let fragment_upstream = concat!(
+            "tls/hub.example:7447#",
             "root_ca_certificate_file=/certs/ca.pem;",
-            "listen_certificate_file=/certs/leaf.pem;",
-            "listen_private_key_file=/certs/leaf.key;",
+            "connect_certificate_file=/certs/client.pem;",
+            "connect_private_key_file=/certs/client.key;",
             "enable_mtls=true"
         )
         .to_string();
@@ -913,48 +904,24 @@ mod tests {
             ZenohNetProtocol::Tcp,
             "0.0.0.0",
             7448,
-            true,
+            false,
             RouterLinks {
-                extra_listen_endpoints: vec![fragment_listener.clone()],
-                ..RouterLinks::default()
+                upstream: Some(fragment_upstream.clone()),
+                tls: None,
             },
         );
         let rendered: serde_json::Value =
             serde_json::from_str(&s).expect("rendered router config is JSON");
 
-        assert_eq!(
-            rendered["listen"]["endpoints"]["router"],
-            json!(["tcp/0.0.0.0:7448", fragment_listener])
-        );
+        assert_eq!(rendered["connect"]["endpoints"], json!([fragment_upstream]));
         assert!(
             rendered.get("transport").is_none(),
             "endpoint-local TLS fragments must not emit a global transport block"
         );
-
-        let config =
-            zenoh::config::Config::from_json5(&s).expect("fragment listener config parses");
-        let listen: serde_json::Value = serde_json::from_str(
-            &config
-                .get_json("listen")
-                .expect("read listeners back from zenoh config"),
-        )
-        .expect("listeners deserialize");
-        assert_eq!(
-            listen["endpoints"]["router"],
-            json!([
-                "tcp/0.0.0.0:7448",
-                concat!(
-                    "tls/0.0.0.0:7449#",
-                    "enable_mtls=true;",
-                    "listen_certificate_file=/certs/leaf.pem;",
-                    "listen_private_key_file=/certs/leaf.key;",
-                    "root_ca_certificate_file=/certs/ca.pem"
-                )
-            ])
-        );
+        zenoh::config::Config::from_json5(&s).expect("fragment upstream config parses");
     }
 
-    // ---- Org-id session namespace rendering ----
+    // ---- Workspace session namespace rendering ----
 
     /// The `namespace` key is rendered for application sessions (`Peer`/`Client`)
     /// and only for them: it is a session-level field, so a router (which only
@@ -962,9 +929,9 @@ mod tests {
     /// still parse as a real zenoh config.
     #[test]
     fn namespace_rendered_for_sessions_never_for_router() {
-        let ns = OrgNamespace::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let ns = Namespace::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
 
-        // Peer session: namespace present with the org value.
+        // Peer session: namespace present with the workspace value.
         let peer = build_zenoh_config(&ZenohConfigSpec {
             namespace: Some(ns.clone()),
             ..peer_spec(true, true)

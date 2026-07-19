@@ -21,7 +21,7 @@ mod zenohd;
 /// (org-id routing isolation). Defined in `config::org`; re-exported here so
 /// callers that drive pmi's session constructors (e.g. peppylib) can name it
 /// through pmi alone.
-pub use config::org::OrgNamespace;
+pub use config::namespace::Namespace;
 /// The full `(core_node, instance_id)` producer wire address taken by the
 /// sender constructors. Defined in `config` (the serialized layer); re-exported
 /// here so pmi's public API is nameable through pmi alone.

@@ -139,7 +139,7 @@ async def test_daemon_runner_succeed(monkeypatch):
             frequency_hz = await asyncio.to_thread(result_queue.get, timeout=5.0)
             assert frequency_hz == TEST_FREQUENCY_HZ
 
-            # The runner opens its session under the `local` org namespace; this
+            # The runner opens its session under the `local` namespace; this
             # control messenger must too, or its probes never route to it.
             messenger = await MessengerHandle.from_host_port_with_namespace(
                 router.host, router.port
@@ -549,7 +549,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
             await asyncio.to_thread(setup_started.wait, timeout=5.0)
             assert setup_started.is_set(), "Setup should have started"
 
-            # The runner opens its session under the `local` org namespace; this
+            # The runner opens its session under the `local` namespace; this
             # control messenger must too, or its probes never route to it.
             messenger = await MessengerHandle.from_host_port_with_namespace(
                 router.host, router.port
@@ -699,7 +699,7 @@ async def test_daemon_cancellation_token_cancelled_on_shutdown(monkeypatch):
                 "Cancellation token should not be cancelled before shutdown"
             )
 
-            # The runner opens its session under the `local` org namespace; this
+            # The runner opens its session under the `local` namespace; this
             # control messenger must too, or its probes never route to it.
             messenger = await MessengerHandle.from_host_port_with_namespace(
                 router.host, router.port
@@ -787,7 +787,7 @@ async def test_daemon_shutdown_during_setup_exits_after_setup_completes(monkeypa
                 token_queue.get, timeout=5.0
             )
 
-            # The runner opens its session under the `local` org namespace; this
+            # The runner opens its session under the `local` namespace; this
             # control messenger must too, or its probes never route to it.
             messenger = await MessengerHandle.from_host_port_with_namespace(
                 router.host, router.port
@@ -892,7 +892,7 @@ async def test_daemon_shutdown_interrupts_blocked_async_setup(monkeypatch):
                 token_queue.get, timeout=5.0
             )
 
-            # The runner opens its session under the `local` org namespace; this
+            # The runner opens its session under the `local` namespace; this
             # control messenger must too, or its probes never route to it.
             messenger = await MessengerHandle.from_host_port_with_namespace(
                 router.host, router.port
@@ -1404,7 +1404,7 @@ async def test_daemon_shutdown_hooks_run_lifo_with_messaging(monkeypatch):
 
             await asyncio.to_thread(setup_done_queue.get, timeout=5.0)
 
-            # The runner opens its session under the `local` org namespace; this
+            # The runner opens its session under the `local` namespace; this
             # control messenger must too, or its probes never route to it.
             messenger = await MessengerHandle.from_host_port_with_namespace(
                 router.host, router.port
@@ -1515,7 +1515,7 @@ async def test_async_node_shuts_down_promptly_not_at_grace_boundary(monkeypatch)
 
             await asyncio.to_thread(setup_done_queue.get, timeout=5.0)
 
-            # The runner opens its session under the `local` org namespace; this
+            # The runner opens its session under the `local` namespace; this
             # control messenger must too, or its probes never route to it.
             messenger = await MessengerHandle.from_host_port_with_namespace(
                 router.host, router.port

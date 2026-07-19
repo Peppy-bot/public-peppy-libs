@@ -39,7 +39,7 @@ use crate::zenoh_config::{
     SessionMode, TlsConfig, ZenohConfigSpec, connectable_host, loopback_listen_endpoint,
     render_config,
 };
-use config::org::OrgNamespace;
+use config::namespace::Namespace;
 // `render_probe_config`, `RouterLinks`, and the `zenohd` module (facade/health/
 // config-path) are only used by the router-management paths; a
 // `zenoh`-without-`router` build (the backend, which only renders configs and
@@ -166,14 +166,14 @@ pub struct ZenohClientConfig {
     /// (not just baked into `zenoh_config`) so the reconnecting-session rebuild
     /// in `start_session` re-renders with the same TLS settings.
     tls: Option<TlsConfig>,
-    /// Organization namespace for this session (org-id routing isolation).
+    /// Workspace namespace for this session (routing isolation).
     /// Retained (like `tls`) so the reconnecting-session rebuild in
     /// `start_session` re-applies it; lost otherwise on every router-restart
     /// reconnect. Applied via [`ZenohAdapter::with_namespace`]; `None` leaves the
     /// session namespace-free (probes, tests). zenoh captures the namespace once
     /// at session build, so there is no in-process swap -- a change needs a fresh
     /// session.
-    namespace: Option<OrgNamespace>,
+    namespace: Option<Namespace>,
 }
 
 pub struct ZenohAdapter {
@@ -192,13 +192,17 @@ impl ZenohAdapter {
     /// `buffer_sizes` its subscriber channel capacities. The adapter renders the
     /// router config, spawns zenohd, and reports an error if its port is busy.
     ///
-    /// `links` *federates* the spawned router ([`RouterLinks`]): upstream
-    /// routers it dials — e.g. the daemon's plaintext loopback router dialing a
-    /// remote `tls/` router so the two zenohd routers join one network — plus
-    /// extra listeners and the links' TLS material. That TLS is written into
+    /// `links` *federates* the spawned router ([`RouterLinks`]): the single
+    /// upstream router it dials — e.g. the daemon's plaintext loopback router
+    /// dialing the platform hub over `tls/` so the two zenohd routers join one
+    /// network — plus the links' TLS material. That TLS is written into
     /// the zenohd config and reused for the adapter's own client session,
     /// where it is inert for a plaintext loopback listener.
     /// `RouterLinks::default()` is a standalone router (today's behavior).
+    ///
+    /// `gossip` drives the router's gossip scouting too, not just the hosted
+    /// session's topology: the two must flip together so a no-gossip (client)
+    /// session never sits on a router that still gossips locators.
     #[cfg(feature = "router")]
     pub fn with_router(
         protocol: ZenohNetProtocol,
@@ -209,7 +213,7 @@ impl ZenohAdapter {
         links: RouterLinks,
     ) -> Result<Self> {
         let client_tls = links.tls.clone();
-        let zenohd_config_path = zenohd::router_config_path(protocol, host, port, links)?;
+        let zenohd_config_path = zenohd::router_config_path(protocol, host, port, gossip, links)?;
         let facade = zenohd::ZenohdFacade::managed(zenohd_config_path)?;
         let client_config =
             Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, client_tls)?;
@@ -290,6 +294,10 @@ impl ZenohAdapter {
             ep.protocol(),
             ep.host(),
             ep.port(),
+            // Reuse the spawn-time gossip bit: session topology and router
+            // scouting flip together only across generation restarts, so a
+            // refederation re-render must not change it mid-generation.
+            self.client_config.gossip,
             links,
         )?;
         Ok(true)
@@ -423,7 +431,7 @@ impl ZenohAdapter {
         port: Option<u16>,
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
-        namespace: Option<OrgNamespace>,
+        namespace: Option<Namespace>,
     ) -> Result<ZenohdInstance> {
         let max_attempts = if port.is_some() { 1 } else { 32 };
 
@@ -577,7 +585,7 @@ impl ZenohAdapter {
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
         tls: Option<TlsConfig>,
-        namespace: Option<OrgNamespace>,
+        namespace: Option<Namespace>,
     ) -> ZenohClientConfig {
         let connect_host = connectable_host(host);
         let seeds = if seed_peers.is_empty() {
@@ -665,7 +673,7 @@ impl ZenohAdapter {
     /// There is intentionally no in-process namespace *swap* once a session is
     /// open: zenoh captures the namespace once at session build, so a change
     /// requires a fresh session (the daemon rebuilds its whole generation).
-    pub fn with_namespace(mut self, namespace: Option<OrgNamespace>) -> Self {
+    pub fn with_namespace(mut self, namespace: Option<Namespace>) -> Self {
         let protocol = self.client_config.protocol;
         let host = self.client_config.host.clone();
         let port = self.client_config.port;
@@ -1607,8 +1615,7 @@ mod tests {
 
         let rewrote = adapter
             .refederate(RouterLinks {
-                connect_endpoints: vec!["tls/cap.zenoh.localhost:7443".to_string()],
-                extra_listen_endpoints: vec!["tls/0.0.0.0:7449#enable_mtls=true".to_string()],
+                upstream: Some("tls/cap.zenoh.localhost:7443".to_string()),
                 tls: Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
             })
             .expect("refederate rewrites the config in place");
@@ -1622,10 +1629,6 @@ mod tests {
         assert!(
             after.contains("/certs/ca.pem"),
             "connect-side CA trust is now present"
-        );
-        assert!(
-            after.contains("tls/0.0.0.0:7449#enable_mtls=true"),
-            "extra listener endpoint is now present"
         );
 
         // refederate on an adapter that owns no router (a client) is an error.
@@ -1650,9 +1653,8 @@ mod tests {
 
         let rewrote = adapter
             .refederate(RouterLinks {
-                connect_endpoints: vec!["tls/cap.zenoh.localhost:7443".to_string()],
+                upstream: Some("tls/cap.zenoh.localhost:7443".to_string()),
                 tls: Some(TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem"))),
-                ..RouterLinks::default()
             })
             .expect("refederate succeeds as a no-op for an external router");
         assert!(!rewrote);

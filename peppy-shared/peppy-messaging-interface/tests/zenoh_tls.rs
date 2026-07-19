@@ -21,7 +21,6 @@ mod zenoh_tls_tests {
     use pmi::{
         Messenger, MessengerAdapter, MessengerBackend, Payload, PublisherQoS, RouterLinks,
         SubscriberBufferSizes, SubscriberQoS, TlsConfig, ZenohAdapter, ZenohNetProtocol,
-        probe_tls_reachable,
     };
     use rcgen::{CertifiedKey, generate_simple_self_signed};
     use std::io::Write;
@@ -107,8 +106,8 @@ mod zenoh_tls_tests {
             false,
             SubscriberBufferSizes::default(),
             RouterLinks {
+                upstream: None,
                 tls: Some(TlsConfig::server(certs.cert.clone(), certs.key.clone())),
-                ..RouterLinks::default()
             },
         )
         .expect("build tls router adapter");
@@ -117,6 +116,38 @@ mod zenoh_tls_tests {
             .start_router()
             .await
             .expect("start tls zenohd router");
+        (messenger, port)
+    }
+
+    /// Starts a `zenohd` router shaped like the platform hub: a `tls/` listener
+    /// that REQUIRES a client certificate chained to the test CA (mTLS), the
+    /// same posture as platform-backend's shared router.
+    async fn start_mtls_hub_router(certs: &Certs) -> (Messenger, u16) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+
+        let adapter = ZenohAdapter::with_router(
+            ZenohNetProtocol::Tls,
+            "127.0.0.1",
+            port,
+            false,
+            SubscriberBufferSizes::default(),
+            RouterLinks {
+                upstream: None,
+                tls: Some(TlsConfig {
+                    root_ca_certificate: Some(certs.ca.clone()),
+                    enable_mtls: true,
+                    ..TlsConfig::server(certs.cert.clone(), certs.key.clone())
+                }),
+            },
+        )
+        .expect("build mTLS hub router adapter");
+        let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
+        messenger
+            .start_router()
+            .await
+            .expect("start mTLS hub zenohd router");
         (messenger, port)
     }
 
@@ -153,9 +184,8 @@ mod zenoh_tls_tests {
             // TLS clients use (name verification off because the leaf's SAN is
             // `localhost` while we dial `127.0.0.1` — the CA-trust check stays on).
             RouterLinks {
-                connect_endpoints: vec![format!("tls/127.0.0.1:{remote_port}")],
+                upstream: Some(format!("tls/127.0.0.1:{remote_port}")),
                 tls: Some(trusting_client_tls(certs)),
-                ..RouterLinks::default()
             },
         )
         .expect("build federated router adapter");
@@ -182,90 +212,125 @@ mod zenoh_tls_tests {
         panic!("could not open a plaintext client session on 127.0.0.1:{port}");
     }
 
-    /// A real zenohd keeps per-endpoint TLS fragments local to the TLS listener:
-    /// its primary listener remains plaintext, the fragment listener requires a
-    /// client certificate, and no global TLS block is needed. This pins Zenoh
-    /// 1.9's endpoint-fragment merge behavior used by federation.
+    /// The platform-link mechanics in miniature: a *local* plaintext router
+    /// dials an mTLS-requiring hub with its client identity carried as
+    /// per-endpoint `#key=val` fragments on the upstream locator (exactly how
+    /// the daemon attaches its platform mTLS material — no global TLS block on
+    /// the local router). A subscriber on the local router receives what a
+    /// publisher sends into the hub, proving the fragment-authenticated
+    /// federation link carries traffic; a rogue client identity on the same
+    /// fragment path is rejected by the hub and relays nothing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn fragment_mtls_listener_accepts_right_cert_and_rejects_wrong_ca() {
+    async fn fragment_mtls_upstream_federates_through_an_mtls_hub() {
+        const TOPIC: &str = "fragment_upstream_relay";
         let _lock = ZENOH_SERIAL.lock().await;
         let certs = write_certs();
         let rogue = write_rogue_identity();
 
-        let primary_listener =
-            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve primary port");
-        let primary_port = primary_listener.local_addr().expect("primary addr").port();
-        let tls_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve TLS port");
-        let tls_port = tls_listener.local_addr().expect("TLS addr").port();
-        drop(primary_listener);
-        drop(tls_listener);
+        let (_hub, hub_port) = start_mtls_hub_router(&certs).await;
 
-        let fragment_listener = format!(
-            concat!(
-                "tls/127.0.0.1:{tls_port}#",
-                "root_ca_certificate_file={ca};",
-                "listen_certificate_file={cert};",
-                "listen_private_key_file={key};",
-                "enable_mtls=true"
-            ),
-            tls_port = tls_port,
-            ca = certs.ca.display(),
-            cert = certs.cert.display(),
-            key = certs.key.display(),
-        );
-        let adapter = ZenohAdapter::with_router(
-            ZenohNetProtocol::Tcp,
-            "127.0.0.1",
-            primary_port,
-            false,
-            SubscriberBufferSizes::default(),
-            RouterLinks {
-                extra_listen_endpoints: vec![fragment_listener],
-                ..RouterLinks::default()
+        let upstream_with = |cert: &std::path::Path, key: &std::path::Path| {
+            // Dial `127.0.0.1` (macOS resolves `localhost` to `[::1]` first,
+            // where the IPv4-only hub does not listen), so name verification is
+            // off in the fragment — the same `verify_name_on_connect=false` key
+            // the daemon's locator builder emits — while CA trust and the
+            // client identity the hub verifies stay on.
+            format!(
+                concat!(
+                    "tls/127.0.0.1:{hub_port}#",
+                    "root_ca_certificate_file={ca};",
+                    "connect_certificate_file={cert};",
+                    "connect_private_key_file={key};",
+                    "enable_mtls=true;",
+                    "verify_name_on_connect=false"
+                ),
+                hub_port = hub_port,
+                ca = certs.ca.display(),
+                cert = cert.display(),
+                key = key.display(),
+            )
+        };
+
+        let start_local = |upstream: String| async {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
+            let port = listener.local_addr().expect("local addr").port();
+            drop(listener);
+            let adapter = ZenohAdapter::with_router(
+                ZenohNetProtocol::Tcp,
+                "127.0.0.1",
+                port,
+                false,
+                SubscriberBufferSizes::default(),
+                RouterLinks {
+                    upstream: Some(upstream),
+                    tls: None,
+                },
+            )
+            .expect("build local router with fragment mTLS upstream");
+            let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
+            messenger.start_router().await.expect("start local router");
+            (messenger, port)
+        };
+
+        let (mut good_local, good_port) = start_local(upstream_with(&certs.cert, &certs.key)).await;
+        let (mut rogue_local, rogue_port) =
+            start_local(upstream_with(&rogue.cert, &rogue.key)).await;
+        // Give the local routers a moment to dial the hub (the good one
+        // establishes; the rogue one is rejected by the hub's client-cert check).
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let good_subscriber = open_plaintext_client(good_port).await;
+        let good_subscription = good_subscriber
+            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .await
+            .expect("subscribe on the fragment-federated local router");
+        let rogue_subscriber = open_plaintext_client(rogue_port).await;
+        let rogue_subscription = rogue_subscriber
+            .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
+            .await
+            .expect("subscribe on the rogue local router (declare is local)");
+
+        let mut publisher = open_tls_client(
+            hub_port,
+            // Same SAN caveat as `trusting_client_tls`: the leaf names
+            // `localhost` but the client dials `127.0.0.1`, so name
+            // verification is off while CA trust and the client identity
+            // (which the mTLS hub verifies) stay on.
+            &TlsConfig {
+                verify_name_on_connect: false,
+                ..TlsConfig::mtls_client(certs.ca.clone(), certs.cert.clone(), certs.key.clone())
             },
         )
-        .expect("build router with fragment mTLS listener");
-        let mut router = Messenger::new(MessengerAdapter::Zenoh(adapter));
-        router.start_router().await.expect("start fragment router");
+        .await;
+        wait_for_subscriber_discovery().await;
+        wait_for_subscriber_discovery().await;
+        publisher
+            .publish_topic(
+                &sender(TOPIC),
+                Payload::from_bytes(Bytes::from_static(b"via-fragment-upstream")),
+                PublisherQoS::Standard,
+                true,
+            )
+            .await
+            .expect("publish into the hub");
 
-        let plaintext_client = open_plaintext_client(primary_port).await;
-        let right_client =
-            TlsConfig::mtls_client(certs.ca.clone(), certs.cert.clone(), certs.key.clone());
-        let mut last_error = None;
-        for _ in 0..20 {
-            match probe_tls_reachable("localhost", tls_port, &right_client, Duration::from_secs(1))
+        let msg = tokio::time::timeout(RECV_TIMEOUT, good_subscription.rx.recv_async())
+            .await
+            .expect("timed out waiting for the fragment-federated relay")
+            .expect("relay subscription channel closed");
+        assert_eq!(msg.payload(), &Bytes::from_static(b"via-fragment-upstream"));
+
+        let rogue_delivered =
+            tokio::time::timeout(Duration::from_secs(3), rogue_subscription.rx.recv_async())
                 .await
-            {
-                Ok(()) => {
-                    last_error = None;
-                    break;
-                }
-                Err(error) => {
-                    last_error = Some(error);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        }
+                .is_ok();
         assert!(
-            last_error.is_none(),
-            "right-CA client did not reach the fragment listener: {last_error:?}"
+            !rogue_delivered,
+            "a rogue client identity must be rejected by the hub and relay nothing"
         );
 
-        // Trusts the genuine server CA but presents the rogue (untrusted-CA)
-        // client identity.
-        let wrong_client =
-            TlsConfig::mtls_client(certs.ca.clone(), rogue.cert.clone(), rogue.key.clone());
-        let error =
-            probe_tls_reachable("localhost", tls_port, &wrong_client, Duration::from_secs(2))
-                .await
-                .expect_err("wrong-CA client certificate must be rejected");
-        assert!(
-            error.contains("handshake") || error.contains("rejected") || error.contains("closed"),
-            "unexpected wrong-CA rejection: {error}"
-        );
-
-        drop(plaintext_client);
-        router.stop_router().await.expect("stop fragment router");
+        good_local.stop_router().await.expect("stop good local");
+        rogue_local.stop_router().await.expect("stop rogue local");
     }
 
     /// Positive path: a TLS router + two TLS clients complete the handshake and

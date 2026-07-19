@@ -11,14 +11,16 @@ use zenoh::config::Config;
 
 /// Resolves the zenohd router config path. Honors a `ZENOH_CONFIG` override;
 /// otherwise renders a router config to a temp file keyed by messaging port and
-/// returns its path. `links` carries the federation wiring — upstream connect
-/// endpoints, extra listeners (per-endpoint fragments preserved), and their TLS
+/// returns its path. `gossip` sets the router's gossip scouting (on for the
+/// logged-out peer mesh, off when sessions relay through the router or the
+/// router is federated). `links` carries the platform upstream and TLS
 /// material; see [`RouterLinks`]. `RouterLinks::default()` renders a standalone
 /// plaintext listener unchanged.
 pub(crate) fn router_config_path(
     protocol: ZenohNetProtocol,
     host: &str,
     messaging_port: u16,
+    gossip: bool,
     links: RouterLinks,
 ) -> Result<PathBuf> {
     if let Some(config_path) = config_override() {
@@ -26,7 +28,7 @@ pub(crate) fn router_config_path(
     }
 
     let config_path = std::env::temp_dir().join(format!("zenohd_config_{}.json5", messaging_port));
-    render_router_config_to_path(&config_path, protocol, host, messaging_port, links)?;
+    render_router_config_to_path(&config_path, protocol, host, messaging_port, gossip, links)?;
     Ok(config_path)
 }
 
@@ -44,14 +46,18 @@ pub(crate) fn render_router_config_to_path(
     protocol: ZenohNetProtocol,
     host: &str,
     messaging_port: u16,
+    gossip: bool,
     links: RouterLinks,
 ) -> Result<()> {
-    // The router seeds gossip discovery for the peer mesh, so gossip stays on;
-    // multicast is off everywhere (see `crate::zenoh_config`). The router listens
-    // on `host` as given (typically `0.0.0.0`) so nodes can reach it. Shares
+    // `gossip` follows the session topology bit: on only for the logged-out
+    // peer mesh the router seeds; off when sessions are router-relayed or the
+    // router holds a platform upstream (nothing consumes gossip then, and it
+    // would only advertise locators over the federation link). Multicast is
+    // off everywhere (see `crate::zenoh_config`). The router listens on `host`
+    // as given (typically `0.0.0.0`) so nodes can reach it. Shares
     // `router_spec` with the out-of-process render path (`render_router_config`).
     let config_content =
-        render_config_string(&router_spec(protocol, host, messaging_port, true, links));
+        render_config_string(&router_spec(protocol, host, messaging_port, gossip, links));
 
     // The endpoint lists arrive as raw locator strings (possibly carrying
     // `#key=val` fragments), so a malformed one renders into a config zenohd

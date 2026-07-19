@@ -1091,7 +1091,7 @@ mod zenoh_tests {
     /// Opens a non-reconnecting peer session under `namespace`, retrying briefly
     /// while the router settles.
     async fn open_namespaced(host: &str, port: u16, namespace: &str) -> ZenohAdapter {
-        let ns = pmi::OrgNamespace::parse(namespace).expect("valid namespace");
+        let ns = pmi::Namespace::parse(namespace).expect("valid namespace");
         for _ in 0..40 {
             let mut adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)
                 .expect("adapter")
@@ -1236,7 +1236,7 @@ mod zenoh_tests {
         let host = instance.host.clone();
         let port = instance.port;
 
-        let subscriber = open_namespaced(&host, port, pmi::OrgNamespace::local().as_str()).await;
+        let subscriber = open_namespaced(&host, port, pmi::Namespace::local().as_str()).await;
         let mut subscription = subscriber
             .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
             .await
