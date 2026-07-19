@@ -2522,8 +2522,8 @@ dependencies = [
  "flume 0.12.0",
  "peppy-config-model",
  "rcgen",
- "rustls-native-certs",
  "rustls-pemfile",
+ "rustls-platform-verifier",
  "serde_json",
  "serde_json5",
  "tempfile",
@@ -4844,14 +4844,13 @@ dependencies = [
 [[package]]
 name = "zenoh-link-tls"
 version = "1.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6f6b308ae2599f9c1344fbcd3418b2c3a3a9fe287ec39501ba834168493ba37"
 dependencies = [
  "async-trait",
  "base64",
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",
+ "rustls-platform-verifier",
  "rustls-webpki",
  "secrecy",
  "socket2 0.5.10",
@@ -4861,7 +4860,6 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tracing",
- "webpki-roots",
  "x509-parser",
  "zenoh-config",
  "zenoh-core",

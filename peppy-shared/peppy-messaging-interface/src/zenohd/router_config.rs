@@ -6,7 +6,29 @@
 use super::ZenohNetProtocol;
 use crate::error::{Error, Result};
 use crate::zenoh_config::{RouterLinks, render_router_config};
+use serde_json::json;
 use std::path::{Path, PathBuf};
+
+/// Returns the identity a Peppy-managed router must keep across process
+/// restarts.
+///
+/// Zenoh assigns a random ZID when a config omits `id`. That is unsafe for the
+/// managed-router reload path: zenohd is necessarily killed to reload rotated
+/// TLS files, and a replacement with a different ZID can leave the upstream
+/// routing graph holding declarations from the old router until it converges.
+/// A core-node presence token dropped through the replacement cannot withdraw
+/// that old-ZID declaration. Persisting the generated ZID in the same managed
+/// config makes every subsequent rewrite/restart the same logical router.
+fn managed_router_id(config_path: &Path) -> String {
+    std::fs::read_to_string(config_path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
+        .and_then(|config| config.get("id")?.as_str().map(str::to_owned))
+        // Refuse to preserve arbitrary text from a damaged/stale file. The
+        // freshly generated replacement below is always a valid Zenoh ID.
+        .filter(|id| id.parse::<zenoh::config::ZenohId>().is_ok())
+        .unwrap_or_else(|| zenoh::config::ZenohId::default().to_string())
+}
 
 /// Resolves the zenohd router config path. Honors a `ZENOH_CONFIG` override;
 /// otherwise renders a router config to a temp file keyed by messaging port and
@@ -60,7 +82,25 @@ pub(crate) fn render_router_config_to_path(
     // refederation path rewrites the running router's only config file in
     // place, and a malformed locator must fail before it clobbers the
     // known-good file and surfaces at the next restart.
-    let config_content = render_router_config(protocol, host, messaging_port, gossip, links)?;
+    let rendered = render_router_config(protocol, host, messaging_port, gossip, links)?;
+    let mut config: serde_json::Value = serde_json::from_str(&rendered).map_err(|error| {
+        Error::ConfigurationError(format!(
+            "Failed to parse Peppy's rendered zenohd config: {error}"
+        ))
+    })?;
+    config["id"] = json!(managed_router_id(config_path));
+    let config_content = serde_json::to_string(&config).map_err(|error| {
+        Error::ConfigurationError(format!(
+            "Failed to serialize Peppy's managed zenohd config: {error}"
+        ))
+    })?;
+    // Validate after adding the persistent ID as well. This guards both the
+    // generated ID and the preservation path before replacing a runnable file.
+    zenoh::config::Config::from_json5(&config_content).map_err(|error| {
+        Error::ConfigurationError(format!(
+            "rendered managed zenohd config is invalid: {error}"
+        ))
+    })?;
 
     std::fs::write(config_path, config_content)
         .map_err(|e| Error::ConfigurationError(format!("Failed to write zenohd config: {}", e)))?;

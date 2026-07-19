@@ -7,6 +7,9 @@ mod zenoh_build {
     use std::env;
     use std::path::{Path, PathBuf};
 
+    const ZENOH_RELEASE: &str = "1.9.0";
+    const TLS_POLICY_TAG: &str = "custom-roots-exclusive-platform-verifier-mtls-tls13-v1";
+
     fn find_cargo_lock(start_dir: &Path) -> Option<PathBuf> {
         let mut current = Some(start_dir);
         while let Some(dir) = current {
@@ -160,20 +163,32 @@ mod zenoh_build {
 
         let target = env::var("TARGET").expect("TARGET not set");
         let cache_dir = build_helpers::cache_dir("zenoh");
+        let patched_tls_source = PathBuf::from(&manifest_dir)
+            .join("../..")
+            .join("vendor/zenoh-link-tls-1.9.0");
+        println!("cargo:rerun-if-changed={}", patched_tls_source.display());
 
         let out_dir = env::var("OUT_DIR").unwrap();
         let zenoh_binary_path = format!("{}/zenohd", out_dir);
 
-        match build_helpers::cargo_install_binary("zenohd", release_tag, &target, &cache_dir) {
+        match build_helpers::cargo_install_binary_with_source_patch(
+            "zenohd",
+            release_tag,
+            &target,
+            &cache_dir,
+            "zenoh-link-tls",
+            &patched_tls_source,
+            TLS_POLICY_TAG,
+        ) {
             Some(compiled) => {
                 build_helpers::copy_if_changed(&compiled, zenoh_binary_path.as_ref());
             }
             None => panic!(
                 "Failed to compile zenohd {} for target '{}'. \
-                 Build zenohd from source with \
-                 `cargo build --release --target {}` \
-                 from the zenoh {} source tree, then place the built binary next to peppy.",
-                release_tag, target, target, release_tag
+                 The managed router must be built by pmi with its vendored \
+                 zenoh-link-tls trust patch; a stock zenohd is not an accepted \
+                 fallback.",
+                release_tag, target
             ),
         }
 
@@ -185,7 +200,12 @@ mod zenoh_build {
     }
 
     pub fn run() {
-        build_zenoh(&get_zenoh_version());
+        let resolved = get_zenoh_version();
+        assert_eq!(
+            resolved, ZENOH_RELEASE,
+            "pmi's zenoh dependency must remain exactly {ZENOH_RELEASE}; found {resolved}"
+        );
+        build_zenoh(ZENOH_RELEASE);
     }
 }
 

@@ -270,6 +270,11 @@ impl ZenohAdapter {
     /// router is external. Both are operator-owned and left untouched. An
     /// external router never read peppy's rendered config, so there is nothing
     /// to rewrite or restart. Errors if the adapter owns no router.
+    ///
+    /// Certificate rotation likewise requires a managed-router reload: use new
+    /// certificate/key paths, call this method, then restart zenohd when it
+    /// returns `Ok(true)`. Replacing PEM contents at the old paths does not make
+    /// the running router reload them.
     #[cfg(feature = "router")]
     pub fn refederate(&mut self, links: RouterLinks) -> Result<bool> {
         let facade = self.zenohd.as_ref().ok_or_else(|| {
@@ -359,6 +364,9 @@ impl ZenohAdapter {
         buffer_sizes: SubscriberBufferSizes,
         tls: Option<TlsConfig>,
     ) -> Result<Self> {
+        if let Some(tls) = &tls {
+            tls.validate_connect_side()?;
+        }
         let client_config = Self::create_client_config(
             protocol,
             host,
@@ -570,6 +578,85 @@ impl ZenohAdapter {
     #[cfg(feature = "router")]
     pub fn router_is_adopted(&self) -> bool {
         self.zenohd.as_ref().is_some_and(|z| z.is_adopted())
+    }
+
+    /// Restarts a managed zenohd and does not report success until this
+    /// adapter's retained reconnecting session has crossed a real
+    /// disconnected -> connected boundary.
+    ///
+    /// Merely waiting for the replacement router's TCP listener is not enough:
+    /// the session may still hold declarations from the dead transport. If a
+    /// caller drops one of those tokens before Zenoh has rebound and replayed
+    /// it, the undeclare cannot reach the new router and an upstream hub can
+    /// retain a stale routed declaration. Waiting for both sides of the
+    /// boundary makes a completed TLS-identity reload safe for an immediate
+    /// logout/teardown.
+    #[cfg(feature = "router")]
+    pub(crate) async fn restart_router_and_wait_for_session(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<()> {
+        const SESSION_STATE_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+        async fn session_has_router(session: &zenoh::Session) -> bool {
+            session.info().routers_zid().await.next().is_some()
+        }
+
+        async fn wait_for_state(
+            session: &zenoh::Session,
+            expected: bool,
+            deadline: tokio::time::Instant,
+        ) -> bool {
+            loop {
+                if session_has_router(session).await == expected {
+                    return true;
+                }
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
+                    return false;
+                }
+                tokio::time::sleep(SESSION_STATE_POLL.min(deadline - now)).await;
+            }
+        }
+
+        let session = self.session.clone();
+        let was_connected = match &session {
+            Some(session) => session_has_router(session).await,
+            None => false,
+        };
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        self.stop_router().await?;
+
+        // Reserve at most half of the total bound for observing the old
+        // transport disappear. Always restart zenohd afterward—even when the
+        // observation times out—so this safety check cannot strand the local
+        // messaging bus down.
+        let disconnected = if let Some(session) = &session
+            && was_connected
+        {
+            let disconnect_deadline =
+                std::cmp::min(deadline, tokio::time::Instant::now() + timeout / 2);
+            wait_for_state(session, false, disconnect_deadline).await
+        } else {
+            true
+        };
+
+        self.start_router().await?;
+
+        if !disconnected {
+            return Err(Error::BackendError(format!(
+                "retained Zenoh session did not observe the managed router disconnect within {timeout:?}"
+            )));
+        }
+        if let Some(session) = &session
+            && !wait_for_state(session, true, deadline).await
+        {
+            return Err(Error::BackendError(format!(
+                "retained Zenoh session did not reconnect to the managed router within {timeout:?}"
+            )));
+        }
+        Ok(())
     }
 
     /// Builds a peer-session config seeded by `host:port` (or `seed_peers` when
@@ -1576,13 +1663,31 @@ mod tests {
         assert_eq!(cfg.buffer_sizes.high_throughput, 4096);
     }
 
+    #[test]
+    fn connecting_client_rejects_a_half_configured_mtls_identity() {
+        let result = ZenohAdapter::connect_to_tls(
+            "federation.platform.example",
+            7443,
+            TlsConfig {
+                connect_certificate: Some("/identity/client-chain.pem".into()),
+                ..TlsConfig::default()
+            },
+        );
+        let error = match result {
+            Ok(_) => panic!("a connecting identity without its private key must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(&error, Error::ConfigurationError(_)), "{error}");
+    }
+
     /// `refederate` re-renders the router's config in place with the upstream
-    /// connect endpoint + connect-side trust — the live (de)federation the daemon
-    /// drives on login/logout. `with_router` only renders + reads config (no
-    /// zenohd process), so this is a pure file check.
+    /// connect endpoint + complete connect-side mTLS identity — the live
+    /// (de)federation the daemon drives on login/logout. `with_router` only
+    /// renders + reads config (no zenohd process), so this is a pure file check.
     #[cfg(feature = "router")]
     #[test]
-    fn refederate_rewrites_the_router_config_with_the_upstream_listener_and_trust() {
+    fn refederate_rewrites_the_router_config_with_endpoint_local_mtls_identity() {
         // A port unlikely to collide with other config-rendering tests (the
         // rendered config path is keyed by port).
         let port = 59247;
@@ -1604,6 +1709,15 @@ mod tests {
             .expect("managed router owns a config path")
             .to_path_buf();
         let before = std::fs::read_to_string(&cfg_path).expect("read rendered config");
+        let before_json: serde_json::Value =
+            serde_json::from_str(&before).expect("rendered config is JSON");
+        let router_id = before_json["id"]
+            .as_str()
+            .expect("a managed router config pins a stable ZID")
+            .to_string();
+        router_id
+            .parse::<zenoh::config::ZenohId>()
+            .expect("the pinned managed-router ZID is valid");
         assert!(
             !before.contains("tls/cap.zenoh.localhost:7443"),
             "a standalone router has no upstream connect endpoint"
@@ -1613,17 +1727,51 @@ mod tests {
             .refederate(RouterLinks {
                 upstream: Some(crate::zenoh_config::UpstreamLink {
                     endpoint: "tls/cap.zenoh.localhost:7443".to_string(),
-                    tls: TlsConfig::client(std::path::PathBuf::from("/certs/ca.pem")),
+                    tls: TlsConfig::mtls_client_with_system_roots(
+                        "/identity/generation-2/client-chain.pem".into(),
+                        "/identity/generation-2/client-key.pem".into(),
+                    ),
                 }),
                 tls: None,
             })
             .expect("refederate rewrites the config in place");
         assert!(rewrote, "a rendered config reports it was rewritten");
 
-        let after = std::fs::read_to_string(&cfg_path).expect("read refederated config");
+        let after_text = std::fs::read_to_string(&cfg_path).expect("read refederated config");
+        let after: serde_json::Value =
+            serde_json::from_str(&after_text).expect("refederated config is JSON");
+        assert_eq!(
+            after["connect"]["endpoints"][0],
+            "tls/cap.zenoh.localhost:7443#connect_certificate_file=/identity/generation-2/client-chain.pem;connect_private_key_file=/identity/generation-2/client-key.pem;enable_mtls=true",
+            "upstream carries the complete mTLS identity as endpoint-local fragments"
+        );
         assert!(
-            after.contains("tls/cap.zenoh.localhost:7443#root_ca_certificate_file=/certs/ca.pem"),
-            "upstream connect endpoint carries its trust as an endpoint fragment: {after}"
+            after.get("transport").is_none(),
+            "upstream identity must not leak into the local plaintext listener"
+        );
+        assert_eq!(
+            after["id"], router_id,
+            "refederation must preserve the router ZID across a TLS-identity reload"
+        );
+
+        let error = adapter
+            .refederate(RouterLinks {
+                upstream: Some(crate::zenoh_config::UpstreamLink {
+                    endpoint: "tls/cap.zenoh.localhost:7443".to_string(),
+                    tls: TlsConfig {
+                        connect_certificate: Some("/identity/generation-3/client-chain.pem".into()),
+                        enable_mtls: true,
+                        ..TlsConfig::default()
+                    },
+                }),
+                tls: None,
+            })
+            .expect_err("refederation must reject a half-configured identity");
+        assert!(matches!(&error, Error::ConfigurationError(_)), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&cfg_path).expect("read config after rejected refederation"),
+            after_text,
+            "invalid mTLS state must not overwrite the last valid router config"
         );
 
         // refederate on an adapter that owns no router (a client) is an error.

@@ -6,6 +6,7 @@ use std::process::Command;
 
 use crate::command::run_command_streaming;
 use crate::fs::{CleanupDir, acquire_file_lock};
+use crate::hash::sha256_source_tree_with_tag;
 
 /// Returns the Rust target triple for the current build.
 ///
@@ -156,6 +157,114 @@ pub fn cargo_install_binary(
     cargo_install_binary_with(cargo_program, name, version, target, cache_dir)
 }
 
+/// Compile a crates.io binary while replacing one dependency with a local
+/// source tree.
+///
+/// The cached filename contains both `policy_tag` and a SHA-256 digest of the
+/// complete patch tree. Consequently a stock binary, a binary built under an
+/// older policy, or one built from older patch contents can never satisfy this
+/// request. The nested Cargo invocation receives an explicit crates.io patch;
+/// callers do not have to rely on a parent workspace's Cargo configuration.
+pub fn cargo_install_binary_with_source_patch(
+    name: &str,
+    version: &str,
+    target: &str,
+    cache_dir: &Path,
+    patch_crate_name: &str,
+    patch_source_dir: &Path,
+    policy_tag: &str,
+) -> Option<PathBuf> {
+    let cargo_program = std::env::var_os("CARGO").map(PathBuf::from);
+    let cargo_program = cargo_program.as_deref().unwrap_or(Path::new("cargo"));
+    cargo_install_binary_with_source_patch_using(
+        cargo_program,
+        name,
+        version,
+        target,
+        cache_dir,
+        patch_crate_name,
+        patch_source_dir,
+        policy_tag,
+    )
+}
+
+struct CargoSourcePatch<'a> {
+    crate_name: &'a str,
+    source_dir: PathBuf,
+    cache_discriminator: String,
+}
+
+fn cache_component(value: &str) -> String {
+    let value: String = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .take(64)
+        .collect();
+    if value.is_empty() {
+        "policy".to_string()
+    } else {
+        value
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cargo_install_binary_with_source_patch_using(
+    cargo_program: &Path,
+    name: &str,
+    version: &str,
+    target: &str,
+    cache_dir: &Path,
+    patch_crate_name: &str,
+    patch_source_dir: &Path,
+    policy_tag: &str,
+) -> Option<PathBuf> {
+    if patch_crate_name.is_empty()
+        || !patch_crate_name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        println!("cargo:warning=Invalid crates.io patch name `{patch_crate_name}`");
+        return None;
+    }
+    let source_dir = match std::fs::canonicalize(patch_source_dir) {
+        Ok(source_dir) if source_dir.is_dir() => source_dir,
+        Ok(source_dir) => {
+            println!(
+                "cargo:warning=Patched source is not a directory: {}",
+                source_dir.display()
+            );
+            return None;
+        }
+        Err(error) => {
+            println!(
+                "cargo:warning=Failed to resolve patched source {}: {error}",
+                patch_source_dir.display()
+            );
+            return None;
+        }
+    };
+    let source_hash = sha256_source_tree_with_tag(&source_dir, policy_tag)?;
+    let patch = CargoSourcePatch {
+        crate_name: patch_crate_name,
+        source_dir,
+        cache_discriminator: format!("{}-{source_hash}", cache_component(policy_tag)),
+    };
+    cargo_install_binary_with_options(
+        cargo_program,
+        name,
+        version,
+        target,
+        cache_dir,
+        Some(&patch),
+    )
+}
+
 /// Implementation of [`cargo_install_binary`] with the cargo executable made
 /// explicit, so tests can substitute a fixture script.
 fn cargo_install_binary_with(
@@ -165,12 +274,27 @@ fn cargo_install_binary_with(
     target: &str,
     cache_dir: &Path,
 ) -> Option<PathBuf> {
+    cargo_install_binary_with_options(cargo_program, name, version, target, cache_dir, None)
+}
+
+fn cargo_install_binary_with_options(
+    cargo_program: &Path,
+    name: &str,
+    version: &str,
+    target: &str,
+    cache_dir: &Path,
+    source_patch: Option<&CargoSourcePatch<'_>>,
+) -> Option<PathBuf> {
     fn use_cached(name: &str, cached_binary: PathBuf) -> Option<PathBuf> {
         println!("cargo:warning=Using cached {name} binary from {cached_binary:?}");
         Some(cached_binary)
     }
 
-    let cached_binary = cache_dir.join(format!("{name}-{version}-{target}"));
+    let cache_name = source_patch.map_or_else(
+        || format!("{name}-{version}-{target}"),
+        |patch| format!("{name}-{version}-{target}-{}", patch.cache_discriminator),
+    );
+    let cached_binary = cache_dir.join(&cache_name);
 
     if cached_binary.exists() {
         return use_cached(name, cached_binary);
@@ -206,6 +330,20 @@ fn cargo_install_binary_with(
     cmd.args(["install", &crate_spec, "--target", target, "--root"])
         .arg(&install_root)
         .env("CARGO_TARGET_DIR", &cargo_target_dir);
+    if let Some(patch) = source_patch {
+        // Cargo CLI config values use TOML syntax. Canonical paths cannot be
+        // relative to Cargo's changing install scratch directory; quote and
+        // escape the absolute path explicitly.
+        let source_dir = patch
+            .source_dir
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        cmd.arg("--config").arg(format!(
+            "patch.crates-io.{}.path=\"{source_dir}\"",
+            patch.crate_name
+        ));
+    }
 
     let label = format!("cargo-install-{name}");
     let output = run_command_streaming(&mut cmd, &label);
@@ -226,7 +364,7 @@ fn cargo_install_binary_with(
     // so the lock-free fast path above never observes a torn binary. The
     // fixed staging name cannot collide — staging only happens under the
     // lock — and a leftover from a killed build is truncated by the copy.
-    let staged = cache_dir.join(format!("{name}-{version}-{target}.tmp"));
+    let staged = cache_dir.join(format!("{cache_name}.tmp"));
     let published = std::fs::copy(&built_binary, &staged)
         .and_then(|_| std::fs::rename(&staged, &cached_binary));
     if let Err(e) = published {
@@ -404,5 +542,97 @@ printf fake-binary > "$root/bin/mytool""#,
         );
         assert!(!cache.join("mytool-install-tmp").exists());
         assert!(!cache.join("cargo-build-mytool").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_patch_uses_content_tagged_cache_and_explicit_cargo_config() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = write_fake_cargo(
+            dir.path(),
+            "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args\"\nroot=\"\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--root\" ]; then root=\"$2\"; shift; fi\n  shift\ndone\nmkdir -p \"$root/bin\"\nprintf patched-binary > \"$root/bin/mytool\"",
+        );
+        let cache = temp_cache_dir(dir.path());
+        // A stock cache entry must never satisfy a source-patched request.
+        std::fs::write(cache.join("mytool-1.0.0-test-target"), b"stock")
+            .expect("write stock cache");
+        let patch = dir.path().join("patch");
+        std::fs::create_dir(&patch).expect("create patch source");
+        std::fs::write(patch.join("Cargo.toml"), b"[package]\nname='patched'\n")
+            .expect("write patch manifest");
+
+        let result = cargo_install_binary_with_source_patch_using(
+            &script,
+            "mytool",
+            "1.0.0",
+            "test-target",
+            &cache,
+            "zenoh-link-tls",
+            &patch,
+            "exclusive-platform-v1",
+        )
+        .expect("patched install succeeds");
+
+        assert_ne!(result, cache.join("mytool-1.0.0-test-target"));
+        let file_name = result.file_name().unwrap().to_string_lossy();
+        assert!(file_name.contains("exclusive-platform-v1"));
+        assert_eq!(
+            std::fs::read(&result).expect("read cache"),
+            b"patched-binary"
+        );
+
+        let args = std::fs::read_to_string(dir.path().join("args")).expect("read cargo args");
+        let canonical_patch = std::fs::canonicalize(&patch).expect("canonical patch");
+        assert!(args.contains("--config\n"));
+        assert!(args.contains(&format!(
+            "patch.crates-io.zenoh-link-tls.path=\"{}\"",
+            canonical_patch.display()
+        )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_patch_content_change_selects_a_new_cache_entry() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = write_fake_cargo(
+            dir.path(),
+            "root=\"\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--root\" ]; then root=\"$2\"; shift; fi\n  shift\ndone\nmkdir -p \"$root/bin\"\nprintf patched-binary > \"$root/bin/mytool\"",
+        );
+        let cache = temp_cache_dir(dir.path());
+        let patch = dir.path().join("patch");
+        std::fs::create_dir(&patch).expect("create patch source");
+        let source = patch.join("source.rs");
+        std::fs::write(&source, b"version one").expect("write source");
+
+        let first = cargo_install_binary_with_source_patch_using(
+            &script,
+            "mytool",
+            "1.0.0",
+            "test-target",
+            &cache,
+            "zenoh-link-tls",
+            &patch,
+            "exclusive-platform-v1",
+        )
+        .expect("first patched install");
+        std::fs::write(&source, b"version two").expect("change source");
+        let second = cargo_install_binary_with_source_patch_using(
+            &script,
+            "mytool",
+            "1.0.0",
+            "test-target",
+            &cache,
+            "zenoh-link-tls",
+            &patch,
+            "exclusive-platform-v1",
+        )
+        .expect("second patched install");
+
+        assert_ne!(first, second, "source changes must invalidate the cache");
+        assert!(
+            first.exists(),
+            "the prior immutable cache entry is retained"
+        );
+        assert!(second.exists(), "the new cache entry is published");
     }
 }

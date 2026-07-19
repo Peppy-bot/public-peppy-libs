@@ -1023,6 +1023,27 @@ impl Messenger {
         }
     }
 
+    /// Restarts the owned router and waits for the retained application
+    /// session to observe a disconnect followed by a reconnect. This is the
+    /// safe reload primitive for a live daemon: it ensures Zenoh has rebound
+    /// and replayed declarations before a successful reload is reported, so an
+    /// immediate token drop can still withdraw its routed state upstream.
+    #[cfg(feature = "router")]
+    pub async fn restart_router_and_wait_for_session(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<()> {
+        match &mut self.adapter {
+            MessengerAdapter::Zenoh(adapter) => {
+                adapter.restart_router_and_wait_for_session(timeout).await
+            }
+            MessengerAdapter::Mock(adapter) => {
+                adapter.stop_router().await?;
+                adapter.start_router().await
+            }
+        }
+    }
+
     /// Pre-bind a per-topic publisher. The returned [`MessengerPublisher`]
     /// publishes to the same wire keyexpr as [`MessengerBackend::publish_topic`]
     /// for the same `sender`, but skips the central `Arc<Mutex<Messenger>>`

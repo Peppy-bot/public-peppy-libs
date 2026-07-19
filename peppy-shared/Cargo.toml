@@ -25,6 +25,14 @@ edition = "2024"
 [workspace.dependencies]
 parking_lot = "0.12"
 
+# Zenoh 1.9 mixes a configured private CA with static public WebPKI roots. The
+# vendored patch makes a custom bundle exclusive and delegates to the operating
+# system when no custom bundle is supplied. Downstream workspace roots must
+# repeat this patch because Cargo intentionally ignores dependency-local
+# `[patch]` sections.
+[patch.crates-io]
+zenoh-link-tls = { path = "../vendor/zenoh-link-tls-1.9.0" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

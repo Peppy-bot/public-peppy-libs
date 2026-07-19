@@ -162,7 +162,7 @@ async fn fails_loud_when_the_configured_external_router_is_not_running() {
     assert!(
         message.contains(&format!(
             "`tcp/127.0.0.1:{port}` is not accepting TCP connections"
-        )),
+        )) || message.contains("not a responsive Zenoh router"),
         "unexpected error: {error}"
     );
     assert!(!adapter.router_is_adopted());

@@ -8,8 +8,8 @@ mod zenoh_tests {
     };
     use bytes::Bytes;
     use pmi::{
-        MessengerBackend, Payload, PublisherQoS, SubscriberBufferSizes, SubscriberQoS,
-        ZenohAdapter, ZenohNetProtocol,
+        Messenger, MessengerAdapter, MessengerBackend, Payload, PublisherQoS, RouterLinks, Segment,
+        SubscriberBufferSizes, SubscriberQoS, UpstreamLink, ZenohAdapter, ZenohNetProtocol,
     };
     use std::time::{Duration, Instant};
 
@@ -76,6 +76,139 @@ mod zenoh_tests {
             }
         }
         false
+    }
+
+    /// Waits until the observer's hub-side liveliness query agrees with
+    /// `expected`. Each query has its own short transport bound; the outer
+    /// deadline leaves room for router-link declaration propagation.
+    async fn wait_for_presence(
+        observer: &ZenohAdapter,
+        core_node: &Segment,
+        instance_id: &str,
+        expected: bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let rows = observer
+                .list_core_node_presence(Some(core_node), Duration::from_millis(500))
+                .await
+                .expect("issue hub-side presence query")
+                .collect()
+                .await
+                .expect("collect hub-side presence query");
+            let visible = rows.iter().any(|row| {
+                row.core_node == core_node.to_string() && row.instance_id == instance_id
+            });
+            if visible == expected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "hub-side presence never became {expected}; last rows: {rows:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// A managed router reload must remain the same logical Zenoh router.
+    /// Otherwise a hard zenohd bounce can strand an old-ZID liveliness route at
+    /// the upstream hub: the reconnecting daemon session declares through the
+    /// replacement, but later dropping that token cannot withdraw the ghost
+    /// owned by the pre-reload router. This is the exact topology used by
+    /// certificate rotation and logout (daemon session -> managed router ->
+    /// platform hub).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn routed_presence_withdraws_after_managed_router_restart() {
+        let _lock = ZENOH_SERIAL.lock().await;
+
+        let hub = ZenohAdapter::start_router_ephemeral_in_mode(
+            "127.0.0.1",
+            None,
+            false,
+            SubscriberBufferSizes::default(),
+            None,
+        )
+        .await
+        .expect("start upstream hub router");
+
+        let port_reservation =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve local router port");
+        let local_port = port_reservation
+            .local_addr()
+            .expect("read reserved local router port")
+            .port();
+        drop(port_reservation);
+
+        let local_adapter = ZenohAdapter::with_router(
+            ZenohNetProtocol::Tcp,
+            "127.0.0.1",
+            local_port,
+            false,
+            SubscriberBufferSizes::default(),
+            RouterLinks {
+                upstream: Some(UpstreamLink {
+                    endpoint: format!("tcp/127.0.0.1:{}", hub.port),
+                    tls: Default::default(),
+                }),
+                tls: None,
+            },
+        )
+        .expect("build managed local router")
+        .with_session_reconnect();
+        let mut local = Messenger::new(MessengerAdapter::Zenoh(local_adapter));
+        local
+            .start_router()
+            .await
+            .expect("start managed local router");
+        local
+            .start_session()
+            .await
+            .expect("start reconnecting daemon session");
+
+        let mut observer = ZenohAdapter::connect_to_with_discovery(
+            ZenohNetProtocol::Tcp,
+            &hub.host,
+            hub.port,
+            Vec::new(),
+            false,
+            SubscriberBufferSizes::default(),
+            None,
+        )
+        .expect("build hub observer");
+        observer
+            .start_session()
+            .await
+            .expect("start hub observer session");
+
+        let core_node = Segment::try_from("reload_presence_core").expect("valid core-node name");
+        let instance_id = Segment::try_from("reload_presence_instance").expect("valid instance");
+        let token = local
+            .declare_core_node_presence(&core_node, &instance_id)
+            .await
+            .expect("declare routed presence");
+        wait_for_presence(&observer, &core_node, &instance_id.to_string(), true).await;
+
+        // Certificate rotation uses this same hard router process reload while
+        // retaining the reconnecting daemon session and its liveliness token.
+        local
+            .restart_router_and_wait_for_session(Duration::from_secs(5))
+            .await
+            .expect("restart managed local router and rebind its session");
+        wait_for_presence(&observer, &core_node, &instance_id.to_string(), true).await;
+
+        drop(token);
+        wait_for_presence(&observer, &core_node, &instance_id.to_string(), false).await;
+
+        observer
+            .stop_session()
+            .await
+            .expect("stop observer session");
+        local.stop_session().await.expect("stop daemon session");
+        local
+            .stop_router()
+            .await
+            .expect("stop managed local router");
+        drop(hub);
     }
 
     /// Proves the daemon's in-process recovery path: a reconnecting subscriber

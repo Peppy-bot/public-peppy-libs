@@ -37,8 +37,9 @@ use tokio_rustls::rustls::sign::CertifiedKey;
 /// renders byte-identical to before.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TlsConfig {
-    /// CA used to validate the peer's certificate. Required on the client side
-    /// for a private CA (dev/internal); omit to fall back to system WebPKI.
+    /// Exclusive CA bundle used to validate the peer's certificate. Required on
+    /// the client side for a private CA (dev/internal); it is never merged with
+    /// public roots. Omit it to delegate to the operating system verifier.
     pub root_ca_certificate: Option<PathBuf>,
     /// Listener (router/server) certificate chain.
     pub listen_certificate: Option<PathBuf>,
@@ -128,33 +129,28 @@ impl ResolvesClientCert for ClientAuthObserver {
 fn build_probe_client_config(
     tls: &TlsConfig,
 ) -> Result<(tokio_rustls::rustls::ClientConfig, Arc<AtomicBool>), String> {
+    use rustls_platform_verifier::BuilderVerifierExt;
+    use tokio_rustls::rustls::version::TLS13;
     use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
-    // Build the trust anchors: either an explicit private CA, or the OS roots.
-    let mut roots = RootCertStore::empty();
-    match &tls.root_ca_certificate {
+    tls.validate_connect_side()
+        .map_err(|error| error.to_string())?;
+
+    // Match the patched Zenoh transport exactly: an explicit private bundle is
+    // the complete trust boundary; in its absence, delegate verification to
+    // the operating system. Never merge private anchors with public roots.
+    let custom_roots = match &tls.root_ca_certificate {
         Some(path) => {
+            let mut roots = RootCertStore::empty();
             for cert in read_pem_certs(path, "root CA")? {
                 roots
                     .add(cert)
                     .map_err(|e| format!("add root CA `{}` failed: {e}", path.display()))?;
             }
+            Some(roots)
         }
-        None => {
-            // rustls-native-certs 0.8 returns a `CertificateResult`; take all of
-            // its `.certs` (any per-cert load errors are non-fatal as long as at
-            // least one root ends up trusted).
-            let native = rustls_native_certs::load_native_certs();
-            for cert in native.certs {
-                let _ = roots.add(cert);
-            }
-            if roots.is_empty() {
-                return Err(
-                    "system trust store is empty (no native roots could be loaded)".to_string(),
-                );
-            }
-        }
-    }
+        None => None,
+    };
 
     // Select the crypto backend explicitly rather than relying on rustls's
     // process-default provider. In this dependency tree rustls is built with BOTH
@@ -163,12 +159,26 @@ fn build_probe_client_config(
     // cannot auto-determine a single default provider and a bare
     // `ClientConfig::builder()` would panic. tokio-rustls's default features
     // guarantee `ring` is available, so we name it directly.
-    let config_builder = ClientConfig::builder_with_provider(Arc::new(
+    let builder = ClientConfig::builder_with_provider(Arc::new(
         tokio_rustls::rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .map_err(|e| format!("TLS provider setup failed: {e}"))?
-    .with_root_certificates(roots);
+    ));
+    // The managed mTLS transport is TLS 1.3-only. A non-mTLS probe retains
+    // rustls's safe defaults, exactly like the patched Zenoh client branch.
+    let builder = if tls.enable_mtls {
+        builder
+            .with_protocol_versions(&[&TLS13])
+            .map_err(|e| format!("TLS 1.3 provider setup failed: {e}"))?
+    } else {
+        builder
+            .with_safe_default_protocol_versions()
+            .map_err(|e| format!("TLS provider setup failed: {e}"))?
+    };
+    let config_builder = match custom_roots {
+        Some(roots) => builder.with_root_certificates(roots),
+        None => builder
+            .with_platform_verifier()
+            .map_err(|e| format!("configure platform TLS verifier failed: {e}"))?,
+    };
 
     let mut config = if tls.enable_mtls {
         let certificate_path = tls.connect_certificate.as_ref().ok_or_else(|| {
@@ -247,6 +257,12 @@ pub async fn probe_tls_reachable(
     use tokio::io::AsyncReadExt;
     use tokio_rustls::TlsConnector;
     use tokio_rustls::rustls::pki_types::ServerName;
+
+    // Reject contradictory identity state before starting either the blocking
+    // material load or a network dial. `build_probe_client_config` repeats the
+    // check as its own invariant because it owns the rustls configuration.
+    tls.validate_connect_side()
+        .map_err(|error| error.to_string())?;
 
     let host = crate::zenohd::unbracket(host);
 
@@ -359,10 +375,59 @@ impl TlsConfig {
         private_key: PathBuf,
     ) -> Self {
         Self {
+            root_ca_certificate: Some(root_ca_certificate),
+            ..Self::mtls_client_with_system_roots(certificate, private_key)
+        }
+    }
+
+    /// Mutual-TLS client that verifies the server with the operating system's
+    /// WebPKI roots and presents `certificate`/`private_key` as its identity.
+    ///
+    /// [`verify_name_on_connect`](Self::verify_name_on_connect) remains enabled.
+    /// Zenoh derives that server name from the DNS hostname in the connecting
+    /// endpoint, so the endpoint must use a DNS name covered by the server
+    /// certificate rather than an unrelated IP address or alias.
+    pub fn mtls_client_with_system_roots(certificate: PathBuf, private_key: PathBuf) -> Self {
+        Self {
             connect_certificate: Some(certificate),
             connect_private_key: Some(private_key),
             enable_mtls: true,
-            ..Self::client(root_ca_certificate)
+            ..Self::default()
+        }
+    }
+
+    /// Validates the fields when this value is used by a connecting TLS client.
+    ///
+    /// This is deliberately connect-side validation rather than a general
+    /// [`TlsConfig`] invariant: an mTLS *listener* sets `enable_mtls` to require
+    /// peer certificates without also owning a connecting identity.
+    pub(crate) fn validate_connect_side(&self) -> Result<(), crate::error::Error> {
+        let certificate_is_set = self.connect_certificate.is_some();
+        let private_key_is_set = self.connect_private_key.is_some();
+
+        match (certificate_is_set, private_key_is_set, self.enable_mtls) {
+            // One-way TLS, or a complete mTLS client identity.
+            (false, false, false) | (true, true, true) => Ok(()),
+            (true, false, _) => Err(crate::error::Error::ConfigurationError(
+                "connect-side TLS identity has a certificate but no private key; \
+                 mTLS requires both `connect_certificate` and `connect_private_key`"
+                    .to_string(),
+            )),
+            (false, true, _) => Err(crate::error::Error::ConfigurationError(
+                "connect-side TLS identity has a private key but no certificate; \
+                 mTLS requires both `connect_certificate` and `connect_private_key`"
+                    .to_string(),
+            )),
+            (false, false, true) => Err(crate::error::Error::ConfigurationError(
+                "connect-side mTLS is enabled without a client identity; \
+                 set both `connect_certificate` and `connect_private_key`"
+                    .to_string(),
+            )),
+            (true, true, false) => Err(crate::error::Error::ConfigurationError(
+                "connect-side TLS identity is configured while mTLS is disabled; \
+                 set `enable_mtls` to true"
+                    .to_string(),
+            )),
         }
     }
 }
@@ -376,6 +441,11 @@ impl TlsConfig {
 /// router's own (typically plaintext) listener. This type owns that rendering,
 /// so a new [`TlsConfig`] field is wired up next to the fields it renders
 /// instead of in every consumer.
+///
+/// Certificate rotation must give the managed router new identity paths and
+/// reload that router after [`crate::ZenohAdapter::refederate`] rewrites its
+/// config. Replacing PEM contents at unchanged paths does not reload a running
+/// zenohd process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpstreamLink {
     /// The upstream's `<proto>/<host>:<port>` dial endpoint, carrying no
@@ -392,6 +462,7 @@ impl UpstreamLink {
     /// material as `#key=val;...` fragments. Defaults are omitted so a link
     /// with default material stays an unfragmented locator.
     pub(crate) fn locator(&self) -> Result<String, crate::error::Error> {
+        self.tls.validate_connect_side()?;
         if self.endpoint.contains(['?', '#']) {
             return Err(crate::error::Error::ConfigurationError(format!(
                 "upstream endpoint {:?} must not carry a config or metadata suffix; \
@@ -1047,6 +1118,92 @@ mod tests {
             rendered.get("transport").is_none(),
             "endpoint-local TLS fragments must not emit a global transport block"
         );
+    }
+
+    #[test]
+    fn system_root_mtls_client_renders_a_complete_endpoint_local_identity() {
+        let link = UpstreamLink {
+            endpoint: "tls/federation.platform.example:7443".to_string(),
+            tls: TlsConfig::mtls_client_with_system_roots(
+                "/identity/client-chain.pem".into(),
+                "/identity/client-key.pem".into(),
+            ),
+        };
+
+        assert_eq!(
+            link.locator().expect("complete mTLS identity renders"),
+            "tls/federation.platform.example:7443#connect_certificate_file=/identity/client-chain.pem;connect_private_key_file=/identity/client-key.pem;enable_mtls=true"
+        );
+        assert!(
+            link.tls.root_ca_certificate.is_none(),
+            "no private CA path means Zenoh uses the system WebPKI roots"
+        );
+        assert!(link.tls.verify_name_on_connect);
+    }
+
+    #[test]
+    fn incomplete_or_disabled_upstream_mtls_identity_is_rejected_before_rendering() {
+        let cases = [
+            (
+                "certificate only",
+                TlsConfig {
+                    connect_certificate: Some("/identity/client-chain.pem".into()),
+                    ..TlsConfig::default()
+                },
+                "certificate but no private key",
+            ),
+            (
+                "private key only",
+                TlsConfig {
+                    connect_private_key: Some("/identity/client-key.pem".into()),
+                    ..TlsConfig::default()
+                },
+                "private key but no certificate",
+            ),
+            (
+                "mTLS enabled without an identity",
+                TlsConfig {
+                    enable_mtls: true,
+                    ..TlsConfig::default()
+                },
+                "enabled without a client identity",
+            ),
+            (
+                "identity present but mTLS disabled",
+                TlsConfig {
+                    connect_certificate: Some("/identity/client-chain.pem".into()),
+                    connect_private_key: Some("/identity/client-key.pem".into()),
+                    ..TlsConfig::default()
+                },
+                "identity is configured while mTLS is disabled",
+            ),
+        ];
+
+        for (case, tls, expected_message) in cases {
+            let error = render_router_config(
+                ZenohNetProtocol::Tcp,
+                "127.0.0.1",
+                7448,
+                false,
+                RouterLinks {
+                    upstream: Some(UpstreamLink {
+                        endpoint: "tls/federation.platform.example:7443".to_string(),
+                        tls,
+                    }),
+                    tls: None,
+                },
+            )
+            .unwrap_err();
+
+            assert!(
+                matches!(&error, crate::error::Error::ConfigurationError(_)),
+                "{case} must produce a typed configuration error: {error}"
+            );
+            assert!(
+                error.to_string().contains(expected_message),
+                "unexpected error for {case}: {error}"
+            );
+        }
     }
 
     #[test]

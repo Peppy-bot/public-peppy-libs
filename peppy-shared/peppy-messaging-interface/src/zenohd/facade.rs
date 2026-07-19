@@ -66,6 +66,27 @@ fn zenohd_log_excerpt(log_path: &Path) -> String {
     }
 }
 
+/// Resolve only release-authorized router artifacts: a binary packaged beside
+/// the current executable, or the exact content-tagged artifact embedded by
+/// pmi's build script. In particular this helper has no PATH input, which keeps
+/// the release selection policy easy to test without mutating process globals.
+fn packaged_or_built_zenohd(
+    current_executable: Option<&Path>,
+    built_artifact: Option<&Path>,
+) -> Option<String> {
+    if let Some(candidate) = current_executable
+        .and_then(Path::parent)
+        .map(|directory| directory.join("zenohd"))
+        .filter(|candidate| candidate.is_file())
+    {
+        return Some(candidate.to_string_lossy().into_owned());
+    }
+
+    built_artifact
+        .filter(|candidate| candidate.is_file())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
+}
+
 /// The Zenoh daemon binary facade. Zenohd is not accessible via the Rust API (or in a very limited fashion).
 /// This facade allows calling the binary in the background.
 pub struct ZenohdFacade {
@@ -119,33 +140,25 @@ impl ZenohdFacade {
     }
 
     fn get_zenohd_binary() -> Option<String> {
-        // 1) Prefer a `zenohd` binary placed next to the current executable.
-        // This is important for `sudo peppy ...` where PATH may be restricted by `secure_path`.
-        if let Ok(exe_path) = env::current_exe()
-            && let Some(exe_dir) = exe_path.parent()
+        let current_executable = env::current_exe().ok();
+        let built_artifact = option_env!("ZENOHD_BINARY_PATH").map(Path::new);
+        if let Some(path) = packaged_or_built_zenohd(current_executable.as_deref(), built_artifact)
         {
-            let candidate = exe_dir.join("zenohd");
-            if candidate.is_file() {
-                return Some(candidate.to_string_lossy().into_owned());
-            }
+            return Some(path);
         }
 
-        // 2) Compile-time path injected by build script (may be stale for packaged/cargo-installed binaries).
-        if let Some(path) = option_env!("ZENOHD_BINARY_PATH") {
-            // If this looks like a path, verify it exists to avoid "os error 2" at spawn-time.
-            if (path.contains('/') || path.contains('\\')) && !Path::new(path).is_file() {
-                // Continue to other discovery mechanisms.
-            } else {
-                return Some(path.to_string());
-            }
-        }
-
-        // 3) Fallback to searching PATH.
-        if let Some(path_var) = env::var_os("PATH") {
-            for dir in env::split_paths(&path_var) {
-                let candidate = dir.join("zenohd");
-                if candidate.is_file() {
-                    return Some(candidate.to_string_lossy().into_owned());
+        // Developer builds may use an explicitly installed zenohd for fast
+        // iteration. Release builds deliberately compile this branch out: an
+        // arbitrary PATH entry has no provenance and could bypass the patched
+        // federation trust policy.
+        #[cfg(debug_assertions)]
+        {
+            if let Some(path_var) = env::var_os("PATH") {
+                for dir in env::split_paths(&path_var) {
+                    let candidate = dir.join("zenohd");
+                    if candidate.is_file() {
+                        return Some(candidate.to_string_lossy().into_owned());
+                    }
                 }
             }
         }
@@ -183,11 +196,23 @@ impl ZenohdFacade {
             return false;
         }
 
-        matches!(
-            tokio::time::timeout(timeout, tokio::net::TcpStream::connect(self.connect_addr()))
-                .await,
-            Ok(Ok(_))
-        )
+        match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(self.connect_addr()))
+            .await
+        {
+            Ok(Ok(stream)) => {
+                // Linux can occasionally satisfy a loopback connect to an
+                // unbound ephemeral port with a TCP self-connection: the
+                // kernel selects that same port for the client side, making
+                // local and peer addresses identical. That is not a listening
+                // router and must not advance external-router adoption to the
+                // Zenoh handshake path.
+                match (stream.local_addr(), stream.peer_addr()) {
+                    (Ok(local), Ok(peer)) => local != peer,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
     }
 
     pub fn is_adopted(&self) -> bool {
@@ -386,7 +411,7 @@ impl ZenohdFacade {
         };
         let zenohd_path = zenohd_path.clone().ok_or_else(|| {
             Error::ZenohdError(
-                "Zenohd binary not found. Install `zenohd` next to the `peppy` binary or make it available on PATH."
+                "Zenohd binary not found. Release builds require the policy-patched `zenohd` packaged next to `peppy` or the exact artifact produced by pmi's `build_zenoh` feature."
                     .to_string(),
             )
         })?;
@@ -493,6 +518,39 @@ impl Drop for ZenohdFacade {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_router_resolution_accepts_only_adjacent_or_exact_built_artifact() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let package_dir = dir.path().join("package");
+        std::fs::create_dir(&package_dir).expect("create package dir");
+        let current_executable = package_dir.join("peppy");
+        let adjacent = package_dir.join("zenohd");
+        let built = dir.path().join("target/policy-tagged/zenohd");
+        std::fs::create_dir_all(built.parent().unwrap()).expect("create build dir");
+        std::fs::write(&built, b"built").expect("write built artifact");
+
+        assert_eq!(
+            packaged_or_built_zenohd(Some(&current_executable), Some(&built)),
+            Some(built.to_string_lossy().into_owned()),
+            "the exact build artifact is used when no adjacent package exists"
+        );
+
+        std::fs::write(&adjacent, b"packaged").expect("write adjacent artifact");
+        assert_eq!(
+            packaged_or_built_zenohd(Some(&current_executable), Some(&built)),
+            Some(adjacent.to_string_lossy().into_owned()),
+            "a packaged adjacent router takes precedence"
+        );
+
+        std::fs::remove_file(&adjacent).expect("remove adjacent fixture");
+        std::fs::remove_file(&built).expect("remove built fixture");
+        assert_eq!(
+            packaged_or_built_zenohd(Some(&current_executable), Some(&built)),
+            None,
+            "missing authorized artifacts do not become a command-name/PATH fallback"
+        );
+    }
 
     #[test]
     fn test_zenohd_facade_creation_with_config() {
@@ -626,9 +684,20 @@ mod tests {
         );
 
         drop(listener);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        while facade
+            .router_endpoint_reachable(std::time::Duration::from_millis(50))
+            .await
+            && tokio::time::Instant::now() < deadline
+        {
+            // A just-closed listener can remain connectable briefly while the
+            // kernel drains its backlog. The probe must converge to closed;
+            // requiring that state in the very next scheduler tick is flaky.
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         assert!(
             !facade
-                .router_endpoint_reachable(std::time::Duration::from_secs(1))
+                .router_endpoint_reachable(std::time::Duration::from_millis(50))
                 .await,
             "a closed TCP endpoint must not be reachable"
         );

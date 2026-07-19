@@ -15,7 +15,9 @@ mod probe_tls_tests {
     use std::time::Duration;
     use tokio_rustls::TlsAcceptor;
     use tokio_rustls::rustls::server::WebPkiClientVerifier;
-    use tokio_rustls::rustls::{RootCertStore, ServerConfig};
+    use tokio_rustls::rustls::{
+        DEFAULT_VERSIONS, RootCertStore, ServerConfig, SupportedProtocolVersion,
+    };
 
     const CA_PEM: &[u8] = include_bytes!("fixtures/minica_ca.pem");
     const SERVER_CERT_PEM: &[u8] = include_bytes!("fixtures/server_localhost.pem");
@@ -36,6 +38,13 @@ mod probe_tls_tests {
     /// Builds a tokio-rustls `TlsAcceptor` serving the `localhost` server leaf and
     /// its key (loaded from the embedded fixtures).
     fn server_acceptor(require_client_auth: bool) -> TlsAcceptor {
+        server_acceptor_with_versions(require_client_auth, DEFAULT_VERSIONS)
+    }
+
+    fn server_acceptor_with_versions(
+        require_client_auth: bool,
+        protocol_versions: &[&'static SupportedProtocolVersion],
+    ) -> TlsAcceptor {
         let chain = rustls_pemfile::certs(&mut &SERVER_CERT_PEM[..])
             .collect::<Result<Vec<_>, _>>()
             .expect("parse server cert chain");
@@ -47,8 +56,8 @@ mod probe_tls_tests {
         // process-default provider and a bare `ServerConfig::builder()` panics.
         let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
         let builder = ServerConfig::builder_with_provider(provider.clone())
-            .with_safe_default_protocol_versions()
-            .expect("default protocol versions");
+            .with_protocol_versions(protocol_versions)
+            .expect("selected protocol versions");
         let builder = if require_client_auth {
             let mut roots = RootCertStore::empty();
             for cert in rustls_pemfile::certs(&mut &CA_PEM[..]) {
@@ -74,6 +83,10 @@ mod probe_tls_tests {
     /// port. The loop task lives for the duration of the test process.
     async fn start_tls_server(require_client_auth: bool) -> u16 {
         let acceptor = server_acceptor(require_client_auth);
+        start_tls_server_with_acceptor(acceptor).await
+    }
+
+    async fn start_tls_server_with_acceptor(acceptor: TlsAcceptor) -> u16 {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("bind tls test listener");
@@ -126,6 +139,26 @@ mod probe_tls_tests {
         );
     }
 
+    /// A supplied identity cannot be silently ignored when mTLS is disabled.
+    /// Validation happens before material loading or the network dial, so these
+    /// intentionally nonexistent paths still produce the configuration error.
+    #[tokio::test]
+    async fn disabled_mtls_identity_is_rejected_before_the_probe_dials() {
+        let tls = TlsConfig {
+            connect_certificate: Some("/does-not-exist/client-chain.pem".into()),
+            connect_private_key: Some("/does-not-exist/client-key.pem".into()),
+            ..TlsConfig::default()
+        };
+
+        let error = probe_tls_reachable("127.0.0.1", 1, &tls, PROBE_TIMEOUT)
+            .await
+            .expect_err("a disabled client identity must be rejected");
+        assert!(
+            error.contains("identity is configured while mTLS is disabled"),
+            "unexpected probe error: {error}"
+        );
+    }
+
     /// Correct CA but a server name (`127.0.0.1`) that does not match the leaf's
     /// SAN (`localhost`) → name verification (always on) rejects it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -167,6 +200,40 @@ mod probe_tls_tests {
         assert!(
             elapsed >= Duration::from_millis(250),
             "a client-auth probe must keep the post-handshake grace, took {elapsed:?}"
+        );
+    }
+
+    /// The probe must mirror Zenoh's protocol policy: ordinary TLS keeps safe
+    /// compatibility defaults, while federation mTLS is TLS 1.3-only.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tls12_only_server_is_accepted_for_plain_tls_but_rejected_for_mtls() {
+        use tokio_rustls::rustls::version::TLS12;
+
+        let ca = pem_tempfile(CA_PEM);
+        let plain_port =
+            start_tls_server_with_acceptor(server_acceptor_with_versions(false, &[&TLS12])).await;
+        let plain_tls = TlsConfig::client(PathBuf::from(&*ca));
+        assert!(
+            probe_tls_reachable("localhost", plain_port, &plain_tls, PROBE_TIMEOUT)
+                .await
+                .is_ok(),
+            "plain TLS should retain safe TLS 1.2 compatibility"
+        );
+
+        let certificate = pem_tempfile(SERVER_CERT_PEM);
+        let private_key = pem_tempfile(SERVER_KEY_PEM);
+        let mtls_port =
+            start_tls_server_with_acceptor(server_acceptor_with_versions(true, &[&TLS12])).await;
+        let mtls = TlsConfig::mtls_client(
+            PathBuf::from(&*ca),
+            PathBuf::from(&*certificate),
+            PathBuf::from(&*private_key),
+        );
+        assert!(
+            probe_tls_reachable("localhost", mtls_port, &mtls, PROBE_TIMEOUT)
+                .await
+                .is_err(),
+            "mTLS must not negotiate a TLS 1.2-only endpoint"
         );
     }
 

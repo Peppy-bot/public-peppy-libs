@@ -37,6 +37,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # Give this run its own peppy data root so the reused self-hosted runner
       # does not accumulate or collide on /tmp/.peppy across runs.
@@ -45,6 +46,10 @@ jobs:
           PEPPY_RUN_HOME="$RUNNER_TEMP/peppy-home"
           mkdir -p "$PEPPY_RUN_HOME/tmpdir"
           echo "PEPPY_RUN_HOME=$PEPPY_RUN_HOME" >> "$GITHUB_ENV"
+
+      - name: Check Rust formatting
+        working-directory: peppy-shared
+        run: cargo fmt --all -- --check
 
       # Rust workspace tests. Exclude peppylib-py: its cdylib build and
       # tests/python_tests.rs only wrap `pixi run test`, which the dedicated
@@ -59,6 +64,22 @@ jobs:
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           cargo test --workspace --exclude peppylib-py --locked
+
+      # The federation client is consumed by shipped Peppy binaries.  Exercise
+      # its full TLS/router surface with debug assertions disabled so endpoint-
+      # local client identities and real zenohd probes cannot regress behind a
+      # debug-only success path.
+      - name: Run production PMI transport suite
+        working-directory: peppy-shared
+        run: |
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          cargo test --release --locked -p pmi --all-features
+
+      - name: Lint production PMI transport targets
+        working-directory: peppy-shared
+        run: |
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          cargo clippy --release --locked -p pmi --all-features --all-targets -- -D warnings
 
       # Python tests for the peppylib-py extension: `pixi run test` builds the
       # native module with `maturin develop` and runs the pytest suite. Requires
