@@ -488,7 +488,7 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
         }
     };
 
-    // Session namespace (org-id routing isolation). zenoh's `namespace` is a
+    // Session namespace (workspace routing isolation). zenoh's `namespace` is a
     // session-level field: it is applied to the application session opened
     // against a router, where egress prepends `<ns>/` to every declared key and
     // ingress strips it — so two sessions interoperate iff their namespaces
@@ -970,7 +970,7 @@ mod tests {
             "a router must never render a namespace: {router}"
         );
 
-        // A session with no namespace omits the key entirely (back-compat).
+        // A namespace-free session omits the key entirely.
         let bare = build_zenoh_config(&peer_spec(false, true));
         assert!(bare.get("namespace").is_none());
     }

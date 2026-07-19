@@ -783,7 +783,7 @@ async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned
     //
     // The namespace must be stamped explicitly here: `MessengerHandle::connect`
     // (which builds `client_handle` below) defaults the session to the `local`
-    // organization namespace, so the hand-built producer has to open under the
+    // workspace namespace, so the hand-built producer has to open under the
     // same namespace or every keyexpr is prefix-mismatched and the goal query
     // never reaches the server (surfacing as `ServiceUnreachable`).
     let producer_adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port)

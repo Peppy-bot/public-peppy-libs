@@ -368,7 +368,7 @@ impl ZenohAdapter {
             gossip,
             buffer_sizes,
             tls,
-            // Namespace-free by default; callers apply org-id isolation with
+            // Namespace-free by default; callers apply workspace isolation with
             // [`Self::with_namespace`] (e.g. peppylib's `MessengerHandle::connect`
             // builder, which defaults the namespace to `local`).
             None,
@@ -414,10 +414,10 @@ impl ZenohAdapter {
     /// hosted session's `gossip` (peer vs router-relay) and subscriber buffer
     /// sizes are explicit. Used by tests to exercise both messaging modes.
     ///
-    /// `namespace` stamps an organization namespace onto the hosted session
+    /// `namespace` stamps a workspace namespace onto the hosted session
     /// (the same `with_router(...).with_namespace(...)` pairing the daemon uses),
     /// so a test that runs a core node off this session and spawns nodes under
-    /// that org id stays routing-consistent with them. `None` leaves the hosted
+    /// that workspace stays routing-consistent with them. `None` leaves the hosted
     /// session namespace-free (the default for client-vs-client tests).
     ///
     /// When `port` is `None`, automatically selects an available port and retries
@@ -658,13 +658,13 @@ impl ZenohAdapter {
             buffer_sizes,
             tls,
             // Both router constructors derive a namespace-free session; callers
-            // apply org isolation afterward via [`Self::with_namespace`].
+            // apply workspace isolation afterward via [`Self::with_namespace`].
             None,
         ))
     }
 
-    /// Applies an organization namespace to this adapter's session (org-id
-    /// routing isolation), re-rendering the stored session config so a
+    /// Applies a workspace namespace to this adapter's session, re-rendering
+    /// the stored session config so a
     /// non-reconnecting session -- which opens `client_config.zenoh_config`
     /// directly -- carries it, and `start_session`'s reconnecting rebuild
     /// re-applies it the same way it does `tls`. `None` leaves the session

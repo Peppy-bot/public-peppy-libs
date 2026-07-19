@@ -17,8 +17,8 @@ mod zenoh_config;
 #[cfg(feature = "zenoh")]
 mod zenohd;
 
-/// The validated organization namespace applied to an application session
-/// (org-id routing isolation). Defined in `config::org`; re-exported here so
+/// The validated workspace namespace applied to an application session.
+/// Defined in `config::namespace`; re-exported here so
 /// callers that drive pmi's session constructors (e.g. peppylib) can name it
 /// through pmi alone.
 pub use config::namespace::Namespace;

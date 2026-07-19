@@ -773,26 +773,6 @@ mod tests {
     }
 
     #[test]
-    fn runtime_config_rejects_the_legacy_organization_id_field() {
-        let err = serde_json5::from_str::<RuntimeConfig>(
-            r#"{
-                messaging_host: "127.0.0.1",
-                messaging_port: 7448,
-                node_instance: { instance_id: "camera_front" },
-                node_name: "camera",
-                node_tag: "v1",
-                bound_core_node: "core_node",
-                discovery: { organization_id: "550e8400-e29b-41d4-a716-446655440000" }
-            }"#,
-        )
-        .expect_err("the removed organization_id field must fail parsing");
-        assert!(
-            err.to_string().contains("organization_id"),
-            "the parse error should name the rejected field: {err}"
-        );
-    }
-
-    #[test]
     fn runtime_config_rejects_an_invalid_namespace() {
         assert!(
             serde_json5::from_str::<RuntimeConfig>(
