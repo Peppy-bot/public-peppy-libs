@@ -148,11 +148,13 @@ impl ZenohdFacade {
         }
 
         // Developer builds may use an explicitly installed zenohd for fast
-        // iteration. Release builds deliberately compile this branch out: an
-        // arbitrary PATH entry has no provenance and could bypass the patched
-        // federation trust policy. Note that this follows the Cargo profile's
-        // `debug-assertions` setting rather than the profile name, so a release
-        // profile that turns debug assertions back on opts back into it.
+        // iteration. Release builds deliberately compile this branch out: a
+        // `zenohd` picked up from PATH has no provenance and no guaranteed
+        // version relationship to the `zenoh` library this binary links, while
+        // the two candidates above are packaged or built alongside it. Note that
+        // this follows the Cargo profile's `debug-assertions` setting rather
+        // than the profile name, so a release profile that turns debug
+        // assertions back on opts back into it.
         #[cfg(debug_assertions)]
         {
             if let Some(path_var) = env::var_os("PATH") {
@@ -422,7 +424,7 @@ impl ZenohdFacade {
         };
         let zenohd_path = zenohd_path.clone().ok_or_else(|| {
             Error::ZenohdError(
-                "Zenohd binary not found. Release builds require the policy-patched `zenohd` packaged next to `peppy` or the exact artifact produced by pmi's `build_zenoh` feature."
+                "Zenohd binary not found. Release builds require a `zenohd` packaged next to `peppy` or the exact artifact produced by pmi's `build_zenoh` feature; a `zenohd` merely on PATH is not used."
                     .to_string(),
             )
         })?;
