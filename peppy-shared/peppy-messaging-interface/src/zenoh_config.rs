@@ -17,7 +17,7 @@
 //! and with a known seed it adds nothing gossip does not already cover.
 
 use crate::zenohd::ZenohNetProtocol;
-use config::org::OrgNamespace;
+use config::namespace::Namespace;
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -239,12 +239,12 @@ pub(crate) struct ZenohConfigSpec {
     /// (`tcp/`, …), in which case no `transport.link.tls` block is rendered and
     /// the output is byte-identical to a pre-TLS config.
     pub tls: Option<TlsConfig>,
-    /// Organization namespace for an application session (org-id routing
-    /// isolation). Rendered into the session-level `namespace` field for
+    /// Workspace namespace for an application session. Rendered into the
+    /// session-level `namespace` field for
     /// `Peer`/`Client` sessions only; `None` for the router and for liveness
     /// probes. Zenoh prepends `<ns>/` to every declared key on egress and strips
     /// it on ingress, so two sessions interoperate iff their namespaces match.
-    pub namespace: Option<OrgNamespace>,
+    pub namespace: Option<Namespace>,
 }
 
 /// Builds the JSON5-equivalent config value for a session or the router.
@@ -306,7 +306,7 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
         }
     };
 
-    // Session namespace (org-id routing isolation). zenoh's `namespace` is a
+    // Workspace routing namespace. zenoh's `namespace` is a
     // session-level field: it is applied to the application session opened
     // against a router, where egress prepends `<ns>/` to every declared key and
     // ingress strips it — so two sessions interoperate iff their namespaces
@@ -713,7 +713,7 @@ mod tests {
         zenoh::config::Config::from_json5(&s).expect("federated router config parses");
     }
 
-    // ---- Org-id session namespace rendering ----
+    // ---- Workspace session namespace rendering ----
 
     /// The `namespace` key is rendered for application sessions (`Peer`/`Client`)
     /// and only for them: it is a session-level field, so a router (which only
@@ -721,9 +721,9 @@ mod tests {
     /// still parse as a real zenoh config.
     #[test]
     fn namespace_rendered_for_sessions_never_for_router() {
-        let ns = OrgNamespace::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let ns = Namespace::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
 
-        // Peer session: namespace present with the org value.
+        // Peer session: namespace present with the workspace value.
         let peer = build_zenoh_config(&ZenohConfigSpec {
             namespace: Some(ns.clone()),
             ..peer_spec(true, true)

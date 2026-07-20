@@ -39,7 +39,7 @@ use crate::zenoh_config::{
     SessionMode, TlsConfig, ZenohConfigSpec, connectable_host, loopback_listen_endpoint,
     render_config,
 };
-use config::org::OrgNamespace;
+use config::namespace::Namespace;
 // `render_probe_config` and the `zenohd` module (facade/health/config-path) are
 // only used by the router-management paths; a `zenoh`-without-`router` build (the
 // backend, which only renders configs and opens client sessions) does not see them.
@@ -165,14 +165,14 @@ pub struct ZenohClientConfig {
     /// (not just baked into `zenoh_config`) so the reconnecting-session rebuild
     /// in `start_session` re-renders with the same TLS settings.
     tls: Option<TlsConfig>,
-    /// Organization namespace for this session (org-id routing isolation).
+    /// Workspace namespace for this session.
     /// Retained (like `tls`) so the reconnecting-session rebuild in
     /// `start_session` re-applies it; lost otherwise on every router-restart
     /// reconnect. Applied via [`ZenohAdapter::with_namespace`]; `None` leaves the
     /// session namespace-free (probes, tests). zenoh captures the namespace once
     /// at session build, so there is no in-process swap -- a change needs a fresh
     /// session.
-    namespace: Option<OrgNamespace>,
+    namespace: Option<Namespace>,
 }
 
 pub struct ZenohAdapter {
@@ -366,7 +366,7 @@ impl ZenohAdapter {
             gossip,
             buffer_sizes,
             tls,
-            // Namespace-free by default; callers apply org-id isolation with
+            // Namespace-free by default; callers apply workspace routing with
             // [`Self::with_namespace`] (e.g. peppylib's `MessengerHandle::connect`
             // builder, which defaults the namespace to `local`).
             None,
@@ -412,10 +412,10 @@ impl ZenohAdapter {
     /// hosted session's `gossip` (peer vs router-relay) and subscriber buffer
     /// sizes are explicit. Used by tests to exercise both messaging modes.
     ///
-    /// `namespace` stamps an organization namespace onto the hosted session
+    /// `namespace` stamps a workspace namespace onto the hosted session
     /// (the same `with_router(...).with_namespace(...)` pairing the daemon uses),
     /// so a test that runs a core node off this session and spawns nodes under
-    /// that org id stays routing-consistent with them. `None` leaves the hosted
+    /// that workspace stays routing-consistent with them. `None` leaves the hosted
     /// session namespace-free (the default for client-vs-client tests).
     ///
     /// When `port` is `None`, automatically selects an available port and retries
@@ -429,7 +429,7 @@ impl ZenohAdapter {
         port: Option<u16>,
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
-        namespace: Option<OrgNamespace>,
+        namespace: Option<Namespace>,
     ) -> Result<ZenohdInstance> {
         let max_attempts = if port.is_some() { 1 } else { 32 };
 
@@ -573,7 +573,7 @@ impl ZenohAdapter {
         gossip: bool,
         buffer_sizes: SubscriberBufferSizes,
         tls: Option<TlsConfig>,
-        namespace: Option<OrgNamespace>,
+        namespace: Option<Namespace>,
     ) -> ZenohClientConfig {
         let connect_host = connectable_host(host);
         let seeds = if seed_peers.is_empty() {
@@ -646,13 +646,13 @@ impl ZenohAdapter {
             buffer_sizes,
             tls,
             // Both router constructors derive a namespace-free session; callers
-            // apply org isolation afterward via [`Self::with_namespace`].
+            // apply workspace routing afterward via [`Self::with_namespace`].
             None,
         ))
     }
 
-    /// Applies an organization namespace to this adapter's session (org-id
-    /// routing isolation), re-rendering the stored session config so a
+    /// Applies a workspace namespace to this adapter's session, re-rendering
+    /// the stored session config so a
     /// non-reconnecting session -- which opens `client_config.zenoh_config`
     /// directly -- carries it, and `start_session`'s reconnecting rebuild
     /// re-applies it the same way it does `tls`. `None` leaves the session
@@ -661,7 +661,7 @@ impl ZenohAdapter {
     /// There is intentionally no in-process namespace *swap* once a session is
     /// open: zenoh captures the namespace once at session build, so a change
     /// requires a fresh session (the daemon rebuilds its whole generation).
-    pub fn with_namespace(mut self, namespace: Option<OrgNamespace>) -> Self {
+    pub fn with_namespace(mut self, namespace: Option<Namespace>) -> Self {
         let protocol = self.client_config.protocol;
         let host = self.client_config.host.clone();
         let port = self.client_config.port;

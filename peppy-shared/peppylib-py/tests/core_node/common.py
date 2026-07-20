@@ -69,12 +69,12 @@ async def start_router_and_runner(tmp_path: Path):
     the messaging fabric.
     """
     router = await ZenohdInstance.start_ephemeral("127.0.0.1")
-    # The node runner opens its session under an org namespace; the standalone
-    # config carries no organization id, so it resolves to the `local`
+    # The node runner opens its session under a workspace namespace; the standalone
+    # config carries no workspace id, so it resolves to the `local`
     # namespace. The stub server must open under that same namespace — zenoh
     # sessions only interoperate when their namespaces match — or the runner's
     # service queries and topic subscriptions never reach the stub. Passing no
-    # org id resolves to `local`, matching the runner.
+    # workspace id resolves to `local`, matching the runner.
     server_handle = await MessengerHandle.from_host_port_with_namespace(
         router.host, router.port
     )

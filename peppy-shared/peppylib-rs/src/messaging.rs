@@ -58,10 +58,9 @@ pub use pmi::{
 use crate::error::{Error, Result};
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
-use config::org::resolve_session_namespace;
 use pmi::{
     ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
-    OrgNamespace, PublisherQoS, Segment, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
+    Namespace, PublisherQoS, Segment, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
     ServiceWireSender, SubscriberQoS, Subscription as PmiSubscription, TopicWireReceiver,
     TopicWireSender, ZenohAdapter, ZenohNetProtocol,
 };
@@ -143,29 +142,29 @@ enum Transport {
 /// Discovery parameters pulled from a node's
 /// [`DiscoveryConfig`](config::runtime::DiscoveryConfig) by
 /// [`SessionScope::Discovery`]: the gossip seed list, the gossip toggle, and
-/// subscriber buffer sizing. The namespace travels on [`MessengerConnect`] itself
-/// (resolved from the config's org id), not here.
+/// subscriber buffer sizing. The workspace namespace travels on
+/// [`MessengerConnect`] itself, not here.
 struct DiscoveryParams {
     seed_peers: Vec<String>,
     gossip: bool,
     buffer_sizes: pmi::SubscriberBufferSizes,
 }
 
-/// How a [`MessengerConnect`] session resolves its organization namespace, and
+/// How a [`MessengerConnect`] session resolves its workspace namespace, and
 /// whether it opens a gossip-discovery peer session. Passed to
 /// [`MessengerConnect::scope`]. The two cases are mutually exclusive *by
 /// construction* — a session is either pinned to an explicit namespace or driven
 /// by a node's discovery config, never both.
 pub enum SessionScope<'a> {
-    /// Open the session under an explicit organization namespace (org-id routing
-    /// isolation) instead of the `local` default, with no gossip discovery. Used
+    /// Open the session under an explicit workspace namespace instead of the
+    /// `local` default, with no gossip discovery. Used
     /// by a CLI control session so it reaches the daemon/node services under the
     /// same namespace the daemon runs.
-    Namespace(OrgNamespace),
+    Namespace(Namespace),
     /// Apply the node's [`DiscoveryConfig`](config::runtime::DiscoveryConfig): an
     /// explicit gossip seed list (falling back to `host:port`), the gossip
-    /// toggle, subscriber buffer sizing, and the organization namespace stamped
-    /// by the daemon (resolved from `cfg.organization_id`). Used by the node
+    /// toggle, subscriber buffer sizing, and the workspace namespace stamped
+    /// by the daemon in `cfg.namespace`. Used by the node
     /// runtime so peers form direct links per the daemon-supplied discovery
     /// settings and stay routing-isolated under the daemon's namespace.
     Discovery(&'a config::runtime::DiscoveryConfig),
@@ -180,7 +179,7 @@ pub struct MessengerConnect {
     host: String,
     port: u16,
     reconnect: bool,
-    namespace: OrgNamespace,
+    namespace: Namespace,
     transport: Transport,
     discovery: Option<DiscoveryParams>,
 }
@@ -204,9 +203,9 @@ impl MessengerConnect {
         self
     }
 
-    /// Set how the session resolves its organization namespace, and whether it
+    /// Set how the session resolves its workspace namespace, and whether it
     /// opens a gossip-discovery peer session. The two cases — an explicit
-    /// [`OrgNamespace`](SessionScope::Namespace) or a node's
+    /// [`Namespace`](SessionScope::Namespace) or a node's
     /// [`DiscoveryConfig`](SessionScope::Discovery) — are mutually exclusive by
     /// construction, so a session can never request both at once. Left unset, the
     /// session opens under the `local` default namespace with no discovery.
@@ -220,11 +219,10 @@ impl MessengerConnect {
                 self.discovery = None;
             }
             SessionScope::Discovery(cfg) => {
-                // The namespace is always present: a stamped org id resolves to
-                // that org, an absent one (or a malformed value) to the constant
-                // `local`. So the node session opens under exactly the daemon's
-                // namespace.
-                self.namespace = resolve_session_namespace(cfg.organization_id.as_deref());
+                // A stamped namespace is already validated by runtime-config
+                // parsing. Absence is legitimate standalone operation and
+                // resolves to `local`.
+                self.namespace = cfg.namespace.clone().unwrap_or_else(Namespace::local);
                 self.discovery = Some(DiscoveryParams {
                     seed_peers: cfg.seed_peers.clone(),
                     gossip: cfg.gossip,
@@ -340,13 +338,13 @@ impl MessengerHandle {
     ///
     /// Returns a [`MessengerConnect`] builder, awaited directly to perform the
     /// connect. Defaults: plaintext TCP peer (gossip) mode, one-shot (no
-    /// reconnect), and the [`OrgNamespace::local()`] namespace. Opt into the
+    /// reconnect), and the [`Namespace::local()`] namespace. Opt into the
     /// other axes fluently:
     ///
     /// ```ignore
     /// MessengerHandle::connect(host, port)
     ///     .reconnecting()                          // re-establishing session for long-lived nodes
-    ///     .scope(SessionScope::Namespace(ns))      // explicit org namespace (else `local`)
+    ///     .scope(SessionScope::Namespace(ns))      // explicit workspace namespace (else `local`)
     ///     .scope(SessionScope::Discovery(&cfg))    // gossip/seed peers + namespace from a node's DiscoveryConfig
     ///     .tls(cfg)                                // TLS client transport
     ///     .await                                   // -> Result<MessengerHandle>
@@ -356,7 +354,7 @@ impl MessengerHandle {
             host: host.to_string(),
             port,
             reconnect: false,
-            namespace: OrgNamespace::local(),
+            namespace: Namespace::local(),
             transport: Transport::Tcp,
             discovery: None,
         }

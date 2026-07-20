@@ -134,9 +134,9 @@ pub(crate) async fn start_router_and_runner()
     let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("start zenoh router");
-    // The node runner opens its session under an org namespace
+    // The node runner opens its session under an workspace namespace
     // (`connect(..).reconnecting().scope(SessionScope::Discovery(..))`); the standalone config
-    // carries no organization id, so it resolves to the `local` namespace. The
+    // carries no workspace id, so it resolves to the `local` namespace. The
     // stub server must open under that same namespace — zenoh sessions only
     // interoperate when their namespaces match — or the runner's service
     // queries and topic subscriptions never reach the stub.
