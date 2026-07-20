@@ -1042,7 +1042,7 @@ impl MessengerBackend for ZenohAdapter {
                 zenohd.adopt_external_router();
                 return Ok(());
             }
-            zenohd.start_router()?;
+            zenohd.start_router().await?;
             Ok(())
         }
         // Client-only build: router management was not compiled in.
@@ -1059,8 +1059,7 @@ impl MessengerBackend for ZenohAdapter {
                 .zenohd
                 .as_mut()
                 .ok_or(Error::ZenohDConfigurationNotFound)?;
-            zenohd.stop_router()?;
-            Ok(())
+            zenohd.stop_router_async().await
         }
         // Client-only build: router management was not compiled in.
         #[cfg(not(feature = "router"))]
