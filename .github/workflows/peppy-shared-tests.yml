@@ -37,6 +37,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # Give this run its own peppy data root so the reused self-hosted runner
       # does not accumulate or collide on /tmp/.peppy across runs.
@@ -45,6 +46,13 @@ jobs:
           PEPPY_RUN_HOME="$RUNNER_TEMP/peppy-home"
           mkdir -p "$PEPPY_RUN_HOME/tmpdir"
           echo "PEPPY_RUN_HOME=$PEPPY_RUN_HOME" >> "$GITHUB_ENV"
+
+      # Formatting is the cheapest gate in the job, so run it before the
+      # multi-minute build. The repository root is not a cargo workspace, so
+      # this has to run inside peppy-shared.
+      - name: Check Rust formatting
+        working-directory: peppy-shared
+        run: cargo fmt --all -- --check
 
       # Rust workspace tests. Exclude peppylib-py: its cdylib build and
       # tests/python_tests.rs only wrap `pixi run test`, which the dedicated
