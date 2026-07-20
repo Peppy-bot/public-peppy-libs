@@ -37,6 +37,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # Give this run its own peppy data root so the reused self-hosted runner
       # does not accumulate or collide on /tmp/.peppy across runs.
