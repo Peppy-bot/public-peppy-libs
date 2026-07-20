@@ -362,7 +362,10 @@ impl ZenohdFacade {
             let max_backoff = std::time::Duration::from_millis(500);
 
             loop {
-                self.check_spawned_process(&zenohd_log_path)?;
+                if let Err(error) = self.check_spawned_process(&zenohd_log_path) {
+                    self.discard_failed_router_process().await;
+                    return Err(error);
+                }
 
                 if self.router_endpoint_reachable(ROUTER_PROBE_TIMEOUT).await {
                     break;
@@ -383,8 +386,9 @@ impl ZenohdFacade {
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(max_backoff);
             }
-        } else {
-            self.check_spawned_process(&zenohd_log_path)?;
+        } else if let Err(error) = self.check_spawned_process(&zenohd_log_path) {
+            self.discard_failed_router_process().await;
+            return Err(error);
         }
 
         tracing::info!(
@@ -467,6 +471,20 @@ impl ZenohdFacade {
             Error::BackendError("zenohd process handle disappeared during startup".to_string())
         })?;
         check_process_alive(child, zenohd_log_path)
+    }
+
+    /// Drops a managed child whose startup liveness check failed, so the stored
+    /// handle never outlives the process it describes: leaving it set would make
+    /// a later `start_router` resume waiting on a dead child instead of spawning
+    /// a fresh one.
+    async fn discard_failed_router_process(&mut self) {
+        if let Err(error) = self.stop_router_async().await {
+            tracing::warn!(
+                "Failed to clear zenohd after its startup check failed: {}",
+                error
+            );
+        }
+        self.router_process = None;
     }
 
     pub fn stop_router(&mut self) -> Result<()> {

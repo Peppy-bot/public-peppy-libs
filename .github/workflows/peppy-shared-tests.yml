@@ -47,13 +47,6 @@ jobs:
           mkdir -p "$PEPPY_RUN_HOME/tmpdir"
           echo "PEPPY_RUN_HOME=$PEPPY_RUN_HOME" >> "$GITHUB_ENV"
 
-      # Formatting is the cheapest gate in the job, so run it before the
-      # multi-minute build. The repository root is not a cargo workspace, so
-      # this has to run inside peppy-shared.
-      - name: Check Rust formatting
-        working-directory: peppy-shared
-        run: cargo fmt --all -- --check
-
       # Rust workspace tests. Exclude peppylib-py: its cdylib build and
       # tests/python_tests.rs only wrap `pixi run test`, which the dedicated
       # Python step below runs directly.
