@@ -328,8 +328,8 @@ impl ZenohAdapter {
     ///
     /// This is the low-level TLS-client primitive: it is what the `tls/` transport
     /// tests dial a router with, and is available for a direct client→router
-    /// session. The peppy daemon does **not** use it to reach the per-user cloud
-    /// router — that is router-to-router federation (the local zenohd dials the
+    /// session. The peppy daemon does **not** use it to reach the shared platform
+    /// router: that is router-to-router federation (the local zenohd dials the
     /// remote over a `tls/` `connect` endpoint; see [`Self::with_router`]).
     pub fn connect_to_tls(host: &str, port: u16, tls: TlsConfig) -> Result<Self> {
         Self::connect_to_with_discovery(
