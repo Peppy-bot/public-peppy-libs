@@ -25,11 +25,11 @@ use std::path::PathBuf;
 /// `transport.link.tls` block. One type serves both roles: a router/listener
 /// sets `listen_certificate`/`listen_private_key` (its server identity); a
 /// client sets `root_ca_certificate` (to verify that server) and
-/// `verify_name_on_connect`. mTLS additionally uses `connect_certificate`/
-/// `connect_private_key` (client identity) with `enable_mtls`. The keys map
-/// 1:1 to zenoh 1.9's `transport.link.tls.*` (verified against its
-/// `DEFAULT_CONFIG.json5`); unset path fields are omitted so a non-TLS config
-/// renders byte-identical to before.
+/// `verify_name_on_connect`. Links are one-way TLS throughout: the server
+/// proves its identity, the client proves nothing at the transport, and no
+/// client certificate is ever presented. The keys map 1:1 to zenoh 1.9's
+/// `transport.link.tls.*` (verified against its `DEFAULT_CONFIG.json5`); unset
+/// path fields are omitted so a non-TLS config renders byte-identical to before.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TlsConfig {
     /// CA used to validate the peer's certificate. Required on the client side
@@ -39,12 +39,6 @@ pub struct TlsConfig {
     pub listen_certificate: Option<PathBuf>,
     /// Listener (router/server) private key.
     pub listen_private_key: Option<PathBuf>,
-    /// Connecting (client) certificate — only for mTLS.
-    pub connect_certificate: Option<PathBuf>,
-    /// Connecting (client) private key — only for mTLS.
-    pub connect_private_key: Option<PathBuf>,
-    /// Require/verify a client certificate (mutual TLS).
-    pub enable_mtls: bool,
     /// Verify the server cert's name matches the dialed host (client side).
     /// zenoh defaults this to `true`; keep it on unless a test needs otherwise.
     pub verify_name_on_connect: bool,
@@ -56,9 +50,6 @@ impl Default for TlsConfig {
             root_ca_certificate: None,
             listen_certificate: None,
             listen_private_key: None,
-            connect_certificate: None,
-            connect_private_key: None,
-            enable_mtls: false,
             verify_name_on_connect: true,
         }
     }
@@ -326,9 +317,15 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
     // present so a plaintext config is byte-identical to before. Path fields are
     // omitted when unset (zenoh treats a missing key as `null`); the two booleans
     // always render (they have no "absent" meaning).
+    //
+    // `enable_mtls` is a hard `false` rather than a knob: every link this
+    // codebase renders is one-way TLS, and there is no client identity to
+    // present. zenoh's own default happens to be `false` too, so the key could
+    // be omitted, but writing it pins the transport shape here instead of
+    // inheriting a library default that a future zenoh release could flip.
     if let Some(tls) = &spec.tls {
         let mut tls_json = json!({
-            "enable_mtls": tls.enable_mtls,
+            "enable_mtls": false,
             "verify_name_on_connect": tls.verify_name_on_connect,
         });
         let mut put_path = |key: &str, value: &Option<PathBuf>| {
@@ -339,8 +336,6 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
         put_path("root_ca_certificate", &tls.root_ca_certificate);
         put_path("listen_certificate", &tls.listen_certificate);
         put_path("listen_private_key", &tls.listen_private_key);
-        put_path("connect_certificate", &tls.connect_certificate);
-        put_path("connect_private_key", &tls.connect_private_key);
         config["transport"] = json!({ "link": { "tls": tls_json } });
     }
 
@@ -406,8 +401,9 @@ pub(crate) fn render_probe_config(
 /// list (e.g. the daemon's local router dialing a remote `tls/` router) turns the
 /// retry/keep-alive on (`reconnect`) so an unreachable or restarted upstream is
 /// recovered transparently and never stops the local router serving its own
-/// nodes. The connect-side TLS for that link rides in `tls` (a
-/// [`TlsConfig::client`]); it is ignored on a plaintext listen endpoint.
+/// nodes. The connect-side trust for that link rides in `tls` (a
+/// [`TlsConfig::client`], which only names the CA to validate the upstream
+/// against); it is ignored on a plaintext listen endpoint.
 pub(crate) fn router_spec(
     protocol: ZenohNetProtocol,
     host: &str,
@@ -628,10 +624,14 @@ mod tests {
         let tls = &cfg["transport"]["link"]["tls"];
         assert_eq!(tls["listen_certificate"], "/certs/leaf.pem");
         assert_eq!(tls["listen_private_key"], "/certs/leaf.key");
+        // The listener never asks a connecting daemon for a certificate: every
+        // link is one-way TLS, and this key pins that rather than inheriting
+        // zenoh's default.
         assert_eq!(tls["enable_mtls"], false);
         assert_eq!(tls["verify_name_on_connect"], true);
         // Server identity only: no connect-side material leaks in.
         assert!(tls.get("connect_certificate").is_none());
+        assert!(tls.get("connect_private_key").is_none());
         assert!(tls.get("root_ca_certificate").is_none());
     }
 
@@ -649,9 +649,13 @@ mod tests {
         let tls = &cfg["transport"]["link"]["tls"];
         assert_eq!(tls["root_ca_certificate"], "/certs/ca.pem");
         assert_eq!(tls["verify_name_on_connect"], true);
-        // Client trust only: no listener identity.
+        // Client trust only: no listener identity, and nothing the client would
+        // present as its own certificate.
         assert!(tls.get("listen_certificate").is_none());
         assert!(tls.get("listen_private_key").is_none());
+        assert_eq!(tls["enable_mtls"], false);
+        assert!(tls.get("connect_certificate").is_none());
+        assert!(tls.get("connect_private_key").is_none());
     }
 
     #[test]
