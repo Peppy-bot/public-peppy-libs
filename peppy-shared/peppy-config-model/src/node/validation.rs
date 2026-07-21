@@ -109,10 +109,13 @@ pub fn collect_contract_implementation_edges(
 /// Validation is two-phase:
 /// 1. **Node existence**: Each entry in `manifest.depends_on.nodes` must resolve to an existing node.
 /// 2. **Interface exposure**: Each consumed/expected interface must reference a valid `link_id`
-///    declared in either `depends_on.nodes` or `depends_on.contracts`. For node-backed
-///    link_ids the producer must expose the required interface; contract-backed link_ids
-///    are validated against their parsed contract at parse time and only need
-///    the link_id declaration check here.
+///    declared in `depends_on.nodes`, `depends_on.contracts`, or (for
+///    `topics.consumes` only) `depends_on.pairings`. For node-backed link_ids
+///    the producer must expose the required interface.
+///
+/// Contract- and pairing-backed link_ids only get the declaration check here.
+/// Neither document is reachable from this crate, so whether the entry names a
+/// real member is checked at node add/sync, where they resolve.
 pub fn validate_dependency_specs(
     manifest: &Manifest,
     interfaces: &Interfaces,
@@ -144,8 +147,8 @@ pub fn validate_dependency_specs(
     }
 
     // Collect all declared link_ids so we can distinguish "declared but unresolved"
-    // (already has a MissingDependency error or is a contract-backed dep validated
-    // at parse time) from "never declared" (typo).
+    // (already has a MissingDependency error, or is a contract-backed dep whose
+    // members resolve at node add/sync) from "never declared" (typo).
     let declared_link_ids: HashSet<&str> = manifest
         .depends_on
         .as_ref()
@@ -158,10 +161,13 @@ pub fn validate_dependency_specs(
         })
         .unwrap_or_default();
 
-    // Pairing slots are never legal targets for `consumes` wiring — both
-    // directions of a pairing are generated from the pairing doc under the
-    // slot module. Kept separate from `declared_link_ids` so a consumed item
-    // naming one gets a dedicated error instead of `UndeclaredLinkId`.
+    // A pairing slot is a legal target for `topics.consumes` (the node names
+    // the counterpart role's topics it wants a module for) but never for
+    // `services.consumes` or `actions.consumes`, because a pairing document
+    // declares topics only. Kept separate from `declared_link_ids` so a
+    // service or action naming one gets a dedicated error rather than
+    // `UndeclaredLinkId`, and so a topic naming one skips the node-dependency
+    // exposure check that cannot apply to it.
     let pairing_link_ids: HashSet<&str> = manifest
         .depends_on
         .as_ref()
@@ -240,11 +246,16 @@ fn validate_consumed_items<'a>(
 ) {
     for (link_id, name) in items {
         if pairing_link_ids.contains(link_id) {
-            errors.push(ParsingError::ConsumedItemReferencesPairingLinkId {
-                dependant: dependant_name.to_owned(),
-                dependant_tag: dependant_tag.to_owned(),
-                link_id: link_id.to_owned(),
-            });
+            if kind != InterfaceKind::Topic {
+                errors.push(ParsingError::ConsumedItemReferencesPairingLinkId {
+                    dependant: dependant_name.to_owned(),
+                    dependant_tag: dependant_tag.to_owned(),
+                    link_id: link_id.to_owned(),
+                    section: kind.consumed_section().to_owned(),
+                });
+            }
+            // A pairing-backed topic resolves against the pairing document at
+            // node add/sync, not against a node dependency.
             continue;
         }
         if implements_link_ids.contains(link_id) {
@@ -436,43 +447,79 @@ mod tests {
         )
     }
 
-    #[test]
-    fn consumed_item_referencing_pairing_link_id_gets_dedicated_error() {
-        // A consumed topic naming a pairing slot must not fall through to
-        // `UndeclaredLinkId` — pairing directions are generated from the
-        // pairing doc, never wired via `topics.consumes`.
-        let node = parse(
-            r#"{
+    /// Wraps an interfaces block in a node holding one `arm_link/v1` pairing
+    /// slot under link_id `controller`, playing the `arm` role.
+    fn node_with_pairing(interfaces: &str) -> NodeConfig {
+        parse(&format!(
+            r#"{{
                 peppy_schema: "node/v1",
-                manifest: {
-                    name: "confused", tag: "v1",
-                    depends_on: {
-                        pairings: [ { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" } ]
-                    }
-                },
-                execution: { language: "rust", run_cmd: ["confused"] },
-                interfaces: {
-                    topics: { consumes: [ { link_id: "controller", name: "joint_commands" } ] }
-                }
-            }"#,
+                manifest: {{
+                    name: "robot_arm", tag: "v1",
+                    depends_on: {{
+                        pairings: [ {{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }} ]
+                    }}
+                }},
+                execution: {{ language: "rust", run_cmd: ["robot_arm"] }},
+                interfaces: {interfaces}
+            }}"#
+        ))
+    }
+
+    /// A consumed topic naming a pairing slot is legal: it selects one of the
+    /// counterpart role's topics. Membership resolves against the pairing
+    /// document at node add/sync, which this layer cannot reach, so it must
+    /// report nothing at all here.
+    #[test]
+    fn consumed_topic_referencing_pairing_link_id_is_accepted() {
+        let node = node_with_pairing(
+            r#"{ topics: { consumes: [ { link_id: "controller", name: "joint_commands" } ] } }"#,
         );
         let errors = validate_dependency_specs(
             &node.manifest,
             &node.interfaces,
-            "confused",
+            "robot_arm",
             "v1",
             |_, _| None,
         );
-        assert_eq!(errors.len(), 1, "errors: {errors:?}");
         assert!(
-            matches!(
-                &errors[0],
-                ParsingError::ConsumedItemReferencesPairingLinkId { link_id, .. }
-                    if link_id == "controller"
-            ),
-            "expected ConsumedItemReferencesPairingLinkId, got: {:?}",
-            errors[0]
+            errors.is_empty(),
+            "a pairing-backed consumed topic must not be reported here: {errors:?}"
         );
+    }
+
+    /// Services and actions keep the dedicated rejection: a pairing document
+    /// declares topics only, so there is nothing for such an entry to name.
+    #[test]
+    fn consumed_service_or_action_referencing_pairing_link_id_gets_dedicated_error() {
+        for (section, interfaces) in [
+            (
+                "services.consumes",
+                r#"{ services: { consumes: [ { link_id: "controller", name: "calibrate" } ] } }"#,
+            ),
+            (
+                "actions.consumes",
+                r#"{ actions: { consumes: [ { link_id: "controller", name: "home" } ] } }"#,
+            ),
+        ] {
+            let node = node_with_pairing(interfaces);
+            let errors = validate_dependency_specs(
+                &node.manifest,
+                &node.interfaces,
+                "robot_arm",
+                "v1",
+                |_, _| None,
+            );
+            assert_eq!(errors.len(), 1, "errors: {errors:?}");
+            assert!(
+                matches!(
+                    &errors[0],
+                    ParsingError::ConsumedItemReferencesPairingLinkId { link_id, section: s, .. }
+                        if link_id == "controller" && s == section
+                ),
+                "expected ConsumedItemReferencesPairingLinkId({section}), got: {:?}",
+                errors[0]
+            );
+        }
     }
 
     #[test]

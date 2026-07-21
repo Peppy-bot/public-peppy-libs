@@ -17,6 +17,9 @@ from peppylib import (
 )
 
 NODE_TAG = "v1"
+# The producer-side link_id segment a publisher declared without a link_id
+# carries on the wire (`config::consts::DEFAULT_LINK_ID_SENTINEL`).
+DEFAULT_LINK_ID_SENTINEL = "_"
 
 
 def test_producer_ref_is_structured_and_hashable():
@@ -105,6 +108,62 @@ async def test_messenger_communication():
         assert message.producer == ProducerRef(core_node, instance_id)
         assert message.producer.core_node == core_node
         assert message.producer.instance_id == instance_id
+
+        # No link_id was bound on the publisher, so the keyexpr carries the
+        # default sentinel rather than a slot name.
+        assert message.link_id == DEFAULT_LINK_ID_SENTINEL
+
+
+@pytest.mark.asyncio
+async def test_message_exposes_the_producers_bound_link_id():
+    """A publisher bound to a link_id surfaces it on the received message.
+
+    The Rust pairing forwarding path re-checks a message's core_node,
+    instance_id and link_id against the slot's pin before delivering it. This
+    is the accessor that lets a Python node make the same check, so the two
+    language bindings surface identical message identity.
+    """
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        test_id = uuid.uuid4().hex[:8]
+        core_node = f"test_core_{test_id}"
+        instance_id = f"test_instance_{test_id}"
+        node_name = f"test_node_{test_id}"
+        topic_name = f"test_topic_{test_id}"
+        link_id = "arm"
+        qos = QoSProfile.Reliable
+
+        receiver_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        sender_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        subscription = await TopicMessenger.subscribe(
+            receiver_handle,
+            core_node,
+            instance_id,
+            SenderTarget.node(node_name, NODE_TAG),
+            topic_name,
+            ProducerRef(core_node, instance_id),
+            qos,
+        )
+        await asyncio.sleep(0.05)
+
+        publisher = await TopicMessenger.declare_publisher(
+            sender_handle,
+            core_node,
+            instance_id,
+            SenderTarget.node(node_name, NODE_TAG),
+            topic_name,
+            qos,
+            link_id,
+        )
+        await publisher.publish(b"joint states")
+
+        message = await asyncio.wait_for(subscription.on_next_message(), timeout=2.0)
+        assert message is not None, "Expected to receive a message"
+        assert message.link_id == link_id
+        # The rest of the identity is unchanged by binding a link_id.
+        assert message.core_node == core_node
+        assert message.instance_id == instance_id
+        assert message.producer == ProducerRef(core_node, instance_id)
 
 
 @pytest.mark.asyncio

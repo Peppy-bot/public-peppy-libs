@@ -19,6 +19,7 @@ pub struct PyTopicMessage {
     pub(crate) payload: Payload,
     pub(crate) instance_id: String,
     pub(crate) core_node: String,
+    pub(crate) link_id: String,
 }
 
 #[pymethods]
@@ -38,6 +39,16 @@ impl PyTopicMessage {
         &self.core_node
     }
 
+    /// The producer's bound link_id, parsed from the inbound topic keyexpr.
+    /// On a pairing subscription this is the peer's own slot link_id, which is
+    /// what the Rust forwarding path re-checks against the slot's pin; exposing
+    /// it here lets a Python node make the same check. Empty for messages that
+    /// arrived via a non-topic path, where the keyexpr encodes no link_id.
+    #[getter]
+    fn link_id(&self) -> &str {
+        &self.link_id
+    }
+
     /// The publisher's full `(core_node, instance_id)` identity as a structured
     /// [`PyProducerRef`]. This is what generated consumed-topic callbacks return
     /// alongside the message; consumers key per-slot state on it.
@@ -53,6 +64,7 @@ impl From<Message> for PyTopicMessage {
             payload: msg.payload(),
             instance_id: msg.instance_id().to_string(),
             core_node: msg.core_node().to_string(),
+            link_id: msg.link_id().to_string(),
         }
     }
 }

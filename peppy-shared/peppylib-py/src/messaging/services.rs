@@ -55,6 +55,9 @@ impl PyServiceRequestContext {
             payload: self.payload.clone(),
             instance_id: self.instance_id.clone(),
             core_node: self.core_node.clone(),
+            // A service request arrives on a query keyexpr, whose caller slots
+            // encode no producer link_id.
+            link_id: String::new(),
         }
     }
 }
