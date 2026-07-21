@@ -314,18 +314,17 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
     }
 
     // TLS material maps to zenoh's `transport.link.tls`. Rendered only when
-    // present so a plaintext config is byte-identical to before. Path fields are
-    // omitted when unset (zenoh treats a missing key as `null`); the two booleans
-    // always render (they have no "absent" meaning).
+    // present so a plaintext config is byte-identical to before. The output is a
+    // pure function of [`TlsConfig`]: every field renders, and nothing else does.
+    // Path fields are omitted when unset (zenoh treats a missing key as `null`);
+    // `verify_name_on_connect` always renders, having no "absent" meaning.
     //
-    // `enable_mtls` is a hard `false` rather than a knob: every link this
-    // codebase renders is one-way TLS, and there is no client identity to
-    // present. zenoh's own default happens to be `false` too, so the key could
-    // be omitted, but writing it pins the transport shape here instead of
-    // inheriting a library default that a future zenoh release could flip.
+    // Nothing emits `enable_mtls` or the `connect_certificate`/`connect_private_key`
+    // pair: mTLS is not a mode this codebase has, so there is no field behind those
+    // keys and no literal standing in for one. zenoh leaves mTLS off when the key is
+    // absent, which is the behaviour we want.
     if let Some(tls) = &spec.tls {
         let mut tls_json = json!({
-            "enable_mtls": false,
             "verify_name_on_connect": tls.verify_name_on_connect,
         });
         let mut put_path = |key: &str, value: &Option<PathBuf>| {
@@ -624,15 +623,18 @@ mod tests {
         let tls = &cfg["transport"]["link"]["tls"];
         assert_eq!(tls["listen_certificate"], "/certs/leaf.pem");
         assert_eq!(tls["listen_private_key"], "/certs/leaf.key");
-        // The listener never asks a connecting daemon for a certificate: every
-        // link is one-way TLS, and this key pins that rather than inheriting
-        // zenoh's default.
-        assert_eq!(tls["enable_mtls"], false);
         assert_eq!(tls["verify_name_on_connect"], true);
-        // Server identity only: no connect-side material leaks in.
-        assert!(tls.get("connect_certificate").is_none());
-        assert!(tls.get("connect_private_key").is_none());
-        assert!(tls.get("root_ca_certificate").is_none());
+        // Server identity only. Asserting the exact key set (rather than a list of
+        // absences) is what makes this a guard: any key we did not mean to emit,
+        // `enable_mtls` and the connect-side pair included, fails here.
+        assert_eq!(
+            tls_keys(tls),
+            [
+                "listen_certificate",
+                "listen_private_key",
+                "verify_name_on_connect"
+            ]
+        );
     }
 
     #[test]
@@ -651,11 +653,23 @@ mod tests {
         assert_eq!(tls["verify_name_on_connect"], true);
         // Client trust only: no listener identity, and nothing the client would
         // present as its own certificate.
-        assert!(tls.get("listen_certificate").is_none());
-        assert!(tls.get("listen_private_key").is_none());
-        assert_eq!(tls["enable_mtls"], false);
-        assert!(tls.get("connect_certificate").is_none());
-        assert!(tls.get("connect_private_key").is_none());
+        assert_eq!(
+            tls_keys(tls),
+            ["root_ca_certificate", "verify_name_on_connect"]
+        );
+    }
+
+    /// The keys of a rendered `transport.link.tls` block, sorted, so a test can
+    /// pin the exact surface instead of enumerating absences.
+    fn tls_keys(tls: &serde_json::Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = tls
+            .as_object()
+            .expect("the tls block is a JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        keys
     }
 
     #[test]
