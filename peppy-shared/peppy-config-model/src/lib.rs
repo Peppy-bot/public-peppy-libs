@@ -44,7 +44,8 @@ pub use common::{
 // -- error --
 pub use error::{
     ConsumedInterfaceOnlyContractBacked, ContractCoverageMismatch, Error as ConfigError,
-    MissingInterface, ParsingError, deserialize_json5_with_structured_errors,
+    MissingInterface, PairingCoverageMismatch, ParsingError,
+    deserialize_json5_with_structured_errors,
 };
 
 // -- consts --
@@ -75,8 +76,8 @@ pub mod node {
     pub use crate::internal::node::{
         ActionInterfaces, ActionServiceEndpoint, ActionTopicEndpoint, ArrayKind, ArraySchema,
         Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
-        ContractBackedEntry, ContractImplementationEdge, DependencySpec, DependsOn, EmittedTopic,
-        Execution, ExposedAction, ExposedService, ImplementsEntry, InterfaceKind, Interfaces,
+        ContractImplementationEdge, DependencySpec, DependsOn, EmittedTopic, Execution,
+        ExposedAction, ExposedService, ImplementsEntry, InterfaceKind, Interfaces, LinkedEntry,
         Manifest, MessageFormat, MessageSizeEstimate, NativeEmittedTopic, NativeExposedAction,
         NativeExposedService, NodeConfig, NodeConfigParser, NodeDependency, ObjectKind,
         ObjectSchema, PairingDependency, PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType,

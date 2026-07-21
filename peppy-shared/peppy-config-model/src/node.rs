@@ -9,12 +9,12 @@ pub use message_size::{MessageSizeEstimate, estimate_serialized_size};
 pub use parse::{NodeConfigParser, load_standalone_node_config};
 pub use types::{
     ActionInterfaces, ActionServiceEndpoint, ActionTopicEndpoint, ArrayKind, ArraySchema,
-    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
-    ContractBackedEntry, DependsOn, EmittedTopic, Execution, ExposedAction, ExposedService,
-    ImplementsEntry, InterfaceKind, Interfaces, Manifest, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService, NodeConfig, NodeDependency, ObjectKind,
-    ObjectSchema, PairingDependency, PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType,
-    ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, is_blocked_mount_source,
+    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig, DependsOn,
+    EmittedTopic, Execution, ExposedAction, ExposedService, ImplementsEntry, InterfaceKind,
+    Interfaces, LinkedEntry, Manifest, MessageFormat, NativeEmittedTopic, NativeExposedAction,
+    NativeExposedService, NodeConfig, NodeDependency, ObjectKind, ObjectSchema, PairingDependency,
+    PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces, Toolchain,
+    TopicInterfaces, TypeToken, is_blocked_mount_source,
 };
 pub use validation::{
     ContractImplementationEdge, DependencySpec, collect_contract_implementation_edges,

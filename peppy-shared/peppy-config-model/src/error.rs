@@ -138,23 +138,108 @@ impl std::fmt::Display for ContractCoverageMismatch {
              `interfaces` referencing link_id `{}`",
             self.contract_name, self.contract_tag, self.link_id, self.link_id
         )?;
-        for (label, items) in [
-            ("missing", &self.missing),
-            ("unknown", &self.unknown),
-            ("duplicated", &self.duplicated),
-            ("wrong kind", &self.wrong_kind),
-        ] {
-            if !items.is_empty() {
-                write!(f, "; {label}: [")?;
-                write_string_list(f, items)?;
-                write!(f, "]")?;
-            }
-        }
-        Ok(())
+        write_labeled_lists(
+            f,
+            &[
+                ("missing", &self.missing),
+                ("unknown", &self.unknown),
+                ("duplicated", &self.duplicated),
+                ("wrong kind", &self.wrong_kind),
+            ],
+        )
     }
 }
 
 impl std::error::Error for ContractCoverageMismatch {}
+
+/// Tier B (raised at node add/sync, where pairing documents resolve): the
+/// set-diff between one `depends_on.pairings` slot and the pairing-backed
+/// entries referencing it. The pairing counterpart of
+/// [`ContractCoverageMismatch`], aggregating every discrepancy for the slot in
+/// one error instead of failing on the first.
+///
+/// The two directions are held apart because their policies differ: the emit
+/// side must cover the role's topics exactly, while the consume side is free
+/// to name any subset of the counterpart role's topics.
+#[derive(Debug, Clone)]
+pub struct PairingCoverageMismatch {
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    pub link_id: String,
+    /// The role this node's slot plays.
+    pub role: String,
+    /// Topics the role emits per the document, with no `topics.emits` entry.
+    pub missing_emits: Vec<String>,
+    /// `topics.emits` entries naming no topic of the document.
+    pub unknown_emits: Vec<String>,
+    /// Topics referenced by more than one `topics.emits` entry.
+    pub duplicated_emits: Vec<String>,
+    /// `topics.emits` entries naming a topic the counterpart role emits,
+    /// rendered as `name (emitted by X)`.
+    pub wrong_role_emits: Vec<String>,
+    /// `topics.consumes` entries naming no topic of the document.
+    pub unknown_consumes: Vec<String>,
+    /// Topics referenced by more than one `topics.consumes` entry.
+    pub duplicated_consumes: Vec<String>,
+    /// `topics.consumes` entries naming a topic this node's own role emits,
+    /// rendered as `name (emitted by this node's role X)`.
+    pub wrong_role_consumes: Vec<String>,
+}
+
+impl PairingCoverageMismatch {
+    pub fn is_empty(&self) -> bool {
+        self.missing_emits.is_empty()
+            && self.unknown_emits.is_empty()
+            && self.duplicated_emits.is_empty()
+            && self.wrong_role_emits.is_empty()
+            && self.unknown_consumes.is_empty()
+            && self.duplicated_consumes.is_empty()
+            && self.wrong_role_consumes.is_empty()
+    }
+}
+
+impl std::fmt::Display for PairingCoverageMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "pairing `{}:{}` (slot `{}`, role `{}`) is not correctly declared: \
+             every topic the role emits needs exactly one entry in `topics.emits` \
+             referencing link_id `{}`, and every `topics.consumes` entry must name \
+             a topic the counterpart role emits",
+            self.pairing_name, self.pairing_tag, self.link_id, self.role, self.link_id
+        )?;
+        write_labeled_lists(
+            f,
+            &[
+                ("missing emits", &self.missing_emits),
+                ("unknown emits", &self.unknown_emits),
+                ("duplicated emits", &self.duplicated_emits),
+                ("wrong role emits", &self.wrong_role_emits),
+                ("unknown consumes", &self.unknown_consumes),
+                ("duplicated consumes", &self.duplicated_consumes),
+                ("wrong role consumes", &self.wrong_role_consumes),
+            ],
+        )
+    }
+}
+
+impl std::error::Error for PairingCoverageMismatch {}
+
+/// Appends every non-empty `label: [a, b]` section to a coverage-diff message.
+fn write_labeled_lists(
+    f: &mut std::fmt::Formatter<'_>,
+    sections: &[(&str, &Vec<String>)],
+) -> std::fmt::Result {
+    for (label, items) in sections {
+        if items.is_empty() {
+            continue;
+        }
+        write!(f, "; {label}: [")?;
+        write_string_list(f, items)?;
+        write!(f, "]")?;
+    }
+    Ok(())
+}
 
 fn write_string_list(f: &mut std::fmt::Formatter<'_>, items: &[String]) -> std::fmt::Result {
     for (idx, item) in items.iter().enumerate() {
@@ -240,12 +325,13 @@ pub enum ParsingError {
         link_id: String,
     },
     #[error(
-        "`{dependant}:{dependant_tag}` references pairing link_id `{link_id}` in consumed interfaces — pairing topics are not wired via `topics.consumes`; both directions are generated under the slot module (`peppygen.pairings.{link_id}` / `peppygen::pairings::{link_id}`)"
+        "`{dependant}:{dependant_tag}` references pairing link_id `{link_id}` in `{section}` — a pairing document declares topics only, so a pairing slot exposes no service or action to consume; only `topics.consumes` may name a pairing slot"
     )]
     ConsumedItemReferencesPairingLinkId {
         dependant: String,
         dependant_tag: String,
         link_id: String,
+        section: String,
     },
     /// Boxed payload for the same reason as
     /// [`ParsingError::BindingTargetMismatch`]: keeps the variant's
@@ -256,9 +342,9 @@ pub enum ParsingError {
 
     // -- manifest.implements + produced-interface entries
     #[error(
-        "Contract-backed entry `{name}` (link_id `{link_id}`) in `{section}` must not carry `{field}` — shape and QoS come from the contract document; a contract-backed entry is exactly `{{link_id, name}}`"
+        "Document-backed entry `{name}` (link_id `{link_id}`) in `{section}` must not carry `{field}` — shape and QoS come from the contract or pairing document the slot resolves to; a document-backed entry is exactly `{{link_id, name}}`"
     )]
-    ContractBackedEntryWithInlineShape {
+    LinkedEntryWithInlineShape {
         section: String,
         link_id: String,
         name: String,
@@ -279,7 +365,7 @@ pub enum ParsingError {
         tag_b: String,
     },
     #[error(
-        "Entry in `{section}` references link_id `{link_id}`, which is declared in `depends_on.{found_in}` — produced-interface entries may only reference `manifest.implements` slots; consumed interfaces belong in the `consumes` lists"
+        "Entry in `{section}` references link_id `{link_id}`, which is declared in `depends_on.{found_in}` — `topics.emits` may reference a `manifest.implements` or `depends_on.pairings` slot, while `services.exposes` and `actions.exposes` may reference only a `manifest.implements` slot; interfaces obtained from a dependency belong in the `consumes` lists"
     )]
     EmitsLinkIdNotImplements {
         section: String,
@@ -287,7 +373,7 @@ pub enum ParsingError {
         found_in: String,
     },
     #[error(
-        "Entry in `{section}` references link_id `{link_id}`, which matches no `manifest.implements` slot"
+        "Entry in `{section}` references link_id `{link_id}`, which matches no slot declared in `manifest.implements` or `depends_on`"
     )]
     UndeclaredEmitsLinkId { section: String, link_id: String },
     #[error(
@@ -316,7 +402,7 @@ pub enum ParsingError {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum StructuredError {
     MissingExecutionLanguage,
-    ContractBackedEntryWithInlineShape {
+    LinkedEntryWithInlineShape {
         section: String,
         link_id: String,
         name: String,
@@ -340,12 +426,12 @@ impl From<StructuredError> for ParsingError {
     fn from(s: StructuredError) -> Self {
         match s {
             StructuredError::MissingExecutionLanguage => ParsingError::MissingExecutionLanguage,
-            StructuredError::ContractBackedEntryWithInlineShape {
+            StructuredError::LinkedEntryWithInlineShape {
                 section,
                 link_id,
                 name,
                 field,
-            } => ParsingError::ContractBackedEntryWithInlineShape {
+            } => ParsingError::LinkedEntryWithInlineShape {
                 section,
                 link_id,
                 name,
