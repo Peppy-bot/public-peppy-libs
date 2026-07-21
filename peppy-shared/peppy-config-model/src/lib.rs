@@ -4,8 +4,8 @@
 //!
 //! This crate owns the wire-facing config tier every peppy surface builds
 //! on: the `peppy.json5` node config model, the runtime configs shipped to
-//! spawned nodes, codegen fingerprints, org namespaces, and the schema tags
-//! identifying each document shape. (Cap'n Proto schema generation for a
+//! spawned nodes, codegen fingerprints, workspace namespaces, and the schema
+//! tags identifying each document shape. (Cap'n Proto schema generation for a
 //! [`node::MessageFormat`] lives in the separate `encoding` crate; the
 //! daemon-side documents, launcher files, interface documents,
 //! `peppy_config.json5`, and the `PeppyDirs` filesystem layout, live in the
@@ -26,8 +26,8 @@ mod parsing;
 mod internal {
     pub mod consts;
     pub mod fingerprint;
+    pub mod namespace;
     pub mod node;
-    pub mod org;
     pub mod peppy_config;
     pub mod repo_node_id;
     pub mod runtime;
@@ -95,12 +95,9 @@ pub mod runtime {
     };
 }
 
-// -- org --
-pub mod org {
-    pub use crate::internal::org::{
-        InvalidOrgNamespace, LOCAL_NAMESPACE, OrgNamespace, resolve_session_namespace,
-        should_federate,
-    };
+// -- namespace --
+pub mod namespace {
+    pub use crate::internal::namespace::{InvalidNamespace, LOCAL_NAMESPACE, Namespace};
 }
 
 // -- peppy_config --
