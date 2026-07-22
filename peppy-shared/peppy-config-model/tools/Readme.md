@@ -1,12 +1,16 @@
-# How to build?
+# How to build
 
-Pull the latest version from the [Cap'n Proto installation instructions](https://capnproto.org/install.html).
-And use the following flags during compilation for static linking:
+The bundled compiler is pinned to Cap'n Proto 1.5.0. Download the source from
+the [official installation instructions](https://capnproto.org/install.html)
+and verify its SHA-256 checksum before building:
 
 ```sh
-curl -O https://capnproto.org/capnproto-c++-1.3.0.tar.gz
-tar zxf capnproto-c++-1.3.0.tar.gz
-cd capnproto-c++-1.3.0
+CAPNP_VERSION=1.5.0
+curl -O "https://capnproto.org/capnproto-c++-${CAPNP_VERSION}.tar.gz"
+# Expected SHA-256: 77dbc13ca82d9c87ddb4581dd49559d45b63096433d3dadea08b7f31b360a5ba
+tar zxf "capnproto-c++-${CAPNP_VERSION}.tar.gz"
+cd "capnproto-c++-${CAPNP_VERSION}"
+
 # Linux
 ./configure --enable-static --disable-shared LDFLAGS="-static-libgcc -static-libstdc++" CXXFLAGS="-O2"
 make -j$(nproc)
@@ -16,4 +20,6 @@ make -j$(nproc)
 make -j$(sysctl -n hw.ncpu)
 ```
 
-the binary will be in `<root_dir>/capnp`.
+The binary will be in `<root_dir>/capnp`. Build each artifact on its matching
+operating system and architecture, then confirm it with `file capnp` and
+`./capnp --version` before replacing the corresponding file in this directory.
