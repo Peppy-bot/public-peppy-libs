@@ -309,10 +309,10 @@ impl TopicMessenger {
     /// subscription at all, so there is no wildcard shape to build), and an
     /// observer pins its configured source. Both are pairing-discriminator
     /// traffic and both pin every wire slot, so the `is_pairing` assertion holds
-    /// for either caller. Applications must never construct raw key expressions;
-    /// this seam is the supported entry point.
+    /// for either caller. Applications never construct raw key expressions;
+    /// every pinned subscription comes through this seam.
     #[allow(clippy::too_many_arguments)]
-    pub async fn subscribe_peer_pinned(
+    pub(crate) async fn subscribe_peer_pinned(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,

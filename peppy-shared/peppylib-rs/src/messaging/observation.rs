@@ -61,9 +61,9 @@ impl ObservationState {
 }
 
 /// User-facing resolved source of an observer slot, returned by
-/// `NodeRunner::observed_source(link_id)` and surfaced by the generated per-slot
-/// `source()` helper. Purely local configuration state known to the observer
-/// from its own registration; it needs no daemon push to read.
+/// `NodeRunner::observation_slot(link_id)`'s `source()` and surfaced by the
+/// generated per-slot `source()` helper. Purely local configuration state known
+/// to the observer from its own registration; it needs no daemon push to read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedSource {
     /// The observed source instance's full wire address.

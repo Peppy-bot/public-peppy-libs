@@ -42,9 +42,7 @@ pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
         }
         PeppyError::UnknownPairingSlot { .. }
         | PeppyError::UnknownObservationSlot { .. }
-        | PeppyError::TargetNotBound { .. } => {
-            PyValueError::new_err(err.to_string())
-        }
+        | PeppyError::TargetNotBound { .. } => PyValueError::new_err(err.to_string()),
         PeppyError::ServiceUnreachable { .. }
         | PeppyError::ActionResultUnreachable { .. }
         | PeppyError::ActionFeedbackProducerGone { .. } => {

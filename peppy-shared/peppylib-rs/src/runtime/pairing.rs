@@ -24,11 +24,6 @@ use config::node::QoSProfile;
 use tokio::sync::{mpsc, watch};
 use tracing::warn;
 
-/// In-flight buffer between the forwarding task and the consuming code, in
-/// messages. Deliberately small: pairing topics are conversations, not
-/// firehoses, and the wire-side QoS buffers already absorb bursts.
-const PEER_CHANNEL_CAPACITY: usize = 128;
-
 /// Handle onto one pairing slot's live pin state. Obtained via
 /// [`NodeRunner::peer`]; the generated per-slot modules expose `paired()` /
 /// `wait_paired()` delegating here.
@@ -146,7 +141,7 @@ pub fn subscribe_peer_with_watch(
     topic: String,
     qos: QoSProfile,
 ) -> PeerSubscription {
-    let (tx, rx) = mpsc::channel(PEER_CHANNEL_CAPACITY);
+    let (tx, rx) = mpsc::channel(super::SLOT_CHANNEL_CAPACITY);
     let task_watch_rx = watch_rx.clone();
     let forward_task = crate::runtime::spawn(forward_peer_messages(
         messenger,

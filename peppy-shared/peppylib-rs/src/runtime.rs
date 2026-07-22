@@ -12,6 +12,12 @@ pub use observation::{
 pub use pairing::{PeerSlot, PeerSubscription, subscribe_peer, subscribe_peer_with_watch};
 pub use processor::Processor;
 
+/// In-flight buffer between a slot's forwarding task and the consuming code,
+/// in messages, shared by the pairing and observer subscriptions. Deliberately
+/// small: slot topics are conversations and taps, not firehoses, and the
+/// wire-side QoS buffers already absorb bursts.
+const SLOT_CHANNEL_CAPACITY: usize = 128;
+
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;

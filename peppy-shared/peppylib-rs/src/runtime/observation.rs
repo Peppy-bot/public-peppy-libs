@@ -33,12 +33,6 @@ use config::node::QoSProfile;
 use tokio::sync::{mpsc, watch};
 use tracing::warn;
 
-/// In-flight buffer between the forwarding task and the consuming code, in
-/// messages. Deliberately small, matching the pairing subscription: observer
-/// topics are taps on conversations, not firehoses, and the wire-side QoS
-/// buffers already absorb bursts.
-const OBSERVATION_CHANNEL_CAPACITY: usize = 128;
-
 /// Handle onto one observer slot's live observation state. Obtained via
 /// [`NodeRunner::observation_slot`]; the generated per-slot modules expose
 /// `source()` delegating here.
@@ -57,7 +51,11 @@ impl ObservationSlot {
     /// health-derived helper, because a third node's health is not knowable
     /// here (see the design's "Generated observer API").
     pub fn source(&self) -> Option<ObservedSource> {
-        self.watch_rx.borrow().source.as_ref().map(ObservedSource::from)
+        self.watch_rx
+            .borrow()
+            .source
+            .as_ref()
+            .map(ObservedSource::from)
     }
 }
 
@@ -120,11 +118,12 @@ pub async fn subscribe_observed(
     qos: QoSProfile,
 ) -> Result<ObservedTopicSubscription> {
     let processor = node_runner.processor();
-    let watch_rx = processor
-        .observation_slot_watch(link_id)
-        .ok_or_else(|| Error::UnknownObservationSlot {
-            link_id: link_id.to_string(),
-        })?;
+    let watch_rx =
+        processor
+            .observation_slot_watch(link_id)
+            .ok_or_else(|| Error::UnknownObservationSlot {
+                link_id: link_id.to_string(),
+            })?;
     let target = SenderTarget::pairing(pairing_name, pairing_tag)?;
     Ok(subscribe_observed_with_watch(
         node_runner.messenger().clone(),
@@ -150,7 +149,7 @@ pub fn subscribe_observed_with_watch(
     topic: String,
     qos: QoSProfile,
 ) -> ObservedTopicSubscription {
-    let (tx, rx) = mpsc::channel(OBSERVATION_CHANNEL_CAPACITY);
+    let (tx, rx) = mpsc::channel(super::SLOT_CHANNEL_CAPACITY);
     let task_watch_rx = watch_rx.clone();
     let forward_task = crate::runtime::spawn(forward_observed_messages(
         messenger,
@@ -189,23 +188,23 @@ async fn forward_observed_messages(
     // under. At most one wire subscription per slot, ever.
     let mut current: Option<(u64, ObservationPin, crate::messaging::Subscription)> = None;
     loop {
-        let (desired_generation, desired_source) = {
-            let state = watch_rx.borrow_and_update();
-            (state.source_generation, state.source.clone())
-        };
         // Redeclare when the source first resolves, when the generation
         // advances (a new incarnation), or when the source is cleared. A source
         // peer transition never changes (generation, source), so it is a no-op
-        // here.
-        let redeclare = match (&current, &desired_source) {
-            (Some((current_generation, _, _)), Some(_)) => {
-                *current_generation != desired_generation
-            }
-            (Some(_), None) => true,
-            (None, Some(_)) => true,
-            (None, None) => false,
+        // here. The decision reads only Copy data; the pin is cloned only when
+        // actually redeclaring, since this loop top runs once per forwarded
+        // message.
+        let redeclare_to = {
+            let state = watch_rx.borrow_and_update();
+            let redeclare = match &current {
+                Some((current_generation, _, _)) => {
+                    state.source.is_none() || *current_generation != state.source_generation
+                }
+                None => state.source.is_some(),
+            };
+            redeclare.then(|| (state.source_generation, state.source.clone()))
         };
-        if redeclare {
+        if let Some((desired_generation, desired_source)) = redeclare_to {
             // Drop-before-redeclare: the old wire subscription (and its buffered
             // messages) dies before the new generation's subscription exists.
             current = None;
@@ -222,9 +221,7 @@ async fn forward_observed_messages(
                 )
                 .await
                 {
-                    Ok(subscription) => {
-                        current = Some((desired_generation, pin, subscription))
-                    }
+                    Ok(subscription) => current = Some((desired_generation, pin, subscription)),
                     Err(err) => {
                         warn!(
                             %err,

@@ -66,10 +66,7 @@ pub struct ObservationTarget {
 }
 
 impl ObservationTarget {
-    pub fn new(
-        source_instance_id: impl Into<String>,
-        source_link_id: impl Into<String>,
-    ) -> Self {
+    pub fn new(source_instance_id: impl Into<String>, source_link_id: impl Into<String>) -> Self {
         Self {
             source_instance_id: source_instance_id.into(),
             source_link_id: source_link_id.into(),

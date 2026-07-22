@@ -24,8 +24,8 @@ impl ObservationUpdateRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = ::capnp::message::Builder::new_default();
         {
-            let mut root =
-                builder.init_root::<observation_update_capnp::observation_update_request::Builder>();
+            let mut root = builder
+                .init_root::<observation_update_capnp::observation_update_request::Builder>();
             root.set_link_id(&self.link_id);
             root.set_sequence(self.sequence);
             root.set_source_generation(self.source_generation);
@@ -53,17 +53,29 @@ impl ObservationUpdateRequest {
         let root = reader
             .get_root::<observation_update_capnp::observation_update_request::Reader>()
             .map_err(|e| Error::Deserialization(e.to_string()))?;
-        let link_id = read_text(root.get_link_id(), "linkId")?;
+        let link_id = super::read_text(root.get_link_id(), "observation_update", "linkId")?;
         let sequence = root.get_sequence();
         let source_generation = root.get_source_generation();
         let source_live = root.get_source_live();
         let source = if root.get_has_source() {
             Some(ObservationPin {
                 producer: ProducerRef::new(
-                    read_text(root.get_source_core_node(), "sourceCoreNode")?,
-                    read_text(root.get_source_instance_id(), "sourceInstanceId")?,
+                    super::read_text(
+                        root.get_source_core_node(),
+                        "observation_update",
+                        "sourceCoreNode",
+                    )?,
+                    super::read_text(
+                        root.get_source_instance_id(),
+                        "observation_update",
+                        "sourceInstanceId",
+                    )?,
                 ),
-                source_link_id: read_text(root.get_source_link_id(), "sourceLinkId")?,
+                source_link_id: super::read_text(
+                    root.get_source_link_id(),
+                    "observation_update",
+                    "sourceLinkId",
+                )?,
             })
         } else {
             None
@@ -134,19 +146,9 @@ impl ObservationUpdateResponse {
         Ok(Self {
             accepted: root.get_accepted(),
             stale_sequence: root.get_stale_sequence(),
-            message: read_text(root.get_message(), "message")?,
+            message: super::read_text(root.get_message(), "observation_update", "message")?,
         })
     }
-}
-
-fn read_text(field: ::capnp::Result<::capnp::text::Reader<'_>>, name: &str) -> Result<String> {
-    field
-        .map_err(|e| Error::Deserialization(format!("observation_update field `{name}`: {e}")))?
-        .to_str()
-        .map(str::to_owned)
-        .map_err(|e| {
-            Error::Deserialization(format!("observation_update field `{name}` not UTF-8: {e}"))
-        })
 }
 
 #[cfg(test)]
@@ -193,7 +195,8 @@ mod tests {
             ObservationUpdateResponse::rejected("unknown observer slot 'observed_arm'"),
         ] {
             let decoded =
-                ObservationUpdateResponse::decode(&response.encode().unwrap().into_inner()).unwrap();
+                ObservationUpdateResponse::decode(&response.encode().unwrap().into_inner())
+                    .unwrap();
             assert_eq!(decoded, response);
         }
     }

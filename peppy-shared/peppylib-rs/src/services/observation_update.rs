@@ -113,14 +113,14 @@ pub(crate) fn apply_observation_update(
         }
         // Absolute state: an equal sequence is an idempotent retry, a larger one
         // supersedes. Only notify watchers when something changed.
-        let changed = state.sequence != request.sequence
-            || state.source_generation != request.source_generation
-            || state.source != request.source
-            || state.source_live != request.source_live;
-        state.sequence = request.sequence;
-        state.source_generation = request.source_generation;
-        state.source = request.source.clone();
-        state.source_live = request.source_live;
+        let new_state = ObservationState {
+            sequence: request.sequence,
+            source_generation: request.source_generation,
+            source: request.source.clone(),
+            source_live: request.source_live,
+        };
+        let changed = *state != new_state;
+        *state = new_state;
         changed
     });
     if stale {

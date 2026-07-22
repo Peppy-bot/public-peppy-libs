@@ -77,12 +77,13 @@ fn validate_manifest_links(manifest: &Manifest) -> Result<()> {
 /// produced/consumed interface entries:
 ///
 /// - A `topics.emits` entry's `link_id` must name a `manifest.implements`
-///   slot or a `depends_on.pairings` slot: a node declares the pairing
-///   topics its role emits the same way a contract implementer declares
-///   contract members. `services.exposes` and `actions.exposes` admit
-///   implements slots only, because a pairing document declares topics
-///   only. Naming any other `depends_on` slot, or nothing at all, gets a
-///   dedicated error each.
+///   slot or a participant `depends_on.pairings` slot: a node declares the
+///   pairing topics its role emits the same way a contract implementer
+///   declares contract members. An observer slot plays no role and emits
+///   nothing, so naming one gets a targeted error. `services.exposes` and
+///   `actions.exposes` admit implements slots only, because a pairing
+///   document declares topics only. Naming any other `depends_on` slot, or
+///   nothing at all, gets a dedicated error each.
 /// - A consumed entry's `link_id` must not name an implements slot (those
 ///   are produced, not consumed); resolution against `depends_on` stays in
 ///   `validate_dependency_specs`, which runs where dependencies resolve.
@@ -109,7 +110,30 @@ fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<(
         .map(|e| e.link_id.as_str())
         .collect();
     let mut topic_emit_link_ids = implements_link_ids.clone();
-    topic_emit_link_ids.extend(pairing_link_ids(manifest));
+    topic_emit_link_ids.extend(participant_pairing_link_ids(manifest));
+
+    // An observer plays no role and emits nothing, which is knowable from the
+    // manifest alone, so a `topics.emits` entry naming an observer slot is
+    // rejected here with a targeted error (the observed role's topics belong
+    // in `topics.consumes`). A linear scan of the (tiny) slot list, like
+    // `depends_list_containing`.
+    let observer_link_ids: Vec<&str> = manifest
+        .depends_on
+        .iter()
+        .flat_map(|d| d.pairings.iter())
+        .filter(|p| p.is_observer())
+        .map(|p| p.link_id())
+        .collect();
+    for (link_id, _) in interfaces.produced(InterfaceKind::Topic) {
+        if let Some(link_id) = link_id
+            && observer_link_ids.contains(&link_id)
+        {
+            return Err(ParsingError::EmitsOnObserverSlot {
+                link_id: link_id.to_owned(),
+            }
+            .into());
+        }
+    }
 
     for (kind, section) in KINDS {
         let allowed = match kind {
@@ -139,20 +163,14 @@ fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<(
     // nothing, which is always a mistake. A participant slot may consume
     // nothing legitimately (it still emits its role's topics), so this rule
     // applies to observers only.
-    let observer_link_ids = manifest
-        .depends_on
-        .iter()
-        .flat_map(|d| d.pairings.iter())
-        .filter(|p| p.is_observer())
-        .map(|p| p.link_id());
     let consumed_topic_link_ids: HashSet<&str> = interfaces
         .consumed(InterfaceKind::Topic)
         .map(|(link_id, _)| link_id)
         .collect();
-    for link_id in observer_link_ids {
+    for link_id in &observer_link_ids {
         if !consumed_topic_link_ids.contains(link_id) {
             return Err(ParsingError::ObserverLinkNeverConsumed {
-                link_id: link_id.to_owned(),
+                link_id: (*link_id).to_owned(),
             }
             .into());
         }
@@ -178,17 +196,20 @@ fn depends_list_containing(depends_on: Option<&DependsOn>, link_id: &str) -> Opt
     None
 }
 
-/// The `depends_on.pairings` slot link_ids of a manifest, both participant and
-/// observer forms. A pairing slot is the one `depends_on` kind a produced topic
-/// entry may reference: a participant's role is a producer of the document's
-/// topics. An observer produces nothing, but it is still a pairing slot, so it
-/// is admitted here structurally; the "observer emits nothing" rule needs the
-/// pairing document and is enforced at node add/sync.
-fn pairing_link_ids(manifest: &Manifest) -> impl Iterator<Item = &str> {
+/// The participant `depends_on.pairings` slot link_ids of a manifest. A
+/// participant slot is the one `depends_on` kind a produced topic entry may
+/// reference: its role is a producer of the pairing document's topics. An
+/// observer plays no role and emits nothing, so observer slots are excluded
+/// and a `topics.emits` entry naming one is rejected with a targeted error.
+/// Which topics a participant's role actually emits needs the pairing
+/// document and is enforced at node add/sync.
+fn participant_pairing_link_ids(manifest: &Manifest) -> impl Iterator<Item = &str> {
     manifest
         .depends_on
         .iter()
-        .flat_map(|d| d.pairings.iter().map(|p| p.link_id()))
+        .flat_map(|d| d.pairings.iter())
+        .filter(|p| p.is_participant())
+        .map(|p| p.link_id())
 }
 
 /// `allowed_link_ids` is the set a document-backed entry of this section may
@@ -318,7 +339,6 @@ pub fn load_standalone_node_config(path: impl AsRef<Path>) -> Result<NodeConfig>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::{PairingDependency, PairingObserverDependency, PairingParticipantDependency};
     use crate::{error::Error, node::ContainerConfig};
     use tempfile::NamedTempFile;
 
@@ -329,22 +349,6 @@ mod tests {
             .container
             .as_ref()
             .expect("expected container")
-    }
-
-    /// Test helper: unwraps a participant pairing slot, panicking on observer.
-    fn participant(dep: &PairingDependency) -> &PairingParticipantDependency {
-        match dep {
-            PairingDependency::Participant(p) => p,
-            PairingDependency::Observer(_) => panic!("expected a participant pairing slot"),
-        }
-    }
-
-    /// Test helper: unwraps an observer pairing slot, panicking on participant.
-    fn observer(dep: &PairingDependency) -> &PairingObserverDependency {
-        match dep {
-            PairingDependency::Observer(o) => o,
-            PairingDependency::Participant(_) => panic!("expected an observer pairing slot"),
-        }
     }
 
     #[test]
@@ -654,7 +658,9 @@ mod tests {
         let config = NodeConfigParser::from_content(json5).unwrap();
         let deps = config.manifest.depends_on.unwrap();
         assert_eq!(deps.pairings.len(), 1);
-        let pairing = participant(&deps.pairings[0]);
+        let pairing = deps.pairings[0]
+            .as_participant()
+            .expect("expected a participant pairing slot");
         assert_eq!(pairing.name.as_str(), "arm_link");
         assert_eq!(pairing.role, "arm");
         assert_eq!(pairing.link_id, "controller");
@@ -682,7 +688,10 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         let deps = config.manifest.depends_on.unwrap();
-        assert!(!participant(&deps.pairings[0]).optional);
+        let pairing = deps.pairings[0]
+            .as_participant()
+            .expect("expected a participant pairing slot");
+        assert!(!pairing.optional);
     }
 
     #[test]
@@ -735,7 +744,9 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5).expect("observer node should parse");
         let deps = config.manifest.depends_on.unwrap();
-        let observed = observer(&deps.pairings[0]);
+        let observed = deps.pairings[0]
+            .as_observer()
+            .expect("expected an observer pairing slot");
         assert_eq!(observed.observes_role, "arm");
         assert_eq!(observed.link_id, "observed_arm");
     }
@@ -766,6 +777,45 @@ mod tests {
                 Error::Parsing(ParsingError::ObserverLinkNeverConsumed { link_id }) if link_id == "observed_arm"
             ),
             "expected ObserverLinkNeverConsumed(\"observed_arm\"), got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn observer_slot_in_topics_emits_is_rejected() {
+        // An observer plays no role and emits nothing, which is knowable from
+        // the manifest alone, so a topics.emits entry naming an observer slot
+        // is rejected at parse time even when the slot is consumed correctly.
+        let json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "lerobot_recorder",
+                tag: "v1",
+                depends_on: {
+                    pairings: [
+                        { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "observed_arm" },
+                    ],
+                },
+            },
+            interfaces: {
+                topics: {
+                    consumes: [
+                        { link_id: "observed_arm", name: "joint_states" },
+                    ],
+                    emits: [
+                        { link_id: "observed_arm", name: "joint_states" },
+                    ],
+                },
+            },
+            execution: { language: "rust", run_cmd: ["./bin"] },
+        }"#;
+        let err = NodeConfigParser::from_content(json5)
+            .expect_err("topics.emits naming an observer slot must be rejected");
+        assert!(
+            matches!(
+                &err,
+                Error::Parsing(ParsingError::EmitsOnObserverSlot { link_id }) if link_id == "observed_arm"
+            ),
+            "expected EmitsOnObserverSlot(\"observed_arm\"), got: {err:?}"
         );
     }
 

@@ -30,8 +30,7 @@ pub use node::{
     init::NodeInitResponse, remove::NodeRemoveRequest, remove::NodeRemoveResponse,
     run::NodeRunFeedback, run::NodeRunGoal, run::NodeRunGoalResponse, run::NodeRunResult,
     run::ObservationTarget, run::PairTarget, stop::NodeStopRequest, stop::NodeStopResponse,
-    sync::NodeSyncRequest,
-    sync::NodeSyncResponse, sync::RepoResolvedEntry,
+    sync::NodeSyncRequest, sync::NodeSyncResponse, sync::RepoResolvedEntry,
 };
 pub use repo::{
     RepoAddRequest, RepoAddResponse, RepoExcludeRequest, RepoExcludeResponse, RepoItemKind,

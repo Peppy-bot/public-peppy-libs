@@ -47,15 +47,19 @@ impl PeerUpdateRequest {
         let root = reader
             .get_root::<peer_update_capnp::peer_update_request::Reader>()
             .map_err(|e| Error::Deserialization(e.to_string()))?;
-        let link_id = read_text(root.get_link_id(), "linkId")?;
+        let link_id = super::read_text(root.get_link_id(), "peer_update", "linkId")?;
         let sequence = root.get_sequence();
         let pin = if root.get_paired() {
             Some(PeerPin {
                 producer: ProducerRef::new(
-                    read_text(root.get_peer_core_node(), "peerCoreNode")?,
-                    read_text(root.get_peer_instance_id(), "peerInstanceId")?,
+                    super::read_text(root.get_peer_core_node(), "peer_update", "peerCoreNode")?,
+                    super::read_text(root.get_peer_instance_id(), "peer_update", "peerInstanceId")?,
                 ),
-                peer_link_id: read_text(root.get_peer_link_id(), "peerLinkId")?,
+                peer_link_id: super::read_text(
+                    root.get_peer_link_id(),
+                    "peer_update",
+                    "peerLinkId",
+                )?,
             })
         } else {
             None
@@ -123,17 +127,9 @@ impl PeerUpdateResponse {
         Ok(Self {
             accepted: root.get_accepted(),
             stale_sequence: root.get_stale_sequence(),
-            message: read_text(root.get_message(), "message")?,
+            message: super::read_text(root.get_message(), "peer_update", "message")?,
         })
     }
-}
-
-fn read_text(field: ::capnp::Result<::capnp::text::Reader<'_>>, name: &str) -> Result<String> {
-    field
-        .map_err(|e| Error::Deserialization(format!("peer_update field `{name}`: {e}")))?
-        .to_str()
-        .map(str::to_owned)
-        .map_err(|e| Error::Deserialization(format!("peer_update field `{name}` not UTF-8: {e}")))
 }
 
 #[cfg(test)]

@@ -992,6 +992,22 @@ impl PairingDependency {
     pub fn is_participant(&self) -> bool {
         matches!(self, Self::Participant(_))
     }
+
+    /// The participant form, or `None` for an observer slot.
+    pub fn as_participant(&self) -> Option<&PairingParticipantDependency> {
+        match self {
+            Self::Participant(p) => Some(p),
+            Self::Observer(_) => None,
+        }
+    }
+
+    /// The observer form, or `None` for a participant slot.
+    pub fn as_observer(&self) -> Option<&PairingObserverDependency> {
+        match self {
+            Self::Observer(o) => Some(o),
+            Self::Participant(_) => None,
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for PairingDependency {
@@ -2426,7 +2442,10 @@ mod tests {
         let deps: DependsOn =
             serde_json5::from_str(participant_json5).expect("participant should parse");
         let PairingDependency::Participant(p) = &deps.pairings[0] else {
-            panic!("`role` must produce a participant, got {:?}", deps.pairings[0]);
+            panic!(
+                "`role` must produce a participant, got {:?}",
+                deps.pairings[0]
+            );
         };
         assert_eq!(p.role, "controller");
         assert_eq!(p.link_id, "arm");

@@ -400,6 +400,10 @@ pub enum ParsingError {
         "Observer pairing slot `{link_id}` is declared but never consumed. Add an `interfaces.topics.consumes` entry with `link_id: \"{link_id}\"`, or remove the dependency"
     )]
     ObserverLinkNeverConsumed { link_id: String },
+    #[error(
+        "Observer pairing slot `{link_id}` is referenced in `topics.emits`. An observer plays no role and emits nothing; it may only consume the observed role's topics via `interfaces.topics.consumes`"
+    )]
+    EmitsOnObserverSlot { link_id: String },
     #[error("Duplicate entry `{key}` in `{section}`")]
     DuplicateInterfaceEntry { section: String, key: String },
 

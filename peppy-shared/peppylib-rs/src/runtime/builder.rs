@@ -395,8 +395,7 @@ where
                 self.instance_id(),
             );
 
-            let pre_setup = start_pre_setup_services(Arc::clone(&node_runner)).await?;
-            let mut shutdown_rx = pre_setup.shutdown_rx;
+            let mut pre_setup = start_pre_setup_services(Arc::clone(&node_runner)).await?;
 
             // Daemon-liveness watchdog: self-terminate if the daemon dies
             // uncatchably and stays gone past the configured grace period. Held
@@ -418,7 +417,7 @@ where
                     result = setup_fn(parameters, Arc::clone(&node_runner)) => {
                         result?;
                     }
-                    _ = &mut shutdown_rx => {
+                    _ = &mut pre_setup.shutdown_rx => {
                         info!("Shutdown requested during setup");
                         return Ok(());
                     }
@@ -431,11 +430,7 @@ where
                 }
                 run_post_setup_services(
                     Arc::clone(&node_runner),
-                    pre_setup.ready_handle,
-                    pre_setup.shutdown_handle,
-                    pre_setup.peer_update_handle,
-                    pre_setup.observation_update_handle,
-                    shutdown_rx,
+                    pre_setup,
                     cancellation_token.clone(),
                 )
                 .await
@@ -625,16 +620,18 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_post_setup_services(
     node_runner: Arc<NodeRunner>,
-    ready_handle: TaskHandle<Result<()>>,
-    shutdown_handle: TaskHandle<Result<()>>,
-    peer_update_handle: TaskHandle<Result<()>>,
-    observation_update_handle: TaskHandle<Result<()>>,
-    mut shutdown_rx: oneshot::Receiver<()>,
+    pre_setup: PreSetupHandles,
     cancellation_token: CancellationToken,
 ) -> Result<()> {
+    let PreSetupHandles {
+        ready_handle,
+        shutdown_handle,
+        peer_update_handle,
+        observation_update_handle,
+        mut shutdown_rx,
+    } = pre_setup;
     let processor = node_runner.processor();
 
     let as_identity =

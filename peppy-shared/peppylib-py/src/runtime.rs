@@ -953,10 +953,10 @@ impl PyNodeRunner {
     /// peer's identity (or `None` while unpaired) and `wait_paired()` awaits
     /// one. Raises `ValueError` if the manifest declares no such slot.
     fn peer(&self, link_id: &str) -> PyResult<crate::messaging::PyPeerSlot> {
-        match self.inner.peer(link_id) {
-            Ok(slot) => Ok(crate::messaging::PyPeerSlot { inner: slot }),
-            Err(err) => Err(pyo3::exceptions::PyValueError::new_err(err.to_string())),
-        }
+        self.inner
+            .peer(link_id)
+            .map(|slot| crate::messaging::PyPeerSlot { inner: slot })
+            .map_err(crate::messaging::to_py_err)
     }
 
     /// Subscribe to one peer-emitted topic of the pairing slot at `link_id`.
@@ -997,10 +997,10 @@ impl PyNodeRunner {
     /// the daemon has delivered it. Raises `ValueError` if the manifest
     /// declares no such observer slot.
     fn observation_slot(&self, link_id: &str) -> PyResult<crate::messaging::PyObservationSlot> {
-        match self.inner.observation_slot(link_id) {
-            Ok(slot) => Ok(crate::messaging::PyObservationSlot { inner: slot }),
-            Err(err) => Err(pyo3::exceptions::PyValueError::new_err(err.to_string())),
-        }
+        self.inner
+            .observation_slot(link_id)
+            .map(|slot| crate::messaging::PyObservationSlot { inner: slot })
+            .map_err(crate::messaging::to_py_err)
     }
 
     /// Subscribe to one topic emitted by an observer slot's source. Spliced by
