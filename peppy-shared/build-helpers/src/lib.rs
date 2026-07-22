@@ -18,8 +18,8 @@ mod fs;
 mod hash;
 
 pub use cargo::{
-    build_target_triple, bundled_capnp_path, cargo_install_binary, embed_git_tag,
-    find_bundled_capnp, peppy_shared_dir,
+    CapnpPlatform, UnsupportedCapnpTarget, build_target_triple, bundled_capnp_path,
+    cargo_install_binary, embed_git_tag, find_bundled_capnp, peppy_shared_dir,
 };
 pub use command::{CommandOutput, run_command, run_command_streaming, run_command_with_timeout};
 pub use fs::{acquire_file_lock, cache_dir, copy_if_changed, set_executable, write_if_changed};
