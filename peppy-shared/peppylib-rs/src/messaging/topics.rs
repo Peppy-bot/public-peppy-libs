@@ -298,13 +298,19 @@ impl TopicMessenger {
         Ok(Subscription::new(subscription))
     }
 
-    /// Subscribe to one topic of a pairing, pinned to the current peer's full
-    /// wire triple: `(core_node, instance_id)` plus the link_id of the peer's
-    /// own slot (the producer-side link_id segment of its publishes). Unlike
-    /// [`Self::subscribe`], the link_id slot is a literal, never a wildcard —
-    /// an unpaired slot has no wire subscription at all, so there is no
-    /// wildcard shape to build. Pairing traffic rides the `pairing` wire
+    /// Subscribe to one topic of a pairing, pinned to a producer's full wire
+    /// triple: `(core_node, instance_id)` plus the producer-side link_id segment
+    /// of its publishes. Unlike [`Self::subscribe`], the link_id slot is a
+    /// literal, never a wildcard. Pairing traffic rides the `pairing` wire
     /// discriminator, which no interface subscription can match.
+    ///
+    /// This is the shared pinned-subscribe seam for both pairing forms: a
+    /// participant pins its current peer (an unpaired slot has no wire
+    /// subscription at all, so there is no wildcard shape to build), and an
+    /// observer pins its configured source. Both are pairing-discriminator
+    /// traffic and both pin every wire slot, so the `is_pairing` assertion holds
+    /// for either caller. Applications never construct raw key expressions;
+    /// every pinned subscription comes through this seam.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn subscribe_peer_pinned(
         messenger: &MessengerHandle,

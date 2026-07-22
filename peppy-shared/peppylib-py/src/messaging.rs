@@ -1,9 +1,11 @@
 mod actions;
+mod observation;
 mod pairing;
 mod services;
 mod target;
 mod topics;
 
+pub(crate) use observation::{PyObservationSlot, PyObservedSource, PyObservedSubscription};
 pub(crate) use pairing::{PyPeerInfo, PyPeerSlot, PyPeerSubscription};
 pub(crate) use target::{PyProducerRef, PySenderTarget};
 
@@ -28,18 +30,19 @@ pub(crate) use topics::{
 /// `ActionFeedbackProducerGone` joins the `ConnectionError` family (the peer
 /// vanished), which keeps it type-distinguishable from the clean
 /// end-of-stream close (`ActionFeedbackChannelClosed` → `RuntimeError`).
-/// `UnknownPairingSlot` and `TargetNotBound` are caller misuse (a link_id
-/// the manifest never declared / a producer outside the slot's bound set),
-/// so they map to `ValueError` — the same type `peer()` raises for the same
-/// kind of input.
+/// `UnknownPairingSlot`, `UnknownObservationSlot` and `TargetNotBound` are
+/// caller misuse (a link_id the manifest never declared as a pairing / observer
+/// slot / a producer outside the slot's bound set), so they map to `ValueError`
+/// — the same type `peer()` / `observation_slot()` raise for the same kind of
+/// input.
 pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
     match &err {
         PeppyError::ServiceTimeout { .. } | PeppyError::ActionResultTimeout { .. } => {
             PyErr::new::<pyo3::exceptions::PyTimeoutError, _>(err.to_string())
         }
-        PeppyError::UnknownPairingSlot { .. } | PeppyError::TargetNotBound { .. } => {
-            PyValueError::new_err(err.to_string())
-        }
+        PeppyError::UnknownPairingSlot { .. }
+        | PeppyError::UnknownObservationSlot { .. }
+        | PeppyError::TargetNotBound { .. } => PyValueError::new_err(err.to_string()),
         PeppyError::ServiceUnreachable { .. }
         | PeppyError::ActionResultUnreachable { .. }
         | PeppyError::ActionFeedbackProducerGone { .. } => {
@@ -262,6 +265,9 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     messaging_module.add_class::<PyPeerInfo>()?;
     messaging_module.add_class::<PyPeerSlot>()?;
     messaging_module.add_class::<PyPeerSubscription>()?;
+    messaging_module.add_class::<PyObservedSource>()?;
+    messaging_module.add_class::<PyObservationSlot>()?;
+    messaging_module.add_class::<PyObservedSubscription>()?;
     services::register(&messaging_module)?;
     actions::register(&messaging_module)?;
     parent_module.add_submodule(&messaging_module)?;

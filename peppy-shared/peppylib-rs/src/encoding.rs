@@ -1,6 +1,8 @@
 pub mod health;
+pub mod observation_update;
 pub mod peer_update;
 pub mod ready;
+pub mod slot_update;
 
 use crate::error::Result;
 use crate::types::Payload;
@@ -115,6 +117,23 @@ pub(crate) fn decode_message(
 ) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
     serialize::read_message(data, ReaderOptions::default())
         .map_err(|e| crate::error::Error::Deserialization(e.to_string()))
+}
+
+/// Reads a capnp text field into an owned `String`, labeling errors with the
+/// owning codec and schema field name. Crate-internal: shared by the framework
+/// service codecs (`peer_update`, `observation_update`).
+pub(crate) fn read_text(
+    field: ::capnp::Result<::capnp::text::Reader<'_>>,
+    codec: &str,
+    name: &str,
+) -> Result<String> {
+    field
+        .map_err(|e| crate::error::Error::Deserialization(format!("{codec} field `{name}`: {e}")))?
+        .to_str()
+        .map(str::to_owned)
+        .map_err(|e| {
+            crate::error::Error::Deserialization(format!("{codec} field `{name}` not UTF-8: {e}"))
+        })
 }
 
 #[cfg(test)]

@@ -953,10 +953,10 @@ impl PyNodeRunner {
     /// peer's identity (or `None` while unpaired) and `wait_paired()` awaits
     /// one. Raises `ValueError` if the manifest declares no such slot.
     fn peer(&self, link_id: &str) -> PyResult<crate::messaging::PyPeerSlot> {
-        match self.inner.peer(link_id) {
-            Ok(slot) => Ok(crate::messaging::PyPeerSlot { inner: slot }),
-            Err(err) => Err(pyo3::exceptions::PyValueError::new_err(err.to_string())),
-        }
+        self.inner
+            .peer(link_id)
+            .map(|slot| crate::messaging::PyPeerSlot { inner: slot })
+            .map_err(crate::messaging::to_py_err)
     }
 
     /// Subscribe to one peer-emitted topic of the pairing slot at `link_id`.
@@ -986,6 +986,51 @@ impl PyNodeRunner {
             .await
             .map_err(crate::messaging::to_py_err)?;
             Ok(crate::messaging::PyPeerSubscription {
+                inner: Arc::new(tokio::sync::Mutex::new(subscription)),
+            })
+        })
+    }
+
+    /// Handle onto the observer slot declared at `link_id` in
+    /// `depends_on.pairings` (an entry carrying `observes_role`):
+    /// `observation_slot(link_id).source()` returns the resolved source once
+    /// the daemon has delivered it. Raises `ValueError` if the manifest
+    /// declares no such observer slot.
+    fn observation_slot(&self, link_id: &str) -> PyResult<crate::messaging::PyObservationSlot> {
+        self.inner
+            .observation_slot(link_id)
+            .map(|slot| crate::messaging::PyObservationSlot { inner: slot })
+            .map_err(crate::messaging::to_py_err)
+    }
+
+    /// Subscribe to one topic emitted by an observer slot's source. Spliced by
+    /// the generated `peppygen.paired_topics.<link_id>.<topic>.subscribe` call
+    /// sites of observer modules; `pairing_name` / `pairing_tag` / `topic` come
+    /// from the pairing doc via codegen constants. Each message is yielded as a
+    /// `(producer, message)` tuple and delivery follows the source instance's
+    /// lifecycle.
+    fn subscribe_observed<'py>(
+        &self,
+        py: Python<'py>,
+        link_id: String,
+        pairing_name: String,
+        pairing_tag: String,
+        topic: String,
+        qos: crate::config::PyQoSProfile,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let node_runner = Arc::clone(&self.inner);
+        crate::py_future::future_into_py(py, async move {
+            let subscription = peppylib::runtime::subscribe_observed(
+                &node_runner,
+                &link_id,
+                &pairing_name,
+                &pairing_tag,
+                &topic,
+                qos.into(),
+            )
+            .await
+            .map_err(crate::messaging::to_py_err)?;
+            Ok(crate::messaging::PyObservedSubscription {
                 inner: Arc::new(tokio::sync::Mutex::new(subscription)),
             })
         })

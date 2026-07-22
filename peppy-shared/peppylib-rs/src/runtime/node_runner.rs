@@ -83,6 +83,20 @@ impl NodeRunner {
             })
     }
 
+    /// Handle onto the observer slot declared at `link_id` in
+    /// `depends_on.pairings` (an entry carrying `observes_role`). Exposes the
+    /// slot's resolved source: `observation_slot(link_id)?.source()` returns the
+    /// observed source once the daemon has delivered it. Errors if the manifest
+    /// declares no such observer slot.
+    pub fn observation_slot(&self, link_id: &str) -> crate::error::Result<super::ObservationSlot> {
+        self.processor
+            .observation_slot_watch(link_id)
+            .map(super::ObservationSlot::new)
+            .ok_or_else(|| crate::error::Error::UnknownObservationSlot {
+                link_id: link_id.to_string(),
+            })
+    }
+
     /// Get the cancellation token for coordinating graceful shutdown.
     ///
     /// The token fires on every stop path: `peppy node stop`, the daemon

@@ -47,15 +47,19 @@ impl PeerUpdateRequest {
         let root = reader
             .get_root::<peer_update_capnp::peer_update_request::Reader>()
             .map_err(|e| Error::Deserialization(e.to_string()))?;
-        let link_id = read_text(root.get_link_id(), "linkId")?;
+        let link_id = super::read_text(root.get_link_id(), "peer_update", "linkId")?;
         let sequence = root.get_sequence();
         let pin = if root.get_paired() {
             Some(PeerPin {
                 producer: ProducerRef::new(
-                    read_text(root.get_peer_core_node(), "peerCoreNode")?,
-                    read_text(root.get_peer_instance_id(), "peerInstanceId")?,
+                    super::read_text(root.get_peer_core_node(), "peer_update", "peerCoreNode")?,
+                    super::read_text(root.get_peer_instance_id(), "peer_update", "peerInstanceId")?,
                 ),
-                peer_link_id: read_text(root.get_peer_link_id(), "peerLinkId")?,
+                peer_link_id: super::read_text(
+                    root.get_peer_link_id(),
+                    "peer_update",
+                    "peerLinkId",
+                )?,
             })
         } else {
             None
@@ -66,74 +70,6 @@ impl PeerUpdateRequest {
             pin,
         })
     }
-}
-
-/// Node-side reply to a [`PeerUpdateRequest`]. `accepted = false` with
-/// `stale_sequence = true` means the request's sequence was strictly older
-/// than the slot's current one (a delayed retry) — the daemon treats that as
-/// already-superseded, not as a failure to revert.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeerUpdateResponse {
-    pub accepted: bool,
-    pub stale_sequence: bool,
-    pub message: String,
-}
-
-impl PeerUpdateResponse {
-    pub fn accepted() -> Self {
-        Self {
-            accepted: true,
-            stale_sequence: false,
-            message: String::new(),
-        }
-    }
-
-    pub fn stale() -> Self {
-        Self {
-            accepted: false,
-            stale_sequence: true,
-            message: "stale sequence".to_string(),
-        }
-    }
-
-    pub fn rejected(message: impl Into<String>) -> Self {
-        Self {
-            accepted: false,
-            stale_sequence: false,
-            message: message.into(),
-        }
-    }
-
-    pub fn encode(&self) -> Result<Payload> {
-        let mut builder = ::capnp::message::Builder::new_default();
-        {
-            let mut root = builder.init_root::<peer_update_capnp::peer_update_response::Builder>();
-            root.set_accepted(self.accepted);
-            root.set_stale_sequence(self.stale_sequence);
-            root.set_message(&self.message);
-        }
-        super::encode_message(&builder)
-    }
-
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        let reader = super::decode_message(data)?;
-        let root = reader
-            .get_root::<peer_update_capnp::peer_update_response::Reader>()
-            .map_err(|e| Error::Deserialization(e.to_string()))?;
-        Ok(Self {
-            accepted: root.get_accepted(),
-            stale_sequence: root.get_stale_sequence(),
-            message: read_text(root.get_message(), "message")?,
-        })
-    }
-}
-
-fn read_text(field: ::capnp::Result<::capnp::text::Reader<'_>>, name: &str) -> Result<String> {
-    field
-        .map_err(|e| Error::Deserialization(format!("peer_update field `{name}`: {e}")))?
-        .to_str()
-        .map(str::to_owned)
-        .map_err(|e| Error::Deserialization(format!("peer_update field `{name}` not UTF-8: {e}")))
 }
 
 #[cfg(test)]
@@ -160,18 +96,5 @@ mod tests {
         };
         let decoded = PeerUpdateRequest::decode(&unpaired.encode().unwrap().into_inner()).unwrap();
         assert_eq!(decoded, unpaired);
-    }
-
-    #[test]
-    fn response_round_trips_all_shapes() {
-        for response in [
-            PeerUpdateResponse::accepted(),
-            PeerUpdateResponse::stale(),
-            PeerUpdateResponse::rejected("unknown pairing slot 'arm'"),
-        ] {
-            let decoded =
-                PeerUpdateResponse::decode(&response.encode().unwrap().into_inner()).unwrap();
-            assert_eq!(decoded, response);
-        }
     }
 }

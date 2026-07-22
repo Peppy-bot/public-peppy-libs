@@ -11,6 +11,7 @@ use crate::runtime::node_runner::NodeRunner;
 use crate::runtime::processor::Processor;
 use crate::services::clock_offset::listen_for_clock_offset;
 use crate::services::health::listen_for_node_health;
+use crate::services::observation_update::listen_for_observation_update;
 use crate::services::peer_update::listen_for_peer_update;
 use crate::services::ready::listen_for_node_ready;
 use crate::services::shutdown::listen_for_shutdown;
@@ -394,8 +395,7 @@ where
                 self.instance_id(),
             );
 
-            let pre_setup = start_pre_setup_services(Arc::clone(&node_runner)).await?;
-            let mut shutdown_rx = pre_setup.shutdown_rx;
+            let mut pre_setup = start_pre_setup_services(Arc::clone(&node_runner)).await?;
 
             // Daemon-liveness watchdog: self-terminate if the daemon dies
             // uncatchably and stays gone past the configured grace period. Held
@@ -417,7 +417,7 @@ where
                     result = setup_fn(parameters, Arc::clone(&node_runner)) => {
                         result?;
                     }
-                    _ = &mut shutdown_rx => {
+                    _ = &mut pre_setup.shutdown_rx => {
                         info!("Shutdown requested during setup");
                         return Ok(());
                     }
@@ -430,10 +430,7 @@ where
                 }
                 run_post_setup_services(
                     Arc::clone(&node_runner),
-                    pre_setup.ready_handle,
-                    pre_setup.shutdown_handle,
-                    pre_setup.peer_update_handle,
-                    shutdown_rx,
+                    pre_setup,
                     cancellation_token.clone(),
                 )
                 .await
@@ -565,6 +562,7 @@ struct PreSetupHandles {
     ready_handle: TaskHandle<Result<()>>,
     shutdown_handle: TaskHandle<Result<()>>,
     peer_update_handle: TaskHandle<Result<()>>,
+    observation_update_handle: TaskHandle<Result<()>>,
     shutdown_rx: oneshot::Receiver<()>,
 }
 
@@ -593,6 +591,18 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
     )
     .await?;
 
+    // Observation delivery joins pairing delivery in pre-setup for the same
+    // reason: the daemon pushes an observer's resolved source the moment the
+    // instance commits, and that must not wait on user `setup_fn`.
+    let observation_update_handle = listen_for_observation_update(
+        node_runner.messenger(),
+        processor.bound_core_node(),
+        processor.bound_instance_id(),
+        as_identity.clone(),
+        processor.observation_slot_senders(),
+    )
+    .await?;
+
     let (shutdown_handle, shutdown_rx) = listen_for_shutdown(
         node_runner.messenger(),
         processor.bound_core_node(),
@@ -605,18 +615,23 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
         ready_handle,
         shutdown_handle,
         peer_update_handle,
+        observation_update_handle,
         shutdown_rx,
     })
 }
 
 async fn run_post_setup_services(
     node_runner: Arc<NodeRunner>,
-    ready_handle: TaskHandle<Result<()>>,
-    shutdown_handle: TaskHandle<Result<()>>,
-    peer_update_handle: TaskHandle<Result<()>>,
-    mut shutdown_rx: oneshot::Receiver<()>,
+    pre_setup: PreSetupHandles,
     cancellation_token: CancellationToken,
 ) -> Result<()> {
+    let PreSetupHandles {
+        ready_handle,
+        shutdown_handle,
+        peer_update_handle,
+        observation_update_handle,
+        mut shutdown_rx,
+    } = pre_setup;
     let processor = node_runner.processor();
 
     let as_identity =
@@ -656,6 +671,7 @@ async fn run_post_setup_services(
         health_handle,
         clock_offset_handle,
         peer_update_handle,
+        observation_update_handle,
         shutdown_handle,
     ];
 

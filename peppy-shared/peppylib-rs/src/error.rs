@@ -90,6 +90,12 @@ pub enum Error {
     #[error("pairing slot channel closed (runtime torn down while waiting for a peer)")]
     PairingSlotClosed,
 
+    // -- observation (pairing observers)
+    #[error(
+        "unknown observer slot '{link_id}': the manifest declares no depends_on.pairings entry with `observes_role` and that link_id"
+    )]
+    UnknownObservationSlot { link_id: String },
+
     // -- topics/services/actions errors
     #[error(
         "service '{service_name}'{instance_suffix} is unreachable",

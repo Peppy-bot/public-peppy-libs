@@ -212,6 +212,14 @@ struct NodeRunGoal {
     # deferredPairs entry which records a deliberate opt-out. Never set by
     # the CLI.
     coveredPairs @7 :List(PairRequest);
+    # Observer requests from `--link <observer_link>@<source_instance>[/<source_link>]`
+    # or a launch plan: the observer slots of this instance and the source each
+    # taps. Like requestedPairs these are commands to the daemon, not resolved
+    # config: the daemon registers each observation BEFORE the instance commits
+    # to Running so it delivers the source pin the moment both are up (and
+    # again whenever the source restarts). The source's core_node is always
+    # this daemon's, so it is not carried here.
+    plannedObservations @8 :List(ObservationRequest);
 }
 
 struct PairRequest {
@@ -223,6 +231,18 @@ struct PairRequest {
     # means unpinned: exactly one available complementary slot must exist on
     # the peer and the daemon resolves it.
     peerLinkId @2 :Text;
+}
+
+struct ObservationRequest {
+    # The starting node's own observer-slot link_id.
+    observerLinkId @0 :Text;
+    # The source instance whose role topics this slot observes.
+    sourceInstanceId @1 :Text;
+    # The source-side participant slot link_id: the segment the source
+    # publishes its observed role topics under, and the third element of the
+    # observer's fully-pinned subscription. Always resolved by the planner (the
+    # CLI preflight or the launcher), never empty.
+    sourceLinkId @2 :Text;
 }
 
 struct NodeRunGoalResponse {

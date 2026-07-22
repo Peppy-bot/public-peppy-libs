@@ -13,8 +13,9 @@ pub use types::{
     EmittedTopic, Execution, ExposedAction, ExposedService, ImplementsEntry, InterfaceKind,
     Interfaces, LinkedEntry, Manifest, MessageFormat, NativeEmittedTopic, NativeExposedAction,
     NativeExposedService, NodeConfig, NodeDependency, ObjectKind, ObjectSchema, PairingDependency,
-    PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces, Toolchain,
-    TopicInterfaces, TypeToken, is_blocked_mount_source,
+    PairingObserverDependency, PairingParticipantDependency, PeppygenLanguage, PrimitiveSchema,
+    QoSProfile, SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken,
+    is_blocked_mount_source,
 };
 pub use validation::{
     ContractImplementationEdge, DependencySpec, collect_contract_implementation_edges,
