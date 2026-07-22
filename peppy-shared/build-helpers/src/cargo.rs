@@ -44,11 +44,17 @@ fn git_tag_directives(tag: Option<&str>) -> Vec<String> {
     directives
 }
 
-/// Find the bundled capnp binary for the current host platform in `tools_dir`.
+/// Find the bundled capnp binary for the build target in `tools_dir`.
 ///
-/// Returns `Some(path)` if a binary matching the host OS/arch exists,
-/// `None` otherwise. The `tools_dir` should point to the directory containing
-/// platform-specific capnp binaries (e.g. `peppy-config-model/tools/`).
+/// The filename is chosen by `capnp_binary_name`, which selects the binary for
+/// the build **target** (read from cargo's `CARGO_CFG_TARGET_OS` /
+/// `CARGO_CFG_TARGET_ARCH` inside a build script). When those variables are
+/// absent, for example when this helper runs outside a build script, it falls
+/// back to the host platform.
+///
+/// Returns `Some(path)` if a binary matching that platform exists in
+/// `tools_dir`, `None` otherwise. The `tools_dir` should point to the directory
+/// containing platform-specific capnp binaries (e.g. `peppy-config-model/tools/`).
 pub fn find_bundled_capnp(tools_dir: &Path) -> Option<PathBuf> {
     let binary_name = capnp_binary_name();
     let binary_path = tools_dir.join(binary_name);
