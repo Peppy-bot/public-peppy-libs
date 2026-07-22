@@ -161,17 +161,20 @@ pub fn validate_dependency_specs(
         })
         .unwrap_or_default();
 
-    // A pairing slot is a legal target for `topics.consumes` (the node names
-    // the counterpart role's topics it wants a module for) but never for
-    // `services.consumes` or `actions.consumes`, because a pairing document
-    // declares topics only. Kept separate from `declared_link_ids` so a
-    // service or action naming one gets a dedicated error rather than
-    // `UndeclaredLinkId`, and so a topic naming one skips the node-dependency
-    // exposure check that cannot apply to it.
+    // A pairing slot (participant or observer) is a legal target for
+    // `topics.consumes`: a participant names the counterpart role's topics it
+    // wants a module for, an observer names the observed role's own topics.
+    // Neither is ever legal for `services.consumes` or `actions.consumes`,
+    // because a pairing document declares topics only. Kept separate from
+    // `declared_link_ids` so a service or action naming one gets a dedicated
+    // error rather than `UndeclaredLinkId`, and so a topic naming one skips the
+    // node-dependency exposure check that cannot apply to it. The topic
+    // direction (counterpart vs observed role) is resolved against the pairing
+    // document at node add/sync, not here.
     let pairing_link_ids: HashSet<&str> = manifest
         .depends_on
         .as_ref()
-        .map(|d| d.pairings.iter().map(|p| p.link_id.as_str()).collect())
+        .map(|d| d.pairings.iter().map(|p| p.link_id()).collect())
         .unwrap_or_default();
 
     // Implements slots are produced, not consumed — a consumed item naming
@@ -518,6 +521,59 @@ mod tests {
                 ),
                 "expected ConsumedItemReferencesPairingLinkId({section}), got: {:?}",
                 errors[0]
+            );
+        }
+    }
+
+    /// The section-scoping rule is identical for an observer slot: it may be
+    /// named in `topics.consumes` (it taps the observed role's topics) but
+    /// never in `services.consumes` or `actions.consumes`, since a pairing
+    /// document declares topics only.
+    #[test]
+    fn consumed_service_or_action_referencing_observer_link_id_gets_dedicated_error() {
+        for (section, extra) in [
+            (
+                "services.consumes",
+                r#"services: { consumes: [ { link_id: "observed_arm", name: "calibrate" } ] },"#,
+            ),
+            (
+                "actions.consumes",
+                r#"actions: { consumes: [ { link_id: "observed_arm", name: "home" } ] },"#,
+            ),
+        ] {
+            // The observer slot is consumed in topics.consumes (satisfying the
+            // "observer must be consumed" rule) AND named in a service/action
+            // section, which is the rejected combination under test.
+            let node = parse(&format!(
+                r#"{{
+                    peppy_schema: "node/v1",
+                    manifest: {{
+                        name: "lerobot_recorder", tag: "v1",
+                        depends_on: {{
+                            pairings: [ {{ name: "arm_link", tag: "v1", observes_role: "arm", link_id: "observed_arm" }} ]
+                        }}
+                    }},
+                    execution: {{ language: "rust", run_cmd: ["recorder"] }},
+                    interfaces: {{
+                        topics: {{ consumes: [ {{ link_id: "observed_arm", name: "joint_states" }} ] }},
+                        {extra}
+                    }}
+                }}"#
+            ));
+            let errors = validate_dependency_specs(
+                &node.manifest,
+                &node.interfaces,
+                "lerobot_recorder",
+                "v1",
+                |_, _| None,
+            );
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    ParsingError::ConsumedItemReferencesPairingLinkId { link_id, section: s, .. }
+                        if link_id == "observed_arm" && s == section
+                )),
+                "expected ConsumedItemReferencesPairingLinkId({section}) for observer slot, got: {errors:?}"
             );
         }
     }

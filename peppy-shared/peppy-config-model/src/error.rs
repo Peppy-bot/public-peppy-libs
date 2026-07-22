@@ -384,6 +384,22 @@ pub enum ParsingError {
         "Pairing slot `{link_id}` in depends_on.pairings carries a `cardinality` key — a pairing is strictly 1:1 between two complementary slots; use `optional: true` to express absence. `cardinality` is valid only on depends_on.nodes and depends_on.contracts entries"
     )]
     CardinalityOnPairingSlot { link_id: String },
+    #[error(
+        "Pairing slot `{link_id}` declares both `role` and `observes_role`. A pairing slot is either a participant (`role`) or an observer (`observes_role`), not both; set exactly one"
+    )]
+    PairingSlotHasBothRoles { link_id: String },
+    #[error(
+        "Pairing slot `{link_id}` declares neither `role` nor `observes_role`. A pairing slot must set exactly one: `role` to participate, `observes_role` to observe"
+    )]
+    PairingSlotMissingRole { link_id: String },
+    #[error(
+        "Observer pairing slot `{link_id}` carries `optional`. Observation is not a required-slot concept, so `optional` is rejected on observer entries; drop it"
+    )]
+    OptionalOnObserverSlot { link_id: String },
+    #[error(
+        "Observer pairing slot `{link_id}` is declared but never consumed. Add an `interfaces.topics.consumes` entry with `link_id: \"{link_id}\"`, or remove the dependency"
+    )]
+    ObserverLinkNeverConsumed { link_id: String },
     #[error("Duplicate entry `{key}` in `{section}`")]
     DuplicateInterfaceEntry { section: String, key: String },
 
@@ -414,6 +430,15 @@ pub enum StructuredError {
     CardinalityOnPairingSlot {
         link_id: String,
     },
+    PairingSlotHasBothRoles {
+        link_id: String,
+    },
+    PairingSlotMissingRole {
+        link_id: String,
+    },
+    OptionalOnObserverSlot {
+        link_id: String,
+    },
 }
 
 impl StructuredError {
@@ -442,6 +467,15 @@ impl From<StructuredError> for ParsingError {
             }
             StructuredError::CardinalityOnPairingSlot { link_id } => {
                 ParsingError::CardinalityOnPairingSlot { link_id }
+            }
+            StructuredError::PairingSlotHasBothRoles { link_id } => {
+                ParsingError::PairingSlotHasBothRoles { link_id }
+            }
+            StructuredError::PairingSlotMissingRole { link_id } => {
+                ParsingError::PairingSlotMissingRole { link_id }
+            }
+            StructuredError::OptionalOnObserverSlot { link_id } => {
+                ParsingError::OptionalOnObserverSlot { link_id }
             }
         }
     }

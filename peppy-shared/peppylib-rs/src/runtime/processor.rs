@@ -423,22 +423,26 @@ impl Processor {
     }
 }
 
-/// Seed one watch channel per pairing slot declared in
+/// Seed one watch channel per **participant** pairing slot declared in
 /// `depends_on.pairings`. The initial value comes from the boot config's
 /// `pairing_slots` map when present (the daemon always ships `Unpaired` —
 /// pairs arrive live over `peer_update` — but the mapping is honored so the
 /// boot contract stays a plain data translation), defaulting to `Unpaired`.
+///
+/// Observer slots are skipped: an observer never occupies a peer pin and
+/// receives no `peer_update`. Its source pin arrives over `observation_update`
+/// into a separate observation-slot channel.
 fn build_pairing_slots(
     runtime_config: &RuntimeConfig,
     node_config: &NodeConfig,
 ) -> Arc<BTreeMap<String, watch::Sender<PeerPinState>>> {
     let mut out = BTreeMap::new();
     if let Some(deps) = node_config.manifest.depends_on.as_ref() {
-        for dep in &deps.pairings {
+        for dep in deps.pairings.iter().filter(|d| d.is_participant()) {
             let initial = match runtime_config
                 .node_instance
                 .pairing_slots
-                .get(dep.link_id.as_str())
+                .get(dep.link_id())
             {
                 Some(PairingSlotBinding::Paired { peer, peer_link_id }) => PeerPinState {
                     sequence: 0,
@@ -453,7 +457,7 @@ fn build_pairing_slots(
                 Some(PairingSlotBinding::Unpaired) | None => PeerPinState::unpaired(),
             };
             let (tx, _rx) = watch::channel(initial);
-            out.insert(dep.link_id.clone(), tx);
+            out.insert(dep.link_id().to_string(), tx);
         }
     }
     Arc::new(out)
