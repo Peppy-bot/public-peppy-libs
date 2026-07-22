@@ -1,6 +1,7 @@
 //! Cargo/build-environment helpers: target triples, env embedding, and
 //! locating or compiling tool binaries.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -44,14 +45,90 @@ fn git_tag_directives(tag: Option<&str>) -> Vec<String> {
     directives
 }
 
-/// Find the bundled capnp binary for the current host platform in `tools_dir`.
+/// Platforms for which peppy ships a Cap'n Proto compiler.
 ///
-/// Returns `Some(path)` if a binary matching the host OS/arch exists,
-/// `None` otherwise. The `tools_dir` should point to the directory containing
-/// platform-specific capnp binaries (e.g. `peppy-config-model/tools/`).
-pub fn find_bundled_capnp(tools_dir: &Path) -> Option<PathBuf> {
-    let binary_name = host_capnp_binary_name();
-    let binary_path = tools_dir.join(binary_name);
+/// Build scripts must choose deliberately between [`Self::current_host`] when
+/// they will execute the compiler during the build and [`TryFrom<&str>`] when
+/// they will embed it into the target artifact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapnpPlatform {
+    LinuxX86_64,
+    LinuxAarch64,
+    MacosAarch64,
+}
+
+impl CapnpPlatform {
+    /// Returns the platform on which the build script itself is running.
+    pub fn current_host() -> Option<Self> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            return Some(Self::LinuxX86_64);
+        }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            return Some(Self::LinuxAarch64);
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            return Some(Self::MacosAarch64);
+        }
+        #[allow(unreachable_code)]
+        None
+    }
+
+    fn binary_name(self) -> &'static str {
+        match self {
+            Self::LinuxX86_64 => "capnp_linux_x86_64",
+            Self::LinuxAarch64 => "capnp_linux_aarch64",
+            Self::MacosAarch64 => "capnp_macos_aarch64",
+        }
+    }
+}
+
+/// Error returned when a Rust target triple has no bundled Cap'n Proto binary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnsupportedCapnpTarget {
+    target: String,
+}
+
+impl UnsupportedCapnpTarget {
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+}
+
+impl fmt::Display for UnsupportedCapnpTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "unsupported Cap'n Proto target {:?}; supported targets: \
+             x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, \
+             aarch64-apple-darwin",
+            self.target
+        )
+    }
+}
+
+impl std::error::Error for UnsupportedCapnpTarget {}
+
+impl TryFrom<&str> for CapnpPlatform {
+    type Error = UnsupportedCapnpTarget;
+
+    fn try_from(target: &str) -> Result<Self, Self::Error> {
+        match target {
+            "x86_64-unknown-linux-gnu" => Ok(Self::LinuxX86_64),
+            "aarch64-unknown-linux-gnu" => Ok(Self::LinuxAarch64),
+            "aarch64-apple-darwin" => Ok(Self::MacosAarch64),
+            _ => Err(UnsupportedCapnpTarget {
+                target: target.to_string(),
+            }),
+        }
+    }
+}
+
+/// Finds the bundled Cap'n Proto binary for `platform` in `tools_dir`.
+pub fn find_bundled_capnp(tools_dir: &Path, platform: CapnpPlatform) -> Option<PathBuf> {
+    let binary_path = tools_dir.join(platform.binary_name());
     if binary_path.exists() {
         Some(binary_path)
     } else {
@@ -60,7 +137,7 @@ pub fn find_bundled_capnp(tools_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Locate the bundled capnp binary that ships next to this crate, in
-/// `peppy-shared/peppy-config-model/tools/`, for the current host platform.
+/// `peppy-shared/peppy-config-model/tools/`, for an explicit platform.
 ///
 /// The lookup is resolved relative to *this crate's own* source directory,
 /// baked in at compile time via `CARGO_MANIFEST_DIR`. That makes it the single
@@ -76,13 +153,13 @@ pub fn find_bundled_capnp(tools_dir: &Path) -> Option<PathBuf> {
 /// This deliberately reads `build-helpers`'s own manifest dir, not the calling
 /// build script's, so the binary is found in the one place it lives rather than
 /// via fragile `../../../` paths from each consumer. Returns `Some(path)` if a
-/// binary matching the host platform exists.
-pub fn bundled_capnp_path() -> Option<PathBuf> {
+/// binary matching `platform` exists.
+pub fn bundled_capnp_path(platform: CapnpPlatform) -> Option<PathBuf> {
     let tools_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("peppy-config-model")
         .join("tools");
-    find_bundled_capnp(&tools_dir)
+    find_bundled_capnp(&tools_dir, platform)
 }
 
 /// Locate the `peppy-shared` directory that this crate lives inside.
@@ -108,29 +185,6 @@ pub fn peppy_shared_dir() -> PathBuf {
         .parent()
         .expect("build-helpers' manifest dir always has a peppy-shared parent")
         .to_path_buf()
-}
-
-fn host_capnp_binary_name() -> &'static str {
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    {
-        "capnp_linux_x86_64"
-    }
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    {
-        "capnp_linux_aarch64"
-    }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-        "capnp_macos_aarch64"
-    }
-    #[cfg(not(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "aarch64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    )))]
-    {
-        "capnp_unsupported"
-    }
 }
 
 /// Compile a Rust binary from crates.io using `cargo install` with cross-compilation support.
@@ -244,6 +298,11 @@ mod tests {
     use super::*;
 
     const RERUN_DIRECTIVE: &str = "cargo:rerun-if-env-changed=PEPPY_GIT_TAG";
+    const SUPPORTED_CAPNP_PLATFORMS: [CapnpPlatform; 3] = [
+        CapnpPlatform::LinuxX86_64,
+        CapnpPlatform::LinuxAarch64,
+        CapnpPlatform::MacosAarch64,
+    ];
 
     #[test]
     fn git_tag_directives_emits_rustc_env_then_rerun_for_nonempty_tag() {
@@ -266,38 +325,83 @@ mod tests {
     #[test]
     fn find_bundled_capnp_returns_none_for_empty_dir() {
         let dir = tempfile::tempdir().expect("temp dir");
-        assert_eq!(find_bundled_capnp(dir.path()), None);
+        assert_eq!(
+            find_bundled_capnp(dir.path(), CapnpPlatform::LinuxX86_64),
+            None
+        );
     }
 
     #[test]
-    fn find_bundled_capnp_finds_host_binary() {
+    fn find_bundled_capnp_finds_requested_platform() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let expected = dir.path().join(host_capnp_binary_name());
+        let expected = dir.path().join("capnp_linux_aarch64");
         std::fs::write(&expected, b"").expect("create fake capnp");
-        assert_eq!(find_bundled_capnp(dir.path()), Some(expected));
+        assert_eq!(
+            find_bundled_capnp(dir.path(), CapnpPlatform::LinuxAarch64),
+            Some(expected)
+        );
     }
 
     #[test]
     fn find_bundled_capnp_ignores_wrongly_named_binary() {
         let dir = tempfile::tempdir().expect("temp dir");
         std::fs::write(dir.path().join("capnp_wrong_name"), b"").expect("create file");
-        assert_eq!(find_bundled_capnp(dir.path()), None);
+        assert_eq!(
+            find_bundled_capnp(dir.path(), CapnpPlatform::MacosAarch64),
+            None
+        );
     }
 
     #[test]
-    fn bundled_capnp_path_resolves_for_supported_host() {
-        // On the platforms we bundle binaries for, `bundled_capnp_path` must
-        // locate one relative to this crate's own source dir — the single source
-        // of truth in `peppy-config-model/tools/`. Hosts we don't bundle for
-        // legitimately return `None`, so only assert on supported hosts.
-        if host_capnp_binary_name() == "capnp_unsupported" {
-            return;
+    fn capnp_platform_parses_every_supported_target() {
+        for (target, expected) in [
+            ("x86_64-unknown-linux-gnu", CapnpPlatform::LinuxX86_64),
+            ("aarch64-unknown-linux-gnu", CapnpPlatform::LinuxAarch64),
+            ("aarch64-apple-darwin", CapnpPlatform::MacosAarch64),
+        ] {
+            assert_eq!(CapnpPlatform::try_from(target), Ok(expected), "{target}");
         }
-        assert!(
-            bundled_capnp_path().is_some(),
-            "expected a bundled capnp binary for host {}",
-            host_capnp_binary_name()
-        );
+    }
+
+    #[test]
+    fn capnp_platform_rejects_unsupported_or_malformed_targets() {
+        for target in [
+            "",
+            "x86_64-pc-windows-msvc",
+            "x86_64-apple-darwin",
+            "arm-unknown-linux-gnueabihf",
+            "linux-x86_64",
+        ] {
+            let error = CapnpPlatform::try_from(target).expect_err(target);
+            assert_eq!(error.target(), target);
+        }
+    }
+
+    #[test]
+    fn bundled_capnp_path_resolves_every_supported_platform() {
+        for platform in SUPPORTED_CAPNP_PLATFORMS {
+            assert!(
+                bundled_capnp_path(platform).is_some(),
+                "expected a bundled capnp binary for {platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_capnp_binaries_are_version_1_5_0() {
+        const EXPECTED_VERSION: &[u8] = b"Cap'n Proto version 1.5.0";
+
+        for platform in SUPPORTED_CAPNP_PLATFORMS {
+            let path = bundled_capnp_path(platform).expect("bundled capnp path");
+            let binary = std::fs::read(&path).expect("read bundled capnp binary");
+            assert!(
+                binary
+                    .windows(EXPECTED_VERSION.len())
+                    .any(|window| window == EXPECTED_VERSION),
+                "{} does not contain the expected Cap'n Proto version",
+                path.display()
+            );
+        }
     }
 
     #[test]
