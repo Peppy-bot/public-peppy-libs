@@ -4,6 +4,7 @@ mod tests;
 mod actions;
 mod bound_set;
 mod discovery;
+mod observation;
 mod pairing;
 mod presence;
 mod services;
@@ -21,6 +22,7 @@ pub use actions::{
     wrap_result_outcome,
 };
 pub use bound_set::NonEmptyProducers;
+pub use observation::{ObservationPin, ObservationState, ObservedSource};
 pub use pairing::{PeerInfo, PeerPin, PeerPinState};
 pub use presence::CoreNodePresenceMessenger;
 pub use services::{
@@ -84,6 +86,12 @@ pub const SHUTDOWN_SERVICE: &str = "shutdown";
 /// a node may block in its `setup_fn` forever, and pairing delivery must not
 /// depend on user code. Triggers no user code.
 pub const PEER_UPDATE_SERVICE: &str = "peer_update";
+
+/// Framework service every node exposes: the daemon delivers absolute
+/// observer-slot state (source pin, source generation, source liveness) over it.
+/// Registered pre-setup for the same reason as [`PEER_UPDATE_SERVICE`], and it
+/// triggers no user code.
+pub const OBSERVATION_UPDATE_SERVICE: &str = "observation_update";
 
 /// Timeout for a single reachability probe sent by `is_reachable`.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);

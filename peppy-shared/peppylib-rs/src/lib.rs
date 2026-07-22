@@ -47,3 +47,7 @@ mod action_cancel_capnp {
 mod peer_update_capnp {
     include!(concat!(env!("OUT_DIR"), "/peer_update_capnp.rs"));
 }
+
+mod observation_update_capnp {
+    include!(concat!(env!("OUT_DIR"), "/observation_update_capnp.rs"));
+}

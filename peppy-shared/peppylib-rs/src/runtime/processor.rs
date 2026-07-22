@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::{Error, ParameterDeserializationError, Result};
-use crate::messaging::{PeerPin, PeerPinState};
+use crate::messaging::{ObservationState, PeerPin, PeerPinState};
 use config::{
     AnyType, NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
@@ -37,6 +37,12 @@ pub struct Processor {
     /// `PeerSubscription`s / `PeerSlot`s observe them. Behind an `Arc` so
     /// `Processor::clone` shares the live channels instead of forking them.
     pairing_slots: Arc<BTreeMap<String, watch::Sender<PeerPinState>>>,
+    /// One live observation-slot channel per observer `depends_on.pairings`
+    /// entry, keyed by the slot's link_id. Same lifecycle shape as
+    /// `pairing_slots`: the key set is fixed at startup and the daemon mutates
+    /// the channel values over the `observation_update` service, while per-slot
+    /// `ObservedTopicSubscription`s / `ObservationSlot`s observe them.
+    observation_slots: Arc<BTreeMap<String, watch::Sender<ObservationState>>>,
 }
 
 impl Processor {
@@ -89,12 +95,14 @@ impl Processor {
 
         let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
+        let observation_slots = build_observation_slots(&node_config);
 
         Ok(Self {
             runtime_config,
             validated_arguments,
             bound_producers,
             pairing_slots,
+            observation_slots,
         })
     }
 
@@ -190,6 +198,7 @@ impl Processor {
 
         let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
+        let observation_slots = build_observation_slots(&node_config);
 
         // Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a
         // slot as already-paired, standing in for the daemon's live
@@ -215,6 +224,7 @@ impl Processor {
             validated_arguments,
             bound_producers,
             pairing_slots,
+            observation_slots,
         })
     }
 
@@ -421,6 +431,46 @@ impl Processor {
     ) -> Arc<BTreeMap<String, watch::Sender<PeerPinState>>> {
         Arc::clone(&self.pairing_slots)
     }
+
+    /// The live watch channel for the observer slot declared at `link_id`, or
+    /// `None` when the manifest declares no such slot. Used by
+    /// [`crate::runtime::NodeRunner::observation_slot`] and the generated
+    /// `subscribe_observed` seam to observe the resolved source; the
+    /// `observation_update` service uses the sender side via
+    /// [`Self::observation_slot_senders`].
+    pub(crate) fn observation_slot_watch(
+        &self,
+        link_id: &str,
+    ) -> Option<watch::Receiver<ObservationState>> {
+        self.observation_slots.get(link_id).map(|tx| tx.subscribe())
+    }
+
+    /// Shared handle to all observation-slot channels, handed to the pre-setup
+    /// `observation_update` service listener.
+    pub(crate) fn observation_slot_senders(
+        &self,
+    ) -> Arc<BTreeMap<String, watch::Sender<ObservationState>>> {
+        Arc::clone(&self.observation_slots)
+    }
+}
+
+/// Seed one watch channel per **observer** pairing slot declared in
+/// `depends_on.pairings` (an entry carrying `observes_role`), keyed by slot
+/// link_id, each initialized to [`ObservationState::unregistered`]. The resolved
+/// source pin, its generation, and its live status all arrive over the
+/// `observation_update` service after the instance commits, exactly as pairing
+/// pins arrive over `peer_update`. Participant slots are skipped.
+fn build_observation_slots(
+    node_config: &NodeConfig,
+) -> Arc<BTreeMap<String, watch::Sender<ObservationState>>> {
+    let mut out = BTreeMap::new();
+    if let Some(deps) = node_config.manifest.depends_on.as_ref() {
+        for dep in deps.pairings.iter().filter(|d| d.is_observer()) {
+            let (tx, _rx) = watch::channel(ObservationState::unregistered());
+            out.insert(dep.link_id().to_string(), tx);
+        }
+    }
+    Arc::new(out)
 }
 
 /// Seed one watch channel per **participant** pairing slot declared in

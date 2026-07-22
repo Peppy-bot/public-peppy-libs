@@ -1,4 +1,5 @@
 pub mod health;
+pub mod observation_update;
 pub mod peer_update;
 pub mod ready;
 
