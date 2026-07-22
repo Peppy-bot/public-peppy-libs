@@ -53,6 +53,30 @@ impl std::fmt::Display for PairTarget {
     }
 }
 
+/// One resolved observer request carried by [`NodeRunGoal::planned_observations`],
+/// keyed in the goal by the starting node's own observer-slot link_id: the
+/// source instance the slot taps and the source-side participant slot the
+/// source publishes the observed role under. Unlike a [`PairTarget`] the source
+/// slot is always resolved (the planner fills it), and observation carries no
+/// `core_node` because the source is always on this same daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservationTarget {
+    pub source_instance_id: String,
+    pub source_link_id: String,
+}
+
+impl ObservationTarget {
+    pub fn new(
+        source_instance_id: impl Into<String>,
+        source_link_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            source_instance_id: source_instance_id.into(),
+            source_link_id: source_link_id.into(),
+        }
+    }
+}
+
 /// Goal message for the NodeRun action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRunGoal {
@@ -79,6 +103,13 @@ pub struct NodeRunGoal {
     /// boots unpaired and needs no action, unlike a `deferred_pairs` entry
     /// which records a deliberate opt-out. Never set by the CLI.
     pub covered_pairs: BTreeMap<String, PairTarget>,
+    /// Observer requests from `--link <observer_link>@<source>[/<source_link>]`
+    /// or a launch plan, keyed by the starting node's own observer-slot
+    /// link_id. Commands to the daemon, not resolved config: the daemon
+    /// registers each with its observation coordinator BEFORE the instance
+    /// commits to Running, so the source pin is delivered the moment both are
+    /// up and re-delivered whenever the source restarts.
+    pub planned_observations: BTreeMap<String, ObservationTarget>,
 }
 
 impl NodeRunGoal {
@@ -97,6 +128,7 @@ impl NodeRunGoal {
             requested_pairs: BTreeMap::new(),
             deferred_pairs: Vec::new(),
             covered_pairs: BTreeMap::new(),
+            planned_observations: BTreeMap::new(),
         }
     }
 
@@ -117,6 +149,14 @@ impl NodeRunGoal {
 
     pub fn with_covered_pairs(mut self, covered_pairs: BTreeMap<String, PairTarget>) -> Self {
         self.covered_pairs = covered_pairs;
+        self
+    }
+
+    pub fn with_planned_observations(
+        mut self,
+        planned_observations: BTreeMap<String, ObservationTarget>,
+    ) -> Self {
+        self.planned_observations = planned_observations;
         self
     }
 
@@ -170,6 +210,15 @@ impl NodeRunGoal {
                 goal.reborrow().init_covered_pairs(covered_count),
                 &self.covered_pairs,
             );
+
+            let observation_count = capnp_list_len(
+                self.planned_observations.len(),
+                "NodeRunGoal.planned_observations",
+            )?;
+            fill_observation_requests(
+                goal.reborrow().init_planned_observations(observation_count),
+                &self.planned_observations,
+            );
         }
         encode_message(&builder)
     }
@@ -203,6 +252,7 @@ impl NodeRunGoal {
             requested_pairs: read_pair_requests(goal.get_requested_pairs()?)?,
             deferred_pairs,
             covered_pairs: read_pair_requests(goal.get_covered_pairs()?)?,
+            planned_observations: read_observation_requests(goal.get_planned_observations()?)?,
         })
     }
 }
@@ -240,6 +290,38 @@ fn read_pair_requests(
         );
     }
     Ok(pairs)
+}
+
+/// Writes an `observer_link_id -> ObservationTarget` map into an initialized
+/// `List(ObservationRequest)` builder ([`NodeRunGoal::planned_observations`]).
+fn fill_observation_requests(
+    mut list: capnp::struct_list::Builder<'_, node_capnp::observation_request::Owned>,
+    observations: &BTreeMap<String, ObservationTarget>,
+) {
+    for (idx, (observer_link_id, target)) in observations.iter().enumerate() {
+        let mut observation = list.reborrow().get(idx as u32);
+        observation.set_observer_link_id(observer_link_id);
+        observation.set_source_instance_id(&target.source_instance_id);
+        observation.set_source_link_id(&target.source_link_id);
+    }
+}
+
+/// Inverse of [`fill_observation_requests`].
+fn read_observation_requests(
+    list: capnp::struct_list::Reader<'_, node_capnp::observation_request::Owned>,
+) -> Result<BTreeMap<String, ObservationTarget>> {
+    let mut observations = BTreeMap::new();
+    for idx in 0..list.len() {
+        let observation = list.get(idx);
+        observations.insert(
+            observation.get_observer_link_id()?.to_str()?.to_owned(),
+            ObservationTarget {
+                source_instance_id: observation.get_source_instance_id()?.to_str()?.to_owned(),
+                source_link_id: observation.get_source_link_id()?.to_str()?.to_owned(),
+            },
+        );
+    }
+    Ok(observations)
 }
 
 /// Response to the NodeRun goal request.
@@ -469,6 +551,14 @@ mod tests {
                 [("left".to_owned(), PairTarget::pinned("cmd_1", "left_arm"))]
                     .into_iter()
                     .collect(),
+            )
+            .with_planned_observations(
+                [(
+                    "observed_arm".to_owned(),
+                    ObservationTarget::new("arm_1", "controller"),
+                )]
+                .into_iter()
+                .collect(),
             );
         let encoded = goal.encode().expect("encode");
         let decoded = NodeRunGoal::decode(&encoded).expect("decode");
@@ -483,6 +573,10 @@ mod tests {
         assert_eq!(
             decoded.covered_pairs["left"],
             PairTarget::pinned("cmd_1", "left_arm")
+        );
+        assert_eq!(
+            decoded.planned_observations["observed_arm"],
+            ObservationTarget::new("arm_1", "controller")
         );
     }
 

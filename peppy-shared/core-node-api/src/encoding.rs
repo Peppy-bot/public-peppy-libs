@@ -29,7 +29,8 @@ pub use node::{
     info::NodeInfoRequest, info::NodeInfoResponse, info::NodeInstanceInfo, init::NodeInitRequest,
     init::NodeInitResponse, remove::NodeRemoveRequest, remove::NodeRemoveResponse,
     run::NodeRunFeedback, run::NodeRunGoal, run::NodeRunGoalResponse, run::NodeRunResult,
-    run::PairTarget, stop::NodeStopRequest, stop::NodeStopResponse, sync::NodeSyncRequest,
+    run::ObservationTarget, run::PairTarget, stop::NodeStopRequest, stop::NodeStopResponse,
+    sync::NodeSyncRequest,
     sync::NodeSyncResponse, sync::RepoResolvedEntry,
 };
 pub use repo::{
