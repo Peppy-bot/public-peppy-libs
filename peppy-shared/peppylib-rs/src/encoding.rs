@@ -2,6 +2,7 @@ pub mod health;
 pub mod observation_update;
 pub mod peer_update;
 pub mod ready;
+pub mod slot_update;
 
 use crate::error::Result;
 use crate::types::Payload;

@@ -1,33 +1,67 @@
 //! Framework `observation_update` service: the daemon's live delivery channel
 //! for observer-slot state (source pin, source generation, source liveness).
-//! Registered pre-setup for the same reason as `peer_update` — user code may
-//! block in `setup_fn` forever, and observation delivery must not depend on it.
-//! Requests carry ABSOLUTE slot state with a sequence number; the handler is
-//! idempotent and rejects strictly-stale sequences so a delayed retry can never
-//! roll a slot back.
+//! Registered pre-setup — user code may block in `setup_fn` forever, and
+//! observation delivery must not depend on it. The sequenced, daemon-only,
+//! idempotent delivery protocol lives in [`crate::services::slot_update`]; this
+//! module only maps an `ObservationUpdateRequest` onto an observer slot's
+//! [`ObservationState`].
 //!
 //! Observation state is daemon-authoritative, so the only legitimate caller is
 //! the node's own daemon, whose identity the node knows as its bound core_node.
-//! Requests stamped with any other core_node are rejected before touching slot
-//! state, exactly as `peer_update` does.
 
-use crate::encoding::observation_update::{ObservationUpdateRequest, ObservationUpdateResponse};
-use crate::messaging::{
-    OBSERVATION_UPDATE_SERVICE, ObservationState, SenderTarget, ServiceRequestContext,
-};
+use crate::encoding::observation_update::ObservationUpdateRequest;
+use crate::messaging::{OBSERVATION_UPDATE_SERVICE, ObservationState, SenderTarget};
 use crate::runtime::TaskHandle;
-use crate::types::Payload;
-use crate::{MessengerHandle, PeppyResult, ServiceMessenger};
-use std::collections::BTreeMap;
-use std::sync::Arc;
-use tokio::sync::watch;
-use tracing::{debug, warn};
+use crate::services::slot_update::{SlotSenders, SlotUpdate, listen_for_slot_update};
+use crate::{MessengerHandle, PeppyResult};
 
 /// Shared map of one watch channel per declared observer slot, keyed by the
-/// node's own observer-slot link_id. Built once by the `Processor`; the map
-/// itself is immutable (slots are declared in the manifest), only the channel
-/// values move.
-pub(crate) type ObservationSlotSenders = Arc<BTreeMap<String, watch::Sender<ObservationState>>>;
+/// node's own observer-slot link_id.
+pub(crate) type ObservationSlotSenders = SlotSenders<ObservationState>;
+
+impl SlotUpdate for ObservationUpdateRequest {
+    type State = ObservationState;
+
+    const SERVICE: &'static str = OBSERVATION_UPDATE_SERVICE;
+    const UNKNOWN_SLOT_NOUN: &'static str = "observer slot";
+
+    fn decode_request(payload: &[u8]) -> PeppyResult<Self> {
+        ObservationUpdateRequest::decode(payload)
+    }
+
+    fn link_id(&self) -> &str {
+        &self.link_id
+    }
+
+    fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    fn state_sequence(state: &ObservationState) -> u64 {
+        state.sequence
+    }
+
+    fn merge_into(&self, state: &mut ObservationState) -> bool {
+        let new_state = ObservationState {
+            sequence: self.sequence,
+            source_generation: self.source_generation,
+            source: self.source.clone(),
+            source_live: self.source_live,
+        };
+        let changed = *state != new_state;
+        *state = new_state;
+        changed
+    }
+
+    fn log_detail(&self) -> String {
+        format!(
+            "has_source={} source_generation={} source_live={}",
+            self.source.is_some(),
+            self.source_generation,
+            self.source_live
+        )
+    }
+}
 
 pub async fn listen_for_observation_update(
     messenger: &MessengerHandle,
@@ -36,104 +70,31 @@ pub async fn listen_for_observation_update(
     as_identity: SenderTarget,
     slots: ObservationSlotSenders,
 ) -> PeppyResult<TaskHandle<PeppyResult<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
+    listen_for_slot_update::<ObservationUpdateRequest>(
         messenger,
         core_node,
         instance_id,
         as_identity,
-        OBSERVATION_UPDATE_SERVICE,
+        slots,
     )
-    .await?;
-
-    let daemon_core_node = core_node.to_string();
-    let handle = crate::runtime::spawn(async move {
-        endpoint
-            .handle_requests(|context| {
-                let slots = Arc::clone(&slots);
-                let daemon_core_node = daemon_core_node.clone();
-                async move { handle_observation_update_request(context, &daemon_core_node, slots) }
-            })
-            .await
-    });
-    Ok(handle)
-}
-
-fn handle_observation_update_request(
-    context: ServiceRequestContext,
-    daemon_core_node: &str,
-    slots: ObservationSlotSenders,
-) -> PeppyResult<Payload> {
-    let caller_core_node = context.message().core_node();
-    if caller_core_node != daemon_core_node {
-        warn!(
-            caller_core_node = %caller_core_node,
-            caller_instance_id = %context.message().instance_id(),
-            "observation_update from a caller outside this node's daemon; rejecting"
-        );
-        return ObservationUpdateResponse::rejected(format!(
-            "observation_update is daemon-only: caller core_node '{caller_core_node}' is not this \
-             node's daemon '{daemon_core_node}'"
-        ))
-        .encode();
-    }
-    let request = ObservationUpdateRequest::decode(&context.message().payload_bytes())?;
-    debug!(
-        link_id = %request.link_id,
-        sequence = request.sequence,
-        source_generation = request.source_generation,
-        has_source = request.source.is_some(),
-        source_live = request.source_live,
-        "received observation_update from {}",
-        context.message().instance_id(),
-    );
-    apply_observation_update(&slots, &request).encode()
-}
-
-/// Applies one absolute-state update to the slot's watch channel. Split from the
-/// service handler so tests can drive it without a wire round-trip.
-pub(crate) fn apply_observation_update(
-    slots: &BTreeMap<String, watch::Sender<ObservationState>>,
-    request: &ObservationUpdateRequest,
-) -> ObservationUpdateResponse {
-    let Some(sender) = slots.get(&request.link_id) else {
-        warn!(
-            link_id = %request.link_id,
-            "observation_update names an undeclared observer slot; rejecting"
-        );
-        return ObservationUpdateResponse::rejected(format!(
-            "unknown observer slot '{}'",
-            request.link_id
-        ));
-    };
-    let mut stale = false;
-    sender.send_if_modified(|state| {
-        if request.sequence < state.sequence {
-            stale = true;
-            return false;
-        }
-        // Absolute state: an equal sequence is an idempotent retry, a larger one
-        // supersedes. Only notify watchers when something changed.
-        let new_state = ObservationState {
-            sequence: request.sequence,
-            source_generation: request.source_generation,
-            source: request.source.clone(),
-            source_live: request.source_live,
-        };
-        let changed = *state != new_state;
-        *state = new_state;
-        changed
-    });
-    if stale {
-        ObservationUpdateResponse::stale()
-    } else {
-        ObservationUpdateResponse::accepted()
-    }
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::slot_update::SlotUpdateResponse;
     use crate::messaging::{ObservationPin, ProducerRef};
+    use crate::services::slot_update::apply_slot_update;
+    use std::collections::BTreeMap;
+    use tokio::sync::watch;
+
+    fn apply(
+        slots: &BTreeMap<String, watch::Sender<ObservationState>>,
+        request: &ObservationUpdateRequest,
+    ) -> SlotUpdateResponse {
+        apply_slot_update::<ObservationUpdateRequest>(slots, request)
+    }
 
     fn slot_map(link_ids: &[&str]) -> BTreeMap<String, watch::Sender<ObservationState>> {
         link_ids
@@ -173,7 +134,7 @@ mod tests {
         let slots = slot_map(&["observed_arm"]);
         let watched = slots["observed_arm"].subscribe();
 
-        let first = apply_observation_update(
+        let first = apply(
             &slots,
             &request(
                 "observed_arm",
@@ -192,7 +153,7 @@ mod tests {
         assert!(watched.borrow().source_live);
 
         // A restart under the same identity advances the generation.
-        let second = apply_observation_update(
+        let second = apply(
             &slots,
             &request(
                 "observed_arm",
@@ -211,7 +172,7 @@ mod tests {
         let slots = slot_map(&["observed_arm"]);
         let watched = slots["observed_arm"].subscribe();
 
-        apply_observation_update(
+        apply(
             &slots,
             &request(
                 "observed_arm",
@@ -222,7 +183,7 @@ mod tests {
             ),
         );
         // A delayed earlier delivery arrives after the newer one.
-        let response = apply_observation_update(
+        let response = apply(
             &slots,
             &request(
                 "observed_arm",
@@ -246,7 +207,7 @@ mod tests {
         let slots = slot_map(&["observed_arm"]);
         let mut watched = slots["observed_arm"].subscribe();
 
-        apply_observation_update(
+        apply(
             &slots,
             &request(
                 "observed_arm",
@@ -259,7 +220,7 @@ mod tests {
         assert!(watched.has_changed().unwrap());
         watched.mark_unchanged();
 
-        let retry = apply_observation_update(
+        let retry = apply(
             &slots,
             &request(
                 "observed_arm",
@@ -279,7 +240,7 @@ mod tests {
     #[test]
     fn unknown_slot_is_rejected() {
         let slots = slot_map(&["observed_arm"]);
-        let response = apply_observation_update(
+        let response = apply(
             &slots,
             &request(
                 "observed_gripper",

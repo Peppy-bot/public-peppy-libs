@@ -9,6 +9,7 @@
 # sequences (`staleSequence = true`) and treats an equal sequence as an
 # idempotent retry.
 
+# The node replies with the shared `SlotUpdateResponse` (see slot_update.capnp).
 struct PeerUpdateRequest {
     linkId @0 :Text;
     # The receiving node's own pairing-slot link_id being updated.
@@ -19,12 +20,4 @@ struct PeerUpdateRequest {
     peerLinkId @5 :Text;
     # The link_id of the peer's complementary slot (its producer-side wire
     # segment). Empty when `paired = false`.
-}
-
-struct PeerUpdateResponse {
-    accepted @0 :Bool;
-    staleSequence @1 :Bool;
-    message @2 :Text;
-    # Human-readable rejection reason when `accepted = false` (unknown slot,
-    # stale sequence). Empty on success.
 }

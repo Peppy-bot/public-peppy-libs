@@ -15,6 +15,7 @@
 # non-terminal state. `hasSource` is false (and the source fields ride empty)
 # only before the daemon has resolved the slot's source.
 
+# The node replies with the shared `SlotUpdateResponse` (see slot_update.capnp).
 struct ObservationUpdateRequest {
     linkId @0 :Text;
     # The receiving node's own observer-slot link_id being updated.
@@ -26,12 +27,4 @@ struct ObservationUpdateRequest {
     # The producer-side link_id of the observed pairing slot (its wire segment).
     sourceGeneration @6 :UInt64;
     sourceLive @7 :Bool;
-}
-
-struct ObservationUpdateResponse {
-    accepted @0 :Bool;
-    staleSequence @1 :Bool;
-    message @2 :Text;
-    # Human-readable rejection reason when `accepted = false` (unknown slot,
-    # stale sequence). Empty on success.
 }

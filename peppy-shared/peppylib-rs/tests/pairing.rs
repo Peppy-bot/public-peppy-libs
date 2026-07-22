@@ -315,7 +315,8 @@ async fn clear_silences_the_slot_until_repaired() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
-    use peppylib::encoding::peer_update::{PeerUpdateRequest, PeerUpdateResponse};
+    use peppylib::encoding::peer_update::PeerUpdateRequest;
+    use peppylib::encoding::slot_update::SlotUpdateResponse;
     use peppylib::services::peer_update::listen_for_peer_update;
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -360,7 +361,7 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
     )
     .await
     .expect("peer_update delivery should succeed");
-    let response = PeerUpdateResponse::decode(&reply.payload_bytes()).expect("decode response");
+    let response = SlotUpdateResponse::decode(&reply.payload_bytes()).expect("decode response");
     assert!(response.accepted, "delivery rejected: {}", response.message);
     assert_eq!(slot_rx.borrow().pin, request.pin);
     assert_eq!(slot_rx.borrow().sequence, 7);
@@ -383,7 +384,7 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
     )
     .await
     .expect("stale delivery still gets a reply");
-    let response = PeerUpdateResponse::decode(&reply.payload_bytes()).expect("decode response");
+    let response = SlotUpdateResponse::decode(&reply.payload_bytes()).expect("decode response");
     assert!(!response.accepted);
     assert!(response.stale_sequence);
     assert_eq!(slot_rx.borrow().sequence, 7, "stale must not roll back");
@@ -408,7 +409,7 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
     )
     .await
     .expect("foreign delivery still gets a reply");
-    let response = PeerUpdateResponse::decode(&reply.payload_bytes()).expect("decode response");
+    let response = SlotUpdateResponse::decode(&reply.payload_bytes()).expect("decode response");
     assert!(!response.accepted, "foreign core_node must be rejected");
     assert!(!response.stale_sequence);
     assert_eq!(

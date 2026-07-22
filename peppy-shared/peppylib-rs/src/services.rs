@@ -5,6 +5,7 @@ pub mod observation_update;
 pub mod peer_update;
 pub mod ready;
 pub mod shutdown;
+pub(crate) mod slot_update;
 
 use crate::messaging::{SenderTarget, ServiceRequestContext};
 use crate::runtime::TaskHandle;

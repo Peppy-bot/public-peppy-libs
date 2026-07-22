@@ -89,7 +89,7 @@ impl PyObservedSubscription {
         let inner = Arc::clone(&self.inner);
         crate::py_future::future_into_py(py, async move {
             let mut subscription = inner.lock().await;
-            match subscription.next().await {
+            match subscription.on_next_message().await {
                 Some((producer, message)) => Ok(Some((
                     PyProducerRef::from(producer),
                     PyTopicMessage::from(message),

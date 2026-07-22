@@ -1,28 +1,22 @@
 //! Consumer-side runtime for pairing slots: [`PeerSlot`] (observe the slot's
 //! pin state) and [`PeerSubscription`] (receive the paired peer's publishes).
 //!
-//! A `PeerSubscription` runs an eager forwarding task so the wire state
-//! always converges with the pairing state, whether or not user code is
-//! polling:
-//!
-//! - unpaired → no wire subscription at all (nothing to receive, and no
-//!   wildcard shape exists for a pairing consumer);
-//! - paired → exactly one wire subscription, triple-pinned to the peer's
-//!   `(core_node, instance_id, slot link_id)`;
-//! - re-pin → the old subscription is dropped BEFORE the new one is declared
-//!   (at most one wire subscription per slot, ever), and a delivery-time
-//!   stale filter drops any already-buffered message whose producer triple
-//!   no longer matches the current pin.
+//! A `PeerSubscription` follows the paired peer through the shared
+//! [`crate::runtime::slot_stream`] engine, which keeps at most one wire
+//! subscription converged with the slot's live pin (unpaired → none; paired →
+//! one, triple-pinned to the peer; re-pin → drop-before-redeclare plus a
+//! delivery-time stale filter). This module supplies only what a pairing slot
+//! follows: the peer pin itself.
 
 use crate::error::{Error, Result};
 use crate::messaging::{
-    MessengerHandle, PeerInfo, PeerPin, PeerPinState, SenderTarget, TopicMessenger,
+    MessengerHandle, PeerInfo, PeerPin, PeerPinState, ProducerRef, SenderTarget,
 };
 use crate::runtime::NodeRunner;
+use crate::runtime::slot_stream::{FollowedSlot, SlotStream, spawn_slot_stream};
 use crate::types::Message;
 use config::node::QoSProfile;
-use tokio::sync::{mpsc, watch};
-use tracing::warn;
+use tokio::sync::watch;
 
 /// Handle onto one pairing slot's live pin state. Obtained via
 /// [`NodeRunner::peer`]; the generated per-slot modules expose `paired()` /
@@ -58,43 +52,45 @@ impl PeerSlot {
     }
 }
 
+/// The pairing slot kind for the shared [`slot_stream`] engine: a pairing slot
+/// follows the peer pin itself, so a re-pair to a new peer changes the pin and
+/// a clear removes it.
+///
+/// [`slot_stream`]: crate::runtime::slot_stream
+pub(crate) struct PeerFollow;
+
+impl FollowedSlot for PeerFollow {
+    type State = PeerPinState;
+    type Pin = PeerPin;
+
+    fn desired(state: &PeerPinState) -> Option<PeerPin> {
+        state.pin.clone()
+    }
+
+    fn producer(pin: &PeerPin) -> &ProducerRef {
+        &pin.producer
+    }
+
+    fn producer_link_id(pin: &PeerPin) -> &str {
+        &pin.peer_link_id
+    }
+}
+
 /// Stream of the paired peer's publishes on one topic of a pairing slot.
 /// Yields nothing while the slot is unpaired; delivery resumes (from the
 /// pairing moment, not retroactively — a pairing is a live stream, not a
 /// mailbox) when a peer pairs.
 pub struct PeerSubscription {
-    rx: mpsc::Receiver<(PeerPin, Message)>,
-    watch_rx: watch::Receiver<PeerPinState>,
-    forward_task: crate::runtime::TaskHandle<()>,
+    stream: SlotStream<PeerFollow>,
 }
 
 impl PeerSubscription {
     /// Waits for the next message from the currently paired peer. Returns
-    /// `None` when the runtime is torn down (slot channel closed).
-    ///
-    /// Messages forwarded before a re-pin or clear are dropped here at
-    /// delivery time by re-checking the producer triple against the current
-    /// pin, so a swap can never leak the previous peer's messages.
+    /// `None` when the runtime is torn down (slot channel closed). Messages
+    /// buffered under a swapped-out or cleared pin are dropped before they
+    /// surface (see [`SlotStream::next`]).
     pub async fn on_next_message(&mut self) -> Option<Message> {
-        loop {
-            let (pin, message) = self.rx.recv().await?;
-            if self.watch_rx.borrow().pin.as_ref() == Some(&pin) {
-                return Some(message);
-            }
-            // Stale: buffered under a pin that has since been swapped or
-            // cleared.
-        }
-    }
-}
-
-/// Aborting the forwarding task here (rather than relying on its `tx.send`
-/// erroring) matters because the task only touches `tx` when a message
-/// arrives: an unpaired or quiet slot leaves it parked on
-/// `watch_rx.changed()`, where it would outlive the dropped subscription —
-/// wire subscription included — until the next pin update.
-impl Drop for PeerSubscription {
-    fn drop(&mut self) {
-        self.forward_task.abort();
+        self.stream.next().await.map(|(_producer, message)| message)
     }
 }
 
@@ -141,117 +137,22 @@ pub fn subscribe_peer_with_watch(
     topic: String,
     qos: QoSProfile,
 ) -> PeerSubscription {
-    let (tx, rx) = mpsc::channel(super::SLOT_CHANNEL_CAPACITY);
-    let task_watch_rx = watch_rx.clone();
-    let forward_task = crate::runtime::spawn(forward_peer_messages(
-        messenger,
-        as_core_node,
-        as_instance_id,
-        task_watch_rx,
-        pairing_target,
-        topic,
-        qos,
-        tx,
-    ));
     PeerSubscription {
-        rx,
-        watch_rx,
-        forward_task,
-    }
-}
-
-/// The eager forwarding loop: keeps the wire subscription converged with the
-/// slot's pin state and forwards each received message tagged with the pin
-/// it arrived under. Ends when the slot channel closes (runtime teardown) or
-/// the receiving `PeerSubscription` is dropped (its `Drop` aborts this task).
-#[allow(clippy::too_many_arguments)]
-async fn forward_peer_messages(
-    messenger: MessengerHandle,
-    as_core_node: String,
-    as_instance_id: String,
-    mut watch_rx: watch::Receiver<PeerPinState>,
-    pairing_target: SenderTarget,
-    topic: String,
-    qos: QoSProfile,
-    tx: mpsc::Sender<(PeerPin, Message)>,
-) {
-    let mut current: Option<(PeerPin, crate::messaging::Subscription)> = None;
-    loop {
-        let desired = watch_rx.borrow_and_update().pin.clone();
-        if current.as_ref().map(|(pin, _)| pin) != desired.as_ref() {
-            // Drop-before-redeclare: the old wire subscription (and its
-            // buffered messages) dies before the new pin's subscription
-            // exists, so the slot never holds two wire subscriptions.
-            current = None;
-            if let Some(pin) = desired {
-                match TopicMessenger::subscribe_peer_pinned(
-                    &messenger,
-                    &as_core_node,
-                    &as_instance_id,
-                    pairing_target.clone(),
-                    &pin.producer,
-                    &pin.peer_link_id,
-                    &topic,
-                    qos.clone(),
-                )
-                .await
-                {
-                    Ok(subscription) => current = Some((pin, subscription)),
-                    Err(err) => {
-                        warn!(
-                            %err,
-                            topic = %topic,
-                            "failed to declare peer wire subscription; slot stays silent until the next pin update"
-                        );
-                    }
-                }
-            }
-        }
-        match current.as_mut() {
-            Some((pin, subscription)) => {
-                tokio::select! {
-                    changed = watch_rx.changed() => {
-                        if changed.is_err() {
-                            return; // runtime teardown
-                        }
-                    }
-                    message = subscription.on_next_message() => {
-                        match message {
-                            Some(message) => {
-                                // The triple pin makes a foreign message
-                                // unmatchable at the keyexpr level; this
-                                // re-check is the defensive second guard.
-                                let matches_pin = message.core_node() == pin.producer.core_node
-                                    && message.instance_id() == pin.producer.instance_id
-                                    && message.link_id() == pin.peer_link_id;
-                                if matches_pin && tx.send((pin.clone(), message)).await.is_err() {
-                                    return; // subscription dropped
-                                }
-                            }
-                            None => {
-                                // Wire channel closed (session teardown).
-                                current = None;
-                                if watch_rx.changed().await.is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            None => {
-                if watch_rx.changed().await.is_err() {
-                    return;
-                }
-            }
-        }
+        stream: spawn_slot_stream::<PeerFollow>(
+            messenger,
+            as_core_node,
+            as_instance_id,
+            watch_rx,
+            pairing_target,
+            topic,
+            qos,
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::messaging::ProducerRef;
     use std::time::Duration;
 
     fn pin() -> PeerPin {

@@ -72,66 +72,6 @@ impl PeerUpdateRequest {
     }
 }
 
-/// Node-side reply to a [`PeerUpdateRequest`]. `accepted = false` with
-/// `stale_sequence = true` means the request's sequence was strictly older
-/// than the slot's current one (a delayed retry) — the daemon treats that as
-/// already-superseded, not as a failure to revert.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeerUpdateResponse {
-    pub accepted: bool,
-    pub stale_sequence: bool,
-    pub message: String,
-}
-
-impl PeerUpdateResponse {
-    pub fn accepted() -> Self {
-        Self {
-            accepted: true,
-            stale_sequence: false,
-            message: String::new(),
-        }
-    }
-
-    pub fn stale() -> Self {
-        Self {
-            accepted: false,
-            stale_sequence: true,
-            message: "stale sequence".to_string(),
-        }
-    }
-
-    pub fn rejected(message: impl Into<String>) -> Self {
-        Self {
-            accepted: false,
-            stale_sequence: false,
-            message: message.into(),
-        }
-    }
-
-    pub fn encode(&self) -> Result<Payload> {
-        let mut builder = ::capnp::message::Builder::new_default();
-        {
-            let mut root = builder.init_root::<peer_update_capnp::peer_update_response::Builder>();
-            root.set_accepted(self.accepted);
-            root.set_stale_sequence(self.stale_sequence);
-            root.set_message(&self.message);
-        }
-        super::encode_message(&builder)
-    }
-
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        let reader = super::decode_message(data)?;
-        let root = reader
-            .get_root::<peer_update_capnp::peer_update_response::Reader>()
-            .map_err(|e| Error::Deserialization(e.to_string()))?;
-        Ok(Self {
-            accepted: root.get_accepted(),
-            stale_sequence: root.get_stale_sequence(),
-            message: super::read_text(root.get_message(), "peer_update", "message")?,
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,18 +96,5 @@ mod tests {
         };
         let decoded = PeerUpdateRequest::decode(&unpaired.encode().unwrap().into_inner()).unwrap();
         assert_eq!(decoded, unpaired);
-    }
-
-    #[test]
-    fn response_round_trips_all_shapes() {
-        for response in [
-            PeerUpdateResponse::accepted(),
-            PeerUpdateResponse::stale(),
-            PeerUpdateResponse::rejected("unknown pairing slot 'arm'"),
-        ] {
-            let decoded =
-                PeerUpdateResponse::decode(&response.encode().unwrap().into_inner()).unwrap();
-            assert_eq!(decoded, response);
-        }
     }
 }

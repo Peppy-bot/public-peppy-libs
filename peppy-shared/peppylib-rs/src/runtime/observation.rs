@@ -3,35 +3,25 @@
 //! (receive the observed source's publishes on one topic).
 //!
 //! An observer passively taps a producer's pairing topic without joining the
-//! source's 1:1 pairing. Unlike a participant subscription, an observer
-//! subscription follows the *source instance's* lifecycle, not any pair
-//! generation:
-//!
-//! - source unresolved (boot) → no wire subscription yet;
-//! - source resolved → exactly one wire subscription, triple-pinned to the
-//!   source's `(core_node, instance_id, source slot link_id)`, declared and held
-//!   whether or not the source currently has a paired peer;
-//! - the source's peer transitions (paired, unpaired, re-paired) do NOT touch
-//!   the subscription or advance the generation;
-//! - a source-generation change (the source's incarnation was replaced) drops
-//!   the old subscription BEFORE declaring the new one (at most one wire
-//!   subscription per slot, ever) and a delivery-time stale filter drops any
-//!   message still buffered under the previous generation.
-//!
-//! The pin is identical across a generation change (a reused instance_id under
-//! the same triple), so the keyexpr cannot distinguish incarnations; the
-//! generation tag is the sole discriminator, applied here in the forwarding
-//! buffer and by the drop-before-redeclare in the transport buffer.
+//! source's 1:1 pairing. It follows the source through the shared
+//! [`crate::runtime::slot_stream`] engine, which keeps at most one wire
+//! subscription converged with the followed pin. Unlike a pairing slot, an
+//! observer follows `(source generation, source pin)`, not the pin alone: the
+//! source's own peer transitions never touch the subscription (the pin is
+//! unchanged), while a source-incarnation change advances the generation and so
+//! redeclares — even though a reused instance_id keeps the wire triple
+//! byte-identical, which the keyexpr alone cannot tell apart. This module
+//! supplies only that follow rule; the loop and stale filter live in the engine.
 
 use crate::error::{Error, Result};
 use crate::messaging::{
-    MessengerHandle, ObservationPin, ObservationState, ObservedSource, SenderTarget, TopicMessenger,
+    MessengerHandle, ObservationPin, ObservationState, ObservedSource, ProducerRef, SenderTarget,
 };
 use crate::runtime::NodeRunner;
+use crate::runtime::slot_stream::{FollowedSlot, SlotStream, spawn_slot_stream};
 use crate::types::Message;
 use config::node::QoSProfile;
-use tokio::sync::{mpsc, watch};
-use tracing::warn;
+use tokio::sync::watch;
 
 /// Handle onto one observer slot's live observation state. Obtained via
 /// [`NodeRunner::observation_slot`]; the generated per-slot modules expose
@@ -59,49 +49,55 @@ impl ObservationSlot {
     }
 }
 
+/// The observer slot kind for the shared [`slot_stream`] engine. An observer
+/// follows `(source generation, source pin)`: the pin is the source's wire
+/// triple, and the generation tells a reused-instance_id incarnation apart from
+/// its predecessor, whose publishes are byte-identical on the wire.
+///
+/// [`slot_stream`]: crate::runtime::slot_stream
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ObservedPin {
+    generation: u64,
+    source: ObservationPin,
+}
+
+pub(crate) struct ObservedFollow;
+
+impl FollowedSlot for ObservedFollow {
+    type State = ObservationState;
+    type Pin = ObservedPin;
+
+    fn desired(state: &ObservationState) -> Option<ObservedPin> {
+        state.source.as_ref().map(|source| ObservedPin {
+            generation: state.source_generation,
+            source: source.clone(),
+        })
+    }
+
+    fn producer(pin: &ObservedPin) -> &ProducerRef {
+        &pin.source.producer
+    }
+
+    fn producer_link_id(pin: &ObservedPin) -> &str {
+        &pin.source.source_link_id
+    }
+}
+
 /// Stream of an observed source's publishes on one topic. Yields nothing while
 /// the source is unresolved or not emitting; delivery is a live stream, never a
 /// mailbox, so messages published before observation became active are never
 /// replayed.
 pub struct ObservedTopicSubscription {
-    rx: mpsc::Receiver<(u64, ObservationPin, Message)>,
-    watch_rx: watch::Receiver<ObservationState>,
-    forward_task: crate::runtime::TaskHandle<()>,
+    stream: SlotStream<ObservedFollow>,
 }
 
 impl ObservedTopicSubscription {
-    /// Waits for the next message from the currently observed source incarnation.
-    /// Returns `None` when the runtime is torn down (slot channel closed).
-    ///
-    /// A message forwarded under a previous source generation is dropped here at
-    /// delivery time by re-checking its generation (and pin) against the current
-    /// observation state, so a message buffered before a source-incarnation
-    /// change can never surface after it. The pin alone cannot discriminate
-    /// incarnations (a reused instance_id keeps the same wire triple), so the
-    /// generation is the load-bearing check.
-    pub async fn next(&mut self) -> Option<(crate::messaging::ProducerRef, Message)> {
-        loop {
-            let (generation, pin, message) = self.rx.recv().await?;
-            let state = self.watch_rx.borrow();
-            let current_matches =
-                state.source_generation == generation && state.source.as_ref() == Some(&pin);
-            drop(state);
-            if current_matches {
-                return Some((pin.producer, message));
-            }
-            // Stale: buffered under a source generation that has since advanced.
-        }
-    }
-}
-
-/// Aborting the forwarding task here (rather than relying on its `tx.send`
-/// erroring) matters because the task only touches `tx` when a message arrives:
-/// an unresolved or quiet source leaves it parked on `watch_rx.changed()`, where
-/// it would outlive the dropped subscription — wire subscription included —
-/// until the next observation update.
-impl Drop for ObservedTopicSubscription {
-    fn drop(&mut self) {
-        self.forward_task.abort();
+    /// Waits for the next `(producer, message)` from the currently observed
+    /// source incarnation. Returns `None` when the runtime is torn down (slot
+    /// channel closed). A message buffered under a superseded source generation
+    /// is dropped before it surfaces (see [`SlotStream::next`]).
+    pub async fn on_next_message(&mut self) -> Option<(ProducerRef, Message)> {
+        self.stream.next().await
     }
 }
 
@@ -149,136 +145,22 @@ pub fn subscribe_observed_with_watch(
     topic: String,
     qos: QoSProfile,
 ) -> ObservedTopicSubscription {
-    let (tx, rx) = mpsc::channel(super::SLOT_CHANNEL_CAPACITY);
-    let task_watch_rx = watch_rx.clone();
-    let forward_task = crate::runtime::spawn(forward_observed_messages(
-        messenger,
-        as_core_node,
-        as_instance_id,
-        task_watch_rx,
-        pairing_target,
-        topic,
-        qos,
-        tx,
-    ));
     ObservedTopicSubscription {
-        rx,
-        watch_rx,
-        forward_task,
-    }
-}
-
-/// The eager forwarding loop: keeps the wire subscription converged with the
-/// slot's source pin and generation, and forwards each received message tagged
-/// with the generation and pin it arrived under. Ends when the slot channel
-/// closes (runtime teardown) or the receiving subscription is dropped (its
-/// `Drop` aborts this task).
-#[allow(clippy::too_many_arguments)]
-async fn forward_observed_messages(
-    messenger: MessengerHandle,
-    as_core_node: String,
-    as_instance_id: String,
-    mut watch_rx: watch::Receiver<ObservationState>,
-    pairing_target: SenderTarget,
-    topic: String,
-    qos: QoSProfile,
-    tx: mpsc::Sender<(u64, ObservationPin, Message)>,
-) {
-    // Tracks the (generation, pin) the current wire subscription was declared
-    // under. At most one wire subscription per slot, ever.
-    let mut current: Option<(u64, ObservationPin, crate::messaging::Subscription)> = None;
-    loop {
-        // Redeclare when the source first resolves, when the generation
-        // advances (a new incarnation), or when the source is cleared. A source
-        // peer transition never changes (generation, source), so it is a no-op
-        // here. The decision reads only Copy data; the pin is cloned only when
-        // actually redeclaring, since this loop top runs once per forwarded
-        // message.
-        let redeclare_to = {
-            let state = watch_rx.borrow_and_update();
-            let redeclare = match &current {
-                Some((current_generation, _, _)) => {
-                    state.source.is_none() || *current_generation != state.source_generation
-                }
-                None => state.source.is_some(),
-            };
-            redeclare.then(|| (state.source_generation, state.source.clone()))
-        };
-        if let Some((desired_generation, desired_source)) = redeclare_to {
-            // Drop-before-redeclare: the old wire subscription (and its buffered
-            // messages) dies before the new generation's subscription exists.
-            current = None;
-            if let Some(pin) = desired_source {
-                match TopicMessenger::subscribe_peer_pinned(
-                    &messenger,
-                    &as_core_node,
-                    &as_instance_id,
-                    pairing_target.clone(),
-                    &pin.producer,
-                    &pin.source_link_id,
-                    &topic,
-                    qos.clone(),
-                )
-                .await
-                {
-                    Ok(subscription) => current = Some((desired_generation, pin, subscription)),
-                    Err(err) => {
-                        warn!(
-                            %err,
-                            topic = %topic,
-                            "failed to declare observer wire subscription; slot stays silent until the next observation update"
-                        );
-                    }
-                }
-            }
-        }
-        match current.as_mut() {
-            Some((generation, pin, subscription)) => {
-                tokio::select! {
-                    changed = watch_rx.changed() => {
-                        if changed.is_err() {
-                            return; // runtime teardown
-                        }
-                    }
-                    message = subscription.on_next_message() => {
-                        match message {
-                            Some(message) => {
-                                // The triple pin makes a foreign producer
-                                // unmatchable at the keyexpr level; this
-                                // re-check is the defensive second guard.
-                                let matches_pin = message.core_node() == pin.producer.core_node
-                                    && message.instance_id() == pin.producer.instance_id
-                                    && message.link_id() == pin.source_link_id;
-                                if matches_pin
-                                    && tx.send((*generation, pin.clone(), message)).await.is_err()
-                                {
-                                    return; // subscription dropped
-                                }
-                            }
-                            None => {
-                                // Wire channel closed (session teardown).
-                                current = None;
-                                if watch_rx.changed().await.is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            None => {
-                if watch_rx.changed().await.is_err() {
-                    return;
-                }
-            }
-        }
+        stream: spawn_slot_stream::<ObservedFollow>(
+            messenger,
+            as_core_node,
+            as_instance_id,
+            watch_rx,
+            pairing_target,
+            topic,
+            qos,
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::messaging::ProducerRef;
 
     fn source() -> ObservationPin {
         ObservationPin {

@@ -3,6 +3,7 @@ mod node_runner;
 mod observation;
 mod pairing;
 mod processor;
+mod slot_stream;
 
 pub use builder::{NodeBuilder, NodeContext, StandaloneConfig};
 pub use node_runner::NodeRunner;
