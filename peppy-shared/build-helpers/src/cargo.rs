@@ -50,7 +50,7 @@ fn git_tag_directives(tag: Option<&str>) -> Vec<String> {
 /// `None` otherwise. The `tools_dir` should point to the directory containing
 /// platform-specific capnp binaries (e.g. `peppy-config-model/tools/`).
 pub fn find_bundled_capnp(tools_dir: &Path) -> Option<PathBuf> {
-    let binary_name = host_capnp_binary_name();
+    let binary_name = capnp_binary_name();
     let binary_path = tools_dir.join(binary_name);
     if binary_path.exists() {
         Some(binary_path)
@@ -108,6 +108,42 @@ pub fn peppy_shared_dir() -> PathBuf {
         .parent()
         .expect("build-helpers' manifest dir always has a peppy-shared parent")
         .to_path_buf()
+}
+
+/// Filename of the bundled capnp binary to embed, selected for the build
+/// **target**.
+///
+/// This function runs inside a build script, where cargo exports the target
+/// platform as `CARGO_CFG_TARGET_OS` / `CARGO_CFG_TARGET_ARCH`. Selection must
+/// key on the target, not the host: `build-helpers` is compiled as a build
+/// dependency (for the host), so a compile-time `#[cfg(target_arch)]` here would
+/// resolve to the *host* arch and embed the wrong binary into a cross-compiled
+/// release (an aarch64 capnp inside an x86_64 build, which then ENOEXECs).
+///
+/// When those env vars are absent (unit tests and other non-build-script
+/// callers) we fall back to the host platform, which is correct for a native
+/// build and keeps direct callers working.
+fn capnp_binary_name() -> &'static str {
+    match (target_cfg("CARGO_CFG_TARGET_OS"), target_cfg("CARGO_CFG_TARGET_ARCH")) {
+        (Some(os), Some(arch)) => capnp_binary_name_for(&os, &arch),
+        _ => host_capnp_binary_name(),
+    }
+}
+
+/// Reads a `CARGO_CFG_*` build-script env var, treating an empty value as unset.
+fn target_cfg(var: &str) -> Option<String> {
+    std::env::var(var).ok().filter(|value| !value.is_empty())
+}
+
+/// Maps an `(os, arch)` pair to the bundled capnp filename, or
+/// `"capnp_unsupported"` for platforms we do not ship a binary for.
+fn capnp_binary_name_for(os: &str, arch: &str) -> &'static str {
+    match (os, arch) {
+        ("linux", "x86_64") => "capnp_linux_x86_64",
+        ("linux", "aarch64") => "capnp_linux_aarch64",
+        ("macos", "aarch64") => "capnp_macos_aarch64",
+        _ => "capnp_unsupported",
+    }
 }
 
 fn host_capnp_binary_name() -> &'static str {
@@ -282,6 +318,23 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         std::fs::write(dir.path().join("capnp_wrong_name"), b"").expect("create file");
         assert_eq!(find_bundled_capnp(dir.path()), None);
+    }
+
+    #[test]
+    fn capnp_binary_name_for_selects_by_target_not_host() {
+        // The mapping is driven purely by the (os, arch) pair cargo reports for
+        // the build target, so a cross-compiled release embeds the right binary
+        // regardless of the host it was built on.
+        assert_eq!(capnp_binary_name_for("linux", "x86_64"), "capnp_linux_x86_64");
+        assert_eq!(capnp_binary_name_for("linux", "aarch64"), "capnp_linux_aarch64");
+        assert_eq!(capnp_binary_name_for("macos", "aarch64"), "capnp_macos_aarch64");
+    }
+
+    #[test]
+    fn capnp_binary_name_for_reports_unsupported_platforms() {
+        assert_eq!(capnp_binary_name_for("windows", "x86_64"), "capnp_unsupported");
+        assert_eq!(capnp_binary_name_for("macos", "x86_64"), "capnp_unsupported");
+        assert_eq!(capnp_binary_name_for("linux", "arm"), "capnp_unsupported");
     }
 
     #[test]
