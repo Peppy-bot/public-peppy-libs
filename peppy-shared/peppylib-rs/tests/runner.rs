@@ -159,8 +159,8 @@ async fn daemon_runner_succeed() {
         .expect("runner setup signal should be sent");
     assert_eq!(frequency_hz, TEST_FREQUENCY_HZ);
 
-    // The daemon runner opens its session under the `local` org namespace (no
-    // organization id in the runtime config); this control messenger must too,
+    // The daemon runner opens its session under the `local` workspace namespace (no
+    // workspace id in the runtime config); this control messenger must too,
     // or its reachability probe never routes to the node's services.
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
@@ -366,8 +366,8 @@ async fn node_ready_but_not_healthy() {
         .expect("runner setup should start")
         .expect("setup start signal should be sent");
 
-    // The daemon runner opens its session under the `local` org namespace (no
-    // organization id in the runtime config); this control messenger must too,
+    // The daemon runner opens its session under the `local` workspace namespace (no
+    // workspace id in the runtime config); this control messenger must too,
     // or its reachability probe never routes to the node's services.
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
@@ -621,8 +621,8 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         "cancellation token should not be cancelled before shutdown request"
     );
 
-    // The daemon runner opens its session under the `local` org namespace (no
-    // organization id in the runtime config); this control messenger must too,
+    // The daemon runner opens its session under the `local` workspace namespace (no
+    // workspace id in the runtime config); this control messenger must too,
     // or its reachability probe never routes to the node's services.
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
@@ -763,8 +763,8 @@ async fn daemon_shutdown_during_setup_cancels_token_and_exits() {
         "cancellation token should not be cancelled before shutdown request"
     );
 
-    // The daemon runner opens its session under the `local` org namespace (no
-    // organization id in the runtime config); this control messenger must too,
+    // The daemon runner opens its session under the `local` workspace namespace (no
+    // workspace id in the runtime config); this control messenger must too,
     // or its reachability probe never routes to the node's services.
     let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
         .await
@@ -990,8 +990,8 @@ async fn send_shutdown_when_reachable<T: std::fmt::Debug>(
     router_port: u16,
     runner_task: &mut tokio::task::JoinHandle<T>,
 ) {
-    // The daemon runner opens its session under the `local` org namespace (no
-    // organization id in the runtime config); this control messenger must too,
+    // The daemon runner opens its session under the `local` workspace namespace (no
+    // workspace id in the runtime config); this control messenger must too,
     // or its reachability probe never routes to the node's services.
     let messenger = peppylib::MessengerHandle::connect(router_host, router_port)
         .await

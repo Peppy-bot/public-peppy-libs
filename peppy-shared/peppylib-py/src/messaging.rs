@@ -7,7 +7,7 @@ mod topics;
 pub(crate) use pairing::{PyPeerInfo, PyPeerSlot, PyPeerSubscription};
 pub(crate) use target::{PyProducerRef, PySenderTarget};
 
-use config::org::resolve_session_namespace;
+use config::namespace::Namespace;
 use peppylib::PeppyError;
 use peppylib::messaging::{MessengerHandle, SessionScope};
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
@@ -206,21 +206,26 @@ impl PyMessengerHandle {
         })
     }
 
-    /// Connect under an organization namespace (org-id routing isolation),
-    /// mirroring `MessengerHandle::connect(..).scope(SessionScope::Namespace(..))`. `org_id` of
-    /// `None` resolves to the `local` namespace — the same logged-out default
+    /// Connect under a workspace namespace, mirroring
+    /// `MessengerHandle::connect(..).scope(SessionScope::Namespace(..))`.
+    /// `namespace` of `None` resolves to the `local` namespace - the same logged-out default
     /// the node runtime resolves to — so a standalone control/stub session
     /// opens under the runner's namespace and actually routes to it.
     #[staticmethod]
-    #[pyo3(signature = (host, port, org_id=None))]
+    #[pyo3(signature = (host, port, namespace=None))]
     fn from_host_port_with_namespace<'py>(
         py: Python<'py>,
         host: String,
         port: u16,
-        org_id: Option<String>,
+        namespace: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         crate::py_future::future_into_py(py, async move {
-            let namespace = resolve_session_namespace(org_id.as_deref());
+            let namespace = match namespace {
+                None => Namespace::local(),
+                Some(raw) => Namespace::parse(&raw).map_err(|error| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(error.to_string())
+                })?,
+            };
             let handle = MessengerHandle::connect(&host, port)
                 .scope(SessionScope::Namespace(namespace))
                 .await

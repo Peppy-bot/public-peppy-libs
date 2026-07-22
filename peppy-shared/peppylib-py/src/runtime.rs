@@ -960,7 +960,7 @@ impl PyNodeRunner {
     }
 
     /// Subscribe to one peer-emitted topic of the pairing slot at `link_id`.
-    /// Spliced by the generated `peppygen.pairings.<link_id>.<topic>.subscribe`
+    /// Spliced by the generated `peppygen.paired_topics.<link_id>.<topic>.subscribe`
     /// call sites; `pairing_name` / `pairing_tag` / `topic` come from the
     /// pairing doc via codegen constants. The subscription yields nothing
     /// while the slot is unpaired and follows the slot's live pin.

@@ -73,16 +73,23 @@ fn validate_manifest_links(manifest: &Manifest) -> Result<()> {
 /// Validates the link_id direction rules and duplicate keys of the
 /// produced/consumed interface entries:
 ///
-/// - A produced (emits/exposes) entry's `link_id` must name a
-///   `manifest.implements` slot — naming a `depends_on` slot or nothing at
-///   all gets a dedicated error each.
+/// - A `topics.emits` entry's `link_id` must name a `manifest.implements`
+///   slot or a `depends_on.pairings` slot: a node declares the pairing
+///   topics its role emits the same way a contract implementer declares
+///   contract members. `services.exposes` and `actions.exposes` admit
+///   implements slots only, because a pairing document declares topics
+///   only. Naming any other `depends_on` slot, or nothing at all, gets a
+///   dedicated error each.
 /// - A consumed entry's `link_id` must not name an implements slot (those
 ///   are produced, not consumed); resolution against `depends_on` stays in
 ///   `validate_dependency_specs`, which runs where dependencies resolve.
-/// - Native entries are unique by `name` per section; contract-backed
+/// - Native entries are unique by `name` per section; document-backed
 ///   entries are unique by `(link_id, name)` per section. A native and a
-///   contract-backed entry may share a name (they are namespaced apart in
+///   document-backed entry may share a name (they are namespaced apart in
 ///   modules, schema keys, and wire keys).
+///
+/// Membership of a pairing-backed entry in its document, and per-slot emit
+/// coverage, need the pairing document and are checked at node add/sync.
 fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<()> {
     const KINDS: [(InterfaceKind, &str); 3] = [
         (InterfaceKind::Topic, super::types::EmittedTopic::SECTION),
@@ -98,12 +105,18 @@ fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<(
         .iter()
         .map(|e| e.link_id.as_str())
         .collect();
+    let mut topic_emit_link_ids = implements_link_ids.clone();
+    topic_emit_link_ids.extend(pairing_link_ids(manifest));
 
     for (kind, section) in KINDS {
+        let allowed = match kind {
+            InterfaceKind::Topic => &topic_emit_link_ids,
+            InterfaceKind::Service | InterfaceKind::Action => &implements_link_ids,
+        };
         validate_produced_section(
             section,
             interfaces.produced(kind),
-            &implements_link_ids,
+            allowed,
             manifest.depends_on.as_ref(),
         )?;
     }
@@ -138,18 +151,31 @@ fn depends_list_containing(depends_on: Option<&DependsOn>, link_id: &str) -> Opt
     None
 }
 
+/// The `depends_on.pairings` slot link_ids of a manifest. A pairing slot is
+/// the one `depends_on` kind a produced topic entry may reference: the slot's
+/// role is a producer of the document's topics, not just a consumer.
+fn pairing_link_ids(manifest: &Manifest) -> impl Iterator<Item = &str> {
+    manifest
+        .depends_on
+        .iter()
+        .flat_map(|d| d.pairings.iter().map(|p| p.link_id.as_str()))
+}
+
+/// `allowed_link_ids` is the set a document-backed entry of this section may
+/// reference: `manifest.implements` slots, plus `depends_on.pairings` slots
+/// for `topics.emits`.
 fn validate_produced_section<'a>(
     section: &'static str,
     entries: impl Iterator<Item = (Option<&'a str>, &'a str)>,
-    implements_link_ids: &HashSet<&str>,
+    allowed_link_ids: &HashSet<&str>,
     depends_on: Option<&DependsOn>,
 ) -> Result<()> {
     let mut seen_native: HashSet<&str> = HashSet::new();
-    let mut seen_contract: HashSet<(&str, &str)> = HashSet::new();
+    let mut seen_linked: HashSet<(&str, &str)> = HashSet::new();
     for (link_id, name) in entries {
         match link_id {
             Some(link_id) => {
-                if !implements_link_ids.contains(link_id) {
+                if !allowed_link_ids.contains(link_id) {
                     if let Some(found_in) = depends_list_containing(depends_on, link_id) {
                         return Err(ParsingError::EmitsLinkIdNotImplements {
                             section: section.to_owned(),
@@ -164,7 +190,7 @@ fn validate_produced_section<'a>(
                     }
                     .into());
                 }
-                if !seen_contract.insert((link_id, name)) {
+                if !seen_linked.insert((link_id, name)) {
                     return Err(ParsingError::DuplicateInterfaceEntry {
                         section: section.to_owned(),
                         key: format!("{link_id}:{name}"),
@@ -1380,10 +1406,6 @@ mod tests {
                 r#"contracts: [{ name: "uvc_camera", tag: "v1", link_id: "dep" }]"#,
                 "contracts",
             ),
-            (
-                r#"pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "dep" }]"#,
-                "pairings",
-            ),
         ] {
             let json5 = format!(
                 r#"{{
@@ -1410,6 +1432,125 @@ mod tests {
                 result.unwrap_err()
             );
         }
+    }
+
+    /// Wraps a pairing slot + interfaces block in a minimal node config. The
+    /// slot is always `arm_link/v1` under link_id `arm`.
+    fn node_with_pairing(interfaces: &str) -> String {
+        format!(
+            r#"{{
+            peppy_schema: "node/v1",
+            manifest: {{
+                name: "arm_controller",
+                tag: "v1",
+                depends_on: {{
+                    pairings: [{{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }}],
+                }},
+            }},
+            interfaces: {interfaces},
+            execution: {{ language: "rust", run_cmd: ["./bin"] }},
+        }}"#
+        )
+    }
+
+    #[test]
+    fn test_pairing_link_id_in_topics_emits_parses() {
+        let json5 = node_with_pairing(
+            r#"{ topics: { emits: [{ link_id: "arm", name: "joint_commands" }] } }"#,
+        );
+        let config = NodeConfigParser::from_content(&json5).expect("pairing-backed emit parses");
+        let emits = config.interfaces.topics.unwrap().emits.unwrap();
+        assert_eq!(
+            emits[0].link_id(),
+            Some("arm"),
+            "a pairing slot is a legal emits target"
+        );
+        assert_eq!(emits[0].name(), "joint_commands");
+    }
+
+    #[test]
+    fn test_pairing_link_id_in_topics_consumes_parses() {
+        let json5 = node_with_pairing(
+            r#"{ topics: { consumes: [{ link_id: "arm", name: "joint_states" }] } }"#,
+        );
+        let config = NodeConfigParser::from_content(&json5).expect("pairing-backed consume parses");
+        let consumes = config.interfaces.topics.unwrap().consumes.unwrap();
+        assert_eq!(consumes[0].link_id, "arm");
+        assert_eq!(consumes[0].name, "joint_states");
+    }
+
+    /// A pairing document declares topics only, so its slot may not be named
+    /// by a service or action entry in either direction.
+    #[test]
+    fn test_pairing_link_id_in_service_and_action_exposes_rejected() {
+        for (section, interfaces) in [
+            (
+                "services.exposes",
+                r#"{ services: { exposes: [{ link_id: "arm", name: "calibrate" }] } }"#,
+            ),
+            (
+                "actions.exposes",
+                r#"{ actions: { exposes: [{ link_id: "arm", name: "home" }] } }"#,
+            ),
+        ] {
+            let result = NodeConfigParser::from_content(&node_with_pairing(interfaces));
+            assert!(
+                matches!(
+                    result.as_ref().unwrap_err(),
+                    Error::Parsing(ParsingError::EmitsLinkIdNotImplements { section: s, link_id, found_in })
+                        if s == section && link_id == "arm" && found_in == "pairings"
+                ),
+                "expected EmitsLinkIdNotImplements({section}) naming depends_on.pairings, got: {:?}",
+                result.unwrap_err()
+            );
+        }
+    }
+
+    #[test]
+    fn test_pairing_backed_entry_with_inline_shape_rejected() {
+        for (section, field, interfaces) in [
+            (
+                "topics.emits",
+                "qos_profile",
+                r#"{ topics: { emits: [{ link_id: "arm", name: "joint_commands", qos_profile: "reliable" }] } }"#,
+            ),
+            (
+                "topics.emits",
+                "message_format",
+                r#"{ topics: { emits: [{ link_id: "arm", name: "joint_commands", message_format: { fields: { x: "f64" } } }] } }"#,
+            ),
+        ] {
+            let result = NodeConfigParser::from_content(&node_with_pairing(interfaces));
+            assert!(
+                matches!(
+                    result.as_ref().unwrap_err(),
+                    Error::Parsing(ParsingError::LinkedEntryWithInlineShape { section: s, field: f, link_id, .. })
+                        if s == section && f == field && link_id == "arm"
+                ),
+                "expected LinkedEntryWithInlineShape({field}), got: {:?}",
+                result.unwrap_err()
+            );
+        }
+    }
+
+    #[test]
+    fn test_duplicate_pairing_backed_emit_rejected() {
+        let json5 = node_with_pairing(
+            r#"{ topics: { emits: [
+                { link_id: "arm", name: "joint_commands" },
+                { link_id: "arm", name: "joint_commands" },
+            ] } }"#,
+        );
+        let result = NodeConfigParser::from_content(&json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::DuplicateInterfaceEntry { key, .. })
+                    if key == "arm:joint_commands"
+            ),
+            "expected DuplicateInterfaceEntry, got: {:?}",
+            result.unwrap_err()
+        );
     }
 
     #[test]
@@ -1532,10 +1673,10 @@ mod tests {
         assert!(
             matches!(
                 result.as_ref().unwrap_err(),
-                Error::Parsing(ParsingError::ContractBackedEntryWithInlineShape { field, .. })
+                Error::Parsing(ParsingError::LinkedEntryWithInlineShape { field, .. })
                     if field == "qos_profile"
             ),
-            "expected ContractBackedEntryWithInlineShape, got: {:?}",
+            "expected LinkedEntryWithInlineShape, got: {:?}",
             result.unwrap_err()
         );
     }

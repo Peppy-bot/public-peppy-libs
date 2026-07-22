@@ -4,8 +4,8 @@
 //!
 //! This crate owns the wire-facing config tier every peppy surface builds
 //! on: the `peppy.json5` node config model, the runtime configs shipped to
-//! spawned nodes, codegen fingerprints, org namespaces, and the schema tags
-//! identifying each document shape. (Cap'n Proto schema generation for a
+//! spawned nodes, codegen fingerprints, workspace namespaces, and the schema
+//! tags identifying each document shape. (Cap'n Proto schema generation for a
 //! [`node::MessageFormat`] lives in the separate `encoding` crate; the
 //! daemon-side documents, launcher files, interface documents,
 //! `peppy_config.json5`, and the `PeppyDirs` filesystem layout, live in the
@@ -26,8 +26,8 @@ mod parsing;
 mod internal {
     pub mod consts;
     pub mod fingerprint;
+    pub mod namespace;
     pub mod node;
-    pub mod org;
     pub mod peppy_config;
     pub mod repo_node_id;
     pub mod runtime;
@@ -44,7 +44,8 @@ pub use common::{
 // -- error --
 pub use error::{
     ConsumedInterfaceOnlyContractBacked, ContractCoverageMismatch, Error as ConfigError,
-    MissingInterface, ParsingError, deserialize_json5_with_structured_errors,
+    MissingInterface, PairingCoverageMismatch, ParsingError,
+    deserialize_json5_with_structured_errors,
 };
 
 // -- consts --
@@ -75,8 +76,8 @@ pub mod node {
     pub use crate::internal::node::{
         ActionInterfaces, ActionServiceEndpoint, ActionTopicEndpoint, ArrayKind, ArraySchema,
         Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
-        ContractBackedEntry, ContractImplementationEdge, DependencySpec, DependsOn, EmittedTopic,
-        Execution, ExposedAction, ExposedService, ImplementsEntry, InterfaceKind, Interfaces,
+        ContractImplementationEdge, DependencySpec, DependsOn, EmittedTopic, Execution,
+        ExposedAction, ExposedService, ImplementsEntry, InterfaceKind, Interfaces, LinkedEntry,
         Manifest, MessageFormat, MessageSizeEstimate, NativeEmittedTopic, NativeExposedAction,
         NativeExposedService, NodeConfig, NodeConfigParser, NodeDependency, ObjectKind,
         ObjectSchema, PairingDependency, PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType,
@@ -95,12 +96,9 @@ pub mod runtime {
     };
 }
 
-// -- org --
-pub mod org {
-    pub use crate::internal::org::{
-        InvalidOrgNamespace, LOCAL_NAMESPACE, OrgNamespace, resolve_session_namespace,
-        should_federate,
-    };
+// -- namespace --
+pub mod namespace {
+    pub use crate::internal::namespace::{InvalidNamespace, LOCAL_NAMESPACE, Namespace};
 }
 
 // -- peppy_config --

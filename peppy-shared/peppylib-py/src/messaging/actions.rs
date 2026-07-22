@@ -377,6 +377,7 @@ impl PyActionMessenger {
                 payload: resp.payload(),
                 instance_id: resp.instance_id().to_string(),
                 core_node: resp.core_node().to_string(),
+                link_id: resp.link_id().to_string(),
             };
             let goal_id = goal_handle.goal_id().to_string();
             let sender = goal_handle.sender().clone();

@@ -145,6 +145,16 @@ impl InterfaceKind {
             InterfaceKind::Action => "Action",
         }
     }
+
+    /// The manifest section this kind's consumed entries live in, for error
+    /// payloads. Mirrors the `SECTION` const the produced-entry enums carry.
+    pub const fn consumed_section(&self) -> &'static str {
+        match self {
+            InterfaceKind::Topic => "topics.consumes",
+            InterfaceKind::Service => "services.consumes",
+            InterfaceKind::Action => "actions.consumes",
+        }
+    }
 }
 
 impl std::fmt::Display for InterfaceKind {
@@ -359,15 +369,21 @@ pub enum QoSProfile {
     Critical,
 }
 
-/// A contract-backed produced-interface entry: `{link_id, name}` where
-/// `link_id` names a `manifest.implements` slot and `name` selects one member
-/// of that contract (byte-equal). Shape and QoS come from the contract
-/// document, so inline `message_format` / `qos_profile` / endpoint fields are
-/// rejected at parse time. Shared by topics.emits, services.exposes, and
-/// actions.exposes.
+/// A document-backed produced-interface entry: `{link_id, name}` where
+/// `link_id` names a slot and `name` selects one member of the document that
+/// slot resolves to (byte-equal). Shape and QoS come from that document, so
+/// inline `message_format` / `qos_profile` / endpoint fields are rejected at
+/// parse time.
+///
+/// The name is direction-neutral on purpose: which document backs the entry
+/// depends on the slot it names. `services.exposes` and `actions.exposes`
+/// admit `manifest.implements` slots only, so their entries are always
+/// contract-backed. `topics.emits` and `topics.consumes` additionally admit
+/// `depends_on.pairings` slots, whose member shapes come from the pairing
+/// document instead.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ContractBackedEntry {
+pub struct LinkedEntry {
     pub link_id: String,
     pub name: String,
 }
@@ -385,10 +401,14 @@ pub struct NativeEmittedTopic {
 
 /// One entry of `interfaces.topics.emits`. Discriminated by the presence of
 /// `link_id` (mirroring the consumes convention): with `link_id` the entry is
-/// contract-backed, without it the entry is native and carries its own shape.
+/// document-backed, without it the entry is native and carries its own shape.
+///
+/// A document-backed emit names either a `manifest.implements` slot (the
+/// contract declares the shape) or a `depends_on.pairings` slot (the pairing
+/// document declares it, for a topic this node's role emits).
 #[derive(Debug, Clone, PartialEq)]
 pub enum EmittedTopic {
-    Contract(ContractBackedEntry),
+    Linked(LinkedEntry),
     Native(NativeEmittedTopic),
 }
 
@@ -404,10 +424,11 @@ pub struct NativeExposedService {
 }
 
 /// One entry of `interfaces.services.exposes`. See [`EmittedTopic`] for the
-/// `link_id` discriminator rule.
+/// `link_id` discriminator rule. Pairing documents declare topics only, so a
+/// document-backed entry here is always contract-backed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExposedService {
-    Contract(ContractBackedEntry),
+    Linked(LinkedEntry),
     Native(NativeExposedService),
 }
 
@@ -425,12 +446,13 @@ pub struct NativeExposedAction {
 }
 
 /// One entry of `interfaces.actions.exposes`. See [`EmittedTopic`] for the
-/// `link_id` discriminator rule. The native payload is boxed: its three
-/// optional endpoints dwarf `ContractBackedEntry`, and boxing keeps the enum
-/// small for the common contract-backed case.
+/// `link_id` discriminator rule. Pairing documents declare topics only, so a
+/// document-backed entry here is always contract-backed. The native payload is
+/// boxed: its three optional endpoints dwarf `LinkedEntry`, and boxing keeps
+/// the enum small for the common document-backed case.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExposedAction {
-    Contract(ContractBackedEntry),
+    Linked(LinkedEntry),
     Native(Box<NativeExposedAction>),
 }
 
@@ -466,34 +488,34 @@ macro_rules! impl_produced_entry {
     ($entry:ident, $wrap:tt $native:ident, $section:literal,
      { $($field:ident : $ty:ty => $mode:tt),+ $(,)? }) => {
         impl $entry {
-            /// Interface name: the contract member selector for
-            /// contract-backed entries, the declared name for native ones.
+            /// Interface name: the document member selector for
+            /// document-backed entries, the declared name for native ones.
             pub fn name(&self) -> &str {
                 match self {
-                    Self::Contract(e) => &e.name,
+                    Self::Linked(e) => &e.name,
                     Self::Native(n) => &n.name,
                 }
             }
 
-            /// The `manifest.implements` slot this entry references, or
-            /// `None` for a native entry.
+            /// The slot this entry references (a `manifest.implements` or
+            /// `depends_on.pairings` slot), or `None` for a native entry.
             pub fn link_id(&self) -> Option<&str> {
                 match self {
-                    Self::Contract(e) => Some(&e.link_id),
+                    Self::Linked(e) => Some(&e.link_id),
                     Self::Native(_) => None,
                 }
             }
 
-            pub fn as_contract(&self) -> Option<&ContractBackedEntry> {
+            pub fn as_linked(&self) -> Option<&LinkedEntry> {
                 match self {
-                    Self::Contract(e) => Some(e),
+                    Self::Linked(e) => Some(e),
                     Self::Native(_) => None,
                 }
             }
 
             pub fn as_native(&self) -> Option<&$native> {
                 match self {
-                    Self::Contract(_) => None,
+                    Self::Linked(_) => None,
                     Self::Native(n) => Some(impl_produced_entry!(@native_ref $wrap n)),
                 }
             }
@@ -514,7 +536,7 @@ macro_rules! impl_produced_entry {
                 S: serde::Serializer,
             {
                 match self {
-                    Self::Contract(e) => e.serialize(serializer),
+                    Self::Linked(e) => e.serialize(serializer),
                     Self::Native(n) => n.serialize(serializer),
                 }
             }
@@ -548,7 +570,7 @@ macro_rules! impl_produced_entry {
                             &name,
                             &[$((stringify!($field), raw.$field.is_some()),)+],
                         )?;
-                        Ok(Self::Contract(ContractBackedEntry { link_id, name }))
+                        Ok(Self::Linked(LinkedEntry { link_id, name }))
                     }
                     None => Ok(Self::Native(impl_produced_entry!(@native_wrap $wrap $native {
                         name,
@@ -591,8 +613,8 @@ fn require_interface_name<E: de::Error>(
     })
 }
 
-/// Rejects inline shape/QoS fields on a contract-backed entry: the shape
-/// comes from the contract document, never from the manifest. `fields` pairs
+/// Rejects inline shape/QoS fields on a document-backed entry: the shape
+/// comes from the referenced document, never from the manifest. `fields` pairs
 /// each field name with whether it was present in the raw entry.
 fn reject_inline_shape<E: de::Error>(
     section: &'static str,
@@ -603,7 +625,7 @@ fn reject_inline_shape<E: de::Error>(
     for (field, present) in fields {
         if *present {
             return Err(E::custom(
-                crate::error::StructuredError::ContractBackedEntryWithInlineShape {
+                crate::error::StructuredError::LinkedEntryWithInlineShape {
                     section: section.to_owned(),
                     link_id: link_id.to_owned(),
                     name: name.to_owned(),
@@ -1224,8 +1246,8 @@ impl Interfaces {
     }
 
     /// The natively-declared entries of `topics.emits`: the node owns these
-    /// shapes. Contract-backed entries are skipped — their shapes live in
-    /// the contract documents and resolve through `manifest.implements`.
+    /// shapes. Document-backed entries are skipped — their shapes live in the
+    /// contract or pairing document the entry's slot resolves to.
     pub fn native_emits(&self) -> impl Iterator<Item = &NativeEmittedTopic> {
         self.topics
             .as_ref()
@@ -1257,20 +1279,21 @@ impl Interfaces {
             .filter_map(|e| e.as_native())
     }
 
-    /// Every contract-backed produced entry across the three sections,
+    /// Every document-backed produced entry across the three sections,
     /// tagged with the [`InterfaceKind`] it is declared under — the single
     /// traversal for the `manifest.implements` resolution and coverage
-    /// checks.
-    pub fn contract_backed_entries(
-        &self,
-    ) -> impl Iterator<Item = (InterfaceKind, &ContractBackedEntry)> {
+    /// checks, and for the pairing emit-coverage check.
+    ///
+    /// Both slot kinds are yielded: callers that care about only one
+    /// partition the stream by looking each `link_id` up in the manifest.
+    pub fn linked_entries(&self) -> impl Iterator<Item = (InterfaceKind, &LinkedEntry)> {
         let topics = self
             .topics
             .as_ref()
             .and_then(|t| t.emits.as_deref())
             .unwrap_or_default()
             .iter()
-            .filter_map(|e| e.as_contract())
+            .filter_map(|e| e.as_linked())
             .map(|e| (InterfaceKind::Topic, e));
         let services = self
             .services
@@ -1278,7 +1301,7 @@ impl Interfaces {
             .and_then(|s| s.exposes.as_deref())
             .unwrap_or_default()
             .iter()
-            .filter_map(|e| e.as_contract())
+            .filter_map(|e| e.as_linked())
             .map(|e| (InterfaceKind::Service, e));
         let actions = self
             .actions
@@ -1286,7 +1309,7 @@ impl Interfaces {
             .and_then(|a| a.exposes.as_deref())
             .unwrap_or_default()
             .iter()
-            .filter_map(|e| e.as_contract())
+            .filter_map(|e| e.as_linked())
             .map(|e| (InterfaceKind::Action, e));
         topics.chain(services).chain(actions)
     }

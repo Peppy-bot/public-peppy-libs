@@ -1087,12 +1087,12 @@ mod zenoh_tests {
         assert_eq!(received.payload(), &body);
     }
 
-    // ---- Organization-id namespace isolation ----
+    // ---- Workspace namespace isolation ----
 
     /// Opens a non-reconnecting peer session under `namespace`, retrying briefly
     /// while the router settles.
     async fn open_namespaced(host: &str, port: u16, namespace: &str) -> ZenohAdapter {
-        let ns = pmi::OrgNamespace::parse(namespace).expect("valid namespace");
+        let ns = pmi::Namespace::parse(namespace).expect("valid namespace");
         for _ in 0..40 {
             let mut adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, host, port)
                 .expect("adapter")
@@ -1116,14 +1116,14 @@ mod zenoh_tests {
         );
     }
 
-    /// The core org-id guarantee: two sessions under the SAME namespace deliver
+    /// The core workspace-isolation guarantee: two sessions under the SAME namespace deliver
     /// pub/sub through the router, while a publisher under a DIFFERENT namespace
     /// never reaches the subscriber. This is routing-layer isolation, not merely
     /// an ingress drop: the subscriber's key is rewritten on the wire to
-    /// `<ns>/<key>`, which a different org's `<other>/<key>` never intersects.
+    /// `<ns>/<key>`, which a different workspace's `<other>/<key>` never intersects.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn same_namespace_delivers_and_different_is_isolated() {
-        const TOPIC: &str = "org_ns_topic";
+        const TOPIC: &str = "workspace_ns_topic";
         let _lock = ZENOH_SERIAL.lock().await;
         let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
@@ -1131,7 +1131,7 @@ mod zenoh_tests {
         let host = instance.host.clone();
         let port = instance.port;
 
-        let subscriber = open_namespaced(&host, port, "org-a").await;
+        let subscriber = open_namespaced(&host, port, "workspace-a").await;
         let mut subscription = subscriber
             .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
             .await
@@ -1139,7 +1139,7 @@ mod zenoh_tests {
 
         // Same namespace ⇒ delivered.
         {
-            let mut pub_a = open_namespaced(&host, port, "org-a").await;
+            let mut pub_a = open_namespaced(&host, port, "workspace-a").await;
             wait_for_subscriber_discovery().await;
             pub_a
                 .publish_topic(
@@ -1156,7 +1156,7 @@ mod zenoh_tests {
 
         // Different namespace ⇒ the subscriber receives NOTHING.
         {
-            let mut pub_b = open_namespaced(&host, port, "org-b").await;
+            let mut pub_b = open_namespaced(&host, port, "workspace-b").await;
             wait_for_subscriber_discovery().await;
             pub_b
                 .publish_topic(
@@ -1167,12 +1167,12 @@ mod zenoh_tests {
                 )
                 .await
                 .expect("other-namespace publish");
-            assert_no_delivery(&mut subscription.rx, "different org").await;
+            assert_no_delivery(&mut subscription.rx, "different workspace").await;
         }
     }
 
     /// Session namespaces apply to liveliness declarations and queries just as
-    /// they do ordinary pub/sub keys. Each organization therefore enumerates
+    /// they do ordinary pub/sub keys. Each workspace therefore enumerates
     /// only its own core-node tokens even when sessions share one router.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn core_node_presence_is_isolated_by_namespace() {
@@ -1185,51 +1185,51 @@ mod zenoh_tests {
         let host = instance.host.clone();
         let port = instance.port;
 
-        let org_a = open_namespaced(&host, port, "org-a").await;
-        let org_b = open_namespaced(&host, port, "org-b").await;
+        let workspace_a = open_namespaced(&host, port, "workspace-a").await;
+        let workspace_b = open_namespaced(&host, port, "workspace-b").await;
         let daemon_a = Segment::try_from("daemon_a").expect("valid core-node segment");
         let daemon_b = Segment::try_from("daemon_b").expect("valid core-node segment");
         let generation_a = Segment::try_from("generation_a").expect("valid instance segment");
         let generation_b = Segment::try_from("generation_b").expect("valid instance segment");
-        let _token_a = org_a
+        let _token_a = workspace_a
             .declare_core_node_presence(&daemon_a, &generation_a)
             .await
-            .expect("org-a token should declare");
-        let _token_b = org_b
+            .expect("workspace-a token should declare");
+        let _token_b = workspace_b
             .declare_core_node_presence(&daemon_b, &generation_b)
             .await
-            .expect("org-b token should declare");
+            .expect("workspace-b token should declare");
         wait_for_subscriber_discovery().await;
 
         assert_eq!(
-            org_a
+            workspace_a
                 .list_core_node_presence(None, Duration::from_secs(2))
                 .await
-                .expect("org-a presence list should issue")
+                .expect("workspace-a presence list should issue")
                 .collect()
                 .await
-                .expect("org-a presence list should succeed"),
+                .expect("workspace-a presence list should succeed"),
             vec![CoreNodePresence::new("daemon_a", "generation_a")]
         );
         assert_eq!(
-            org_b
+            workspace_b
                 .list_core_node_presence(None, Duration::from_secs(2))
                 .await
-                .expect("org-b presence list should issue")
+                .expect("workspace-b presence list should issue")
                 .collect()
                 .await
-                .expect("org-b presence list should succeed"),
+                .expect("workspace-b presence list should succeed"),
             vec![CoreNodePresence::new("daemon_b", "generation_b")]
         );
     }
 
-    /// A logged-out (`local`) session and an org session sharing one router are
+    /// A logged-out (`local`) session and an workspace session sharing one router are
     /// routing-isolated: `local`'s keys are rewritten to `local/<key>` and the
-    /// org's to `<org>/<key>`, which never intersect. Closes the LAN cross-tenant
+    /// workspace's to `<workspace>/<key>`, which never intersect. Closes the LAN cross-tenant
     /// leak a "no namespace when logged out" model would leave open.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn local_and_org_namespaces_are_isolated() {
-        const TOPIC: &str = "local_vs_org_topic";
+    async fn local_and_workspace_namespaces_are_isolated() {
+        const TOPIC: &str = "local_vs_workspace_topic";
         let _lock = ZENOH_SERIAL.lock().await;
         let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
@@ -1237,7 +1237,7 @@ mod zenoh_tests {
         let host = instance.host.clone();
         let port = instance.port;
 
-        let subscriber = open_namespaced(&host, port, pmi::OrgNamespace::local().as_str()).await;
+        let subscriber = open_namespaced(&host, port, pmi::Namespace::local().as_str()).await;
         let mut subscription = subscriber
             .subscribe_topic(&receiver(TOPIC), SubscriberQoS::Standard)
             .await
@@ -1260,20 +1260,20 @@ mod zenoh_tests {
             assert_eq!(got.payload(), &Bytes::from_static(b"local-payload"));
         }
 
-        // An org publisher must NOT reach the `local` subscriber.
+        // An workspace publisher must NOT reach the `local` subscriber.
         {
-            let mut org_pub = open_namespaced(&host, port, "org-x").await;
+            let mut workspace_pub = open_namespaced(&host, port, "workspace-x").await;
             wait_for_subscriber_discovery().await;
-            org_pub
+            workspace_pub
                 .publish_topic(
                     &sender(TOPIC),
-                    Payload::from_bytes(Bytes::from_static(b"org-payload")),
+                    Payload::from_bytes(Bytes::from_static(b"workspace-payload")),
                     PublisherQoS::Standard,
                     true,
                 )
                 .await
-                .expect("org publish");
-            assert_no_delivery(&mut subscription.rx, "org vs local").await;
+                .expect("workspace publish");
+            assert_no_delivery(&mut subscription.rx, "workspace vs local").await;
         }
     }
 }

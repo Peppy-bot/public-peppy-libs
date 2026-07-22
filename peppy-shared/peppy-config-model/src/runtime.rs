@@ -428,15 +428,14 @@ pub struct DiscoveryConfig {
     /// Subscriber channel buffer for the `HighThroughput` QoS tier (e.g. sensor data).
     #[serde(default = "default_high_throughput_buffer_size")]
     pub high_throughput_buffer_size: usize,
-    /// Organization id stamped by the daemon so each spawned node opens its
-    /// session under the same namespace as the daemon (routing isolation across
-    /// the federation). `None` means "logged out" and resolves to the constant
-    /// `local` namespace at session open. Stored as a plain string here
-    /// (serde-simple); parsed into an `org::OrgNamespace` at the session-open
-    /// boundary. Omitted from serialized configs when absent so configs written
-    /// before this field existed still parse byte-identically.
+    /// Workspace namespace stamped by the daemon so each spawned node opens
+    /// its session under the same namespace as the daemon (routing context
+    /// across the platform federation). `None` means "logged out" and resolves
+    /// to the constant `local` namespace at session open. Typed: an invalid
+    /// value fails runtime-config parsing instead of leaking toward a live
+    /// session. Omitted from serialized configs when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub organization_id: Option<String>,
+    pub namespace: Option<crate::internal::namespace::Namespace>,
 }
 
 impl Default for DiscoveryConfig {
@@ -446,7 +445,7 @@ impl Default for DiscoveryConfig {
             gossip: true,
             standard_buffer_size: crate::peppy_config::DEFAULT_STANDARD_BUFFER_SIZE,
             high_throughput_buffer_size: crate::peppy_config::DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE,
-            organization_id: None,
+            namespace: None,
         }
     }
 }
@@ -736,15 +735,15 @@ mod tests {
             serde_json5::from_str(&serde_json5::to_string(&custom).unwrap()).unwrap();
         assert_eq!(reparsed.discovery, custom.discovery);
 
-        // A default discovery has no organization_id and omits it on serialize.
-        assert!(DiscoveryConfig::default().organization_id.is_none());
+        // A default discovery has no namespace and omits it on serialize.
+        assert!(DiscoveryConfig::default().namespace.is_none());
         assert!(
-            !serialized.contains("organization_id"),
-            "absent organization_id should not be serialized: {serialized}"
+            !serialized.contains("namespace"),
+            "absent namespace should not be serialized: {serialized}"
         );
 
-        // An explicit organization_id round-trips and is emitted on serialize.
-        let with_org: RuntimeConfig = serde_json5::from_str(
+        // An explicit namespace round-trips and is emitted on serialize.
+        let with_namespace: RuntimeConfig = serde_json5::from_str(
             r#"{
                 messaging_host: "127.0.0.1",
                 messaging_port: 7448,
@@ -752,21 +751,44 @@ mod tests {
                 node_name: "camera",
                 node_tag: "v1",
                 bound_core_node: "core_node",
-                discovery: { organization_id: "550e8400-e29b-41d4-a716-446655440000" }
+                discovery: { namespace: "550e8400-e29b-41d4-a716-446655440000" }
             }"#,
         )
         .unwrap();
         assert_eq!(
-            with_org.discovery.organization_id.as_deref(),
+            with_namespace
+                .discovery
+                .namespace
+                .as_ref()
+                .map(|namespace| namespace.as_str()),
             Some("550e8400-e29b-41d4-a716-446655440000")
         );
-        let org_serialized = serde_json5::to_string(&with_org).unwrap();
+        let namespace_serialized = serde_json5::to_string(&with_namespace).unwrap();
         assert!(
-            org_serialized.contains("organization_id"),
-            "an explicit organization_id should be serialized: {org_serialized}"
+            namespace_serialized.contains("namespace"),
+            "an explicit namespace should be serialized: {namespace_serialized}"
         );
-        let reparsed: RuntimeConfig = serde_json5::from_str(&org_serialized).unwrap();
-        assert_eq!(reparsed.discovery, with_org.discovery);
+        let reparsed: RuntimeConfig = serde_json5::from_str(&namespace_serialized).unwrap();
+        assert_eq!(reparsed.discovery, with_namespace.discovery);
+    }
+
+    #[test]
+    fn runtime_config_rejects_an_invalid_namespace() {
+        assert!(
+            serde_json5::from_str::<RuntimeConfig>(
+                r#"{
+                    messaging_host: "127.0.0.1",
+                    messaging_port: 7448,
+                    node_instance: { instance_id: "camera_front" },
+                    node_name: "camera",
+                    node_tag: "v1",
+                    bound_core_node: "core_node",
+                    discovery: { namespace: "**" }
+                }"#,
+            )
+            .is_err(),
+            "an invalid namespace must fail runtime-config parsing"
+        );
     }
 
     #[test]

@@ -763,7 +763,7 @@ async fn concurrent_action_abandoned_goal_yields_typed_abandoned() {
 /// Python binding uses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned() {
-    use pmi::{Messenger, MessengerAdapter, MessengerBackend, OrgNamespace, ZenohNetProtocol};
+    use pmi::{Messenger, MessengerAdapter, MessengerBackend, Namespace, ZenohNetProtocol};
 
     let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -783,12 +783,12 @@ async fn concurrent_action_producer_death_unblocks_feedback_and_yields_abandoned
     //
     // The namespace must be stamped explicitly here: `MessengerHandle::connect`
     // (which builds `client_handle` below) defaults the session to the `local`
-    // organization namespace, so the hand-built producer has to open under the
+    // workspace namespace, so the hand-built producer has to open under the
     // same namespace or every keyexpr is prefix-mismatched and the goal query
     // never reaches the server (surfacing as `ServiceUnreachable`).
     let producer_adapter = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port)
         .expect("producer adapter")
-        .with_namespace(Some(OrgNamespace::local()));
+        .with_namespace(Some(Namespace::local()));
     let mut producer_messenger = Messenger::new(MessengerAdapter::Zenoh(producer_adapter));
     producer_messenger
         .start_session()
