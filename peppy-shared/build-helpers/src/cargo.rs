@@ -298,6 +298,11 @@ mod tests {
     use super::*;
 
     const RERUN_DIRECTIVE: &str = "cargo:rerun-if-env-changed=PEPPY_GIT_TAG";
+    const SUPPORTED_CAPNP_PLATFORMS: [CapnpPlatform; 3] = [
+        CapnpPlatform::LinuxX86_64,
+        CapnpPlatform::LinuxAarch64,
+        CapnpPlatform::MacosAarch64,
+    ];
 
     #[test]
     fn git_tag_directives_emits_rustc_env_then_rerun_for_nonempty_tag() {
@@ -374,14 +379,27 @@ mod tests {
 
     #[test]
     fn bundled_capnp_path_resolves_every_supported_platform() {
-        for platform in [
-            CapnpPlatform::LinuxX86_64,
-            CapnpPlatform::LinuxAarch64,
-            CapnpPlatform::MacosAarch64,
-        ] {
+        for platform in SUPPORTED_CAPNP_PLATFORMS {
             assert!(
                 bundled_capnp_path(platform).is_some(),
                 "expected a bundled capnp binary for {platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_capnp_binaries_are_version_1_5_0() {
+        const EXPECTED_VERSION: &[u8] = b"Cap'n Proto version 1.5.0";
+
+        for platform in SUPPORTED_CAPNP_PLATFORMS {
+            let path = bundled_capnp_path(platform).expect("bundled capnp path");
+            let binary = std::fs::read(&path).expect("read bundled capnp binary");
+            assert!(
+                binary
+                    .windows(EXPECTED_VERSION.len())
+                    .any(|window| window == EXPECTED_VERSION),
+                "{} does not contain the expected Cap'n Proto version",
+                path.display()
             );
         }
     }
