@@ -74,15 +74,16 @@ pub mod fingerprint {
 // -- node --
 pub mod node {
     pub use crate::internal::node::{
-        ActionInterfaces, ActionServiceEndpoint, ActionTopicEndpoint, ArrayKind, ArraySchema,
-        Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
-        ContractImplementationEdge, DependencySpec, DependsOn, EmittedTopic, Execution,
-        ExposedAction, ExposedService, ImplementsEntry, InterfaceKind, Interfaces, LinkedEntry,
-        Manifest, MessageFormat, MessageSizeEstimate, NativeEmittedTopic, NativeExposedAction,
+        ActionInterfaces, ActionTopicEndpoint, ArrayKind, ArraySchema, Cardinality, ConsumedAction,
+        ConsumedService, ConsumedTopic, ContainerConfig, ContractImplementationEdge,
+        DependencySpec, DependsOn, EmittedTopic, Execution, ExposedAction, ExposedService,
+        GoalServiceEndpoint, ImplementsEntry, InterfaceKind, Interfaces, LinkedEntry, Manifest,
+        MessageFormat, MessageSizeEstimate, NativeEmittedTopic, NativeExposedAction,
         NativeExposedService, NodeConfig, NodeConfigParser, NodeDependency, ObjectKind,
         ObjectSchema, PairingDependency, PairingObserverDependency, PairingParticipantDependency,
-        PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType, ServiceInterfaces, Toolchain,
-        TopicInterfaces, TypeToken, collect_contract_implementation_edges,
+        PeppygenLanguage, PrimitiveSchema, QoSProfile, ResultServiceEndpoint, SchemaType,
+        ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken,
+        collect_contract_implementation_edges,
         collect_dependency_specs, estimate_serialized_size, is_blocked_mount_source,
         load_standalone_node_config, node_implements, validate_dependency_specs,
     };

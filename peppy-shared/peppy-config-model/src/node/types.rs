@@ -438,11 +438,11 @@ pub enum ExposedService {
 pub struct NativeExposedAction {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub goal_service: Option<ActionServiceEndpoint>,
+    pub goal_service: Option<GoalServiceEndpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feedback_topic: Option<ActionTopicEndpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_service: Option<ActionServiceEndpoint>,
+    pub result_service: Option<ResultServiceEndpoint>,
 }
 
 /// One entry of `interfaces.actions.exposes`. See [`EmittedTopic`] for the
@@ -591,9 +591,9 @@ impl_produced_entry!(ExposedService, plain NativeExposedService, "services.expos
     response_message_format: Option<MessageFormat> => keep,
 });
 impl_produced_entry!(ExposedAction, boxed NativeExposedAction, "actions.exposes", {
-    goal_service: Option<ActionServiceEndpoint> => keep,
+    goal_service: Option<GoalServiceEndpoint> => keep,
     feedback_topic: Option<ActionTopicEndpoint> => keep,
-    result_service: Option<ActionServiceEndpoint> => keep,
+    result_service: Option<ResultServiceEndpoint> => keep,
 });
 
 /// Validates the (required, non-empty) `name` of a produced-interface entry,
@@ -665,25 +665,27 @@ pub struct ConsumedAction {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// The goal side of an exposed action. Both the request (the goal parameters)
+/// and the response (the acceptance reply) are user-defined and optional.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ActionServiceEndpoint {
+pub struct GoalServiceEndpoint {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_message_format: Option<MessageFormat>,
-    #[serde(default = "default_action_service_qos_profile")]
-    pub qos_profile: QoSProfile,
 }
 
-impl Default for ActionServiceEndpoint {
-    fn default() -> Self {
-        Self {
-            qos_profile: default_action_service_qos_profile(),
-            request_message_format: None,
-            response_message_format: None,
-        }
-    }
+/// The result side of an exposed action. It has no user-defined request: a
+/// `get_result` call identifies its goal by the framework-owned `goal_id`, so
+/// the only declarable payload is the response the producer retains through
+/// `GoalContext::complete` / `complete_cancelled`. Declaring a
+/// `request_message_format` here is rejected by `deny_unknown_fields`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ResultServiceEndpoint {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_message_format: Option<MessageFormat>,
 }
 
 fn deserialize_consumed_topic_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -777,10 +779,6 @@ pub struct ActionTopicEndpoint {
     pub message_format: Option<MessageFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-}
-
-fn default_action_service_qos_profile() -> QoSProfile {
-    QoSProfile::Reliable
 }
 
 /// How many producers a `depends_on.{nodes,contracts}` slot binds at the
@@ -1546,9 +1544,15 @@ impl Normalize for ConsumedAction {
     fn normalize(&mut self) {}
 }
 
-impl Normalize for ActionServiceEndpoint {
+impl Normalize for GoalServiceEndpoint {
     fn normalize(&mut self) {
         normalize_opt(&mut self.request_message_format);
+        normalize_opt(&mut self.response_message_format);
+    }
+}
+
+impl Normalize for ResultServiceEndpoint {
+    fn normalize(&mut self) {
         normalize_opt(&mut self.response_message_format);
     }
 }
@@ -1806,10 +1810,6 @@ mod tests {
             .as_ref()
             .expect("result_service is present");
         assert!(
-            result.request_message_format.is_none(),
-            "result_service.request_message_format is optional"
-        );
-        assert!(
             result.response_message_format.is_some(),
             "result_service.response_message_format was provided"
         );
@@ -1820,6 +1820,59 @@ mod tests {
             .expect("goal_service is present");
         assert!(goal.request_message_format.is_some());
         assert!(goal.response_message_format.is_some());
+    }
+
+    #[test]
+    fn result_service_accepts_only_a_response_payload() {
+        let json5 = r#"{
+            name: "perform_scan",
+            result_service: {
+                response_message_format: {
+                    success: "bool",
+                },
+            },
+        }"#;
+
+        let action: ExposedAction = serde_json5::from_str(json5)
+            .expect("result_service with only a response payload must parse");
+        let action = action.as_native().expect("no link_id means native");
+        let result = action
+            .result_service
+            .as_ref()
+            .expect("result_service is present");
+        assert!(result.response_message_format.is_some());
+    }
+
+    #[test]
+    fn result_service_rejects_a_declared_request_message_format() {
+        // The action protocol has no user-defined result request: `get_result`
+        // is correlated by the framework-owned `goal_id`. Declaring one must
+        // fail at parse time rather than being silently ignored.
+        let json5 = r#"{
+            name: "perform_scan",
+            result_service: {
+                request_message_format: {
+                    include_diagnostics: "bool",
+                },
+                response_message_format: {
+                    success: "bool",
+                },
+            },
+        }"#;
+
+        let err = serde_json5::from_str::<ExposedAction>(json5)
+            .expect_err("result_service.request_message_format must be rejected");
+        let message = err.to_string();
+        // The message names the offending field and shows the result endpoint's
+        // only supported field, so the `result_service` context is unambiguous.
+        assert!(
+            message.contains("request_message_format"),
+            "error should name the rejected field, got: {message}"
+        );
+        assert!(
+            message.contains("response_message_format"),
+            "error should point to the supported result payload, got: {message}"
+        );
     }
 
     #[test]
