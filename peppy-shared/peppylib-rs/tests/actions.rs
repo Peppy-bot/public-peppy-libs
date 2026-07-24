@@ -6,7 +6,7 @@ use peppylib::PeppyError;
 use peppylib::messaging::{
     ActionFeedbackPublisher, ActionGoalHandle, ActionMessenger, CancelState, ConcurrentAction,
     EmptyPayloadError, MessengerHandle, NonEmptyPayload, ProducerRef, ResultStatus, SenderTarget,
-    decode_cancel_ack, encode_cancel_ack, wrap_result_outcome,
+    decode_cancel_ack, encode_cancel_ack, wrap_goal_ack, wrap_result_outcome,
 };
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
@@ -74,7 +74,9 @@ async fn action_messenger_communication() {
                     if let Some(tx) = publisher_tx.lock().unwrap().take() {
                         let _ = tx.send(declared.publisher);
                     }
-                    Ok(resp)
+                    // Raw goal-service handler: frame the reply with the
+                    // engine's admission ack itself.
+                    wrap_goal_ack(true, None, resp.as_ref())
                 }
             })
             .await
@@ -115,10 +117,9 @@ async fn action_messenger_communication() {
     .await
     .expect("send_goal should succeed");
 
-    assert_eq!(
-        goal_handle.goal_response().payload(),
-        &goal_response_payload
-    );
+    assert!(goal_handle.goal_reply().accepted);
+    assert_eq!(goal_handle.goal_reply().reason, None);
+    assert_eq!(goal_handle.goal_reply().body, goal_response_payload);
 
     // Client: receive feedback
     let feedback = tokio::time::timeout(Duration::from_secs(2), goal_handle.on_next_feedback())
@@ -200,7 +201,7 @@ async fn setup_goal_handshake(
                     if let Some(tx) = publisher_tx.lock().unwrap().take() {
                         let _ = tx.send(declared.publisher);
                     }
-                    Ok(Payload::from_static(b"accepted"))
+                    wrap_goal_ack(true, None, b"accepted")
                 }
             })
             .await
@@ -620,7 +621,9 @@ async fn concurrent_action_reject_then_accept() {
         while let Ok(Some(pending)) = action.recv_next_goal().await {
             let request = pending.request_bytes().to_vec();
             if request == b"reject" {
-                let _ = pending.reject(Payload::from_static(b"rejected")).await;
+                let _ = pending
+                    .reject(Some("resource is busy"), Payload::from_static(b"rejected"))
+                    .await;
                 continue;
             }
             let Ok(ctx) = pending.accept(Payload::from_static(b"accepted")).await else {
@@ -647,14 +650,22 @@ async fn concurrent_action_reject_then_accept() {
         )
     };
 
-    // First goal is rejected: the client still gets the goal response.
+    // First goal is rejected: the client still gets the goal reply, with the
+    // admission flag and reason decoded from the framework ack.
     let goal_a = send(b"reject").await.expect("send rejected goal");
-    assert_eq!(goal_a.goal_response().payload().as_ref(), b"rejected");
+    assert!(!goal_a.goal_reply().accepted);
+    assert_eq!(
+        goal_a.goal_reply().reason.as_deref(),
+        Some("resource is busy")
+    );
+    assert_eq!(goal_a.goal_reply().body.as_ref(), b"rejected");
 
     // After the rejection the server keeps serving, so the next goal is
     // accepted and its result is routed back by goal_id.
     let goal_b = send(b"B").await.expect("send accepted goal");
-    assert_eq!(goal_b.goal_response().payload().as_ref(), b"accepted");
+    assert!(goal_b.goal_reply().accepted);
+    assert_eq!(goal_b.goal_reply().reason, None);
+    assert_eq!(goal_b.goal_reply().body.as_ref(), b"accepted");
     let res_b = ActionMessenger::request_result(&client_handle, &goal_b, Duration::from_secs(2))
         .await
         .expect("result B");
@@ -1333,7 +1344,7 @@ async fn action_contract_scoped_native_and_implemented_do_not_collide() {
                             .await
                             .expect("declare_from_wire");
                         kept.lock().unwrap().replace(declared.publisher);
-                        Ok(response)
+                        wrap_goal_ack(true, None, response.as_ref())
                     }
                 })
                 .await
@@ -1363,8 +1374,8 @@ async fn action_contract_scoped_native_and_implemented_do_not_collide() {
     .await
     .expect("native send_goal");
     assert_eq!(
-        native_goal.goal_response().payload(),
-        &native_response,
+        native_goal.goal_reply().body,
+        native_response,
         "native send_goal must hit the native goal handler",
     );
 
@@ -1382,8 +1393,8 @@ async fn action_contract_scoped_native_and_implemented_do_not_collide() {
     .await
     .expect("contract send_goal");
     assert_eq!(
-        contract_goal.goal_response().payload(),
-        &contract_response,
+        contract_goal.goal_reply().body,
+        contract_response,
         "contract send_goal must hit the contract goal handler",
     );
 
@@ -1465,7 +1476,10 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
                     if let Ok(Some((_ctx, responder))) = res {
                         goal_count.fetch_add(1, Ordering::SeqCst);
                         responder
-                            .respond(Payload::from(spec.inst.as_bytes().to_vec()))
+                            .respond(
+                                wrap_goal_ack(true, None, spec.inst.as_bytes())
+                                    .expect("wrap goal ack"),
+                            )
                             .await
                             .expect("goal respond");
                     }
@@ -1540,7 +1554,7 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
     // Winner has been serviced; release the loser from its `recv_next_request`.
     shutdown_tx.send(true).expect("signal producers to stop");
 
-    let winner_inst = goal_handle.goal_response().instance_id().to_string();
+    let winner_inst = goal_handle.goal_reply().instance_id.to_string();
     assert!(
         winner_inst == producer_a_inst || winner_inst == producer_b_inst,
         "goal response identity must come from one of the producers, got {winner_inst:?}",

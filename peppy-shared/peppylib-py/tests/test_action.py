@@ -32,6 +32,17 @@ NODE_TAG = "v1"
 ACTION_NAME = "test_action"
 GOAL_PAYLOAD = b"goal data"
 GOAL_RESPONSE_PAYLOAD = b"goal accepted"
+
+
+def wrap_goal_ack(body: bytes, accepted: bool = True, reason: str = "") -> bytes:
+    """Frame a goal reply the way the engine does: [accepted][reason_len u16 BE][reason][body].
+
+    Raw goal-service handlers bypass PendingGoal (which applies this framing
+    itself), so tests driving the service directly must wrap their replies.
+    Mirrors peppylib's Rust wrap_goal_ack and independently pins the layout.
+    """
+    reason_bytes = reason.encode()
+    return bytes([1 if accepted else 0]) + len(reason_bytes).to_bytes(2, "big") + reason_bytes + body
 FEEDBACK_PAYLOAD = b"50% done"
 RESULT_PAYLOAD = b"action result"
 
@@ -79,7 +90,11 @@ async def test_action_messenger_communication():
             QoSProfile.Reliable,
             2.0,)
 
-        assert goal_handle.goal_response.payload == GOAL_RESPONSE_PAYLOAD
+        assert goal_handle.accepted
+        assert goal_handle.reason is None
+        assert goal_handle.goal_reply_body == GOAL_RESPONSE_PAYLOAD
+        assert goal_handle.core_node == CORE_NODE
+        assert goal_handle.instance_id == INSTANCE_ID
 
         # Client: receive feedback
         feedback = await asyncio.wait_for(
@@ -214,7 +229,9 @@ async def test_producer_gone_unblocks_feedback_and_yields_abandoned():
             QoSProfile.Reliable,
             2.0,)
 
-        assert goal_handle.goal_response.payload == GOAL_RESPONSE_PAYLOAD
+        assert goal_handle.accepted
+        assert goal_handle.reason is None
+        assert goal_handle.goal_reply_body == GOAL_RESPONSE_PAYLOAD
 
         # The goal is live: first feedback arrives normally.
         feedback = await asyncio.wait_for(
@@ -311,7 +328,9 @@ async def test_send_goal_honors_target_pair():
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
             2.0,)
-        assert goal_handle.goal_response.payload == GOAL_RESPONSE_PAYLOAD
+        assert goal_handle.accepted
+        assert goal_handle.reason is None
+        assert goal_handle.goal_reply_body == GOAL_RESPONSE_PAYLOAD
 
         await server_task
 
@@ -366,7 +385,7 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
                     bytes(req.message.payload),
                 )
                 captured[0] = publisher
-                return response
+                return wrap_goal_ack(response)
 
             await action.goal_service.handle_next_request(on_goal)
             return captured[0]
@@ -386,7 +405,8 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             QoSProfile.Reliable,
             2.0,
         )
-        assert native_goal.goal_response.payload == native_goal_response
+        assert native_goal.accepted
+        assert native_goal.goal_reply_body == native_goal_response
 
         iface_goal = await ActionMessenger.send_goal(
             caller_handle,
@@ -399,7 +419,8 @@ async def test_action_iface_scoped_native_and_conformed_do_not_collide():
             QoSProfile.Reliable,
             2.0,
         )
-        assert iface_goal.goal_response.payload == iface_goal_response
+        assert iface_goal.accepted
+        assert iface_goal.goal_reply_body == iface_goal_response
 
         await asyncio.wait_for(native_task, timeout=2.0)
         await asyncio.wait_for(iface_task, timeout=2.0)
@@ -434,7 +455,7 @@ async def test_reject_then_accept_through_concurrent_action():
             rejected = await action.recv_next_goal()
             assert rejected is not None
             assert rejected.request_bytes == b"reject"
-            await rejected.reject(b"rejected")
+            await rejected.reject("resource is busy", b"rejected")
 
             accepted = await action.recv_next_goal()
             assert accepted is not None
@@ -461,12 +482,16 @@ async def test_reject_then_accept_through_concurrent_action():
 
         # A rejected goal still resolves with the server's goal response.
         goal_a = await send(b"reject")
-        assert goal_a.goal_response.payload == b"rejected"
+        assert not goal_a.accepted
+        assert goal_a.reason == "resource is busy"
+        assert goal_a.goal_reply_body == b"rejected"
 
         # The server kept serving past the rejection: the next goal is accepted
         # and its typed Completed result routes back.
         goal_b = await send(b"B")
-        assert goal_b.goal_response.payload == b"accepted"
+        assert goal_b.accepted
+        assert goal_b.reason is None
+        assert goal_b.goal_reply_body == b"accepted"
         result_b = await ActionMessenger.request_result(client_handle, goal_b, 2.0)
         assert result_b.status == RESULT_STATUS_COMPLETED
         assert result_b.body == b"result:B"

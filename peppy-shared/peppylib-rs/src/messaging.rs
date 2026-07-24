@@ -10,16 +10,17 @@ mod presence;
 mod services;
 mod topics;
 
-// `unwrap_result_outcome` is intentionally not re-exported: unlike its public
-// siblings (`wrap_result_outcome` / `encode_cancel_ack`, which the integration
-// tests use to assert the wire codec), it is only used inside `actions` and its
-// unit tests, so it stays `pub(crate)`.
+// `unwrap_result_outcome` / `unwrap_goal_ack` are intentionally not
+// re-exported: unlike their public siblings (`wrap_result_outcome` /
+// `wrap_goal_ack` / `encode_cancel_ack`, which the integration tests use to
+// assert the wire codec), they are only used inside `actions` and its unit
+// tests, so they stay `pub(crate)`.
 pub use actions::{
     ActionCreation, ActionFeedbackPublisher, ActionFeedbackPublisherFactory, ActionGoalHandle,
-    ActionMessenger, ActionResultReply, CancelState, ConcurrentAction, DeclaredFeedback,
-    EmptyPayloadError, GoalContext, NonEmptyPayload, PendingGoal, ResultStatus, decode_cancel_ack,
-    encode_cancel_ack, generate_goal_id, unwrap_goal_payload, wrap_goal_payload,
-    wrap_result_outcome,
+    ActionGoalReply, ActionMessenger, ActionResultReply, CancelState, ConcurrentAction,
+    DeclaredFeedback, EmptyPayloadError, GoalContext, NonEmptyPayload, PendingGoal, ResultStatus,
+    decode_cancel_ack, encode_cancel_ack, generate_goal_id, unwrap_goal_payload, wrap_goal_ack,
+    wrap_goal_payload, wrap_result_outcome,
 };
 pub use bound_set::NonEmptyProducers;
 pub use observation::{ObservationPin, ObservationState, ObservedSource};
