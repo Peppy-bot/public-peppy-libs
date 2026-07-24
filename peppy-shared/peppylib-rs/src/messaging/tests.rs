@@ -2450,7 +2450,11 @@ async fn action_communication_no_instance_id_target() {
                     if let Some(tx) = publisher_tx.lock().unwrap().take() {
                         let _ = tx.send(declared.publisher);
                     }
-                    Ok(expected_goal_response_payload)
+                    super::actions::wrap_goal_ack(
+                        true,
+                        None,
+                        expected_goal_response_payload.as_ref(),
+                    )
                 }
             });
 
@@ -2537,12 +2541,9 @@ async fn action_communication_no_instance_id_target() {
         .await
         .expect("caller should send goal");
 
-        assert_eq!(goal_handle.goal_response().core_node(), LISTENER_CORE_NODE);
-        assert_eq!(
-            goal_handle.goal_response().instance_id(),
-            LISTENER_INSTANCE_ID
-        );
-        assert_eq!(goal_handle.goal_response().payload(), goal_response_payload);
+        assert_eq!(goal_handle.goal_reply().core_node, LISTENER_CORE_NODE);
+        assert_eq!(goal_handle.goal_reply().instance_id, LISTENER_INSTANCE_ID);
+        assert_eq!(goal_handle.goal_reply().body, goal_response_payload);
 
         // Consume one feedback update from the action server.
         let feedback_message = goal_handle
@@ -2632,7 +2633,11 @@ async fn action_communication_with_instance_id_target() {
                     .handle_next_request(move |_request| async move {
                         // This should never be reached
                         call_count_for_closure.fetch_add(1, Ordering::SeqCst);
-                        Ok(expected_goal_response_payload)
+                        super::actions::wrap_goal_ack(
+                            true,
+                            None,
+                            expected_goal_response_payload.as_ref(),
+                        )
                     });
 
             let handled_goal = tokio::time::timeout(Duration::from_secs(5), goal_handler).await;
@@ -2690,7 +2695,11 @@ async fn action_communication_with_instance_id_target() {
                     if let Some(tx) = publisher_tx.lock().unwrap().take() {
                         let _ = tx.send(declared.publisher);
                     }
-                    Ok(expected_goal_response_payload)
+                    super::actions::wrap_goal_ack(
+                        true,
+                        None,
+                        expected_goal_response_payload.as_ref(),
+                    )
                 }
             });
 
@@ -2780,12 +2789,9 @@ async fn action_communication_with_instance_id_target() {
         .await
         .expect("caller should send goal");
 
-        assert_eq!(goal_handle.goal_response().core_node(), LISTENER_CORE_NODE2);
-        assert_eq!(
-            goal_handle.goal_response().instance_id(),
-            LISTENER_INSTANCE_ID2
-        );
-        assert_eq!(goal_handle.goal_response().payload(), goal_response_payload);
+        assert_eq!(goal_handle.goal_reply().core_node, LISTENER_CORE_NODE2);
+        assert_eq!(goal_handle.goal_reply().instance_id, LISTENER_INSTANCE_ID2);
+        assert_eq!(goal_handle.goal_reply().body, goal_response_payload);
 
         // Consume one feedback update from the action server.
         let feedback_message = goal_handle
@@ -2892,7 +2898,11 @@ async fn action_communication_goal_cancelled() {
                         let _ = tx.send(declared.publisher);
                     }
                     goal_call_count.fetch_add(1, Ordering::SeqCst);
-                    Ok(expected_goal_response_payload)
+                    super::actions::wrap_goal_ack(
+                        true,
+                        None,
+                        expected_goal_response_payload.as_ref(),
+                    )
                 }
             });
 
@@ -2996,12 +3006,9 @@ async fn action_communication_goal_cancelled() {
     .await
     .expect("caller should send goal");
 
-    assert_eq!(goal_handle.goal_response().core_node(), LISTENER_CORE_NODE);
-    assert_eq!(
-        goal_handle.goal_response().instance_id(),
-        LISTENER_INSTANCE_ID
-    );
-    assert_eq!(goal_handle.goal_response().payload(), goal_response_payload);
+    assert_eq!(goal_handle.goal_reply().core_node, LISTENER_CORE_NODE);
+    assert_eq!(goal_handle.goal_reply().instance_id, LISTENER_INSTANCE_ID);
+    assert_eq!(goal_handle.goal_reply().body, goal_response_payload);
 
     let first_feedback = goal_handle
         .on_next_feedback()
@@ -3187,7 +3194,7 @@ async fn single_action_communication_multiple_polls() {
                                 )
                                 .await?;
 
-                            Ok(case.goal_response.clone())
+                            super::actions::wrap_goal_ack(true, None, case.goal_response.as_ref())
                         }
                     })
                     .await
@@ -3271,7 +3278,7 @@ async fn single_action_communication_multiple_polls() {
             .expect("caller should send goal");
 
             assert_eq!(
-                goal_handle.goal_response().payload(),
+                goal_handle.goal_reply().body,
                 case.goal_response.clone(),
                 "goal response should match expected payload for `{}`",
                 case.client_id
@@ -3388,7 +3395,10 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
                 Ok(Ok(Some((_ctx, goal_responder)))) => {
                     counters.goal.fetch_add(1, Ordering::SeqCst);
                     goal_responder
-                        .respond(Payload::from(spec.inst.as_bytes().to_vec()))
+                        .respond(
+                            super::actions::wrap_goal_ack(true, None, spec.inst.as_bytes())
+                                .expect("wrap goal ack"),
+                        )
                         .await
                         .expect("goal respond");
                 }
@@ -3469,8 +3479,8 @@ async fn action_wildcard_send_goal_runs_handler_on_winner_only() {
     .await
     .expect("send_goal should succeed");
 
-    let winner_inst = goal_handle.goal_response().instance_id().to_string();
-    let winner_core = goal_handle.goal_response().core_node().to_string();
+    let winner_inst = goal_handle.goal_reply().instance_id.to_string();
+    let winner_core = goal_handle.goal_reply().core_node.to_string();
     assert!(
         winner_inst == server_a_inst || winner_inst == server_b_inst,
         "goal_response identity must come from one of the producers, got {winner_inst:?}",
@@ -3720,7 +3730,10 @@ async fn action_send_goal_full_wildcard_discovers() {
             {
                 goal_count.fetch_add(1, Ordering::SeqCst);
                 goal_responder
-                    .respond(Payload::from(spec.core.as_bytes().to_vec()))
+                    .respond(
+                        super::actions::wrap_goal_ack(true, None, spec.core.as_bytes())
+                            .expect("wrap goal ack"),
+                    )
                     .await
                     .expect("goal respond");
             }
@@ -3775,8 +3788,8 @@ async fn action_send_goal_full_wildcard_discovers() {
     .await
     .expect("send_goal should succeed");
 
-    assert_eq!(goal_handle.goal_response().instance_id(), shared_inst);
-    let winner_core = goal_handle.goal_response().core_node().to_string();
+    assert_eq!(goal_handle.goal_reply().instance_id, shared_inst);
+    let winner_core = goal_handle.goal_reply().core_node.to_string();
     assert!(
         winner_core == server_a_core || winner_core == server_b_core,
         "goal_response core_node must come from one of the producers, got {winner_core:?}",
@@ -4039,7 +4052,10 @@ async fn action_send_goal_same_core_distinct_instances_pinned_routes_to_pinned()
             {
                 goal_count.fetch_add(1, Ordering::SeqCst);
                 goal_responder
-                    .respond(Payload::from(inst.as_bytes().to_vec()))
+                    .respond(
+                        super::actions::wrap_goal_ack(true, None, inst.as_bytes())
+                            .expect("wrap goal ack"),
+                    )
                     .await
                     .expect("goal respond");
             }
@@ -4090,8 +4106,8 @@ async fn action_send_goal_same_core_distinct_instances_pinned_routes_to_pinned()
         .await
         .unwrap_or_else(|e| panic!("pinned send_goal to {pinned_inst} should succeed: {e}"));
 
-        assert_eq!(goal_handle.goal_response().instance_id(), pinned_inst);
-        assert_eq!(goal_handle.goal_response().core_node(), shared_core);
+        assert_eq!(goal_handle.goal_reply().instance_id, pinned_inst);
+        assert_eq!(goal_handle.goal_reply().core_node, shared_core);
     }
 
     left_task.await.expect("left arm task panicked");
@@ -4158,7 +4174,9 @@ async fn action_send_goal_same_core_pinned_producer_busy_waits_caller_budget() {
             {
                 goal_count.fetch_add(1, Ordering::SeqCst);
                 goal_responder
-                    .respond(Payload::from_static(b"done"))
+                    .respond(
+                        super::actions::wrap_goal_ack(true, None, b"done").expect("wrap goal ack"),
+                    )
                     .await
                     .expect("goal respond");
             }
@@ -4190,7 +4208,7 @@ async fn action_send_goal_same_core_pinned_producer_busy_waits_caller_budget() {
              caller's own goal budget; failed after {elapsed:?}: {e}"
         )
     });
-    assert_eq!(goal_handle.goal_response().instance_id(), left_inst);
+    assert_eq!(goal_handle.goal_reply().instance_id, left_inst);
     assert_eq!(
         goal_count.load(Ordering::SeqCst),
         1,
@@ -4316,7 +4334,9 @@ async fn pinned_calls_issue_zero_probes() {
                     .expect("goal subscription closed before the pinned goal");
             act_goal_count.fetch_add(1, Ordering::SeqCst);
             goal_responder
-                .respond(Payload::from_static(b"accepted"))
+                .respond(
+                    super::actions::wrap_goal_ack(true, None, b"accepted").expect("wrap goal ack"),
+                )
                 .await
                 .expect("goal respond");
         })
@@ -4427,8 +4447,8 @@ async fn pinned_calls_issue_zero_probes() {
     )
     .await
     .expect("pinned send_goal should succeed");
-    assert_eq!(goal_handle.goal_response().core_node(), producer_core);
-    assert_eq!(goal_handle.goal_response().instance_id(), producer_inst);
+    assert_eq!(goal_handle.goal_reply().core_node, producer_core);
+    assert_eq!(goal_handle.goal_reply().instance_id, producer_inst);
 
     // Wire delivery to the watcher is asynchronous; give it a moment
     // before reading the counters.
