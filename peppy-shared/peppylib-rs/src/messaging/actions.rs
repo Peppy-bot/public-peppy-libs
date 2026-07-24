@@ -195,6 +195,12 @@ fn goal_ack_error(reason: impl Into<String>) -> Error {
 /// admission out of the declared response schema, so `GoalResponse` contains
 /// exactly the fields the contract declares. Symmetric counterpart of
 /// [`unwrap_goal_ack`].
+///
+/// Breaking wire change: producers and consumers must run the same peppylib
+/// generation. A pre-envelope producer's raw reply can decode as a
+/// plausible-but-wrong ack (a capnp segment table starts with 0x00, reading
+/// as a rejection), so mixed versions are unsupported; upgrade all nodes of
+/// a deployment together, as peppy releases already require.
 pub fn wrap_goal_ack(accepted: bool, reason: Option<&str>, body: &[u8]) -> Result<Payload> {
     let reason = reason.unwrap_or("");
     if reason.len() > u16::MAX as usize {
