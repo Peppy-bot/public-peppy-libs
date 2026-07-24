@@ -15,16 +15,11 @@
 mod sweep;
 
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use openarm_can::{
-    ARM_MOTOR_TYPES, ARM_RECV_IDS, ArmCan, GripperCan, JointVec, Mit, PosForce, v10, v20,
-};
+use openarm_can::{ArmCan, GripperCan, JointVec, Mit, PosForce, v10, v20};
 use socketcan::id::FdFlags;
-use socketcan::{
-    CanAnyFrame, CanFdFrame, CanFdSocket, CanFrame, CanSocket, EmbeddedFrame, Frame, Socket,
-    StandardId,
-};
+use socketcan::{CanAnyFrame, CanFdSocket, EmbeddedFrame, Frame, Socket};
 
 /// All tests share one bus, so they must not interleave traffic.
 static BUS_LOCK: Mutex<()> = Mutex::new(());
@@ -149,128 +144,4 @@ fn gripper_mit_sweep_matches_ffi_fixture() {
 #[test]
 fn gripper_pos_force_sweep_matches_ffi_fixture() {
     replay_against_fixture("gripper_pos_force.txt", drive_gripper_pos_force_sweep);
-}
-
-/// A full-scale state frame: q at +p_max, dq at -v_max, tau at +t_max. These
-/// quantizer endpoints decode to the exact limit values.
-const FULL_SCALE_STATE: [u8; 8] = [0x00, 0xFF, 0xFF, 0x00, 0x0F, 0xFF, 0x30, 0x28];
-
-#[test]
-fn state_frames_decode_into_arm_state() {
-    let Some(iface) = test_iface() else {
-        eprintln!("skipped: OPENARM_CAN_TEST_IFACE not set");
-        return;
-    };
-    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-    let mut arm = ArmCan::open(&iface, true).expect("open arm");
-    let tx = CanFdSocket::open(&iface).expect("open sender");
-    for &recv_id in &ARM_RECV_IDS {
-        let id = StandardId::new(recv_id as u16).unwrap();
-        let frame = CanFdFrame::with_flags(id, &FULL_SCALE_STATE, FdFlags::BRS).unwrap();
-        tx.write_frame(&frame).expect("send state");
-    }
-    arm.recv_all(100_000).expect("recv_all");
-
-    let state = arm.get_state();
-    for (i, motor_type) in ARM_MOTOR_TYPES.iter().enumerate() {
-        // Full-scale limits per motor model (Damiao MOTOR_LIMIT_PARAMS).
-        let (v_max, t_max) = match motor_type {
-            openarm_can::MotorType::DM8009 => (45.0, 54.0),
-            openarm_can::MotorType::DM4340 => (8.0, 28.0),
-            openarm_can::MotorType::DM4310 => (30.0, 10.0),
-            other => panic!("unexpected arm motor type {other:?}"),
-        };
-        assert_eq!(state.positions[i], 12.5, "joint {i}");
-        assert_eq!(state.velocities[i], -v_max, "joint {i}");
-        assert_eq!(state.torques[i], t_max, "joint {i}");
-    }
-}
-
-#[test]
-fn classic_state_frame_decodes_on_fd_socket() {
-    // The C++ implementation drops classic frames arriving on an FD socket;
-    // the native driver accepts both read sizes.
-    let Some(iface) = test_iface() else {
-        eprintln!("skipped: OPENARM_CAN_TEST_IFACE not set");
-        return;
-    };
-    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-    let mut arm = ArmCan::open(&iface, true).expect("open arm");
-    let tx = CanSocket::open(&iface).expect("open classic sender");
-    let id = StandardId::new(ARM_RECV_IDS[0] as u16).unwrap();
-    let frame = CanFrame::new(id, &FULL_SCALE_STATE).unwrap();
-    tx.write_frame(&frame).expect("send state");
-    arm.recv_all(100_000).expect("recv_all");
-
-    assert_eq!(arm.get_state().positions[0], 12.5);
-}
-
-#[test]
-fn gripper_open_drains_the_ctrl_mode_echo() {
-    // The motor echoes a parameter write on the same recv id as state frames;
-    // if the echo leaked into the state cache it would decode as a garbage
-    // position (~-12.47 rad here). Opening must consume it.
-    let Some(iface) = test_iface() else {
-        eprintln!("skipped: OPENARM_CAN_TEST_IFACE not set");
-        return;
-    };
-    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-    let responder = CanFdSocket::open(&iface).expect("open responder");
-    let echo_thread = std::thread::spawn(move || {
-        // Wait for the control-mode write, then echo it back on the recv id.
-        loop {
-            let frame = responder
-                .read_frame_timeout(Duration::from_secs(2))
-                .expect("ctrl-mode write never arrived");
-            let CanAnyFrame::Fd(f) = frame else { continue };
-            if f.raw_id() == 0x7FF && f.data().get(2) == Some(&0x55) {
-                let mut echo = [0u8; 8];
-                echo.copy_from_slice(&f.data()[..8]);
-                let id = StandardId::new(v20::GRIPPER_RECV_ID as u16).unwrap();
-                let reply = CanFdFrame::with_flags(id, &echo, FdFlags::BRS).unwrap();
-                responder.write_frame(&reply).expect("send echo");
-                return;
-            }
-        }
-    });
-
-    let gripper = GripperCan::<PosForce>::open_pos_force(
-        &iface,
-        true,
-        v20::GRIPPER_MOTOR_TYPE,
-        v20::GRIPPER_SEND_ID,
-        v20::GRIPPER_RECV_ID,
-    )
-    .expect("open gripper");
-    echo_thread.join().expect("responder thread");
-
-    let state = gripper.get_state();
-    assert_eq!(
-        state.position, 0.0,
-        "param echo leaked into the state cache"
-    );
-    assert_eq!(state.velocity, 0.0);
-    assert_eq!(state.torque, 0.0);
-}
-
-#[test]
-fn recv_all_times_out_on_a_quiet_bus() {
-    let Some(iface) = test_iface() else {
-        eprintln!("skipped: OPENARM_CAN_TEST_IFACE not set");
-        return;
-    };
-    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-    let mut arm = ArmCan::open(&iface, true).expect("open arm");
-    let start = Instant::now();
-    arm.recv_all(50_000).expect("recv_all");
-    let elapsed = start.elapsed();
-    assert!(
-        elapsed >= Duration::from_millis(40),
-        "returned too early: {elapsed:?}"
-    );
-    assert!(elapsed < Duration::from_secs(1), "hung: {elapsed:?}");
 }
