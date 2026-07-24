@@ -108,6 +108,8 @@ pub enum CanError {
     InvalidCanId(u32),
     #[error("torque_pu must be per-unit in 0..=1, got {0}")]
     TorqueOutOfRange(f64),
+    #[error("command value must be finite, got {0}")]
+    NonFiniteCommand(f64),
 }
 
 pub type Result<T> = std::result::Result<T, CanError>;
@@ -164,7 +166,7 @@ impl ArmCan {
                 q[i],
                 dq[i],
                 tau[i],
-            );
+            )?;
             self.0.send(&frame)?;
         }
         Ok(())
@@ -233,7 +235,7 @@ impl GripperCan<Mit> {
     /// MIT-mode command: PD to `q`/`dq` plus feedforward `tau`.
     pub fn mit_control(&mut self, kp: f64, kd: f64, q: f64, dq: f64, tau: f64) -> Result<()> {
         let slot = &self.bus.slots()[0];
-        let frame = protocol::mit_frame(slot.motor_type(), slot.send_id(), kp, kd, q, dq, tau);
+        let frame = protocol::mit_frame(slot.motor_type(), slot.send_id(), kp, kd, q, dq, tau)?;
         self.bus.send(&frame)
     }
 }
@@ -266,7 +268,7 @@ impl GripperCan<PosForce> {
     pub fn set_position(&mut self, q_rad: f64, speed_rad_s: f64, torque_pu: f64) -> Result<()> {
         let torque = TorquePu::new(torque_pu)?;
         let send_id = self.bus.slots()[0].send_id();
-        let frame = protocol::pos_force_frame(send_id, q_rad, speed_rad_s, torque);
+        let frame = protocol::pos_force_frame(send_id, q_rad, speed_rad_s, torque)?;
         self.bus.send(&frame)
     }
 }

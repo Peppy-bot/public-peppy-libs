@@ -126,8 +126,18 @@ fn command_frame(send_id: u32, cmd: u8) -> OutFrame {
     }
 }
 
+/// Rejects NaN and infinities: quantization would silently turn them into a
+/// full-scale command.
+fn finite(value: f64) -> Result<f64> {
+    if !value.is_finite() {
+        return Err(CanError::NonFiniteCommand(value));
+    }
+    Ok(value)
+}
+
 /// MIT-mode command: PD to `q`/`dq` with gains `kp`/`kd` plus feedforward `tau`.
-/// Values are clamped to the motor's full-scale ranges (kp `0..=500`, kd `0..=5`).
+/// Values must be finite and are clamped to the motor's full-scale ranges
+/// (kp `0..=500`, kd `0..=5`).
 pub(crate) fn mit_frame(
     motor_type: MotorType,
     send_id: u32,
@@ -136,14 +146,14 @@ pub(crate) fn mit_frame(
     q: f64,
     dq: f64,
     tau: f64,
-) -> OutFrame {
+) -> Result<OutFrame> {
     let lim = motor_type.limits();
-    let kp_u = quantize(kp, 0.0, 500.0, 12);
-    let kd_u = quantize(kd, 0.0, 5.0, 12);
-    let q_u = quantize(q, -lim.p_max, lim.p_max, 16);
-    let dq_u = quantize(dq, -lim.v_max, lim.v_max, 12);
-    let tau_u = quantize(tau, -lim.t_max, lim.t_max, 12);
-    OutFrame {
+    let kp_u = quantize(finite(kp)?, 0.0, 500.0, 12);
+    let kd_u = quantize(finite(kd)?, 0.0, 5.0, 12);
+    let q_u = quantize(finite(q)?, -lim.p_max, lim.p_max, 16);
+    let dq_u = quantize(finite(dq)?, -lim.v_max, lim.v_max, 12);
+    let tau_u = quantize(finite(tau)?, -lim.t_max, lim.t_max, 12);
+    Ok(OutFrame {
         id: send_id,
         data: [
             (q_u >> 8) as u8,
@@ -155,28 +165,28 @@ pub(crate) fn mit_frame(
             (((kd_u & 0xF) << 4) | ((tau_u >> 8) & 0xF)) as u8,
             (tau_u & 0xFF) as u8,
         ],
-    }
+    })
 }
 
 /// POS_FORCE command: drive to `q_rad` under a speed limit (`0..=100` rad/s,
-/// clamped) and the torque-current limit.
+/// clamped) and the torque-current limit. Position and speed must be finite.
 pub(crate) fn pos_force_frame(
     send_id: u32,
     q_rad: f64,
     speed_rad_s: f64,
     torque: TorquePu,
-) -> OutFrame {
-    let pos = (q_rad as f32).to_le_bytes();
-    let speed_u = (speed_rad_s.clamp(0.0, 100.0) * 100.0) as u16;
+) -> Result<OutFrame> {
+    let pos = (finite(q_rad)? as f32).to_le_bytes();
+    let speed_u = (finite(speed_rad_s)?.clamp(0.0, 100.0) * 100.0) as u16;
     let torque_u = (torque.0 * 10000.0) as u16;
     let [speed_lo, speed_hi] = speed_u.to_le_bytes();
     let [torque_lo, torque_hi] = torque_u.to_le_bytes();
-    OutFrame {
+    Ok(OutFrame {
         id: send_id + POS_FORCE_ID_OFFSET,
         data: [
             pos[0], pos[1], pos[2], pos[3], speed_lo, speed_hi, torque_lo, torque_hi,
         ],
-    }
+    })
 }
 
 /// Parameter write setting the motor's control mode.
@@ -254,7 +264,7 @@ mod tests {
     #[test]
     fn mit_frame_all_zero_command_dm8009() {
         // q=0x7FFF, dq=0x7FF, kp=0, kd=0, tau=0x7FF nibble-packed by hand.
-        let f = mit_frame(MotorType::DM8009, 0x01, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let f = mit_frame(MotorType::DM8009, 0x01, 0.0, 0.0, 0.0, 0.0, 0.0).unwrap();
         assert_eq!(f.id, 0x01);
         assert_eq!(f.data, [0x7F, 0xFF, 0x7F, 0xF0, 0x00, 0x00, 0x07, 0xFF]);
     }
@@ -262,7 +272,7 @@ mod tests {
     #[test]
     fn mit_frame_full_scale_command() {
         // Every field clamped high: all quantizers saturate.
-        let f = mit_frame(MotorType::DM4310, 0x05, 501.0, 5.1, 13.0, 31.0, 11.0);
+        let f = mit_frame(MotorType::DM4310, 0x05, 501.0, 5.1, 13.0, 31.0, 11.0).unwrap();
         assert_eq!(f.data, [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
     }
 
@@ -270,7 +280,7 @@ mod tests {
     fn mit_frame_nibble_boundaries() {
         // DM4310: q=1.0 -> 35388 = 0x8A3C; kp=250.0 -> trunc(0.5*4095) = 2047 =
         // 0x7FF; kd/dq/tau at zero-point. Exercises every nibble splice.
-        let f = mit_frame(MotorType::DM4310, 0x03, 250.0, 0.0, 1.0, 0.0, 0.0);
+        let f = mit_frame(MotorType::DM4310, 0x03, 250.0, 0.0, 1.0, 0.0, 0.0).unwrap();
         assert_eq!(f.data[0], 0x8A);
         assert_eq!(f.data[1], 0x3C);
         assert_eq!(f.data[2], 0x7F); // dq 0x7FF high byte
@@ -304,7 +314,7 @@ mod tests {
 
     #[test]
     fn pos_force_frame_layout() {
-        let f = pos_force_frame(0x08, 1.5, 5.0, TorquePu::new(0.5).unwrap());
+        let f = pos_force_frame(0x08, 1.5, 5.0, TorquePu::new(0.5).unwrap()).unwrap();
         assert_eq!(f.id, 0x308);
         assert_eq!(f.data[..4], (1.5f32).to_le_bytes());
         assert_eq!(f.data[4..6], 500u16.to_le_bytes()); // 5.0 rad/s * 100
@@ -313,12 +323,30 @@ mod tests {
 
     #[test]
     fn pos_force_frame_clamps_speed() {
-        let f = pos_force_frame(0x08, 0.0, 150.0, TorquePu::new(1.0).unwrap());
+        let f = pos_force_frame(0x08, 0.0, 150.0, TorquePu::new(1.0).unwrap()).unwrap();
         assert_eq!(f.data[4..6], 10000u16.to_le_bytes());
         assert_eq!(f.data[6..8], 10000u16.to_le_bytes());
-        let f = pos_force_frame(0x08, 0.0, -3.0, TorquePu::new(0.0).unwrap());
+        let f = pos_force_frame(0x08, 0.0, -3.0, TorquePu::new(0.0).unwrap()).unwrap();
         assert_eq!(f.data[4..6], 0u16.to_le_bytes());
         assert_eq!(f.data[6..8], 0u16.to_le_bytes());
+    }
+
+    #[test]
+    fn mit_frame_rejects_non_finite_values() {
+        let ty = MotorType::DM4310;
+        assert!(mit_frame(ty, 0x01, f64::NAN, 0.0, 0.0, 0.0, 0.0).is_err());
+        assert!(mit_frame(ty, 0x01, 0.0, f64::INFINITY, 0.0, 0.0, 0.0).is_err());
+        assert!(mit_frame(ty, 0x01, 0.0, 0.0, f64::NEG_INFINITY, 0.0, 0.0).is_err());
+        assert!(mit_frame(ty, 0x01, 0.0, 0.0, 0.0, f64::NAN, 0.0).is_err());
+        assert!(mit_frame(ty, 0x01, 0.0, 0.0, 0.0, 0.0, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn pos_force_frame_rejects_non_finite_values() {
+        let torque = TorquePu::new(0.5).unwrap();
+        assert!(pos_force_frame(0x08, f64::NAN, 5.0, torque).is_err());
+        assert!(pos_force_frame(0x08, f64::INFINITY, 5.0, torque).is_err());
+        assert!(pos_force_frame(0x08, 0.0, f64::NAN, torque).is_err());
     }
 
     #[test]
@@ -358,7 +386,7 @@ mod tests {
         for q in [-12.5, -3.7, -0.001, 0.0, 0.42, 7.9, 12.5] {
             for dq in [-45.0, -1.3, 0.0, 2.2, 45.0] {
                 for tau in [-54.0, -8.05, 0.0, 0.5, 54.0] {
-                    let f = mit_frame(ty, 0x01, 0.0, 0.0, q, dq, tau);
+                    let f = mit_frame(ty, 0x01, 0.0, 0.0, q, dq, tau).unwrap();
                     // Rebuild the state layout from the command layout.
                     let q_u = (u16::from(f.data[0]) << 8) | u16::from(f.data[1]);
                     let dq_u = (u16::from(f.data[2]) << 4) | (u16::from(f.data[3]) >> 4);
