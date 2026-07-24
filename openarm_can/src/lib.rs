@@ -1,49 +1,25 @@
-//! Rust wrapper around the openarm_can C++ library.
+//! Pure-Rust driver for OpenArm's Damiao DM motors over Linux SocketCAN.
 //!
-//! [`ArmCan`] and [`GripperCan`] must be wrapped in `Arc<Mutex<_>>` for
-//! cross-task sharing — they are `Send` but not `Sync`.
+//! [`ArmCan`] and [`GripperCan`] take `&mut self` for every bus operation;
+//! wrap them in `Arc<Mutex<_>>` for cross-task sharing.
 //!
 //! The arm motor lineup and CAN addressing are identical across OpenArm v1.0 and v2.0
 //! (same DM motors, same bus IDs), so they live once at the crate root ([`ARM_MOTOR_TYPES`],
 //! [`ARM_SEND_IDS`], [`ARM_RECV_IDS`]). Only the gripper differs per generation: [`v10`]
 //! is the prismatic parallel-jaw gripper (MIT position control); [`v20`] is the revolute
 //! pinch gripper (POS_FORCE control with a commanded force limit).
+//!
+//! State readback is poll-based: a `recv_all` pass decodes pending state
+//! frames into a cache that `get_state` snapshots.
 
-use std::ffi::CString;
+mod bus;
+mod protocol;
 
-/// Damiao motor model; mirrors `openarm::damiao_motor::MotorType` — do not reorder.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MotorType {
-    DM3507 = 0,
-    DM4310 = 1,
-    DM4310_48V = 2,
-    DM4340 = 3,
-    DM4340_48V = 4,
-    DM6006 = 5,
-    DM8006 = 6,
-    DM8009 = 7,
-    DM10010L = 8,
-    DM10010 = 9,
-    DMH3510 = 10,
-    DMH6215 = 11,
-    DMG6220 = 12,
-}
+use std::marker::PhantomData;
 
-/// Damiao motor control mode; mirrors `openarm::damiao_motor::ControlMode`; the values
-/// are the on-wire mode ids, do not renumber. The arm and the v1 gripper run [`Mit`];
-/// the v2 pinch gripper runs [`PosForce`] (position command with a speed + force limit).
-///
-/// [`Mit`]: ControlMode::Mit
-/// [`PosForce`]: ControlMode::PosForce
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ControlMode {
-    Mit = 1,
-    PosVel = 2,
-    Vel = 3,
-    PosForce = 4,
-}
+use bus::{MotorBus, MotorSlot};
+pub use protocol::MotorType;
+use protocol::TorquePu;
 
 /// Degrees of freedom of the arm. Both generations are 7-DOF SRS.
 pub const ARM_DOF: usize = 7;
@@ -95,18 +71,13 @@ pub mod v20 {
     // motor-frame open angle used by enactic's POS_FORCE reference (test_gripper_posforce
     // commands 0..π/2); each finger joint travels π/2 rad (the right hand's URDF range
     // mirrored to -π/2..0), so the motor↔finger ratio is 1:1.
-    #[allow(clippy::approx_constant)]
     pub const GRIPPER_OPEN_RAD: f64 = std::f64::consts::FRAC_PI_2;
 }
 
-/// Damiao motor callback mode. Controls which CAN frames the firmware emits.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallbackMode {
-    State = 0,
-    Param = 1,
-    Ignore = 2,
-}
+/// Receive window for the motor's reply to a control-mode write during
+/// gripper bring-up, matching the enactic reference timing (demo.cpp waits
+/// 2000us after enable and parameter round-trips).
+const CTRL_MODE_ECHO_TIMEOUT_US: u32 = 2000;
 
 /// State of the gripper motor from the most recent `recv_all`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -126,259 +97,56 @@ pub struct ArmState {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CanError {
-    #[error("CAN interface name '{0}' contains an interior NUL byte")]
-    InvalidInterface(String),
-    #[error("failed to open CAN interface '{0}'")]
-    OpenFailed(String),
+    #[error("failed to open CAN interface '{interface}'")]
+    Open {
+        interface: String,
+        source: std::io::Error,
+    },
+    #[error("CAN I/O failed")]
+    Io(#[from] std::io::Error),
+    #[error("CAN id {0:#x} exceeds the 11-bit standard range")]
+    InvalidCanId(u32),
+    #[error("torque_pu must be per-unit in 0..=1, got {0}")]
+    TorqueOutOfRange(f64),
 }
 
 pub type Result<T> = std::result::Result<T, CanError>;
 
-// FFI to the openarm_can C++ wrapper (see wrapper.h). The surface is small and uses only
-// primitive types, so the `extern "C"` block is declared by hand rather than via bindgen.
-// build.rs compiles wrapper.cpp and sets `openarm_sdk` when the C++ SDK is present.
-#[cfg(openarm_sdk)]
-mod inner {
-    use std::os::raw::{c_char, c_void};
-
-    pub type OpenArmHandle = *mut c_void;
-
-    unsafe extern "C" {
-        pub fn openarm_create(can_interface: *const c_char, enable_fd: bool) -> OpenArmHandle;
-        pub fn openarm_destroy(h: OpenArmHandle);
-        pub fn openarm_init_arm_motors(
-            h: OpenArmHandle,
-            motor_types: *const u8,
-            send_can_ids: *const u32,
-            recv_can_ids: *const u32,
-            count: i32,
-        );
-        pub fn openarm_enable_all(h: OpenArmHandle);
-        pub fn openarm_disable_all(h: OpenArmHandle);
-        pub fn openarm_recv_all(h: OpenArmHandle, first_timeout_us: i32);
-        pub fn openarm_refresh_all(h: OpenArmHandle);
-        pub fn openarm_set_callback_mode_all(h: OpenArmHandle, mode: i32);
-        pub fn openarm_arm_mit_control(
-            h: OpenArmHandle,
-            kp: *const f64,
-            kd: *const f64,
-            q: *const f64,
-            dq: *const f64,
-            tau: *const f64,
-            count: i32,
-        );
-        pub fn openarm_arm_get_state(
-            h: OpenArmHandle,
-            positions: *mut f64,
-            velocities: *mut f64,
-            torques: *mut f64,
-            count: i32,
-        );
-        pub fn openarm_init_gripper_motor(
-            h: OpenArmHandle,
-            motor_type: u8,
-            send_can_id: u32,
-            recv_can_id: u32,
-        );
-        pub fn openarm_init_gripper_motor_mode(
-            h: OpenArmHandle,
-            motor_type: u8,
-            send_can_id: u32,
-            recv_can_id: u32,
-            control_mode: u8,
-        );
-        pub fn openarm_gripper_mit_control(
-            h: OpenArmHandle,
-            kp: f64,
-            kd: f64,
-            q: f64,
-            dq: f64,
-            tau: f64,
-        );
-        pub fn openarm_gripper_pos_force_control(h: OpenArmHandle, q: f64, dq: f64, i: f64);
-        pub fn openarm_gripper_get_state(
-            h: OpenArmHandle,
-            position: *mut f64,
-            velocity: *mut f64,
-            torque: *mut f64,
-        );
-    }
-}
-
-// Stub FFI used when the openarm_can C++ SDK is absent (dev machines / CI without
-// the hardware library; see build.rs). `openarm_create` returns null so
-// `CanHandle::new` fails with `CanError::OpenFailed`, which makes the other entry
-// points unreachable. They exist only so the crate links and the pure-Rust API
-// and tests compile. Build against the real SDK for hardware support. Signatures
-// mirror the `openarm_sdk` extern block above so the wrapper code compiles against both.
-#[cfg(not(openarm_sdk))]
-mod inner {
-    #![allow(dead_code, unused_variables)]
-    use std::os::raw::{c_char, c_void};
-
-    pub type OpenArmHandle = *mut c_void;
-
-    pub unsafe fn openarm_create(_iface: *const c_char, _enable_fd: bool) -> OpenArmHandle {
-        std::ptr::null_mut()
-    }
-    pub unsafe fn openarm_destroy(h: OpenArmHandle) {}
-    pub unsafe fn openarm_enable_all(h: OpenArmHandle) {}
-    pub unsafe fn openarm_disable_all(h: OpenArmHandle) {}
-    pub unsafe fn openarm_recv_all(h: OpenArmHandle, first_timeout_us: i32) {}
-    pub unsafe fn openarm_refresh_all(h: OpenArmHandle) {}
-    pub unsafe fn openarm_set_callback_mode_all(h: OpenArmHandle, mode: i32) {}
-    pub unsafe fn openarm_init_arm_motors(
-        h: OpenArmHandle,
-        motor_types: *const u8,
-        send_can_ids: *const u32,
-        recv_can_ids: *const u32,
-        count: i32,
-    ) {
-    }
-    pub unsafe fn openarm_arm_mit_control(
-        h: OpenArmHandle,
-        kp: *const f64,
-        kd: *const f64,
-        q: *const f64,
-        dq: *const f64,
-        tau: *const f64,
-        count: i32,
-    ) {
-    }
-    pub unsafe fn openarm_arm_get_state(
-        h: OpenArmHandle,
-        positions: *mut f64,
-        velocities: *mut f64,
-        torques: *mut f64,
-        count: i32,
-    ) {
-    }
-    pub unsafe fn openarm_init_gripper_motor(
-        h: OpenArmHandle,
-        motor_type: u8,
-        send_can_id: u32,
-        recv_can_id: u32,
-    ) {
-    }
-    pub unsafe fn openarm_init_gripper_motor_mode(
-        h: OpenArmHandle,
-        motor_type: u8,
-        send_can_id: u32,
-        recv_can_id: u32,
-        control_mode: u8,
-    ) {
-    }
-    pub unsafe fn openarm_gripper_mit_control(
-        h: OpenArmHandle,
-        kp: f64,
-        kd: f64,
-        q: f64,
-        dq: f64,
-        tau: f64,
-    ) {
-    }
-    pub unsafe fn openarm_gripper_pos_force_control(h: OpenArmHandle, q: f64, dq: f64, i: f64) {}
-    pub unsafe fn openarm_gripper_get_state(
-        h: OpenArmHandle,
-        position: *mut f64,
-        velocity: *mut f64,
-        torque: *mut f64,
-    ) {
-    }
-}
-
-// SAFETY: Verified by inspection of enactic/openarm_can: CANSocket wraps a plain
-// socket_fd_ (int) with no thread affinity; all other fields are heap-allocated
-// (std::unique_ptr / std::vector / std::map); the library has no thread_local storage
-// and no static mutable state. Transferring ownership across threads is safe.
-// Sync is intentionally not impl'd: mutable motor state is read back without any
-// synchronisation. Wrap in Arc<Mutex<_>> for cross-task sharing.
-struct CanHandle {
-    handle: inner::OpenArmHandle,
-}
-
-unsafe impl Send for CanHandle {}
-
-impl CanHandle {
-    fn new(can_interface: &str, enable_fd: bool) -> Result<Self> {
-        let iface = CString::new(can_interface)
-            .map_err(|_| CanError::InvalidInterface(can_interface.to_owned()))?;
-        let handle = unsafe { inner::openarm_create(iface.as_ptr(), enable_fd) };
-        if handle.is_null() {
-            return Err(CanError::OpenFailed(can_interface.to_owned()));
-        }
-        Ok(Self { handle })
-    }
-
-    fn enable_all(&mut self) {
-        unsafe { inner::openarm_enable_all(self.handle) }
-    }
-
-    fn disable_all(&mut self) {
-        unsafe { inner::openarm_disable_all(self.handle) }
-    }
-
-    fn recv_all(&mut self, first_timeout_us: i32) {
-        unsafe { inner::openarm_recv_all(self.handle, first_timeout_us) }
-    }
-
-    fn refresh_all(&mut self) {
-        unsafe { inner::openarm_refresh_all(self.handle) }
-    }
-
-    fn set_callback_mode(&mut self, mode: CallbackMode) {
-        unsafe { inner::openarm_set_callback_mode_all(self.handle, mode as i32) }
-    }
-}
-
-impl Drop for CanHandle {
-    fn drop(&mut self) {
-        unsafe { inner::openarm_destroy(self.handle) }
-    }
-}
-
-/// 7 DOF arm. Open with [`ArmCan::new`].
-pub struct ArmCan(CanHandle);
+/// 7-DOF arm on one CAN interface. Open with [`ArmCan::open`], then
+/// `enable_all` before commanding.
+pub struct ArmCan(MotorBus);
 
 impl ArmCan {
-    pub fn new(can_interface: &str, enable_fd: bool) -> Result<Self> {
-        Ok(Self(CanHandle::new(can_interface, enable_fd)?))
+    /// Opens `can_interface` and registers the seven arm motors
+    /// ([`ARM_MOTOR_TYPES`] on [`ARM_SEND_IDS`] / [`ARM_RECV_IDS`]).
+    pub fn open(can_interface: &str, enable_fd: bool) -> Result<Self> {
+        let slots = (0..ARM_DOF)
+            .map(|i| MotorSlot::new(ARM_MOTOR_TYPES[i], ARM_SEND_IDS[i], ARM_RECV_IDS[i], 0))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self(MotorBus::open(can_interface, enable_fd, slots)?))
     }
 
-    pub fn init_motors(
-        &mut self,
-        motor_types: &[MotorType; ARM_DOF],
-        send_ids: &[u32; ARM_DOF],
-        recv_ids: &[u32; ARM_DOF],
-    ) {
-        let types_u8: [u8; ARM_DOF] = std::array::from_fn(|i| motor_types[i] as u8);
-        unsafe {
-            inner::openarm_init_arm_motors(
-                self.0.handle,
-                types_u8.as_ptr(),
-                send_ids.as_ptr(),
-                recv_ids.as_ptr(),
-                ARM_DOF as i32,
-            );
-        }
-    }
-
-    pub fn enable_all(&mut self) {
+    pub fn enable_all(&mut self) -> Result<()> {
         self.0.enable_all()
     }
-    pub fn disable_all(&mut self) {
+
+    pub fn disable_all(&mut self) -> Result<()> {
         self.0.disable_all()
     }
-    pub fn recv_all(&mut self, first_timeout_us: i32) {
+
+    /// Receives pending state frames into the cache: waits up to
+    /// `first_timeout_us` for the first frame, then drains without waiting.
+    pub fn recv_all(&mut self, first_timeout_us: u32) -> Result<()> {
         self.0.recv_all(first_timeout_us)
     }
-    pub fn refresh_all(&mut self) {
-        self.0.refresh_all()
-    }
-    pub fn set_callback_mode(&mut self, mode: CallbackMode) {
-        self.0.set_callback_mode(mode)
+
+    /// Receives and discards pending frames (bring-up replies that must not
+    /// land in the state cache).
+    pub fn drain(&mut self, first_timeout_us: u32) -> Result<()> {
+        self.0.drain(first_timeout_us)
     }
 
+    /// MIT-mode command to all joints: PD to `q`/`dq` plus feedforward `tau`.
     pub fn mit_control(
         &mut self,
         kp: &JointVec,
@@ -386,150 +154,172 @@ impl ArmCan {
         q: &JointVec,
         dq: &JointVec,
         tau: &JointVec,
-    ) {
-        unsafe {
-            inner::openarm_arm_mit_control(
-                self.0.handle,
-                kp.as_ptr(),
-                kd.as_ptr(),
-                q.as_ptr(),
-                dq.as_ptr(),
-                tau.as_ptr(),
-                ARM_DOF as i32,
+    ) -> Result<()> {
+        for i in 0..ARM_DOF {
+            let frame = protocol::mit_frame(
+                ARM_MOTOR_TYPES[i],
+                ARM_SEND_IDS[i],
+                kp[i],
+                kd[i],
+                q[i],
+                dq[i],
+                tau[i],
             );
+            self.0.send(&frame)?;
         }
+        Ok(())
     }
 
-    /// Snapshot of joint state from the most recent `recv_all`.
-    /// Calls `std::abort` (via C++) if [`init_motors`](Self::init_motors) has not been called.
+    /// Snapshot of joint state from the most recent [`recv_all`](Self::recv_all).
     pub fn get_state(&self) -> ArmState {
         let mut state = ArmState::default();
-        unsafe {
-            inner::openarm_arm_get_state(
-                self.0.handle,
-                state.positions.as_mut_ptr(),
-                state.velocities.as_mut_ptr(),
-                state.torques.as_mut_ptr(),
-                ARM_DOF as i32,
-            );
+        for (i, slot) in self.0.slots().iter().enumerate() {
+            let motor = slot.state();
+            state.positions[i] = motor.position;
+            state.velocities[i] = motor.velocity;
+            state.torques[i] = motor.torque;
         }
         state
     }
 }
 
-/// 1 DOF gripper. Open with [`GripperCan::new`], then initialise the motor for the control
-/// mode this generation uses: [`init_motor`](Self::init_motor) (MIT, v1.0) or
-/// [`init_motor_pos_force`](Self::init_motor_pos_force) (POS_FORCE, v2.0). The handle
-/// remembers the initialised mode and asserts each command matches it, so a frame can
-/// never be sent in a protocol the motor is not configured for.
-pub struct GripperCan {
-    handle: CanHandle,
-    mode: Option<ControlMode>,
+/// Marker for the MIT control mode (v1.0 prismatic gripper).
+pub enum Mit {}
+/// Marker for the POS_FORCE control mode (v2.0 pinch gripper).
+pub enum PosForce {}
+
+mod sealed {
+    use crate::protocol::ControlMode;
+
+    pub trait Sealed {
+        const CONTROL_MODE: ControlMode;
+    }
+    impl Sealed for super::Mit {
+        const CONTROL_MODE: ControlMode = ControlMode::Mit;
+    }
+    impl Sealed for super::PosForce {
+        const CONTROL_MODE: ControlMode = ControlMode::PosForce;
+    }
 }
 
-impl GripperCan {
-    pub fn new(can_interface: &str, enable_fd: bool) -> Result<Self> {
+/// Gripper control mode, fixed at open time: [`Mit`] or [`PosForce`].
+pub trait Mode: sealed::Sealed {}
+impl Mode for Mit {}
+impl Mode for PosForce {}
+
+/// 1-DOF gripper on one CAN interface. The control mode is part of the type:
+/// open with [`GripperCan::open_mit`] (v1.0) or
+/// [`GripperCan::open_pos_force`] (v2.0), then `enable_all` before
+/// commanding. Opening writes the motor's control-mode parameter and consumes
+/// the reply, so the bus is quiet when it returns.
+pub struct GripperCan<M: Mode> {
+    bus: MotorBus,
+    _mode: PhantomData<M>,
+}
+
+impl GripperCan<Mit> {
+    /// Opens the gripper motor in MIT mode; command it with
+    /// [`mit_control`](Self::mit_control).
+    pub fn open_mit(
+        can_interface: &str,
+        enable_fd: bool,
+        motor_type: MotorType,
+        send_id: u32,
+        recv_id: u32,
+    ) -> Result<Self> {
+        Self::open(can_interface, enable_fd, motor_type, send_id, recv_id, 0)
+    }
+
+    /// MIT-mode command: PD to `q`/`dq` plus feedforward `tau`.
+    pub fn mit_control(&mut self, kp: f64, kd: f64, q: f64, dq: f64, tau: f64) -> Result<()> {
+        let slot = &self.bus.slots()[0];
+        let frame = protocol::mit_frame(slot.motor_type(), slot.send_id(), kp, kd, q, dq, tau);
+        self.bus.send(&frame)
+    }
+}
+
+impl GripperCan<PosForce> {
+    /// Opens the gripper motor in POS_FORCE mode; command it with
+    /// [`set_position`](Self::set_position).
+    pub fn open_pos_force(
+        can_interface: &str,
+        enable_fd: bool,
+        motor_type: MotorType,
+        send_id: u32,
+        recv_id: u32,
+    ) -> Result<Self> {
+        Self::open(
+            can_interface,
+            enable_fd,
+            motor_type,
+            send_id,
+            recv_id,
+            protocol::POS_FORCE_ID_OFFSET,
+        )
+    }
+
+    /// POS_FORCE-mode command: drive to motor angle `q_rad` with an absolute
+    /// speed limit `speed_rad_s` (`0..=100` rad/s, clamped) and a
+    /// torque-current limit `torque_pu` (per-unit, `0..=1`; rejected outside
+    /// that range). The commanded force is the grip force cap; measured
+    /// torque comes back via [`get_state`](Self::get_state).
+    pub fn set_position(&mut self, q_rad: f64, speed_rad_s: f64, torque_pu: f64) -> Result<()> {
+        let torque = TorquePu::new(torque_pu)?;
+        let send_id = self.bus.slots()[0].send_id();
+        let frame = protocol::pos_force_frame(send_id, q_rad, speed_rad_s, torque);
+        self.bus.send(&frame)
+    }
+}
+
+impl<M: Mode> GripperCan<M> {
+    fn open(
+        can_interface: &str,
+        enable_fd: bool,
+        motor_type: MotorType,
+        send_id: u32,
+        recv_id: u32,
+        extra_send_offset: u32,
+    ) -> Result<Self> {
+        let slot = MotorSlot::new(motor_type, send_id, recv_id, extra_send_offset)?;
+        let mut bus = MotorBus::open(can_interface, enable_fd, vec![slot])?;
+        bus.set_control_mode(M::CONTROL_MODE)?;
+        bus.drain(CTRL_MODE_ECHO_TIMEOUT_US)?;
         Ok(Self {
-            handle: CanHandle::new(can_interface, enable_fd)?,
-            mode: None,
+            bus,
+            _mode: PhantomData,
         })
     }
 
-    /// Initialise the gripper motor in MIT mode (the v1.0 prismatic gripper).
-    /// Command it with [`mit_control`](Self::mit_control).
-    pub fn init_motor(&mut self, motor_type: MotorType, send_id: u32, recv_id: u32) {
-        unsafe {
-            inner::openarm_init_gripper_motor(
-                self.handle.handle,
-                motor_type as u8,
-                send_id,
-                recv_id,
-            );
-        }
-        self.mode = Some(ControlMode::Mit);
+    pub fn enable_all(&mut self) -> Result<()> {
+        self.bus.enable_all()
     }
 
-    /// Initialise the gripper motor in POS_FORCE mode (the v2.0 revolute pinch gripper).
-    /// Command it with [`set_position`](Self::set_position).
-    pub fn init_motor_pos_force(&mut self, motor_type: MotorType, send_id: u32, recv_id: u32) {
-        unsafe {
-            inner::openarm_init_gripper_motor_mode(
-                self.handle.handle,
-                motor_type as u8,
-                send_id,
-                recv_id,
-                ControlMode::PosForce as u8,
-            );
-        }
-        self.mode = Some(ControlMode::PosForce);
+    pub fn disable_all(&mut self) -> Result<()> {
+        self.bus.disable_all()
     }
 
-    pub fn enable_all(&mut self) {
-        self.handle.enable_all()
-    }
-    pub fn disable_all(&mut self) {
-        self.handle.disable_all()
-    }
-    pub fn recv_all(&mut self, first_timeout_us: i32) {
-        self.handle.recv_all(first_timeout_us)
-    }
-    pub fn refresh_all(&mut self) {
-        self.handle.refresh_all()
-    }
-    pub fn set_callback_mode(&mut self, mode: CallbackMode) {
-        self.handle.set_callback_mode(mode)
+    /// Receives pending state frames into the cache: waits up to
+    /// `first_timeout_us` for the first frame, then drains without waiting.
+    pub fn recv_all(&mut self, first_timeout_us: u32) -> Result<()> {
+        self.bus.recv_all(first_timeout_us)
     }
 
-    /// MIT-mode command (v1.0 prismatic gripper): PD to `q`/`dq` plus feedforward `tau`.
-    /// Asserts the motor was initialised with [`init_motor`](Self::init_motor).
-    pub fn mit_control(&mut self, kp: f64, kd: f64, q: f64, dq: f64, tau: f64) {
-        assert_eq!(
-            self.mode,
-            Some(ControlMode::Mit),
-            "mit_control requires init_motor (MIT mode) first"
-        );
-        unsafe { inner::openarm_gripper_mit_control(self.handle.handle, kp, kd, q, dq, tau) }
+    /// Receives and discards pending frames (bring-up replies that must not
+    /// land in the state cache).
+    pub fn drain(&mut self, first_timeout_us: u32) -> Result<()> {
+        self.bus.drain(first_timeout_us)
     }
 
-    /// POS_FORCE-mode command (v2.0 pinch gripper): drive to motor angle `q_rad` with an
-    /// absolute speed limit `speed_rad_s` and a torque-current limit `torque_pu`
-    /// (per-unit, 0..=1; asserted). The commanded force is the grip force cap; measured
-    /// torque comes back via [`get_state`](Self::get_state). Asserts the motor was
-    /// initialised with [`init_motor_pos_force`](Self::init_motor_pos_force).
-    pub fn set_position(&mut self, q_rad: f64, speed_rad_s: f64, torque_pu: f64) {
-        assert_eq!(
-            self.mode,
-            Some(ControlMode::PosForce),
-            "set_position requires init_motor_pos_force (POS_FORCE mode) first"
-        );
-        assert!(
-            (0.0..=1.0).contains(&torque_pu),
-            "torque_pu must be per-unit in 0..=1, got {torque_pu}"
-        );
-        unsafe {
-            inner::openarm_gripper_pos_force_control(
-                self.handle.handle,
-                q_rad,
-                speed_rad_s,
-                torque_pu,
-            )
-        }
-    }
-
-    /// Snapshot of gripper state (position, velocity, torque) from the most recent
-    /// `recv_all`. The `torque` field is the measured grip force feedback.
-    /// Calls `std::abort` (via C++) if the motor has not been initialised.
+    /// Snapshot of gripper state from the most recent
+    /// [`recv_all`](Self::recv_all). The `torque` field is the measured grip
+    /// force feedback.
     pub fn get_state(&self) -> GripperState {
-        let mut state = GripperState::default();
-        unsafe {
-            inner::openarm_gripper_get_state(
-                self.handle.handle,
-                &mut state.position,
-                &mut state.velocity,
-                &mut state.torque,
-            );
+        let motor = self.bus.slots()[0].state();
+        GripperState {
+            position: motor.position,
+            velocity: motor.velocity,
+            torque: motor.torque,
         }
-        state
     }
 }
 
@@ -569,11 +359,5 @@ mod tests {
             assert!(!ARM_SEND_IDS.contains(&send));
             assert!(!ARM_RECV_IDS.contains(&recv));
         }
-    }
-
-    #[test]
-    fn control_mode_wire_ids_match_the_firmware() {
-        assert_eq!(ControlMode::Mit as u8, 1);
-        assert_eq!(ControlMode::PosForce as u8, 4);
     }
 }
