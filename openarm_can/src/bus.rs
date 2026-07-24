@@ -166,7 +166,10 @@ impl MotorBus {
     }
 
     fn recv_loop(&mut self, first_timeout_us: u32, decode: bool) -> Result<()> {
-        let mut timeout = Duration::from_micros(first_timeout_us.into());
+        // The socket poll has millisecond granularity, so round sub-ms waits
+        // up: rounding down would turn them into non-waiting polls. A pending
+        // frame still returns immediately.
+        let mut timeout = Duration::from_millis(u64::from(first_timeout_us.div_ceil(1000)));
         while let Some(frame) = self.socket.recv(timeout)? {
             timeout = Duration::ZERO;
             if decode {
