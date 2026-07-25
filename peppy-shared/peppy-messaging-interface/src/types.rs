@@ -5,6 +5,7 @@ use super::wire::{
     ActionWireReceiver, ActionWireSender, Segment, ServiceQueryKind, ServiceReplyKind,
     ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
+use config::namespace::Namespace;
 use config::node::QoSProfile;
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -271,14 +272,20 @@ pub trait MessengerBackend {
         core_node: Option<&Segment>,
     ) -> impl Future<Output = Result<LivelinessWatch<CoreNodePresence>>> + Send;
 
-    /// Enumerates every currently live daemon token, optionally restricted to
-    /// one core-node name. Multiple instance ids for one name are intentionally
-    /// preserved so callers can detect active name collisions. Issuing the
-    /// query is fast; the replies are awaited via
+    /// Enumerates every currently live daemon token in `scope`, optionally
+    /// restricted to one core-node name. Multiple instance ids for one name are
+    /// intentionally preserved so callers can detect active name collisions.
+    /// Issuing the query is fast; the replies are awaited via
     /// [`CoreNodePresenceList::collect`], so callers can release any shared
     /// lock before waiting out the query `timeout`.
+    ///
+    /// A session opened under a namespace uses [`PresenceScope::Session`]. A
+    /// namespace-free session enumerating one workspace uses
+    /// [`PresenceScope::Namespace`]; the query stays scoped to that workspace,
+    /// so no other workspace's tokens are ever pulled.
     fn list_core_node_presence(
         &self,
+        scope: PresenceScope<'_>,
         core_node: Option<&Segment>,
         timeout: std::time::Duration,
     ) -> impl Future<Output = Result<CoreNodePresenceList>> + Send;
@@ -379,6 +386,45 @@ impl CoreNodePresence {
         Self {
             core_node: core_node.into(),
             instance_id: instance_id.into(),
+        }
+    }
+}
+
+/// Which workspace a presence query enumerates.
+///
+/// The two variants are genuinely different observations, not one observation
+/// with a flag, which is why this is a type rather than an `Option`. A
+/// namespaced session never sees its own prefix (zenoh prepends it on egress
+/// and strips it on ingress), so [`Self::Session`] is the only scope such a
+/// session can express. A namespace-free observer sees keys exactly as they
+/// travel the wire, prefix included, and so must name the workspace it wants
+/// with [`Self::Namespace`]; its query stays scoped to that one workspace and
+/// never enumerates another's tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresenceScope<'a> {
+    /// The namespace the querying session itself was opened under.
+    Session,
+    /// One named workspace namespace, observed from a namespace-free session.
+    Namespace(&'a Namespace),
+}
+
+impl<'a> PresenceScope<'a> {
+    /// Rebuilds a scope from a borrowed namespace. Paired with
+    /// [`Self::to_namespace`] so a `'static` transport reply callback can carry
+    /// the scope its selector was built with.
+    pub fn from_namespace(namespace: Option<&'a Namespace>) -> Self {
+        match namespace {
+            Some(namespace) => Self::Namespace(namespace),
+            None => Self::Session,
+        }
+    }
+
+    /// Clones out the scope's namespace so it can be moved into a `'static`
+    /// transport reply callback. See [`Self::from_namespace`].
+    pub fn to_namespace(self) -> Option<Namespace> {
+        match self {
+            Self::Session => None,
+            Self::Namespace(namespace) => Some(namespace.clone()),
         }
     }
 }
@@ -1205,10 +1251,17 @@ impl MessengerBackend for Messenger {
 
     async fn list_core_node_presence(
         &self,
+        scope: PresenceScope<'_>,
         core_node: Option<&Segment>,
         timeout: std::time::Duration,
     ) -> Result<CoreNodePresenceList> {
-        dispatch!(&self.adapter, list_core_node_presence, core_node, timeout)
+        dispatch!(
+            &self.adapter,
+            list_core_node_presence,
+            scope,
+            core_node,
+            timeout
+        )
     }
 
     async fn start_router(&mut self) -> Result<()> {
@@ -1227,8 +1280,8 @@ impl MessengerBackend for Messenger {
 #[cfg(test)]
 mod tests {
     use super::{
-        CoreNodePresence, CoreNodePresenceList, Payload, ServiceReply, SubscriberBufferSizes,
-        SubscriberQoS, TopicMessage, ZenohWireFormat,
+        CoreNodePresence, CoreNodePresenceList, Payload, PresenceScope, ServiceReply,
+        SubscriberBufferSizes, SubscriberQoS, TopicMessage, ZenohWireFormat,
     };
     use crate::error::Error;
     use crate::wire::ServiceReplyKind;
@@ -1327,8 +1380,11 @@ mod tests {
         let (tx, rx) = flume::unbounded();
         tx.send(Ok(CoreNodePresence::new("daemon_a", "generation_1")))
             .expect("first presence should send");
-        tx.send(ZenohWireFormat::parse_core_node_presence("malformed").map_err(Error::from))
-            .expect("malformed presence should send");
+        tx.send(
+            ZenohWireFormat::parse_core_node_presence(PresenceScope::Session, "malformed")
+                .map_err(Error::from),
+        )
+        .expect("malformed presence should send");
         tx.send(Ok(CoreNodePresence::new("daemon_b", "generation_2")))
             .expect("second presence should send");
         drop(tx);

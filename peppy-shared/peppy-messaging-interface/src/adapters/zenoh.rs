@@ -26,9 +26,9 @@
 use crate::error::{Error, Result};
 use crate::types::{
     ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, IncomingRequest,
-    LivelinessEvent, LivelinessToken, LivelinessWatch, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS,
-    ReplyStream, ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes,
-    SubscriberQoS, TopicMessage, ZenohResponseToken,
+    LivelinessEvent, LivelinessToken, LivelinessWatch, NO_TIMEOUT_SENTINEL, Payload, PresenceScope,
+    PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable, ServiceReply,
+    SubscriberBufferSizes, SubscriberQoS, TopicMessage, ZenohResponseToken,
 };
 use crate::wire::zenoh_format::{ServiceReplyAttachment, TopicAttachment, ZenohWireFormat};
 use crate::wire::{
@@ -390,6 +390,27 @@ impl ZenohAdapter {
     pub fn with_session_reconnect(mut self) -> Self {
         self.reconnect_session = true;
         self
+    }
+
+    /// Whether this adapter's session currently holds a transport link to a
+    /// router.
+    ///
+    /// A reconnecting session is deliberately tolerant: `zenoh::open` succeeds
+    /// against an unreachable endpoint and retries in the background, so a
+    /// query issued while the link is down returns *no replies* rather than an
+    /// error. That makes "the transport is down" and "nothing is live"
+    /// indistinguishable from the query result alone, and any caller that
+    /// reports liveliness to a user has to tell those two apart. This is the
+    /// signal that does it: `false` means an empty result carries no
+    /// information, `true` means it means nothing is live.
+    ///
+    /// Answered from the session's current routing state, so it costs no
+    /// round trip. `false` before [`start_session`](MessengerBackend::start_session).
+    pub async fn is_linked(&self) -> bool {
+        let Some(session) = self.session.as_ref() else {
+            return false;
+        };
+        session.info().routers_zid().await.next().is_some()
     }
 
     /// Starts a zenohd router with an ephemeral port, retrying on bind failures.
@@ -960,10 +981,10 @@ impl MessengerBackend for ZenohAdapter {
         core_node: Option<&Segment>,
     ) -> Result<LivelinessWatch<CoreNodePresence>> {
         self.watch_liveliness(
-            ZenohWireFormat::core_node_presence_filter(core_node),
+            ZenohWireFormat::core_node_presence_filter(PresenceScope::Session, core_node),
             |sample| {
                 let keyexpr = sample.key_expr().as_str();
-                match ZenohWireFormat::parse_core_node_presence(keyexpr) {
+                match ZenohWireFormat::parse_core_node_presence(PresenceScope::Session, keyexpr) {
                     Ok(presence) => Some(presence),
                     Err(_) => {
                         tracing::error!(%keyexpr, "failed to parse core-node presence keyexpr");
@@ -977,6 +998,7 @@ impl MessengerBackend for ZenohAdapter {
 
     async fn list_core_node_presence(
         &self,
+        scope: PresenceScope<'_>,
         core_node: Option<&Segment>,
         timeout: std::time::Duration,
     ) -> Result<CoreNodePresenceList> {
@@ -984,7 +1006,10 @@ impl MessengerBackend for ZenohAdapter {
             .session
             .as_ref()
             .ok_or_else(|| Error::MessagingSessionError("Session not initialized".to_string()))?;
-        let keyexpr = ZenohWireFormat::core_node_presence_filter(core_node);
+        let keyexpr = ZenohWireFormat::core_node_presence_filter(scope, core_node);
+        // Owned so the `'static` reply callback can strip exactly the prefix
+        // the selector above wrote.
+        let namespace = scope.to_namespace();
         // Use a callback rather than Zenoh's default FIFO handler (see the
         // module-level rationale). The callback-owned sender is dropped when
         // the query finalizes (at the latest after `timeout`), ending the
@@ -997,11 +1022,12 @@ impl MessengerBackend for ZenohAdapter {
             .get(&keyexpr)
             .timeout(timeout)
             .callback(move |reply| {
+                let scope = PresenceScope::from_namespace(namespace.as_ref());
                 let presence = reply
                     .into_result()
                     .map_err(|err| Error::BackendError(err.to_string()))
                     .and_then(|sample| {
-                        ZenohWireFormat::parse_core_node_presence(sample.key_expr().as_str())
+                        ZenohWireFormat::parse_core_node_presence(scope, sample.key_expr().as_str())
                             .map_err(Into::into)
                     });
                 let _ = tx.send(presence);

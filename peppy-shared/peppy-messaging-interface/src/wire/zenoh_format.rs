@@ -7,7 +7,7 @@
 //! different wire form (MQTT, DDS, etc.), add a sibling module rather than
 //! diverging this one.
 
-use crate::types::CoreNodePresence;
+use crate::types::{CoreNodePresence, PresenceScope};
 use crate::wire::{
     ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, Segment, SenderTarget, ServiceKind,
     ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
@@ -343,38 +343,73 @@ impl ZenohWireFormat {
     /// Presence watch/list selector. `None` enumerates every core-node name;
     /// `Some(name)` restricts the selector to that one name. The instance-id
     /// slot always remains wildcarded so simultaneous claims stay visible.
-    pub(crate) fn core_node_presence_filter(core_node: Option<&Segment>) -> String {
+    ///
+    /// [`PresenceScope::Session`] emits the bare grammar, which the querying
+    /// session's own namespace prefixes on egress.
+    /// [`PresenceScope::Namespace`] writes the prefix explicitly, for a
+    /// namespace-free observer enumerating a workspace it is not a member of.
+    /// The prefix is followed by `/`, so the selector matches on chunk
+    /// boundaries: namespace `ws-a` never selects namespace `ws-ab`'s tokens.
+    pub(crate) fn core_node_presence_filter(
+        scope: PresenceScope<'_>,
+        core_node: Option<&Segment>,
+    ) -> String {
         let core_node = core_node
             .map(Segment::as_str)
             .unwrap_or(SINGLE_CHUNK_WILDCARD);
-        format!("core_node_presence/{core_node}/{SINGLE_CHUNK_WILDCARD}")
+        let prefix = namespace_prefix(scope);
+        format!("{prefix}core_node_presence/{core_node}/{SINGLE_CHUNK_WILDCARD}")
     }
 
     /// Parses a concrete presence-token key back into its public identity.
     /// This is deliberately colocated with the builders so the declared and
     /// observed grammar cannot drift.
+    ///
+    /// The `scope` must be the one the selector was built with: a namespaced
+    /// session's replies arrive with the prefix already stripped by zenoh,
+    /// while a namespace-free observer's arrive with it intact, so the parser
+    /// strips exactly what the matching builder wrote. A reply that does not
+    /// carry the expected prefix is rejected rather than reinterpreted, since
+    /// mistaking another workspace's key for this one's is the failure that
+    /// matters here.
     pub(crate) fn parse_core_node_presence(
+        scope: PresenceScope<'_>,
         keyexpr: &str,
     ) -> Result<CoreNodePresence, ZenohWireParseError> {
+        let invalid = || ZenohWireParseError::InvalidCoreNodePresenceKey(keyexpr.to_string());
+        // A namespace may itself be several chunks, so strip it as one literal
+        // prefix rather than by counting segments.
+        let rest = match scope {
+            PresenceScope::Session => keyexpr,
+            PresenceScope::Namespace(namespace) => keyexpr
+                .strip_prefix(namespace.as_str())
+                .and_then(|rest| rest.strip_prefix('/'))
+                .ok_or_else(invalid)?,
+        };
         // Runs inside transport callbacks, so the happy path allocates only
         // the two result strings (no segment Vec, no throwaway `Segment`s).
-        let mut segments = keyexpr.split('/');
+        let mut segments = rest.split('/');
         let (Some("core_node_presence"), Some(core_node), Some(instance_id), None) = (
             segments.next(),
             segments.next(),
             segments.next(),
             segments.next(),
         ) else {
-            return Err(ZenohWireParseError::InvalidCoreNodePresenceKey(
-                keyexpr.to_string(),
-            ));
+            return Err(invalid());
         };
         if !Segment::is_valid(core_node) || !Segment::is_valid(instance_id) {
-            return Err(ZenohWireParseError::InvalidCoreNodePresenceKey(
-                keyexpr.to_string(),
-            ));
+            return Err(invalid());
         }
         Ok(CoreNodePresence::new(core_node, instance_id))
+    }
+}
+
+/// The keyexpr prefix a scope contributes: nothing for the querying session's
+/// own namespace (zenoh writes it), `"<namespace>/"` for a named workspace.
+fn namespace_prefix(scope: PresenceScope<'_>) -> String {
+    match scope {
+        PresenceScope::Session => String::new(),
+        PresenceScope::Namespace(namespace) => format!("{}/", namespace.as_str()),
     }
 }
 

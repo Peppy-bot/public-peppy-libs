@@ -63,9 +63,9 @@ use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{
     ActionWireReceiver, Messenger, MessengerAdapter, MessengerBackend, MessengerPublisher,
-    Namespace, PublisherQoS, Segment, ServiceQueryKind, ServiceReplyKind, ServiceWireReceiver,
-    ServiceWireSender, SubscriberQoS, Subscription as PmiSubscription, TopicWireReceiver,
-    TopicWireSender, ZenohAdapter, ZenohNetProtocol,
+    Namespace, PresenceScope, PublisherQoS, Segment, ServiceQueryKind, ServiceReplyKind,
+    ServiceWireReceiver, ServiceWireSender, SubscriberQoS, Subscription as PmiSubscription,
+    TopicWireReceiver, TopicWireSender, ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::sync::{
@@ -710,7 +710,7 @@ impl MessengerHandle {
         let list = {
             let messenger = self.messenger.lock().await;
             messenger
-                .list_core_node_presence(core_node, timeout)
+                .list_core_node_presence(PresenceScope::Session, core_node, timeout)
                 .await
                 .map_err(Error::PeppyMessagingInterface)?
         };

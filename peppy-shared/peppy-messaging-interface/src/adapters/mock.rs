@@ -2,9 +2,9 @@ use super::super::error::{Error, Result};
 use super::super::types::{
     AbortOnDrop, ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, IncomingRequest,
     LivelinessEvent, LivelinessToken, LivelinessWatch, Message, Messenger, MessengerAdapter,
-    MessengerBackend, MockResponseToken, NO_TIMEOUT_SENTINEL, Payload, PublisherQoS, ReplyStream,
-    ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS,
-    Subscription, TopicMessage,
+    MessengerBackend, MockResponseToken, NO_TIMEOUT_SENTINEL, Payload, PresenceScope, PublisherQoS,
+    ReplyStream, ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes,
+    SubscriberQoS, Subscription, TopicMessage,
 };
 use super::super::wire::zenoh_format::ZenohWireFormat;
 use super::super::wire::{
@@ -414,14 +414,16 @@ impl MessengerBackend for MockAdapter {
                 "Session not initialized".to_string(),
             ));
         }
-        let pattern = ZenohWireFormat::core_node_presence_filter(core_node);
+        let pattern = ZenohWireFormat::core_node_presence_filter(PresenceScope::Session, core_node);
         let (tx, rx) = flume::unbounded::<LivelinessEvent<CoreNodePresence>>();
         {
             let mut liveliness = self.liveliness.lock().unwrap();
             // History must replay every concrete token, not merely one event
             // per name: duplicate instance ids are the collision signal.
             for keyexpr in Self::live_keys_matching(&liveliness, &pattern) {
-                if let Ok(presence) = ZenohWireFormat::parse_core_node_presence(keyexpr) {
+                if let Ok(presence) =
+                    ZenohWireFormat::parse_core_node_presence(PresenceScope::Session, keyexpr)
+                {
                     let _ = tx.send(LivelinessEvent::Alive(presence));
                 }
             }
@@ -430,7 +432,9 @@ impl MessengerBackend for MockAdapter {
                 .entry(pattern)
                 .or_default()
                 .push(Box::new(move |keyexpr, event| {
-                    let Ok(presence) = ZenohWireFormat::parse_core_node_presence(keyexpr) else {
+                    let Ok(presence) =
+                        ZenohWireFormat::parse_core_node_presence(PresenceScope::Session, keyexpr)
+                    else {
                         return;
                     };
                     let _ = tx.send(match event {
@@ -442,8 +446,18 @@ impl MessengerBackend for MockAdapter {
         Ok(LivelinessWatch::new(rx, Box::new(())))
     }
 
+    /// The mock has no session namespace, so it declares presence tokens with
+    /// the bare grammar and a [`PresenceScope::Namespace`] query matches
+    /// nothing here. That is deliberate rather than an omission: emulating
+    /// zenoh's egress prefixing for presence alone (and not for pub/sub,
+    /// services, or action liveliness) would make the mock look like it proves
+    /// workspace isolation when it proves only that two strings differ. The
+    /// selector and parser are pinned directly in `zenoh_format`'s unit tests,
+    /// and isolation over a real transport is proven against a live router in
+    /// `tests/zenoh.rs`.
     async fn list_core_node_presence(
         &self,
+        scope: PresenceScope<'_>,
         core_node: Option<&Segment>,
         _timeout: std::time::Duration,
     ) -> Result<CoreNodePresenceList> {
@@ -452,15 +466,16 @@ impl MessengerBackend for MockAdapter {
                 "Session not initialized".to_string(),
             ));
         }
-        let pattern = ZenohWireFormat::core_node_presence_filter(core_node);
+        let pattern = ZenohWireFormat::core_node_presence_filter(scope, core_node);
         // The mock answers instantly: pre-fill the reply channel and drop
         // the sender so `collect` returns without waiting.
         let (tx, rx) = flume::unbounded::<Result<CoreNodePresence>>();
         {
             let liveliness = self.liveliness.lock().unwrap();
             for keyexpr in Self::live_keys_matching(&liveliness, &pattern) {
-                let _ =
-                    tx.send(ZenohWireFormat::parse_core_node_presence(keyexpr).map_err(Into::into));
+                let _ = tx.send(
+                    ZenohWireFormat::parse_core_node_presence(scope, keyexpr).map_err(Into::into),
+                );
             }
         }
         drop(tx);
@@ -1316,7 +1331,11 @@ mod tests {
         core_node: Option<&Segment>,
     ) -> Vec<CoreNodePresence> {
         adapter
-            .list_core_node_presence(core_node, std::time::Duration::from_secs(1))
+            .list_core_node_presence(
+                PresenceScope::Session,
+                core_node,
+                std::time::Duration::from_secs(1),
+            )
             .await
             .expect("presence list should issue")
             .collect()
