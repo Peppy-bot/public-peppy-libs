@@ -387,6 +387,36 @@ impl ZenohAdapter {
     /// the router is restarted under it. Used by the daemon so the router
     /// watchdog can respawn zenohd without leaving the daemon's own session
     /// dead. CLI and short-lived adapters leave this off (fail-fast default).
+    ///
+    /// # `start_session` blocks for a client-mode session
+    ///
+    /// The retry is **foreground** in client mode and **background** in peer
+    /// mode, so what this changes about `start_session` depends on which one
+    /// the adapter builds:
+    ///
+    /// * A **peer** session ([`connect_to`](Self::connect_to), and any
+    ///   `gossip = true` constructor) returns from `start_session` immediately
+    ///   even when the seed is unreachable, and keeps dialing behind the
+    ///   session.
+    /// * A **client** session ([`connect_to_tls`](Self::connect_to_tls), and
+    ///   any `gossip = false` constructor) does **not** return from
+    ///   `start_session` until the router accepts it. There is no timeout to
+    ///   fall back on: this config sets `connect.timeout_ms: -1`, which zenoh
+    ///   reads as `Duration::MAX`.
+    ///
+    /// The asymmetry is zenoh's, not ours, and it is not what the config keys
+    /// suggest: `connect.exit_on_failure: false` is what buys the peer session
+    /// its background dial (`connect_peers_multiply_links`), and the
+    /// client-mode path (`connect_peers_single_link`) never reads that key at
+    /// all.
+    ///
+    /// So a caller whose router is remote, and may be down when the process
+    /// starts, must not `await` `start_session` on its startup path: doing so
+    /// hangs the process for exactly as long as the router is unreachable.
+    /// Drive the open from a background task and treat the session as absent
+    /// until it lands. [`is_linked`](Self::is_linked) is the signal for that.
+    /// `reconnecting_client_open_blocks_until_the_router_accepts` pins both
+    /// halves of this behaviour.
     pub fn with_session_reconnect(mut self) -> Self {
         self.reconnect_session = true;
         self

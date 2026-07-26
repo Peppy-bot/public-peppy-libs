@@ -1347,6 +1347,110 @@ mod zenoh_tests {
         );
     }
 
+    /// Pins the asymmetry documented on
+    /// [`ZenohAdapter::with_session_reconnect`]: against an endpoint nothing is
+    /// serving, the reconnecting config makes `start_session` return
+    /// immediately for a **peer** session and not return at all for a
+    /// **client** one, until a router shows up at that endpoint.
+    ///
+    /// This is not a preference being recorded, it is a trap being fenced. Both
+    /// sessions ask for the same thing (`connect.timeout_ms: -1`,
+    /// `exit_on_failure: false`), and zenoh honours `exit_on_failure` only on
+    /// the peer path (`connect_peers_multiply_links` spawns a background
+    /// connector) while the client path (`connect_peers_single_link`) retries
+    /// in the foreground under a `Duration::MAX` budget. So a caller that opens
+    /// a reconnecting client session to a remote router on its startup path
+    /// hangs the whole process for as long as that router is down, which is the
+    /// opposite of what "reconnecting" reads like it buys.
+    ///
+    /// The client half runs on a detached `std::thread` rather than a spawned
+    /// task, because the block is not a pending future: `zenoh::open` resolves
+    /// through `Wait`, whose `IntoFuture` is `ready(self.wait())` over a
+    /// `block_in_place`, so it occupies its thread synchronously. Nothing can
+    /// cancel it, `tokio::time::timeout` included, and a task left in that
+    /// state would stall this runtime's shutdown. A detached thread just dies
+    /// with the process if the router never arrives.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reconnecting_client_open_blocks_until_the_router_accepts() {
+        // Long enough that "returned immediately" is not a race won, and that
+        // several of the config's 1s..4s retries have gone by unsatisfied.
+        const BLOCKED_FOR: Duration = Duration::from_secs(5);
+        // Generous: this only has to cover one retry period plus the session
+        // handshake once the router is listening.
+        const UNBLOCKS_WITHIN: Duration = Duration::from_secs(20);
+        let _lock = ZENOH_SERIAL.lock().await;
+
+        // A port the OS just handed out and nothing holds: dead now, and
+        // bindable by the router below.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("reserve a port")
+            .local_addr()
+            .expect("reserved port address")
+            .port();
+
+        let mut peer = ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, "127.0.0.1", port)
+            .expect("peer adapter")
+            .with_session_reconnect();
+        peer.start_session()
+            .await
+            .expect("a reconnecting peer session must open against a dead endpoint");
+        assert!(
+            !peer.is_linked().await,
+            "the peer session returned without a link, which is the point: it \
+             dials on behind the session rather than holding up the caller"
+        );
+
+        let client = ZenohAdapter::connect_to_with_discovery(
+            ZenohNetProtocol::Tcp,
+            "127.0.0.1",
+            port,
+            Vec::new(),
+            // Gossip off is what makes this a client session; it is the only
+            // difference from the peer above, and `connect_to_tls` sets it.
+            false,
+            SubscriberBufferSizes::default(),
+            None,
+        )
+        .expect("client adapter")
+        .with_session_reconnect();
+        let (opened_tx, mut opened_rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let mut client = client;
+            // `block_in_place` panics under a current-thread scheduler, so this
+            // thread needs a multi-thread runtime of its own.
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("thread runtime");
+            let opened = runtime.block_on(client.start_session());
+            let _ = opened_tx.send(opened.is_ok());
+        });
+
+        assert!(
+            tokio::time::timeout(BLOCKED_FOR, &mut opened_rx)
+                .await
+                .is_err(),
+            "a reconnecting client session must NOT return from start_session \
+             while its endpoint is dead; if this now returns, zenoh honours \
+             exit_on_failure on the client path too and the callers that drive \
+             this open off their startup path can stop"
+        );
+
+        let _router = ZenohAdapter::start_router_ephemeral("127.0.0.1", Some(port))
+            .await
+            .expect("start a router on the reserved port");
+
+        assert!(
+            matches!(
+                tokio::time::timeout(UNBLOCKS_WITHIN, opened_rx).await,
+                Ok(Ok(true))
+            ),
+            "the blocked client open must complete once a router accepts it, \
+             which is what makes the retry worth keeping"
+        );
+    }
+
     /// A logged-out (`local`) session and an workspace session sharing one router are
     /// routing-isolated: `local`'s keys are rewritten to `local/<key>` and the
     /// workspace's to `<workspace>/<key>`, which never intersect. Closes the LAN cross-tenant
