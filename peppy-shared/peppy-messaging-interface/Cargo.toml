@@ -20,6 +20,10 @@ flume = "0.12"
 tracing = "0.1"
 derive_more = { version = "2", features = ["from"] }
 tempfile = "3"
+# Mints the 128-bit router identity `RouterId::generate` pins into every rendered
+# router config. Same version the rest of the workspace already resolves
+# (peppylib-rs, peppylib-py), so this adds no new crate to the tree.
+rand = "0.10"
 
 # Optional deps
 # Exact-pinned; peppylib pins the same `=1.9.0` in its [dev-dependencies] so

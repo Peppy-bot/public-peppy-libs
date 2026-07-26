@@ -16,6 +16,7 @@
 //! otherwise-independent peer groups (and would cross-link unrelated test runs),
 //! and with a known seed it adds nothing gossip does not already cover.
 
+use crate::router_id::RouterId;
 use crate::zenohd::ZenohNetProtocol;
 use config::namespace::Namespace;
 use serde_json::json;
@@ -236,6 +237,11 @@ pub(crate) struct ZenohConfigSpec {
     /// probes. Zenoh prepends `<ns>/` to every declared key on egress and strips
     /// it on ingress, so two sessions interoperate iff their namespaces match.
     pub namespace: Option<Namespace>,
+    /// The transport identity to pin as the config's `id`. `Some` for every
+    /// router (see [`router_spec`]), `None` for the peer/client/probe sessions,
+    /// which are short-lived or process-scoped and have nothing to correlate
+    /// across restarts. Unpinned, zenoh mints a fresh random zid on every start.
+    pub id: Option<RouterId>,
 }
 
 /// Builds the JSON5-equivalent config value for a session or the router.
@@ -253,6 +259,14 @@ pub(crate) fn build_zenoh_config(spec: &ZenohConfigSpec) -> serde_json::Value {
             "gossip": { "enabled": spec.gossip }
         }
     });
+
+    // The pinned transport identity. Without it zenoh mints a fresh random zid
+    // per start, so nothing observing this process's sessions (another router's
+    // session list, this one's own logs) can tie two runs together. Only routers
+    // pin one; see `ZenohConfigSpec::id`.
+    if let Some(id) = &spec.id {
+        config["id"] = json!(id.as_str());
+    }
 
     if !spec.connect_endpoints.is_empty() {
         let mut connect = json!({ "endpoints": spec.connect_endpoints });
@@ -385,6 +399,9 @@ pub(crate) fn render_probe_config(
         // Readiness probes are deliberately namespace-free: a probe only checks
         // "is our router up?", which a namespace would only get in the way of.
         namespace: None,
+        // A probe session is opened, used once, and dropped, so it has no
+        // identity worth correlating across restarts.
+        id: None,
     })
 }
 
@@ -403,6 +420,12 @@ pub(crate) fn render_probe_config(
 /// nodes. The connect-side trust for that link rides in `tls` (a
 /// [`TlsConfig::client`], which only names the CA to validate the upstream
 /// against); it is ignored on a plaintext listen endpoint.
+///
+/// `id` pins the router's transport identity, and is required rather than
+/// optional on purpose: an `Option` would leave two behaviours to reason about
+/// and test, and would let a caller silently fall back to zenoh's fresh-random
+/// zid, which makes the router anonymous to anything observing its sessions
+/// (see [`RouterId`]).
 pub(crate) fn router_spec(
     protocol: ZenohNetProtocol,
     host: &str,
@@ -410,6 +433,7 @@ pub(crate) fn router_spec(
     gossip: bool,
     connect_endpoints: Vec<String>,
     tls: Option<TlsConfig>,
+    id: &RouterId,
 ) -> ZenohConfigSpec {
     ZenohConfigSpec {
         mode: SessionMode::Router,
@@ -423,6 +447,7 @@ pub(crate) fn router_spec(
         // would not prefix forwarded/federated traffic. Isolation is enforced on
         // the application sessions instead.
         namespace: None,
+        id: Some(id.clone()),
     }
 }
 
@@ -434,6 +459,9 @@ pub(crate) fn router_spec(
 /// upstreams (see [`router_spec`]). Available under the base `zenoh` feature (no
 /// `router`/zenohd binary needed) because rendering a config is independent of
 /// spawning a process.
+///
+/// `id` is the router's pinned transport identity and is required; see
+/// [`router_spec`] for why it is not an `Option`.
 pub fn render_router_config(
     protocol: ZenohNetProtocol,
     host: &str,
@@ -441,6 +469,7 @@ pub fn render_router_config(
     gossip: bool,
     connect_endpoints: Vec<String>,
     tls: Option<TlsConfig>,
+    id: &RouterId,
 ) -> String {
     render_config_string(&router_spec(
         protocol,
@@ -449,6 +478,7 @@ pub fn render_router_config(
         gossip,
         connect_endpoints,
         tls,
+        id,
     ))
 }
 
@@ -462,6 +492,12 @@ pub(crate) fn loopback_listen_endpoint(protocol: ZenohNetProtocol) -> String {
 mod tests {
     use super::*;
 
+    /// A fixed router identity for the render tests, so an assertion on the
+    /// emitted `id` pins a literal rather than whatever was just minted.
+    fn test_router_id() -> RouterId {
+        RouterId::parse("7f3a9c1e").expect("a valid router id literal")
+    }
+
     fn peer_spec(reconnect: bool, gossip: bool) -> ZenohConfigSpec {
         ZenohConfigSpec {
             mode: SessionMode::Peer,
@@ -471,6 +507,7 @@ mod tests {
             gossip,
             tls: None,
             namespace: None,
+            id: None,
         }
     }
 
@@ -522,6 +559,7 @@ mod tests {
             gossip: false,
             tls: None,
             namespace: None,
+            id: None,
         });
 
         assert_eq!(cfg["mode"], "client");
@@ -547,6 +585,7 @@ mod tests {
             gossip: false,
             tls: None,
             namespace: None,
+            id: None,
         });
 
         assert_eq!(cfg["mode"], "client");
@@ -564,6 +603,7 @@ mod tests {
             gossip: true,
             tls: None,
             namespace: None,
+            id: Some(test_router_id()),
         });
 
         assert_eq!(cfg["mode"], "router");
@@ -572,6 +612,72 @@ mod tests {
         assert_eq!(cfg["timestamping"]["drop_future_timestamp"], false);
         // Routers do not dial out.
         assert!(cfg.get("connect").is_none());
+    }
+
+    /// The wire shape the whole network-status feature rests on: a rendered
+    /// router config carries *exactly* the id it was given, under zenoh's own
+    /// `id` key, and zenoh accepts it. If this drifts, every router silently
+    /// falls back to a fresh random zid per start and the platform's session
+    /// list becomes anonymous again.
+    #[test]
+    fn a_rendered_router_config_pins_exactly_the_id_it_was_given() {
+        let id = test_router_id();
+        let rendered = render_router_config(
+            ZenohNetProtocol::Tcp,
+            "0.0.0.0",
+            7448,
+            true,
+            Vec::new(),
+            None,
+            &id,
+        );
+
+        let cfg: serde_json::Value =
+            serde_json::from_str(&rendered).expect("a rendered router config is JSON");
+        assert_eq!(cfg["id"], serde_json::json!(id.as_str()));
+        // And zenoh reads it back as the very id it will run under. Its config
+        // struct is `deny_unknown_fields`, so this also proves `id` is a real key
+        // rather than one silently ignored.
+        let parsed = zenoh::config::Config::from_json5(&rendered)
+            .expect("a rendered router config with a pinned id parses");
+        let stored: serde_json::Value = serde_json::from_str(
+            &parsed
+                .get_json("id")
+                .expect("zenoh exposes the configured id under its own `id` key"),
+        )
+        .expect("zenoh returns the id as JSON");
+        assert_eq!(
+            stored,
+            serde_json::json!(id.as_str()),
+            "zenoh must run under the very id that was rendered, or the platform's \
+             session list cannot be matched against it"
+        );
+    }
+
+    /// Only routers pin an identity. A peer/client session is process-scoped and
+    /// identified by its declarations, so rendering an `id` for one would pin an
+    /// identity nothing reads.
+    #[test]
+    fn session_configs_pin_no_id() {
+        assert!(
+            build_zenoh_config(&peer_spec(true, true))
+                .get("id")
+                .is_none()
+        );
+        assert!(
+            build_zenoh_config(&ZenohConfigSpec {
+                mode: SessionMode::Client,
+                connect_endpoints: vec!["tcp/127.0.0.1:7448".to_string()],
+                listen_endpoints: Vec::new(),
+                reconnect: false,
+                gossip: false,
+                tls: None,
+                namespace: None,
+                id: None,
+            })
+            .get("id")
+            .is_none()
+        );
     }
 
     #[test]
@@ -613,6 +719,7 @@ mod tests {
                 PathBuf::from("/certs/leaf.pem"),
                 PathBuf::from("/certs/leaf.key"),
             )),
+            &test_router_id(),
         );
         let cfg = build_zenoh_config(&spec);
 
@@ -647,6 +754,7 @@ mod tests {
             gossip: false,
             tls: Some(TlsConfig::client(PathBuf::from("/certs/ca.pem"))),
             namespace: None,
+            id: None,
         });
         let tls = &cfg["transport"]["link"]["tls"];
         assert_eq!(tls["root_ca_certificate"], "/certs/ca.pem");
@@ -687,6 +795,7 @@ mod tests {
                 PathBuf::from("/certs/leaf.pem"),
                 PathBuf::from("/certs/leaf.key"),
             )),
+            &test_router_id(),
         );
         zenoh::config::Config::from_json5(&s).expect("rendered tls router config parses");
         assert!(s.contains("tls/0.0.0.0:7447"));
@@ -705,6 +814,7 @@ mod tests {
             true,
             vec!["tls/cap.zenoh.localhost:7443".to_string()],
             Some(TlsConfig::client(PathBuf::from("/certs/ca.pem"))),
+            &test_router_id(),
         );
         let cfg: serde_json::Value =
             serde_json::from_str(&s).expect("rendered federated router config is JSON");
@@ -761,6 +871,7 @@ mod tests {
             gossip: false,
             tls: None,
             namespace: Some(ns.clone()),
+            id: None,
         });
         assert_eq!(client["namespace"], ns.as_str());
 
@@ -774,6 +885,7 @@ mod tests {
             gossip: true,
             tls: None,
             namespace: Some(ns.clone()),
+            id: Some(test_router_id()),
         });
         assert!(
             router.get("namespace").is_none(),
