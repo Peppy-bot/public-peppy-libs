@@ -35,9 +35,9 @@ pub use probe::{MAX_PROBE_REPLY_SIZE, build_sized_probe_request};
 pub use types::{
     ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, IncomingRequest,
     LivelinessEvent, LivelinessToken, LivelinessWatch, Messenger, MessengerAdapter,
-    MessengerBackend, MessengerPublisher, Payload, PublisherQoS, ReplyStream, ResponseToken,
-    ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS, Subscription,
-    TopicMessage,
+    MessengerBackend, MessengerPublisher, Payload, PresenceScope, PublisherQoS, ReplyStream,
+    ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS,
+    Subscription, TopicMessage,
 };
 /// Channel-address template helpers (`pmi::templates`) that render the zenoh
 /// key-expression grammar with caller-supplied identity slots. Consumed by

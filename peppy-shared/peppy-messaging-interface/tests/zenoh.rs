@@ -8,8 +8,8 @@ mod zenoh_tests {
     };
     use bytes::Bytes;
     use pmi::{
-        MessengerBackend, Payload, PublisherQoS, SubscriberBufferSizes, SubscriberQoS,
-        ZenohAdapter, ZenohNetProtocol,
+        MessengerBackend, Payload, PresenceScope, PublisherQoS, SubscriberBufferSizes,
+        SubscriberQoS, ZenohAdapter, ZenohNetProtocol,
     };
     use std::time::{Duration, Instant};
 
@@ -821,7 +821,7 @@ mod zenoh_tests {
         assert_eq!(initial, LivelinessEvent::Alive(expected.clone()));
         assert_eq!(
             observer
-                .list_core_node_presence(None, Duration::from_secs(2))
+                .list_core_node_presence(PresenceScope::Session, None, Duration::from_secs(2))
                 .await
                 .expect("presence list should issue")
                 .collect()
@@ -841,7 +841,7 @@ mod zenoh_tests {
         assert_eq!(gone, LivelinessEvent::Gone(expected));
         assert!(
             observer
-                .list_core_node_presence(None, Duration::from_secs(2))
+                .list_core_node_presence(PresenceScope::Session, None, Duration::from_secs(2))
                 .await
                 .expect("presence list should issue after token removal")
                 .collect()
@@ -1203,7 +1203,7 @@ mod zenoh_tests {
 
         assert_eq!(
             workspace_a
-                .list_core_node_presence(None, Duration::from_secs(2))
+                .list_core_node_presence(PresenceScope::Session, None, Duration::from_secs(2))
                 .await
                 .expect("workspace-a presence list should issue")
                 .collect()
@@ -1213,13 +1213,137 @@ mod zenoh_tests {
         );
         assert_eq!(
             workspace_b
-                .list_core_node_presence(None, Duration::from_secs(2))
+                .list_core_node_presence(PresenceScope::Session, None, Duration::from_secs(2))
                 .await
                 .expect("workspace-b presence list should issue")
                 .collect()
                 .await
                 .expect("workspace-b presence list should succeed"),
             vec![CoreNodePresence::new("daemon_b", "generation_b")]
+        );
+    }
+
+    /// The assumption the platform's workspace listing rests on: a
+    /// **namespace-free** session sees liveliness tokens declared by namespaced
+    /// sessions, with the workspace prefix intact on the wire, and a
+    /// namespace-scoped query returns exactly that workspace's tokens.
+    ///
+    /// This is the transport-level counterpart to the `zenoh_format` unit
+    /// tests. Those pin the strings; only a live router proves that zenoh
+    /// applies session namespaces to liveliness declarations at all, that the
+    /// prefix survives to a namespace-free observer, and that the scoped query
+    /// matches on chunk boundaries rather than string prefixes. A workspace
+    /// named `workspace-a` and one named `workspace-ab` are both present here
+    /// for exactly that reason.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_namespace_free_observer_enumerates_one_workspace_at_a_time() {
+        use pmi::{CoreNodePresence, Segment};
+
+        let _lock = ZENOH_SERIAL.lock().await;
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("router");
+        let host = instance.host.clone();
+        let port = instance.port;
+
+        let daemon = Segment::try_from("daemon_a").expect("valid core-node segment");
+        let generation = Segment::try_from("generation_a").expect("valid instance segment");
+        let neighbour_daemon = Segment::try_from("daemon_b").expect("valid core-node segment");
+        let neighbour_generation =
+            Segment::try_from("generation_b").expect("valid instance segment");
+
+        let workspace_a = open_namespaced(&host, port, "workspace-a").await;
+        // `workspace-a` is a string prefix of `workspace-ab`. A selector that
+        // matched on string prefixes would leak this daemon into the other
+        // workspace's roster.
+        let workspace_ab = open_namespaced(&host, port, "workspace-ab").await;
+        let _token_a = workspace_a
+            .declare_core_node_presence(&daemon, &generation)
+            .await
+            .expect("workspace-a token should declare");
+        let _token_ab = workspace_ab
+            .declare_core_node_presence(&neighbour_daemon, &neighbour_generation)
+            .await
+            .expect("workspace-ab token should declare");
+
+        // The observer: a plain session with no namespace of its own, exactly
+        // as the platform backend opens one.
+        let mut observer =
+            ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &host, port).expect("observer adapter");
+        observer
+            .start_session()
+            .await
+            .expect("observer session should open");
+        assert!(
+            observer.is_linked().await,
+            "an observer that opened against a live router must report a link, \
+             otherwise an empty result cannot be told from a dead transport"
+        );
+        wait_for_subscriber_discovery().await;
+
+        let list_in = async |namespace: &str| {
+            let namespace = pmi::Namespace::parse(namespace).expect("valid namespace");
+            observer
+                .list_core_node_presence(
+                    PresenceScope::Namespace(&namespace),
+                    None,
+                    Duration::from_secs(2),
+                )
+                .await
+                .expect("observer presence list should issue")
+                .collect()
+                .await
+                .expect("observer presence list should succeed")
+        };
+
+        assert_eq!(
+            list_in("workspace-a").await,
+            vec![CoreNodePresence::new("daemon_a", "generation_a")],
+            "the observer must see workspace-a's daemon, and only it"
+        );
+        assert_eq!(
+            list_in("workspace-ab").await,
+            vec![CoreNodePresence::new("daemon_b", "generation_b")],
+            "workspace-ab must not inherit workspace-a's daemon through a string prefix"
+        );
+        assert!(
+            list_in("workspace-c").await.is_empty(),
+            "a workspace with no live daemon must enumerate empty, not fall back to another's"
+        );
+    }
+
+    /// `is_linked` is the signal that separates "nothing is live" from "the
+    /// transport is down", so it must be false before a session is opened and
+    /// false again once it is closed. Without that, a reconnecting observer
+    /// reports every core node offline while it is simply disconnected.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn is_linked_tracks_the_session_rather_than_the_query_result() {
+        let _lock = ZENOH_SERIAL.lock().await;
+        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+            .await
+            .expect("router");
+
+        let mut observer =
+            ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &instance.host, instance.port)
+                .expect("observer adapter");
+        assert!(
+            !observer.is_linked().await,
+            "an adapter with no session yet holds no link"
+        );
+
+        observer
+            .start_session()
+            .await
+            .expect("observer session should open");
+        assert!(observer.is_linked().await, "an open session holds a link");
+
+        observer
+            .stop_session()
+            .await
+            .expect("observer session should close");
+        assert!(
+            !observer.is_linked().await,
+            "a closed session holds no link, so an empty presence list means nothing"
         );
     }
 

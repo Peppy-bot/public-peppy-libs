@@ -5,11 +5,18 @@
 
 use super::*;
 use crate::wire::{Segment, SenderTarget};
+use config::namespace::Namespace;
 
 /// Test-local shorthand: wrap a `&str` in a validated [`Segment`]. Panics on
 /// invalid input — tests use known-good values only.
 fn seg(value: &str) -> Segment {
     Segment::try_from(value).expect("test segment value should be valid")
+}
+
+/// Test-local shorthand: wrap a `&str` in a validated [`Namespace`]. Panics on
+/// invalid input.
+fn namespace(value: &str) -> Namespace {
+    Namespace::parse(value).expect("test namespace value should be valid")
 }
 
 /// Test-local shorthand: build a node-shaped target. Panics on invalid input.
@@ -766,12 +773,32 @@ fn core_node_presence_token_and_filters_pin_the_wire_grammar() {
         "core_node_presence/daemon_a/generation_42"
     );
     assert_eq!(
-        ZenohWireFormat::core_node_presence_filter(Some(&core_node)),
+        ZenohWireFormat::core_node_presence_filter(PresenceScope::Session, Some(&core_node)),
         "core_node_presence/daemon_a/*"
     );
     assert_eq!(
-        ZenohWireFormat::core_node_presence_filter(None),
+        ZenohWireFormat::core_node_presence_filter(PresenceScope::Session, None),
         "core_node_presence/*/*"
+    );
+}
+
+/// A namespace-free observer must name the workspace it enumerates, and the
+/// key it builds must be exactly what a namespaced session puts on the wire:
+/// the session's own namespace prefix followed by the bare grammar.
+#[test]
+fn namespace_scoped_presence_filter_prefixes_the_workspace() {
+    let workspace = namespace("4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4");
+    let core_node = seg("daemon_a");
+    assert_eq!(
+        ZenohWireFormat::core_node_presence_filter(
+            PresenceScope::Namespace(&workspace),
+            Some(&core_node)
+        ),
+        "4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4/core_node_presence/daemon_a/*"
+    );
+    assert_eq!(
+        ZenohWireFormat::core_node_presence_filter(PresenceScope::Namespace(&workspace), None),
+        "4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4/core_node_presence/*/*"
     );
 }
 
@@ -780,10 +807,70 @@ fn core_node_presence_parser_roundtrips_token_builder() {
     let core_node = seg("daemon_a");
     let instance_id = seg("generation_42");
     let keyexpr = ZenohWireFormat::core_node_presence_token(&core_node, &instance_id);
-    let parsed =
-        ZenohWireFormat::parse_core_node_presence(&keyexpr).expect("presence token should parse");
+    let parsed = ZenohWireFormat::parse_core_node_presence(PresenceScope::Session, &keyexpr)
+        .expect("presence token should parse");
     assert_eq!(parsed.core_node, core_node.as_str());
     assert_eq!(parsed.instance_id, instance_id.as_str());
+}
+
+/// A namespace-scoped reply carries the workspace prefix, and parsing it must
+/// yield exactly the identity a session-scoped parse of the same token yields.
+/// The two scopes observe the same daemon, so they must not report it
+/// differently.
+#[test]
+fn namespace_scoped_parser_yields_the_same_identity_as_the_session_scope() {
+    let workspace = namespace("4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4");
+    let core_node = seg("daemon_a");
+    let instance_id = seg("generation_42");
+    let bare = ZenohWireFormat::core_node_presence_token(&core_node, &instance_id);
+    let on_the_wire = format!("4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4/{bare}");
+
+    let observed = ZenohWireFormat::parse_core_node_presence(
+        PresenceScope::Namespace(&workspace),
+        &on_the_wire,
+    )
+    .expect("a prefixed token should parse under its own namespace");
+    let from_session = ZenohWireFormat::parse_core_node_presence(PresenceScope::Session, &bare)
+        .expect("the bare token should parse under the session scope");
+    assert_eq!(observed, from_session);
+}
+
+/// The security property the workspace listing rests on: a namespace-scoped
+/// parse matches on chunk boundaries, so `ws-a` never accepts `ws-ab`'s
+/// tokens. String-prefix matching would silently leak one workspace's daemons
+/// into another's roster whenever one namespace happens to start with another.
+#[test]
+fn namespace_scoped_parser_matches_on_chunk_boundaries_not_string_prefixes() {
+    let workspace = namespace("ws-a");
+    let neighbour = namespace("ws-ab");
+    let bare = "core_node_presence/daemon_a/generation_42";
+
+    let own = format!("ws-a/{bare}");
+    assert!(
+        ZenohWireFormat::parse_core_node_presence(PresenceScope::Namespace(&workspace), &own)
+            .is_ok(),
+        "a workspace must parse its own tokens"
+    );
+
+    // `ws-ab/...` starts with the string `ws-a`, and must still be rejected.
+    let neighbours = format!("ws-ab/{bare}");
+    assert!(
+        matches!(
+            ZenohWireFormat::parse_core_node_presence(
+                PresenceScope::Namespace(&workspace),
+                &neighbours
+            ),
+            Err(ZenohWireParseError::InvalidCoreNodePresenceKey(_))
+        ),
+        "namespace ws-a must not accept a token from ws-ab"
+    );
+    assert!(
+        matches!(
+            ZenohWireFormat::parse_core_node_presence(PresenceScope::Namespace(&neighbour), &own),
+            Err(ZenohWireParseError::InvalidCoreNodePresenceKey(_))
+        ),
+        "namespace ws-ab must not accept a token from ws-a"
+    );
 }
 
 #[test]
@@ -798,7 +885,38 @@ fn core_node_presence_parser_rejects_non_concrete_or_wrong_shape_keys() {
     ] {
         assert!(
             matches!(
-                ZenohWireFormat::parse_core_node_presence(malformed),
+                ZenohWireFormat::parse_core_node_presence(PresenceScope::Session, malformed),
+                Err(ZenohWireParseError::InvalidCoreNodePresenceKey(_))
+            ),
+            "malformed key should be rejected: {malformed}"
+        );
+    }
+}
+
+/// A namespace-scoped parse must reject an unprefixed key rather than fall
+/// back to reading it as its own, and must reject a key whose prefix is right
+/// but whose body is malformed.
+#[test]
+fn namespace_scoped_parser_rejects_unprefixed_and_malformed_keys() {
+    let workspace = namespace("ws-a");
+    for malformed in [
+        // No prefix at all: a session-scoped key reaching a namespaced parse.
+        "core_node_presence/daemon_a/generation_42",
+        // Right prefix, wrong body.
+        "ws-a/other_root/daemon_a/generation_42",
+        "ws-a/core_node_presence/daemon_a",
+        "ws-a/core_node_presence/daemon_a/generation_42/extra",
+        "ws-a/core_node_presence/*/generation_42",
+        // The prefix alone is not a token.
+        "ws-a",
+        "ws-a/",
+    ] {
+        assert!(
+            matches!(
+                ZenohWireFormat::parse_core_node_presence(
+                    PresenceScope::Namespace(&workspace),
+                    malformed
+                ),
                 Err(ZenohWireParseError::InvalidCoreNodePresenceKey(_))
             ),
             "malformed key should be rejected: {malformed}"
