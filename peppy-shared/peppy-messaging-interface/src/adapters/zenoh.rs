@@ -24,6 +24,8 @@
 //! service call with a late-replying sibling producer.
 
 use crate::error::{Error, Result};
+#[cfg(feature = "router")]
+use crate::router_id::RouterId;
 use crate::types::{
     ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, IncomingRequest,
     LivelinessEvent, LivelinessToken, LivelinessWatch, NO_TIMEOUT_SENTINEL, Payload, PresenceScope,
@@ -198,6 +200,11 @@ impl ZenohAdapter {
     /// trust for a `tls/` upstream rides in `tls` (a [`TlsConfig::client`]); it is
     /// written into the zenohd config only and is inert for the daemon's own
     /// plaintext loopback session.
+    ///
+    /// `router_id` is the transport identity pinned into the rendered config and
+    /// reused by every later [`refederate`](Self::refederate), so the router
+    /// keeps one identity across restarts and federation changes. It is taken by
+    /// value, not as an `Option`: see [`RouterId`].
     #[cfg(feature = "router")]
     #[allow(clippy::too_many_arguments)]
     pub fn with_router(
@@ -208,10 +215,17 @@ impl ZenohAdapter {
         buffer_sizes: SubscriberBufferSizes,
         connect_endpoints: Vec<String>,
         tls: Option<TlsConfig>,
+        router_id: RouterId,
     ) -> Result<Self> {
-        let zenohd_config_path =
-            zenohd::router_config_path(protocol, host, port, connect_endpoints, tls.clone())?;
-        let facade = zenohd::ZenohdFacade::managed(zenohd_config_path)?;
+        let zenohd_config_path = zenohd::router_config_path(
+            protocol,
+            host,
+            port,
+            connect_endpoints,
+            tls.clone(),
+            &router_id,
+        )?;
+        let facade = zenohd::ZenohdFacade::managed(zenohd_config_path, router_id)?;
         let client_config =
             Self::derive_client_config_from_zenohd(&facade, gossip, buffer_sizes, tls)?;
 
@@ -297,6 +311,13 @@ impl ZenohAdapter {
             ep.port(),
             connect_endpoints,
             tls,
+            // The identity the router was built with, not a fresh one: a
+            // (de)federation is the same router changing upstream, and minting a
+            // new zid here would make it look like a different machine to
+            // anything reading the upstream's session list.
+            facade
+                .managed_router_id()
+                .expect("a non-external facade has a managed router id"),
         )?;
         Ok(true)
     }
@@ -502,6 +523,11 @@ impl ZenohAdapter {
                 buffer_sizes,
                 Vec::new(),
                 None,
+                // An ephemeral router lives and dies with its caller, so it has
+                // no identity to keep across restarts. A fresh one per attempt
+                // also keeps two concurrent ephemeral routers distinct, which a
+                // shared constant would not.
+                RouterId::generate(),
             )?
             .with_namespace(namespace.clone());
             // A lightweight client probe (no listener, no peer discovery) is the
@@ -644,6 +670,9 @@ impl ZenohAdapter {
                 gossip: true,
                 tls: tls.clone(),
                 namespace: namespace.clone(),
+                // Application sessions are process-scoped and identified by their
+                // declarations, not by a zid, so nothing pins one here.
+                id: None,
             })
         } else {
             // A plain `client` routes only through the selected router (no
@@ -656,6 +685,9 @@ impl ZenohAdapter {
                 gossip: false,
                 tls: tls.clone(),
                 namespace: namespace.clone(),
+                // Application sessions are process-scoped and identified by their
+                // declarations, not by a zid, so nothing pins one here.
+                id: None,
             })
         };
 
@@ -1579,6 +1611,18 @@ impl ZenohPublisher {
 mod tests {
     use super::*;
 
+    /// The `id` a rendered router config pins, read back off the file the way
+    /// zenohd would.
+    #[cfg(feature = "router")]
+    fn rendered_id(config: &str) -> String {
+        let parsed: serde_json::Value =
+            serde_json::from_str(config).expect("a rendered router config is JSON");
+        parsed["id"]
+            .as_str()
+            .expect("a rendered router config pins an id")
+            .to_string()
+    }
+
     #[test]
     fn create_client_config_rewrites_wildcard_host_and_defaults_the_seed() {
         // `0.0.0.0` must be rewritten to a connectable loopback host, and an
@@ -1634,6 +1678,7 @@ mod tests {
         // A port unlikely to collide with other config-rendering tests (the
         // rendered config path is keyed by port).
         let port = 59247;
+        let router_id = RouterId::parse("7f3a9c1e").expect("a valid router id literal");
         let mut adapter = ZenohAdapter::with_router(
             ZenohNetProtocol::Tcp,
             "127.0.0.1",
@@ -1642,6 +1687,7 @@ mod tests {
             SubscriberBufferSizes::default(),
             Vec::new(),
             None,
+            router_id.clone(),
         )
         .expect("build standalone router adapter");
 
@@ -1656,6 +1702,11 @@ mod tests {
         assert!(
             !before.contains("tls/cap.zenoh.localhost:7443"),
             "a standalone router has no upstream connect endpoint"
+        );
+        assert_eq!(
+            rendered_id(&before),
+            router_id.to_string(),
+            "the rendered config pins the identity it was built with"
         );
 
         let rewrote = adapter
@@ -1674,6 +1725,13 @@ mod tests {
         assert!(
             after.contains("/certs/ca.pem"),
             "connect-side CA trust is now present"
+        );
+        assert_eq!(
+            rendered_id(&after),
+            router_id.to_string(),
+            "a federation change must keep the router's identity: minting a new zid here \
+             would look, to anything reading the upstream's session list, like a different \
+             machine arriving and the old one vanishing"
         );
 
         // refederate on an adapter that owns no router (a client) is an error.

@@ -5,6 +5,7 @@
 
 use super::ZenohNetProtocol;
 use crate::error::{Error, Result};
+use crate::router_id::RouterId;
 use crate::zenoh_config::{TlsConfig, render_config_string, router_spec};
 use std::path::{Path, PathBuf};
 
@@ -15,12 +16,17 @@ use std::path::{Path, PathBuf};
 /// the connect-side trust root; `None` renders a plaintext listener unchanged.
 /// `connect_endpoints` federates this router to those upstream routers (empty for
 /// a standalone router); see [`crate::zenoh_config::router_spec`].
+///
+/// `router_id` pins the spawned router's transport identity. It is ignored on
+/// the `ZENOH_CONFIG` path, where the operator owns the whole config including
+/// whatever `id` it does or does not carry.
 pub(crate) fn router_config_path(
     protocol: ZenohNetProtocol,
     host: &str,
     messaging_port: u16,
     connect_endpoints: Vec<String>,
     tls: Option<TlsConfig>,
+    router_id: &RouterId,
 ) -> Result<PathBuf> {
     if let Some(config_path) = config_override() {
         return Ok(config_path);
@@ -34,6 +40,7 @@ pub(crate) fn router_config_path(
         messaging_port,
         connect_endpoints,
         tls,
+        router_id,
     )?;
     Ok(config_path)
 }
@@ -54,6 +61,7 @@ pub(crate) fn render_router_config_to_path(
     messaging_port: u16,
     connect_endpoints: Vec<String>,
     tls: Option<TlsConfig>,
+    router_id: &RouterId,
 ) -> Result<()> {
     // The router seeds gossip discovery for the peer mesh, so gossip stays on;
     // multicast is off everywhere (see `crate::zenoh_config`). The router listens
@@ -66,6 +74,7 @@ pub(crate) fn render_router_config_to_path(
         true,
         connect_endpoints,
         tls,
+        router_id,
     ));
 
     std::fs::write(config_path, config_content)

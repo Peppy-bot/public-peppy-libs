@@ -10,6 +10,7 @@
 mod adapters;
 mod error;
 mod probe;
+mod router_id;
 mod types;
 mod wire;
 #[cfg(feature = "zenoh")]
@@ -28,6 +29,10 @@ pub use config::namespace::Namespace;
 pub use config::runtime::ProducerRef;
 pub use error::Error as PeppyMessagingInterfaceError;
 pub use probe::{MAX_PROBE_REPLY_SIZE, build_sized_probe_request};
+/// The stable transport identity every peppy-rendered router config pins.
+/// Ungated: it is pure lexical parsing, so a caller can mint and persist one
+/// without pulling in the zenoh transport.
+pub use router_id::RouterId;
 // `ZenohResponseToken` / `MockResponseToken` are intentionally NOT re-exported:
 // they are opaque, non-constructible payloads of the public `ResponseToken` enum
 // (reached only through `ResponseToken`'s methods), so naming them directly is

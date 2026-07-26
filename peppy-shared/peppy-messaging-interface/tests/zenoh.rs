@@ -8,7 +8,7 @@ mod zenoh_tests {
     };
     use bytes::Bytes;
     use pmi::{
-        MessengerBackend, Payload, PresenceScope, PublisherQoS, SubscriberBufferSizes,
+        MessengerBackend, Payload, PresenceScope, PublisherQoS, RouterId, SubscriberBufferSizes,
         SubscriberQoS, ZenohAdapter, ZenohNetProtocol,
     };
     use std::time::{Duration, Instant};
@@ -969,6 +969,7 @@ mod zenoh_tests {
             SubscriberBufferSizes::default(),
             Vec::new(),
             None,
+            RouterId::generate(),
         )
         .unwrap();
         let (host, adapter_port) = adapter.client_endpoint();

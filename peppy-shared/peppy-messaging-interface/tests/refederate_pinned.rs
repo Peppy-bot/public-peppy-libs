@@ -12,7 +12,10 @@
 
 #![cfg(feature = "router")]
 
-use pmi::{SubscriberBufferSizes, TlsConfig, ZenohAdapter, ZenohNetProtocol, render_router_config};
+use pmi::{
+    RouterId, SubscriberBufferSizes, TlsConfig, ZenohAdapter, ZenohNetProtocol,
+    render_router_config,
+};
 
 #[test]
 fn refederate_is_a_no_op_under_an_operator_pinned_config() {
@@ -21,6 +24,10 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
     // An operator hand-writes a router config and points `ZENOH_CONFIG` at it.
     // `render_router_config` produces exactly the shape zenohd (and the facade's
     // config parser) expect, so this stands in for a real operator-owned file.
+    // The operator's own identity for their own router: `with_router`'s
+    // `router_id` below is deliberately different, so this test also pins that a
+    // pinned config's `id` is never overwritten by the one peppy would have used.
+    let operator_id = RouterId::parse("a11ce").expect("a valid router id literal");
     let pinned_config = render_router_config(
         ZenohNetProtocol::Tcp,
         "127.0.0.1",
@@ -28,6 +35,7 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
         false,
         Vec::new(),
         None,
+        &operator_id,
     );
     let cfg_path = std::env::temp_dir().join(format!("peppy_pinned_router_{port}.json5"));
     std::fs::write(&cfg_path, &pinned_config).expect("write the operator-pinned config");
@@ -49,6 +57,7 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
         SubscriberBufferSizes::default(),
         Vec::new(),
         None,
+        RouterId::parse("b0b").expect("a valid router id literal"),
     )
     .expect("build a router adapter from the operator-pinned config");
 
@@ -69,6 +78,10 @@ fn refederate_is_a_no_op_under_an_operator_pinned_config() {
     assert_eq!(
         before, after,
         "the operator-pinned config must be left untouched"
+    );
+    assert!(
+        after.contains(operator_id.as_str()),
+        "the pinned config keeps the operator's own router id, not the one peppy was given"
     );
 
     let _ = std::fs::remove_file(&cfg_path);
