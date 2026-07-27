@@ -10,10 +10,10 @@ enum FeedbackStream {
     warning @2;
 }
 
-# Node List service
-struct NodeListRequest {}
+# Stack List service
+struct StackListRequest {}
 
-struct NodeListResponse {
+struct StackListResponse {
     # JSON-serialized graph representation (SerializedNodeGraph)
     graphJson @0 :Text;
     # Hostname of the daemon serving this stack
@@ -22,6 +22,14 @@ struct NodeListResponse {
     # daemon-generation instance id, matching its core-node presence token.
     coreNode @2 :Text;
     instanceId @3 :Text;
+    # The launch this daemon's slice belongs to, making the slice
+    # self-describing. Both fields are empty when the stack was not started
+    # by a federated launch. Carrying them here is what lets a coordinator
+    # rediscover its participants by query instead of remembering them, so a
+    # coordinator restart is not a catastrophe and `stack reset` works from
+    # any machine.
+    launchId @4 :Text;
+    coordinatorCoreNode @5 :Text;
 }
 
 # Node Add Action (streaming version with feedback)
@@ -185,8 +193,20 @@ struct RepoResolvedEntry {
 }
 
 struct NodeRunGoal {
-    # Runtime configuration in JSON5 format (PEPPY_RUNTIME_CONFIG)
-    runtimeConfigJson5 @0 :Text;
+    # JSON5-encoded `NodeInstancePlan`: instance id, arguments, the
+    # unresolved `use_sim_time` override, and the resolved slot bindings.
+    #
+    # Deliberately a PLAN and not an assembled runtime config. A daemon owns
+    # the runtime identity of every node it spawns, so the messaging
+    # endpoint, `bound_core_node`, and the resolved framework values are
+    # supplied by the receiving daemon on every path, this one included. A
+    # requester-assembled config would name the requester's own router, which
+    # a node on another machine cannot reach.
+    #
+    # Never empty, and its `instanceId` is never empty: a goal without a plan
+    # comes from a peppy that predates federated launch and is refused at
+    # decode rather than starting a node under a defaulted identity.
+    instancePlanJson5 @0 :Text;
     # Name of the node to run
     nodeName @1 :Text;
     # Tag of the node to run
@@ -217,9 +237,16 @@ struct NodeRunGoal {
     # taps. Like requestedPairs these are commands to the daemon, not resolved
     # config: the daemon registers each observation BEFORE the instance commits
     # to Running so it delivers the source pin the moment both are up (and
-    # again whenever the source restarts). The source's core_node is always
-    # this daemon's, so it is not carried here.
+    # again whenever the source restarts).
     plannedObservations @8 :List(ObservationRequest);
+    # SHA256 of the node manifest the planner validated this instance
+    # against. The spawning daemon re-resolves the manifest from its own
+    # cache and refuses if the hashes differ, so a cache that changed between
+    # a federated preflight and this dispatch fails loudly here instead of
+    # starting a node the plan was never checked against. Empty only on the
+    # in-process launch path, where planner and spawner are the same daemon
+    # reading the same entity under the same lock.
+    manifestSha256 @9 :Text;
 }
 
 struct PairRequest {
@@ -231,6 +258,11 @@ struct PairRequest {
     # means unpinned: exactly one available complementary slot must exist on
     # the peer and the daemon resolves it.
     peerLinkId @2 :Text;
+    # The core node the peer instance runs on. Always populated: a message a
+    # peer acts on is self-describing about placement, so a daemon never
+    # infers "this must be local" from an absent field. For a same-daemon
+    # pair this is the receiving daemon's own name.
+    peerCoreNode @3 :Text;
 }
 
 struct ObservationRequest {
@@ -243,6 +275,12 @@ struct ObservationRequest {
     # observer's fully-pinned subscription. Always resolved by the planner (the
     # CLI preflight or the launcher), never empty.
     sourceLinkId @2 :Text;
+    # The core node the source instance runs on. Always populated, for the
+    # same self-describing-placement reason as `PairRequest.peerCoreNode`.
+    # A remote source subscribes identically; what differs is that its
+    # lifecycle transitions reach the observing daemon as notifications from
+    # the source's own daemon rather than from local lifecycle events.
+    sourceCoreNode @3 :Text;
 }
 
 struct NodeRunGoalResponse {
@@ -302,11 +340,11 @@ struct NodeRemoveResponse {
     errorMessage @1 :Text;
 }
 
-# Node Reset service
-struct NodeResetRequest {
+# Stack Reset service
+struct StackResetRequest {
 }
 
-struct NodeResetResponse {
+struct StackResetResponse {
     # Whether the reset was successful
     success @0 :Bool;
     # Error message if failed (optional)

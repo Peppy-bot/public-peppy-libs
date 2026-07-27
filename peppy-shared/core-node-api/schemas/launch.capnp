@@ -24,6 +24,32 @@ struct LaunchGoal {
         fs @5 :Text;
         repository @6 :Text;
     }
+    # Identity of this federated launch, minted by the coordinator that
+    # receives this goal. Every participant records it alongside its slice,
+    # so the global stack is reconstructible by query from any machine and a
+    # restarted coordinator finds its own launch again.
+    #
+    # Never empty. A goal without one comes from a peppy that predates
+    # federated launch, and is refused at decode rather than silently running
+    # every instance on the coordinator: Cap'n Proto defaults an absent field
+    # to the empty string, so nothing but this check makes the break loud.
+    launchId @7 :Text;
+    # The `core_nodes` placeholders declared by the launcher, wired to
+    # concrete core nodes by `stack launch --place`. Empty for a launcher
+    # that declares no core node links; the coordinator cross-checks this map
+    # against the parsed document and refuses a mismatch.
+    coreNodeLinks @8 :List(CoreNodeLink);
+}
+
+# One `--place <core-node-link>@<core-node>` wiring: the placeholder the
+# launcher author declared on the left, the concrete machine on the right.
+struct CoreNodeLink {
+    # The placeholder as it appears in the launcher's `core_nodes` list.
+    linkId @0 :Text;
+    # The core node it is wired to. Never the literal `self`: the CLI
+    # resolves `self` to the coordinator's own name before dispatch, so a
+    # daemon only ever sees concrete names.
+    coreNode @1 :Text;
 }
 
 struct LaunchGoalResponse {

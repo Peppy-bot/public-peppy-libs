@@ -15,17 +15,17 @@ impl StackListRequest {
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<node_capnp::node_list_request::Builder>();
+        builder.init_root::<node_capnp::stack_list_request::Builder>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let request = reader.get_root::<node_capnp::node_list_request::Reader>()?;
+        let request = reader.get_root::<node_capnp::stack_list_request::Reader>()?;
         let size = request.total_size()?;
         if size.word_count != 0 || size.cap_count != 0 {
             return Err(crate::Error::Decoding(format!(
-                "NodeListRequest must be an empty struct, got {} words and {} capabilities",
+                "StackListRequest must be an empty struct, got {} words and {} capabilities",
                 size.word_count, size.cap_count
             )));
         }
@@ -42,6 +42,33 @@ pub struct StackListResponse {
     pub instance_id: String,
     /// Hostname of the machine the serving daemon runs on.
     pub host_name: String,
+    /// The launch this daemon's slice belongs to: its id and the coordinator
+    /// that drove it. `None` when the stack was not started by a federated
+    /// launch.
+    ///
+    /// Carrying it here is what makes a slice self-describing, and therefore
+    /// what lets a coordinator REDISCOVER its participants instead of
+    /// remembering them. `stack list` already fans out to every live core
+    /// node, so rediscovery is that same fan-out filtered by launch id: a
+    /// restarted coordinator finds its own launch again, and `stack reset`
+    /// works from any machine in the federation.
+    pub launch: Option<LaunchIdentity>,
+}
+
+/// Which launch a slice belongs to, and who drove it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchIdentity {
+    pub launch_id: String,
+    pub coordinator_core_node: String,
+}
+
+impl LaunchIdentity {
+    pub fn new(launch_id: impl Into<String>, coordinator_core_node: impl Into<String>) -> Self {
+        Self {
+            launch_id: launch_id.into(),
+            coordinator_core_node: coordinator_core_node.into(),
+        }
+    }
 }
 
 impl StackListResponse {
@@ -56,39 +83,75 @@ impl StackListResponse {
             core_node: core_node.into(),
             instance_id: instance_id.into(),
             host_name: host_name.into(),
+            launch: None,
         }
+    }
+
+    /// Attaches the launch this slice belongs to. A daemon whose stack came
+    /// from a federated launch always sets this.
+    pub fn with_launch(mut self, launch: LaunchIdentity) -> Self {
+        self.launch = Some(launch);
+        self
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_list_response::Builder>();
+            let mut response = builder.init_root::<node_capnp::stack_list_response::Builder>();
             response.set_graph_json(&self.graph_json);
             response.set_core_node(&self.core_node);
             response.set_instance_id(&self.instance_id);
             response.set_host_name(&self.host_name);
+            let (launch_id, coordinator) = match &self.launch {
+                Some(launch) => (
+                    launch.launch_id.as_str(),
+                    launch.coordinator_core_node.as_str(),
+                ),
+                None => ("", ""),
+            };
+            response.set_launch_id(launch_id);
+            response.set_coordinator_core_node(coordinator);
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_list_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::stack_list_response::Reader>()?;
+
+        // Both halves of the identity travel together or not at all: a launch
+        // id with no coordinator names a launch nobody can reset, and a
+        // coordinator with no launch id names nothing at all.
+        let launch_id = response.get_launch_id()?.to_str()?;
+        let coordinator = response.get_coordinator_core_node()?.to_str()?;
+        let launch = match (launch_id.is_empty(), coordinator.is_empty()) {
+            (true, true) => None,
+            (false, false) => Some(LaunchIdentity::new(launch_id, coordinator)),
+            _ => {
+                return Err(crate::Error::Decoding(format!(
+                    "StackListResponse carries a half-formed launch identity \
+                     (launch_id {launch_id:?}, coordinator {coordinator:?}): a slice is either \
+                     part of a launch or it is not"
+                )));
+            }
+        };
+
         Ok(Self {
             graph_json: response.get_graph_json()?.to_str()?.to_owned(),
             core_node: response.get_core_node()?.to_str()?.to_owned(),
             instance_id: response.get_instance_id()?.to_str()?.to_owned(),
             host_name: response.get_host_name()?.to_str()?.to_owned(),
+            launch,
         })
     }
 }
 
 impl crate::encoding::Wire for StackListRequest {
-    type Root = crate::node_capnp::node_list_request::Owned;
+    type Root = crate::node_capnp::stack_list_request::Owned;
 }
 
 impl crate::encoding::Wire for StackListResponse {
-    type Root = crate::node_capnp::node_list_response::Owned;
+    type Root = crate::node_capnp::stack_list_response::Owned;
 }
 
 #[cfg(test)]
@@ -147,6 +210,37 @@ mod tests {
         assert_eq!(decoded.core_node, "core_a");
         assert_eq!(decoded.instance_id, "generation_1");
         assert_eq!(decoded.host_name, "robo-a");
+        assert_eq!(decoded.launch, None, "a local stack belongs to no launch");
+    }
+
+    /// A slice is self-describing: it names the launch it belongs to and the
+    /// coordinator that drove it, which is what lets a restarted coordinator
+    /// rediscover its participants rather than lose them.
+    #[test]
+    fn response_round_trips_launch_identity() {
+        let response = StackListResponse::new("{}", "cn-atlas-h100", "generation_1", "atlas")
+            .with_launch(LaunchIdentity::new("launch-abc123", "cn-robot-7"));
+        let payload = response.encode().expect("encode");
+        let decoded = StackListResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+        let launch = decoded.launch.expect("launch identity must survive");
+        assert_eq!(launch.launch_id, "launch-abc123");
+        assert_eq!(launch.coordinator_core_node, "cn-robot-7");
+    }
+
+    #[test]
+    fn response_decode_rejects_a_half_formed_launch_identity() {
+        for (launch_id, coordinator) in [("launch-abc123", ""), ("", "cn-robot-7")] {
+            let response = StackListResponse::new("{}", "cn-atlas", "gen_1", "atlas")
+                .with_launch(LaunchIdentity::new(launch_id, coordinator));
+            let payload = response.encode().expect("encode");
+            let error =
+                StackListResponse::decode(payload.as_ref()).expect_err("half identity must fail");
+            assert!(
+                error.to_string().contains("half-formed launch identity"),
+                "got: {error}"
+            );
+        }
     }
 
     #[test]

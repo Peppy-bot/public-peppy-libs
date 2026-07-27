@@ -4,6 +4,7 @@
 //! used in the core-node services.
 mod clock;
 mod datastore;
+mod federation;
 mod health;
 mod info;
 mod node;
@@ -18,6 +19,11 @@ pub use datastore::{
     DatastoreGetRequest, DatastoreGetResponse, DatastoreKey, DatastoreKeyError, DatastoreListEntry,
     DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
     DatastoreStoreRequest, DatastoreStoreResponse,
+};
+pub use federation::{
+    ParticipantReleaseRequest, ParticipantReleaseResponse, ParticipantReserveRequest,
+    ParticipantReserveResponse, RelationshipEvent, RelationshipNotification,
+    RelationshipNotificationAck, ResolvedManifest,
 };
 pub use health::{HealthRequest, HealthResponse};
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
@@ -47,8 +53,8 @@ pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
 };
-pub use stack::list::{StackListRequest, StackListResponse};
-pub use stack::reset::{NodeResetRequest, NodeResetResponse};
+pub use stack::list::{LaunchIdentity, StackListRequest, StackListResponse};
+pub use stack::reset::{StackResetRequest, StackResetResponse};
 
 use capnp::introspect::Introspect;
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};

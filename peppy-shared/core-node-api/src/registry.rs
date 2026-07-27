@@ -114,8 +114,8 @@ methods! {
             name: "stack_reset",
             host: CoreNodeDaemon,
             summary: "Tear down the whole node stack back to an empty state.",
-            request: NodeResetRequest,
-            response: NodeResetResponse,
+            request: StackResetRequest,
+            response: StackResetResponse,
             schema: "node.capnp",
         }
         StackList {
@@ -125,6 +125,44 @@ methods! {
             request: StackListRequest,
             response: StackListResponse,
             schema: "node.capnp",
+        }
+        /// Preflight step of a federated launch, called daemon-to-daemon.
+        /// The coordinator holds a reservation on EVERY participant before
+        /// anything is torn down, so two coordinators racing the same
+        /// machines are refused before either has replaced a stack. The
+        /// participant answers with what the coordinator cannot know: its
+        /// version, its root identity, and the manifests for its own slice.
+        ParticipantReserve {
+            name: "participant_reserve",
+            host: CoreNodeDaemon,
+            summary: "Reserve this daemon for a federated launch and resolve its slice's manifests.",
+            request: ParticipantReserveRequest,
+            response: ParticipantReserveResponse,
+            schema: "federation.capnp",
+        }
+        /// Releases a reservation, whether because a later participant
+        /// refused or because the launch finished. Idempotent.
+        ParticipantRelease {
+            name: "participant_release",
+            host: CoreNodeDaemon,
+            summary: "Release a federated-launch reservation held for a launch id.",
+            request: ParticipantReleaseRequest,
+            response: ParticipantReleaseResponse,
+            schema: "federation.capnp",
+        }
+        /// Runtime notification from the daemon that owns an instance to a
+        /// daemon holding a relationship with it: a fresh incarnation for an
+        /// observer to follow, or a death for a peer to dissolve against.
+        /// Best-effort and idempotent by construction; the owning daemon
+        /// stays authoritative, so a lost notification leaves the receiver
+        /// stale rather than in disagreement.
+        RelationshipNotify {
+            name: "relationship_notify",
+            host: CoreNodeDaemon,
+            summary: "Notify a peer daemon that a related instance started a new incarnation or stopped.",
+            request: RelationshipNotification,
+            response: RelationshipNotificationAck,
+            schema: "federation.capnp",
         }
         NodeInit {
             name: "node_init",
@@ -313,6 +351,10 @@ pub const SCHEMA_SOURCES: &[(&str, &str)] = &[
     (
         "datastore.capnp",
         include_str!("../schemas/datastore.capnp"),
+    ),
+    (
+        "federation.capnp",
+        include_str!("../schemas/federation.capnp"),
     ),
     ("health.capnp", include_str!("../schemas/health.capnp")),
     ("info.capnp", include_str!("../schemas/info.capnp")),

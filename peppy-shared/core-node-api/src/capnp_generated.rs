@@ -39,3 +39,7 @@ pub(crate) mod repo_capnp {
 pub(crate) mod datastore_capnp {
     include!(concat!(env!("OUT_DIR"), "/datastore_capnp.rs"));
 }
+
+pub(crate) mod federation_capnp {
+    include!(concat!(env!("OUT_DIR"), "/federation_capnp.rs"));
+}
