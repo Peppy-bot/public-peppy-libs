@@ -58,6 +58,13 @@ struct NodeAddGoal {
     timeoutSecs @5 :UInt64;
     # When true, cancel any in-progress add action and start a new one
     force @7 :Bool;
+    # The federated launch this goal is one step of, when a coordinator
+    # dispatched it. Empty for anything a user typed.
+    #
+    # A daemon reserved by a launch refuses node work that does not name that
+    # launch, which is what stops a local `peppy node add` from racing a
+    # coordinator that is halfway through replacing this machine's slice.
+    launchId @9 :Text;
 }
 
 struct NodeAddRepoNodeSource {
@@ -116,6 +123,8 @@ struct NodeBuildGoal {
     envVars @2 :List(EnvVar);
     timeoutSecs @3 :UInt64;
     force @4 :Bool;
+    # See `NodeAddGoal.launchId`.
+    launchId @5 :Text;
 }
 
 struct NodeBuildGoalResponse {
@@ -247,6 +256,20 @@ struct NodeRunGoal {
     # in-process launch path, where planner and spawner are the same daemon
     # reading the same entity under the same lock.
     manifestSha256 @9 :Text;
+    # See `NodeAddGoal.launchId`.
+    launchId @10 :Text;
+    # Core nodes that must hear about this instance's lifecycle but that the
+    # spawning daemon cannot work out for itself.
+    #
+    # Concretely: the daemons whose OBSERVERS tap this instance. An observer
+    # claims no slot and holds no peer, and the source is deliberately unaware
+    # of it, so the source's daemon has no record it could consult. Pairing is
+    # different: a pair names both endpoints and their core nodes, so the
+    # daemon derives those recipients from its own registry.
+    #
+    # Only the planner sees the whole graph, so only the planner can fill this
+    # in. Empty for a single-machine launch and for anything a user typed.
+    lifecycleWatchers @11 :List(Text);
 }
 
 struct PairRequest {

@@ -51,6 +51,8 @@ pub struct NodeBuildGoal {
     pub env_vars: Vec<(String, String)>,
     pub timeout_secs: u64,
     pub force: bool,
+    /// See [`crate::encoding::NodeAddGoal::launch_id`].
+    pub launch_id: Option<String>,
 }
 
 impl NodeBuildGoal {
@@ -65,6 +67,7 @@ impl NodeBuildGoal {
             env_vars: Vec::new(),
             timeout_secs,
             force: false,
+            launch_id: None,
         }
     }
 
@@ -75,6 +78,13 @@ impl NodeBuildGoal {
 
     pub fn with_force(mut self, force: bool) -> Self {
         self.force = force;
+        self
+    }
+
+    /// Marks this goal as one step of a federated launch's dispatch, so the
+    /// receiving daemon accepts it while reserved for that launch.
+    pub fn with_launch_id(mut self, launch_id: impl Into<String>) -> Self {
+        self.launch_id = Some(launch_id.into());
         self
     }
 
@@ -95,6 +105,9 @@ impl NodeBuildGoal {
 
             goal.reborrow().set_timeout_secs(self.timeout_secs);
             goal.reborrow().set_force(self.force);
+            if let Some(launch_id) = &self.launch_id {
+                goal.reborrow().set_launch_id(launch_id);
+            }
         }
         encode_message(&builder)
     }
@@ -119,6 +132,7 @@ impl NodeBuildGoal {
             env_vars,
             timeout_secs: goal.get_timeout_secs(),
             force: goal.get_force(),
+            launch_id: optional_text(goal.get_launch_id()?.to_str()?),
         })
     }
 }
@@ -324,6 +338,20 @@ mod tests {
         assert!(goal.env_vars.is_empty());
         assert_eq!(goal.timeout_secs, 30);
         assert!(!goal.force);
+    }
+
+    /// See `node_run_goal_round_trips_the_launch_it_belongs_to`: the add and
+    /// build steps of a dispatch are gated on this field too.
+    #[test]
+    fn node_build_goal_round_trips_the_launch_it_belongs_to() {
+        let dispatched = NodeBuildGoal::new("node", "tag", 30).with_launch_id("launch-abc123");
+        let decoded = NodeBuildGoal::decode(&dispatched.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.launch_id.as_deref(), Some("launch-abc123"));
+        assert_eq!(decoded, dispatched);
+
+        let typed = NodeBuildGoal::new("node", "tag", 30);
+        let decoded = NodeBuildGoal::decode(&typed.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.launch_id, None);
     }
 
     #[test]

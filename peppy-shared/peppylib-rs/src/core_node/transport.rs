@@ -23,7 +23,7 @@ use core_node_api::names;
 use core_node_api::{ActionGoal, ServiceId, ServiceRequest};
 
 use crate::error::Result;
-use crate::messaging::{ActionGoalHandle, SenderTarget, ServiceTarget};
+use crate::messaging::{ActionGoalHandle, ResultStatus, SenderTarget, ServiceTarget};
 use crate::{ActionMessenger, MessengerHandle, ServiceMessenger};
 
 /// Routing parameters for a single service poll. Bundled into a struct so
@@ -201,4 +201,36 @@ pub async fn poll_node_stop(
         response_timeout,
     )
     .await
+}
+
+/// Fetches the final result of a goal that has already completed, mapping the
+/// non-`Completed` outcomes to a caller-facing explanation.
+///
+/// Shared rather than reimplemented per caller because the interesting part is
+/// the [`ResultStatus`] match, not the request: `Abandoned` and `Expired` are
+/// easy to lump in with a transport error, and doing so would report "failed
+/// to get result" for a worker that died and for one whose result simply aged
+/// out. Every caller wants the same four sentences here, so they live here.
+///
+/// The feedback DRAIN deliberately stays with each caller: a CLI bounds it by
+/// the user's `--idle-timeout`, while a coordinator relaying a peer's output
+/// into a launch stream bounds it by that launch's own budget. Those policies
+/// differ, so sharing them would mean parameterizing away the whole loop.
+pub async fn take_goal_result(
+    messenger: &MessengerHandle,
+    action_handle: &ActionGoalHandle,
+    result_timeout: Duration,
+) -> std::result::Result<crate::types::Payload, String> {
+    let reply = ActionMessenger::request_result(messenger, action_handle, result_timeout)
+        .await
+        .map_err(|e| format!("failed to get action result: {e}"))?;
+    match reply.status {
+        ResultStatus::Completed | ResultStatus::Cancelled => Ok(reply.body),
+        ResultStatus::Abandoned => Err(
+            "the action goal was abandoned by its worker before producing a result".to_owned(),
+        ),
+        ResultStatus::Expired => {
+            Err("the action result expired before it could be fetched".to_owned())
+        }
+    }
 }

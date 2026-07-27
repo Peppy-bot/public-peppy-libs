@@ -110,6 +110,10 @@ pub struct NodeAddGoal {
     pub env_vars: Vec<(String, String)>,
     pub timeout_secs: u64,
     pub force: bool,
+    /// The federated launch this goal is one step of, when a coordinator
+    /// dispatched it; `None` for anything a user typed. A reserved daemon
+    /// refuses node work that does not name the launch holding it.
+    pub launch_id: Option<String>,
 }
 
 impl NodeAddGoal {
@@ -121,6 +125,7 @@ impl NodeAddGoal {
             env_vars: Vec::new(),
             timeout_secs,
             force: false,
+            launch_id: None,
         }
     }
 
@@ -192,6 +197,13 @@ impl NodeAddGoal {
         self
     }
 
+    /// Marks this goal as one step of a federated launch's dispatch, so the
+    /// receiving daemon accepts it while reserved for that launch.
+    pub fn with_launch_id(mut self, launch_id: impl Into<String>) -> Self {
+        self.launch_id = Some(launch_id.into());
+        self
+    }
+
     /// Returns the filesystem path if the source is `Fs`, otherwise `None`.
     pub fn fs_path(&self) -> Option<&PathBuf> {
         match &self.source {
@@ -248,6 +260,9 @@ impl NodeAddGoal {
 
             goal.reborrow().set_timeout_secs(self.timeout_secs);
             goal.reborrow().set_force(self.force);
+            if let Some(launch_id) = &self.launch_id {
+                goal.reborrow().set_launch_id(launch_id);
+            }
         }
         encode_message(&builder)
     }
@@ -291,6 +306,7 @@ impl NodeAddGoal {
             env_vars,
             timeout_secs: goal.get_timeout_secs(),
             force: goal.get_force(),
+            launch_id: optional_text(goal.get_launch_id()?.to_str()?),
         })
     }
 }
@@ -341,10 +357,23 @@ mod tests {
             env_vars: vec![],
             timeout_secs: 30,
             force: false,
+            launch_id: None,
         };
         let encoded = goal.encode().expect("encoding should succeed");
         let result = NodeAddGoal::decode(&encoded);
         assert!(result.is_err(), "decoding an empty Fs source should fail");
+    }
+
+    /// See `node_run_goal_round_trips_the_launch_it_belongs_to`.
+    #[test]
+    fn node_add_goal_round_trips_the_launch_it_belongs_to() {
+        let dispatched = NodeAddGoal::new("/some/path", "hash", 30).with_launch_id("launch-abc123");
+        let decoded = NodeAddGoal::decode(&dispatched.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.launch_id.as_deref(), Some("launch-abc123"));
+
+        let typed = NodeAddGoal::new("/some/path", "hash", 30);
+        let decoded = NodeAddGoal::decode(&typed.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.launch_id, None);
     }
 
     #[test]

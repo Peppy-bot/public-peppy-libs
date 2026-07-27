@@ -21,8 +21,9 @@ pub use datastore::{
     DatastoreStoreRequest, DatastoreStoreResponse,
 };
 pub use federation::{
-    ParticipantReleaseRequest, ParticipantReleaseResponse, ParticipantReserveRequest,
-    ParticipantReserveResponse, RelationshipEvent, RelationshipNotification,
+    PairCommitRequest, PairCommitResponse, ParticipantReleaseRequest, ParticipantReleaseResponse,
+    ParticipantReserveRequest, ParticipantReserveResponse, ParticipantSliceBeginRequest,
+    ParticipantSliceBeginResponse, RelationshipEvent, RelationshipNotification,
     RelationshipNotificationAck, ResolvedManifest,
 };
 pub use health::{HealthRequest, HealthResponse};

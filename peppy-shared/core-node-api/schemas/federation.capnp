@@ -72,6 +72,27 @@ struct ParticipantReserveResponse {
     manifests @4 :List(ResolvedManifest);
 }
 
+# Tells a reserved participant to replace its stack slice: tear down whatever
+# it is running, clear it, and record that the slice now belongs to this
+# launch.
+#
+# Separate from the reservation on purpose. Reserving is NON-DESTRUCTIVE and
+# happens before the coordinator knows whether every participant will accept,
+# so folding the teardown into it would replace a stack on machine A for a
+# launch that machine B is about to refuse. This is the commit point: the
+# coordinator sends it only once every participant is reserved.
+struct ParticipantSliceBeginRequest {
+    # Must match the reservation this participant holds. A participant that is
+    # reserved for a different launch refuses, which is what stops a stale
+    # coordinator from wiping a machine out from under the launch that owns it.
+    launchId @0 :Text;
+}
+
+struct ParticipantSliceBeginResponse {
+    began @0 :Bool;
+    rejectionReason @1 :Text;
+}
+
 # Releases a reservation the coordinator obtained but no longer needs, either
 # because a later participant refused or because the launch finished.
 # Idempotent: releasing a reservation that is not held succeeds.
@@ -83,6 +104,40 @@ struct ParticipantReleaseResponse {
     # False only when the reservation is held for a DIFFERENT launch, which the
     # caller has no standing to release.
     released @0 :Bool;
+    rejectionReason @1 :Text;
+}
+
+# Asks a peer daemon to record its half of a cross-daemon pair and deliver the
+# pin to its own endpoint.
+#
+# Pairing is symmetric, but a registry is not shared: each daemon records the
+# pairs its own instances are in, and only a daemon can deliver a pin to a node
+# it hosts. A same-daemon pair is committed and delivered in one place; a
+# cross-daemon one needs the second half committed where the second node lives,
+# and this is that request.
+#
+# Sent by the daemon starting the LATER endpoint, which is the side that has
+# just validated the pair. The receiving side does not re-derive the pairing
+# rules: it cannot read the sender's manifests, and the launch coordinator
+# already checked both against each other before anything started.
+struct PairCommitRequest {
+    pairingName @0 :Text;
+    pairingTag @1 :Text;
+    # The endpoint that lives on the RECEIVING daemon.
+    localInstanceId @2 :Text;
+    localLinkId @3 :Text;
+    localRole @4 :Text;
+    # The endpoint on the SENDING daemon, which the receiver pins its node to.
+    peerCoreNode @5 :Text;
+    peerInstanceId @6 :Text;
+    peerLinkId @7 :Text;
+    peerRole @8 :Text;
+}
+
+struct PairCommitResponse {
+    committed @0 :Bool;
+    # Populated when `committed` is false. The sender reverts its own half, so
+    # a pair is never left established on one machine and absent on the other.
     rejectionReason @1 :Text;
 }
 

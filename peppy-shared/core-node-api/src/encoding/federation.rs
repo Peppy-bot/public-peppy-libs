@@ -204,6 +204,189 @@ impl ParticipantReserveResponse {
     }
 }
 
+/// Commits a reserved participant to replacing its stack slice.
+///
+/// The destructive half of the exchange, deliberately split from the
+/// reservation: reserving happens before the coordinator knows whether every
+/// participant will accept, so folding a teardown into it would replace a
+/// stack on one machine for a launch another is about to refuse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParticipantSliceBeginRequest {
+    pub launch_id: String,
+}
+
+impl ParticipantSliceBeginRequest {
+    pub fn new(launch_id: impl Into<String>) -> Self {
+        Self {
+            launch_id: launch_id.into(),
+        }
+    }
+
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut request =
+                builder.init_root::<federation_capnp::participant_slice_begin_request::Builder>();
+            request.set_launch_id(&self.launch_id);
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let request =
+            reader.get_root::<federation_capnp::participant_slice_begin_request::Reader>()?;
+        Ok(Self {
+            launch_id: non_empty(request.get_launch_id()?.to_str()?, "launch_id")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParticipantSliceBeginResponse {
+    pub began: bool,
+    pub rejection_reason: Option<String>,
+}
+
+impl ParticipantSliceBeginResponse {
+    pub fn began() -> Self {
+        Self {
+            began: true,
+            rejection_reason: None,
+        }
+    }
+
+    pub fn refused(reason: impl Into<String>) -> Self {
+        Self {
+            began: false,
+            rejection_reason: Some(reason.into()),
+        }
+    }
+
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut response =
+                builder.init_root::<federation_capnp::participant_slice_begin_response::Builder>();
+            response.set_began(self.began);
+            response.set_rejection_reason(self.rejection_reason.as_deref().unwrap_or(""));
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let response =
+            reader.get_root::<federation_capnp::participant_slice_begin_response::Reader>()?;
+        Ok(Self {
+            began: response.get_began(),
+            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
+        })
+    }
+}
+
+/// Asks a peer daemon to record its half of a cross-daemon pair and deliver the
+/// pin to its own endpoint.
+///
+/// The field names are relative to the RECEIVER: `local_*` is the endpoint on
+/// the daemon being asked, `peer_*` is the one on the daemon asking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairCommitRequest {
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    pub local_instance_id: String,
+    pub local_link_id: String,
+    pub local_role: String,
+    pub peer_core_node: String,
+    pub peer_instance_id: String,
+    pub peer_link_id: String,
+    pub peer_role: String,
+}
+
+impl PairCommitRequest {
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut request =
+                builder.init_root::<federation_capnp::pair_commit_request::Builder>();
+            request.set_pairing_name(&self.pairing_name);
+            request.set_pairing_tag(&self.pairing_tag);
+            request.set_local_instance_id(&self.local_instance_id);
+            request.set_local_link_id(&self.local_link_id);
+            request.set_local_role(&self.local_role);
+            request.set_peer_core_node(&self.peer_core_node);
+            request.set_peer_instance_id(&self.peer_instance_id);
+            request.set_peer_link_id(&self.peer_link_id);
+            request.set_peer_role(&self.peer_role);
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let request = reader.get_root::<federation_capnp::pair_commit_request::Reader>()?;
+        Ok(Self {
+            pairing_name: non_empty(request.get_pairing_name()?.to_str()?, "pairing_name")?,
+            pairing_tag: non_empty(request.get_pairing_tag()?.to_str()?, "pairing_tag")?,
+            local_instance_id: non_empty(
+                request.get_local_instance_id()?.to_str()?,
+                "local_instance_id",
+            )?,
+            local_link_id: non_empty(request.get_local_link_id()?.to_str()?, "local_link_id")?,
+            local_role: non_empty(request.get_local_role()?.to_str()?, "local_role")?,
+            peer_core_node: non_empty(request.get_peer_core_node()?.to_str()?, "peer_core_node")?,
+            peer_instance_id: non_empty(
+                request.get_peer_instance_id()?.to_str()?,
+                "peer_instance_id",
+            )?,
+            peer_link_id: non_empty(request.get_peer_link_id()?.to_str()?, "peer_link_id")?,
+            peer_role: non_empty(request.get_peer_role()?.to_str()?, "peer_role")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairCommitResponse {
+    pub committed: bool,
+    pub rejection_reason: Option<String>,
+}
+
+impl PairCommitResponse {
+    pub fn committed() -> Self {
+        Self {
+            committed: true,
+            rejection_reason: None,
+        }
+    }
+
+    pub fn refused(reason: impl Into<String>) -> Self {
+        Self {
+            committed: false,
+            rejection_reason: Some(reason.into()),
+        }
+    }
+
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut response =
+                builder.init_root::<federation_capnp::pair_commit_response::Builder>();
+            response.set_committed(self.committed);
+            response.set_rejection_reason(self.rejection_reason.as_deref().unwrap_or(""));
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let response = reader.get_root::<federation_capnp::pair_commit_response::Reader>()?;
+        Ok(Self {
+            committed: response.get_committed(),
+            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
+        })
+    }
+}
+
 /// Releases a reservation. Idempotent: releasing one that is not held
 /// succeeds, because a coordinator unwinding a failed preflight cannot always
 /// know which participants actually acked.
@@ -388,6 +571,22 @@ impl crate::encoding::Wire for ParticipantReserveResponse {
     type Root = crate::federation_capnp::participant_reserve_response::Owned;
 }
 
+impl crate::encoding::Wire for ParticipantSliceBeginRequest {
+    type Root = crate::federation_capnp::participant_slice_begin_request::Owned;
+}
+
+impl crate::encoding::Wire for ParticipantSliceBeginResponse {
+    type Root = crate::federation_capnp::participant_slice_begin_response::Owned;
+}
+
+impl crate::encoding::Wire for PairCommitRequest {
+    type Root = crate::federation_capnp::pair_commit_request::Owned;
+}
+
+impl crate::encoding::Wire for PairCommitResponse {
+    type Root = crate::federation_capnp::pair_commit_response::Owned;
+}
+
 impl crate::encoding::Wire for ParticipantReleaseRequest {
     type Root = crate::federation_capnp::participant_release_request::Owned;
 }
@@ -497,6 +696,101 @@ mod tests {
                 ParticipantReleaseResponse::decode(payload.as_ref()).expect("decode"),
                 response
             );
+        }
+    }
+
+    #[test]
+    fn slice_begin_round_trips() {
+        let request = ParticipantSliceBeginRequest::new("launch-abc123");
+        let payload = request.encode().expect("encode");
+        assert_eq!(
+            ParticipantSliceBeginRequest::decode(payload.as_ref()).expect("decode"),
+            request
+        );
+
+        for response in [
+            ParticipantSliceBeginResponse::began(),
+            ParticipantSliceBeginResponse::refused("reserved for launch `launch-other`"),
+        ] {
+            let payload = response.encode().expect("encode");
+            assert_eq!(
+                ParticipantSliceBeginResponse::decode(payload.as_ref()).expect("decode"),
+                response
+            );
+        }
+    }
+
+    /// The destructive step must never act on a defaulted launch id: that is
+    /// how a machine would get its stack replaced on behalf of nobody.
+    #[test]
+    fn slice_begin_decode_rejects_empty_launch_id() {
+        let payload = ParticipantSliceBeginRequest::new("")
+            .encode()
+            .expect("encode");
+        let error = ParticipantSliceBeginRequest::decode(payload.as_ref())
+            .expect_err("empty launch id must fail");
+        assert!(error.to_string().contains("launch_id"), "got: {error}");
+    }
+
+    fn pair_commit() -> PairCommitRequest {
+        PairCommitRequest {
+            pairing_name: "task_delegation".to_owned(),
+            pairing_tag: "v1".to_owned(),
+            local_instance_id: "reflex_inst".to_owned(),
+            local_link_id: "delegation".to_owned(),
+            local_role: "executor".to_owned(),
+            peer_core_node: "cn-atlas".to_owned(),
+            peer_instance_id: "planner_inst".to_owned(),
+            peer_link_id: "delegation".to_owned(),
+            peer_role: "planner".to_owned(),
+        }
+    }
+
+    #[test]
+    fn pair_commit_round_trips() {
+        let request = pair_commit();
+        let payload = request.encode().expect("encode");
+        assert_eq!(
+            PairCommitRequest::decode(payload.as_ref()).expect("decode"),
+            request
+        );
+
+        for response in [
+            PairCommitResponse::committed(),
+            PairCommitResponse::refused("slot already paired"),
+        ] {
+            let payload = response.encode().expect("encode");
+            assert_eq!(
+                PairCommitResponse::decode(payload.as_ref()).expect("decode"),
+                response
+            );
+        }
+    }
+
+    /// Every field addresses a specific slot on a specific machine. A defaulted
+    /// one would pair the wrong thing silently, so each is refused at decode
+    /// rather than filled in.
+    #[test]
+    fn pair_commit_decode_rejects_any_empty_address_field() {
+        let fields: [(&str, fn(&mut PairCommitRequest)); 9] = [
+            ("pairing_name", |r| r.pairing_name.clear()),
+            ("pairing_tag", |r| r.pairing_tag.clear()),
+            ("local_instance_id", |r| r.local_instance_id.clear()),
+            ("local_link_id", |r| r.local_link_id.clear()),
+            ("local_role", |r| r.local_role.clear()),
+            ("peer_core_node", |r| r.peer_core_node.clear()),
+            ("peer_instance_id", |r| r.peer_instance_id.clear()),
+            ("peer_link_id", |r| r.peer_link_id.clear()),
+            ("peer_role", |r| r.peer_role.clear()),
+        ];
+        for (field, blank) in fields {
+            let mut request = pair_commit();
+            blank(&mut request);
+            let payload = request.encode().expect("encode");
+            let error = PairCommitRequest::decode(payload.as_ref())
+                .err()
+                .unwrap_or_else(|| panic!("a blank `{field}` must be refused"));
+            assert!(error.to_string().contains(field), "got: {error}");
         }
     }
 

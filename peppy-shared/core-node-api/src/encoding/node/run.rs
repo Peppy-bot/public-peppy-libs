@@ -145,6 +145,14 @@ pub struct NodeRunGoal {
     /// commits to Running, so the source pin is delivered the moment both are
     /// up and re-delivered whenever the source restarts.
     pub planned_observations: BTreeMap<String, ObservationTarget>,
+    /// See [`crate::encoding::NodeAddGoal::launch_id`].
+    pub launch_id: Option<String>,
+    /// Core nodes that must hear about this instance's lifecycle but that the
+    /// spawning daemon cannot work out for itself: the daemons whose observers
+    /// tap it. A source is deliberately unaware of its observers, so only the
+    /// planner can name them. Pairing recipients are NOT listed here; a pair
+    /// names both endpoints, so the daemon derives those from its own registry.
+    pub lifecycle_watchers: Vec<String>,
 }
 
 impl NodeRunGoal {
@@ -165,6 +173,8 @@ impl NodeRunGoal {
             deferred_pairs: Vec::new(),
             covered_pairs: BTreeMap::new(),
             planned_observations: BTreeMap::new(),
+            launch_id: None,
+            lifecycle_watchers: Vec::new(),
         }
     }
 
@@ -203,6 +213,20 @@ impl NodeRunGoal {
         self
     }
 
+    /// Marks this goal as one step of a federated launch's dispatch, so the
+    /// receiving daemon accepts it while reserved for that launch.
+    pub fn with_launch_id(mut self, launch_id: impl Into<String>) -> Self {
+        self.launch_id = Some(launch_id.into());
+        self
+    }
+
+    /// Names the daemons whose observers tap this instance, so the daemon that
+    /// spawns it can report its lifecycle to them.
+    pub fn with_lifecycle_watchers(mut self, lifecycle_watchers: Vec<String>) -> Self {
+        self.lifecycle_watchers = lifecycle_watchers;
+        self
+    }
+
     /// Builds a goal for in-process execution that bypasses the action-loop
     /// gate (see `services::stack::launch::start_node_directly`). The
     /// `timeout_secs` field feeds the gate's busy-reporting and is unread on
@@ -223,6 +247,16 @@ impl NodeRunGoal {
             let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
             goal.set_instance_plan_json5(&instance_plan_json5);
             goal.set_manifest_sha256(self.manifest_sha256.as_deref().unwrap_or(""));
+            goal.set_launch_id(self.launch_id.as_deref().unwrap_or(""));
+
+            let watcher_count = capnp_list_len(
+                self.lifecycle_watchers.len(),
+                "NodeRunGoal.lifecycle_watchers",
+            )?;
+            let mut watchers = goal.reborrow().init_lifecycle_watchers(watcher_count);
+            for (idx, core_node) in self.lifecycle_watchers.iter().enumerate() {
+                watchers.set(idx as u32, core_node.as_str());
+            }
             goal.set_node_name(&self.node_name);
             goal.set_tag(&self.tag);
 
@@ -283,6 +317,12 @@ impl NodeRunGoal {
             ));
         }
 
+        let watchers_reader = goal.get_lifecycle_watchers()?;
+        let mut lifecycle_watchers = Vec::with_capacity(watchers_reader.len() as usize);
+        for idx in 0..watchers_reader.len() {
+            lifecycle_watchers.push(watchers_reader.get(idx)?.to_str()?.to_owned());
+        }
+
         let deferred_reader = goal.get_deferred_pairs()?;
         let mut deferred_pairs = Vec::with_capacity(deferred_reader.len() as usize);
         for idx in 0..deferred_reader.len() {
@@ -308,6 +348,8 @@ impl NodeRunGoal {
         Ok(Self {
             instance_plan,
             manifest_sha256: optional_text(goal.get_manifest_sha256()?.to_str()?),
+            launch_id: optional_text(goal.get_launch_id()?.to_str()?),
+            lifecycle_watchers,
             node_name: goal.get_node_name()?.to_str()?.to_owned(),
             tag: goal.get_tag()?.to_str()?.to_owned(),
             env_vars,
@@ -868,6 +910,28 @@ mod tests {
         let encoded = goal.encode().expect("encode");
         let decoded = NodeRunGoal::decode(&encoded).expect("decode");
         assert_eq!(decoded, goal);
+    }
+
+    /// A dispatched start names the launch that reserved the machine; a
+    /// user-typed one names nothing. The receiving daemon tells them apart by
+    /// exactly this field, so it has to survive the wire.
+    #[test]
+    fn node_run_goal_round_trips_the_launch_it_belongs_to() {
+        let dispatched = NodeRunGoal::new(plan("inst_1"), "node", "tag", 30)
+            .with_launch_id("launch-abc123")
+            .with_lifecycle_watchers(vec!["cn-atlas".to_owned()]);
+        let decoded = NodeRunGoal::decode(&dispatched.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.launch_id.as_deref(), Some("launch-abc123"));
+        assert_eq!(decoded.lifecycle_watchers, ["cn-atlas"]);
+        assert_eq!(decoded, dispatched);
+
+        let typed = NodeRunGoal::new(plan("inst_1"), "node", "tag", 30);
+        let decoded = NodeRunGoal::decode(&typed.encode().expect("encode")).expect("decode");
+        assert_eq!(
+            decoded.launch_id, None,
+            "a goal nobody dispatched must not claim a launch"
+        );
+        assert!(decoded.lifecycle_watchers.is_empty());
     }
 
     #[test]

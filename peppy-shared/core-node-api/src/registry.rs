@@ -140,6 +140,31 @@ methods! {
             response: ParticipantReserveResponse,
             schema: "federation.capnp",
         }
+        /// Commit point of a federated launch: the coordinator tells a
+        /// reserved participant to tear down its stack and record that its
+        /// new slice belongs to this launch. Split from the reservation
+        /// because reserving must stay non-destructive until every
+        /// participant has accepted.
+        ParticipantSliceBegin {
+            name: "participant_slice_begin",
+            host: CoreNodeDaemon,
+            summary: "Replace this daemon's stack slice on behalf of a reserved federated launch.",
+            request: ParticipantSliceBeginRequest,
+            response: ParticipantSliceBeginResponse,
+            schema: "federation.capnp",
+        }
+        /// Records the second half of a CROSS-DAEMON pair on the daemon
+        /// hosting the other endpoint, and delivers that endpoint its pin.
+        /// A same-daemon pair never needs it: one registry holds both
+        /// halves and one daemon delivers both pins.
+        PairCommit {
+            name: "pair_commit",
+            host: CoreNodeDaemon,
+            summary: "Record this daemon's half of a cross-daemon pair and pin its endpoint.",
+            request: PairCommitRequest,
+            response: PairCommitResponse,
+            schema: "federation.capnp",
+        }
         /// Releases a reservation, whether because a later participant
         /// refused or because the launch finished. Idempotent.
         ParticipantRelease {
