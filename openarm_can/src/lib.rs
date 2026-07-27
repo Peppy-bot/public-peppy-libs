@@ -375,3 +375,62 @@ mod tests {
         }
     }
 }
+
+/// Log throttle for a periodic bus loop: one line per failure burst (the
+/// first, then every [`Self::REPEAT_EVERY`]th) and one on recovery, instead of
+/// several per tick at the loop rate. [`consecutive`](Self::consecutive) lets
+/// the caller escalate when a burst has clearly stopped being transient.
+#[derive(Debug, Default)]
+pub struct CanErrorThrottle {
+    consecutive: u64,
+}
+
+impl CanErrorThrottle {
+    const REPEAT_EVERY: u64 = 100;
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn failure(&mut self, context: &str, e: &CanError) {
+        if self.consecutive.is_multiple_of(Self::REPEAT_EVERY) {
+            tracing::error!(
+                "{context}: CAN tick failed ({} consecutive): {e}",
+                self.consecutive + 1
+            );
+        }
+        self.consecutive += 1;
+    }
+
+    pub fn success(&mut self, context: &str) {
+        if self.consecutive > 0 {
+            tracing::info!(
+                "{context}: CAN recovered after {} failed ticks",
+                self.consecutive
+            );
+        }
+        self.consecutive = 0;
+    }
+
+    /// Failed ticks since the last success.
+    pub fn consecutive(&self) -> u64 {
+        self.consecutive
+    }
+}
+
+#[cfg(test)]
+mod throttle_tests {
+    use super::*;
+
+    #[test]
+    fn throttle_counts_and_resets() {
+        let mut t = CanErrorThrottle::new();
+        let e = CanError::InvalidCanId(0x800);
+        for _ in 0..5 {
+            t.failure("test", &e);
+        }
+        assert_eq!(t.consecutive(), 5);
+        t.success("test");
+        assert_eq!(t.consecutive(), 0);
+    }
+}
