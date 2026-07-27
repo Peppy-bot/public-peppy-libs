@@ -40,7 +40,12 @@ impl Recorder {
     /// Reads until the bus stays quiet for 200ms, returning fixture lines.
     fn drain_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
-        while let Ok(frame) = self.0.read_frame_timeout(Duration::from_millis(200)) {
+        loop {
+            let frame = match self.0.read_frame_timeout(Duration::from_millis(200)) {
+                Ok(frame) => frame,
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return lines,
+                Err(e) => panic!("recorder read failed: {e}"),
+            };
             let (fd, flags, id, data) = match &frame {
                 CanAnyFrame::Normal(f) => (false, 0, f.raw_id(), f.data().to_vec()),
                 CanAnyFrame::Fd(f) => (
@@ -53,7 +58,6 @@ impl Recorder {
             };
             lines.push(sweep::format_frame(fd, flags, id, &data));
         }
-        lines
     }
 }
 
@@ -121,10 +125,8 @@ fn replay_against_fixture(fixture_name: &str, drive: fn(&str)) {
         "{}/tests/fixtures/{fixture_name}",
         env!("CARGO_MANIFEST_DIR")
     );
-    let Ok(fixture) = std::fs::read_to_string(&path) else {
-        eprintln!("skipped: no fixture at {path} (run the capture harness first)");
-        return;
-    };
+    let fixture = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read fixture {path}: {e}"));
     let expected: Vec<&str> = fixture.lines().collect();
 
     let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
