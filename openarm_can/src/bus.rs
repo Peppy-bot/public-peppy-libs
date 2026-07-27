@@ -23,6 +23,11 @@ use crate::{CanError, Result};
 /// Highest valid 11-bit standard CAN id.
 const CAN_SFF_MAX: u32 = 0x7FF;
 
+/// SO_RCVTIMEO on the bus socket: the reference implementation's 100us
+/// stuck-read guard, kept so a blocking read can never outlive one kernel
+/// timer tick even if the readiness poll misfires.
+const RECV_BACKSTOP: Duration = Duration::from_micros(100);
+
 /// One motor on the bus: its addressing plus the last decoded state.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MotorSlot {
@@ -97,11 +102,23 @@ impl CanSock {
         if !self.readable_within(timeout)? {
             return Ok(None);
         }
-        let frame = match self {
-            Self::Classic(socket) => socket.read_frame().map(CanAnyFrame::from)?,
-            Self::Fd(socket) => socket.read_frame()?,
+        let read = match self {
+            Self::Classic(socket) => socket.read_frame().map(CanAnyFrame::from),
+            Self::Fd(socket) => socket.read_frame(),
         };
-        Ok(Some(frame))
+        match read {
+            Ok(frame) => Ok(Some(frame)),
+            // The RECV_BACKSTOP timeout fired: poll readiness raced away.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Waits for the socket to become readable via `ppoll`, which takes a
@@ -140,6 +157,17 @@ impl MotorBus {
         } else {
             CanSock::Classic(CanSocket::open(interface).map_err(open_err)?)
         };
+        // Backstop from the reference implementation: reads happen only after
+        // a readiness poll, but if that invariant is ever wrong (kernel or
+        // driver quirk), SO_RCVTIMEO bounds the blocking read instead of
+        // letting it hang the caller's mutex forever. Kernel rounding makes
+        // the effective bound one scheduler tick, not the literal value.
+        let raw = match &socket {
+            CanSock::Classic(s) => s.as_raw_socket(),
+            CanSock::Fd(s) => s.as_raw_socket(),
+        };
+        raw.set_read_timeout(Some(RECV_BACKSTOP))
+            .map_err(open_err)?;
         Ok(Self { socket, slots })
     }
 
@@ -205,16 +233,110 @@ impl MotorBus {
     fn dispatch(&mut self, frame: &CanAnyFrame) {
         // Remote and error frames can never be motor state; the Damiao
         // protocol replies with plain data frames only.
-        let (id, data) = match frame {
-            CanAnyFrame::Normal(f) => (f.raw_id(), f.data()),
-            CanAnyFrame::Fd(f) => (f.raw_id(), f.data()),
+        let (extended, id, data) = match frame {
+            CanAnyFrame::Normal(f) => (f.is_extended(), f.raw_id(), f.data()),
+            CanAnyFrame::Fd(f) => (f.is_extended(), f.raw_id(), f.data()),
             CanAnyFrame::Remote(_) | CanAnyFrame::Error(_) => return,
         };
-        let Some(slot) = self.slots.iter_mut().find(|slot| slot.recv_id == id) else {
-            return;
-        };
-        if let Some(state) = protocol::parse_state(slot.motor_type, data) {
-            slot.state = state;
+        decode_into_slots(&mut self.slots, extended, id, data);
+    }
+}
+
+/// Decodes a received data frame into the matching slot's state cache.
+/// Rejected without decoding: extended-id frames (motors address with 11-bit
+/// ids only; `raw_id` strips the EFF flag, so without this gate a foreign
+/// 29-bit frame whose low bits collide with a recv id would masquerade as
+/// state) and parameter replies (the motor mirrors 0x7FF writes/queries back
+/// on its state id; decoded as state, the echo reads as a violent full-scale
+/// position).
+fn decode_into_slots(slots: &mut [MotorSlot], extended: bool, id: u32, data: &[u8]) {
+    if extended {
+        return;
+    }
+    let Some(slot) = slots.iter_mut().find(|slot| slot.recv_id == id) else {
+        return;
+    };
+    if is_param_reply(slot.send_id, data) {
+        return;
+    }
+    if let Some(state) = protocol::parse_state(slot.motor_type, data) {
+        slot.state = state;
+    }
+}
+
+/// A parameter reply carries the motor's send id little-endian in bytes 0-1
+/// and the write/query opcode in byte 2. A state frame matching all three
+/// bytes would put the motor at a physically unreachable full-scale position,
+/// so this cannot reject live states.
+fn is_param_reply(send_id: u32, data: &[u8]) -> bool {
+    data.len() >= 3
+        && data[0] == (send_id & 0xFF) as u8
+        && data[1] == ((send_id >> 8) & 0xFF) as u8
+        && matches!(data[2], 0x33 | 0x55)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gripper_slot() -> MotorSlot {
+        MotorSlot::new(MotorType::DM4310, 0x08, 0x18, 0x300).unwrap()
+    }
+
+    /// DM4310 state: q at +p_max, dq at -v_max, tau at +t_max.
+    const STATE: [u8; 8] = [0x00, 0xFF, 0xFF, 0x00, 0x0F, 0xFF, 0x30, 0x28];
+
+    #[test]
+    fn state_frame_updates_the_matching_slot() {
+        let mut slots = [gripper_slot()];
+        decode_into_slots(&mut slots, false, 0x18, &STATE);
+        assert_eq!(slots[0].state().position, 12.5);
+    }
+
+    #[test]
+    fn extended_id_frames_are_rejected() {
+        // A 29-bit id whose low bits collide with the recv id must not
+        // masquerade as motor state.
+        let mut slots = [gripper_slot()];
+        decode_into_slots(&mut slots, true, 0x18, &STATE);
+        assert_eq!(slots[0].state(), MotorState::default());
+    }
+
+    #[test]
+    fn param_reply_echoes_are_rejected() {
+        // The CTRL_MODE write (0x55) and query (0x33) echoes carry the send
+        // id little-endian then the opcode; decoded as state they would read
+        // as a full-scale position.
+        let mut slots = [gripper_slot()];
+        for opcode in [0x55, 0x33] {
+            decode_into_slots(
+                &mut slots,
+                false,
+                0x18,
+                &[0x08, 0x00, opcode, 0x0A, 4, 0, 0, 0],
+            );
+            assert_eq!(slots[0].state(), MotorState::default());
         }
+    }
+
+    #[test]
+    fn echo_shaped_frame_for_a_different_motor_still_decodes() {
+        // The reply signature is keyed to this slot's send id; the same bytes
+        // with a mismatched id prefix are treated as (implausible) state.
+        let mut slots = [gripper_slot()];
+        decode_into_slots(
+            &mut slots,
+            false,
+            0x18,
+            &[0x07, 0x00, 0x55, 0x0A, 4, 0, 0, 0],
+        );
+        assert_ne!(slots[0].state(), MotorState::default());
+    }
+
+    #[test]
+    fn unknown_ids_are_ignored() {
+        let mut slots = [gripper_slot()];
+        decode_into_slots(&mut slots, false, 0x19, &STATE);
+        assert_eq!(slots[0].state(), MotorState::default());
     }
 }

@@ -42,7 +42,9 @@ pub const GRIPPER_MIT_SWEEP: &[(f64, f64, f64, f64, f64)] = &[
 
 /// POS_FORCE command tuples `(q_rad, speed_rad_s, torque_pu)` for the v2.0
 /// gripper motor. Speeds beyond 100 rad/s and below zero exercise the clamp;
-/// torque stays in `0..=1` (both implementations reject values outside it).
+/// torque stays in `0..=1` because the implementations diverge outside it
+/// (the C++ clamps, the native driver rejects), so out-of-range values can
+/// never byte-compare.
 pub const POS_FORCE_SWEEP: &[(f64, f64, f64)] = &[
     (0.0, 5.0, 0.5),
     (std::f64::consts::FRAC_PI_2, 5.0, 0.5),

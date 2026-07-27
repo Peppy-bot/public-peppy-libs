@@ -169,14 +169,21 @@ pub(crate) fn mit_frame(
 }
 
 /// POS_FORCE command: drive to `q_rad` under a speed limit (`0..=100` rad/s,
-/// clamped) and the torque-current limit. Position and speed must be finite.
+/// clamped) and the torque-current limit. Position and speed must be finite,
+/// including after the position's cast to `f32` (this field is the one that
+/// goes on the wire un-quantized, so an overflowing cast would encode
+/// infinity).
 pub(crate) fn pos_force_frame(
     send_id: u32,
     q_rad: f64,
     speed_rad_s: f64,
     torque: TorquePu,
 ) -> Result<OutFrame> {
-    let pos = (finite(q_rad)? as f32).to_le_bytes();
+    let pos_f32 = finite(q_rad)? as f32;
+    if !pos_f32.is_finite() {
+        return Err(CanError::NonFiniteCommand(q_rad));
+    }
+    let pos = pos_f32.to_le_bytes();
     let speed_u = (finite(speed_rad_s)?.clamp(0.0, 100.0) * 100.0) as u16;
     let torque_u = (torque.0 * 10000.0) as u16;
     let [speed_lo, speed_hi] = speed_u.to_le_bytes();
@@ -374,6 +381,14 @@ mod tests {
         assert!(pos_force_frame(0x08, f64::NAN, 5.0, torque).is_err());
         assert!(pos_force_frame(0x08, f64::INFINITY, 5.0, torque).is_err());
         assert!(pos_force_frame(0x08, 0.0, f64::NAN, torque).is_err());
+    }
+
+    #[test]
+    fn pos_force_frame_rejects_f32_overflow() {
+        // Finite as f64 but infinity once cast to the wire's f32.
+        let torque = TorquePu::new(0.5).unwrap();
+        assert!(pos_force_frame(0x08, 1e39, 5.0, torque).is_err());
+        assert!(pos_force_frame(0x08, -1e39, 5.0, torque).is_err());
     }
 
     #[test]
