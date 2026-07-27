@@ -5,8 +5,12 @@
 //! flag, and a receive pass waits `first_timeout_us` for the first frame then
 //! drains the rest without waiting.
 
+use std::os::fd::AsFd;
 use std::time::Duration;
 
+use nix::errno::Errno;
+use nix::poll::{PollFd, PollFlags, ppoll};
+use nix::sys::time::TimeSpec;
 use socketcan::id::FdFlags;
 use socketcan::{
     CanAnyFrame, CanFdFrame, CanFdSocket, CanFrame, CanSocket, EmbeddedFrame, Frame, Socket,
@@ -90,14 +94,31 @@ impl CanSock {
 
     /// Reads one frame, waiting at most `timeout`. Returns `None` on timeout.
     fn recv(&self, timeout: Duration) -> Result<Option<CanAnyFrame>> {
-        let read = match self {
-            Self::Classic(socket) => socket.read_frame_timeout(timeout).map(CanAnyFrame::from),
-            Self::Fd(socket) => socket.read_frame_timeout(timeout),
+        if !self.readable_within(timeout)? {
+            return Ok(None);
+        }
+        let frame = match self {
+            Self::Classic(socket) => socket.read_frame().map(CanAnyFrame::from)?,
+            Self::Fd(socket) => socket.read_frame()?,
         };
-        match read {
-            Ok(frame) => Ok(Some(frame)),
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(None),
-            Err(e) => Err(e.into()),
+        Ok(Some(frame))
+    }
+
+    /// Waits for the socket to become readable via `ppoll`, which takes a
+    /// nanosecond timeout; the crate-provided timed read only has millisecond
+    /// resolution, which would flatten the firmware's microsecond receive
+    /// windows. A signal during the wait reads as "nothing arrived", matching
+    /// the reference implementation's select loop.
+    fn readable_within(&self, timeout: Duration) -> Result<bool> {
+        let socket = match self {
+            Self::Classic(socket) => socket.as_raw_socket(),
+            Self::Fd(socket) => socket.as_raw_socket(),
+        };
+        let mut fds = [PollFd::new(socket.as_fd(), PollFlags::POLLIN)];
+        match ppoll(&mut fds, Some(TimeSpec::from(timeout)), None) {
+            Ok(n) => Ok(n > 0),
+            Err(Errno::EINTR) => Ok(false),
+            Err(errno) => Err(std::io::Error::from(errno).into()),
         }
     }
 }
@@ -171,10 +192,7 @@ impl MotorBus {
     }
 
     fn recv_loop(&mut self, first_timeout_us: u32, decode: bool) -> Result<()> {
-        // The socket poll has millisecond granularity, so round sub-ms waits
-        // up: rounding down would turn them into non-waiting polls. A pending
-        // frame still returns immediately.
-        let mut timeout = Duration::from_millis(u64::from(first_timeout_us.div_ceil(1000)));
+        let mut timeout = Duration::from_micros(first_timeout_us.into());
         while let Some(frame) = self.socket.recv(timeout)? {
             timeout = Duration::ZERO;
             if decode {
