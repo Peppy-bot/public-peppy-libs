@@ -189,6 +189,26 @@ pub(crate) fn pos_force_frame(
     })
 }
 
+/// State refresh request: asks the motor to emit a state frame without
+/// commanding it. The reference implementation truncates the send id to one
+/// byte here; for the sub-0x100 ids this addressing supports the bytes are
+/// identical.
+pub(crate) fn refresh_frame(send_id: u32) -> OutFrame {
+    OutFrame {
+        id: PARAM_CAN_ID,
+        data: [
+            (send_id & 0xFF) as u8,
+            ((send_id >> 8) & 0xFF) as u8,
+            0xCC,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
+    }
+}
+
 /// Parameter write setting the motor's control mode.
 pub(crate) fn ctrl_mode_frame(send_id: u32, mode: ControlMode) -> OutFrame {
     OutFrame {
@@ -302,6 +322,13 @@ mod tests {
             disable_frame(0x08).data,
             [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFD]
         );
+    }
+
+    #[test]
+    fn refresh_frame_layout() {
+        let f = refresh_frame(0x07);
+        assert_eq!(f.id, 0x7FF);
+        assert_eq!(f.data, [0x07, 0x00, 0xCC, 0x00, 0x00, 0x00, 0x00, 0x00]);
     }
 
     #[test]

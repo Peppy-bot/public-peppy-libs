@@ -144,6 +144,11 @@ impl MotorBus {
         self.send_to_each(|send_id| protocol::ctrl_mode_frame(send_id, mode))
     }
 
+    /// Requests a state frame from every motor without commanding it.
+    pub fn refresh_all(&mut self) -> Result<()> {
+        self.send_to_each(protocol::refresh_frame)
+    }
+
     fn send_to_each(&mut self, frame_for: impl Fn(u32) -> OutFrame) -> Result<()> {
         self.slots
             .iter()

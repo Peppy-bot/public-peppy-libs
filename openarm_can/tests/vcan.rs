@@ -66,6 +66,7 @@ fn splat(value: f64) -> JointVec {
 fn drive_arm_sweep(iface: &str) {
     let mut arm = ArmCan::open(iface, true).expect("open arm");
     arm.enable_all().expect("enable");
+    arm.refresh_all().expect("refresh");
     for &(kp, kd, q, dq, tau) in sweep::ARM_MIT_SWEEP {
         arm.mit_control(&splat(kp), &splat(kd), &splat(q), &splat(dq), &splat(tau))
             .expect("mit_control");
@@ -85,6 +86,7 @@ fn drive_gripper_mit_sweep(iface: &str) {
     )
     .expect("open gripper");
     gripper.enable_all().expect("enable");
+    gripper.refresh_all().expect("refresh");
     for &(kp, kd, q, dq, tau) in sweep::GRIPPER_MIT_SWEEP {
         gripper.mit_control(kp, kd, q, dq, tau).expect("mit");
     }
@@ -101,6 +103,7 @@ fn drive_gripper_pos_force_sweep(iface: &str) {
     )
     .expect("open gripper");
     gripper.enable_all().expect("enable");
+    gripper.refresh_all().expect("refresh");
     for &(q, speed, torque) in sweep::POS_FORCE_SWEEP {
         gripper
             .set_position(q, speed, torque)

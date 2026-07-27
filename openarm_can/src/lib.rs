@@ -148,6 +148,12 @@ impl ArmCan {
         self.0.drain(first_timeout_us)
     }
 
+    /// Requests a state frame from every motor without commanding it; follow
+    /// with [`recv_all`](Self::recv_all) to decode the replies.
+    pub fn refresh_all(&mut self) -> Result<()> {
+        self.0.refresh_all()
+    }
+
     /// MIT-mode command to all joints: PD to `q`/`dq` plus feedforward `tau`.
     pub fn mit_control(
         &mut self,
@@ -310,6 +316,12 @@ impl<M: Mode> GripperCan<M> {
     /// land in the state cache).
     pub fn drain(&mut self, first_timeout_us: u32) -> Result<()> {
         self.bus.drain(first_timeout_us)
+    }
+
+    /// Requests a state frame from the motor without commanding it; follow
+    /// with [`recv_all`](Self::recv_all) to decode the reply.
+    pub fn refresh_all(&mut self) -> Result<()> {
+        self.bus.refresh_all()
     }
 
     /// Snapshot of gripper state from the most recent
