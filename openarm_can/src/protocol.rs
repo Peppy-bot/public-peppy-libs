@@ -73,6 +73,15 @@ impl MotorType {
     }
 }
 
+impl MotorType {
+    /// The model's peak torque (Nm), the tau full-scale from the firmware
+    /// limits table. Public so control code can reason about PD saturation
+    /// (a position error beyond tau_max/kp adds no torque).
+    pub const fn torque_limit_nm(self) -> f64 {
+        self.limits().t_max
+    }
+}
+
 /// Damiao control mode; the values are the on-wire ids written to `CTRL_MODE`.
 /// `pub` only to satisfy the sealed `Mode` trait's associated const; the
 /// private `protocol` module keeps it out of the crate API.
@@ -457,6 +466,12 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn torque_limit_matches_the_limits_table() {
+        assert_eq!(MotorType::DM8009.torque_limit_nm(), 54.0);
+        assert_eq!(MotorType::DM4310.torque_limit_nm(), 10.0);
     }
 
     #[test]

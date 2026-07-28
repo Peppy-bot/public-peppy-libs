@@ -16,6 +16,7 @@ mod bus;
 mod protocol;
 
 use std::marker::PhantomData;
+use std::time::Duration;
 
 use bus::{MotorBus, MotorSlot};
 pub use protocol::MotorType;
@@ -110,6 +111,59 @@ pub enum CanError {
     TorqueOutOfRange(f64),
     #[error("command value must be finite, got {0}")]
     NonFiniteCommand(f64),
+}
+
+/// What a failure means for a caller driving a periodic control loop.
+///
+/// The distinction is the difference between dropping one frame and losing the
+/// bus: a control loop must keep running through the first and must not
+/// pretend to command through the second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// The bus could not carry this frame right now: a full transmit queue
+    /// (SocketCAN reports `ENOBUFS` when the controller is not getting frames
+    /// acknowledged), or an interrupted or raced read. The interface is
+    /// healthy, and every command on this protocol carries an absolute
+    /// setpoint, so a periodic caller should drop this frame and command again
+    /// next tick rather than abandon the loop.
+    Transient,
+    /// The interface itself is unusable: adapter unplugged, link down, socket
+    /// closed. Retrying cannot succeed until the interface returns.
+    Interface,
+    /// The caller passed a value the protocol cannot carry. Retrying the same
+    /// call fails identically: this is a bug above the driver, not a bus
+    /// condition.
+    Command,
+}
+
+impl CanError {
+    pub fn severity(&self) -> Severity {
+        match self {
+            Self::InvalidCanId(_) | Self::TorqueOutOfRange(_) | Self::NonFiniteCommand(_) => {
+                Severity::Command
+            }
+            Self::Open { .. } => Severity::Interface,
+            Self::Io(e) => io_severity(e),
+        }
+    }
+}
+
+/// Classify a raw I/O failure. The platform errno is authoritative where there
+/// is one; `ErrorKind` covers the rest.
+fn io_severity(error: &std::io::Error) -> Severity {
+    use nix::libc::{EAGAIN, EINTR, ENOBUFS};
+    use std::io::ErrorKind;
+
+    if let Some(errno) = error.raw_os_error() {
+        return match errno {
+            ENOBUFS | EAGAIN | EINTR => Severity::Transient,
+            _ => Severity::Interface,
+        };
+    }
+    match error.kind() {
+        ErrorKind::WouldBlock | ErrorKind::Interrupted | ErrorKind::TimedOut => Severity::Transient,
+        _ => Severity::Interface,
+    }
 }
 
 pub type Result<T> = std::result::Result<T, CanError>;
@@ -376,61 +430,151 @@ mod tests {
     }
 }
 
-/// Log throttle for a periodic bus loop: one line per failure burst (the
-/// first, then every [`Self::REPEAT_EVERY`]th) and one on recovery, instead of
-/// several per tick at the loop rate. [`consecutive`](Self::consecutive) lets
-/// the caller escalate when a burst has clearly stopped being transient.
-#[derive(Debug, Default)]
-pub struct CanErrorThrottle {
+/// Health of a periodic CAN control loop.
+///
+/// A control loop must not stop on a momentary bus failure: every command
+/// carries an absolute setpoint, so a dropped frame costs one tick, while
+/// abandoning the loop leaves motors uncommanded (and, on an arm, limp under
+/// gravity). This counts consecutive failed ticks, rate-limits the log, and
+/// reports whether the loop still has the bus.
+pub struct BusHealth {
+    context: &'static str,
+    period: Duration,
     consecutive: u64,
+    fault_after: u64,
 }
 
-impl CanErrorThrottle {
-    const REPEAT_EVERY: u64 = 100;
+impl BusHealth {
+    /// How long a loop may fail continuously before it is treated as out of
+    /// control. Long enough to cover a controller clearing error-passive (it
+    /// needs 128 acknowledged frames, far under a second at any real control
+    /// rate) and a transmit queue draining; short enough that readiness drops
+    /// while the failure is still on screen.
+    const FAULT_WINDOW: Duration = Duration::from_secs(1);
 
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn failure(&mut self, context: &str, e: &CanError) {
-        if self.consecutive.is_multiple_of(Self::REPEAT_EVERY) {
-            tracing::error!(
-                "{context}: CAN tick failed ({} consecutive): {e}",
-                self.consecutive + 1
-            );
+    /// One log line per [`FAULT_WINDOW`](Self::FAULT_WINDOW) of continuous
+    /// failure, so a dead bus names itself once a second instead of at the
+    /// control rate.
+    pub fn new(context: &'static str, cycle_period: Duration) -> Self {
+        let ticks_per_window = (Self::FAULT_WINDOW.as_secs_f64()
+            / cycle_period.as_secs_f64().max(f64::MIN_POSITIVE))
+        .ceil()
+        .max(1.0) as u64;
+        Self {
+            context,
+            period: cycle_period,
+            consecutive: 0,
+            fault_after: ticks_per_window,
         }
-        self.consecutive += 1;
     }
 
-    pub fn success(&mut self, context: &str) {
-        if self.consecutive > 0 {
+    /// Record a tick whose bus work all succeeded.
+    pub fn succeeded(&mut self) {
+        if self.consecutive >= self.fault_after {
             tracing::info!(
-                "{context}: CAN recovered after {} failed ticks",
-                self.consecutive
+                "{}: bus recovered after {:.1}s out of contact",
+                self.context,
+                self.out_of_contact().as_secs_f64()
             );
         }
         self.consecutive = 0;
     }
 
-    /// Failed ticks since the last success.
-    pub fn consecutive(&self) -> u64 {
-        self.consecutive
+    /// Record a tick whose bus work failed. The frame is gone; the next tick
+    /// carries a fresh absolute command.
+    pub fn failed(&mut self, e: &CanError) {
+        if self.consecutive.is_multiple_of(self.fault_after) {
+            tracing::error!(
+                "{}: CAN tick failed ({:?}, {:.1}s out of contact): {e}",
+                self.context,
+                e.severity(),
+                self.out_of_contact().as_secs_f64()
+            );
+        }
+        self.consecutive += 1;
+    }
+
+    /// Whether the loop still has the bus: it has not been failing for a
+    /// continuous [`FAULT_WINDOW`](Self::FAULT_WINDOW).
+    pub fn in_control(&self) -> bool {
+        self.consecutive < self.fault_after
+    }
+
+    /// How long the loop has been failing continuously.
+    pub fn out_of_contact(&self) -> Duration {
+        self.period * self.consecutive as u32
     }
 }
 
 #[cfg(test)]
-mod throttle_tests {
+mod health_tests {
     use super::*;
 
+    const CYCLE_100HZ: Duration = Duration::from_millis(10);
+
+    fn transient() -> CanError {
+        CanError::Io(std::io::Error::from_raw_os_error(nix::libc::ENOBUFS))
+    }
+
     #[test]
-    fn throttle_counts_and_resets() {
-        let mut t = CanErrorThrottle::new();
-        let e = CanError::InvalidCanId(0x800);
-        for _ in 0..5 {
-            t.failure("test", &e);
+    fn a_full_transmit_queue_is_transient() {
+        assert_eq!(transient().severity(), Severity::Transient);
+        assert_eq!(
+            CanError::Io(std::io::Error::from_raw_os_error(nix::libc::EINTR)).severity(),
+            Severity::Transient
+        );
+    }
+
+    #[test]
+    fn a_missing_interface_is_not_transient() {
+        assert_eq!(
+            CanError::Io(std::io::Error::from_raw_os_error(nix::libc::ENODEV)).severity(),
+            Severity::Interface
+        );
+        assert_eq!(
+            CanError::Io(std::io::Error::from_raw_os_error(nix::libc::ENETDOWN)).severity(),
+            Severity::Interface
+        );
+    }
+
+    #[test]
+    fn caller_bugs_are_command_errors() {
+        assert_eq!(CanError::InvalidCanId(0x800).severity(), Severity::Command);
+        assert_eq!(
+            CanError::TorqueOutOfRange(2.0).severity(),
+            Severity::Command
+        );
+        assert_eq!(
+            CanError::NonFiniteCommand(f64::NAN).severity(),
+            Severity::Command
+        );
+    }
+
+    #[test]
+    fn control_is_held_until_a_full_window_of_failure() {
+        let mut health = BusHealth::new("test", CYCLE_100HZ);
+        let e = transient();
+        // 100 ticks at 10 ms is exactly the one-second window.
+        for _ in 0..99 {
+            health.failed(&e);
+            assert!(health.in_control(), "a burst shorter than the window holds");
         }
-        assert_eq!(t.consecutive(), 5);
-        t.success("test");
-        assert_eq!(t.consecutive(), 0);
+        health.failed(&e);
+        assert!(
+            !health.in_control(),
+            "a full window out of contact loses it"
+        );
+        health.succeeded();
+        assert!(health.in_control(), "one good tick restores control");
+    }
+
+    #[test]
+    fn out_of_contact_tracks_the_control_rate() {
+        let mut health = BusHealth::new("test", CYCLE_100HZ);
+        let e = transient();
+        for _ in 0..50 {
+            health.failed(&e);
+        }
+        assert_eq!(health.out_of_contact(), Duration::from_millis(500));
     }
 }
