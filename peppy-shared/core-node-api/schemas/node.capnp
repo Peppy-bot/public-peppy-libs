@@ -308,6 +308,32 @@ struct PairRequest {
     # means unpinned: exactly one available complementary slot must exist on
     # the peer and the daemon resolves it.
     peerLinkId @2 :Text;
+    # The planner's verdict about a peer the receiving daemon cannot inspect.
+    #
+    # Set only when `peer.coreNode` is a DIFFERENT machine from the one being
+    # asked to start. A daemon validates a pair against the two manifests it
+    # holds; for a peer on another machine it holds neither, so re-deriving the
+    # rules is not an option and guessing is worse. A federated launch's
+    # coordinator does hold every participant's manifests and checks the whole
+    # plan (same pairing, complementary roles, matching sha pins) before
+    # anything starts — this carries that verdict to the daemon that commits
+    # the local half.
+    #
+    # Absent for a same-daemon peer, where the local manifests are the
+    # authority and a coordinator's opinion would be a second one.
+    remotePeer @3 :RemotePeerPairing;
+}
+
+# What a daemon needs about a pair endpoint it cannot read a manifest for.
+# Mirrors the fields the pair registry records, so a cross-machine pair is
+# stored exactly like a local one once committed.
+struct RemotePeerPairing {
+    # Empty `pairingName` means "not set": a same-daemon peer carries no
+    # remote verdict, and Cap'n Proto defaults an absent struct's text to "".
+    pairingName @0 :Text;
+    pairingTag @1 :Text;
+    # The role the peer's manifest declares for its side of the pair.
+    peerRole @2 :Text;
 }
 
 struct ObservationRequest {

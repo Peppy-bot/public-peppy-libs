@@ -34,11 +34,28 @@ struct LaunchGoal {
     # every instance on the coordinator: Cap'n Proto defaults an absent field
     # to the empty string, so nothing but this check makes the break loud.
     launchId @7 :Text;
-    # The `core_nodes` placeholders declared by the launcher, wired to
-    # concrete core nodes by `stack launch --place`. Empty for a launcher
-    # that declares no core node links; the coordinator cross-checks this map
-    # against the parsed document and refuses a mismatch.
-    coreNodeLinks @8 :List(CoreNodeLink);
+    # How this launch places the launcher's declared core node links.
+    #
+    # The INTENT travels, not its expansion. Only the coordinator holds the
+    # resolved launcher: a `repository` origin is read from the daemon's own
+    # cache, which the caller may never have seen, so the caller cannot know
+    # which `core_nodes` the document declares. A caller that expanded
+    # `--local` itself could only do so for the origin it happens to hold,
+    # and the two origins would drift into meaning different things.
+    #
+    # `places` is the `--place` wiring, keyed by the placeholder the launcher
+    # author declared; empty means no placement flag was given at all, which
+    # only a launcher declaring no `core_nodes` can satisfy. `local` is
+    # `--local`: collapse EVERY link the document declares onto the
+    # coordinator, whatever it turns out to declare.
+    #
+    # Cap'n Proto defaults an unset union to its first member, so a goal that
+    # sets neither decodes as an empty `places` — the same "no placement
+    # given" that has always meant.
+    placement :union {
+        places @8 :List(CoreNodeLink);
+        local @9 :Void;
+    }
 }
 
 # One `--place <core-node-link>@<core-node>` wiring: the placeholder the

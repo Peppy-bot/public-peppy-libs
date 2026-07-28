@@ -34,6 +34,27 @@ pub struct PairTarget {
     /// `None` is unpinned: exactly one available complementary slot must
     /// exist on the peer and the daemon resolves it.
     pub peer_link_id: Option<String>,
+    /// The planner's verdict about a peer the receiving daemon cannot inspect,
+    /// set only when [`Self::peer`] names a DIFFERENT machine.
+    ///
+    /// A daemon validates a pair against the two manifests it holds. For a peer
+    /// on another machine it holds neither, so the rules cannot be re-derived
+    /// there — and a federated launch's coordinator has already checked the
+    /// whole plan against every participant's manifests. This carries that
+    /// verdict; `None` means the peer is local and the local manifests decide.
+    pub remote_peer: Option<RemotePeerPairing>,
+}
+
+/// What a daemon needs about a pair endpoint whose manifest it cannot read.
+///
+/// Mirrors the fields the pair registry records, so a cross-machine pair is
+/// stored exactly like a same-daemon one once committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemotePeerPairing {
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    /// The role the peer's manifest declares for its side of the pair.
+    pub peer_role: String,
 }
 
 impl PairTarget {
@@ -41,6 +62,7 @@ impl PairTarget {
         Self {
             peer: ProducerRef::new(peer_core_node, peer_instance_id),
             peer_link_id: None,
+            remote_peer: None,
         }
     }
 
@@ -52,7 +74,17 @@ impl PairTarget {
         Self {
             peer: ProducerRef::new(peer_core_node, peer_instance_id),
             peer_link_id: Some(peer_link_id.into()),
+            remote_peer: None,
         }
+    }
+
+    /// Attaches the planner's verdict for a peer on another machine.
+    ///
+    /// Only a planner holding both manifests may call this: it is the
+    /// receiving daemon's sole evidence about a slot it cannot read.
+    pub fn with_remote_peer(mut self, remote_peer: RemotePeerPairing) -> Self {
+        self.remote_peer = Some(remote_peer);
+        self
     }
 }
 
@@ -350,7 +382,8 @@ impl NodeRunGoal {
 /// Writes a `link_id -> PairTarget` map into an initialized
 /// `List(PairRequest)` builder ([`NodeRunGoal::requested_pairs`] and
 /// [`NodeRunGoal::covered_pairs`] share the wire shape). An unpinned
-/// `peer_link_id` is encoded as the empty string.
+/// `peer_link_id` is encoded as the empty string, and an absent
+/// `remote_peer` as an all-empty `remotePeer` struct.
 fn fill_pair_requests(
     mut list: capnp::struct_list::Builder<'_, node_capnp::pair_request::Owned>,
     pairs: &BTreeMap<String, PairTarget>,
@@ -359,23 +392,52 @@ fn fill_pair_requests(
         let mut pair = list.reborrow().get(idx as u32);
         pair.set_link_id(link_id);
         pair.set_peer_link_id(target.peer_link_id.as_deref().unwrap_or(""));
+        if let Some(remote) = &target.remote_peer {
+            let mut builder = pair.reborrow().init_remote_peer();
+            builder.set_pairing_name(&remote.pairing_name);
+            builder.set_pairing_tag(&remote.pairing_tag);
+            builder.set_peer_role(&remote.peer_role);
+        }
         write_instance_address(pair.init_peer(), &target.peer);
     }
 }
 
 /// Inverse of [`fill_pair_requests`]: an empty `peerLinkId` decodes to
-/// `None` (unpinned).
+/// `None` (unpinned), and an empty `remotePeer.pairingName` to no remote
+/// verdict.
 fn read_pair_requests(
     list: capnp::struct_list::Reader<'_, node_capnp::pair_request::Owned>,
 ) -> Result<BTreeMap<String, PairTarget>> {
     let mut pairs = BTreeMap::new();
     for idx in 0..list.len() {
         let pair = list.get(idx);
+        let remote = pair.get_remote_peer()?;
+        let pairing_name = remote.get_pairing_name()?.to_str()?;
+        // A same-daemon peer carries no verdict, and Cap'n Proto defaults an
+        // absent struct's text to "". Keying "set" on the pairing name means a
+        // partially-filled verdict is refused below rather than silently
+        // committing a pair under an empty pairing identity.
+        let remote_peer = if pairing_name.is_empty() {
+            None
+        } else {
+            Some(RemotePeerPairing {
+                pairing_name: pairing_name.to_owned(),
+                pairing_tag: required_text(
+                    remote.get_pairing_tag()?.to_str()?,
+                    "NodeRunGoal pair request remote_peer.pairing_tag",
+                )?,
+                peer_role: required_text(
+                    remote.get_peer_role()?.to_str()?,
+                    "NodeRunGoal pair request remote_peer.peer_role",
+                )?,
+            })
+        };
         pairs.insert(
             pair.get_link_id()?.to_str()?.to_owned(),
             PairTarget {
                 peer: read_instance_address(pair.get_peer()?, "NodeRunGoal pair request")?,
                 peer_link_id: optional_text(pair.get_peer_link_id()?.to_str()?),
+                remote_peer,
             },
         );
     }
@@ -779,6 +841,49 @@ mod tests {
             decoded.planned_observations["observed_arm"],
             ObservationTarget::new("arm_1", "controller", "cn-local")
         );
+    }
+
+    /// The coordinator's verdict about a peer this daemon cannot inspect is
+    /// what makes a cross-machine pair committable at all: the receiver holds
+    /// no manifest for the far side, so the pairing identity and the peer's
+    /// role have to arrive with the request.
+    #[test]
+    fn a_remote_peer_verdict_survives_the_wire() {
+        let goal = NodeRunGoal::new(plan("reflex_inst"), "reactive_policy", "v1", 0)
+            .with_requested_pairs(
+                [(
+                    "deliberation".to_owned(),
+                    PairTarget::pinned("planner_inst", "deliberation", "cn-atlas-h100")
+                        .with_remote_peer(RemotePeerPairing {
+                            pairing_name: "deliberation_link".to_owned(),
+                            pairing_tag: "v1".to_owned(),
+                            peer_role: "planner".to_owned(),
+                        }),
+                )]
+                .into_iter()
+                .collect(),
+            );
+        let decoded = NodeRunGoal::decode(&goal.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, goal);
+        let remote = decoded.requested_pairs["deliberation"]
+            .remote_peer
+            .as_ref()
+            .expect("a peer on another machine carries the planner's verdict");
+        assert_eq!(remote.peer_role, "planner");
+        assert_eq!(remote.pairing_name, "deliberation_link");
+    }
+
+    /// A same-daemon peer carries no verdict: the local manifests are the
+    /// authority, and a second opinion would be one too many.
+    #[test]
+    fn a_same_daemon_peer_carries_no_remote_verdict() {
+        let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 0).with_requested_pairs(
+            [("arm".to_owned(), PairTarget::new("arm_1", "cn-local"))]
+                .into_iter()
+                .collect(),
+        );
+        let decoded = NodeRunGoal::decode(&goal.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.requested_pairs["arm"].remote_peer, None);
     }
 
     /// Placement is never inferred from an absent field, so a pair or

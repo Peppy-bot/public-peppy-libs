@@ -42,6 +42,40 @@ impl LauncherOrigin {
     }
 }
 
+/// How a launch places the core node links its launcher declares.
+///
+/// The INTENT, not its expansion. Only the coordinator holds the resolved
+/// launcher — a [`LauncherOrigin::Repository`] is read from the daemon's own
+/// cache, which the caller may never have seen — so the caller cannot know
+/// what the document declares. Sending what the user asked for, and expanding
+/// it where the document lives, is what makes `--local` mean the same thing
+/// for both origins instead of working only for the one the caller can read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlacementSpec {
+    /// `--place <core-node-link>@<core-node>` wirings, keyed by the
+    /// placeholder declared in the launcher's `core_nodes` list.
+    ///
+    /// Empty means no placement flag was given at all, which only a launcher
+    /// declaring no `core_nodes` can satisfy: the coordinator refuses a
+    /// declared-but-unwired link rather than quietly collapsing it onto itself.
+    ///
+    /// A `BTreeMap` rather than a list because the caller has already rejected
+    /// repeats, so "at most one target per placeholder" is a property of the
+    /// type instead of a rule the daemon has to re-check.
+    Places(BTreeMap<String, String>),
+    /// `--local`: every link the launcher declares runs on the coordinator.
+    ///
+    /// Carries no map on purpose. Which links exist is a property of the
+    /// document, so naming them here would mean the caller had to have read it.
+    Local,
+}
+
+impl Default for PlacementSpec {
+    fn default() -> Self {
+        Self::Places(BTreeMap::new())
+    }
+}
+
 /// Goal message for the Launch action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchGoal {
@@ -59,14 +93,9 @@ pub struct LaunchGoal {
     ///
     /// Never empty; [`LaunchGoal::decode`] refuses an empty one.
     pub launch_id: String,
-    /// `--place <core-node-link>@<core-node>` wirings, keyed by the
-    /// placeholder declared in the launcher's `core_nodes` list. Empty for a
-    /// launcher that declares none.
-    ///
-    /// A `BTreeMap` rather than a list because the CLI has already rejected
-    /// repeats, so "at most one target per placeholder" is a property of the
-    /// type instead of a rule the daemon has to re-check.
-    pub core_node_links: BTreeMap<String, String>,
+    /// What the caller asked for about placement, for the coordinator to
+    /// expand against the document it resolved.
+    pub placement: PlacementSpec,
 }
 
 impl LaunchGoal {
@@ -86,7 +115,7 @@ impl LaunchGoal {
             node_run_idle_timeout_secs,
             max_timeout_secs,
             launch_id: launch_id.into(),
-            core_node_links: BTreeMap::new(),
+            placement: PlacementSpec::default(),
         }
     }
 
@@ -95,8 +124,8 @@ impl LaunchGoal {
         self
     }
 
-    pub fn with_core_node_links(mut self, core_node_links: BTreeMap<String, String>) -> Self {
-        self.core_node_links = core_node_links;
+    pub fn with_placement(mut self, placement: PlacementSpec) -> Self {
+        self.placement = placement;
         self
     }
 
@@ -125,13 +154,17 @@ impl LaunchGoal {
 
             goal.reborrow().set_launch_id(&self.launch_id);
 
-            let link_count =
-                capnp_list_len(self.core_node_links.len(), "LaunchGoal.core_node_links")?;
-            let mut links = goal.reborrow().init_core_node_links(link_count);
-            for (idx, (link_id, core_node)) in self.core_node_links.iter().enumerate() {
-                let mut link = links.reborrow().get(idx as u32);
-                link.set_link_id(link_id);
-                link.set_core_node(core_node);
+            match &self.placement {
+                PlacementSpec::Places(places) => {
+                    let link_count = capnp_list_len(places.len(), "LaunchGoal.placement.places")?;
+                    let mut links = goal.reborrow().init_placement().init_places(link_count);
+                    for (idx, (link_id, core_node)) in places.iter().enumerate() {
+                        let mut link = links.reborrow().get(idx as u32);
+                        link.set_link_id(link_id);
+                        link.set_core_node(core_node);
+                    }
+                }
+                PlacementSpec::Local => goal.reborrow().init_placement().set_local(()),
             }
 
             let mut origin = goal.reborrow().init_launcher_origin();
@@ -149,6 +182,7 @@ impl LaunchGoal {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         use launch_capnp::launch_goal::launcher_origin::Which;
+        use launch_capnp::launch_goal::placement::Which as PlacementWhich;
 
         let reader = decode_message(data)?;
         let goal = reader.get_root::<launch_capnp::launch_goal::Reader>()?;
@@ -196,31 +230,37 @@ impl LaunchGoal {
             ));
         }
 
-        let links_reader = goal.get_core_node_links()?;
-        let mut core_node_links = BTreeMap::new();
-        for idx in 0..links_reader.len() {
-            let link = links_reader.get(idx);
-            let link_id = link.get_link_id()?.to_str()?;
-            let core_node = link.get_core_node()?.to_str()?;
-            if link_id.is_empty() || core_node.is_empty() {
-                return Err(crate::Error::Decoding(format!(
-                    "LaunchGoal.core_node_links[{idx}] has an empty link_id or core_node"
-                )));
+        let placement = match goal.get_placement().which()? {
+            PlacementWhich::Local(()) => PlacementSpec::Local,
+            PlacementWhich::Places(places) => {
+                let places_reader = places?;
+                let mut places = BTreeMap::new();
+                for idx in 0..places_reader.len() {
+                    let link = places_reader.get(idx);
+                    let link_id = link.get_link_id()?.to_str()?;
+                    let core_node = link.get_core_node()?.to_str()?;
+                    if link_id.is_empty() || core_node.is_empty() {
+                        return Err(crate::Error::Decoding(format!(
+                            "LaunchGoal.placement.places[{idx}] has an empty link_id or core_node"
+                        )));
+                    }
+                    if places
+                        .insert(link_id.to_owned(), core_node.to_owned())
+                        .is_some()
+                    {
+                        return Err(crate::Error::Decoding(format!(
+                            "LaunchGoal.placement.places wires `{link_id}` more than once"
+                        )));
+                    }
+                }
+                PlacementSpec::Places(places)
             }
-            if core_node_links
-                .insert(link_id.to_owned(), core_node.to_owned())
-                .is_some()
-            {
-                return Err(crate::Error::Decoding(format!(
-                    "LaunchGoal.core_node_links wires `{link_id}` more than once"
-                )));
-            }
-        }
+        };
 
         let raw_max = goal.get_max_timeout_secs();
         Ok(Self {
             launch_id: launch_id.to_owned(),
-            core_node_links,
+            placement,
             launcher_origin,
             env_vars,
             node_add_idle_timeout_secs: with_timeout_default(
@@ -621,21 +661,63 @@ mod tests {
             15,
             None,
         )
-        .with_core_node_links(BTreeMap::from([
+        .with_placement(PlacementSpec::Places(BTreeMap::from([
             ("robot_onboard".to_string(), "cn-robot-7".to_string()),
             ("cloud_inference".to_string(), "cn-atlas-h100".to_string()),
-        ]));
+        ])));
 
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
         assert_eq!(goal, decoded);
+        let PlacementSpec::Places(places) = &decoded.placement else {
+            panic!("expected explicit places, got {:?}", decoded.placement);
+        };
         assert_eq!(
-            decoded
-                .core_node_links
-                .get("cloud_inference")
-                .map(String::as_str),
+            places.get("cloud_inference").map(String::as_str),
             Some("cn-atlas-h100")
         );
+    }
+
+    /// `--local` travels as INTENT, not as an expansion. The caller cannot
+    /// know what a `Repository` launcher declares, so a map here would mean it
+    /// had read a document only the coordinator holds.
+    #[test]
+    fn launch_goal_roundtrips_local_placement() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Repository {
+                name: "split_compute_manipulation".to_string(),
+            },
+            "launch-abc123",
+            1,
+            1,
+            1,
+            None,
+        )
+        .with_placement(PlacementSpec::Local);
+
+        let bytes = goal.encode().expect("encode");
+        let decoded = LaunchGoal::decode(&bytes).expect("decode");
+        assert_eq!(decoded.placement, PlacementSpec::Local);
+        assert_eq!(goal, decoded);
+    }
+
+    /// A goal that sets no placement decodes as empty `places`, which is what
+    /// "neither `--place` nor `--local`" has always meant.
+    #[test]
+    fn launch_goal_without_placement_decodes_as_no_places() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Repository {
+                name: "teleop".to_string(),
+            },
+            "launch-abc123",
+            1,
+            1,
+            1,
+            None,
+        );
+        let bytes = goal.encode().expect("encode");
+        let decoded = LaunchGoal::decode(&bytes).expect("decode");
+        assert_eq!(decoded.placement, PlacementSpec::Places(BTreeMap::new()));
     }
 
     /// Wiring two placeholders to the SAME machine is legitimate: a launcher
@@ -652,10 +734,10 @@ mod tests {
             1,
             None,
         )
-        .with_core_node_links(BTreeMap::from([
+        .with_placement(PlacementSpec::Places(BTreeMap::from([
             ("robot_onboard".to_string(), "cn-solo".to_string()),
             ("cloud_inference".to_string(), "cn-solo".to_string()),
-        ]));
+        ])));
 
         let bytes = goal.encode().expect("encode");
         assert_eq!(LaunchGoal::decode(&bytes).expect("decode"), goal);
@@ -696,10 +778,10 @@ mod tests {
                 1,
                 None,
             )
-            .with_core_node_links(BTreeMap::from([(
+            .with_placement(PlacementSpec::Places(BTreeMap::from([(
                 link_id.to_string(),
                 core_node.to_string(),
-            )]));
+            )])));
             let msg = decoding_message(&goal);
             assert!(msg.contains("empty link_id or core_node"), "got: {msg}");
         }
