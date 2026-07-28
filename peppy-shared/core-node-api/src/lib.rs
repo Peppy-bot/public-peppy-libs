@@ -55,12 +55,12 @@ pub use graph::{
     SerializedNodeGraph, SerializedPairingSlot,
 };
 pub use payload::{EmptyPayloadError, NonEmptyPayload, Payload};
-pub use registry::{ActionGoal, ActionId, ServiceId, ServiceRequest, TopicId};
+pub use registry::{ActionGoal, ActionId, LaunchScoped, ServiceId, ServiceRequest, TopicId};
 
 // The generated Cap'n Proto modules must be reachable at the crate root as
 // `crate::*_capnp` because capnpc emits crate-root-relative paths. They live in
 // `capnp_generated`; re-export them here so those paths resolve.
 pub(crate) use capnp_generated::{
-    benchmark_capnp, clock_capnp, datastore_capnp, health_capnp, info_capnp, launch_capnp,
-    node_capnp, repo_capnp,
+    benchmark_capnp, clock_capnp, datastore_capnp, federation_capnp, health_capnp, info_capnp,
+    launch_capnp, node_capnp, repo_capnp,
 };

@@ -41,6 +41,11 @@ fn pinned_service_name(id: ServiceId) -> &'static str {
         ServiceId::DatastoreRemove => "datastore_remove",
         ServiceId::StackReset => "stack_reset",
         ServiceId::StackList => "stack_list",
+        ServiceId::ParticipantReserve => "participant_reserve",
+        ServiceId::ParticipantSliceBegin => "participant_slice_begin",
+        ServiceId::PairCommit => "pair_commit",
+        ServiceId::ParticipantRelease => "participant_release",
+        ServiceId::RelationshipNotify => "relationship_notify",
         ServiceId::NodeInit => "node_init",
         ServiceId::NodeRemove => "node_remove",
         ServiceId::NodeSync => "node_sync",
@@ -127,7 +132,7 @@ fn ids_index_their_own_descriptors() {
 /// `.src_prefix("schemas")` in `build.rs` guarantees the display name is
 /// `"{file}.capnp:{TypePath}"`, so this ties each registry root to the right
 /// `.capnp` file even where the Rust type name and capnp struct name differ
-/// (e.g. `StackListRequest` -> `node.capnp:NodeListRequest`).
+/// (e.g. `StackListRequest` -> `node.capnp:StackListRequest`).
 #[test]
 fn payload_descriptors_resolve_and_point_at_their_schema_file() {
     for m in METHODS {
@@ -206,7 +211,7 @@ fn spot_check_codec_roundtrip_and_registry_root() {
     roundtrip!(HealthRequest);
     roundtrip!(InfoRequest);
     roundtrip!(RepoListRequest);
-    roundtrip!(NodeResetRequest);
+    roundtrip!(StackResetRequest);
     roundtrip!(ClockOffsetRequest);
     roundtrip!(RepoRefreshGoal);
 
@@ -220,7 +225,7 @@ fn spot_check_codec_roundtrip_and_registry_root() {
         ),
         (
             ServiceId::StackReset.descriptor(),
-            "node.capnp:NodeResetRequest",
+            "node.capnp:StackResetRequest",
         ),
         (
             ServiceId::ClockOffset.descriptor(),

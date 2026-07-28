@@ -24,6 +24,49 @@ struct LaunchGoal {
         fs @5 :Text;
         repository @6 :Text;
     }
+    # Identity of this federated launch, minted by the coordinator that
+    # receives this goal. Every participant records it alongside its slice,
+    # so the global stack is reconstructible by query from any machine and a
+    # restarted coordinator finds its own launch again.
+    #
+    # Never empty. A goal without one comes from a peppy that predates
+    # federated launch, and is refused at decode rather than silently running
+    # every instance on the coordinator: Cap'n Proto defaults an absent field
+    # to the empty string, so nothing but this check makes the break loud.
+    launchId @7 :Text;
+    # How this launch places the launcher's declared core node links.
+    #
+    # The INTENT travels, not its expansion. Only the coordinator holds the
+    # resolved launcher: a `repository` origin is read from the daemon's own
+    # cache, which the caller may never have seen, so the caller cannot know
+    # which `core_nodes` the document declares. A caller that expanded
+    # `--local` itself could only do so for the origin it happens to hold,
+    # and the two origins would drift into meaning different things.
+    #
+    # `places` is the `--place` wiring, keyed by the placeholder the launcher
+    # author declared; empty means no placement flag was given at all, which
+    # only a launcher declaring no `core_nodes` can satisfy. `local` is
+    # `--local`: collapse EVERY link the document declares onto the
+    # coordinator, whatever it turns out to declare.
+    #
+    # Cap'n Proto defaults an unset union to its first member, so a goal that
+    # sets neither decodes as an empty `places` — the same "no placement
+    # given" that has always meant.
+    placement :union {
+        places @8 :List(CoreNodeLink);
+        local @9 :Void;
+    }
+}
+
+# One `--place <core-node-link>@<core-node>` wiring: the placeholder the
+# launcher author declared on the left, the concrete machine on the right.
+struct CoreNodeLink {
+    # The placeholder as it appears in the launcher's `core_nodes` list.
+    linkId @0 :Text;
+    # The core node it is wired to. Never the literal `self`: the CLI
+    # resolves `self` to the coordinator's own name before dispatch, so a
+    # daemon only ever sees concrete names.
+    coreNode @1 :Text;
 }
 
 struct LaunchGoalResponse {

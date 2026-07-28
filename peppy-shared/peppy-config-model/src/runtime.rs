@@ -336,6 +336,67 @@ impl NodeInstanceConfig {
     }
 }
 
+/// Everything a daemon needs to start one node instance, and nothing that
+/// would let the requester dictate the node's runtime identity.
+///
+/// This is what travels on a `node_run` goal. It deliberately carries no
+/// messaging endpoint, no `bound_core_node`, and no resolved framework
+/// values: a daemon owns the runtime identity of every node it spawns, so
+/// those are supplied by the daemon that does the spawning, on every path.
+/// A federated launch makes the reason concrete (a coordinator-assembled
+/// endpoint names the coordinator's own router, which no node on a peer can
+/// reach), but the rule is not federation-specific and the type is what
+/// keeps it checkable in one place.
+///
+/// Turn one into the config a node actually receives with
+/// [`NodeInstancePlan::resolve`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeInstancePlan {
+    pub instance_id: Name,
+    #[serde(default)]
+    pub arguments: BTreeMap<String, AnyType>,
+    /// Per-instance `use_sim_time` override, still unresolved. `None` means
+    /// "whatever this daemon's default is", which only the spawning daemon
+    /// knows, hence [`Option`] here and a concrete `bool` in
+    /// [`ResolvedFramework`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_sim_time: Option<bool>,
+    /// Resolved producers per consumer slot, each already stamped with the
+    /// core node it lives on, so a producer on another daemon addresses
+    /// identically to a local one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub slot_bindings: SlotBindings,
+}
+
+impl NodeInstancePlan {
+    /// Builds a plan with everything except `instance_id` defaulted. Use
+    /// with struct-update syntax to override a field.
+    pub fn new(instance_id: Name) -> Self {
+        Self {
+            instance_id,
+            arguments: BTreeMap::new(),
+            use_sim_time: None,
+            slot_bindings: BTreeMap::new(),
+        }
+    }
+
+    /// Resolves this plan into a node instance config by applying the
+    /// spawning daemon's own `use_sim_time` default where the plan declined
+    /// to override it. The single place a plan becomes a config.
+    pub fn resolve(self, daemon_use_sim_time: bool) -> NodeInstanceConfig {
+        NodeInstanceConfig {
+            instance_id: self.instance_id,
+            arguments: self.arguments,
+            framework: ResolvedFramework {
+                use_sim_time: self.use_sim_time.unwrap_or(daemon_use_sim_time),
+            },
+            slot_bindings: self.slot_bindings,
+            pairing_slots: BTreeMap::new(),
+        }
+    }
+}
+
 /// Framework knobs already resolved by the daemon. Distinct from
 /// the launcher-file `FrameworkOverrides` (peppy `daemon-config`) so the type system enforces "resolution
 /// happens once": the launcher form carries optional overrides; this form

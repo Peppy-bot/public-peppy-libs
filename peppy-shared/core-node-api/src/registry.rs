@@ -44,9 +44,10 @@ mod machinery;
 mod tests;
 
 pub use machinery::{
-    ActionGoal, Host, MethodDescriptor, MethodKind, PayloadDescriptor, Payloads, ServiceRequest,
+    ActionGoal, Host, LaunchScoped, MethodDescriptor, MethodKind, PayloadDescriptor, Payloads,
+    ServiceRequest,
 };
-use machinery::{methods, pd, service_request_impl};
+use machinery::{launch_scoped_impl, methods, pd, service_request_impl};
 
 methods! {
     services {
@@ -114,8 +115,8 @@ methods! {
             name: "stack_reset",
             host: CoreNodeDaemon,
             summary: "Tear down the whole node stack back to an empty state.",
-            request: NodeResetRequest,
-            response: NodeResetResponse,
+            request: StackResetRequest,
+            response: StackResetResponse,
             schema: "node.capnp",
         }
         StackList {
@@ -125,6 +126,69 @@ methods! {
             request: StackListRequest,
             response: StackListResponse,
             schema: "node.capnp",
+        }
+        /// Preflight step of a federated launch, called daemon-to-daemon.
+        /// The coordinator holds a reservation on EVERY participant before
+        /// anything is torn down, so two coordinators racing the same
+        /// machines are refused before either has replaced a stack. The
+        /// participant answers with what the coordinator cannot know: its
+        /// version, its root identity, and the manifests for its own slice.
+        ParticipantReserve {
+            name: "participant_reserve",
+            host: CoreNodeDaemon,
+            summary: "Reserve this daemon for a federated launch and resolve its slice's manifests.",
+            request: ParticipantReserveRequest,
+            response: ParticipantReserveResponse,
+            schema: "federation.capnp",
+        }
+        /// Commit point of a federated launch: the coordinator tells a
+        /// reserved participant to tear down its stack and record that its
+        /// new slice belongs to this launch. Split from the reservation
+        /// because reserving must stay non-destructive until every
+        /// participant has accepted.
+        ParticipantSliceBegin {
+            name: "participant_slice_begin",
+            host: CoreNodeDaemon,
+            summary: "Replace this daemon's stack slice on behalf of a reserved federated launch.",
+            request: ParticipantSliceBeginRequest,
+            response: FederationVerdict,
+            schema: "federation.capnp",
+        }
+        /// Records the second half of a CROSS-DAEMON pair on the daemon
+        /// hosting the other endpoint, and delivers that endpoint its pin.
+        /// A same-daemon pair never needs it: one registry holds both
+        /// halves and one daemon delivers both pins.
+        PairCommit {
+            name: "pair_commit",
+            host: CoreNodeDaemon,
+            summary: "Record this daemon's half of a cross-daemon pair and pin its endpoint.",
+            request: PairCommitRequest,
+            response: FederationVerdict,
+            schema: "federation.capnp",
+        }
+        /// Releases a reservation, whether because a later participant
+        /// refused or because the launch finished. Idempotent.
+        ParticipantRelease {
+            name: "participant_release",
+            host: CoreNodeDaemon,
+            summary: "Release a federated-launch reservation held for a launch id.",
+            request: ParticipantReleaseRequest,
+            response: FederationVerdict,
+            schema: "federation.capnp",
+        }
+        /// Runtime notification from the daemon that owns an instance to a
+        /// daemon holding a relationship with it: a fresh incarnation for an
+        /// observer to follow, or a death for a peer to dissolve against.
+        /// Best-effort and idempotent by construction; the owning daemon
+        /// stays authoritative, so a lost notification leaves the receiver
+        /// stale rather than in disagreement.
+        RelationshipNotify {
+            name: "relationship_notify",
+            host: CoreNodeDaemon,
+            summary: "Notify a peer daemon that a related instance started a new incarnation or stopped.",
+            request: RelationshipNotification,
+            response: RelationshipNotificationAck,
+            schema: "federation.capnp",
         }
         NodeInit {
             name: "node_init",
@@ -240,6 +304,7 @@ methods! {
         }
         NodeAdd {
             name: "node_add",
+            scope: launch,
             summary: "Add a node to the stack, streaming resolution and fetch progress.",
             goal: NodeAddGoal,
             goal_response: NodeAddGoalResponse,
@@ -249,6 +314,7 @@ methods! {
         }
         NodeBuild {
             name: "node_build",
+            scope: launch,
             summary: "Build a node's container image, streaming build log lines.",
             goal: NodeBuildGoal,
             goal_response: NodeBuildGoalResponse,
@@ -258,6 +324,7 @@ methods! {
         }
         NodeRun {
             name: "node_run",
+            scope: launch,
             summary: "Run a node instance, streaming startup progress.",
             goal: NodeRunGoal,
             goal_response: NodeRunGoalResponse,
@@ -313,6 +380,10 @@ pub const SCHEMA_SOURCES: &[(&str, &str)] = &[
     (
         "datastore.capnp",
         include_str!("../schemas/datastore.capnp"),
+    ),
+    (
+        "federation.capnp",
+        include_str!("../schemas/federation.capnp"),
     ),
     ("health.capnp", include_str!("../schemas/health.capnp")),
     ("info.capnp", include_str!("../schemas/info.capnp")),

@@ -6,33 +6,33 @@ use crate::{Payload, Result};
 use crate::encoding::{decode_message, encode_message, optional_text};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct NodeResetRequest;
+pub struct StackResetRequest;
 
-impl NodeResetRequest {
+impl StackResetRequest {
     pub fn new() -> Self {
         Self
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
-        builder.init_root::<node_capnp::node_reset_request::Builder>();
+        builder.init_root::<node_capnp::stack_reset_request::Builder>();
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        reader.get_root::<node_capnp::node_reset_request::Reader>()?;
+        reader.get_root::<node_capnp::stack_reset_request::Reader>()?;
         Ok(Self)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeResetResponse {
+pub struct StackResetResponse {
     pub success: bool,
     pub error_message: Option<String>,
 }
 
-impl NodeResetResponse {
+impl StackResetResponse {
     pub fn new(success: bool, error_message: Option<String>) -> Self {
         Self {
             success,
@@ -51,7 +51,7 @@ impl NodeResetResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_reset_response::Builder>();
+            let mut response = builder.init_root::<node_capnp::stack_reset_response::Builder>();
             response.set_success(self.success);
             if let Some(ref error_message) = self.error_message {
                 response.set_error_message(error_message);
@@ -62,7 +62,7 @@ impl NodeResetResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_reset_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::stack_reset_response::Reader>()?;
         Ok(Self {
             success: response.get_success(),
             error_message: optional_text(response.get_error_message()?.to_str()?),
@@ -70,12 +70,12 @@ impl NodeResetResponse {
     }
 }
 
-impl crate::encoding::Wire for NodeResetRequest {
-    type Root = crate::node_capnp::node_reset_request::Owned;
+impl crate::encoding::Wire for StackResetRequest {
+    type Root = crate::node_capnp::stack_reset_request::Owned;
 }
 
-impl crate::encoding::Wire for NodeResetResponse {
-    type Root = crate::node_capnp::node_reset_response::Owned;
+impl crate::encoding::Wire for StackResetResponse {
+    type Root = crate::node_capnp::stack_reset_response::Owned;
 }
 
 #[cfg(test)]
@@ -84,9 +84,9 @@ mod tests {
 
     #[test]
     fn request_round_trips() {
-        let request = NodeResetRequest::new();
+        let request = StackResetRequest::new();
         let payload = request.encode().expect("encode");
-        let decoded = NodeResetRequest::decode(payload.as_ref()).expect("decode");
+        let decoded = StackResetRequest::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, request);
     }
 
@@ -95,21 +95,21 @@ mod tests {
     #[allow(clippy::default_constructed_unit_structs)]
     #[test]
     fn request_default_round_trips() {
-        let request = NodeResetRequest::default();
+        let request = StackResetRequest::default();
         let payload = request.encode().expect("encode");
-        NodeResetRequest::decode(payload.as_ref()).expect("decode");
+        StackResetRequest::decode(payload.as_ref()).expect("decode");
     }
 
     #[test]
     fn request_decode_rejects_malformed() {
-        assert!(NodeResetRequest::decode(b"not capnp").is_err());
+        assert!(StackResetRequest::decode(b"not capnp").is_err());
     }
 
     #[test]
     fn response_new_round_trips_success() {
-        let response = NodeResetResponse::new(true, None);
+        let response = StackResetResponse::new(true, None);
         let payload = response.encode().expect("encode");
-        let decoded = NodeResetResponse::decode(payload.as_ref()).expect("decode");
+        let decoded = StackResetResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
         assert!(decoded.success);
         assert_eq!(decoded.error_message, None);
@@ -117,9 +117,9 @@ mod tests {
 
     #[test]
     fn response_new_round_trips_with_error_message() {
-        let response = NodeResetResponse::new(false, Some("reset failed".to_string()));
+        let response = StackResetResponse::new(false, Some("reset failed".to_string()));
         let payload = response.encode().expect("encode");
-        let decoded = NodeResetResponse::decode(payload.as_ref()).expect("decode");
+        let decoded = StackResetResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
         assert!(!decoded.success);
         assert_eq!(decoded.error_message.as_deref(), Some("reset failed"));
@@ -127,29 +127,29 @@ mod tests {
 
     #[test]
     fn response_success_constructor_round_trips() {
-        let response = NodeResetResponse::success();
+        let response = StackResetResponse::success();
         assert!(response.success);
         assert_eq!(response.error_message, None);
         let payload = response.encode().expect("encode");
-        let decoded = NodeResetResponse::decode(payload.as_ref()).expect("decode");
+        let decoded = StackResetResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
     }
 
     #[test]
     fn response_failure_constructor_round_trips() {
-        let response = NodeResetResponse::failure("daemon unreachable");
+        let response = StackResetResponse::failure("daemon unreachable");
         assert!(!response.success);
         assert_eq!(
             response.error_message.as_deref(),
             Some("daemon unreachable")
         );
         let payload = response.encode().expect("encode");
-        let decoded = NodeResetResponse::decode(payload.as_ref()).expect("decode");
+        let decoded = StackResetResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
     }
 
     #[test]
     fn response_decode_rejects_malformed() {
-        assert!(NodeResetResponse::decode(b"not capnp").is_err());
+        assert!(StackResetResponse::decode(b"not capnp").is_err());
     }
 }

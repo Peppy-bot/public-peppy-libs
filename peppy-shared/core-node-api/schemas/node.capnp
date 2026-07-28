@@ -10,10 +10,10 @@ enum FeedbackStream {
     warning @2;
 }
 
-# Node List service
-struct NodeListRequest {}
+# Stack List service
+struct StackListRequest {}
 
-struct NodeListResponse {
+struct StackListResponse {
     # JSON-serialized graph representation (SerializedNodeGraph)
     graphJson @0 :Text;
     # Hostname of the daemon serving this stack
@@ -22,6 +22,28 @@ struct NodeListResponse {
     # daemon-generation instance id, matching its core-node presence token.
     coreNode @2 :Text;
     instanceId @3 :Text;
+    # The launch this daemon's slice belongs to, making the slice
+    # self-describing. Carrying it here is what lets a coordinator rediscover
+    # its participants by query instead of remembering them, so a coordinator
+    # restart is not a catastrophe and `stack reset` works from any machine.
+    #
+    # A union rather than two optional fields: a launch id with no coordinator
+    # names a launch nobody can reset, and a coordinator with no launch id
+    # names nothing at all. Neither half is meaningful alone, so the wire does
+    # not let them be sent apart and no decoder has to police it.
+    launch :union {
+        # This stack was not started by a federated launch.
+        standalone @4 :Void;
+        identity @5 :LaunchIdentity;
+    }
+}
+
+# Which launch a stack slice belongs to, and who drove it.
+struct LaunchIdentity {
+    launchId @0 :Text;
+    # The coordinator that drove the launch. A participant watches this core
+    # node's presence for as long as it holds the slice.
+    coordinatorCoreNode @1 :Text;
 }
 
 # Node Add Action (streaming version with feedback)
@@ -50,6 +72,13 @@ struct NodeAddGoal {
     timeoutSecs @5 :UInt64;
     # When true, cancel any in-progress add action and start a new one
     force @7 :Bool;
+    # The federated launch this goal is one step of, when a coordinator
+    # dispatched it. Empty for anything a user typed.
+    #
+    # A daemon reserved by a launch refuses node work that does not name that
+    # launch, which is what stops a local `peppy node add` from racing a
+    # coordinator that is halfway through replacing this machine's slice.
+    launchId @9 :Text;
 }
 
 struct NodeAddRepoNodeSource {
@@ -108,6 +137,8 @@ struct NodeBuildGoal {
     envVars @2 :List(EnvVar);
     timeoutSecs @3 :UInt64;
     force @4 :Bool;
+    # See `NodeAddGoal.launchId`.
+    launchId @5 :Text;
 }
 
 struct NodeBuildGoalResponse {
@@ -185,8 +216,20 @@ struct RepoResolvedEntry {
 }
 
 struct NodeRunGoal {
-    # Runtime configuration in JSON5 format (PEPPY_RUNTIME_CONFIG)
-    runtimeConfigJson5 @0 :Text;
+    # JSON5-encoded `NodeInstancePlan`: instance id, arguments, the
+    # unresolved `use_sim_time` override, and the resolved slot bindings.
+    #
+    # Deliberately a PLAN and not an assembled runtime config. A daemon owns
+    # the runtime identity of every node it spawns, so the messaging
+    # endpoint, `bound_core_node`, and the resolved framework values are
+    # supplied by the receiving daemon on every path, this one included. A
+    # requester-assembled config would name the requester's own router, which
+    # a node on another machine cannot reach.
+    #
+    # Never empty, and its `instanceId` is never empty: a goal without a plan
+    # comes from a peppy that predates federated launch and is refused at
+    # decode rather than starting a node under a defaulted identity.
+    instancePlanJson5 @0 :Text;
     # Name of the node to run
     nodeName @1 :Text;
     # Tag of the node to run
@@ -217,27 +260,90 @@ struct NodeRunGoal {
     # taps. Like requestedPairs these are commands to the daemon, not resolved
     # config: the daemon registers each observation BEFORE the instance commits
     # to Running so it delivers the source pin the moment both are up (and
-    # again whenever the source restarts). The source's core_node is always
-    # this daemon's, so it is not carried here.
+    # again whenever the source restarts).
     plannedObservations @8 :List(ObservationRequest);
+    # SHA256 of the node manifest the planner validated this instance
+    # against. The spawning daemon re-resolves the manifest from its own
+    # cache and refuses if the hashes differ, so a cache that changed between
+    # a federated preflight and this dispatch fails loudly here instead of
+    # starting a node the plan was never checked against. Empty only on the
+    # in-process launch path, where planner and spawner are the same daemon
+    # reading the same entity under the same lock.
+    manifestSha256 @9 :Text;
+    # See `NodeAddGoal.launchId`.
+    launchId @10 :Text;
+    # Core nodes that must hear about this instance's lifecycle but that the
+    # spawning daemon cannot work out for itself.
+    #
+    # Concretely: the daemons whose OBSERVERS tap this instance. An observer
+    # claims no slot and holds no peer, and the source is deliberately unaware
+    # of it, so the source's daemon has no record it could consult. Pairing is
+    # different: a pair names both endpoints and their core nodes, so the
+    # daemon derives those recipients from its own registry.
+    #
+    # Only the planner sees the whole graph, so only the planner can fill this
+    # in. Empty for a single-machine launch and for anything a user typed.
+    lifecycleWatchers @11 :List(Text);
+}
+
+# One instance, addressed the way the whole mesh addresses instances: by the
+# `(coreNode, instanceId)` pair. An `instanceId` alone is unique only within one
+# stack, so every cross-machine reference carries both halves and no daemon ever
+# infers "this must be local" from an absent field — including when the target
+# IS local, where this holds the receiving daemon's own name.
+#
+# Decodes to `config::runtime::ProducerRef`, the same type the validator stamps
+# into slot bindings, so a message and the plan it acts on speak one vocabulary.
+struct InstanceAddress {
+    coreNode @0 :Text;
+    instanceId @1 :Text;
 }
 
 struct PairRequest {
     # The starting node's own pairing-slot link_id.
     linkId @0 :Text;
     # The peer instance this slot pairs with.
-    peerInstanceId @1 :Text;
+    peer @1 :InstanceAddress;
     # The complementary slot on the peer, when the request pins one. Empty
     # means unpinned: exactly one available complementary slot must exist on
     # the peer and the daemon resolves it.
     peerLinkId @2 :Text;
+    # The planner's verdict about a peer the receiving daemon cannot inspect.
+    #
+    # Set only when `peer.coreNode` is a DIFFERENT machine from the one being
+    # asked to start. A daemon validates a pair against the two manifests it
+    # holds; for a peer on another machine it holds neither, so re-deriving the
+    # rules is not an option and guessing is worse. A federated launch's
+    # coordinator does hold every participant's manifests and checks the whole
+    # plan (same pairing, complementary roles, matching sha pins) before
+    # anything starts — this carries that verdict to the daemon that commits
+    # the local half.
+    #
+    # Absent for a same-daemon peer, where the local manifests are the
+    # authority and a coordinator's opinion would be a second one.
+    remotePeer @3 :RemotePeerPairing;
+}
+
+# What a daemon needs about a pair endpoint it cannot read a manifest for.
+# Mirrors the fields the pair registry records, so a cross-machine pair is
+# stored exactly like a local one once committed.
+struct RemotePeerPairing {
+    # Empty `pairingName` means "not set": a same-daemon peer carries no
+    # remote verdict, and Cap'n Proto defaults an absent struct's text to "".
+    pairingName @0 :Text;
+    pairingTag @1 :Text;
+    # The role the peer's manifest declares for its side of the pair.
+    peerRole @2 :Text;
 }
 
 struct ObservationRequest {
     # The starting node's own observer-slot link_id.
     observerLinkId @0 :Text;
-    # The source instance whose role topics this slot observes.
-    sourceInstanceId @1 :Text;
+    # The source instance whose role topics this slot observes. A remote source
+    # subscribes identically to a local one; what differs is that its lifecycle
+    # transitions reach the observing daemon as notifications from the source's
+    # own daemon rather than from local lifecycle events.
+    source @1 :InstanceAddress;
     # The source-side participant slot link_id: the segment the source
     # publishes its observed role topics under, and the third element of the
     # observer's fully-pinned subscription. Always resolved by the planner (the
@@ -302,11 +408,11 @@ struct NodeRemoveResponse {
     errorMessage @1 :Text;
 }
 
-# Node Reset service
-struct NodeResetRequest {
+# Stack Reset service
+struct StackResetRequest {
 }
 
-struct NodeResetResponse {
+struct StackResetResponse {
     # Whether the reset was successful
     success @0 :Bool;
     # Error message if failed (optional)

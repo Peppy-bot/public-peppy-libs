@@ -202,3 +202,14 @@ pub async fn poll_node_stop(
     )
     .await
 }
+
+// The goal-result fetch that used to live here is
+// `ActionMessenger::request_result_body` (`messaging/actions.rs`): it touches
+// no capnp type, so it belongs beside `request_result` and `ResultStatus`
+// rather than in this capnp-to-messenger shim, and every peppylib user reaches
+// it without importing the core-node transport.
+//
+// The feedback DRAIN deliberately stays with each caller: a CLI bounds it by
+// the user's `--idle-timeout`, while a coordinator relaying a peer's output
+// into a launch stream bounds it by that launch's own budget. Those policies
+// differ, so sharing them would mean parameterizing away the whole loop.

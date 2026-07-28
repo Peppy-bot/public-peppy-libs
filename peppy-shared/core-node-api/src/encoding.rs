@@ -4,6 +4,7 @@
 //! used in the core-node services.
 mod clock;
 mod datastore;
+mod federation;
 mod health;
 mod info;
 mod node;
@@ -19,6 +20,11 @@ pub use datastore::{
     DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
     DatastoreStoreRequest, DatastoreStoreResponse,
 };
+pub use federation::{
+    FederationVerdict, PairCommitRequest, ParticipantReleaseRequest, ParticipantReserveRequest,
+    ParticipantReserveResponse, ParticipantSliceBeginRequest, RelationshipEvent,
+    RelationshipNotification, RelationshipNotificationAck, ResolvedManifest,
+};
 pub use health::{HealthRequest, HealthResponse};
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
 pub use node::builder::FeedbackStream;
@@ -29,8 +35,8 @@ pub use node::{
     info::NodeInfoRequest, info::NodeInfoResponse, info::NodeInstanceInfo, init::NodeInitRequest,
     init::NodeInitResponse, remove::NodeRemoveRequest, remove::NodeRemoveResponse,
     run::NodeRunFeedback, run::NodeRunGoal, run::NodeRunGoalResponse, run::NodeRunResult,
-    run::ObservationTarget, run::PairTarget, stop::NodeStopRequest, stop::NodeStopResponse,
-    sync::NodeSyncRequest, sync::NodeSyncResponse, sync::RepoResolvedEntry,
+    run::ObservationTarget, run::PairTarget, run::RemotePeerPairing, stop::NodeStopRequest,
+    stop::NodeStopResponse, sync::NodeSyncRequest, sync::NodeSyncResponse, sync::RepoResolvedEntry,
 };
 pub use repo::{
     RepoAddRequest, RepoAddResponse, RepoExcludeRequest, RepoExcludeResponse, RepoItemKind,
@@ -45,10 +51,10 @@ pub use stack::benchmark::{
 };
 pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
+    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, PlacementSpec,
 };
-pub use stack::list::{StackListRequest, StackListResponse};
-pub use stack::reset::{NodeResetRequest, NodeResetResponse};
+pub use stack::list::{LaunchIdentity, StackListRequest, StackListResponse};
+pub use stack::reset::{StackResetRequest, StackResetResponse};
 
 use capnp::introspect::Introspect;
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
@@ -75,6 +81,40 @@ pub(crate) fn optional_text(s: &str) -> Option<String> {
     } else {
         Some(s.to_owned())
     }
+}
+
+/// The counterpart to [`optional_text`]: decodes a text field that the message
+/// is not reconstructible without.
+///
+/// Cap'n Proto defaults an absent text field to the empty string, so a required
+/// field and an omitted one are indistinguishable on the wire. Refusing here is
+/// what stops a receiver from acting on a defaulted identity. Sites that can
+/// name the fix for the operator (a version skew, say) should return their own
+/// `Error::Decoding` with that prose instead — this is the default, not a rule.
+pub(crate) fn required_text(value: &str, field: &str) -> Result<String> {
+    if value.is_empty() {
+        return Err(crate::Error::Decoding(format!("`{field}` is empty")));
+    }
+    Ok(value.to_owned())
+}
+
+/// Writes owned strings into an already-initialized `List(Text)` builder.
+///
+/// Pairs with [`read_text_list`]. Callers size the list themselves through
+/// [`capnp_list_len`], because only they can name the field in the error.
+pub(crate) fn write_text_list(mut list: capnp::text_list::Builder<'_>, values: &[String]) {
+    for (idx, value) in values.iter().enumerate() {
+        list.set(idx as u32, value.as_str());
+    }
+}
+
+/// Inverse of [`write_text_list`].
+pub(crate) fn read_text_list(list: capnp::text_list::Reader<'_>) -> Result<Vec<String>> {
+    let mut values = Vec::with_capacity(list.len() as usize);
+    for idx in 0..list.len() {
+        values.push(list.get(idx)?.to_str()?.to_owned());
+    }
+    Ok(values)
 }
 
 /// Decode a non-empty filesystem-path text field into a `PathBuf`.
@@ -174,6 +214,46 @@ mod tests {
     fn optional_text_maps_empty_to_none() {
         assert_eq!(optional_text(""), None);
         assert_eq!(optional_text("value"), Some("value".to_owned()));
+    }
+
+    #[test]
+    fn required_text_rejects_empty_and_names_the_field() {
+        let err = required_text("", "MyField").expect_err("empty must fail");
+        assert!(err.to_string().contains("MyField"), "got: {err}");
+        assert_eq!(
+            required_text("value", "MyField").expect("non-empty"),
+            "value"
+        );
+    }
+
+    // The write/read pair is only useful if it is exactly lossless, empty list
+    // included — an off-by-one in either half would survive a one-element test.
+    #[test]
+    fn text_list_round_trips() {
+        for values in [
+            Vec::new(),
+            vec!["only".to_owned()],
+            vec!["a".to_owned(), String::new(), "c".to_owned()],
+        ] {
+            let mut message = Builder::new_default();
+            {
+                let request = message
+                    .init_root::<crate::federation_capnp::participant_reserve_request::Builder>();
+                let len = capnp_list_len(values.len(), "test").expect("len fits");
+                write_text_list(request.init_deployment_sources_json5(len), &values);
+            }
+            let request = message
+                .get_root_as_reader::<crate::federation_capnp::participant_reserve_request::Reader>(
+                )
+                .expect("root");
+            let read = read_text_list(
+                request
+                    .get_deployment_sources_json5()
+                    .expect("list present"),
+            )
+            .expect("read");
+            assert_eq!(read, values);
+        }
     }
 
     #[test]

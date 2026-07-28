@@ -1,5 +1,6 @@
 //! Encoding types for the Launch action (streaming version with feedback).
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use capnp::message::Builder;
@@ -41,6 +42,40 @@ impl LauncherOrigin {
     }
 }
 
+/// How a launch places the core node links its launcher declares.
+///
+/// The INTENT, not its expansion. Only the coordinator holds the resolved
+/// launcher — a [`LauncherOrigin::Repository`] is read from the daemon's own
+/// cache, which the caller may never have seen — so the caller cannot know
+/// what the document declares. Sending what the user asked for, and expanding
+/// it where the document lives, is what makes `--local` mean the same thing
+/// for both origins instead of working only for the one the caller can read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlacementSpec {
+    /// `--place <core-node-link>@<core-node>` wirings, keyed by the
+    /// placeholder declared in the launcher's `core_nodes` list.
+    ///
+    /// Empty means no placement flag was given at all, which only a launcher
+    /// declaring no `core_nodes` can satisfy: the coordinator refuses a
+    /// declared-but-unwired link rather than quietly collapsing it onto itself.
+    ///
+    /// A `BTreeMap` rather than a list because the caller has already rejected
+    /// repeats, so "at most one target per placeholder" is a property of the
+    /// type instead of a rule the daemon has to re-check.
+    Places(BTreeMap<String, String>),
+    /// `--local`: every link the launcher declares runs on the coordinator.
+    ///
+    /// Carries no map on purpose. Which links exist is a property of the
+    /// document, so naming them here would mean the caller had to have read it.
+    Local,
+}
+
+impl Default for PlacementSpec {
+    fn default() -> Self {
+        Self::Places(BTreeMap::new())
+    }
+}
+
 /// Goal message for the Launch action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchGoal {
@@ -52,11 +87,21 @@ pub struct LaunchGoal {
     /// Whole-launch deadline. `None` means no overall deadline is enforced (only idle timeouts
     /// apply). Wire encoding uses 0 as the sentinel for `None`.
     pub max_timeout_secs: Option<u64>,
+    /// Identity of this launch, minted by the caller. Every participant
+    /// records it with its slice, so the global stack is rediscoverable by
+    /// query from any machine rather than remembered in a coordinator's RAM.
+    ///
+    /// Never empty; [`LaunchGoal::decode`] refuses an empty one.
+    pub launch_id: String,
+    /// What the caller asked for about placement, for the coordinator to
+    /// expand against the document it resolved.
+    pub placement: PlacementSpec,
 }
 
 impl LaunchGoal {
     pub fn new(
         launcher_origin: LauncherOrigin,
+        launch_id: impl Into<String>,
         node_add_idle_timeout_secs: u64,
         node_build_idle_timeout_secs: u64,
         node_run_idle_timeout_secs: u64,
@@ -69,11 +114,18 @@ impl LaunchGoal {
             node_build_idle_timeout_secs,
             node_run_idle_timeout_secs,
             max_timeout_secs,
+            launch_id: launch_id.into(),
+            placement: PlacementSpec::default(),
         }
     }
 
     pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars = env_vars;
+        self
+    }
+
+    pub fn with_placement(mut self, placement: PlacementSpec) -> Self {
+        self.placement = placement;
         self
     }
 
@@ -100,6 +152,21 @@ impl LaunchGoal {
             goal.reborrow()
                 .set_max_timeout_secs(self.max_timeout_secs.unwrap_or(0));
 
+            goal.reborrow().set_launch_id(&self.launch_id);
+
+            match &self.placement {
+                PlacementSpec::Places(places) => {
+                    let link_count = capnp_list_len(places.len(), "LaunchGoal.placement.places")?;
+                    let mut links = goal.reborrow().init_placement().init_places(link_count);
+                    for (idx, (link_id, core_node)) in places.iter().enumerate() {
+                        let mut link = links.reborrow().get(idx as u32);
+                        link.set_link_id(link_id);
+                        link.set_core_node(core_node);
+                    }
+                }
+                PlacementSpec::Local => goal.reborrow().init_placement().set_local(()),
+            }
+
             let mut origin = goal.reborrow().init_launcher_origin();
             match &self.launcher_origin {
                 LauncherOrigin::Fs(path) => {
@@ -115,6 +182,7 @@ impl LaunchGoal {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         use launch_capnp::launch_goal::launcher_origin::Which;
+        use launch_capnp::launch_goal::placement::Which as PlacementWhich;
 
         let reader = decode_message(data)?;
         let goal = reader.get_root::<launch_capnp::launch_goal::Reader>()?;
@@ -147,8 +215,52 @@ impl LaunchGoal {
             }
         };
 
+        // Cap'n Proto defaults an absent field to the empty string, so a goal
+        // from a peppy that predates federated launch decodes here with no
+        // launch id and no placements. Left unchecked it would run every
+        // instance on this daemon and record an unidentifiable slice, which is
+        // exactly the silent-wrong outcome a breaking change must not produce.
+        // There is no compatibility path: refuse, and name the fix.
+        let launch_id = goal.get_launch_id()?.to_str()?;
+        if launch_id.is_empty() {
+            return Err(crate::Error::Decoding(
+                "LaunchGoal.launch_id is empty: this launch came from a peppy that predates \
+                 federated launch. Upgrade the caller to the same version as this daemon."
+                    .to_owned(),
+            ));
+        }
+
+        let placement = match goal.get_placement().which()? {
+            PlacementWhich::Local(()) => PlacementSpec::Local,
+            PlacementWhich::Places(places) => {
+                let places_reader = places?;
+                let mut places = BTreeMap::new();
+                for idx in 0..places_reader.len() {
+                    let link = places_reader.get(idx);
+                    let link_id = link.get_link_id()?.to_str()?;
+                    let core_node = link.get_core_node()?.to_str()?;
+                    if link_id.is_empty() || core_node.is_empty() {
+                        return Err(crate::Error::Decoding(format!(
+                            "LaunchGoal.placement.places[{idx}] has an empty link_id or core_node"
+                        )));
+                    }
+                    if places
+                        .insert(link_id.to_owned(), core_node.to_owned())
+                        .is_some()
+                    {
+                        return Err(crate::Error::Decoding(format!(
+                            "LaunchGoal.placement.places wires `{link_id}` more than once"
+                        )));
+                    }
+                }
+                PlacementSpec::Places(places)
+            }
+        };
+
         let raw_max = goal.get_max_timeout_secs();
         Ok(Self {
+            launch_id: launch_id.to_owned(),
+            placement,
             launcher_origin,
             env_vars,
             node_add_idle_timeout_secs: with_timeout_default(
@@ -493,10 +605,19 @@ impl crate::encoding::Wire for LaunchResult {
 mod tests {
     use super::*;
 
+    fn decoding_message(goal: &LaunchGoal) -> String {
+        let bytes = goal.encode().expect("encode");
+        match LaunchGoal::decode(&bytes).expect_err("decode should fail") {
+            crate::Error::Decoding(msg) => msg,
+            other => panic!("expected Decoding error, got {other:?}"),
+        }
+    }
+
     #[test]
     fn launch_goal_roundtrips_fs_origin() {
         let goal = LaunchGoal::new(
             LauncherOrigin::Fs(PathBuf::from("/tmp/launcher.json5")),
+            "launch-abc123",
             10,
             20,
             30,
@@ -515,6 +636,7 @@ mod tests {
             LauncherOrigin::Repository {
                 name: "openarm01_sim_teleop".to_string(),
             },
+            "launch-abc123",
             5,
             10,
             15,
@@ -527,6 +649,144 @@ mod tests {
         assert_eq!(decoded.max_timeout_secs, None);
     }
 
+    #[test]
+    fn launch_goal_roundtrips_core_node_links() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Repository {
+                name: "split_compute_manipulation".to_string(),
+            },
+            "launch-abc123",
+            5,
+            10,
+            15,
+            None,
+        )
+        .with_placement(PlacementSpec::Places(BTreeMap::from([
+            ("robot_onboard".to_string(), "cn-robot-7".to_string()),
+            ("cloud_inference".to_string(), "cn-atlas-h100".to_string()),
+        ])));
+
+        let bytes = goal.encode().expect("encode");
+        let decoded = LaunchGoal::decode(&bytes).expect("decode");
+        assert_eq!(goal, decoded);
+        let PlacementSpec::Places(places) = &decoded.placement else {
+            panic!("expected explicit places, got {:?}", decoded.placement);
+        };
+        assert_eq!(
+            places.get("cloud_inference").map(String::as_str),
+            Some("cn-atlas-h100")
+        );
+    }
+
+    /// `--local` travels as INTENT, not as an expansion. The caller cannot
+    /// know what a `Repository` launcher declares, so a map here would mean it
+    /// had read a document only the coordinator holds.
+    #[test]
+    fn launch_goal_roundtrips_local_placement() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Repository {
+                name: "split_compute_manipulation".to_string(),
+            },
+            "launch-abc123",
+            1,
+            1,
+            1,
+            None,
+        )
+        .with_placement(PlacementSpec::Local);
+
+        let bytes = goal.encode().expect("encode");
+        let decoded = LaunchGoal::decode(&bytes).expect("decode");
+        assert_eq!(decoded.placement, PlacementSpec::Local);
+        assert_eq!(goal, decoded);
+    }
+
+    /// A goal that sets no placement decodes as empty `places`, which is what
+    /// "neither `--place` nor `--local`" has always meant.
+    #[test]
+    fn launch_goal_without_placement_decodes_as_no_places() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Repository {
+                name: "teleop".to_string(),
+            },
+            "launch-abc123",
+            1,
+            1,
+            1,
+            None,
+        );
+        let bytes = goal.encode().expect("encode");
+        let decoded = LaunchGoal::decode(&bytes).expect("decode");
+        assert_eq!(decoded.placement, PlacementSpec::Places(BTreeMap::new()));
+    }
+
+    /// Wiring two placeholders to the SAME machine is legitimate: a launcher
+    /// that describes a two-machine topology must still run on one box.
+    #[test]
+    fn launch_goal_roundtrips_two_links_wired_to_one_core_node() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Repository {
+                name: "split_compute_manipulation".to_string(),
+            },
+            "launch-abc123",
+            1,
+            1,
+            1,
+            None,
+        )
+        .with_placement(PlacementSpec::Places(BTreeMap::from([
+            ("robot_onboard".to_string(), "cn-solo".to_string()),
+            ("cloud_inference".to_string(), "cn-solo".to_string()),
+        ])));
+
+        let bytes = goal.encode().expect("encode");
+        assert_eq!(LaunchGoal::decode(&bytes).expect("decode"), goal);
+    }
+
+    /// The break with pre-federation callers is enforced HERE, not by the
+    /// codec. Cap'n Proto defaults an absent field to the empty string, so an
+    /// older caller's goal decodes cleanly unless this guard refuses it, and
+    /// the launch would silently run every instance on the coordinator under
+    /// an unidentifiable slice.
+    #[test]
+    fn launch_goal_decode_rejects_empty_launch_id() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Repository {
+                name: "teleop".to_string(),
+            },
+            "",
+            1,
+            1,
+            1,
+            None,
+        );
+        let msg = decoding_message(&goal);
+        assert!(msg.contains("launch_id"), "got: {msg}");
+        assert!(msg.contains("predates federated launch"), "got: {msg}");
+    }
+
+    #[test]
+    fn launch_goal_decode_rejects_empty_core_node_link_fields() {
+        for (link_id, core_node) in [("", "cn-atlas"), ("cloud_inference", "")] {
+            let goal = LaunchGoal::new(
+                LauncherOrigin::Repository {
+                    name: "teleop".to_string(),
+                },
+                "launch-abc123",
+                1,
+                1,
+                1,
+                None,
+            )
+            .with_placement(PlacementSpec::Places(BTreeMap::from([(
+                link_id.to_string(),
+                core_node.to_string(),
+            )])));
+            let msg = decoding_message(&goal);
+            assert!(msg.contains("empty link_id or core_node"), "got: {msg}");
+        }
+    }
+
     /// `LauncherOrigin::Fs` is documented to carry an absolute path; the
     /// daemon opens it directly without resolving. A relative path here
     /// would silently anchor at the daemon's CWD, which is a footgun.
@@ -534,16 +794,13 @@ mod tests {
     fn launch_goal_decode_rejects_relative_fs_path() {
         let goal = LaunchGoal::new(
             LauncherOrigin::Fs(PathBuf::from("relative/launcher.json5")),
+            "launch-abc123",
             1,
             1,
             1,
             None,
         );
-        let bytes = goal.encode().expect("encode");
-        let err = LaunchGoal::decode(&bytes).expect_err("relative path should fail");
-        let crate::Error::Decoding(msg) = err else {
-            panic!("expected Decoding error, got {err:?}");
-        };
+        let msg = decoding_message(&goal);
         assert!(msg.contains("absolute"), "got: {msg}");
     }
 
@@ -553,14 +810,14 @@ mod tests {
             LauncherOrigin::Repository {
                 name: "".to_string(),
             },
+            "launch-abc123",
             1,
             1,
             1,
             None,
         );
-        let bytes = goal.encode().expect("encode");
-        let err = LaunchGoal::decode(&bytes).expect_err("empty name should fail");
-        assert!(matches!(err, crate::Error::Decoding(_)));
+        let msg = decoding_message(&goal);
+        assert!(msg.contains("repository name is empty"), "got: {msg}");
     }
 
     #[test]

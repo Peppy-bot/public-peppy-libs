@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use capnp::message::Builder;
+use config::runtime::{NodeInstancePlan, ProducerRef};
 
 use crate::node_capnp;
 use crate::{NonEmptyPayload, Payload, Result};
@@ -11,6 +12,7 @@ use crate::{NonEmptyPayload, Payload, Result};
 use super::builder::FeedbackStream;
 use crate::encoding::{
     capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
+    read_text_list, required_text, write_text_list,
 };
 
 /// One peer reference carried by [`NodeRunGoal::requested_pairs`] /
@@ -21,34 +23,76 @@ use crate::encoding::{
 /// unambiguous.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairTarget {
-    pub peer_instance_id: String,
+    /// The peer instance, addressed the way the whole mesh addresses
+    /// instances. Its `core_node` is always populated, including for a
+    /// same-daemon pair, so a daemon never has to infer "this must be local"
+    /// from an absent field. Set by whoever plans the pair: the coordinator of
+    /// a federated launch, or the receiving daemon's own name for a
+    /// `node run --pair`.
+    pub peer: ProducerRef,
     /// The complementary slot on the peer, when the request pins one.
     /// `None` is unpinned: exactly one available complementary slot must
     /// exist on the peer and the daemon resolves it.
     pub peer_link_id: Option<String>,
+    /// The planner's verdict about a peer the receiving daemon cannot inspect,
+    /// set only when [`Self::peer`] names a DIFFERENT machine.
+    ///
+    /// A daemon validates a pair against the two manifests it holds. For a peer
+    /// on another machine it holds neither, so the rules cannot be re-derived
+    /// there — and a federated launch's coordinator has already checked the
+    /// whole plan against every participant's manifests. This carries that
+    /// verdict; `None` means the peer is local and the local manifests decide.
+    pub remote_peer: Option<RemotePeerPairing>,
+}
+
+/// What a daemon needs about a pair endpoint whose manifest it cannot read.
+///
+/// Mirrors the fields the pair registry records, so a cross-machine pair is
+/// stored exactly like a same-daemon one once committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemotePeerPairing {
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    /// The role the peer's manifest declares for its side of the pair.
+    pub peer_role: String,
 }
 
 impl PairTarget {
-    pub fn new(peer_instance_id: impl Into<String>) -> Self {
+    pub fn new(peer_instance_id: impl Into<String>, peer_core_node: impl Into<String>) -> Self {
         Self {
-            peer_instance_id: peer_instance_id.into(),
+            peer: ProducerRef::new(peer_core_node, peer_instance_id),
             peer_link_id: None,
+            remote_peer: None,
         }
     }
 
-    pub fn pinned(peer_instance_id: impl Into<String>, peer_link_id: impl Into<String>) -> Self {
+    pub fn pinned(
+        peer_instance_id: impl Into<String>,
+        peer_link_id: impl Into<String>,
+        peer_core_node: impl Into<String>,
+    ) -> Self {
         Self {
-            peer_instance_id: peer_instance_id.into(),
+            peer: ProducerRef::new(peer_core_node, peer_instance_id),
             peer_link_id: Some(peer_link_id.into()),
+            remote_peer: None,
         }
+    }
+
+    /// Attaches the planner's verdict for a peer on another machine.
+    ///
+    /// Only a planner holding both manifests may call this: it is the
+    /// receiving daemon's sole evidence about a slot it cannot read.
+    pub fn with_remote_peer(mut self, remote_peer: RemotePeerPairing) -> Self {
+        self.remote_peer = Some(remote_peer);
+        self
     }
 }
 
 impl std::fmt::Display for PairTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.peer_link_id {
-            Some(link) => write!(f, "{}/{}", self.peer_instance_id, link),
-            None => f.write_str(&self.peer_instance_id),
+            Some(link) => write!(f, "{}/{}", self.peer.instance_id, link),
+            None => f.write_str(&self.peer.instance_id),
         }
     }
 }
@@ -57,27 +101,50 @@ impl std::fmt::Display for PairTarget {
 /// keyed in the goal by the starting node's own observer-slot link_id: the
 /// source instance the slot taps and the source-side participant slot the
 /// source publishes the observed role under. Unlike a [`PairTarget`] the source
-/// slot is always resolved (the planner fills it), and observation carries no
-/// `core_node` because the source is always on this same daemon.
+/// slot is always resolved (the planner fills it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservationTarget {
-    pub source_instance_id: String,
+    /// The source instance, addressed for the same self-describing-placement
+    /// reason as [`PairTarget::peer`]. A remote source subscribes identically
+    /// to a local one; what differs is that its lifecycle transitions arrive
+    /// as notifications from its own daemon rather than from local lifecycle
+    /// events.
+    pub source: ProducerRef,
     pub source_link_id: String,
 }
 
 impl ObservationTarget {
-    pub fn new(source_instance_id: impl Into<String>, source_link_id: impl Into<String>) -> Self {
+    pub fn new(
+        source_instance_id: impl Into<String>,
+        source_link_id: impl Into<String>,
+        source_core_node: impl Into<String>,
+    ) -> Self {
         Self {
-            source_instance_id: source_instance_id.into(),
+            source: ProducerRef::new(source_core_node, source_instance_id),
             source_link_id: source_link_id.into(),
         }
     }
 }
 
 /// Goal message for the NodeRun action.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NodeRunGoal {
-    pub runtime_config_json5: String,
+    /// What to start, NOT how it is wired into the mesh. See
+    /// [`NodeInstancePlan`]: the receiving daemon owns the runtime identity of
+    /// every node it spawns, so the messaging endpoint, `bound_core_node`, and
+    /// the resolved framework values are added by the daemon, on every path
+    /// including `peppy node run`. One assembly site, one invariant.
+    pub instance_plan: NodeInstancePlan,
+    /// SHA256 of the manifest the planner validated this instance against.
+    /// The spawning daemon refuses if its own re-resolved manifest hashes
+    /// differently, so a cache that moved between a federated preflight and
+    /// this dispatch fails loudly rather than starting a node against a plan
+    /// that was never checked for it.
+    ///
+    /// `None` on the in-process launch path, where planner and spawner are the
+    /// same daemon reading the same entity under the same lock and there is no
+    /// window to close.
+    pub manifest_sha256: Option<String>,
     pub node_name: String,
     pub tag: String,
     pub env_vars: Vec<(String, String)>,
@@ -107,17 +174,26 @@ pub struct NodeRunGoal {
     /// commits to Running, so the source pin is delivered the moment both are
     /// up and re-delivered whenever the source restarts.
     pub planned_observations: BTreeMap<String, ObservationTarget>,
+    /// See [`crate::encoding::NodeAddGoal::launch_id`].
+    pub launch_id: Option<String>,
+    /// Core nodes that must hear about this instance's lifecycle but that the
+    /// spawning daemon cannot work out for itself: the daemons whose observers
+    /// tap it. A source is deliberately unaware of its observers, so only the
+    /// planner can name them. Pairing recipients are NOT listed here; a pair
+    /// names both endpoints, so the daemon derives those from its own registry.
+    pub lifecycle_watchers: Vec<String>,
 }
 
 impl NodeRunGoal {
     pub fn new(
-        runtime_config_json5: impl Into<String>,
+        instance_plan: NodeInstancePlan,
         node_name: impl Into<String>,
         tag: impl Into<String>,
         timeout_secs: u64,
     ) -> Self {
         Self {
-            runtime_config_json5: runtime_config_json5.into(),
+            instance_plan,
+            manifest_sha256: None,
             node_name: node_name.into(),
             tag: tag.into(),
             env_vars: Vec::new(),
@@ -126,7 +202,16 @@ impl NodeRunGoal {
             deferred_pairs: Vec::new(),
             covered_pairs: BTreeMap::new(),
             planned_observations: BTreeMap::new(),
+            launch_id: None,
+            lifecycle_watchers: Vec::new(),
         }
+    }
+
+    /// Pins the manifest the planner validated against. Set by a coordinator
+    /// dispatching to a peer; left unset on the in-process launch path.
+    pub fn with_manifest_sha256(mut self, manifest_sha256: impl Into<String>) -> Self {
+        self.manifest_sha256 = Some(manifest_sha256.into());
+        self
     }
 
     pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
@@ -157,23 +242,50 @@ impl NodeRunGoal {
         self
     }
 
+    /// Marks this goal as one step of a federated launch's dispatch, so the
+    /// receiving daemon accepts it while reserved for that launch.
+    pub fn with_launch_id(mut self, launch_id: impl Into<String>) -> Self {
+        self.launch_id = Some(launch_id.into());
+        self
+    }
+
+    /// Names the daemons whose observers tap this instance, so the daemon that
+    /// spawns it can report its lifecycle to them.
+    pub fn with_lifecycle_watchers(mut self, lifecycle_watchers: Vec<String>) -> Self {
+        self.lifecycle_watchers = lifecycle_watchers;
+        self
+    }
+
     /// Builds a goal for in-process execution that bypasses the action-loop
     /// gate (see `services::stack::launch::start_node_directly`). The
     /// `timeout_secs` field feeds the gate's busy-reporting and is unread on
     /// this path, so it is zero by construction.
     pub fn for_internal_execution(
-        runtime_config_json5: impl Into<String>,
+        instance_plan: NodeInstancePlan,
         node_name: impl Into<String>,
         tag: impl Into<String>,
     ) -> Self {
-        Self::new(runtime_config_json5, node_name, tag, 0)
+        Self::new(instance_plan, node_name, tag, 0)
     }
 
     pub fn encode(&self) -> Result<Payload> {
+        let instance_plan_json5 = serde_json5::to_string(&self.instance_plan)
+            .map_err(|e| crate::Error::Encoding(format!("NodeRunGoal.instance_plan: {e}")))?;
         let mut builder = Builder::new_default();
         {
             let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
-            goal.set_runtime_config_json5(&self.runtime_config_json5);
+            goal.set_instance_plan_json5(&instance_plan_json5);
+            goal.set_manifest_sha256(self.manifest_sha256.as_deref().unwrap_or(""));
+            goal.set_launch_id(self.launch_id.as_deref().unwrap_or(""));
+
+            let watcher_count = capnp_list_len(
+                self.lifecycle_watchers.len(),
+                "NodeRunGoal.lifecycle_watchers",
+            )?;
+            write_text_list(
+                goal.reborrow().init_lifecycle_watchers(watcher_count),
+                &self.lifecycle_watchers,
+            );
             goal.set_node_name(&self.node_name);
             goal.set_tag(&self.tag);
 
@@ -196,10 +308,10 @@ impl NodeRunGoal {
 
             let deferred_count =
                 capnp_list_len(self.deferred_pairs.len(), "NodeRunGoal.deferred_pairs")?;
-            let mut deferred = goal.reborrow().init_deferred_pairs(deferred_count);
-            for (idx, link_id) in self.deferred_pairs.iter().enumerate() {
-                deferred.set(idx as u32, link_id.as_str());
-            }
+            write_text_list(
+                goal.reborrow().init_deferred_pairs(deferred_count),
+                &self.deferred_pairs,
+            );
 
             let covered_count =
                 capnp_list_len(self.covered_pairs.len(), "NodeRunGoal.covered_pairs")?;
@@ -234,20 +346,33 @@ impl NodeRunGoal {
             ));
         }
 
-        let deferred_reader = goal.get_deferred_pairs()?;
-        let mut deferred_pairs = Vec::with_capacity(deferred_reader.len() as usize);
-        for idx in 0..deferred_reader.len() {
-            deferred_pairs.push(deferred_reader.get(idx)?.to_str()?.to_owned());
+        // Cap'n Proto defaults an absent field to the empty string, so a goal
+        // from a peppy that still ships an assembled runtime config decodes
+        // here with no plan at all. Left unchecked that would spawn a node
+        // under a defaulted identity. Refuse, and name the fix.
+        let instance_plan_json5 = goal.get_instance_plan_json5()?.to_str()?;
+        if instance_plan_json5.is_empty() {
+            return Err(crate::Error::Decoding(
+                "NodeRunGoal.instance_plan is empty: this goal came from a peppy that still \
+                 assembles runtime configs caller-side. Upgrade the caller to the same version \
+                 as this daemon."
+                    .to_owned(),
+            ));
         }
+        let instance_plan: NodeInstancePlan = serde_json5::from_str(instance_plan_json5)
+            .map_err(|e| crate::Error::Decoding(format!("NodeRunGoal.instance_plan: {e}")))?;
 
         Ok(Self {
-            runtime_config_json5: goal.get_runtime_config_json5()?.to_str()?.to_owned(),
+            instance_plan,
+            manifest_sha256: optional_text(goal.get_manifest_sha256()?.to_str()?),
+            launch_id: optional_text(goal.get_launch_id()?.to_str()?),
+            lifecycle_watchers: read_text_list(goal.get_lifecycle_watchers()?)?,
             node_name: goal.get_node_name()?.to_str()?.to_owned(),
             tag: goal.get_tag()?.to_str()?.to_owned(),
             env_vars,
             timeout_secs: goal.get_timeout_secs(),
             requested_pairs: read_pair_requests(goal.get_requested_pairs()?)?,
-            deferred_pairs,
+            deferred_pairs: read_text_list(goal.get_deferred_pairs()?)?,
             covered_pairs: read_pair_requests(goal.get_covered_pairs()?)?,
             planned_observations: read_observation_requests(goal.get_planned_observations()?)?,
         })
@@ -257,7 +382,8 @@ impl NodeRunGoal {
 /// Writes a `link_id -> PairTarget` map into an initialized
 /// `List(PairRequest)` builder ([`NodeRunGoal::requested_pairs`] and
 /// [`NodeRunGoal::covered_pairs`] share the wire shape). An unpinned
-/// `peer_link_id` is encoded as the empty string.
+/// `peer_link_id` is encoded as the empty string, and an absent
+/// `remote_peer` as an all-empty `remotePeer` struct.
 fn fill_pair_requests(
     mut list: capnp::struct_list::Builder<'_, node_capnp::pair_request::Owned>,
     pairs: &BTreeMap<String, PairTarget>,
@@ -265,28 +391,93 @@ fn fill_pair_requests(
     for (idx, (link_id, target)) in pairs.iter().enumerate() {
         let mut pair = list.reborrow().get(idx as u32);
         pair.set_link_id(link_id);
-        pair.set_peer_instance_id(&target.peer_instance_id);
         pair.set_peer_link_id(target.peer_link_id.as_deref().unwrap_or(""));
+        if let Some(remote) = &target.remote_peer {
+            let mut builder = pair.reborrow().init_remote_peer();
+            builder.set_pairing_name(&remote.pairing_name);
+            builder.set_pairing_tag(&remote.pairing_tag);
+            builder.set_peer_role(&remote.peer_role);
+        }
+        write_instance_address(pair.init_peer(), &target.peer);
     }
 }
 
 /// Inverse of [`fill_pair_requests`]: an empty `peerLinkId` decodes to
-/// `None` (unpinned).
+/// `None` (unpinned), and an empty `remotePeer.pairingName` to no remote
+/// verdict.
 fn read_pair_requests(
     list: capnp::struct_list::Reader<'_, node_capnp::pair_request::Owned>,
 ) -> Result<BTreeMap<String, PairTarget>> {
     let mut pairs = BTreeMap::new();
     for idx in 0..list.len() {
         let pair = list.get(idx);
+        let remote = pair.get_remote_peer()?;
+        let pairing_name = remote.get_pairing_name()?.to_str()?;
+        // A same-daemon peer carries no verdict, and Cap'n Proto defaults an
+        // absent struct's text to "". Keying "set" on the pairing name means a
+        // partially-filled verdict is refused below rather than silently
+        // committing a pair under an empty pairing identity.
+        let remote_peer = if pairing_name.is_empty() {
+            None
+        } else {
+            Some(RemotePeerPairing {
+                pairing_name: pairing_name.to_owned(),
+                pairing_tag: required_text(
+                    remote.get_pairing_tag()?.to_str()?,
+                    "NodeRunGoal pair request remote_peer.pairing_tag",
+                )?,
+                peer_role: required_text(
+                    remote.get_peer_role()?.to_str()?,
+                    "NodeRunGoal pair request remote_peer.peer_role",
+                )?,
+            })
+        };
         pairs.insert(
             pair.get_link_id()?.to_str()?.to_owned(),
             PairTarget {
-                peer_instance_id: pair.get_peer_instance_id()?.to_str()?.to_owned(),
+                peer: read_instance_address(pair.get_peer()?, "NodeRunGoal pair request")?,
                 peer_link_id: optional_text(pair.get_peer_link_id()?.to_str()?),
+                remote_peer,
             },
         );
     }
     Ok(pairs)
+}
+
+/// Writes a [`ProducerRef`] into an initialized `InstanceAddress` builder.
+fn write_instance_address(
+    mut address: node_capnp::instance_address::Builder<'_>,
+    producer: &ProducerRef,
+) {
+    address.set_core_node(&producer.core_node);
+    address.set_instance_id(&producer.instance_id);
+}
+
+/// Inverse of [`write_instance_address`].
+///
+/// Both halves are required. Every wire message a peer acts on is
+/// self-describing about placement, so an absent core node is a bug in the
+/// sender rather than a shorthand for "local" — refusing here is what stops a
+/// daemon from ever having to guess. `context` names the message, since the
+/// address itself cannot say which one carried it.
+fn read_instance_address(
+    address: node_capnp::instance_address::Reader<'_>,
+    context: &str,
+) -> Result<ProducerRef> {
+    let core_node = address.get_core_node()?.to_str()?;
+    if core_node.is_empty() {
+        return Err(crate::Error::Decoding(format!(
+            "{context} carries an empty core_node: placement must be explicit, \
+             even when the target is on the receiving daemon"
+        )));
+    }
+    Ok(ProducerRef::new(
+        core_node,
+        required_text(
+            address.get_instance_id()?.to_str()?,
+            &format!("{context} instance_id"),
+        )?,
+    ))
 }
 
 /// Writes an `observer_link_id -> ObservationTarget` map into an initialized
@@ -298,8 +489,8 @@ fn fill_observation_requests(
     for (idx, (observer_link_id, target)) in observations.iter().enumerate() {
         let mut observation = list.reborrow().get(idx as u32);
         observation.set_observer_link_id(observer_link_id);
-        observation.set_source_instance_id(&target.source_instance_id);
         observation.set_source_link_id(&target.source_link_id);
+        write_instance_address(observation.init_source(), &target.source);
     }
 }
 
@@ -313,7 +504,10 @@ fn read_observation_requests(
         observations.insert(
             observation.get_observer_link_id()?.to_str()?.to_owned(),
             ObservationTarget {
-                source_instance_id: observation.get_source_instance_id()?.to_str()?.to_owned(),
+                source: read_instance_address(
+                    observation.get_source()?,
+                    "NodeRunGoal observation request",
+                )?,
                 source_link_id: observation.get_source_link_id()?.to_str()?.to_owned(),
             },
         );
@@ -510,19 +704,24 @@ mod tests {
 
     // --- NodeRunGoal ---
 
+    fn plan(instance_id: &str) -> NodeInstancePlan {
+        NodeInstancePlan::new(config::runtime::Name::new(instance_id).expect("valid name"))
+    }
+
     #[test]
     fn node_run_goal_new_has_empty_env_vars() {
-        let goal = NodeRunGoal::new("config", "node", "tag", 30);
-        assert_eq!(goal.runtime_config_json5, "config");
+        let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 30);
+        assert_eq!(goal.instance_plan.instance_id.as_str(), "inst_1");
         assert_eq!(goal.node_name, "node");
         assert_eq!(goal.tag, "tag");
         assert!(goal.env_vars.is_empty());
         assert_eq!(goal.timeout_secs, 30);
+        assert_eq!(goal.manifest_sha256, None);
     }
 
     #[test]
     fn node_run_goal_roundtrip_empty_env_vars() {
-        let goal = NodeRunGoal::new("config", "node", "tag", 30);
+        let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 30);
         let encoded = goal.encode().expect("encode");
         let decoded = NodeRunGoal::decode(&encoded).expect("decode");
         assert_eq!(decoded, goal);
@@ -530,14 +729,74 @@ mod tests {
     }
 
     #[test]
+    fn node_run_goal_roundtrip_instance_plan_fields() {
+        let goal = NodeRunGoal::new(
+            NodeInstancePlan {
+                use_sim_time: Some(true),
+                slot_bindings: BTreeMap::from([(
+                    "camera".to_owned(),
+                    config::runtime::BoundProducers::try_from(vec![
+                        config::runtime::ProducerRef::new("cn-robot-7", "wrist_cam_inst"),
+                    ])
+                    .expect("one producer is a valid set"),
+                )]),
+                ..plan("planner_inst")
+            },
+            "deliberative_planner",
+            "v1",
+            30,
+        )
+        .with_manifest_sha256("a".repeat(64));
+
+        let encoded = goal.encode().expect("encode");
+        let decoded = NodeRunGoal::decode(&encoded).expect("decode");
+        assert_eq!(decoded, goal);
+        assert_eq!(decoded.instance_plan.use_sim_time, Some(true));
+        assert_eq!(
+            decoded.instance_plan.slot_bindings["camera"].as_slice()[0].core_node,
+            "cn-robot-7"
+        );
+        assert_eq!(decoded.manifest_sha256, Some("a".repeat(64)));
+    }
+
+    /// A cross-daemon producer binding is carried the same way a local one is:
+    /// the `ProducerRef` already names its core node, so nothing at the point
+    /// of use records which machine the producer sits on.
+    #[test]
+    fn node_run_goal_carries_producers_on_other_core_nodes() {
+        let goal = NodeRunGoal::new(
+            NodeInstancePlan {
+                slot_bindings: BTreeMap::from([(
+                    "scene".to_owned(),
+                    config::runtime::BoundProducers::try_from(vec![
+                        config::runtime::ProducerRef::new("cn-robot-7", "wrist_cam_inst"),
+                    ])
+                    .expect("one producer is a valid set"),
+                )]),
+                ..plan("planner_inst")
+            },
+            "deliberative_planner",
+            "v1",
+            0,
+        );
+        let decoded = NodeRunGoal::decode(&goal.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, goal);
+    }
+
+    #[test]
     fn node_run_goal_roundtrip_pairs() {
-        let goal = NodeRunGoal::new("config", "node", "tag", 30)
+        let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 30)
             .with_requested_pairs(
                 [
-                    ("arm".to_owned(), PairTarget::new("arm_1")),
+                    ("arm".to_owned(), PairTarget::new("arm_1", "cn-local")),
                     (
                         "gripper".to_owned(),
-                        PairTarget::pinned("grip_1", "controller"),
+                        PairTarget::pinned("grip_1", "controller", "cn-local"),
+                    ),
+                    // The cross-daemon case: same shape, different core node.
+                    (
+                        "deliberation".to_owned(),
+                        PairTarget::pinned("planner_inst", "deliberator", "cn-atlas-h100"),
                     ),
                 ]
                 .into_iter()
@@ -545,14 +804,17 @@ mod tests {
             )
             .with_deferred_pairs(vec!["spare".to_owned()])
             .with_covered_pairs(
-                [("left".to_owned(), PairTarget::pinned("cmd_1", "left_arm"))]
-                    .into_iter()
-                    .collect(),
+                [(
+                    "left".to_owned(),
+                    PairTarget::pinned("cmd_1", "left_arm", "cn-local"),
+                )]
+                .into_iter()
+                .collect(),
             )
             .with_planned_observations(
                 [(
                     "observed_arm".to_owned(),
-                    ObservationTarget::new("arm_1", "controller"),
+                    ObservationTarget::new("arm_1", "controller", "cn-local"),
                 )]
                 .into_iter()
                 .collect(),
@@ -566,31 +828,167 @@ mod tests {
             decoded.requested_pairs["gripper"].peer_link_id.as_deref(),
             Some("controller")
         );
+        assert_eq!(
+            decoded.requested_pairs["deliberation"].peer.core_node,
+            "cn-atlas-h100"
+        );
         assert_eq!(decoded.deferred_pairs, vec!["spare".to_owned()]);
         assert_eq!(
             decoded.covered_pairs["left"],
-            PairTarget::pinned("cmd_1", "left_arm")
+            PairTarget::pinned("cmd_1", "left_arm", "cn-local")
         );
         assert_eq!(
             decoded.planned_observations["observed_arm"],
-            ObservationTarget::new("arm_1", "controller")
+            ObservationTarget::new("arm_1", "controller", "cn-local")
         );
     }
 
+    /// The coordinator's verdict about a peer this daemon cannot inspect is
+    /// what makes a cross-machine pair committable at all: the receiver holds
+    /// no manifest for the far side, so the pairing identity and the peer's
+    /// role have to arrive with the request.
+    #[test]
+    fn a_remote_peer_verdict_survives_the_wire() {
+        let goal = NodeRunGoal::new(plan("reflex_inst"), "reactive_policy", "v1", 0)
+            .with_requested_pairs(
+                [(
+                    "deliberation".to_owned(),
+                    PairTarget::pinned("planner_inst", "deliberation", "cn-atlas-h100")
+                        .with_remote_peer(RemotePeerPairing {
+                            pairing_name: "deliberation_link".to_owned(),
+                            pairing_tag: "v1".to_owned(),
+                            peer_role: "planner".to_owned(),
+                        }),
+                )]
+                .into_iter()
+                .collect(),
+            );
+        let decoded = NodeRunGoal::decode(&goal.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, goal);
+        let remote = decoded.requested_pairs["deliberation"]
+            .remote_peer
+            .as_ref()
+            .expect("a peer on another machine carries the planner's verdict");
+        assert_eq!(remote.peer_role, "planner");
+        assert_eq!(remote.pairing_name, "deliberation_link");
+    }
+
+    /// A same-daemon peer carries no verdict: the local manifests are the
+    /// authority, and a second opinion would be one too many.
+    #[test]
+    fn a_same_daemon_peer_carries_no_remote_verdict() {
+        let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 0).with_requested_pairs(
+            [("arm".to_owned(), PairTarget::new("arm_1", "cn-local"))]
+                .into_iter()
+                .collect(),
+        );
+        let decoded = NodeRunGoal::decode(&goal.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.requested_pairs["arm"].remote_peer, None);
+    }
+
+    /// Placement is never inferred from an absent field, so a pair or
+    /// observation whose core node did not survive encoding is refused rather
+    /// than quietly read as "local".
+    #[test]
+    fn node_run_goal_decode_rejects_pair_without_a_core_node() {
+        let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 0).with_requested_pairs(
+            [("arm".to_owned(), PairTarget::new("arm_1", ""))]
+                .into_iter()
+                .collect(),
+        );
+        let encoded = goal.encode().expect("encode");
+        let error = NodeRunGoal::decode(&encoded).expect_err("empty core node must fail");
+        assert!(
+            error.to_string().contains("empty core_node"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn node_run_goal_decode_rejects_observation_without_a_core_node() {
+        let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 0).with_planned_observations(
+            [(
+                "observed".to_owned(),
+                ObservationTarget::new("arm_1", "controller", ""),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let encoded = goal.encode().expect("encode");
+        let error = NodeRunGoal::decode(&encoded).expect_err("empty core node must fail");
+        assert!(
+            error.to_string().contains("empty core_node"),
+            "got: {error}"
+        );
+    }
+
+    /// The break with pre-federation callers is enforced here, not by the
+    /// codec: Cap'n Proto defaults an absent field to the empty string, so a
+    /// goal that still ships an assembled runtime config would otherwise
+    /// decode into a defaulted plan and spawn a node under the wrong identity.
+    #[test]
+    fn node_run_goal_decode_rejects_a_goal_carrying_no_instance_plan() {
+        let mut builder = Builder::new_default();
+        {
+            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
+            goal.set_node_name("node");
+            goal.set_tag("tag");
+        }
+        let encoded = crate::encoding::encode_message(&builder).expect("encode");
+        let error = NodeRunGoal::decode(&encoded).expect_err("a goal with no plan must fail");
+        assert!(
+            error.to_string().contains("instance_plan is empty"),
+            "got: {error}"
+        );
+        assert!(
+            error.to_string().contains("assembles runtime configs"),
+            "the message must name the version gap, got: {error}"
+        );
+    }
+
+    /// Pins tenet 9 at the type level: a daemon owns the runtime identity of
+    /// every node it spawns, so nothing a requester sends may name a messaging
+    /// endpoint or a daemon. This holds for `peppy node run` exactly as it does
+    /// for a federated dispatch, which is what makes the invariant checkable in
+    /// one place instead of two.
+    #[test]
+    fn an_instance_plan_names_no_endpoint_and_no_daemon() {
+        let serialized = serde_json5::to_string(&NodeInstancePlan {
+            use_sim_time: Some(false),
+            ..plan("inst_1")
+        })
+        .expect("serialize");
+
+        for forbidden in [
+            "messaging_host",
+            "messaging_port",
+            "bound_core_node",
+            "discovery",
+            "lifecycle",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "an instance plan must not carry `{forbidden}`, got: {serialized}"
+            );
+        }
+    }
+
     /// `Display` renders the CLI/launcher target grammar, the format fed to
-    /// the shared pairing validator.
+    /// the shared pairing validator. Placement is deliberately absent from it:
+    /// a target names an instance, and where that instance runs is declared
+    /// once on the instance, never repeated at the point of use.
     #[test]
     fn pair_target_display_matches_target_grammar() {
-        assert_eq!(PairTarget::new("arm_1").to_string(), "arm_1");
+        assert_eq!(PairTarget::new("arm_1", "cn-local").to_string(), "arm_1");
         assert_eq!(
-            PairTarget::pinned("cmd_1", "left_arm").to_string(),
+            PairTarget::pinned("cmd_1", "left_arm", "cn-atlas").to_string(),
             "cmd_1/left_arm"
         );
     }
 
     #[test]
     fn node_run_goal_roundtrip_populated_env_vars() {
-        let goal = NodeRunGoal::new("config", "node", "tag", 42).with_env_vars(vec![
+        let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 42).with_env_vars(vec![
             ("KEY1".to_owned(), "VAL1".to_owned()),
             ("KEY2".to_owned(), "VAL2".to_owned()),
         ]);
@@ -608,12 +1006,37 @@ mod tests {
 
     #[test]
     fn node_run_goal_for_internal_execution_has_zero_timeout() {
-        let goal = NodeRunGoal::for_internal_execution("config", "node", "tag");
+        let goal = NodeRunGoal::for_internal_execution(plan("inst_1"), "node", "tag");
         assert_eq!(goal.timeout_secs, 0);
         assert!(goal.env_vars.is_empty());
+        // The in-process path has no preflight/dispatch window to close, so it
+        // pins no manifest.
+        assert_eq!(goal.manifest_sha256, None);
         let encoded = goal.encode().expect("encode");
         let decoded = NodeRunGoal::decode(&encoded).expect("decode");
         assert_eq!(decoded, goal);
+    }
+
+    /// A dispatched start names the launch that reserved the machine; a
+    /// user-typed one names nothing. The receiving daemon tells them apart by
+    /// exactly this field, so it has to survive the wire.
+    #[test]
+    fn node_run_goal_round_trips_the_launch_it_belongs_to() {
+        let dispatched = NodeRunGoal::new(plan("inst_1"), "node", "tag", 30)
+            .with_launch_id("launch-abc123")
+            .with_lifecycle_watchers(vec!["cn-atlas".to_owned()]);
+        let decoded = NodeRunGoal::decode(&dispatched.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.launch_id.as_deref(), Some("launch-abc123"));
+        assert_eq!(decoded.lifecycle_watchers, ["cn-atlas"]);
+        assert_eq!(decoded, dispatched);
+
+        let typed = NodeRunGoal::new(plan("inst_1"), "node", "tag", 30);
+        let decoded = NodeRunGoal::decode(&typed.encode().expect("encode")).expect("decode");
+        assert_eq!(
+            decoded.launch_id, None,
+            "a goal nobody dispatched must not claim a launch"
+        );
+        assert!(decoded.lifecycle_watchers.is_empty());
     }
 
     #[test]
