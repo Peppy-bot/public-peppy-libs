@@ -72,39 +72,53 @@ struct ParticipantReserveResponse {
     manifests @4 :List(ResolvedManifest);
 }
 
-# Tells a reserved participant to replace its stack slice: tear down whatever
-# it is running, clear it, and record that the slice now belongs to this
-# launch.
+# The whole payload of every exchange that names a launch and nothing else.
+# Shared by `participant_slice_begin` and `participant_release`, whose requests
+# are the same question asked about the same identity; the verb is the service
+# name, not a field. Give an exchange its own struct the moment it needs a
+# second field, rather than growing an optional one here.
 #
-# Separate from the reservation on purpose. Reserving is NON-DESTRUCTIVE and
-# happens before the coordinator knows whether every participant will accept,
-# so folding the teardown into it would replace a stack on machine A for a
-# launch that machine B is about to refuse. This is the commit point: the
-# coordinator sends it only once every participant is reserved.
-struct ParticipantSliceBeginRequest {
-    # Must match the reservation this participant holds. A participant that is
-    # reserved for a different launch refuses, which is what stops a stale
-    # coordinator from wiping a machine out from under the launch that owns it.
+# `participant_slice_begin` tells a reserved participant to replace its stack
+# slice: tear down whatever it is running, clear it, and record that the slice
+# now belongs to this launch. It is separate from the reservation on purpose —
+# reserving is NON-DESTRUCTIVE and happens before the coordinator knows whether
+# every participant will accept, so folding the teardown into it would replace
+# a stack on machine A for a launch that machine B is about to refuse. This is
+# the commit point, sent only once every participant is reserved. The launch id
+# must match the reservation the participant holds, which is what stops a stale
+# coordinator from wiping a machine out from under the launch that owns it.
+#
+# `participant_release` releases a reservation the coordinator obtained but no
+# longer needs, either because a later participant refused or because the launch
+# finished. Idempotent: releasing a reservation that is not held succeeds; only
+# a reservation held for a DIFFERENT launch is refused, because the caller has
+# no standing to release that one.
+struct LaunchScopedRequest {
     launchId @0 :Text;
 }
 
-struct ParticipantSliceBeginResponse {
-    began @0 :Bool;
+# The reply to every federation exchange whose answer is "did you do it, and if
+# not, why". Shared by `participant_slice_begin`, `pair_commit` and
+# `participant_release` rather than restated per service: the three differ only
+# in which verb `ok` reports, and that verb is already the service name.
+#
+# The refusal reason is load-bearing, not decoration. A `pair_commit` refusal
+# makes the sender revert its own half, so a pair is never left established on
+# one machine and absent on the other; a `participant_release` refusal tells a
+# coordinator its reservation was taken over rather than merely absent.
+struct FederationVerdict {
+    ok @0 :Bool;
+    # Populated when `ok` is false, empty otherwise.
     rejectionReason @1 :Text;
 }
 
-# Releases a reservation the coordinator obtained but no longer needs, either
-# because a later participant refused or because the launch finished.
-# Idempotent: releasing a reservation that is not held succeeds.
-struct ParticipantReleaseRequest {
-    launchId @0 :Text;
-}
-
-struct ParticipantReleaseResponse {
-    # False only when the reservation is held for a DIFFERENT launch, which the
-    # caller has no standing to release.
-    released @0 :Bool;
-    rejectionReason @1 :Text;
+# One instance, addressed by the `(coreNode, instanceId)` pair. Identical to
+# `node.capnp:InstanceAddress` and decoding to the same `ProducerRef`; it is
+# restated here only because each schema file is compiled on its own, so this
+# file cannot import that one.
+struct InstanceAddress {
+    coreNode @0 :Text;
+    instanceId @1 :Text;
 }
 
 # Asks a peer daemon to record its half of a cross-daemon pair and deliver the
@@ -123,22 +137,20 @@ struct ParticipantReleaseResponse {
 struct PairCommitRequest {
     pairingName @0 :Text;
     pairingTag @1 :Text;
-    # The endpoint that lives on the RECEIVING daemon.
-    localInstanceId @2 :Text;
+    # The endpoint that lives on the RECEIVING daemon. Its `coreNode` is the
+    # receiver's own name, and the receiver REFUSES the commit if it is not:
+    # the rule this whole schema is built on is that a daemon never infers
+    # placement from an absent field, and "local means whoever opened the
+    # envelope" is exactly that inference. Stating it also makes a request
+    # mis-routed to the wrong machine fail loudly instead of pairing a
+    # same-named instance that happens to live there.
+    local @2 :InstanceAddress;
     localLinkId @3 :Text;
     localRole @4 :Text;
     # The endpoint on the SENDING daemon, which the receiver pins its node to.
-    peerCoreNode @5 :Text;
-    peerInstanceId @6 :Text;
-    peerLinkId @7 :Text;
-    peerRole @8 :Text;
-}
-
-struct PairCommitResponse {
-    committed @0 :Bool;
-    # Populated when `committed` is false. The sender reverts its own half, so
-    # a pair is never left established on one machine and absent on the other.
-    rejectionReason @1 :Text;
+    peer @5 :InstanceAddress;
+    peerLinkId @6 :Text;
+    peerRole @7 :Text;
 }
 
 # Best-effort notification from the daemon that owns an instance to a daemon
@@ -146,15 +158,15 @@ struct PairCommitResponse {
 # reported state, so a duplicate changes nothing and a lost one leaves the
 # receiver stale rather than wrong.
 struct RelationshipNotification {
-    # The instance whose lifecycle moved, and the daemon that owns it.
-    instanceId @0 :Text;
-    coreNode @1 :Text;
+    # The instance whose lifecycle moved, and the daemon that owns it. Two
+    # daemons can host same-named instances, so the pair is the identity.
+    instance @0 :InstanceAddress;
     event :union {
         # The instance reached Running under a fresh incarnation. Observing
         # daemons advance their incarnation counter for this source and
         # redeliver its pin, which is what makes an observer drop and redeclare
         # its subscription across a source restart.
-        reachedRunning @2 :Void;
+        reachedRunning @1 :Void;
         # The instance stopped or died. A daemon holding a pair with it
         # dissolves that pair locally. Dissolution stays authoritative on the
         # daemon that owns the dead instance; this only propagates it.
@@ -162,10 +174,13 @@ struct RelationshipNotification {
         # An unreachable daemon cannot send this, which is exactly why a node
         # whose correctness depends on freshness owns a staleness watchdog
         # rather than trusting the framework to notice a partition.
-        stopped @3 :Void;
+        stopped @2 :Void;
     }
 }
 
 struct RelationshipNotificationAck {
-    received @0 :Bool;
+    # No fields: the notification is best-effort and the receiver converges on
+    # whatever it is told, so there is nothing for it to answer. Delivery of a
+    # well-formed reply IS the ack, the same contract `health` uses. Kept as a
+    # struct so the ack can grow a field without a wire break.
 }

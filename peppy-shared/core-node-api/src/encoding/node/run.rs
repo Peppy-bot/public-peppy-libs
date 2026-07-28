@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use capnp::message::Builder;
-use config::runtime::NodeInstancePlan;
+use config::runtime::{NodeInstancePlan, ProducerRef};
 
 use crate::node_capnp;
 use crate::{NonEmptyPayload, Payload, Result};
@@ -12,7 +12,7 @@ use crate::{NonEmptyPayload, Payload, Result};
 use super::builder::FeedbackStream;
 use crate::encoding::{
     capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
-    read_text_list, write_text_list,
+    read_text_list, required_text, write_text_list,
 };
 
 /// One peer reference carried by [`NodeRunGoal::requested_pairs`] /
@@ -23,25 +23,24 @@ use crate::encoding::{
 /// unambiguous.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairTarget {
-    pub peer_instance_id: String,
+    /// The peer instance, addressed the way the whole mesh addresses
+    /// instances. Its `core_node` is always populated, including for a
+    /// same-daemon pair, so a daemon never has to infer "this must be local"
+    /// from an absent field. Set by whoever plans the pair: the coordinator of
+    /// a federated launch, or the receiving daemon's own name for a
+    /// `node run --pair`.
+    pub peer: ProducerRef,
     /// The complementary slot on the peer, when the request pins one.
     /// `None` is unpinned: exactly one available complementary slot must
     /// exist on the peer and the daemon resolves it.
     pub peer_link_id: Option<String>,
-    /// The core node the peer instance runs on. Always populated, including
-    /// for a same-daemon pair, so a daemon never has to infer "this must be
-    /// local" from an absent field. Set by whoever plans the pair: the
-    /// coordinator of a federated launch, or the receiving daemon's own name
-    /// for a `node run --pair`.
-    pub peer_core_node: String,
 }
 
 impl PairTarget {
     pub fn new(peer_instance_id: impl Into<String>, peer_core_node: impl Into<String>) -> Self {
         Self {
-            peer_instance_id: peer_instance_id.into(),
+            peer: ProducerRef::new(peer_core_node, peer_instance_id),
             peer_link_id: None,
-            peer_core_node: peer_core_node.into(),
         }
     }
 
@@ -51,9 +50,8 @@ impl PairTarget {
         peer_core_node: impl Into<String>,
     ) -> Self {
         Self {
-            peer_instance_id: peer_instance_id.into(),
+            peer: ProducerRef::new(peer_core_node, peer_instance_id),
             peer_link_id: Some(peer_link_id.into()),
-            peer_core_node: peer_core_node.into(),
         }
     }
 }
@@ -61,8 +59,8 @@ impl PairTarget {
 impl std::fmt::Display for PairTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.peer_link_id {
-            Some(link) => write!(f, "{}/{}", self.peer_instance_id, link),
-            None => f.write_str(&self.peer_instance_id),
+            Some(link) => write!(f, "{}/{}", self.peer.instance_id, link),
+            None => f.write_str(&self.peer.instance_id),
         }
     }
 }
@@ -74,14 +72,13 @@ impl std::fmt::Display for PairTarget {
 /// slot is always resolved (the planner fills it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservationTarget {
-    pub source_instance_id: String,
+    /// The source instance, addressed for the same self-describing-placement
+    /// reason as [`PairTarget::peer`]. A remote source subscribes identically
+    /// to a local one; what differs is that its lifecycle transitions arrive
+    /// as notifications from its own daemon rather than from local lifecycle
+    /// events.
+    pub source: ProducerRef,
     pub source_link_id: String,
-    /// The core node the source instance runs on. Always populated, for the
-    /// same self-describing-placement reason as [`PairTarget::peer_core_node`].
-    /// A remote source subscribes identically to a local one; what differs is
-    /// that its lifecycle transitions arrive as notifications from its own
-    /// daemon rather than from local lifecycle events.
-    pub source_core_node: String,
 }
 
 impl ObservationTarget {
@@ -91,9 +88,8 @@ impl ObservationTarget {
         source_core_node: impl Into<String>,
     ) -> Self {
         Self {
-            source_instance_id: source_instance_id.into(),
+            source: ProducerRef::new(source_core_node, source_instance_id),
             source_link_id: source_link_id.into(),
-            source_core_node: source_core_node.into(),
         }
     }
 }
@@ -362,9 +358,8 @@ fn fill_pair_requests(
     for (idx, (link_id, target)) in pairs.iter().enumerate() {
         let mut pair = list.reborrow().get(idx as u32);
         pair.set_link_id(link_id);
-        pair.set_peer_instance_id(&target.peer_instance_id);
         pair.set_peer_link_id(target.peer_link_id.as_deref().unwrap_or(""));
-        pair.set_peer_core_node(&target.peer_core_node);
+        write_instance_address(pair.init_peer(), &target.peer);
     }
 }
 
@@ -379,33 +374,48 @@ fn read_pair_requests(
         pairs.insert(
             pair.get_link_id()?.to_str()?.to_owned(),
             PairTarget {
-                peer_instance_id: pair.get_peer_instance_id()?.to_str()?.to_owned(),
+                peer: read_instance_address(pair.get_peer()?, "NodeRunGoal pair request")?,
                 peer_link_id: optional_text(pair.get_peer_link_id()?.to_str()?),
-                peer_core_node: non_empty_core_node(
-                    pair.get_peer_core_node()?.to_str()?,
-                    "NodeRunGoal pair request",
-                )?,
             },
         );
     }
     Ok(pairs)
 }
 
-/// Every wire message a peer acts on is self-describing about placement, so
-/// an absent core node is a bug in the sender rather than a shorthand for
-/// "local". Refusing here is what stops a daemon from ever having to guess.
+/// Writes a [`ProducerRef`] into an initialized `InstanceAddress` builder.
+fn write_instance_address(
+    mut address: node_capnp::instance_address::Builder<'_>,
+    producer: &ProducerRef,
+) {
+    address.set_core_node(&producer.core_node);
+    address.set_instance_id(&producer.instance_id);
+}
+
+/// Inverse of [`write_instance_address`].
 ///
-/// Deliberately not [`crate::encoding::required_text`]: the generic helper
-/// reports which field was empty, and the whole point of this one is to say
-/// why "empty" is not the same as "here".
-fn non_empty_core_node(value: &str, context: &str) -> Result<String> {
-    if value.is_empty() {
+/// Both halves are required. Every wire message a peer acts on is
+/// self-describing about placement, so an absent core node is a bug in the
+/// sender rather than a shorthand for "local" — refusing here is what stops a
+/// daemon from ever having to guess. `context` names the message, since the
+/// address itself cannot say which one carried it.
+fn read_instance_address(
+    address: node_capnp::instance_address::Reader<'_>,
+    context: &str,
+) -> Result<ProducerRef> {
+    let core_node = address.get_core_node()?.to_str()?;
+    if core_node.is_empty() {
         return Err(crate::Error::Decoding(format!(
             "{context} carries an empty core_node: placement must be explicit, \
              even when the target is on the receiving daemon"
         )));
     }
-    Ok(value.to_owned())
+    Ok(ProducerRef::new(
+        core_node,
+        required_text(
+            address.get_instance_id()?.to_str()?,
+            &format!("{context} instance_id"),
+        )?,
+    ))
 }
 
 /// Writes an `observer_link_id -> ObservationTarget` map into an initialized
@@ -417,9 +427,8 @@ fn fill_observation_requests(
     for (idx, (observer_link_id, target)) in observations.iter().enumerate() {
         let mut observation = list.reborrow().get(idx as u32);
         observation.set_observer_link_id(observer_link_id);
-        observation.set_source_instance_id(&target.source_instance_id);
         observation.set_source_link_id(&target.source_link_id);
-        observation.set_source_core_node(&target.source_core_node);
+        write_instance_address(observation.init_source(), &target.source);
     }
 }
 
@@ -433,12 +442,11 @@ fn read_observation_requests(
         observations.insert(
             observation.get_observer_link_id()?.to_str()?.to_owned(),
             ObservationTarget {
-                source_instance_id: observation.get_source_instance_id()?.to_str()?.to_owned(),
-                source_link_id: observation.get_source_link_id()?.to_str()?.to_owned(),
-                source_core_node: non_empty_core_node(
-                    observation.get_source_core_node()?.to_str()?,
+                source: read_instance_address(
+                    observation.get_source()?,
                     "NodeRunGoal observation request",
                 )?,
+                source_link_id: observation.get_source_link_id()?.to_str()?.to_owned(),
             },
         );
     }
@@ -759,7 +767,7 @@ mod tests {
             Some("controller")
         );
         assert_eq!(
-            decoded.requested_pairs["deliberation"].peer_core_node,
+            decoded.requested_pairs["deliberation"].peer.core_node,
             "cn-atlas-h100"
         );
         assert_eq!(decoded.deferred_pairs, vec!["spare".to_owned()]);

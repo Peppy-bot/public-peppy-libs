@@ -146,6 +146,28 @@ pub enum Error {
         instance_id: Option<String>,
         action_name: String,
     },
+    /// Distinct from a transport failure on purpose: the worker was reached and
+    /// its goal is terminal, it simply never produced a result. Lumping this in
+    /// with "failed to get result" would report the same thing for a worker that
+    /// died and for one whose result merely aged out.
+    #[error(
+        "action '{action_name}'{instance_suffix} was abandoned by its worker before producing a result",
+        instance_suffix = InstanceSuffix(.instance_id.as_deref())
+    )]
+    ActionGoalAbandoned {
+        instance_id: Option<String>,
+        action_name: String,
+    },
+    /// See [`Error::ActionGoalAbandoned`]: the goal did finish, but its result
+    /// was retained only for a bounded window that has since elapsed.
+    #[error(
+        "action '{action_name}'{instance_suffix} result expired before it could be fetched",
+        instance_suffix = InstanceSuffix(.instance_id.as_deref())
+    )]
+    ActionResultExpired {
+        instance_id: Option<String>,
+        action_name: String,
+    },
 
     // -- system
     #[error("failed to read `{var}` from the environment")]

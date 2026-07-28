@@ -44,9 +44,10 @@ mod machinery;
 mod tests;
 
 pub use machinery::{
-    ActionGoal, Host, MethodDescriptor, MethodKind, PayloadDescriptor, Payloads, ServiceRequest,
+    ActionGoal, Host, LaunchScoped, MethodDescriptor, MethodKind, PayloadDescriptor, Payloads,
+    ServiceRequest,
 };
-use machinery::{methods, pd, service_request_impl};
+use machinery::{launch_scoped_impl, methods, pd, service_request_impl};
 
 methods! {
     services {
@@ -150,7 +151,7 @@ methods! {
             host: CoreNodeDaemon,
             summary: "Replace this daemon's stack slice on behalf of a reserved federated launch.",
             request: ParticipantSliceBeginRequest,
-            response: ParticipantSliceBeginResponse,
+            response: FederationVerdict,
             schema: "federation.capnp",
         }
         /// Records the second half of a CROSS-DAEMON pair on the daemon
@@ -162,7 +163,7 @@ methods! {
             host: CoreNodeDaemon,
             summary: "Record this daemon's half of a cross-daemon pair and pin its endpoint.",
             request: PairCommitRequest,
-            response: PairCommitResponse,
+            response: FederationVerdict,
             schema: "federation.capnp",
         }
         /// Releases a reservation, whether because a later participant
@@ -172,7 +173,7 @@ methods! {
             host: CoreNodeDaemon,
             summary: "Release a federated-launch reservation held for a launch id.",
             request: ParticipantReleaseRequest,
-            response: ParticipantReleaseResponse,
+            response: FederationVerdict,
             schema: "federation.capnp",
         }
         /// Runtime notification from the daemon that owns an instance to a
@@ -303,6 +304,7 @@ methods! {
         }
         NodeAdd {
             name: "node_add",
+            scope: launch,
             summary: "Add a node to the stack, streaming resolution and fetch progress.",
             goal: NodeAddGoal,
             goal_response: NodeAddGoalResponse,
@@ -312,6 +314,7 @@ methods! {
         }
         NodeBuild {
             name: "node_build",
+            scope: launch,
             summary: "Build a node's container image, streaming build log lines.",
             goal: NodeBuildGoal,
             goal_response: NodeBuildGoalResponse,
@@ -321,6 +324,7 @@ methods! {
         }
         NodeRun {
             name: "node_run",
+            scope: launch,
             summary: "Run a node instance, streaming startup progress.",
             goal: NodeRunGoal,
             goal_response: NodeRunGoalResponse,

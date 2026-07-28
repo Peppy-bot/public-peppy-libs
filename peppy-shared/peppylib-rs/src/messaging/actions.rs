@@ -936,6 +936,38 @@ impl ActionMessenger {
         .await
     }
 
+    /// [`request_result`](Self::request_result), reduced to the body — the
+    /// terminal outcomes that carry no body become typed errors rather than an
+    /// empty [`Payload`] the caller has to notice.
+    ///
+    /// Lives here rather than in each caller because the interesting part is
+    /// the [`ResultStatus`] match, not the request: `Abandoned` and `Expired`
+    /// are easy to lump in with a transport error, and doing so would report
+    /// "failed to get result" both for a worker that died and for one whose
+    /// result simply aged out. Callers that need to tell `Cancelled` from
+    /// `Completed`, or want the producer identity, keep using
+    /// [`request_result`](Self::request_result).
+    pub async fn request_result_body(
+        messenger_handle: &MessengerHandle,
+        action_handle: &ActionGoalHandle,
+        result_timeout: Duration,
+    ) -> Result<Payload> {
+        let action_name = action_handle.sender.to_action_name().to_string();
+        let reply = Self::request_result(messenger_handle, action_handle, result_timeout).await?;
+        let instance_id = Some(reply.instance_id.clone()).filter(|id| !id.is_empty());
+        match reply.status {
+            ResultStatus::Completed | ResultStatus::Cancelled => Ok(reply.body),
+            ResultStatus::Abandoned => Err(Error::ActionGoalAbandoned {
+                instance_id,
+                action_name,
+            }),
+            ResultStatus::Expired => Err(Error::ActionResultExpired {
+                instance_id,
+                action_name,
+            }),
+        }
+    }
+
     /// Like [`request_result`](Self::request_result) but takes a cloned sender
     /// and `goal_id` directly. Mirrors [`cancel_with_sender`](Self::cancel_with_sender);
     /// the `goal_id` rides in the result request payload for server-side routing.

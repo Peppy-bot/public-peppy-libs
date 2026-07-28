@@ -6,6 +6,7 @@
 //! and idempotent.
 
 use capnp::message::Builder;
+use config::runtime::ProducerRef;
 
 use crate::federation_capnp;
 use crate::{Payload, Result};
@@ -185,12 +186,37 @@ impl ParticipantReserveResponse {
     }
 }
 
+/// Encodes the shared `LaunchScopedRequest` root. Body of the `encode` on every
+/// federation request whose entire payload is a launch id.
+fn encode_launch_scoped(launch_id: &str) -> Result<Payload> {
+    let mut builder = Builder::new_default();
+    {
+        builder
+            .init_root::<federation_capnp::launch_scoped_request::Builder>()
+            .set_launch_id(launch_id);
+    }
+    encode_message(&builder)
+}
+
+/// Inverse of [`encode_launch_scoped`]. An empty launch id is refused: these
+/// exchanges act on exactly one launch, and a defaulted id names none.
+fn decode_launch_scoped(data: &[u8]) -> Result<String> {
+    let reader = decode_message(data)?;
+    let request = reader.get_root::<federation_capnp::launch_scoped_request::Reader>()?;
+    required_text(request.get_launch_id()?.to_str()?, "launch_id")
+}
+
 /// Commits a reserved participant to replacing its stack slice.
 ///
 /// The destructive half of the exchange, deliberately split from the
 /// reservation: reserving happens before the coordinator knows whether every
 /// participant will accept, so folding a teardown into it would replace a
 /// stack on one machine for a launch another is about to refuse.
+///
+/// Shares the [`LaunchScopedRequest`](federation_capnp::launch_scoped_request)
+/// wire root with [`ParticipantReleaseRequest`]; it stays a distinct Rust type
+/// because [`ServiceRequest`](crate::registry::ServiceRequest) is keyed on the
+/// request codec, so the two services cannot name one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParticipantSliceBeginRequest {
     pub launch_id: String,
@@ -204,42 +230,40 @@ impl ParticipantSliceBeginRequest {
     }
 
     pub fn encode(&self) -> Result<Payload> {
-        let mut builder = Builder::new_default();
-        {
-            let mut request =
-                builder.init_root::<federation_capnp::participant_slice_begin_request::Builder>();
-            request.set_launch_id(&self.launch_id);
-        }
-        encode_message(&builder)
+        encode_launch_scoped(&self.launch_id)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
-        let reader = decode_message(data)?;
-        let request =
-            reader.get_root::<federation_capnp::participant_slice_begin_request::Reader>()?;
         Ok(Self {
-            launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
+            launch_id: decode_launch_scoped(data)?,
         })
     }
 }
 
+/// The reply to every federation exchange whose answer is "did you do it, and
+/// if not, why": `participant_slice_begin`, `pair_commit` and
+/// `participant_release`. One codec rather than three, because the three
+/// differed only in which verb the bool reported and that verb is already the
+/// service name.
+///
+/// [`Self::rejection_reason`] is load-bearing on refusal — see the schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParticipantSliceBeginResponse {
-    pub began: bool,
+pub struct FederationVerdict {
+    pub ok: bool,
     pub rejection_reason: Option<String>,
 }
 
-impl ParticipantSliceBeginResponse {
-    pub fn began() -> Self {
+impl FederationVerdict {
+    pub fn ok() -> Self {
         Self {
-            began: true,
+            ok: true,
             rejection_reason: None,
         }
     }
 
     pub fn refused(reason: impl Into<String>) -> Self {
         Self {
-            began: false,
+            ok: false,
             rejection_reason: Some(reason.into()),
         }
     }
@@ -247,39 +271,69 @@ impl ParticipantSliceBeginResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response =
-                builder.init_root::<federation_capnp::participant_slice_begin_response::Builder>();
-            response.set_began(self.began);
-            response.set_rejection_reason(self.rejection_reason.as_deref().unwrap_or(""));
+            let mut verdict = builder.init_root::<federation_capnp::federation_verdict::Builder>();
+            verdict.set_ok(self.ok);
+            verdict.set_rejection_reason(self.rejection_reason.as_deref().unwrap_or(""));
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response =
-            reader.get_root::<federation_capnp::participant_slice_begin_response::Reader>()?;
+        let verdict = reader.get_root::<federation_capnp::federation_verdict::Reader>()?;
         Ok(Self {
-            began: response.get_began(),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
+            ok: verdict.get_ok(),
+            rejection_reason: optional_text(verdict.get_rejection_reason()?.to_str()?),
         })
     }
+}
+
+/// Writes a [`ProducerRef`] into an initialized `InstanceAddress` builder.
+///
+/// The federation twin of `node::run`'s helper of the same name: the two
+/// schemas declare the struct separately because each `.capnp` is compiled on
+/// its own, but both decode to one [`ProducerRef`].
+fn write_instance_address(
+    mut address: federation_capnp::instance_address::Builder<'_>,
+    producer: &ProducerRef,
+) {
+    address.set_core_node(&producer.core_node);
+    address.set_instance_id(&producer.instance_id);
+}
+
+/// Inverse of [`write_instance_address`]. Both halves are required: an address
+/// missing either one names no instance in particular.
+fn read_instance_address(
+    address: federation_capnp::instance_address::Reader<'_>,
+    field: &str,
+) -> Result<ProducerRef> {
+    Ok(ProducerRef::new(
+        required_text(
+            address.get_core_node()?.to_str()?,
+            &format!("{field}.core_node"),
+        )?,
+        required_text(
+            address.get_instance_id()?.to_str()?,
+            &format!("{field}.instance_id"),
+        )?,
+    ))
 }
 
 /// Asks a peer daemon to record its half of a cross-daemon pair and deliver the
 /// pin to its own endpoint.
 ///
 /// The field names are relative to the RECEIVER: `local_*` is the endpoint on
-/// the daemon being asked, `peer_*` is the one on the daemon asking.
+/// the daemon being asked, `peer_*` is the one on the daemon asking. Both
+/// addresses carry their core node, so the receiver checks that `local` really
+/// names it rather than assuming so; see the schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairCommitRequest {
     pub pairing_name: String,
     pub pairing_tag: String,
-    pub local_instance_id: String,
+    pub local: ProducerRef,
     pub local_link_id: String,
     pub local_role: String,
-    pub peer_core_node: String,
-    pub peer_instance_id: String,
+    pub peer: ProducerRef,
     pub peer_link_id: String,
     pub peer_role: String,
 }
@@ -291,13 +345,12 @@ impl PairCommitRequest {
             let mut request = builder.init_root::<federation_capnp::pair_commit_request::Builder>();
             request.set_pairing_name(&self.pairing_name);
             request.set_pairing_tag(&self.pairing_tag);
-            request.set_local_instance_id(&self.local_instance_id);
             request.set_local_link_id(&self.local_link_id);
             request.set_local_role(&self.local_role);
-            request.set_peer_core_node(&self.peer_core_node);
-            request.set_peer_instance_id(&self.peer_instance_id);
             request.set_peer_link_id(&self.peer_link_id);
             request.set_peer_role(&self.peer_role);
+            write_instance_address(request.reborrow().init_local(), &self.local);
+            write_instance_address(request.init_peer(), &self.peer);
         }
         encode_message(&builder)
     }
@@ -308,64 +361,12 @@ impl PairCommitRequest {
         Ok(Self {
             pairing_name: required_text(request.get_pairing_name()?.to_str()?, "pairing_name")?,
             pairing_tag: required_text(request.get_pairing_tag()?.to_str()?, "pairing_tag")?,
-            local_instance_id: required_text(
-                request.get_local_instance_id()?.to_str()?,
-                "local_instance_id",
-            )?,
+            local: read_instance_address(request.get_local()?, "local")?,
             local_link_id: required_text(request.get_local_link_id()?.to_str()?, "local_link_id")?,
             local_role: required_text(request.get_local_role()?.to_str()?, "local_role")?,
-            peer_core_node: required_text(
-                request.get_peer_core_node()?.to_str()?,
-                "peer_core_node",
-            )?,
-            peer_instance_id: required_text(
-                request.get_peer_instance_id()?.to_str()?,
-                "peer_instance_id",
-            )?,
+            peer: read_instance_address(request.get_peer()?, "peer")?,
             peer_link_id: required_text(request.get_peer_link_id()?.to_str()?, "peer_link_id")?,
             peer_role: required_text(request.get_peer_role()?.to_str()?, "peer_role")?,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PairCommitResponse {
-    pub committed: bool,
-    pub rejection_reason: Option<String>,
-}
-
-impl PairCommitResponse {
-    pub fn committed() -> Self {
-        Self {
-            committed: true,
-            rejection_reason: None,
-        }
-    }
-
-    pub fn refused(reason: impl Into<String>) -> Self {
-        Self {
-            committed: false,
-            rejection_reason: Some(reason.into()),
-        }
-    }
-
-    pub fn encode(&self) -> Result<Payload> {
-        let mut builder = Builder::new_default();
-        {
-            let mut response =
-                builder.init_root::<federation_capnp::pair_commit_response::Builder>();
-            response.set_committed(self.committed);
-            response.set_rejection_reason(self.rejection_reason.as_deref().unwrap_or(""));
-        }
-        encode_message(&builder)
-    }
-
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        let reader = decode_message(data)?;
-        let response = reader.get_root::<federation_capnp::pair_commit_response::Reader>()?;
-        Ok(Self {
-            committed: response.get_committed(),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
         })
     }
 }
@@ -373,6 +374,8 @@ impl PairCommitResponse {
 /// Releases a reservation. Idempotent: releasing one that is not held
 /// succeeds, because a coordinator unwinding a failed preflight cannot always
 /// know which participants actually acked.
+///
+/// Shares its wire root with [`ParticipantSliceBeginRequest`]; see there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParticipantReleaseRequest {
     pub launch_id: String,
@@ -386,65 +389,12 @@ impl ParticipantReleaseRequest {
     }
 
     pub fn encode(&self) -> Result<Payload> {
-        let mut builder = Builder::new_default();
-        {
-            let mut request =
-                builder.init_root::<federation_capnp::participant_release_request::Builder>();
-            request.set_launch_id(&self.launch_id);
-        }
-        encode_message(&builder)
+        encode_launch_scoped(&self.launch_id)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
-        let reader = decode_message(data)?;
-        let request = reader.get_root::<federation_capnp::participant_release_request::Reader>()?;
         Ok(Self {
-            launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParticipantReleaseResponse {
-    /// False only when the reservation is held for a DIFFERENT launch, which
-    /// the caller has no standing to release.
-    pub released: bool,
-    pub rejection_reason: Option<String>,
-}
-
-impl ParticipantReleaseResponse {
-    pub fn released() -> Self {
-        Self {
-            released: true,
-            rejection_reason: None,
-        }
-    }
-
-    pub fn refused(reason: impl Into<String>) -> Self {
-        Self {
-            released: false,
-            rejection_reason: Some(reason.into()),
-        }
-    }
-
-    pub fn encode(&self) -> Result<Payload> {
-        let mut builder = Builder::new_default();
-        {
-            let mut response =
-                builder.init_root::<federation_capnp::participant_release_response::Builder>();
-            response.set_released(self.released);
-            response.set_rejection_reason(self.rejection_reason.as_deref().unwrap_or(""));
-        }
-        encode_message(&builder)
-    }
-
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        let reader = decode_message(data)?;
-        let response =
-            reader.get_root::<federation_capnp::participant_release_response::Reader>()?;
-        Ok(Self {
-            released: response.get_released(),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
+            launch_id: decode_launch_scoped(data)?,
         })
     }
 }
@@ -463,8 +413,9 @@ pub enum RelationshipEvent {
 /// to a daemon holding a relationship with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationshipNotification {
-    pub instance_id: String,
-    pub core_node: String,
+    /// The instance whose lifecycle moved, and the daemon that owns it. Two
+    /// daemons can host same-named instances, so the pair is the identity.
+    pub instance: ProducerRef,
     pub event: RelationshipEvent,
 }
 
@@ -475,8 +426,7 @@ impl RelationshipNotification {
         event: RelationshipEvent,
     ) -> Self {
         Self {
-            instance_id: instance_id.into(),
-            core_node: core_node.into(),
+            instance: ProducerRef::new(core_node, instance_id),
             event,
         }
     }
@@ -486,13 +436,12 @@ impl RelationshipNotification {
         {
             let mut notification =
                 builder.init_root::<federation_capnp::relationship_notification::Builder>();
-            notification.set_instance_id(&self.instance_id);
-            notification.set_core_node(&self.core_node);
             let mut event = notification.reborrow().init_event();
             match self.event {
                 RelationshipEvent::ReachedRunning => event.set_reached_running(()),
                 RelationshipEvent::Stopped => event.set_stopped(()),
             }
+            write_instance_address(notification.init_instance(), &self.instance);
         }
         encode_message(&builder)
     }
@@ -510,41 +459,37 @@ impl RelationshipNotification {
         };
 
         Ok(Self {
-            instance_id: required_text(notification.get_instance_id()?.to_str()?, "instance_id")?,
-            core_node: required_text(notification.get_core_node()?.to_str()?, "core_node")?,
+            instance: read_instance_address(notification.get_instance()?, "instance")?,
             event,
         })
     }
 }
 
-/// No `Default`: it would hand out `received: false`, the one value this ack is
-/// never allowed to carry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelationshipNotificationAck {
-    pub received: bool,
-}
+/// Carries no fields: the notification is best-effort and the receiver simply
+/// converges on what it is told, so a well-formed reply is itself the ack —
+/// the same contract [`HealthRequest`](crate::encoding::HealthRequest) uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RelationshipNotificationAck;
 
 impl RelationshipNotificationAck {
-    pub fn received() -> Self {
-        Self { received: true }
+    pub fn new() -> Self {
+        Self
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut ack =
-                builder.init_root::<federation_capnp::relationship_notification_ack::Builder>();
-            ack.set_received(self.received);
+            builder.init_root::<federation_capnp::relationship_notification_ack::Builder>();
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let ack = reader.get_root::<federation_capnp::relationship_notification_ack::Reader>()?;
-        Ok(Self {
-            received: ack.get_received(),
-        })
+        // Validate the framing decodes as the ack; the struct is empty, so
+        // there is nothing else to read back.
+        reader.get_root::<federation_capnp::relationship_notification_ack::Reader>()?;
+        Ok(Self)
     }
 }
 
@@ -556,28 +501,22 @@ impl crate::encoding::Wire for ParticipantReserveResponse {
     type Root = crate::federation_capnp::participant_reserve_response::Owned;
 }
 
+// The two launch-scoped requests deliberately resolve to one root; see
+// `ParticipantSliceBeginRequest`.
 impl crate::encoding::Wire for ParticipantSliceBeginRequest {
-    type Root = crate::federation_capnp::participant_slice_begin_request::Owned;
+    type Root = crate::federation_capnp::launch_scoped_request::Owned;
 }
 
-impl crate::encoding::Wire for ParticipantSliceBeginResponse {
-    type Root = crate::federation_capnp::participant_slice_begin_response::Owned;
+impl crate::encoding::Wire for ParticipantReleaseRequest {
+    type Root = crate::federation_capnp::launch_scoped_request::Owned;
 }
 
 impl crate::encoding::Wire for PairCommitRequest {
     type Root = crate::federation_capnp::pair_commit_request::Owned;
 }
 
-impl crate::encoding::Wire for PairCommitResponse {
-    type Root = crate::federation_capnp::pair_commit_response::Owned;
-}
-
-impl crate::encoding::Wire for ParticipantReleaseRequest {
-    type Root = crate::federation_capnp::participant_release_request::Owned;
-}
-
-impl crate::encoding::Wire for ParticipantReleaseResponse {
-    type Root = crate::federation_capnp::participant_release_response::Owned;
+impl crate::encoding::Wire for FederationVerdict {
+    type Root = crate::federation_capnp::federation_verdict::Owned;
 }
 
 impl crate::encoding::Wire for RelationshipNotification {
@@ -671,17 +610,6 @@ mod tests {
             ParticipantReleaseRequest::decode(payload.as_ref()).expect("decode"),
             request
         );
-
-        for response in [
-            ParticipantReleaseResponse::released(),
-            ParticipantReleaseResponse::refused("reserved for launch `launch-other`"),
-        ] {
-            let payload = response.encode().expect("encode");
-            assert_eq!(
-                ParticipantReleaseResponse::decode(payload.as_ref()).expect("decode"),
-                response
-            );
-        }
     }
 
     #[test]
@@ -692,17 +620,33 @@ mod tests {
             ParticipantSliceBeginRequest::decode(payload.as_ref()).expect("decode"),
             request
         );
+    }
 
-        for response in [
-            ParticipantSliceBeginResponse::began(),
-            ParticipantSliceBeginResponse::refused("reserved for launch `launch-other`"),
+    #[test]
+    fn verdict_round_trips_both_outcomes() {
+        for verdict in [
+            FederationVerdict::ok(),
+            FederationVerdict::refused("reserved for launch `launch-other`"),
         ] {
-            let payload = response.encode().expect("encode");
+            let payload = verdict.encode().expect("encode");
             assert_eq!(
-                ParticipantSliceBeginResponse::decode(payload.as_ref()).expect("decode"),
-                response
+                FederationVerdict::decode(payload.as_ref()).expect("decode"),
+                verdict
             );
         }
+    }
+
+    /// The two launch-scoped requests share one wire root, so bytes written by
+    /// either must read back as the other. That is the property the sharing
+    /// rests on; if it ever stops holding, they need separate schema structs.
+    #[test]
+    fn launch_scoped_requests_share_one_wire_shape() {
+        let begin = ParticipantSliceBeginRequest::new("launch-abc123");
+        let payload = begin.encode().expect("encode");
+        assert_eq!(
+            ParticipantReleaseRequest::decode(payload.as_ref()).expect("decode"),
+            ParticipantReleaseRequest::new("launch-abc123")
+        );
     }
 
     /// The destructive step must never act on a defaulted launch id: that is
@@ -721,35 +665,25 @@ mod tests {
         PairCommitRequest {
             pairing_name: "task_delegation".to_owned(),
             pairing_tag: "v1".to_owned(),
-            local_instance_id: "reflex_inst".to_owned(),
+            local: ProducerRef::new("cn-robot-7", "reflex_inst"),
             local_link_id: "delegation".to_owned(),
             local_role: "executor".to_owned(),
-            peer_core_node: "cn-atlas".to_owned(),
-            peer_instance_id: "planner_inst".to_owned(),
+            peer: ProducerRef::new("cn-atlas", "planner_inst"),
             peer_link_id: "delegation".to_owned(),
             peer_role: "planner".to_owned(),
         }
     }
 
+    /// Both endpoints name their core node, so a request is readable without
+    /// knowing which machine opened it.
     #[test]
     fn pair_commit_round_trips() {
         let request = pair_commit();
         let payload = request.encode().expect("encode");
-        assert_eq!(
-            PairCommitRequest::decode(payload.as_ref()).expect("decode"),
-            request
-        );
-
-        for response in [
-            PairCommitResponse::committed(),
-            PairCommitResponse::refused("slot already paired"),
-        ] {
-            let payload = response.encode().expect("encode");
-            assert_eq!(
-                PairCommitResponse::decode(payload.as_ref()).expect("decode"),
-                response
-            );
-        }
+        let decoded = PairCommitRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, request);
+        assert_eq!(decoded.local.core_node, "cn-robot-7");
+        assert_eq!(decoded.peer.core_node, "cn-atlas");
     }
 
     /// Every field addresses a specific slot on a specific machine. A defaulted
@@ -758,14 +692,15 @@ mod tests {
     #[test]
     fn pair_commit_decode_rejects_any_empty_address_field() {
         type Blank = fn(&mut PairCommitRequest);
-        let fields: [(&str, Blank); 9] = [
+        let fields: [(&str, Blank); 10] = [
             ("pairing_name", |r| r.pairing_name.clear()),
             ("pairing_tag", |r| r.pairing_tag.clear()),
-            ("local_instance_id", |r| r.local_instance_id.clear()),
+            ("local.core_node", |r| r.local.core_node.clear()),
+            ("local.instance_id", |r| r.local.instance_id.clear()),
             ("local_link_id", |r| r.local_link_id.clear()),
             ("local_role", |r| r.local_role.clear()),
-            ("peer_core_node", |r| r.peer_core_node.clear()),
-            ("peer_instance_id", |r| r.peer_instance_id.clear()),
+            ("peer.core_node", |r| r.peer.core_node.clear()),
+            ("peer.instance_id", |r| r.peer.instance_id.clear()),
             ("peer_link_id", |r| r.peer_link_id.clear()),
             ("peer_role", |r| r.peer_role.clear()),
         ];
@@ -821,11 +756,12 @@ mod tests {
 
     #[test]
     fn relationship_ack_round_trips() {
-        let ack = RelationshipNotificationAck::received();
+        let ack = RelationshipNotificationAck::new();
         let payload = ack.encode().expect("encode");
-        let decoded = RelationshipNotificationAck::decode(payload.as_ref()).expect("decode");
-        assert_eq!(decoded, ack);
-        assert!(decoded.received);
+        assert_eq!(
+            RelationshipNotificationAck::decode(payload.as_ref()).expect("decode"),
+            ack
+        );
     }
 
     #[test]
@@ -833,7 +769,7 @@ mod tests {
         assert!(ParticipantReserveRequest::decode(b"not capnp").is_err());
         assert!(ParticipantReserveResponse::decode(b"not capnp").is_err());
         assert!(ParticipantReleaseRequest::decode(b"not capnp").is_err());
-        assert!(ParticipantReleaseResponse::decode(b"not capnp").is_err());
+        assert!(FederationVerdict::decode(b"not capnp").is_err());
         assert!(RelationshipNotification::decode(b"not capnp").is_err());
         assert!(RelationshipNotificationAck::decode(b"not capnp").is_err());
     }

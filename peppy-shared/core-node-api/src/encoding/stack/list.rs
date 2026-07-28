@@ -3,7 +3,7 @@ use capnp::message::Builder;
 use crate::node_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message};
+use crate::encoding::{decode_message, encode_message, required_text};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StackListRequest;
@@ -102,32 +102,38 @@ impl StackListResponse {
             response.set_core_node(&self.core_node);
             response.set_instance_id(&self.instance_id);
             response.set_host_name(&self.host_name);
-            let launch = self.launch.as_ref();
-            response.set_launch_id(launch.map_or("", |l| l.launch_id.as_str()));
-            response
-                .set_coordinator_core_node(launch.map_or("", |l| l.coordinator_core_node.as_str()));
+            let mut launch = response.reborrow().init_launch();
+            match &self.launch {
+                Some(identity) => {
+                    let mut wire = launch.init_identity();
+                    wire.set_launch_id(&identity.launch_id);
+                    wire.set_coordinator_core_node(&identity.coordinator_core_node);
+                }
+                None => launch.set_standalone(()),
+            }
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
+        use node_capnp::stack_list_response::launch::Which;
+
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::stack_list_response::Reader>()?;
 
-        // Both halves of the identity travel together or not at all: a launch
-        // id with no coordinator names a launch nobody can reset, and a
-        // coordinator with no launch id names nothing at all.
-        let launch_id = response.get_launch_id()?.to_str()?;
-        let coordinator = response.get_coordinator_core_node()?.to_str()?;
-        let launch = match (launch_id.is_empty(), coordinator.is_empty()) {
-            (true, true) => None,
-            (false, false) => Some(LaunchIdentity::new(launch_id, coordinator)),
-            _ => {
-                return Err(crate::Error::Decoding(format!(
-                    "StackListResponse carries a half-formed launch identity \
-                     (launch_id {launch_id:?}, coordinator {coordinator:?}): a slice is either \
-                     part of a launch or it is not"
-                )));
+        // The union makes "a slice is either part of a launch or it is not" a
+        // wire fact, so there is no half-formed identity left to police here.
+        let launch = match response.get_launch().which()? {
+            Which::Standalone(()) => None,
+            Which::Identity(identity) => {
+                let identity = identity?;
+                Some(LaunchIdentity::new(
+                    required_text(identity.get_launch_id()?.to_str()?, "launch.launch_id")?,
+                    required_text(
+                        identity.get_coordinator_core_node()?.to_str()?,
+                        "launch.coordinator_core_node",
+                    )?,
+                ))
             }
         };
 
@@ -223,19 +229,34 @@ mod tests {
         assert_eq!(launch.coordinator_core_node, "cn-robot-7");
     }
 
+    /// The union carries "part of a launch or not" in the discriminant, so the
+    /// two halves can no longer be sent apart. What remains decodable-but-wrong
+    /// is an identity arm with a blank half, and that is still refused — a
+    /// launch nobody can name is no better than no launch at all.
     #[test]
-    fn response_decode_rejects_a_half_formed_launch_identity() {
-        for (launch_id, coordinator) in [("launch-abc123", ""), ("", "cn-robot-7")] {
+    fn response_decode_rejects_a_blank_half_of_the_identity() {
+        for (launch_id, coordinator, expected) in [
+            ("launch-abc123", "", "coordinator_core_node"),
+            ("", "cn-robot-7", "launch_id"),
+        ] {
             let response = StackListResponse::new("{}", "cn-atlas", "gen_1", "atlas")
                 .with_launch(LaunchIdentity::new(launch_id, coordinator));
             let payload = response.encode().expect("encode");
             let error =
-                StackListResponse::decode(payload.as_ref()).expect_err("half identity must fail");
-            assert!(
-                error.to_string().contains("half-formed launch identity"),
-                "got: {error}"
-            );
+                StackListResponse::decode(payload.as_ref()).expect_err("blank half must fail");
+            assert!(error.to_string().contains(expected), "got: {error}");
         }
+    }
+
+    /// A standalone slice must decode as one even though `LaunchIdentity` is a
+    /// pointer field: the discriminant, not an empty string, is what says so.
+    #[test]
+    fn standalone_is_the_discriminant_not_an_empty_identity() {
+        let payload = StackListResponse::new("{}", "cn-solo", "gen_1", "solo")
+            .encode()
+            .expect("encode");
+        let decoded = StackListResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded.launch, None);
     }
 
     #[test]

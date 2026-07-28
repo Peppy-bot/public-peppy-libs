@@ -23,13 +23,27 @@ struct StackListResponse {
     coreNode @2 :Text;
     instanceId @3 :Text;
     # The launch this daemon's slice belongs to, making the slice
-    # self-describing. Both fields are empty when the stack was not started
-    # by a federated launch. Carrying them here is what lets a coordinator
-    # rediscover its participants by query instead of remembering them, so a
-    # coordinator restart is not a catastrophe and `stack reset` works from
-    # any machine.
-    launchId @4 :Text;
-    coordinatorCoreNode @5 :Text;
+    # self-describing. Carrying it here is what lets a coordinator rediscover
+    # its participants by query instead of remembering them, so a coordinator
+    # restart is not a catastrophe and `stack reset` works from any machine.
+    #
+    # A union rather than two optional fields: a launch id with no coordinator
+    # names a launch nobody can reset, and a coordinator with no launch id
+    # names nothing at all. Neither half is meaningful alone, so the wire does
+    # not let them be sent apart and no decoder has to police it.
+    launch :union {
+        # This stack was not started by a federated launch.
+        standalone @4 :Void;
+        identity @5 :LaunchIdentity;
+    }
+}
+
+# Which launch a stack slice belongs to, and who drove it.
+struct LaunchIdentity {
+    launchId @0 :Text;
+    # The coordinator that drove the launch. A participant watches this core
+    # node's presence for as long as it holds the slice.
+    coordinatorCoreNode @1 :Text;
 }
 
 # Node Add Action (streaming version with feedback)
@@ -272,38 +286,43 @@ struct NodeRunGoal {
     lifecycleWatchers @11 :List(Text);
 }
 
+# One instance, addressed the way the whole mesh addresses instances: by the
+# `(coreNode, instanceId)` pair. An `instanceId` alone is unique only within one
+# stack, so every cross-machine reference carries both halves and no daemon ever
+# infers "this must be local" from an absent field — including when the target
+# IS local, where this holds the receiving daemon's own name.
+#
+# Decodes to `config::runtime::ProducerRef`, the same type the validator stamps
+# into slot bindings, so a message and the plan it acts on speak one vocabulary.
+struct InstanceAddress {
+    coreNode @0 :Text;
+    instanceId @1 :Text;
+}
+
 struct PairRequest {
     # The starting node's own pairing-slot link_id.
     linkId @0 :Text;
     # The peer instance this slot pairs with.
-    peerInstanceId @1 :Text;
+    peer @1 :InstanceAddress;
     # The complementary slot on the peer, when the request pins one. Empty
     # means unpinned: exactly one available complementary slot must exist on
     # the peer and the daemon resolves it.
     peerLinkId @2 :Text;
-    # The core node the peer instance runs on. Always populated: a message a
-    # peer acts on is self-describing about placement, so a daemon never
-    # infers "this must be local" from an absent field. For a same-daemon
-    # pair this is the receiving daemon's own name.
-    peerCoreNode @3 :Text;
 }
 
 struct ObservationRequest {
     # The starting node's own observer-slot link_id.
     observerLinkId @0 :Text;
-    # The source instance whose role topics this slot observes.
-    sourceInstanceId @1 :Text;
+    # The source instance whose role topics this slot observes. A remote source
+    # subscribes identically to a local one; what differs is that its lifecycle
+    # transitions reach the observing daemon as notifications from the source's
+    # own daemon rather than from local lifecycle events.
+    source @1 :InstanceAddress;
     # The source-side participant slot link_id: the segment the source
     # publishes its observed role topics under, and the third element of the
     # observer's fully-pinned subscription. Always resolved by the planner (the
     # CLI preflight or the launcher), never empty.
     sourceLinkId @2 :Text;
-    # The core node the source instance runs on. Always populated, for the
-    # same self-describing-placement reason as `PairRequest.peerCoreNode`.
-    # A remote source subscribes identically; what differs is that its
-    # lifecycle transitions reach the observing daemon as notifications from
-    # the source's own daemon rather than from local lifecycle events.
-    sourceCoreNode @3 :Text;
 }
 
 struct NodeRunGoalResponse {
