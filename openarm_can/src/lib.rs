@@ -155,6 +155,8 @@ impl ArmCan {
     }
 
     /// MIT-mode command to all joints: PD to `q`/`dq` plus feedforward `tau`.
+    /// Refused whole or delivered to every joint: encoding happens before any
+    /// send, and a send failure does not stop the remaining joints' frames.
     pub fn mit_control(
         &mut self,
         kp: &JointVec,
@@ -163,19 +165,8 @@ impl ArmCan {
         dq: &JointVec,
         tau: &JointVec,
     ) -> Result<()> {
-        for i in 0..ARM_DOF {
-            let frame = protocol::mit_frame(
-                ARM_MOTOR_TYPES[i],
-                ARM_SEND_IDS[i],
-                kp[i],
-                kd[i],
-                q[i],
-                dq[i],
-                tau[i],
-            )?;
-            self.0.send(&frame)?;
-        }
-        Ok(())
+        let frames = mit_frames(kp, kd, q, dq, tau)?;
+        self.0.send_all(frames)
     }
 
     /// Snapshot of joint state from the most recent [`recv_all`](Self::recv_all).
@@ -189,6 +180,31 @@ impl ArmCan {
         }
         state
     }
+}
+
+/// Encodes the seven per-joint MIT frames before anything touches the bus, so
+/// one bad value (for example a NaN feedforward) refuses the whole command
+/// instead of commanding the joints ahead of it and skipping the rest.
+fn mit_frames(
+    kp: &JointVec,
+    kd: &JointVec,
+    q: &JointVec,
+    dq: &JointVec,
+    tau: &JointVec,
+) -> Result<Vec<protocol::OutFrame>> {
+    (0..ARM_DOF)
+        .map(|i| {
+            protocol::mit_frame(
+                ARM_MOTOR_TYPES[i],
+                ARM_SEND_IDS[i],
+                kp[i],
+                kd[i],
+                q[i],
+                dq[i],
+                tau[i],
+            )
+        })
+        .collect()
 }
 
 /// Marker for the MIT control mode (v1.0 prismatic gripper).
@@ -347,6 +363,33 @@ mod tests {
         assert_eq!(ARM_MOTOR_TYPES.len(), ARM_DOF);
         assert_eq!(ARM_SEND_IDS.len(), ARM_DOF);
         assert_eq!(ARM_RECV_IDS.len(), ARM_DOF);
+    }
+
+    /// The MIT command is all-or-nothing at encode time: a bad value in any
+    /// joint refuses the whole command with no frame built, independent of
+    /// which joint carries it (the old per-joint loop sent joints 1..k before
+    /// discovering a bad value at k+1).
+    #[test]
+    fn one_bad_joint_refuses_the_whole_mit_command() {
+        let good = [0.0; ARM_DOF];
+        for bad_joint in [0, ARM_DOF - 1] {
+            let mut tau = good;
+            tau[bad_joint] = f64::NAN;
+            let refused = mit_frames(&good, &good, &good, &good, &tau);
+            assert!(
+                matches!(refused, Err(CanError::NonFiniteCommand(_))),
+                "NaN at joint {bad_joint} must refuse the command"
+            );
+        }
+    }
+
+    #[test]
+    fn mit_frames_encodes_one_frame_per_joint_in_id_order() {
+        let zero = [0.0; ARM_DOF];
+        let frames = mit_frames(&zero, &zero, &zero, &zero, &zero).unwrap();
+        assert_eq!(frames.len(), ARM_DOF);
+        let ids: Vec<u32> = frames.iter().map(|f| f.id).collect();
+        assert_eq!(ids, ARM_SEND_IDS);
     }
 
     #[test]

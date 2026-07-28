@@ -198,11 +198,18 @@ impl MotorBus {
         self.send_to_each(protocol::refresh_frame)
     }
 
+    /// Sends every frame even when one fails, reporting the first error.
+    pub fn send_all(&mut self, frames: impl IntoIterator<Item = OutFrame>) -> Result<()> {
+        first_error(frames.into_iter().map(|frame| self.socket.send(&frame)))
+    }
+
     fn send_to_each(&mut self, frame_for: impl Fn(u32) -> OutFrame) -> Result<()> {
-        self.slots
-            .iter()
-            .map(|slot| frame_for(slot.send_id))
-            .try_for_each(|frame| self.socket.send(&frame))
+        first_error(
+            self.slots
+                .iter()
+                .map(|slot| frame_for(slot.send_id))
+                .map(|frame| self.socket.send(&frame)),
+        )
     }
 
     /// Receives and decodes state frames into the cache: waits up to
@@ -240,6 +247,15 @@ impl MotorBus {
         };
         decode_into_slots(&mut self.slots, extended, id, data);
     }
+}
+
+/// Drives every send in a group command and keeps the first error. Stopping at
+/// the first failure would leave the group half applied: a partial disable has
+/// some joints limp and some holding their last command (the arm folds
+/// asymmetrically), and a partial refresh blinds the joints it skipped. The
+/// reference implementation always addresses every motor.
+fn first_error(results: impl Iterator<Item = Result<()>>) -> Result<()> {
+    results.fold(Ok(()), Result::and)
 }
 
 /// Decodes a received data frame into the matching slot's state cache.
@@ -285,6 +301,31 @@ mod tests {
 
     /// DM4310 state: q at +p_max, dq at -v_max, tau at +t_max.
     const STATE: [u8; 8] = [0x00, 0xFF, 0xFF, 0x00, 0x0F, 0xFF, 0x30, 0x28];
+
+    /// Every group send routes through `first_error`; this pins its two
+    /// guarantees: the iterator is driven to the end (every motor addressed
+    /// even after a failure) and the first error is the one reported.
+    #[test]
+    fn first_error_drives_every_send_and_reports_the_first_failure() {
+        let attempted = std::cell::Cell::new(0u32);
+        let outcome = first_error(
+            [
+                Ok(()),
+                Err(CanError::InvalidCanId(1)),
+                Err(CanError::InvalidCanId(2)),
+                Ok(()),
+            ]
+            .into_iter()
+            .inspect(|_| attempted.set(attempted.get() + 1)),
+        );
+        assert_eq!(attempted.get(), 4, "a failed send must not skip the rest");
+        assert!(matches!(outcome, Err(CanError::InvalidCanId(1))));
+    }
+
+    #[test]
+    fn first_error_of_all_ok_is_ok() {
+        assert!(first_error([Ok(()), Ok(())].into_iter()).is_ok());
+    }
 
     #[test]
     fn state_frame_updates_the_matching_slot() {
