@@ -215,7 +215,9 @@ impl MotorBus {
     /// Receives and decodes state frames into the cache: waits up to
     /// `first_timeout_us` for the first frame, then drains without waiting.
     /// Frames from unknown ids and undecodable payloads are ignored.
-    pub fn recv_all(&mut self, first_timeout_us: u32) -> Result<()> {
+    /// Returns whether any motor state reached the cache this pass; `false`
+    /// means `get_state` holds previous readings, not fresh ones.
+    pub fn recv_all(&mut self, first_timeout_us: u32) -> Result<bool> {
         self.recv_loop(first_timeout_us, true)
     }
 
@@ -223,29 +225,29 @@ impl MotorBus {
     /// frame. Use to consume bus traffic that must not land in the state
     /// cache (bring-up replies, parameter echoes).
     pub fn drain(&mut self, first_timeout_us: u32) -> Result<()> {
-        self.recv_loop(first_timeout_us, false)
+        self.recv_loop(first_timeout_us, false).map(drop)
     }
 
-    fn recv_loop(&mut self, first_timeout_us: u32, decode: bool) -> Result<()> {
+    fn recv_loop(&mut self, first_timeout_us: u32, decode: bool) -> Result<bool> {
         let mut timeout = Duration::from_micros(first_timeout_us.into());
+        let mut decoded = false;
         while let Some(frame) = self.socket.recv(timeout)? {
             timeout = Duration::ZERO;
-            if decode {
-                self.dispatch(&frame);
-            }
+            decoded |= decode && self.dispatch(&frame).is_some();
         }
-        Ok(())
+        Ok(decoded)
     }
 
-    fn dispatch(&mut self, frame: &CanAnyFrame) {
+    /// The index of the slot the frame decoded into, if any.
+    fn dispatch(&mut self, frame: &CanAnyFrame) -> Option<usize> {
         // Remote and error frames can never be motor state; the Damiao
         // protocol replies with plain data frames only.
         let (extended, id, data) = match frame {
             CanAnyFrame::Normal(f) => (f.is_extended(), f.raw_id(), f.data()),
             CanAnyFrame::Fd(f) => (f.is_extended(), f.raw_id(), f.data()),
-            CanAnyFrame::Remote(_) | CanAnyFrame::Error(_) => return,
+            CanAnyFrame::Remote(_) | CanAnyFrame::Error(_) => return None,
         };
-        decode_into_slots(&mut self.slots, extended, id, data);
+        decode_into_slots(&mut self.slots, extended, id, data)
     }
 }
 
@@ -258,26 +260,32 @@ fn first_error(results: impl Iterator<Item = Result<()>>) -> Result<()> {
     results.fold(Ok(()), Result::and)
 }
 
-/// Decodes a received data frame into the matching slot's state cache.
+/// Decodes a received data frame into the matching slot's state cache,
+/// returning the slot's index when it lands.
 /// Rejected without decoding: extended-id frames (motors address with 11-bit
 /// ids only; `raw_id` strips the EFF flag, so without this gate a foreign
 /// 29-bit frame whose low bits collide with a recv id would masquerade as
 /// state) and parameter replies (the motor mirrors 0x7FF writes/queries back
 /// on its state id; decoded as state, the echo reads as a violent full-scale
 /// position).
-fn decode_into_slots(slots: &mut [MotorSlot], extended: bool, id: u32, data: &[u8]) {
+fn decode_into_slots(
+    slots: &mut [MotorSlot],
+    extended: bool,
+    id: u32,
+    data: &[u8],
+) -> Option<usize> {
     if extended {
-        return;
+        return None;
     }
-    let Some(slot) = slots.iter_mut().find(|slot| slot.recv_id == id) else {
-        return;
-    };
+    let (index, slot) = slots
+        .iter_mut()
+        .enumerate()
+        .find(|(_, slot)| slot.recv_id == id)?;
     if is_param_reply(slot.send_id, data) {
-        return;
+        return None;
     }
-    if let Some(state) = protocol::parse_state(slot.motor_type, data) {
-        slot.state = state;
-    }
+    slot.state = protocol::parse_state(slot.motor_type, data)?;
+    Some(index)
 }
 
 /// A parameter reply carries the motor's send id little-endian in bytes 0-1
@@ -328,9 +336,9 @@ mod tests {
     }
 
     #[test]
-    fn state_frame_updates_the_matching_slot() {
+    fn state_frame_updates_the_matching_slot_and_reports_its_index() {
         let mut slots = [gripper_slot()];
-        decode_into_slots(&mut slots, false, 0x18, &STATE);
+        assert_eq!(decode_into_slots(&mut slots, false, 0x18, &STATE), Some(0));
         assert_eq!(slots[0].state().position, 12.5);
     }
 
@@ -339,7 +347,7 @@ mod tests {
         // A 29-bit id whose low bits collide with the recv id must not
         // masquerade as motor state.
         let mut slots = [gripper_slot()];
-        decode_into_slots(&mut slots, true, 0x18, &STATE);
+        assert_eq!(decode_into_slots(&mut slots, true, 0x18, &STATE), None);
         assert_eq!(slots[0].state(), MotorState::default());
     }
 
@@ -350,12 +358,13 @@ mod tests {
         // as a full-scale position.
         let mut slots = [gripper_slot()];
         for opcode in [0x55, 0x33] {
-            decode_into_slots(
+            let decoded = decode_into_slots(
                 &mut slots,
                 false,
                 0x18,
                 &[0x08, 0x00, opcode, 0x0A, 4, 0, 0, 0],
             );
+            assert_eq!(decoded, None);
             assert_eq!(slots[0].state(), MotorState::default());
         }
     }
@@ -365,19 +374,20 @@ mod tests {
         // The reply signature is keyed to this slot's send id; the same bytes
         // with a mismatched id prefix are treated as (implausible) state.
         let mut slots = [gripper_slot()];
-        decode_into_slots(
+        let decoded = decode_into_slots(
             &mut slots,
             false,
             0x18,
             &[0x07, 0x00, 0x55, 0x0A, 4, 0, 0, 0],
         );
+        assert_eq!(decoded, Some(0));
         assert_ne!(slots[0].state(), MotorState::default());
     }
 
     #[test]
     fn unknown_ids_are_ignored() {
         let mut slots = [gripper_slot()];
-        decode_into_slots(&mut slots, false, 0x19, &STATE);
+        assert_eq!(decode_into_slots(&mut slots, false, 0x19, &STATE), None);
         assert_eq!(slots[0].state(), MotorState::default());
     }
 }

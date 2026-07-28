@@ -138,7 +138,9 @@ impl ArmCan {
 
     /// Receives pending state frames into the cache: waits up to
     /// `first_timeout_us` for the first frame, then drains without waiting.
-    pub fn recv_all(&mut self, first_timeout_us: u32) -> Result<()> {
+    /// Returns whether any joint reported this pass; `false` means
+    /// [`get_state`](Self::get_state) holds previous readings, not fresh ones.
+    pub fn recv_all(&mut self, first_timeout_us: u32) -> Result<bool> {
         self.0.recv_all(first_timeout_us)
     }
 
@@ -324,7 +326,10 @@ impl<M: Mode> GripperCan<M> {
 
     /// Receives pending state frames into the cache: waits up to
     /// `first_timeout_us` for the first frame, then drains without waiting.
-    pub fn recv_all(&mut self, first_timeout_us: u32) -> Result<()> {
+    /// Returns whether the motor reported this pass; `false` means
+    /// [`get_state`](Self::get_state) holds a previous reading, not a fresh
+    /// one.
+    pub fn recv_all(&mut self, first_timeout_us: u32) -> Result<bool> {
         self.bus.recv_all(first_timeout_us)
     }
 
@@ -435,10 +440,13 @@ impl CanErrorThrottle {
         Self::default()
     }
 
-    pub fn failure(&mut self, context: &str, e: &CanError) {
+    /// Reports an unhealthy tick. `cause` is any renderable reason, so a pass
+    /// that raised no error but decoded nothing throttles on the same counter
+    /// as a driver failure rather than needing a parallel one.
+    pub fn failure(&mut self, context: &str, cause: impl std::fmt::Display) {
         if self.consecutive.is_multiple_of(Self::REPEAT_EVERY) {
             tracing::error!(
-                "{context}: CAN tick failed ({} consecutive): {e}",
+                "{context}: CAN tick failed ({} consecutive): {cause}",
                 self.consecutive + 1
             );
         }
