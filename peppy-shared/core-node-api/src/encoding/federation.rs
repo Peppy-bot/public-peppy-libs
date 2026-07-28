@@ -10,7 +10,10 @@ use capnp::message::Builder;
 use crate::federation_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
+use crate::encoding::{
+    capnp_list_len, decode_message, encode_message, optional_text, read_text_list, required_text,
+    write_text_list,
+};
 
 /// Reserves one participant for one launch, and asks it to resolve the
 /// manifests for its own slice while it is at it.
@@ -51,10 +54,10 @@ impl ParticipantReserveRequest {
                 self.deployment_sources_json5.len(),
                 "ParticipantReserveRequest.deployment_sources_json5",
             )?;
-            let mut sources = request.reborrow().init_deployment_sources_json5(count);
-            for (idx, source) in self.deployment_sources_json5.iter().enumerate() {
-                sources.set(idx as u32, source.as_str());
-            }
+            write_text_list(
+                request.reborrow().init_deployment_sources_json5(count),
+                &self.deployment_sources_json5,
+            );
         }
         encode_message(&builder)
     }
@@ -63,35 +66,15 @@ impl ParticipantReserveRequest {
         let reader = decode_message(data)?;
         let request = reader.get_root::<federation_capnp::participant_reserve_request::Reader>()?;
 
-        let launch_id = non_empty(request.get_launch_id()?.to_str()?, "launch_id")?;
-        let coordinator_core_node = non_empty(
-            request.get_coordinator_core_node()?.to_str()?,
-            "coordinator_core_node",
-        )?;
-
-        let sources_reader = request.get_deployment_sources_json5()?;
-        let mut deployment_sources_json5 = Vec::with_capacity(sources_reader.len() as usize);
-        for idx in 0..sources_reader.len() {
-            deployment_sources_json5.push(sources_reader.get(idx)?.to_str()?.to_owned());
-        }
-
         Ok(Self {
-            launch_id,
-            coordinator_core_node,
-            deployment_sources_json5,
+            launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
+            coordinator_core_node: required_text(
+                request.get_coordinator_core_node()?.to_str()?,
+                "coordinator_core_node",
+            )?,
+            deployment_sources_json5: read_text_list(request.get_deployment_sources_json5()?)?,
         })
     }
-}
-
-/// A launch is only reconstructible if every message that carries its identity
-/// actually carries it, so an empty one is refused rather than defaulted.
-fn non_empty(value: &str, field: &str) -> Result<String> {
-    if value.is_empty() {
-        return Err(crate::Error::Decoding(format!(
-            "federation message field `{field}` is empty"
-        )));
-    }
-    Ok(value.to_owned())
 }
 
 /// One manifest as a participant resolved it, aligned by index with the
@@ -165,10 +148,8 @@ impl ParticipantReserveResponse {
             response.set_peppy_version(&self.peppy_version);
             response.set_root_instance_id(&self.root_instance_id);
 
-            let count = capnp_list_len(
-                self.manifests.len(),
-                "ParticipantReserveResponse.manifests",
-            )?;
+            let count =
+                capnp_list_len(self.manifests.len(), "ParticipantReserveResponse.manifests")?;
             let mut manifests = response.reborrow().init_manifests(count);
             for (idx, manifest) in self.manifests.iter().enumerate() {
                 let mut entry = manifests.reborrow().get(idx as u32);
@@ -237,7 +218,7 @@ impl ParticipantSliceBeginRequest {
         let request =
             reader.get_root::<federation_capnp::participant_slice_begin_request::Reader>()?;
         Ok(Self {
-            launch_id: non_empty(request.get_launch_id()?.to_str()?, "launch_id")?,
+            launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
         })
     }
 }
@@ -307,8 +288,7 @@ impl PairCommitRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut request =
-                builder.init_root::<federation_capnp::pair_commit_request::Builder>();
+            let mut request = builder.init_root::<federation_capnp::pair_commit_request::Builder>();
             request.set_pairing_name(&self.pairing_name);
             request.set_pairing_tag(&self.pairing_tag);
             request.set_local_instance_id(&self.local_instance_id);
@@ -326,21 +306,24 @@ impl PairCommitRequest {
         let reader = decode_message(data)?;
         let request = reader.get_root::<federation_capnp::pair_commit_request::Reader>()?;
         Ok(Self {
-            pairing_name: non_empty(request.get_pairing_name()?.to_str()?, "pairing_name")?,
-            pairing_tag: non_empty(request.get_pairing_tag()?.to_str()?, "pairing_tag")?,
-            local_instance_id: non_empty(
+            pairing_name: required_text(request.get_pairing_name()?.to_str()?, "pairing_name")?,
+            pairing_tag: required_text(request.get_pairing_tag()?.to_str()?, "pairing_tag")?,
+            local_instance_id: required_text(
                 request.get_local_instance_id()?.to_str()?,
                 "local_instance_id",
             )?,
-            local_link_id: non_empty(request.get_local_link_id()?.to_str()?, "local_link_id")?,
-            local_role: non_empty(request.get_local_role()?.to_str()?, "local_role")?,
-            peer_core_node: non_empty(request.get_peer_core_node()?.to_str()?, "peer_core_node")?,
-            peer_instance_id: non_empty(
+            local_link_id: required_text(request.get_local_link_id()?.to_str()?, "local_link_id")?,
+            local_role: required_text(request.get_local_role()?.to_str()?, "local_role")?,
+            peer_core_node: required_text(
+                request.get_peer_core_node()?.to_str()?,
+                "peer_core_node",
+            )?,
+            peer_instance_id: required_text(
                 request.get_peer_instance_id()?.to_str()?,
                 "peer_instance_id",
             )?,
-            peer_link_id: non_empty(request.get_peer_link_id()?.to_str()?, "peer_link_id")?,
-            peer_role: non_empty(request.get_peer_role()?.to_str()?, "peer_role")?,
+            peer_link_id: required_text(request.get_peer_link_id()?.to_str()?, "peer_link_id")?,
+            peer_role: required_text(request.get_peer_role()?.to_str()?, "peer_role")?,
         })
     }
 }
@@ -416,7 +399,7 @@ impl ParticipantReleaseRequest {
         let reader = decode_message(data)?;
         let request = reader.get_root::<federation_capnp::participant_release_request::Reader>()?;
         Ok(Self {
-            launch_id: non_empty(request.get_launch_id()?.to_str()?, "launch_id")?,
+            launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
         })
     }
 }
@@ -527,14 +510,16 @@ impl RelationshipNotification {
         };
 
         Ok(Self {
-            instance_id: non_empty(notification.get_instance_id()?.to_str()?, "instance_id")?,
-            core_node: non_empty(notification.get_core_node()?.to_str()?, "core_node")?,
+            instance_id: required_text(notification.get_instance_id()?.to_str()?, "instance_id")?,
+            core_node: required_text(notification.get_core_node()?.to_str()?, "core_node")?,
             event,
         })
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// No `Default`: it would hand out `received: false`, the one value this ack is
+/// never allowed to carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationshipNotificationAck {
     pub received: bool,
 }
@@ -772,7 +757,8 @@ mod tests {
     /// rather than filled in.
     #[test]
     fn pair_commit_decode_rejects_any_empty_address_field() {
-        let fields: [(&str, fn(&mut PairCommitRequest)); 9] = [
+        type Blank = fn(&mut PairCommitRequest);
+        let fields: [(&str, Blank); 9] = [
             ("pairing_name", |r| r.pairing_name.clear()),
             ("pairing_tag", |r| r.pairing_tag.clear()),
             ("local_instance_id", |r| r.local_instance_id.clear()),
@@ -824,11 +810,8 @@ mod tests {
             ("", "cn-robot-7", "instance_id"),
             ("reflex_inst", "", "core_node"),
         ] {
-            let notification = RelationshipNotification::new(
-                instance_id,
-                core_node,
-                RelationshipEvent::Stopped,
-            );
+            let notification =
+                RelationshipNotification::new(instance_id, core_node, RelationshipEvent::Stopped);
             let payload = notification.encode().expect("encode");
             let error = RelationshipNotification::decode(payload.as_ref())
                 .expect_err("partial address must fail");

@@ -12,6 +12,7 @@ use crate::{NonEmptyPayload, Payload, Result};
 use super::builder::FeedbackStream;
 use crate::encoding::{
     capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
+    read_text_list, write_text_list,
 };
 
 /// One peer reference carried by [`NodeRunGoal::requested_pairs`] /
@@ -253,10 +254,10 @@ impl NodeRunGoal {
                 self.lifecycle_watchers.len(),
                 "NodeRunGoal.lifecycle_watchers",
             )?;
-            let mut watchers = goal.reborrow().init_lifecycle_watchers(watcher_count);
-            for (idx, core_node) in self.lifecycle_watchers.iter().enumerate() {
-                watchers.set(idx as u32, core_node.as_str());
-            }
+            write_text_list(
+                goal.reborrow().init_lifecycle_watchers(watcher_count),
+                &self.lifecycle_watchers,
+            );
             goal.set_node_name(&self.node_name);
             goal.set_tag(&self.tag);
 
@@ -279,10 +280,10 @@ impl NodeRunGoal {
 
             let deferred_count =
                 capnp_list_len(self.deferred_pairs.len(), "NodeRunGoal.deferred_pairs")?;
-            let mut deferred = goal.reborrow().init_deferred_pairs(deferred_count);
-            for (idx, link_id) in self.deferred_pairs.iter().enumerate() {
-                deferred.set(idx as u32, link_id.as_str());
-            }
+            write_text_list(
+                goal.reborrow().init_deferred_pairs(deferred_count),
+                &self.deferred_pairs,
+            );
 
             let covered_count =
                 capnp_list_len(self.covered_pairs.len(), "NodeRunGoal.covered_pairs")?;
@@ -317,18 +318,6 @@ impl NodeRunGoal {
             ));
         }
 
-        let watchers_reader = goal.get_lifecycle_watchers()?;
-        let mut lifecycle_watchers = Vec::with_capacity(watchers_reader.len() as usize);
-        for idx in 0..watchers_reader.len() {
-            lifecycle_watchers.push(watchers_reader.get(idx)?.to_str()?.to_owned());
-        }
-
-        let deferred_reader = goal.get_deferred_pairs()?;
-        let mut deferred_pairs = Vec::with_capacity(deferred_reader.len() as usize);
-        for idx in 0..deferred_reader.len() {
-            deferred_pairs.push(deferred_reader.get(idx)?.to_str()?.to_owned());
-        }
-
         // Cap'n Proto defaults an absent field to the empty string, so a goal
         // from a peppy that still ships an assembled runtime config decodes
         // here with no plan at all. Left unchecked that would spawn a node
@@ -349,13 +338,13 @@ impl NodeRunGoal {
             instance_plan,
             manifest_sha256: optional_text(goal.get_manifest_sha256()?.to_str()?),
             launch_id: optional_text(goal.get_launch_id()?.to_str()?),
-            lifecycle_watchers,
+            lifecycle_watchers: read_text_list(goal.get_lifecycle_watchers()?)?,
             node_name: goal.get_node_name()?.to_str()?.to_owned(),
             tag: goal.get_tag()?.to_str()?.to_owned(),
             env_vars,
             timeout_secs: goal.get_timeout_secs(),
             requested_pairs: read_pair_requests(goal.get_requested_pairs()?)?,
-            deferred_pairs,
+            deferred_pairs: read_text_list(goal.get_deferred_pairs()?)?,
             covered_pairs: read_pair_requests(goal.get_covered_pairs()?)?,
             planned_observations: read_observation_requests(goal.get_planned_observations()?)?,
         })
@@ -405,6 +394,10 @@ fn read_pair_requests(
 /// Every wire message a peer acts on is self-describing about placement, so
 /// an absent core node is a bug in the sender rather than a shorthand for
 /// "local". Refusing here is what stops a daemon from ever having to guess.
+///
+/// Deliberately not [`crate::encoding::required_text`]: the generic helper
+/// reports which field was empty, and the whole point of this one is to say
+/// why "empty" is not the same as "here".
 fn non_empty_core_node(value: &str, context: &str) -> Result<String> {
     if value.is_empty() {
         return Err(crate::Error::Decoding(format!(
@@ -882,11 +875,10 @@ mod tests {
 
     #[test]
     fn node_run_goal_roundtrip_populated_env_vars() {
-        let goal =
-            NodeRunGoal::new(plan("inst_1"), "node", "tag", 42).with_env_vars(vec![
-                ("KEY1".to_owned(), "VAL1".to_owned()),
-                ("KEY2".to_owned(), "VAL2".to_owned()),
-            ]);
+        let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 42).with_env_vars(vec![
+            ("KEY1".to_owned(), "VAL1".to_owned()),
+            ("KEY2".to_owned(), "VAL2".to_owned()),
+        ]);
         let encoded = goal.encode().expect("encode");
         let decoded = NodeRunGoal::decode(&encoded).expect("decode");
         assert_eq!(decoded, goal);

@@ -83,9 +83,9 @@ pub mod node {
         ObjectSchema, PairingDependency, PairingObserverDependency, PairingParticipantDependency,
         PeppygenLanguage, PrimitiveSchema, QoSProfile, ResultServiceEndpoint, SchemaType,
         ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken,
-        collect_contract_implementation_edges,
-        collect_dependency_specs, estimate_serialized_size, is_blocked_mount_source,
-        load_standalone_node_config, node_implements, validate_dependency_specs,
+        collect_contract_implementation_edges, collect_dependency_specs, estimate_serialized_size,
+        is_blocked_mount_source, load_standalone_node_config, node_implements,
+        validate_dependency_specs,
     };
 }
 

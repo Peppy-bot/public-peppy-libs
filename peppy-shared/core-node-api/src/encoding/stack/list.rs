@@ -102,15 +102,10 @@ impl StackListResponse {
             response.set_core_node(&self.core_node);
             response.set_instance_id(&self.instance_id);
             response.set_host_name(&self.host_name);
-            let (launch_id, coordinator) = match &self.launch {
-                Some(launch) => (
-                    launch.launch_id.as_str(),
-                    launch.coordinator_core_node.as_str(),
-                ),
-                None => ("", ""),
-            };
-            response.set_launch_id(launch_id);
-            response.set_coordinator_core_node(coordinator);
+            let launch = self.launch.as_ref();
+            response.set_launch_id(launch.map_or("", |l| l.launch_id.as_str()));
+            response
+                .set_coordinator_core_node(launch.map_or("", |l| l.coordinator_core_node.as_str()));
         }
         encode_message(&builder)
     }

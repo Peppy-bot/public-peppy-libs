@@ -630,7 +630,10 @@ mod tests {
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
         assert_eq!(goal, decoded);
         assert_eq!(
-            decoded.core_node_links.get("cloud_inference").map(String::as_str),
+            decoded
+                .core_node_links
+                .get("cloud_inference")
+                .map(String::as_str),
             Some("cn-atlas-h100")
         );
     }

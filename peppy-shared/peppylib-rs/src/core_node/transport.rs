@@ -220,15 +220,15 @@ pub async fn take_goal_result(
     messenger: &MessengerHandle,
     action_handle: &ActionGoalHandle,
     result_timeout: Duration,
-) -> std::result::Result<crate::types::Payload, String> {
+) -> std::result::Result<Payload, String> {
     let reply = ActionMessenger::request_result(messenger, action_handle, result_timeout)
         .await
         .map_err(|e| format!("failed to get action result: {e}"))?;
     match reply.status {
         ResultStatus::Completed | ResultStatus::Cancelled => Ok(reply.body),
-        ResultStatus::Abandoned => Err(
-            "the action goal was abandoned by its worker before producing a result".to_owned(),
-        ),
+        ResultStatus::Abandoned => {
+            Err("the action goal was abandoned by its worker before producing a result".to_owned())
+        }
         ResultStatus::Expired => {
             Err("the action result expired before it could be fetched".to_owned())
         }
