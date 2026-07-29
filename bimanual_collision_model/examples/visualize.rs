@@ -426,7 +426,10 @@ const UP = new THREE.Vector3(0, 1, 0);
 // cylinders along the edges, and spheres at the vertices fill the fillets.
 for (const b of DATA.bodies) {
   const color = b.hit ? (DATA.distance <= 0 ? 0xe03c3c : 0xe2902f) : COL[b.side];
-  const mat = new THREE.MeshStandardMaterial({ color, transparent:true, opacity: b.hit ? 0.5 : 0.3, depthWrite:false, roughness:0.6, side:THREE.DoubleSide });
+  // Faint enough to read the source mesh through the proxy: the gap between the
+  // two is the whole point of the scene, so the proxy tints the geometry rather
+  // than hiding it.
+  const mat = new THREE.MeshStandardMaterial({ color, transparent:true, opacity: b.hit ? 0.35 : 0.20, depthWrite:false, roughness:0.6, side:THREE.DoubleSide });
   if (b.caps.length) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(b.caps, 3));
@@ -460,7 +463,7 @@ for (const b of DATA.bodies) {
 for (const w of DATA.meshes) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(w.positions, 3));
-  scene.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color:0x6b7280, wireframe:true })));
+  scene.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color:0xc2c8d2, wireframe:true })));
 }
 { const [a,b] = DATA.witness.map(p => new THREE.Vector3(...p));
   scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([a,b]), new THREE.LineBasicMaterial({ color:0xff5a5a })));
