@@ -15,11 +15,13 @@
 //! at that opening, so the scene shows the true finger positions rather than the
 //! full swept envelope.
 //!
-//! The rendered solids are exactly what the distance query measures against.
 //! A circumscribing fit carries no rounding, so a piece draws as its bare
-//! polytope faces; a piece that does carry a rounding radius additionally gets
-//! cylinders along its edges and spheres at its vertices, filling the fillets of
-//! the hull's Minkowski sum with a ball. `--wireframes` overlays the source
+//! polytope faces, which is exactly the surface the distance query measures
+//! against. A piece that does carry a rounding radius additionally gets cylinders
+//! along its edges and spheres at its vertices, standing in for the fillets of
+//! the hull's Minkowski sum with a ball; those are tessellated, so that surface is
+//! drawn to within the tessellation while GJK measures the true one.
+//! `--wireframes` overlays the source
 //! meshes underneath, so the gap between mesh and piece surface is the fit's
 //! slack, visible directly. The closest pair is highlighted with the GJK/EPA
 //! witness segment; the HUD shows the signed minimum distance against the band
@@ -326,10 +328,11 @@ fn decimate(verts: &[Point3<f64>]) -> Vec<Point3<f64>> {
 
 /// One hull piece as render data: the faces offset outward by any rounding
 /// radius (the flat caps), the bare vertices (sphere centres), and the unique
-/// edges (cylinder axes). The browser sweeps a ball of `radius` over the edges
-/// and vertices, so caps + edge cylinders + vertex spheres union into the exact
-/// surface the distance query sees. At `radius == 0` the caps alone are that
-/// surface and the browser draws no fillets.
+/// edges (cylinder axes). At `radius == 0` the caps alone are the surface the
+/// distance query sees, drawn exactly and with no fillets. Otherwise the browser
+/// sweeps a ball of `radius` over the edges and vertices, so caps + edge
+/// cylinders + vertex spheres union into that surface up to the tessellation of
+/// the spheres and cylinders.
 fn rounded_piece_json(p: &PlacedPiece, side: &str, hit: bool) -> serde_json::Value {
     let centroid = Point3::from(
         p.vertices

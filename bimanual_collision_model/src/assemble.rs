@@ -248,7 +248,11 @@ fn fit_body(
     supplied: &HashMap<String, Vec<ClipRegion>>,
 ) -> Result<Vec<Hull>, BuildError> {
     let Some(regions) = supplied.get(name) else {
-        let fit = circumscribe(verts, MAX_DEVIATION_M)?;
+        let fit =
+            circumscribe(verts, MAX_DEVIATION_M).map_err(|reason| BuildError::DegenerateBody {
+                body: name.to_string(),
+                reason,
+            })?;
         return Ok(vec![Hull::new(&fit.hull, 0.0)?]);
     };
     if regions.is_empty() {

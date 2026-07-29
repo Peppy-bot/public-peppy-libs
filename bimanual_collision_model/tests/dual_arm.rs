@@ -461,32 +461,39 @@ fn fit_cost_report() {
         radius * 1000.0
     );
 
-    // An in-band pose, the regime the governor actually queries in.
+    const ITERATIONS: usize = 2000;
+    let mut acc = 0.0;
+
+    // HOME first, at the openings the model defaults to, so the clearance
+    // printed here is the same quantity `rest_pose_clearance_is_stable` pins and
+    // can be read straight into its constant.
+    let rest_clearance = m.min_distance(&HOME, &HOME).expect("query").distance;
+    let rest = std::time::Instant::now();
+    for _ in 0..ITERATIONS {
+        acc += m.min_distance(&HOME, &HOME).expect("query").distance;
+    }
+    let per_rest = rest.elapsed().as_secs_f64() / ITERATIONS as f64;
+
+    // An in-band pose with the jaws closed, the regime the governor actually
+    // queries in. This overrides the openings, so it runs last.
     let (ql, qr) = (
         [0.0, 0.0, 1.2, 0.4, 0.0, 0.0, 0.0],
         [0.0, 0.0, -1.2, 0.4, 0.0, 0.0, 0.0],
     );
     m.set_gripper_openings(0.0, 0.0);
     let d = m.min_distance(&ql, &qr).expect("query").distance;
-    const ITERATIONS: usize = 2000;
     let start = std::time::Instant::now();
-    let mut acc = 0.0;
     for _ in 0..ITERATIONS {
         acc += m.min_distance(&ql, &qr).expect("query").distance;
     }
     let per_query = start.elapsed().as_secs_f64() / ITERATIONS as f64;
-    let rest = std::time::Instant::now();
-    for _ in 0..ITERATIONS {
-        acc += m.min_distance(&HOME, &HOME).expect("query").distance;
-    }
-    let per_rest = rest.elapsed().as_secs_f64() / ITERATIONS as f64;
-    println!("separated (HOME) query {:.1} us", per_rest * 1e6);
     assert!(acc.is_finite());
+
+    println!("separated (HOME) query {:.1} us", per_rest * 1e6);
     println!(
-        "\nbuild {:.0} ms | in-band query {:.1} us (d={d:+.5} m) | rest clearance {:+.5} m\n",
+        "\nbuild {:.0} ms | in-band query {:.1} us (d={d:+.5} m) | rest clearance {rest_clearance:+.5} m\n",
         build.as_secs_f64() * 1e3,
         per_query * 1e6,
-        m.min_distance(&HOME, &HOME).expect("query").distance
     );
 }
 

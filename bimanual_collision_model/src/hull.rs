@@ -165,6 +165,13 @@ pub fn exact_hull(points: &[Point3<f64>]) -> Result<ConvexHull, String> {
             facets[vi].alive = false;
             orphans.append(&mut facets[vi].outside);
         }
+        // A horizon edge the apex is collinear with caps to a zero-area triangle.
+        // `make_facet` drops those, and the drop leaves no hole: the triangle
+        // bounds no surface, so the neighbouring caps already close it. Real
+        // meshes hit this regularly, which is why only a horizon that caps to
+        // nothing at all is an error. That the surface does stay closed is pinned
+        // by Euler on the real meshes, in
+        // `tests::a_real_collision_mesh_hulls_exactly`, rather than assumed here.
         let first_new = facets.len();
         for (a, b) in horizon {
             if let Some(f) = make_facet(a, b, apex, points, &interior) {
@@ -578,11 +585,15 @@ mod tests {
             pts.len(),
             hull.vertices.len()
         );
-        // Euler's formula on a closed triangulation: V - E + F = 2 with
-        // E = 3F/2, so F = 2V - 4 exactly when no coplanar vertices survive.
-        assert!(
-            hull.faces.len() <= 2 * hull.vertices.len() - 4,
-            "{} faces over {} vertices exceeds a closed triangulation",
+        // Euler on a closed genus-0 triangulation: V - E + F = 2 with E = 3F/2,
+        // so F = 2V - 4 exactly. Equality is the real assertion here, and it is
+        // what rules out the failure the stitching loop tolerates: a horizon edge
+        // whose degenerate cap is dropped would, if it truly left a hole, show up
+        // as a facet deficit against this count.
+        assert_eq!(
+            hull.faces.len(),
+            2 * hull.vertices.len() - 4,
+            "{} faces over {} vertices is not a closed triangulation",
             hull.faces.len(),
             hull.vertices.len()
         );

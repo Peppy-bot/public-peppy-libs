@@ -52,6 +52,11 @@ pub enum BuildError {
     #[error("supplied clip regions for '{body}' are empty; provide at least one region")]
     EmptyRegions { body: String },
 
+    /// A body's own mesh could not be fitted (an empty, collinear, or coplanar
+    /// cloud, or one no plane budget could circumscribe).
+    #[error("'{body}' could not be fitted from its mesh: {reason}")]
+    DegenerateBody { body: String, reason: String },
+
     /// A clip region caught too little of its body's mesh to bound a solid
     /// (an empty, collinear, or coplanar clipped slice).
     #[error("clip region {index} of '{body}' does not bound a solid slice of its mesh: {reason}")]
