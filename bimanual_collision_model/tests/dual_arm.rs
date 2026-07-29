@@ -245,7 +245,7 @@ fn rest_pose_clearance_is_stable() {
     // clearance. Pinned to the measured value as a two-sided regression guard: a
     // re-fit that moves the rest clearance in either direction trips this, so update
     // the constant when the geometry deliberately changes.
-    const REST_CLEARANCE_M: f64 = 0.0331;
+    const REST_CLEARANCE_M: f64 = 0.0333;
     const TOLERANCE_M: f64 = 0.001;
     let mut m = model();
     let p = m.min_distance(&HOME, &HOME).expect("query");

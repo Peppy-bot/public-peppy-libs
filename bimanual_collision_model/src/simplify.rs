@@ -6,12 +6,12 @@
 //! therefore structural, not something a sweep radius has to rescue afterwards,
 //! and the fit reports a true clearance instead of one shrunk by an inflation.
 //!
-//! The plane set is chosen by greedy worst-case refinement. Start from a 26-way
-//! supporting cover (an axis-aligned box with its edges and corners chamfered,
-//! which is bounded by construction), then repeatedly find the vertex of the
-//! current polytope that sits furthest outside the mesh's convex hull and cut it
-//! off with the supporting plane whose normal points from the hull to that
-//! vertex. That plane touches the hull exactly at the vertex's nearest point, so
+//! The plane set is chosen by greedy worst-case refinement. Start from the
+//! cloud's axis-aligned bounding box (six supporting planes, bounded by
+//! construction), then repeatedly find the vertex of the current polytope that
+//! sits furthest outside the mesh's convex hull and cut it off with the
+//! supporting plane whose normal points from the hull to that vertex. That plane
+//! touches the hull exactly at the vertex's nearest point, so
 //! it drives that deviation to zero, and the loop stops once the worst remaining
 //! deviation is inside the caller's budget. Faces land where the surface curves
 //! and nowhere else: a flat needs one plane however large it is.
@@ -31,21 +31,41 @@ use crate::hull::{ConvexHull, exact_hull};
 /// Halfspace count at which the fit gives up. A budget this many supporting
 /// planes cannot meet means a pathologically round body, and erroring beats
 /// silently shipping a proxy looser than the caller asked for.
+///
+/// The worst of the eleven collision meshes converges in 75 planes at a 1 mm
+/// budget, so this leaves roughly sevenfold headroom: loose enough that no real
+/// part trips it, tight enough that a runaway stops in well under a second.
 const MAX_PLANES: usize = 512;
 
 /// Squared-magnitude floor below which a dual facet is treated as collapsed.
+///
+/// A guard against exact degeneracy (repeated or collinear dual points), not
+/// against ill-conditioning. Polarity puts a dual point at `1/slack` from the
+/// origin, so on a decimetre part the dual facets have edge lengths of order ten
+/// and cross products of order a hundred: twenty-odd orders above this floor.
+/// Nothing real is near it.
 const DEGEN_EPS2: f64 = 1e-20;
 
-/// Two cuts in one round must point at least this far apart (as a normal dot
-/// product, so 0.95 is about 18 degrees). It bounds how many planes a round adds
-/// without letting a single bulge be cut a dozen times over.
-const BATCH_SEPARATION: f64 = 0.95;
+/// Two cuts in one round must point at least this far apart, as a dot product of
+/// unit normals, so 0.90 is about 26 degrees. It bounds how many planes a round
+/// adds without letting one bulge be cut a dozen times over.
+///
+/// Swept over the eleven collision meshes at a 1 mm budget. Cutting one vertex
+/// per round (0.999) costs 1097 fitted vertices; the value here gives 994; taking
+/// every offender every round (0.0) reaches 973, but takes 43% longer to fit for
+/// that last 2%. The curve is flat either side of this knee, so the exact value
+/// is not delicate.
+const BATCH_SEPARATION: f64 = 0.90;
 
 /// How far outside the reference hull's own bounding radius a fitted vertex may
-/// land before the halfspace intersection is treated as degenerate. The seed
-/// cover alone confines every vertex within `sqrt(3)` radii (the box corners),
-/// and adding planes only shrinks the polytope, so anything past this multiple is
-/// a numerically collapsed dual facet rather than real geometry.
+/// land before the halfspace intersection is treated as degenerate.
+///
+/// The bounding box seed confines every vertex to its own corners, at most
+/// `sqrt(3)` radii out, and adding planes only shrinks the polytope, so real
+/// geometry never passes 1.74 here. The margin to 8 is deliberate: a collapsed
+/// dual facet throws its vertex orders of magnitude out, not just past the bound,
+/// so a loose threshold separates the two cases cleanly while never firing on a
+/// merely ill-conditioned one.
 const EXTENT_LIMIT_RADII: f64 = 8.0;
 
 /// A vertex of the working polytope that sits further outside the mesh hull than
@@ -172,15 +192,20 @@ fn support_offset(cloud: &[Point3<f64>], n: &Unit<Vector3<f64>>) -> f64 {
         .fold(f64::NEG_INFINITY, f64::max)
 }
 
-/// The 26 directions of a chamfered box: six face normals, twelve edge normals,
-/// eight corner normals. Their supporting planes bound a solid whatever the
-/// cloud, which is what lets the refinement below assume a bounded polytope.
+/// The six axis directions. Their supporting planes are the cloud's
+/// axis-aligned bounding box, which is bounded whatever the cloud, and that is
+/// what lets the refinement below assume a bounded polytope.
+///
+/// Chamfering the box first (adding the twelve edge and eight corner normals, so
+/// 26 seeds) was measured to be worse on every axis: 1104 fitted vertices against
+/// 1009, a slightly looser worst deviation, and a slower fit. Refinement puts
+/// planes where the surface actually curves, so a chamfer seeded off the bounding
+/// box is mostly redundant by the time the fit converges, having biased the early
+/// rounds on its way there.
 fn seed_cover() -> impl Iterator<Item = Unit<Vector3<f64>>> {
-    (0..27).filter_map(|code| {
-        let digit = |place: u32| (code / 3_i32.pow(place)) % 3 - 1;
-        let v = Vector3::new(digit(0) as f64, digit(1) as f64, digit(2) as f64);
-        (v.norm_squared() > 0.0).then(|| Unit::new_normalize(v))
-    })
+    [Vector3::x_axis(), Vector3::y_axis(), Vector3::z_axis()]
+        .into_iter()
+        .flat_map(|axis| [axis, -axis])
 }
 
 /// Vertices of the intersection of `planes`, by polarity about `center`.

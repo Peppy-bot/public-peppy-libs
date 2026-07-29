@@ -31,13 +31,17 @@ use std::collections::VecDeque;
 
 use srs_model::nalgebra::{Point3, Vector3};
 
-/// A point in front of a facet by more than this (metres) is outside it. At
-/// 1e-9 a point counts as inside only when it is inside to within a nanometre,
-/// far under any millimetre-scale safety threshold.
+/// A point in front of a facet by more than this (metres) is outside it. At 1e-9
+/// a point counts as inside only when it is inside to within a nanometre, far
+/// under any millimetre-scale safety threshold, while still sitting some seven
+/// orders above the rounding of a decimetre coordinate in `f64`, so it absorbs
+/// predicate noise without absorbing geometry.
 const FRONT_EPS: f64 = 1e-9;
 
 /// Degenerate area/length guard: a facet or spanning direction below this in
-/// squared magnitude is treated as collapsed.
+/// squared magnitude is treated as collapsed. Squared, so it trips at 1e-10 in
+/// length: a triangle that thin bounds no surface at collision-mesh scale, and
+/// nothing this crate builds comes near it except an exactly repeated point.
 const DEGEN_EPS2: f64 = 1e-20;
 
 /// The convex hull as outward-oriented triangles over a deduplicated vertex
@@ -114,8 +118,10 @@ pub fn exact_hull(points: &[Point3<f64>]) -> Result<ConvexHull, String> {
         claim(idx, points, &mut facets, &seeded);
     }
 
-    // Each round folds in one new hull vertex, so a cloud of n points needs at
-    // most n rounds; the cap only backstops a numerical stall.
+    // A round either folds in one new hull vertex or discards one apex it could
+    // not stitch, and both are one-way, so 2n rounds covers a cloud of n points.
+    // The constant carries the smallest clouds, where the seed already spends
+    // four. This only backstops a numerical stall; real meshes finish far inside.
     let max_rounds = points.len() * 2 + 16;
     let mut rounds = 0;
     let mut alive = facets.len();
@@ -179,8 +185,11 @@ pub fn exact_hull(points: &[Point3<f64>]) -> Result<ConvexHull, String> {
 
         // Deleted facets are only marked, so the visibility scan would otherwise
         // grow with the whole construction history rather than the live surface.
-        // Compacting once the dead outnumber the living keeps that scan, and so
-        // the whole build, linear in the hull rather than in its history.
+        // Compacting once the dead outnumber the living three to one keeps that
+        // scan, and so the whole build, linear in the hull rather than in its
+        // history, while being rare enough that the copying stays amortised. The
+        // floor of 16 stops a hull that is still only a few facets from
+        // compacting on every round.
         if facets.len() > 4 * alive.max(16) {
             facets.retain(|f| f.alive);
             alive = facets.len();
