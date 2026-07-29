@@ -245,7 +245,7 @@ fn rest_pose_clearance_is_stable() {
     // clearance. Pinned to the measured value as a two-sided regression guard: a
     // re-fit that moves the rest clearance in either direction trips this, so update
     // the constant when the geometry deliberately changes.
-    const REST_CLEARANCE_M: f64 = 0.0241;
+    const REST_CLEARANCE_M: f64 = 0.0331;
     const TOLERANCE_M: f64 = 0.001;
     let mut m = model();
     let p = m.min_distance(&HOME, &HOME).expect("query");
@@ -422,6 +422,72 @@ fn old_box_phantom_volumes_are_outside_the_torso_pieces() {
             "phantom probe {probe:?} clears the pieces by {clearance:+.4}, need {margin}"
         );
     }
+}
+
+/// What the fit costs and buys, per piece and in total. Not an assertion: the
+/// numbers are the deliverable, so run it deliberately.
+///
+/// ```sh
+/// cargo test --release --test dual_arm fit_cost_report -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "measurement probe, not a pass/fail check"]
+fn fit_cost_report() {
+    let build_start = std::time::Instant::now();
+    let mut m = model();
+    let build = build_start.elapsed();
+
+    let mut rows: Vec<(String, usize, usize, f64)> = m
+        .world_pieces(&HOME, &HOME)
+        .expect("pieces")
+        .into_iter()
+        .map(|(name, ps)| {
+            let vertices = ps.iter().map(|p| p.vertices.len()).sum();
+            let radius = ps.iter().map(|p| p.radius).fold(0.0, f64::max);
+            (name.to_string(), ps.len(), vertices, radius)
+        })
+        .collect();
+    rows.sort_by_key(|r| std::cmp::Reverse(r.2));
+    let (pieces, vertices) = rows.iter().fold((0, 0), |(p, v), r| (p + r.1, v + r.2));
+    let radius = rows.iter().map(|r| r.3).fold(0.0, f64::max);
+
+    println!("\nbody                             pieces  vertices  radius (mm)");
+    for (name, p, v, r) in &rows {
+        println!("{name:32} {p:6} {v:9} {:12.3}", r * 1000.0);
+    }
+    println!(
+        "{:32} {pieces:6} {vertices:9} {:12.3}",
+        "TOTAL",
+        radius * 1000.0
+    );
+
+    // An in-band pose, the regime the governor actually queries in.
+    let (ql, qr) = (
+        [0.0, 0.0, 1.2, 0.4, 0.0, 0.0, 0.0],
+        [0.0, 0.0, -1.2, 0.4, 0.0, 0.0, 0.0],
+    );
+    m.set_gripper_openings(0.0, 0.0);
+    let d = m.min_distance(&ql, &qr).expect("query").distance;
+    const ITERATIONS: usize = 2000;
+    let start = std::time::Instant::now();
+    let mut acc = 0.0;
+    for _ in 0..ITERATIONS {
+        acc += m.min_distance(&ql, &qr).expect("query").distance;
+    }
+    let per_query = start.elapsed().as_secs_f64() / ITERATIONS as f64;
+    let rest = std::time::Instant::now();
+    for _ in 0..ITERATIONS {
+        acc += m.min_distance(&HOME, &HOME).expect("query").distance;
+    }
+    let per_rest = rest.elapsed().as_secs_f64() / ITERATIONS as f64;
+    println!("separated (HOME) query {:.1} us", per_rest * 1e6);
+    assert!(acc.is_finite());
+    println!(
+        "\nbuild {:.0} ms | in-band query {:.1} us (d={d:+.5} m) | rest clearance {:+.5} m\n",
+        build.as_secs_f64() * 1e3,
+        per_query * 1e6,
+        m.min_distance(&HOME, &HOME).expect("query").distance
+    );
 }
 
 /// Wall-clock budget: a full dual-arm query must stay far inside a control

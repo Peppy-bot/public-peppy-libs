@@ -1,8 +1,11 @@
 //! Runtime self-collision detection for a bimanual arm.
 //!
 //! Every link is conservatively wrapped, at model construction, in a small set
-//! of convex hulls decomposed from its URDF collision mesh (most links one
-//! hull, a concave body like the torso a few). At runtime the only geometry is
+//! of convex hulls fitted from its URDF collision mesh (most links one hull, a
+//! concave body like the torso a few). Each hull is the intersection of planes
+//! that support the mesh, so it encloses the geometry by construction, and the
+//! fit adds planes until the widest gap between hull surface and mesh is inside a
+//! millimetre budget. At runtime the only geometry is
 //! Gilbert-Johnson-Keerthi distance between hulls, with EPA recovering
 //! penetration depth on overlap, so the signed distance is continuous through
 //! contact and cheap enough for every control tick.
@@ -30,6 +33,7 @@ mod gjk;
 mod hull;
 mod model;
 mod pairs;
+mod simplify;
 mod stl;
 // `urdf_collision` stays public: the `visualize` example loads meshes through it.
 pub mod urdf_collision;

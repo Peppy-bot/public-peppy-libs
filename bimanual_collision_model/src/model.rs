@@ -216,9 +216,10 @@ pub struct DistanceGradient<'a> {
 }
 
 /// One hull piece placed in the world: the vertices, the face triangles
-/// indexing them, and the inflation `radius` swept around the core to recover
-/// the mesh. Enough to draw the true rounded collision surface (offset faces
-/// plus edge and vertex fillets); runtime queries never materialize this.
+/// indexing them, and any `radius` swept around that core. Enough to draw the
+/// exact collision surface: the offset faces, plus edge and vertex fillets when
+/// the radius is nonzero. A circumscribing fit needs no sweep to contain its
+/// mesh, so its pieces report zero. Runtime queries never materialize this.
 pub struct PlacedPiece {
     pub vertices: Vec<Point3<f64>>,
     pub faces: Vec<[usize; 3]>,

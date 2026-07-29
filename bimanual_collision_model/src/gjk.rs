@@ -823,7 +823,7 @@ mod tests {
                 }
             }
         }
-        Hull::new(&crate::hull::convex_hull(&verts).expect("box hull"), radius).expect("box")
+        Hull::new(&crate::hull::exact_hull(&verts).expect("box hull"), radius).expect("box")
     }
 
     #[test]
@@ -893,7 +893,7 @@ mod tests {
                     )
                 })
                 .collect();
-            Hull::new(&crate::hull::convex_hull(&verts).expect("hull"), 0.0).expect("blob")
+            Hull::new(&crate::hull::exact_hull(&verts).expect("hull"), 0.0).expect("blob")
         };
         let a = blob(pt(0.0, 0.0, 0.0));
         let (mut prev, mut crossed) = (None, false);

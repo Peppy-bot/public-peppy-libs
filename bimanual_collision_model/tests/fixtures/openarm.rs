@@ -5,9 +5,9 @@
 //! shoulder skirt, a diagonal gusset, a thin central column, and a tapering
 //! head. Its auto-fit single hull bridges those into one bulging solid that
 //! clips the grippers at rest. These clip regions decompose it instead; each
-//! region's slice of the mesh gets the same rounded simplified-hull fit a link
-//! gets, so every piece tracks the mesh surface. Supply them via
-//! [`Builder::regions`] for the torso body.
+//! region's slice of the mesh gets the same circumscribing fit a link gets, so
+//! every piece tracks the mesh surface. Supply them via [`Builder::regions`] for
+//! the torso body.
 //!
 //! Feature extents measured from the collision mesh (`body_link0_symp.stl`,
 //! mm, root frame):

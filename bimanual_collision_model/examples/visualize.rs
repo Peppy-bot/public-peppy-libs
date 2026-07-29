@@ -15,15 +15,15 @@
 //! at that opening, so the scene shows the true finger positions rather than the
 //! full swept envelope.
 //!
-//! The rendered solids are the true rounded collision surface, not the bare
-//! cores: each hull piece is drawn as its faces offset outward by the inflation
-//! radius, with cylinders along its edges and spheres at its vertices filling
-//! the fillets (the Minkowski sum of the hull with a ball, which is what the
-//! distance query actually measures against). `--wireframes` overlays the
-//! source meshes underneath, so the gap between mesh and rounded surface is the
-//! conservative margin, visible directly. The closest pair is highlighted with
-//! the GJK/EPA witness segment; the HUD shows the signed minimum distance
-//! against the band thresholds.
+//! The rendered solids are exactly what the distance query measures against.
+//! A circumscribing fit carries no rounding, so a piece draws as its bare
+//! polytope faces; a piece that does carry a rounding radius additionally gets
+//! cylinders along its edges and spheres at its vertices, filling the fillets of
+//! the hull's Minkowski sum with a ball. `--wireframes` overlays the source
+//! meshes underneath, so the gap between mesh and piece surface is the fit's
+//! slack, visible directly. The closest pair is highlighted with the GJK/EPA
+//! witness segment; the HUD shows the signed minimum distance against the band
+//! thresholds.
 use std::collections::HashSet;
 
 use bimanual_collision_model::nalgebra::{Point3, Vector3};
@@ -324,11 +324,12 @@ fn decimate(verts: &[Point3<f64>]) -> Vec<Point3<f64>> {
         .collect()
 }
 
-/// One rounded hull piece as render data: the faces offset outward by the
-/// inflation radius (the flat caps), the bare vertices (sphere centres), and the
-/// unique edges (cylinder axes). The browser sweeps a ball of `radius` over the
-/// edges and vertices, so caps + edge cylinders + vertex spheres union into the
-/// exact rounded surface the distance query sees.
+/// One hull piece as render data: the faces offset outward by any rounding
+/// radius (the flat caps), the bare vertices (sphere centres), and the unique
+/// edges (cylinder axes). The browser sweeps a ball of `radius` over the edges
+/// and vertices, so caps + edge cylinders + vertex spheres union into the exact
+/// surface the distance query sees. At `radius == 0` the caps alone are that
+/// surface and the browser draws no fillets.
 fn rounded_piece_json(p: &PlacedPiece, side: &str, hit: bool) -> serde_json::Value {
     let centroid = Point3::from(
         p.vertices
