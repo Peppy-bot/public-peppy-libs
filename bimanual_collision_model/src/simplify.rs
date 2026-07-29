@@ -6,20 +6,32 @@
 //! therefore structural, not something a sweep radius has to rescue afterwards,
 //! and the fit reports a true clearance instead of one shrunk by an inflation.
 //!
-//! The plane set is chosen by greedy worst-case refinement. Start from the
+//! The plane set is chosen by estimate refinement (Kamenev 1992), the cutting
+//! scheme for outer polyhedral approximation of a convex body: start from the
 //! cloud's axis-aligned bounding box (six supporting planes, bounded by
-//! construction), then repeatedly find the vertex of the current polytope that
+//! construction), then repeatedly take the vertex of the current polytope that
 //! sits furthest outside the mesh's convex hull and cut it off with the
 //! supporting plane whose normal points from the hull to that vertex. That plane
-//! touches the hull exactly at the vertex's nearest point, so
-//! it drives that deviation to zero, and the loop stops once the worst remaining
-//! deviation is inside the caller's budget. Faces land where the surface curves
-//! and nowhere else: a flat needs one plane however large it is.
+//! touches the hull exactly at the vertex's nearest point, so it drives that
+//! deviation to zero, and the loop stops once the worst remaining deviation is
+//! inside the caller's budget. Faces land where the surface curves and nowhere
+//! else: a flat needs one plane however large it is, and the scheme is known to
+//! grow vertices and facets at the optimal order in the approximation error.
+//!
+//! Refining outward to an error budget is chosen over decimating the exact hull
+//! down to a face count, which is the other standard route. The budget is a
+//! Hausdorff distance, so it bounds the quantity a proximity governor is exposed
+//! to; minimising added volume for a fixed face count does not, and can spend its
+//! whole error on one spike.
 //!
 //! Deviation is measured as true Euclidean distance to the hull, never as a
 //! face-plane violation. The plane metric understates the distance from a point
 //! off an edge or a corner (by `1/sqrt(2)` at a right angle), so budgeting
 //! against it would quietly overshoot.
+//!
+//! G. K. Kamenev, "A class of adaptive algorithms for approximation of convex
+//! bodies by polyhedra", Zh. Vychisl. Mat. Mat. Fiz. 32(1):136-152, 1992;
+//! translated in Computational Mathematics and Mathematical Physics 32:114-127.
 
 use std::cell::Cell;
 
