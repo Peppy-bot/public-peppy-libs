@@ -425,7 +425,7 @@ const grid = new THREE.GridHelper(2,20,0x3a3f4a,0x262a33); grid.rotation.x = Mat
 scene.add(new THREE.AxesHelper(0.25));
 const COL = { left:0x4f8fde, right:0x53b97a, fixed:0x8a8f9c };
 const UP = new THREE.Vector3(0, 1, 0);
-// Each piece is the rounded hull: faces offset outward by the radius (caps),
+// Each piece is its collision surface: faces offset outward by any radius (caps),
 // cylinders along the edges, and spheres at the vertices fill the fillets.
 for (const b of DATA.bodies) {
   const color = b.hit ? (DATA.distance <= 0 ? 0xe03c3c : 0xe2902f) : COL[b.side];
@@ -478,7 +478,7 @@ document.getElementById('hud').innerHTML =
   `<span><i class="dot" style="background:#53b97a"></i>right</span>` +
   `<span><i class="dot" style="background:#8a8f9c"></i>fixed</span>` +
   `<span><i class="dot" style="background:#e2902f"></i>closest pair</span>` +
-  `<span>solid = rounded hull (collision surface)</span>` +
+  `<span>solid = collision surface</span>` +
   `${DATA.meshes.length ? '<span>wireframe = source mesh</span>' : ''}</div>`;
 addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
