@@ -15,15 +15,17 @@
 //! at that opening, so the scene shows the true finger positions rather than the
 //! full swept envelope.
 //!
-//! The rendered solids are the true rounded collision surface, not the bare
-//! cores: each hull piece is drawn as its faces offset outward by the inflation
-//! radius, with cylinders along its edges and spheres at its vertices filling
-//! the fillets (the Minkowski sum of the hull with a ball, which is what the
-//! distance query actually measures against). `--wireframes` overlays the
-//! source meshes underneath, so the gap between mesh and rounded surface is the
-//! conservative margin, visible directly. The closest pair is highlighted with
-//! the GJK/EPA witness segment; the HUD shows the signed minimum distance
-//! against the band thresholds.
+//! A circumscribing fit carries no rounding, so a piece draws as its bare
+//! polytope faces, which is exactly the surface the distance query measures
+//! against. A piece that does carry a rounding radius additionally gets cylinders
+//! along its edges and spheres at its vertices, standing in for the fillets of
+//! the hull's Minkowski sum with a ball; those are tessellated, so that surface is
+//! drawn to within the tessellation while GJK measures the true one.
+//! `--wireframes` overlays the source
+//! meshes underneath, so the gap between mesh and piece surface is the fit's
+//! slack, visible directly. The closest pair is highlighted with the GJK/EPA
+//! witness segment; the HUD shows the signed minimum distance against the band
+//! thresholds.
 use std::collections::HashSet;
 
 use bimanual_collision_model::nalgebra::{Point3, Vector3};
@@ -324,11 +326,13 @@ fn decimate(verts: &[Point3<f64>]) -> Vec<Point3<f64>> {
         .collect()
 }
 
-/// One rounded hull piece as render data: the faces offset outward by the
-/// inflation radius (the flat caps), the bare vertices (sphere centres), and the
-/// unique edges (cylinder axes). The browser sweeps a ball of `radius` over the
-/// edges and vertices, so caps + edge cylinders + vertex spheres union into the
-/// exact rounded surface the distance query sees.
+/// One hull piece as render data: the faces offset outward by any rounding
+/// radius (the flat caps), the bare vertices (sphere centres), and the unique
+/// edges (cylinder axes). At `radius == 0` the caps alone are the surface the
+/// distance query sees, drawn exactly and with no fillets. Otherwise the browser
+/// sweeps a ball of `radius` over the edges and vertices, so caps + edge
+/// cylinders + vertex spheres union into that surface up to the tessellation of
+/// the spheres and cylinders.
 fn rounded_piece_json(p: &PlacedPiece, side: &str, hit: bool) -> serde_json::Value {
     let centroid = Point3::from(
         p.vertices
@@ -421,11 +425,14 @@ const grid = new THREE.GridHelper(2,20,0x3a3f4a,0x262a33); grid.rotation.x = Mat
 scene.add(new THREE.AxesHelper(0.25));
 const COL = { left:0x4f8fde, right:0x53b97a, fixed:0x8a8f9c };
 const UP = new THREE.Vector3(0, 1, 0);
-// Each piece is the rounded hull: faces offset outward by the radius (caps),
+// Each piece is its collision surface: faces offset outward by any radius (caps),
 // cylinders along the edges, and spheres at the vertices fill the fillets.
 for (const b of DATA.bodies) {
   const color = b.hit ? (DATA.distance <= 0 ? 0xe03c3c : 0xe2902f) : COL[b.side];
-  const mat = new THREE.MeshStandardMaterial({ color, transparent:true, opacity: b.hit ? 0.5 : 0.3, depthWrite:false, roughness:0.6, side:THREE.DoubleSide });
+  // Faint enough to read the source mesh through the proxy: the gap between the
+  // two is the whole point of the scene, so the proxy tints the geometry rather
+  // than hiding it.
+  const mat = new THREE.MeshStandardMaterial({ color, transparent:true, opacity: b.hit ? 0.35 : 0.20, depthWrite:false, roughness:0.6, side:THREE.DoubleSide });
   if (b.caps.length) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(b.caps, 3));
@@ -459,7 +466,7 @@ for (const b of DATA.bodies) {
 for (const w of DATA.meshes) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(w.positions, 3));
-  scene.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color:0x6b7280, wireframe:true })));
+  scene.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color:0xc2c8d2, wireframe:true })));
 }
 { const [a,b] = DATA.witness.map(p => new THREE.Vector3(...p));
   scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([a,b]), new THREE.LineBasicMaterial({ color:0xff5a5a })));
@@ -471,7 +478,7 @@ document.getElementById('hud').innerHTML =
   `<span><i class="dot" style="background:#53b97a"></i>right</span>` +
   `<span><i class="dot" style="background:#8a8f9c"></i>fixed</span>` +
   `<span><i class="dot" style="background:#e2902f"></i>closest pair</span>` +
-  `<span>solid = rounded hull (collision surface)</span>` +
+  `<span>solid = collision surface</span>` +
   `${DATA.meshes.length ? '<span>wireframe = source mesh</span>' : ''}</div>`;
 addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });

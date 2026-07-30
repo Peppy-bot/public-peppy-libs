@@ -8,14 +8,22 @@ use srs_model::nalgebra::Point3;
 
 use crate::clip::ClipRegion;
 use crate::gjk::{self, Hull};
-use crate::hull::{ConvexHull, simplified_hull};
+use crate::hull::ConvexHull;
+use crate::simplify::circumscribe;
 use crate::urdf_collision::{ParentJoint, UrdfCollisions};
 use crate::{BuildError, ContainmentFailure};
 
-/// Grid cell for hull simplification: points are welded onto this grid before
-/// hulling, recovered by each hull's inflation radius, so a 68k-vertex link
-/// builds fast and its support stays cheap.
-const SIMPLIFY_CELL: f64 = 0.004;
+/// How much slack a fitted piece may carry: the widest gap (metres) from its own
+/// surface inward to the mesh's convex hull.
+///
+/// A piece always encloses its mesh, at any budget, because every plane of the
+/// fit is a supporting plane of the mesh cloud. So this is never a leak; it is
+/// the opposite, the worst amount by which a piece is *larger* than the geometry
+/// it stands in for. That excess is clearance the arms give away, since the
+/// governor sees the piece and not the part, which is why it sits an order of
+/// magnitude under the millimetre-scale bands tuned over it. The face count
+/// needed to hold it falls out of how much the surface curves.
+const MAX_DEVIATION_M: f64 = 0.001;
 /// A mesh point counts as inside a supplied hull when its signed distance is
 /// within this of the surface (metres), so on-boundary points pass.
 const CONTAIN_TOL: f64 = 1e-6;
@@ -224,19 +232,28 @@ fn vertex_centroid(verts: &[Point3<f64>]) -> Point3<f64> {
     Point3::from(sum / verts.len().max(1) as f64)
 }
 
-/// The hulls for one body. Without an override: a single simplified hull of the
-/// vertex cloud. With supplied clip regions (a concave body): the mesh surface
-/// is clipped to each region and every clipped slice gets the same rounded
-/// simplified-hull fit, so the pieces track the mesh exactly as the links do,
-/// then the union is verified to contain the mesh.
+/// The hulls for one body. Without an override: a single circumscribing fit of
+/// the vertex cloud. With supplied clip regions (a concave body): the mesh
+/// surface is clipped to each region and every clipped slice gets the same fit,
+/// so the pieces track the mesh exactly as the links do, then the union is
+/// verified to contain the mesh.
+///
+/// The fit's planes support the mesh, so each piece contains its own cloud by
+/// construction and the pieces carry no inflation radius: the reported distance
+/// is the surface clearance less at most [`MAX_DEVIATION_M`], not one shrunk by a
+/// sweep around a shape too coarse to follow the mesh.
 fn fit_body(
     name: &str,
     verts: &[Point3<f64>],
     supplied: &HashMap<String, Vec<ClipRegion>>,
 ) -> Result<Vec<Hull>, BuildError> {
     let Some(regions) = supplied.get(name) else {
-        let rounded = simplified_hull(verts, SIMPLIFY_CELL)?;
-        return Ok(vec![Hull::new(&rounded.hull, rounded.radius)?]);
+        let fit =
+            circumscribe(verts, MAX_DEVIATION_M).map_err(|reason| BuildError::DegenerateBody {
+                body: name.to_string(),
+                reason,
+            })?;
+        return Ok(vec![Hull::new(&fit.hull, 0.0)?]);
     };
     if regions.is_empty() {
         return Err(BuildError::EmptyRegions {
@@ -246,14 +263,14 @@ fn fit_body(
     let mut hulls = Vec::with_capacity(regions.len());
     for (index, region) in regions.iter().enumerate() {
         let points = region.clip_triangles(verts);
-        let rounded = simplified_hull(&points, SIMPLIFY_CELL).map_err(|reason| {
+        let fit = circumscribe(&points, MAX_DEVIATION_M).map_err(|reason| {
             BuildError::DegenerateRegion {
                 body: name.to_string(),
                 index,
                 reason,
             }
         })?;
-        hulls.push(Hull::new(&rounded.hull, rounded.radius)?);
+        hulls.push(Hull::new(&fit.hull, 0.0)?);
     }
     verify_contains(name, &hulls, verts)?;
     Ok(hulls)
@@ -373,7 +390,7 @@ fn min_altitude(t: &[Point3<f64>; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hull::convex_hull;
+    use crate::hull::exact_hull;
 
     /// A solid box hull (radius 0) from its min/max corner.
     fn box_hull(min: [f64; 3], max: [f64; 3]) -> Hull {
@@ -383,7 +400,7 @@ mod tests {
                 Point3::new(pick(0, 0), pick(1, 1), pick(2, 2))
             })
             .collect();
-        Hull::new(&convex_hull(&corners).expect("box hull"), 0.0).expect("hull")
+        Hull::new(&exact_hull(&corners).expect("box hull"), 0.0).expect("hull")
     }
 
     /// Two boxes with an empty gap in z, the case a vertex-only check gets wrong.
