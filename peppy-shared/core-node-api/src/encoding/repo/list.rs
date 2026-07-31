@@ -1,3 +1,5 @@
+use std::fmt;
+
 use capnp::message::Builder;
 
 use crate::encoding::repo::add::RepoSourceKind;
@@ -64,15 +66,49 @@ pub struct RepoListRepoEntry {
     /// `true` when the entries listed for this repository come from an
     /// earlier read because its most recent one failed.
     pub retained: bool,
-    /// `None` when the last read succeeded, otherwise `"unreachable"` or
-    /// `"conflict"` with the detail. An outage and a content bug are
-    /// never collapsed into one label.
+    /// `None` when the last read succeeded, otherwise the failure kind
+    /// with its detail. An outage and a content bug are never collapsed
+    /// into one label.
     pub failure: Option<RepoListRepoFailure>,
+}
+
+/// Why a repository's last read failed. Closed on purpose: an outage and
+/// a content bug send the user to completely different places, and a
+/// third kind would have to earn its own recovery path first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RepoListRepoFailureKind {
+    /// The repository could not be reached (network, auth, missing path).
+    Unreachable,
+    /// The repository was read, but its contents do not resolve.
+    Conflict,
+}
+
+impl RepoListRepoFailureKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RepoListRepoFailureKind::Unreachable => "unreachable",
+            RepoListRepoFailureKind::Conflict => "conflict",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "unreachable" => Some(RepoListRepoFailureKind::Unreachable),
+            "conflict" => Some(RepoListRepoFailureKind::Conflict),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for RepoListRepoFailureKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoListRepoFailure {
-    pub kind: String,
+    pub kind: RepoListRepoFailureKind,
     pub detail: String,
 }
 
@@ -137,7 +173,7 @@ impl RepoListResponse {
                 entry.set_last_read_unix_secs(repo.last_read_unix_secs.unwrap_or(0));
                 entry.set_retained(repo.retained);
                 if let Some(ref failure) = repo.failure {
-                    entry.set_failure_kind(&failure.kind);
+                    entry.set_failure_kind(failure.kind.as_str());
                     entry.set_failure_detail(&failure.detail);
                 }
             }
@@ -175,12 +211,17 @@ impl RepoListResponse {
             let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
                 crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
             })?;
-            let failure = optional_text(entry.get_failure_kind()?.to_str()?).map(|kind| {
-                Ok::<_, crate::Error>(RepoListRepoFailure {
-                    kind,
+            // The empty kind is the "read succeeded" sentinel; anything
+            // else has to be one of the two kinds we know how to route.
+            let failure = match entry.get_failure_kind()?.to_str()? {
+                "" => None,
+                kind => Some(RepoListRepoFailure {
+                    kind: RepoListRepoFailureKind::parse(kind).ok_or_else(|| {
+                        crate::Error::Decoding(format!("unknown repo failure kind: {kind}"))
+                    })?,
                     detail: entry.get_failure_detail()?.to_str()?.to_owned(),
-                })
-            });
+                }),
+            };
             let last_read = entry.get_last_read_unix_secs();
             repos.push(RepoListRepoEntry {
                 id: entry.get_id(),
@@ -188,7 +229,7 @@ impl RepoListResponse {
                 source_type,
                 last_read_unix_secs: (last_read != 0).then_some(last_read),
                 retained: entry.get_retained(),
-                failure: failure.transpose()?,
+                failure,
             });
         }
         Ok(Self {
@@ -260,27 +301,27 @@ mod tests {
     fn list_response_success_round_trips_multiple_entries() {
         let response = RepoListResponse::success(
             vec![
-            sample_entry(),
-            RepoListNodeEntry {
-                node_name: "camera".to_owned(),
-                node_tag: "latest".to_owned(),
-                source_type: RepoSourceKind::Git,
-                path: "nodes/camera".to_owned(),
-                duplicate: true,
-                repo_id: 42,
-                repo_label: "https://github.com/org/repo (ref: main)".to_owned(),
-                conflict: false,
-            },
-            RepoListNodeEntry {
-                node_name: "lidar".to_owned(),
-                node_tag: "v2".to_owned(),
-                source_type: RepoSourceKind::Url,
-                path: "https://example.com/packages/lidar".to_owned(),
-                duplicate: false,
-                repo_id: 3,
-                repo_label: "https://example.com/packages".to_owned(),
-                conflict: true,
-            },
+                sample_entry(),
+                RepoListNodeEntry {
+                    node_name: "camera".to_owned(),
+                    node_tag: "latest".to_owned(),
+                    source_type: RepoSourceKind::Git,
+                    path: "nodes/camera".to_owned(),
+                    duplicate: true,
+                    repo_id: 42,
+                    repo_label: "https://github.com/org/repo (ref: main)".to_owned(),
+                    conflict: false,
+                },
+                RepoListNodeEntry {
+                    node_name: "lidar".to_owned(),
+                    node_tag: "v2".to_owned(),
+                    source_type: RepoSourceKind::Url,
+                    path: "https://example.com/packages/lidar".to_owned(),
+                    duplicate: false,
+                    repo_id: 3,
+                    repo_label: "https://example.com/packages".to_owned(),
+                    conflict: true,
+                },
             ],
             vec![
                 sample_repo(),
@@ -291,7 +332,7 @@ mod tests {
                     last_read_unix_secs: Some(1_753_900_000),
                     retained: true,
                     failure: Some(RepoListRepoFailure {
-                        kind: "unreachable".to_owned(),
+                        kind: RepoListRepoFailureKind::Unreachable,
                         detail: "network is unreachable".to_owned(),
                     }),
                 },
@@ -302,6 +343,17 @@ mod tests {
                     last_read_unix_secs: None,
                     retained: false,
                     failure: None,
+                },
+                RepoListRepoEntry {
+                    id: 9,
+                    label: "/abs/other".to_owned(),
+                    source_type: RepoSourceKind::Fs,
+                    last_read_unix_secs: Some(1_753_900_001),
+                    retained: true,
+                    failure: Some(RepoListRepoFailure {
+                        kind: RepoListRepoFailureKind::Conflict,
+                        detail: "robot:v1 claimed twice".to_owned(),
+                    }),
                 },
             ],
         );
@@ -360,6 +412,55 @@ mod tests {
         let payload = encode_message(&builder).expect("encode raw response");
         let err = RepoListResponse::decode(payload.as_ref())
             .expect_err("unknown source type must be rejected");
+        assert!(
+            matches!(err, crate::Error::Decoding(_)),
+            "expected Decoding error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn repo_failure_kind_as_str_parse_round_trip() {
+        for kind in [
+            RepoListRepoFailureKind::Unreachable,
+            RepoListRepoFailureKind::Conflict,
+        ] {
+            assert_eq!(RepoListRepoFailureKind::parse(kind.as_str()), Some(kind));
+        }
+        assert_eq!(RepoListRepoFailureKind::Unreachable.as_str(), "unreachable");
+        assert_eq!(RepoListRepoFailureKind::Conflict.as_str(), "conflict");
+        assert_eq!(RepoListRepoFailureKind::Conflict.to_string(), "conflict");
+    }
+
+    #[test]
+    fn repo_failure_kind_parse_rejects_unknown() {
+        // The empty kind is the "read succeeded" sentinel, handled by the
+        // decoder rather than by this mapping.
+        assert_eq!(RepoListRepoFailureKind::parse(""), None);
+        assert_eq!(RepoListRepoFailureKind::parse("timeout"), None);
+        assert_eq!(RepoListRepoFailureKind::parse("Unreachable"), None);
+    }
+
+    #[test]
+    fn list_response_decode_rejects_unknown_failure_kind() {
+        // A peer that invents a failure kind is rejected rather than
+        // silently handed to a caller that has no recovery path for it.
+        let mut builder = Builder::new_default();
+        {
+            let mut response = builder.init_root::<repo_capnp::repo_list_response::Builder>();
+            response.set_success(true);
+            let mut repos = response.init_repos(1);
+            let mut entry = repos.reborrow().get(0);
+            entry.set_id(1);
+            entry.set_label("/abs/repo");
+            entry.set_source_type("fs");
+            entry.set_last_read_unix_secs(0);
+            entry.set_retained(false);
+            entry.set_failure_kind("timeout");
+            entry.set_failure_detail("took too long");
+        }
+        let payload = encode_message(&builder).expect("encode raw response");
+        let err = RepoListResponse::decode(payload.as_ref())
+            .expect_err("unknown failure kind must be rejected");
         assert!(
             matches!(err, crate::Error::Decoding(_)),
             "expected Decoding error, got {err:?}"

@@ -132,6 +132,24 @@ mod tests {
         assert_eq!(decoded, response);
         assert!(decoded.success);
         assert!(decoded.error_message.is_empty());
+        assert!(decoded.refresh_report.is_empty());
+    }
+
+    #[test]
+    fn remove_response_success_with_refresh_report_round_trips() {
+        // The edit landed and the re-index complained: both halves have to
+        // survive the wire, or the recovery path reads as a clean success.
+        let response =
+            RepoRemoveResponse::success_with_refresh_report("repo 3 unreachable: network is down");
+        let payload = response.encode().expect("encode");
+        let decoded = RepoRemoveResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+        assert!(decoded.success);
+        assert!(decoded.error_message.is_empty());
+        assert_eq!(
+            decoded.refresh_report,
+            "repo 3 unreachable: network is down"
+        );
     }
 
     #[test]
