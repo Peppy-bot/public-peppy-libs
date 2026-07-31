@@ -44,51 +44,49 @@ pub fn create_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     .render()
     .expect("failed to render controller template");
 
-    let uvc_path = Path::new("nodes/uvc_camera/peppy.json5");
-    let lidar_path = Path::new("nodes/lidar_sensor/peppy.json5");
-    let web_path = Path::new("nodes/web_video_stream/peppy.json5");
-    let brain_path = Path::new("nodes/brain/peppy.json5");
-    let controller_path = Path::new("nodes/controller/peppy.json5");
+    // Sorted by node name so the repository index below is written in the
+    // same deterministic order `peppy repo index` would produce.
+    let nodes = [
+        (BRAIN_NODE_NAME, brain_content),
+        (CONTROLLER_NODE_NAME, controller_content),
+        (LIDAR_SENSOR_NODE_NAME, lidar_content),
+        (UVC_CAMERA_NODE_NAME, uvc_content),
+        (WEB_VIDEO_STREAM_NODE_NAME, web_content),
+    ];
 
-    if let Some(parent) = uvc_path.parent() {
-        fs::create_dir_all(repo_path.join(parent)).expect("failed to create uvc directories");
+    let mut committed_paths: Vec<PathBuf> = Vec::new();
+    for (node_name, content) in &nodes {
+        let node_path = PathBuf::from(format!("nodes/{node_name}/peppy.json5"));
+        let absolute = repo_path.join(&node_path);
+        fs::create_dir_all(absolute.parent().expect("node path has a parent"))
+            .unwrap_or_else(|e| panic!("failed to create {node_name} directories: {e}"));
+        fs::write(&absolute, content)
+            .unwrap_or_else(|e| panic!("failed to write {node_name} node: {e}"));
+        committed_paths.push(node_path);
     }
-    fs::write(repo_path.join(uvc_path), uvc_content).expect("failed to write uvc node");
 
-    if let Some(parent) = lidar_path.parent() {
-        fs::create_dir_all(repo_path.join(parent)).expect("failed to create lidar directories");
-    }
-    fs::write(repo_path.join(lidar_path), lidar_content).expect("failed to write lidar node");
-
-    if let Some(parent) = web_path.parent() {
-        fs::create_dir_all(repo_path.join(parent)).expect("failed to create web directories");
-    }
-    fs::write(repo_path.join(web_path), web_content).expect("failed to write web node");
-
-    if let Some(parent) = brain_path.parent() {
-        fs::create_dir_all(repo_path.join(parent)).expect("failed to create brain directories");
-    }
-    fs::write(repo_path.join(brain_path), brain_content).expect("failed to write brain node");
-
-    if let Some(parent) = controller_path.parent() {
-        fs::create_dir_all(repo_path.join(parent))
-            .expect("failed to create controller directories");
-    }
-    fs::write(repo_path.join(controller_path), controller_content)
-        .expect("failed to write controller node");
+    // Every node in this fixture is tagged `v1`, matching the templates and
+    // the `v1` git tag the tests resolve against.
+    let entries = nodes
+        .iter()
+        .map(|(node_name, _)| {
+            format!("    \"{node_name}\": {{ \"v1\": {{ path: \"nodes/{node_name}/peppy.json5\" }} }},\n")
+        })
+        .collect::<String>();
+    let index_path = PathBuf::from("peppy_repository.json5");
+    fs::write(
+        repo_path.join(&index_path),
+        format!("{{\n  peppy_schema: \"repository/v1\",\n  nodes: {{\n{entries}  }},\n}}\n"),
+    )
+    .expect("failed to write the repository index");
+    committed_paths.push(index_path);
 
     let mut index = repo.index().expect("failed to open index");
-    index.add_path(uvc_path).expect("failed to add uvc node");
-    index
-        .add_path(lidar_path)
-        .expect("failed to add lidar node");
-    index.add_path(web_path).expect("failed to add web node");
-    index
-        .add_path(brain_path)
-        .expect("failed to add brain node");
-    index
-        .add_path(controller_path)
-        .expect("failed to add controller node");
+    for path in &committed_paths {
+        index
+            .add_path(path)
+            .unwrap_or_else(|e| panic!("failed to add {}: {e}", path.display()));
+    }
     index.write().expect("failed to write index");
 
     let tree_id = index.write_tree().expect("failed to write tree");
