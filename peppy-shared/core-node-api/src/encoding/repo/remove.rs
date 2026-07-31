@@ -37,6 +37,10 @@ impl RepoRemoveRequest {
 pub struct RepoRemoveResponse {
     pub success: bool,
     pub error_message: String,
+    /// Problems from the re-index that follows the change. `success`
+    /// covers the configuration edit alone; this reports whether the
+    /// re-read that made it take effect worked. Empty when it did.
+    pub refresh_report: String,
 }
 
 impl RepoRemoveResponse {
@@ -44,6 +48,19 @@ impl RepoRemoveResponse {
         Self {
             success: true,
             error_message: String::new(),
+            refresh_report: String::new(),
+        }
+    }
+
+    /// The configuration edit landed but the re-index that follows it
+    /// reported problems. Kept separate from [`Self::failure`] so a user
+    /// on the recovery path can tell "your change did not apply" from
+    /// "your change applied, and here is what is still wrong".
+    pub fn success_with_refresh_report(report: impl Into<String>) -> Self {
+        Self {
+            success: true,
+            error_message: String::new(),
+            refresh_report: report.into(),
         }
     }
 
@@ -51,6 +68,7 @@ impl RepoRemoveResponse {
         Self {
             success: false,
             error_message: message.into(),
+            refresh_report: String::new(),
         }
     }
 
@@ -60,6 +78,7 @@ impl RepoRemoveResponse {
             let mut response = builder.init_root::<repo_capnp::repo_remove_response::Builder>();
             response.set_success(self.success);
             response.set_error_message(&self.error_message);
+            response.set_refresh_report(&self.refresh_report);
         }
         encode_message(&builder)
     }
@@ -70,6 +89,7 @@ impl RepoRemoveResponse {
         Ok(Self {
             success: response.get_success(),
             error_message: response.get_error_message()?.to_str()?.to_owned(),
+            refresh_report: response.get_refresh_report()?.to_str()?.to_owned(),
         })
     }
 }

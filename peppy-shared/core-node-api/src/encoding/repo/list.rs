@@ -35,11 +35,45 @@ pub struct RepoListNodeEntry {
     pub path: String,
     /// `true` when another repository with higher priority already provides
     /// this `(name, tag)` pair.
+    ///
+    /// Cross-repository shadowing: a supported feature with a documented
+    /// order, where the lower-id repository deterministically wins. Kept
+    /// distinct from [`RepoListNodeEntry::conflict`], which has no winner.
     pub duplicate: bool,
     /// Id of the owning repository (from `repositories.json5`).
     pub repo_id: u32,
     /// Display label of the owning repository (path for fs, `"url (ref: r)"` for git).
     pub repo_label: String,
+    /// `true` when this identity is claimed more than once inside its own
+    /// repository, so it does not resolve at all.
+    pub conflict: bool,
+}
+
+/// Read status of one configured repository, so a partial update is
+/// legible: which repositories are current, which are serving entries
+/// retained from an earlier read, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoListRepoEntry {
+    pub id: u32,
+    /// Display label (path for fs, `"url (ref: r)"` for git).
+    pub label: String,
+    pub source_type: RepoSourceKind,
+    /// Unix seconds of the last read that produced entries. `None` when
+    /// this repository has never been read successfully on this machine.
+    pub last_read_unix_secs: Option<u64>,
+    /// `true` when the entries listed for this repository come from an
+    /// earlier read because its most recent one failed.
+    pub retained: bool,
+    /// `None` when the last read succeeded, otherwise `"unreachable"` or
+    /// `"conflict"` with the detail. An outage and a content bug are
+    /// never collapsed into one label.
+    pub failure: Option<RepoListRepoFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoListRepoFailure {
+    pub kind: String,
+    pub detail: String,
 }
 
 /// Response message for the RepoList service.
@@ -48,14 +82,16 @@ pub struct RepoListResponse {
     pub success: bool,
     pub error_message: Option<String>,
     pub nodes: Vec<RepoListNodeEntry>,
+    pub repos: Vec<RepoListRepoEntry>,
 }
 
 impl RepoListResponse {
-    pub fn success(nodes: Vec<RepoListNodeEntry>) -> Self {
+    pub fn success(nodes: Vec<RepoListNodeEntry>, repos: Vec<RepoListRepoEntry>) -> Self {
         Self {
             success: true,
             error_message: None,
             nodes,
+            repos,
         }
     }
 
@@ -64,6 +100,7 @@ impl RepoListResponse {
             success: false,
             error_message: Some(message.into()),
             nodes: Vec::new(),
+            repos: Vec::new(),
         }
     }
 
@@ -76,7 +113,7 @@ impl RepoListResponse {
                 response.set_error_message(msg);
             }
             let node_count = capnp_list_len(self.nodes.len(), "RepoListResponse.nodes")?;
-            let mut nodes_builder = response.init_nodes(node_count);
+            let mut nodes_builder = response.reborrow().init_nodes(node_count);
             for (i, node) in self.nodes.iter().enumerate() {
                 let mut entry = nodes_builder.reborrow().get(i as u32);
                 entry.set_node_name(&node.node_name);
@@ -86,6 +123,23 @@ impl RepoListResponse {
                 entry.set_duplicate(node.duplicate);
                 entry.set_repo_id(node.repo_id);
                 entry.set_repo_label(&node.repo_label);
+                entry.set_conflict(node.conflict);
+            }
+            let repo_count = capnp_list_len(self.repos.len(), "RepoListResponse.repos")?;
+            let mut repos_builder = response.init_repos(repo_count);
+            for (i, repo) in self.repos.iter().enumerate() {
+                let mut entry = repos_builder.reborrow().get(i as u32);
+                entry.set_id(repo.id);
+                entry.set_label(&repo.label);
+                entry.set_source_type(repo.source_type.as_str());
+                // 0 is the "never read successfully" sentinel: a real
+                // read at the epoch is not a case worth modelling.
+                entry.set_last_read_unix_secs(repo.last_read_unix_secs.unwrap_or(0));
+                entry.set_retained(repo.retained);
+                if let Some(ref failure) = repo.failure {
+                    entry.set_failure_kind(&failure.kind);
+                    entry.set_failure_detail(&failure.detail);
+                }
             }
         }
         encode_message(&builder)
@@ -110,12 +164,38 @@ impl RepoListResponse {
                 duplicate: entry.get_duplicate(),
                 repo_id: entry.get_repo_id(),
                 repo_label: entry.get_repo_label()?.to_str()?.to_owned(),
+                conflict: entry.get_conflict(),
+            });
+        }
+        let repos_reader = response.get_repos()?;
+        let mut repos = Vec::with_capacity(repos_reader.len() as usize);
+        for i in 0..repos_reader.len() {
+            let entry = repos_reader.get(i);
+            let source_type_str = entry.get_source_type()?.to_str()?;
+            let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
+                crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
+            })?;
+            let failure = optional_text(entry.get_failure_kind()?.to_str()?).map(|kind| {
+                Ok::<_, crate::Error>(RepoListRepoFailure {
+                    kind,
+                    detail: entry.get_failure_detail()?.to_str()?.to_owned(),
+                })
+            });
+            let last_read = entry.get_last_read_unix_secs();
+            repos.push(RepoListRepoEntry {
+                id: entry.get_id(),
+                label: entry.get_label()?.to_str()?.to_owned(),
+                source_type,
+                last_read_unix_secs: (last_read != 0).then_some(last_read),
+                retained: entry.get_retained(),
+                failure: failure.transpose()?,
             });
         }
         Ok(Self {
             success: response.get_success(),
             error_message: optional_text(response.get_error_message()?.to_str()?),
             nodes,
+            repos,
         })
     }
 }
@@ -141,6 +221,18 @@ mod tests {
             duplicate: false,
             repo_id: 7,
             repo_label: "/abs/repo".to_owned(),
+            conflict: false,
+        }
+    }
+
+    fn sample_repo() -> RepoListRepoEntry {
+        RepoListRepoEntry {
+            id: 7,
+            label: "/abs/repo".to_owned(),
+            source_type: RepoSourceKind::Fs,
+            last_read_unix_secs: Some(1_753_900_000),
+            retained: false,
+            failure: None,
         }
     }
 
@@ -154,18 +246,20 @@ mod tests {
 
     #[test]
     fn list_response_success_round_trips_empty() {
-        let response = RepoListResponse::success(Vec::new());
+        let response = RepoListResponse::success(Vec::new(), Vec::new());
         let payload = response.encode().expect("encode");
         let decoded = RepoListResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
         assert!(decoded.success);
         assert!(decoded.error_message.is_none());
         assert!(decoded.nodes.is_empty());
+        assert!(decoded.repos.is_empty());
     }
 
     #[test]
     fn list_response_success_round_trips_multiple_entries() {
-        let response = RepoListResponse::success(vec![
+        let response = RepoListResponse::success(
+            vec![
             sample_entry(),
             RepoListNodeEntry {
                 node_name: "camera".to_owned(),
@@ -175,6 +269,7 @@ mod tests {
                 duplicate: true,
                 repo_id: 42,
                 repo_label: "https://github.com/org/repo (ref: main)".to_owned(),
+                conflict: false,
             },
             RepoListNodeEntry {
                 node_name: "lidar".to_owned(),
@@ -184,8 +279,32 @@ mod tests {
                 duplicate: false,
                 repo_id: 3,
                 repo_label: "https://example.com/packages".to_owned(),
+                conflict: true,
             },
-        ]);
+            ],
+            vec![
+                sample_repo(),
+                RepoListRepoEntry {
+                    id: 42,
+                    label: "https://github.com/org/repo (ref: main)".to_owned(),
+                    source_type: RepoSourceKind::Git,
+                    last_read_unix_secs: Some(1_753_900_000),
+                    retained: true,
+                    failure: Some(RepoListRepoFailure {
+                        kind: "unreachable".to_owned(),
+                        detail: "network is unreachable".to_owned(),
+                    }),
+                },
+                RepoListRepoEntry {
+                    id: 3,
+                    label: "https://example.com/packages".to_owned(),
+                    source_type: RepoSourceKind::Url,
+                    last_read_unix_secs: None,
+                    retained: false,
+                    failure: None,
+                },
+            ],
+        );
         let payload = response.encode().expect("encode");
         let decoded = RepoListResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
@@ -200,6 +319,7 @@ mod tests {
         assert!(!decoded.success);
         assert_eq!(decoded.error_message.as_deref(), Some("boom"));
         assert!(decoded.nodes.is_empty());
+        assert!(decoded.repos.is_empty());
     }
 
     #[test]
@@ -235,6 +355,7 @@ mod tests {
             entry.set_duplicate(false);
             entry.set_repo_id(1);
             entry.set_repo_label("/abs/repo");
+            entry.set_conflict(false);
         }
         let payload = encode_message(&builder).expect("encode raw response");
         let err = RepoListResponse::decode(payload.as_ref())

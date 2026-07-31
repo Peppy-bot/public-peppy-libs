@@ -94,18 +94,48 @@ struct RepoListNodeEntry {
     sourceType @2 :Text;
     # Absolute path (fs) or relative path within repo (git)
     path @3 :Text;
-    # True when another repo with higher priority already provides this node
+    # True when another repo with higher priority already provides this node.
+    # Cross-repository shadowing: a supported feature with a documented
+    # order, where the lower-id repository deterministically wins.
     duplicate @4 :Bool;
     # Id of the owning repository (from repositories.json5)
     repoId @5 :UInt32;
     # Display label of the owning repository (path for fs, "url (ref: r)" for git)
     repoLabel @6 :Text;
+    # True when this identity is claimed more than once inside its OWN
+    # repository. Unlike `duplicate` there is no defensible winner, so it
+    # does not resolve at all. The two must stay distinct: reporting a
+    # conflict as harmless shadowing is what let the original defect hide.
+    conflict @7 :Bool;
+}
+
+# Per-repository read status, so a partial update is legible: which
+# repositories are current, which are serving entries retained from an
+# earlier read, and why.
+struct RepoListRepoEntry {
+    id @0 :UInt32;
+    # Display label (path for fs, "url (ref: r)" for git)
+    label @1 :Text;
+    # "fs", "git", or "url"
+    sourceType @2 :Text;
+    # Unix seconds of the last read that produced entries; 0 when this
+    # repository has never been read successfully on this machine.
+    lastReadUnixSecs @3 :UInt64;
+    # True when the entries listed for this repository come from an
+    # earlier read because its most recent one failed.
+    retained @4 :Bool;
+    # "" when the last read succeeded, otherwise "unreachable" or
+    # "conflict". An outage and a content bug send the user to completely
+    # different places, so they are never collapsed into one label.
+    failureKind @5 :Text;
+    failureDetail @6 :Text;
 }
 
 struct RepoListResponse {
     success @0 :Bool;
     errorMessage @1 :Text;
     nodes @2 :List(RepoListNodeEntry);
+    repos @3 :List(RepoListRepoEntry);
 }
 
 # ── Repo Remove (request-response) ─────────────────────────────
@@ -120,6 +150,10 @@ struct RepoRemoveResponse {
     success @0 :Bool;
     # Error message if failed (optional)
     errorMessage @1 :Text;
+    # Problems from the re-index that follows the change. `success` covers
+    # the configuration edit alone; this reports whether the re-read that
+    # made it take effect worked. Empty when it did.
+    refreshReport @2 :Text;
 }
 
 # ── Repo Exclude (request-response) ───────────────────────────
@@ -141,4 +175,10 @@ struct RepoExcludeResponse {
     success @0 :Bool;
     # Error message if failed (optional)
     errorMessage @1 :Text;
+    # Problems from the re-index that follows the change. `success` covers
+    # the configuration edit alone; this reports whether the re-read that
+    # made it take effect worked. Empty when it did. This matters most on
+    # the recovery path, where the user excluded a repository precisely to
+    # unblock themselves and needs to know whether it worked.
+    refreshReport @2 :Text;
 }

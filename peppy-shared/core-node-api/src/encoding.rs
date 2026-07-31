@@ -40,7 +40,8 @@ pub use node::{
 };
 pub use repo::{
     RepoAddRequest, RepoAddResponse, RepoExcludeRequest, RepoExcludeResponse, RepoItemKind,
-    RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoRefreshFeedback, RepoRefreshGoal,
+    RepoListNodeEntry, RepoListRepoEntry, RepoListRepoFailure, RepoListRequest, RepoListResponse,
+    RepoRefreshFeedback, RepoRefreshGoal,
     RepoRefreshGoalResponse, RepoRefreshResult, RepoRemoveRequest, RepoRemoveResponse, RepoSource,
     RepoSourceKind,
 };
