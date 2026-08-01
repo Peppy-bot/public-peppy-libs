@@ -50,8 +50,8 @@ struct LaunchIdentity {
 struct NodeAddGoal {
     # Git commit hash of the node being added
     gitHash @0 :Text;
-    # Source of the node (filesystem path, git repository, HTTP URL, or
-    # a `name:tag` lookup in the repo cache).
+    # Source of the node (filesystem path, git repository, HTTP URL, a
+    # launch-pinned entry, or a `name:tag` the receiving daemon resolves).
     source :union {
         # Filesystem path to the node directory
         fs @1 :Text;
@@ -59,10 +59,22 @@ struct NodeAddGoal {
         git @2 :NodeAddGitSource;
         # HTTP URL source
         http @3 :Text;
-        # Reference a node by `name:tag` — the daemon looks it up in
-        # `~/.peppy/cache/nodes.json5` and resolves transitive
-        # dependencies as an atomic batch.
-        repoNode @8 :NodeAddRepoNodeSource;
+        # JSON5-encoded pin for the root node of a pinned batch: the exact
+        # manifest bytes to run, identified by content fingerprint, plus the
+        # git location any machine can fetch them from. The daemon
+        # materializes exactly these bytes — reusing its own copy on a
+        # content match, fetching the pinned commit otherwise — and never
+        # resolves the name against its own cache. The pin model lives in
+        # peppy; it is opaque text here for the same reason
+        # `ParticipantReserveRequest.deploymentPinsJson5` is.
+        pinned @8 :Text;
+        # Resolve a `name:tag` against the RECEIVING daemon's own repo cache
+        # (`~/.peppy/cache/nodes.json5`), then continue exactly as a pinned
+        # batch: that daemon resolves the transitive closure once, pins every
+        # entry, and adds by pin. The entry arm for `peppy node add
+        # <name>:<tag>` — the receiving daemon is the coordinator of its own
+        # add.
+        resolveRef @10 :NodeAddResolveRefSource;
     }
     # Optional SHA256 checksum for HTTP sources
     httpSha256 @6 :Text;
@@ -79,9 +91,15 @@ struct NodeAddGoal {
     # launch, which is what stops a local `peppy node add` from racing a
     # coordinator that is halfway through replacing this machine's slice.
     launchId @9 :Text;
+    # JSON5-encoded pins for the rest of a pinned batch: every transitive
+    # node dependency of the `pinned` root, and every contract and pairing
+    # document any manifest in the batch names. Populated exactly when the
+    # source is `pinned`. The daemon refuses a batch whose closure names an
+    # entry missing from this list rather than resolving it by name.
+    pinsJson5 @11 :List(Text);
 }
 
-struct NodeAddRepoNodeSource {
+struct NodeAddResolveRefSource {
     # Node name as it appears in `nodes.json5`
     name @0 :Text;
     # Node tag as it appears in `nodes.json5`
@@ -211,7 +229,7 @@ struct NodeSyncResponse {
 struct RepoResolvedEntry {
     name @0 :Text;
     tag @1 :Text;
-    # "fs" | "git" | "url"
+    # "fs" | "git"
     sourceKind @2 :Text;
 }
 
@@ -263,9 +281,10 @@ struct NodeRunGoal {
     # again whenever the source restarts).
     plannedObservations @8 :List(ObservationRequest);
     # SHA256 of the node manifest the planner validated this instance
-    # against. The spawning daemon re-resolves the manifest from its own
-    # cache and refuses if the hashes differ, so a cache that changed between
-    # a federated preflight and this dispatch fails loudly here instead of
+    # against, which is the manifest the coordinator resolved for the whole
+    # launch. The spawning daemon compares it against the entity now in its
+    # stack and refuses if the hashes differ, so an entity replaced between
+    # the launch's add phase and this dispatch fails loudly here instead of
     # starting a node the plan was never checked against. Empty only on the
     # in-process launch path, where planner and spawner are the same daemon
     # reading the same entity under the same lock.

@@ -30,35 +30,30 @@ struct ParticipantReserveRequest {
     # coordinator disappears, so a coordinator that dies mid-launch cannot wedge
     # a machine until its next daemon restart.
     coordinatorCoreNode @1 :Text;
-    # JSON5-encoded launcher `DeploymentSource`, one per deployment placed on
-    # this participant. The participant resolves its own manifests rather than
-    # being handed the coordinator's: the coordinator then needs no reachability
-    # to sources it does not use, and the manifest the coordinator validates is
-    # provably the one the participant will spawn from, because it is the same
-    # daemon and the same cache.
+    # JSON5-encoded `DeploymentPins`, one per deployment placed on this
+    # participant: the root node's pin plus the pin of every transitive node
+    # dependency and every contract and pairing document in its closure. The
+    # coordinator resolves the whole launch once and every participant runs
+    # exactly those bytes, so a participant's own cache freshness, repository
+    # priorities and exclusions never influence a federated launch. The
+    # participant validates each pin here — a refusal costs nothing, since the
+    # reservation is non-destructive — and materializes it at add time,
+    # reusing its own copy on a content match and fetching the pinned commit
+    # otherwise. It never falls back to resolving a name.
     #
-    # A `local:` source never appears here. Its path names a tree on the
-    # coordinator's filesystem, so the plan refuses it for any deployment placed
-    # off-coordinator.
-    deploymentSourcesJson5 @2 :List(Text);
-}
-
-# One manifest as a participant resolved it, aligned by index with the
-# request's `deploymentSourcesJson5`.
-struct ResolvedManifest {
-    # JSON5-serialized NodeConfig.
-    configJson5 @0 :Text;
-    # SHA256 of the manifest. The coordinator echoes this back on the instance
-    # plan it later dispatches, and the participant refuses the start if its
-    # re-resolved manifest no longer hashes the same. That closes the window
-    # between preflight and dispatch in which a cache could move.
-    configSha256 @1 :Text;
+    # Opaque text: the pin model lives in peppy, whose serde decoding is the
+    # validation, and this crate has no business re-deriving it.
+    #
+    # A `local:` source and a filesystem-backed repository entry never appear
+    # here. Both name trees on the coordinator's own disk, so the plan refuses
+    # them for any deployment placed off-coordinator.
+    deploymentPinsJson5 @2 :List(Text);
 }
 
 struct ParticipantReserveResponse {
     accepted @0 :Bool;
     # Populated when `accepted` is false: already reserved for another launch,
-    # or a launch already running.
+    # a launch already running, or a pin that does not validate.
     rejectionReason @1 :Text;
     # The participant's peppy version, compared against the coordinator's own
     # so a mixed-version federation is refused before any stack is touched.
@@ -68,8 +63,6 @@ struct ParticipantReserveResponse {
     # The participant's root entity instance id, folded into the coordinator's
     # global instance-id uniqueness check.
     rootInstanceId @3 :Text;
-    # One entry per requested deployment source, in request order.
-    manifests @4 :List(ResolvedManifest);
 }
 
 # The whole payload of every exchange that names a launch and nothing else.

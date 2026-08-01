@@ -135,9 +135,10 @@ pub struct NodeRunGoal {
     /// the resolved framework values are added by the daemon, on every path
     /// including `peppy node run`. One assembly site, one invariant.
     pub instance_plan: NodeInstancePlan,
-    /// SHA256 of the manifest the planner validated this instance against.
-    /// The spawning daemon refuses if its own re-resolved manifest hashes
-    /// differently, so a cache that moved between a federated preflight and
+    /// SHA256 of the manifest the planner validated this instance against,
+    /// which is the manifest the coordinator resolved for the whole launch.
+    /// The spawning daemon refuses if the entity now in its stack hashes
+    /// differently, so an entity replaced between the launch's add phase and
     /// this dispatch fails loudly rather than starting a node against a plan
     /// that was never checked for it.
     ///
