@@ -14,14 +14,12 @@ struct RepoAddRequest {
     source :union {
         # Git repository source
         git @0 :RepoAddGitSource;
-        # Plain URL source
-        url @1 :Text;
         # Local filesystem path
-        fs @2 :Text;
+        fs @1 :Text;
     }
     # When true, assign the new repo an id below the current minimum so it
     # takes top priority. Defaults to false (append with max+1).
-    top @3 :Bool;
+    top @2 :Bool;
 }
 
 struct RepoAddResponse {
@@ -52,7 +50,7 @@ struct RepoRefreshFeedback {
             itemName @1 :Text;
             # Tag of the discovered item. Empty for launchers (which have no tag).
             itemTag @2 :Text;
-            # "fs", "git", or "url"
+            # "fs" or "git"
             sourceType @3 :Text;
             # Absolute path (fs) or relative path within repo (git). Points
             # at the manifest file itself.
@@ -62,7 +60,7 @@ struct RepoRefreshFeedback {
         }
         # A repository that was skipped (e.g. listed in excluded_repositories.json5).
         excluded :group {
-            # "fs", "git", or "url"
+            # "fs" or "git"
             sourceType @6 :Text;
             # Repository identity (URL or fs path).
             identity @7 :Text;
@@ -90,7 +88,7 @@ struct RepoListRequest {
 struct RepoListNodeEntry {
     nodeName @0 :Text;
     nodeTag @1 :Text;
-    # "fs", "git", or "url"
+    # "fs" or "git"
     sourceType @2 :Text;
     # Absolute path (fs) or relative path within repo (git)
     path @3 :Text;
@@ -102,11 +100,6 @@ struct RepoListNodeEntry {
     repoId @5 :UInt32;
     # Display label of the owning repository (path for fs, "url (ref: r)" for git)
     repoLabel @6 :Text;
-    # True when this identity is claimed more than once inside its OWN
-    # repository. Unlike `duplicate` there is no defensible winner, so it
-    # does not resolve at all. The two must stay distinct: reporting a
-    # conflict as harmless shadowing is what let the original defect hide.
-    conflict @7 :Bool;
 }
 
 # Per-repository read status, so a partial update is legible: which
@@ -116,7 +109,7 @@ struct RepoListRepoEntry {
     id @0 :UInt32;
     # Display label (path for fs, "url (ref: r)" for git)
     label @1 :Text;
-    # "fs", "git", or "url"
+    # "fs" or "git"
     sourceType @2 :Text;
     # Unix seconds of the last read that produced entries; 0 when this
     # repository has never been read successfully on this machine.
@@ -163,10 +156,8 @@ struct RepoExcludeRequest {
     source :union {
         # Git repository source
         git @0 :RepoAddGitSource;
-        # Plain URL source
-        url @1 :Text;
         # Local filesystem path
-        fs @2 :Text;
+        fs @1 :Text;
     }
 }
 

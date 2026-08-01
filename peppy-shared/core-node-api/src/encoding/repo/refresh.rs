@@ -415,8 +415,8 @@ mod tests {
     #[test]
     fn feedback_excluded_roundtrips() {
         let feedback = RepoRefreshFeedback::Excluded {
-            source_type: RepoSourceKind::Url,
-            identity: "https://example.com/packages".to_string(),
+            source_type: RepoSourceKind::Git,
+            identity: "https://github.com/org/repo@main".to_string(),
         };
         let bytes = feedback.encode().expect("encode").into_inner();
         assert_eq!(
