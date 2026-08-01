@@ -14,7 +14,6 @@ use crate::encoding::{decode_message, encode_message, optional_text};
 pub enum RepoSourceKind {
     Fs,
     Git,
-    Url,
 }
 
 impl RepoSourceKind {
@@ -22,7 +21,6 @@ impl RepoSourceKind {
         match self {
             RepoSourceKind::Fs => "fs",
             RepoSourceKind::Git => "git",
-            RepoSourceKind::Url => "url",
         }
     }
 
@@ -30,7 +28,6 @@ impl RepoSourceKind {
         match s {
             "fs" => Some(RepoSourceKind::Fs),
             "git" => Some(RepoSourceKind::Git),
-            "url" => Some(RepoSourceKind::Url),
             _ => None,
         }
     }
@@ -49,7 +46,6 @@ pub enum RepoSource {
         repo_url: String,
         repo_ref: Option<String>,
     },
-    Url(String),
 }
 
 impl RepoSource {
@@ -63,7 +59,6 @@ impl RepoSource {
         match self {
             RepoSource::Fs(_) => RepoSourceKind::Fs,
             RepoSource::Git { .. } => RepoSourceKind::Git,
-            RepoSource::Url(_) => RepoSourceKind::Url,
         }
     }
 
@@ -73,7 +68,6 @@ impl RepoSource {
     /// - `Git`: `"url (ref: r)"` when a ref is configured, else `"url"`. Code
     ///   paths that have access to the actual checked-out ref (e.g. the
     ///   packages cache) may prefer to build their own label.
-    /// - `Url`: the url as-is
     pub fn display_label(&self) -> String {
         match self {
             RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
@@ -81,7 +75,6 @@ impl RepoSource {
                 Some(r) if !r.is_empty() => format!("{repo_url} (ref: {r})"),
                 _ => repo_url.clone(),
             },
-            RepoSource::Url(url) => url.clone(),
         }
     }
 }
@@ -110,13 +103,6 @@ impl RepoAddRequest {
         }
     }
 
-    pub fn new_url(url: impl Into<String>) -> Self {
-        Self {
-            source: RepoSource::Url(url.into()),
-            top: false,
-        }
-    }
-
     pub fn with_top(mut self, top: bool) -> Self {
         self.top = top;
         self
@@ -136,9 +122,6 @@ impl RepoAddRequest {
                     let mut git = source.init_git();
                     git.set_repo_url(repo_url);
                     git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
-                }
-                RepoSource::Url(url) => {
-                    source.set_url(url);
                 }
             }
         }
@@ -162,7 +145,6 @@ impl RepoAddRequest {
                 let repo_ref = optional_text(git.get_repo_ref()?.to_str()?);
                 RepoSource::Git { repo_url, repo_ref }
             }
-            Which::Url(url) => RepoSource::Url(url?.to_str()?.to_owned()),
         };
         Ok(Self { source, top })
     }
@@ -223,7 +205,7 @@ mod tests {
 
     #[test]
     fn source_kind_as_str_parse_roundtrips() {
-        for kind in [RepoSourceKind::Fs, RepoSourceKind::Git, RepoSourceKind::Url] {
+        for kind in [RepoSourceKind::Fs, RepoSourceKind::Git] {
             assert_eq!(RepoSourceKind::parse(kind.as_str()), Some(kind));
         }
     }
@@ -232,7 +214,6 @@ mod tests {
     fn source_kind_as_str_values() {
         assert_eq!(RepoSourceKind::Fs.as_str(), "fs");
         assert_eq!(RepoSourceKind::Git.as_str(), "git");
-        assert_eq!(RepoSourceKind::Url.as_str(), "url");
     }
 
     #[test]
@@ -260,10 +241,6 @@ mod tests {
             }
             .kind(),
             RepoSourceKind::Git
-        );
-        assert_eq!(
-            RepoSource::Url("https://example.com/packages".to_string()).kind(),
-            RepoSourceKind::Url
         );
     }
 
@@ -304,12 +281,6 @@ mod tests {
     }
 
     #[test]
-    fn source_display_label_url_is_unchanged() {
-        let src = RepoSource::Url("https://example.com/packages".to_string());
-        assert_eq!(src.display_label(), "https://example.com/packages");
-    }
-
-    #[test]
     fn add_request_new_fs_defaults_top_false() {
         let request = RepoAddRequest::new_fs("/abs/path/to/repo");
         assert_eq!(
@@ -345,19 +316,8 @@ mod tests {
     }
 
     #[test]
-    fn add_request_new_url_roundtrips() {
-        let request = RepoAddRequest::new_url("https://example.com/packages");
-        assert_eq!(
-            request.source,
-            RepoSource::Url("https://example.com/packages".to_string())
-        );
-        let bytes = request.encode().expect("encode");
-        assert_eq!(RepoAddRequest::decode(&bytes).expect("decode"), request);
-    }
-
-    #[test]
     fn add_request_with_top_builder_sets_flag_and_roundtrips() {
-        let request = RepoAddRequest::new_url("https://example.com/packages").with_top(true);
+        let request = RepoAddRequest::new_fs("/abs/path/to/repo").with_top(true);
         assert!(request.top);
         let bytes = request.encode().expect("encode");
         assert_eq!(RepoAddRequest::decode(&bytes).expect("decode"), request);

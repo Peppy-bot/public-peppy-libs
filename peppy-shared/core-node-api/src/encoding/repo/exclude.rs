@@ -29,12 +29,6 @@ impl RepoExcludeRequest {
         }
     }
 
-    pub fn new_url(url: impl Into<String>) -> Self {
-        Self {
-            source: RepoSource::Url(url.into()),
-        }
-    }
-
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
@@ -48,9 +42,6 @@ impl RepoExcludeRequest {
                     let mut git = source.init_git();
                     git.set_repo_url(repo_url);
                     git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
-                }
-                RepoSource::Url(url) => {
-                    source.set_url(url);
                 }
             }
         }
@@ -73,7 +64,6 @@ impl RepoExcludeRequest {
                 let repo_ref = optional_text(git.get_repo_ref()?.to_str()?);
                 RepoSource::Git { repo_url, repo_ref }
             }
-            Which::Url(url) => RepoSource::Url(url?.to_str()?.to_owned()),
         };
         Ok(Self { source })
     }
@@ -191,18 +181,6 @@ mod tests {
                 repo_ref: None,
             }
         );
-    }
-
-    #[test]
-    fn exclude_request_new_url_round_trips() {
-        let request = RepoExcludeRequest::new_url("https://example.com/packages");
-        assert_eq!(
-            request.source,
-            RepoSource::Url("https://example.com/packages".to_owned())
-        );
-        let payload = request.encode().expect("encode");
-        let decoded = RepoExcludeRequest::decode(payload.as_ref()).expect("decode");
-        assert_eq!(decoded, request);
     }
 
     #[test]

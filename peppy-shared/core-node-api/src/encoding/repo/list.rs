@@ -39,16 +39,15 @@ pub struct RepoListNodeEntry {
     /// this `(name, tag)` pair.
     ///
     /// Cross-repository shadowing: a supported feature with a documented
-    /// order, where the lower-id repository deterministically wins. Kept
-    /// distinct from [`RepoListNodeEntry::conflict`], which has no winner.
+    /// order, where the lower-id repository deterministically wins. An
+    /// identity claimed twice inside ONE repository is not representable:
+    /// a repository index keys each identity once, so a second claim has
+    /// nowhere to go.
     pub duplicate: bool,
     /// Id of the owning repository (from `repositories.json5`).
     pub repo_id: u32,
     /// Display label of the owning repository (path for fs, `"url (ref: r)"` for git).
     pub repo_label: String,
-    /// `true` when this identity is claimed more than once inside its own
-    /// repository, so it does not resolve at all.
-    pub conflict: bool,
 }
 
 /// Read status of one configured repository, so a partial update is
@@ -159,7 +158,6 @@ impl RepoListResponse {
                 entry.set_duplicate(node.duplicate);
                 entry.set_repo_id(node.repo_id);
                 entry.set_repo_label(&node.repo_label);
-                entry.set_conflict(node.conflict);
             }
             let repo_count = capnp_list_len(self.repos.len(), "RepoListResponse.repos")?;
             let mut repos_builder = response.init_repos(repo_count);
@@ -200,7 +198,6 @@ impl RepoListResponse {
                 duplicate: entry.get_duplicate(),
                 repo_id: entry.get_repo_id(),
                 repo_label: entry.get_repo_label()?.to_str()?.to_owned(),
-                conflict: entry.get_conflict(),
             });
         }
         let repos_reader = response.get_repos()?;
@@ -262,7 +259,6 @@ mod tests {
             duplicate: false,
             repo_id: 7,
             repo_label: "/abs/repo".to_owned(),
-            conflict: false,
         }
     }
 
@@ -310,17 +306,15 @@ mod tests {
                     duplicate: true,
                     repo_id: 42,
                     repo_label: "https://github.com/org/repo (ref: main)".to_owned(),
-                    conflict: false,
                 },
                 RepoListNodeEntry {
                     node_name: "lidar".to_owned(),
                     node_tag: "v2".to_owned(),
-                    source_type: RepoSourceKind::Url,
-                    path: "https://example.com/packages/lidar".to_owned(),
+                    source_type: RepoSourceKind::Fs,
+                    path: "/abs/other/lidar/peppy.json5".to_owned(),
                     duplicate: false,
                     repo_id: 3,
-                    repo_label: "https://example.com/packages".to_owned(),
-                    conflict: true,
+                    repo_label: "/abs/other".to_owned(),
                 },
             ],
             vec![
@@ -338,8 +332,8 @@ mod tests {
                 },
                 RepoListRepoEntry {
                     id: 3,
-                    label: "https://example.com/packages".to_owned(),
-                    source_type: RepoSourceKind::Url,
+                    label: "/abs/other".to_owned(),
+                    source_type: RepoSourceKind::Fs,
                     last_read_unix_secs: None,
                     retained: false,
                     failure: None,
@@ -376,12 +370,11 @@ mod tests {
 
     #[test]
     fn repo_source_kind_as_str_parse_round_trip() {
-        for kind in [RepoSourceKind::Fs, RepoSourceKind::Git, RepoSourceKind::Url] {
+        for kind in [RepoSourceKind::Fs, RepoSourceKind::Git] {
             assert_eq!(RepoSourceKind::parse(kind.as_str()), Some(kind));
         }
         assert_eq!(RepoSourceKind::Fs.as_str(), "fs");
         assert_eq!(RepoSourceKind::Git.as_str(), "git");
-        assert_eq!(RepoSourceKind::Url.as_str(), "url");
     }
 
     #[test]
@@ -407,7 +400,6 @@ mod tests {
             entry.set_duplicate(false);
             entry.set_repo_id(1);
             entry.set_repo_label("/abs/repo");
-            entry.set_conflict(false);
         }
         let payload = encode_message(&builder).expect("encode raw response");
         let err = RepoListResponse::decode(payload.as_ref())
