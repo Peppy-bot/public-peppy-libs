@@ -16,18 +16,21 @@ use crate::encoding::{
     write_text_list,
 };
 
-/// Reserves one participant for one launch, and asks it to resolve the
-/// manifests for its own slice while it is at it.
+/// Reserves one participant for one launch, carrying the pins for every
+/// deployment placed on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParticipantReserveRequest {
     pub launch_id: String,
     /// The coordinator driving the launch. The participant watches this core
     /// node's presence for as long as it holds the reservation.
     pub coordinator_core_node: String,
-    /// JSON5-encoded launcher `DeploymentSource`, one per deployment placed on
-    /// this participant. Opaque here: the launcher document model lives in
-    /// peppy, and this crate has no business re-deriving it.
-    pub deployment_sources_json5: Vec<String>,
+    /// JSON5-encoded `DeploymentPins`, one per deployment placed on this
+    /// participant: the root node's pin plus the pin of every transitive
+    /// node dependency and every contract and pairing document in its
+    /// closure. Opaque here: the pin model lives in peppy, whose serde
+    /// decoding is the validation, and this crate has no business
+    /// re-deriving it.
+    pub deployment_pins_json5: Vec<String>,
 }
 
 impl ParticipantReserveRequest {
@@ -35,12 +38,12 @@ impl ParticipantReserveRequest {
         Self {
             launch_id: launch_id.into(),
             coordinator_core_node: coordinator_core_node.into(),
-            deployment_sources_json5: Vec::new(),
+            deployment_pins_json5: Vec::new(),
         }
     }
 
-    pub fn with_deployment_sources(mut self, sources: Vec<String>) -> Self {
-        self.deployment_sources_json5 = sources;
+    pub fn with_deployment_pins(mut self, pins: Vec<String>) -> Self {
+        self.deployment_pins_json5 = pins;
         self
     }
 
@@ -52,12 +55,12 @@ impl ParticipantReserveRequest {
             request.set_launch_id(&self.launch_id);
             request.set_coordinator_core_node(&self.coordinator_core_node);
             let count = capnp_list_len(
-                self.deployment_sources_json5.len(),
-                "ParticipantReserveRequest.deployment_sources_json5",
+                self.deployment_pins_json5.len(),
+                "ParticipantReserveRequest.deployment_pins_json5",
             )?;
             write_text_list(
-                request.reborrow().init_deployment_sources_json5(count),
-                &self.deployment_sources_json5,
+                request.reborrow().init_deployment_pins_json5(count),
+                &self.deployment_pins_json5,
             );
         }
         encode_message(&builder)
@@ -73,28 +76,8 @@ impl ParticipantReserveRequest {
                 request.get_coordinator_core_node()?.to_str()?,
                 "coordinator_core_node",
             )?,
-            deployment_sources_json5: read_text_list(request.get_deployment_sources_json5()?)?,
+            deployment_pins_json5: read_text_list(request.get_deployment_pins_json5()?)?,
         })
-    }
-}
-
-/// One manifest as a participant resolved it, aligned by index with the
-/// request's `deployment_sources_json5`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedManifest {
-    pub config_json5: String,
-    /// SHA256 of the manifest, echoed back on the instance plan the
-    /// coordinator later dispatches so the participant can refuse a cache that
-    /// moved between preflight and start.
-    pub config_sha256: String,
-}
-
-impl ResolvedManifest {
-    pub fn new(config_json5: impl Into<String>, config_sha256: impl Into<String>) -> Self {
-        Self {
-            config_json5: config_json5.into(),
-            config_sha256: config_sha256.into(),
-        }
     }
 }
 
@@ -109,21 +92,15 @@ pub struct ParticipantReserveResponse {
     /// The participant's root entity instance id, folded into the
     /// coordinator's global instance-id uniqueness check.
     pub root_instance_id: String,
-    pub manifests: Vec<ResolvedManifest>,
 }
 
 impl ParticipantReserveResponse {
-    pub fn accepted(
-        peppy_version: impl Into<String>,
-        root_instance_id: impl Into<String>,
-        manifests: Vec<ResolvedManifest>,
-    ) -> Self {
+    pub fn accepted(peppy_version: impl Into<String>, root_instance_id: impl Into<String>) -> Self {
         Self {
             accepted: true,
             rejection_reason: None,
             peppy_version: peppy_version.into(),
             root_instance_id: root_instance_id.into(),
-            manifests,
         }
     }
 
@@ -135,7 +112,6 @@ impl ParticipantReserveResponse {
             rejection_reason: Some(reason.into()),
             peppy_version: peppy_version.into(),
             root_instance_id: String::new(),
-            manifests: Vec::new(),
         }
     }
 
@@ -148,15 +124,6 @@ impl ParticipantReserveResponse {
             response.set_rejection_reason(self.rejection_reason.as_deref().unwrap_or(""));
             response.set_peppy_version(&self.peppy_version);
             response.set_root_instance_id(&self.root_instance_id);
-
-            let count =
-                capnp_list_len(self.manifests.len(), "ParticipantReserveResponse.manifests")?;
-            let mut manifests = response.reborrow().init_manifests(count);
-            for (idx, manifest) in self.manifests.iter().enumerate() {
-                let mut entry = manifests.reborrow().get(idx as u32);
-                entry.set_config_json5(&manifest.config_json5);
-                entry.set_config_sha256(&manifest.config_sha256);
-            }
         }
         encode_message(&builder)
     }
@@ -166,22 +133,11 @@ impl ParticipantReserveResponse {
         let response =
             reader.get_root::<federation_capnp::participant_reserve_response::Reader>()?;
 
-        let manifests_reader = response.get_manifests()?;
-        let mut manifests = Vec::with_capacity(manifests_reader.len() as usize);
-        for idx in 0..manifests_reader.len() {
-            let entry = manifests_reader.get(idx);
-            manifests.push(ResolvedManifest {
-                config_json5: entry.get_config_json5()?.to_str()?.to_owned(),
-                config_sha256: entry.get_config_sha256()?.to_str()?.to_owned(),
-            });
-        }
-
         Ok(Self {
             accepted: response.get_accepted(),
             rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
             peppy_version: response.get_peppy_version()?.to_str()?.to_owned(),
             root_instance_id: response.get_root_instance_id()?.to_str()?.to_owned(),
-            manifests,
         })
     }
 }
@@ -534,9 +490,10 @@ mod tests {
     #[test]
     fn reserve_request_round_trips() {
         let request = ParticipantReserveRequest::new("launch-abc123", "cn-robot-7")
-            .with_deployment_sources(vec![
-                r#"{name:"deliberative_planner",tag:"v1"}"#.to_owned(),
-                r#"{name:"episode_recorder",tag:"v1"}"#.to_owned(),
+            .with_deployment_pins(vec![
+                r#"{root:{kind:"node",name:"deliberative_planner",tag:"v1"},closure:[]}"#
+                    .to_owned(),
+                r#"{root:{kind:"node",name:"episode_recorder",tag:"v1"},closure:[]}"#.to_owned(),
             ]);
         let payload = request.encode().expect("encode");
         assert_eq!(
@@ -551,7 +508,7 @@ mod tests {
         let payload = request.encode().expect("encode");
         let decoded = ParticipantReserveRequest::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, request);
-        assert!(decoded.deployment_sources_json5.is_empty());
+        assert!(decoded.deployment_pins_json5.is_empty());
     }
 
     #[test]
@@ -569,21 +526,14 @@ mod tests {
     }
 
     #[test]
-    fn reserve_response_round_trips_acceptance_with_manifests() {
-        let response = ParticipantReserveResponse::accepted(
-            "v0.20.0-3-g8c7cbaa7",
-            "core_node_gen_1",
-            vec![
-                ResolvedManifest::new(r#"{peppy_schema:"node/v1"}"#, "a".repeat(64)),
-                ResolvedManifest::new(r#"{peppy_schema:"node/v1"}"#, "b".repeat(64)),
-            ],
-        );
+    fn reserve_response_round_trips_acceptance() {
+        let response =
+            ParticipantReserveResponse::accepted("v0.20.0-3-g8c7cbaa7", "core_node_gen_1");
         let payload = response.encode().expect("encode");
         let decoded = ParticipantReserveResponse::decode(payload.as_ref()).expect("decode");
         assert_eq!(decoded, response);
         assert!(decoded.accepted);
-        assert_eq!(decoded.manifests.len(), 2);
-        assert_eq!(decoded.manifests[1].config_sha256, "b".repeat(64));
+        assert_eq!(decoded.root_instance_id, "core_node_gen_1");
     }
 
     /// A refusal still reports the version so "busy" and "too old" are
@@ -599,7 +549,7 @@ mod tests {
         assert_eq!(decoded, response);
         assert!(!decoded.accepted);
         assert_eq!(decoded.peppy_version, "v0.19.0");
-        assert!(decoded.manifests.is_empty());
+        assert!(decoded.root_instance_id.is_empty());
     }
 
     #[test]

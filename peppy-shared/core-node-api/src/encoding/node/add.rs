@@ -24,22 +24,33 @@ pub enum NodeSource {
         url: url::Url,
         sha256: Option<String>,
     },
-    /// Reference a node by `(name, tag)`; the daemon resolves it and
-    /// its transitive dependencies against the repo cache
-    /// (`~/.peppy/cache/nodes.json5`) and adds them as one batch.
-    RepoNode {
+    /// JSON5-encoded pin for the root node of a pinned batch: the exact
+    /// manifest bytes to run, identified by content fingerprint, plus the
+    /// git location any machine can fetch them from. The daemon
+    /// materializes exactly these bytes and never resolves the name
+    /// against its own cache. Opaque text here: the pin model lives in
+    /// peppy, and this crate has no business re-deriving it.
+    Pinned {
+        pin_json5: String,
+    },
+    /// Resolve a `(name, tag)` against the RECEIVING daemon's own repo
+    /// cache, then continue exactly as a pinned batch: that daemon
+    /// resolves the transitive closure once, pins every entry, and adds
+    /// by pin. The entry arm for `peppy node add <name>:<tag>` — the
+    /// receiving daemon is the coordinator of its own add.
+    ResolveRef {
         name: String,
         tag: String,
     },
 }
 
 impl NodeSource {
-    /// Validated convenience constructor for a `RepoNode`. Applies the
-    /// same name/tag validation as [`Self::decode_repo_node`] so callers
+    /// Validated convenience constructor for a `ResolveRef`. Applies the
+    /// same name/tag validation as [`Self::decode_resolve_ref`] so callers
     /// cannot build an unsafe source that would later be rejected on the
     /// wire.
-    pub fn repo_node(name: impl AsRef<str>, tag: impl AsRef<str>) -> Result<Self> {
-        Self::decode_repo_node(name.as_ref(), tag.as_ref())
+    pub fn resolve_ref(name: impl AsRef<str>, tag: impl AsRef<str>) -> Result<Self> {
+        Self::decode_resolve_ref(name.as_ref(), tag.as_ref())
     }
 }
 
@@ -85,12 +96,25 @@ impl NodeSource {
         })
     }
 
-    pub fn decode_repo_node(name: &str, tag: &str) -> Result<Self> {
-        validate_repo_node_name(name, "repo-node name")?;
-        validate_repo_node_tag(tag, "repo-node tag")?;
-        Ok(Self::RepoNode {
+    pub fn decode_resolve_ref(name: &str, tag: &str) -> Result<Self> {
+        validate_repo_node_name(name, "resolve-ref name")?;
+        validate_repo_node_tag(tag, "resolve-ref tag")?;
+        Ok(Self::ResolveRef {
             name: name.to_owned(),
             tag: tag.to_owned(),
+        })
+    }
+
+    /// The pin is opaque to this crate, but an empty one names nothing and
+    /// is refused at decode rather than handed to a daemon to trip over.
+    pub fn decode_pinned(pin_json5: &str) -> Result<Self> {
+        if pin_json5.trim().is_empty() {
+            return Err(crate::Error::Decoding(
+                "NodeSource.pinned must not be empty".to_owned(),
+            ));
+        }
+        Ok(Self::Pinned {
+            pin_json5: pin_json5.to_owned(),
         })
     }
 }
@@ -114,6 +138,13 @@ pub struct NodeAddGoal {
     /// dispatched it; `None` for anything a user typed. A reserved daemon
     /// refuses node work that does not name the launch holding it.
     pub launch_id: Option<String>,
+    /// JSON5-encoded pins for the rest of a pinned batch: every transitive
+    /// node dependency of the [`NodeSource::Pinned`] root, and every
+    /// contract and pairing document any manifest in the batch names.
+    /// Populated exactly when the source is `Pinned`. The daemon refuses a
+    /// batch whose closure names an entry missing from this list rather
+    /// than resolving it by name.
+    pub pins_json5: Vec<String>,
 }
 
 impl NodeAddGoal {
@@ -126,6 +157,7 @@ impl NodeAddGoal {
             timeout_secs,
             force: false,
             launch_id: None,
+            pins_json5: Vec::new(),
         }
     }
 
@@ -163,17 +195,17 @@ impl NodeAddGoal {
         Self::from_source(NodeSource::Http { url, sha256 }, git_hash, timeout_secs)
     }
 
-    /// Creates a new NodeAddGoal that targets a node by `(name, tag)`
-    /// against the daemon's repo cache. Returns an error when the name
+    /// Creates a new NodeAddGoal that names a node by `(name, tag)` for the
+    /// receiving daemon to resolve and pin. Returns an error when the name
     /// or tag fails the repo-node validation rules.
-    pub fn new_repo_node(
+    pub fn new_resolve_ref(
         name: impl AsRef<str>,
         tag: impl AsRef<str>,
         git_hash: impl Into<String>,
         timeout_secs: u64,
     ) -> Result<Self> {
         Ok(Self::from_source(
-            NodeSource::repo_node(name, tag)?,
+            NodeSource::resolve_ref(name, tag)?,
             git_hash,
             timeout_secs,
         ))
@@ -204,11 +236,21 @@ impl NodeAddGoal {
         self
     }
 
+    /// Attaches the closure pins of a pinned batch; see
+    /// [`Self::pins_json5`].
+    pub fn with_pins(mut self, pins_json5: Vec<String>) -> Self {
+        self.pins_json5 = pins_json5;
+        self
+    }
+
     /// Returns the filesystem path if the source is `Fs`, otherwise `None`.
     pub fn fs_path(&self) -> Option<&PathBuf> {
         match &self.source {
             NodeSource::Fs(path) => Some(path),
-            NodeSource::Git { .. } | NodeSource::Http { .. } | NodeSource::RepoNode { .. } => None,
+            NodeSource::Git { .. }
+            | NodeSource::Http { .. }
+            | NodeSource::Pinned { .. }
+            | NodeSource::ResolveRef { .. } => None,
         }
     }
 
@@ -243,10 +285,13 @@ impl NodeAddGoal {
                         goal.reborrow().set_http_sha256(&digest);
                     }
                 }
-                NodeSource::RepoNode { name, tag } => {
-                    let mut repo = source.init_repo_node();
-                    repo.set_name(name);
-                    repo.set_tag(tag);
+                NodeSource::Pinned { pin_json5 } => {
+                    source.set_pinned(pin_json5);
+                }
+                NodeSource::ResolveRef { name, tag } => {
+                    let mut resolve_ref = source.init_resolve_ref();
+                    resolve_ref.set_name(name);
+                    resolve_ref.set_tag(tag);
                 }
             }
 
@@ -263,6 +308,12 @@ impl NodeAddGoal {
             if let Some(launch_id) = &self.launch_id {
                 goal.reborrow().set_launch_id(launch_id);
             }
+
+            let pin_count = capnp_list_len(self.pins_json5.len(), "NodeAddGoal.pins_json5")?;
+            crate::encoding::write_text_list(
+                goal.reborrow().init_pins_json5(pin_count),
+                &self.pins_json5,
+            );
         }
         encode_message(&builder)
     }
@@ -284,9 +335,13 @@ impl NodeAddGoal {
             Which::Http(http) => {
                 NodeSource::decode_http(http?.to_str()?, Some(goal.get_http_sha256()?.to_str()?))?
             }
-            Which::RepoNode(repo) => {
-                let repo = repo?;
-                NodeSource::decode_repo_node(repo.get_name()?.to_str()?, repo.get_tag()?.to_str()?)?
+            Which::Pinned(pin) => NodeSource::decode_pinned(pin?.to_str()?)?,
+            Which::ResolveRef(resolve_ref) => {
+                let resolve_ref = resolve_ref?;
+                NodeSource::decode_resolve_ref(
+                    resolve_ref.get_name()?.to_str()?,
+                    resolve_ref.get_tag()?.to_str()?,
+                )?
             }
         };
 
@@ -307,6 +362,7 @@ impl NodeAddGoal {
             timeout_secs: goal.get_timeout_secs(),
             force: goal.get_force(),
             launch_id: optional_text(goal.get_launch_id()?.to_str()?),
+            pins_json5: crate::encoding::read_text_list(goal.get_pins_json5()?)?,
         })
     }
 }
@@ -358,6 +414,7 @@ mod tests {
             timeout_secs: 30,
             force: false,
             launch_id: None,
+            pins_json5: vec![],
         };
         let encoded = goal.encode().expect("encoding should succeed");
         let result = NodeAddGoal::decode(&encoded);
@@ -396,45 +453,76 @@ mod tests {
     }
 
     #[test]
-    fn node_add_goal_repo_node_source_roundtrips() {
-        let encoded = NodeAddGoal::new_repo_node("camera", "v1", "hash", 42)
-            .expect("repo_node constructor should accept valid inputs")
+    fn node_add_goal_resolve_ref_source_roundtrips() {
+        let encoded = NodeAddGoal::new_resolve_ref("camera", "v1", "hash", 42)
+            .expect("resolve_ref constructor should accept valid inputs")
             .encode()
             .expect("encoding should succeed");
         let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
         assert_eq!(
             decoded.source,
-            NodeSource::RepoNode {
+            NodeSource::ResolveRef {
                 name: "camera".to_owned(),
                 tag: "v1".to_owned(),
             }
         );
+        assert!(decoded.pins_json5.is_empty());
     }
 
     #[test]
-    fn repo_node_rejects_invalid_name() {
-        assert!(NodeSource::repo_node("../etc", "1.0").is_err());
-        assert!(NodeSource::repo_node("bad name", "1.0").is_err());
+    fn node_add_goal_pinned_source_roundtrips_with_closure_pins() {
+        let root = r#"{kind:"node",name:"camera",tag:"v1"}"#;
+        let goal = NodeAddGoal::from_source(
+            NodeSource::decode_pinned(root).expect("non-empty pin"),
+            "hash",
+            42,
+        )
+        .with_pins(vec![
+            r#"{kind:"node",name:"driver",tag:"v2"}"#.to_owned(),
+            r#"{kind:"contract",name:"frames",tag:"v1"}"#.to_owned(),
+        ]);
+        let decoded = NodeAddGoal::decode(&goal.encode().expect("encode")).expect("decode");
+        assert_eq!(
+            decoded.source,
+            NodeSource::Pinned {
+                pin_json5: root.to_owned()
+            }
+        );
+        assert_eq!(decoded.pins_json5, goal.pins_json5);
+    }
+
+    /// An empty pin names nothing; refusing it at decode keeps the daemon
+    /// from tripping over it later with a worse message.
+    #[test]
+    fn decode_pinned_rejects_empty_pin() {
+        assert!(NodeSource::decode_pinned("").is_err());
+        assert!(NodeSource::decode_pinned("   ").is_err());
     }
 
     #[test]
-    fn repo_node_rejects_invalid_tag() {
-        assert!(NodeSource::repo_node("node", "").is_err());
-        assert!(NodeSource::repo_node("node", "..").is_err());
+    fn resolve_ref_rejects_invalid_name() {
+        assert!(NodeSource::resolve_ref("../etc", "1.0").is_err());
+        assert!(NodeSource::resolve_ref("bad name", "1.0").is_err());
     }
 
     #[test]
-    fn decode_repo_node_rejects_empty_name() {
-        assert!(NodeSource::decode_repo_node("", "v1").is_err());
+    fn resolve_ref_rejects_invalid_tag() {
+        assert!(NodeSource::resolve_ref("node", "").is_err());
+        assert!(NodeSource::resolve_ref("node", "..").is_err());
     }
 
     #[test]
-    fn decode_repo_node_rejects_empty_tag() {
-        assert!(NodeSource::decode_repo_node("node", "").is_err());
+    fn decode_resolve_ref_rejects_empty_name() {
+        assert!(NodeSource::decode_resolve_ref("", "v1").is_err());
     }
 
     #[test]
-    fn decode_repo_node_rejects_path_traversal_in_name() {
+    fn decode_resolve_ref_rejects_empty_tag() {
+        assert!(NodeSource::decode_resolve_ref("node", "").is_err());
+    }
+
+    #[test]
+    fn decode_resolve_ref_rejects_path_traversal_in_name() {
         for name in [
             "../etc",
             "a/b",
@@ -445,14 +533,14 @@ mod tests {
             "name with space",
         ] {
             assert!(
-                NodeSource::decode_repo_node(name, "v1").is_err(),
+                NodeSource::decode_resolve_ref(name, "v1").is_err(),
                 "name `{name}` should be rejected"
             );
         }
     }
 
     #[test]
-    fn decode_repo_node_rejects_path_traversal_in_tag() {
+    fn decode_resolve_ref_rejects_path_traversal_in_tag() {
         for tag in [
             "../etc",
             "a/b",
@@ -463,7 +551,7 @@ mod tests {
             "tag with space",
         ] {
             assert!(
-                NodeSource::decode_repo_node("node", tag).is_err(),
+                NodeSource::decode_resolve_ref("node", tag).is_err(),
                 "tag `{tag}` should be rejected"
             );
         }
@@ -499,9 +587,9 @@ mod tests {
         let goal = NodeAddGoal::new("/some/node", "git-hash", 30);
         assert_eq!(goal.fs_path(), Some(&PathBuf::from("/some/node")));
 
-        let repo_goal = NodeAddGoal::new_repo_node("camera", "v1", "hash", 30)
-            .expect("repo_node constructor should accept valid inputs");
-        assert_eq!(repo_goal.fs_path(), None);
+        let resolve_goal = NodeAddGoal::new_resolve_ref("camera", "v1", "hash", 30)
+            .expect("resolve_ref constructor should accept valid inputs");
+        assert_eq!(resolve_goal.fs_path(), None);
     }
 
     // --- NodeAddGoalResponse ---

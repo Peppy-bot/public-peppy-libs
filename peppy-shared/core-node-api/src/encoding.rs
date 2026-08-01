@@ -23,7 +23,7 @@ pub use datastore::{
 pub use federation::{
     FederationVerdict, PairCommitRequest, ParticipantReleaseRequest, ParticipantReserveRequest,
     ParticipantReserveResponse, ParticipantSliceBeginRequest, RelationshipEvent,
-    RelationshipNotification, RelationshipNotificationAck, ResolvedManifest,
+    RelationshipNotification, RelationshipNotificationAck,
 };
 pub use health::{HealthRequest, HealthResponse};
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
@@ -241,18 +241,14 @@ mod tests {
                 let request = message
                     .init_root::<crate::federation_capnp::participant_reserve_request::Builder>();
                 let len = capnp_list_len(values.len(), "test").expect("len fits");
-                write_text_list(request.init_deployment_sources_json5(len), &values);
+                write_text_list(request.init_deployment_pins_json5(len), &values);
             }
             let request = message
                 .get_root_as_reader::<crate::federation_capnp::participant_reserve_request::Reader>(
                 )
                 .expect("root");
-            let read = read_text_list(
-                request
-                    .get_deployment_sources_json5()
-                    .expect("list present"),
-            )
-            .expect("read");
+            let read = read_text_list(request.get_deployment_pins_json5().expect("list present"))
+                .expect("read");
             assert_eq!(read, values);
         }
     }
