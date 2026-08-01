@@ -33,7 +33,7 @@ fn validate_manifest_links(manifest: &Manifest) -> Result<()> {
             .iter()
             .map(|n| n.link_id.as_str())
             .chain(d.contracts.iter().map(|c| c.link_id.as_str()))
-            .chain(d.pairings.iter().map(|p| p.link_id()))
+            .chain(d.pairing_link_ids())
     });
     for link_id in depends.chain(implements) {
         if !seen_link_ids.insert(link_id) {
@@ -42,11 +42,9 @@ fn validate_manifest_links(manifest: &Manifest) -> Result<()> {
     }
 
     if let Some(depends_on) = &manifest.depends_on {
-        for pairing in &depends_on.pairings {
-            if !is_wire_safe_link_id(pairing.link_id()) {
-                return Err(
-                    ParsingError::PairingSentinelLinkId(pairing.link_id().to_owned()).into(),
-                );
+        for link_id in depends_on.pairing_link_ids() {
+            if !is_wire_safe_link_id(link_id) {
+                return Err(ParsingError::PairingSentinelLinkId(link_id.to_owned()).into());
             }
         }
     }
@@ -120,9 +118,8 @@ fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<(
     let observer_link_ids: Vec<&str> = manifest
         .depends_on
         .iter()
-        .flat_map(|d| d.pairings.iter())
-        .filter(|p| p.is_observer())
-        .map(|p| p.link_id())
+        .flat_map(|d| d.pairing_observers.iter())
+        .map(|o| o.link_id.as_str())
         .collect();
     for (link_id, _) in interfaces.produced(InterfaceKind::Topic) {
         if let Some(link_id) = link_id
@@ -190,30 +187,32 @@ fn depends_list_containing(depends_on: Option<&DependsOn>, link_id: &str) -> Opt
     if d.contracts.iter().any(|c| c.link_id == link_id) {
         return Some("contracts");
     }
-    if d.pairings.iter().any(|p| p.link_id() == link_id) {
+    if d.pairings.iter().any(|p| p.link_id == link_id) {
         return Some("pairings");
+    }
+    if d.pairing_observers.iter().any(|o| o.link_id == link_id) {
+        return Some("pairing_observers");
     }
     None
 }
 
-/// The participant `depends_on.pairings` slot link_ids of a manifest. A
-/// participant slot is the one `depends_on` kind a produced topic entry may
-/// reference: its role is a producer of the pairing document's topics. An
-/// observer plays no role and emits nothing, so observer slots are excluded
-/// and a `topics.emits` entry naming one is rejected with a targeted error.
-/// Which topics a participant's role actually emits needs the pairing
-/// document and is enforced at node add/sync.
+/// The `depends_on.pairings` slot link_ids of a manifest. A participant slot is
+/// the one `depends_on` kind a produced topic entry may reference: its role is
+/// a producer of the pairing document's topics. An observer plays no role and
+/// emits nothing, so `depends_on.pairing_observers` is excluded and a
+/// `topics.emits` entry naming one is rejected with a targeted error. Which
+/// topics a participant's role actually emits needs the pairing document and is
+/// enforced at node add/sync.
 fn participant_pairing_link_ids(manifest: &Manifest) -> impl Iterator<Item = &str> {
     manifest
         .depends_on
         .iter()
         .flat_map(|d| d.pairings.iter())
-        .filter(|p| p.is_participant())
-        .map(|p| p.link_id())
+        .map(|p| p.link_id.as_str())
 }
 
 /// `allowed_link_ids` is the set a document-backed entry of this section may
-/// reference: `manifest.implements` slots, plus `depends_on.pairings` slots
+/// reference: `manifest.implements` slots, plus participant pairing slots
 /// for `topics.emits`.
 fn validate_produced_section<'a>(
     section: &'static str,
@@ -658,9 +657,7 @@ mod tests {
         let config = NodeConfigParser::from_content(json5).unwrap();
         let deps = config.manifest.depends_on.unwrap();
         assert_eq!(deps.pairings.len(), 1);
-        let pairing = deps.pairings[0]
-            .as_participant()
-            .expect("expected a participant pairing slot");
+        let pairing = &deps.pairings[0];
         assert_eq!(pairing.name.as_str(), "arm_link");
         assert_eq!(pairing.role, "arm");
         assert_eq!(pairing.link_id, "controller");
@@ -688,10 +685,7 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         let deps = config.manifest.depends_on.unwrap();
-        let pairing = deps.pairings[0]
-            .as_participant()
-            .expect("expected a participant pairing slot");
-        assert!(!pairing.optional);
+        assert!(!deps.pairings[0].optional);
     }
 
     #[test]
@@ -728,8 +722,8 @@ mod tests {
                 name: "lerobot_recorder",
                 tag: "v1",
                 depends_on: {
-                    pairings: [
-                        { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "observed_arm" },
+                    pairing_observers: [
+                        { name: "arm_link", tag: "v1", role: "arm", link_id: "observed_arm" },
                     ],
                 },
             },
@@ -744,10 +738,8 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5).expect("observer node should parse");
         let deps = config.manifest.depends_on.unwrap();
-        let observed = deps.pairings[0]
-            .as_observer()
-            .expect("expected an observer pairing slot");
-        assert_eq!(observed.observes_role, "arm");
+        let observed = &deps.pairing_observers[0];
+        assert_eq!(observed.role, "arm");
         assert_eq!(observed.link_id, "observed_arm");
     }
 
@@ -762,8 +754,8 @@ mod tests {
                 name: "lerobot_recorder",
                 tag: "v1",
                 depends_on: {
-                    pairings: [
-                        { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "observed_arm" },
+                    pairing_observers: [
+                        { name: "arm_link", tag: "v1", role: "arm", link_id: "observed_arm" },
                     ],
                 },
             },
@@ -791,8 +783,8 @@ mod tests {
                 name: "lerobot_recorder",
                 tag: "v1",
                 depends_on: {
-                    pairings: [
-                        { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "observed_arm" },
+                    pairing_observers: [
+                        { name: "arm_link", tag: "v1", role: "arm", link_id: "observed_arm" },
                     ],
                 },
             },

@@ -273,7 +273,7 @@ impl<'de> Deserialize<'de> for BoundProducers {
 /// is no wildcard, no unbound state, and no discovery fallback.
 pub type SlotBindings = BTreeMap<String, BoundProducers>;
 
-/// State of one pairing slot (a `depends_on.pairings` entry) of a node
+/// State of one participant pairing slot (a `depends_on.pairings` entry) of a node
 /// instance. Deliberately NOT part of `slot_bindings`: slot bindings feed
 /// the immutable consumer-filter cache, while a pairing slot is live-mutable
 /// over the node's lifetime (the daemon delivers pins via the `peer_update`

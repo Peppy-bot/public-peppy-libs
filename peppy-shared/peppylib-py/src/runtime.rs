@@ -992,7 +992,7 @@ impl PyNodeRunner {
     }
 
     /// Handle onto the observer slot declared at `link_id` in
-    /// `depends_on.pairings` (an entry carrying `observes_role`):
+    /// `depends_on.pairing_observers`:
     /// `observation_slot(link_id).source()` returns the resolved source once
     /// the daemon has delivered it. Raises `ValueError` if the manifest
     /// declares no such observer slot.

@@ -379,8 +379,9 @@ pub enum QoSProfile {
 /// depends on the slot it names. `services.exposes` and `actions.exposes`
 /// admit `manifest.implements` slots only, so their entries are always
 /// contract-backed. `topics.emits` and `topics.consumes` additionally admit
-/// `depends_on.pairings` slots, whose member shapes come from the pairing
-/// document instead.
+/// pairing slots (`depends_on.pairings` for emits and consumes,
+/// `depends_on.pairing_observers` for consumes), whose member shapes come from
+/// the pairing document instead.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LinkedEntry {
@@ -497,8 +498,8 @@ macro_rules! impl_produced_entry {
                 }
             }
 
-            /// The slot this entry references (a `manifest.implements` or
-            /// `depends_on.pairings` slot), or `None` for a native entry.
+            /// The slot this entry references (a `manifest.implements` or a
+            /// pairing slot), or `None` for a native entry.
             pub fn link_id(&self) -> Option<&str> {
                 match self {
                     Self::Linked(e) => Some(&e.link_id),
@@ -734,7 +735,7 @@ fn deserialize_pairing_dependency_link_id<'de, D>(deserializer: D) -> Result<Str
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "PairingDependency.link_id")
+    deserialize_non_empty_identifier(deserializer, "PairingSlot.link_id")
 }
 
 fn deserialize_implements_link_id<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -888,39 +889,20 @@ pub struct ImplementsEntry {
     pub sha256: Option<String>,
 }
 
-/// One pairing slot of a node. A slot is either a **participant** or an
-/// **observer**, and the discriminator is which of `role` / `observes_role` is
-/// present. Exactly one is required: the field name states the referent, so a
-/// participant naming the role it plays and an observer naming the role it taps
-/// stay visually distinct and the parser rejects the wrong combination
-/// outright.
+/// A participant pairing slot, declared under `depends_on.pairings`: this node
+/// plays `role`, owns an exclusive 1:1 pairing endpoint, and one entry covers
+/// both directions of the conversation (the topics the role emits AND the
+/// counterpart-role topics it consumes) through `link_id`. Like contract
+/// dependencies, a pairing slot contributes no DAG edge.
 ///
-/// A participant plays `role`, owns an exclusive 1:1 pairing endpoint, and one
-/// entry covers both directions of the conversation (the topics the role emits
-/// AND the counterpart-role topics it consumes). An observer plays no role,
-/// claims no endpoint, and passively consumes the topics emitted by
-/// `observes_role`. Both are addressable in code and CLI flags via `link_id`,
-/// and like contract dependencies they contribute no DAG edge.
+/// `optional: true` marks a slot the node functions meaningfully without (it
+/// boots unpaired with no `--link`/`--defer-link` ceremony); a required slot
+/// must be linked or explicitly deferred at start.
 ///
-/// `optional: true` marks a participant slot the node functions meaningfully
-/// without (it boots unpaired with no `--link`/`--defer-link` ceremony); a
-/// required slot must be linked or explicitly deferred at start. `optional` is
-/// meaningless for an observer and is rejected.
-///
-/// Deliberately carries no `cardinality` on either form: a pairing is strictly
-/// 1:1 between two complementary slots and expresses absence with `optional`.
-/// The custom `Deserialize` below turns a `cardinality` key into a targeted
-/// manifest error instead of a generic unknown-field message.
-#[derive(Debug, Clone, Serialize)]
-#[serde(untagged)]
-pub enum PairingDependency {
-    Participant(PairingParticipantDependency),
-    Observer(PairingObserverDependency),
-}
-
-/// A participant pairing slot: this node plays `role` and owns an exclusive
-/// pairing endpoint, emitting its role's topics and consuming the counterpart
-/// role's topics through `link_id`.
+/// Deliberately carries no `cardinality`: a pairing is strictly 1:1 between two
+/// complementary slots and expresses absence with `optional`. The custom
+/// `Deserialize` below turns a `cardinality` key into a targeted manifest error
+/// instead of a generic unknown-field message.
 #[derive(Debug, Clone, Serialize)]
 pub struct PairingParticipantDependency {
     pub name: Name,
@@ -933,163 +915,111 @@ pub struct PairingParticipantDependency {
     pub sha256: Option<String>,
 }
 
-/// An observer pairing slot: this node plays no role and claims no endpoint. It
-/// passively consumes the topics emitted by `observes_role`, listed in
-/// `interfaces.topics.consumes` keyed by `link_id`. The `link_id` is a
-/// local-only resolution name (never stamped on the wire), but it stays
-/// wire-safe like every other pairing link_id so both forms share one parser.
+/// An observer pairing slot, declared under `depends_on.pairing_observers`:
+/// this node plays no role and claims no endpoint. It passively consumes the
+/// topics emitted by `role`, listed in `interfaces.topics.consumes` keyed by
+/// `link_id`. The list it lives in states the referent, so `role` here names
+/// the role being observed rather than one this node plays.
+///
+/// The `link_id` is a local-only resolution name (never stamped on the wire),
+/// but it stays wire-safe like every other pairing link_id so both slot kinds
+/// share one parser. `optional` is meaningless for an observer and is rejected,
+/// as is `cardinality`.
 #[derive(Debug, Clone, Serialize)]
 pub struct PairingObserverDependency {
     pub name: Name,
     pub tag: String,
-    pub observes_role: String,
+    pub role: String,
     pub link_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
 }
 
-impl PairingDependency {
-    /// The referenced pairing document's name, shared by both forms.
-    pub fn name(&self) -> &Name {
-        match self {
-            Self::Participant(p) => &p.name,
-            Self::Observer(o) => &o.name,
-        }
-    }
-
-    /// The referenced pairing document's tag, shared by both forms.
-    pub fn tag(&self) -> &str {
-        match self {
-            Self::Participant(p) => &p.tag,
-            Self::Observer(o) => &o.tag,
-        }
-    }
-
-    /// The slot's local `link_id`, shared by both forms.
-    pub fn link_id(&self) -> &str {
-        match self {
-            Self::Participant(p) => &p.link_id,
-            Self::Observer(o) => &o.link_id,
-        }
-    }
-
-    /// The optional pairing-document sha256 pin, shared by both forms.
-    pub fn sha256(&self) -> Option<&str> {
-        match self {
-            Self::Participant(p) => p.sha256.as_deref(),
-            Self::Observer(o) => o.sha256.as_deref(),
-        }
-    }
-
-    /// Whether this slot is the observer form.
-    pub fn is_observer(&self) -> bool {
-        matches!(self, Self::Observer(_))
-    }
-
-    /// Whether this slot is the participant form.
-    pub fn is_participant(&self) -> bool {
-        matches!(self, Self::Participant(_))
-    }
-
-    /// The participant form, or `None` for an observer slot.
-    pub fn as_participant(&self) -> Option<&PairingParticipantDependency> {
-        match self {
-            Self::Participant(p) => Some(p),
-            Self::Observer(_) => None,
-        }
-    }
-
-    /// The observer form, or `None` for a participant slot.
-    pub fn as_observer(&self) -> Option<&PairingObserverDependency> {
-        match self {
-            Self::Observer(o) => Some(o),
-            Self::Participant(_) => None,
-        }
-    }
+/// The wire shape both pairing slot kinds deserialize through. `role` is
+/// `Option` only so a missing one produces the targeted
+/// `PairingSlotMissingRole` error instead of serde's generic message, and
+/// `cardinality` is captured only to reject it the same way.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPairingSlot {
+    name: Name,
+    tag: String,
+    role: Option<String>,
+    #[serde(deserialize_with = "deserialize_pairing_dependency_link_id")]
+    link_id: String,
+    optional: Option<bool>,
+    sha256: Option<String>,
+    cardinality: Option<serde::de::IgnoredAny>,
 }
 
-impl<'de> Deserialize<'de> for PairingDependency {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct RawPairingDependency {
-            name: Name,
-            tag: String,
-            role: Option<String>,
-            observes_role: Option<String>,
-            #[serde(deserialize_with = "deserialize_pairing_dependency_link_id")]
-            link_id: String,
-            optional: Option<bool>,
-            sha256: Option<String>,
-            /// Captured only to reject it with a targeted message; the type
-            /// is irrelevant, presence alone is the error.
-            cardinality: Option<serde::de::IgnoredAny>,
-        }
-
-        let raw = RawPairingDependency::deserialize(deserializer)?;
-        let link_id = raw.link_id;
-
-        // `cardinality` is rejected on either form, before the role split, so
-        // the targeted message fires whether the entry is a participant or an
-        // observer.
-        if raw.cardinality.is_some() {
+impl RawPairingSlot {
+    /// The checks shared by both slot kinds: no `cardinality`, and a present,
+    /// non-empty `role`. Returns the validated role; the caller owns whatever
+    /// its own kind additionally requires.
+    fn shared_checks<E: de::Error>(&self, context: &'static str) -> Result<String, E> {
+        if self.cardinality.is_some() {
             return Err(de::Error::custom(
                 crate::error::StructuredError::CardinalityOnPairingSlot {
-                    link_id: link_id.clone(),
+                    link_id: self.link_id.clone(),
                 }
                 .json5_message(),
             ));
         }
-
-        // Exactly one of `role` / `observes_role` selects the form.
-        match (raw.role, raw.observes_role) {
-            (Some(_), Some(_)) => Err(de::Error::custom(
-                crate::error::StructuredError::PairingSlotHasBothRoles { link_id }.json5_message(),
-            )),
-            (None, None) => Err(de::Error::custom(
-                crate::error::StructuredError::PairingSlotMissingRole { link_id }.json5_message(),
-            )),
-            (Some(role), None) => {
-                let role = validate_non_empty_identifier(&role, "PairingDependency.role")
-                    .map_err(de::Error::custom)?;
-                Ok(PairingDependency::Participant(
-                    PairingParticipantDependency {
-                        name: raw.name,
-                        tag: raw.tag,
-                        role,
-                        link_id,
-                        optional: raw.optional.unwrap_or(false),
-                        sha256: raw.sha256,
-                    },
-                ))
-            }
-            (None, Some(observes_role)) => {
-                // An observer never boots as a required-but-unlinked slot, so
-                // `optional` carries no meaning; its presence is an error even
-                // when set to false.
-                if raw.optional.is_some() {
-                    return Err(de::Error::custom(
-                        crate::error::StructuredError::OptionalOnObserverSlot { link_id }
-                            .json5_message(),
-                    ));
+        let role = self.role.as_deref().ok_or_else(|| {
+            de::Error::custom(
+                crate::error::StructuredError::PairingSlotMissingRole {
+                    link_id: self.link_id.clone(),
                 }
-                let observes_role = validate_non_empty_identifier(
-                    &observes_role,
-                    "PairingDependency.observes_role",
-                )
-                .map_err(de::Error::custom)?;
-                Ok(PairingDependency::Observer(PairingObserverDependency {
-                    name: raw.name,
-                    tag: raw.tag,
-                    observes_role,
-                    link_id,
-                    sha256: raw.sha256,
-                }))
-            }
+                .json5_message(),
+            )
+        })?;
+        validate_non_empty_identifier(role, context).map_err(de::Error::custom)
+    }
+}
+
+impl<'de> Deserialize<'de> for PairingParticipantDependency {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawPairingSlot::deserialize(deserializer)?;
+        let role = raw.shared_checks("PairingParticipantDependency.role")?;
+        Ok(Self {
+            name: raw.name,
+            tag: raw.tag,
+            role,
+            link_id: raw.link_id,
+            optional: raw.optional.unwrap_or(false),
+            sha256: raw.sha256,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for PairingObserverDependency {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawPairingSlot::deserialize(deserializer)?;
+        let role = raw.shared_checks("PairingObserverDependency.role")?;
+        // An observer never boots as a required-but-unlinked slot, so
+        // `optional` carries no meaning; its presence is an error even when set
+        // to false.
+        if raw.optional.is_some() {
+            return Err(de::Error::custom(
+                crate::error::StructuredError::OptionalOnObserverSlot {
+                    link_id: raw.link_id,
+                }
+                .json5_message(),
+            ));
         }
+        Ok(Self {
+            name: raw.name,
+            tag: raw.tag,
+            role,
+            link_id: raw.link_id,
+            sha256: raw.sha256,
+        })
     }
 }
 
@@ -1101,7 +1031,21 @@ pub struct DependsOn {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contracts: Vec<ContractDependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pairings: Vec<PairingDependency>,
+    pub pairings: Vec<PairingParticipantDependency>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pairing_observers: Vec<PairingObserverDependency>,
+}
+
+impl DependsOn {
+    /// Every pairing slot link_id, participants first then observers. The two
+    /// lists share one link_id namespace with the rest of `depends_on`, so
+    /// namespace-wide rules read them together.
+    pub fn pairing_link_ids(&self) -> impl Iterator<Item = &str> {
+        self.pairings
+            .iter()
+            .map(|p| p.link_id.as_str())
+            .chain(self.pairing_observers.iter().map(|o| o.link_id.as_str()))
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -2446,11 +2390,11 @@ mod tests {
             "message should explain the pairing model: {msg}"
         );
 
-        // `cardinality` is rejected on the observer form too, with the same
+        // `cardinality` is rejected on an observer entry too, with the same
         // targeted message keyed on the slot's link_id.
         let observer_json5 = r#"{
-            pairings: [
-                { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch", cardinality: "one" }
+            pairing_observers: [
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "one" }
             ]
         }"#;
         let err = serde_json5::from_str::<DependsOn>(observer_json5)
@@ -2476,87 +2420,60 @@ mod tests {
             ]
         }"#;
         let deps: DependsOn = serde_json5::from_str(valid).expect("valid pairing should parse");
-        let PairingDependency::Participant(p) = &deps.pairings[0] else {
-            panic!("expected a participant pairing slot");
-        };
-        assert!(p.optional);
+        assert!(deps.pairings[0].optional);
     }
 
-    /// The same base entry becomes a participant when it carries `role` and an
-    /// observer when it carries `observes_role`, and the two forms round-trip
-    /// through serialization back to the same flat shape.
+    /// Which list an entry lives in is the whole participant/observer
+    /// discriminator, and both lists carry the same `role` key naming the role
+    /// played or observed. Both round-trip through serialization back to the
+    /// same flat shape.
     #[test]
-    fn pairing_form_is_selected_by_the_role_field() {
-        let participant_json5 = r#"{
+    fn slot_kind_is_selected_by_the_depends_on_list() {
+        let json5 = r#"{
             pairings: [
                 { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
+            ],
+            pairing_observers: [
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "observed_arm" }
             ]
         }"#;
-        let deps: DependsOn =
-            serde_json5::from_str(participant_json5).expect("participant should parse");
-        let PairingDependency::Participant(p) = &deps.pairings[0] else {
-            panic!(
-                "`role` must produce a participant, got {:?}",
-                deps.pairings[0]
-            );
-        };
-        assert_eq!(p.role, "controller");
-        assert_eq!(p.link_id, "arm");
+        let deps: DependsOn = serde_json5::from_str(json5).expect("both lists should parse");
 
-        let observer_json5 = r#"{
-            pairings: [
-                { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "observed_arm" }
-            ]
-        }"#;
-        let deps: DependsOn = serde_json5::from_str(observer_json5).expect("observer should parse");
-        let PairingDependency::Observer(o) = &deps.pairings[0] else {
-            panic!(
-                "`observes_role` must produce an observer, got {:?}",
-                deps.pairings[0]
-            );
-        };
-        assert_eq!(o.observes_role, "arm");
-        assert_eq!(o.link_id, "observed_arm");
-
-        // The untagged serialization stays flat (no `Participant`/`Observer`
-        // wrapper), so manifests round-trip byte-identically.
-        let serialized = serde_json5::to_string(&deps).expect("serialize");
-        assert!(
-            serialized.contains("observes_role") && !serialized.contains("Observer"),
-            "observer must serialize flat: {serialized}"
+        assert_eq!(deps.pairings[0].role, "controller");
+        assert_eq!(deps.pairings[0].link_id, "arm");
+        assert_eq!(deps.pairing_observers[0].role, "arm");
+        assert_eq!(deps.pairing_observers[0].link_id, "observed_arm");
+        assert_eq!(
+            deps.pairing_link_ids().collect::<Vec<_>>(),
+            ["arm", "observed_arm"],
+            "pairing_link_ids must cover both lists, participants first"
         );
+
+        // Serialization stays flat and keeps each entry in its own list, so
+        // manifests round-trip byte-identically.
+        let serialized = serde_json5::to_string(&deps).expect("serialize");
+        let reparsed: DependsOn = serde_json5::from_str(&serialized).expect("round-trip");
+        assert_eq!(reparsed.pairings[0].role, "controller");
+        assert_eq!(reparsed.pairing_observers[0].role, "arm");
     }
 
-    /// The role field is the whole discriminator: exactly one of `role` /
-    /// `observes_role` is required, so both-present and neither-present are
-    /// each a targeted error rather than a silent wrong-direction tap.
+    /// `role` is required on both slot kinds, and gets a targeted error rather
+    /// than serde's generic missing-field message.
     #[test]
-    fn pairing_entry_requires_exactly_one_role_field() {
-        let both = r#"{
-            pairings: [
-                { name: "arm_link", tag: "v1", role: "arm", observes_role: "controller", link_id: "x" }
-            ]
-        }"#;
-        let err = crate::error::ParsingError::from(
-            serde_json5::from_str::<DependsOn>(both).expect_err("both roles must be rejected"),
-        );
-        assert!(
-            matches!(&err, crate::error::ParsingError::PairingSlotHasBothRoles { link_id } if link_id == "x"),
-            "expected PairingSlotHasBothRoles, got {err:?}"
-        );
-
-        let neither = r#"{
-            pairings: [
-                { name: "arm_link", tag: "v1", link_id: "x" }
-            ]
-        }"#;
-        let err = crate::error::ParsingError::from(
-            serde_json5::from_str::<DependsOn>(neither).expect_err("neither role must be rejected"),
-        );
-        assert!(
-            matches!(&err, crate::error::ParsingError::PairingSlotMissingRole { link_id } if link_id == "x"),
-            "expected PairingSlotMissingRole, got {err:?}"
-        );
+    fn pairing_entry_requires_a_role() {
+        for json5 in [
+            r#"{ pairings: [ { name: "arm_link", tag: "v1", link_id: "x" } ] }"#,
+            r#"{ pairing_observers: [ { name: "arm_link", tag: "v1", link_id: "x" } ] }"#,
+        ] {
+            let err = crate::error::ParsingError::from(
+                serde_json5::from_str::<DependsOn>(json5)
+                    .expect_err("a missing role must be rejected"),
+            );
+            assert!(
+                matches!(&err, crate::error::ParsingError::PairingSlotMissingRole { link_id } if link_id == "x"),
+                "expected PairingSlotMissingRole, got {err:?}"
+            );
+        }
     }
 
     /// `optional` is a required-slot concept and has no meaning for an
@@ -2566,8 +2483,8 @@ mod tests {
         for value in ["true", "false"] {
             let json5 = format!(
                 r#"{{
-                    pairings: [
-                        {{ name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch", optional: {value} }}
+                    pairing_observers: [
+                        {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", optional: {value} }}
                     ]
                 }}"#
             );

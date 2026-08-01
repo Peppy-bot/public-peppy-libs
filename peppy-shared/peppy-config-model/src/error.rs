@@ -153,7 +153,7 @@ impl std::fmt::Display for ContractCoverageMismatch {
 impl std::error::Error for ContractCoverageMismatch {}
 
 /// Tier B (raised at node add/sync, where pairing documents resolve): the
-/// set-diff between one `depends_on.pairings` slot and the pairing-backed
+/// set-diff between one pairing slot and the pairing-backed
 /// entries referencing it. The pairing counterpart of
 /// [`ContractCoverageMismatch`], aggregating every discrepancy for the slot in
 /// one error instead of failing on the first.
@@ -267,11 +267,11 @@ pub enum ParsingError {
     #[error("Empty name")]
     EmptyName,
     #[error(
-        "Duplicate link_id `{0}` in manifest (link_ids share one flat namespace across depends_on.nodes, depends_on.contracts, depends_on.pairings, and manifest.implements)"
+        "Duplicate link_id `{0}` in manifest (link_ids share one flat namespace across depends_on.nodes, depends_on.contracts, depends_on.pairings, depends_on.pairing_observers, and manifest.implements)"
     )]
     DuplicateLinkId(String),
     #[error(
-        "Pairing link_id `{0}` in manifest.depends_on.pairings is not a valid wire segment (must not contain '/' or '@', and must not collide with a reserved sentinel) — pairing slot link_ids appear on the wire as the producer-side link_id segment"
+        "Pairing link_id `{0}` in manifest.depends_on.pairings or manifest.depends_on.pairing_observers is not a valid wire segment (must not contain '/' or '@', and must not collide with a reserved sentinel): pairing slot link_ids appear on the wire as the producer-side link_id segment"
     )]
     PairingSentinelLinkId(String),
     #[error(
@@ -381,19 +381,15 @@ pub enum ParsingError {
     )]
     ConsumedItemReferencesImplementsLinkId { link_id: String },
     #[error(
-        "Pairing slot `{link_id}` in depends_on.pairings carries a `cardinality` key — a pairing is strictly 1:1 between two complementary slots; use `optional: true` to express absence. `cardinality` is valid only on depends_on.nodes and depends_on.contracts entries"
+        "Pairing slot `{link_id}` in depends_on.pairings or depends_on.pairing_observers carries a `cardinality` key: a pairing is strictly 1:1 between two complementary slots; use `optional: true` to express absence. `cardinality` is valid only on depends_on.nodes and depends_on.contracts entries"
     )]
     CardinalityOnPairingSlot { link_id: String },
     #[error(
-        "Pairing slot `{link_id}` declares both `role` and `observes_role`. A pairing slot is either a participant (`role`) or an observer (`observes_role`), not both; set exactly one"
-    )]
-    PairingSlotHasBothRoles { link_id: String },
-    #[error(
-        "Pairing slot `{link_id}` declares neither `role` nor `observes_role`. A pairing slot must set exactly one: `role` to participate, `observes_role` to observe"
+        "Pairing slot `{link_id}` declares no `role`. Every entry in depends_on.pairings names the role this node plays, and every entry in depends_on.pairing_observers names the role it observes"
     )]
     PairingSlotMissingRole { link_id: String },
     #[error(
-        "Observer pairing slot `{link_id}` carries `optional`. Observation is not a required-slot concept, so `optional` is rejected on observer entries; drop it"
+        "Observer pairing slot `{link_id}` in depends_on.pairing_observers carries `optional`. Observation is not a required-slot concept, so `optional` is rejected on observer entries; drop it"
     )]
     OptionalOnObserverSlot { link_id: String },
     #[error(
@@ -434,9 +430,6 @@ pub enum StructuredError {
     CardinalityOnPairingSlot {
         link_id: String,
     },
-    PairingSlotHasBothRoles {
-        link_id: String,
-    },
     PairingSlotMissingRole {
         link_id: String,
     },
@@ -471,9 +464,6 @@ impl From<StructuredError> for ParsingError {
             }
             StructuredError::CardinalityOnPairingSlot { link_id } => {
                 ParsingError::CardinalityOnPairingSlot { link_id }
-            }
-            StructuredError::PairingSlotHasBothRoles { link_id } => {
-                ParsingError::PairingSlotHasBothRoles { link_id }
             }
             StructuredError::PairingSlotMissingRole { link_id } => {
                 ParsingError::PairingSlotMissingRole { link_id }

@@ -84,7 +84,7 @@ impl NodeRunner {
     }
 
     /// Handle onto the observer slot declared at `link_id` in
-    /// `depends_on.pairings` (an entry carrying `observes_role`). Exposes the
+    /// `depends_on.pairing_observers`. Exposes the
     /// slot's resolved source: `observation_slot(link_id)?.source()` returns the
     /// observed source once the daemon has delivered it. Errors if the manifest
     /// declares no such observer slot.
