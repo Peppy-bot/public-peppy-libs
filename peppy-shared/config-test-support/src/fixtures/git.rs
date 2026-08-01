@@ -70,7 +70,7 @@ pub fn create_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     let entries = nodes
         .iter()
         .map(|(node_name, _)| {
-            format!("    \"{node_name}\": {{ \"v1\": {{ path: \"nodes/{node_name}/peppy.json5\" }} }},\n")
+            format!("    \"{node_name}\": {{ \"v1\": \"nodes/{node_name}/peppy.json5\" }},\n")
         })
         .collect::<String>();
     let index_path = PathBuf::from("peppy_repository.json5");
