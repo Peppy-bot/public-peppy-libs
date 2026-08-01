@@ -4,14 +4,17 @@ use serde::{
 };
 use std::fmt;
 
-/// Schema identifier embedded at the root of node, launcher, and contract
-/// `.json5` documents. The schema tag tells the daemon which document shape it
-/// is reading so the strict deserializer can reject mixed-up files (e.g. a
-/// launcher that claims to be a node config). Node files are always named
-/// `peppy.json5`; launcher files conventionally use `peppy_launcher.json5`
-/// for standalone projects but may use any `.json5` filename when discovered
-/// through a repository. Contract files are filename-agnostic and identified
-/// solely by their schema tag.
+/// Schema identifier embedded at the root of every Peppy `.json5` document.
+/// The schema tag tells the daemon which document shape it is reading so the
+/// strict deserializer can reject mixed-up files (e.g. a launcher that claims
+/// to be a node config). Node files are always named `peppy.json5`; launcher
+/// files conventionally use `peppy_launcher.json5` for standalone projects but
+/// may use any `.json5` filename when listed in a repository index. Contract
+/// and pairing files are filename-agnostic and identified solely by their
+/// schema tag. `repository/v1` is the odd one out: it tags a repository's
+/// `peppy_repository.json5` index, which declares no item of its own and
+/// instead states which identities the repository publishes and where each is
+/// declared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeppySchema {
     #[serde(rename = "node/v1")]
@@ -22,6 +25,8 @@ pub enum PeppySchema {
     ContractV1,
     #[serde(rename = "pairing/v1")]
     PairingV1,
+    #[serde(rename = "repository/v1")]
+    RepositoryV1,
 }
 
 impl fmt::Display for PeppySchema {
@@ -31,6 +36,7 @@ impl fmt::Display for PeppySchema {
             PeppySchema::LauncherV1 => "launcher/v1",
             PeppySchema::ContractV1 => "contract/v1",
             PeppySchema::PairingV1 => "pairing/v1",
+            PeppySchema::RepositoryV1 => "repository/v1",
         };
         f.write_str(s)
     }
@@ -53,5 +59,36 @@ impl PeppySchema {
             )));
         }
         Ok(schema)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EVERY_SCHEMA: &[PeppySchema] = &[
+        PeppySchema::NodeV1,
+        PeppySchema::LauncherV1,
+        PeppySchema::ContractV1,
+        PeppySchema::PairingV1,
+        PeppySchema::RepositoryV1,
+    ];
+
+    /// `Display` and the serde rename are written out separately, so this
+    /// pins them to each other: a variant added to one and not the other
+    /// would make a document's tag and its error text disagree.
+    #[test]
+    fn display_matches_the_wire_tag_for_every_variant() {
+        for schema in EVERY_SCHEMA {
+            let wire = serde_json::to_string(schema).expect("serializes");
+            assert_eq!(wire, format!("\"{schema}\""));
+            let parsed: PeppySchema = serde_json::from_str(&wire).expect("round trips");
+            assert_eq!(parsed, *schema);
+        }
+    }
+
+    #[test]
+    fn rejects_an_unknown_schema_tag() {
+        assert!(serde_json::from_str::<PeppySchema>("\"repository/v2\"").is_err());
     }
 }
