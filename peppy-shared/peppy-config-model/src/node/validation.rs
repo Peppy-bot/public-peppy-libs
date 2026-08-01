@@ -110,7 +110,8 @@ pub fn collect_contract_implementation_edges(
 /// 1. **Node existence**: Each entry in `manifest.depends_on.nodes` must resolve to an existing node.
 /// 2. **Interface exposure**: Each consumed/expected interface must reference a valid `link_id`
 ///    declared in `depends_on.nodes`, `depends_on.contracts`, or (for
-///    `topics.consumes` only) `depends_on.pairings`. For node-backed link_ids
+///    `topics.consumes` only) `depends_on.pairings` /
+///    `depends_on.pairing_observers`. For node-backed link_ids
 ///    the producer must expose the required interface.
 ///
 /// Contract- and pairing-backed link_ids only get the declaration check here.
@@ -174,7 +175,7 @@ pub fn validate_dependency_specs(
     let pairing_link_ids: HashSet<&str> = manifest
         .depends_on
         .as_ref()
-        .map(|d| d.pairings.iter().map(|p| p.link_id()).collect())
+        .map(|d| d.pairing_link_ids().collect())
         .unwrap_or_default();
 
     // Implements slots are produced, not consumed — a consumed item naming
@@ -550,7 +551,7 @@ mod tests {
                     manifest: {{
                         name: "lerobot_recorder", tag: "v1",
                         depends_on: {{
-                            pairings: [ {{ name: "arm_link", tag: "v1", observes_role: "arm", link_id: "observed_arm" }} ]
+                            pairing_observers: [ {{ name: "arm_link", tag: "v1", role: "arm", link_id: "observed_arm" }} ]
                         }}
                     }},
                     execution: {{ language: "rust", run_cmd: ["recorder"] }},

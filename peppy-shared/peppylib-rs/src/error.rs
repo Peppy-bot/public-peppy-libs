@@ -92,7 +92,7 @@ pub enum Error {
 
     // -- observation (pairing observers)
     #[error(
-        "unknown observer slot '{link_id}': the manifest declares no depends_on.pairings entry with `observes_role` and that link_id"
+        "unknown observer slot '{link_id}': the manifest declares no depends_on.pairing_observers entry with that link_id"
     )]
     UnknownObservationSlot { link_id: String },
 
