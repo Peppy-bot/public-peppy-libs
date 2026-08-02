@@ -426,6 +426,8 @@ pub struct NodeAddLogEntry {
     pub node_label: String,
     pub log_path: PathBuf,
     pub failed: bool,
+    /// Core node whose filesystem holds the log file.
+    pub core_node: String,
 }
 
 /// Per-node build log entry carried in `LaunchResult`.
@@ -435,6 +437,8 @@ pub struct NodeBuildLogEntry {
     pub node_label: String,
     pub log_path: PathBuf,
     pub failed: bool,
+    /// Core node whose filesystem holds the log file.
+    pub core_node: String,
 }
 
 /// Per-node start log entry carried in `LaunchResult`.
@@ -445,6 +449,8 @@ pub struct NodeRunLogEntry {
     pub node_label: String,
     pub log_path: PathBuf,
     pub failed: bool,
+    /// Core node whose filesystem holds the log file.
+    pub core_node: String,
 }
 
 /// Result message for the Launch action.
@@ -508,6 +514,7 @@ impl LaunchResult {
                 e.set_node_label(&entry.node_label);
                 e.set_log_path(entry.log_path.to_string_lossy().as_ref());
                 e.set_failed(entry.failed);
+                e.set_core_node(&entry.core_node);
             }
 
             let build_log_count =
@@ -518,6 +525,7 @@ impl LaunchResult {
                 e.set_node_label(&entry.node_label);
                 e.set_log_path(entry.log_path.to_string_lossy().as_ref());
                 e.set_failed(entry.failed);
+                e.set_core_node(&entry.core_node);
             }
 
             let run_log_count =
@@ -529,6 +537,7 @@ impl LaunchResult {
                 e.set_node_label(&entry.node_label);
                 e.set_log_path(entry.log_path.to_string_lossy().as_ref());
                 e.set_failed(entry.failed);
+                e.set_core_node(&entry.core_node);
             }
         }
         encode_message(&builder)
@@ -548,6 +557,7 @@ impl LaunchResult {
                 node_label: e.get_node_label()?.to_str()?.to_owned(),
                 log_path: PathBuf::from(e.get_log_path()?.to_str()?),
                 failed: e.get_failed(),
+                core_node: e.get_core_node()?.to_str()?.to_owned(),
             });
         }
 
@@ -559,6 +569,7 @@ impl LaunchResult {
                 node_label: e.get_node_label()?.to_str()?.to_owned(),
                 log_path: PathBuf::from(e.get_log_path()?.to_str()?),
                 failed: e.get_failed(),
+                core_node: e.get_core_node()?.to_str()?.to_owned(),
             });
         }
 
@@ -571,6 +582,7 @@ impl LaunchResult {
                 node_label: e.get_node_label()?.to_str()?.to_owned(),
                 log_path: PathBuf::from(e.get_log_path()?.to_str()?),
                 failed: e.get_failed(),
+                core_node: e.get_core_node()?.to_str()?.to_owned(),
             });
         }
 
@@ -919,17 +931,20 @@ mod tests {
                     node_label: "camera:v1".to_string(),
                     log_path: PathBuf::from("/var/log/add/camera.log"),
                     failed: false,
+                    core_node: "cn-coordinator".to_string(),
                 }],
                 vec![NodeBuildLogEntry {
                     node_label: "planner:v2".to_string(),
                     log_path: PathBuf::from("/var/log/build/planner.log"),
                     failed: true,
+                    core_node: "cn-gpu-box".to_string(),
                 }],
                 vec![NodeRunLogEntry {
                     instance_id: "inst-001".to_string(),
                     node_label: "driver:v3".to_string(),
                     log_path: PathBuf::from("/var/log/run/driver.log"),
                     failed: false,
+                    core_node: "cn-robot-arm".to_string(),
                 }],
             );
         let bytes = result.encode().expect("encode");
@@ -940,6 +955,9 @@ mod tests {
         assert_eq!(decoded.node_run_logs.len(), 1);
         assert!(decoded.node_build_logs[0].failed);
         assert_eq!(decoded.node_run_logs[0].instance_id, "inst-001");
+        assert_eq!(decoded.node_add_logs[0].core_node, "cn-coordinator");
+        assert_eq!(decoded.node_build_logs[0].core_node, "cn-gpu-box");
+        assert_eq!(decoded.node_run_logs[0].core_node, "cn-robot-arm");
     }
 
     #[test]
