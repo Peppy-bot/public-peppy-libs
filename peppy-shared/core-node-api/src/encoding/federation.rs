@@ -142,65 +142,143 @@ impl ParticipantReserveResponse {
     }
 }
 
-/// Encodes the shared `LaunchScopedRequest` root. Body of the `encode` on every
-/// federation request whose entire payload is a launch id.
-fn encode_launch_scoped(launch_id: &str) -> Result<Payload> {
-    let mut builder = Builder::new_default();
-    {
-        builder
-            .init_root::<federation_capnp::launch_scoped_request::Builder>()
-            .set_launch_id(launch_id);
-    }
-    encode_message(&builder)
-}
-
-/// Inverse of [`encode_launch_scoped`]. An empty launch id is refused: these
-/// exchanges act on exactly one launch, and a defaulted id names none.
-fn decode_launch_scoped(data: &[u8]) -> Result<String> {
-    let reader = decode_message(data)?;
-    let request = reader.get_root::<federation_capnp::launch_scoped_request::Reader>()?;
-    required_text(request.get_launch_id()?.to_str()?, "launch_id")
-}
-
-/// Commits a reserved participant to replacing its stack slice.
+/// Commits a reserved participant to replacing its stack slice, and hands it
+/// the container bind sources that slice will need.
 ///
 /// The destructive half of the exchange, deliberately split from the
 /// reservation: reserving happens before the coordinator knows whether every
 /// participant will accept, so folding a teardown into it would replace a
 /// stack on one machine for a launch another is about to refuse.
 ///
-/// Shares the [`LaunchScopedRequest`](federation_capnp::launch_scoped_request)
-/// wire root with [`ParticipantReleaseRequest`]; it stays a distinct Rust type
-/// because [`ServiceRequest`](crate::registry::ServiceRequest) is keyed on the
-/// request codec, so the two services cannot name one.
+/// [`Self::mount_sources`] rides along because this is the one moment the
+/// participant's slice is empty; see the schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParticipantSliceBeginRequest {
     pub launch_id: String,
+    pub mount_sources: Vec<String>,
 }
 
 impl ParticipantSliceBeginRequest {
-    pub fn new(launch_id: impl Into<String>) -> Self {
+    pub fn new(launch_id: impl Into<String>, mount_sources: Vec<String>) -> Self {
         Self {
             launch_id: launch_id.into(),
+            mount_sources,
         }
     }
 
     pub fn encode(&self) -> Result<Payload> {
-        encode_launch_scoped(&self.launch_id)
+        let mut builder = Builder::new_default();
+        {
+            let mut request =
+                builder.init_root::<federation_capnp::participant_slice_begin_request::Builder>();
+            request.set_launch_id(&self.launch_id);
+            let count = capnp_list_len(
+                self.mount_sources.len(),
+                "ParticipantSliceBeginRequest.mount_sources",
+            )?;
+            write_text_list(
+                request.reborrow().init_mount_sources(count),
+                &self.mount_sources,
+            );
+        }
+        encode_message(&builder)
+    }
+
+    /// An empty launch id is refused: the exchange acts on exactly one launch,
+    /// and a defaulted id names none. An empty mount source is refused one
+    /// level down, for the same reason: it names no host path, and the
+    /// participant would resolve it against its own working directory.
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let request =
+            reader.get_root::<federation_capnp::participant_slice_begin_request::Reader>()?;
+        Ok(Self {
+            launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
+            mount_sources: required_text_list(
+                read_text_list(request.get_mount_sources()?)?,
+                "mount_sources",
+            )?,
+        })
+    }
+}
+
+/// Refuses an empty entry in a list whose members each name something: a
+/// defaulted string in such a list is a hole, not a value.
+fn required_text_list(values: Vec<String>, field: &str) -> Result<Vec<String>> {
+    for (idx, value) in values.iter().enumerate() {
+        required_text(value, &format!("{field}[{idx}]"))?;
+    }
+    Ok(values)
+}
+
+/// The reply to `participant_slice_begin`: the verdict, plus the bind sources
+/// the participant had to create to honour it.
+///
+/// [`Self::auto_created_mount_sources`] is what the coordinator turns back into
+/// the warning an operator would have seen had the instance run on their own
+/// machine; see the schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParticipantSliceBeginResponse {
+    pub ok: bool,
+    pub rejection_reason: Option<String>,
+    pub auto_created_mount_sources: Vec<String>,
+}
+
+impl ParticipantSliceBeginResponse {
+    pub fn ok(auto_created_mount_sources: Vec<String>) -> Self {
+        Self {
+            ok: true,
+            rejection_reason: None,
+            auto_created_mount_sources,
+        }
+    }
+
+    pub fn refused(reason: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            rejection_reason: Some(reason.into()),
+            auto_created_mount_sources: Vec::new(),
+        }
+    }
+
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut response =
+                builder.init_root::<federation_capnp::participant_slice_begin_response::Builder>();
+            response.set_ok(self.ok);
+            response.set_rejection_reason(self.rejection_reason.as_deref().unwrap_or(""));
+            let count = capnp_list_len(
+                self.auto_created_mount_sources.len(),
+                "ParticipantSliceBeginResponse.auto_created_mount_sources",
+            )?;
+            write_text_list(
+                response.reborrow().init_auto_created_mount_sources(count),
+                &self.auto_created_mount_sources,
+            );
+        }
+        encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let response =
+            reader.get_root::<federation_capnp::participant_slice_begin_response::Reader>()?;
         Ok(Self {
-            launch_id: decode_launch_scoped(data)?,
+            ok: response.get_ok(),
+            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
+            auto_created_mount_sources: required_text_list(
+                read_text_list(response.get_auto_created_mount_sources()?)?,
+                "auto_created_mount_sources",
+            )?,
         })
     }
 }
 
 /// The reply to every federation exchange whose answer is "did you do it, and
-/// if not, why": `participant_slice_begin`, `pair_commit` and
-/// `participant_release`. One codec rather than three, because the three
-/// differed only in which verb the bool reported and that verb is already the
-/// service name.
+/// if not, why": `pair_commit` and `participant_release`. One codec rather than
+/// two, because the two differ only in which verb the bool reports and that
+/// verb is already the service name.
 ///
 /// [`Self::rejection_reason`] is load-bearing on refusal — see the schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,8 +408,6 @@ impl PairCommitRequest {
 /// Releases a reservation. Idempotent: releasing one that is not held
 /// succeeds, because a coordinator unwinding a failed preflight cannot always
 /// know which participants actually acked.
-///
-/// Shares its wire root with [`ParticipantSliceBeginRequest`]; see there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParticipantReleaseRequest {
     pub launch_id: String,
@@ -345,12 +421,22 @@ impl ParticipantReleaseRequest {
     }
 
     pub fn encode(&self) -> Result<Payload> {
-        encode_launch_scoped(&self.launch_id)
+        let mut builder = Builder::new_default();
+        {
+            builder
+                .init_root::<federation_capnp::launch_scoped_request::Builder>()
+                .set_launch_id(&self.launch_id);
+        }
+        encode_message(&builder)
     }
 
+    /// An empty launch id is refused: the exchange acts on exactly one launch,
+    /// and a defaulted id names none.
     pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let request = reader.get_root::<federation_capnp::launch_scoped_request::Reader>()?;
         Ok(Self {
-            launch_id: decode_launch_scoped(data)?,
+            launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
         })
     }
 }
@@ -457,10 +543,12 @@ impl crate::encoding::Wire for ParticipantReserveResponse {
     type Root = crate::federation_capnp::participant_reserve_response::Owned;
 }
 
-// The two launch-scoped requests deliberately resolve to one root; see
-// `ParticipantSliceBeginRequest`.
 impl crate::encoding::Wire for ParticipantSliceBeginRequest {
-    type Root = crate::federation_capnp::launch_scoped_request::Owned;
+    type Root = crate::federation_capnp::participant_slice_begin_request::Owned;
+}
+
+impl crate::encoding::Wire for ParticipantSliceBeginResponse {
+    type Root = crate::federation_capnp::participant_slice_begin_response::Owned;
 }
 
 impl crate::encoding::Wire for ParticipantReleaseRequest {
@@ -563,13 +651,62 @@ mod tests {
     }
 
     #[test]
-    fn slice_begin_round_trips() {
-        let request = ParticipantSliceBeginRequest::new("launch-abc123");
-        let payload = request.encode().expect("encode");
-        assert_eq!(
-            ParticipantSliceBeginRequest::decode(payload.as_ref()).expect("decode"),
-            request
+    fn slice_begin_round_trips_with_mount_sources() {
+        let request = ParticipantSliceBeginRequest::new(
+            "launch-abc123",
+            vec![
+                "/tmp/video_reconstruction".to_owned(),
+                "/data/episodes".to_owned(),
+            ],
         );
+        let payload = request.encode().expect("encode");
+        let decoded = ParticipantSliceBeginRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, request);
+        assert_eq!(decoded.mount_sources.len(), 2);
+        assert_eq!(decoded.mount_sources[1], "/data/episodes");
+    }
+
+    /// A slice with no container node binds nothing, which is not the same
+    /// shape of message as one that failed to say what it binds.
+    #[test]
+    fn slice_begin_round_trips_with_no_mount_sources() {
+        let request = ParticipantSliceBeginRequest::new("launch-abc123", Vec::new());
+        let payload = request.encode().expect("encode");
+        let decoded = ParticipantSliceBeginRequest::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, request);
+        assert!(decoded.mount_sources.is_empty());
+    }
+
+    /// A defaulted entry names no host path. Accepting one would have the
+    /// participant create a directory for the empty string.
+    #[test]
+    fn slice_begin_decode_rejects_an_empty_mount_source() {
+        let request = ParticipantSliceBeginRequest::new(
+            "launch-abc123",
+            vec![String::new(), "/ok".to_owned()],
+        );
+        let payload = request.encode().expect("encode");
+        let error = ParticipantSliceBeginRequest::decode(payload.as_ref())
+            .expect_err("an empty mount source must fail");
+        assert!(
+            error.to_string().contains("mount_sources[0]"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn slice_begin_response_round_trips_both_outcomes() {
+        for response in [
+            ParticipantSliceBeginResponse::ok(vec!["/tmp/video_reconstruction".to_owned()]),
+            ParticipantSliceBeginResponse::ok(Vec::new()),
+            ParticipantSliceBeginResponse::refused("reserved for launch `launch-other`"),
+        ] {
+            let payload = response.encode().expect("encode");
+            assert_eq!(
+                ParticipantSliceBeginResponse::decode(payload.as_ref()).expect("decode"),
+                response
+            );
+        }
     }
 
     #[test]
@@ -586,24 +723,11 @@ mod tests {
         }
     }
 
-    /// The two launch-scoped requests share one wire root, so bytes written by
-    /// either must read back as the other. That is the property the sharing
-    /// rests on; if it ever stops holding, they need separate schema structs.
-    #[test]
-    fn launch_scoped_requests_share_one_wire_shape() {
-        let begin = ParticipantSliceBeginRequest::new("launch-abc123");
-        let payload = begin.encode().expect("encode");
-        assert_eq!(
-            ParticipantReleaseRequest::decode(payload.as_ref()).expect("decode"),
-            ParticipantReleaseRequest::new("launch-abc123")
-        );
-    }
-
     /// The destructive step must never act on a defaulted launch id: that is
     /// how a machine would get its stack replaced on behalf of nobody.
     #[test]
     fn slice_begin_decode_rejects_empty_launch_id() {
-        let payload = ParticipantSliceBeginRequest::new("")
+        let payload = ParticipantSliceBeginRequest::new("", Vec::new())
             .encode()
             .expect("encode");
         let error = ParticipantSliceBeginRequest::decode(payload.as_ref())

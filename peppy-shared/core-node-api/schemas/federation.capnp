@@ -65,35 +65,60 @@ struct ParticipantReserveResponse {
     rootInstanceId @3 :Text;
 }
 
-# The whole payload of every exchange that names a launch and nothing else.
-# Shared by `participant_slice_begin` and `participant_release`, whose requests
-# are the same question asked about the same identity; the verb is the service
-# name, not a field. Give an exchange its own struct the moment it needs a
-# second field, rather than growing an optional one here.
+# The whole payload of `participant_release`, which names a launch and nothing
+# else: the verb is the service name, not a field.
 #
-# `participant_slice_begin` tells a reserved participant to replace its stack
-# slice: tear down whatever it is running, clear it, and record that the slice
-# now belongs to this launch. It is separate from the reservation on purpose —
-# reserving is NON-DESTRUCTIVE and happens before the coordinator knows whether
-# every participant will accept, so folding the teardown into it would replace
-# a stack on machine A for a launch that machine B is about to refuse. This is
-# the commit point, sent only once every participant is reserved. The launch id
-# must match the reservation the participant holds, which is what stops a stale
-# coordinator from wiping a machine out from under the launch that owns it.
-#
-# `participant_release` releases a reservation the coordinator obtained but no
-# longer needs, either because a later participant refused or because the launch
-# finished. Idempotent: releasing a reservation that is not held succeeds; only
-# a reservation held for a DIFFERENT launch is refused, because the caller has
-# no standing to release that one.
+# It releases a reservation the coordinator obtained but no longer needs, either
+# because a later participant refused or because the launch finished.
+# Idempotent: releasing a reservation that is not held succeeds; only a
+# reservation held for a DIFFERENT launch is refused, because the caller has no
+# standing to release that one.
 struct LaunchScopedRequest {
     launchId @0 :Text;
 }
 
+# Tells a reserved participant to replace its stack slice: tear down whatever it
+# is running, clear it, and record that the slice now belongs to this launch.
+#
+# Separate from the reservation on purpose: reserving is NON-DESTRUCTIVE and
+# happens before the coordinator knows whether every participant will accept, so
+# folding the teardown into it would replace a stack on machine A for a launch
+# that machine B is about to refuse. This is the commit point, sent only once
+# every participant is reserved. The launch id must match the reservation the
+# participant holds, which is what stops a stale coordinator from wiping a
+# machine out from under the launch that owns it.
+struct ParticipantSliceBeginRequest {
+    launchId @0 :Text;
+    # Host paths the container instances placed on this participant bind, each
+    # resolved by the coordinator against that instance's arguments: only the
+    # coordinator holds the whole plan, and a participant is handed one instance
+    # at a time.
+    #
+    # The participant creates the missing ones and registers them with its
+    # container runtime while its slice is empty, which is the only moment that
+    # is free: registering a host path can restart the runtime VM, and paying
+    # that once a container of this launch is running would kill it.
+    mountSources @1 :List(Text);
+}
+
+# The reply to `participant_slice_begin`, which owes the coordinator more than a
+# verdict: what it created on the way.
+struct ParticipantSliceBeginResponse {
+    ok @0 :Bool;
+    # Populated when `ok` is false, empty otherwise.
+    rejectionReason @1 :Text;
+    # The entries of `mountSources` that did not exist and were created here.
+    # The coordinator relays them into the launch output attributed to this
+    # machine: an auto-created bind source is the only warning an operator gets
+    # that a bind meant to name an existing file was a typo, and it must not go
+    # silent because the machine it happened on is not the one being watched.
+    autoCreatedMountSources @2 :List(Text);
+}
+
 # The reply to every federation exchange whose answer is "did you do it, and if
-# not, why". Shared by `participant_slice_begin`, `pair_commit` and
-# `participant_release` rather than restated per service: the three differ only
-# in which verb `ok` reports, and that verb is already the service name.
+# not, why". Shared by `pair_commit` and `participant_release` rather than
+# restated per service: the two differ only in which verb `ok` reports, and that
+# verb is already the service name.
 #
 # The refusal reason is load-bearing, not decoration. A `pair_commit` refusal
 # makes the sender revert its own half, so a pair is never left established on
