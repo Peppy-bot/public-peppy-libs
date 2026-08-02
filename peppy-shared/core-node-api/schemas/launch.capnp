@@ -101,6 +101,8 @@ struct NodeAddLog {
     logPath @1 :Text;
     # Whether the add operation failed
     failed @2 :Bool;
+    # Core node whose filesystem holds the log file
+    coreNode @3 :Text;
 }
 
 struct NodeRunLog {
@@ -112,6 +114,8 @@ struct NodeRunLog {
     logPath @2 :Text;
     # Whether the run operation failed
     failed @3 :Bool;
+    # Core node whose filesystem holds the log file
+    coreNode @4 :Text;
 }
 
 struct NodeBuildLog {
@@ -121,6 +125,8 @@ struct NodeBuildLog {
     logPath @1 :Text;
     # Whether the build operation failed
     failed @2 :Bool;
+    # Core node whose filesystem holds the log file
+    coreNode @3 :Text;
 }
 
 struct LaunchResult {
