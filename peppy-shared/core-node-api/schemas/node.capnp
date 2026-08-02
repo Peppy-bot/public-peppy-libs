@@ -36,6 +36,18 @@ struct StackListResponse {
         standalone @4 :Void;
         identity @5 :LaunchIdentity;
     }
+    # The reservation currently held over this machine: the launch it guards
+    # and the coordinator driving it. Distinct from `launch`, which describes
+    # the stack the LAST launch left behind; the reservation describes the
+    # launch holding the machine RIGHT NOW. Carrying it here is what makes a
+    # held machine visible to `stack list` and discoverable by
+    # `stack reset --federated`, including one whose launch died before
+    # populating a slice.
+    reservation :union {
+        # No launch holds this machine.
+        none @6 :Void;
+        identity @7 :LaunchIdentity;
+    }
 }
 
 # Which launch a stack slice belongs to, and who drove it.
