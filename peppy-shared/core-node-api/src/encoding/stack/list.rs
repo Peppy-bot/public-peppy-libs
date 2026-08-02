@@ -53,6 +53,16 @@ pub struct StackListResponse {
     /// restarted coordinator finds its own launch again, and `stack reset`
     /// works from any machine in the federation.
     pub launch: Option<LaunchIdentity>,
+    /// The reservation currently held over this machine: the launch it guards
+    /// and the coordinator driving it. `None` when no launch holds the
+    /// machine.
+    ///
+    /// Distinct from `launch`, which describes the stack the LAST launch left
+    /// behind; the reservation describes the launch holding the machine RIGHT
+    /// NOW. Carrying it here is what makes a held machine visible to
+    /// `stack list` and discoverable by `stack reset --federated`, including
+    /// one whose launch died before populating a slice.
+    pub reservation: Option<LaunchIdentity>,
 }
 
 /// Which launch a slice belongs to, and who drove it.
@@ -84,6 +94,7 @@ impl StackListResponse {
             instance_id: instance_id.into(),
             host_name: host_name.into(),
             launch: None,
+            reservation: None,
         }
     }
 
@@ -91,6 +102,13 @@ impl StackListResponse {
     /// from a federated launch always sets this.
     pub fn with_launch(mut self, launch: LaunchIdentity) -> Self {
         self.launch = Some(launch);
+        self
+    }
+
+    /// Attaches the reservation currently held over this machine. A daemon
+    /// reserved by a federated launch always sets this.
+    pub fn with_reservation(mut self, reservation: LaunchIdentity) -> Self {
+        self.reservation = Some(reservation);
         self
     }
 
@@ -111,29 +129,38 @@ impl StackListResponse {
                 }
                 None => launch.set_standalone(()),
             }
+            let mut reservation = response.reborrow().init_reservation();
+            match &self.reservation {
+                Some(identity) => {
+                    let mut wire = reservation.init_identity();
+                    wire.set_launch_id(&identity.launch_id);
+                    wire.set_coordinator_core_node(&identity.coordinator_core_node);
+                }
+                None => reservation.set_none(()),
+            }
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
-        use node_capnp::stack_list_response::launch::Which;
-
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::stack_list_response::Reader>()?;
 
-        // The union makes "a slice is either part of a launch or it is not" a
-        // wire fact, so there is no half-formed identity left to police here.
-        let launch = match response.get_launch().which()? {
-            Which::Standalone(()) => None,
-            Which::Identity(identity) => {
-                let identity = identity?;
-                Some(LaunchIdentity::new(
-                    required_text(identity.get_launch_id()?.to_str()?, "launch.launch_id")?,
-                    required_text(
-                        identity.get_coordinator_core_node()?.to_str()?,
-                        "launch.coordinator_core_node",
-                    )?,
-                ))
+        // The unions make "part of a launch or not" and "held by a launch or
+        // not" wire facts, so there is no half-formed identity left to police
+        // here.
+        let launch = {
+            use node_capnp::stack_list_response::launch::Which;
+            match response.get_launch().which()? {
+                Which::Standalone(()) => None,
+                Which::Identity(identity) => Some(decode_identity(identity?, "launch")?),
+            }
+        };
+        let reservation = {
+            use node_capnp::stack_list_response::reservation::Which;
+            match response.get_reservation().which()? {
+                Which::None(()) => None,
+                Which::Identity(identity) => Some(decode_identity(identity?, "reservation")?),
             }
         };
 
@@ -143,8 +170,27 @@ impl StackListResponse {
             instance_id: response.get_instance_id()?.to_str()?.to_owned(),
             host_name: response.get_host_name()?.to_str()?.to_owned(),
             launch,
+            reservation,
         })
     }
+}
+
+/// Decodes one wire launch identity, refusing a blank half: a launch nobody
+/// can name is no better than no launch at all, whichever field carried it.
+fn decode_identity(
+    identity: node_capnp::launch_identity::Reader<'_>,
+    field: &str,
+) -> Result<LaunchIdentity> {
+    Ok(LaunchIdentity::new(
+        required_text(
+            identity.get_launch_id()?.to_str()?,
+            &format!("{field}.launch_id"),
+        )?,
+        required_text(
+            identity.get_coordinator_core_node()?.to_str()?,
+            &format!("{field}.coordinator_core_node"),
+        )?,
+    ))
 }
 
 impl crate::encoding::Wire for StackListRequest {
@@ -229,22 +275,45 @@ mod tests {
         assert_eq!(launch.coordinator_core_node, "cn-robot-7");
     }
 
-    /// The union carries "part of a launch or not" in the discriminant, so the
-    /// two halves can no longer be sent apart. What remains decodable-but-wrong
-    /// is an identity arm with a blank half, and that is still refused — a
-    /// launch nobody can name is no better than no launch at all.
+    /// A held machine is self-describing the same way a slice is: the
+    /// reservation names the launch holding it and the coordinator driving
+    /// it, which is what lets `stack list` show a wedged machine and
+    /// `stack reset --federated` discover one whose launch never populated a
+    /// slice.
+    #[test]
+    fn response_round_trips_reservation_identity() {
+        let response = StackListResponse::new("{}", "cn-atlas-h100", "generation_1", "atlas")
+            .with_reservation(LaunchIdentity::new("launch-abc123", "cn-robot-7"));
+        let payload = response.encode().expect("encode");
+        let decoded = StackListResponse::decode(payload.as_ref()).expect("decode");
+        assert_eq!(decoded, response);
+        let reservation = decoded.reservation.expect("reservation must survive");
+        assert_eq!(reservation.launch_id, "launch-abc123");
+        assert_eq!(reservation.coordinator_core_node, "cn-robot-7");
+        assert_eq!(decoded.launch, None, "slice and reservation travel apart");
+    }
+
+    /// The unions carry "part of a launch or not" and "held by a launch or
+    /// not" in their discriminants, so the two halves can no longer be sent
+    /// apart. What remains decodable-but-wrong is an identity arm with a blank
+    /// half, and that is still refused: a launch nobody can name is no better
+    /// than no launch at all, whichever field carried it.
     #[test]
     fn response_decode_rejects_a_blank_half_of_the_identity() {
         for (launch_id, coordinator, expected) in [
             ("launch-abc123", "", "coordinator_core_node"),
             ("", "cn-robot-7", "launch_id"),
         ] {
-            let response = StackListResponse::new("{}", "cn-atlas", "gen_1", "atlas")
+            let launch = StackListResponse::new("{}", "cn-atlas", "gen_1", "atlas")
                 .with_launch(LaunchIdentity::new(launch_id, coordinator));
-            let payload = response.encode().expect("encode");
-            let error =
-                StackListResponse::decode(payload.as_ref()).expect_err("blank half must fail");
-            assert!(error.to_string().contains(expected), "got: {error}");
+            let reservation = StackListResponse::new("{}", "cn-atlas", "gen_1", "atlas")
+                .with_reservation(LaunchIdentity::new(launch_id, coordinator));
+            for response in [launch, reservation] {
+                let payload = response.encode().expect("encode");
+                let error =
+                    StackListResponse::decode(payload.as_ref()).expect_err("blank half must fail");
+                assert!(error.to_string().contains(expected), "got: {error}");
+            }
         }
     }
 
