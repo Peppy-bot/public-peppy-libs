@@ -210,10 +210,12 @@ impl PyMessengerHandle {
     }
 
     /// Connect under a workspace namespace, mirroring
-    /// `MessengerHandle::connect(..).scope(SessionScope::Namespace(..))`.
-    /// `namespace` of `None` resolves to the `local` namespace - the same logged-out default
-    /// the node runtime resolves to — so a standalone control/stub session
-    /// opens under the runner's namespace and actually routes to it.
+    /// `MessengerHandle::connect(..).scope(SessionScope::Namespace(..))`:
+    /// a client-mode session with no listener and no gossip discovery.
+    /// `namespace` of `None` resolves to the `local` namespace, the same
+    /// logged-out default the node runtime resolves to, so a standalone
+    /// control/stub session opens under the runner's namespace and actually
+    /// routes to it.
     #[staticmethod]
     #[pyo3(signature = (host, port, namespace=None))]
     fn from_host_port_with_namespace<'py>(

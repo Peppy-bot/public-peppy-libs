@@ -159,16 +159,35 @@ struct DiscoveryParams {
     buffer_sizes: pmi::SubscriberBufferSizes,
 }
 
+/// How a [`MessengerConnect`] session attaches to the messaging fabric at
+/// `host:port`. Selected by [`MessengerConnect::scope`]; the default is
+/// [`SessionKind::GossipPeer`].
+enum SessionKind {
+    /// Gossip peer: binds a loopback listener and forms direct links with
+    /// peers discovered via gossip seeded by `host:port`.
+    GossipPeer,
+    /// Pure client: no listener and no peer discovery; every message relays
+    /// through the router at `host:port`.
+    Client,
+    /// Peer or client per a node's
+    /// [`DiscoveryConfig`](config::runtime::DiscoveryConfig) gossip toggle,
+    /// with its seed list and subscriber buffer sizing applied.
+    Discovery(DiscoveryParams),
+}
+
 /// How a [`MessengerConnect`] session resolves its workspace namespace, and
-/// whether it opens a gossip-discovery peer session. Passed to
-/// [`MessengerConnect::scope`]. The two cases are mutually exclusive *by
-/// construction* — a session is either pinned to an explicit namespace or driven
-/// by a node's discovery config, never both.
+/// which [`SessionKind`] it opens. Passed to [`MessengerConnect::scope`]. The
+/// two cases are mutually exclusive *by construction*: a session is either
+/// pinned to an explicit namespace or driven by a node's discovery config,
+/// never both.
 pub enum SessionScope<'a> {
-    /// Open the session under an explicit workspace namespace instead of the
-    /// `local` default, with no gossip discovery. Used
-    /// by a CLI control session so it reaches the daemon/node services under the
-    /// same namespace the daemon runs.
+    /// Open a pure client session under an explicit workspace namespace
+    /// instead of the `local` default: no loopback listener, no gossip
+    /// discovery, every request relayed through the router it dialed. Used by
+    /// a CLI control session so it reaches the daemon/node services under the
+    /// same namespace the daemon runs, and so a one-shot (non-reconnecting)
+    /// connect fails promptly when that router is down instead of timing out
+    /// per request.
     Namespace(Namespace),
     /// Apply the node's [`DiscoveryConfig`](config::runtime::DiscoveryConfig): an
     /// explicit gossip seed list (falling back to `host:port`), the gossip
@@ -190,7 +209,7 @@ pub struct MessengerConnect {
     reconnect: bool,
     namespace: Namespace,
     transport: Transport,
-    discovery: Option<DiscoveryParams>,
+    kind: SessionKind,
 }
 
 impl MessengerConnect {
@@ -212,27 +231,30 @@ impl MessengerConnect {
         self
     }
 
-    /// Set how the session resolves its workspace namespace, and whether it
-    /// opens a gossip-discovery peer session. The two cases — an explicit
+    /// Set how the session resolves its workspace namespace, and which
+    /// [`SessionKind`] it opens. The two cases, an explicit
     /// [`Namespace`](SessionScope::Namespace) or a node's
-    /// [`DiscoveryConfig`](SessionScope::Discovery) — are mutually exclusive by
+    /// [`DiscoveryConfig`](SessionScope::Discovery), are mutually exclusive by
     /// construction, so a session can never request both at once. Left unset, the
-    /// session opens under the `local` default namespace with no discovery.
+    /// session opens under the `local` default namespace as a gossip peer.
     pub fn scope(mut self, scope: SessionScope<'_>) -> Self {
         match scope {
             SessionScope::Namespace(ns) => {
-                // A namespace-only session never gossips, so drop any discovery
-                // params a prior `scope(Discovery(..))` call may have set. This
-                // keeps the two modes mutually exclusive across chained calls.
+                // A namespace-scoped control session relays every request
+                // through the router it dialed, so it opens as a pure client:
+                // no listener, no discovery. Overwriting the kind also drops
+                // any params a prior `scope(Discovery(..))` call may have set,
+                // keeping the two modes mutually exclusive across chained
+                // calls.
                 self.namespace = ns;
-                self.discovery = None;
+                self.kind = SessionKind::Client;
             }
             SessionScope::Discovery(cfg) => {
                 // A stamped namespace is already validated by runtime-config
                 // parsing. Absence is legitimate standalone operation and
                 // resolves to `local`.
                 self.namespace = cfg.namespace.clone().unwrap_or_else(Namespace::local);
-                self.discovery = Some(DiscoveryParams {
+                self.kind = SessionKind::Discovery(DiscoveryParams {
                     seed_peers: cfg.seed_peers.clone(),
                     gossip: cfg.gossip,
                     buffer_sizes: pmi::SubscriberBufferSizes::from(cfg),
@@ -250,23 +272,38 @@ impl std::future::IntoFuture for MessengerConnect {
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
-            let adapter = match (self.transport, self.discovery) {
-                (Transport::Tcp, None) => {
+            let adapter = match (self.transport, self.kind) {
+                (Transport::Tcp, SessionKind::GossipPeer) => {
                     ZenohAdapter::connect_to(ZenohNetProtocol::Tcp, &self.host, self.port)?
                 }
-                (Transport::Tls(tls), None) => {
-                    ZenohAdapter::connect_to_tls(&self.host, self.port, tls)?
-                }
-                (Transport::Tcp, Some(d)) => ZenohAdapter::connect_to_with_discovery(
+                // Empty seeds fall back to `host:port`; `gossip = false`
+                // selects client mode, so no listener is bound.
+                (Transport::Tcp, SessionKind::Client) => ZenohAdapter::connect_to_with_discovery(
                     ZenohNetProtocol::Tcp,
                     &self.host,
                     self.port,
-                    d.seed_peers,
-                    d.gossip,
-                    d.buffer_sizes,
+                    Vec::new(),
+                    false,
+                    pmi::SubscriberBufferSizes::default(),
                     None,
                 )?,
-                (Transport::Tls(_), Some(_)) => {
+                // TLS sessions are always client mode, whichever kind the
+                // builder holds.
+                (Transport::Tls(tls), SessionKind::GossipPeer | SessionKind::Client) => {
+                    ZenohAdapter::connect_to_tls(&self.host, self.port, tls)?
+                }
+                (Transport::Tcp, SessionKind::Discovery(d)) => {
+                    ZenohAdapter::connect_to_with_discovery(
+                        ZenohNetProtocol::Tcp,
+                        &self.host,
+                        self.port,
+                        d.seed_peers,
+                        d.gossip,
+                        d.buffer_sizes,
+                        None,
+                    )?
+                }
+                (Transport::Tls(_), SessionKind::Discovery(_)) => {
                     return Err(Error::ConfigurationError(
                         "TLS transport with discovery is not supported".into(),
                     ));
@@ -353,7 +390,7 @@ impl MessengerHandle {
     /// ```ignore
     /// MessengerHandle::connect(host, port)
     ///     .reconnecting()                          // re-establishing session for long-lived nodes
-    ///     .scope(SessionScope::Namespace(ns))      // explicit workspace namespace (else `local`)
+    ///     .scope(SessionScope::Namespace(ns))      // client-mode control session under an explicit namespace
     ///     .scope(SessionScope::Discovery(&cfg))    // gossip/seed peers + namespace from a node's DiscoveryConfig
     ///     .tls(cfg)                                // TLS client transport
     ///     .await                                   // -> Result<MessengerHandle>
@@ -365,7 +402,7 @@ impl MessengerHandle {
             reconnect: false,
             namespace: Namespace::local(),
             transport: Transport::Tcp,
-            discovery: None,
+            kind: SessionKind::GossipPeer,
         }
     }
 
