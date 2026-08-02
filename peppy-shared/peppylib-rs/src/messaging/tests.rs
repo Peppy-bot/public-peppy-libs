@@ -4799,3 +4799,86 @@ async fn probes_answered_while_pinned_producer_is_busy() {
 
     router.shutdown().await;
 }
+
+/// The bare builder opens a gossip peer under the `local` namespace.
+#[test]
+fn connect_defaults_to_gossip_peer_under_local_namespace() {
+    let conn = MessengerHandle::connect("127.0.0.1", 7448);
+    assert!(matches!(conn.kind, super::SessionKind::GossipPeer));
+    assert_eq!(conn.namespace, config::namespace::Namespace::local());
+}
+
+/// `scope(Namespace)` selects a client-mode session pinned to that namespace.
+#[test]
+fn namespace_scope_selects_client_kind() {
+    let ns = config::namespace::Namespace::parse("workspace-a").expect("valid namespace");
+    let conn = MessengerHandle::connect("127.0.0.1", 7448)
+        .scope(super::SessionScope::Namespace(ns.clone()));
+    assert!(matches!(conn.kind, super::SessionKind::Client));
+    assert_eq!(conn.namespace, ns);
+}
+
+/// `scope(Discovery)` carries the config's seeds, gossip toggle, and buffer
+/// sizes, and resolves an absent stamped namespace to `local`.
+#[test]
+fn discovery_scope_carries_params_and_defaults_namespace_to_local() {
+    let cfg = config::runtime::DiscoveryConfig {
+        seed_peers: vec!["tcp/10.0.0.1:7448".to_string()],
+        gossip: false,
+        standard_buffer_size: 7,
+        high_throughput_buffer_size: 9,
+        namespace: None,
+    };
+    let conn =
+        MessengerHandle::connect("127.0.0.1", 7448).scope(super::SessionScope::Discovery(&cfg));
+    assert_eq!(conn.namespace, config::namespace::Namespace::local());
+    match conn.kind {
+        super::SessionKind::Discovery(d) => {
+            assert_eq!(d.seed_peers, cfg.seed_peers);
+            assert!(!d.gossip);
+            assert_eq!(d.buffer_sizes.standard, 7);
+            assert_eq!(d.buffer_sizes.high_throughput, 9);
+        }
+        _ => panic!("expected SessionKind::Discovery"),
+    }
+}
+
+/// A stamped namespace on the discovery config pins the session namespace.
+#[test]
+fn discovery_scope_applies_stamped_namespace() {
+    let ns = config::namespace::Namespace::parse("workspace-b").expect("valid namespace");
+    let cfg = config::runtime::DiscoveryConfig {
+        namespace: Some(ns.clone()),
+        ..Default::default()
+    };
+    let conn =
+        MessengerHandle::connect("127.0.0.1", 7448).scope(super::SessionScope::Discovery(&cfg));
+    assert_eq!(conn.namespace, ns);
+    assert!(matches!(conn.kind, super::SessionKind::Discovery(_)));
+}
+
+/// Chained `scope` calls stay mutually exclusive: the last call wins the kind
+/// and the namespace in both orders.
+#[test]
+fn chained_scopes_last_call_wins() {
+    let ns = config::namespace::Namespace::parse("workspace-c").expect("valid namespace");
+    let cfg = config::runtime::DiscoveryConfig {
+        seed_peers: vec!["tcp/10.0.0.2:7448".to_string()],
+        ..Default::default()
+    };
+
+    let conn = MessengerHandle::connect("127.0.0.1", 7448)
+        .scope(super::SessionScope::Discovery(&cfg))
+        .scope(super::SessionScope::Namespace(ns.clone()));
+    assert!(matches!(conn.kind, super::SessionKind::Client));
+    assert_eq!(conn.namespace, ns);
+
+    let conn = MessengerHandle::connect("127.0.0.1", 7448)
+        .scope(super::SessionScope::Namespace(ns))
+        .scope(super::SessionScope::Discovery(&cfg));
+    assert_eq!(conn.namespace, config::namespace::Namespace::local());
+    match conn.kind {
+        super::SessionKind::Discovery(d) => assert_eq!(d.seed_peers, cfg.seed_peers),
+        _ => panic!("expected SessionKind::Discovery"),
+    }
+}

@@ -794,9 +794,14 @@ impl MessengerBackend for ZenohAdapter {
             .await
             .map_err(|e| Error::BackendError(format!("Failed to create Zenoh session: {}", e)))?;
 
+        let mode = if self.client_config.gossip {
+            "peer"
+        } else {
+            "client"
+        };
         info!(
-            "Zenoh session started on: {}://{}:{}",
-            &self.client_config.protocol, &self.client_config.host, &self.client_config.port
+            "Zenoh {} session connected to {}://{}:{}",
+            mode, &self.client_config.protocol, &self.client_config.host, &self.client_config.port
         );
         self.session = Some(Arc::new(session));
         Ok(())

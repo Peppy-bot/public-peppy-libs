@@ -2,7 +2,7 @@ mod common;
 
 use common::test_node_target;
 use peppylib::messaging::{
-    MessengerHandle, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget,
+    MessengerHandle, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget, SessionScope,
 };
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
@@ -427,4 +427,75 @@ async fn service_wildcard_poll_runs_handler_on_winner_only() {
         loser_count, 0,
         "losing producer must NOT run its user handler — discovery pins to the winner first",
     );
+}
+
+/// Namespace-scoped sessions are pure clients: no listener and no gossip
+/// discovery, every message relayed through the router. Two such sessions
+/// must still round-trip a service call end to end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn namespace_scoped_client_sessions_round_trip_via_router() {
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (host, port) = (instance.host.clone(), instance.port);
+
+    let namespace =
+        config::namespace::Namespace::parse("client-mode-workspace").expect("valid namespace");
+
+    let core_node = "test_core";
+    let instance_id = "test_instance";
+    let node_name = "test_node";
+    let service_name = "test_service";
+    let request_payload = Payload::from_static(b"Hello request");
+    let response_payload = Payload::from_static(b"Hello response");
+
+    let server_handle = MessengerHandle::connect(&host, port)
+        .scope(SessionScope::Namespace(namespace.clone()))
+        .await
+        .expect("failed to create server handle");
+    let client_handle = MessengerHandle::connect(&host, port)
+        .scope(SessionScope::Namespace(namespace))
+        .await
+        .expect("failed to create client handle");
+
+    let mut service = ServiceMessenger::listen(
+        &server_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        service_name,
+    )
+    .await
+    .expect("listen should succeed");
+
+    // No settle sleep: `poll` below does discover-then-pin with a built-in
+    // cold-start retry bounded by its timeout, so it waits for the listener's
+    // queryable to propagate rather than guessing a fixed delay.
+
+    let response_clone = response_payload.clone();
+    let handler = tokio::spawn(async move {
+        service
+            .handle_next_request(|_request| async move { Ok(response_clone) })
+            .await
+            .expect("handle_next_request should succeed");
+    });
+
+    let response = ServiceMessenger::poll(
+        &client_handle,
+        core_node,
+        instance_id,
+        test_node_target(node_name),
+        service_name,
+        ServiceTarget::Producer(&ProducerRef::new(core_node, instance_id)),
+        request_payload,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("poll should succeed");
+
+    handler.await.expect("handler task should not panic");
+
+    assert_eq!(response.payload(), &response_payload);
+    assert_eq!(response.instance_id(), instance_id);
+    assert_eq!(response.core_node(), core_node);
 }
