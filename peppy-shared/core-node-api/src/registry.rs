@@ -142,16 +142,17 @@ methods! {
             schema: "federation.capnp",
         }
         /// Commit point of a federated launch: the coordinator tells a
-        /// reserved participant to tear down its stack and record that its
-        /// new slice belongs to this launch. Split from the reservation
-        /// because reserving must stay non-destructive until every
-        /// participant has accepted.
+        /// reserved participant to tear down its stack, prepare the container
+        /// bind sources its slice will need, and record that its new slice
+        /// belongs to this launch. Split from the reservation because
+        /// reserving must stay non-destructive until every participant has
+        /// accepted.
         ParticipantSliceBegin {
             name: "participant_slice_begin",
             host: CoreNodeDaemon,
             summary: "Replace this daemon's stack slice on behalf of a reserved federated launch.",
             request: ParticipantSliceBeginRequest,
-            response: FederationVerdict,
+            response: ParticipantSliceBeginResponse,
             schema: "federation.capnp",
         }
         /// Records the second half of a CROSS-DAEMON pair on the daemon
