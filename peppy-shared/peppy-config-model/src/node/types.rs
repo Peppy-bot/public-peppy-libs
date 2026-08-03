@@ -110,9 +110,82 @@ pub enum TypeToken {
 }
 // Derives above keep serde logic concise; `TypeToken` handles mapping of known strings.
 
-// Common wrapper for dynamic message formats in topics/services
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+impl TypeToken {
+    /// Whether this token encodes as a Cap'n Proto scalar, meaning a field
+    /// that lives in the struct's fixed data section rather than behind a
+    /// pointer. `string`, `bytes`, and `time` are pointer-backed (`Text`,
+    /// `Data`, and a `Timestamp` struct); every other token is a scalar.
+    ///
+    /// The distinction decides what a field can express. A pointer field is
+    /// null when unset, which is the presence information `$optional` needs,
+    /// so only pointer-backed types accept it. A scalar field has a fixed
+    /// width and no pointer indirection, which is what a `$length` array
+    /// needs, so only scalars are valid fixed-length array items.
+    pub const fn is_scalar(&self) -> bool {
+        matches!(
+            self,
+            TypeToken::Bool
+                | TypeToken::U8
+                | TypeToken::U16
+                | TypeToken::U32
+                | TypeToken::U64
+                | TypeToken::I8
+                | TypeToken::I16
+                | TypeToken::I32
+                | TypeToken::I64
+                | TypeToken::F32
+                | TypeToken::F64
+        )
+    }
+}
+
+/// Common wrapper for dynamic message formats in topics, services, and
+/// actions.
+///
+/// A format holds at least one field: an empty `{}` is rejected at parse
+/// time. "No payload" therefore has exactly one spelling, the omitted key,
+/// and code generation reads presence of the key alone to decide whether an
+/// endpoint carries a payload.
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
 pub struct MessageFormat(pub IndexMap<String, SchemaType>);
+
+impl<'de> Deserialize<'de> for MessageFormat {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let fields = IndexMap::<String, SchemaType>::deserialize(deserializer)?;
+        if fields.is_empty() {
+            return Err(de::Error::custom(
+                "a message format cannot be empty; omit the key entirely when the payload \
+carries no fields",
+            ));
+        }
+        // Only root-level fields are checked because only they can be
+        // optional at all: `ObjectSchema` rejects `$optional` on its nested
+        // fields and `$items` rejects it on array items, both at parse time.
+        //
+        // The check lives here rather than in `PrimitiveSchema` because
+        // `SchemaType` is `untagged`: an error raised inside a variant is
+        // discarded and reported as "data did not match any variant", which
+        // tells a node author nothing. `MessageFormat` is the nearest
+        // enclosing type whose errors reach them intact.
+        for (name, schema) in &fields {
+            let SchemaType::Primitive(primitive) = schema else {
+                continue;
+            };
+            if primitive.optional && primitive.kind.is_scalar() {
+                return Err(de::Error::custom(format!(
+                    "`$optional` is not supported on field `{name}` of type `{}`: it encodes as \
+a fixed-width Cap'n Proto scalar, which is always present on the wire. Only `string`, `bytes`, \
+`time`, objects, and arrays can be optional",
+                    type_token_name(&primitive.kind)
+                )));
+            }
+        }
+        Ok(Self(fields))
+    }
+}
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -190,6 +263,11 @@ pub enum SchemaType {
     Object(ObjectSchema),
 }
 
+/// A primitive field in its structured form: a `$type` token plus modifiers.
+///
+/// `$optional` is accepted only on the pointer-backed tokens (`string`,
+/// `bytes`, `time`); [`MessageFormat`] enforces that, and
+/// [`TypeToken::is_scalar`] explains why a scalar cannot carry it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PrimitiveSchema {
@@ -769,15 +847,19 @@ fn validate_non_empty_identifier(raw: &str, label: &'static str) -> Result<Strin
     Ok(trimmed.to_string())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+/// An action's `feedback_topic`. Declaring the block is what opts the action
+/// into a feedback stream, so `message_format` is required: a feedback message
+/// exists to carry progress data, and an empty payload is reserved as the
+/// framework's per-goal end-of-stream signal. An action that streams no
+/// progress omits `feedback_topic` entirely.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ActionTopicEndpoint {
     #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
     pub topic_type: Option<String>,
     #[serde(default)]
     pub qos_profile: QoSProfile,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message_format: Option<MessageFormat>,
+    pub message_format: MessageFormat,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -1503,7 +1585,7 @@ impl Normalize for ResultServiceEndpoint {
 
 impl Normalize for ActionTopicEndpoint {
     fn normalize(&mut self) {
-        normalize_opt(&mut self.message_format);
+        self.message_format.normalize();
     }
 }
 
@@ -1820,7 +1902,7 @@ mod tests {
     }
 
     #[test]
-    fn exposed_action_accepts_empty_message_format_object() {
+    fn exposed_action_rejects_empty_message_format_object() {
         let json5 = r#"{
             name: "calibrate",
             goal_service: {
@@ -1829,20 +1911,11 @@ mod tests {
             },
         }"#;
 
-        let action: ExposedAction =
-            serde_json5::from_str(json5).expect("empty `{}` message format must parse");
-        let goal = action
-            .as_native()
-            .expect("no link_id means native")
-            .goal_service
-            .clone()
-            .expect("goal_service is present");
-        let request = goal
-            .request_message_format
-            .expect("request_message_format is Some when `{}` is given explicitly");
+        let err = serde_json5::from_str::<ExposedAction>(json5)
+            .expect_err("empty `{}` message format must be rejected");
         assert!(
-            request.0.is_empty(),
-            "empty `{{}}` deserializes to an empty MessageFormat"
+            err.to_string().contains("cannot be empty"),
+            "error should explain the empty format, got: {err}"
         );
     }
 
@@ -2115,6 +2188,115 @@ mod tests {
         let parsed: MessageFormat = serde_json5::from_str(json5).expect("should parse");
         assert!(parsed.0["error_msg"].is_optional());
         assert!(!parsed.0["code"].is_optional());
+    }
+
+    #[test]
+    fn optional_scalar_is_rejected() {
+        for token in [
+            "bool", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64",
+        ] {
+            let json5 = format!(r#"{{ maybe: {{ $type: "{token}", $optional: true }} }}"#);
+            assert!(
+                serde_json5::from_str::<MessageFormat>(&json5).is_err(),
+                "`$optional` on `{token}` must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn optional_scalar_error_names_the_type() {
+        let json5 = r#"{ maybe_code: { $type: "u32", $optional: true } }"#;
+        let err = serde_json5::from_str::<MessageFormat>(json5)
+            .expect_err("`$optional` on `u32` must be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("`u32`") && message.contains("$optional"),
+            "error should name the offending type, got: {message}"
+        );
+    }
+
+    /// `string`, `bytes`, and `time` encode as Cap'n Proto pointers, so they
+    /// are null when unset and can carry `$optional`.
+    #[test]
+    fn optional_pointer_backed_primitives_are_accepted() {
+        for token in ["string", "bytes", "time"] {
+            let json5 = format!(r#"{{ maybe: {{ $type: "{token}", $optional: true }} }}"#);
+            let parsed = serde_json5::from_str::<MessageFormat>(&json5)
+                .unwrap_or_else(|err| panic!("`$optional` on `{token}` must parse: {err}"));
+            assert!(parsed.0["maybe"].is_optional());
+        }
+    }
+
+    #[test]
+    fn optional_object_and_array_are_accepted() {
+        let json5 = r#"{
+            header: { $type: "object", $optional: true, frame_id: "u32" },
+            samples: { $type: "array", $items: "f32", $optional: true }
+        }"#;
+
+        let parsed: MessageFormat =
+            serde_json5::from_str(json5).expect("pointer-backed structures may be optional");
+        assert!(parsed.0["header"].is_optional());
+        assert!(parsed.0["samples"].is_optional());
+    }
+
+    #[test]
+    fn empty_message_format_is_rejected() {
+        let err = serde_json5::from_str::<MessageFormat>("{}")
+            .expect_err("an empty message format must be rejected");
+        assert!(
+            err.to_string().contains("cannot be empty"),
+            "error should explain the empty format, got: {err}"
+        );
+    }
+
+    #[test]
+    fn feedback_topic_requires_a_message_format() {
+        let json5 = r#"{
+            name: "move_arm",
+            feedback_topic: { qos_profile: "sensor_data" }
+        }"#;
+
+        assert!(
+            serde_json5::from_str::<ExposedAction>(json5).is_err(),
+            "a declared feedback_topic must carry a message_format"
+        );
+    }
+
+    #[test]
+    fn feedback_topic_rejects_an_empty_message_format() {
+        let json5 = r#"{
+            name: "move_arm",
+            feedback_topic: { message_format: {} }
+        }"#;
+
+        let err = serde_json5::from_str::<ExposedAction>(json5)
+            .expect_err("an empty feedback message_format must be rejected");
+        assert!(
+            err.to_string().contains("cannot be empty"),
+            "error should explain the empty format, got: {err}"
+        );
+    }
+
+    #[test]
+    fn feedback_topic_with_a_message_format_parses() {
+        let json5 = r#"{
+            name: "move_arm",
+            feedback_topic: {
+                qos_profile: "sensor_data",
+                message_format: { current_position: { $type: "array", $items: "i32", $length: 3 } }
+            }
+        }"#;
+
+        let action: ExposedAction = serde_json5::from_str(json5).expect("should parse");
+        let feedback = action
+            .as_native()
+            .expect("no link_id means native")
+            .feedback_topic
+            .as_ref()
+            .expect("feedback_topic is present");
+        assert_eq!(feedback.qos_profile, QoSProfile::SensorData);
+        assert!(feedback.message_format.0.contains_key("current_position"));
     }
 
     #[test]
@@ -2659,7 +2841,7 @@ mod tests {
         }
 
         let svc: ExposedService = serde_json5::from_str(
-            r#"{ name: "native_svc", request_message_format: {}, response_message_format: { ok: "bool" } }"#,
+            r#"{ name: "native_svc", request_message_format: { id: "u8" }, response_message_format: { ok: "bool" } }"#,
         )
         .expect("should parse");
         let reparsed: ExposedService =

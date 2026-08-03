@@ -104,9 +104,9 @@ mod tests {
     use super::*;
     use crate::node::NodeConfigParser;
 
-    /// Parse a node whose one exposed service carries `req`/`resp` formats, and
-    /// return the parsed request/response `MessageFormat`s.
-    fn service_formats(req: &str, resp: &str) -> (MessageFormat, MessageFormat) {
+    /// Parse a node whose one exposed service carries `schema` as its request
+    /// format, and return that parsed `MessageFormat`.
+    fn request_format(schema: &str) -> MessageFormat {
         let cfg = NodeConfigParser::from_content(&format!(
             r#"{{
                 peppy_schema: "node/v1",
@@ -114,8 +114,8 @@ mod tests {
                 execution: {{ language: "rust", run_cmd: ["n"] }},
                 interfaces: {{ services: {{ exposes: [ {{
                     name: "svc",
-                    request_message_format: {req},
-                    response_message_format: {resp}
+                    request_message_format: {schema},
+                    response_message_format: {{ ok: "bool" }}
                 }} ] }} }}
             }}"#
         ))
@@ -130,35 +130,30 @@ mod tests {
             .next()
             .unwrap();
         let svc = svc.as_native().expect("no link_id means native").clone();
-        (
-            svc.request_message_format.unwrap(),
-            svc.response_message_format.unwrap(),
-        )
+        svc.request_message_format.unwrap()
     }
 
     #[test]
     fn fixed_primitives_are_sized_exactly_and_not_variable() {
-        let (req, _) = service_formats(r#"{ a: "u32", b: "f64", c: "bool" }"#, "{}");
+        let req = request_format(r#"{ a: "u32", b: "f64", c: "bool" }"#);
         let est = estimate_serialized_size(&req);
         // 4 + 8 + 1 = 13 → round to 16 + 8 framing = 24; nothing variable.
         assert_eq!(est.bytes, 24);
         assert!(!est.has_variable);
     }
 
+    /// A parsed `message_format` is never empty, so this covers the
+    /// programmatically-built floor: no fields means framing alone.
     #[test]
     fn empty_message_is_just_framing() {
-        let (_, resp) = service_formats("{}", "{}");
-        let est = estimate_serialized_size(&resp);
+        let est = estimate_serialized_size(&MessageFormat::default());
         assert_eq!(est.bytes, FRAMING_OVERHEAD);
         assert!(!est.has_variable);
     }
 
     #[test]
     fn fixed_length_array_is_counted_exactly() {
-        let (req, _) = service_formats(
-            r#"{ joints: { $type: "array", $items: "f64", $length: 6 } }"#,
-            "{}",
-        );
+        let req = request_format(r#"{ joints: { $type: "array", $items: "f64", $length: 6 } }"#);
         let est = estimate_serialized_size(&req);
         // pointer(8) + 6*8 = 56 → already a multiple of 8 → +8 framing = 64.
         assert_eq!(est.bytes, 64);
@@ -167,10 +162,7 @@ mod tests {
 
     #[test]
     fn strings_and_unbounded_arrays_flag_variable_as_lower_bound() {
-        let (req, _) = service_formats(
-            r#"{ name: "string", frame: { $type: "array", $items: "u8" } }"#,
-            "{}",
-        );
+        let req = request_format(r#"{ name: "string", frame: { $type: "array", $items: "u8" } }"#);
         let est = estimate_serialized_size(&req);
         assert!(
             est.has_variable,
