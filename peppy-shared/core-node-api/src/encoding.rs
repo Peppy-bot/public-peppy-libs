@@ -52,7 +52,7 @@ pub use stack::benchmark::{
 };
 pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, PlacementSpec,
+    NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, PlacementSpec,
 };
 pub use stack::list::{LaunchIdentity, StackListRequest, StackListResponse};
 pub use stack::reset::{StackResetRequest, StackResetResponse};
@@ -119,27 +119,11 @@ pub(crate) fn read_text_list(list: capnp::text_list::Reader<'_>) -> Result<Vec<S
 }
 
 /// Decode a non-empty filesystem-path text field into a `PathBuf`.
-/// Relative paths are accepted; sites that name a real location should use
-/// [`decode_absolute_fs_path`] instead.
 pub(crate) fn decode_fs_path(path: &str, label: &str) -> Result<PathBuf> {
     if path.is_empty() {
         return Err(crate::Error::Decoding(format!("{label}: path is empty")));
     }
     Ok(PathBuf::from(path))
-}
-
-/// Like [`decode_fs_path`] but additionally requires an absolute path.
-/// Use this when the daemon will open the path without further
-/// resolution — relative paths would silently anchor at the daemon's
-/// CWD, which is a footgun.
-pub(crate) fn decode_absolute_fs_path(path: &str, label: &str) -> Result<PathBuf> {
-    let buf = decode_fs_path(path, label)?;
-    if !buf.is_absolute() {
-        return Err(crate::Error::Decoding(format!(
-            "{label}: path must be absolute, got `{path}`"
-        )));
-    }
-    Ok(buf)
 }
 
 pub(crate) fn capnp_list_len(len: usize, field: &str) -> Result<u32> {
@@ -194,21 +178,6 @@ mod tests {
     fn decode_fs_path_accepts_relative() {
         let buf = decode_fs_path("rel/path", "TestLabel").expect("relative must pass");
         assert_eq!(buf, PathBuf::from("rel/path"));
-    }
-
-    #[test]
-    fn decode_absolute_fs_path_rejects_relative() {
-        let err = decode_absolute_fs_path("rel/path", "TestLabel").expect_err("relative must fail");
-        let msg = err.to_string();
-        assert!(msg.contains("TestLabel"), "got: {msg}");
-        assert!(msg.contains("absolute"), "got: {msg}");
-        assert!(msg.contains("rel/path"), "got: {msg}");
-    }
-
-    #[test]
-    fn decode_absolute_fs_path_accepts_absolute() {
-        let buf = decode_absolute_fs_path("/abs/path", "TestLabel").expect("absolute must pass");
-        assert_eq!(buf, PathBuf::from("/abs/path"));
     }
 
     #[test]

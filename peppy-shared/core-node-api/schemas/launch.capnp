@@ -18,12 +18,10 @@ struct LaunchGoal {
     maxTimeoutSecs @3 :UInt64;
     # Idle timeout in seconds for the node build phase (resets on build_cmd output)
     nodeBuildIdleTimeoutSecs @4 :UInt64;
-    # Where the launcher file comes from. `fs` carries an absolute path; `repository` carries
-    # a launcher name to look up in `~/.peppy/cache/launchers.json5`.
-    launcherOrigin :union {
-        fs @5 :Text;
-        repository @6 :Text;
-    }
+    # Name of the launcher to look up in `~/.peppy/cache/launchers.json5`.
+    # Never a filesystem path: every daemon resolves the name against its own
+    # launcher cache. Never empty; refused at decode.
+    launcherName @5 :Text;
     # Identity of this federated launch, minted by the coordinator that
     # receives this goal. Every participant records it alongside its slice,
     # so the global stack is reconstructible by query from any machine and a
@@ -33,15 +31,14 @@ struct LaunchGoal {
     # federated launch, and is refused at decode rather than silently running
     # every instance on the coordinator: Cap'n Proto defaults an absent field
     # to the empty string, so nothing but this check makes the break loud.
-    launchId @7 :Text;
+    launchId @6 :Text;
     # How this launch places the launcher's declared core node links.
     #
     # The INTENT travels, not its expansion. Only the coordinator holds the
-    # resolved launcher: a `repository` origin is read from the daemon's own
-    # cache, which the caller may never have seen, so the caller cannot know
-    # which `core_nodes` the document declares. A caller that expanded
-    # `--local` itself could only do so for the origin it happens to hold,
-    # and the two origins would drift into meaning different things.
+    # resolved launcher, read from its own cache, which the caller may never
+    # have seen, so the caller cannot know which `core_nodes` the document
+    # declares. A caller that expanded `--local` itself could only do so for
+    # a document it happens to hold.
     #
     # `places` is the `--place` wiring, keyed by the placeholder the launcher
     # author declared; empty means no placement flag was given at all, which
@@ -53,8 +50,8 @@ struct LaunchGoal {
     # sets neither decodes as an empty `places` — the same "no placement
     # given" that has always meant.
     placement :union {
-        places @8 :List(CoreNodeLink);
-        local @9 :Void;
+        places @7 :List(CoreNodeLink);
+        local @8 :Void;
     }
 }
 

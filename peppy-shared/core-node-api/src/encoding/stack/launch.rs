@@ -21,35 +21,13 @@ fn with_timeout_default(value: u64, default: u64) -> u64 {
     if value == 0 { default } else { value }
 }
 
-/// Where the launcher file lives.
-///
-/// `Fs` carries an absolute path that the daemon opens directly. `Repository` carries the
-/// launcher *name* (the file stem of a `.json5` file as recorded in `launchers.json5`); the
-/// daemon resolves it against the launcher repository cache before opening.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LauncherOrigin {
-    Fs(PathBuf),
-    Repository { name: String },
-}
-
-impl LauncherOrigin {
-    pub fn fs(path: impl Into<PathBuf>) -> Self {
-        Self::Fs(path.into())
-    }
-
-    pub fn repository(name: impl Into<String>) -> Self {
-        Self::Repository { name: name.into() }
-    }
-}
-
 /// How a launch places the core node links its launcher declares.
 ///
 /// The INTENT, not its expansion. Only the coordinator holds the resolved
-/// launcher — a [`LauncherOrigin::Repository`] is read from the daemon's own
-/// cache, which the caller may never have seen — so the caller cannot know
-/// what the document declares. Sending what the user asked for, and expanding
-/// it where the document lives, is what makes `--local` mean the same thing
-/// for both origins instead of working only for the one the caller can read.
+/// launcher, read from the daemon's own launcher cache, which the caller may
+/// never have seen, so the caller cannot know what the document declares.
+/// Sending what the user asked for, and expanding it where the document
+/// lives, is what makes `--local` mean the same thing everywhere.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlacementSpec {
     /// `--place <core-node-link>@<core-node>` wirings, keyed by the
@@ -79,7 +57,11 @@ impl Default for PlacementSpec {
 /// Goal message for the Launch action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchGoal {
-    pub launcher_origin: LauncherOrigin,
+    /// Name of the launcher (the file stem of a `.json5` file as recorded in
+    /// `launchers.json5`); the daemon resolves it against the launcher
+    /// repository cache before opening. Never empty; [`LaunchGoal::decode`]
+    /// refuses an empty one.
+    pub launcher_name: String,
     pub env_vars: Vec<(String, String)>,
     pub node_add_idle_timeout_secs: u64,
     pub node_build_idle_timeout_secs: u64,
@@ -100,7 +82,7 @@ pub struct LaunchGoal {
 
 impl LaunchGoal {
     pub fn new(
-        launcher_origin: LauncherOrigin,
+        launcher_name: impl Into<String>,
         launch_id: impl Into<String>,
         node_add_idle_timeout_secs: u64,
         node_build_idle_timeout_secs: u64,
@@ -108,7 +90,7 @@ impl LaunchGoal {
         max_timeout_secs: Option<u64>,
     ) -> Self {
         Self {
-            launcher_origin,
+            launcher_name: launcher_name.into(),
             env_vars: Vec::new(),
             node_add_idle_timeout_secs,
             node_build_idle_timeout_secs,
@@ -167,21 +149,12 @@ impl LaunchGoal {
                 PlacementSpec::Local => goal.reborrow().init_placement().set_local(()),
             }
 
-            let mut origin = goal.reborrow().init_launcher_origin();
-            match &self.launcher_origin {
-                LauncherOrigin::Fs(path) => {
-                    origin.set_fs(path.to_string_lossy().as_ref());
-                }
-                LauncherOrigin::Repository { name } => {
-                    origin.set_repository(name.as_str());
-                }
-            }
+            goal.reborrow().set_launcher_name(&self.launcher_name);
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
-        use launch_capnp::launch_goal::launcher_origin::Which;
         use launch_capnp::launch_goal::placement::Which as PlacementWhich;
 
         let reader = decode_message(data)?;
@@ -197,23 +170,12 @@ impl LaunchGoal {
             ));
         }
 
-        let launcher_origin = match goal.get_launcher_origin().which()? {
-            Which::Fs(fs) => LauncherOrigin::Fs(crate::encoding::decode_absolute_fs_path(
-                fs?.to_str()?,
-                "LaunchGoal.launcher_origin.fs",
-            )?),
-            Which::Repository(name) => {
-                let name = name?.to_str()?;
-                if name.is_empty() {
-                    return Err(crate::Error::Decoding(
-                        "LaunchGoal.launcher_origin.repository name is empty".to_owned(),
-                    ));
-                }
-                LauncherOrigin::Repository {
-                    name: name.to_owned(),
-                }
-            }
-        };
+        let launcher_name = goal.get_launcher_name()?.to_str()?;
+        if launcher_name.is_empty() {
+            return Err(crate::Error::Decoding(
+                "LaunchGoal.launcher_name is empty".to_owned(),
+            ));
+        }
 
         // Cap'n Proto defaults an absent field to the empty string, so a goal
         // from a peppy that predates federated launch decodes here with no
@@ -261,7 +223,7 @@ impl LaunchGoal {
         Ok(Self {
             launch_id: launch_id.to_owned(),
             placement,
-            launcher_origin,
+            launcher_name: launcher_name.to_owned(),
             env_vars,
             node_add_idle_timeout_secs: with_timeout_default(
                 goal.get_node_add_idle_timeout_secs(),
@@ -626,16 +588,9 @@ mod tests {
     }
 
     #[test]
-    fn launch_goal_roundtrips_fs_origin() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Fs(PathBuf::from("/tmp/launcher.json5")),
-            "launch-abc123",
-            10,
-            20,
-            30,
-            Some(99),
-        )
-        .with_env_vars(vec![("PATH".to_string(), "/usr/bin".to_string())]);
+    fn launch_goal_roundtrips_with_env_vars() {
+        let goal = LaunchGoal::new("openarm01_sim_teleop", "launch-abc123", 10, 20, 30, Some(99))
+            .with_env_vars(vec![("PATH".to_string(), "/usr/bin".to_string())]);
 
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
@@ -643,11 +598,9 @@ mod tests {
     }
 
     #[test]
-    fn launch_goal_roundtrips_repository_origin() {
+    fn launch_goal_roundtrips_without_max_timeout() {
         let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "openarm01_sim_teleop".to_string(),
-            },
+            "openarm01_sim_teleop",
             "launch-abc123",
             5,
             10,
@@ -664,9 +617,7 @@ mod tests {
     #[test]
     fn launch_goal_roundtrips_core_node_links() {
         let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "split_compute_manipulation".to_string(),
-            },
+            "split_compute_manipulation",
             "launch-abc123",
             5,
             10,
@@ -696,9 +647,7 @@ mod tests {
     #[test]
     fn launch_goal_roundtrips_local_placement() {
         let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "split_compute_manipulation".to_string(),
-            },
+            "split_compute_manipulation",
             "launch-abc123",
             1,
             1,
@@ -718,9 +667,7 @@ mod tests {
     #[test]
     fn launch_goal_without_placement_decodes_as_no_places() {
         let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "teleop".to_string(),
-            },
+            "teleop",
             "launch-abc123",
             1,
             1,
@@ -737,9 +684,7 @@ mod tests {
     #[test]
     fn launch_goal_roundtrips_two_links_wired_to_one_core_node() {
         let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "split_compute_manipulation".to_string(),
-            },
+            "split_compute_manipulation",
             "launch-abc123",
             1,
             1,
@@ -763,9 +708,7 @@ mod tests {
     #[test]
     fn launch_goal_decode_rejects_empty_launch_id() {
         let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "teleop".to_string(),
-            },
+            "teleop",
             "",
             1,
             1,
@@ -781,9 +724,7 @@ mod tests {
     fn launch_goal_decode_rejects_empty_core_node_link_fields() {
         for (link_id, core_node) in [("", "cn-atlas"), ("cloud_inference", "")] {
             let goal = LaunchGoal::new(
-                LauncherOrigin::Repository {
-                    name: "teleop".to_string(),
-                },
+                "teleop",
                 "launch-abc123",
                 1,
                 1,
@@ -799,37 +740,11 @@ mod tests {
         }
     }
 
-    /// `LauncherOrigin::Fs` is documented to carry an absolute path; the
-    /// daemon opens it directly without resolving. A relative path here
-    /// would silently anchor at the daemon's CWD, which is a footgun.
     #[test]
-    fn launch_goal_decode_rejects_relative_fs_path() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Fs(PathBuf::from("relative/launcher.json5")),
-            "launch-abc123",
-            1,
-            1,
-            1,
-            None,
-        );
+    fn launch_goal_decode_rejects_empty_launcher_name() {
+        let goal = LaunchGoal::new("", "launch-abc123", 1, 1, 1, None);
         let msg = decoding_message(&goal);
-        assert!(msg.contains("absolute"), "got: {msg}");
-    }
-
-    #[test]
-    fn launch_goal_decode_rejects_empty_repository_name() {
-        let goal = LaunchGoal::new(
-            LauncherOrigin::Repository {
-                name: "".to_string(),
-            },
-            "launch-abc123",
-            1,
-            1,
-            1,
-            None,
-        );
-        let msg = decoding_message(&goal);
-        assert!(msg.contains("repository name is empty"), "got: {msg}");
+        assert!(msg.contains("launcher_name is empty"), "got: {msg}");
     }
 
     #[test]
