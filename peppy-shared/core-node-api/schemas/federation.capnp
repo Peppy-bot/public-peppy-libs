@@ -44,9 +44,9 @@ struct ParticipantReserveRequest {
     # Opaque text: the pin model lives in peppy, whose serde decoding is the
     # validation, and this crate has no business re-deriving it.
     #
-    # A `local:` source and a filesystem-backed repository entry never appear
-    # here. Both name trees on the coordinator's own disk, so the plan refuses
-    # them for any deployment placed off-coordinator.
+    # A filesystem-backed repository entry never appears here. It names a
+    # tree on the coordinator's own disk, so the plan refuses it for any
+    # deployment placed off-coordinator.
     deploymentPinsJson5 @2 :List(Text);
 }
 
