@@ -19,7 +19,7 @@ tracing = "0.1"
 walkdir = "2.5"
 # Used only by the `Capnp` error variant in `error.rs`; Cap'n Proto schema
 # generation itself now lives in the separate `encoding` crate.
-capnp = "0.26"
+capnp = "0.27"
 sha2 = "0.11"
 indexmap = { version = "2.2", features = ["serde"] }
 # Validates the workspace namespace as a zenoh non-wild key expression so an

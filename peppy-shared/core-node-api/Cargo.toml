@@ -9,7 +9,7 @@ edition.workspace = true
 # `config` stays in the peppy workspace (shared by many peppy crates); reach it
 # via a reverse path, the same way peppylib-rs does.
 config = { package = "peppy-config-model", path = "../peppy-config-model" }
-capnp = "0.26"
+capnp = "0.27"
 bytes = "1.10"
 chrono = "0.4"
 serde = { version = "1.0", features = ["derive"] }
@@ -20,7 +20,7 @@ gix-url = "0.37"
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers" }
-capnpc = "0.26"
+capnpc = "0.27"
 
 [dev-dependencies]
 tempfile = "3.10"
