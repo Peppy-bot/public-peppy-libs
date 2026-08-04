@@ -77,6 +77,12 @@ struct RepoRefreshResult {
     totalLaunchersFound @3 :UInt32;
     totalContractsFound @4 :UInt32;
     totalPairingsFound @5 :UInt32;
+    # Repositories that could not be updated this run. `success` covers the
+    # refresh as a whole: it ran, it published the caches, and every
+    # repository that read cleanly is current. This names the ones that did
+    # not, each still serving the entries it last published. Empty when
+    # every configured repository was read.
+    failureReport @6 :Text;
 }
 
 # ── Repo List (request-response) ────────────────────────────────
