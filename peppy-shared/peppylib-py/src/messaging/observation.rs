@@ -96,15 +96,9 @@ impl PyObservationSlotSet {
 
     fn __repr__(&self) -> String {
         let sources = self
-            .inner
             .sources()
             .iter()
-            .map(|source| {
-                format!(
-                    "{}@{}/{}",
-                    source.producer.instance_id, source.producer.core_node, source.source_link_id
-                )
-            })
+            .map(PyObservedSource::__repr__)
             .collect::<Vec<_>>();
         format!("ObservationSlotSet(sources=[{}])", sources.join(", "))
     }

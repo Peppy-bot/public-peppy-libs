@@ -68,6 +68,10 @@ impl FollowedSlot for PeerFollow {
         state.pin.clone().into_iter().collect()
     }
 
+    fn is_followed(state: &PeerPinState, pin: &PeerPin) -> bool {
+        state.pin.as_ref() == Some(pin)
+    }
+
     fn producer(pin: &PeerPin) -> &ProducerRef {
         &pin.producer
     }

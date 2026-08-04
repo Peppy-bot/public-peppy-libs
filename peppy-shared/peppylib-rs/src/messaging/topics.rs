@@ -36,14 +36,49 @@ impl Subscription {
         }
     }
 
-    /// The underlying wire receiver, for call sites that merge several
-    /// subscriptions into one `select_all` set (see
-    /// [`crate::runtime::slot_stream`]). `recv_async` takes `&self`, so a whole
-    /// set can be polled at once, and its `RecvFut` is `Unpin` and cancel-safe:
-    /// the losing futures drop without consuming a message.
+    /// The underlying wire receiver, so a pinned slot's subscription set can go
+    /// through [`recv_first_ready`] (see [`crate::runtime::slot_stream`]).
     pub(crate) fn wire_receiver(&self) -> &flume::Receiver<pmi::TopicMessage> {
         &self.inner.rx
     }
+}
+
+/// First-ready-wins receive across a set of wire subscriptions, polled in a
+/// rotated order starting at `start` so a busy source cannot indefinitely
+/// starve a quiet one. Returns the winning index into `sources` and its receive
+/// result; callers advance their own rotation cursor once per call.
+///
+/// The one fan-in rule for every multi-source consumer: a dep slot's bound
+/// producer set ([`BoundSetSubscription`]) and a pinned slot's followed member
+/// set ([`crate::runtime::slot_stream`]) merge identically, and differ only in
+/// the arm each races this against (shutdown vs. slot update).
+///
+/// This is the per-message receive path of every consumed topic, so it
+/// allocates no boxed futures: flume's `RecvFut` is `Unpin` (it goes into
+/// `select_all` as-is) and cancel-safe, so the losing futures drop without
+/// consuming a message. The ubiquitous single-source set recvs directly, with
+/// no future collection at all.
+///
+/// `sources` must be non-empty; both callers park on their own idle path
+/// rather than polling an empty set.
+pub(crate) async fn recv_first_ready<T>(
+    sources: &[T],
+    receiver_of: impl Fn(&T) -> &flume::Receiver<pmi::TopicMessage>,
+    start: usize,
+) -> (
+    usize,
+    std::result::Result<pmi::TopicMessage, flume::RecvError>,
+) {
+    let len = sources.len();
+    if len == 1 {
+        return (0, receiver_of(&sources[0]).recv_async().await);
+    }
+    let start = start % len;
+    let recvs: Vec<_> = (0..len)
+        .map(|offset| receiver_of(&sources[(start + offset) % len]).recv_async())
+        .collect();
+    let (received, position, _) = futures::future::select_all(recvs).await;
+    ((start + position) % len, received)
 }
 
 /// One producer's pinned wire subscription inside a
@@ -98,43 +133,19 @@ impl BoundSetSubscription {
                 return None;
             }
 
-            let len = self.sources.len();
-            let start = self.next_start % len;
+            let start = self.next_start;
             self.next_start = self.next_start.wrapping_add(1);
 
-            // This is the per-message receive path of every consumed topic,
-            // so it allocates no boxed futures: flume's `RecvFut` is `Unpin`
-            // (it goes into `select_all` as-is) and cancel-safe (the losing
-            // futures drop without consuming a message). `biased` polls the
-            // sources before the shutdown token in both arms, so queued
+            // `biased` polls the sources before the shutdown token, so queued
             // messages drain before a fired cancellation is honored.
-            let outcome = if len == 1 {
-                // The ubiquitous single-producer slot: recv on the sole
-                // source directly, with no future collection at all.
-                tokio::select! {
-                    biased;
-                    received = self.sources[0].subscription.rx.recv_async() => {
-                        Some((0, received))
-                    }
-                    _ = self.shutdown.cancelled() => None,
-                }
-            } else {
-                // First-ready-wins over the rotated source order.
-                let recvs: Vec<_> = (0..len)
-                    .map(|offset| {
-                        self.sources[(start + offset) % len]
-                            .subscription
-                            .rx
-                            .recv_async()
-                    })
-                    .collect();
-                tokio::select! {
-                    biased;
-                    (received, position, _) = futures::future::select_all(recvs) => {
-                        Some(((start + position) % len, received))
-                    }
-                    _ = self.shutdown.cancelled() => None,
-                }
+            let outcome = tokio::select! {
+                biased;
+                (idx, received) = recv_first_ready(
+                    &self.sources,
+                    |source| &source.subscription.rx,
+                    start,
+                ) => Some((idx, received)),
+                _ = self.shutdown.cancelled() => None,
             };
 
             match outcome {

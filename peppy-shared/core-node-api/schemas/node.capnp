@@ -370,18 +370,12 @@ struct RemotePeerPairing {
 struct ObservationRequest {
     # The starting node's own observer-slot link_id.
     observerLinkId @0 :Text;
-    # Read-only tombstones for the single-source shape an observer slot no
-    # longer has. A sender that still fills them is running a build from
-    # before observer slots carried a cardinality, and the decoder refuses the
-    # message rather than silently dropping the source it named.
-    removedSource @1 :InstanceAddress;
-    removedSourceLinkId @2 :Text;
     # The pairings this slot observes, in the order the plan lists them
     # (launcher array order, or `--link` occurrence order). Sized against the
     # slot's declared cardinality by the planner. Never empty: a
     # `zero_or_more` slot that observes nothing carries no ObservationRequest
     # at all.
-    targets @3 :List(ObservationMember);
+    targets @1 :List(ObservationMember);
 }
 
 # One pairing an observer slot taps.

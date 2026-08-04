@@ -5,7 +5,7 @@ use crate::messaging::{ObservationState, PeerPin, PeerPinState};
 use config::{
     AnyType, NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
-    node::{Cardinality, NodeConfig, load_standalone_node_config},
+    node::{Cardinality, NodeConfig, PairingObserverDependency, load_standalone_node_config},
     runtime::{Name, NodeInstanceConfig, PairingSlotBinding, RuntimeConfig},
     validate_node_arguments,
 };
@@ -101,7 +101,8 @@ impl Processor {
 
         let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
-        let (observation_slots, observation_cardinalities) = build_observation_slots(&node_config);
+        let observation_slots = build_observation_slots(&node_config);
+        let observation_cardinalities = build_observer_cardinalities(&node_config);
 
         Ok(Self {
             runtime_config,
@@ -205,7 +206,8 @@ impl Processor {
 
         let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
-        let (observation_slots, observation_cardinalities) = build_observation_slots(&node_config);
+        let observation_slots = build_observation_slots(&node_config);
+        let observation_cardinalities = build_observer_cardinalities(&node_config);
 
         // Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a
         // slot as already-paired, standing in for the daemon's live
@@ -471,30 +473,41 @@ impl Processor {
     }
 }
 
-/// Everything [`build_observation_slots`] seeds for a node's observer slots:
-/// one live channel per slot, and each slot's declared cardinality.
-type SeededObservationSlots = (
-    Arc<BTreeMap<String, watch::Sender<ObservationState>>>,
-    BTreeMap<String, Cardinality>,
-);
+/// Every observer slot declared in `depends_on.pairing_observers`, as an
+/// iterator over the manifest entries that both seeders below key on.
+fn observer_deps(node_config: &NodeConfig) -> impl Iterator<Item = &PairingObserverDependency> {
+    node_config
+        .manifest
+        .depends_on
+        .iter()
+        .flat_map(|deps| &deps.pairing_observers)
+}
 
 /// Seed one watch channel per **observer** pairing slot declared in
 /// `depends_on.pairing_observers`, keyed by slot link_id, each initialized to
-/// [`ObservationState::unregistered`], alongside each slot's declared
-/// `cardinality`. The member set, each member's generation, and each member's
-/// live status all arrive over the `observation_update` service after the
-/// instance commits, exactly as pairing pins arrive over `peer_update`.
-fn build_observation_slots(node_config: &NodeConfig) -> SeededObservationSlots {
-    let mut slots = BTreeMap::new();
-    let mut cardinalities = BTreeMap::new();
-    if let Some(deps) = node_config.manifest.depends_on.as_ref() {
-        for dep in &deps.pairing_observers {
-            let (tx, _rx) = watch::channel(ObservationState::unregistered());
-            slots.insert(dep.link_id.clone(), tx);
-            cardinalities.insert(dep.link_id.clone(), dep.cardinality);
-        }
-    }
-    (Arc::new(slots), cardinalities)
+/// [`ObservationState::unregistered`]. The member set, each member's
+/// generation, and each member's live status all arrive over the
+/// `observation_update` service after the instance commits, exactly as pairing
+/// pins arrive over `peer_update`.
+fn build_observation_slots(
+    node_config: &NodeConfig,
+) -> Arc<BTreeMap<String, watch::Sender<ObservationState>>> {
+    Arc::new(
+        observer_deps(node_config)
+            .map(|dep| {
+                let (tx, _rx) = watch::channel(ObservationState::unregistered());
+                (dep.link_id.clone(), tx)
+            })
+            .collect(),
+    )
+}
+
+/// Each observer slot's declared `cardinality`, keyed by the same link_ids
+/// [`build_observation_slots`] seeds.
+fn build_observer_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Cardinality> {
+    observer_deps(node_config)
+        .map(|dep| (dep.link_id.clone(), dep.cardinality))
+        .collect()
 }
 
 /// Seed one watch channel per **participant** pairing slot declared in

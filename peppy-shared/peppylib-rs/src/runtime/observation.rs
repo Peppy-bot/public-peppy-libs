@@ -138,6 +138,13 @@ impl FollowedSlot for ObservedFollow {
             .collect()
     }
 
+    fn is_followed(state: &ObservationState, pin: &ObservedPin) -> bool {
+        state
+            .members
+            .iter()
+            .any(|member| member.source_generation == pin.generation && member.source == pin.source)
+    }
+
     fn producer(pin: &ObservedPin) -> &ProducerRef {
         &pin.source.producer
     }

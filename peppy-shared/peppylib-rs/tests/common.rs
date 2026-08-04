@@ -35,6 +35,98 @@ pub async fn wait_for_topic_subscriber(
     );
 }
 
+/// Declares a slot-scoped publisher: the wire link_id segment carries the
+/// producer's OWN slot link_id, which is what a pinned consumer (a pairing peer
+/// or an observer member) subscribes against.
+pub async fn declare_pinned_publisher(
+    handle: &MessengerHandle,
+    core_node: &str,
+    instance_id: &str,
+    target: SenderTarget,
+    link_id: &str,
+    topic_name: &str,
+) -> peppylib::messaging::TopicPublisher {
+    TopicMessenger::declare_publisher(
+        handle,
+        core_node,
+        instance_id,
+        target,
+        Some(link_id),
+        topic_name,
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("pinned publisher should declare")
+}
+
+/// Waits until a pinned consumer's wire subscription for `(core_node,
+/// producer_instance, link_id)` is visible to `handle`'s session. Both pinned
+/// slot kinds declare their wire subs from the forwarding task, asynchronously
+/// after a slot update, so a test must synchronize on the declaration before
+/// publishing. Panics if it does not appear within 2s.
+pub async fn wait_for_pinned_wire_sub(
+    handle: &MessengerHandle,
+    core_node: &str,
+    producer_instance: &str,
+    target: SenderTarget,
+    link_id: &str,
+    topic_name: &str,
+) {
+    let matched = TopicMessenger::wait_for_subscriber_with_link_id(
+        handle,
+        core_node,
+        producer_instance,
+        target,
+        Some(link_id),
+        topic_name,
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("wait_for_subscriber should not error");
+    assert!(
+        matched,
+        "wire subscription for `{producer_instance}` did not appear within 2s"
+    );
+}
+
+/// Inverse of [`wait_for_pinned_wire_sub`]: waits until that subscription has
+/// disappeared from `handle`'s session. The forwarding task drops a wire sub
+/// asynchronously once the pin leaves the followed set, so a test must gate on
+/// the actual teardown before probing for silence. A probe window returning
+/// `false` means every poll inside it saw no matching subscriber, i.e. the drop
+/// has landed; while the sub still exists the probe returns `true` immediately
+/// and we retry until the deadline.
+pub async fn wait_for_pinned_wire_sub_gone(
+    handle: &MessengerHandle,
+    core_node: &str,
+    producer_instance: &str,
+    target: SenderTarget,
+    link_id: &str,
+    topic_name: &str,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let matched = TopicMessenger::wait_for_subscriber_with_link_id(
+            handle,
+            core_node,
+            producer_instance,
+            target.clone(),
+            Some(link_id),
+            topic_name,
+            Duration::from_millis(25),
+        )
+        .await
+        .expect("wait_for_subscriber should not error");
+        if !matched {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "wire subscription for `{producer_instance}` did not disappear within 2s"
+        );
+    }
+}
+
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 
 pub const TEST_CORE_NODE_NAME: &str = "test_core_node";

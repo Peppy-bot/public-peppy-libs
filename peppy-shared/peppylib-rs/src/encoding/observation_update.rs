@@ -6,7 +6,6 @@ use crate::error::{Error, Result};
 use crate::messaging::{ObservationPin, ObservedMemberState, ProducerRef};
 use crate::observation_update_capnp;
 use crate::types::Payload;
-use std::collections::HashSet;
 
 /// Absolute observer-slot state pushed by the daemon: the slot's complete
 /// ordered member set. Field-for-field mirror of the capnp
@@ -50,8 +49,7 @@ impl ObservationUpdateRequest {
         let wire_members = root
             .get_members()
             .map_err(|e| Error::Deserialization(e.to_string()))?;
-        let mut members = Vec::with_capacity(wire_members.len() as usize);
-        let mut seen = HashSet::with_capacity(wire_members.len() as usize);
+        let mut members: Vec<ObservedMemberState> = Vec::with_capacity(wire_members.len() as usize);
         for idx in 0..wire_members.len() {
             let wire = wire_members.get(idx);
             let source = ObservationPin {
@@ -76,12 +74,10 @@ impl ObservationUpdateRequest {
             // A member's identity is its `(source, source_link_id)` pair, and a
             // slot holds each identity once. Repeating one would give the slot
             // two subscriptions to one pairing and make the position of every
-            // later member ambiguous, so the delivery is refused whole.
-            if !seen.insert((
-                source.producer.core_node.clone(),
-                source.producer.instance_id.clone(),
-                source.source_link_id.clone(),
-            )) {
+            // later member ambiguous, so the delivery is refused whole. A slot's
+            // member set is small, so the already-decoded members are the
+            // lookup: no side table, and no per-member clone to key it.
+            if members.iter().any(|member| member.source == source) {
                 return Err(Error::Deserialization(format!(
                     "observation_update for slot `{link_id}` lists `{}/{}` on `{}` twice: a \
                      slot observes each pairing once",

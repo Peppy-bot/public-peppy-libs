@@ -9,7 +9,7 @@ use common::get_client_server;
 use config::node::QoSProfile;
 use peppylib::messaging::{
     MessengerHandle, ObservationPin, ObservationState, ObservedMemberState, ProducerRef,
-    SenderTarget, TopicMessenger, TopicPublisher,
+    SenderTarget, TopicPublisher,
 };
 use peppylib::runtime::{ObservedTopicSubscription, subscribe_observed_with_watch};
 use peppylib::types::Payload;
@@ -45,17 +45,15 @@ fn state(sequence: u64, members: Vec<ObservedMemberState>) -> ObservationState {
 }
 
 async fn declare_source_publisher(handle: &MessengerHandle, instance_id: &str) -> TopicPublisher {
-    TopicMessenger::declare_publisher(
+    common::declare_pinned_publisher(
         handle,
         CORE,
         instance_id,
         pairing_target(),
-        Some(SOURCE_SLOT_LINK_ID),
+        SOURCE_SLOT_LINK_ID,
         TOPIC,
-        QoSProfile::Reliable,
     )
     .await
-    .expect("source publisher should declare")
 }
 
 /// Observer-side subscription driven by a hand-held watch channel (standing in
@@ -76,52 +74,31 @@ fn subscribe(
 }
 
 /// Waits until the observer's wire subscription pinned to `source_instance` is
-/// visible to the publisher's session. Wire subs are declared by the forwarding
-/// task asynchronously after a slot update, so tests synchronize before
-/// publishing.
+/// visible to the publisher's session.
 async fn wait_for_source_wire_sub(handle: &MessengerHandle, source_instance: &str) {
-    let matched = TopicMessenger::wait_for_subscriber_with_link_id(
+    common::wait_for_pinned_wire_sub(
         handle,
         CORE,
         source_instance,
         pairing_target(),
-        Some(SOURCE_SLOT_LINK_ID),
+        SOURCE_SLOT_LINK_ID,
         TOPIC,
-        Duration::from_secs(2),
     )
-    .await
-    .expect("wait_for_subscriber should not error");
-    assert!(
-        matched,
-        "wire subscription for `{source_instance}` did not appear within 2s"
-    );
+    .await;
 }
 
 /// Inverse of [`wait_for_source_wire_sub`]: the deterministic sync point for a
-/// member leaving the set, since the forwarding task drops its wire sub
-/// asynchronously.
+/// member leaving the set.
 async fn wait_for_source_wire_sub_gone(handle: &MessengerHandle, source_instance: &str) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        let matched = TopicMessenger::wait_for_subscriber_with_link_id(
-            handle,
-            CORE,
-            source_instance,
-            pairing_target(),
-            Some(SOURCE_SLOT_LINK_ID),
-            TOPIC,
-            Duration::from_millis(25),
-        )
-        .await
-        .expect("wait_for_subscriber should not error");
-        if !matched {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "wire subscription for `{source_instance}` did not disappear within 2s"
-        );
-    }
+    common::wait_for_pinned_wire_sub_gone(
+        handle,
+        CORE,
+        source_instance,
+        pairing_target(),
+        SOURCE_SLOT_LINK_ID,
+        TOPIC,
+    )
+    .await;
 }
 
 async fn expect_message(

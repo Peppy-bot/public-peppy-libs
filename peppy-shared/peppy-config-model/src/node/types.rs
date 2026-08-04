@@ -900,11 +900,11 @@ impl Cardinality {
 
     /// Whether a set of `len` sources satisfies the slot: exactly one for
     /// `one`, at least one for `one_or_more`, any size for `zero_or_more`.
-    /// The one size-admission rule, shared by plan-time binding validation,
-    /// the node runtime's startup re-check of bound producers, and plan-time
-    /// observer validation. Observation is checked at plan time only: an
-    /// observed member set changes while the node runs, so no size holds
-    /// across its lifetime.
+    /// The one size-admission rule, shared by plan-time binding validation and
+    /// the node runtime's startup re-check of bound producers. Observer slots
+    /// go through the shape check in the launcher instead, and only at plan
+    /// time: an observed member set changes while the node runs, so no size
+    /// holds across its lifetime.
     pub fn admits(&self, len: usize) -> bool {
         match self {
             Cardinality::One => len == 1,

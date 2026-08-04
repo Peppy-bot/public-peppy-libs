@@ -41,8 +41,13 @@ pub(crate) trait FollowedSlot: Send + Sync + 'static {
     type Pin: Clone + PartialEq + Send + Sync + 'static;
 
     /// The pins to follow now, in the slot's own order, without duplicates.
-    /// Empty when the slot follows nothing.
+    /// Empty when the slot follows nothing. Called only when the slot's state
+    /// actually changed, so it is free to allocate.
     fn desired(state: &Self::State) -> Vec<Self::Pin>;
+    /// Whether `pin` is still in the followed set. The same answer as
+    /// `desired(state).contains(pin)`, without materializing the set: this one
+    /// runs on the per-message delivery path.
+    fn is_followed(state: &Self::State, pin: &Self::Pin) -> bool;
     /// The producer whose publishes this pin subscribes to.
     fn producer(pin: &Self::Pin) -> &ProducerRef;
     /// The producer-side link_id segment of that producer's publishes.
@@ -71,7 +76,7 @@ impl<S: FollowedSlot> SlotStream<S> {
     pub(crate) async fn next(&mut self) -> Option<(ProducerRef, Message)> {
         loop {
             let (pin, message) = self.rx.recv().await?;
-            let still_followed = S::desired(&self.watch_rx.borrow()).contains(&*pin);
+            let still_followed = S::is_followed(&self.watch_rx.borrow(), &pin);
             if still_followed {
                 return Some((S::producer(&pin).clone(), message));
             }
@@ -140,63 +145,61 @@ async fn forward_messages<S: FollowedSlot>(
     // clone. At most one wire subscription per pin, ever.
     let mut current: Vec<(Arc<S::Pin>, Subscription)> = Vec::new();
     // Rotating first-poll position, so a busy member cannot indefinitely starve
-    // a quiet one (the merge rule [`crate::messaging::BoundSetSubscription`]
-    // applies to a bound producer set).
+    // a quiet one.
     let mut next_start: usize = 0;
+    // Convergence is set work, so it runs only when the followed set can have
+    // moved: the first pass, every slot update, and after a member is dropped.
+    // The steady-state message path skips it entirely rather than rebuilding
+    // and rediffing the whole pin set once per forwarded message.
+    let mut needs_converge = true;
     loop {
-        // The decision reads only the followed pins; the loop top runs once per
-        // forwarded message, so pins are cloned out of the watch guard only when
-        // they are about to be followed.
-        let desired = S::desired(&watch_rx.borrow_and_update());
-        current = converge_subscriptions::<S>(
-            current,
-            desired,
-            &messenger,
-            &as_core_node,
-            &as_instance_id,
-            &pairing_target,
-            &topic,
-            &qos,
-        )
-        .await;
+        if needs_converge {
+            let desired = S::desired(&watch_rx.borrow_and_update());
+            current = converge_subscriptions::<S>(
+                current,
+                desired,
+                &messenger,
+                &as_core_node,
+                &as_instance_id,
+                &pairing_target,
+                &topic,
+                &qos,
+            )
+            .await;
+            needs_converge = false;
+        }
 
         if current.is_empty() {
             if watch_rx.changed().await.is_err() {
                 return; // runtime teardown
             }
+            needs_converge = true;
             continue;
         }
 
-        let len = current.len();
-        let start = next_start % len;
+        let start = next_start;
         next_start = next_start.wrapping_add(1);
-        // First-ready-wins over the rotated member order. `flume::RecvFut` is
-        // `Unpin` and cancel-safe, so this collection allocates no boxed futures
-        // and the losing futures drop without consuming a message.
-        let received = {
-            let recvs: Vec<_> = (0..len)
-                .map(|offset| {
-                    current[(start + offset) % len]
-                        .1
-                        .wire_receiver()
-                        .recv_async()
-                })
-                .collect();
-            tokio::select! {
-                changed = watch_rx.changed() => {
-                    if changed.is_err() {
-                        return; // runtime teardown
-                    }
-                    None
+        // `biased` polls the slot update before the members, so a pin swap is
+        // applied promptly instead of waiting out a saturated stream; a slot
+        // update is rare, so the members are reached on essentially every poll.
+        let received = tokio::select! {
+            biased;
+            changed = watch_rx.changed() => {
+                if changed.is_err() {
+                    return; // runtime teardown
                 }
-                (received, position, _) = futures::future::select_all(recvs) => {
-                    Some(((start + position) % len, received))
-                }
+                needs_converge = true;
+                None
             }
+            (idx, received) = crate::messaging::recv_first_ready(
+                &current,
+                |(_, subscription)| subscription.wire_receiver(),
+                start,
+            ) => Some((idx, received)),
         };
 
         match received {
-            // The followed set may have moved; reconverge at the loop top.
+            // The followed set moved; reconverge at the loop top.
             None => continue,
             Some((idx, Ok(raw))) => {
                 let message = Message::from(raw);
@@ -216,6 +219,7 @@ async fn forward_messages<S: FollowedSlot>(
                 // and keep serving the rest; the next slot update redeclares it
                 // if the slot still follows that pin.
                 let (gone, _) = current.remove(idx);
+                needs_converge = true;
                 warn!(
                     topic = %topic,
                     core_node = %S::producer(&gone).core_node,
@@ -249,25 +253,41 @@ async fn converge_subscriptions<S: FollowedSlot>(
 ) -> Vec<(Arc<S::Pin>, Subscription)> {
     current.retain(|(pin, _)| desired.contains(&**pin));
 
-    let mut converged = Vec::with_capacity(desired.len());
-    for pin in desired {
-        if let Some(idx) = current.iter().position(|(followed, _)| **followed == pin) {
-            converged.push(current.swap_remove(idx));
-            continue;
+    // Claim the still-followed subscriptions first, so every pin the slot moved
+    // off is already dropped before any new one is declared. One entry per
+    // desired position, `None` where a declaration is still owed.
+    let mut converged: Vec<Option<(Arc<S::Pin>, Subscription)>> = Vec::with_capacity(desired.len());
+    let mut pending: Vec<(usize, S::Pin)> = Vec::new();
+    for (position, pin) in desired.into_iter().enumerate() {
+        match current.iter().position(|(followed, _)| **followed == pin) {
+            Some(idx) => converged.push(Some(current.swap_remove(idx))),
+            None => {
+                converged.push(None);
+                pending.push((position, pin));
+            }
         }
-        match TopicMessenger::subscribe_peer_pinned(
+    }
+
+    // The owed declarations are mutually independent, so a multi-member slot
+    // waits out one declare round-trip rather than N in series. Each result is
+    // filed by its `desired` position, never by completion order.
+    let declared = futures::future::join_all(pending.iter().map(|(_, pin)| {
+        TopicMessenger::subscribe_peer_pinned(
             messenger,
             as_core_node,
             as_instance_id,
             pairing_target.clone(),
-            S::producer(&pin),
-            S::producer_link_id(&pin),
+            S::producer(pin),
+            S::producer_link_id(pin),
             topic,
             qos.clone(),
         )
-        .await
-        {
-            Ok(subscription) => converged.push((Arc::new(pin), subscription)),
+    }))
+    .await;
+
+    for ((position, pin), result) in pending.into_iter().zip(declared) {
+        match result {
+            Ok(subscription) => converged[position] = Some((Arc::new(pin), subscription)),
             Err(err) => {
                 warn!(
                     %err,
@@ -279,5 +299,7 @@ async fn converge_subscriptions<S: FollowedSlot>(
             }
         }
     }
-    converged
+    // A pin whose declaration failed is left out and retried at the next slot
+    // update; the remaining members keep their order.
+    converged.into_iter().flatten().collect()
 }

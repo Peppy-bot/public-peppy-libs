@@ -9,7 +9,7 @@ use common::get_client_server;
 use config::node::QoSProfile;
 use peppylib::messaging::{
     MessengerHandle, PEER_UPDATE_SERVICE, PeerPin, PeerPinState, ProducerRef, SenderTarget,
-    ServiceMessenger, ServiceTarget, TopicMessenger, TopicPublisher,
+    ServiceMessenger, ServiceTarget, TopicPublisher,
 };
 use peppylib::runtime::{PeerSubscription, subscribe_peer_with_watch};
 use peppylib::types::Payload;
@@ -40,17 +40,15 @@ fn pin_to(instance_id: &str) -> PeerPin {
 /// Declares a slot-scoped pairing publisher for a peer instance: the wire
 /// link_id segment carries the peer's OWN slot link_id.
 async fn declare_peer_publisher(handle: &MessengerHandle, instance_id: &str) -> TopicPublisher {
-    TopicMessenger::declare_publisher(
+    common::declare_pinned_publisher(
         handle,
         CORE,
         instance_id,
         pairing_target(),
-        Some(ARM_SLOT_LINK_ID),
+        ARM_SLOT_LINK_ID,
         TOPIC,
-        QoSProfile::Reliable,
     )
     .await
-    .expect("peer publisher should declare")
 }
 
 /// Consumer-side pairing subscription driven by a hand-held watch channel
@@ -71,54 +69,31 @@ fn subscribe(
 }
 
 /// Waits until the consumer's current wire subscription (pinned to
-/// `peer_instance`) is visible to the publisher's session. Pairing wire
-/// subs are declared by the forwarding task asynchronously after a pin
-/// update, so tests must synchronize before publishing.
+/// `peer_instance`) is visible to the publisher's session.
 async fn wait_for_peer_wire_sub(handle: &MessengerHandle, peer_instance: &str) {
-    let matched = TopicMessenger::wait_for_subscriber_with_link_id(
+    common::wait_for_pinned_wire_sub(
         handle,
         CORE,
         peer_instance,
         pairing_target(),
-        Some(ARM_SLOT_LINK_ID),
+        ARM_SLOT_LINK_ID,
         TOPIC,
-        Duration::from_secs(2),
     )
-    .await
-    .expect("wait_for_subscriber should not error");
-    assert!(matched, "peer wire subscription did not appear within 2s");
+    .await;
 }
 
-/// Inverse of [`wait_for_peer_wire_sub`]: waits until the consumer's wire
-/// subscription pinned to `peer_instance` has disappeared from the
-/// publisher's session. The forwarding task drops the old wire sub
-/// asynchronously after a clear, so tests must gate on the actual teardown
-/// before probing for silence. A probe window returning `false` means every
-/// poll inside it saw no matching subscriber — i.e. the drop has landed;
-/// while the sub still exists the probe returns `true` immediately and we
-/// retry until the deadline.
+/// Inverse of [`wait_for_peer_wire_sub`]: the deterministic sync point for a
+/// clear, since the forwarding task drops the old wire sub asynchronously.
 async fn wait_for_peer_wire_sub_gone(handle: &MessengerHandle, peer_instance: &str) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        let matched = TopicMessenger::wait_for_subscriber_with_link_id(
-            handle,
-            CORE,
-            peer_instance,
-            pairing_target(),
-            Some(ARM_SLOT_LINK_ID),
-            TOPIC,
-            Duration::from_millis(25),
-        )
-        .await
-        .expect("wait_for_subscriber should not error");
-        if !matched {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "peer wire subscription did not disappear within 2s"
-        );
-    }
+    common::wait_for_pinned_wire_sub_gone(
+        handle,
+        CORE,
+        peer_instance,
+        pairing_target(),
+        ARM_SLOT_LINK_ID,
+        TOPIC,
+    )
+    .await;
 }
 
 async fn expect_message(subscription: &mut PeerSubscription, expected_payload: &[u8]) {

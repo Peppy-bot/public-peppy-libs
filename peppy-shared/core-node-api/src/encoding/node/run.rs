@@ -143,39 +143,22 @@ impl std::fmt::Display for ObservationTarget {
 /// slot, which is a planning mistake, not a request for two subscriptions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DuplicateObservationTarget {
-    pub observer_link_id: Option<String>,
+    pub observer_link_id: String,
     pub target: ObservationTarget,
 }
 
 impl std::fmt::Display for DuplicateObservationTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.observer_link_id {
-            Some(link_id) => write!(
-                f,
-                "Duplicate observation target `{}` on observer slot `{link_id}` — an observed \
-                 pairing may appear only once in a slot's member set",
-                self.target
-            ),
-            None => write!(
-                f,
-                "Duplicate observation target `{}` in an observer slot's member set — an \
-                 observed pairing may appear only once in a slot",
-                self.target
-            ),
-        }
+        write!(
+            f,
+            "Duplicate observation target `{}` on observer slot `{}` — an observed pairing may \
+             appear only once in a slot's member set",
+            self.target, self.observer_link_id
+        )
     }
 }
 
 impl std::error::Error for DuplicateObservationTarget {}
-
-impl DuplicateObservationTarget {
-    /// Names the observer slot the duplicate was found on, for callers that
-    /// build a set per slot and want the slot in the message.
-    pub fn on_slot(mut self, observer_link_id: impl Into<String>) -> Self {
-        self.observer_link_id = Some(observer_link_id.into());
-        self
-    }
-}
 
 /// The ordered, duplicate-free member set of one observer slot, sized against
 /// the slot's declared `cardinality` by the planner. Order is the plan's:
@@ -190,6 +173,43 @@ impl DuplicateObservationTarget {
 pub struct ObservationTargets(Vec<ObservationTarget>);
 
 impl ObservationTargets {
+    /// Ordered construction from an already-collected member list, rejecting
+    /// duplicates. The single construction gate: the goal decoder delegates
+    /// here, and the launcher validator calls it when it materializes a slot's
+    /// set, so every boundary rejects the same sets with the same error.
+    pub fn new(
+        observer_link_id: &str,
+        targets: Vec<ObservationTarget>,
+    ) -> std::result::Result<Self, DuplicateObservationTarget> {
+        // The first duplicated member in plan order names the error.
+        let mut seen = HashSet::with_capacity(targets.len());
+        if let Some(duplicate) = targets.iter().find(|target| !seen.insert(*target)) {
+            return Err(DuplicateObservationTarget {
+                observer_link_id: observer_link_id.to_string(),
+                target: duplicate.clone(),
+            });
+        }
+        Ok(Self(targets))
+    }
+
+    /// Materializes a planner's per-slot member lists into the map a goal
+    /// carries. Both planners (the launcher and the CLI preflight) group their
+    /// validated plan this way, so the invariant they lean on — the launcher
+    /// validator already rejected duplicates within a slot, making one here a
+    /// planner bug rather than a user error — is asserted once, here.
+    pub fn slots_from_plan(
+        members: BTreeMap<String, Vec<ObservationTarget>>,
+    ) -> BTreeMap<String, ObservationTargets> {
+        members
+            .into_iter()
+            .map(|(link_id, targets)| {
+                let targets = Self::new(&link_id, targets)
+                    .expect("plan members are duplicate-free by validation");
+                (link_id, targets)
+            })
+            .collect()
+    }
+
     pub fn as_slice(&self) -> &[ObservationTarget] {
         &self.0
     }
@@ -205,36 +225,12 @@ impl ObservationTargets {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-
-    pub fn first(&self) -> Option<&ObservationTarget> {
-        self.0.first()
-    }
 }
 
 /// A one-member set, for `cardinality: "one"` slots and tests.
 impl From<ObservationTarget> for ObservationTargets {
     fn from(target: ObservationTarget) -> Self {
         Self(vec![target])
-    }
-}
-
-/// Ordered construction from an already-collected member list, rejecting
-/// duplicates. The single construction gate: the goal decoder delegates here,
-/// and the launcher validator calls it when it materializes a slot's set, so
-/// every boundary rejects the same sets with the same error.
-impl TryFrom<Vec<ObservationTarget>> for ObservationTargets {
-    type Error = DuplicateObservationTarget;
-
-    fn try_from(targets: Vec<ObservationTarget>) -> std::result::Result<Self, Self::Error> {
-        // The first duplicated member in plan order names the error.
-        let mut seen = HashSet::with_capacity(targets.len());
-        if let Some(duplicate) = targets.iter().find(|target| !seen.insert(*target)) {
-            return Err(DuplicateObservationTarget {
-                observer_link_id: None,
-                target: duplicate.clone(),
-            });
-        }
-        Ok(Self(targets))
     }
 }
 
@@ -624,11 +620,9 @@ fn fill_observation_requests(
 
 /// Inverse of [`fill_observation_requests`].
 ///
-/// Rejects the removed single-source shape by name: an observer slot carries a
-/// member set now, so a filled tombstone means the sender predates observer
-/// cardinality and the pairing it asked for would be silently dropped. Empty
-/// member sets and duplicates (of a member within a slot, or of a slot within
-/// the goal) are refused for the same reason the writer never produces them.
+/// Empty member sets and duplicates (of a member within a slot, or of a slot
+/// within the goal) are refused for the same reason the writer never produces
+/// them: each would silently drop a pairing the plan named.
 fn read_observation_requests(
     list: capnp::struct_list::Reader<'_, node_capnp::observation_request::Owned>,
 ) -> Result<BTreeMap<String, ObservationTargets>> {
@@ -639,15 +633,6 @@ fn read_observation_requests(
             observation.get_observer_link_id()?.to_str()?,
             "NodeRunGoal observation request observer_link_id",
         )?;
-        if observation.has_removed_source() || observation.has_removed_source_link_id() {
-            return Err(crate::Error::Decoding(format!(
-                "NodeRunGoal observation request for slot `{observer_link_id}` uses the removed \
-                 single-source shape; since the observer-cardinality release an observer slot \
-                 carries an ordered member LIST (a `cardinality: \"one\"` slot carries a \
-                 one-member list). The daemon, CLI, generated bindings, and node runtime must be \
-                 upgraded together"
-            )));
-        }
         let members = observation.get_targets()?;
         if members.is_empty() {
             return Err(crate::Error::Decoding(format!(
@@ -671,9 +656,8 @@ fn read_observation_requests(
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let targets = ObservationTargets::try_from(targets).map_err(|duplicate| {
-            crate::Error::Decoding(duplicate.on_slot(&observer_link_id).to_string())
-        })?;
+        let targets = ObservationTargets::new(&observer_link_id, targets)
+            .map_err(|duplicate| crate::Error::Decoding(duplicate.to_string()))?;
         if observations
             .insert(observer_link_id.clone(), targets)
             .is_some()
@@ -1020,10 +1004,13 @@ mod tests {
     /// a deployment can associate member N with its own Nth command slot.
     #[test]
     fn node_run_goal_roundtrip_multi_member_observation_preserves_order() {
-        let targets = ObservationTargets::try_from(vec![
-            ObservationTarget::new("follower_2", "joint", "cn-local"),
-            ObservationTarget::new("follower_1", "joint", "cn-atlas-h100"),
-        ])
+        let targets = ObservationTargets::new(
+            "observed_joints",
+            vec![
+                ObservationTarget::new("follower_2", "joint", "cn-local"),
+                ObservationTarget::new("follower_1", "joint", "cn-atlas-h100"),
+            ],
+        )
         .expect("distinct members");
         let goal = NodeRunGoal::new(plan("commander_1"), "commander", "v1", 0)
             .with_planned_observations(
@@ -1048,16 +1035,19 @@ mod tests {
     /// and the construction gate is the same one the launcher validator uses.
     #[test]
     fn observation_targets_reject_a_repeated_member() {
-        let duplicate = ObservationTargets::try_from(vec![
-            ObservationTarget::new("follower_1", "joint", "cn-local"),
-            ObservationTarget::new("follower_1", "joint", "cn-local"),
-        ])
+        let duplicate = ObservationTargets::new(
+            "observed_joints",
+            vec![
+                ObservationTarget::new("follower_1", "joint", "cn-local"),
+                ObservationTarget::new("follower_1", "joint", "cn-local"),
+            ],
+        )
         .expect_err("a repeated member must be rejected");
         assert_eq!(
             duplicate.target,
             ObservationTarget::new("follower_1", "joint", "cn-local")
         );
-        let message = duplicate.on_slot("observed_joints").to_string();
+        let message = duplicate.to_string();
         assert!(
             message.contains("observed_joints") && message.contains("follower_1/joint@cn-local"),
             "the message names the slot and the repeated member: {message}"
@@ -1065,10 +1055,13 @@ mod tests {
 
         // The same source instance under a DIFFERENT source slot is a
         // different pairing, and a legitimate second member.
-        ObservationTargets::try_from(vec![
-            ObservationTarget::new("follower_1", "joint", "cn-local"),
-            ObservationTarget::new("follower_1", "gripper", "cn-local"),
-        ])
+        ObservationTargets::new(
+            "observed_joints",
+            vec![
+                ObservationTarget::new("follower_1", "joint", "cn-local"),
+                ObservationTarget::new("follower_1", "gripper", "cn-local"),
+            ],
+        )
         .expect("distinct source slots are distinct members");
     }
 
@@ -1193,36 +1186,6 @@ mod tests {
             fill(goal.init_planned_observations(request_count));
         }
         crate::encoding::encode_message(&builder).expect("encode")
-    }
-
-    /// A sender still filling the removed single-source fields is refused by
-    /// name rather than having the pairing it asked for silently dropped: the
-    /// goal boundary is where CLI/daemon version skew across the
-    /// observer-cardinality break becomes visible.
-    #[test]
-    fn node_run_goal_decode_rejects_the_removed_single_source_shape() {
-        let encoded = goal_with_raw_observations(
-            |mut list| {
-                let mut request = list.reborrow().get(0);
-                request.set_observer_link_id("observed_arm");
-                request.set_removed_source_link_id("controller");
-                let mut source = request.init_removed_source();
-                source.set_core_node("cn-local");
-                source.set_instance_id("arm_1");
-            },
-            1,
-        );
-        let error =
-            NodeRunGoal::decode(&encoded).expect_err("the removed single-source shape must fail");
-        let message = error.to_string();
-        assert!(
-            message.contains("observed_arm") && message.contains("removed single-source shape"),
-            "the message names the slot and the removed shape: {message}"
-        );
-        assert!(
-            message.contains("upgraded together"),
-            "the message must name the version gap: {message}"
-        );
     }
 
     /// An empty member list is never written (a slot that observes nothing is
