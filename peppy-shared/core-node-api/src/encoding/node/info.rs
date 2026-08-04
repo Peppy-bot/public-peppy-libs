@@ -365,7 +365,6 @@ mod tests {
                     pairing_name: "arm_link".to_string(),
                     pairing_tag: "v1".to_string(),
                     role: "controller".to_string(),
-                    optional: false,
                     binding: config::runtime::PairingSlotBinding::Paired {
                         peer: ProducerRef::new("core_a", "arm_1"),
                         peer_link_id: "controller".to_string(),
@@ -378,7 +377,6 @@ mod tests {
                     pairing_name: "gripper_link".to_string(),
                     pairing_tag: "v1".to_string(),
                     role: "controller".to_string(),
-                    optional: true,
                     binding: config::runtime::PairingSlotBinding::Unpaired,
                 },
             ),

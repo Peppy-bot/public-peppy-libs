@@ -991,11 +991,12 @@ impl PyNodeRunner {
         })
     }
 
-    /// Handle onto the observer slot declared at `link_id` in
-    /// `depends_on.pairing_observers`:
-    /// `observation_slot(link_id).source()` returns the resolved source once
+    /// Handle onto the `cardinality: "one"` observer slot declared at `link_id`
+    /// in `depends_on.pairing_observers`:
+    /// `observation_slot(link_id).source()` returns the observed source once
     /// the daemon has delivered it. Raises `ValueError` if the manifest
-    /// declares no such observer slot.
+    /// declares no such observer slot, and panics if it declares one with a
+    /// multi-member cardinality, which is read through `observation_slot_set`.
     fn observation_slot(&self, link_id: &str) -> PyResult<crate::messaging::PyObservationSlot> {
         self.inner
             .observation_slot(link_id)
@@ -1003,12 +1004,29 @@ impl PyNodeRunner {
             .map_err(crate::messaging::to_py_err)
     }
 
-    /// Subscribe to one topic emitted by an observer slot's source. Spliced by
-    /// the generated `peppygen.paired_topics.<link_id>.<topic>.subscribe` call
-    /// sites of observer modules; `pairing_name` / `pairing_tag` / `topic` come
-    /// from the pairing doc via codegen constants. Each message is yielded as a
-    /// `(producer, message)` tuple and delivery follows the source instance's
-    /// lifecycle.
+    /// Handle onto the multi-member observer slot declared at `link_id` in
+    /// `depends_on.pairing_observers` (a `one_or_more` or `zero_or_more` slot):
+    /// `observation_slot_set(link_id).sources()` returns every pairing it
+    /// currently observes, in plan order. Raises `ValueError` if the manifest
+    /// declares no such observer slot, and panics if it declares one with
+    /// `cardinality: "one"`, which is read through `observation_slot`.
+    fn observation_slot_set(
+        &self,
+        link_id: &str,
+    ) -> PyResult<crate::messaging::PyObservationSlotSet> {
+        self.inner
+            .observation_slot_set(link_id)
+            .map(|slot| crate::messaging::PyObservationSlotSet { inner: slot })
+            .map_err(crate::messaging::to_py_err)
+    }
+
+    /// Subscribe to one topic emitted by an observer slot's sources, for every
+    /// cardinality. Spliced by the generated
+    /// `peppygen.paired_topics.<link_id>.<topic>.subscribe` call sites of
+    /// observer modules; `pairing_name` / `pairing_tag` / `topic` come from the
+    /// pairing doc via codegen constants. Messages from every member of the slot
+    /// fan into one stream, each yielded as a `(producer, message)` tuple, and
+    /// delivery follows each source instance's lifecycle.
     fn subscribe_observed<'py>(
         &self,
         py: Python<'py>,

@@ -370,16 +370,26 @@ struct RemotePeerPairing {
 struct ObservationRequest {
     # The starting node's own observer-slot link_id.
     observerLinkId @0 :Text;
-    # The source instance whose role topics this slot observes. A remote source
-    # subscribes identically to a local one; what differs is that its lifecycle
-    # transitions reach the observing daemon as notifications from the source's
-    # own daemon rather than from local lifecycle events.
-    source @1 :InstanceAddress;
+    # The pairings this slot observes, in the order the plan lists them
+    # (launcher array order, or `--link` occurrence order). Sized against the
+    # slot's declared cardinality by the planner. Never empty: a
+    # `zero_or_more` slot that observes nothing carries no ObservationRequest
+    # at all.
+    targets @1 :List(ObservationMember);
+}
+
+# One pairing an observer slot taps.
+struct ObservationMember {
+    # The source instance whose role topics this member observes. A remote
+    # source subscribes identically to a local one; what differs is that its
+    # lifecycle transitions reach the observing daemon as notifications from
+    # the source's own daemon rather than from local lifecycle events.
+    source @0 :InstanceAddress;
     # The source-side participant slot link_id: the segment the source
     # publishes its observed role topics under, and the third element of the
     # observer's fully-pinned subscription. Always resolved by the planner (the
     # CLI preflight or the launcher), never empty.
-    sourceLinkId @2 :Text;
+    sourceLinkId @1 :Text;
 }
 
 struct NodeRunGoalResponse {

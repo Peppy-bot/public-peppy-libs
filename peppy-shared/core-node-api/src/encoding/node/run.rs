@@ -1,6 +1,6 @@
 //! Encoding types for the NodeRun action (streaming version with feedback).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use capnp::message::Builder;
@@ -97,12 +97,13 @@ impl std::fmt::Display for PairTarget {
     }
 }
 
-/// One resolved observer request carried by [`NodeRunGoal::planned_observations`],
-/// keyed in the goal by the starting node's own observer-slot link_id: the
-/// source instance the slot taps and the source-side participant slot the
-/// source publishes the observed role under. Unlike a [`PairTarget`] the source
-/// slot is always resolved (the planner fills it).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One pairing an observer slot taps, carried by
+/// [`NodeRunGoal::planned_observations`]: the source instance and the
+/// source-side participant slot the source publishes the observed role under.
+/// Unlike a [`PairTarget`] the source slot is always resolved (the planner
+/// fills it). The pair of the two fields is the member's identity within its
+/// slot.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ObservationTarget {
     /// The source instance, addressed for the same self-describing-placement
     /// reason as [`PairTarget::peer`]. A remote source subscribes identically
@@ -123,6 +124,122 @@ impl ObservationTarget {
             source: ProducerRef::new(source_core_node, source_instance_id),
             source_link_id: source_link_id.into(),
         }
+    }
+}
+
+impl std::fmt::Display for ObservationTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}/{}@{}",
+            self.source.instance_id, self.source_link_id, self.source.core_node
+        )
+    }
+}
+
+/// A member repeated inside one observer slot's target set, named by the
+/// identity that repeated. Rejected rather than deduplicated: the same pairing
+/// listed twice means the plan resolved two launcher entries onto one source
+/// slot, which is a planning mistake, not a request for two subscriptions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DuplicateObservationTarget {
+    pub observer_link_id: String,
+    pub target: ObservationTarget,
+}
+
+impl std::fmt::Display for DuplicateObservationTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Duplicate observation target `{}` on observer slot `{}` — an observed pairing may \
+             appear only once in a slot's member set",
+            self.target, self.observer_link_id
+        )
+    }
+}
+
+impl std::error::Error for DuplicateObservationTarget {}
+
+/// The ordered, duplicate-free member set of one observer slot, sized against
+/// the slot's declared `cardinality` by the planner. Order is the plan's:
+/// launcher array order, or `--link` occurrence order, preserved end to end so
+/// the node's `sources()` matches what the deployment wrote. Mirrors
+/// [`config::runtime::BoundProducers`] on the producer-binding side, and like
+/// it rejects duplicates rather than removing or reordering them.
+///
+/// Never empty on the wire: a `zero_or_more` slot that observes nothing has no
+/// entry in [`NodeRunGoal::planned_observations`] at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservationTargets(Vec<ObservationTarget>);
+
+impl ObservationTargets {
+    /// Ordered construction from an already-collected member list, rejecting
+    /// duplicates. The single construction gate: the goal decoder delegates
+    /// here, and the launcher validator calls it when it materializes a slot's
+    /// set, so every boundary rejects the same sets with the same error.
+    pub fn new(
+        observer_link_id: &str,
+        targets: Vec<ObservationTarget>,
+    ) -> std::result::Result<Self, DuplicateObservationTarget> {
+        // The first duplicated member in plan order names the error.
+        let mut seen = HashSet::with_capacity(targets.len());
+        if let Some(duplicate) = targets.iter().find(|target| !seen.insert(*target)) {
+            return Err(DuplicateObservationTarget {
+                observer_link_id: observer_link_id.to_string(),
+                target: duplicate.clone(),
+            });
+        }
+        Ok(Self(targets))
+    }
+
+    /// Materializes a planner's per-slot member lists into the map a goal
+    /// carries. Both planners (the launcher and the CLI preflight) group their
+    /// validated plan this way, so the invariant they lean on — the launcher
+    /// validator already rejected duplicates within a slot, making one here a
+    /// planner bug rather than a user error — is asserted once, here.
+    pub fn slots_from_plan(
+        members: BTreeMap<String, Vec<ObservationTarget>>,
+    ) -> BTreeMap<String, ObservationTargets> {
+        members
+            .into_iter()
+            .map(|(link_id, targets)| {
+                let targets = Self::new(&link_id, targets)
+                    .expect("plan members are duplicate-free by validation");
+                (link_id, targets)
+            })
+            .collect()
+    }
+
+    pub fn as_slice(&self) -> &[ObservationTarget] {
+        &self.0
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, ObservationTarget> {
+        self.0.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// A one-member set, for `cardinality: "one"` slots and tests.
+impl From<ObservationTarget> for ObservationTargets {
+    fn from(target: ObservationTarget) -> Self {
+        Self(vec![target])
+    }
+}
+
+impl<'a> IntoIterator for &'a ObservationTargets {
+    type Item = &'a ObservationTarget;
+    type IntoIter = std::slice::Iter<'a, ObservationTarget>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
     }
 }
 
@@ -170,11 +287,13 @@ pub struct NodeRunGoal {
     pub covered_pairs: BTreeMap<String, PairTarget>,
     /// Observer requests from `--link <observer_link>@<source>[/<source_link>]`
     /// or a launch plan, keyed by the starting node's own observer-slot
-    /// link_id. Commands to the daemon, not resolved config: the daemon
-    /// registers each with its observation coordinator BEFORE the instance
-    /// commits to Running, so the source pin is delivered the moment both are
-    /// up and re-delivered whenever the source restarts.
-    pub planned_observations: BTreeMap<String, ObservationTarget>,
+    /// link_id and holding that slot's whole ordered member set. Commands to
+    /// the daemon, not resolved config: the daemon registers each with its
+    /// observation coordinator BEFORE the instance commits to Running, so
+    /// every member's pin is delivered the moment both are up and re-delivered
+    /// whenever a member restarts. A slot that observes nothing carries no
+    /// entry.
+    pub planned_observations: BTreeMap<String, ObservationTargets>,
     /// See [`crate::encoding::NodeAddGoal::launch_id`].
     pub launch_id: Option<String>,
     /// Core nodes that must hear about this instance's lifecycle but that the
@@ -237,7 +356,7 @@ impl NodeRunGoal {
 
     pub fn with_planned_observations(
         mut self,
-        planned_observations: BTreeMap<String, ObservationTarget>,
+        planned_observations: BTreeMap<String, ObservationTargets>,
     ) -> Self {
         self.planned_observations = planned_observations;
         self
@@ -481,37 +600,73 @@ fn read_instance_address(
     ))
 }
 
-/// Writes an `observer_link_id -> ObservationTarget` map into an initialized
+/// Writes an `observer_link_id -> ObservationTargets` map into an initialized
 /// `List(ObservationRequest)` builder ([`NodeRunGoal::planned_observations`]).
 fn fill_observation_requests(
     mut list: capnp::struct_list::Builder<'_, node_capnp::observation_request::Owned>,
-    observations: &BTreeMap<String, ObservationTarget>,
+    observations: &BTreeMap<String, ObservationTargets>,
 ) {
-    for (idx, (observer_link_id, target)) in observations.iter().enumerate() {
+    for (idx, (observer_link_id, targets)) in observations.iter().enumerate() {
         let mut observation = list.reborrow().get(idx as u32);
         observation.set_observer_link_id(observer_link_id);
-        observation.set_source_link_id(&target.source_link_id);
-        write_instance_address(observation.init_source(), &target.source);
+        let mut members = observation.init_targets(targets.len() as u32);
+        for (member_idx, target) in targets.iter().enumerate() {
+            let mut member = members.reborrow().get(member_idx as u32);
+            member.set_source_link_id(&target.source_link_id);
+            write_instance_address(member.init_source(), &target.source);
+        }
     }
 }
 
 /// Inverse of [`fill_observation_requests`].
+///
+/// Empty member sets and duplicates (of a member within a slot, or of a slot
+/// within the goal) are refused for the same reason the writer never produces
+/// them: each would silently drop a pairing the plan named.
 fn read_observation_requests(
     list: capnp::struct_list::Reader<'_, node_capnp::observation_request::Owned>,
-) -> Result<BTreeMap<String, ObservationTarget>> {
-    let mut observations = BTreeMap::new();
+) -> Result<BTreeMap<String, ObservationTargets>> {
+    let mut observations: BTreeMap<String, ObservationTargets> = BTreeMap::new();
     for idx in 0..list.len() {
         let observation = list.get(idx);
-        observations.insert(
-            observation.get_observer_link_id()?.to_str()?.to_owned(),
-            ObservationTarget {
-                source: read_instance_address(
-                    observation.get_source()?,
-                    "NodeRunGoal observation request",
-                )?,
-                source_link_id: observation.get_source_link_id()?.to_str()?.to_owned(),
-            },
-        );
+        let observer_link_id = required_text(
+            observation.get_observer_link_id()?.to_str()?,
+            "NodeRunGoal observation request observer_link_id",
+        )?;
+        let members = observation.get_targets()?;
+        if members.is_empty() {
+            return Err(crate::Error::Decoding(format!(
+                "NodeRunGoal observation request for slot `{observer_link_id}` carries no \
+                 targets: a slot that observes nothing is omitted from planned_observations \
+                 rather than sent empty"
+            )));
+        }
+        let targets = (0..members.len())
+            .map(|member_idx| {
+                let member = members.get(member_idx);
+                Ok(ObservationTarget {
+                    source: read_instance_address(
+                        member.get_source()?,
+                        "NodeRunGoal observation request",
+                    )?,
+                    source_link_id: required_text(
+                        member.get_source_link_id()?.to_str()?,
+                        "NodeRunGoal observation request source_link_id",
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let targets = ObservationTargets::new(&observer_link_id, targets)
+            .map_err(|duplicate| crate::Error::Decoding(duplicate.to_string()))?;
+        if observations
+            .insert(observer_link_id.clone(), targets)
+            .is_some()
+        {
+            return Err(crate::Error::Decoding(format!(
+                "NodeRunGoal carries two observation requests for slot `{observer_link_id}`: a \
+                 slot's whole member set travels in one request"
+            )));
+        }
     }
     Ok(observations)
 }
@@ -815,7 +970,7 @@ mod tests {
             .with_planned_observations(
                 [(
                     "observed_arm".to_owned(),
-                    ObservationTarget::new("arm_1", "controller", "cn-local"),
+                    ObservationTarget::new("arm_1", "controller", "cn-local").into(),
                 )]
                 .into_iter()
                 .collect(),
@@ -839,9 +994,75 @@ mod tests {
             PairTarget::pinned("cmd_1", "left_arm", "cn-local")
         );
         assert_eq!(
-            decoded.planned_observations["observed_arm"],
-            ObservationTarget::new("arm_1", "controller", "cn-local")
+            decoded.planned_observations["observed_arm"].as_slice(),
+            [ObservationTarget::new("arm_1", "controller", "cn-local")]
         );
+    }
+
+    /// A multi-member observer slot travels as one request, and the order the
+    /// plan wrote survives the wire: the node's `sources()` is that order, so
+    /// a deployment can associate member N with its own Nth command slot.
+    #[test]
+    fn node_run_goal_roundtrip_multi_member_observation_preserves_order() {
+        let targets = ObservationTargets::new(
+            "observed_joints",
+            vec![
+                ObservationTarget::new("follower_2", "joint", "cn-local"),
+                ObservationTarget::new("follower_1", "joint", "cn-atlas-h100"),
+            ],
+        )
+        .expect("distinct members");
+        let goal = NodeRunGoal::new(plan("commander_1"), "commander", "v1", 0)
+            .with_planned_observations(
+                [("observed_joints".to_owned(), targets.clone())]
+                    .into_iter()
+                    .collect(),
+            );
+        let decoded = NodeRunGoal::decode(&goal.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, goal);
+        assert_eq!(
+            decoded.planned_observations["observed_joints"].as_slice(),
+            [
+                ObservationTarget::new("follower_2", "joint", "cn-local"),
+                ObservationTarget::new("follower_1", "joint", "cn-atlas-h100"),
+            ],
+            "plan order is not sorted away on the wire"
+        );
+    }
+
+    /// The same pairing may not be observed twice through one slot: two
+    /// launcher entries resolving onto one source slot is a planning mistake,
+    /// and the construction gate is the same one the launcher validator uses.
+    #[test]
+    fn observation_targets_reject_a_repeated_member() {
+        let duplicate = ObservationTargets::new(
+            "observed_joints",
+            vec![
+                ObservationTarget::new("follower_1", "joint", "cn-local"),
+                ObservationTarget::new("follower_1", "joint", "cn-local"),
+            ],
+        )
+        .expect_err("a repeated member must be rejected");
+        assert_eq!(
+            duplicate.target,
+            ObservationTarget::new("follower_1", "joint", "cn-local")
+        );
+        let message = duplicate.to_string();
+        assert!(
+            message.contains("observed_joints") && message.contains("follower_1/joint@cn-local"),
+            "the message names the slot and the repeated member: {message}"
+        );
+
+        // The same source instance under a DIFFERENT source slot is a
+        // different pairing, and a legitimate second member.
+        ObservationTargets::new(
+            "observed_joints",
+            vec![
+                ObservationTarget::new("follower_1", "joint", "cn-local"),
+                ObservationTarget::new("follower_1", "gripper", "cn-local"),
+            ],
+        )
+        .expect("distinct source slots are distinct members");
     }
 
     /// The coordinator's verdict about a peer this daemon cannot inspect is
@@ -910,7 +1131,7 @@ mod tests {
         let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 0).with_planned_observations(
             [(
                 "observed".to_owned(),
-                ObservationTarget::new("arm_1", "controller", ""),
+                ObservationTarget::new("arm_1", "controller", "").into(),
             )]
             .into_iter()
             .collect(),
@@ -944,6 +1165,98 @@ mod tests {
         assert!(
             error.to_string().contains("assembles runtime configs"),
             "the message must name the version gap, got: {error}"
+        );
+    }
+
+    /// Encodes a goal whose observation requests are hand-built, so the
+    /// decoder's shape rules can be exercised against messages the writer
+    /// never produces.
+    fn goal_with_raw_observations(
+        fill: impl FnOnce(capnp::struct_list::Builder<'_, node_capnp::observation_request::Owned>),
+        request_count: u32,
+    ) -> Payload {
+        let mut builder = Builder::new_default();
+        {
+            let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
+            goal.set_instance_plan_json5(
+                serde_json5::to_string(&plan("inst_1")).expect("serialize plan"),
+            );
+            goal.set_node_name("node");
+            goal.set_tag("tag");
+            fill(goal.init_planned_observations(request_count));
+        }
+        crate::encoding::encode_message(&builder).expect("encode")
+    }
+
+    /// An empty member list is never written (a slot that observes nothing is
+    /// omitted), so decoding one means the sender disagrees about that rule.
+    #[test]
+    fn node_run_goal_decode_rejects_an_empty_observation_target_list() {
+        let encoded = goal_with_raw_observations(
+            |mut list| {
+                let mut request = list.reborrow().get(0);
+                request.set_observer_link_id("observed_grippers");
+                request.init_targets(0);
+            },
+            1,
+        );
+        let error = NodeRunGoal::decode(&encoded).expect_err("an empty member list must fail");
+        assert!(
+            error.to_string().contains("observed_grippers")
+                && error.to_string().contains("carries no targets"),
+            "got: {error}"
+        );
+    }
+
+    /// A slot's whole member set travels in one request, so two requests for
+    /// one slot would mean one of them silently wins the map insert.
+    #[test]
+    fn node_run_goal_decode_rejects_two_requests_for_one_slot() {
+        let encoded = goal_with_raw_observations(
+            |mut list| {
+                for (idx, instance) in ["follower_1", "follower_2"].into_iter().enumerate() {
+                    let mut request = list.reborrow().get(idx as u32);
+                    request.set_observer_link_id("observed_joints");
+                    let mut member = request.init_targets(1).get(0);
+                    member.set_source_link_id("joint");
+                    let mut source = member.init_source();
+                    source.set_core_node("cn-local");
+                    source.set_instance_id(instance);
+                }
+            },
+            2,
+        );
+        let error = NodeRunGoal::decode(&encoded).expect_err("a repeated slot must fail");
+        assert!(
+            error.to_string().contains("two observation requests"),
+            "got: {error}"
+        );
+    }
+
+    /// The duplicate gate holds on the wire too, not only where the launcher
+    /// builds the set.
+    #[test]
+    fn node_run_goal_decode_rejects_a_repeated_member_within_a_slot() {
+        let encoded = goal_with_raw_observations(
+            |mut list| {
+                let mut request = list.reborrow().get(0);
+                request.set_observer_link_id("observed_joints");
+                let mut members = request.init_targets(2);
+                for idx in 0..2 {
+                    let mut member = members.reborrow().get(idx);
+                    member.set_source_link_id("joint");
+                    let mut source = member.init_source();
+                    source.set_core_node("cn-local");
+                    source.set_instance_id("follower_1");
+                }
+            },
+            1,
+        );
+        let error = NodeRunGoal::decode(&encoded).expect_err("a repeated member must fail");
+        assert!(
+            error.to_string().contains("Duplicate observation target")
+                && error.to_string().contains("observed_joints"),
+            "got: {error}"
         );
     }
 

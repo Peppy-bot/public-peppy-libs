@@ -34,9 +34,10 @@ pub use node::{
     builder::NodeBuildGoalResponse, builder::NodeBuildResult, info::NodeInfo,
     info::NodeInfoRequest, info::NodeInfoResponse, info::NodeInstanceInfo, init::NodeInitRequest,
     init::NodeInitResponse, remove::NodeRemoveRequest, remove::NodeRemoveResponse,
-    run::NodeRunFeedback, run::NodeRunGoal, run::NodeRunGoalResponse, run::NodeRunResult,
-    run::ObservationTarget, run::PairTarget, run::RemotePeerPairing, stop::NodeStopRequest,
-    stop::NodeStopResponse, sync::NodeSyncRequest, sync::NodeSyncResponse, sync::RepoResolvedEntry,
+    run::DuplicateObservationTarget, run::NodeRunFeedback, run::NodeRunGoal,
+    run::NodeRunGoalResponse, run::NodeRunResult, run::ObservationTarget, run::ObservationTargets,
+    run::PairTarget, run::RemotePeerPairing, stop::NodeStopRequest, stop::NodeStopResponse,
+    sync::NodeSyncRequest, sync::NodeSyncResponse, sync::RepoResolvedEntry,
 };
 pub use repo::{
     RepoAddRequest, RepoAddResponse, RepoExcludeRequest, RepoExcludeResponse, RepoItemKind,

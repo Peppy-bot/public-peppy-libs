@@ -645,7 +645,7 @@ mod tests {
                 tag: "v1",
                 depends_on: {
                     pairings: [
-                        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true },
+                        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" },
                     ],
                 },
             },
@@ -661,31 +661,7 @@ mod tests {
         assert_eq!(pairing.name.as_str(), "arm_link");
         assert_eq!(pairing.role, "arm");
         assert_eq!(pairing.link_id, "controller");
-        assert!(pairing.optional);
         assert!(pairing.sha256.is_none());
-    }
-
-    #[test]
-    fn test_pairing_optional_defaults_to_false() {
-        let json5 = r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "arm_controller",
-                tag: "v1",
-                depends_on: {
-                    pairings: [
-                        { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
-                    ],
-                },
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["./bin"],
-            },
-        }"#;
-        let config = NodeConfigParser::from_content(json5).unwrap();
-        let deps = config.manifest.depends_on.unwrap();
-        assert!(!deps.pairings[0].optional);
     }
 
     #[test]

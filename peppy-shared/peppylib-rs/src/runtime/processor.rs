@@ -5,7 +5,7 @@ use crate::messaging::{ObservationState, PeerPin, PeerPinState};
 use config::{
     AnyType, NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
-    node::{NodeConfig, load_standalone_node_config},
+    node::{Cardinality, NodeConfig, PairingObserverDependency, load_standalone_node_config},
     runtime::{Name, NodeInstanceConfig, PairingSlotBinding, RuntimeConfig},
     validate_node_arguments,
 };
@@ -43,6 +43,12 @@ pub struct Processor {
     /// the channel values over the `observation_update` service, while per-slot
     /// `ObservedTopicSubscription`s / `ObservationSlot`s observe them.
     observation_slots: Arc<BTreeMap<String, watch::Sender<ObservationState>>>,
+    /// Each observer slot's declared `cardinality`, keyed by link_id and read
+    /// from the same manifest entries that seed `observation_slots`. It types
+    /// the slot's accessor (`observation_slot` vs `observation_slot_set`); it
+    /// never gates a member count, because an observed set changes while the
+    /// node runs and no size holds across its lifetime.
+    observation_cardinalities: BTreeMap<String, Cardinality>,
 }
 
 impl Processor {
@@ -96,6 +102,7 @@ impl Processor {
         let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
         let observation_slots = build_observation_slots(&node_config);
+        let observation_cardinalities = build_observer_cardinalities(&node_config);
 
         Ok(Self {
             runtime_config,
@@ -103,6 +110,7 @@ impl Processor {
             bound_producers,
             pairing_slots,
             observation_slots,
+            observation_cardinalities,
         })
     }
 
@@ -199,6 +207,7 @@ impl Processor {
         let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
         let observation_slots = build_observation_slots(&node_config);
+        let observation_cardinalities = build_observer_cardinalities(&node_config);
 
         // Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a
         // slot as already-paired, standing in for the daemon's live
@@ -225,6 +234,7 @@ impl Processor {
             bound_producers,
             pairing_slots,
             observation_slots,
+            observation_cardinalities,
         })
     }
 
@@ -445,6 +455,15 @@ impl Processor {
         self.observation_slots.get(link_id).map(|tx| tx.subscribe())
     }
 
+    /// The `cardinality` the manifest declares for the observer slot at
+    /// `link_id`, or `None` when it declares no such slot. Types the slot's
+    /// accessor: `one` slots are read through
+    /// [`crate::runtime::NodeRunner::observation_slot`], the rest through
+    /// [`crate::runtime::NodeRunner::observation_slot_set`].
+    pub(crate) fn observation_slot_cardinality(&self, link_id: &str) -> Option<Cardinality> {
+        self.observation_cardinalities.get(link_id).copied()
+    }
+
     /// Shared handle to all observation-slot channels, handed to the pre-setup
     /// `observation_update` service listener.
     pub(crate) fn observation_slot_senders(
@@ -454,22 +473,41 @@ impl Processor {
     }
 }
 
+/// Every observer slot declared in `depends_on.pairing_observers`, as an
+/// iterator over the manifest entries that both seeders below key on.
+fn observer_deps(node_config: &NodeConfig) -> impl Iterator<Item = &PairingObserverDependency> {
+    node_config
+        .manifest
+        .depends_on
+        .iter()
+        .flat_map(|deps| &deps.pairing_observers)
+}
+
 /// Seed one watch channel per **observer** pairing slot declared in
 /// `depends_on.pairing_observers`, keyed by slot link_id, each initialized to
-/// [`ObservationState::unregistered`]. The resolved source pin, its generation,
-/// and its live status all arrive over the `observation_update` service after
-/// the instance commits, exactly as pairing pins arrive over `peer_update`.
+/// [`ObservationState::unregistered`]. The member set, each member's
+/// generation, and each member's live status all arrive over the
+/// `observation_update` service after the instance commits, exactly as pairing
+/// pins arrive over `peer_update`.
 fn build_observation_slots(
     node_config: &NodeConfig,
 ) -> Arc<BTreeMap<String, watch::Sender<ObservationState>>> {
-    let mut out = BTreeMap::new();
-    if let Some(deps) = node_config.manifest.depends_on.as_ref() {
-        for dep in &deps.pairing_observers {
-            let (tx, _rx) = watch::channel(ObservationState::unregistered());
-            out.insert(dep.link_id.clone(), tx);
-        }
-    }
-    Arc::new(out)
+    Arc::new(
+        observer_deps(node_config)
+            .map(|dep| {
+                let (tx, _rx) = watch::channel(ObservationState::unregistered());
+                (dep.link_id.clone(), tx)
+            })
+            .collect(),
+    )
+}
+
+/// Each observer slot's declared `cardinality`, keyed by the same link_ids
+/// [`build_observation_slots`] seeds.
+fn build_observer_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Cardinality> {
+    observer_deps(node_config)
+        .map(|dep| (dep.link_id.clone(), dep.cardinality))
+        .collect()
 }
 
 /// Seed one watch channel per **participant** pairing slot declared in
@@ -1638,6 +1676,64 @@ mod tests {
         )
         .expect("missing zero_or_more entry should construct");
         assert!(processor.bound_producers("spare_cameras").is_empty());
+    }
+
+    /// Manifest fixture with one observer slot of each cardinality. Every
+    /// declared observer slot is consumed, which the manifest parser requires.
+    const OBSERVER_PEPPY_CONFIG: &str = r#"{
+        peppy_schema: "node/v1",
+        manifest: {
+            name: "consumer_node",
+            tag: "v1",
+            depends_on: {
+                pairing_observers: [
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "sole_arm" },
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "watched_arms", cardinality: "one_or_more" },
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "spare_arms", cardinality: "zero_or_more" }
+                ]
+            }
+        },
+        interfaces: {
+            topics: {
+                consumes: [
+                    { link_id: "sole_arm", name: "joint_states" },
+                    { link_id: "watched_arms", name: "joint_states" },
+                    { link_id: "spare_arms", name: "joint_states" }
+                ]
+            }
+        },
+        execution: { language: "rust", run_cmd: ["./target/debug/consumer_node"] },
+    }"#;
+
+    /// Observer slots carry no boot-config binding of any cardinality: the
+    /// daemon delivers each slot's member set live, so every slot starts empty
+    /// and construction never depends on a member being there.
+    #[test]
+    fn observer_slots_are_cardinality_typed_and_start_empty() {
+        let processor = daemon_processor_with_bindings(OBSERVER_PEPPY_CONFIG, None)
+            .expect("observer slots need no boot-config binding");
+
+        for (link_id, expected) in [
+            ("sole_arm", Cardinality::One),
+            ("watched_arms", Cardinality::OneOrMore),
+            ("spare_arms", Cardinality::ZeroOrMore),
+        ] {
+            assert_eq!(
+                processor.observation_slot_cardinality(link_id),
+                Some(expected),
+                "slot `{link_id}` must carry its declared cardinality"
+            );
+            let watch = processor
+                .observation_slot_watch(link_id)
+                .unwrap_or_else(|| panic!("slot `{link_id}` must have a channel"));
+            assert!(
+                watch.borrow().members.is_empty(),
+                "slot `{link_id}` starts with no members, whatever its cardinality"
+            );
+        }
+
+        assert_eq!(processor.observation_slot_cardinality("not_declared"), None);
+        assert!(processor.observation_slot_watch("not_declared").is_none());
     }
 
     /// Standalone runs enforce the same rules via

@@ -54,7 +54,8 @@ impl PeerSlot {
 
 /// The pairing slot kind for the shared [`slot_stream`] engine: a pairing slot
 /// follows the peer pin itself, so a re-pair to a new peer changes the pin and
-/// a clear removes it.
+/// a clear removes it. A pairing is strictly 1:1, so its followed set is empty
+/// while unpaired and holds exactly one pin once paired.
 ///
 /// [`slot_stream`]: crate::runtime::slot_stream
 pub(crate) struct PeerFollow;
@@ -63,8 +64,12 @@ impl FollowedSlot for PeerFollow {
     type State = PeerPinState;
     type Pin = PeerPin;
 
-    fn desired(state: &PeerPinState) -> Option<PeerPin> {
-        state.pin.clone()
+    fn desired(state: &PeerPinState) -> Vec<PeerPin> {
+        state.pin.clone().into_iter().collect()
+    }
+
+    fn is_followed(state: &PeerPinState, pin: &PeerPin) -> bool {
+        state.pin.as_ref() == Some(pin)
     }
 
     fn producer(pin: &PeerPin) -> &ProducerRef {

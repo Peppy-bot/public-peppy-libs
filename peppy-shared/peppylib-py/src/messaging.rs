@@ -5,7 +5,9 @@ mod services;
 mod target;
 mod topics;
 
-pub(crate) use observation::{PyObservationSlot, PyObservedSource, PyObservedSubscription};
+pub(crate) use observation::{
+    PyObservationSlot, PyObservationSlotSet, PyObservedSource, PyObservedSubscription,
+};
 pub(crate) use pairing::{PyPeerInfo, PyPeerSlot, PyPeerSubscription};
 pub(crate) use target::{PyProducerRef, PySenderTarget};
 
@@ -269,6 +271,7 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     messaging_module.add_class::<PyPeerSubscription>()?;
     messaging_module.add_class::<PyObservedSource>()?;
     messaging_module.add_class::<PyObservationSlot>()?;
+    messaging_module.add_class::<PyObservationSlotSet>()?;
     messaging_module.add_class::<PyObservedSubscription>()?;
     services::register(&messaging_module)?;
     actions::register(&messaging_module)?;

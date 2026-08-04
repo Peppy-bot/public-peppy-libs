@@ -41,12 +41,13 @@ impl SlotUpdate for ObservationUpdateRequest {
         state.sequence
     }
 
+    /// Replace-wholesale: a delivery carries the slot's complete member set, so
+    /// members it omits are gone from the slot and the plan's order is the
+    /// order the slot holds.
     fn merge_into(&self, state: &mut ObservationState) -> bool {
         let new_state = ObservationState {
             sequence: self.sequence,
-            source_generation: self.source_generation,
-            source: self.source.clone(),
-            source_live: self.source_live,
+            members: self.members.clone(),
         };
         let changed = *state != new_state;
         *state = new_state;
@@ -55,10 +56,12 @@ impl SlotUpdate for ObservationUpdateRequest {
 
     fn log_detail(&self) -> String {
         format!(
-            "has_source={} source_generation={} source_live={}",
-            self.source.is_some(),
-            self.source_generation,
-            self.source_live
+            "members={} live={}",
+            self.members.len(),
+            self.members
+                .iter()
+                .filter(|member| member.source_live)
+                .count()
         )
     }
 }
@@ -84,7 +87,7 @@ pub async fn listen_for_observation_update(
 mod tests {
     use super::*;
     use crate::encoding::slot_update::SlotUpdateResponse;
-    use crate::messaging::{ObservationPin, ProducerRef};
+    use crate::messaging::{ObservationPin, ObservedMemberState, ProducerRef};
     use crate::services::slot_update::apply_slot_update;
     use std::collections::BTreeMap;
     use tokio::sync::watch;
@@ -106,31 +109,39 @@ mod tests {
             .collect()
     }
 
-    fn source(core: &str, inst: &str, source_link: &str) -> ObservationPin {
-        ObservationPin {
-            producer: ProducerRef::new(core, inst),
-            source_link_id: source_link.to_string(),
+    fn member(instance: &str, generation: u64, live: bool) -> ObservedMemberState {
+        ObservedMemberState {
+            source: ObservationPin {
+                producer: ProducerRef::new("core_a", instance),
+                source_link_id: "commander".to_string(),
+            },
+            source_generation: generation,
+            source_live: live,
         }
     }
 
     fn request(
         link_id: &str,
         sequence: u64,
-        source: Option<ObservationPin>,
-        source_generation: u64,
-        source_live: bool,
+        members: Vec<ObservedMemberState>,
     ) -> ObservationUpdateRequest {
         ObservationUpdateRequest {
             link_id: link_id.to_string(),
             sequence,
-            source,
-            source_generation,
-            source_live,
+            members,
         }
     }
 
+    fn instances(state: &ObservationState) -> Vec<String> {
+        state
+            .members
+            .iter()
+            .map(|m| m.source.producer.instance_id.clone())
+            .collect()
+    }
+
     #[test]
-    fn applies_source_then_advances_generation() {
+    fn applies_members_then_advances_one_generation_in_place() {
         let slots = slot_map(&["observed_arm"]);
         let watched = slots["observed_arm"].subscribe();
 
@@ -139,32 +150,88 @@ mod tests {
             &request(
                 "observed_arm",
                 10,
-                Some(source("core_a", "arm_1", "commander")),
-                5,
-                true,
+                vec![member("arm_2", 5, true), member("arm_1", 5, true)],
             ),
         );
         assert!(first.accepted);
         assert_eq!(
-            watched.borrow().source,
-            Some(source("core_a", "arm_1", "commander"))
+            instances(&watched.borrow()),
+            ["arm_2", "arm_1"],
+            "the delivery's order is the slot's order"
         );
-        assert_eq!(watched.borrow().source_generation, 5);
-        assert!(watched.borrow().source_live);
 
-        // A restart under the same identity advances the generation.
+        // One member restarting advances only its own generation, at its own
+        // position.
         let second = apply(
             &slots,
             &request(
                 "observed_arm",
                 11,
-                Some(source("core_a", "arm_1", "commander")),
-                6,
-                true,
+                vec![member("arm_2", 5, true), member("arm_1", 6, true)],
             ),
         );
         assert!(second.accepted);
-        assert_eq!(watched.borrow().source_generation, 6);
+        let state = watched.borrow().clone();
+        assert_eq!(instances(&state), ["arm_2", "arm_1"]);
+        assert_eq!(state.members[0].source_generation, 5);
+        assert_eq!(state.members[1].source_generation, 6);
+    }
+
+    /// A delivery is the whole set, so a member it omits leaves the slot and a
+    /// member it adds joins it. Nothing merges member-by-member.
+    #[test]
+    fn a_delivery_replaces_the_member_set_wholesale() {
+        let slots = slot_map(&["observed_arm"]);
+        let watched = slots["observed_arm"].subscribe();
+
+        apply(
+            &slots,
+            &request(
+                "observed_arm",
+                1,
+                vec![member("arm_1", 1, true), member("arm_2", 1, true)],
+            ),
+        );
+        apply(
+            &slots,
+            &request("observed_arm", 2, vec![member("arm_2", 1, true)]),
+        );
+        assert_eq!(instances(&watched.borrow()), ["arm_2"]);
+
+        apply(&slots, &request("observed_arm", 3, Vec::new()));
+        assert!(
+            watched.borrow().members.is_empty(),
+            "an empty delivery empties the slot"
+        );
+    }
+
+    /// A source going down keeps its member listed at its position; only the
+    /// liveness flag moves.
+    #[test]
+    fn a_down_source_stays_listed_with_liveness_cleared() {
+        let slots = slot_map(&["observed_arm"]);
+        let watched = slots["observed_arm"].subscribe();
+
+        apply(
+            &slots,
+            &request(
+                "observed_arm",
+                1,
+                vec![member("arm_1", 1, true), member("arm_2", 1, true)],
+            ),
+        );
+        apply(
+            &slots,
+            &request(
+                "observed_arm",
+                2,
+                vec![member("arm_1", 1, true), member("arm_2", 1, false)],
+            ),
+        );
+        let state = watched.borrow().clone();
+        assert_eq!(instances(&state), ["arm_1", "arm_2"]);
+        assert!(state.members[0].source_live);
+        assert!(!state.members[1].source_live);
     }
 
     #[test]
@@ -174,29 +241,17 @@ mod tests {
 
         apply(
             &slots,
-            &request(
-                "observed_arm",
-                20,
-                Some(source("core_a", "arm_1", "commander")),
-                5,
-                true,
-            ),
+            &request("observed_arm", 20, vec![member("arm_1", 5, true)]),
         );
         // A delayed earlier delivery arrives after the newer one.
         let response = apply(
             &slots,
-            &request(
-                "observed_arm",
-                19,
-                Some(source("core_a", "arm_1", "commander")),
-                4,
-                false,
-            ),
+            &request("observed_arm", 19, vec![member("arm_1", 4, false)]),
         );
         assert!(!response.accepted);
         assert!(response.stale_sequence);
         assert_eq!(
-            watched.borrow().source_generation,
+            watched.borrow().members[0].source_generation,
             5,
             "stale request must not roll the slot back"
         );
@@ -209,26 +264,14 @@ mod tests {
 
         apply(
             &slots,
-            &request(
-                "observed_arm",
-                5,
-                Some(source("core_a", "arm_1", "commander")),
-                1,
-                true,
-            ),
+            &request("observed_arm", 5, vec![member("arm_1", 1, true)]),
         );
         assert!(watched.has_changed().unwrap());
         watched.mark_unchanged();
 
         let retry = apply(
             &slots,
-            &request(
-                "observed_arm",
-                5,
-                Some(source("core_a", "arm_1", "commander")),
-                1,
-                true,
-            ),
+            &request("observed_arm", 5, vec![member("arm_1", 1, true)]),
         );
         assert!(retry.accepted);
         assert!(
@@ -242,13 +285,7 @@ mod tests {
         let slots = slot_map(&["observed_arm"]);
         let response = apply(
             &slots,
-            &request(
-                "observed_gripper",
-                1,
-                Some(source("core_a", "g_1", "commander")),
-                1,
-                true,
-            ),
+            &request("observed_gripper", 1, vec![member("g_1", 1, true)]),
         );
         assert!(!response.accepted);
         assert!(!response.stale_sequence);

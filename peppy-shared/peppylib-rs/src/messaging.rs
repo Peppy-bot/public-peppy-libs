@@ -23,13 +23,16 @@ pub use actions::{
     wrap_goal_payload, wrap_result_outcome,
 };
 pub use bound_set::NonEmptyProducers;
-pub use observation::{ObservationPin, ObservationState, ObservedSource};
+pub use observation::{ObservationPin, ObservationState, ObservedMemberState, ObservedSource};
 pub use pairing::{PeerInfo, PeerPin, PeerPinState};
 pub use presence::CoreNodePresenceMessenger;
 pub use services::{
     ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder, ServiceTarget,
 };
 pub use topics::{BoundSetSubscription, Subscription, TopicMessenger, TopicPublisher};
+// The fan-in rule every multi-source consumer merges through, shared with the
+// pinned-slot engine in `crate::runtime::slot_stream`.
+pub(crate) use topics::recv_first_ready;
 
 // Fully-qualified producer address, re-exported from the config model: the
 // wire addresses a producer by the `(core_node, instance_id)` pair. Every
