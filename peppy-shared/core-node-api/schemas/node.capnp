@@ -273,16 +273,17 @@ struct NodeRunGoal {
     # daemon validates and reserves each pair BEFORE spawning and delivers it
     # live after the instance commits to Running.
     requestedPairs @5 :List(PairRequest);
-    # Pairing slot link_ids deliberately left unpaired via `--defer-pair` /
-    # the launcher's `defer_pairings:`. Together with requestedPairs and
-    # coveredPairs these must cover every required pairing slot of the
-    # manifest or the daemon rejects the run.
-    deferredPairs @6 :List(Text);
+    # Pairing slots deliberately left unpaired via `--vacant-link
+    # <link_id>=<why>` / the launcher's `links: { <link_id>: { vacant:
+    # "<why>" } }`, each carrying the reason the deployment wrote down.
+    # Together with requestedPairs and coveredPairs these must cover every
+    # required pairing slot of the manifest or the daemon rejects the run.
+    vacantPairs @6 :List(VacantPair);
     # Pairing slots of this instance that a LATER-starting instance of the
     # same `stack launch` will claim through its own requestedPairs entry;
     # each entry names that future peer. A launch-mechanism marker, not user
     # intent: the slot boots unpaired and needs no action, unlike a
-    # deferredPairs entry which records a deliberate opt-out. Never set by
+    # vacantPairs entry which records a deliberate opt-out. Never set by
     # the CLI.
     coveredPairs @7 :List(PairRequest);
     # Observer requests from `--link <observer_link>@<source_instance>[/<source_link>]`
@@ -328,6 +329,16 @@ struct NodeRunGoal {
 struct InstanceAddress {
     coreNode @0 :Text;
     instanceId @1 :Text;
+}
+
+struct VacantPair {
+    # The starting node's own pairing-slot link_id.
+    linkId @0 :Text;
+    # Why the deployment leaves this slot unpaired, in its own words. Always
+    # non-empty: a vacancy without a reason is rejected where it is written,
+    # so the operator reading a running stack sees the same sentence the
+    # launch file carries.
+    reason @1 :Text;
 }
 
 struct PairRequest {
