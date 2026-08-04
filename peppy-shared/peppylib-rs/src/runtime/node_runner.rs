@@ -83,15 +83,69 @@ impl NodeRunner {
             })
     }
 
-    /// Handle onto the observer slot declared at `link_id` in
-    /// `depends_on.pairing_observers`. Exposes the
-    /// slot's resolved source: `observation_slot(link_id)?.source()` returns the
-    /// observed source once the daemon has delivered it. Errors if the manifest
-    /// declares no such observer slot.
+    /// Handle onto the `cardinality: "one"` observer slot declared at `link_id`
+    /// in `depends_on.pairing_observers`. Exposes the slot's observed source:
+    /// `observation_slot(link_id)?.source()` returns it once the daemon has
+    /// delivered it. Errors if the manifest declares no such observer slot, and
+    /// panics if it declares one with a multi-member cardinality, which is read
+    /// through [`Self::observation_slot_set`] instead.
     pub fn observation_slot(&self, link_id: &str) -> crate::error::Result<super::ObservationSlot> {
+        let cardinality = self.observation_slot_cardinality(link_id)?;
+        if !cardinality.is_one() {
+            super::observation::observer_shape_panic(
+                link_id,
+                "observation_slot()",
+                cardinality.as_str(),
+            );
+        }
+        Ok(super::ObservationSlot::new(
+            link_id,
+            self.observation_slot_watch(link_id)?,
+        ))
+    }
+
+    /// Handle onto the multi-member observer slot declared at `link_id` in
+    /// `depends_on.pairing_observers` (a `one_or_more` or `zero_or_more` slot).
+    /// Exposes the slot's live member set: `observation_slot_set(link_id)?
+    /// .sources()` returns every pairing it currently observes, in plan order.
+    /// Errors if the manifest declares no such observer slot, and panics if it
+    /// declares one with `cardinality: "one"`, which is read through
+    /// [`Self::observation_slot`] instead.
+    pub fn observation_slot_set(
+        &self,
+        link_id: &str,
+    ) -> crate::error::Result<super::ObservationSlotSet> {
+        let cardinality = self.observation_slot_cardinality(link_id)?;
+        if cardinality.is_one() {
+            super::observation::observer_shape_panic(
+                link_id,
+                "observation_slot_set()",
+                cardinality.as_str(),
+            );
+        }
+        Ok(super::ObservationSlotSet::new(
+            self.observation_slot_watch(link_id)?,
+        ))
+    }
+
+    fn observation_slot_cardinality(
+        &self,
+        link_id: &str,
+    ) -> crate::error::Result<config::node::Cardinality> {
+        self.processor
+            .observation_slot_cardinality(link_id)
+            .ok_or_else(|| crate::error::Error::UnknownObservationSlot {
+                link_id: link_id.to_string(),
+            })
+    }
+
+    fn observation_slot_watch(
+        &self,
+        link_id: &str,
+    ) -> crate::error::Result<tokio::sync::watch::Receiver<crate::messaging::ObservationState>>
+    {
         self.processor
             .observation_slot_watch(link_id)
-            .map(super::ObservationSlot::new)
             .ok_or_else(|| crate::error::Error::UnknownObservationSlot {
                 link_id: link_id.to_string(),
             })

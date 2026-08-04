@@ -174,10 +174,6 @@ pub struct SerializedPairingSlot {
     pub pairing_tag: String,
     /// The role this instance plays in the pairing.
     pub role: String,
-    /// Whether the manifest marks the slot `optional: true` (boots unpaired
-    /// without `--pair`/`--defer-pair` ceremony).
-    #[serde(default)]
-    pub optional: bool,
     pub binding: PairingSlotBinding,
 }
 
@@ -519,7 +515,7 @@ mod tests {
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
                 role: "controller".to_string(),
-                optional: false,
+
                 binding: PairingSlotBinding::Paired {
                     peer: ProducerRef::new("core_a", "arm_1"),
                     peer_link_id: "controller".to_string(),
@@ -532,7 +528,7 @@ mod tests {
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
                 role: "controller".to_string(),
-                optional: true,
+
                 binding: PairingSlotBinding::Unpaired,
             },
         );

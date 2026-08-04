@@ -35,6 +35,15 @@ impl Subscription {
             Err(err) => Err(crate::types::TryRecvError::from(err)),
         }
     }
+
+    /// The underlying wire receiver, for call sites that merge several
+    /// subscriptions into one `select_all` set (see
+    /// [`crate::runtime::slot_stream`]). `recv_async` takes `&self`, so a whole
+    /// set can be polled at once, and its `RecvFut` is `Unpin` and cancel-safe:
+    /// the losing futures drop without consuming a message.
+    pub(crate) fn wire_receiver(&self) -> &flume::Receiver<pmi::TopicMessage> {
+        &self.inner.rx
+    }
 }
 
 /// One producer's pinned wire subscription inside a

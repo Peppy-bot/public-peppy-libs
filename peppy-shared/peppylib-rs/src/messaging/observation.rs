@@ -19,51 +19,64 @@ pub struct ObservationPin {
     pub source_link_id: String,
 }
 
-/// Absolute observation state for one observer slot as delivered by the daemon.
+/// One member of an observer slot's set: the pairing this member taps, plus
+/// the two per-member facts the daemon keeps current.
 ///
-/// Two monotonic counters ride here, and they mean different things:
-/// - `sequence` orders `observation_update` deliveries so a delayed (stale)
-///   retry can never roll the slot back; the listener rejects strictly-smaller
-///   sequences and treats an equal sequence as an idempotent retry.
-/// - `source_generation` is the daemon-assigned incarnation counter. It advances
-///   only when the source's incarnation changes (never on the source's own peer
-///   transitions), and is the sole discriminator between old-B and new-B
-///   messages, which are byte-identical on the wire. A change drops and
-///   redeclares the wire subscription (buffer isolation) and invalidates any
-///   in-flight tagged message from the previous generation.
+/// `source_generation` is the daemon-assigned incarnation counter. It advances
+/// only when this member's source changes incarnation (never on the source's own
+/// peer transitions), and is the sole discriminator between old-B and new-B
+/// messages, which are byte-identical on the wire. A change drops and redeclares
+/// that member's wire subscription (buffer isolation) and invalidates any
+/// in-flight tagged message from the previous generation.
 ///
-/// `source` is `None` only before the daemon has resolved the slot's source (the
-/// boot state); once resolved it stays `Some` across every peer transition.
-/// `source_live` reports whether the source instance is currently in a
-/// non-terminal state; it is informational (the observer keeps its subscription
+/// `source_live` reports whether the member's source instance is currently in a
+/// non-terminal state. It is informational (the observer keeps the subscription
 /// declared whether or not the source is live), delivered so the state is
-/// complete.
+/// complete. A member whose source is down stays listed, at its position.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ObservationState {
-    pub sequence: u64,
+pub struct ObservedMemberState {
+    pub source: ObservationPin,
     pub source_generation: u64,
-    pub source: Option<ObservationPin>,
     pub source_live: bool,
 }
 
+/// Absolute observation state for one observer slot as delivered by the daemon:
+/// the slot's complete ordered member set, in the order the plan listed it.
+///
+/// `sequence` orders `observation_update` deliveries so a delayed (stale) retry
+/// can never roll the slot back; the listener rejects strictly-smaller sequences
+/// and treats an equal sequence as an idempotent retry. Each delivery carries
+/// the whole set and replaces it wholesale, so the members a delivery omits are
+/// gone from the slot.
+///
+/// `members` is empty before the daemon has delivered the slot (the boot state)
+/// and for a `zero_or_more` slot the plan left with nothing to observe. A
+/// member's position never moves once delivered: a generation bump changes that
+/// member in place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservationState {
+    pub sequence: u64,
+    pub members: Vec<ObservedMemberState>,
+}
+
 impl ObservationState {
-    /// Boot-time state: no source resolved yet, at sequence and generation
-    /// zero. The daemon delivers the resolved source over `observation_update`
-    /// right after the instance commits, exactly as it delivers pairing pins.
+    /// Boot-time state: no members delivered yet, at sequence zero. The daemon
+    /// delivers the slot's member set over `observation_update` right after the
+    /// instance commits, exactly as it delivers pairing pins.
     pub fn unregistered() -> Self {
         Self {
             sequence: 0,
-            source_generation: 0,
-            source: None,
-            source_live: false,
+            members: Vec::new(),
         }
     }
 }
 
-/// User-facing resolved source of an observer slot, returned by
-/// `NodeRunner::observation_slot(link_id)`'s `source()` and surfaced by the
-/// generated per-slot `source()` helper. Purely local configuration state known
-/// to the observer from its own registration; it needs no daemon push to read.
+/// User-facing observed source of one observer-slot member, returned by
+/// `NodeRunner::observation_slot(link_id)`'s `source()` and
+/// `observation_slot_set(link_id)`'s `sources()`, and surfaced by the generated
+/// per-slot `source()` / `sources()` helpers. Purely local configuration state
+/// known to the observer from its own registration; it needs no daemon push to
+/// read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedSource {
     /// The observed source instance's full wire address.
@@ -78,5 +91,11 @@ impl From<&ObservationPin> for ObservedSource {
             producer: pin.producer.clone(),
             source_link_id: pin.source_link_id.clone(),
         }
+    }
+}
+
+impl From<&ObservedMemberState> for ObservedSource {
+    fn from(member: &ObservedMemberState) -> Self {
+        Self::from(&member.source)
     }
 }

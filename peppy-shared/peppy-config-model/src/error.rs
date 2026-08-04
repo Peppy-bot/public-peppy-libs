@@ -381,17 +381,13 @@ pub enum ParsingError {
     )]
     ConsumedItemReferencesImplementsLinkId { link_id: String },
     #[error(
-        "Pairing slot `{link_id}` in depends_on.pairings or depends_on.pairing_observers carries a `cardinality` key: a pairing is strictly 1:1 between two complementary slots; use `optional: true` to express absence. `cardinality` is valid only on depends_on.nodes and depends_on.contracts entries"
+        "Participant pairing slot `{link_id}` in depends_on.pairings carries a `cardinality` key: a pairing is strictly 1:1 between two complementary slots, so there is no set to size; a slot that boots unpaired is deferred explicitly at start. `cardinality` is valid on depends_on.nodes, depends_on.contracts and depends_on.pairing_observers entries"
     )]
     CardinalityOnPairingSlot { link_id: String },
     #[error(
         "Pairing slot `{link_id}` declares no `role`. Every entry in depends_on.pairings names the role this node plays, and every entry in depends_on.pairing_observers names the role it observes"
     )]
     PairingSlotMissingRole { link_id: String },
-    #[error(
-        "Observer pairing slot `{link_id}` in depends_on.pairing_observers carries `optional`. Observation is not a required-slot concept, so `optional` is rejected on observer entries; drop it"
-    )]
-    OptionalOnObserverSlot { link_id: String },
     #[error(
         "Observer pairing slot `{link_id}` is declared but never consumed. Add an `interfaces.topics.consumes` entry with `link_id: \"{link_id}\"`, or remove the dependency"
     )]
@@ -433,9 +429,6 @@ pub enum StructuredError {
     PairingSlotMissingRole {
         link_id: String,
     },
-    OptionalOnObserverSlot {
-        link_id: String,
-    },
 }
 
 impl StructuredError {
@@ -467,9 +460,6 @@ impl From<StructuredError> for ParsingError {
             }
             StructuredError::PairingSlotMissingRole { link_id } => {
                 ParsingError::PairingSlotMissingRole { link_id }
-            }
-            StructuredError::OptionalOnObserverSlot { link_id } => {
-                ParsingError::OptionalOnObserverSlot { link_id }
             }
         }
     }

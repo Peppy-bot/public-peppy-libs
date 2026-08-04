@@ -1,21 +1,22 @@
-//! Python bindings for the observer runtime surface: [`PyObservedSource`] (the
-//! resolved source of an observer slot), [`PyObservationSlot`] (observe a slot's
-//! resolved source), and [`PyObservedSubscription`] (receive the observed
-//! source's publishes on one topic, yielded as `(producer, message)`).
+//! Python bindings for the observer runtime surface: [`PyObservedSource`] (one
+//! observed pairing of an observer slot), [`PyObservationSlot`] (read a
+//! `cardinality: "one"` slot's source), [`PyObservationSlotSet`] (read a
+//! multi-member slot's whole set), and [`PyObservedSubscription`] (receive the
+//! observed sources' publishes on one topic, yielded as `(producer, message)`).
 
 use super::target::PyProducerRef;
 use super::topics::PyTopicMessage;
 use peppylib::messaging::ObservedSource;
-use peppylib::runtime::{ObservationSlot, ObservedTopicSubscription};
+use peppylib::runtime::{ObservationSlot, ObservationSlotSet, ObservedTopicSubscription};
 use pyo3::prelude::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// The resolved source of an observer slot: the observed instance's full
+/// One pairing an observer slot observes: the observed instance's full
 /// `(core_node, instance_id)` wire address plus the producer-side link_id of the
-/// observed pairing slot. Returned by `ObservationSlot.source()`. Purely local
-/// configuration state; there is no health-derived helper, because a third
-/// node's health is not knowable here.
+/// observed pairing slot. Returned by `ObservationSlot.source()` and
+/// `ObservationSlotSet.sources()`. Purely local configuration state; there is no
+/// health-derived helper, because a third node's health is not knowable here.
 #[pyclass(name = "ObservedSource", frozen, eq, skip_from_py_object)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct PyObservedSource {
@@ -52,9 +53,10 @@ impl From<ObservedSource> for PyObservedSource {
     }
 }
 
-/// Handle onto one observer slot's live observation state, obtained via
-/// `node_runner.observation_slot(link_id)`. `source()` reads the resolved source
-/// (or `None` before the daemon has delivered it).
+/// Handle onto a `cardinality: "one"` observer slot's live observation state,
+/// obtained via `node_runner.observation_slot(link_id)`. `source()` reads the
+/// observed source (or `None` before the daemon has delivered it). Multi-member
+/// slots are read through [`PyObservationSlotSet`] instead.
 #[pyclass(name = "ObservationSlot")]
 pub struct PyObservationSlot {
     pub(crate) inner: ObservationSlot,
@@ -62,18 +64,58 @@ pub struct PyObservationSlot {
 
 #[pymethods]
 impl PyObservationSlot {
-    /// The resolved source of this observer slot, or `None` before the daemon
-    /// has delivered it.
+    /// The observed source of this slot, or `None` before the daemon has
+    /// delivered it.
     fn source(&self) -> Option<PyObservedSource> {
         self.inner.source().map(PyObservedSource::from)
     }
 }
 
-/// Stream of an observed source's publishes on one topic, vended by
-/// `node_runner.subscribe_observed(...)`. Each `on_next_message()` yields a
-/// `(producer, message)` tuple, or `None` when the runtime is torn down.
-/// Delivery is a live stream, not a mailbox, and follows the source instance's
-/// lifecycle independently of its peer relationship.
+/// Handle onto a multi-member observer slot's live observation state (a
+/// `one_or_more` or `zero_or_more` slot), obtained via
+/// `node_runner.observation_slot_set(link_id)`. The set is live: the daemon
+/// replaces it whole whenever the plan's observed pairings change, so an empty
+/// list is legal at any instant.
+#[pyclass(name = "ObservationSlotSet")]
+pub struct PyObservationSlotSet {
+    pub(crate) inner: ObservationSlotSet,
+}
+
+#[pymethods]
+impl PyObservationSlotSet {
+    /// Every pairing this slot currently observes, in plan order: the order the
+    /// launcher's array or the `--link` occurrences wrote, so member N here is
+    /// the deployment's Nth entry for this slot.
+    fn sources(&self) -> Vec<PyObservedSource> {
+        self.inner
+            .sources()
+            .into_iter()
+            .map(PyObservedSource::from)
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        let sources = self
+            .inner
+            .sources()
+            .iter()
+            .map(|source| {
+                format!(
+                    "{}@{}/{}",
+                    source.producer.instance_id, source.producer.core_node, source.source_link_id
+                )
+            })
+            .collect::<Vec<_>>();
+        format!("ObservationSlotSet(sources=[{}])", sources.join(", "))
+    }
+}
+
+/// Stream of the observed sources' publishes on one topic, fanned in across the
+/// slot's whole member set and vended by `node_runner.subscribe_observed(...)`.
+/// Each `on_next_message()` yields a `(producer, message)` tuple, or `None` when
+/// the runtime is torn down. Delivery is a live stream, not a mailbox, and
+/// follows each source instance's lifecycle independently of its peer
+/// relationship.
 #[pyclass(name = "ObservedSubscription")]
 pub struct PyObservedSubscription {
     pub(crate) inner: Arc<Mutex<ObservedTopicSubscription>>,
@@ -81,10 +123,12 @@ pub struct PyObservedSubscription {
 
 #[pymethods]
 impl PyObservedSubscription {
-    /// Wait for and receive the next `(producer, message)` from the currently
-    /// observed source incarnation. Returns `None` when the runtime is torn
-    /// down. Messages buffered under a superseded source incarnation are dropped
-    /// before they surface here.
+    /// Wait for and receive the next `(producer, message)` from any currently
+    /// observed source incarnation. Every cardinality fans in the same way and
+    /// every message is tagged with the member that published it. Returns `None`
+    /// when the runtime is torn down. Messages buffered under a superseded
+    /// source incarnation, or under a member the slot has since dropped, are
+    /// dropped before they surface here.
     fn on_next_message<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         crate::py_future::future_into_py(py, async move {

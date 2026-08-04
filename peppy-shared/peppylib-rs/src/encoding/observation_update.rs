@@ -3,21 +3,20 @@
 //! contract.
 
 use crate::error::{Error, Result};
-use crate::messaging::{ObservationPin, ProducerRef};
+use crate::messaging::{ObservationPin, ObservedMemberState, ProducerRef};
 use crate::observation_update_capnp;
 use crate::types::Payload;
+use std::collections::HashSet;
 
-/// Absolute observer-slot state pushed by the daemon. `source: Some` pins the
-/// slot to that producer source; `None` is the pre-resolution boot state.
-/// Field-for-field mirror of the capnp `ObservationUpdateRequest` with the
-/// `hasSource`/source-fields flattening folded into `Option<ObservationPin>`.
+/// Absolute observer-slot state pushed by the daemon: the slot's complete
+/// ordered member set. Field-for-field mirror of the capnp
+/// `ObservationUpdateRequest`, with each `ObservedMember` decoding into the
+/// [`ObservedMemberState`] the slot's watch channel holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservationUpdateRequest {
     pub link_id: String,
     pub sequence: u64,
-    pub source: Option<ObservationPin>,
-    pub source_generation: u64,
-    pub source_live: bool,
+    pub members: Vec<ObservedMemberState>,
 }
 
 impl ObservationUpdateRequest {
@@ -28,21 +27,14 @@ impl ObservationUpdateRequest {
                 .init_root::<observation_update_capnp::observation_update_request::Builder>();
             root.set_link_id(&self.link_id);
             root.set_sequence(self.sequence);
-            root.set_source_generation(self.source_generation);
-            root.set_source_live(self.source_live);
-            match &self.source {
-                Some(source) => {
-                    root.set_has_source(true);
-                    root.set_source_core_node(&source.producer.core_node);
-                    root.set_source_instance_id(&source.producer.instance_id);
-                    root.set_source_link_id(&source.source_link_id);
-                }
-                None => {
-                    root.set_has_source(false);
-                    root.set_source_core_node("");
-                    root.set_source_instance_id("");
-                    root.set_source_link_id("");
-                }
+            let mut members = root.init_members(self.members.len() as u32);
+            for (idx, member) in self.members.iter().enumerate() {
+                let mut wire = members.reborrow().get(idx as u32);
+                wire.set_source_core_node(&member.source.producer.core_node);
+                wire.set_source_instance_id(&member.source.producer.instance_id);
+                wire.set_source_link_id(&member.source.source_link_id);
+                wire.set_source_generation(member.source_generation);
+                wire.set_source_live(member.source_live);
             }
         }
         super::encode_message(&builder)
@@ -55,37 +47,57 @@ impl ObservationUpdateRequest {
             .map_err(|e| Error::Deserialization(e.to_string()))?;
         let link_id = super::read_text(root.get_link_id(), "observation_update", "linkId")?;
         let sequence = root.get_sequence();
-        let source_generation = root.get_source_generation();
-        let source_live = root.get_source_live();
-        let source = if root.get_has_source() {
-            Some(ObservationPin {
+        let wire_members = root
+            .get_members()
+            .map_err(|e| Error::Deserialization(e.to_string()))?;
+        let mut members = Vec::with_capacity(wire_members.len() as usize);
+        let mut seen = HashSet::with_capacity(wire_members.len() as usize);
+        for idx in 0..wire_members.len() {
+            let wire = wire_members.get(idx);
+            let source = ObservationPin {
                 producer: ProducerRef::new(
                     super::read_text(
-                        root.get_source_core_node(),
+                        wire.get_source_core_node(),
                         "observation_update",
                         "sourceCoreNode",
                     )?,
                     super::read_text(
-                        root.get_source_instance_id(),
+                        wire.get_source_instance_id(),
                         "observation_update",
                         "sourceInstanceId",
                     )?,
                 ),
                 source_link_id: super::read_text(
-                    root.get_source_link_id(),
+                    wire.get_source_link_id(),
                     "observation_update",
                     "sourceLinkId",
                 )?,
-            })
-        } else {
-            None
-        };
+            };
+            // A member's identity is its `(source, source_link_id)` pair, and a
+            // slot holds each identity once. Repeating one would give the slot
+            // two subscriptions to one pairing and make the position of every
+            // later member ambiguous, so the delivery is refused whole.
+            if !seen.insert((
+                source.producer.core_node.clone(),
+                source.producer.instance_id.clone(),
+                source.source_link_id.clone(),
+            )) {
+                return Err(Error::Deserialization(format!(
+                    "observation_update for slot `{link_id}` lists `{}/{}` on `{}` twice: a \
+                     slot observes each pairing once",
+                    source.producer.instance_id, source.source_link_id, source.producer.core_node,
+                )));
+            }
+            members.push(ObservedMemberState {
+                source,
+                source_generation: wire.get_source_generation(),
+                source_live: wire.get_source_live(),
+            });
+        }
         Ok(Self {
             link_id,
             sequence,
-            source,
-            source_generation,
-            source_live,
+            members,
         })
     }
 }
@@ -94,35 +106,102 @@ impl ObservationUpdateRequest {
 mod tests {
     use super::*;
 
-    fn pin() -> ObservationPin {
-        ObservationPin {
-            producer: ProducerRef::new("core_a", "arm_1"),
-            source_link_id: "commander".to_string(),
+    fn member(instance: &str, generation: u64, live: bool) -> ObservedMemberState {
+        ObservedMemberState {
+            source: ObservationPin {
+                producer: ProducerRef::new("core_a", instance),
+                source_link_id: "commander".to_string(),
+            },
+            source_generation: generation,
+            source_live: live,
         }
     }
 
-    #[test]
-    fn request_round_trips_resolved_and_unresolved() {
-        let resolved = ObservationUpdateRequest {
-            link_id: "observed_arm".to_string(),
-            sequence: 42,
-            source: Some(pin()),
-            source_generation: 7,
-            source_live: true,
-        };
-        let decoded =
-            ObservationUpdateRequest::decode(&resolved.encode().unwrap().into_inner()).unwrap();
-        assert_eq!(decoded, resolved);
+    fn round_trip(request: &ObservationUpdateRequest) -> ObservationUpdateRequest {
+        ObservationUpdateRequest::decode(&request.encode().unwrap().into_inner()).unwrap()
+    }
 
-        let unresolved = ObservationUpdateRequest {
+    /// Zero, one and several members all ride the same shape; the empty set is
+    /// both the boot state and a `zero_or_more` slot the plan left unobserved.
+    #[test]
+    fn request_round_trips_every_member_count() {
+        let empty = ObservationUpdateRequest {
             link_id: "observed_arm".to_string(),
             sequence: 43,
-            source: None,
-            source_generation: 0,
-            source_live: false,
+            members: Vec::new(),
         };
-        let decoded =
-            ObservationUpdateRequest::decode(&unresolved.encode().unwrap().into_inner()).unwrap();
-        assert_eq!(decoded, unresolved);
+        assert_eq!(round_trip(&empty), empty);
+
+        let sole = ObservationUpdateRequest {
+            link_id: "observed_arm".to_string(),
+            sequence: 42,
+            members: vec![member("arm_1", 7, true)],
+        };
+        assert_eq!(round_trip(&sole), sole);
+
+        let several = ObservationUpdateRequest {
+            link_id: "observed_arm".to_string(),
+            sequence: 44,
+            members: vec![
+                member("arm_2", 1, true),
+                member("arm_1", 9, false),
+                ObservedMemberState {
+                    source: ObservationPin {
+                        producer: ProducerRef::new("core_b", "arm_3"),
+                        source_link_id: "gripper".to_string(),
+                    },
+                    source_generation: 3,
+                    source_live: true,
+                },
+            ],
+        };
+        let decoded = round_trip(&several);
+        assert_eq!(decoded, several);
+        assert_eq!(
+            decoded
+                .members
+                .iter()
+                .map(|m| m.source.producer.instance_id.as_str())
+                .collect::<Vec<_>>(),
+            ["arm_2", "arm_1", "arm_3"],
+            "plan order survives the wire"
+        );
+    }
+
+    /// One source instance observed through two of ITS own pairing slots is two
+    /// distinct members, while the same pairing listed twice is refused.
+    #[test]
+    fn decode_rejects_a_repeated_member_identity() {
+        let repeated = ObservationUpdateRequest {
+            link_id: "observed_arm".to_string(),
+            sequence: 1,
+            members: vec![member("arm_1", 1, true), member("arm_1", 2, true)],
+        };
+        let error = ObservationUpdateRequest::decode(&repeated.encode().unwrap().into_inner())
+            .expect_err("a repeated member identity must be rejected");
+        assert!(
+            error.to_string().contains("observed_arm") && error.to_string().contains("arm_1"),
+            "got: {error}"
+        );
+
+        let two_slots_of_one_source = ObservationUpdateRequest {
+            link_id: "observed_arm".to_string(),
+            sequence: 1,
+            members: vec![
+                member("arm_1", 1, true),
+                ObservedMemberState {
+                    source: ObservationPin {
+                        producer: ProducerRef::new("core_a", "arm_1"),
+                        source_link_id: "gripper".to_string(),
+                    },
+                    source_generation: 1,
+                    source_live: true,
+                },
+            ],
+        };
+        assert_eq!(
+            round_trip(&two_slots_of_one_source),
+            two_slots_of_one_source
+        );
     }
 }

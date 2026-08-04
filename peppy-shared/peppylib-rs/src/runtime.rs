@@ -1,6 +1,6 @@
 mod builder;
 mod node_runner;
-mod observation;
+pub(crate) mod observation;
 mod pairing;
 mod processor;
 mod slot_stream;
@@ -8,7 +8,8 @@ mod slot_stream;
 pub use builder::{NodeBuilder, NodeContext, StandaloneConfig};
 pub use node_runner::NodeRunner;
 pub use observation::{
-    ObservationSlot, ObservedTopicSubscription, subscribe_observed, subscribe_observed_with_watch,
+    ObservationSlot, ObservationSlotSet, ObservedTopicSubscription, subscribe_observed,
+    subscribe_observed_with_watch,
 };
 pub use pairing::{PeerSlot, PeerSubscription, subscribe_peer, subscribe_peer_with_watch};
 pub use processor::Processor;
