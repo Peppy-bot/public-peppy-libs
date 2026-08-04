@@ -216,8 +216,17 @@ async fn forward_messages<S: FollowedSlot>(
             }
             Some((idx, Err(_))) => {
                 // One member's wire channel closed (session teardown). Drop it
-                // and keep serving the rest; the next slot update redeclares it
-                // if the slot still follows that pin.
+                // and keep serving the rest, reconverging at the very next loop
+                // iteration rather than waiting for a slot update, so the pin is
+                // redeclared right away if the slot still follows it.
+                //
+                // That immediate retry cannot spin: the channel closes only when
+                // the messenger session dropped the subscriber's callback, and a
+                // closing zenoh session takes its primitives out of the session
+                // state BEFORE it drops any callback, so every declaration after
+                // this point fails with `SessionClosedError`. The member is then
+                // left out by `converge_subscriptions`, the set empties, and the
+                // loop parks on the slot watch until teardown closes it.
                 let (gone, _) = current.remove(idx);
                 needs_converge = true;
                 warn!(

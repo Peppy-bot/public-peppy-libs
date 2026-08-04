@@ -66,6 +66,11 @@ pub struct PyObservationSlot {
 impl PyObservationSlot {
     /// The observed source of this slot, or `None` before the daemon has
     /// delivered it.
+    ///
+    /// Raises `PanicException` if the slot holds more than one member, which a
+    /// `cardinality: "one"` slot cannot have: reading a multi-member slot
+    /// through this accessor is stale codegen, so regenerate the node's
+    /// bindings and read it through `ObservationSlotSet.sources()`.
     fn source(&self) -> Option<PyObservedSource> {
         self.inner.source().map(PyObservedSource::from)
     }
