@@ -221,6 +221,11 @@ pub struct RepoRefreshResult {
     pub total_launchers_found: u32,
     pub total_contracts_found: u32,
     pub total_pairings_found: u32,
+    /// Repositories that could not be updated this run. `success` covers
+    /// the refresh as a whole; this reports the repositories it could not
+    /// read, each still serving the entries it last published. Empty when
+    /// every configured repository was read.
+    pub failure_report: String,
 }
 
 impl RepoRefreshResult {
@@ -237,6 +242,30 @@ impl RepoRefreshResult {
             total_launchers_found,
             total_contracts_found,
             total_pairings_found,
+            failure_report: String::new(),
+        }
+    }
+
+    /// The refresh ran and published its caches, but some repositories
+    /// could not be read. Kept separate from [`Self::failure`] so a caller
+    /// can tell "the refresh did not happen" from "the refresh happened,
+    /// and these repositories are not current". The counts are the ones
+    /// the caches actually hold, retained entries included.
+    pub fn success_with_failure_report(
+        total_nodes_found: u32,
+        total_launchers_found: u32,
+        total_contracts_found: u32,
+        total_pairings_found: u32,
+        report: impl Into<String>,
+    ) -> Self {
+        Self {
+            success: true,
+            error_message: None,
+            total_nodes_found,
+            total_launchers_found,
+            total_contracts_found,
+            total_pairings_found,
+            failure_report: report.into(),
         }
     }
 
@@ -248,6 +277,7 @@ impl RepoRefreshResult {
             total_launchers_found: 0,
             total_contracts_found: 0,
             total_pairings_found: 0,
+            failure_report: String::new(),
         }
     }
 
@@ -263,6 +293,7 @@ impl RepoRefreshResult {
             result.set_total_launchers_found(self.total_launchers_found);
             result.set_total_contracts_found(self.total_contracts_found);
             result.set_total_pairings_found(self.total_pairings_found);
+            result.set_failure_report(&self.failure_report);
         }
         encode_message(&builder)
     }
@@ -277,6 +308,7 @@ impl RepoRefreshResult {
             total_launchers_found: result.get_total_launchers_found(),
             total_contracts_found: result.get_total_contracts_found(),
             total_pairings_found: result.get_total_pairings_found(),
+            failure_report: result.get_failure_report()?.to_str()?.to_owned(),
         })
     }
 }
@@ -451,6 +483,30 @@ mod tests {
         assert_eq!(result.total_launchers_found, 1);
         assert_eq!(result.total_contracts_found, 2);
         assert_eq!(result.total_pairings_found, 4);
+        assert!(result.failure_report.is_empty());
+        let bytes = result.encode().expect("encode");
+        assert_eq!(RepoRefreshResult::decode(&bytes).expect("decode"), result);
+    }
+
+    /// A refresh that read most of its repositories reports the counts it
+    /// published *and* the ones it could not read, so a caller can act on
+    /// the problem without treating the run as a failure.
+    #[test]
+    fn result_success_with_failure_report_roundtrips() {
+        let result = RepoRefreshResult::success_with_failure_report(
+            3,
+            1,
+            2,
+            4,
+            "1 of the configured repositories could not be updated.",
+        );
+        assert!(result.success);
+        assert_eq!(result.error_message, None);
+        assert_eq!(result.total_nodes_found, 3);
+        assert_eq!(
+            result.failure_report,
+            "1 of the configured repositories could not be updated."
+        );
         let bytes = result.encode().expect("encode");
         assert_eq!(RepoRefreshResult::decode(&bytes).expect("decode"), result);
     }
@@ -464,6 +520,10 @@ mod tests {
         assert_eq!(result.total_launchers_found, 0);
         assert_eq!(result.total_contracts_found, 0);
         assert_eq!(result.total_pairings_found, 0);
+        assert!(
+            result.failure_report.is_empty(),
+            "a run that never happened has no per-repository report to give"
+        );
         let bytes = result.encode().expect("encode");
         assert_eq!(RepoRefreshResult::decode(&bytes).expect("decode"), result);
     }
