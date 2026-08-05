@@ -319,11 +319,8 @@ mod tests {
     #[should_panic(expected = "observer slot `observed_joints` is declared `zero_or_one`")]
     async fn a_scalar_accessor_on_a_multi_member_slot_panics() {
         let (tx, rx) = watch::channel(ObservationState::unregistered());
-        let slot = ObservationSlot::new(
-            "observed_joints",
-            config::node::Cardinality::ZeroOrOne,
-            rx,
-        );
+        let slot =
+            ObservationSlot::new("observed_joints", config::node::Cardinality::ZeroOrOne, rx);
         tx.send(state(vec![member("arm_1", 1), member("arm_2", 1)]))
             .unwrap();
         let _ = slot.source();

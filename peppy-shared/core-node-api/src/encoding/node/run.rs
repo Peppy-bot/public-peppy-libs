@@ -429,8 +429,7 @@ impl NodeRunGoal {
                 &self.requested_pairs,
             );
 
-            let vacant_count =
-                capnp_list_len(self.vacant_pairs.len(), "NodeRunGoal.vacant_pairs")?;
+            let vacant_count = capnp_list_len(self.vacant_pairs.len(), "NodeRunGoal.vacant_pairs")?;
             fill_vacant_pairs(
                 goal.reborrow().init_vacant_pairs(vacant_count),
                 &self.vacant_pairs,
@@ -1050,8 +1049,11 @@ mod tests {
     /// as an unexplained unpaired slot.
     #[test]
     fn node_run_goal_rejects_a_vacant_pair_without_a_reason() {
-        let goal = NodeRunGoal::new(plan("arm_1"), "robot_arm", "v1", 0)
-            .with_vacant_pairs([("controller".to_owned(), String::new())].into_iter().collect());
+        let goal = NodeRunGoal::new(plan("arm_1"), "robot_arm", "v1", 0).with_vacant_pairs(
+            [("controller".to_owned(), String::new())]
+                .into_iter()
+                .collect(),
+        );
         let encoded = goal.encode().expect("encode");
         let err = NodeRunGoal::decode(&encoded).expect_err("an empty reason must be refused");
         assert!(

@@ -275,9 +275,11 @@ struct NodeRunGoal {
     requestedPairs @5 :List(PairRequest);
     # Pairing slots deliberately left unpaired via `--vacant-link
     # <link_id>=<why>` / the launcher's `links: { <link_id>: { vacant:
-    # "<why>" } }`, each carrying the reason the deployment wrote down.
-    # Together with requestedPairs and coveredPairs these must cover every
-    # required pairing slot of the manifest or the daemon rejects the run.
+    # "<why>" } }`, each carrying the reason the deployment wrote down. Legal
+    # only on a slot the manifest declares `optional: true`; the daemon
+    # re-checks that against its own copy of the manifest. Together with
+    # requestedPairs and coveredPairs these must cover every pairing slot of
+    # the manifest or the daemon rejects the run.
     vacantPairs @6 :List(VacantPair);
     # Pairing slots of this instance that a LATER-starting instance of the
     # same `stack launch` will claim through its own requestedPairs entry;

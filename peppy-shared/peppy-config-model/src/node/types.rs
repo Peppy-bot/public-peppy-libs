@@ -1090,8 +1090,9 @@ pub struct PairingObserverDependency {
     pub link_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
-    /// Size constraint on the slot's observed member set. Same values and
-    /// default as [`NodeDependency::cardinality`].
+    /// Size constraint on the slot's observed member set. Same default as
+    /// [`NodeDependency::cardinality`], and the same three spellings plus
+    /// `zero_or_one`, which only an observer slot takes.
     #[serde(default, skip_serializing_if = "Cardinality::is_one")]
     pub cardinality: Cardinality,
 }
@@ -2656,7 +2657,10 @@ mod tests {
             ]
         }"#;
         let deps: DependsOn = serde_json5::from_str(observer_json5).expect("should parse");
-        assert_eq!(deps.pairing_observers[0].cardinality, Cardinality::ZeroOrOne);
+        assert_eq!(
+            deps.pairing_observers[0].cardinality,
+            Cardinality::ZeroOrOne
+        );
 
         for producer_json5 in [
             r#"{ nodes: [ { name: "arm", tag: "v1", link_id: "arm", cardinality: "zero_or_one" } ] }"#,
