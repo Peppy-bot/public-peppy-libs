@@ -107,8 +107,9 @@ struct BoundSource {
 ///   set is never mutated.
 /// - Queued messages drain before shutdown is honored; once the node's
 ///   cancellation token fires and no message is ready, `on_next_message`
-///   returns `None`. An empty `zero_or_more` set therefore stays pending
-///   until shutdown and then returns `None`.
+///   returns `None`. An empty set (a `zero_or_more` slot the application
+///   bound nothing to, or a vacant `zero_or_one` slot) therefore stays
+///   pending until shutdown and then returns `None`.
 /// - Dropping the subscription closes every underlying wire subscription.
 pub struct BoundSetSubscription {
     sources: Vec<BoundSource>,
@@ -241,8 +242,9 @@ impl TopicMessenger {
     /// member: one subscription per bound producer, each pinning the full
     /// `(core_node, instance_id)` pair in its keyexpr, merged client-side
     /// behind one [`BoundSetSubscription`]. An empty set (a `zero_or_more`
-    /// slot with no binding) opens zero subscriptions and the returned
-    /// subscription yields nothing until `shutdown` fires. Wildcarding the
+    /// slot with no binding, or a vacant `zero_or_one` slot) opens zero
+    /// subscriptions and the returned subscription yields nothing until
+    /// `shutdown` fires. Wildcarding the
     /// producer segments and filtering in-process is deliberately not
     /// offered: it would express interest in every same-namespace producer
     /// of the contract, pulling unbound producers' traffic across a

@@ -150,10 +150,12 @@ impl StandaloneConfig {
     /// with the same `link_id` accumulate in call order, mirroring how
     /// repeated `--bind KEY@instance` flags accumulate: the resulting set
     /// must satisfy the slot's declared cardinality at startup (exactly one
-    /// for `one`, at least one for `one_or_more`; a `zero_or_more` slot may
-    /// be left unseeded for an empty set). Standalone-mode stand-in for the
-    /// launcher's validated binding map; ignored (with a warning) if the
-    /// manifest declares no such slot.
+    /// for `one`, at most one for `zero_or_one`, at least one for
+    /// `one_or_more`, any size for `zero_or_more`; a `zero_or_more` slot may
+    /// be left unseeded for an empty set, and a `zero_or_one` slot that runs
+    /// empty says so with [`Self::with_vacant_producer_slot`]).
+    /// Standalone-mode stand-in for the launcher's validated binding map;
+    /// ignored (with a warning) if the manifest declares no such slot.
     pub fn with_bound_producer(
         mut self,
         link_id: impl Into<String>,
@@ -167,6 +169,18 @@ impl StandaloneConfig {
                 producer_core_node.into(),
                 producer_instance_id.into(),
             ));
+        self
+    }
+
+    /// Seed the consumer slot at `link_id` with an explicit empty producer
+    /// set, the standalone spelling of a deployment's
+    /// `links: { <link_id>: { vacant: "<why>" } }`. Only a `zero_or_one`
+    /// slot accepts it: startup admits an empty set there and rejects one on
+    /// a `one` / `one_or_more` slot, exactly as it does for a daemon boot
+    /// config. The reason a deployment writes down has no standalone
+    /// counterpart, because there is no deployment to write it.
+    pub fn with_vacant_producer_slot(mut self, link_id: impl Into<String>) -> Self {
+        self.bound_producers.entry(link_id.into()).or_default();
         self
     }
 

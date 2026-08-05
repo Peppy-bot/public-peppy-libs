@@ -327,15 +327,17 @@ impl Processor {
     /// every interface kind sharing the slot's `link_id` sees the same set
     /// in the same declaration order, so `.first()` is deterministic. The
     /// set's validated size is the slot's declared cardinality (exactly one
-    /// for `one`, at least one for `one_or_more`, possibly empty only for
-    /// `zero_or_more`); a producer disconnecting at runtime never shrinks
-    /// it. Startup validates every declared slot into the cache, so a cache
-    /// miss means the generated code and the manifest disagree (version
-    /// skew / stale codegen) — a bug, not a user error — and panics.
+    /// for `one`, at most one for `zero_or_one`, at least one for
+    /// `one_or_more`, any size for `zero_or_more`); a producer disconnecting
+    /// at runtime never shrinks it. Startup validates every declared slot
+    /// into the cache, so a cache miss means the generated code and the
+    /// manifest disagree (version skew / stale codegen), a bug rather than a
+    /// user error, and panics.
     ///
     /// The generated accessors are cardinality-typed: only `zero_or_more`
     /// slots' `bound_producers()` splice this plain, possibly empty slice
-    /// directly. `one` slots go through [`Self::sole_bound_producer`] and
+    /// directly. `one` slots go through [`Self::sole_bound_producer`],
+    /// `zero_or_one` slots through [`Self::optional_bound_producer`] and
     /// `one_or_more` slots through [`Self::non_empty_bound_producers`];
     /// every generated `subscribe()` passes this slice to
     /// `subscribe_bound_set` regardless of cardinality.
@@ -367,6 +369,28 @@ impl Processor {
             set => panic!(
                 "consumer slot `{link_id}` is bound to {} producers but the generated accessor \
                  expects cardinality `one`: the generated code and the manifest disagree \
+                 (version skew / stale codegen); regenerate bindings for this node",
+                set.len()
+            ),
+        }
+    }
+
+    /// The producer bound to a `cardinality: "zero_or_one"` consumer slot,
+    /// or `None` where the deployment wrote the slot vacant. Startup
+    /// validated the slot's set as holding at most one member, so a larger
+    /// one here means the generated code and the manifest disagree (version
+    /// skew / stale codegen), a bug rather than a user error, and panics
+    /// just like an unknown `link_id` in [`Self::bound_producers`].
+    ///
+    /// Generated `bound_producer()` module functions of `zero_or_one` slots
+    /// splice `node_runner.processor().optional_bound_producer(<link_id>)`.
+    pub fn optional_bound_producer(&self, link_id: &str) -> Option<&crate::messaging::ProducerRef> {
+        match self.bound_producers(link_id) {
+            [] => None,
+            [sole] => Some(sole),
+            set => panic!(
+                "consumer slot `{link_id}` is bound to {} producers but the generated accessor \
+                 expects cardinality `zero_or_one`: the generated code and the manifest disagree \
                  (version skew / stale codegen); regenerate bindings for this node",
                 set.len()
             ),
@@ -553,6 +577,9 @@ fn build_pairing_slots(
 /// - `one`: the slot's entry must hold exactly one producer; a missing
 ///   entry is [`Error::SlotUnbound`], a wrong-sized one is
 ///   [`Error::SlotCardinalityViolated`].
+/// - `zero_or_one`: the entry must hold at most one producer. A slot the
+///   deployment wrote vacant arrives as an explicit empty entry, so a
+///   missing one is [`Error::SlotUnbound`] like a `one` slot's.
 /// - `one_or_more`: the entry must hold at least one producer.
 /// - `zero_or_more`: a missing entry and an empty entry are both the valid
 ///   empty set.
@@ -1397,7 +1424,8 @@ mod tests {
     }"#;
 
     /// Manifest fixture with one slot of each cardinality: `main` (one,
-    /// omitted), `arms` (one_or_more), `spare_cameras` (zero_or_more).
+    /// omitted), `wrist_camera` (zero_or_one), `arms` (one_or_more),
+    /// `spare_cameras` (zero_or_more).
     const MULTI_SLOT_PEPPY_CONFIG: &str = r#"{
         peppy_schema: "node/v1",
         manifest: {
@@ -1406,6 +1434,7 @@ mod tests {
             depends_on: {
                 nodes: [
                     { name: "camera", tag: "v1", link_id: "main" },
+                    { name: "camera", tag: "v1", link_id: "wrist_camera", cardinality: "zero_or_one" },
                     { name: "robot_arm", tag: "v1", link_id: "arms", cardinality: "one_or_more" }
                 ],
                 contracts: [
@@ -1481,14 +1510,16 @@ mod tests {
     }
 
     /// Daemon processor over [`MULTI_SLOT_PEPPY_CONFIG`] with the standard
-    /// bindings: `main` (one) -> camera_1, `arms` (one_or_more) ->
-    /// [right_arm, left_arm], `spare_cameras` (zero_or_more) -> [].
+    /// bindings: `main` (one) -> camera_1, `wrist_camera` (zero_or_one) ->
+    /// camera_2, `arms` (one_or_more) -> [right_arm, left_arm],
+    /// `spare_cameras` (zero_or_more) -> [].
     fn multi_slot_processor() -> Processor {
         daemon_processor_with_bindings(
             MULTI_SLOT_PEPPY_CONFIG,
             Some(
                 r#"{
                     main: [{ core_node: "core-1234", instance_id: "camera_1" }],
+                    wrist_camera: [{ core_node: "core-1234", instance_id: "camera_2" }],
                     arms: [
                         { core_node: "core-1234", instance_id: "right_arm" },
                         { core_node: "core-1234", instance_id: "left_arm" }
@@ -1498,6 +1529,23 @@ mod tests {
             ),
         )
         .expect("valid bindings should construct")
+    }
+
+    /// The same fixture with `wrist_camera` resolved to the explicit empty
+    /// set a launcher writes for a slot a deployment declared vacant.
+    fn multi_slot_processor_with_vacant_wrist_camera() -> Processor {
+        daemon_processor_with_bindings(
+            MULTI_SLOT_PEPPY_CONFIG,
+            Some(
+                r#"{
+                    main: [{ core_node: "core-1234", instance_id: "camera_1" }],
+                    wrist_camera: [],
+                    arms: [{ core_node: "core-1234", instance_id: "right_arm" }],
+                    spare_cameras: []
+                }"#,
+            ),
+        )
+        .expect("a vacant zero_or_one slot is a valid empty set")
     }
 
     /// Happy path: each slot's bound set reaches the startup cache with
@@ -1539,7 +1587,8 @@ mod tests {
 
     /// The cardinality-typed accessors expose exactly the guarantee startup
     /// validation established: `sole_bound_producer` returns a `one` slot's
-    /// single member directly, and `non_empty_bound_producers` a
+    /// single member directly, `optional_bound_producer` a `zero_or_one`
+    /// slot's member as an `Option`, and `non_empty_bound_producers` a
     /// `one_or_more` slot's ordered set with an infallible `first()`.
     #[test]
     fn cardinality_typed_accessors_return_the_validated_shapes() {
@@ -1548,6 +1597,18 @@ mod tests {
         assert_eq!(
             processor.sole_bound_producer("main").instance_id,
             "camera_1"
+        );
+
+        assert_eq!(
+            processor
+                .optional_bound_producer("wrist_camera")
+                .map(|producer| producer.instance_id.as_str()),
+            Some("camera_2")
+        );
+        assert_eq!(
+            multi_slot_processor_with_vacant_wrist_camera().optional_bound_producer("wrist_camera"),
+            None,
+            "a vacant zero_or_one slot resolves to an empty set, which reads as `None`"
         );
 
         let arms = processor.non_empty_bound_producers("arms");
@@ -1580,6 +1641,15 @@ mod tests {
     #[should_panic(expected = "expects cardinality `one_or_more`")]
     fn non_empty_bound_producers_panics_on_an_empty_set() {
         let _ = multi_slot_processor().non_empty_bound_producers("spare_cameras");
+    }
+
+    /// See [`sole_bound_producer_panics_on_a_multi_member_set`]: the scalar
+    /// `Option` accessor refuses a set of two the same way. An empty set is
+    /// this accessor's `None`, so only the ceiling can be violated.
+    #[test]
+    #[should_panic(expected = "expects cardinality `zero_or_one`")]
+    fn optional_bound_producer_panics_on_a_multi_member_set() {
+        let _ = multi_slot_processor().optional_bound_producer("arms");
     }
 
     /// A boot config carrying the removed pre-cardinality single-producer
@@ -1621,6 +1691,7 @@ mod tests {
                         { core_node: "core-1234", instance_id: "camera_1" },
                         { core_node: "core-1234", instance_id: "camera_2" }
                     ],
+                    wrist_camera: [],
                     arms: [{ core_node: "core-1234", instance_id: "right_arm" }],
                     spare_cameras: []
                 }"#,
@@ -1643,6 +1714,7 @@ mod tests {
             Some(
                 r#"{
                     main: [{ core_node: "core-1234", instance_id: "camera_1" }],
+                    wrist_camera: [],
                     arms: [],
                     spare_cameras: []
                 }"#,
@@ -1659,6 +1731,64 @@ mod tests {
             ),
             "expected SlotCardinalityViolated for `arms`, got: {empty_one_or_more}"
         );
+
+        let two_on_a_zero_or_one_slot = daemon_processor_with_bindings(
+            MULTI_SLOT_PEPPY_CONFIG,
+            Some(
+                r#"{
+                    main: [{ core_node: "core-1234", instance_id: "camera_1" }],
+                    wrist_camera: [
+                        { core_node: "core-1234", instance_id: "camera_2" },
+                        { core_node: "core-1234", instance_id: "camera_3" }
+                    ],
+                    arms: [{ core_node: "core-1234", instance_id: "right_arm" }],
+                    spare_cameras: []
+                }"#,
+            ),
+        );
+        let Err(two_on_a_zero_or_one_slot) = two_on_a_zero_or_one_slot else {
+            panic!("two producers on a `zero_or_one` slot must fail startup");
+        };
+        assert!(
+            matches!(
+                &two_on_a_zero_or_one_slot,
+                crate::error::Error::SlotCardinalityViolated { link_id, cardinality, bound }
+                    if link_id == "wrist_camera"
+                        && *cardinality == Cardinality::ZeroOrOne
+                        && *bound == 2
+            ),
+            "expected SlotCardinalityViolated for `wrist_camera`, got: \
+             {two_on_a_zero_or_one_slot}"
+        );
+    }
+
+    /// A `zero_or_one` slot has no silent empty state: its entry must be in
+    /// `slot_bindings` even when it is empty, so a boot config that omits it
+    /// fails startup exactly as a `one` slot's would. This is what keeps
+    /// "the deployment declared this slot vacant" distinguishable from "the
+    /// component that wrote this boot config forgot the slot".
+    #[test]
+    fn zero_or_one_slot_still_needs_its_binding_entry() {
+        let Err(err) = daemon_processor_with_bindings(
+            MULTI_SLOT_PEPPY_CONFIG,
+            Some(
+                r#"{
+                    main: [{ core_node: "core-1234", instance_id: "camera_1" }],
+                    arms: [{ core_node: "core-1234", instance_id: "right_arm" }],
+                    spare_cameras: []
+                }"#,
+            ),
+        ) else {
+            panic!("a missing zero_or_one entry must fail startup");
+        };
+        assert!(
+            matches!(
+                &err,
+                crate::error::Error::SlotUnbound { link_id, cardinality }
+                    if link_id == "wrist_camera" && *cardinality == Cardinality::ZeroOrOne
+            ),
+            "expected SlotUnbound for `wrist_camera`, got: {err}"
+        );
     }
 
     /// A `zero_or_more` slot may be left out of `slot_bindings` entirely;
@@ -1670,6 +1800,7 @@ mod tests {
             Some(
                 r#"{
                     main: [{ core_node: "core-1234", instance_id: "camera_1" }],
+                    wrist_camera: [],
                     arms: [{ core_node: "core-1234", instance_id: "right_arm" }]
                 }"#,
             ),
@@ -1762,6 +1893,7 @@ mod tests {
         // `spare_cameras` (zero_or_more) is deliberately left unseeded.
         let seeded = StandaloneConfig::new()
             .with_bound_producer("main", "core_x", "camera_1")
+            .with_bound_producer("wrist_camera", "core_x", "camera_2")
             .with_bound_producer("arms", "core_x", "right_arm")
             .with_bound_producer("arms", "core_x", "left_arm");
         let processor = Processor::new_standalone(&peppy_config_path, &seeded)
@@ -1769,6 +1901,12 @@ mod tests {
         assert_eq!(
             instance_ids(processor.bound_producers("main")),
             ["camera_1"]
+        );
+        assert_eq!(
+            processor
+                .optional_bound_producer("wrist_camera")
+                .map(|producer| producer.instance_id.as_str()),
+            Some("camera_2")
         );
         assert_eq!(
             instance_ids(processor.bound_producers("arms")),
@@ -1787,6 +1925,42 @@ mod tests {
         assert!(
             err.to_string().contains("right_arm"),
             "duplicate error should name the producer, got: {err}"
+        );
+    }
+
+    /// `with_vacant_producer_slot` is the standalone spelling of a
+    /// deployment's `{ vacant: "<why>" }`: it seeds the explicit empty set a
+    /// launcher would write, the slot's accessor answers `None`, and the same
+    /// call on a slot whose cardinality has a floor of one fails startup.
+    #[test]
+    fn standalone_vacant_producer_slot_seeds_an_explicit_empty_set() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&peppy_config_path, MULTI_SLOT_PEPPY_CONFIG)
+            .expect("peppy config should be written");
+
+        let vacant = StandaloneConfig::new()
+            .with_bound_producer("main", "core_x", "camera_1")
+            .with_vacant_producer_slot("wrist_camera")
+            .with_bound_producer("arms", "core_x", "right_arm");
+        let processor = Processor::new_standalone(&peppy_config_path, &vacant)
+            .expect("a vacant zero_or_one slot should construct");
+        assert_eq!(processor.optional_bound_producer("wrist_camera"), None);
+
+        let vacant_one_slot = StandaloneConfig::new()
+            .with_vacant_producer_slot("main")
+            .with_vacant_producer_slot("wrist_camera")
+            .with_bound_producer("arms", "core_x", "right_arm");
+        let Err(err) = Processor::new_standalone(&peppy_config_path, &vacant_one_slot) else {
+            panic!("a vacant `one` slot must fail startup");
+        };
+        assert!(
+            matches!(
+                &err,
+                crate::error::Error::SlotCardinalityViolated { link_id, cardinality, bound }
+                    if link_id == "main" && *cardinality == Cardinality::One && *bound == 0
+            ),
+            "expected SlotCardinalityViolated for `main`, got: {err}"
         );
     }
 }

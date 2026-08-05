@@ -255,15 +255,17 @@ pub enum Error {
     SubscriptionClosed { topic_name: String },
 
     /// Startup backstop for the launch-time rule "every declared
-    /// depends_on slot with cardinality `one` / `one_or_more` must be
-    /// bound": a daemon that validates bindings never ships a boot config
+    /// depends_on slot except `zero_or_more` carries a `slot_bindings`
+    /// entry": a daemon that validates bindings never ships a boot config
     /// missing such a slot's entry, so hitting this means version skew or
-    /// a hand-edited boot config.
+    /// a hand-edited boot config. A `zero_or_one` slot the deployment wrote
+    /// vacant is not missing: it arrives as an explicit empty set.
     #[error(
         "consumer slot `{link_id}` (cardinality `{cardinality}`) is unbound: the boot config \
          carries no producer set for it, but only a `zero_or_more` slot may be left unbound. \
          Fix the launcher / daemon that produced the boot config (or, in standalone mode, \
-         seed the slot via `StandaloneConfig::with_bound_producer`)"
+         seed the slot via `StandaloneConfig::with_bound_producer`, or \
+         `with_vacant_producer_slot` for a `zero_or_one` slot that runs empty)"
     )]
     SlotUnbound {
         link_id: String,
@@ -288,8 +290,9 @@ pub enum Error {
     /// A directed service / action call named a producer outside the
     /// slot's bound set. Every `poll` / `fire_goal` target must come from
     /// the slot's own bound set, exposed by the slot's cardinality-typed
-    /// accessor (`bound_producer()` for `one`, `bound_producers()` for the
-    /// multi cardinalities): an out-of-set instance was never checked by
+    /// accessor (`bound_producer()` for the scalar cardinalities,
+    /// `bound_producers()` for the multi ones): an out-of-set instance was
+    /// never checked by
     /// plan-time binding validation, and membership is per slot, so a
     /// producer bound to a different slot of the same consumer is rejected
     /// all the same.
