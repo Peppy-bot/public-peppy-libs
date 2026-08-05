@@ -389,10 +389,6 @@ pub enum ParsingError {
     )]
     OptionalOnObserverSlot { link_id: String },
     #[error(
-        "Cardinality `zero_or_one` names an observer slot's member set and is not valid on a producer slot. A `depends_on.nodes` or `depends_on.contracts` slot binds its producer set once, when the node starts, and its accessor is typed from this key, so it is sized `one`, `one_or_more` or `zero_or_more`"
-    )]
-    ZeroOrOneOnProducerSlot,
-    #[error(
         "Pairing slot `{link_id}` declares no `role`. Every entry in depends_on.pairings names the role this node plays, and every entry in depends_on.pairing_observers names the role it observes"
     )]
     PairingSlotMissingRole { link_id: String },
@@ -437,7 +433,6 @@ pub enum StructuredError {
     OptionalOnObserverSlot {
         link_id: String,
     },
-    ZeroOrOneOnProducerSlot,
     PairingSlotMissingRole {
         link_id: String,
     },
@@ -473,7 +468,6 @@ impl From<StructuredError> for ParsingError {
             StructuredError::OptionalOnObserverSlot { link_id } => {
                 ParsingError::OptionalOnObserverSlot { link_id }
             }
-            StructuredError::ZeroOrOneOnProducerSlot => ParsingError::ZeroOrOneOnProducerSlot,
             StructuredError::PairingSlotMissingRole { link_id } => {
                 ParsingError::PairingSlotMissingRole { link_id }
             }

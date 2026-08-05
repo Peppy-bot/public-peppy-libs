@@ -7,8 +7,9 @@ use config::runtime::ProducerRef;
 /// the launch-validated "at least one" guarantee lives in the type rather
 /// than in a comment: [`first`](Self::first) is infallible and there is no
 /// empty branch to write. The sibling cardinalities keep their own shapes
-/// (`one` returns the sole `&ProducerRef` directly, `zero_or_more` a plain,
-/// possibly empty `&[ProducerRef]`), so flipping a slot's cardinality
+/// (`one` returns the sole `&ProducerRef` directly, `zero_or_one` an
+/// `Option<&ProducerRef>`, `zero_or_more` a plain, possibly empty
+/// `&[ProducerRef]`), so flipping a slot's cardinality
 /// changes the accessor's type and surfaces every affected call site at
 /// compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

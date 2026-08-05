@@ -172,8 +172,9 @@ impl PyTopicMessenger {
     /// set: one producer-pinned wire subscription per member of
     /// `bound_producers`, merged behind one [`PyBoundSetSubscription`]
     /// yielding `(producer, message)` tuples. An empty set opens zero wire
-    /// subscriptions and yields nothing until `shutdown` fires (the
-    /// `zero_or_more` empty-slot case). Generated code splices
+    /// subscriptions and yields nothing until `shutdown` fires (a
+    /// `zero_or_more` slot with no binding, or a vacant `zero_or_one` slot).
+    /// Generated code splices
     /// `node_runner.bound_producers(link_id)` and the node's cancellation
     /// token here.
     #[staticmethod]

@@ -141,11 +141,13 @@ impl ProducerRef {
 /// accessors, so selecting the first member is deterministic. Duplicates
 /// are rejected rather than removed or
 /// reordered. The set's validated size is the slot's declared
-/// `cardinality`: exactly one for `one` (the default), one or more for
-/// `one_or_more`, zero or more for `zero_or_more`; an empty set is a
-/// valid value only for a `zero_or_more` slot and simply has no bound
-/// edge. The set is fixed when the node starts; producers disconnecting
-/// at runtime never shrink it.
+/// `cardinality`: exactly one for `one` (the default), at most one for
+/// `zero_or_one`, one or more for `one_or_more`, zero or more for
+/// `zero_or_more`. An empty set has no bound edge, and it is the resolved
+/// form of two things: a `zero_or_more` slot the application bound nothing
+/// to, and a `zero_or_one` slot the deployment wrote vacant. The set is
+/// fixed when the node starts; producers disconnecting at runtime never
+/// shrink it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct BoundProducers(Vec<ProducerRef>);
@@ -268,9 +270,10 @@ impl<'de> Deserialize<'de> for BoundProducers {
 /// and the daemon graph: consumer slot `link_id` → the ordered producer
 /// set explicitly bound to that slot. The launcher validator materializes
 /// one entry per declared `depends_on.{nodes,contracts}` slot at plan
-/// time, sized per the slot's `cardinality`; an empty set is valid only
-/// for `zero_or_more` slots. Every member is a full wire address; there
-/// is no wildcard, no unbound state, and no discovery fallback.
+/// time, sized per the slot's `cardinality`; an empty set is valid on a
+/// `zero_or_more` slot and on a `zero_or_one` slot the deployment wrote
+/// vacant. Every member is a full wire address; there is no wildcard, no
+/// unbound state, and no discovery fallback.
 pub type SlotBindings = BTreeMap<String, BoundProducers>;
 
 /// State of one participant pairing slot (a `depends_on.pairings` entry) of a node
@@ -881,7 +884,8 @@ mod tests {
     /// `link_id` to the ORDERED ARRAY of full `(core_node, instance_id)`
     /// producer pairs bound to it — a one-element array for a
     /// `cardinality: "one"` slot, an empty array for an unbound
-    /// `zero_or_more` slot. A shape change here is a `graph_json` /
+    /// `zero_or_more` slot and for a `zero_or_one` slot the deployment wrote
+    /// vacant. A shape change here is a `graph_json` /
     /// launch-config wire break, so assert the exact JSON and that it
     /// round-trips with member order preserved.
     #[test]
