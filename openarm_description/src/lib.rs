@@ -283,6 +283,44 @@ impl HardwareVersion {
     }
 }
 
+/// A whole-arm joint posture (rad, j1..j7) in right-arm convention; the left
+/// arm takes its [`mirror`].
+pub type JointPosture = [f64; ARM_DOF];
+
+/// The right-arm Ready posture: elbows bent, hands forward, prepared to work.
+/// The single source both the executor (backbone) and any gesture authoring
+/// anchor on; in-limit for both generations, pinned by test.
+pub const READY_R: JointPosture = [0.15, 0.40, -0.48, 0.95, 0.0, 0.0, 0.0];
+
+/// The right-arm Home posture: hanging at rest with the elbow held exactly at
+/// its singularity floor, the safe posture to power down from. In-limit for
+/// both generations, pinned by test.
+pub const HOME_R: JointPosture = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
+
+/// Mirror a right-arm posture onto the left arm: j1..j3 flip sign, the elbow
+/// and wrist do not. Exported for right-convention gesture authoring; for the
+/// postures themselves, [`ready`] and [`home`] resolve a side directly.
+pub const fn mirror(q: JointPosture) -> JointPosture {
+    [-q[0], -q[1], -q[2], q[3], q[4], q[5], q[6]]
+}
+
+/// One side's Ready posture.
+pub const fn ready(side: Side) -> JointPosture {
+    for_side(side, READY_R)
+}
+
+/// One side's Home posture.
+pub const fn home(side: Side) -> JointPosture {
+    for_side(side, HOME_R)
+}
+
+const fn for_side(side: Side, right: JointPosture) -> JointPosture {
+    match side {
+        Side::Left => mirror(right),
+        Side::Right => right,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +423,50 @@ mod tests {
             v2.lower,
             v2.upper
         );
+    }
+
+    #[test]
+    fn both_postures_sit_inside_every_generation_and_side_limits() {
+        for v in [HardwareVersion::V1, HardwareVersion::V2] {
+            for side in [Side::Left, Side::Right] {
+                let limits = v.joint_limits(side);
+                for (name, posture) in
+                    [("ready", ready as fn(Side) -> JointPosture), ("home", home)]
+                {
+                    let q = posture(side);
+                    for j in 0..ARM_DOF {
+                        assert!(
+                            limits[j][0] <= q[j] && q[j] <= limits[j][1],
+                            "{v:?} {side:?} {name} j{} = {} outside {:?}",
+                            j + 1,
+                            q[j],
+                            limits[j],
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn home_holds_the_elbow_at_its_floor() {
+        for v in [HardwareVersion::V1, HardwareVersion::V2] {
+            assert_eq!(
+                HOME_R[v.elbow_joint_index()],
+                v.elbow_singularity_floor_rad()
+            );
+        }
+    }
+
+    #[test]
+    fn mirror_flips_the_shoulder_and_keeps_the_elbow_and_wrist() {
+        let m = mirror(READY_R);
+        for j in 0..3 {
+            assert_eq!(m[j], -READY_R[j]);
+        }
+        for j in 3..ARM_DOF {
+            assert_eq!(m[j], READY_R[j]);
+        }
     }
 
     #[test]
