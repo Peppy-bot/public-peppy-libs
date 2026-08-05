@@ -991,8 +991,8 @@ impl PyNodeRunner {
         })
     }
 
-    /// Handle onto the `cardinality: "one"` observer slot declared at `link_id`
-    /// in `depends_on.pairing_observers`:
+    /// Handle onto the scalar observer slot declared at `link_id` in
+    /// `depends_on.pairing_observers` (a `one` or `zero_or_one` slot):
     /// `observation_slot(link_id).source()` returns the observed source once
     /// the daemon has delivered it. Raises `ValueError` if the manifest
     /// declares no such observer slot, and panics if it declares one with a
@@ -1008,8 +1008,8 @@ impl PyNodeRunner {
     /// `depends_on.pairing_observers` (a `one_or_more` or `zero_or_more` slot):
     /// `observation_slot_set(link_id).sources()` returns every pairing it
     /// currently observes, in plan order. Raises `ValueError` if the manifest
-    /// declares no such observer slot, and panics if it declares one with
-    /// `cardinality: "one"`, which is read through `observation_slot`.
+    /// declares no such observer slot, and panics if it declares one with a
+    /// scalar cardinality, which is read through `observation_slot`.
     fn observation_slot_set(
         &self,
         link_id: &str,

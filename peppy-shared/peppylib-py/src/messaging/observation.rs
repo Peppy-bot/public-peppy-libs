@@ -1,8 +1,8 @@
 //! Python bindings for the observer runtime surface: [`PyObservedSource`] (one
-//! observed pairing of an observer slot), [`PyObservationSlot`] (read a
-//! `cardinality: "one"` slot's source), [`PyObservationSlotSet`] (read a
-//! multi-member slot's whole set), and [`PyObservedSubscription`] (receive the
-//! observed sources' publishes on one topic, yielded as `(producer, message)`).
+//! observed pairing of an observer slot), [`PyObservationSlot`] (read a scalar
+//! slot's source), [`PyObservationSlotSet`] (read a multi-member slot's whole
+//! set), and [`PyObservedSubscription`] (receive the observed sources'
+//! publishes on one topic, yielded as `(producer, message)`).
 
 use super::target::PyProducerRef;
 use super::topics::PyTopicMessage;
@@ -53,10 +53,11 @@ impl From<ObservedSource> for PyObservedSource {
     }
 }
 
-/// Handle onto a `cardinality: "one"` observer slot's live observation state,
-/// obtained via `node_runner.observation_slot(link_id)`. `source()` reads the
-/// observed source (or `None` before the daemon has delivered it). Multi-member
-/// slots are read through [`PyObservationSlotSet`] instead.
+/// Handle onto a scalar observer slot's live observation state (a
+/// `cardinality: "one"` or `cardinality: "zero_or_one"` slot), obtained via
+/// `node_runner.observation_slot(link_id)`. `source()` reads the observed
+/// source (or `None` before the daemon has delivered it). Multi-member slots
+/// are read through [`PyObservationSlotSet`] instead.
 #[pyclass(name = "ObservationSlot")]
 pub struct PyObservationSlot {
     pub(crate) inner: ObservationSlot,
@@ -65,12 +66,12 @@ pub struct PyObservationSlot {
 #[pymethods]
 impl PyObservationSlot {
     /// The observed source of this slot, or `None` before the daemon has
-    /// delivered it.
+    /// delivered it, and for a `zero_or_one` slot the deployment wrote vacant.
     ///
     /// Raises `PanicException` if the slot holds more than one member, which a
-    /// `cardinality: "one"` slot cannot have: reading a multi-member slot
-    /// through this accessor is stale codegen, so regenerate the node's
-    /// bindings and read it through `ObservationSlotSet.sources()`.
+    /// scalar slot cannot have: reading a multi-member slot through this
+    /// accessor is stale codegen, so regenerate the node's bindings and read it
+    /// through `ObservationSlotSet.sources()`.
     fn source(&self) -> Option<PyObservedSource> {
         self.inner.source().map(PyObservedSource::from)
     }

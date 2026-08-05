@@ -457,9 +457,9 @@ impl Processor {
 
     /// The `cardinality` the manifest declares for the observer slot at
     /// `link_id`, or `None` when it declares no such slot. Types the slot's
-    /// accessor: `one` slots are read through
-    /// [`crate::runtime::NodeRunner::observation_slot`], the rest through
-    /// [`crate::runtime::NodeRunner::observation_slot_set`].
+    /// accessor: scalar slots (`one`, `zero_or_one`) are read through
+    /// [`crate::runtime::NodeRunner::observation_slot`], the multi-member ones
+    /// through [`crate::runtime::NodeRunner::observation_slot_set`].
     pub(crate) fn observation_slot_cardinality(&self, link_id: &str) -> Option<Cardinality> {
         self.observation_cardinalities.get(link_id).copied()
     }

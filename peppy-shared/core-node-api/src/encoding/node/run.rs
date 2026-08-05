@@ -273,16 +273,19 @@ pub struct NodeRunGoal {
     /// reserves each pair BEFORE spawning and delivers it live after the
     /// instance commits to Running.
     pub requested_pairs: BTreeMap<String, PairTarget>,
-    /// Pairing slot link_ids deliberately left unpaired via `--defer-pair` /
-    /// the launcher's `defer_pairings:`. Together with `requested_pairs` and
-    /// `covered_pairs` these must cover every required pairing slot of the
-    /// manifest, or the daemon rejects the run.
-    pub deferred_pairs: Vec<String>,
+    /// Pairing slots deliberately left unpaired, keyed by this instance's
+    /// slot link_id; each value is the reason the deployment wrote down
+    /// (`--vacant-link <link_id>=<why>`, or the launcher's
+    /// `links: { <link_id>: { vacant: "<why>" } }`) and is never empty.
+    /// Together with `requested_pairs` and `covered_pairs` these must cover
+    /// every required pairing slot of the manifest, or the daemon rejects the
+    /// run.
+    pub vacant_pairs: BTreeMap<String, String>,
     /// Pairing slots of this instance that a LATER-starting instance of the
     /// same `stack launch` will claim through its own `requested_pairs`
     /// entry, keyed by this instance's slot link_id; each value names that
     /// future peer. A launch-mechanism marker, not user intent: the slot
-    /// boots unpaired and needs no action, unlike a `deferred_pairs` entry
+    /// boots unpaired and needs no action, unlike a `vacant_pairs` entry
     /// which records a deliberate opt-out. Never set by the CLI.
     pub covered_pairs: BTreeMap<String, PairTarget>,
     /// Observer requests from `--link <observer_link>@<source>[/<source_link>]`
@@ -319,7 +322,7 @@ impl NodeRunGoal {
             env_vars: Vec::new(),
             timeout_secs,
             requested_pairs: BTreeMap::new(),
-            deferred_pairs: Vec::new(),
+            vacant_pairs: BTreeMap::new(),
             covered_pairs: BTreeMap::new(),
             planned_observations: BTreeMap::new(),
             launch_id: None,
@@ -344,8 +347,8 @@ impl NodeRunGoal {
         self
     }
 
-    pub fn with_deferred_pairs(mut self, deferred_pairs: Vec<String>) -> Self {
-        self.deferred_pairs = deferred_pairs;
+    pub fn with_vacant_pairs(mut self, vacant_pairs: BTreeMap<String, String>) -> Self {
+        self.vacant_pairs = vacant_pairs;
         self
     }
 
@@ -426,11 +429,10 @@ impl NodeRunGoal {
                 &self.requested_pairs,
             );
 
-            let deferred_count =
-                capnp_list_len(self.deferred_pairs.len(), "NodeRunGoal.deferred_pairs")?;
-            write_text_list(
-                goal.reborrow().init_deferred_pairs(deferred_count),
-                &self.deferred_pairs,
+            let vacant_count = capnp_list_len(self.vacant_pairs.len(), "NodeRunGoal.vacant_pairs")?;
+            fill_vacant_pairs(
+                goal.reborrow().init_vacant_pairs(vacant_count),
+                &self.vacant_pairs,
             );
 
             let covered_count =
@@ -492,7 +494,7 @@ impl NodeRunGoal {
             env_vars,
             timeout_secs: goal.get_timeout_secs(),
             requested_pairs: read_pair_requests(goal.get_requested_pairs()?)?,
-            deferred_pairs: read_text_list(goal.get_deferred_pairs()?)?,
+            vacant_pairs: read_vacant_pairs(goal.get_vacant_pairs()?)?,
             covered_pairs: read_pair_requests(goal.get_covered_pairs()?)?,
             planned_observations: read_observation_requests(goal.get_planned_observations()?)?,
         })
@@ -562,6 +564,39 @@ fn read_pair_requests(
         );
     }
     Ok(pairs)
+}
+
+/// Writes a `link_id -> reason` map into an initialized `List(VacantPair)`
+/// builder ([`NodeRunGoal::vacant_pairs`]).
+fn fill_vacant_pairs(
+    mut list: capnp::struct_list::Builder<'_, node_capnp::vacant_pair::Owned>,
+    vacant: &BTreeMap<String, String>,
+) {
+    for (idx, (link_id, reason)) in vacant.iter().enumerate() {
+        let mut pair = list.reborrow().get(idx as u32);
+        pair.set_link_id(link_id);
+        pair.set_reason(reason);
+    }
+}
+
+/// Inverse of [`fill_vacant_pairs`]. The reason is required: a vacancy is
+/// rejected without one wherever it is written, so an empty one here means
+/// the sender dropped it and the operator would be shown a blank explanation
+/// for an unpaired slot.
+fn read_vacant_pairs(
+    list: capnp::struct_list::Reader<'_, node_capnp::vacant_pair::Owned>,
+) -> Result<BTreeMap<String, String>> {
+    let mut vacant = BTreeMap::new();
+    for idx in 0..list.len() {
+        let pair = list.get(idx);
+        let link_id = pair.get_link_id()?.to_str()?.to_owned();
+        let reason = required_text(
+            pair.get_reason()?.to_str()?,
+            &format!("NodeRunGoal.vacant_pairs[`{link_id}`].reason"),
+        )?;
+        vacant.insert(link_id, reason);
+    }
+    Ok(vacant)
 }
 
 /// Writes a [`ProducerRef`] into an initialized `InstanceAddress` builder.
@@ -958,7 +993,14 @@ mod tests {
                 .into_iter()
                 .collect(),
             )
-            .with_deferred_pairs(vec!["spare".to_owned()])
+            .with_vacant_pairs(
+                [(
+                    "spare".to_owned(),
+                    "bench rig: no second controller on this bench".to_owned(),
+                )]
+                .into_iter()
+                .collect(),
+            )
             .with_covered_pairs(
                 [(
                     "left".to_owned(),
@@ -988,7 +1030,10 @@ mod tests {
             decoded.requested_pairs["deliberation"].peer.core_node,
             "cn-atlas-h100"
         );
-        assert_eq!(decoded.deferred_pairs, vec!["spare".to_owned()]);
+        assert_eq!(
+            decoded.vacant_pairs["spare"],
+            "bench rig: no second controller on this bench"
+        );
         assert_eq!(
             decoded.covered_pairs["left"],
             PairTarget::pinned("cmd_1", "left_arm", "cn-local")
@@ -996,6 +1041,24 @@ mod tests {
         assert_eq!(
             decoded.planned_observations["observed_arm"].as_slice(),
             [ObservationTarget::new("arm_1", "controller", "cn-local")]
+        );
+    }
+
+    /// The reason is what a vacancy IS on the wire, so a goal that carries an
+    /// empty one is refused at the boundary rather than shown to an operator
+    /// as an unexplained unpaired slot.
+    #[test]
+    fn node_run_goal_rejects_a_vacant_pair_without_a_reason() {
+        let goal = NodeRunGoal::new(plan("arm_1"), "robot_arm", "v1", 0).with_vacant_pairs(
+            [("controller".to_owned(), String::new())]
+                .into_iter()
+                .collect(),
+        );
+        let encoded = goal.encode().expect("encode");
+        let err = NodeRunGoal::decode(&encoded).expect_err("an empty reason must be refused");
+        assert!(
+            err.to_string().contains("controller"),
+            "the error should name the slot: {err}"
         );
     }
 
