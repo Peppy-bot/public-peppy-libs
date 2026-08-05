@@ -83,15 +83,16 @@ impl NodeRunner {
             })
     }
 
-    /// Handle onto the `cardinality: "one"` observer slot declared at `link_id`
-    /// in `depends_on.pairing_observers`. Exposes the slot's observed source:
-    /// `observation_slot(link_id)?.source()` returns it once the daemon has
-    /// delivered it. Errors if the manifest declares no such observer slot, and
-    /// panics if it declares one with a multi-member cardinality, which is read
-    /// through [`Self::observation_slot_set`] instead.
+    /// Handle onto the scalar observer slot declared at `link_id` in
+    /// `depends_on.pairing_observers` (a `one` or `zero_or_one` slot). Exposes
+    /// the slot's observed source: `observation_slot(link_id)?.source()` returns
+    /// it once the daemon has delivered it. Errors if the manifest declares no
+    /// such observer slot, and panics if it declares one with a multi-member
+    /// cardinality, which is read through [`Self::observation_slot_set`]
+    /// instead.
     pub fn observation_slot(&self, link_id: &str) -> crate::error::Result<super::ObservationSlot> {
         let cardinality = self.observation_slot_cardinality(link_id)?;
-        if !cardinality.is_one() {
+        if !cardinality.is_scalar() {
             super::observation::observer_shape_panic(
                 link_id,
                 "observation_slot()",
@@ -100,6 +101,7 @@ impl NodeRunner {
         }
         Ok(super::ObservationSlot::new(
             link_id,
+            cardinality,
             self.observation_slot_watch(link_id)?,
         ))
     }
@@ -109,14 +111,14 @@ impl NodeRunner {
     /// Exposes the slot's live member set: `observation_slot_set(link_id)?
     /// .sources()` returns every pairing it currently observes, in plan order.
     /// Errors if the manifest declares no such observer slot, and panics if it
-    /// declares one with `cardinality: "one"`, which is read through
+    /// declares one with a scalar cardinality, which is read through
     /// [`Self::observation_slot`] instead.
     pub fn observation_slot_set(
         &self,
         link_id: &str,
     ) -> crate::error::Result<super::ObservationSlotSet> {
         let cardinality = self.observation_slot_cardinality(link_id)?;
-        if cardinality.is_one() {
+        if cardinality.is_scalar() {
             super::observation::observer_shape_panic(
                 link_id,
                 "observation_slot_set()",

@@ -381,9 +381,17 @@ pub enum ParsingError {
     )]
     ConsumedItemReferencesImplementsLinkId { link_id: String },
     #[error(
-        "Participant pairing slot `{link_id}` in depends_on.pairings carries a `cardinality` key: a pairing is strictly 1:1 between two complementary slots, so there is no set to size; a slot that boots unpaired is deferred explicitly at start. `cardinality` is valid on depends_on.nodes, depends_on.contracts and depends_on.pairing_observers entries"
+        "Participant pairing slot `{link_id}` in depends_on.pairings carries a `cardinality` key: a pairing is strictly 1:1 between two complementary slots, so there is no set to size; a slot a deployment may run with no peer is declared `optional: true` instead. `cardinality` is valid on depends_on.nodes, depends_on.contracts and depends_on.pairing_observers entries"
     )]
     CardinalityOnPairingSlot { link_id: String },
+    #[error(
+        "Observer pairing slot `{link_id}` in depends_on.pairing_observers carries an `optional` key: an observer claims no endpoint and takes no peer, so it has nothing to waive; a slot that may observe nothing declares `cardinality: \"zero_or_one\"` instead. `optional` is valid on depends_on.pairings entries"
+    )]
+    OptionalOnObserverSlot { link_id: String },
+    #[error(
+        "Cardinality `zero_or_one` names an observer slot's member set and is not valid on a producer slot. A `depends_on.nodes` or `depends_on.contracts` slot binds its producer set once, when the node starts, and its accessor is typed from this key, so it is sized `one`, `one_or_more` or `zero_or_more`"
+    )]
+    ZeroOrOneOnProducerSlot,
     #[error(
         "Pairing slot `{link_id}` declares no `role`. Every entry in depends_on.pairings names the role this node plays, and every entry in depends_on.pairing_observers names the role it observes"
     )]
@@ -426,6 +434,10 @@ pub enum StructuredError {
     CardinalityOnPairingSlot {
         link_id: String,
     },
+    OptionalOnObserverSlot {
+        link_id: String,
+    },
+    ZeroOrOneOnProducerSlot,
     PairingSlotMissingRole {
         link_id: String,
     },
@@ -458,6 +470,10 @@ impl From<StructuredError> for ParsingError {
             StructuredError::CardinalityOnPairingSlot { link_id } => {
                 ParsingError::CardinalityOnPairingSlot { link_id }
             }
+            StructuredError::OptionalOnObserverSlot { link_id } => {
+                ParsingError::OptionalOnObserverSlot { link_id }
+            }
+            StructuredError::ZeroOrOneOnProducerSlot => ParsingError::ZeroOrOneOnProducerSlot,
             StructuredError::PairingSlotMissingRole { link_id } => {
                 ParsingError::PairingSlotMissingRole { link_id }
             }

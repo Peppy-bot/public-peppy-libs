@@ -873,14 +873,23 @@ pub struct ActionTopicEndpoint {
 /// same spellings constrain the member count the planner accepts, and the
 /// member set the daemon delivers changes over the node's lifetime.
 /// Participant pairing slots carry no cardinality: a pairing is strictly 1:1
-/// between two complementary slots, and a participant slot that boots
-/// unpaired is deferred explicitly.
+/// between two complementary slots, and a participant slot that may run
+/// unpaired says so with `optional: true` instead.
+///
+/// [`Cardinality::ZeroOrOne`] is an observer-slot spelling: producer slots
+/// take the other three, and [`deserialize_producer_cardinality`] refuses it
+/// on `depends_on.nodes` and `depends_on.contracts` so producer-side code
+/// reads one of three variants.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Cardinality {
     /// The slot binds exactly one producer (the default when omitted).
     #[default]
     One,
+    /// The observer slot observes at most one pairing: the deployment either
+    /// links one, or writes the slot vacant with the reason it stays empty.
+    /// Scalar-shaped like [`Cardinality::One`], with a floor of zero.
+    ZeroOrOne,
     /// The slot binds one or more producers; an empty set is a binding error.
     OneOrMore,
     /// The slot binds zero or more producers; an empty set is valid and
@@ -893,35 +902,68 @@ impl Cardinality {
         matches!(self, Cardinality::One)
     }
 
-    /// Whether an empty bound set satisfies the slot.
+    /// Whether the slot holds at most one source, so its generated accessor is
+    /// singular (`source()` answering an `Option`) rather than set-valued.
+    /// The one shape rule, shared by the code generator, the node runtime's
+    /// observation-slot handles and the launcher's error hints, so an accessor
+    /// and the handle it calls can never disagree about a slot's shape.
+    pub fn is_scalar(&self) -> bool {
+        matches!(self, Cardinality::One | Cardinality::ZeroOrOne)
+    }
+
+    /// Whether an empty bound set satisfies the slot without the deployment
+    /// saying anything. `zero_or_one` is deliberately absent: it admits an
+    /// empty set, but only where the deployment wrote the slot vacant, so an
+    /// omitted `zero_or_one` slot stays uncovered.
     pub fn allows_empty(&self) -> bool {
         matches!(self, Cardinality::ZeroOrMore)
     }
 
     /// Whether a set of `len` sources satisfies the slot: exactly one for
-    /// `one`, at least one for `one_or_more`, any size for `zero_or_more`.
-    /// The one size-admission rule, shared by plan-time binding validation and
-    /// the node runtime's startup re-check of bound producers. Observer slots
-    /// go through the shape check in the launcher instead, and only at plan
-    /// time: an observed member set changes while the node runs, so no size
-    /// holds across its lifetime.
+    /// `one`, at most one for `zero_or_one`, at least one for `one_or_more`,
+    /// any size for `zero_or_more`. The one size-admission rule, shared by
+    /// plan-time binding validation and the node runtime's startup re-check of
+    /// bound producers. Observer slots go through the shape check in the
+    /// launcher instead, and only at plan time: an observed member set changes
+    /// while the node runs, so no size holds across its lifetime.
     pub fn admits(&self, len: usize) -> bool {
         match self {
             Cardinality::One => len == 1,
+            Cardinality::ZeroOrOne => len <= 1,
             Cardinality::OneOrMore => len >= 1,
             Cardinality::ZeroOrMore => true,
         }
     }
 
-    /// The manifest spelling (`one`, `one_or_more`, `zero_or_more`), for
-    /// error messages.
+    /// The manifest spelling (`one`, `zero_or_one`, `one_or_more`,
+    /// `zero_or_more`), for error messages.
     pub fn as_str(&self) -> &'static str {
         match self {
             Cardinality::One => "one",
+            Cardinality::ZeroOrOne => "zero_or_one",
             Cardinality::OneOrMore => "one_or_more",
             Cardinality::ZeroOrMore => "zero_or_more",
         }
     }
+}
+
+/// Reads a producer slot's `cardinality`, refusing the observer-only
+/// `zero_or_one`. A bound producer set is fixed when the node starts and its
+/// accessor is typed from this key, so "at most one producer" has no accessor
+/// to generate and no runtime state to hold; the three producer spellings are
+/// the whole vocabulary. Shared by `depends_on.nodes` and
+/// `depends_on.contracts`, which size their bound sets identically.
+fn deserialize_producer_cardinality<'de, D>(deserializer: D) -> Result<Cardinality, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let cardinality = Cardinality::deserialize(deserializer)?;
+    if cardinality == Cardinality::ZeroOrOne {
+        return Err(de::Error::custom(
+            crate::error::StructuredError::ZeroOrOneOnProducerSlot.json5_message(),
+        ));
+    }
+    Ok(cardinality)
 }
 
 impl fmt::Display for Cardinality {
@@ -937,10 +979,14 @@ pub struct NodeDependency {
     pub tag: String,
     #[serde(deserialize_with = "deserialize_node_dependency_link_id")]
     pub link_id: String,
-    /// Size constraint on the slot's application-bound producer set.
-    /// Serialized only when non-default so manifests written before the
-    /// field existed stay byte-identical on round-trip.
-    #[serde(default, skip_serializing_if = "Cardinality::is_one")]
+    /// Size constraint on the slot's application-bound producer set. Takes the
+    /// three producer spellings; serialized only when non-default so a
+    /// manifest that omits it round-trips byte-identical.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_producer_cardinality",
+        skip_serializing_if = "Cardinality::is_one"
+    )]
     pub cardinality: Cardinality,
 }
 
@@ -957,7 +1003,11 @@ pub struct ContractDependency {
     /// values and default as [`NodeDependency::cardinality`]; the only
     /// per-kind difference is the conformance rule applied per bound target
     /// (contract implementation instead of `(name, tag)` identity).
-    #[serde(default, skip_serializing_if = "Cardinality::is_one")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_producer_cardinality",
+        skip_serializing_if = "Cardinality::is_one"
+    )]
     pub cardinality: Cardinality,
 }
 
@@ -985,9 +1035,12 @@ pub struct ImplementsEntry {
 /// counterpart-role topics it consumes) through `link_id`. Like contract
 /// dependencies, a pairing slot contributes no DAG edge.
 ///
-/// Every participant slot is linked or explicitly deferred at start; a
-/// deployment that runs the node with the slot unpaired says so by deferring
-/// it.
+/// `optional` is the node's own, deployment-independent statement that the
+/// slot may run with no peer at all. It gates the launcher: only an optional
+/// slot may be written `{ vacant: "<why>" }` in a deployment's `links`, and a
+/// slot left out of `links` entirely is uncovered either way, so forgetting to
+/// link a slot stays an error whether or not it is optional. The manifest says
+/// "may be empty"; the deployment says "is empty here, because".
 ///
 /// Deliberately carries no `cardinality`: a pairing is strictly 1:1 between two
 /// complementary slots. The custom `Deserialize` below turns a `cardinality`
@@ -1001,6 +1054,10 @@ pub struct PairingParticipantDependency {
     pub link_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+    /// Whether a deployment may run this slot with no peer. Serialized only
+    /// when set so a manifest that omits it round-trips byte-identical.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
 }
 
 /// An observer pairing slot, declared under `depends_on.pairing_observers`:
@@ -1015,9 +1072,16 @@ pub struct PairingParticipantDependency {
 ///
 /// `cardinality` sizes the slot's observed member set the same way it sizes a
 /// producer-binding slot's bound set: `one` observes exactly one pairing,
-/// `one_or_more` at least one, `zero_or_more` any number including none. The
-/// planner validates the count; the member set the daemon delivers changes
-/// while the node runs.
+/// `zero_or_one` at most one, `one_or_more` at least one, `zero_or_more` any
+/// number including none. The planner validates the count; the member set the
+/// daemon delivers changes while the node runs.
+///
+/// `zero_or_one` is the observer counterpart of a participant slot's
+/// `optional`: it is the node's own statement that the slot may observe
+/// nothing, and it is the one observer cardinality a deployment may write
+/// `{ vacant: "<why>" }` on. Like `one`, it is scalar-shaped, so the slot
+/// still needs an explicit `links` entry: an omitted `zero_or_one` slot is
+/// uncovered, which keeps "forgot" distinguishable from "decided".
 #[derive(Debug, Clone, Serialize)]
 pub struct PairingObserverDependency {
     pub name: Name,
@@ -1034,9 +1098,15 @@ pub struct PairingObserverDependency {
 
 /// The wire shape both pairing slot kinds deserialize through. `role` is
 /// `Option` only so a missing one produces the targeted
-/// `PairingSlotMissingRole` error instead of serde's generic message;
-/// `cardinality` is a real field on observer slots and a targeted error on
-/// participant ones.
+/// `PairingSlotMissingRole` error instead of serde's generic message.
+///
+/// `cardinality` and `optional` are the two keys that belong to exactly one
+/// slot kind each: `cardinality` sizes an observer's member set and is a
+/// targeted error on a participant, `optional` waives a participant's peer and
+/// is a targeted error on an observer (which says the same thing with
+/// `cardinality: "zero_or_one"`). Both live here so each kind rejects the
+/// other's key by name rather than through serde's generic unknown-field
+/// message.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPairingSlot {
@@ -1047,6 +1117,7 @@ struct RawPairingSlot {
     link_id: String,
     sha256: Option<String>,
     cardinality: Option<Cardinality>,
+    optional: Option<bool>,
 }
 
 impl RawPairingSlot {
@@ -1089,6 +1160,7 @@ impl<'de> Deserialize<'de> for PairingParticipantDependency {
             role,
             link_id: raw.link_id,
             sha256: raw.sha256,
+            optional: raw.optional.unwrap_or(false),
         })
     }
 }
@@ -1100,6 +1172,17 @@ impl<'de> Deserialize<'de> for PairingObserverDependency {
     {
         let raw = RawPairingSlot::deserialize(deserializer)?;
         let role = raw.validated_role("PairingObserverDependency.role")?;
+        // An observer slot is sized, not paired, so "may be empty" is a floor
+        // of zero on its member set rather than a waived peer; the key is an
+        // error even spelled `false`.
+        if raw.optional.is_some() {
+            return Err(de::Error::custom(
+                crate::error::StructuredError::OptionalOnObserverSlot {
+                    link_id: raw.link_id,
+                }
+                .json5_message(),
+            ));
+        }
         Ok(Self {
             name: raw.name,
             tag: raw.tag,
@@ -2529,11 +2612,10 @@ mod tests {
         );
     }
 
-    /// Only the three defined spellings parse, on every slot kind that takes
-    /// the key; `zero_or_one` is intentionally not a cardinality.
+    /// Only defined spellings parse, on every slot kind that takes the key.
     #[test]
     fn depends_on_cardinality_rejects_unknown_values() {
-        for value in ["zero_or_one", "many", "two", "ONE_OR_MORE", ""] {
+        for value in ["many", "two", "ONE_OR_MORE", ""] {
             let contract_json5 = format!(
                 r#"{{
                     contracts: [
@@ -2558,6 +2640,69 @@ mod tests {
                 "cardinality `{value}` should be rejected on an observer slot"
             );
         }
+    }
+
+    /// `zero_or_one` sizes an observed member set and nothing else: it parses
+    /// on an observer slot, and both producer families reject it with a
+    /// targeted message rather than accepting a spelling they have no accessor
+    /// for. The participant bar is `CardinalityOnPairingSlot`, which covers
+    /// every spelling and is asserted in
+    /// `participant_entry_rejects_cardinality_with_targeted_error`.
+    #[test]
+    fn zero_or_one_parses_on_an_observer_slot_and_is_rejected_on_producer_slots() {
+        let observer_json5 = r#"{
+            pairing_observers: [
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "zero_or_one" }
+            ]
+        }"#;
+        let deps: DependsOn = serde_json5::from_str(observer_json5).expect("should parse");
+        assert_eq!(deps.pairing_observers[0].cardinality, Cardinality::ZeroOrOne);
+
+        for producer_json5 in [
+            r#"{ nodes: [ { name: "arm", tag: "v1", link_id: "arm", cardinality: "zero_or_one" } ] }"#,
+            r#"{ contracts: [ { name: "uvc_camera", tag: "v1", link_id: "camera", cardinality: "zero_or_one" } ] }"#,
+        ] {
+            let err = crate::error::ParsingError::from(
+                serde_json5::from_str::<DependsOn>(producer_json5)
+                    .expect_err("zero_or_one on a producer slot must be rejected"),
+            );
+            assert!(
+                matches!(&err, crate::error::ParsingError::ZeroOrOneOnProducerSlot),
+                "expected ZeroOrOneOnProducerSlot, got {err:?}"
+            );
+        }
+    }
+
+    /// `zero_or_one` is not the default, so it round-trips explicitly, and the
+    /// observer accessor shape follows `is_scalar` rather than `is_one`.
+    #[test]
+    fn zero_or_one_round_trips_and_is_scalar_shaped() {
+        let slot: PairingObserverDependency = serde_json5::from_str(
+            r#"{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "zero_or_one" }"#,
+        )
+        .unwrap();
+        let serialized = serde_json5::to_string(&slot).unwrap();
+        assert!(
+            serialized.contains("\"cardinality\":\"zero_or_one\""),
+            "zero_or_one must round-trip: {serialized}"
+        );
+        let reparsed: PairingObserverDependency = serde_json5::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.cardinality, Cardinality::ZeroOrOne);
+
+        assert!(Cardinality::ZeroOrOne.is_scalar());
+        assert!(Cardinality::One.is_scalar());
+        assert!(!Cardinality::OneOrMore.is_scalar());
+        assert!(!Cardinality::ZeroOrMore.is_scalar());
+        assert!(
+            !Cardinality::ZeroOrOne.is_one(),
+            "`zero_or_one` is not the default, so it serializes"
+        );
+        assert!(
+            !Cardinality::ZeroOrOne.allows_empty(),
+            "an omitted `zero_or_one` slot stays uncovered: only a written vacancy empties it"
+        );
+        assert!(Cardinality::ZeroOrOne.admits(0) && Cardinality::ZeroOrOne.admits(1));
+        assert!(!Cardinality::ZeroOrOne.admits(2));
     }
 
     /// An omitted cardinality is not serialized (existing manifests stay
@@ -2612,7 +2757,7 @@ mod tests {
     /// to size.
     #[test]
     fn participant_entry_rejects_cardinality_with_targeted_error() {
-        for value in ["one", "one_or_more", "zero_or_more"] {
+        for value in ["one", "zero_or_one", "one_or_more", "zero_or_more"] {
             let json5 = format!(
                 r#"{{
                     pairings: [
@@ -2630,8 +2775,8 @@ mod tests {
             assert_eq!(link_id, "arm");
             let msg = parsing_err.to_string();
             assert!(
-                msg.contains("strictly 1:1") && msg.contains("deferred"),
-                "message should explain the pairing model and point at deferral: {msg}"
+                msg.contains("strictly 1:1") && msg.contains("optional: true"),
+                "message should explain the pairing model and name the key that waives a peer: {msg}"
             );
         }
 
@@ -2706,12 +2851,14 @@ mod tests {
         }
     }
 
-    /// A participant slot that boots unpaired is deferred at start, so
-    /// `optional` is not a manifest key on either pairing slot kind and gets
-    /// the plain unknown-field rejection.
+    /// `optional` waives a participant slot's peer, so it parses there and
+    /// nowhere else: an observer claims no endpoint and takes no peer, and says
+    /// "may observe nothing" with `cardinality: "zero_or_one"` instead. The
+    /// observer rejection is targeted rather than a generic unknown-field
+    /// message, so it can name the key that does say it.
     #[test]
-    fn pairing_entries_reject_optional_as_an_unknown_key() {
-        for value in ["true", "false"] {
+    fn optional_parses_on_a_participant_slot_and_is_rejected_on_an_observer() {
+        for (value, expected) in [("true", true), ("false", false)] {
             let participant = format!(
                 r#"{{
                     pairings: [
@@ -2719,10 +2866,9 @@ mod tests {
                     ]
                 }}"#
             );
-            assert!(
-                serde_json5::from_str::<DependsOn>(&participant).is_err(),
-                "optional: {value} on a participant slot must be rejected"
-            );
+            let deps: DependsOn = serde_json5::from_str(&participant)
+                .unwrap_or_else(|err| panic!("optional: {value} should parse: {err}"));
+            assert_eq!(deps.pairings[0].optional, expected);
 
             let observer = format!(
                 r#"{{
@@ -2731,11 +2877,44 @@ mod tests {
                     ]
                 }}"#
             );
+            let err = crate::error::ParsingError::from(
+                serde_json5::from_str::<DependsOn>(&observer)
+                    .expect_err("optional on an observer slot must be rejected"),
+            );
             assert!(
-                serde_json5::from_str::<DependsOn>(&observer).is_err(),
-                "optional: {value} on an observer slot must be rejected"
+                matches!(&err, crate::error::ParsingError::OptionalOnObserverSlot { link_id } if link_id == "watch"),
+                "expected OptionalOnObserverSlot, got {err:?}"
             );
         }
+    }
+
+    /// An omitted `optional` is the default and is not serialized, so a
+    /// manifest that never mentions the key round-trips byte-identical; an
+    /// explicit `optional: true` survives the round trip.
+    #[test]
+    fn participant_optional_serialization_round_trip() {
+        let required: PairingParticipantDependency = serde_json5::from_str(
+            r#"{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }"#,
+        )
+        .unwrap();
+        assert!(!required.optional);
+        let serialized = serde_json5::to_string(&required).unwrap();
+        assert!(
+            !serialized.contains("optional"),
+            "a required slot must not serialize `optional`: {serialized}"
+        );
+
+        let waived: PairingParticipantDependency = serde_json5::from_str(
+            r#"{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm", optional: true }"#,
+        )
+        .unwrap();
+        let serialized = serde_json5::to_string(&waived).unwrap();
+        assert!(
+            serialized.contains("\"optional\":true"),
+            "an optional slot must round-trip the flag: {serialized}"
+        );
+        let reparsed: PairingParticipantDependency = serde_json5::from_str(&serialized).unwrap();
+        assert!(reparsed.optional);
     }
 
     #[test]

@@ -38,40 +38,46 @@ pub(crate) fn observer_shape_panic(link_id: &str, accessor: &str, declared: &str
     )
 }
 
-/// Handle onto a `cardinality: "one"` observer slot's live observation state.
-/// Obtained via [`NodeRunner::observation_slot`]; the generated per-slot modules
-/// of `one` slots expose `source()` delegating here. Multi-member slots are read
-/// through [`ObservationSlotSet`] instead.
+/// Handle onto a scalar observer slot's live observation state (a `one` or
+/// `zero_or_one` slot). Obtained via [`NodeRunner::observation_slot`]; the
+/// generated per-slot modules of those slots expose `source()` delegating here.
+/// Multi-member slots are read through [`ObservationSlotSet`] instead.
 #[derive(Clone)]
 pub struct ObservationSlot {
     link_id: String,
+    /// The slot's declared cardinality, carried only so a shape panic names the
+    /// spelling the manifest actually uses.
+    cardinality: config::node::Cardinality,
     watch_rx: watch::Receiver<ObservationState>,
 }
 
 impl ObservationSlot {
     pub(crate) fn new(
         link_id: impl Into<String>,
+        cardinality: config::node::Cardinality,
         watch_rx: watch::Receiver<ObservationState>,
     ) -> Self {
         Self {
             link_id: link_id.into(),
+            cardinality,
             watch_rx,
         }
     }
 
     /// The observed source of this slot, or `None` before the daemon has
-    /// delivered it. Purely local configuration state; there is no
-    /// health-derived helper, because a third node's health is not knowable
-    /// here (see the design's "Generated observer API").
+    /// delivered it, and for a `zero_or_one` slot the deployment wrote vacant.
+    /// Purely local configuration state; there is no health-derived helper,
+    /// because a third node's health is not knowable here (see the design's
+    /// "Generated observer API").
     ///
-    /// Panics if the slot holds more than one member, which a `one` slot cannot
+    /// Panics if the slot holds more than one member, which a scalar slot cannot
     /// have: reading a multi-member slot through this accessor is stale codegen.
     pub fn source(&self) -> Option<ObservedSource> {
         let state = self.watch_rx.borrow();
         match state.members.as_slice() {
             [] => None,
             [sole] => Some(ObservedSource::from(sole)),
-            _ => observer_shape_panic(&self.link_id, "source()", "one"),
+            _ => observer_shape_panic(&self.link_id, "source()", self.cardinality.as_str()),
         }
     }
 }
@@ -84,7 +90,7 @@ impl ObservationSlot {
 /// The member set is live: the daemon replaces it whole whenever the plan's
 /// observed pairings change, so a set read now can differ from one read later,
 /// and an empty set is legal at any instant (before first delivery, during a
-/// replan, or for a `zero_or_more` slot the plan left unobserved).
+/// replan, or for a `zero_or_more` slot the deployment left unobserved).
 #[derive(Clone)]
 pub struct ObservationSlotSet {
     watch_rx: watch::Receiver<ObservationState>,
@@ -257,16 +263,29 @@ mod tests {
         }
     }
 
+    /// Both scalar cardinalities read through the same singular accessor, and
+    /// both answer `None` on an empty member set: a `one` slot before the
+    /// daemon has delivered its source, a `zero_or_one` slot for as long as the
+    /// deployment leaves it vacant.
     #[tokio::test]
-    async fn one_slot_reports_its_sole_source() {
-        let (tx, rx) = watch::channel(ObservationState::unregistered());
-        let slot = ObservationSlot::new("observed_arm", rx);
-        assert_eq!(slot.source(), None);
+    async fn a_scalar_slot_reports_its_sole_source() {
+        for cardinality in [
+            config::node::Cardinality::One,
+            config::node::Cardinality::ZeroOrOne,
+        ] {
+            let (tx, rx) = watch::channel(ObservationState::unregistered());
+            let slot = ObservationSlot::new("observed_arm", cardinality, rx);
+            assert_eq!(
+                slot.source(),
+                None,
+                "an undelivered `{cardinality}` slot observes nothing"
+            );
 
-        tx.send(state(vec![member("arm_1", 1)])).unwrap();
-        let src = slot.source().expect("slot should be resolved");
-        assert_eq!(src.producer, ProducerRef::new("core_a", "arm_1"));
-        assert_eq!(src.source_link_id, "commander");
+            tx.send(state(vec![member("arm_1", 1)])).unwrap();
+            let src = slot.source().expect("slot should be resolved");
+            assert_eq!(src.producer, ProducerRef::new("core_a", "arm_1"));
+            assert_eq!(src.source_link_id, "commander");
+        }
     }
 
     #[tokio::test]
@@ -293,13 +312,18 @@ mod tests {
         assert_eq!(set.sources().len(), 1);
     }
 
-    /// Reading a multi-member slot through the `one` accessor is stale codegen,
-    /// so it panics rather than silently reporting the first member.
+    /// Reading a multi-member slot through the singular accessor is stale
+    /// codegen, so it panics rather than silently reporting the first member,
+    /// and the panic names the cardinality the manifest declared.
     #[tokio::test]
-    #[should_panic(expected = "observed_joints")]
-    async fn one_accessor_on_a_multi_member_slot_panics() {
+    #[should_panic(expected = "observer slot `observed_joints` is declared `zero_or_one`")]
+    async fn a_scalar_accessor_on_a_multi_member_slot_panics() {
         let (tx, rx) = watch::channel(ObservationState::unregistered());
-        let slot = ObservationSlot::new("observed_joints", rx);
+        let slot = ObservationSlot::new(
+            "observed_joints",
+            config::node::Cardinality::ZeroOrOne,
+            rx,
+        );
         tx.send(state(vec![member("arm_1", 1), member("arm_2", 1)]))
             .unwrap();
         let _ = slot.source();
