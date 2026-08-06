@@ -9,9 +9,7 @@
 //! follows: the peer pin itself.
 
 use crate::error::{Error, Result};
-use crate::messaging::{
-    MessengerHandle, PeerInfo, PeerPin, PeerPinState, ProducerRef, SenderTarget,
-};
+use crate::messaging::{MessengerHandle, PeerInfo, PeerPinState, ProducerRef, SenderTarget};
 use crate::runtime::NodeRunner;
 use crate::runtime::slot_stream::{FollowedSlot, SlotStream, spawn_slot_stream};
 use crate::types::Message;
@@ -33,7 +31,7 @@ impl PeerSlot {
 
     /// The currently paired peer, or `None` while the slot is unpaired.
     pub fn paired(&self) -> Option<PeerInfo> {
-        self.watch_rx.borrow().pin.as_ref().map(PeerInfo::from)
+        self.watch_rx.borrow().pin.clone()
     }
 
     /// Waits until the slot is paired and returns the peer. Returns
@@ -42,7 +40,7 @@ impl PeerSlot {
     pub async fn wait_paired(&mut self) -> Result<PeerInfo> {
         loop {
             if let Some(pin) = self.watch_rx.borrow_and_update().pin.as_ref() {
-                return Ok(PeerInfo::from(pin));
+                return Ok(pin.clone());
             }
             self.watch_rx
                 .changed()
@@ -62,21 +60,21 @@ pub(crate) struct PeerFollow;
 
 impl FollowedSlot for PeerFollow {
     type State = PeerPinState;
-    type Pin = PeerPin;
+    type Pin = PeerInfo;
 
-    fn desired(state: &PeerPinState) -> Vec<PeerPin> {
+    fn desired(state: &PeerPinState) -> Vec<PeerInfo> {
         state.pin.clone().into_iter().collect()
     }
 
-    fn is_followed(state: &PeerPinState, pin: &PeerPin) -> bool {
+    fn is_followed(state: &PeerPinState, pin: &PeerInfo) -> bool {
         state.pin.as_ref() == Some(pin)
     }
 
-    fn producer(pin: &PeerPin) -> &ProducerRef {
+    fn producer(pin: &PeerInfo) -> &ProducerRef {
         &pin.producer
     }
 
-    fn producer_link_id(pin: &PeerPin) -> &str {
+    fn producer_link_id(pin: &PeerInfo) -> &str {
         &pin.peer_link_id
     }
 }
@@ -100,7 +98,7 @@ impl PeerSubscription {
         self.stream
             .next()
             .await
-            .map(|(pin, message)| (PeerInfo::from(&*pin), message))
+            .map(|(pin, message)| ((*pin).clone(), message))
     }
 }
 
@@ -165,8 +163,8 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn pin() -> PeerPin {
-        PeerPin {
+    fn pin() -> PeerInfo {
+        PeerInfo {
             producer: ProducerRef::new("core_a", "arm_1"),
             peer_link_id: "controller".to_string(),
         }

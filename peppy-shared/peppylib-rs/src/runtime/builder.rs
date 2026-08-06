@@ -49,7 +49,7 @@ pub struct StandaloneConfig {
     /// Daemon-less pairing pins: pre-pair a declared pairing slot (keyed by
     /// its link_id) to a known peer, standing in for the daemon's live
     /// `peer_update` delivery during standalone development.
-    pub peer_pins: std::collections::BTreeMap<String, crate::messaging::PeerPin>,
+    pub peer_pins: std::collections::BTreeMap<String, crate::messaging::PeerInfo>,
     /// Daemon-less consumer-slot bindings: the ordered producer set bound
     /// to each declared `depends_on` slot (keyed by its link_id), standing
     /// in for the launcher's validated binding map during standalone
@@ -134,7 +134,7 @@ impl StandaloneConfig {
     ) -> Self {
         self.peer_pins.insert(
             link_id.into(),
-            crate::messaging::PeerPin {
+            crate::messaging::PeerInfo {
                 producer: crate::messaging::ProducerRef::new(
                     peer_core_node.into(),
                     peer_instance_id.into(),

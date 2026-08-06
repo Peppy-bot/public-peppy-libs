@@ -8,8 +8,8 @@ mod common;
 use common::get_client_server;
 use config::node::QoSProfile;
 use peppylib::messaging::{
-    MessengerHandle, ObservationPin, ObservationState, ObservedMemberState, ObservedSource,
-    ProducerRef, SenderTarget, TopicPublisher,
+    MessengerHandle, ObservationState, ObservedMemberState, ObservedSource, ProducerRef,
+    SenderTarget, TopicPublisher,
 };
 use peppylib::runtime::{ObservedTopicSubscription, subscribe_observed_with_watch};
 use peppylib::types::Payload;
@@ -37,7 +37,7 @@ fn member(instance_id: &str, generation: u64) -> ObservedMemberState {
 /// one instance and differ only in the source slot they publish under.
 fn member_on_link(instance_id: &str, source_link_id: &str, generation: u64) -> ObservedMemberState {
     ObservedMemberState {
-        source: ObservationPin {
+        source: ObservedSource {
             producer: ProducerRef::new(CORE, instance_id),
             source_link_id: source_link_id.to_string(),
         },

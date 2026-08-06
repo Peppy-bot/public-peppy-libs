@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::{Error, ParameterDeserializationError, Result};
-use crate::messaging::{ObservationState, PeerPin, PeerPinState};
+use crate::messaging::{ObservationState, PeerInfo, PeerPinState};
 use config::{
     AnyType, NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
@@ -553,7 +553,7 @@ fn build_pairing_slots(
             let initial = match runtime_config.node_instance.pairing_slots.get(&dep.link_id) {
                 Some(PairingSlotBinding::Paired { peer, peer_link_id }) => PeerPinState {
                     sequence: 0,
-                    pin: Some(PeerPin {
+                    pin: Some(PeerInfo {
                         producer: crate::messaging::ProducerRef::new(
                             peer.core_node.clone(),
                             peer.instance_id.clone(),

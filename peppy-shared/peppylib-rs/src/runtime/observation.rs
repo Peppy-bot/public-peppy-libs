@@ -17,7 +17,7 @@
 
 use crate::error::{Error, Result};
 use crate::messaging::{
-    MessengerHandle, ObservationPin, ObservationState, ObservedSource, ProducerRef, SenderTarget,
+    MessengerHandle, ObservationState, ObservedSource, ProducerRef, SenderTarget,
 };
 use crate::runtime::NodeRunner;
 use crate::runtime::slot_stream::{FollowedSlot, SlotStream, spawn_slot_stream};
@@ -124,7 +124,7 @@ impl ObservationSlotSet {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ObservedPin {
     generation: u64,
-    source: ObservationPin,
+    source: ObservedSource,
 }
 
 pub(crate) struct ObservedFollow;
@@ -183,7 +183,7 @@ impl ObservedTopicSubscription {
         self.stream
             .next()
             .await
-            .map(|(pin, message)| (ObservedSource::from(&pin.source), message))
+            .map(|(pin, message)| (pin.source.clone(), message))
     }
 }
 
@@ -252,7 +252,7 @@ mod tests {
 
     fn member(instance: &str, generation: u64) -> ObservedMemberState {
         ObservedMemberState {
-            source: ObservationPin {
+            source: ObservedSource {
                 producer: ProducerRef::new("core_a", instance),
                 source_link_id: "commander".to_string(),
             },

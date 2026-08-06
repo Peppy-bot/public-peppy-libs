@@ -8,8 +8,8 @@ mod common;
 use common::get_client_server;
 use config::node::QoSProfile;
 use peppylib::messaging::{
-    MessengerHandle, PEER_UPDATE_SERVICE, PeerInfo, PeerPin, PeerPinState, ProducerRef,
-    SenderTarget, ServiceMessenger, ServiceTarget, TopicPublisher,
+    MessengerHandle, PEER_UPDATE_SERVICE, PeerInfo, PeerPinState, ProducerRef, SenderTarget,
+    ServiceMessenger, ServiceTarget, TopicPublisher,
 };
 use peppylib::runtime::{PeerSubscription, subscribe_peer_with_watch};
 use peppylib::types::Payload;
@@ -30,8 +30,8 @@ fn pairing_target() -> SenderTarget {
     SenderTarget::pairing(PAIRING_NAME, PAIRING_TAG).expect("test pairing target")
 }
 
-fn pin_to(instance_id: &str) -> PeerPin {
-    PeerPin {
+fn pin_to(instance_id: &str) -> PeerInfo {
+    PeerInfo {
         producer: ProducerRef::new(CORE, instance_id),
         peer_link_id: ARM_SLOT_LINK_ID.to_string(),
     }
@@ -332,7 +332,7 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
     let request = PeerUpdateRequest {
         link_id: "arm".to_string(),
         sequence: 7,
-        pin: Some(PeerPin {
+        pin: Some(PeerInfo {
             producer: ProducerRef::new(CORE, "arm_1"),
             peer_link_id: "controller".to_string(),
         }),
