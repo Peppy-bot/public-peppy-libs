@@ -868,4 +868,18 @@
         </state_interface>
       </joint> -->
   </ros2_control>
+  <!-- Grasp point of the pinch gripper: on the closing axis midway between the pads, at the pinch line where the tapering face is narrowest, which is where an object wedges for every opening in the jaw's range. The half turn about y aims +z out of the gripper, matching v1. Local addition, not emitted by the xacro. -->
+  <link name="openarm_left_tcp"/>
+  <joint name="openarm_left_tcp_joint" type="fixed">
+    <origin rpy="0 3.141592653589793 0" xyz="-0.0014 0 -0.16"/>
+    <parent link="openarm_left_ee_base_link"/>
+    <child link="openarm_left_tcp"/>
+  </joint>
+  <!-- Grasp point of the pinch gripper: on the closing axis midway between the pads, at the pinch line where the tapering face is narrowest, which is where an object wedges for every opening in the jaw's range. The half turn about y aims +z out of the gripper, matching v1. Local addition, not emitted by the xacro. -->
+  <link name="openarm_right_tcp"/>
+  <joint name="openarm_right_tcp_joint" type="fixed">
+    <origin rpy="0 3.141592653589793 0" xyz="-0.0014 0 -0.16"/>
+    <parent link="openarm_right_ee_base_link"/>
+    <child link="openarm_right_tcp"/>
+  </joint>
 </robot>

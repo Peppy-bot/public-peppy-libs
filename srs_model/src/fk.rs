@@ -28,8 +28,9 @@ pub(crate) struct ForwardKinematics {
     chain: SerialChain<f64>,
     /// The 7 revolute joint nodes in chain order.
     joint_nodes: [Node<f64>; ARM_DOF],
-    /// The wrist (tip) node, the EE frame: the link after the 7th revolute joint,
-    /// found by walking the chain out from the base.
+    /// The wrist (tip) node: the link after the 7th revolute joint, found by
+    /// walking the chain out from the base. The end-effector frame too, unless a
+    /// tool is mounted (see [`tool`](Self::tool)).
     tip: Node<f64>,
     /// `world -> base_link`; constant because every joint between them is fixed.
     base_from_world: Isometry3<f64>,
@@ -42,6 +43,10 @@ pub(crate) struct ForwardKinematics {
     /// via [`set_lower_floor`](Self::set_lower_floor) to impose a control margin
     /// (e.g. holding a joint off a solver singularity) without editing the URDF.
     lower_floors: [f64; ARM_DOF],
+    /// Fixed `tip -> tool` transform, placing the mounted tool's control point on
+    /// the wrist. Identity until [`set_tool_link`](Self::set_tool_link), so a bare
+    /// arm controls its tip.
+    tool: Isometry3<f64>,
 }
 
 impl ForwardKinematics {
@@ -99,6 +104,43 @@ impl ForwardKinematics {
             "joint_idx {joint_idx} out of range (ARM_DOF={ARM_DOF})"
         );
         self.lower_floors[joint_idx] = floor;
+    }
+
+    /// Mount the tool frame carried by `link_name`: [`Posed::ee_pose`] and the
+    /// Jacobian then describe that link instead of the tip. The SRS geometry the IK
+    /// solver is derived from stays on the tip ([`Posed::tip_pose`]), so mounting a
+    /// tool never moves the wrist center the solver's closed form is built around.
+    ///
+    /// The link must sit below the tip on fixed joints only. Both halves are
+    /// enforced: a link elsewhere in the URDF is not found, and one reached through
+    /// a movable joint is rejected, because its offset would silently change with
+    /// that joint.
+    pub(crate) fn set_tool_link(&mut self, link_name: &str) -> Result<(), SrsError> {
+        let mut path = Vec::new();
+        if !collect_fixed_path(&self.tip, link_name, &mut path) {
+            return Err(SrsError::Tool(format!(
+                "'{link_name}' is not a link fixed below the tip '{}'",
+                self.tip_link_name()
+            )));
+        }
+        self.tool = path
+            .iter()
+            .fold(Isometry3::identity(), |acc, joint| acc * joint);
+        Ok(())
+    }
+
+    /// The tip link's URDF name, for error messages.
+    fn tip_link_name(&self) -> String {
+        self.tip
+            .link()
+            .as_ref()
+            .map(|l| l.name.clone())
+            .unwrap_or_default()
+    }
+
+    /// The mounted `tip -> tool` transform (identity when none is mounted).
+    pub(crate) fn tool(&self) -> Isometry3<f64> {
+        self.tool
     }
 
     fn from_chain(full: Chain<f64>, base_link: &str) -> Result<Self, SrsError> {
@@ -173,6 +215,7 @@ impl ForwardKinematics {
             coms_local,
             inertias_local,
             lower_floors: [f64::NEG_INFINITY; ARM_DOF],
+            tool: Isometry3::identity(),
         })
     }
 
@@ -206,8 +249,18 @@ pub struct Posed<'a> {
 }
 
 impl Posed<'_> {
-    /// End-effector (tip-link) pose in the arm base frame.
+    /// End-effector pose in the arm base frame: the mounted tool's control point,
+    /// or the tip itself when no tool is mounted. This is the point the Jacobian
+    /// and [`Arm::solve_ik`](crate::Arm::solve_ik) work at, so a caller commands
+    /// and reads one frame throughout.
     pub fn ee_pose(&self) -> Isometry3<f64> {
+        self.tip_pose() * self.fk.tool
+    }
+
+    /// Tip-link (wrist) pose in the arm base frame: where the chain's 7th revolute
+    /// joint leaves the flange, before any mounted tool. Equal to
+    /// [`ee_pose`](Self::ee_pose) on a bare arm; the two differ by the tool.
+    pub fn tip_pose(&self) -> Isometry3<f64> {
         self.to_base(&self.fk.tip)
     }
 
@@ -334,6 +387,27 @@ impl Posed<'_> {
     fn to_base(&self, node: &Node<f64>) -> Isometry3<f64> {
         self.fk.base_from_world * node.world_transform().expect("node world transform")
     }
+}
+
+/// Walk down from `node` for the link named `link_name`, pushing each joint's fixed
+/// origin onto `path`. Returns false if the link is not in this subtree or is
+/// reached through a joint that moves, so the caller cannot mount a frame whose
+/// offset is not constant.
+fn collect_fixed_path(node: &Node<f64>, link_name: &str, path: &mut Vec<Isometry3<f64>>) -> bool {
+    let children: Vec<Node<f64>> = node.children().to_vec();
+    for child in children {
+        if !matches!(child.joint().joint_type, JointType::Fixed) {
+            continue;
+        }
+        let origin = *child.joint().origin();
+        let found = child.link().as_ref().is_some_and(|l| l.name == link_name);
+        path.push(origin);
+        if found || collect_fixed_path(&child, link_name, path) {
+            return true;
+        }
+        path.pop();
+    }
+    false
 }
 
 /// Walk from `base` down the unique revolute-bearing path and return the link
