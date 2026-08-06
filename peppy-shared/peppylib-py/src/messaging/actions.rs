@@ -451,7 +451,7 @@ impl PyActionMessenger {
             let core_node = response.core_node().to_string();
             // Decode the framework cancel-ack Rust-side (mirroring request_result),
             // so Python reads a typed `state` tag without re-parsing the capnp.
-            let state = decode_cancel_ack(response.payload().as_ref()).map_err(to_py_err)?;
+            let state = decode_cancel_ack(response.payload_bytes().as_ref()).map_err(to_py_err)?;
             Ok(PyActionCancelReply {
                 state: state as u8,
                 instance_id,

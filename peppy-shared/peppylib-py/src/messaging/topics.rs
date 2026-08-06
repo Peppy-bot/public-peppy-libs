@@ -12,10 +12,12 @@ use tokio::sync::Mutex;
 #[pyclass(name = "TopicMessage", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyTopicMessage {
-    // Held as a `Payload` (refcounted `Bytes`) rather than `Vec<u8>` so cloning a
-    // `PyTopicMessage` is a refcount bump, and the wire bytes are copied into a
-    // Python buffer once, in the getter, instead of also being copied eagerly at
-    // construction.
+    // Owned rather than borrowed from the `Message`: the wrapper is `Clone` and
+    // outlives the message it was built from. `Payload` wraps a refcounted
+    // `Bytes`, so cloning a `PyTopicMessage` is a refcount bump. Construction
+    // copies the wire bytes out of the zenoh buffer and the getter copies them
+    // again into a fresh Python buffer on each read; both copies are forced by the
+    // wrapper outliving the message and by `PyBytes` needing the GIL.
     pub(crate) payload: Payload,
     pub(crate) instance_id: String,
     pub(crate) core_node: String,

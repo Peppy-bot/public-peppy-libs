@@ -245,7 +245,7 @@ impl PyClockSubscription {
             let mut guard = inner.lock().await;
             match guard.on_next_message().await {
                 Some(message) => {
-                    let tick = ClockTick::decode(message.payload().as_ref())
+                    let tick = ClockTick::decode(message.payload_bytes().as_ref())
                         .map_err(|e| decode_err("ClockTick", e))?;
                     Ok(Some(PyClockTick::from(tick)))
                 }
