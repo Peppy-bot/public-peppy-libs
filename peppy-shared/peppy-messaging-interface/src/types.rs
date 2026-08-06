@@ -1285,6 +1285,72 @@ mod tests {
     };
     use crate::error::Error;
     use crate::wire::ServiceReplyKind;
+    use std::borrow::Cow;
+    #[cfg(feature = "zenoh")]
+    use zenoh::bytes::ZBytes;
+
+    /// A buffer large enough that a copy would land at a different address:
+    /// small allocations can be recycled onto the same block, which would make
+    /// the pointer comparisons below pass for the wrong reason.
+    const WIRE_BUFFER_LEN: usize = 64 * 1024;
+
+    /// Pointer identity is the only way to see a copy from outside `Payload`;
+    /// a value comparison passes either way. `as_ptr` on the `Cow` reads
+    /// through its `Deref`, so a `Cow::Owned` would report the copy's address.
+    fn buffer_address(payload: &Payload) -> *const u8 {
+        payload.as_bytes().as_ptr()
+    }
+
+    /// The receive path builds a `Payload` over a buffer the transport already
+    /// owns, so reading it must borrow rather than copy, and cloning it must be
+    /// a refcount bump. Every subscription and service handler depends on this.
+    #[test]
+    fn reading_and_cloning_an_in_process_payload_never_copies_the_buffer() {
+        let source = bytes::Bytes::from(vec![7u8; WIRE_BUFFER_LEN]);
+        let wire_address = source.as_ptr();
+        let payload = Payload::from_bytes(source);
+
+        assert!(matches!(payload.as_bytes(), Cow::Borrowed(_)));
+        assert_eq!(buffer_address(&payload), wire_address);
+        assert_eq!(buffer_address(&payload.clone()), wire_address);
+        // On this arm the owned accessor clones the `Bytes` handle, so it is a
+        // refcount bump too. That is why the mock adapter hides the cost the
+        // zenoh arm pays, which
+        // `reading_a_zenoh_payload_borrows_the_wire_buffer_but_owning_it_copies`
+        // pins.
+        assert_eq!(payload.to_bytes().as_ptr(), wire_address);
+    }
+
+    /// The deployed arm. `as_bytes` borrows the zenoh buffer while `to_bytes`
+    /// cannot, so it allocates and memcpys the whole payload. This asymmetry is
+    /// why receive paths read through `as_bytes`.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn reading_a_zenoh_payload_borrows_the_wire_buffer_but_owning_it_copies() {
+        let payload = Payload::from_zbytes(ZBytes::from(vec![9u8; WIRE_BUFFER_LEN]));
+        let wire_address = buffer_address(&payload);
+
+        assert!(matches!(payload.as_bytes(), Cow::Borrowed(_)));
+        assert_eq!(buffer_address(&payload.clone()), wire_address);
+        assert_ne!(payload.to_bytes().as_ptr(), wire_address);
+        assert_eq!(payload.to_bytes().as_ref(), payload.as_bytes().as_ref());
+    }
+
+    /// Envelope clones ride the payload's refcount. Bindings that outlive the
+    /// receive call clone the whole message rather than copy the body out.
+    #[test]
+    fn cloning_a_topic_message_does_not_copy_the_payload() {
+        let source = bytes::Bytes::from(vec![5u8; WIRE_BUFFER_LEN]);
+        let wire_address = source.as_ptr();
+        let message = TopicMessage::from_parts(
+            "core_node".to_string(),
+            "instance".to_string(),
+            Payload::from_bytes(source),
+        );
+
+        let cloned = message.clone();
+        assert_eq!(buffer_address(cloned.payload()), wire_address);
+    }
 
     /// The default buffer sizes must match the historical hardcoded values, so
     /// that removing `SubscriberQoS::channel_size()` changed no behavior for any

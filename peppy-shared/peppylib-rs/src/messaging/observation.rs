@@ -8,16 +8,40 @@
 
 use super::ProducerRef;
 
-/// The wire coordinates of an observed producer source: its full
-/// `(core_node, instance_id)` address plus the producer-side link_id of the
-/// pairing slot being observed. Together the triple pins the source's publishes
-/// exactly (core, instance, producer-side link_id segment), the same pin an
-/// observer subscription is declared against.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ObservationPin {
+/// One observed source: the observed instance's full `(core_node,
+/// instance_id)` address plus the producer-side link_id of the pairing slot
+/// being observed. The triple pins the source's publishes exactly (core,
+/// instance, producer-side link_id segment), which is both what an observer
+/// subscription is declared against and the member's full identity, so members
+/// sharing one instance stay distinct.
+///
+/// Returned by `NodeRunner::observation_slot(link_id)`'s `source()` and
+/// `observation_slot_set(link_id)`'s `sources()`, surfaced by the generated
+/// per-slot `source()` / `sources()` helpers, and tagged onto every message an
+/// observed-topic subscription yields. Hashable and ordered so consumers key
+/// demux maps on it. Purely local configuration state known to the observer
+/// from its own registration; it needs no daemon push to read.
+///
+/// Its derived `PartialEq` is the follow key: a member's wire subscription is
+/// redeclared when its source changes, and a buffered message is dropped at
+/// delivery once its source leaves the followed set. A field added here for
+/// presentation alone would move that predicate, so wrap it the way
+/// [`ObservedMemberState`] wraps this type to carry the generation.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ObservedSource {
+    /// The observed source instance's full wire address.
     pub producer: ProducerRef,
+    /// The producer-side link_id of the observed pairing slot.
     pub source_link_id: String,
 }
+
+/// The documented demux idiom keys a map on an `ObservedSource`, so the bounds
+/// that needs are pinned here rather than left to the derive list. `Ord` has no
+/// other user in the crate and would otherwise be droppable without a failure.
+const _: fn() = || {
+    fn assert_map_key<T: std::hash::Hash + Eq + Ord>() {}
+    assert_map_key::<ObservedSource>();
+};
 
 /// One member of an observer slot's set: the pairing this member taps, plus
 /// the two per-member facts the daemon keeps current.
@@ -35,7 +59,7 @@ pub struct ObservationPin {
 /// complete. A member whose source is down stays listed, at its position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedMemberState {
-    pub source: ObservationPin,
+    pub source: ObservedSource,
     pub source_generation: u64,
     pub source_live: bool,
 }
@@ -71,31 +95,11 @@ impl ObservationState {
     }
 }
 
-/// User-facing observed source of one observer-slot member, returned by
-/// `NodeRunner::observation_slot(link_id)`'s `source()` and
-/// `observation_slot_set(link_id)`'s `sources()`, and surfaced by the generated
-/// per-slot `source()` / `sources()` helpers. Purely local configuration state
-/// known to the observer from its own registration; it needs no daemon push to
-/// read.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ObservedSource {
-    /// The observed source instance's full wire address.
-    pub producer: ProducerRef,
-    /// The producer-side link_id of the observed pairing slot.
-    pub source_link_id: String,
-}
-
-impl From<&ObservationPin> for ObservedSource {
-    fn from(pin: &ObservationPin) -> Self {
-        Self {
-            producer: pin.producer.clone(),
-            source_link_id: pin.source_link_id.clone(),
-        }
-    }
-}
-
+/// Narrows a member to the identity alone, dropping the daemon-kept
+/// `source_generation` and `source_live`, which are the observer runtime's
+/// business and not the consumer's.
 impl From<&ObservedMemberState> for ObservedSource {
     fn from(member: &ObservedMemberState) -> Self {
-        Self::from(&member.source)
+        member.source.clone()
     }
 }

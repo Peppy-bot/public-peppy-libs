@@ -9,34 +9,33 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Python wrapper for TopicMessage
-#[pyclass(name = "TopicMessage", skip_from_py_object)]
-#[derive(Clone)]
+///
+/// Keeps the received [`Message`] whole instead of destructuring it into owned
+/// fields. The message already owns every string the getters return and its
+/// payload is a refcounted handle on the transport buffer, so building this
+/// wrapper copies nothing. Python pays a single copy of the wire bytes, in the
+/// [`payload`](Self::payload) getter, and that one is unavoidable: `PyBytes`
+/// owns its buffer and needs the GIL, while reception runs without it.
+#[pyclass(name = "TopicMessage")]
 pub struct PyTopicMessage {
-    // Held as a `Payload` (refcounted `Bytes`) rather than `Vec<u8>` so cloning a
-    // `PyTopicMessage` is a refcount bump, and the wire bytes are copied into a
-    // Python buffer once, in the getter, instead of also being copied eagerly at
-    // construction.
-    pub(crate) payload: Payload,
-    pub(crate) instance_id: String,
-    pub(crate) core_node: String,
-    pub(crate) link_id: String,
+    inner: Message,
 }
 
 #[pymethods]
 impl PyTopicMessage {
     #[getter]
     fn payload<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, self.payload.as_ref())
+        PyBytes::new(py, self.inner.payload_bytes().as_ref())
     }
 
     #[getter]
     fn instance_id(&self) -> &str {
-        &self.instance_id
+        self.inner.instance_id()
     }
 
     #[getter]
     fn core_node(&self) -> &str {
-        &self.core_node
+        self.inner.core_node()
     }
 
     /// The producer's bound link_id, parsed from the inbound topic keyexpr.
@@ -46,7 +45,7 @@ impl PyTopicMessage {
     /// arrived via a non-topic path, where the keyexpr encodes no link_id.
     #[getter]
     fn link_id(&self) -> &str {
-        &self.link_id
+        self.inner.link_id()
     }
 
     /// The publisher's full `(core_node, instance_id)` identity as a structured
@@ -54,18 +53,16 @@ impl PyTopicMessage {
     /// alongside the message; consumers key per-slot state on it.
     #[getter]
     fn producer(&self) -> PyProducerRef {
-        PyProducerRef::new(self.core_node.clone(), self.instance_id.clone())
+        PyProducerRef::new(
+            self.inner.core_node().to_string(),
+            self.inner.instance_id().to_string(),
+        )
     }
 }
 
 impl From<Message> for PyTopicMessage {
-    fn from(msg: Message) -> Self {
-        Self {
-            payload: msg.payload(),
-            instance_id: msg.instance_id().to_string(),
-            core_node: msg.core_node().to_string(),
-            link_id: msg.link_id().to_string(),
-        }
+    fn from(inner: Message) -> Self {
+        Self { inner }
     }
 }
 

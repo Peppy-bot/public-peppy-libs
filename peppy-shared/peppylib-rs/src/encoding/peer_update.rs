@@ -2,19 +2,19 @@
 //! delivery). See `schemas/peer_update.capnp` for the wire contract.
 
 use crate::error::{Error, Result};
-use crate::messaging::{PeerPin, ProducerRef};
+use crate::messaging::{PeerInfo, ProducerRef};
 use crate::peer_update_capnp;
 use crate::types::Payload;
 
 /// Absolute pairing-slot state pushed by the daemon. `pin: Some` pairs the
 /// slot to that peer; `None` clears it. Field-for-field mirror of the capnp
 /// `PeerUpdateRequest` with the `paired`/peer-fields flattening folded into
-/// `Option<PeerPin>`.
+/// `Option<PeerInfo>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerUpdateRequest {
     pub link_id: String,
     pub sequence: u64,
-    pub pin: Option<PeerPin>,
+    pub pin: Option<PeerInfo>,
 }
 
 impl PeerUpdateRequest {
@@ -50,7 +50,7 @@ impl PeerUpdateRequest {
         let link_id = super::read_text(root.get_link_id(), "peer_update", "linkId")?;
         let sequence = root.get_sequence();
         let pin = if root.get_paired() {
-            Some(PeerPin {
+            Some(PeerInfo {
                 producer: ProducerRef::new(
                     super::read_text(root.get_peer_core_node(), "peer_update", "peerCoreNode")?,
                     super::read_text(root.get_peer_instance_id(), "peer_update", "peerInstanceId")?,
@@ -81,7 +81,7 @@ mod tests {
         let paired = PeerUpdateRequest {
             link_id: "arm".to_string(),
             sequence: 42,
-            pin: Some(PeerPin {
+            pin: Some(PeerInfo {
                 producer: ProducerRef::new("core_a", "arm_1"),
                 peer_link_id: "controller".to_string(),
             }),

@@ -12,15 +12,28 @@ use tokio::sync::Mutex;
 
 /// Identity of the peer paired on a pairing slot: the peer instance's full
 /// `(core_node, instance_id)` wire address plus the link_id of the peer's own
-/// complementary slot. Returned by `PeerSlot.paired()` / `wait_paired()`.
-#[pyclass(name = "PeerInfo", frozen, eq, skip_from_py_object)]
-#[derive(Clone, PartialEq, Eq)]
+/// complementary slot. Returned by `PeerSlot.paired()` / `wait_paired()` and
+/// tagged onto every message a `PeerSubscription` yields. `frozen, eq, hash`
+/// make it usable directly as a `dict` key, mirroring the Rust
+/// `HashMap<PeerInfo, _>` idiom.
+#[pyclass(name = "PeerInfo", frozen, eq, hash, skip_from_py_object)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PyPeerInfo {
     pub(crate) inner: PeerInfo,
 }
 
 #[pymethods]
 impl PyPeerInfo {
+    #[new]
+    fn new(producer: PyProducerRef, peer_link_id: String) -> Self {
+        Self {
+            inner: PeerInfo {
+                producer: producer.into_inner(),
+                peer_link_id,
+            },
+        }
+    }
+
     /// The peer instance's full wire address.
     #[getter]
     fn producer(&self) -> PyProducerRef {
@@ -76,8 +89,10 @@ impl PyPeerSlot {
 }
 
 /// Stream of the paired peer's publishes on one topic of a pairing slot,
-/// vended by `node_runner.subscribe_peer(...)`. Yields nothing while the slot
-/// is unpaired; delivery follows the slot's live pin (pair, re-pin, clear).
+/// vended by `node_runner.subscribe_peer(...)`. Each `on_next_message()`
+/// yields a `(peer, message)` tuple, or `None` when the runtime is torn down.
+/// Yields nothing while the slot is unpaired; delivery follows the slot's live
+/// pin (pair, re-pin, clear).
 #[pyclass(name = "PeerSubscription")]
 pub struct PyPeerSubscription {
     pub(crate) inner: Arc<Mutex<PeerSubscription>>,
@@ -85,14 +100,18 @@ pub struct PyPeerSubscription {
 
 #[pymethods]
 impl PyPeerSubscription {
-    /// Wait for and receive the next message from the currently paired peer.
-    /// Returns `None` when the runtime is torn down.
+    /// Wait for and receive the next `(peer, message)` from the currently
+    /// paired peer: the same `PeerInfo` that `PeerSlot.paired()` returns, and
+    /// the message it published. Returns `None` when the runtime is torn down.
     fn on_next_message<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         crate::py_future::future_into_py(py, async move {
             let mut subscription = inner.lock().await;
             match subscription.on_next_message().await {
-                Some(message) => Ok(Some(PyTopicMessage::from(message))),
+                Some((peer, message)) => Ok(Some((
+                    PyPeerInfo::from(peer),
+                    PyTopicMessage::from(message),
+                ))),
                 None => Ok(None),
             }
         })

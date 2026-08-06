@@ -10,70 +10,56 @@ use super::target::{PyProducerRef, PySenderTarget};
 use super::{PyMessengerHandle, PyTopicMessage, duration_from_secs_f64, to_py_err};
 
 /// Python wrapper for a service request received by a listener.
+///
+/// Keeps the Rust [`ServiceRequestContext`] whole for the same reason
+/// [`PyTopicMessage`] keeps its message: every getter borrows out of it, so
+/// receiving a request copies nothing and Python pays a single copy of the
+/// request body in the [`payload`](Self::payload) getter.
 #[pyclass(name = "ServiceRequestContext")]
 pub struct PyServiceRequestContext {
-    request_id: String,
-    link_id: String,
-    // `Payload` (refcounted `Bytes`) so handing the bytes to the `message()`
-    // wrapper is a refcount bump and Python receives a single copy in the getter.
-    payload: Payload,
-    instance_id: String,
-    core_node: String,
+    inner: ServiceRequestContext,
 }
 
 #[pymethods]
 impl PyServiceRequestContext {
     #[getter]
     fn request_id(&self) -> &str {
-        &self.request_id
+        self.inner.request_id()
     }
 
+    /// The producer-side link_id whose queryable received this request.
     #[getter]
     fn link_id(&self) -> &str {
-        &self.link_id
+        self.inner.link_id()
     }
 
     #[getter]
     fn payload<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, self.payload.as_ref())
+        PyBytes::new(py, self.inner.message().payload_bytes().as_ref())
     }
 
     #[getter]
     fn instance_id(&self) -> &str {
-        &self.instance_id
+        self.inner.message().instance_id()
     }
 
     #[getter]
     fn core_node(&self) -> &str {
-        &self.core_node
+        self.inner.message().core_node()
     }
 
-    /// Returns the underlying message as a `TopicMessage`.
+    /// Returns the underlying message as a `TopicMessage`. Its `link_id` is
+    /// empty, unlike this context's: a service request arrives on a query
+    /// keyexpr, whose caller slots encode no producer link_id.
     #[getter]
     fn message(&self) -> PyTopicMessage {
-        PyTopicMessage {
-            payload: self.payload.clone(),
-            instance_id: self.instance_id.clone(),
-            core_node: self.core_node.clone(),
-            // A service request arrives on a query keyexpr, whose caller slots
-            // encode no producer link_id.
-            link_id: String::new(),
-        }
+        PyTopicMessage::from(self.inner.message().clone())
     }
 }
 
 impl From<ServiceRequestContext> for PyServiceRequestContext {
-    fn from(ctx: ServiceRequestContext) -> Self {
-        let request_id = ctx.request_id().to_string();
-        let link_id = ctx.link_id().to_string();
-        let message = ctx.message();
-        Self {
-            request_id,
-            link_id,
-            payload: message.payload(),
-            instance_id: message.instance_id().to_string(),
-            core_node: message.core_node().to_string(),
-        }
+    fn from(inner: ServiceRequestContext) -> Self {
+        Self { inner }
     }
 }
 

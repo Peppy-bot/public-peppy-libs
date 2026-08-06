@@ -3,7 +3,7 @@
 //! contract.
 
 use crate::error::{Error, Result};
-use crate::messaging::{ObservationPin, ObservedMemberState, ProducerRef};
+use crate::messaging::{ObservedMemberState, ObservedSource, ProducerRef};
 use crate::observation_update_capnp;
 use crate::types::Payload;
 
@@ -52,7 +52,7 @@ impl ObservationUpdateRequest {
         let mut members: Vec<ObservedMemberState> = Vec::with_capacity(wire_members.len() as usize);
         for idx in 0..wire_members.len() {
             let wire = wire_members.get(idx);
-            let source = ObservationPin {
+            let source = ObservedSource {
                 producer: ProducerRef::new(
                     super::read_text(
                         wire.get_source_core_node(),
@@ -104,7 +104,7 @@ mod tests {
 
     fn member(instance: &str, generation: u64, live: bool) -> ObservedMemberState {
         ObservedMemberState {
-            source: ObservationPin {
+            source: ObservedSource {
                 producer: ProducerRef::new("core_a", instance),
                 source_link_id: "commander".to_string(),
             },
@@ -142,7 +142,7 @@ mod tests {
                 member("arm_2", 1, true),
                 member("arm_1", 9, false),
                 ObservedMemberState {
-                    source: ObservationPin {
+                    source: ObservedSource {
                         producer: ProducerRef::new("core_b", "arm_3"),
                         source_link_id: "gripper".to_string(),
                     },
@@ -186,7 +186,7 @@ mod tests {
             members: vec![
                 member("arm_1", 1, true),
                 ObservedMemberState {
-                    source: ObservationPin {
+                    source: ObservedSource {
                         producer: ProducerRef::new("core_a", "arm_1"),
                         source_link_id: "gripper".to_string(),
                     },

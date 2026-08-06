@@ -87,7 +87,7 @@ pub async fn listen_for_observation_update(
 mod tests {
     use super::*;
     use crate::encoding::slot_update::SlotUpdateResponse;
-    use crate::messaging::{ObservationPin, ObservedMemberState, ProducerRef};
+    use crate::messaging::{ObservedMemberState, ObservedSource, ProducerRef};
     use crate::services::slot_update::apply_slot_update;
     use std::collections::BTreeMap;
     use tokio::sync::watch;
@@ -111,7 +111,7 @@ mod tests {
 
     fn member(instance: &str, generation: u64, live: bool) -> ObservedMemberState {
         ObservedMemberState {
-            source: ObservationPin {
+            source: ObservedSource {
                 producer: ProducerRef::new("core_a", instance),
                 source_link_id: "commander".to_string(),
             },

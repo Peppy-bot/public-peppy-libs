@@ -24,6 +24,9 @@ NODE_TAG = "v1"
 SERVICE_NAME = "test_service"
 REQUEST_PAYLOAD = b"Hello request"
 RESPONSE_PAYLOAD = b"Hello response"
+# The reserved link_id segment a service queryable is declared under
+# (`config::consts::DEFAULT_LINK_ID_SENTINEL`).
+DEFAULT_LINK_ID_SENTINEL = "_"
 
 
 @pytest.mark.asyncio
@@ -66,6 +69,74 @@ async def test_service_messenger_communication():
         assert response.payload == RESPONSE_PAYLOAD
         assert response.instance_id == INSTANCE_ID
         assert response.core_node == CORE_NODE
+
+
+@pytest.mark.asyncio
+async def test_service_request_context_exposes_caller_identity_and_body():
+    """Every ServiceRequestContext getter reads through to the received request.
+
+    The context's own `link_id` names the producer-side queryable the query
+    arrived on, so it differs from the `link_id` of the message it wraps: a query
+    keyexpr's caller slots encode no producer link_id.
+    """
+
+    async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
+        server_handle = await MessengerHandle.from_host_port(router.host, router.port)
+        client_handle = await MessengerHandle.from_host_port(router.host, router.port)
+
+        service = await ServiceMessenger.listen(
+            server_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            SenderTarget.node(NODE_NAME, NODE_TAG),
+            SERVICE_NAME,
+        )
+
+        seen = {}
+
+        def capture(request):
+            message = request.message
+            seen.update(
+                request_id=request.request_id,
+                link_id=request.link_id,
+                payload=request.payload,
+                core_node=request.core_node,
+                instance_id=request.instance_id,
+                message_payload=message.payload,
+                message_core_node=message.core_node,
+                message_instance_id=message.instance_id,
+                message_link_id=message.link_id,
+                message_producer=message.producer,
+            )
+            return RESPONSE_PAYLOAD
+
+        handler = asyncio.ensure_future(service.handle_next_request(capture))
+        await ServiceMessenger.poll(
+            client_handle,
+            CORE_NODE,
+            INSTANCE_ID,
+            SenderTarget.node(NODE_NAME, NODE_TAG),
+            SERVICE_NAME,
+            ProducerRef(CORE_NODE, INSTANCE_ID),
+            REQUEST_PAYLOAD,
+            2.0,
+        )
+        await handler
+
+        assert seen["payload"] == REQUEST_PAYLOAD
+        assert seen["core_node"] == CORE_NODE
+        assert seen["instance_id"] == INSTANCE_ID
+        # A correlation id minted per request; its shape is opaque to callers.
+        assert seen["request_id"]
+        assert seen["link_id"] == DEFAULT_LINK_ID_SENTINEL
+
+        # The wrapped message repeats the body and the caller's identity...
+        assert seen["message_payload"] == REQUEST_PAYLOAD
+        assert seen["message_core_node"] == CORE_NODE
+        assert seen["message_instance_id"] == INSTANCE_ID
+        assert seen["message_producer"] == ProducerRef(CORE_NODE, INSTANCE_ID)
+        # ...but carries no link_id of its own.
+        assert seen["message_link_id"] == ""
 
 
 @pytest.mark.asyncio

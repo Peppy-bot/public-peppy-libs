@@ -1,6 +1,12 @@
 pub use core_node_api::Payload;
 
 /// A wrapper around `pmi::TopicMessage` to abstract away the underlying message implementation.
+///
+/// Cloning copies the envelope's identity strings and bumps the payload's
+/// refcount, never the wire bytes. That is what lets a binding whose wrapper
+/// outlives the receive call (the Python `TopicMessage`) keep the whole message
+/// instead of destructuring it into owned fields and copying the payload out.
+#[derive(Clone)]
 pub struct Message(pub(crate) pmi::TopicMessage);
 
 impl std::fmt::Debug for Message {
@@ -92,5 +98,52 @@ impl From<flume::TryRecvError> for TryRecvError {
             flume::TryRecvError::Empty => TryRecvError::Empty,
             flume::TryRecvError::Disconnected => TryRecvError::Disconnected,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Message;
+
+    /// Large enough that a copy cannot be recycled onto the source buffer's
+    /// address, which would make the pointer comparisons pass for the wrong
+    /// reason.
+    const WIRE_BUFFER_LEN: usize = 64 * 1024;
+
+    fn received_message(payload: pmi::Payload) -> Message {
+        Message::from(pmi::TopicMessage::from_parts(
+            "core_node".to_string(),
+            "instance".to_string(),
+            payload,
+        ))
+    }
+
+    /// The two accessors return the same bytes, so pointer identity is the only
+    /// way to see the difference that matters: `payload_bytes` reaches into the
+    /// zenoh buffer, while `payload` has to allocate and memcpy because it hands
+    /// back ownership. Receive paths take the borrowing one.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn payload_bytes_borrows_the_wire_buffer_where_payload_copies_it() {
+        let message = received_message(pmi::Payload::from_zbytes(zenoh::bytes::ZBytes::from(
+            vec![4u8; WIRE_BUFFER_LEN],
+        )));
+        let wire_address = message.payload_bytes().as_ptr();
+
+        assert_ne!(message.payload().as_ref().as_ptr(), wire_address);
+        assert_eq!(message.payload().as_ref(), message.payload_bytes().as_ref());
+    }
+
+    /// A binding whose wrapper outlives the receive call clones the whole
+    /// message rather than copying the body out of it (the Python
+    /// `TopicMessage`, reached through `ServiceRequestContext::message`). That
+    /// clone has to ride the payload's refcount.
+    #[test]
+    fn cloning_a_message_leaves_the_payload_buffer_shared() {
+        let source = bytes::Bytes::from(vec![6u8; WIRE_BUFFER_LEN]);
+        let wire_address = source.as_ptr();
+        let message = received_message(pmi::Payload::from_bytes(source));
+
+        assert_eq!(message.clone().payload_bytes().as_ptr(), wire_address);
     }
 }

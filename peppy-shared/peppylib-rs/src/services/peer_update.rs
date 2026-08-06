@@ -76,7 +76,7 @@ pub async fn listen_for_peer_update(
 mod tests {
     use super::*;
     use crate::encoding::slot_update::SlotUpdateResponse;
-    use crate::messaging::{PeerPin, ProducerRef};
+    use crate::messaging::{PeerInfo, ProducerRef};
     use crate::services::slot_update::apply_slot_update;
     use std::collections::BTreeMap;
     use tokio::sync::watch;
@@ -98,14 +98,14 @@ mod tests {
             .collect()
     }
 
-    fn pin(core: &str, inst: &str, peer_link: &str) -> PeerPin {
-        PeerPin {
+    fn pin(core: &str, inst: &str, peer_link: &str) -> PeerInfo {
+        PeerInfo {
             producer: ProducerRef::new(core, inst),
             peer_link_id: peer_link.to_string(),
         }
     }
 
-    fn request(link_id: &str, sequence: u64, pin: Option<PeerPin>) -> PeerUpdateRequest {
+    fn request(link_id: &str, sequence: u64, pin: Option<PeerInfo>) -> PeerUpdateRequest {
         PeerUpdateRequest {
             link_id: link_id.to_string(),
             sequence,
