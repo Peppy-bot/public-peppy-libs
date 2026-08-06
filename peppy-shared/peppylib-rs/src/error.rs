@@ -287,6 +287,49 @@ pub enum Error {
         bound: usize,
     },
 
+    /// Startup backstop for observer slots, the observation twin of
+    /// [`Self::SlotUnbound`] / [`Self::SlotCardinalityViolated`]: the boot
+    /// config's seed for a slot has a size its declared cardinality does not
+    /// allow. A missing seed counts as empty, so a `one` / `one_or_more`
+    /// slot under a daemon that predates observation seeding fails here,
+    /// loudly, instead of booting an empty slot the plan says cannot be.
+    #[error(
+        "observer slot `{link_id}` declares cardinality `{cardinality}` but the boot config \
+         seeds {seeded} member(s) — the launcher validator enforces this at plan time, so \
+         this boot config was produced by an incompatible component version (a daemon that \
+         predates observation seeding, or an edited config)"
+    )]
+    ObservationSeedViolated {
+        link_id: String,
+        cardinality: config::node::Cardinality,
+        seeded: usize,
+    },
+
+    /// One observed pairing appears twice in a slot's seed. The wire decoder
+    /// rejects the same set on a live delivery, so accepting it here would
+    /// let a hand-edited boot config open duplicate subscriptions.
+    #[error(
+        "observer slot `{link_id}` seeds the observed pairing \
+         `{instance_id}/{source_link_id}@{core_node}` more than once — an observed pairing \
+         may appear only once in a slot's member set"
+    )]
+    ObservationSeedDuplicate {
+        link_id: String,
+        core_node: String,
+        instance_id: String,
+        source_link_id: String,
+    },
+
+    /// The boot config seeds an observer slot the manifest does not
+    /// declare: component version skew (stale codegen or a daemon working
+    /// from a different manifest), never a user error.
+    #[error(
+        "the boot config seeds observer slot `{link_id}`, which this node's manifest does \
+         not declare — the daemon and this node disagree about the manifest (version skew \
+         or stale codegen); re-sync and rebuild the node"
+    )]
+    ObservationSeedUndeclared { link_id: String },
+
     /// A directed service / action call named a producer outside the
     /// slot's bound set. Every `poll` / `fire_goal` target must come from
     /// the slot's own bound set, exposed by the slot's cardinality-typed

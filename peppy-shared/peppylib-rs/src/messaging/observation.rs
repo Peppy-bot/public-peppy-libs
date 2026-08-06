@@ -84,9 +84,14 @@ pub struct ObservationState {
 }
 
 impl ObservationState {
-    /// Boot-time state: no members delivered yet, at sequence zero. The daemon
-    /// delivers the slot's member set over `observation_update` right after the
-    /// instance commits, exactly as it delivers pairing pins.
+    /// The empty state at sequence zero. A slot boots from the config's
+    /// `observation_seeds` entry (the plan's membership, stamped by the
+    /// daemon at spawn); a missing seed counts as empty and constructs only
+    /// where the plan could have written an empty set (`zero_or_one` vacant,
+    /// `zero_or_more` observing nothing), so this is the boot state of those
+    /// slots and of embedders that manage observation state themselves. Live
+    /// `observation_update` deliveries replace the boot state at strictly
+    /// larger sequences.
     pub fn unregistered() -> Self {
         Self {
             sequence: 0,
