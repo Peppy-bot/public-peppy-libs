@@ -10,7 +10,7 @@
 use k::nalgebra::{Isometry3, Matrix3, Vector3};
 
 use crate::fk::ForwardKinematics;
-use crate::{ARM_DOF, Limit, PARALLEL_SIN_EPS};
+use crate::{ARM_DOF, PARALLEL_SIN_EPS};
 
 /// Constant kinematic model of one OpenArm: PoE screw data plus the SRS
 /// shoulder/elbow/wrist centers and link lengths.
@@ -20,8 +20,10 @@ pub(crate) struct ArmModel {
     pub axes: [Vector3<f64>; ARM_DOF],
     /// A point on each joint's axis at the home configuration (base frame).
     pub points: [Vector3<f64>; ARM_DOF],
-    /// EE (joint-7 link) pose at `q = 0`; the `M` matrix of the PoE formula.
-    pub home_ee: Isometry3<f64>,
+    /// Tip (joint-7 link) pose at `q = 0`; the `M` matrix of the PoE formula. The
+    /// tip, not a mounted tool: the solver takes this frame's origin as the wrist
+    /// center, so it is the one frame that cannot move with a tool.
+    pub home_tip: Isometry3<f64>,
     /// Shoulder center `S` = concurrency of joints 1,2,3.
     pub shoulder: Vector3<f64>,
     /// Elbow center `E*` = joint-4 axis point on the S-W line, at home.
@@ -35,8 +37,6 @@ pub(crate) struct ArmModel {
     pub l_su: f64,
     /// Forearm length |E*-W|.
     pub l_uw: f64,
-    /// Joint position limits, j1..j7.
-    pub limits: [Limit; ARM_DOF],
     /// Constant `world -> arm base` transform (this arm's fixed mounting). The
     /// IK/FK work in the arm base frame; this converts world/body-frame poses.
     pub base_from_world: Isometry3<f64>,
@@ -62,9 +62,8 @@ impl ArmModel {
     /// The [`Arm`](crate::Arm) facade builds the FK once and calls this so the
     /// URDF is parsed a single time for both FK/dynamics and IK.
     pub fn from_fk(fk: &mut ForwardKinematics) -> Result<Self, String> {
-        let limits = fk.limits(); // joint limits read off the chain before posing
         let fk = fk.at(&[0.0; ARM_DOF]); // pose at home; read everything off this view
-        let home_ee = fk.ee_pose();
+        let home_tip = fk.tip_pose();
         let axes: [Vector3<f64>; ARM_DOF] = std::array::from_fn(|i| fk.axis_base(i));
         let points: [Vector3<f64>; ARM_DOF] = std::array::from_fn(|i| fk.origin_base(i));
 
@@ -104,14 +103,16 @@ impl ArmModel {
             ));
         }
 
-        // The closed-form IK assumes the EE (tip) origin coincides with the wrist
+        // The closed-form IK assumes the tip origin coincides with the wrist
         // center, i.e. a zero wrist-to-tip offset (`ik::solve` takes p_w = p_d).
         // Enforce it here so a URDF whose tip sits off the wrist concurrency point
-        // fails loudly rather than silently solving for the wrong wrist center.
-        let ee_offset = (home_ee.translation.vector - wrist_home).norm();
-        if ee_offset > SRS_TOL_M {
+        // fails loudly rather than silently solving for the wrong wrist center. A
+        // mounted tool is deliberately outside this: it offsets the *commanded*
+        // frame, which `Arm::solve_ik` removes before reaching the closed form.
+        let tip_offset = (home_tip.translation.vector - wrist_home).norm();
+        if tip_offset > SRS_TOL_M {
             return Err(format!(
-                "EE origin is {ee_offset:.4} m off the wrist center; the closed-form \
+                "tip origin is {tip_offset:.4} m off the wrist center; the closed-form \
                  IK requires the tip link to sit at the j5-j7 concurrency point"
             ));
         }
@@ -144,13 +145,12 @@ impl ArmModel {
         Ok(Self {
             axes,
             points,
-            home_ee,
+            home_tip,
             shoulder,
             elbow_home,
             wrist_home,
             l_su: (shoulder - elbow_home).norm(),
             l_uw: (elbow_home - wrist_home).norm(),
-            limits,
             base_from_world: fk.base_from_world(),
         })
     }
@@ -302,12 +302,12 @@ mod tests {
 
     #[test]
     fn joint_limits_present_and_ordered() {
-        let m = model();
-        for (i, l) in m.limits.iter().enumerate() {
+        let limits = crate::test_support::v1_limits("left");
+        for (i, l) in limits.iter().enumerate() {
             assert!(l.lo < l.hi, "joint {i}: {l:?}");
         }
         // Joint 4 (elbow) is one-sided per URDF: lower bound at 0.
-        assert!(m.limits[3].lo.abs() < 1e-6, "j4 lower = {}", m.limits[3].lo);
+        assert!(limits[3].lo.abs() < 1e-6, "j4 lower = {}", limits[3].lo);
     }
 
     #[test]

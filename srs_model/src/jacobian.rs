@@ -202,6 +202,53 @@ mod tests {
     }
 
     #[test]
+    fn jacobian_follows_a_mounted_tool() {
+        // The finite difference is taken on `ee_pose`, so it tracks whichever frame
+        // the arm controls: agreement here is the Jacobian having moved onto the
+        // tool with it, and the fixture's tcp frame is far enough off the tip to
+        // make disagreement unmissable.
+        for side in ["left", "right"] {
+            let mut fk = v1_fk(side);
+            fk.set_tool_link(&format!("openarm_{side}_tcp"))
+                .expect("the fixture carries the tcp frame");
+            let mut rng = StdRng::seed_from_u64(0x5A5);
+            for _ in 0..50 {
+                let q = sample_q(&mut rng, &fk);
+                let j = fk.at(&q).jacobian();
+                for i in 0..ARM_DOF {
+                    let fd = fd_twist(&mut fk, &q, i, 1e-6);
+                    let err = (j.column(i) - fd).norm();
+                    assert!(err < 1e-5, "{side} joint {i}: column off by {err}");
+                }
+            }
+        }
+    }
+
+    // Shifting the reference point multiplies the Jacobian by an adjoint, which is
+    // unimodular, so `det(J Jᵀ)` and hence manipulability are unchanged. The IK
+    // solver scores `ArmAnglePolicy::MaxManipulability` on the tip-based PoE
+    // Jacobian while the servo runs on the tool-based one, and this is why the two
+    // agree.
+    #[test]
+    fn manipulability_is_invariant_under_a_mounted_tool() {
+        let mut bare = v1_fk("left");
+        let mut tooled = v1_fk("left");
+        tooled
+            .set_tool_link("openarm_left_tcp")
+            .expect("the fixture carries the tcp frame");
+        let mut rng = StdRng::seed_from_u64(7);
+        for _ in 0..200 {
+            let q = sample_q(&mut rng, &bare);
+            let w_bare = bare.at(&q).manipulability();
+            let w_tool = tooled.at(&q).manipulability();
+            assert!(
+                (w_bare - w_tool).abs() <= 1e-9 * w_bare.max(1.0),
+                "manipulability moved with the tool: {w_bare} vs {w_tool}"
+            );
+        }
+    }
+
+    #[test]
     fn pseudo_inverse_is_a_right_inverse() {
         let mut fk = v1_fk("left");
         let mut rng = StdRng::seed_from_u64(11);
