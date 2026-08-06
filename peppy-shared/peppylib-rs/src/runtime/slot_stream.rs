@@ -63,8 +63,10 @@ pub(crate) struct SlotStream<S: FollowedSlot> {
 }
 
 impl<S: FollowedSlot> SlotStream<S> {
-    /// The next message from any currently followed pin, as `(producer,
-    /// message)`. `None` when the runtime is torn down (slot channel closed).
+    /// The next message from any currently followed pin, as `(pin, message)`;
+    /// each slot kind's subscription wrapper projects the pin into its
+    /// user-facing identity type. `None` when the runtime is torn down (slot
+    /// channel closed).
     ///
     /// A message tagged with a pin the slot has since moved off is dropped here.
     /// The wire triple pin makes a foreign producer unmatchable at the keyexpr
@@ -73,12 +75,12 @@ impl<S: FollowedSlot> SlotStream<S> {
     /// under the old pin; this re-check against the live set drops it. The pin
     /// alone cannot always discriminate incarnations, so the slot kind folds any
     /// generation into `Pin`'s identity.
-    pub(crate) async fn next(&mut self) -> Option<(ProducerRef, Message)> {
+    pub(crate) async fn next(&mut self) -> Option<(Arc<S::Pin>, Message)> {
         loop {
             let (pin, message) = self.rx.recv().await?;
             let still_followed = S::is_followed(&self.watch_rx.borrow(), &pin);
             if still_followed {
-                return Some((S::producer(&pin).clone(), message));
+                return Some((pin, message));
             }
             // Stale: buffered under a pin the slot has since moved off.
         }

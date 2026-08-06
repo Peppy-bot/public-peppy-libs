@@ -8,8 +8,8 @@ mod common;
 use common::get_client_server;
 use config::node::QoSProfile;
 use peppylib::messaging::{
-    MessengerHandle, PEER_UPDATE_SERVICE, PeerPin, PeerPinState, ProducerRef, SenderTarget,
-    ServiceMessenger, ServiceTarget, TopicPublisher,
+    MessengerHandle, PEER_UPDATE_SERVICE, PeerInfo, PeerPin, PeerPinState, ProducerRef,
+    SenderTarget, ServiceMessenger, ServiceTarget, TopicPublisher,
 };
 use peppylib::runtime::{PeerSubscription, subscribe_peer_with_watch};
 use peppylib::types::Payload;
@@ -96,11 +96,24 @@ async fn wait_for_peer_wire_sub_gone(handle: &MessengerHandle, peer_instance: &s
     .await;
 }
 
-async fn expect_message(subscription: &mut PeerSubscription, expected_payload: &[u8]) {
-    let message = tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
-        .await
-        .expect("should receive a message within 2s")
-        .expect("subscription should not close");
+async fn expect_message(
+    subscription: &mut PeerSubscription,
+    expected_peer: &str,
+    expected_payload: &[u8],
+) {
+    let (peer, message) =
+        tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
+            .await
+            .expect("should receive a message within 2s")
+            .expect("subscription should not close");
+    assert_eq!(
+        peer,
+        PeerInfo {
+            producer: ProducerRef::new(CORE, expected_peer),
+            peer_link_id: ARM_SLOT_LINK_ID.to_string(),
+        },
+        "every message is tagged with the full identity of the paired peer"
+    );
     assert_eq!(&*message.payload_bytes(), expected_payload);
 }
 
@@ -110,7 +123,7 @@ async fn expect_silence(subscription: &mut PeerSubscription) {
     assert!(
         outcome.is_err(),
         "expected no delivery, got: {:?}",
-        outcome.unwrap().map(|m| m.payload())
+        outcome.unwrap().map(|(peer, _)| peer)
     );
 }
 
@@ -154,7 +167,7 @@ async fn live_pair_starts_delivery_without_resubscribe() {
         .publish(Payload::from_static(b"post-pairing"))
         .await
         .expect("publish");
-    expect_message(&mut subscription, b"post-pairing").await;
+    expect_message(&mut subscription, "arm_1", b"post-pairing").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -189,7 +202,7 @@ async fn foreign_identity_on_same_keyexpr_shape_is_never_delivered() {
         .publish(Payload::from_static(b"legit"))
         .await
         .expect("publish");
-    expect_message(&mut subscription, b"legit").await;
+    expect_message(&mut subscription, "arm_1", b"legit").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -213,7 +226,7 @@ async fn repin_swaps_to_the_new_peer_without_stale_or_duplicate_delivery() {
         .publish(Payload::from_static(b"from arm_1"))
         .await
         .expect("publish");
-    expect_message(&mut subscription, b"from arm_1").await;
+    expect_message(&mut subscription, "arm_1", b"from arm_1").await;
 
     // Re-pin to arm_2 (failover: replacement booted with --pair).
     tx.send(PeerPinState {
@@ -233,7 +246,7 @@ async fn repin_swaps_to_the_new_peer_without_stale_or_duplicate_delivery() {
         .await
         .expect("publish");
 
-    expect_message(&mut subscription, b"from arm_2").await;
+    expect_message(&mut subscription, "arm_2", b"from arm_2").await;
     expect_silence(&mut subscription).await;
 }
 
@@ -256,7 +269,7 @@ async fn clear_silences_the_slot_until_repaired() {
         .publish(Payload::from_static(b"while paired"))
         .await
         .expect("publish");
-    expect_message(&mut subscription, b"while paired").await;
+    expect_message(&mut subscription, "arm_1", b"while paired").await;
 
     // The daemon clears the pair (peer death / node stop).
     tx.send(PeerPinState {
@@ -285,7 +298,7 @@ async fn clear_silences_the_slot_until_repaired() {
         .publish(Payload::from_static(b"after re-pair"))
         .await
         .expect("publish");
-    expect_message(&mut subscription, b"after re-pair").await;
+    expect_message(&mut subscription, "arm_1", b"after re-pair").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

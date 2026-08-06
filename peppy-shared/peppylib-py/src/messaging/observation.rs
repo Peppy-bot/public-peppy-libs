@@ -2,7 +2,7 @@
 //! observed pairing of an observer slot), [`PyObservationSlot`] (read a scalar
 //! slot's source), [`PyObservationSlotSet`] (read a multi-member slot's whole
 //! set), and [`PyObservedSubscription`] (receive the observed sources'
-//! publishes on one topic, yielded as `(producer, message)`).
+//! publishes on one topic, yielded as `(source, message)`).
 
 use super::target::PyProducerRef;
 use super::topics::PyTopicMessage;
@@ -15,16 +15,31 @@ use tokio::sync::Mutex;
 /// One pairing an observer slot observes: the observed instance's full
 /// `(core_node, instance_id)` wire address plus the producer-side link_id of the
 /// observed pairing slot. Returned by `ObservationSlot.source()` and
-/// `ObservationSlotSet.sources()`. Purely local configuration state; there is no
-/// health-derived helper, because a third node's health is not knowable here.
-#[pyclass(name = "ObservedSource", frozen, eq, skip_from_py_object)]
-#[derive(Clone, PartialEq, Eq)]
+/// `ObservationSlotSet.sources()`, and tagged onto every message an
+/// `ObservedSubscription` yields; it is the member's full identity, so members
+/// sharing one instance stay distinct. `frozen, eq, hash` make it usable
+/// directly as a `dict` key for per-member demux, mirroring the Rust
+/// `HashMap<ObservedSource, _>` idiom. Purely local configuration state; there
+/// is no health-derived helper, because a third node's health is not knowable
+/// here.
+#[pyclass(name = "ObservedSource", frozen, eq, hash, skip_from_py_object)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PyObservedSource {
     pub(crate) inner: ObservedSource,
 }
 
 #[pymethods]
 impl PyObservedSource {
+    #[new]
+    fn new(producer: PyProducerRef, source_link_id: String) -> Self {
+        Self {
+            inner: ObservedSource {
+                producer: producer.into_inner(),
+                source_link_id,
+            },
+        }
+    }
+
     /// The observed source instance's full wire address.
     #[getter]
     fn producer(&self) -> PyProducerRef {
@@ -112,7 +127,7 @@ impl PyObservationSlotSet {
 
 /// Stream of the observed sources' publishes on one topic, fanned in across the
 /// slot's whole member set and vended by `node_runner.subscribe_observed(...)`.
-/// Each `on_next_message()` yields a `(producer, message)` tuple, or `None` when
+/// Each `on_next_message()` yields a `(source, message)` tuple, or `None` when
 /// the runtime is torn down. Delivery is a live stream, not a mailbox, and
 /// follows each source instance's lifecycle independently of its peer
 /// relationship.
@@ -123,19 +138,21 @@ pub struct PyObservedSubscription {
 
 #[pymethods]
 impl PyObservedSubscription {
-    /// Wait for and receive the next `(producer, message)` from any currently
+    /// Wait for and receive the next `(source, message)` from any currently
     /// observed source incarnation. Every cardinality fans in the same way and
-    /// every message is tagged with the member that published it. Returns `None`
-    /// when the runtime is torn down. Messages buffered under a superseded
-    /// source incarnation, or under a member the slot has since dropped, are
-    /// dropped before they surface here.
+    /// every message is tagged with the `ObservedSource` that published it, the
+    /// same identity `ObservationSlotSet.sources()` enumerates, so a consumer
+    /// routes on it even when several members share one instance. Returns
+    /// `None` when the runtime is torn down. Messages buffered under a
+    /// superseded source incarnation, or under a member the slot has since
+    /// dropped, are dropped before they surface here.
     fn on_next_message<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         crate::py_future::future_into_py(py, async move {
             let mut subscription = inner.lock().await;
             match subscription.on_next_message().await {
-                Some((producer, message)) => Ok(Some((
-                    PyProducerRef::from(producer),
+                Some((source, message)) => Ok(Some((
+                    PyObservedSource::from(source),
                     PyTopicMessage::from(message),
                 ))),
                 None => Ok(None),

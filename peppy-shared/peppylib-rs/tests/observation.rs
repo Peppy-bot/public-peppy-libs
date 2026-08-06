@@ -8,8 +8,8 @@ mod common;
 use common::get_client_server;
 use config::node::QoSProfile;
 use peppylib::messaging::{
-    MessengerHandle, ObservationPin, ObservationState, ObservedMemberState, ProducerRef,
-    SenderTarget, TopicPublisher,
+    MessengerHandle, ObservationPin, ObservationState, ObservedMemberState, ObservedSource,
+    ProducerRef, SenderTarget, TopicPublisher,
 };
 use peppylib::runtime::{ObservedTopicSubscription, subscribe_observed_with_watch};
 use peppylib::types::Payload;
@@ -30,10 +30,16 @@ fn pairing_target() -> SenderTarget {
 }
 
 fn member(instance_id: &str, generation: u64) -> ObservedMemberState {
+    member_on_link(instance_id, SOURCE_SLOT_LINK_ID, generation)
+}
+
+/// A member observed through `source_link_id`, for slots whose members share
+/// one instance and differ only in the source slot they publish under.
+fn member_on_link(instance_id: &str, source_link_id: &str, generation: u64) -> ObservedMemberState {
     ObservedMemberState {
         source: ObservationPin {
             producer: ProducerRef::new(CORE, instance_id),
-            source_link_id: SOURCE_SLOT_LINK_ID.to_string(),
+            source_link_id: source_link_id.to_string(),
         },
         source_generation: generation,
         source_live: true,
@@ -45,12 +51,20 @@ fn state(sequence: u64, members: Vec<ObservedMemberState>) -> ObservationState {
 }
 
 async fn declare_source_publisher(handle: &MessengerHandle, instance_id: &str) -> TopicPublisher {
+    declare_source_publisher_on_link(handle, instance_id, SOURCE_SLOT_LINK_ID).await
+}
+
+async fn declare_source_publisher_on_link(
+    handle: &MessengerHandle,
+    instance_id: &str,
+    source_link_id: &str,
+) -> TopicPublisher {
     common::declare_pinned_publisher(
         handle,
         CORE,
         instance_id,
         pairing_target(),
-        SOURCE_SLOT_LINK_ID,
+        source_link_id,
         TOPIC,
     )
     .await
@@ -76,12 +90,20 @@ fn subscribe(
 /// Waits until the observer's wire subscription pinned to `source_instance` is
 /// visible to the publisher's session.
 async fn wait_for_source_wire_sub(handle: &MessengerHandle, source_instance: &str) {
+    wait_for_source_wire_sub_on_link(handle, source_instance, SOURCE_SLOT_LINK_ID).await
+}
+
+async fn wait_for_source_wire_sub_on_link(
+    handle: &MessengerHandle,
+    source_instance: &str,
+    source_link_id: &str,
+) {
     common::wait_for_pinned_wire_sub(
         handle,
         CORE,
         source_instance,
         pairing_target(),
-        SOURCE_SLOT_LINK_ID,
+        source_link_id,
         TOPIC,
     )
     .await;
@@ -106,14 +128,30 @@ async fn expect_message(
     expected_producer: &str,
     expected_payload: &[u8],
 ) {
-    let (producer, message) =
+    expect_message_from_source(
+        subscription,
+        &ObservedSource {
+            producer: ProducerRef::new(CORE, expected_producer),
+            source_link_id: SOURCE_SLOT_LINK_ID.to_string(),
+        },
+        expected_payload,
+    )
+    .await
+}
+
+async fn expect_message_from_source(
+    subscription: &mut ObservedTopicSubscription,
+    expected_source: &ObservedSource,
+    expected_payload: &[u8],
+) {
+    let (source, message) =
         tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
             .await
             .expect("should receive a message within 2s")
             .expect("subscription should not close");
     assert_eq!(
-        producer.instance_id, expected_producer,
-        "every message is tagged with the member that published it"
+        &source, expected_source,
+        "every message is tagged with the full identity of the member that published it"
     );
     assert_eq!(&*message.payload_bytes(), expected_payload);
 }
@@ -139,10 +177,11 @@ async fn expect_message_after_redeclare(
             .publish(Payload::from_static(payload))
             .await
             .expect("publish");
-        if let Ok(Some((producer, message))) =
+        if let Ok(Some((source, message))) =
             tokio::time::timeout(Duration::from_millis(50), subscription.on_next_message()).await
         {
-            assert_eq!(producer.instance_id, expected_producer);
+            assert_eq!(source.producer.instance_id, expected_producer);
+            assert_eq!(source.source_link_id, SOURCE_SLOT_LINK_ID);
             assert_eq!(&*message.payload_bytes(), payload);
             break;
         }
@@ -165,7 +204,7 @@ async fn expect_silence(subscription: &mut ObservedTopicSubscription) {
     assert!(
         outcome.is_err(),
         "expected no delivery, got: {:?}",
-        outcome.unwrap().map(|(producer, _)| producer)
+        outcome.unwrap().map(|(source, _)| source)
     );
 }
 
@@ -282,6 +321,59 @@ async fn a_generation_bump_redeclares_only_that_member() {
         .await
         .expect("publish");
     expect_message(&mut subscription, "arm_1", b"undisturbed").await;
+}
+
+/// Two members of one slot can be the same instance observed through two
+/// different source slots (four `commanded_*` links on one backbone instance
+/// is the canonical deployment). The producer pair is identical for both, so
+/// the source link_id on the yielded tag is what tells them apart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn members_sharing_one_instance_are_told_apart_by_source_link_id() {
+    let (client, shared) = get_client_server().await;
+    let source_handle = MessengerHandle::from_shared(shared);
+
+    let (tx, watch_rx) = watch::channel(ObservationState::unregistered());
+    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let left = declare_source_publisher_on_link(&source_handle, "backbone_1", "left_arm").await;
+    let right = declare_source_publisher_on_link(&source_handle, "backbone_1", "right_arm").await;
+
+    tx.send(state(
+        1,
+        vec![
+            member_on_link("backbone_1", "left_arm", 1),
+            member_on_link("backbone_1", "right_arm", 1),
+        ],
+    ))
+    .expect("watch send");
+    wait_for_source_wire_sub_on_link(&source_handle, "backbone_1", "left_arm").await;
+    wait_for_source_wire_sub_on_link(&source_handle, "backbone_1", "right_arm").await;
+
+    left.publish(Payload::from_static(b"left setpoints"))
+        .await
+        .expect("publish");
+    expect_message_from_source(
+        &mut subscription,
+        &ObservedSource {
+            producer: ProducerRef::new(CORE, "backbone_1"),
+            source_link_id: "left_arm".to_string(),
+        },
+        b"left setpoints",
+    )
+    .await;
+
+    right
+        .publish(Payload::from_static(b"right setpoints"))
+        .await
+        .expect("publish");
+    expect_message_from_source(
+        &mut subscription,
+        &ObservedSource {
+            producer: ProducerRef::new(CORE, "backbone_1"),
+            source_link_id: "right_arm".to_string(),
+        },
+        b"right setpoints",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

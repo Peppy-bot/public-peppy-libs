@@ -980,8 +980,9 @@ impl PyNodeRunner {
     /// Subscribe to one peer-emitted topic of the pairing slot at `link_id`.
     /// Spliced by the generated `peppygen.paired_topics.<link_id>.<topic>.subscribe`
     /// call sites; `pairing_name` / `pairing_tag` / `topic` come from the
-    /// pairing doc via codegen constants. The subscription yields nothing
-    /// while the slot is unpaired and follows the slot's live pin.
+    /// pairing doc via codegen constants. The subscription yields
+    /// `(peer, message)` tuples, nothing while the slot is unpaired, and
+    /// follows the slot's live pin.
     fn subscribe_peer<'py>(
         &self,
         py: Python<'py>,
@@ -1043,8 +1044,9 @@ impl PyNodeRunner {
     /// `peppygen.paired_topics.<link_id>.<topic>.subscribe` call sites of
     /// observer modules; `pairing_name` / `pairing_tag` / `topic` come from the
     /// pairing doc via codegen constants. Messages from every member of the slot
-    /// fan into one stream, each yielded as a `(producer, message)` tuple, and
-    /// delivery follows each source instance's lifecycle.
+    /// fan into one stream, each yielded as a `(source, message)` tuple whose
+    /// `ObservedSource` tag tells members apart even when they share one
+    /// instance, and delivery follows each source instance's lifecycle.
     fn subscribe_observed<'py>(
         &self,
         py: Python<'py>,

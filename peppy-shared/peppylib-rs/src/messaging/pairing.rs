@@ -41,9 +41,11 @@ impl PeerPinState {
 }
 
 /// User-facing identity of the peer paired on a slot, returned by
-/// `NodeRunner::peer(link_id).paired()` / `wait_paired()` and surfaced by the
-/// generated per-slot `paired()` / `wait_paired()` helpers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `NodeRunner::peer(link_id).paired()` / `wait_paired()`, surfaced by the
+/// generated per-slot `paired()` / `wait_paired()` helpers, and tagged onto
+/// every message a peer subscription yields. Hashable and ordered so consumers
+/// key maps on it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerInfo {
     /// The peer instance's full wire address.
     pub producer: ProducerRef,

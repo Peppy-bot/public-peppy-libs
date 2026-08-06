@@ -9,6 +9,8 @@ import pytest
 
 from peppylib import (
     MessengerHandle,
+    ObservedSource,
+    PeerInfo,
     ProducerRef,
     QoSProfile,
     SenderTarget,
@@ -44,6 +46,59 @@ def test_producer_ref_is_structured_and_hashable():
     assert frames_by_producer[ProducerRef("core_a", "inst_1")] == "frame"
 
     assert repr(producer) == 'ProducerRef("core_a", "inst_1")'
+
+
+def test_observed_source_is_structured_and_hashable():
+    """`ObservedSource` exposes named fields and works as a dict key.
+
+    An observed subscription tags every message with it, and two members of
+    one slot can share an instance and differ only in the source link_id, so
+    per-member demux keys a dict on the full identity (mirrors the Rust
+    `HashMap<ObservedSource, _>` idiom).
+    """
+    left = ObservedSource(ProducerRef("core_a", "backbone_1"), "left_arm")
+    right = ObservedSource(ProducerRef("core_a", "backbone_1"), "right_arm")
+    assert left.producer == ProducerRef("core_a", "backbone_1")
+    assert left.source_link_id == "left_arm"
+
+    same = ObservedSource(ProducerRef("core_a", "backbone_1"), "left_arm")
+    assert left == same
+    assert left != right
+    assert hash(left) == hash(same)
+
+    handlers = {left: "left", right: "right"}
+    assert len(handlers) == 2
+    assert handlers[same] == "left"
+
+    assert repr(left) == (
+        'ObservedSource(producer=ProducerRef("core_a", "backbone_1"), '
+        'source_link_id="left_arm")'
+    )
+
+
+def test_peer_info_is_structured_and_hashable():
+    """`PeerInfo` exposes named fields and works as a dict key.
+
+    A peer subscription tags every message with it, the same identity
+    `PeerSlot.paired()` returns.
+    """
+    peer = PeerInfo(ProducerRef("core_a", "arm_1"), "controller")
+    assert peer.producer == ProducerRef("core_a", "arm_1")
+    assert peer.peer_link_id == "controller"
+
+    same = PeerInfo(ProducerRef("core_a", "arm_1"), "controller")
+    other = PeerInfo(ProducerRef("core_a", "arm_1"), "follower")
+    assert peer == same
+    assert peer != other
+    assert hash(peer) == hash(same)
+
+    state_by_peer = {peer: "paired"}
+    assert state_by_peer[same] == "paired"
+
+    assert repr(peer) == (
+        'PeerInfo(producer=ProducerRef("core_a", "arm_1"), '
+        'peer_link_id="controller")'
+    )
 
 
 @pytest.mark.asyncio

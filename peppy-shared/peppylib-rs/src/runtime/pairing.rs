@@ -90,12 +90,17 @@ pub struct PeerSubscription {
 }
 
 impl PeerSubscription {
-    /// Waits for the next message from the currently paired peer. Returns
-    /// `None` when the runtime is torn down (slot channel closed). Messages
-    /// buffered under a swapped-out or cleared pin are dropped before they
-    /// surface (see [`SlotStream::next`]).
-    pub async fn on_next_message(&mut self) -> Option<Message> {
-        self.stream.next().await.map(|(_producer, message)| message)
+    /// Waits for the next `(peer, message)` from the currently paired peer:
+    /// the peer's identity (the same [`PeerInfo`] that [`PeerSlot::paired`]
+    /// returns) and the message it published. Returns `None` when the runtime
+    /// is torn down (slot channel closed). Messages buffered under a
+    /// swapped-out or cleared pin are dropped before they surface (see
+    /// [`SlotStream::next`]).
+    pub async fn on_next_message(&mut self) -> Option<(PeerInfo, Message)> {
+        self.stream
+            .next()
+            .await
+            .map(|(pin, message)| (PeerInfo::from(&*pin), message))
     }
 }
 

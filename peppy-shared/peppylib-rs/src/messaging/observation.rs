@@ -73,11 +73,13 @@ impl ObservationState {
 
 /// User-facing observed source of one observer-slot member, returned by
 /// `NodeRunner::observation_slot(link_id)`'s `source()` and
-/// `observation_slot_set(link_id)`'s `sources()`, and surfaced by the generated
-/// per-slot `source()` / `sources()` helpers. Purely local configuration state
-/// known to the observer from its own registration; it needs no daemon push to
-/// read.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `observation_slot_set(link_id)`'s `sources()`, surfaced by the generated
+/// per-slot `source()` / `sources()` helpers, and tagged onto every message an
+/// observed-topic subscription yields. It is the member's full identity, so
+/// members sharing one instance stay distinct, and it is hashable and ordered
+/// so consumers key demux maps on it. Purely local configuration state known
+/// to the observer from its own registration; it needs no daemon push to read.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ObservedSource {
     /// The observed source instance's full wire address.
     pub producer: ProducerRef,
@@ -97,5 +99,31 @@ impl From<&ObservationPin> for ObservedSource {
 impl From<&ObservedMemberState> for ObservedSource {
     fn from(member: &ObservedMemberState) -> Self {
         Self::from(&member.source)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// An `ObservedSource` keys demux maps: two members sharing one instance
+    /// hash and compare as distinct entries because the link_id is part of the
+    /// identity.
+    #[test]
+    fn observed_source_keys_demux_maps_per_member() {
+        let left = ObservedSource {
+            producer: ProducerRef::new("core_a", "backbone_1"),
+            source_link_id: "left_arm".to_string(),
+        };
+        let right = ObservedSource {
+            producer: ProducerRef::new("core_a", "backbone_1"),
+            source_link_id: "right_arm".to_string(),
+        };
+
+        let handlers = HashMap::from([(left.clone(), "left"), (right.clone(), "right")]);
+        assert_eq!(handlers.len(), 2);
+        assert_eq!(handlers[&left], "left");
+        assert_eq!(handlers[&right], "right");
     }
 }

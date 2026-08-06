@@ -169,16 +169,21 @@ pub struct ObservedTopicSubscription {
 }
 
 impl ObservedTopicSubscription {
-    /// Waits for the next `(producer, message)` from any currently observed
+    /// Waits for the next `(source, message)` from any currently observed
     /// source incarnation. Every cardinality fans in the same way and every
-    /// message is tagged with the member that published it, so a multi-member
-    /// slot's consumer routes on the producer rather than on which subscription
-    /// it came from. Returns `None` when the runtime is torn down (slot channel
-    /// closed). A message buffered under a superseded source generation, or
-    /// under a member the slot has since dropped, never surfaces (see
+    /// message is tagged with the [`ObservedSource`] that published it, the
+    /// same type [`ObservationSlotSet::sources`] enumerates, so a multi-member
+    /// slot's consumer routes on the source identity (wire address plus
+    /// producer-side link_id) even when several members share one instance.
+    /// Returns `None` when the runtime is torn down (slot channel closed). A
+    /// message buffered under a superseded source generation, or under a
+    /// member the slot has since dropped, never surfaces (see
     /// [`SlotStream::next`]).
-    pub async fn on_next_message(&mut self) -> Option<(ProducerRef, Message)> {
-        self.stream.next().await
+    pub async fn on_next_message(&mut self) -> Option<(ObservedSource, Message)> {
+        self.stream
+            .next()
+            .await
+            .map(|(pin, message)| (ObservedSource::from(&pin.source), message))
     }
 }
 
