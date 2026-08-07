@@ -24,6 +24,11 @@ pub enum SrsError {
     /// or non-SRS geometry). Carries the underlying reason.
     #[error("{0}")]
     Model(String),
+
+    /// A tool link mounted via [`Arm::with_tool_link`](crate::Arm::with_tool_link) is not a rigid
+    /// transform: a non-finite component, or a rotation that is not unit length.
+    #[error("tool transform: {0}")]
+    Tool(String),
 }
 
 /// Lower-level helpers report opaque string reasons; fold them into

@@ -4,7 +4,7 @@
 <!-- |    EDITING THIS FILE BY HAND IS NOT RECOMMENDED                                 | -->
 <!-- =================================================================================== -->
 <!-- Vendored from enactic/openarm_ros2 with ONE physical correction: the parallel-
-     gripper hand-body inertials on both *_hand_tcp links (upstream omits them; the
+     gripper hand-body inertials on both *_hand links (upstream omits them; the
      srs_model gravity/Coriolis feedforward needs them). Mechanical joint limits are
      left as vendored. The elbow singularity control margin is NOT baked in here; it
      is applied in code (openarm_description::ELBOW_SINGULARITY_FLOOR_RAD). -->
@@ -470,10 +470,10 @@
     <axis xyz="0 1 0"/>
     <limit effort="7" lower="-1.570796" upper="1.570796" velocity="20.943946"/>
   </joint>
-  <link name="openarm_left_hand_tcp">
+  <link name="openarm_left_hand">
     <!-- Parallel-gripper hand-body mass (enactic openarm_description
          parallel_link/config/inertials.yaml: hand 0.127 kg, frame at z=0.1025 from
-         link7, COM offset -0.000549). hand_tcp is link7-aligned, so the COM sits at
+         link7, COM offset -0.000549). this link is link7-aligned, so the COM sits at
          z=0.101951; srs_model lumps this (plus the two 36 g fingers) into the wrist
          for the gravity/Coriolis feedforward. -->
     <inertial>
@@ -482,10 +482,10 @@
       <inertia ixx="1.65558e-04" ixy="0.0" ixz="0.0" iyy="1.74660e-05" iyz="0.0" izz="1.73524e-04"/>
     </inertial>
   </link>
-  <joint name="openarm_left_hand_tcp_joint" type="fixed">
+  <joint name="openarm_left_hand_joint" type="fixed">
     <origin rpy="0 0 0" xyz="0 0 0"/>
     <parent link="openarm_left_link7"/>
-    <child link="openarm_left_hand_tcp"/>
+    <child link="openarm_left_hand"/>
   </joint>
   <link name="openarm_left_left_finger">
     <visual name="openarm_left_left_finger_visual">
@@ -540,18 +540,18 @@
     <limit effort="333" lower="0.0" upper="0.044" velocity="10.0"/>
     <mimic joint="openarm_left_finger_joint1"/>
   </joint>
-  <link name="openarm_right_hand_tcp">
-    <!-- Parallel-gripper hand-body mass; see the left hand_tcp note. -->
+  <link name="openarm_right_hand">
+    <!-- Parallel-gripper hand-body mass; see the left hand note. -->
     <inertial>
       <origin rpy="0 0 0" xyz="0.000001 0.0 0.101951"/>
       <mass value="0.127"/>
       <inertia ixx="1.65558e-04" ixy="0.0" ixz="0.0" iyy="1.74660e-05" iyz="0.0" izz="1.73524e-04"/>
     </inertial>
   </link>
-  <joint name="openarm_right_hand_tcp_joint" type="fixed">
+  <joint name="openarm_right_hand_joint" type="fixed">
     <origin rpy="0 0 0" xyz="0 0 0"/>
     <parent link="openarm_right_link7"/>
-    <child link="openarm_right_hand_tcp"/>
+    <child link="openarm_right_hand"/>
   </joint>
   <link name="openarm_right_left_finger">
     <visual name="openarm_right_left_finger_visual">
@@ -605,5 +605,19 @@
     <axis xyz="0 1 0"/>
     <limit effort="333" lower="0.0" upper="0.044" velocity="10.0"/>
     <mimic joint="openarm_right_finger_joint1"/>
+  </joint>
+  <!-- Grasp point of the parallel-jaw gripper: on the closing axis midway between the pads, at their face centre. The jaws are prismatic, so the pads stay parallel at every opening and an object meets the whole face. Local addition, not emitted by the xacro. -->
+  <link name="openarm_left_tcp"/>
+  <joint name="openarm_left_tcp_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.0015 0 0.1717"/>
+    <parent link="openarm_left_link7"/>
+    <child link="openarm_left_tcp"/>
+  </joint>
+  <!-- Grasp point of the parallel-jaw gripper: on the closing axis midway between the pads, at their face centre. The jaws are prismatic, so the pads stay parallel at every opening and an object meets the whole face. Local addition, not emitted by the xacro. -->
+  <link name="openarm_right_tcp"/>
+  <joint name="openarm_right_tcp_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.0015 0 0.1717"/>
+    <parent link="openarm_right_link7"/>
+    <child link="openarm_right_tcp"/>
   </joint>
 </robot>

@@ -122,4 +122,9 @@ pub(crate) mod test_support {
     pub(crate) fn v1_model(side: &str) -> ArmModel {
         ArmModel::from_fk(&mut v1_fk(side)).expect("load fixture model")
     }
+
+    /// The fixture's joint limits, the solver's in-limit test (see `ik::solve`).
+    pub(crate) fn v1_limits(side: &str) -> [crate::Limit; crate::ARM_DOF] {
+        v1_fk(side).limits()
+    }
 }

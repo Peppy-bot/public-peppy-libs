@@ -48,6 +48,23 @@ impl Arm {
         self
     }
 
+    /// Mount the tool frame the URDF carries as `link_name`, which must sit below
+    /// the chain tip on fixed joints only. The arm then speaks that frame
+    /// throughout - [`at`](Self::at)'s [`ee_pose`](Posed::ee_pose), the
+    /// [`jacobian`](Posed::jacobian) it is taken at, [`solve_ik`](Self::solve_ik)'s
+    /// target, and the twist [`rate_step`](Self::rate_step) realizes - so a caller
+    /// cannot command one frame and read another. Without this an arm controls its
+    /// bare tip.
+    ///
+    /// Taking the frame from the URDF rather than from a caller's numbers keeps the
+    /// tool where the rest of the robot's geometry lives, and makes it a rigid
+    /// transform by construction. Errors if the link is absent or is reached
+    /// through a joint that moves.
+    pub fn with_tool_link(mut self, link_name: &str) -> Result<Self, SrsError> {
+        self.fk.set_tool_link(link_name)?;
+        Ok(self)
+    }
+
     /// Pose the arm at configuration `q` for forward-kinematics and dynamics
     /// reads. Takes `&mut self` not because posing requires it (`k` poses through
     /// interior mutability) but to enforce "pose, then read": the returned [`Posed`]
@@ -62,13 +79,25 @@ impl Arm {
     /// resolving the redundant arm angle per `arm_angle` and selecting the branch
     /// nearest `seed`. Convert a world-frame target with [`base_pose`](Self::base_pose)
     /// first. `None` if the target is unreachable or admits no in-limit solution.
+    /// In-limit means [`limits`](Self::limits), so a floor set by
+    /// [`with_lower_floor`](Self::with_lower_floor) constrains the solutions too.
+    ///
+    /// `target` is where the caller wants the end-effector, so on an arm with a
+    /// tool it is a tool-frame target; the tool is removed here to leave the tip
+    /// target the closed form is defined on.
     pub fn solve_ik(
         &self,
         target: &Isometry3<f64>,
         arm_angle: ArmAnglePolicy,
         seed: &JointVec,
     ) -> Option<Solution> {
-        ik::solve(&self.model, target, arm_angle, seed)
+        ik::solve(
+            &self.model,
+            &self.fk.limits(),
+            &(target * self.fk.tool().inverse()),
+            arm_angle,
+            seed,
+        )
     }
 
     /// The arm angle of configuration `q`, or `None` at the straight-arm
@@ -80,6 +109,13 @@ impl Arm {
     /// URDF joint position limits, j1..j7, in radians.
     pub fn limits(&self) -> [Limit; ARM_DOF] {
         self.fk.limits()
+    }
+
+    /// The mounted `tip -> tool` transform, identity when none is mounted. The tool
+    /// origin's distance from the tip bounds how far the end-effector can be from
+    /// the tip in any direction, which a caller reasoning about reach needs.
+    pub fn tool(&self) -> Isometry3<f64> {
+        self.fk.tool()
     }
 
     /// Convert a world/body-frame pose into the arm base frame the solver uses.
@@ -182,6 +218,29 @@ mod tests {
     }
 
     #[test]
+    fn a_lower_floor_constrains_the_solutions_not_just_the_report() {
+        // The floor exists to hold a joint off a singularity, which it cannot do if
+        // IK keeps returning configurations under it. Uses a floor far from the
+        // straight-arm singularity so a refusal here is the limit doing the work
+        // rather than the solver failing on conditioning.
+        const FLOOR: f64 = 0.5;
+        let mut arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0")
+            .expect("load fixture")
+            .with_lower_floor(3, FLOOR);
+        assert_eq!(arm.limits()[3].lo, FLOOR, "the floor is reported");
+
+        let under: JointVec = [0.1, 0.2, 0.0, 0.30, 0.0, 0.3, 0.0];
+        let target = arm.at(&under).ee_pose();
+        if let Some(s) = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &under) {
+            assert!(
+                s.q[3] >= FLOOR,
+                "IK returned j4 = {} under the {FLOOR} floor it reports",
+                s.q[3]
+            );
+        }
+    }
+
+    #[test]
     fn with_lower_floor_below_the_mechanical_limit_is_a_noop() {
         let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture");
         let base = arm.limits();
@@ -216,6 +275,11 @@ mod tests {
 
     fn ee_world(arm: &mut Arm, q: &JointVec) -> Isometry3<f64> {
         let base = arm.at(q).ee_pose();
+        arm.world_pose(&base)
+    }
+
+    fn tip_world(arm: &mut Arm, q: &JointVec) -> Isometry3<f64> {
+        let base = arm.at(q).tip_pose();
         arm.world_pose(&base)
     }
 
@@ -277,5 +341,127 @@ mod tests {
             RATE_LAMBDA,
         );
         assert_eq!(q, RATE_Q, "zero task must not move any joint");
+    }
+
+    // The fixture carries `openarm_{side}_tcp`, a frame fixed well off the tip, so
+    // a test that passes cannot be one that ignores the tool.
+    const TOOL_LINK: &str = "openarm_left_tcp";
+
+    fn tooled_arm() -> Arm {
+        rate_arm()
+            .with_tool_link(TOOL_LINK)
+            .expect("the fixture carries the tool link")
+    }
+
+    #[test]
+    fn a_mounted_tool_moves_the_ee_frame_and_leaves_the_tip_where_it_was() {
+        let mut bare = rate_arm();
+        let bare_tip = bare.at(&RATE_Q).tip_pose();
+        let bare_ee = bare.at(&RATE_Q).ee_pose();
+        assert_eq!(bare_tip, bare_ee, "with no tool the EE frame is the tip");
+
+        let mut tooled = tooled_arm();
+        assert_eq!(
+            tooled.at(&RATE_Q).tip_pose(),
+            bare_tip,
+            "mounting a tool must not move the tip"
+        );
+        let tool = tooled.tool();
+        assert!(
+            tool.translation.vector.norm() > 0.1,
+            "the fixture's tool link should sit well off the tip, got {tool:?}"
+        );
+        let ee = tooled.at(&RATE_Q).ee_pose();
+        let expected = bare_tip * tool;
+        assert!(
+            (ee.translation.vector - expected.translation.vector).norm() < 1e-12
+                && ee.rotation.angle_to(&expected.rotation) < 1e-12,
+            "EE frame must be the tip composed with the tool: {ee:?} vs {expected:?}"
+        );
+    }
+
+    #[test]
+    fn ik_round_trips_the_tool_frame_it_was_given() {
+        // The whole point of the seam: a target expressed at the tool is reached at
+        // the tool. A composition inverted anywhere lands a tool-length away.
+        let mut arm = tooled_arm();
+        let target = arm.at(&RATE_Q).ee_pose();
+        let seed: JointVec = std::array::from_fn(|i| RATE_Q[i] + 0.05);
+        let solution = arm
+            .solve_ik(&target, ArmAnglePolicy::FromSeed, &seed)
+            .expect("a pose reached by FK is reachable");
+        let reached = arm.at(&solution.q).ee_pose();
+        assert!(
+            (reached.translation.vector - target.translation.vector).norm() < 1e-9,
+            "IK reached {:?}, wanted {:?}",
+            reached.translation.vector,
+            target.translation.vector
+        );
+        assert!(
+            reached.rotation.angle_to(&target.rotation) < 1e-9,
+            "IK reached a {:.6} rad different orientation",
+            reached.rotation.angle_to(&target.rotation)
+        );
+    }
+
+    #[test]
+    fn a_pure_rotation_pivots_about_the_tool_point() {
+        // The sharpest statement that the Jacobian moved with the frame: a rotation
+        // task holds the point it is taken at and swings everything else. Left at
+        // the tip, this would drag the tool point through a tool-length arc.
+        let mut arm = tooled_arm();
+        let tip_before = tip_world(&mut arm, &RATE_Q);
+        let ee_before = ee_world(&mut arm, &RATE_Q);
+        let dw = Vector3::new(0.0, 0.0, 1e-2);
+        let q = arm.rate_step(
+            &RATE_Q,
+            Vector3::zeros(),
+            dw,
+            &RATE_V_MAX,
+            RATE_DT,
+            RATE_LAMBDA,
+        );
+        let tip_after = tip_world(&mut arm, &q);
+        let ee_after = ee_world(&mut arm, &q);
+
+        let turned = ee_after.rotation.angle_to(&ee_before.rotation);
+        assert!(
+            (turned - dw.norm()).abs() < 1e-4,
+            "the commanded rotation must be realized, got {turned}"
+        );
+        let tip_swing = (tip_after.translation.vector - tip_before.translation.vector).norm();
+        let tool_swing = (ee_after.translation.vector - ee_before.translation.vector).norm();
+        assert!(
+            tip_swing > 1e-4,
+            "the tip should swing about the tool point, got {tip_swing}"
+        );
+        // The damped step trades a little drift for conditioning, so hold is an
+        // order of magnitude, not zero: the pivot must move far less than what it
+        // is swinging.
+        assert!(
+            tool_swing < 0.2 * tip_swing,
+            "the tool point should hold: moved {tool_swing} against a {tip_swing} tip swing"
+        );
+    }
+
+    #[test]
+    fn with_tool_link_rejects_anything_whose_offset_could_move() {
+        for (label, link) in [
+            ("absent from the URDF", "openarm_left_nonesuch"),
+            // Reached through a prismatic finger joint, so its offset tracks the
+            // gripper opening rather than staying put.
+            ("below a movable joint", "openarm_left_left_finger"),
+            // A real link, but up the arm rather than below the tip.
+            ("not below the tip", "openarm_left_link3"),
+        ] {
+            let err = match rate_arm().with_tool_link(link) {
+                Ok(_) => panic!("{label}: expected a rejection for '{link}'"),
+                Err(e) => e,
+            };
+            assert!(
+                matches!(err, SrsError::Tool(_)),
+                "{label}: wrong error {err}"
+            );
+        }
     }
 }

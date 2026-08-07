@@ -17,12 +17,22 @@
 //!   produces joint commands.
 //! - [`HardwareVersion::base_link`] names one side's chain base link in the bundled URDF:
 //!   the single source for the link a kinematics chain is walked out from.
+//! - [`HardwareVersion::tcp_link`] names one side's tool-center-point frame in the bundled
+//!   URDF, so poses are commanded and reported at the grasp point (see the method docs for
+//!   the frame convention).
 //!
 //! Pure data: this crate carries no solver dependency. A consumer that wants a kinematic
-//! model builds it from these, e.g. `srs_model::Arm::from_urdf(v.urdf(),
-//! v.base_link(side)).with_lower_floor(v.elbow_joint_index(),
-//! v.elbow_singularity_floor_rad())`, so the description stays reusable by any consumer (a
-//! viz tool, a sim bridge) without pulling a solver in.
+//! model builds it from these, e.g.
+//!
+//! ```text
+//! srs_model::Arm::from_urdf(v.urdf(), v.base_link(side))?
+//!     .with_lower_floor(v.elbow_joint_index(), v.elbow_singularity_floor_rad())
+//!     .with_tool_link(v.tcp_link(side))?
+//! ```
+//!
+//! so the description stays reusable by any consumer (a viz tool, a sim bridge) without
+//! pulling a solver in. A consumer that only needs dynamics (an arm driver's gravity
+//! feedforward) can skip the tool: it moves the end-effector frame, not the masses.
 
 use std::fmt;
 use std::str::FromStr;
@@ -126,8 +136,35 @@ impl HardwareVersion {
             (Self::V2, Side::Right) => "openarm_right_base_link",
         }
     }
-}
 
+    /// The tool-center-point frame naming one side's grasp point in the bundled URDF:
+    /// the link a kinematics consumer mounts via `with_tool_link`, mirroring how
+    /// [`Self::base_link`] names the chain root. The frame itself (a fixed joint off
+    /// the chain tip) lives in the URDF with the rest of the robot's geometry; this
+    /// resolves its per-generation name.
+    ///
+    /// The point is on the gripping face, on the jaw closing axis midway between the
+    /// pads, located by the jaw's own kinematics:
+    ///
+    /// - v1's jaws are **prismatic**, so the pads stay parallel at every opening and an
+    ///   object meets the whole face. The point is the face centre.
+    /// - v2's jaws are **revolute**, so the pads splay open and the face tapers. An object
+    ///   wedges where the gap is narrowest, which measures the same (the pad's proximal
+    ///   edge) for every object from 10 mm to the jaw's 65 mm limit, so the point is that
+    ///   pinch line rather than the face centre 5 mm ahead of it.
+    ///
+    /// Frame convention, both generations: `+z` out of the gripper along its approach
+    /// direction, `y` on the jaw closing axis. The generations mount their grippers along
+    /// opposite tip axes (v1 along tip `+z`, v2 along tip `-z`), so v2's frame carries a
+    /// half turn about `y` in the URDF; a consumer writing a top-down grasp need not know
+    /// which generation it drives.
+    pub fn tcp_link(self, side: Side) -> &'static str {
+        match (self, side) {
+            (Self::V1 | Self::V2, Side::Left) => "openarm_left_tcp",
+            (Self::V1 | Self::V2, Side::Right) => "openarm_right_tcp",
+        }
+    }
+}
 impl fmt::Display for HardwareVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -435,6 +472,268 @@ mod tests {
             assert_eq!(v.to_string(), s);
         }
         assert!("v3".parse::<HardwareVersion>().is_err());
+    }
+
+    /// The finger geometry of one side, in the chain-tip frame: where the finger hinges
+    /// (the knuckle) and how far the finger reaches past it along each axis.
+    #[cfg(feature = "meshes")]
+    struct FingerSpan {
+        knuckle: [f64; 3],
+        min: [f64; 3],
+        max: [f64; 3],
+        /// The finger's collision vertices, placed in the chain-tip frame with the
+        /// jaws closed.
+        points: Vec<[f64; 3]>,
+    }
+
+    /// Read one finger's geometry straight out of the bundled URDF and meshes, so the
+    /// tool transform is checked against the description rather than against itself.
+    #[cfg(feature = "meshes")]
+    fn finger_span(v: HardwareVersion, side: Side, finger: usize) -> FingerSpan {
+        let robot = parsed(v);
+        let joint_name = format!("openarm_{}_finger_joint{finger}", side.urdf_prefix());
+        let joint = robot
+            .joints
+            .iter()
+            .find(|j| j.name == joint_name)
+            .unwrap_or_else(|| panic!("{v}: bundled URDF missing {joint_name}"));
+        let knuckle = joint.origin.xyz.0;
+        let link = robot
+            .links
+            .iter()
+            .find(|l| l.name == joint.child.link)
+            .unwrap_or_else(|| panic!("{v}: bundled URDF missing link {}", joint.child.link));
+        let collision = link
+            .collision
+            .first()
+            .unwrap_or_else(|| panic!("{v}: {} has no collision geometry", link.name));
+        let urdf_rs::Geometry::Mesh { filename, scale } = &collision.geometry else {
+            panic!("{v}: {} collision is not a mesh", link.name);
+        };
+        // The placement below is translation + scale only, so a rotation on either
+        // origin would silently misplace the geometry this test brackets against.
+        for (what, rpy) in [
+            ("joint", joint.origin.rpy.0),
+            ("collision", collision.origin.rpy.0),
+        ] {
+            assert!(
+                rpy.iter().all(|c| c.abs() < 1e-12),
+                "{v} {side:?}: finger {what} origin carries a rotation {rpy:?}; teach \
+                 finger_span the transform before trusting this test again"
+            );
+        }
+        let scale = scale.map(|s| s.0).unwrap_or([1.0; 3]);
+        let file = filename
+            .rsplit('/')
+            .next()
+            .expect("mesh filename has a final component");
+        let (_, bytes) = v
+            .meshes()
+            .iter()
+            .find(|(name, _)| *name == file)
+            .unwrap_or_else(|| panic!("{v}: {file} is not embedded"));
+        let (lo, hi) = stl_bounds(bytes);
+        // The mirror in `scale` flips a bound onto the other end, so order after scaling.
+        let placed =
+            |k: usize, bound: f64| bound * scale[k] + collision.origin.xyz.0[k] + knuckle[k];
+        FingerSpan {
+            knuckle,
+            min: std::array::from_fn(|k| placed(k, lo[k]).min(placed(k, hi[k]))),
+            max: std::array::from_fn(|k| placed(k, lo[k]).max(placed(k, hi[k]))),
+            points: stl_vertices(bytes)
+                .map(|v| {
+                    std::array::from_fn(|k| {
+                        v[k] * scale[k] + collision.origin.xyz.0[k] + knuckle[k]
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    /// The closed-jaw gap between two fingers in the `z` slice around `at`: how far
+    /// apart their facing surfaces are, negative where the collision meshes overlap.
+    /// `None` when neither finger has geometry there.
+    #[cfg(feature = "meshes")]
+    fn closed_gap_at(a: &FingerSpan, b: &FingerSpan, at: f64, half_slice: f64) -> Option<f64> {
+        let slice = |f: &FingerSpan| -> Vec<f64> {
+            f.points
+                .iter()
+                .filter(|p| (p[2] - at).abs() <= half_slice)
+                .map(|p| p[1])
+                .collect()
+        };
+        let (ys_a, ys_b) = (slice(a), slice(b));
+        if ys_a.is_empty() || ys_b.is_empty() {
+            return None;
+        }
+        // Which finger sits on which side of the closing axis flips between the
+        // arms (the URDF mirrors finger 1 across them), so order by the geometry
+        // rather than by argument position, or the gap goes negative on one side
+        // and a `gap <= tolerance` assertion passes vacuously there.
+        let mid = |ys: &[f64]| ys.iter().sum::<f64>() / ys.len() as f64;
+        let (lower, upper) = if mid(&ys_a) <= mid(&ys_b) {
+            (&ys_a, &ys_b)
+        } else {
+            (&ys_b, &ys_a)
+        };
+        let inner_lower = lower.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let inner_upper = upper.iter().copied().fold(f64::INFINITY, f64::min);
+        Some(inner_upper - inner_lower)
+    }
+
+    /// The vertices of a binary STL: an 80-byte header, a triangle count, then 50
+    /// bytes per triangle (a normal, three vertices, an attribute count).
+    #[cfg(feature = "meshes")]
+    fn stl_vertices(bytes: &[u8]) -> impl Iterator<Item = [f64; 3]> + '_ {
+        const HEADER: usize = 84;
+        const TRIANGLE: usize = 50;
+        let count = u32::from_le_bytes(bytes[80..HEADER].try_into().expect("4 bytes")) as usize;
+        assert_eq!(
+            bytes.len(),
+            HEADER + count * TRIANGLE,
+            "not a binary STL of {count} triangles"
+        );
+        (0..count).flat_map(move |tri| {
+            (0..3).map(move |vertex| {
+                std::array::from_fn(|axis| {
+                    let at = HEADER + tri * TRIANGLE + 12 + vertex * 12 + axis * 4;
+                    f32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes")) as f64
+                })
+            })
+        })
+    }
+
+    /// Per-axis `(min, max)` of a binary STL's vertices.
+    #[cfg(feature = "meshes")]
+    fn stl_bounds(bytes: &[u8]) -> ([f64; 3], [f64; 3]) {
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for v in stl_vertices(bytes) {
+            for axis in 0..3 {
+                lo[axis] = lo[axis].min(v[axis]);
+                hi[axis] = hi[axis].max(v[axis]);
+            }
+        }
+        (lo, hi)
+    }
+
+    /// The tcp frame as the URDF carries it: the fixed joint's translation and the
+    /// rotation matrix its rpy composes to, in the chain-tip frame.
+    fn tcp_joint(v: HardwareVersion, side: Side) -> ([f64; 3], [[f64; 3]; 3]) {
+        let robot = parsed(v);
+        let name = v.tcp_link(side);
+        let joint = robot
+            .joints
+            .iter()
+            .find(|j| j.child.link == name)
+            .unwrap_or_else(|| panic!("{v}: bundled URDF missing a joint to {name}"));
+        assert!(
+            matches!(joint.joint_type, urdf_rs::JointType::Fixed),
+            "{v} {side:?}: the tcp joint must be fixed"
+        );
+        let [roll, pitch, yaw] = joint.origin.rpy.0;
+        let (sr, cr) = (roll.sin(), roll.cos());
+        let (sp, cp) = (pitch.sin(), pitch.cos());
+        let (sy, cy) = (yaw.sin(), yaw.cos());
+        // URDF rpy is extrinsic XYZ: R = Rz(yaw) Ry(pitch) Rx(roll).
+        let r = [
+            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+            [-sp, cp * sr, cp * cr],
+        ];
+        (joint.origin.xyz.0, r)
+    }
+
+    fn rotate(r: [[f64; 3]; 3], p: [f64; 3]) -> [f64; 3] {
+        std::array::from_fn(|i| r[i][0] * p[0] + r[i][1] * p[1] + r[i][2] * p[2])
+    }
+
+    #[test]
+    fn tcp_link_names_a_fixed_frame_the_urdf_carries() {
+        for v in [HardwareVersion::V1, HardwareVersion::V2] {
+            for side in [Side::Left, Side::Right] {
+                // tcp_joint itself asserts existence and fixity; the two sides must
+                // also mirror in y and agree elsewhere, like the arms they hang off.
+                let (t, _) = tcp_joint(v, side);
+                let (u, _) = tcp_joint(
+                    v,
+                    match side {
+                        Side::Left => Side::Right,
+                        Side::Right => Side::Left,
+                    },
+                );
+                assert_eq!(t[0], u[0], "{v}: tcp x differs across sides");
+                assert_eq!(t[1], -u[1], "{v}: tcp y must mirror across sides");
+                assert_eq!(t[2], u[2], "{v}: tcp z differs across sides");
+            }
+        }
+    }
+
+    #[cfg(feature = "meshes")]
+    #[test]
+    fn tool_center_point_sits_between_the_knuckle_and_the_fingertip() {
+        // Bracketed against the bundled description, not against a second copy of the
+        // number: a re-vendored gripper moves the knuckle or the finger and fails here
+        // rather than silently leaving the constant describing the old hardware.
+        for v in [HardwareVersion::V1, HardwareVersion::V2] {
+            for side in [Side::Left, Side::Right] {
+                let (translation, rotation) = tcp_joint(v, side);
+                let finger = finger_span(v, side, 1);
+                let opposing = finger_span(v, side, 2);
+                let [x, y, z] = translation;
+                // Midway between the two fingers is what "grasp point" means, so pin it
+                // to the knuckles rather than to a zero that happens to be right today.
+                let midpoint = 0.5 * (finger.knuckle[1] + opposing.knuckle[1]);
+                assert!(
+                    (y - midpoint).abs() < 1e-9,
+                    "{v} {side:?}: tool y {y} is not midway between the fingers ({midpoint})"
+                );
+                let (near, far) = (
+                    finger.knuckle[2],
+                    if z < 0.0 {
+                        finger.min[2]
+                    } else {
+                        finger.max[2]
+                    },
+                );
+                assert!(
+                    (z - near).abs() < (far - near).abs() && (z - near) * (far - near) > 0.0,
+                    "{v} {side:?}: tool z {z} is not between the knuckle {near} and the fingertip {far}"
+                );
+                assert!(
+                    (finger.min[0]..=finger.max[0]).contains(&x),
+                    "{v} {side:?}: tool x {x} is outside the finger's {:?}..{:?}",
+                    finger.min[0],
+                    finger.max[0]
+                );
+                // On the gripping face, not in the relief behind it or past the tip:
+                // with the jaws closed the two pads meet at the tool's own z, which is
+                // false everywhere else along the finger.
+                let gap = closed_gap_at(&finger, &opposing, z, 0.002)
+                    .unwrap_or_else(|| panic!("{v} {side:?}: no finger geometry at z {z}"));
+                assert!(
+                    gap <= 1e-3,
+                    "{v} {side:?}: jaws stand {:.1} mm apart at the tool's z {z}, so it is \
+                     not on the gripping face",
+                    gap * 1000.0
+                );
+                // The tool frame's +z is the approach direction: it must point from the
+                // knuckle toward the fingertip, which is what makes the two generations
+                // interchangeable to a caller despite their opposite mounting axes.
+                let approach = rotate(rotation, [0.0, 0.0, 1.0]);
+                assert!(
+                    approach[2] * (far - near) > 0.0,
+                    "{v} {side:?}: tool +z {approach:?} does not point out of the gripper"
+                );
+                // And the frame's y is the jaw closing axis: the fingers hinge apart
+                // along tip y in both URDFs, so tool y must map onto it, not off it.
+                let closing = rotate(rotation, [0.0, 1.0, 0.0]);
+                assert!(
+                    closing[1].abs() > 1.0 - 1e-9,
+                    "{v} {side:?}: tool y {closing:?} is off the jaw closing axis"
+                );
+            }
+        }
     }
 
     #[cfg(feature = "meshes")]
