@@ -13,11 +13,12 @@ on:
     paths:
       - 'peppy-shared/**'
       - '.github/workflows/peppy-shared-tests.yml'
+  # No `paths` filter here, unlike the push trigger: `test` is a required status
+  # check on `main`, and a workflow that `paths` filters out never reports its
+  # check at all, which leaves the pull request blocked with nothing to wait for.
+  # The path decision moves into the `changes` job below instead.
   pull_request:
-    branches: [main, dev]
-    paths:
-      - 'peppy-shared/**'
-      - '.github/workflows/peppy-shared-tests.yml'
+    branches: [main]
 
 concurrency:
   group: peppy-shared-tests-${{ github.event.pull_request.number || github.ref }}
@@ -27,7 +28,35 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Decides whether a pull request touches the workspace. Runs on a GitHub-hosted
+  # runner so that pull requests leaving `peppy-shared/` alone never queue against
+  # the single self-hosted runner.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      peppy_shared: ${{ steps.filter.outputs.peppy_shared }}
+
+    steps:
+      # On a pull request the action reads the changed files from the API, so it
+      # needs no checkout. The step is skipped on push, where the trigger's own
+      # `paths` filter has already made the decision.
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            peppy_shared:
+              - 'peppy-shared/**'
+              - '.github/workflows/peppy-shared-tests.yml'
+
+  # Skipping this job reports the `test` check as successful, which is what lets a
+  # pull request outside `peppy-shared/` satisfy the required check and merge.
   test:
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.peppy_shared == 'true'
     runs-on: self-hosted
     permissions:
       contents: read
