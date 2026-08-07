@@ -293,6 +293,34 @@ pub enum PairingSlotBinding {
     Unpaired,
 }
 
+/// One member of one observer slot as the daemon stamped it at spawn time:
+/// the observed pairing's identity plus that source's incarnation generation
+/// and liveness at assembly. The boot-config twin of the wire's
+/// `ObservedMemberState`: identical stamping, different transport, so the
+/// node's first live `observation_update` normally repeats this state
+/// byte-for-byte and replaces it without redeclaring any subscription.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationSeedMember {
+    pub source: ProducerRef,
+    pub source_link_id: String,
+    pub source_generation: u64,
+    pub source_live: bool,
+}
+
+/// Boot-time member sets of every observer slot (a `depends_on.pairing_observers`
+/// entry) of a node instance, keyed by slot link_id, each set in plan order.
+///
+/// Deliberately UNLIKE `pairing_slots` (which boots all-Unpaired): observer
+/// membership is launch-time configuration the same way `slot_bindings` is,
+/// and the daemon delivers it to a running instance only after that instance
+/// reaches Running, which a node's setup runs strictly before. Without the
+/// seed, setup-time discovery reads every slot empty with nothing to
+/// distinguish "not delivered yet" from "bound to nothing". The seed is the
+/// slot's first delivery, at sequence zero; live `observation_update`
+/// deliveries carry strictly larger sequences and replace it wholesale.
+pub type ObservationSeeds = BTreeMap<String, Vec<ObservationSeedMember>>;
+
 /// Represents a node instance at runtime. Used by RuntimeConfig to identify the running node and its configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -321,6 +349,12 @@ pub struct NodeInstanceConfig {
     /// declares no pairings.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pairing_slots: BTreeMap<String, PairingSlotBinding>,
+    /// Boot-time member sets of the instance's observer slots, stamped by
+    /// the daemon at spawn (see [`ObservationSeeds`]). Empty when the
+    /// manifest declares no `pairing_observers`, and on a slot the plan
+    /// left with nothing to observe.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub observation_seeds: ObservationSeeds,
 }
 
 impl NodeInstanceConfig {
@@ -335,6 +369,7 @@ impl NodeInstanceConfig {
             framework: ResolvedFramework::default(),
             slot_bindings: BTreeMap::new(),
             pairing_slots: BTreeMap::new(),
+            observation_seeds: BTreeMap::new(),
         }
     }
 }
@@ -396,6 +431,10 @@ impl NodeInstancePlan {
             },
             slot_bindings: self.slot_bindings,
             pairing_slots: BTreeMap::new(),
+            // Stamped by the spawning daemon after resolution: the seed
+            // carries daemon-held state (source generations and liveness)
+            // that a plan, by design, does not know.
+            observation_seeds: BTreeMap::new(),
         }
     }
 }

@@ -85,11 +85,13 @@ impl NodeRunner {
 
     /// Handle onto the scalar observer slot declared at `link_id` in
     /// `depends_on.pairing_observers` (a `one` or `zero_or_one` slot). Exposes
-    /// the slot's observed source: `observation_slot(link_id)?.source()` returns
-    /// it once the daemon has delivered it. Errors if the manifest declares no
-    /// such observer slot, and panics if it declares one with a multi-member
-    /// cardinality, which is read through [`Self::observation_slot_set`]
-    /// instead.
+    /// the slot's observed source, through the accessor its cardinality declares:
+    /// `observation_slot(link_id)?.sole_source()` for a `one` slot, which always
+    /// observes a pairing, and `observation_slot(link_id)?.source()` for a
+    /// `zero_or_one` slot, which answers `None` where the deployment wrote it
+    /// vacant. Errors if the manifest declares no such observer slot, and panics
+    /// if it declares one with a multi-member cardinality, which is read through
+    /// [`Self::observation_slot_set`] instead.
     pub fn observation_slot(&self, link_id: &str) -> crate::error::Result<super::ObservationSlot> {
         let cardinality = self.observation_slot_cardinality(link_id)?;
         if !cardinality.is_scalar() {
@@ -108,10 +110,14 @@ impl NodeRunner {
 
     /// Handle onto the multi-member observer slot declared at `link_id` in
     /// `depends_on.pairing_observers` (a `one_or_more` or `zero_or_more` slot).
-    /// Exposes the slot's live member set: `observation_slot_set(link_id)?
-    /// .sources()` returns every pairing it currently observes, in plan order.
-    /// Errors if the manifest declares no such observer slot, and panics if it
-    /// declares one with a scalar cardinality, which is read through
+    /// Exposes every pairing the slot observes, in plan order, through the
+    /// accessor its cardinality declares:
+    /// `observation_slot_set(link_id)?.non_empty_sources()` for a `one_or_more`
+    /// slot, whose set is never empty, and
+    /// `observation_slot_set(link_id)?.sources()` for a `zero_or_more` slot,
+    /// whose set is empty where the plan bound no pairing. Errors if the
+    /// manifest declares no such observer slot, and panics if it declares one
+    /// with a scalar cardinality, which is read through
     /// [`Self::observation_slot`] instead.
     pub fn observation_slot_set(
         &self,
@@ -126,6 +132,8 @@ impl NodeRunner {
             );
         }
         Ok(super::ObservationSlotSet::new(
+            link_id,
+            cardinality,
             self.observation_slot_watch(link_id)?,
         ))
     }

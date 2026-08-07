@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::{Error, ParameterDeserializationError, Result};
-use crate::messaging::{ObservationState, PeerInfo, PeerPinState};
+use crate::messaging::{ObservationState, ObservedMemberState, PeerInfo, PeerPinState};
 use config::{
     AnyType, NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
@@ -44,10 +44,11 @@ pub struct Processor {
     /// `ObservedTopicSubscription`s / `ObservationSlot`s observe them.
     observation_slots: Arc<BTreeMap<String, watch::Sender<ObservationState>>>,
     /// Each observer slot's declared `cardinality`, keyed by link_id and read
-    /// from the same manifest entries that seed `observation_slots`. It types
-    /// the slot's accessor (`observation_slot` vs `observation_slot_set`); it
-    /// never gates a member count, because an observed set changes while the
-    /// node runs and no size holds across its lifetime.
+    /// from the same manifest entries that seed `observation_slots`. It picks
+    /// the slot's handle (`observation_slot` vs `observation_slot_set`) and,
+    /// through the handle, which accessor that slot's generated module calls; it
+    /// also gates the slot's seed at startup, so a floored slot cannot boot
+    /// observing less than its manifest declares.
     observation_cardinalities: BTreeMap<String, Cardinality>,
 }
 
@@ -101,8 +102,9 @@ impl Processor {
 
         let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
-        let observation_slots = build_observation_slots(&node_config);
         let observation_cardinalities = build_observer_cardinalities(&node_config);
+        let observation_slots =
+            build_observation_slots(&runtime_config, &observation_cardinalities)?;
 
         Ok(Self {
             runtime_config,
@@ -192,11 +194,45 @@ impl Processor {
             slot_bindings.insert(link_id.clone(), bound);
         }
 
+        // Daemon-less development: `StandaloneConfig::with_observed_source`
+        // seeds an observer slot's member set, standing in for the set the
+        // daemon stamps into a spawned node's boot config. Undeclared link_ids
+        // are ignored with a warning, on the same terms as `bound_producers`
+        // above; a declared slot whose seeded set violates its cardinality, or
+        // that repeats a pairing, fails `build_observation_slots`, exactly like
+        // a daemon boot config with a bad seed. Members boot live at generation
+        // zero: standalone has no daemon to report an incarnation change or a
+        // source going down.
+        let observation_cardinalities = build_observer_cardinalities(&node_config);
+        let mut observation_seeds = config::runtime::ObservationSeeds::new();
+        for (link_id, sources) in &config.observed_sources {
+            if !observation_cardinalities.contains_key(link_id) {
+                tracing::warn!(
+                    link_id = %link_id,
+                    "StandaloneConfig observed source names an undeclared observer slot; ignoring"
+                );
+                continue;
+            }
+            observation_seeds.insert(
+                link_id.clone(),
+                sources
+                    .iter()
+                    .map(|source| config::runtime::ObservationSeedMember {
+                        source: source.producer.clone(),
+                        source_link_id: source.source_link_id.clone(),
+                        source_generation: 0,
+                        source_live: true,
+                    })
+                    .collect(),
+            );
+        }
+
         let runtime_config = RuntimeConfig::new(
             &messaging_host,
             messaging_port,
             NodeInstanceConfig {
                 slot_bindings,
+                observation_seeds,
                 ..NodeInstanceConfig::new(instance_id_name)
             },
             &node_name,
@@ -206,8 +242,8 @@ impl Processor {
 
         let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
-        let observation_slots = build_observation_slots(&node_config);
-        let observation_cardinalities = build_observer_cardinalities(&node_config);
+        let observation_slots =
+            build_observation_slots(&runtime_config, &observation_cardinalities)?;
 
         // Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a
         // slot as already-paired, standing in for the daemon's live
@@ -508,26 +544,74 @@ fn observer_deps(node_config: &NodeConfig) -> impl Iterator<Item = &PairingObser
 }
 
 /// Seed one watch channel per **observer** pairing slot declared in
-/// `depends_on.pairing_observers`, keyed by slot link_id, each initialized to
-/// [`ObservationState::unregistered`]. The member set, each member's
-/// generation, and each member's live status all arrive over the
-/// `observation_update` service after the instance commits, exactly as pairing
-/// pins arrive over `peer_update`.
+/// `depends_on.pairing_observers`, keyed by slot link_id, each initialized
+/// from the boot config's `observation_seeds` entry for that slot: the
+/// launch-time member set the daemon stamped at spawn, at sequence zero, so
+/// `sources()` answers the plan's membership from the node's first
+/// instruction, setup included. Membership changes, generation bumps, and
+/// liveness transitions arrive over the `observation_update` service at
+/// strictly larger sequences and replace the seed wholesale.
+///
+/// The startup backstop mirrors the producer-binding rules: a missing seed
+/// counts as empty, an empty slot is legal only where the plan could have
+/// written one (`zero_or_one` vacant, `zero_or_more` observing nothing), and
+/// a seed whose size the declared cardinality does not allow, or that names
+/// a slot the manifest does not declare, fails construction as component
+/// version skew rather than booting a slot the plan says cannot exist.
+///
+/// `cardinalities` is [`build_observer_cardinalities`]'s map, so the slots
+/// seeded here and the cardinalities their accessors read are one set of
+/// link_ids by construction rather than by two walks agreeing.
 fn build_observation_slots(
-    node_config: &NodeConfig,
-) -> Arc<BTreeMap<String, watch::Sender<ObservationState>>> {
-    Arc::new(
-        observer_deps(node_config)
-            .map(|dep| {
-                let (tx, _rx) = watch::channel(ObservationState::unregistered());
-                (dep.link_id.clone(), tx)
-            })
-            .collect(),
-    )
+    runtime_config: &RuntimeConfig,
+    cardinalities: &BTreeMap<String, Cardinality>,
+) -> Result<Arc<BTreeMap<String, watch::Sender<ObservationState>>>> {
+    let seeds = &runtime_config.node_instance.observation_seeds;
+    if let Some(link_id) = seeds.keys().find(|k| !cardinalities.contains_key(*k)) {
+        return Err(Error::ObservationSeedUndeclared {
+            link_id: link_id.clone(),
+        });
+    }
+
+    cardinalities
+        .iter()
+        .map(|(link_id, cardinality)| {
+            let members: Vec<ObservedMemberState> = seeds
+                .get(link_id)
+                .map(|seeded| seeded.iter().map(ObservedMemberState::from).collect())
+                .unwrap_or_default();
+            // The wire decoder rejects a repeated observed pairing on a live
+            // delivery; the seed path holds the same line, keyed on the whole
+            // `ObservedSource`, which is the member identity and carries the
+            // `Hash`/`Eq` pinned for exactly this use.
+            let mut identities = std::collections::HashSet::with_capacity(members.len());
+            for member in &members {
+                if !identities.insert(&member.source) {
+                    return Err(Error::ObservationSeedDuplicate {
+                        link_id: link_id.clone(),
+                        core_node: member.source.producer.core_node.clone(),
+                        instance_id: member.source.producer.instance_id.clone(),
+                        source_link_id: member.source.source_link_id.clone(),
+                    });
+                }
+            }
+            if !cardinality.admits(members.len()) {
+                return Err(Error::ObservationSeedViolated {
+                    link_id: link_id.clone(),
+                    cardinality: *cardinality,
+                    seeded: members.len(),
+                });
+            }
+            let (tx, _rx) = watch::channel(ObservationState::seeded(members));
+            Ok((link_id.clone(), tx))
+        })
+        .collect::<Result<_>>()
+        .map(Arc::new)
 }
 
-/// Each observer slot's declared `cardinality`, keyed by the same link_ids
-/// [`build_observation_slots`] seeds.
+/// Each observer slot's declared `cardinality`, keyed by link_id. Built once
+/// per processor and handed to [`build_observation_slots`], which seeds a
+/// channel for exactly these link_ids.
 fn build_observer_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Cardinality> {
     observer_deps(node_config)
         .map(|dep| (dep.link_id.clone(), dep.cardinality))
@@ -1452,6 +1536,19 @@ mod tests {
         peppy_config: &str,
         slot_bindings_json5: Option<&str>,
     ) -> Result<Processor, crate::error::Error> {
+        let instance_block = match slot_bindings_json5 {
+            Some(bindings) => {
+                format!("{{ instance_id: \"consumer_1\", slot_bindings: {bindings} }}")
+            }
+            None => "{ instance_id: \"consumer_1\" }".to_string(),
+        };
+        daemon_processor_with_instance_block(peppy_config, &instance_block)
+    }
+
+    fn daemon_processor_with_instance_block(
+        peppy_config: &str,
+        instance_block: &str,
+    ) -> Result<Processor, crate::error::Error> {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         std::fs::write(&peppy_config_path, peppy_config).expect("peppy config should be written");
@@ -1459,13 +1556,6 @@ mod tests {
             &peppy_config_path,
             Path::new(PEPPYGEN_OUTPUT_PATH),
         );
-
-        let instance_block = match slot_bindings_json5 {
-            Some(bindings) => {
-                format!("{{ instance_id: \"consumer_1\", slot_bindings: {bindings} }}")
-            }
-            None => "{ instance_id: \"consumer_1\" }".to_string(),
-        };
         let json5_config = format!(
             r#"{{
                 messaging_host: "127.0.0.1",
@@ -1836,17 +1926,42 @@ mod tests {
         execution: { language: "rust", run_cmd: ["./target/debug/consumer_node"] },
     }"#;
 
-    /// Observer slots carry no boot-config binding of any cardinality: the
-    /// daemon delivers each slot's member set live, so every slot starts empty
-    /// and construction never depends on a member being there.
+    /// Like [`OBSERVER_PEPPY_CONFIG`] but with only the cardinalities whose
+    /// empty state is a legal plan (`zero_or_one` vacant, `zero_or_more`
+    /// observing nothing), so a seedless boot config constructs.
+    const ZERO_FLOOR_OBSERVER_PEPPY_CONFIG: &str = r#"{
+        peppy_schema: "node/v1",
+        manifest: {
+            name: "consumer_node",
+            tag: "v1",
+            depends_on: {
+                pairing_observers: [
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "maybe_arm", cardinality: "zero_or_one" },
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "spare_arms", cardinality: "zero_or_more" }
+                ]
+            }
+        },
+        interfaces: {
+            topics: {
+                consumes: [
+                    { link_id: "maybe_arm", name: "joint_states" },
+                    { link_id: "spare_arms", name: "joint_states" }
+                ]
+            }
+        },
+        execution: { language: "rust", run_cmd: ["./target/debug/consumer_node"] },
+    }"#;
+
+    /// A boot config without `observation_seeds` boots a zero-floor slot
+    /// empty: that is a legal plan (vacant / observing nothing), never a
+    /// missing delivery.
     #[test]
-    fn observer_slots_are_cardinality_typed_and_start_empty() {
-        let processor = daemon_processor_with_bindings(OBSERVER_PEPPY_CONFIG, None)
-            .expect("observer slots need no boot-config binding");
+    fn zero_floor_observer_slots_boot_empty_without_seeds() {
+        let processor = daemon_processor_with_bindings(ZERO_FLOOR_OBSERVER_PEPPY_CONFIG, None)
+            .expect("zero-floor observer slots need no seed");
 
         for (link_id, expected) in [
-            ("sole_arm", Cardinality::One),
-            ("watched_arms", Cardinality::OneOrMore),
+            ("maybe_arm", Cardinality::ZeroOrOne),
             ("spare_arms", Cardinality::ZeroOrMore),
         ] {
             assert_eq!(
@@ -1857,14 +1972,213 @@ mod tests {
             let watch = processor
                 .observation_slot_watch(link_id)
                 .unwrap_or_else(|| panic!("slot `{link_id}` must have a channel"));
-            assert!(
-                watch.borrow().members.is_empty(),
-                "slot `{link_id}` starts with no members, whatever its cardinality"
-            );
+            assert!(watch.borrow().members.is_empty());
         }
 
         assert_eq!(processor.observation_slot_cardinality("not_declared"), None);
         assert!(processor.observation_slot_watch("not_declared").is_none());
+    }
+
+    /// The observation twin of `fails_at_startup_when_declared_slot_has_no_binding`:
+    /// a missing seed counts as empty, and an empty `one` / `one_or_more`
+    /// slot is a set the plan cannot have written, so construction fails as
+    /// version skew (a daemon that predates seeding) instead of booting a
+    /// slot in an impossible state.
+    #[test]
+    fn a_missing_seed_for_a_floored_observer_slot_fails_startup() {
+        let Err(err) = daemon_processor_with_bindings(OBSERVER_PEPPY_CONFIG, None) else {
+            panic!("expected missing-seed startup error");
+        };
+        assert!(
+            matches!(
+                &err,
+                crate::error::Error::ObservationSeedViolated { link_id, cardinality, seeded }
+                    if link_id == "sole_arm" && *cardinality == Cardinality::One && *seeded == 0
+            ),
+            "expected ObservationSeedViolated for `sole_arm`, got: {err}"
+        );
+    }
+
+    /// A seed whose size the declared cardinality does not allow fails the
+    /// same way: the launcher validated the plan, so an oversized set is an
+    /// incompatible component, not a user error.
+    #[test]
+    fn an_oversized_seed_fails_startup() {
+        let Err(err) = daemon_processor_with_instance_block(
+            ZERO_FLOOR_OBSERVER_PEPPY_CONFIG,
+            r#"{
+                instance_id: "consumer_1",
+                observation_seeds: {
+                    maybe_arm: [
+                        {
+                            source: { core_node: "core-1234", instance_id: "arm_1" },
+                            source_link_id: "controller",
+                            source_generation: 1,
+                            source_live: true
+                        },
+                        {
+                            source: { core_node: "core-1234", instance_id: "arm_2" },
+                            source_link_id: "controller",
+                            source_generation: 1,
+                            source_live: true
+                        }
+                    ]
+                }
+            }"#,
+        ) else {
+            panic!("expected oversized-seed startup error");
+        };
+        assert!(
+            matches!(
+                &err,
+                crate::error::Error::ObservationSeedViolated { link_id, cardinality, seeded }
+                    if link_id == "maybe_arm"
+                        && *cardinality == Cardinality::ZeroOrOne
+                        && *seeded == 2
+            ),
+            "expected ObservationSeedViolated for `maybe_arm`, got: {err}"
+        );
+    }
+
+    /// The seed path holds the wire decoder's line: one observed pairing may
+    /// appear only once in a slot's member set, so a hand-edited boot config
+    /// cannot open duplicate subscriptions.
+    #[test]
+    fn a_duplicate_seed_identity_fails_startup() {
+        let Err(err) = daemon_processor_with_instance_block(
+            ZERO_FLOOR_OBSERVER_PEPPY_CONFIG,
+            r#"{
+                instance_id: "consumer_1",
+                observation_seeds: {
+                    spare_arms: [
+                        {
+                            source: { core_node: "core-1234", instance_id: "arm_1" },
+                            source_link_id: "controller",
+                            source_generation: 1,
+                            source_live: true
+                        },
+                        {
+                            source: { core_node: "core-1234", instance_id: "arm_1" },
+                            source_link_id: "controller",
+                            source_generation: 1,
+                            source_live: true
+                        }
+                    ]
+                }
+            }"#,
+        ) else {
+            panic!("expected duplicate-seed startup error");
+        };
+        assert!(
+            matches!(
+                &err,
+                crate::error::Error::ObservationSeedDuplicate { link_id, instance_id, .. }
+                    if link_id == "spare_arms" && instance_id == "arm_1"
+            ),
+            "expected ObservationSeedDuplicate, got: {err}"
+        );
+    }
+
+    /// A seed for a slot the manifest does not declare is version skew and
+    /// fails construction rather than being silently dropped.
+    #[test]
+    fn a_seed_for_an_undeclared_slot_fails_startup() {
+        let Err(err) = daemon_processor_with_instance_block(
+            ZERO_FLOOR_OBSERVER_PEPPY_CONFIG,
+            r#"{
+                instance_id: "consumer_1",
+                observation_seeds: {
+                    phantom_slot: []
+                }
+            }"#,
+        ) else {
+            panic!("expected undeclared-seed startup error");
+        };
+        assert!(
+            matches!(
+                &err,
+                crate::error::Error::ObservationSeedUndeclared { link_id } if link_id == "phantom_slot"
+            ),
+            "expected ObservationSeedUndeclared, got: {err}"
+        );
+    }
+
+    /// A boot config's `observation_seeds` is each slot's first delivery: the
+    /// member set answers from construction (so setup-time discovery sees the
+    /// plan's membership), in plan order, stamped exactly as the daemon wrote
+    /// it. An unseeded slot in the same config still boots empty, and a live
+    /// `observation_update` (whose sequence is always positive) replaces the
+    /// sequence-zero seed.
+    #[test]
+    fn observation_seeds_answer_from_construction() {
+        let processor = daemon_processor_with_instance_block(
+            OBSERVER_PEPPY_CONFIG,
+            r#"{
+                instance_id: "consumer_1",
+                observation_seeds: {
+                    sole_arm: [
+                        {
+                            source: { core_node: "core-1234", instance_id: "arm_1" },
+                            source_link_id: "controller",
+                            source_generation: 3,
+                            source_live: true
+                        }
+                    ],
+                    watched_arms: [
+                        {
+                            source: { core_node: "core-1234", instance_id: "arm_9" },
+                            source_link_id: "controller",
+                            source_generation: 2,
+                            source_live: true
+                        },
+                        {
+                            source: { core_node: "remote-5678", instance_id: "arm_3" },
+                            source_link_id: "controller",
+                            source_generation: 0,
+                            source_live: false
+                        }
+                    ]
+                }
+            }"#,
+        )
+        .expect("a seeded observer config should construct");
+
+        let sole = processor
+            .observation_slot_watch("sole_arm")
+            .expect("declared slot has a channel");
+        let state = sole.borrow().clone();
+        assert_eq!(state.sequence, 0, "the seed is the pre-delivery state");
+        assert_eq!(state.members.len(), 1);
+        assert_eq!(state.members[0].source.producer.instance_id, "arm_1");
+        assert_eq!(state.members[0].source.source_link_id, "controller");
+        assert_eq!(state.members[0].source_generation, 3);
+        assert!(state.members[0].source_live);
+
+        let watched = processor
+            .observation_slot_watch("watched_arms")
+            .expect("declared slot has a channel");
+        let members = watched.borrow().members.clone();
+        assert_eq!(
+            members
+                .iter()
+                .map(|m| m.source.producer.instance_id.as_str())
+                .collect::<Vec<_>>(),
+            ["arm_9", "arm_3"],
+            "plan order is preserved through the seed (arm_9 sorts after arm_3, \
+             so a sorted set would flip this)"
+        );
+        assert!(
+            !members[1].source_live,
+            "a member whose source has not run yet is seeded down, membership intact"
+        );
+
+        let spare = processor
+            .observation_slot_watch("spare_arms")
+            .expect("declared slot has a channel");
+        assert!(
+            spare.borrow().members.is_empty(),
+            "an unseeded slot boots empty exactly as before"
+        );
     }
 
     /// Standalone runs enforce the same rules via
@@ -1962,5 +2276,102 @@ mod tests {
             ),
             "expected SlotCardinalityViolated for `main`, got: {err}"
         );
+    }
+
+    /// `StandaloneConfig::with_observed_source` is the observer counterpart of
+    /// `with_bound_producer`: a declared `one` slot left unseeded fails startup,
+    /// repeat calls accumulate a multi slot's set in call order, and the seeded
+    /// members answer the slot's accessors from construction.
+    #[test]
+    fn standalone_observed_sources_accumulate_and_enforce_cardinality() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&peppy_config_path, OBSERVER_PEPPY_CONFIG)
+            .expect("peppy config should be written");
+
+        let unseeded = StandaloneConfig::new();
+        let Err(err) = Processor::new_standalone(&peppy_config_path, &unseeded) else {
+            panic!("expected an unseeded floored observer slot to fail startup");
+        };
+        assert!(
+            matches!(
+                &err,
+                crate::error::Error::ObservationSeedViolated { link_id, cardinality, seeded }
+                    if link_id == "sole_arm" && *cardinality == Cardinality::One && *seeded == 0
+            ),
+            "expected ObservationSeedViolated for `sole_arm`, got: {err}"
+        );
+
+        // `spare_arms` (zero_or_more) is deliberately left unseeded.
+        let seeded = StandaloneConfig::new()
+            .with_observed_source("sole_arm", "core_x", "left_arm", "commander")
+            .with_observed_source("watched_arms", "core_x", "right_arm", "commander")
+            .with_observed_source("watched_arms", "core_x", "left_arm", "commander");
+        let processor = Processor::new_standalone(&peppy_config_path, &seeded)
+            .expect("seeded observer slots should construct");
+
+        let sole = processor
+            .observation_slot_watch("sole_arm")
+            .expect("declared slot has a watch channel");
+        assert_eq!(
+            sole.borrow()
+                .members
+                .iter()
+                .map(|m| m.source.producer.instance_id.clone())
+                .collect::<Vec<_>>(),
+            ["left_arm"]
+        );
+
+        let watched = processor
+            .observation_slot_watch("watched_arms")
+            .expect("declared slot has a watch channel");
+        assert_eq!(
+            watched
+                .borrow()
+                .members
+                .iter()
+                .map(|m| m.source.producer.instance_id.clone())
+                .collect::<Vec<_>>(),
+            ["right_arm", "left_arm"],
+            "with_observed_source call order must be preserved"
+        );
+
+        let spare = processor
+            .observation_slot_watch("spare_arms")
+            .expect("declared slot has a watch channel");
+        assert!(spare.borrow().members.is_empty());
+
+        let duplicated = StandaloneConfig::new()
+            .with_observed_source("sole_arm", "core_x", "left_arm", "commander")
+            .with_observed_source("watched_arms", "core_x", "right_arm", "commander")
+            .with_observed_source("watched_arms", "core_x", "right_arm", "commander");
+        let Err(err) = Processor::new_standalone(&peppy_config_path, &duplicated) else {
+            panic!("duplicate seeded pairing must be rejected");
+        };
+        assert!(
+            err.to_string().contains("right_arm"),
+            "duplicate error should name the source, got: {err}"
+        );
+    }
+
+    /// An undeclared link_id is a standalone typo, not a manifest violation, so
+    /// it warns and is dropped rather than failing startup, on the same terms as
+    /// `with_bound_producer`.
+    #[test]
+    fn standalone_observed_source_on_an_undeclared_slot_is_ignored() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&peppy_config_path, ZERO_FLOOR_OBSERVER_PEPPY_CONFIG)
+            .expect("peppy config should be written");
+
+        let stray = StandaloneConfig::new().with_observed_source(
+            "not_a_slot",
+            "core_x",
+            "left_arm",
+            "commander",
+        );
+        let processor = Processor::new_standalone(&peppy_config_path, &stray)
+            .expect("an undeclared observer seed should be ignored, not fatal");
+        assert!(processor.observation_slot_watch("not_a_slot").is_none());
     }
 }

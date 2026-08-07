@@ -23,7 +23,9 @@ pub use actions::{
     wrap_goal_payload, wrap_result_outcome,
 };
 pub use bound_set::NonEmptyProducers;
-pub use observation::{ObservationState, ObservedMemberState, ObservedSource};
+pub use observation::{
+    NonEmptyObservedSources, ObservationState, ObservedMemberState, ObservedSource,
+};
 pub use pairing::{PeerInfo, PeerPinState};
 pub use presence::CoreNodePresenceMessenger;
 pub use services::{
