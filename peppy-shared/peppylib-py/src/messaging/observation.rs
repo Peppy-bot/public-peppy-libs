@@ -70,9 +70,11 @@ impl From<ObservedSource> for PyObservedSource {
 
 /// Handle onto a scalar observer slot's live observation state (a
 /// `cardinality: "one"` or `cardinality: "zero_or_one"` slot), obtained via
-/// `node_runner.observation_slot(link_id)`. `source()` reads the observed
-/// source (or `None` before the daemon has delivered it). Multi-member slots
-/// are read through [`PyObservationSlotSet`] instead.
+/// `node_runner.observation_slot(link_id)`. Each scalar cardinality reads
+/// through the accessor it declares: `sole_source()` for a `one` slot, which
+/// always observes a pairing, and `source()` for a `zero_or_one` slot, which
+/// answers `None` where the deployment wrote it vacant. Multi-member slots are
+/// read through [`PyObservationSlotSet`] instead.
 #[pyclass(name = "ObservationSlot")]
 pub struct PyObservationSlot {
     pub(crate) inner: ObservationSlot,
@@ -80,8 +82,8 @@ pub struct PyObservationSlot {
 
 #[pymethods]
 impl PyObservationSlot {
-    /// The observed source of this slot, or `None` before the daemon has
-    /// delivered it, and for a `zero_or_one` slot the deployment wrote vacant.
+    /// The observed source of a `zero_or_one` slot, or `None` where the
+    /// deployment wrote it vacant.
     ///
     /// Raises `PanicException` if the slot holds more than one member, which a
     /// scalar slot cannot have: reading a multi-member slot through this
@@ -90,13 +92,26 @@ impl PyObservationSlot {
     fn source(&self) -> Option<PyObservedSource> {
         self.inner.source().map(PyObservedSource::from)
     }
+
+    /// The sole pairing a `one` slot observes. The plan binds exactly one
+    /// pairing to the slot and node startup re-checks its seed against the same
+    /// rule, so a member always exists and there is no `None` to handle.
+    ///
+    /// Raises `PanicException` if the slot observes nothing, or more than one
+    /// pairing: either means the generated code and the manifest disagree, so
+    /// regenerate the node's bindings.
+    fn sole_source(&self) -> PyObservedSource {
+        PyObservedSource::from(self.inner.sole_source())
+    }
 }
 
 /// Handle onto a multi-member observer slot's live observation state (a
 /// `one_or_more` or `zero_or_more` slot), obtained via
-/// `node_runner.observation_slot_set(link_id)`. The set is live: the daemon
-/// replaces it whole whenever the plan's observed pairings change, so an empty
-/// list is legal at any instant.
+/// `node_runner.observation_slot_set(link_id)`. The set is live in what it says
+/// about each member: the daemon keeps every member's incarnation and liveness
+/// current, and a member whose source is down stays in the list, at its
+/// position. Its size does not move, so a `one_or_more` slot never reads empty
+/// and only a `zero_or_more` slot does.
 #[pyclass(name = "ObservationSlotSet")]
 pub struct PyObservationSlotSet {
     pub(crate) inner: ObservationSlotSet,
@@ -106,7 +121,9 @@ pub struct PyObservationSlotSet {
 impl PyObservationSlotSet {
     /// Every pairing this slot currently observes, in plan order: the order the
     /// launcher's array or the `--link` occurrences wrote, so member N here is
-    /// the deployment's Nth entry for this slot.
+    /// the deployment's Nth entry for this slot. A `one_or_more` slot's list is
+    /// never empty, so `[0]` is always valid there; a `zero_or_more` slot's list
+    /// is empty wherever the plan bound no pairing at all.
     fn sources(&self) -> Vec<PyObservedSource> {
         self.inner
             .sources()

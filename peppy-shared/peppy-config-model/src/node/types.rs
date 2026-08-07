@@ -906,10 +906,12 @@ impl Cardinality {
     }
 
     /// Whether the slot holds at most one source, so its generated accessor is
-    /// singular (`source()` answering an `Option`) rather than set-valued.
-    /// The one shape rule, shared by the code generator, the node runtime's
-    /// observation-slot handles and the launcher's error hints, so an accessor
-    /// and the handle it calls can never disagree about a slot's shape.
+    /// singular rather than set-valued. The one shape rule, shared by the code
+    /// generator, the node runtime's observation-slot handles and the launcher's
+    /// error hints, so an accessor and the handle it calls can never disagree
+    /// about a slot's shape. It answers the singular/set-valued split only: what
+    /// each singular accessor returns is the cardinality's own business, since
+    /// `one` always resolves a source and `zero_or_one` may not.
     pub fn is_scalar(&self) -> bool {
         matches!(self, Cardinality::One | Cardinality::ZeroOrOne)
     }
@@ -926,9 +928,8 @@ impl Cardinality {
     /// `one`, at most one for `zero_or_one`, at least one for `one_or_more`,
     /// any size for `zero_or_more`. The one size-admission rule, shared by
     /// plan-time binding validation and the node runtime's startup re-check of
-    /// bound producers. Observer slots go through the shape check in the
-    /// launcher instead, and only at plan time: an observed member set changes
-    /// while the node runs, so no size holds across its lifetime.
+    /// both bound producers and observation seeds, so a slot cannot boot holding
+    /// a set its manifest does not admit.
     pub fn admits(&self, len: usize) -> bool {
         match self {
             Cardinality::One => len == 1,
