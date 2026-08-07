@@ -17,7 +17,8 @@
 
 use crate::error::{Error, Result};
 use crate::messaging::{
-    MessengerHandle, ObservationState, ObservedSource, ProducerRef, SenderTarget,
+    MessengerHandle, NonEmptyObservedSources, ObservationState, ObservedSource, ProducerRef,
+    SenderTarget,
 };
 use crate::runtime::NodeRunner;
 use crate::runtime::slot_stream::{FollowedSlot, SlotStream, spawn_slot_stream};
@@ -34,6 +35,22 @@ pub(crate) fn observer_shape_panic(link_id: &str, accessor: &str, declared: &str
     panic!(
         "observer slot `{link_id}` is declared `{declared}` but was read through `{accessor}`: \
          the generated code and the manifest disagree (version skew / stale codegen); \
+         regenerate bindings for this node"
+    )
+}
+
+/// The panic a floored observer accessor raises when the slot observes nothing.
+/// The too-few counterpart of [`observer_shape_panic`]'s too-many case, and the
+/// observation twin of [`crate::runtime::Processor::non_empty_bound_producers`]:
+/// the launcher sizes the slot at plan time and node startup re-checks the seed
+/// against the same rule, so an empty set means the daemon and this node
+/// disagree about the manifest rather than that the application has a case to
+/// handle.
+pub(crate) fn observer_empty_panic(link_id: &str, declared: &str) -> ! {
+    panic!(
+        "observer slot `{link_id}` is declared `{declared}` but observes nothing: \
+         the plan sizes this slot and node startup re-checks its seed, so an empty set means \
+         the daemon and the generated code disagree (version skew / stale codegen); \
          regenerate bindings for this node"
     )
 }
@@ -64,11 +81,13 @@ impl ObservationSlot {
         }
     }
 
-    /// The observed source of this slot, or `None` before the daemon has
-    /// delivered it, and for a `zero_or_one` slot the deployment wrote vacant.
-    /// Purely local configuration state; there is no health-derived helper,
-    /// because a third node's health is not knowable here (see the design's
-    /// "Generated observer API").
+    /// The observed source of a `zero_or_one` slot, or `None` where the
+    /// deployment wrote it vacant. Purely local configuration state; there is no
+    /// health-derived helper, because a third node's health is not knowable here
+    /// (see the design's "Generated observer API").
+    ///
+    /// Generated `source()` module functions of `zero_or_one` slots call this; a
+    /// `one` slot reads [`Self::sole_source`] instead, which has no empty case.
     ///
     /// Panics if the slot holds more than one member, which a scalar slot cannot
     /// have: reading a multi-member slot through this accessor is stale codegen.
@@ -80,6 +99,23 @@ impl ObservationSlot {
             _ => observer_shape_panic(&self.link_id, "source()", self.cardinality.as_str()),
         }
     }
+
+    /// The sole pairing a `one` slot observes. The plan binds exactly one
+    /// pairing to the slot and node startup re-checks its seed against the same
+    /// rule, so a member always exists and the accessor needs no `Option`.
+    /// Purely local configuration state, on the same terms as [`Self::source`].
+    ///
+    /// Generated `source()` module functions of `one` slots call this.
+    ///
+    /// Panics if the slot observes nothing, or more than one pairing: either
+    /// means the generated code and the manifest disagree. Mirrors
+    /// [`Processor::sole_bound_producer`] on the producer-binding side.
+    ///
+    /// [`Processor::sole_bound_producer`]: crate::runtime::Processor::sole_bound_producer
+    pub fn sole_source(&self) -> ObservedSource {
+        self.source()
+            .unwrap_or_else(|| observer_empty_panic(&self.link_id, self.cardinality.as_str()))
+    }
 }
 
 /// Handle onto a multi-member observer slot's live observation state (a
@@ -87,23 +123,42 @@ impl ObservationSlot {
 /// [`NodeRunner::observation_slot_set`]; the generated per-slot modules of those
 /// slots expose `sources()` delegating here.
 ///
-/// The member set is live: the daemon replaces it whole whenever the plan's
-/// observed pairings change, so a set read now can differ from one read later,
-/// and an empty set is legal at any instant (before first delivery, during a
-/// replan, or for a `zero_or_more` slot the deployment left unobserved).
+/// The member set is live in what it says about each member: the daemon owns it
+/// and keeps every member's incarnation and liveness current, so a set read now
+/// can differ from one read later and a member whose source is down stays in the
+/// set, at its position. What does not move is the size: the launcher fixes it
+/// at plan time and node startup re-checks the slot's seed against the same
+/// rule, so the slot's declared floor holds on every read.
 #[derive(Clone)]
 pub struct ObservationSlotSet {
+    link_id: String,
+    /// The slot's declared cardinality, carried only so a shape panic names the
+    /// spelling the manifest actually uses.
+    cardinality: config::node::Cardinality,
     watch_rx: watch::Receiver<ObservationState>,
 }
 
 impl ObservationSlotSet {
-    pub(crate) fn new(watch_rx: watch::Receiver<ObservationState>) -> Self {
-        Self { watch_rx }
+    pub(crate) fn new(
+        link_id: impl Into<String>,
+        cardinality: config::node::Cardinality,
+        watch_rx: watch::Receiver<ObservationState>,
+    ) -> Self {
+        Self {
+            link_id: link_id.into(),
+            cardinality,
+            watch_rx,
+        }
     }
 
-    /// Every pairing this slot currently observes, in plan order: the order the
-    /// launcher's array or the `--link` occurrences wrote, preserved end to
-    /// end, so member N here is the deployment's Nth entry for this slot.
+    /// Every pairing a `zero_or_more` slot currently observes, in plan order:
+    /// the order the launcher's array or the `--link` occurrences wrote,
+    /// preserved end to end, so member N here is the deployment's Nth entry for
+    /// this slot. The set is empty wherever the plan bound no pairing at all.
+    ///
+    /// Generated `sources()` module functions of `zero_or_more` slots call this;
+    /// a `one_or_more` slot reads [`Self::non_empty_sources`] instead, which has
+    /// no empty case.
     pub fn sources(&self) -> Vec<ObservedSource> {
         self.watch_rx
             .borrow()
@@ -111,6 +166,23 @@ impl ObservationSlotSet {
             .iter()
             .map(ObservedSource::from)
             .collect()
+    }
+
+    /// Every pairing a `one_or_more` slot observes, in plan order, as a set
+    /// whose [`first`](NonEmptyObservedSources::first) is infallible. The plan
+    /// binds at least one pairing to the slot and node startup re-checks its
+    /// seed against the same rule, so the set is never empty.
+    ///
+    /// Generated `sources()` module functions of `one_or_more` slots call this.
+    ///
+    /// Panics if the slot observes nothing, which means the generated code and
+    /// the manifest disagree. Mirrors [`Processor::non_empty_bound_producers`]
+    /// on the producer-binding side.
+    ///
+    /// [`Processor::non_empty_bound_producers`]: crate::runtime::Processor::non_empty_bound_producers
+    pub fn non_empty_sources(&self) -> NonEmptyObservedSources {
+        NonEmptyObservedSources::new(self.sources())
+            .unwrap_or_else(|| observer_empty_panic(&self.link_id, self.cardinality.as_str()))
     }
 }
 
@@ -268,38 +340,54 @@ mod tests {
         }
     }
 
-    /// Both scalar cardinalities read through the same singular accessor, and
-    /// both answer `None` on an empty member set: a `one` slot before the
-    /// daemon has delivered its source, a `zero_or_one` slot for as long as the
-    /// deployment leaves it vacant.
+    /// A `zero_or_one` slot is the one scalar cardinality with an empty state to
+    /// report, so it is the one that reads through the `Option`-returning
+    /// accessor: `None` for as long as the deployment leaves it vacant.
     #[tokio::test]
-    async fn a_scalar_slot_reports_its_sole_source() {
-        for cardinality in [
-            config::node::Cardinality::One,
-            config::node::Cardinality::ZeroOrOne,
-        ] {
-            let (tx, rx) = watch::channel(ObservationState::unregistered());
-            let slot = ObservationSlot::new("observed_arm", cardinality, rx);
-            assert_eq!(
-                slot.source(),
-                None,
-                "an undelivered `{cardinality}` slot observes nothing"
-            );
+    async fn a_zero_or_one_slot_reports_an_absent_source_as_none() {
+        let (tx, rx) = watch::channel(ObservationState::unregistered());
+        let slot = ObservationSlot::new("observed_arm", config::node::Cardinality::ZeroOrOne, rx);
+        assert_eq!(slot.source(), None, "a vacant slot observes nothing");
 
-            tx.send(state(vec![member("arm_1", 1)])).unwrap();
-            let src = slot.source().expect("slot should be resolved");
-            assert_eq!(src.producer, ProducerRef::new("core_a", "arm_1"));
-            assert_eq!(src.source_link_id, "commander");
-        }
+        tx.send(state(vec![member("arm_1", 1)])).unwrap();
+        let src = slot.source().expect("slot should be resolved");
+        assert_eq!(src.producer, ProducerRef::new("core_a", "arm_1"));
+        assert_eq!(src.source_link_id, "commander");
+    }
+
+    /// A `one` slot always observes a pairing, so its accessor hands the member
+    /// back directly and the caller has no empty branch to write.
+    #[tokio::test]
+    async fn a_one_slot_reads_its_member_without_an_option() {
+        let (tx, rx) = watch::channel(ObservationState::unregistered());
+        let slot = ObservationSlot::new("observed_arm", config::node::Cardinality::One, rx);
+        tx.send(state(vec![member("arm_1", 1)])).unwrap();
+
+        let src = slot.sole_source();
+        assert_eq!(src.producer, ProducerRef::new("core_a", "arm_1"));
+        assert_eq!(src.source_link_id, "commander");
+    }
+
+    /// A `one` slot that observes nothing is a manifest disagreement, not a case
+    /// the application handles, and the panic names the declared spelling.
+    #[tokio::test]
+    #[should_panic(
+        expected = "observer slot `observed_arm` is declared `one` but observes nothing"
+    )]
+    async fn sole_source_panics_when_a_one_slot_observes_nothing() {
+        let (_tx, rx) = watch::channel(ObservationState::unregistered());
+        let slot = ObservationSlot::new("observed_arm", config::node::Cardinality::One, rx);
+        let _ = slot.sole_source();
     }
 
     #[tokio::test]
     async fn slot_set_reports_every_member_in_plan_order() {
         let (tx, rx) = watch::channel(ObservationState::unregistered());
-        let set = ObservationSlotSet::new(rx);
+        let set =
+            ObservationSlotSet::new("observed_arms", config::node::Cardinality::ZeroOrMore, rx);
         assert!(
             set.sources().is_empty(),
-            "an undelivered set is empty, not absent"
+            "a `zero_or_more` slot the plan left unobserved is empty, not absent"
         );
 
         tx.send(state(vec![member("arm_2", 1), member("arm_1", 1)]))
@@ -315,6 +403,45 @@ mod tests {
         // The set is live: a replan that drops a member shrinks it.
         tx.send(state(vec![member("arm_2", 1)])).unwrap();
         assert_eq!(set.sources().len(), 1);
+    }
+
+    /// A `one_or_more` slot hands its members back as a set whose head needs no
+    /// unwrap, in the same plan order the permissive accessor reports.
+    #[tokio::test]
+    async fn non_empty_sources_carries_every_member_in_plan_order() {
+        let (tx, rx) = watch::channel(ObservationState::unregistered());
+        let set =
+            ObservationSlotSet::new("observed_arms", config::node::Cardinality::OneOrMore, rx);
+        tx.send(state(vec![member("arm_2", 1), member("arm_1", 1)]))
+            .unwrap();
+
+        let sources = set.non_empty_sources();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(
+            sources.first().producer,
+            ProducerRef::new("core_a", "arm_2"),
+            "first() is the plan's head, not the lowest instance_id"
+        );
+        assert_eq!(
+            sources
+                .iter()
+                .map(|s| s.producer.instance_id.clone())
+                .collect::<Vec<_>>(),
+            ["arm_2", "arm_1"]
+        );
+    }
+
+    /// A `one_or_more` slot that observes nothing is a manifest disagreement on
+    /// the same terms as an empty `one` slot.
+    #[tokio::test]
+    #[should_panic(
+        expected = "observer slot `observed_arms` is declared `one_or_more` but observes nothing"
+    )]
+    async fn non_empty_sources_panics_when_a_one_or_more_slot_observes_nothing() {
+        let (_tx, rx) = watch::channel(ObservationState::unregistered());
+        let set =
+            ObservationSlotSet::new("observed_arms", config::node::Cardinality::OneOrMore, rx);
+        let _ = set.non_empty_sources();
     }
 
     /// Reading a multi-member slot through the singular accessor is stale

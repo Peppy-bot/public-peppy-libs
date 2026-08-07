@@ -1011,11 +1011,14 @@ impl PyNodeRunner {
     }
 
     /// Handle onto the scalar observer slot declared at `link_id` in
-    /// `depends_on.pairing_observers` (a `one` or `zero_or_one` slot):
-    /// `observation_slot(link_id).source()` returns the observed source once
-    /// the daemon has delivered it. Raises `ValueError` if the manifest
-    /// declares no such observer slot, and panics if it declares one with a
-    /// multi-member cardinality, which is read through `observation_slot_set`.
+    /// `depends_on.pairing_observers` (a `one` or `zero_or_one` slot), read
+    /// through the accessor its cardinality declares:
+    /// `observation_slot(link_id).sole_source()` for a `one` slot, which always
+    /// observes a pairing, and `observation_slot(link_id).source()` for a
+    /// `zero_or_one` slot, which answers `None` where the deployment wrote it
+    /// vacant. Raises `ValueError` if the manifest declares no such observer
+    /// slot, and panics if it declares one with a multi-member cardinality,
+    /// which is read through `observation_slot_set`.
     fn observation_slot(&self, link_id: &str) -> PyResult<crate::messaging::PyObservationSlot> {
         self.inner
             .observation_slot(link_id)
@@ -1132,6 +1135,94 @@ impl PyStandaloneConfig {
     fn with_node_name(&self, name: String) -> Self {
         Self {
             inner: self.inner.clone().with_node_name(name),
+        }
+    }
+
+    /// Pre-pair the pairing slot at `link_id` to the peer at
+    /// `(peer_core_node, peer_instance_id)` whose complementary slot is
+    /// `peer_link_id`. Standalone-mode stand-in for the daemon's `--pair`
+    /// delivery; ignored (with a warning) if the manifest declares no such
+    /// slot.
+    fn with_peer_pin(
+        &self,
+        link_id: String,
+        peer_core_node: String,
+        peer_instance_id: String,
+        peer_link_id: String,
+    ) -> Self {
+        Self {
+            inner: self.inner.clone().with_peer_pin(
+                link_id,
+                peer_core_node,
+                peer_instance_id,
+                peer_link_id,
+            ),
+        }
+    }
+
+    /// Append the producer at `(producer_core_node, producer_instance_id)` to
+    /// the bound set of the consumer slot at `link_id`. Repeat calls with the
+    /// same `link_id` accumulate in call order, mirroring how repeated
+    /// `--bind KEY@instance` flags accumulate: the resulting set must satisfy
+    /// the slot's declared cardinality at startup (exactly one for `one`, at
+    /// most one for `zero_or_one`, at least one for `one_or_more`, any size for
+    /// `zero_or_more`; a `zero_or_more` slot may be left unseeded for an empty
+    /// set, and a `zero_or_one` slot that runs empty says so with
+    /// `with_vacant_producer_slot`). Standalone-mode stand-in for the
+    /// launcher's validated binding map; ignored (with a warning) if the
+    /// manifest declares no such slot.
+    fn with_bound_producer(
+        &self,
+        link_id: String,
+        producer_core_node: String,
+        producer_instance_id: String,
+    ) -> Self {
+        Self {
+            inner: self.inner.clone().with_bound_producer(
+                link_id,
+                producer_core_node,
+                producer_instance_id,
+            ),
+        }
+    }
+
+    /// Seed the consumer slot at `link_id` with an explicit empty producer set,
+    /// the standalone spelling of a deployment's
+    /// `links: { <link_id>: { vacant: "<why>" } }`. Only a `zero_or_one` slot
+    /// accepts it: startup admits an empty set there and rejects one on a `one`
+    /// / `one_or_more` slot, exactly as it does for a daemon boot config. The
+    /// reason a deployment writes down has no standalone counterpart, because
+    /// there is no deployment to write it.
+    fn with_vacant_producer_slot(&self, link_id: String) -> Self {
+        Self {
+            inner: self.inner.clone().with_vacant_producer_slot(link_id),
+        }
+    }
+
+    /// Append the pairing at `(source_core_node, source_instance_id)`'s
+    /// `source_link_id` slot to the member set the observer slot at `link_id`
+    /// observes. Repeat calls with the same `link_id` accumulate in call order,
+    /// mirroring how a launcher's `links` array orders a slot's members: the
+    /// resulting set must satisfy the slot's declared cardinality at startup. A
+    /// `zero_or_one` or `zero_or_more` slot left unseeded observes nothing,
+    /// which those cardinalities admit; the two floored ones have no such state
+    /// and so must be seeded. Standalone-mode stand-in for the member set the
+    /// daemon stamps at spawn; ignored (with a warning) if the manifest
+    /// declares no such observer slot.
+    fn with_observed_source(
+        &self,
+        link_id: String,
+        source_core_node: String,
+        source_instance_id: String,
+        source_link_id: String,
+    ) -> Self {
+        Self {
+            inner: self.inner.clone().with_observed_source(
+                link_id,
+                source_core_node,
+                source_instance_id,
+                source_link_id,
+            ),
         }
     }
 }

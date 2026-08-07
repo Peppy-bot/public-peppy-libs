@@ -44,10 +44,11 @@ pub struct Processor {
     /// `ObservedTopicSubscription`s / `ObservationSlot`s observe them.
     observation_slots: Arc<BTreeMap<String, watch::Sender<ObservationState>>>,
     /// Each observer slot's declared `cardinality`, keyed by link_id and read
-    /// from the same manifest entries that seed `observation_slots`. It types
-    /// the slot's accessor (`observation_slot` vs `observation_slot_set`); it
-    /// never gates a member count, because an observed set changes while the
-    /// node runs and no size holds across its lifetime.
+    /// from the same manifest entries that seed `observation_slots`. It picks
+    /// the slot's handle (`observation_slot` vs `observation_slot_set`) and,
+    /// through the handle, which accessor that slot's generated module calls; it
+    /// also gates the slot's seed at startup, so a floored slot cannot boot
+    /// observing less than its manifest declares.
     observation_cardinalities: BTreeMap<String, Cardinality>,
 }
 
@@ -192,11 +193,55 @@ impl Processor {
             slot_bindings.insert(link_id.clone(), bound);
         }
 
+        // Daemon-less development: `StandaloneConfig::with_observed_source`
+        // seeds an observer slot's member set, standing in for the set the
+        // daemon stamps into a spawned node's boot config. Undeclared link_ids
+        // are ignored with a warning, on the same terms as `bound_producers`
+        // above; a declared slot whose seeded set violates its cardinality, or
+        // that repeats a pairing, fails `build_observation_slots`, exactly like
+        // a daemon boot config with a bad seed. Members boot live at generation
+        // zero: standalone has no daemon to report an incarnation change or a
+        // source going down.
+        let mut observation_seeds = config::runtime::ObservationSeeds::new();
+        let declared_observers: std::collections::BTreeSet<&str> = node_config
+            .manifest
+            .depends_on
+            .as_ref()
+            .map(|deps| {
+                deps.pairing_observers
+                    .iter()
+                    .map(|dep| dep.link_id.as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (link_id, sources) in &config.observed_sources {
+            if !declared_observers.contains(link_id.as_str()) {
+                tracing::warn!(
+                    link_id = %link_id,
+                    "StandaloneConfig observed source names an undeclared observer slot; ignoring"
+                );
+                continue;
+            }
+            observation_seeds.insert(
+                link_id.clone(),
+                sources
+                    .iter()
+                    .map(|source| config::runtime::ObservationSeedMember {
+                        source: source.producer.clone(),
+                        source_link_id: source.source_link_id.clone(),
+                        source_generation: 0,
+                        source_live: true,
+                    })
+                    .collect(),
+            );
+        }
+
         let runtime_config = RuntimeConfig::new(
             &messaging_host,
             messaging_port,
             NodeInstanceConfig {
                 slot_bindings,
+                observation_seeds,
                 ..NodeInstanceConfig::new(instance_id_name)
             },
             &node_name,
@@ -2258,5 +2303,102 @@ mod tests {
             ),
             "expected SlotCardinalityViolated for `main`, got: {err}"
         );
+    }
+
+    /// `StandaloneConfig::with_observed_source` is the observer counterpart of
+    /// `with_bound_producer`: a declared `one` slot left unseeded fails startup,
+    /// repeat calls accumulate a multi slot's set in call order, and the seeded
+    /// members answer the slot's accessors from construction.
+    #[test]
+    fn standalone_observed_sources_accumulate_and_enforce_cardinality() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&peppy_config_path, OBSERVER_PEPPY_CONFIG)
+            .expect("peppy config should be written");
+
+        let unseeded = StandaloneConfig::new();
+        let Err(err) = Processor::new_standalone(&peppy_config_path, &unseeded) else {
+            panic!("expected an unseeded floored observer slot to fail startup");
+        };
+        assert!(
+            matches!(
+                &err,
+                crate::error::Error::ObservationSeedViolated { link_id, cardinality, seeded }
+                    if link_id == "sole_arm" && *cardinality == Cardinality::One && *seeded == 0
+            ),
+            "expected ObservationSeedViolated for `sole_arm`, got: {err}"
+        );
+
+        // `spare_arms` (zero_or_more) is deliberately left unseeded.
+        let seeded = StandaloneConfig::new()
+            .with_observed_source("sole_arm", "core_x", "left_arm", "commander")
+            .with_observed_source("watched_arms", "core_x", "right_arm", "commander")
+            .with_observed_source("watched_arms", "core_x", "left_arm", "commander");
+        let processor = Processor::new_standalone(&peppy_config_path, &seeded)
+            .expect("seeded observer slots should construct");
+
+        let sole = processor
+            .observation_slot_watch("sole_arm")
+            .expect("declared slot has a watch channel");
+        assert_eq!(
+            sole.borrow()
+                .members
+                .iter()
+                .map(|m| m.source.producer.instance_id.clone())
+                .collect::<Vec<_>>(),
+            ["left_arm"]
+        );
+
+        let watched = processor
+            .observation_slot_watch("watched_arms")
+            .expect("declared slot has a watch channel");
+        assert_eq!(
+            watched
+                .borrow()
+                .members
+                .iter()
+                .map(|m| m.source.producer.instance_id.clone())
+                .collect::<Vec<_>>(),
+            ["right_arm", "left_arm"],
+            "with_observed_source call order must be preserved"
+        );
+
+        let spare = processor
+            .observation_slot_watch("spare_arms")
+            .expect("declared slot has a watch channel");
+        assert!(spare.borrow().members.is_empty());
+
+        let duplicated = StandaloneConfig::new()
+            .with_observed_source("sole_arm", "core_x", "left_arm", "commander")
+            .with_observed_source("watched_arms", "core_x", "right_arm", "commander")
+            .with_observed_source("watched_arms", "core_x", "right_arm", "commander");
+        let Err(err) = Processor::new_standalone(&peppy_config_path, &duplicated) else {
+            panic!("duplicate seeded pairing must be rejected");
+        };
+        assert!(
+            err.to_string().contains("right_arm"),
+            "duplicate error should name the source, got: {err}"
+        );
+    }
+
+    /// An undeclared link_id is a standalone typo, not a manifest violation, so
+    /// it warns and is dropped rather than failing startup, on the same terms as
+    /// `with_bound_producer`.
+    #[test]
+    fn standalone_observed_source_on_an_undeclared_slot_is_ignored() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&peppy_config_path, ZERO_FLOOR_OBSERVER_PEPPY_CONFIG)
+            .expect("peppy config should be written");
+
+        let stray = StandaloneConfig::new().with_observed_source(
+            "not_a_slot",
+            "core_x",
+            "left_arm",
+            "commander",
+        );
+        let processor = Processor::new_standalone(&peppy_config_path, &stray)
+            .expect("an undeclared observer seed should be ignored, not fatal");
+        assert!(processor.observation_slot_watch("not_a_slot").is_none());
     }
 }

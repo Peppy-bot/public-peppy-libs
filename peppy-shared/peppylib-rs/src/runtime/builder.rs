@@ -22,8 +22,10 @@ use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, NODE_CONFIG
 pub(crate) enum ExecutionMode {
     /// Daemon mode - managed by CLI via PEPPY_RUNTIME_CONFIG
     Daemon,
-    /// Standalone mode with configuration
-    Standalone(StandaloneConfig),
+    /// Standalone mode with configuration. Boxed because the config carries a
+    /// map per daemon-less seeding kind and the sibling variant carries nothing,
+    /// so inlining it would size every `ExecutionMode` for the rarer case.
+    Standalone(Box<StandaloneConfig>),
 }
 
 /// Configuration for standalone execution.
@@ -57,6 +59,12 @@ pub struct StandaloneConfig {
     /// cardinality at startup, exactly as a daemon launch would have
     /// enforced at plan time.
     pub bound_producers: std::collections::BTreeMap<String, Vec<crate::messaging::ProducerRef>>,
+    /// Daemon-less observer membership: the ordered pairing set each declared
+    /// `pairing_observers` slot observes (keyed by its link_id), standing in
+    /// for the member set the daemon stamps into a spawned node's boot config.
+    /// Each slot's set must satisfy the slot's declared cardinality at
+    /// startup, exactly as a daemon launch would have enforced at plan time.
+    pub observed_sources: std::collections::BTreeMap<String, Vec<crate::messaging::ObservedSource>>,
 }
 
 impl StandaloneConfig {
@@ -184,6 +192,42 @@ impl StandaloneConfig {
         self
     }
 
+    /// Append the pairing at `(source_core_node, source_instance_id)`'s
+    /// `source_link_id` slot to the member set the observer slot at `link_id`
+    /// observes. Repeat calls with the same `link_id` accumulate in call order,
+    /// mirroring how a launcher's `links` array orders a slot's members: the
+    /// resulting set must satisfy the slot's declared cardinality at startup
+    /// (exactly one for `one`, at most one for `zero_or_one`, at least one for
+    /// `one_or_more`, any size for `zero_or_more`). A `zero_or_one` or
+    /// `zero_or_more` slot left unseeded observes nothing, which those
+    /// cardinalities admit; the two floored ones have no such state and so must
+    /// be seeded. Standalone-mode stand-in for the member set the daemon stamps
+    /// at spawn; ignored (with a warning) if the manifest declares no such
+    /// observer slot.
+    ///
+    /// The seeded members boot live, at the generation the daemon would assign a
+    /// first incarnation: there is no daemon to report a source going down, so
+    /// standalone liveness never changes.
+    pub fn with_observed_source(
+        mut self,
+        link_id: impl Into<String>,
+        source_core_node: impl Into<String>,
+        source_instance_id: impl Into<String>,
+        source_link_id: impl Into<String>,
+    ) -> Self {
+        self.observed_sources
+            .entry(link_id.into())
+            .or_default()
+            .push(crate::messaging::ObservedSource {
+                producer: crate::messaging::ProducerRef::new(
+                    source_core_node.into(),
+                    source_instance_id.into(),
+                ),
+                source_link_id: source_link_id.into(),
+            });
+        self
+    }
+
     pub(crate) fn messaging_host_or_default(&self) -> String {
         self.messaging_host
             .clone()
@@ -285,7 +329,7 @@ where
             return ExecutionMode::Daemon;
         }
 
-        ExecutionMode::Standalone(self.standalone_config.clone().unwrap_or_default())
+        ExecutionMode::Standalone(Box::new(self.standalone_config.clone().unwrap_or_default()))
     }
 }
 
