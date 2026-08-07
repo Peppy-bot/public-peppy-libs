@@ -102,8 +102,9 @@ impl Processor {
 
         let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
-        let observation_slots = build_observation_slots(&runtime_config, &node_config)?;
         let observation_cardinalities = build_observer_cardinalities(&node_config);
+        let observation_slots =
+            build_observation_slots(&runtime_config, &observation_cardinalities)?;
 
         Ok(Self {
             runtime_config,
@@ -202,20 +203,10 @@ impl Processor {
         // a daemon boot config with a bad seed. Members boot live at generation
         // zero: standalone has no daemon to report an incarnation change or a
         // source going down.
+        let observation_cardinalities = build_observer_cardinalities(&node_config);
         let mut observation_seeds = config::runtime::ObservationSeeds::new();
-        let declared_observers: std::collections::BTreeSet<&str> = node_config
-            .manifest
-            .depends_on
-            .as_ref()
-            .map(|deps| {
-                deps.pairing_observers
-                    .iter()
-                    .map(|dep| dep.link_id.as_str())
-                    .collect()
-            })
-            .unwrap_or_default();
         for (link_id, sources) in &config.observed_sources {
-            if !declared_observers.contains(link_id.as_str()) {
+            if !observation_cardinalities.contains_key(link_id) {
                 tracing::warn!(
                     link_id = %link_id,
                     "StandaloneConfig observed source names an undeclared observer slot; ignoring"
@@ -251,8 +242,8 @@ impl Processor {
 
         let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
-        let observation_slots = build_observation_slots(&runtime_config, &node_config)?;
-        let observation_cardinalities = build_observer_cardinalities(&node_config);
+        let observation_slots =
+            build_observation_slots(&runtime_config, &observation_cardinalities)?;
 
         // Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a
         // slot as already-paired, standing in for the daemon's live
@@ -567,78 +558,60 @@ fn observer_deps(node_config: &NodeConfig) -> impl Iterator<Item = &PairingObser
 /// a seed whose size the declared cardinality does not allow, or that names
 /// a slot the manifest does not declare, fails construction as component
 /// version skew rather than booting a slot the plan says cannot exist.
+///
+/// `cardinalities` is [`build_observer_cardinalities`]'s map, so the slots
+/// seeded here and the cardinalities their accessors read are one set of
+/// link_ids by construction rather than by two walks agreeing.
 fn build_observation_slots(
     runtime_config: &RuntimeConfig,
-    node_config: &NodeConfig,
+    cardinalities: &BTreeMap<String, Cardinality>,
 ) -> Result<Arc<BTreeMap<String, watch::Sender<ObservationState>>>> {
     let seeds = &runtime_config.node_instance.observation_seeds;
-    let declared: BTreeMap<&str, config::node::Cardinality> = observer_deps(node_config)
-        .map(|dep| (dep.link_id.as_str(), dep.cardinality))
-        .collect();
-    if let Some(link_id) = seeds.keys().find(|k| !declared.contains_key(k.as_str())) {
+    if let Some(link_id) = seeds.keys().find(|k| !cardinalities.contains_key(*k)) {
         return Err(Error::ObservationSeedUndeclared {
             link_id: link_id.clone(),
         });
     }
 
-    declared
-        .into_iter()
+    cardinalities
+        .iter()
         .map(|(link_id, cardinality)| {
             let members: Vec<ObservedMemberState> = seeds
                 .get(link_id)
-                .map(|seeded| seeded.iter().map(seeded_member).collect())
+                .map(|seeded| seeded.iter().map(ObservedMemberState::from).collect())
                 .unwrap_or_default();
             // The wire decoder rejects a repeated observed pairing on a live
-            // delivery; the seed path holds the same line.
-            let mut identities = std::collections::HashSet::new();
-            if let Some(duplicate) = members
-                .iter()
-                .find(|m| !identities.insert((&m.source.producer, &m.source.source_link_id)))
-            {
-                return Err(Error::ObservationSeedDuplicate {
-                    link_id: link_id.to_string(),
-                    core_node: duplicate.source.producer.core_node.clone(),
-                    instance_id: duplicate.source.producer.instance_id.clone(),
-                    source_link_id: duplicate.source.source_link_id.clone(),
-                });
+            // delivery; the seed path holds the same line, keyed on the whole
+            // `ObservedSource`, which is the member identity and carries the
+            // `Hash`/`Eq` pinned for exactly this use.
+            let mut identities = std::collections::HashSet::with_capacity(members.len());
+            for member in &members {
+                if !identities.insert(&member.source) {
+                    return Err(Error::ObservationSeedDuplicate {
+                        link_id: link_id.clone(),
+                        core_node: member.source.producer.core_node.clone(),
+                        instance_id: member.source.producer.instance_id.clone(),
+                        source_link_id: member.source.source_link_id.clone(),
+                    });
+                }
             }
             if !cardinality.admits(members.len()) {
                 return Err(Error::ObservationSeedViolated {
-                    link_id: link_id.to_string(),
-                    cardinality,
+                    link_id: link_id.clone(),
+                    cardinality: *cardinality,
                     seeded: members.len(),
                 });
             }
-            let (tx, _rx) = watch::channel(ObservationState {
-                sequence: 0,
-                members,
-            });
-            Ok((link_id.to_string(), tx))
+            let (tx, _rx) = watch::channel(ObservationState::seeded(members));
+            Ok((link_id.clone(), tx))
         })
         .collect::<Result<_>>()
         .map(Arc::new)
 }
 
-/// One boot-config seed member as the runtime's wire-state type. Field for
-/// field: the seed is the daemon's `ObservedMemberState` stamping carried by
-/// the config instead of the wire, so the first live delivery normally
-/// repeats it exactly and no subscription redeclares.
-fn seeded_member(seed: &config::runtime::ObservationSeedMember) -> ObservedMemberState {
-    ObservedMemberState {
-        source: crate::messaging::ObservedSource {
-            producer: crate::messaging::ProducerRef::new(
-                &seed.source.core_node,
-                &seed.source.instance_id,
-            ),
-            source_link_id: seed.source_link_id.clone(),
-        },
-        source_generation: seed.source_generation,
-        source_live: seed.source_live,
-    }
-}
-
-/// Each observer slot's declared `cardinality`, keyed by the same link_ids
-/// [`build_observation_slots`] seeds.
+/// Each observer slot's declared `cardinality`, keyed by link_id. Built once
+/// per processor and handed to [`build_observation_slots`], which seeds a
+/// channel for exactly these link_ids.
 fn build_observer_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Cardinality> {
     observer_deps(node_config)
         .map(|dep| (dep.link_id.clone(), dep.cardinality))

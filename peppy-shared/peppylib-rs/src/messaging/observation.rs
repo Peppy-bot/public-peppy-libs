@@ -103,14 +103,6 @@ impl NonEmptyObservedSources {
     pub fn as_slice(&self) -> &[ObservedSource] {
         &self.sources
     }
-
-    /// The members as an owned `Vec`, for handing the set on to a `Vec`-shaped
-    /// API. The owning counterpart of [`as_slice`](Self::as_slice), and the one
-    /// method with no [`NonEmptyProducers`](super::NonEmptyProducers) sibling,
-    /// which lends its members out rather than owning them.
-    pub fn into_vec(self) -> Vec<ObservedSource> {
-        self.sources
-    }
 }
 
 impl IntoIterator for NonEmptyObservedSources {
@@ -173,19 +165,25 @@ pub struct ObservationState {
 }
 
 impl ObservationState {
-    /// The empty state at sequence zero. A slot boots from the config's
-    /// `observation_seeds` entry (the plan's membership, stamped by the
-    /// daemon at spawn); a missing seed counts as empty and constructs only
-    /// where the plan could have written an empty set (`zero_or_one` vacant,
-    /// `zero_or_more` observing nothing), so this is the boot state of those
-    /// slots and of embedders that manage observation state themselves. Live
-    /// `observation_update` deliveries replace the boot state at strictly
-    /// larger sequences.
-    pub fn unregistered() -> Self {
+    /// A slot's boot state at sequence zero, carrying the membership the
+    /// daemon stamped into the config's `observation_seeds` entry at spawn.
+    /// The one construction path for a pre-delivery state, so a slot cannot
+    /// boot through a spelling that skips the seed. Live
+    /// `observation_update` deliveries replace it at strictly larger
+    /// sequences.
+    pub fn seeded(members: Vec<ObservedMemberState>) -> Self {
         Self {
             sequence: 0,
-            members: Vec::new(),
+            members,
         }
+    }
+
+    /// The empty boot state: a missing seed counts as empty, which constructs
+    /// only where the plan could have written an empty set (`zero_or_one`
+    /// vacant, `zero_or_more` observing nothing), so this is the boot state of
+    /// those slots and of embedders that manage observation state themselves.
+    pub fn unregistered() -> Self {
+        Self::seeded(Vec::new())
     }
 }
 
@@ -195,6 +193,24 @@ impl ObservationState {
 impl From<&ObservedMemberState> for ObservedSource {
     fn from(member: &ObservedMemberState) -> Self {
         member.source.clone()
+    }
+}
+
+/// One boot-config seed member as the runtime's wire-state type. Field for
+/// field: the seed is the daemon's [`ObservedMemberState`] stamping carried by
+/// the config instead of the wire, so the first live delivery normally repeats
+/// it exactly and no subscription redeclares. Sits beside the narrowing
+/// conversion above so both seed/wire translations live in one place.
+impl From<&config::runtime::ObservationSeedMember> for ObservedMemberState {
+    fn from(seed: &config::runtime::ObservationSeedMember) -> Self {
+        Self {
+            source: ObservedSource {
+                producer: seed.source.clone(),
+                source_link_id: seed.source_link_id.clone(),
+            },
+            source_generation: seed.source_generation,
+            source_live: seed.source_live,
+        }
     }
 }
 
@@ -250,12 +266,5 @@ mod tests {
             seen.push(member.producer.instance_id);
         }
         assert_eq!(seen, ["left_arm", "right_arm", "left_arm", "right_arm"]);
-    }
-
-    #[test]
-    fn into_vec_hands_the_members_on_in_plan_order() {
-        let set = NonEmptyObservedSources::new(sources()).expect("two members are non-empty");
-
-        assert_eq!(set.into_vec(), sources());
     }
 }

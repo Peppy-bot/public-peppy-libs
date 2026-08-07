@@ -157,16 +157,16 @@ async def test_standalone_seeds_every_slot_kind(monkeypatch):
                 peppy_config_path, _seeded_config(router), setup_fn
             )
 
+            # The token is put in a `finally`, so it always arrives last: drain
+            # until it does rather than counting the reads, which would silently
+            # hang or truncate the moment a slot is added below.
             seen = {}
-            token = None
-            for _ in range(8):
+            while True:
                 key, value = await asyncio.to_thread(results.get, timeout=10.0)
                 if key == "token":
-                    token = value
-                else:
-                    seen[key] = value
-            if token is not None:
-                token.cancel()
+                    value.cancel()
+                    break
+                seen[key] = value
             thread.join(timeout=10.0)
 
     assert errors.empty(), f"Runner error: {errors.get_nowait()}"
