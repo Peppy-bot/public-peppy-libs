@@ -1,8 +1,9 @@
 //! Shared control-loop primitives for the openarm control nodes.
 //!
 //! - [`Pacer`]: fixed-rate pacing for a control loop, with overrun accounting.
-//! - [`filters`]: scalar signal smoothers ([`LowPassFilter`](filters::LowPassFilter),
-//!   [`ButterworthFilter`](filters::ButterworthFilter)).
+//! - [`filters`]: scalar signal filters ([`LowPassFilter`](filters::LowPassFilter),
+//!   [`ButterworthFilter`](filters::ButterworthFilter),
+//!   [`HampelFilter`](filters::HampelFilter)).
 //!
 //! The bimanual backbone (openarm_backbone) and the real arm
 //! (openarm_arm) both pace their real-time control loops with [`Pacer`]; this is
@@ -25,4 +26,6 @@ pub enum Error {
     InvalidLowPass,
     #[error("Butterworth cutoff and sample period must be finite, positive, and below Nyquist")]
     InvalidButterworth,
+    #[error("Hampel window must be at least 3 and thresholds finite and positive")]
+    InvalidHampel,
 }
