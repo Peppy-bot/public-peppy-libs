@@ -5,6 +5,10 @@ use crate::Error;
 /// The MAD-to-sigma consistency constant for normally distributed noise.
 const MAD_SCALE: f64 = 1.4826;
 
+/// Upper bound on the window, far beyond any useful Hampel span; caps the allocation and
+/// the per-sample median sort.
+const MAX_WINDOW_SIZE: usize = 1024;
+
 /// An online Hampel filter applied to a scalar signal one sample at a time. Signal-agnostic
 /// like the smoothers in this module; compose an array of them to filter a vector.
 ///
@@ -43,11 +47,13 @@ pub struct HampelFilter {
 impl HampelFilter {
     /// A filter judging each sample against the median of the trailing `window_size` raw
     /// samples, with the outlier threshold `max(n_sigmas * 1.4826 * MAD, min_threshold)`.
-    /// Returns [`Error::InvalidHampel`] unless `window_size` is at least 3 (a shorter
-    /// window has no meaningful median) and `n_sigmas` and `min_threshold` are finite and
-    /// positive (a zero floor would reject every change once the window goes noise-free).
+    /// Returns [`Error::InvalidHampel`] unless `window_size` is in `3..=1024` (a shorter
+    /// window has no meaningful median, a longer one has no filtering use and only inflates
+    /// the allocation and the per-sample sort) and `n_sigmas` and `min_threshold` are finite
+    /// and positive (a zero floor would reject every change once the window goes
+    /// noise-free).
     pub fn new(window_size: usize, n_sigmas: f64, min_threshold: f64) -> Result<Self, Error> {
-        let valid = window_size >= 3
+        let valid = (3..=MAX_WINDOW_SIZE).contains(&window_size)
             && n_sigmas.is_finite()
             && n_sigmas > 0.0
             && min_threshold.is_finite()
@@ -114,7 +120,8 @@ fn median_of_unsorted(values: &mut [f64]) -> f64 {
     if values.len() % 2 == 1 {
         values[mid]
     } else {
-        0.5 * (values[mid - 1] + values[mid])
+        // Halve before adding so a middle pair near f64::MAX cannot overflow to infinity.
+        0.5 * values[mid - 1] + 0.5 * values[mid]
     }
 }
 
@@ -131,6 +138,8 @@ mod tests {
     fn new_rejects_degenerate_parameters() {
         for (window, n_sigmas, min_threshold) in [
             (2, 3.0, 1.0),
+            (MAX_WINDOW_SIZE + 1, 3.0, 1.0),
+            (usize::MAX, 3.0, 1.0),
             (5, 0.0, 1.0),
             (5, -3.0, 1.0),
             (5, f64::NAN, 1.0),
@@ -262,6 +271,16 @@ mod tests {
         }
         // Window [0, 2, 4, 6]: median 3, MAD 2, threshold 3 * 1.4826 * 2 = 8.9.
         assert_eq!(f.filter(50.0), 3.0);
+    }
+
+    #[test]
+    fn even_window_median_stays_finite_at_f64_max() {
+        let mut f = HampelFilter::new(4, 3.0, 1.0).unwrap();
+        f.filter(f64::MAX);
+        // The middle pair is (MAX, MAX); a naive average would overflow to infinity and
+        // a rejected sample would then plant infinity in the window.
+        assert_eq!(f.filter(f64::NAN), f64::MAX);
+        assert!(f.filter(f64::NAN).is_finite(), "the window stays finite");
     }
 
     #[test]

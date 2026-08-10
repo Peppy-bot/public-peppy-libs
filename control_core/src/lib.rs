@@ -26,6 +26,6 @@ pub enum Error {
     InvalidLowPass,
     #[error("Butterworth cutoff and sample period must be finite, positive, and below Nyquist")]
     InvalidButterworth,
-    #[error("Hampel window must be at least 3 and thresholds finite and positive")]
+    #[error("Hampel window must be within 3..=1024 and thresholds finite and positive")]
     InvalidHampel,
 }
