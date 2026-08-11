@@ -31,6 +31,8 @@ pub enum Error {
     InvalidLowPass,
     #[error("Butterworth cutoff and sample period must be finite, positive, and below Nyquist")]
     InvalidButterworth,
+    #[error("velocity ratio and requested duration must be finite and non-negative")]
+    InvalidVelocityBudget,
     #[error("Hampel window must be within 3..=1024 and thresholds finite and positive")]
     InvalidHampel,
 }
