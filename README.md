@@ -28,6 +28,8 @@ A virtual Cargo workspace. Crates are migrated here from the private `peppy` wor
 | [peppy-messaging-interface](./peppy-shared/peppy-messaging-interface) (`pmi`) | Rust | Messaging transport interface — zenoh transport plus an in-process mock adapter, sessions, and org-id namespace routing |
 | [peppy-config-model](./peppy-shared/peppy-config-model) | Rust | Parsing and validation of the shared Peppy config documents: the `peppy.json5` node config model, runtime configs shipped to nodes, codegen fingerprints, and schema tags |
 | [core-node-api](./peppy-shared/core-node-api) | Rust | Shared API surface for talking to a core-node daemon — capnp request/response types, service-name constants, and response parsers |
+| [peppy-mcp-catalog](./peppy-shared/peppy-mcp-catalog) | Rust | The versioned MCP exposure bundle format shared by the peppy publisher (writer) and the MCP server runtime (reader), plus the exposure policy vocabulary |
+| [peppy-mcp-runtime](./peppy-shared/peppy-mcp-runtime) | Rust | The MCP server runtime generated Peppy MCP server nodes compose: a Streamable HTTP endpoint on `127.0.0.1` speaking MCP `2026-07-28`, built on the official `rmcp` SDK, serving an exposure bundle's resources and tools with freshness, rate, representation, and size policies |
 | [json5-pretty](./peppy-shared/json5-pretty) | Rust | Pretty-print a `Serialize` value as JSON5 with unquoted object keys |
 | [config-test-support](./peppy-shared/config-test-support) | Rust | Test fixtures shared across the Peppy workspaces (scratch dirs, and git-repo / node-config-template fixtures behind a feature) |
 | [build-helpers](./peppy-shared/build-helpers) | Rust | Generic build-script helpers shared across peppy crates |

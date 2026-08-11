@@ -14,7 +14,16 @@
 # (`crates/peppylib-build-policy`).
 
 [workspace]
-members = ["peppylib-py", "peppylib-rs", "core-node-api", "build-helpers", "json5-pretty", "config-test-support"]
+members = [
+    "peppylib-py",
+    "peppylib-rs",
+    "core-node-api",
+    "build-helpers",
+    "json5-pretty",
+    "config-test-support",
+    "peppy-mcp-catalog",
+    "peppy-mcp-runtime",
+]
 resolver = "3"
 
 [workspace.package]

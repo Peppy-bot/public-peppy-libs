@@ -1,0 +1,17 @@
+# The exposure bundle format sits at the bottom of the MCP dependency graph:
+# the peppy generator writes bundles at publication and the MCP server runtime
+# reads them at boot, so the shared shape lives here rather than in either
+# consumer.
+[package]
+name = "peppy-mcp-catalog"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "The versioned MCP exposure bundle format shared by the peppy publisher and the MCP server runtime"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+# preserve_order: derived JSON Schemas keep their field order from the contract
+# message formats, and the committed bundle bytes are compared byte-for-byte by
+# the publication drift check.
+serde_json = { version = "1.0", features = ["preserve_order"] }
