@@ -42,9 +42,10 @@ struct RepoRefreshGoalResponse {
 
 struct RepoRefreshFeedback {
     payload :union {
-        # A discovered node, launcher, or contract manifest.
+        # A discovered node, launcher, contract, pairing, or MCP exposure manifest.
         discovered :group {
-            # Kind of item being reported: "node", "launcher", or "contract".
+            # Kind of item being reported: "node", "launcher", "contract",
+            # "pairing", or "mcp_exposure".
             kind @0 :Text;
             # Name of the discovered item.
             itemName @1 :Text;
@@ -83,6 +84,7 @@ struct RepoRefreshResult {
     # not, each still serving the entries it last published. Empty when
     # every configured repository was read.
     failureReport @6 :Text;
+    totalMcpExposuresFound @7 :UInt32;
 }
 
 # ── Repo List (request-response) ────────────────────────────────

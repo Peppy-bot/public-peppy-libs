@@ -78,6 +78,7 @@ pub enum RepoItemKind {
     Launcher,
     Contract,
     Pairing,
+    McpExposure,
 }
 
 impl RepoItemKind {
@@ -87,6 +88,7 @@ impl RepoItemKind {
             RepoItemKind::Launcher => "launcher",
             RepoItemKind::Contract => "contract",
             RepoItemKind::Pairing => "pairing",
+            RepoItemKind::McpExposure => "mcp_exposure",
         }
     }
 
@@ -96,6 +98,7 @@ impl RepoItemKind {
             "launcher" => Some(RepoItemKind::Launcher),
             "contract" => Some(RepoItemKind::Contract),
             "pairing" => Some(RepoItemKind::Pairing),
+            "mcp_exposure" => Some(RepoItemKind::McpExposure),
             _ => None,
         }
     }
@@ -110,7 +113,8 @@ impl std::fmt::Display for RepoItemKind {
 /// Feedback message for the RepoRefresh action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepoRefreshFeedback {
-    /// A node, launcher, or contract manifest discovered in a repository.
+    /// A node, launcher, contract, pairing, or MCP exposure manifest
+    /// discovered in a repository.
     Discovered {
         kind: RepoItemKind,
         item_name: String,
@@ -221,6 +225,7 @@ pub struct RepoRefreshResult {
     pub total_launchers_found: u32,
     pub total_contracts_found: u32,
     pub total_pairings_found: u32,
+    pub total_mcp_exposures_found: u32,
     /// Repositories that could not be updated this run. `success` covers
     /// the refresh as a whole; this reports the repositories it could not
     /// read, each still serving the entries it last published. Empty when
@@ -234,6 +239,7 @@ impl RepoRefreshResult {
         total_launchers_found: u32,
         total_contracts_found: u32,
         total_pairings_found: u32,
+        total_mcp_exposures_found: u32,
     ) -> Self {
         Self {
             success: true,
@@ -242,6 +248,7 @@ impl RepoRefreshResult {
             total_launchers_found,
             total_contracts_found,
             total_pairings_found,
+            total_mcp_exposures_found,
             failure_report: String::new(),
         }
     }
@@ -256,6 +263,7 @@ impl RepoRefreshResult {
         total_launchers_found: u32,
         total_contracts_found: u32,
         total_pairings_found: u32,
+        total_mcp_exposures_found: u32,
         report: impl Into<String>,
     ) -> Self {
         Self {
@@ -265,6 +273,7 @@ impl RepoRefreshResult {
             total_launchers_found,
             total_contracts_found,
             total_pairings_found,
+            total_mcp_exposures_found,
             failure_report: report.into(),
         }
     }
@@ -277,6 +286,7 @@ impl RepoRefreshResult {
             total_launchers_found: 0,
             total_contracts_found: 0,
             total_pairings_found: 0,
+            total_mcp_exposures_found: 0,
             failure_report: String::new(),
         }
     }
@@ -293,6 +303,7 @@ impl RepoRefreshResult {
             result.set_total_launchers_found(self.total_launchers_found);
             result.set_total_contracts_found(self.total_contracts_found);
             result.set_total_pairings_found(self.total_pairings_found);
+            result.set_total_mcp_exposures_found(self.total_mcp_exposures_found);
             result.set_failure_report(&self.failure_report);
         }
         encode_message(&builder)
@@ -308,6 +319,7 @@ impl RepoRefreshResult {
             total_launchers_found: result.get_total_launchers_found(),
             total_contracts_found: result.get_total_contracts_found(),
             total_pairings_found: result.get_total_pairings_found(),
+            total_mcp_exposures_found: result.get_total_mcp_exposures_found(),
             failure_report: result.get_failure_report()?.to_str()?.to_owned(),
         })
     }
@@ -384,6 +396,7 @@ mod tests {
             RepoItemKind::Launcher,
             RepoItemKind::Contract,
             RepoItemKind::Pairing,
+            RepoItemKind::McpExposure,
         ] {
             assert_eq!(RepoItemKind::parse(kind.as_str()), Some(kind));
         }
@@ -395,6 +408,7 @@ mod tests {
         assert_eq!(RepoItemKind::Launcher.as_str(), "launcher");
         assert_eq!(RepoItemKind::Contract.as_str(), "contract");
         assert_eq!(RepoItemKind::Pairing.as_str(), "pairing");
+        assert_eq!(RepoItemKind::McpExposure.as_str(), "mcp_exposure");
     }
 
     #[test]
@@ -476,13 +490,14 @@ mod tests {
 
     #[test]
     fn result_success_roundtrips() {
-        let result = RepoRefreshResult::success(3, 1, 2, 4);
+        let result = RepoRefreshResult::success(3, 1, 2, 4, 5);
         assert!(result.success);
         assert_eq!(result.error_message, None);
         assert_eq!(result.total_nodes_found, 3);
         assert_eq!(result.total_launchers_found, 1);
         assert_eq!(result.total_contracts_found, 2);
         assert_eq!(result.total_pairings_found, 4);
+        assert_eq!(result.total_mcp_exposures_found, 5);
         assert!(result.failure_report.is_empty());
         let bytes = result.encode().expect("encode");
         assert_eq!(RepoRefreshResult::decode(&bytes).expect("decode"), result);
@@ -498,6 +513,7 @@ mod tests {
             1,
             2,
             4,
+            5,
             "1 of the configured repositories could not be updated.",
         );
         assert!(result.success);
@@ -520,6 +536,7 @@ mod tests {
         assert_eq!(result.total_launchers_found, 0);
         assert_eq!(result.total_contracts_found, 0);
         assert_eq!(result.total_pairings_found, 0);
+        assert_eq!(result.total_mcp_exposures_found, 0);
         assert!(
             result.failure_report.is_empty(),
             "a run that never happened has no per-repository report to give"
