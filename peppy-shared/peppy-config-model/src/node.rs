@@ -18,6 +18,7 @@ pub use types::{
     TypeToken, is_blocked_mount_source,
 };
 pub use validation::{
-    ContractImplementationEdge, DependencySpec, collect_contract_implementation_edges,
-    collect_dependency_specs, node_implements, validate_dependency_specs,
+    ContractImplementationEdge, DependencySpec, MissingDependencyPolicy,
+    collect_contract_implementation_edges, collect_dependency_specs, node_implements,
+    validate_dependency_specs,
 };
