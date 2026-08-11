@@ -1,6 +1,6 @@
 //! First-order low-pass filter for smoothing a noisy control signal.
 
-use crate::Error;
+use crate::filters::FilterError;
 
 /// A first-order (single-pole) low-pass filter applied to a scalar signal one sample at a
 /// time. Signal-agnostic: point it at a velocity, an opening fraction, or any channel that
@@ -20,15 +20,15 @@ pub struct LowPassFilter {
 
 impl LowPassFilter {
     /// A filter with cutoff `cutoff_hz` sampled every `sample_period_s`, or
-    /// [`Error::InvalidLowPass`] if either is not finite and positive: a non-positive cutoff
+    /// [`FilterError::InvalidLowPass`] if either is not finite and positive: a non-positive cutoff
     /// or period has no physical meaning and would produce a degenerate `alpha`.
-    pub fn from_cutoff(cutoff_hz: f64, sample_period_s: f64) -> Result<Self, Error> {
+    pub fn from_cutoff(cutoff_hz: f64, sample_period_s: f64) -> Result<Self, FilterError> {
         let valid = cutoff_hz.is_finite()
             && cutoff_hz > 0.0
             && sample_period_s.is_finite()
             && sample_period_s > 0.0;
         if !valid {
-            return Err(Error::InvalidLowPass);
+            return Err(FilterError::InvalidLowPass);
         }
         let alpha = 1.0 / (1.0 + sample_period_s * std::f64::consts::TAU * cutoff_hz);
         Ok(Self { alpha, state: None })
@@ -66,23 +66,23 @@ mod tests {
     fn from_cutoff_rejects_non_positive_or_non_finite() {
         assert!(matches!(
             LowPassFilter::from_cutoff(0.0, TS),
-            Err(Error::InvalidLowPass)
+            Err(FilterError::InvalidLowPass)
         ));
         assert!(matches!(
             LowPassFilter::from_cutoff(-1.0, TS),
-            Err(Error::InvalidLowPass)
+            Err(FilterError::InvalidLowPass)
         ));
         assert!(matches!(
             LowPassFilter::from_cutoff(90.0, 0.0),
-            Err(Error::InvalidLowPass)
+            Err(FilterError::InvalidLowPass)
         ));
         assert!(matches!(
             LowPassFilter::from_cutoff(f64::NAN, TS),
-            Err(Error::InvalidLowPass)
+            Err(FilterError::InvalidLowPass)
         ));
         assert!(matches!(
             LowPassFilter::from_cutoff(90.0, f64::INFINITY),
-            Err(Error::InvalidLowPass)
+            Err(FilterError::InvalidLowPass)
         ));
     }
 

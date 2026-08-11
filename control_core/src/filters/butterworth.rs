@@ -1,6 +1,6 @@
 //! Second-order Butterworth low-pass filter for smoothing a control signal.
 
-use crate::Error;
+use crate::filters::FilterError;
 
 /// A second-order (two-pole) Butterworth low-pass filter applied to a scalar signal one
 /// sample at a time. Signal-agnostic like [`LowPassFilter`](crate::filters::LowPassFilter); compose
@@ -39,17 +39,17 @@ struct Biquad {
 
 impl ButterworthFilter {
     /// A filter with cutoff `cutoff_hz` sampled every `sample_period_s`, or
-    /// [`Error::InvalidButterworth`] if either is not finite and positive, or the cutoff is not
+    /// [`FilterError::InvalidButterworth`] if either is not finite and positive, or the cutoff is not
     /// below the Nyquist frequency (`0.5 / sample_period_s`): at or above Nyquist the
     /// pre-warp `tan(pi fc Ts)` is undefined, so no valid filter exists.
-    pub fn from_cutoff(cutoff_hz: f64, sample_period_s: f64) -> Result<Self, Error> {
+    pub fn from_cutoff(cutoff_hz: f64, sample_period_s: f64) -> Result<Self, FilterError> {
         let valid = cutoff_hz.is_finite()
             && cutoff_hz > 0.0
             && sample_period_s.is_finite()
             && sample_period_s > 0.0
             && cutoff_hz < 0.5 / sample_period_s;
         if !valid {
-            return Err(Error::InvalidButterworth);
+            return Err(FilterError::InvalidButterworth);
         }
         // Pre-warped cutoff and the Butterworth quality factor Q = 1/sqrt(2).
         let k = (std::f64::consts::PI * cutoff_hz * sample_period_s).tan();
@@ -108,28 +108,28 @@ mod tests {
     fn from_cutoff_rejects_non_positive_non_finite_or_above_nyquist() {
         assert!(matches!(
             ButterworthFilter::from_cutoff(0.0, TS),
-            Err(Error::InvalidButterworth)
+            Err(FilterError::InvalidButterworth)
         ));
         assert!(matches!(
             ButterworthFilter::from_cutoff(-1.0, TS),
-            Err(Error::InvalidButterworth)
+            Err(FilterError::InvalidButterworth)
         ));
         assert!(matches!(
             ButterworthFilter::from_cutoff(10.0, 0.0),
-            Err(Error::InvalidButterworth)
+            Err(FilterError::InvalidButterworth)
         ));
         assert!(matches!(
             ButterworthFilter::from_cutoff(f64::NAN, TS),
-            Err(Error::InvalidButterworth)
+            Err(FilterError::InvalidButterworth)
         ));
         // At/above Nyquist (500 Hz here) there is no valid filter.
         assert!(matches!(
             ButterworthFilter::from_cutoff(500.0, TS),
-            Err(Error::InvalidButterworth)
+            Err(FilterError::InvalidButterworth)
         ));
         assert!(matches!(
             ButterworthFilter::from_cutoff(600.0, TS),
-            Err(Error::InvalidButterworth)
+            Err(FilterError::InvalidButterworth)
         ));
     }
 

@@ -3,7 +3,12 @@
 //! budget. Nothing here knows about arms, joints, or Cartesian space: the
 //! blend parameter is dimensionless and the caller supplies the ratio.
 
-use crate::Error;
+use thiserror::Error;
+
+/// A budget that cannot size a duration.
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("velocity ratio and requested duration must be finite and non-negative")]
+pub struct InvalidVelocityBudget;
 
 /// Peak normalised velocity of the quintic blend `s(tau)`: `ds/dtau` at
 /// `tau = 0.5`. Over a blend of duration `T`, a quantity changing by `delta`
@@ -41,10 +46,10 @@ pub fn quintic(tau: f64) -> (f64, f64) {
 pub fn velocity_limited_duration(
     peak_velocity_ratio: f64,
     requested_secs: f64,
-) -> Result<f64, Error> {
+) -> Result<f64, InvalidVelocityBudget> {
     let sane = |v: f64| v.is_finite() && v >= 0.0;
     if !sane(peak_velocity_ratio) || !sane(requested_secs) {
-        return Err(Error::InvalidVelocityBudget);
+        return Err(InvalidVelocityBudget);
     }
     Ok(requested_secs.max(QUINTIC_PEAK_VELOCITY * peak_velocity_ratio))
 }
