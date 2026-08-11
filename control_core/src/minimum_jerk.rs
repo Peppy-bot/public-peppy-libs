@@ -1,0 +1,89 @@
+//! The minimum-jerk profile: the shape a bounded motion follows between two
+//! endpoints, and the duration that shape needs to stay inside a velocity
+//! budget. Nothing here knows about arms, joints, or Cartesian space: the
+//! blend parameter is dimensionless and the caller supplies the ratio.
+
+/// Peak normalised velocity of the quintic blend `s(tau)`: `ds/dtau` at
+/// `tau = 0.5`. Over a blend of duration `T`, a quantity changing by `delta`
+/// peaks at `QUINTIC_PEAK_VELOCITY * delta / T`, which is what turns a
+/// velocity budget into a minimum duration (see
+/// [`velocity_limited_duration`]). 15/8 exactly.
+pub const QUINTIC_PEAK_VELOCITY: f64 = 1.875;
+
+/// The quintic minimum-jerk blend `s(tau)` and its derivative `ds/dtau`, for
+/// `tau = t/T` in `[0, 1]`. `s` runs 0 to 1 with `s'(0) = s'(1) = 0` and
+/// `s''(0) = s''(1) = 0`, so a path blended by it starts and stops with zero
+/// velocity and zero acceleration: the smoothest profile that meets fixed
+/// boundary conditions.
+///
+/// `tau` outside `[0, 1]` extrapolates the polynomial; callers that hold at
+/// the endpoints clamp before calling.
+pub fn quintic(tau: f64) -> (f64, f64) {
+    let s = ((6.0 * tau - 15.0) * tau + 10.0) * tau * tau * tau;
+    let ds_dtau = ((30.0 * tau - 60.0) * tau + 30.0) * tau * tau;
+    (s, ds_dtau)
+}
+
+/// Smallest duration (s) that keeps a quintic-blended motion within its
+/// velocity limits, floored at `requested_secs` so a caller can ask for a
+/// slower motion. `peak_velocity_ratio` is the largest per-component ratio of
+/// travel to that component's limit (units cancel, so joint radians and
+/// Cartesian metres size the same way); the quintic's peak factor scales it to
+/// the minimum feasible duration.
+pub fn velocity_limited_duration(peak_velocity_ratio: f64, requested_secs: f64) -> f64 {
+    requested_secs.max(QUINTIC_PEAK_VELOCITY * peak_velocity_ratio)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_blend_runs_zero_to_one_and_rests_at_both_ends() {
+        let (s0, ds0) = quintic(0.0);
+        let (s1, ds1) = quintic(1.0);
+        assert_eq!(s0, 0.0);
+        assert_eq!(ds0, 0.0);
+        assert!((s1 - 1.0).abs() < 1e-12);
+        assert!(ds1.abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_blend_is_monotone_and_symmetric() {
+        let mut prev = 0.0;
+        for i in 0..=100 {
+            let tau = f64::from(i) / 100.0;
+            let (s, ds) = quintic(tau);
+            assert!(s >= prev - 1e-12, "s decreased at tau={tau}");
+            assert!(ds >= -1e-12, "negative rate at tau={tau}");
+            prev = s;
+            // s(tau) + s(1 - tau) == 1 for a symmetric blend.
+            let (mirror, _) = quintic(1.0 - tau);
+            assert!((s + mirror - 1.0).abs() < 1e-12, "asymmetric at tau={tau}");
+        }
+    }
+
+    #[test]
+    fn the_peak_rate_is_the_documented_factor() {
+        let (_, ds_mid) = quintic(0.5);
+        assert!((ds_mid - QUINTIC_PEAK_VELOCITY).abs() < 1e-12);
+        // And it really is the maximum over the blend.
+        for i in 0..=1000 {
+            let (_, ds) = quintic(f64::from(i) / 1000.0);
+            assert!(ds <= QUINTIC_PEAK_VELOCITY + 1e-12);
+        }
+    }
+
+    #[test]
+    fn a_sized_duration_holds_the_peak_inside_the_budget() {
+        // One unit of travel against a 0.5 unit/s limit: ratio 2 s.
+        let duration = velocity_limited_duration(2.0, 0.0);
+        let peak = QUINTIC_PEAK_VELOCITY * 1.0 / duration;
+        assert!(peak <= 0.5 + 1e-12, "peak {peak} exceeded the limit");
+    }
+
+    #[test]
+    fn a_slower_request_wins() {
+        assert_eq!(velocity_limited_duration(2.0, 30.0), 30.0);
+    }
+}

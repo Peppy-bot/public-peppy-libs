@@ -11,6 +11,13 @@ use crate::jacobian::damped_pseudo_inverse;
 use crate::model::ArmModel;
 use crate::{ARM_DOF, JointVec, Limit, SrsError};
 
+/// Damping `lambda` for [`Arm::rate_step`] when the caller has no reason to
+/// pick another: heavy enough to stay bounded through singular postures, light
+/// enough not to visibly lag a jog step. A streaming jog and a guarded servo
+/// that share the step share this too, so the two control paths cannot drift
+/// apart on damping alone.
+pub const DEFAULT_DLS_LAMBDA: f64 = 0.05;
+
 /// A complete SRS arm built from a URDF: forward kinematics + gravity/Coriolis
 /// dynamics + closed-form inverse kinematics. The URDF is parsed once at
 /// construction; pose it with [`at`](Self::at) for FK and dynamics, and solve
