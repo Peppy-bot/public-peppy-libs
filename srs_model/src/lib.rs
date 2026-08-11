@@ -48,7 +48,7 @@ mod payload;
 /// The library entry point: build an [`Arm`] from a URDF, then read FK, gravity,
 /// Coriolis, and IK off it. [`Posed`] is the read-only view returned by
 /// [`Arm::at`]; [`ArmAnglePolicy`] / [`Solution`] are the IK types.
-pub use arm::Arm;
+pub use arm::{Arm, DEFAULT_DLS_LAMBDA};
 pub use error::SrsError;
 pub use fk::Posed;
 pub use ik::{ArmAnglePolicy, Solution};

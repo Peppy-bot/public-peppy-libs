@@ -14,6 +14,19 @@ mod butterworth;
 mod hampel;
 mod lowpass;
 
+use thiserror::Error;
+
+/// Parameters a filter cannot be built from.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum FilterError {
+    #[error("low-pass cutoff and sample period must be finite and positive")]
+    InvalidLowPass,
+    #[error("Butterworth cutoff and sample period must be finite, positive, and below Nyquist")]
+    InvalidButterworth,
+    #[error("Hampel window must be within 3..=1024 and thresholds finite and positive")]
+    InvalidHampel,
+}
+
 pub use butterworth::ButterworthFilter;
 pub use hampel::HampelFilter;
 pub use lowpass::LowPassFilter;

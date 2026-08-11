@@ -4,7 +4,12 @@ use std::time::{Duration, Instant};
 
 use tracing::warn;
 
-use crate::Error;
+use thiserror::Error;
+
+/// A pacer needs a period to pace to.
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("pacer period must be non-zero")]
+pub struct ZeroPacerPeriod;
 
 /// How often [`Pacer`] reports accumulated overruns, so a chronically overloaded
 /// loop is loud in the log without flooding it at the control rate.
@@ -33,12 +38,12 @@ pub struct Pacer {
 }
 
 impl Pacer {
-    /// Create a pacer ticking at `period`, or [`Error::ZeroPacerPeriod`] if the
+    /// Create a pacer ticking at `period`, or [`ZeroPacerPeriod`] if the
     /// period is zero: a zero period makes every tick an overrun, so `pace()` would
     /// spin without awaiting.
-    pub fn new(period: Duration) -> Result<Self, Error> {
+    pub fn new(period: Duration) -> Result<Self, ZeroPacerPeriod> {
         if period.is_zero() {
-            return Err(Error::ZeroPacerPeriod);
+            return Err(ZeroPacerPeriod);
         }
         Ok(Self {
             next_tick: tokio::time::Instant::now(),
@@ -113,10 +118,7 @@ mod tests {
 
     #[test]
     fn new_rejects_a_zero_period() {
-        assert!(matches!(
-            Pacer::new(Duration::ZERO),
-            Err(Error::ZeroPacerPeriod)
-        ));
+        assert!(matches!(Pacer::new(Duration::ZERO), Err(ZeroPacerPeriod)));
     }
 
     #[test]
