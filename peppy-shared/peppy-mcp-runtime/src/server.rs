@@ -1425,9 +1425,12 @@ mod tests {
             .expect("builds");
         let uri = "peppy://resource/front_camera.status";
 
+        // Unavailable and stale are deliberately internal errors: both are
+        // server-side snapshot conditions, not client mistakes.
         let error = server
             .read_snapshot(uri)
             .expect_err("nothing published yet");
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
         assert!(error.message.contains("unavailable"));
 
         let ingest = server
@@ -1445,6 +1448,7 @@ mod tests {
 
         nanos.store(2_500 * 1_000_000, Ordering::SeqCst);
         let error = server.read_snapshot(uri).expect_err("2500 ms old is stale");
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
         assert!(error.message.contains("stale"), "got {}", error.message);
         assert!(
             error.message.contains("2500 ms old"),
