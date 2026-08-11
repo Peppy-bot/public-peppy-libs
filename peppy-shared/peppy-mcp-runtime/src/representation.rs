@@ -92,21 +92,20 @@ fn transcode(
     if codec == ImageCodec::Raw {
         return Ok(());
     }
-    let encoding = get_string(value, &fields.encoding, "encoding")?;
-    if JPEG_ENCODINGS.contains(&encoding.as_str()) {
+    let encoding = get_str(value, &fields.encoding, "encoding")?;
+    if JPEG_ENCODINGS.contains(&encoding) {
         return Ok(());
     }
     let width = get_dimension(value, &fields.width, "width")?;
     let height = get_dimension(value, &fields.height, "height")?;
-    let data = get_string(value, &fields.data, "data")?;
     let bytes = BASE64
-        .decode(data.as_bytes())
+        .decode(get_str(value, &fields.data, "data")?.as_bytes())
         .map_err(|_| PublishError::Field {
             role: "data",
             name: fields.data.clone(),
             problem: "is not valid base64".to_string(),
         })?;
-    let rgb = pixels_as_rgb8(&encoding, &bytes, width, height)?;
+    let rgb = pixels_as_rgb8(encoding, bytes, width, height)?;
     let jpeg = encode_jpeg(&rgb, quality.unwrap_or(DEFAULT_JPEG_QUALITY))?;
     set_field(value, &fields.data, Value::String(BASE64.encode(&jpeg)));
     set_field(
@@ -126,21 +125,21 @@ fn downscale_to_fit(
     limit: u64,
     mut serialized: String,
 ) -> Result<String, PublishError> {
-    loop {
-        let data = get_string(value, &fields.data, "data")?;
+    let mut decoded = {
         let bytes = BASE64
-            .decode(data.as_bytes())
+            .decode(get_str(value, &fields.data, "data")?.as_bytes())
             .map_err(|_| PublishError::Field {
                 role: "data",
                 name: fields.data.clone(),
                 problem: "is not valid base64".to_string(),
             })?;
-        let decoded =
-            image::load_from_memory_with_format(&bytes, ImageFormat::Jpeg).map_err(|error| {
-                PublishError::BadFrame {
-                    detail: error.to_string(),
-                }
-            })?;
+        image::load_from_memory_with_format(&bytes, ImageFormat::Jpeg).map_err(|error| {
+            PublishError::BadFrame {
+                detail: error.to_string(),
+            }
+        })?
+    };
+    loop {
         let (width, height) = (decoded.width(), decoded.height());
         if width / 2 < MIN_DOWNSCALE_EDGE || height / 2 < MIN_DOWNSCALE_EDGE {
             return Err(PublishError::Oversize {
@@ -148,10 +147,8 @@ fn downscale_to_fit(
                 limit,
             });
         }
-        let resized = decoded
-            .resize_exact(width / 2, height / 2, FilterType::Triangle)
-            .to_rgb8();
-        let jpeg = encode_jpeg(&resized, quality)?;
+        decoded = decoded.resize_exact(width / 2, height / 2, FilterType::Triangle);
+        let jpeg = encode_jpeg(&decoded.to_rgb8(), quality)?;
         set_field(value, &fields.data, Value::String(BASE64.encode(&jpeg)));
         set_field(value, &fields.width, Value::from(width / 2));
         set_field(value, &fields.height, Value::from(height / 2));
@@ -165,24 +162,21 @@ fn downscale_to_fit(
 /// Interprets raw pixel bytes under their encoding label as an RGB image.
 fn pixels_as_rgb8(
     encoding: &str,
-    bytes: &[u8],
+    mut bytes: Vec<u8>,
     width: u32,
     height: u32,
 ) -> Result<RgbImage, PublishError> {
     let expected = width as usize * height as usize * 3;
-    let rgb_bytes = match encoding {
-        "rgb8" => bytes.to_vec(),
-        "bgr8" => bytes
-            .chunks_exact(3)
-            .flat_map(|pixel| [pixel[2], pixel[1], pixel[0]])
-            .collect(),
+    match encoding {
+        "rgb8" => {}
+        "bgr8" => bytes.chunks_exact_mut(3).for_each(|pixel| pixel.swap(0, 2)),
         other => {
             return Err(PublishError::UnsupportedEncoding {
                 encoding: other.to_string(),
             });
         }
-    };
-    if rgb_bytes.len() != expected {
+    }
+    if bytes.len() != expected {
         return Err(PublishError::BadFrame {
             detail: format!(
                 "{} bytes do not match {width}x{height} {encoding} ({expected} expected)",
@@ -190,7 +184,7 @@ fn pixels_as_rgb8(
             ),
         });
     }
-    RgbImage::from_raw(width, height, rgb_bytes).ok_or_else(|| PublishError::BadFrame {
+    RgbImage::from_raw(width, height, bytes).ok_or_else(|| PublishError::BadFrame {
         detail: format!("{width}x{height} frame does not form an image"),
     })
 }
@@ -210,10 +204,9 @@ fn encode_jpeg(image: &RgbImage, quality: u8) -> Result<Vec<u8>, PublishError> {
     Ok(jpeg)
 }
 
-fn get_string(value: &Value, name: &str, role: &'static str) -> Result<String, PublishError> {
+fn get_str<'a>(value: &'a Value, name: &str, role: &'static str) -> Result<&'a str, PublishError> {
     field(value, name, role)?
         .as_str()
-        .map(str::to_string)
         .ok_or_else(|| PublishError::Field {
             role,
             name: name.to_string(),
@@ -254,7 +247,7 @@ fn set_field(value: &mut Value, name: &str, new_value: Value) {
 /// diagnostics.
 #[cfg(test)]
 fn decode_snapshot_jpeg(value: &Value, fields: &ImageFieldMap) -> image::DynamicImage {
-    let data = get_string(value, &fields.data, "data").expect("data field present");
+    let data = get_str(value, &fields.data, "data").expect("data field present");
     let bytes = BASE64
         .decode(data.as_bytes())
         .expect("data field is base64");

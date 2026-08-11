@@ -248,28 +248,21 @@ async fn serve(server: ExposureServer, nanos: Arc<AtomicU64>) -> Endpoint {
 }
 
 pub async fn connect(url: &str) -> Client {
-    let transport = StreamableHttpClientTransport::from_config(
-        StreamableHttpClientTransportConfig::with_uri(url.to_string()),
-    );
-    ClientInfo::default()
-        .serve_with_lifecycle(
-            transport,
-            ClientLifecycleMode::Discover {
-                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-            },
-        )
-        .await
-        .expect("client negotiates 2026-07-28 over loopback")
+    connect_as(url, ClientCapabilities::default()).await
 }
 
 /// Connects a client that declares the SEP-2663 tasks extension capability;
 /// in discover mode the SDK attaches it to every request's `_meta`.
 pub async fn connect_with_tasks(url: &str) -> Client {
+    connect_as(url, ClientCapabilities::builder().enable_tasks().build()).await
+}
+
+async fn connect_as(url: &str, capabilities: ClientCapabilities) -> Client {
     let transport = StreamableHttpClientTransport::from_config(
         StreamableHttpClientTransportConfig::with_uri(url.to_string()),
     );
     let mut info = ClientInfo::default();
-    info.capabilities = ClientCapabilities::builder().enable_tasks().build();
+    info.capabilities = capabilities;
     info.serve_with_lifecycle(
         transport,
         ClientLifecycleMode::Discover {
@@ -277,7 +270,7 @@ pub async fn connect_with_tasks(url: &str) -> Client {
         },
     )
     .await
-    .expect("tasks-capable client negotiates 2026-07-28 over loopback")
+    .expect("client negotiates 2026-07-28 over loopback")
 }
 
 pub fn protocol_error(error: ServiceError) -> rmcp::ErrorData {

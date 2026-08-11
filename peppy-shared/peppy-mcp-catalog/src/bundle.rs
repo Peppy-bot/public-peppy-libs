@@ -16,6 +16,32 @@ pub const EXPOSURE_BUNDLE_FORMAT: u32 = 1;
 /// mapped under a version it does not implement.
 pub const SCHEMA_MAPPING_VERSION: u32 = 1;
 
+/// Canonical decimal rendering of a `u64`: no leading zeros. Published in
+/// derived input schemas and enforced by the runtime bridge, which is why
+/// the pattern and its predicate live here, next to the mapping version.
+pub const U64_DECIMAL_PATTERN: &str = "^(0|[1-9][0-9]*)$";
+
+/// Canonical decimal rendering of an `i64`: no leading zeros, no `-0`.
+pub const I64_DECIMAL_PATTERN: &str = "^(0|-?[1-9][0-9]*)$";
+
+/// Whether `text` matches [`U64_DECIMAL_PATTERN`]. Range is the parse's
+/// concern, not this predicate's.
+pub fn is_canonical_u64_decimal(text: &str) -> bool {
+    match text.as_bytes() {
+        [b'0'] => true,
+        [b'1'..=b'9', rest @ ..] => rest.iter().all(u8::is_ascii_digit),
+        _ => false,
+    }
+}
+
+/// Whether `text` matches [`I64_DECIMAL_PATTERN`].
+pub fn is_canonical_i64_decimal(text: &str) -> bool {
+    match text.strip_prefix('-') {
+        Some(digits) => digits != "0" && is_canonical_u64_decimal(digits),
+        None => is_canonical_u64_decimal(text),
+    }
+}
+
 /// The product of validating one exposure document against its pinned
 /// contracts: the public catalog (stable names, prose, policies, derived
 /// JSON Schemas) plus the identity and contract slots of the generated MCP

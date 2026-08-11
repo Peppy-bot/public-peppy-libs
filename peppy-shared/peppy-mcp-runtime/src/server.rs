@@ -4,7 +4,7 @@
 
 use crate::clock::Clock;
 use crate::error::{BuildError, ToolCallError};
-use crate::state::{CatalogEvent, ReadRefusal, ResourceIngest, ResourceState};
+use crate::state::{ReadRefusal, ResourceIngest, ResourceState, ResourceUpdated};
 use crate::tasks::{ActionContext, ActionExit, TaskHandler};
 use peppy_mcp_catalog::{
     BundleIdentity, BundleServer, ExposureBundle, ServiceOperation, TaskEntry, ToolEntry,
@@ -100,7 +100,7 @@ struct ServerState {
     /// session shares this manager, which is what lets a reconnecting
     /// client keep polling an existing task id.
     manager: TaskManager,
-    events: broadcast::Sender<CatalogEvent>,
+    events: broadcast::Sender<ResourceUpdated>,
     clock: Clock,
 }
 
@@ -187,27 +187,13 @@ impl ExposureServerBuilder {
                     .ok_or_else(|| BuildError::MissingToolHandler {
                         name: entry.name.clone(),
                     })?;
-            let validator = jsonschema::validator_for(&entry.input_schema).map_err(|error| {
-                BuildError::InvalidInputSchema {
-                    name: entry.name.clone(),
-                    error: error.to_string(),
-                }
-            })?;
-            let Value::Object(input_schema) = entry.input_schema.clone() else {
-                return Err(BuildError::InvalidInputSchema {
-                    name: entry.name.clone(),
-                    error: "the input schema root is not an object".to_string(),
-                });
-            };
-            let mut tool = Tool::new(
-                entry.name.clone(),
-                entry.description.clone(),
-                Arc::new(input_schema),
-            )
-            .with_annotations(annotations_for(entry.operation));
-            if let Value::Object(output_schema) = entry.output_schema.clone() {
-                tool = tool.with_raw_output_schema(Arc::new(output_schema));
-            }
+            let (tool, validator) = catalog_tool(
+                &entry.name,
+                &entry.description,
+                &entry.input_schema,
+                &entry.output_schema,
+                annotations_for(entry.operation),
+            )?;
             tool_list.push(tool);
             tools.insert(
                 entry.name.clone(),
@@ -234,27 +220,13 @@ impl ExposureServerBuilder {
                     name: entry.name.clone(),
                 }
             })?;
-            let validator = jsonschema::validator_for(&entry.input_schema).map_err(|error| {
-                BuildError::InvalidInputSchema {
-                    name: entry.name.clone(),
-                    error: error.to_string(),
-                }
-            })?;
-            let Value::Object(input_schema) = entry.input_schema.clone() else {
-                return Err(BuildError::InvalidInputSchema {
-                    name: entry.name.clone(),
-                    error: "the input schema root is not an object".to_string(),
-                });
-            };
-            let mut tool = Tool::new(
-                entry.name.clone(),
-                entry.description.clone(),
-                Arc::new(input_schema),
-            )
-            .with_annotations(task_annotations(entry));
-            if let Value::Object(output_schema) = entry.output_schema.clone() {
-                tool = tool.with_raw_output_schema(Arc::new(output_schema));
-            }
+            let (tool, validator) = catalog_tool(
+                &entry.name,
+                &entry.description,
+                &entry.input_schema,
+                &entry.output_schema,
+                task_annotations(entry),
+            )?;
             tool_list.push(tool);
             tasks.insert(
                 entry.name.clone(),
@@ -287,6 +259,57 @@ impl ExposureServerBuilder {
             }),
         })
     }
+}
+
+/// Measures the compact serialized size of a value without materializing
+/// the string.
+fn serialized_len(value: &Value) -> u64 {
+    struct ByteCount(u64);
+    impl std::io::Write for ByteCount {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len() as u64;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut sink = ByteCount(0);
+    serde_json::to_writer(&mut sink, value).expect("JSON value serializes");
+    sink.0
+}
+
+/// Validates one catalog entry's input schema and builds the served `Tool`
+/// listing plus its compiled validator, shared by the tool and task loops.
+fn catalog_tool(
+    name: &str,
+    description: &str,
+    input_schema: &Value,
+    output_schema: &Value,
+    annotations: ToolAnnotations,
+) -> Result<(Tool, jsonschema::Validator), BuildError> {
+    let validator = jsonschema::validator_for(input_schema).map_err(|error| {
+        BuildError::InvalidInputSchema {
+            name: name.to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    let Value::Object(input_schema) = input_schema.clone() else {
+        return Err(BuildError::InvalidInputSchema {
+            name: name.to_string(),
+            error: "the input schema root is not an object".to_string(),
+        });
+    };
+    let mut tool = Tool::new(
+        name.to_string(),
+        description.to_string(),
+        Arc::new(input_schema),
+    )
+    .with_annotations(annotations);
+    if let Value::Object(output_schema) = output_schema.clone() {
+        tool = tool.with_raw_output_schema(Arc::new(output_schema));
+    }
+    Ok((tool, validator))
 }
 
 fn annotations_for(operation: ServiceOperation) -> ToolAnnotations {
@@ -443,9 +466,7 @@ impl ExposureServer {
         };
 
         if let Some(limit) = tool.entry.max_result_bytes {
-            let size = serde_json::to_string(&result)
-                .expect("JSON value serializes")
-                .len() as u64;
+            let size = serialized_len(&result);
             if size > limit.get() {
                 return Ok(tool_error(format!(
                     "result of {size} bytes exceeds the {} byte limit",
@@ -725,7 +746,7 @@ impl ServerHandler for ExposureServer {
             tokio::select! {
                 _ = context.cancelled() => return Ok(()),
                 event = events.recv() => match event {
-                    Ok(CatalogEvent::ResourceUpdated { uri }) => {
+                    Ok(ResourceUpdated { uri }) => {
                         match sink.notify_resource_updated(uri).await {
                             Ok(()) => {}
                             Err(

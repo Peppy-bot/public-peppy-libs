@@ -95,12 +95,14 @@ signed_value_accessor!(value_i16, i16);
 signed_value_accessor!(value_i32, i32);
 
 /// A `u64` carried as a canonical decimal string, because JSON numbers lose
-/// precision above 2^53.
+/// precision above 2^53. Canonical form is the catalog's
+/// [`U64_DECIMAL_PATTERN`](peppy_mcp_catalog::U64_DECIMAL_PATTERN), the same
+/// pattern the published input schemas carry.
 pub fn value_u64_decimal(value: &Value, name: &str) -> Result<u64, String> {
     let text = value
         .as_str()
         .ok_or_else(|| format!("`{name}` is not a decimal string"))?;
-    if text != "0" && (text.is_empty() || text.starts_with('0')) {
+    if !peppy_mcp_catalog::is_canonical_u64_decimal(text) {
         return Err(format!("`{name}` is not a canonical decimal string"));
     }
     text.parse()
@@ -112,8 +114,7 @@ pub fn value_i64_decimal(value: &Value, name: &str) -> Result<i64, String> {
     let text = value
         .as_str()
         .ok_or_else(|| format!("`{name}` is not a decimal string"))?;
-    let digits = text.strip_prefix('-').unwrap_or(text);
-    if text == "-0" || digits.is_empty() || (digits != "0" && digits.starts_with('0')) {
+    if !peppy_mcp_catalog::is_canonical_i64_decimal(text) {
         return Err(format!("`{name}` is not a canonical decimal string"));
     }
     text.parse()
