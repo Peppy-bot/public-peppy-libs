@@ -7,10 +7,13 @@
 //! test advances; every wait is on a response or a notification.
 
 use peppy_mcp_catalog::ExposureBundle;
-use peppy_mcp_runtime::{Clock, ExposureServer, MCP_HTTP_PATH, ToolCallError};
+use peppy_mcp_runtime::{
+    ActionContext, ActionExit, Clock, ExposureServer, MCP_HTTP_PATH, ToolCallError,
+};
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, ClientInfo, ErrorCode, ProtocolVersion,
-    ReadResourceRequestParams, ServerNotification, SubscriptionFilter, object,
+    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ClientCapabilities,
+    ClientInfo, DetailedTask, ErrorCode, GetTaskParams, ProtocolVersion, ReadResourceRequestParams,
+    ServerNotification, SubscriptionFilter, TaskStatus, UpdateTaskParams, object,
 };
 use rmcp::service::ServiceError;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -42,7 +45,8 @@ fn loopback_bundle() -> ExposureBundle {
     "name": "camera_and_recording_mcp",
     "tag": "v1",
     "contracts": [
-      { "name": "rgb_camera", "tag": "v1", "sha256": "aa", "link_id": "front_camera" }
+      { "name": "rgb_camera", "tag": "v1", "sha256": "aa", "link_id": "front_camera" },
+      { "name": "episode_recording", "tag": "v1", "sha256": "bb", "link_id": "recorder" }
     ]
   },
   "resources": [
@@ -125,7 +129,36 @@ fn loopback_bundle() -> ExposureBundle {
       }
     }
   ],
-  "tasks": []
+  "tasks": [
+    {
+      "name": "recorder.record_episode",
+      "description": "Record one teleoperation episode to the local dataset.",
+      "target": "recorder",
+      "member": "record_episode",
+      "operation": "long_running",
+      "safety_sensitive": true,
+      "confirmation_required": true,
+      "deadline_ms": 600000,
+      "input_schema": {
+        "type": "object",
+        "properties": { "episode_name": { "type": "string" } },
+        "required": ["episode_name"],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "frames": { "type": "integer" } },
+        "required": ["frames"],
+        "additionalProperties": false
+      },
+      "feedback_schema": {
+        "type": "object",
+        "properties": { "frame": { "type": "integer" } },
+        "required": ["frame"],
+        "additionalProperties": false
+      }
+    }
+  ]
 }"#,
     )
     .expect("loopback bundle parses")
@@ -155,6 +188,21 @@ async fn start_endpoint() -> Endpoint {
             }
             Ok(json!({ "applied": true }))
         })
+        .with_task(
+            "recorder.record_episode",
+            |input: Value, context: ActionContext| async move {
+                let episode = input["episode_name"]
+                    .as_str()
+                    .expect("validated string")
+                    .to_string();
+                context.report_feedback(format!("recording `{episode}`"));
+                if episode == "wait_for_cancel" {
+                    context.cancel_requested().await;
+                    return Err(ActionExit::Cancelled);
+                }
+                Ok(json!({ "frames": 120 }))
+            },
+        )
         .build()
         .expect("bundle and handlers agree");
 
@@ -212,7 +260,11 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
     tool_names.sort_unstable();
     assert_eq!(
         tool_names,
-        ["front_camera.info", "front_camera.set_brightness"]
+        [
+            "front_camera.info",
+            "front_camera.set_brightness",
+            "recorder.record_episode"
+        ]
     );
     assert_eq!(tools.ttl_ms, Some(3_600_000));
     assert_eq!(tools.cache_scope, Some(CacheScope::Private));
@@ -423,6 +475,198 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
     );
     assert!(error.message.contains("stale"), "got {}", error.message);
     late_client.cancel().await.expect("client disconnects");
+
+    endpoint.shutdown.cancel();
+}
+
+/// Connects a client that declares the SEP-2663 tasks extension capability;
+/// in discover mode the SDK attaches it to every request's `_meta`.
+async fn connect_with_tasks(
+    url: &str,
+) -> rmcp::service::RunningService<rmcp::RoleClient, rmcp::model::ClientInfo> {
+    let transport = StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(url.to_string()),
+    );
+    let mut info = ClientInfo::default();
+    info.capabilities = ClientCapabilities::builder().enable_tasks().build();
+    info.serve_with_lifecycle(
+        transport,
+        ClientLifecycleMode::Discover {
+            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+        },
+    )
+    .await
+    .expect("tasks-capable client negotiates 2026-07-28 over loopback")
+}
+
+/// Polls `tasks/get` until the task satisfies `accept`; the wait is bounded
+/// by [`GUARD`] and driven by server responses, not by elapsed host time.
+async fn poll_task_until(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, rmcp::model::ClientInfo>,
+    task_id: &str,
+    description: &str,
+    accept: impl Fn(&DetailedTask) -> bool,
+) -> DetailedTask {
+    tokio::time::timeout(GUARD, async {
+        loop {
+            let result = client
+                .get_task(GetTaskParams::new(task_id))
+                .await
+                .expect("tasks/get answers");
+            if accept(&result.task) {
+                return result.task;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("task `{task_id}` never reached: {description}"))
+}
+
+fn confirmation_accept(task_id: &str) -> UpdateTaskParams {
+    UpdateTaskParams::new(
+        task_id,
+        [("confirmation".to_string(), json!({ "action": "accept" }))]
+            .into_iter()
+            .collect(),
+    )
+}
+
+async fn start_record_episode(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, rmcp::model::ClientInfo>,
+    episode_name: &str,
+) -> String {
+    let response = client
+        .call_tool_once(
+            CallToolRequestParams::new("recorder.record_episode")
+                .with_arguments(object(json!({ "episode_name": episode_name }))),
+        )
+        .await
+        .expect("the task-backed tool answers");
+    let CallToolResponse::Task(created) = response else {
+        panic!("expected a task handle, got {response:?}");
+    };
+    assert_eq!(created.task.status, TaskStatus::Working);
+    assert_eq!(
+        created.task.ttl_ms,
+        Some(600000),
+        "the whole-goal deadline is the advertised TTL"
+    );
+    created.task.task_id
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_real_client_drives_action_backed_tasks() {
+    let endpoint = start_endpoint().await;
+
+    // A client that does not declare the tasks capability never receives a
+    // task handle: the call is refused with the required capability.
+    let plain_client = connect(&endpoint.url).await;
+    let error = protocol_error(
+        plain_client
+            .call_tool_once(
+                CallToolRequestParams::new("recorder.record_episode")
+                    .with_arguments(object(json!({ "episode_name": "demo" }))),
+            )
+            .await
+            .expect_err("the tasks capability is required"),
+    );
+    assert_eq!(error.code, ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY);
+    plain_client.cancel().await.expect("client disconnects");
+
+    let client = connect_with_tasks(&endpoint.url).await;
+    let info = client.peer_info().expect("discovery ran");
+    assert!(
+        info.capabilities.supports_tasks(),
+        "the exposure advertises the tasks extension"
+    );
+
+    // Confirmation walk: the task parks in input_required with the
+    // confirmation elicitation; accepting through tasks/update releases the
+    // goal, feedback drives the status message, and the Peppy result
+    // completes the task with structured output.
+    let task_id = start_record_episode(&client, "demo").await;
+    let parked = poll_task_until(&client, &task_id, "input_required", |task| {
+        task.status() == TaskStatus::InputRequired
+    })
+    .await;
+    let rmcp::model::TaskPayload::InputRequired { input_requests } = parked.payload else {
+        panic!("expected input_required, got {:?}", parked.payload);
+    };
+    assert!(input_requests.contains_key("confirmation"));
+
+    client
+        .update_task(confirmation_accept(&task_id))
+        .await
+        .expect("the confirmation is delivered");
+    let completed = poll_task_until(&client, &task_id, "a terminal status", |task| {
+        task.status().is_terminal()
+    })
+    .await;
+    assert_eq!(completed.status(), TaskStatus::Completed);
+    assert_eq!(
+        completed.task.status_message.as_deref(),
+        Some("recording `demo`"),
+        "feedback reports as the status message"
+    );
+    let rmcp::model::TaskPayload::Completed { result } = completed.payload else {
+        panic!("expected a completed payload");
+    };
+    assert_eq!(result["structuredContent"], json!({ "frames": 120 }));
+
+    // Cancellation walk: tasks/cancel is forwarded cooperatively and the
+    // Peppy cancelled result settles the task as cancelled.
+    let task_id = start_record_episode(&client, "wait_for_cancel").await;
+    poll_task_until(&client, &task_id, "input_required", |task| {
+        task.status() == TaskStatus::InputRequired
+    })
+    .await;
+    client
+        .update_task(confirmation_accept(&task_id))
+        .await
+        .expect("the confirmation is delivered");
+    poll_task_until(&client, &task_id, "the goal running", |task| {
+        task.task.status_message.as_deref() == Some("recording `wait_for_cancel`")
+    })
+    .await;
+    client
+        .cancel_task(CancelTaskParams::new(&*task_id))
+        .await
+        .expect("tasks/cancel acknowledges");
+    let cancelled = poll_task_until(&client, &task_id, "a terminal status", |task| {
+        task.status().is_terminal()
+    })
+    .await;
+    assert_eq!(cancelled.status(), TaskStatus::Cancelled);
+
+    // Reconnect walk: task handles are node-lifetime, so a client that
+    // disconnects mid-goal can reconnect and keep driving the same handle.
+    let task_id = start_record_episode(&client, "wait_for_cancel").await;
+    poll_task_until(&client, &task_id, "input_required", |task| {
+        task.status() == TaskStatus::InputRequired
+    })
+    .await;
+    client.cancel().await.expect("client disconnects mid-task");
+
+    let reconnected = connect_with_tasks(&endpoint.url).await;
+    reconnected
+        .update_task(confirmation_accept(&task_id))
+        .await
+        .expect("the reconnected client confirms the same handle");
+    poll_task_until(&reconnected, &task_id, "the goal running", |task| {
+        task.task.status_message.as_deref() == Some("recording `wait_for_cancel`")
+    })
+    .await;
+    reconnected
+        .cancel_task(CancelTaskParams::new(&*task_id))
+        .await
+        .expect("tasks/cancel acknowledges");
+    let cancelled = poll_task_until(&reconnected, &task_id, "a terminal status", |task| {
+        task.status().is_terminal()
+    })
+    .await;
+    assert_eq!(cancelled.status(), TaskStatus::Cancelled);
+    reconnected.cancel().await.expect("client disconnects");
 
     endpoint.shutdown.cancel();
 }

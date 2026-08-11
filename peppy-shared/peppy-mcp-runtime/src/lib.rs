@@ -8,13 +8,16 @@
 //! `server/discover`, `tools/list`, and `resources/list` with their caching
 //! hints, snapshot freshness on an injected clock, `subscriptions/listen`
 //! notifications, tool-input validation against the bundle's derived
-//! schemas, and the mapping from bridge failures to MCP errors.
+//! schemas, action-backed MCP tasks (SEP-2663) with confirmation,
+//! cooperative cancellation, and whole-goal deadlines, and the mapping from
+//! bridge failures to MCP errors.
 //!
 //! Entry points:
 //!
 //! - [`ExposureServer::builder`] takes a parsed
 //!   [`ExposureBundle`](peppy_mcp_catalog::ExposureBundle) plus one
-//!   [`ToolHandler`] per exposed service and builds the server.
+//!   [`ToolHandler`] per exposed service and one [`TaskHandler`] per
+//!   exposed action and builds the server.
 //! - [`ExposureServer::ingest`] hands out the [`ResourceIngest`] a topic
 //!   pump feeds: [`ResourceIngest::admit`] applies the update-rate gate
 //!   before any decoding work, [`ResourceIngest::publish`] applies the
@@ -33,9 +36,11 @@ pub mod error;
 pub mod representation;
 pub mod server;
 mod state;
+pub mod tasks;
 
 pub use clock::Clock;
 pub use error::{BuildError, PublishError, ToolCallError};
 pub use peppy_mcp_catalog as catalog;
 pub use server::{ExposureServer, ExposureServerBuilder, MCP_HTTP_PATH, ToolHandler};
 pub use state::ResourceIngest;
+pub use tasks::{ActionContext, ActionExit, TaskHandler};

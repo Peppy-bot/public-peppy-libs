@@ -7,14 +7,15 @@ use std::fmt;
 /// Why a bundle plus its registered handlers cannot become a server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildError {
-    /// The bundle exposes actions. Action-backed MCP tasks are not part of
-    /// this runtime yet, so a server cannot honestly advertise the bundle.
-    TasksUnsupported { count: usize },
     /// A handler was registered under a name no tool entry carries.
     UnknownToolHandler { name: String },
     /// A tool entry has no registered handler, so calls could never route.
     MissingToolHandler { name: String },
-    /// A tool entry's derived input schema does not compile.
+    /// A task handler was registered under a name no task entry carries.
+    UnknownTaskHandler { name: String },
+    /// A task entry has no registered handler, so calls could never route.
+    MissingTaskHandler { name: String },
+    /// A tool or task entry's derived input schema does not compile.
     InvalidInputSchema { name: String, error: String },
     /// Two catalog entries collide on a public name or URI.
     DuplicateName { name: String },
@@ -23,11 +24,6 @@ pub enum BuildError {
 impl fmt::Display for BuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TasksUnsupported { count } => write!(
-                f,
-                "the bundle exposes {count} action(s); action-backed MCP tasks are not \
-                 supported by this runtime yet"
-            ),
             Self::UnknownToolHandler { name } => {
                 write!(
                     f,
@@ -36,6 +32,15 @@ impl fmt::Display for BuildError {
             }
             Self::MissingToolHandler { name } => {
                 write!(f, "tool `{name}` has no registered handler")
+            }
+            Self::UnknownTaskHandler { name } => {
+                write!(
+                    f,
+                    "a task handler is registered for `{name}`, which is not a task in the bundle"
+                )
+            }
+            Self::MissingTaskHandler { name } => {
+                write!(f, "task `{name}` has no registered handler")
             }
             Self::InvalidInputSchema { name, error } => {
                 write!(f, "tool `{name}` input schema does not compile: {error}")

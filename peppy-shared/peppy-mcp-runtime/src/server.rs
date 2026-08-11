@@ -5,17 +5,21 @@
 use crate::clock::Clock;
 use crate::error::{BuildError, ToolCallError};
 use crate::state::{CatalogEvent, ReadRefusal, ResourceIngest, ResourceState};
+use crate::tasks::{ActionContext, ActionExit, TaskHandler};
 use peppy_mcp_catalog::{
-    BundleIdentity, BundleServer, ExposureBundle, ServiceOperation, ToolEntry,
+    BundleIdentity, BundleServer, ExposureBundle, ServiceOperation, TaskEntry, ToolEntry,
 };
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
-    DiscoverResult, Implementation, JsonObject, ListResourcesResult, ListToolsResult,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
+    ClientCapabilities, ContentBlock, CreateTaskResult, DiscoverResult, ElicitRequest,
+    ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema, GetTaskParams,
+    GetTaskResult, Implementation, InputRequest, JsonObject, ListResourcesResult, ListToolsResult,
     PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
     ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerInfo,
-    SubscriptionFilter, Tool, ToolAnnotations,
+    SubscriptionFilter, Tool, ToolAnnotations, UpdateTaskParams,
 };
 use rmcp::service::{RequestContext, SubscriptionContext, SubscriptionSendError};
+use rmcp::task_manager::{TaskContext, TaskExit, TaskManager, TaskOptions};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
@@ -73,6 +77,14 @@ struct ToolState {
     handler: Arc<dyn ToolHandler>,
 }
 
+struct TaskState {
+    entry: TaskEntry,
+    /// Compiled from the bundle's derived goal schema; every call is
+    /// validated before a task can be materialized.
+    validator: jsonschema::Validator,
+    handler: Arc<dyn TaskHandler>,
+}
+
 struct ServerState {
     server: BundleServer,
     exposure: BundleIdentity,
@@ -81,17 +93,24 @@ struct ServerState {
     resource_uri_by_name: HashMap<String, String>,
     resource_list: Vec<Resource>,
     tools: HashMap<String, Arc<ToolState>>,
+    tasks: HashMap<String, Arc<TaskState>>,
+    /// `tools/list` order: the bundle's tools, then its tasks.
     tool_list: Vec<Tool>,
+    /// Task handles are in-memory and node-lifetime by design; every HTTP
+    /// session shares this manager, which is what lets a reconnecting
+    /// client keep polling an existing task id.
+    manager: TaskManager,
     events: broadcast::Sender<CatalogEvent>,
     clock: Clock,
 }
 
-/// Builds an [`ExposureServer`] from a parsed bundle and one registered
-/// handler per exposed tool.
+/// Builds an [`ExposureServer`] from a parsed bundle, one registered
+/// handler per exposed tool, and one task handler per exposed action.
 pub struct ExposureServerBuilder {
     bundle: ExposureBundle,
     clock: Clock,
     handlers: HashMap<String, Arc<dyn ToolHandler>>,
+    task_handlers: HashMap<String, Arc<dyn TaskHandler>>,
 }
 
 impl ExposureServerBuilder {
@@ -109,6 +128,12 @@ impl ExposureServerBuilder {
         self
     }
 
+    /// Registers the action bridge behind one task entry of the bundle.
+    pub fn with_task(mut self, name: impl Into<String>, handler: impl TaskHandler) -> Self {
+        self.task_handlers.insert(name.into(), Arc::new(handler));
+        self
+    }
+
     /// Checks the bundle and the registered handlers against each other and
     /// prepares the served catalog.
     pub fn build(self) -> Result<ExposureServer, BuildError> {
@@ -116,12 +141,8 @@ impl ExposureServerBuilder {
             bundle,
             clock,
             mut handlers,
+            mut task_handlers,
         } = self;
-        if !bundle.tasks.is_empty() {
-            return Err(BuildError::TasksUnsupported {
-                count: bundle.tasks.len(),
-            });
-        }
 
         let mut names = HashSet::new();
         let mut resources_by_uri = HashMap::new();
@@ -201,6 +222,53 @@ impl ExposureServerBuilder {
             return Err(BuildError::UnknownToolHandler { name });
         }
 
+        let mut tasks = HashMap::new();
+        for entry in &bundle.tasks {
+            if !names.insert(entry.name.clone()) {
+                return Err(BuildError::DuplicateName {
+                    name: entry.name.clone(),
+                });
+            }
+            let handler = task_handlers.remove(&entry.name).ok_or_else(|| {
+                BuildError::MissingTaskHandler {
+                    name: entry.name.clone(),
+                }
+            })?;
+            let validator = jsonschema::validator_for(&entry.input_schema).map_err(|error| {
+                BuildError::InvalidInputSchema {
+                    name: entry.name.clone(),
+                    error: error.to_string(),
+                }
+            })?;
+            let Value::Object(input_schema) = entry.input_schema.clone() else {
+                return Err(BuildError::InvalidInputSchema {
+                    name: entry.name.clone(),
+                    error: "the input schema root is not an object".to_string(),
+                });
+            };
+            let mut tool = Tool::new(
+                entry.name.clone(),
+                entry.description.clone(),
+                Arc::new(input_schema),
+            )
+            .with_annotations(task_annotations(entry));
+            if let Value::Object(output_schema) = entry.output_schema.clone() {
+                tool = tool.with_raw_output_schema(Arc::new(output_schema));
+            }
+            tool_list.push(tool);
+            tasks.insert(
+                entry.name.clone(),
+                Arc::new(TaskState {
+                    entry: entry.clone(),
+                    validator,
+                    handler,
+                }),
+            );
+        }
+        if let Some(name) = task_handlers.into_keys().next() {
+            return Err(BuildError::UnknownTaskHandler { name });
+        }
+
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Ok(ExposureServer {
             state: Arc::new(ServerState {
@@ -211,7 +279,9 @@ impl ExposureServerBuilder {
                 resource_uri_by_name,
                 resource_list,
                 tools,
+                tasks,
                 tool_list,
+                manager: TaskManager::new(),
                 events,
                 clock,
             }),
@@ -225,6 +295,18 @@ fn annotations_for(operation: ServiceOperation) -> ToolAnnotations {
             .read_only(true)
             .destructive(false),
         ServiceOperation::Mutating => ToolAnnotations::default().read_only(false),
+    }
+}
+
+/// An action tool is never read-only; the exposure's `safety_sensitive`
+/// marker is surfaced as the destructive hint, and an unmarked action stays
+/// unhinted rather than claiming to be safe.
+fn task_annotations(entry: &TaskEntry) -> ToolAnnotations {
+    let annotations = ToolAnnotations::default().read_only(false);
+    if entry.safety_sensitive {
+        annotations.destructive(true)
+    } else {
+        annotations
     }
 }
 
@@ -250,6 +332,7 @@ impl ExposureServer {
             bundle,
             clock: Clock::wall(),
             handlers: HashMap::new(),
+            task_handlers: HashMap::new(),
         }
     }
 
@@ -272,25 +355,36 @@ impl ExposureServer {
         listener: tokio::net::TcpListener,
         shutdown: tokio_util::sync::CancellationToken,
     ) -> std::io::Result<()> {
+        let manager = self.state.manager.clone();
         let config = StreamableHttpServerConfig::default()
             .with_legacy_session_mode(false)
             .with_cancellation_token(shutdown.child_token());
         let service: StreamableHttpService<Self, LocalSessionManager> =
             StreamableHttpService::new(move || Ok(self.clone()), Default::default(), config);
         let router = axum::Router::new().nest_service(MCP_HTTP_PATH, service);
-        axum::serve(listener, router)
+        let served = axum::serve(listener, router)
             .with_graceful_shutdown(shutdown.cancelled_owned())
-            .await
+            .await;
+        // Task handles are node-lifetime: the endpoint going down aborts
+        // every still-running operation instead of leaking it.
+        manager.shutdown();
+        served
     }
 
-    fn capabilities() -> ServerCapabilities {
-        ServerCapabilities::builder()
+    fn capabilities(&self) -> ServerCapabilities {
+        let mut capabilities = ServerCapabilities::builder()
             .enable_resources()
             .enable_resources_subscribe()
             .enable_resources_list_changed()
             .enable_tools()
-            .enable_tool_list_changed()
-            .build()
+            .enable_tool_list_changed();
+        // The tasks extension is advertised only when the bundle exposes
+        // actions; a client probing `tasks/*` on a task-less exposure gets
+        // method-not-found instead of a capability it could never use.
+        if !self.state.tasks.is_empty() {
+            capabilities = capabilities.enable_tasks();
+        }
+        capabilities.build()
     }
 
     fn read_snapshot(&self, uri: &str) -> Result<ReadResourceResult, McpError> {
@@ -334,25 +428,7 @@ impl ExposureServer {
                 None,
             ));
         };
-        let input = Value::Object(arguments);
-        let problems: Vec<String> = tool
-            .validator
-            .iter_errors(&input)
-            .map(|error| {
-                let path = error.instance_path().to_string();
-                if path.is_empty() {
-                    error.to_string()
-                } else {
-                    format!("{path}: {error}")
-                }
-            })
-            .collect();
-        if !problems.is_empty() {
-            return Err(McpError::invalid_params(
-                format!("invalid arguments for `{name}`: {}", problems.join("; ")),
-                None,
-            ));
-        }
+        let input = validated_input(name, &tool.validator, arguments)?;
 
         let deadline = Duration::from_millis(tool.entry.deadline_ms.get());
         let result = match tokio::time::timeout(deadline, tool.handler.call(input)).await {
@@ -379,6 +455,137 @@ impl ExposureServer {
         }
         Ok(CallToolResult::structured(result))
     }
+
+    /// Materializes the MCP task behind a task-backed tool call.
+    ///
+    /// The goal fields are validated before anything is created, and a
+    /// client that did not declare the tasks extension capability is
+    /// refused before a task exists: per the design, such a client never
+    /// receives a task handle, and refusing early also means no orphaned
+    /// goal ever runs for a client that could not poll it.
+    fn start_task(
+        &self,
+        name: &str,
+        arguments: JsonObject,
+        client_declared_tasks: bool,
+    ) -> Result<CreateTaskResult, McpError> {
+        let Some(task) = self.state.tasks.get(name) else {
+            return Err(McpError::invalid_params(
+                format!("`{name}` is not a task of this exposure"),
+                None,
+            ));
+        };
+        let input = validated_input(name, &task.validator, arguments)?;
+        if !client_declared_tasks {
+            return Err(McpError::missing_required_client_capability(
+                ClientCapabilities::builder().enable_tasks().build(),
+            ));
+        }
+
+        let task = Arc::clone(task);
+        // The exposure's whole-goal deadline doubles as the task TTL the
+        // client sees: the server may discard the task once it has been
+        // failed for a full deadline window.
+        let options = TaskOptions::new().with_ttl_ms(task.entry.deadline_ms.get());
+        let seed = self.state.manager.spawn(options, move |context| {
+            Box::pin(run_task_operation(task, input, context))
+        });
+        Ok(CreateTaskResult::new(seed))
+    }
+}
+
+/// The whole task operation: the optional confirmation gate, the bridge,
+/// and the exposure's whole-goal deadline around both. Enforcing the
+/// deadline here (rather than leaving it to the manager's TTL sweep) makes
+/// it prompt and gives the failure a descriptive message.
+async fn run_task_operation(
+    task: Arc<TaskState>,
+    input: Value,
+    context: TaskContext,
+) -> Result<CallToolResult, TaskExit> {
+    let deadline = Duration::from_millis(task.entry.deadline_ms.get());
+    match tokio::time::timeout(deadline, drive_task(task, input, context)).await {
+        Ok(result) => result,
+        Err(_elapsed) => Err(TaskExit::Error(McpError::internal_error(
+            format!(
+                "deadline exceeded: the goal did not reach a terminal state within {} ms",
+                deadline.as_millis()
+            ),
+            None,
+        ))),
+    }
+}
+
+/// Identifier of the confirmation entry in the task's `inputRequests`.
+const CONFIRMATION_INPUT_KEY: &str = "confirmation";
+
+async fn drive_task(
+    task: Arc<TaskState>,
+    input: Value,
+    context: TaskContext,
+) -> Result<CallToolResult, TaskExit> {
+    if task.entry.confirmation_required {
+        // The task parks in `input_required` with this elicitation until
+        // the client answers via `tasks/update`; only an explicit accept
+        // lets the goal reach the provider. A decline, a cancel, a
+        // malformed response, and `tasks/cancel` all settle the task as
+        // `cancelled` with the goal never sent.
+        let request = ElicitRequest::new(ElicitRequestParams::FormElicitationParams {
+            meta: None,
+            message: format!(
+                "Confirm running `{}`: {}",
+                task.entry.name, task.entry.description
+            ),
+            requested_schema: ElicitationSchema::new(Default::default()),
+        });
+        let response = context
+            .request_input(CONFIRMATION_INPUT_KEY, InputRequest::Elicitation(request))
+            .await?;
+        let confirmed = serde_json::from_value::<ElicitResult>(response)
+            .is_ok_and(|result| result.action == ElicitationAction::Accept);
+        if !confirmed {
+            return Err(TaskExit::Cancelled);
+        }
+    }
+
+    let action_context = ActionContext {
+        inner: context.clone(),
+    };
+    match task.handler.start(input, action_context).await {
+        Ok(value) => Ok(CallToolResult::structured(value)),
+        Err(ActionExit::Cancelled) => Err(TaskExit::Cancelled),
+        Err(ActionExit::Failed(message)) => {
+            Err(TaskExit::Error(McpError::internal_error(message, None)))
+        }
+    }
+}
+
+/// Validates tool-call arguments against a compiled derived schema; nothing
+/// invalid ever reaches a bridge or materializes a task.
+fn validated_input(
+    name: &str,
+    validator: &jsonschema::Validator,
+    arguments: JsonObject,
+) -> Result<Value, McpError> {
+    let input = Value::Object(arguments);
+    let problems: Vec<String> = validator
+        .iter_errors(&input)
+        .map(|error| {
+            let path = error.instance_path().to_string();
+            if path.is_empty() {
+                error.to_string()
+            } else {
+                format!("{path}: {error}")
+            }
+        })
+        .collect();
+    if !problems.is_empty() {
+        return Err(McpError::invalid_params(
+            format!("invalid arguments for `{name}`: {}", problems.join("; ")),
+            None,
+        ));
+    }
+    Ok(input)
 }
 
 fn tool_error(message: String) -> CallToolResult {
@@ -396,7 +603,7 @@ impl ServerHandler for ExposureServer {
             self.state.exposure.tag.clone(),
         )
         .with_title(self.state.server.title.clone());
-        let mut info = ServerInfo::new(Self::capabilities())
+        let mut info = ServerInfo::new(self.capabilities())
             .with_server_info(implementation)
             .with_protocol_version(ProtocolVersion::V_2026_07_28);
         if let Some(instructions) = &self.state.server.instructions {
@@ -460,18 +667,55 @@ impl ServerHandler for ExposureServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        self.execute_tool(request.name.as_ref(), request.arguments.unwrap_or_default())
-            .await
-            .map(Into::into)
+        let name = request.name.as_ref();
+        let arguments = request.arguments.unwrap_or_default();
+        if self.state.tasks.contains_key(name) {
+            let client_declared_tasks = context
+                .client_capabilities()
+                .is_some_and(|capabilities| capabilities.supports_tasks());
+            return self
+                .start_task(name, arguments, client_declared_tasks)
+                .map(CallToolResponse::Task);
+        }
+        self.execute_tool(name, arguments).await.map(Into::into)
+    }
+
+    async fn get_task(
+        &self,
+        request: GetTaskParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetTaskResult, McpError> {
+        self.state
+            .manager
+            .get_task(&request.task_id)
+            .map(GetTaskResult::new)
+    }
+
+    async fn update_task(
+        &self,
+        request: UpdateTaskParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        self.state
+            .manager
+            .update_task(&request.task_id, request.input_responses)
+    }
+
+    async fn cancel_task(
+        &self,
+        request: CancelTaskParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        self.state.manager.cancel_task(&request.task_id)
     }
 
     fn accepted_subscription_filter(
         &self,
         requested: &SubscriptionFilter,
     ) -> Option<SubscriptionFilter> {
-        Some(requested.supported_by(&Self::capabilities()))
+        Some(requested.supported_by(&self.capabilities()))
     }
 
     async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
@@ -596,29 +840,418 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_bundle_with_tasks_is_refused() {
+    /// `test_bundle` plus two exposed actions: `record_episode` requires
+    /// confirmation and is safety-sensitive, `resume_session` is neither.
+    fn task_bundle() -> ExposureBundle {
         let mut bundle = test_bundle();
         bundle.tasks = vec![
             serde_json::from_value(json!({
                 "name": "recorder.record_episode",
-                "description": "Record one episode.",
+                "description": "Record one teleoperation episode.",
                 "target": "recorder",
                 "member": "record_episode",
                 "operation": "long_running",
                 "safety_sensitive": true,
                 "confirmation_required": true,
                 "deadline_ms": 900000,
-                "input_schema": { "type": "object" },
-                "output_schema": { "type": "object" }
+                "input_schema": {
+                    "type": "object",
+                    "properties": { "episode_name": { "type": "string" } },
+                    "required": ["episode_name"],
+                    "additionalProperties": false
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": { "frames": { "type": "integer" } },
+                    "required": ["frames"],
+                    "additionalProperties": false
+                }
+            }))
+            .expect("valid task entry"),
+            serde_json::from_value(json!({
+                "name": "recorder.resume_session",
+                "description": "Resume the recording session.",
+                "target": "recorder",
+                "member": "resume_session",
+                "operation": "long_running",
+                "safety_sensitive": false,
+                "confirmation_required": false,
+                "deadline_ms": 2000,
+                "input_schema": {
+                    "type": "object",
+                    "additionalProperties": false
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": { "resumed": { "type": "boolean" } },
+                    "required": ["resumed"],
+                    "additionalProperties": false
+                }
             }))
             .expect("valid task entry"),
         ];
-        let error = ExposureServer::builder(bundle)
+        bundle
+    }
+
+    fn record_handler(
+        _input: Value,
+        _context: crate::tasks::ActionContext,
+    ) -> impl Future<Output = Result<Value, ActionExit>> + Send {
+        async move { Ok(json!({ "frames": 120 })) }
+    }
+
+    fn resume_handler(
+        _input: Value,
+        _context: crate::tasks::ActionContext,
+    ) -> impl Future<Output = Result<Value, ActionExit>> + Send {
+        async move { Ok(json!({ "resumed": true })) }
+    }
+
+    fn built_task_server() -> ExposureServer {
+        ExposureServer::builder(task_bundle())
             .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_task("recorder.record_episode", record_handler)
+            .with_task("recorder.resume_session", resume_handler)
             .build()
-            .expect_err("tasks are not supported yet");
-        assert_eq!(error, BuildError::TasksUnsupported { count: 1 });
+            .expect("bundle and handlers agree")
+    }
+
+    /// Yield-driven wait for a task state; every iteration hands the
+    /// scheduler to the spawned operation, so this depends on scheduling
+    /// alone, never on host time.
+    async fn task_matching(
+        server: &ExposureServer,
+        task_id: &str,
+        description: &str,
+        accept: impl Fn(&rmcp::model::DetailedTask) -> bool,
+    ) -> rmcp::model::DetailedTask {
+        for _ in 0..100_000 {
+            let task = server.state.manager.get_task(task_id).expect("task exists");
+            if accept(&task) {
+                return task;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("task `{task_id}` never reached: {description}");
+    }
+
+    async fn settled(server: &ExposureServer, task_id: &str) -> rmcp::model::DetailedTask {
+        task_matching(server, task_id, "a terminal status", |task| {
+            task.status().is_terminal()
+        })
+        .await
+    }
+
+    #[test]
+    fn a_task_without_a_handler_is_refused() {
+        let error = ExposureServer::builder(task_bundle())
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_task("recorder.record_episode", record_handler)
+            .build()
+            .expect_err("resume_session has no handler");
+        assert_eq!(
+            error,
+            BuildError::MissingTaskHandler {
+                name: "recorder.resume_session".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_task_handler_without_a_task_is_refused() {
+        let error = ExposureServer::builder(test_bundle())
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_task("recorder.record_episode", record_handler)
+            .build()
+            .expect_err("the plain bundle exposes no tasks");
+        assert_eq!(
+            error,
+            BuildError::UnknownTaskHandler {
+                name: "recorder.record_episode".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn task_tools_join_the_catalog_with_annotations() {
+        let server = built_task_server();
+        let record = server
+            .get_tool("recorder.record_episode")
+            .expect("task tools are listed");
+        assert!(record.output_schema.is_some());
+        let annotations = record.annotations.as_ref().expect("annotations set");
+        assert_eq!(annotations.read_only_hint, Some(false));
+        assert_eq!(
+            annotations.destructive_hint,
+            Some(true),
+            "safety_sensitive surfaces as the destructive hint"
+        );
+        let resume = server
+            .get_tool("recorder.resume_session")
+            .expect("task tools are listed");
+        let annotations = resume.annotations.as_ref().expect("annotations set");
+        assert_eq!(
+            annotations.destructive_hint, None,
+            "an unmarked action stays unhinted"
+        );
+    }
+
+    #[test]
+    fn the_tasks_capability_tracks_the_bundle() {
+        assert!(built_task_server().capabilities().supports_tasks());
+        assert!(!built_server().capabilities().supports_tasks());
+    }
+
+    #[tokio::test]
+    async fn a_client_without_the_tasks_capability_never_materializes_a_task() {
+        let server = built_task_server();
+        let error = server
+            .start_task("recorder.resume_session", JsonObject::new(), false)
+            .expect_err("the capability is required");
+        assert_eq!(error.code, ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY);
+        assert_eq!(
+            server.state.manager.running_task_count(),
+            0,
+            "no orphaned goal may run for a client that cannot poll it"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_goal_arguments_never_materialize_a_task() {
+        let server = built_task_server();
+        let error = server
+            .start_task(
+                "recorder.record_episode",
+                arguments(json!({ "episode_name": 7 })),
+                true,
+            )
+            .expect_err("the goal fields fail the derived schema");
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        assert_eq!(server.state.manager.running_task_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_task_completes_with_the_bridge_result() {
+        let server = built_task_server();
+        let created = server
+            .start_task("recorder.resume_session", JsonObject::new(), true)
+            .expect("the task starts");
+        assert_eq!(
+            created.task.ttl_ms,
+            Some(2000),
+            "the whole-goal deadline is the advertised TTL"
+        );
+        let task = settled(&server, &created.task.task_id).await;
+        let rmcp::model::TaskPayload::Completed { result } = task.payload else {
+            panic!("expected a completed task, got {:?}", task.payload);
+        };
+        assert_eq!(result["structuredContent"], json!({ "resumed": true }));
+    }
+
+    #[tokio::test]
+    async fn feedback_reports_as_the_status_message_and_cancel_settles_cancelled() {
+        let server = ExposureServer::builder(task_bundle())
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_task("recorder.record_episode", record_handler)
+            .with_task(
+                "recorder.resume_session",
+                |_input: Value, context: crate::tasks::ActionContext| async move {
+                    context.report_feedback("resuming at frame 42");
+                    context.cancel_requested().await;
+                    Err(ActionExit::Cancelled)
+                },
+            )
+            .build()
+            .expect("builds");
+        let created = server
+            .start_task("recorder.resume_session", JsonObject::new(), true)
+            .expect("the task starts");
+        let task_id = created.task.task_id;
+        let task = task_matching(&server, &task_id, "the feedback status message", |task| {
+            task.task.status_message.as_deref() == Some("resuming at frame 42")
+        })
+        .await;
+        assert!(!task.status().is_terminal());
+
+        server.state.manager.cancel_task(&task_id).expect("cancels");
+        let task = settled(&server, &task_id).await;
+        assert_eq!(task.status(), rmcp::model::TaskStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn a_failed_bridge_settles_the_task_as_failed() {
+        let server = ExposureServer::builder(task_bundle())
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_task("recorder.record_episode", record_handler)
+            .with_task(
+                "recorder.resume_session",
+                |_input: Value, _context: crate::tasks::ActionContext| async move {
+                    Err::<Value, _>(ActionExit::Failed(
+                        "the provider abandoned the goal".to_string(),
+                    ))
+                },
+            )
+            .build()
+            .expect("builds");
+        let created = server
+            .start_task("recorder.resume_session", JsonObject::new(), true)
+            .expect("the task starts");
+        let task = settled(&server, &created.task.task_id).await;
+        let rmcp::model::TaskPayload::Failed { error } = task.payload else {
+            panic!("expected a failed task, got {:?}", task.payload);
+        };
+        assert!(
+            error["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("the provider abandoned the goal")),
+            "got {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn confirmation_parks_the_task_and_accept_releases_the_goal() {
+        let goal_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = Arc::clone(&goal_ran);
+        let server = ExposureServer::builder(task_bundle())
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_task(
+                "recorder.record_episode",
+                move |_input: Value, _context: crate::tasks::ActionContext| {
+                    let goal_ran = Arc::clone(&observed);
+                    async move {
+                        goal_ran.store(true, Ordering::SeqCst);
+                        Ok(json!({ "frames": 120 }))
+                    }
+                },
+            )
+            .with_task("recorder.resume_session", resume_handler)
+            .build()
+            .expect("builds");
+        let created = server
+            .start_task(
+                "recorder.record_episode",
+                arguments(json!({ "episode_name": "pick_and_place" })),
+                true,
+            )
+            .expect("the task starts");
+        let task_id = created.task.task_id;
+
+        let task = task_matching(&server, &task_id, "input_required", |task| {
+            task.status() == rmcp::model::TaskStatus::InputRequired
+        })
+        .await;
+        let rmcp::model::TaskPayload::InputRequired { input_requests } = task.payload else {
+            panic!("expected input_required, got {:?}", task.payload);
+        };
+        assert!(
+            input_requests.contains_key(CONFIRMATION_INPUT_KEY),
+            "the confirmation elicitation is outstanding"
+        );
+        assert!(
+            !goal_ran.load(Ordering::SeqCst),
+            "the goal must not run before the confirmation"
+        );
+
+        server
+            .state
+            .manager
+            .update_task(
+                &task_id,
+                [(
+                    CONFIRMATION_INPUT_KEY.to_string(),
+                    json!({ "action": "accept" }),
+                )],
+            )
+            .expect("the confirmation is delivered");
+        let task = settled(&server, &task_id).await;
+        assert_eq!(task.status(), rmcp::model::TaskStatus::Completed);
+        assert!(goal_ran.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_declined_confirmation_cancels_the_task_without_running_the_goal() {
+        let goal_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = Arc::clone(&goal_ran);
+        let server = ExposureServer::builder(task_bundle())
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_task(
+                "recorder.record_episode",
+                move |_input: Value, _context: crate::tasks::ActionContext| {
+                    let goal_ran = Arc::clone(&observed);
+                    async move {
+                        goal_ran.store(true, Ordering::SeqCst);
+                        Ok(json!({ "frames": 120 }))
+                    }
+                },
+            )
+            .with_task("recorder.resume_session", resume_handler)
+            .build()
+            .expect("builds");
+        let created = server
+            .start_task(
+                "recorder.record_episode",
+                arguments(json!({ "episode_name": "pick_and_place" })),
+                true,
+            )
+            .expect("the task starts");
+        let task_id = created.task.task_id;
+        task_matching(&server, &task_id, "input_required", |task| {
+            task.status() == rmcp::model::TaskStatus::InputRequired
+        })
+        .await;
+
+        server
+            .state
+            .manager
+            .update_task(
+                &task_id,
+                [(
+                    CONFIRMATION_INPUT_KEY.to_string(),
+                    json!({ "action": "decline" }),
+                )],
+            )
+            .expect("the response is delivered");
+        let task = settled(&server, &task_id).await;
+        assert_eq!(task.status(), rmcp::model::TaskStatus::Cancelled);
+        assert!(
+            !goal_ran.load(Ordering::SeqCst),
+            "a declined goal never reaches the provider"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_deadline_fails_the_task_with_a_descriptive_error() {
+        let server = ExposureServer::builder(task_bundle())
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_task("recorder.record_episode", record_handler)
+            .with_task(
+                "recorder.resume_session",
+                |_input: Value, _context: crate::tasks::ActionContext| async move {
+                    std::future::pending::<Result<Value, ActionExit>>().await
+                },
+            )
+            .build()
+            .expect("builds");
+        let created = server
+            .start_task("recorder.resume_session", JsonObject::new(), true)
+            .expect("the task starts");
+        // Paused time: this yields to the spawned operation (registering
+        // its 2000 ms deadline timer), then auto-advances past it.
+        tokio::time::sleep(Duration::from_millis(2001)).await;
+        let task = server
+            .state
+            .manager
+            .get_task(&created.task.task_id)
+            .expect("task exists");
+        let rmcp::model::TaskPayload::Failed { error } = task.payload else {
+            panic!("expected a failed task, got {:?}", task.payload);
+        };
+        assert!(
+            error["message"].as_str().is_some_and(|message| {
+                message.contains("deadline exceeded") && message.contains("2000 ms")
+            }),
+            "got {error:?}"
+        );
     }
 
     #[test]
