@@ -41,6 +41,14 @@ pub const MCP_HTTP_PATH: &str = "/mcp";
 /// long as they keep the connection.
 const CATALOG_TTL_MS: u64 = 3_600_000;
 
+/// Grace period the advertised task TTL carries on top of the exposure's
+/// whole-goal deadline. The runtime fails an overrunning goal itself, with a
+/// message naming the deadline; the manager's TTL sweep fires at
+/// `created + ttl` and aborts the operation with a generic expiry instead, so
+/// the two must not coincide. The task stays observable for a further TTL
+/// window past that, which is what a poller reads the terminal state from.
+const TASK_TTL_GRACE_MS: u64 = 1_000;
+
 /// Capacity of the resource-updated event channel; a listener lagging this
 /// far behind skips to the newest events, which for latest-snapshot
 /// semantics loses nothing that a fresh read would not recover.
@@ -479,11 +487,12 @@ impl ExposureServer {
 
     /// Materializes the MCP task behind a task-backed tool call.
     ///
-    /// The goal fields are validated before anything is created, and a
-    /// client that did not declare the tasks extension capability is
-    /// refused before a task exists: per the design, such a client never
-    /// receives a task handle, and refusing early also means no orphaned
-    /// goal ever runs for a client that could not poll it.
+    /// A client that did not declare the tasks extension capability is
+    /// refused first: per the design, such a client never receives a task
+    /// handle, and the capability, not its arguments, is what it has to fix.
+    /// The goal fields are validated next, so neither invalid fields nor a
+    /// goal orphaned by a client that could not poll it ever materializes a
+    /// task.
     fn start_task(
         &self,
         name: &str,
@@ -496,18 +505,24 @@ impl ExposureServer {
                 None,
             ));
         };
-        let input = validated_input(name, &task.validator, arguments)?;
         if !client_declared_tasks {
             return Err(McpError::missing_required_client_capability(
                 ClientCapabilities::builder().enable_tasks().build(),
             ));
         }
+        let input = validated_input(name, &task.validator, arguments)?;
 
         let task = Arc::clone(task);
-        // The exposure's whole-goal deadline doubles as the task TTL the
-        // client sees: the server may discard the task once it has been
-        // failed for a full deadline window.
-        let options = TaskOptions::new().with_ttl_ms(task.entry.deadline_ms.get());
+        // The advertised TTL is the whole-goal deadline plus a grace window:
+        // the manager's own TTL sweep is a hard stop that aborts the
+        // operation and reports a generic expiry, so it has to land after
+        // the deadline this runtime enforces, never race it.
+        let options = TaskOptions::new().with_ttl_ms(
+            task.entry
+                .deadline_ms
+                .get()
+                .saturating_add(TASK_TTL_GRACE_MS),
+        );
         let seed = self.state.manager.spawn(options, move |context| {
             Box::pin(run_task_operation(task, input, context))
         });
@@ -1035,6 +1050,17 @@ mod tests {
             0,
             "no orphaned goal may run for a client that cannot poll it"
         );
+
+        // The capability is the client's real blocker, so it is reported
+        // ahead of anything its arguments could be told about.
+        let error = server
+            .start_task(
+                "recorder.record_episode",
+                arguments(json!({ "episode_name": 7 })),
+                false,
+            )
+            .expect_err("the capability is required");
+        assert_eq!(error.code, ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY);
     }
 
     #[tokio::test]
@@ -1059,8 +1085,8 @@ mod tests {
             .expect("the task starts");
         assert_eq!(
             created.task.ttl_ms,
-            Some(2000),
-            "the whole-goal deadline is the advertised TTL"
+            Some(2000 + TASK_TTL_GRACE_MS),
+            "the advertised TTL clears the 2000 ms whole-goal deadline"
         );
         let task = settled(&server, &created.task.task_id).await;
         let rmcp::model::TaskPayload::Completed { result } = task.payload else {

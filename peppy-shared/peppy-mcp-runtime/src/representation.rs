@@ -166,7 +166,14 @@ fn pixels_as_rgb8(
     width: u32,
     height: u32,
 ) -> Result<RgbImage, PublishError> {
-    let expected = width as usize * height as usize * 3;
+    // Declared dimensions are arbitrary `u32`s, so the RGB8 buffer size they
+    // ask for can exceed `usize`; that is a bad frame, not an overflow.
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| PublishError::BadFrame {
+            detail: format!("{width}x{height} {encoding} does not fit in memory"),
+        })?;
     match encoding {
         "rgb8" => {}
         "bgr8" => bytes.chunks_exact_mut(3).for_each(|pixel| pixel.swap(0, 2)),
@@ -393,6 +400,22 @@ mod tests {
         });
         let error = apply_topic_policies(&jpeg_policies(None, None), &mut value)
             .expect_err("3 bytes are not a 4x4 frame");
+        assert!(
+            matches!(error, PublishError::BadFrame { .. }),
+            "got {error:?}"
+        );
+    }
+
+    #[test]
+    fn frames_whose_dimensions_overflow_the_buffer_size_are_refused() {
+        let mut value = json!({
+            "frame": BASE64.encode([1u8, 2, 3]),
+            "encoding": "rgb8",
+            "width": u32::MAX,
+            "height": u32::MAX,
+        });
+        let error = apply_topic_policies(&jpeg_policies(None, None), &mut value)
+            .expect_err("the RGB8 buffer those dimensions ask for exceeds usize");
         assert!(
             matches!(error, PublishError::BadFrame { .. }),
             "got {error:?}"

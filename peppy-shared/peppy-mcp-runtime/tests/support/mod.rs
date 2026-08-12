@@ -163,6 +163,21 @@ pub struct Endpoint {
     pub server: ExposureServer,
     pub nanos: Arc<AtomicU64>,
     pub shutdown: tokio_util::sync::CancellationToken,
+    served: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+impl Endpoint {
+    /// Cancels the endpoint and settles the serve task. Ending a test this
+    /// way is what turns a serve failure into a named failure here, rather
+    /// than into whatever timed out downstream of it.
+    pub async fn stop(self) {
+        self.shutdown.cancel();
+        tokio::time::timeout(GUARD, self.served)
+            .await
+            .expect("the serve task ends once the token is cancelled")
+            .expect("the serve task does not panic")
+            .expect("serving the endpoint succeeds");
+    }
 }
 
 /// Serves the full loopback bundle: two tool handlers and the
@@ -237,13 +252,14 @@ async fn serve(server: ExposureServer, nanos: Arc<AtomicU64>) -> Endpoint {
         .local_addr()
         .expect("bound listener has an address");
     let shutdown = tokio_util::sync::CancellationToken::new();
-    tokio::spawn(server.clone().serve(listener, shutdown.clone()));
+    let served = tokio::spawn(server.clone().serve(listener, shutdown.clone()));
 
     Endpoint {
         url: format!("http://{address}{MCP_HTTP_PATH}"),
         server,
         nanos,
         shutdown,
+        served,
     }
 }
 

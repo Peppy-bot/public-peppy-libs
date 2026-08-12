@@ -42,5 +42,5 @@ pub use clock::Clock;
 pub use error::{BuildError, PublishError, ToolCallError};
 pub use peppy_mcp_catalog as catalog;
 pub use server::{ExposureServer, ExposureServerBuilder, MCP_HTTP_PATH, ToolHandler};
-pub use state::ResourceIngest;
+pub use state::{AdmitToken, ResourceIngest};
 pub use tasks::{ActionContext, ActionExit, TaskHandler};

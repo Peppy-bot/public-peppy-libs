@@ -43,7 +43,10 @@ impl fmt::Display for BuildError {
                 write!(f, "task `{name}` has no registered handler")
             }
             Self::InvalidInputSchema { name, error } => {
-                write!(f, "tool `{name}` input schema does not compile: {error}")
+                write!(
+                    f,
+                    "catalog entry `{name}` input schema does not compile: {error}"
+                )
             }
             Self::DuplicateName { name } => {
                 write!(f, "catalog name `{name}` appears more than once")

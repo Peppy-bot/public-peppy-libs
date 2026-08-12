@@ -64,12 +64,38 @@ pub enum OversizePolicy {
 /// schema and publish it in the declared codec. Frames whose encoding
 /// already matches the codec pass through without transcoding.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawImageRepresentation")]
 pub struct ImageRepresentation {
     pub image: ImageCodec,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub quality: Option<JpegQuality>,
     pub fields: ImageFieldMap,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawImageRepresentation {
+    image: ImageCodec,
+    #[serde(default)]
+    quality: Option<JpegQuality>,
+    fields: ImageFieldMap,
+}
+
+impl TryFrom<RawImageRepresentation> for ImageRepresentation {
+    type Error = String;
+
+    /// `raw` publishes frame bytes untouched, so there is no encode step a
+    /// quality could apply to; accepting one would silently ignore it.
+    fn try_from(raw: RawImageRepresentation) -> Result<Self, String> {
+        if raw.quality.is_some() && raw.image != ImageCodec::Jpeg {
+            return Err("`quality` applies only to the `jpeg` image representation".to_string());
+        }
+        Ok(Self {
+            image: raw.image,
+            quality: raw.quality,
+            fields: raw.fields,
+        })
+    }
 }
 
 /// The published encoding of an image resource. `jpeg` transcodes
@@ -210,6 +236,30 @@ mod tests {
                 "unexpected error for {raw}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn image_representation_accepts_quality_only_for_jpeg() {
+        let fields =
+            r#""fields": {"data": "frame", "encoding": "encoding", "width": "w", "height": "h"}"#;
+        let jpeg: ImageRepresentation =
+            serde_json::from_str(&format!(r#"{{"image": "jpeg", "quality": 80, {fields}}}"#))
+                .expect("jpeg carries a quality");
+        assert_eq!(jpeg.quality.map(JpegQuality::get), Some(80));
+        let raw: ImageRepresentation =
+            serde_json::from_str(&format!(r#"{{"image": "raw", {fields}}}"#))
+                .expect("raw without a quality is the normal raw representation");
+        assert_eq!(raw.quality, None);
+
+        let error = serde_json::from_str::<ImageRepresentation>(&format!(
+            r#"{{"image": "raw", "quality": 80, {fields}}}"#
+        ))
+        .expect_err("a raw representation has no encode step to apply a quality to")
+        .to_string();
+        assert!(
+            error.contains("`quality` applies only to the `jpeg`"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

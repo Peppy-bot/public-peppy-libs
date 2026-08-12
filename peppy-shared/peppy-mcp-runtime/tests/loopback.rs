@@ -255,7 +255,7 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
     assert!(error.message.contains("stale"), "got {}", error.message);
     late_client.cancel().await.expect("client disconnects");
 
-    endpoint.shutdown.cancel();
+    endpoint.stop().await;
 }
 
 /// Polls `tasks/get` until the task satisfies `accept`; the wait is bounded
@@ -296,8 +296,9 @@ async fn start_record_episode(client: &Client, episode_name: &str) -> String {
     assert_eq!(created.task.status, TaskStatus::Working);
     assert_eq!(
         created.task.ttl_ms,
-        Some(600000),
-        "the whole-goal deadline is the advertised TTL"
+        Some(601000),
+        "the advertised TTL clears the 600000 ms whole-goal deadline, so the runtime's own \
+         deadline error wins over the SDK's TTL sweep"
     );
     created.task.task_id
 }
@@ -415,5 +416,5 @@ async fn a_real_client_drives_action_backed_tasks() {
     assert_eq!(cancelled.status(), TaskStatus::Cancelled);
     reconnected.cancel().await.expect("client disconnects");
 
-    endpoint.shutdown.cancel();
+    endpoint.stop().await;
 }

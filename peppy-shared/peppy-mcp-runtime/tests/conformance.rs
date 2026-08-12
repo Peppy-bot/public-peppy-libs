@@ -76,7 +76,7 @@ async fn discovery_advertises_versions_capabilities_and_caching() {
     assert_eq!(negotiated.protocol_version, ProtocolVersion::V_2026_07_28);
 
     client.cancel().await.expect("client disconnects");
-    endpoint.shutdown.cancel();
+    endpoint.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -118,7 +118,7 @@ async fn an_initialize_client_negotiates_2026_07_28_but_gets_no_legacy_session()
     );
 
     client.cancel().await.expect("client disconnects");
-    endpoint.shutdown.cancel();
+    endpoint.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -146,7 +146,7 @@ async fn a_client_preferring_only_older_versions_cannot_connect() {
     };
     assert_eq!(server_supported, vec![ProtocolVersion::V_2026_07_28]);
 
-    endpoint.shutdown.cancel();
+    endpoint.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -188,7 +188,7 @@ async fn tasks_methods_on_a_task_less_exposure_are_method_not_found() {
     assert_eq!(error.code, ErrorCode::METHOD_NOT_FOUND);
 
     client.cancel().await.expect("client disconnects");
-    endpoint.shutdown.cancel();
+    endpoint.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -221,7 +221,7 @@ async fn task_methods_with_an_unknown_id_are_invalid_params() {
     assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
 
     client.cancel().await.expect("client disconnects");
-    endpoint.shutdown.cancel();
+    endpoint.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -292,5 +292,5 @@ async fn subscription_filters_narrow_to_capabilities_and_scope_notifications() {
     subscription.cancel().await.expect("subscription cancels");
 
     client.cancel().await.expect("client disconnects");
-    endpoint.shutdown.cancel();
+    endpoint.stop().await;
 }
