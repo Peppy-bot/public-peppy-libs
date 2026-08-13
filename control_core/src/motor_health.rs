@@ -255,7 +255,9 @@ impl Latch {
 /// averaged threshold can engage on the first tick. The instantaneous peak
 /// channel and the condition checks are deliberately not averaged, so a
 /// first sample already at peak, or already faulted, reports immediately.
-#[derive(Debug, Clone, Copy)]
+///
+/// Clone is for deliberate snapshots of the latch state.
+#[derive(Debug, Clone)]
 pub struct MotorHealthFilter {
     ratings: Ratings,
     fraction_ewma: f64,
@@ -343,20 +345,18 @@ impl MotorHealthFilter {
             self.ratings.peak_nm,
             self.ratings.peak_nm * PEAK_RELEASE,
         );
-        let sustained_crit =
+        // Holds only what the average earned: the peak is its own channel,
+        // and the two combine in `verdict`.
+        self.torque_crit =
             self.torque_crit
                 .updated(self.fraction_ewma, TORQUE_CRIT_ON, TORQUE_CRIT_OFF);
-        // A peak engages the critical latch on its own; the sustained
-        // channel holds it independently, so the peak releasing cannot pull
-        // a genuinely sustained overload out of critical.
-        self.torque_crit = Latch(sustained_crit.engaged() || self.peak.engaged());
         // The cause names the channel that engaged critical. A peak arriving
         // while the sustained channel is already critical does not relabel a
         // minute-long overload as a transient, and a peak that is the only
         // critical-grade evidence is named as the peak even while the
         // sustained average sits in the warning band: the two call for
         // opposite operator actions.
-        self.crit_from_peak = self.peak.engaged() && !sustained_crit.engaged();
+        self.crit_from_peak = self.peak.engaged() && !self.torque_crit.engaged();
 
         self.driver_warn = self.driver_warn.updated(
             sample.driver_temp.0,
@@ -419,9 +419,7 @@ impl MotorHealthFilter {
         } else {
             HealthCause::SustainedTorque
         };
-        let critical = self
-            .torque_crit
-            .engaged()
+        let critical = (self.torque_crit.engaged() || self.peak.engaged())
             .then_some(over_torque)
             .or_else(|| {
                 self.driver_crit
@@ -525,7 +523,10 @@ pub fn severity_of(level: HealthLevel) -> u8 {
 
 /// The operator-facing one-liner for a report's condition, naming the
 /// measurement that drove it.
-pub fn describe(report: &MotorHealth) -> String {
+/// Private to the raiser: every raised alert is non-nominal, and a
+/// non-nominal verdict always carries its cause, so the expect below is an
+/// invariant.
+fn describe(report: &MotorHealth) -> String {
     match report.cause.expect("only conditions are described") {
         HealthCause::SustainedTorque => format!(
             "holding {:.0}% of rated torque",
@@ -865,6 +866,20 @@ mod tests {
         let spiked = f.step(sample(PEAK), DT);
         assert_eq!(spiked.level, HealthLevel::Critical);
         assert_eq!(spiked.cause, Some(HealthCause::PeakTorque));
+    }
+
+    #[test]
+    fn a_released_peak_does_not_leave_a_warning_band_average_critical() {
+        // After the peak releases, the level is whatever the sustained
+        // average earns on its own: here the warning band, named as the
+        // sustained cause.
+        let mut f = filter();
+        let warned = run(&mut f, sample(1.3 * RATED), 6.5);
+        assert_eq!(warned.level, HealthLevel::Warning);
+        assert_eq!(f.step(sample(PEAK), DT).level, HealthLevel::Critical);
+        let released = f.step(sample(0.5 * PEAK), DT);
+        assert_eq!(released.level, HealthLevel::Warning);
+        assert_eq!(released.cause, Some(HealthCause::SustainedTorque));
     }
 
     #[test]
