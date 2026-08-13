@@ -29,7 +29,7 @@ jsonschema = { version = "0.49", default-features = false }
 # JPEG transcoding for image-representation topic snapshots; jpeg is the only
 # codec the representation policy emits.
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
-base64 = "0.22"
+base64 = "0.23"
 tracing = "0.1"
 
 [dev-dependencies]
