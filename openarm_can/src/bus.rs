@@ -280,6 +280,13 @@ impl MotorBus {
     /// at full rate with no error flag while ignoring commands, which is
     /// indistinguishable from a healthy motor until someone watches the
     /// metal, so the acknowledgment has to be read back rather than assumed.
+    ///
+    /// Confirmation is causal under two bus invariants this crate is built
+    /// on: this process is the interface's sole commander (the nodes hold
+    /// per-component instance locks), and a motor replies within
+    /// milliseconds or not at all. The wire carries no correlation token,
+    /// so those invariants, the drain, and the settle are what tie each
+    /// collected frame to this attempt.
     pub fn enable_and_confirm(
         &mut self,
         attempts: NonZeroU32,
@@ -339,6 +346,10 @@ impl MotorBus {
     /// Read one register from every motor, in slot order: `None` where a
     /// motor did not answer inside [`REPLY_WINDOW`]. Read-only, so it is
     /// safe on motors that are disabled, faulted, or that must not move.
+    /// Replies are matched by reply id and register id, the whole
+    /// correlation the wire offers; freshness rests on the same sole
+    /// commander and prompt-reply invariants as
+    /// [`enable_and_confirm`](Self::enable_and_confirm).
     pub fn read_param(
         &mut self,
         param: MotorParam,
