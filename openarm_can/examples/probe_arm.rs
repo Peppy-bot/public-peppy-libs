@@ -67,9 +67,13 @@ fn main() {
     let torque_max = read(&mut arm, MotorParam::TorqueMax);
 
     // A state request is not a command: it asks the motor to report itself.
-    if let Err(e) = arm.refresh_state(RECV_TIMEOUT_US) {
-        eprintln!("state read: {e}");
-    }
+    let state_read_ok = match arm.refresh_state(RECV_TIMEOUT_US) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("state read: {e}");
+            false
+        }
+    };
     let state = arm.get_state();
 
     println!("{interface}");
@@ -211,7 +215,7 @@ fn main() {
         println!("\n  UNREAD REGISTERS (nothing was verified for these):");
         println!("    {}", unread.join(", "));
     }
-    if silent.is_empty() && mismatched.is_empty() && unread.is_empty() {
+    if state_read_ok && silent.is_empty() && mismatched.is_empty() && unread.is_empty() {
         println!("\n  every motor answered, on the expected decode scales");
         if misconfigured.is_empty() {
             return;

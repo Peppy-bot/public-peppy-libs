@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use openarm_can::{ArmCan, GripperCan, JointVec, Mit, PosForce, v10, v20};
 use socketcan::id::FdFlags;
-use socketcan::{CanAnyFrame, CanFdSocket, EmbeddedFrame, Frame, Socket};
+use socketcan::{CanAnyFrame, CanFdSocket, CanFrame, EmbeddedFrame, Frame, Socket, StandardId};
 
 /// All tests share one bus, so they must not interleave traffic.
 static BUS_LOCK: Mutex<()> = Mutex::new(());
@@ -149,4 +149,33 @@ fn gripper_mit_sweep_matches_ffi_fixture() {
 #[test]
 fn gripper_pos_force_sweep_matches_ffi_fixture() {
     replay_against_fixture("gripper_pos_force.txt", drive_gripper_pos_force_sweep);
+}
+
+#[test]
+fn a_queued_state_frame_does_not_satisfy_a_refresh_pass() {
+    // A frame already in the socket buffer predates the solicitation, so
+    // the pass must not count it: on a bus where no motor answers, the
+    // refreshed state stays unreported however much stale traffic was
+    // queued.
+    let Some(iface) = test_iface() else {
+        eprintln!("skipped: OPENARM_CAN_TEST_IFACE not set");
+        return;
+    };
+    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut arm = ArmCan::open(&iface, true).expect("open arm");
+    let peer = CanFdSocket::open(&iface).expect("open peer");
+    // A well-formed j1 state frame claiming Enabled, mid-scale readings.
+    let stale = CanFrame::new(
+        StandardId::new(openarm_can::ARM_RECV_IDS[0] as u16).expect("standard id"),
+        &[0x11, 0x7F, 0xFF, 0x7F, 0xF7, 0xFF, 0x28, 0x23],
+    )
+    .expect("frame");
+    peer.write_frame(&stale).expect("inject stale frame");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    arm.refresh_state(2000).expect("refresh");
+    assert_eq!(
+        arm.get_state().statuses[0],
+        openarm_can::MotorStatus::Unreported,
+        "a frame from before the solicitation is not a reply to it"
+    );
 }

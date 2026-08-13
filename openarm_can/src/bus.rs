@@ -321,6 +321,10 @@ impl MotorBus {
     /// silence pass, so the cache reflects a whole fresh pass rather than
     /// whichever motors answered first.
     pub fn refresh_state(&mut self, recv_timeout_us: u32) -> Result<()> {
+        // Already-queued frames predate the solicitation below and are not
+        // replies to it; they are swept out first, so the pass holds only
+        // frames the refresh produced.
+        self.drain(0)?;
         self.refresh_all()?;
         begin_decode_pass(&mut self.slots);
         let deadline = Instant::now() + REPLY_WINDOW;
@@ -352,10 +356,14 @@ impl MotorBus {
 
         let mut values: Vec<Option<f64>> = vec![None; send_ids.len()];
         let deadline = Instant::now() + REPLY_WINDOW;
-        let mut timeout = Duration::from_micros(recv_timeout_us.into());
+        let receive_timeout = Duration::from_micros(recv_timeout_us.into());
+        let mut timeout = receive_timeout;
         while values.iter().any(Option::is_none) && Instant::now() < deadline {
-            let Some(frame) = self.socket.recv(timeout)? else {
-                timeout = Duration::from_micros(recv_timeout_us.into());
+            // The deadline bounds every wait, the gaps between frames
+            // included, and this loop holds the bus lock.
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(frame) = self.socket.recv(timeout.min(remaining))? else {
+                timeout = receive_timeout;
                 continue;
             };
             timeout = Duration::ZERO;
