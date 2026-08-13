@@ -4,6 +4,7 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
+control_core = { path = "../control_core" }
 nix = { version = "0.29", features = ["poll", "signal", "time"] }
 socketcan = "3"
 tracing = "0.1"

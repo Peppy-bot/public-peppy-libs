@@ -16,10 +16,19 @@ mod bus;
 mod protocol;
 
 use std::marker::PhantomData;
+use std::num::NonZeroU32;
+use std::time::Duration;
 
 use bus::{MotorBus, MotorSlot};
-pub use protocol::MotorType;
 use protocol::TorquePu;
+pub use protocol::{EffectiveRatings, FaultKind, MotorParam, MotorStatus, MotorType};
+
+/// Enable attempts before bring-up refuses readiness, for
+/// [`ArmCan::enable_and_confirm`] and its gripper counterpart. A one-shot
+/// enable can silently fail to take (seen on hardware: a motor answering
+/// every poll while ignoring commands); the retries cover an enable frame
+/// the motor missed or dropped.
+pub const ENABLE_ATTEMPTS: std::num::NonZeroU32 = std::num::NonZeroU32::new(3).expect("non-zero");
 
 /// Degrees of freedom of the arm. Both generations are 7-DOF SRS.
 pub const ARM_DOF: usize = 7;
@@ -79,20 +88,37 @@ pub mod v20 {
 /// 2000us after enable and parameter round-trips).
 const CTRL_MODE_ECHO_TIMEOUT_US: u32 = 2000;
 
-/// State of the gripper motor from the most recent `recv_all`.
+/// State of the gripper motor from the most recent `recv_all`. Temperatures
+/// are raw degrees C; the status is [`MotorStatus::Unreported`] until the
+/// first state frame decodes. The same DM motor as every arm joint, with the
+/// same fault behaviour: a fault drops it out of Enable Mode mid-grasp.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GripperState {
     pub position: f64,
     pub velocity: f64,
     pub torque: f64,
+    pub status: MotorStatus,
+    pub temp_mos_c: f64,
+    pub temp_rotor_c: f64,
+    /// Receive passes since this motor's last decoded state frame.
+    pub passes_since_state: u32,
 }
 
-/// State of all arm joints from the most recent `recv_all`.
+/// State of all arm joints from the most recent `recv_all`. Temperatures are
+/// raw degrees C; each status is [`MotorStatus::Unreported`] until that
+/// joint's first state frame decodes.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ArmState {
     pub positions: JointVec,
     pub velocities: JointVec,
     pub torques: JointVec,
+    pub statuses: [MotorStatus; ARM_DOF],
+    pub temps_mos_c: JointVec,
+    pub temps_rotor_c: JointVec,
+    /// Per joint, completed `recv_all` passes since that motor's last state
+    /// frame; the other fields are cached from that frame, so a growing
+    /// count means they are stale, not current.
+    pub passes_since_state: [u32; ARM_DOF],
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -110,6 +136,55 @@ pub enum CanError {
     TorqueOutOfRange(f64),
     #[error("command value must be finite, got {0}")]
     NonFiniteCommand(f64),
+}
+
+/// Motors that did not acknowledge an enable, split by what the bus showed.
+/// A refusal means the motor is talking but not taking commands; silence
+/// means it is not talking at all (unpowered, unplugged, wrong bus).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Unconfirmed {
+    pub refused: Vec<u32>,
+    pub silent: Vec<u32>,
+}
+
+impl Unconfirmed {
+    pub fn is_empty(&self) -> bool {
+        self.refused.is_empty() && self.silent.is_empty()
+    }
+}
+
+impl std::fmt::Display for Unconfirmed {
+    /// Names both groups by send id, listing only the non-empty ones so the
+    /// common single-fault case reads as one clause.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ids = |group: &[u32]| {
+            group
+                .iter()
+                .map(|id| format!("{id:#04x}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match (self.refused.is_empty(), self.silent.is_empty()) {
+            (true, true) => write!(f, "every motor confirmed enable"),
+            (false, true) => write!(f, "motors [{}] refused enable", ids(&self.refused)),
+            (true, false) => write!(f, "motors [{}] are silent", ids(&self.silent)),
+            (false, false) => write!(
+                f,
+                "motors [{}] refused enable and [{}] are silent",
+                ids(&self.refused),
+                ids(&self.silent)
+            ),
+        }
+    }
+}
+
+/// Why enabling failed: the bus itself, or motors that never acknowledged.
+#[derive(Debug, thiserror::Error)]
+pub enum EnableFailure {
+    #[error(transparent)]
+    Can(#[from] CanError),
+    #[error("{0}")]
+    Unconfirmed(Unconfirmed),
 }
 
 pub type Result<T> = std::result::Result<T, CanError>;
@@ -148,10 +223,42 @@ impl ArmCan {
         self.0.drain(first_timeout_us)
     }
 
+    /// Enable every motor and confirm each acknowledges it, retrying the
+    /// enable for stragglers and reporting the ones that never confirm.
+    /// Blocking; see [`MotorBus::enable_and_confirm`].
+    pub fn enable_and_confirm(
+        &mut self,
+        attempts: NonZeroU32,
+        settle: Duration,
+        recv_timeout_us: u32,
+    ) -> std::result::Result<(), EnableFailure> {
+        self.0.enable_and_confirm(attempts, settle, recv_timeout_us)
+    }
+
     /// Requests a state frame from every motor without commanding it; follow
     /// with [`recv_all`](Self::recv_all) to decode the replies.
     pub fn refresh_all(&mut self) -> Result<()> {
         self.0.refresh_all()
+    }
+
+    /// Solicits a state frame from every joint and collects the replies, so
+    /// [`get_state`](Self::get_state) reflects one fresh pass rather than
+    /// whichever motors happened to answer first. Read-only.
+    pub fn refresh_state(&mut self, recv_timeout_us: u32) -> Result<()> {
+        self.0.refresh_state(recv_timeout_us)
+    }
+
+    /// Reads one register from every joint, j1..j7, `None` where a motor did
+    /// not answer. Read-only: safe on a disabled, faulted, or immobile arm.
+    pub fn read_param(
+        &mut self,
+        param: MotorParam,
+        recv_timeout_us: u32,
+    ) -> Result<[Option<f64>; ARM_DOF]> {
+        let values = self.0.read_param(param, recv_timeout_us)?;
+        Ok(values
+            .try_into()
+            .expect("open() registers exactly ARM_DOF slots"))
     }
 
     /// MIT-mode command to all joints: PD to `q`/`dq` plus feedforward `tau`.
@@ -177,6 +284,10 @@ impl ArmCan {
             state.positions[i] = motor.position;
             state.velocities[i] = motor.velocity;
             state.torques[i] = motor.torque;
+            state.statuses[i] = motor.status;
+            state.temps_mos_c[i] = motor.temp_mos_c;
+            state.temps_rotor_c[i] = motor.temp_rotor_c;
+            state.passes_since_state[i] = slot.passes_since_state();
         }
         state
     }
@@ -318,6 +429,17 @@ impl<M: Mode> GripperCan<M> {
         self.bus.enable_all()
     }
 
+    /// Re-enable after an unexpected Disabled, rewriting the control mode
+    /// first: opening wrote the mode into motor RAM, so a motor that lost
+    /// power since then is back on its flash default, and enabling it there
+    /// would have it interpret this session's commands under the wrong frame
+    /// layout. The motor mirrors the mode write back on the param id, which
+    /// the state decoder already rejects, so no drain is needed.
+    pub fn reenable(&mut self) -> Result<()> {
+        self.bus.set_control_mode(M::CONTROL_MODE)?;
+        self.bus.enable_all()
+    }
+
     pub fn disable_all(&mut self) -> Result<()> {
         self.bus.disable_all()
     }
@@ -334,6 +456,18 @@ impl<M: Mode> GripperCan<M> {
         self.bus.drain(first_timeout_us)
     }
 
+    /// Enable the motor and confirm it acknowledges, retrying and reporting
+    /// it if it never does. Blocking; see [`MotorBus::enable_and_confirm`].
+    pub fn enable_and_confirm(
+        &mut self,
+        attempts: NonZeroU32,
+        settle: Duration,
+        recv_timeout_us: u32,
+    ) -> std::result::Result<(), EnableFailure> {
+        self.bus
+            .enable_and_confirm(attempts, settle, recv_timeout_us)
+    }
+
     /// Requests a state frame from the motor without commanding it; follow
     /// with [`recv_all`](Self::recv_all) to decode the reply.
     pub fn refresh_all(&mut self) -> Result<()> {
@@ -344,11 +478,16 @@ impl<M: Mode> GripperCan<M> {
     /// [`recv_all`](Self::recv_all). The `torque` field is the measured grip
     /// force feedback.
     pub fn get_state(&self) -> GripperState {
-        let motor = self.bus.slots()[0].state();
+        let slot = &self.bus.slots()[0];
+        let motor = slot.state();
         GripperState {
             position: motor.position,
             velocity: motor.velocity,
             torque: motor.torque,
+            status: motor.status,
+            temp_mos_c: motor.temp_mos_c,
+            temp_rotor_c: motor.temp_rotor_c,
+            passes_since_state: slot.passes_since_state(),
         }
     }
 }
