@@ -9,9 +9,9 @@ use std::fmt;
 /// strict deserializer can reject mixed-up files (e.g. a launcher that claims
 /// to be a node config). Node files are always named `peppy.json5`; launcher
 /// files conventionally use `peppy_launcher.json5` for standalone projects but
-/// may use any `.json5` filename when listed in a repository index. Contract
-/// and pairing files are filename-agnostic and identified solely by their
-/// schema tag. `repository/v1` is the odd one out: it tags a repository's
+/// may use any `.json5` filename when listed in a repository index. Contract,
+/// pairing, and MCP exposure files are filename-agnostic and identified solely
+/// by their schema tag. `repository/v1` is the odd one out: it tags a repository's
 /// `peppy_repository.json5` index, which declares no item of its own and
 /// instead states which identities the repository publishes and where each is
 /// declared.
@@ -25,6 +25,8 @@ pub enum PeppySchema {
     ContractV1,
     #[serde(rename = "pairing/v1")]
     PairingV1,
+    #[serde(rename = "mcp_exposure/v1")]
+    McpExposureV1,
     #[serde(rename = "repository/v1")]
     RepositoryV1,
 }
@@ -36,6 +38,7 @@ impl fmt::Display for PeppySchema {
             PeppySchema::LauncherV1 => "launcher/v1",
             PeppySchema::ContractV1 => "contract/v1",
             PeppySchema::PairingV1 => "pairing/v1",
+            PeppySchema::McpExposureV1 => "mcp_exposure/v1",
             PeppySchema::RepositoryV1 => "repository/v1",
         };
         f.write_str(s)
@@ -71,6 +74,7 @@ mod tests {
         PeppySchema::LauncherV1,
         PeppySchema::ContractV1,
         PeppySchema::PairingV1,
+        PeppySchema::McpExposureV1,
         PeppySchema::RepositoryV1,
     ];
 
