@@ -398,7 +398,9 @@ impl MotorBus {
         if decode == Decode::AsOnePass {
             begin_decode_pass(&mut self.slots);
         }
-        let mut timeout = Duration::from_micros(first_timeout_us.into());
+        // The deadline bounds the first wait exactly as it bounds the drain.
+        let mut timeout = Duration::from_micros(first_timeout_us.into())
+            .min(deadline.saturating_duration_since(Instant::now()));
         while let Some(frame) = self.socket.recv(timeout)? {
             timeout = Duration::ZERO;
             if decode != Decode::Discard {

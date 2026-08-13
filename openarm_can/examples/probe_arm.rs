@@ -192,7 +192,7 @@ fn main() {
         .filter(|&j| effective[j].is_some_and(|e| e.trip_too_low))
         .map(|j| {
             format!(
-                "j{}: cuts out at {:.2} Nm, at or below its {:.1} Nm continuous rating",
+                "j{}: cuts out at {:.2} Nm, too close to its {:.1} Nm continuous rating to warn early",
                 j + 1,
                 effective[j].and_then(|e| e.trip_nm).unwrap_or(f64::NAN),
                 effective[j]
