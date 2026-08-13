@@ -6,6 +6,8 @@
 //!   [`HampelFilter`](filters::HampelFilter)).
 //! - [`minimum_jerk`]: the quintic profile and the duration a velocity budget
 //!   implies for it.
+//! - [`motor_health`]: judging one motor's load, temperature and condition
+//!   against its ratings.
 //! - [`servo`]: the tolerances that decide when a Cartesian goal is reached.
 //! - [`throttle`]: admitting a repeating event at most once per window.
 //!
@@ -20,6 +22,7 @@
 
 pub mod filters;
 pub mod minimum_jerk;
+pub mod motor_health;
 pub mod pacer;
 pub mod servo;
 pub mod throttle;
