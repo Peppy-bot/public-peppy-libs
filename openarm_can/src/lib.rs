@@ -40,8 +40,12 @@ pub type JointVec = [f64; ARM_DOF];
 pub const ARM_MOTOR_TYPES: [MotorType; ARM_DOF] = [
     MotorType::DM8009,
     MotorType::DM8009,
-    MotorType::DM4340,
-    MotorType::DM4340,
+    // j3 and j4 are the 10 rad/s DM4340 variant: on both arms they report
+    // a VelocityMax of 10, and the two variants differ only in that scale.
+    // Decoding them at 8 under-read their measured velocity by 20% and
+    // over-commanded their velocity setpoints by 25%.
+    MotorType::DM4340_48V,
+    MotorType::DM4340_48V,
     MotorType::DM4310,
     MotorType::DM4310,
     MotorType::DM4310,

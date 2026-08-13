@@ -881,7 +881,7 @@ mod trip_tests {
 
     #[test]
     fn a_configured_trip_below_the_datasheet_peak_tightens_it() {
-        // Read from hardware: the DM4340 elbows are configured to trip at
+        // Read from hardware: j3 and j4 are configured to trip at
         // 0.8 of a 28 Nm full scale, which is under their 27 Nm peak, so a
         // peak-based threshold would never fire before the motor cut out.
         let datasheet = MotorType::DM4340.ratings().unwrap();
@@ -1129,6 +1129,39 @@ mod scale_tests {
     }
 
     #[test]
+    fn the_arm_lineup_decodes_at_the_scales_the_hardware_reports() {
+        // Read off both arms with probe_arm: every motor's PositionMax,
+        // VelocityMax and TorqueMax registers against the table this driver
+        // decodes with. j3 and j4 report 10 rad/s, not the 8 of the other
+        // DM4340 variant, and decoding them at 8 silently under-read their
+        // measured velocity by 20% while over-commanding setpoints by 25%.
+        let measured: [(f64, f64, f64); crate::ARM_DOF] = [
+            (12.5, 45.0, 54.0),
+            (12.5, 45.0, 54.0),
+            (12.5, 10.0, 28.0),
+            (12.5, 10.0, 28.0),
+            (12.5, 30.0, 10.0),
+            (12.5, 30.0, 10.0),
+            (12.5, 30.0, 10.0),
+        ];
+        for (joint, (p_max, v_max, t_max)) in measured.iter().enumerate() {
+            let ty = crate::ARM_MOTOR_TYPES[joint];
+            for (param, reported) in [
+                (MotorParam::PositionMax, *p_max),
+                (MotorParam::VelocityMax, *v_max),
+                (MotorParam::TorqueMax, *t_max),
+            ] {
+                assert_eq!(
+                    ty.scale_matches(param, reported),
+                    Some(true),
+                    "j{} {param:?}",
+                    joint + 1
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_scale_register_maps_to_its_own_decode_axis() {
         // The decode table for the DM4310: position +-12.5 rad, velocity
         // +-30 rad/s, torque +-10 Nm. Crossing the axes would corrupt every
@@ -1219,5 +1252,77 @@ mod variant_tests {
         for (joint, ty) in crate::ARM_MOTOR_TYPES.iter().enumerate() {
             assert!(ty.ratings().is_some(), "j{} ({ty:?})", joint + 1);
         }
+    }
+}
+
+/// Differential fixture replay, without a CAN interface.
+///
+/// The frames are built by the same encoder the driver sends, so the whole
+/// arm sweep is checked on every `cargo test` run. The bus-level replay in
+/// `tests/vcan.rs` needs a vcan interface and skips without one; this does
+/// not, so a scale or layout change cannot land against a green suite.
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+    use crate::{ARM_DOF, ARM_MOTOR_TYPES, ARM_SEND_IDS};
+
+    // The gripper halves of the shared sweep belong to the bus-level replay
+    // in tests/vcan.rs; this consumer only encodes the arm.
+    #[allow(dead_code)]
+    mod sweep {
+        include!("../tests/common/sweep.rs");
+    }
+
+    fn line(frame: &OutFrame) -> String {
+        sweep::format_frame(true, 1, frame.id, &frame.data)
+    }
+
+    fn arm_sweep_lines() -> Vec<String> {
+        let joint = |j: usize| (ARM_MOTOR_TYPES[j], ARM_SEND_IDS[j]);
+        let mut out: Vec<String> = ARM_SEND_IDS
+            .iter()
+            .map(|&id| line(&enable_frame(id)))
+            .collect();
+        out.extend(ARM_SEND_IDS.iter().map(|&id| line(&refresh_frame(id))));
+        for &(kp, kd, q, dq, tau) in sweep::ARM_MIT_SWEEP {
+            out.extend((0..ARM_DOF).map(|j| {
+                let (ty, id) = joint(j);
+                line(&mit_frame(ty, id, kp, kd, q, dq, tau).expect("sweep value is finite"))
+            }));
+        }
+        let [kp, kd, q, dq, tau] = sweep::ARM_MIT_INDEXED;
+        out.extend((0..ARM_DOF).map(|j| {
+            let (ty, id) = joint(j);
+            line(&mit_frame(ty, id, kp[j], kd[j], q[j], dq[j], tau[j]).expect("finite"))
+        }));
+        out.extend(ARM_SEND_IDS.iter().map(|&id| line(&disable_frame(id))));
+        out
+    }
+
+    #[test]
+    fn the_arm_sweep_encodes_to_the_recorded_fixture() {
+        let fixture = include_str!("../tests/fixtures/arm_mit.txt");
+        let expected: Vec<&str> = fixture.lines().filter(|l| !l.trim().is_empty()).collect();
+        let actual = arm_sweep_lines();
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "frame count changed: the sweep or the command sequence moved"
+        );
+        for (i, (a, e)) in actual.iter().zip(&expected).enumerate() {
+            assert_eq!(a, e, "fixture line {}", i + 1);
+        }
+    }
+
+    #[test]
+    fn j3_and_j4_encode_velocity_at_the_scale_the_hardware_reports() {
+        // The j3/j4 scale is the one place this driver deliberately differs
+        // from the enactic capture, so it gets its own assertion rather than
+        // living only inside the whole-sweep diff.
+        let dq = 0.1;
+        let at_ten = mit_frame(MotorType::DM4340_48V, 3, 50.0, 1.0, 0.5, dq, 0.2).expect("finite");
+        let at_eight = mit_frame(MotorType::DM4340, 3, 50.0, 1.0, 0.5, dq, 0.2).expect("finite");
+        assert_ne!(at_ten.data, at_eight.data);
+        assert_eq!(line(&at_ten), "FD:1 003 851E81319933380E");
     }
 }
