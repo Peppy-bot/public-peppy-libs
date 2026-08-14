@@ -9,32 +9,17 @@
 //! by every node that judges a motor rather than only the ones holding a CAN
 //! socket.
 
-/// Time constant of the sustained-torque EWMA, sized against the two spec
-/// load cases rather than a thermal model: long enough that the 3 s
+use crate::filters::Ewma;
+
+/// Time constant of the sustained-torque average, sized against the two
+/// spec load cases rather than a thermal model: long enough that the 3 s
 /// peak-spec transient cannot reach the critical threshold, short enough
 /// that a sustained overload warns within about 6 s.
-///
-/// `step` takes the measured interval since the previous sample. Per-tick
-/// jitter is not the reason: measured on a loaded desktop, tick spacing
-/// scatters widely (100 Hz: p99 14.6 ms against a 10 ms nominal) but its
-/// *mean* lands within 0.04% of nominal at 100, 500 and 1000 Hz, because
-/// the pacer runs an absolute timeline.
-///
-/// What a fixed coefficient would not survive is chronic overrun. A loop
-/// configured faster than it can run re-anchors every tick, so the mean
-/// interval becomes the real loop time and a fixed coefficient stretches the
-/// time constant with it: 1 kHz configured against a 1.5 ms loop turns a 5 s
-/// constant into 7.5 s, silently. So the interval is measured, and
-/// `1 - e^(-dt/tau)` is exact for whatever elapsed (two half-steps compose to
-/// one full step, pinned in the tests).
 const EWMA_TAU_S: f64 = 5.0;
 
-/// Longest interval one sample may claim. `1 - e^(-dt/tau)` is exact for any
-/// elapsed time, which is what makes an unbounded `dt` dangerous: a sample
-/// arriving after a long stall is weighted as though its value had held for
-/// the whole gap, so one reading can overwrite the entire history in either
-/// direction. Beyond this bound the elapsed time is capped and the average
-/// ages toward the new sample instead of snapping to it.
+/// Longest interval one sample may claim toward the average ([`Ewma`]'s
+/// cap): one second rides out a scheduler stall without weighting the
+/// resuming sample as a second of held load.
 const MAX_STEP_S: f64 = 1.0;
 
 /// Sustained |torque|/rated latch thresholds, judged against the EWMA `y`.
@@ -260,7 +245,7 @@ impl Latch {
 #[derive(Debug, Clone)]
 pub struct MotorHealthFilter {
     ratings: Ratings,
-    fraction_ewma: f64,
+    fraction_ewma: Ewma,
     /// The critical torque latch owes its engagement to an instantaneous
     /// peak rather than to the EWMA crossing, so the cause stays PeakTorque
     /// while hysteresis holds the latch below the sustained threshold.
@@ -280,7 +265,8 @@ impl MotorHealthFilter {
     pub fn new(ratings: Ratings) -> Self {
         Self {
             ratings,
-            fraction_ewma: 0.0,
+            fraction_ewma: Ewma::new(EWMA_TAU_S, MAX_STEP_S)
+                .expect("the tau and cap constants are positive"),
             crit_from_peak: false,
             peak: Latch::default(),
             torque_warn: Latch::default(),
@@ -323,10 +309,6 @@ impl MotorHealthFilter {
     /// asserted here anyway because a NaN would silently poison the EWMA or
     /// freeze a temperature latch (NaN comparisons never engage or release).
     pub fn step(&mut self, sample: MotorSample, dt_s: f64) -> MotorHealth {
-        assert!(
-            dt_s.is_finite() && dt_s >= 0.0,
-            "dt_s must be finite and non-negative, got {dt_s}"
-        );
         assert!(sample.torque_nm.is_finite(), "torque must be finite");
         assert!(
             sample.driver_temp.0.is_finite() && sample.winding_temp.0.is_finite(),
@@ -334,12 +316,11 @@ impl MotorHealthFilter {
         );
 
         let fraction = sample.torque_nm.abs() / self.ratings.rated_nm;
-        let alpha = 1.0 - (-dt_s.min(MAX_STEP_S) / EWMA_TAU_S).exp();
-        self.fraction_ewma += alpha * (fraction - self.fraction_ewma);
+        let sustained = self.fraction_ewma.step(fraction, dt_s);
 
-        self.torque_warn =
-            self.torque_warn
-                .updated(self.fraction_ewma, TORQUE_WARN_ON, TORQUE_WARN_OFF);
+        self.torque_warn = self
+            .torque_warn
+            .updated(sustained, TORQUE_WARN_ON, TORQUE_WARN_OFF);
         self.peak = self.peak.updated(
             sample.torque_nm.abs(),
             self.ratings.peak_nm,
@@ -347,9 +328,9 @@ impl MotorHealthFilter {
         );
         // Holds only what the average earned: the peak is its own channel,
         // and the two combine in `verdict`.
-        self.torque_crit =
-            self.torque_crit
-                .updated(self.fraction_ewma, TORQUE_CRIT_ON, TORQUE_CRIT_OFF);
+        self.torque_crit = self
+            .torque_crit
+            .updated(sustained, TORQUE_CRIT_ON, TORQUE_CRIT_OFF);
         // The cause names the channel that engaged critical. A peak arriving
         // while the sustained channel is already critical does not relabel a
         // minute-long overload as a transient, and a peak that is the only
@@ -387,7 +368,7 @@ impl MotorHealthFilter {
         let health = MotorHealth {
             level,
             cause,
-            torque_fraction: self.fraction_ewma,
+            torque_fraction: sustained,
             driver_temp: sample.driver_temp,
             winding_temp: sample.winding_temp,
         };
@@ -712,23 +693,10 @@ mod tests {
     }
 
     #[test]
-    fn ewma_reaches_63_percent_of_a_step_in_one_time_constant() {
+    fn the_sustained_average_reaches_63_percent_of_a_step_in_one_time_constant() {
         let mut f = filter();
         let report = run(&mut f, sample(RATED), EWMA_TAU_S);
         assert!((report.torque_fraction - (1.0 - (-1.0f64).exp())).abs() < 1e-3);
-    }
-
-    #[test]
-    fn uneven_sample_spacing_integrates_like_even_spacing() {
-        let mut even = filter();
-        let mut uneven = filter();
-        for _ in 0..200 {
-            even.step(sample(RATED), 0.01);
-            uneven.step(sample(RATED), 0.004);
-            uneven.step(sample(RATED), 0.006);
-        }
-        let (a, b) = (even.fraction_ewma, uneven.fraction_ewma);
-        assert!((a - b).abs() < 1e-9, "{a} vs {b}");
     }
 
     #[test]
@@ -746,23 +714,6 @@ mod tests {
             "one sample erased the history: {}",
             after_gap.torque_fraction
         );
-    }
-
-    #[test]
-    fn a_long_gap_is_capped_not_rejected() {
-        let mut f = filter();
-        let capped = f.step(sample(RATED), MAX_STEP_S * 100.0);
-        let exact = MotorHealthFilter::new(ratings()).step(sample(RATED), MAX_STEP_S);
-        assert_eq!(capped.torque_fraction, exact.torque_fraction);
-    }
-
-    #[test]
-    fn a_zero_length_tick_is_a_no_op_rather_than_a_panic() {
-        let mut f = filter();
-        f.step(sample(RATED), DT);
-        let before = f.fraction_ewma;
-        let report = f.step(sample(0.0), 0.0);
-        assert_eq!(report.torque_fraction, before);
     }
 
     #[test]
@@ -1039,12 +990,6 @@ mod tests {
     #[should_panic(expected = "temperatures must be finite")]
     fn non_finite_temperature_is_rejected() {
         filter().step(at(0.0, f64::NAN, 25.0), DT);
-    }
-
-    #[test]
-    #[should_panic(expected = "dt_s must be finite")]
-    fn non_finite_dt_is_rejected() {
-        filter().step(sample(0.0), f64::NAN);
     }
 }
 
