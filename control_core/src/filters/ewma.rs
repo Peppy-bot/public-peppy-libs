@@ -47,16 +47,12 @@ impl Ewma {
     }
 
     /// Folds one sample in over the measured interval `dt_s`, clamped to
-    /// `max_step_s`, and returns the updated average. Asserts both finite
-    /// (and the interval non-negative) because a NaN would silently poison
-    /// the average, and every threshold judged on it would disengage
-    /// without a trace.
+    /// `max_step_s`, and returns the updated average. The sample must be
+    /// finite and the interval finite and non-negative: like every filter
+    /// in this module, the sample path is pure math, and a non-finite
+    /// input poisons the state until the filter is rebuilt. A caller
+    /// judging on the average validates at its own boundary.
     pub fn step(&mut self, x: f64, dt_s: f64) -> f64 {
-        assert!(x.is_finite(), "sample must be finite, got {x}");
-        assert!(
-            dt_s.is_finite() && dt_s >= 0.0,
-            "dt_s must be finite and non-negative, got {dt_s}"
-        );
         let alpha = 1.0 - (-dt_s.min(self.max_step_s) / self.tau_s).exp();
         self.value += alpha * (x - self.value);
         self.value
@@ -144,23 +140,5 @@ mod tests {
         assert_eq!(e.value(), 0.0);
         let first = e.step(1.0, 0.01);
         assert!(first < 0.01, "one tick must not reach the sample: {first}");
-    }
-
-    #[test]
-    #[should_panic(expected = "sample must be finite")]
-    fn a_non_finite_sample_is_rejected() {
-        ewma().step(f64::NAN, 0.01);
-    }
-
-    #[test]
-    #[should_panic(expected = "dt_s must be finite")]
-    fn a_non_finite_interval_is_rejected() {
-        ewma().step(0.0, f64::NAN);
-    }
-
-    #[test]
-    #[should_panic(expected = "dt_s must be finite and non-negative")]
-    fn a_negative_interval_is_rejected() {
-        ewma().step(0.0, -0.01);
     }
 }

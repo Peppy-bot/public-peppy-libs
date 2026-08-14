@@ -309,6 +309,10 @@ impl MotorHealthFilter {
     /// asserted here anyway because a NaN would silently poison the EWMA or
     /// freeze a temperature latch (NaN comparisons never engage or release).
     pub fn step(&mut self, sample: MotorSample, dt_s: f64) -> MotorHealth {
+        assert!(
+            dt_s.is_finite() && dt_s >= 0.0,
+            "dt_s must be finite and non-negative, got {dt_s}"
+        );
         assert!(sample.torque_nm.is_finite(), "torque must be finite");
         assert!(
             sample.driver_temp.0.is_finite() && sample.winding_temp.0.is_finite(),
@@ -990,6 +994,12 @@ mod tests {
     #[should_panic(expected = "temperatures must be finite")]
     fn non_finite_temperature_is_rejected() {
         filter().step(at(0.0, f64::NAN, 25.0), DT);
+    }
+
+    #[test]
+    #[should_panic(expected = "dt_s must be finite")]
+    fn non_finite_dt_is_rejected() {
+        filter().step(sample(0.0), f64::NAN);
     }
 }
 
