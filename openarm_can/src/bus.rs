@@ -326,8 +326,14 @@ impl MotorBus {
 
     /// Solicit a state frame from every motor and collect the replies as one
     /// silence pass, so the cache reflects a whole fresh pass rather than
-    /// whichever motors answered first.
+    /// whichever motors answered first. `recv_timeout_us` is each wait for
+    /// the next reply and must be positive: the pass repeats it until every
+    /// motor answers or [`REPLY_WINDOW`] closes, and a zero wait would spin
+    /// that whole window on the CPU while holding the bus lock.
     pub fn refresh_state(&mut self, recv_timeout_us: u32) -> Result<()> {
+        if recv_timeout_us == 0 {
+            return Err(CanError::ZeroReceiveTimeout);
+        }
         // Already-queued frames predate the solicitation below and are not
         // replies to it; they are swept out first, so the pass holds only
         // frames the refresh produced.
@@ -349,12 +355,17 @@ impl MotorBus {
     /// Replies are matched by reply id and register id, the whole
     /// correlation the wire offers; freshness rests on the same sole
     /// commander and prompt-reply invariants as
-    /// [`enable_and_confirm`](Self::enable_and_confirm).
+    /// [`enable_and_confirm`](Self::enable_and_confirm). `recv_timeout_us`
+    /// is each wait for the next reply and must be positive, exactly as in
+    /// [`refresh_state`](Self::refresh_state).
     pub fn read_param(
         &mut self,
         param: MotorParam,
         recv_timeout_us: u32,
     ) -> Result<Vec<Option<f64>>> {
+        if recv_timeout_us == 0 {
+            return Err(CanError::ZeroReceiveTimeout);
+        }
         self.drain(recv_timeout_us)?;
         let rid = param.rid();
         let send_ids: Vec<u32> = self.slots.iter().map(|slot| slot.send_id).collect();

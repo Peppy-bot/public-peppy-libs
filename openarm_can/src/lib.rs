@@ -140,6 +140,8 @@ pub enum CanError {
     TorqueOutOfRange(f64),
     #[error("command value must be finite, got {0}")]
     NonFiniteCommand(f64),
+    #[error("receive timeout must be positive; the reply pass waits on it")]
+    ZeroReceiveTimeout,
 }
 
 /// Motors that did not acknowledge an enable, split by what the bus showed.
