@@ -72,10 +72,17 @@ impl RepoRefreshGoalResponse {
 
 /// Kind of item reported by a `RepoRefreshFeedback`. Carried on the wire
 /// as a lowercase string so the schema stays human-readable.
+///
+/// `LauncherFragment` names a `launcher_fragment/v1` file a repository walk
+/// recognized. A fragment is not a repository item: it is never listed in
+/// `peppy_repository.json5`, never cached as a launchable stack, and never
+/// refreshes on its own. The kind exists so a walk can name what it saw
+/// (and validate it) instead of silently dropping an unrecognized tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RepoItemKind {
     Node,
     Launcher,
+    LauncherFragment,
     Contract,
     Pairing,
     McpExposure,
@@ -86,6 +93,7 @@ impl RepoItemKind {
         match self {
             RepoItemKind::Node => "node",
             RepoItemKind::Launcher => "launcher",
+            RepoItemKind::LauncherFragment => "launcher_fragment",
             RepoItemKind::Contract => "contract",
             RepoItemKind::Pairing => "pairing",
             RepoItemKind::McpExposure => "mcp_exposure",
@@ -96,6 +104,7 @@ impl RepoItemKind {
         match s {
             "node" => Some(RepoItemKind::Node),
             "launcher" => Some(RepoItemKind::Launcher),
+            "launcher_fragment" => Some(RepoItemKind::LauncherFragment),
             "contract" => Some(RepoItemKind::Contract),
             "pairing" => Some(RepoItemKind::Pairing),
             "mcp_exposure" => Some(RepoItemKind::McpExposure),
@@ -394,6 +403,7 @@ mod tests {
         for kind in [
             RepoItemKind::Node,
             RepoItemKind::Launcher,
+            RepoItemKind::LauncherFragment,
             RepoItemKind::Contract,
             RepoItemKind::Pairing,
             RepoItemKind::McpExposure,
@@ -406,6 +416,7 @@ mod tests {
     fn item_kind_as_str_values() {
         assert_eq!(RepoItemKind::Node.as_str(), "node");
         assert_eq!(RepoItemKind::Launcher.as_str(), "launcher");
+        assert_eq!(RepoItemKind::LauncherFragment.as_str(), "launcher_fragment");
         assert_eq!(RepoItemKind::Contract.as_str(), "contract");
         assert_eq!(RepoItemKind::Pairing.as_str(), "pairing");
         assert_eq!(RepoItemKind::McpExposure.as_str(), "mcp_exposure");

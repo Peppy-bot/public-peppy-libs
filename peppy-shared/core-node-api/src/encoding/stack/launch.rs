@@ -96,6 +96,11 @@ pub struct LaunchGoal {
     /// What the caller asked for about placement, for the coordinator to
     /// expand against the document it resolved.
     pub placement: PlacementSpec,
+    /// The launcher's `--with` selections, verbatim: each entry is `option`
+    /// or `axis=option`, exactly as the caller typed it. The coordinator
+    /// resolves the words against the document it read, for the same reason
+    /// placement travels as intent.
+    pub selections: Vec<String>,
 }
 
 impl LaunchGoal {
@@ -116,6 +121,7 @@ impl LaunchGoal {
             max_timeout_secs,
             launch_id: launch_id.into(),
             placement: PlacementSpec::default(),
+            selections: Vec::new(),
         }
     }
 
@@ -126,6 +132,11 @@ impl LaunchGoal {
 
     pub fn with_placement(mut self, placement: PlacementSpec) -> Self {
         self.placement = placement;
+        self
+    }
+
+    pub fn with_selections(mut self, selections: Vec<String>) -> Self {
+        self.selections = selections;
         self
     }
 
@@ -175,6 +186,12 @@ impl LaunchGoal {
                 LauncherOrigin::Repository { name } => {
                     origin.set_repository(name.as_str());
                 }
+            }
+
+            let selection_count = capnp_list_len(self.selections.len(), "LaunchGoal.selections")?;
+            let mut selections = goal.reborrow().init_selections(selection_count);
+            for (idx, word) in self.selections.iter().enumerate() {
+                selections.reborrow().set(idx as u32, word);
             }
         }
         encode_message(&builder)
@@ -258,11 +275,26 @@ impl LaunchGoal {
         };
 
         let raw_max = goal.get_max_timeout_secs();
+
+        let selections_reader = goal.get_selections()?;
+        let mut selections = Vec::with_capacity(selections_reader.len() as usize);
+        for idx in 0..selections_reader.len() {
+            let word = selections_reader.get(idx)?.to_str()?;
+            if word.is_empty() {
+                return Err(crate::Error::Decoding(format!(
+                    "LaunchGoal.selections[{idx}] is empty: a `--with` entry is `option` or \
+                     `axis=option`, never blank"
+                )));
+            }
+            selections.push(word.to_owned());
+        }
+
         Ok(Self {
             launch_id: launch_id.to_owned(),
             placement,
             launcher_origin,
             env_vars,
+            selections,
             node_add_idle_timeout_secs: with_timeout_default(
                 goal.get_node_add_idle_timeout_secs(),
                 DEFAULT_IDLE_TIMEOUT_SECS,
@@ -730,6 +762,77 @@ mod tests {
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
         assert_eq!(decoded.placement, PlacementSpec::Places(BTreeMap::new()));
+    }
+
+    /// The `--with` words travel verbatim: bare option names and
+    /// `axis=option` entries alike reach the coordinator exactly as typed,
+    /// because only the coordinator holds the document that gives them
+    /// meaning.
+    #[test]
+    fn launch_goal_roundtrips_selections_verbatim() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Repository {
+                name: "openarm_v2".to_string(),
+            },
+            "launch-abc123",
+            1,
+            1,
+            1,
+            None,
+        )
+        .with_selections(vec![
+            "mujoco".to_string(),
+            "robot=mujoco".to_string(),
+            "xr_commander".to_string(),
+        ]);
+
+        let bytes = goal.encode().expect("encode");
+        let decoded = LaunchGoal::decode(&bytes).expect("decode");
+        assert_eq!(
+            decoded.selections,
+            vec!["mujoco".to_string(), "robot=mujoco".to_string(), "xr_commander".to_string()]
+        );
+    }
+
+    /// A goal that names no selection decodes with an empty list, which is
+    /// what "no `--with` given" means: a composed launcher fills its defaults,
+    /// a flat one has nothing to select.
+    #[test]
+    fn launch_goal_without_selections_decodes_as_empty() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Fs("/abs/launcher.json5".into()),
+            "launch-abc123",
+            1,
+            1,
+            1,
+            None,
+        );
+        let bytes = goal.encode().expect("encode");
+        let decoded = LaunchGoal::decode(&bytes).expect("decode");
+        assert!(decoded.selections.is_empty());
+    }
+
+    /// A blank `--with` entry is a caller bug (an empty comma segment), not a
+    /// meaningful "select nothing": refuse it at decode so it cannot silently
+    /// pass as one.
+    #[test]
+    fn launch_goal_decode_rejects_an_empty_selection_entry() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Fs("/abs/launcher.json5".into()),
+            "launch-abc123",
+            1,
+            1,
+            1,
+            None,
+        )
+        .with_selections(vec!["mujoco".to_string(), String::new()]);
+
+        let bytes = goal.encode().expect("encode");
+        let err = LaunchGoal::decode(&bytes).expect_err("empty selection must be refused");
+        assert!(
+            err.to_string().contains("selections[1] is empty"),
+            "unexpected error: {err}"
+        );
     }
 
     /// Wiring two placeholders to the SAME machine is legitimate: a launcher

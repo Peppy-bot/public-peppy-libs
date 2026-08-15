@@ -396,7 +396,7 @@ pub const SCHEMA_SOURCES: &[(&str, &str)] = &[
 /// Version of the wire protocol described by this registry. Feeds the AsyncAPI
 /// document's `info.version`. Bump the minor on additive methods/fields, the
 /// major on breaking wire changes.
-pub const WIRE_API_VERSION: &str = "0.1.0";
+pub const WIRE_API_VERSION: &str = "0.2.0";
 
 /// Version of this crate, for provenance only (not the wire version).
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
