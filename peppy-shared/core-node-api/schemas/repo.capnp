@@ -45,9 +45,7 @@ struct RepoRefreshFeedback {
         # A discovered node, launcher, contract, pairing, or MCP exposure manifest.
         discovered :group {
             # Kind of item being reported: "node", "launcher", "contract",
-            # "pairing", or "mcp_exposure". ("launcher_fragment" names a
-            # fragment file a walk recognized; a fragment is not a repository
-            # item, so this kind reports recognition, never a listed entry.)
+            # "pairing", or "mcp_exposure".
             kind @0 :Text;
             # Name of the discovered item.
             itemName @1 :Text;
