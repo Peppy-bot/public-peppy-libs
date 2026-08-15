@@ -56,6 +56,18 @@ struct LaunchGoal {
         places @8 :List(CoreNodeLink);
         local @9 :Void;
     }
+    # The launcher's `--with` selections, verbatim: each entry is `option` or
+    # `axis=option`, exactly as the caller typed it.
+    #
+    # The WORDS travel, not their resolution, for the same reason placement
+    # is an intent: only the coordinator holds a repository launcher's
+    # document, so only it knows which component axes exist. A caller that
+    # resolved selections itself could do so for a filesystem launcher and
+    # not for a repository one, and the two origins would drift into meaning
+    # different things. Empty means no `--with` was given, which a launcher
+    # with no `components` requires and any other launcher fills from its
+    # defaults.
+    selections @10 :List(Text);
 }
 
 # One `--place <core-node-link>@<core-node>` wiring: the placeholder the

@@ -11,7 +11,10 @@ use std::fmt;
 /// files conventionally use `peppy_launcher.json5` for standalone projects but
 /// may use any `.json5` filename when listed in a repository index. Contract,
 /// pairing, and MCP exposure files are filename-agnostic and identified solely
-/// by their schema tag. `repository/v1` is the odd one out: it tags a repository's
+/// by their schema tag. `launcher_fragment/v1` tags a fragment file: a piece
+/// of a composed launcher (deployments, adjustments, core node links) that a
+/// launcher's `components` reference by path and that never launches on its
+/// own. `repository/v1` is the odd one out: it tags a repository's
 /// `peppy_repository.json5` index, which declares no item of its own and
 /// instead states which identities the repository publishes and where each is
 /// declared.
@@ -21,6 +24,8 @@ pub enum PeppySchema {
     NodeV1,
     #[serde(rename = "launcher/v1")]
     LauncherV1,
+    #[serde(rename = "launcher_fragment/v1")]
+    LauncherFragmentV1,
     #[serde(rename = "contract/v1")]
     ContractV1,
     #[serde(rename = "pairing/v1")]
@@ -36,6 +41,7 @@ impl fmt::Display for PeppySchema {
         let s = match self {
             PeppySchema::NodeV1 => "node/v1",
             PeppySchema::LauncherV1 => "launcher/v1",
+            PeppySchema::LauncherFragmentV1 => "launcher_fragment/v1",
             PeppySchema::ContractV1 => "contract/v1",
             PeppySchema::PairingV1 => "pairing/v1",
             PeppySchema::McpExposureV1 => "mcp_exposure/v1",
@@ -72,6 +78,7 @@ mod tests {
     const EVERY_SCHEMA: &[PeppySchema] = &[
         PeppySchema::NodeV1,
         PeppySchema::LauncherV1,
+        PeppySchema::LauncherFragmentV1,
         PeppySchema::ContractV1,
         PeppySchema::PairingV1,
         PeppySchema::McpExposureV1,
