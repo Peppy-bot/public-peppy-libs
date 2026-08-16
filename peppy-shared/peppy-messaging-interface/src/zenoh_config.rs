@@ -28,7 +28,7 @@ use std::path::PathBuf;
 /// client sets `root_ca_certificate` (to verify that server) and
 /// `verify_name_on_connect`. Links are one-way TLS throughout: the server
 /// proves its identity, the client proves nothing at the transport, and no
-/// client certificate is ever presented. The keys map 1:1 to zenoh 1.9's
+/// client certificate is ever presented. The keys map 1:1 to zenoh 1.10's
 /// `transport.link.tls.*` (verified against its `DEFAULT_CONFIG.json5`); unset
 /// path fields are omitted so a non-TLS config renders byte-identical to before.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -482,10 +482,22 @@ pub fn render_router_config(
     ))
 }
 
-/// The loopback ephemeral listen endpoint a peer binds. Loopback-only by design:
-/// it keeps the new inbound socket off the network (co-located peering only).
-pub(crate) fn loopback_listen_endpoint(protocol: ZenohNetProtocol) -> String {
-    format!("{protocol}/127.0.0.1:0")
+/// The wildcard ephemeral listen endpoint a peer binds. Zenoh 1.10 gossips
+/// only non-loopback locators (`LinkState` filters loopback addresses out of
+/// the advertised set), so a loopback-only listener is never advertised and
+/// direct peer links can never form: peers would sit behind the router with
+/// no route to each other. Binding the wildcard address makes zenoh advertise
+/// every routable interface address instead, which co-located peers can dial
+/// (a host can always reach its own interface addresses) and remote peers
+/// could too, should a mesh ever span hosts. The trade is that the listener
+/// leaves loopback: it is reachable from the network. That widens an existing
+/// exposure class rather than opening a new one — the zenoh transport is
+/// unauthenticated, and the router's own listener is already bound to
+/// `0.0.0.0` — but a deployment that must not accept inbound peer links can
+/// set `gossip: false` in its discovery config to keep every session a
+/// relay-only client with no listener at all.
+pub(crate) fn peer_listen_endpoint(protocol: ZenohNetProtocol) -> String {
+    format!("{protocol}/0.0.0.0:0")
 }
 
 #[cfg(test)]
@@ -502,7 +514,7 @@ mod tests {
         ZenohConfigSpec {
             mode: SessionMode::Peer,
             connect_endpoints: vec!["tcp/127.0.0.1:7448".to_string()],
-            listen_endpoints: vec![loopback_listen_endpoint(ZenohNetProtocol::Tcp)],
+            listen_endpoints: vec![peer_listen_endpoint(ZenohNetProtocol::Tcp)],
             reconnect,
             gossip,
             tls: None,
@@ -517,8 +529,9 @@ mod tests {
 
         assert_eq!(cfg["mode"], "peer");
         assert_eq!(cfg["connect"]["endpoints"][0], "tcp/127.0.0.1:7448");
-        // Peers listen on a loopback ephemeral port under the per-mode key.
-        assert_eq!(cfg["listen"]["endpoints"]["peer"][0], "tcp/127.0.0.1:0");
+        // Peers listen on a wildcard ephemeral port under the per-mode key, so
+        // zenoh 1.10+ gossips the host's routable addresses for direct links.
+        assert_eq!(cfg["listen"]["endpoints"]["peer"][0], "tcp/0.0.0.0:0");
         // Discovery is gossip-only.
         assert_eq!(cfg["scouting"]["multicast"]["enabled"], false);
         assert_eq!(cfg["scouting"]["gossip"]["enabled"], true);

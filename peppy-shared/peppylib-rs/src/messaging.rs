@@ -168,7 +168,7 @@ struct DiscoveryParams {
 /// `host:port`. Selected by [`MessengerConnect::scope`]; the default is
 /// [`SessionKind::GossipPeer`].
 enum SessionKind {
-    /// Gossip peer: binds a loopback listener and forms direct links with
+    /// Gossip peer: binds a wildcard listener and forms direct links with
     /// peers discovered via gossip seeded by `host:port`.
     GossipPeer,
     /// Pure client: no listener and no peer discovery; every message relays
@@ -187,7 +187,7 @@ enum SessionKind {
 /// never both.
 pub enum SessionScope<'a> {
     /// Open a pure client session under an explicit workspace namespace
-    /// instead of the `local` default: no loopback listener, no gossip
+    /// instead of the `local` default: no listener, no gossip
     /// discovery, every request relayed through the router it dialed. Used by
     /// a CLI control session so it reaches the daemon/node services under the
     /// same namespace the daemon runs, and so a one-shot (non-reconnecting)
