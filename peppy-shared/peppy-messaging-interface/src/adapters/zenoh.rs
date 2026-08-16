@@ -38,7 +38,7 @@ use crate::wire::{
     ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 use crate::zenoh_config::{
-    SessionMode, TlsConfig, ZenohConfigSpec, connectable_host, loopback_listen_endpoint,
+    SessionMode, TlsConfig, ZenohConfigSpec, connectable_host, peer_listen_endpoint,
     render_config,
 };
 use config::namespace::Namespace;
@@ -660,12 +660,13 @@ impl ZenohAdapter {
         };
 
         let zenoh_config = if gossip {
-            // A `peer` binds a loopback listener and forms direct peer-to-peer
-            // links via gossip.
+            // A `peer` binds a wildcard listener and forms direct peer-to-peer
+            // links via gossip; the endpoint must be non-loopback for zenoh
+            // 1.10 to advertise it (see [`peer_listen_endpoint`]).
             render_config(&ZenohConfigSpec {
                 mode: SessionMode::Peer,
                 connect_endpoints: seeds.clone(),
-                listen_endpoints: vec![loopback_listen_endpoint(protocol)],
+                listen_endpoints: vec![peer_listen_endpoint(protocol)],
                 reconnect,
                 gossip: true,
                 tls: tls.clone(),

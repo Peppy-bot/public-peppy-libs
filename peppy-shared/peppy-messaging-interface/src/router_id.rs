@@ -29,7 +29,7 @@ const MAX_CHARS: usize = 32;
 /// A zenoh router identity (`zid`), in the exact lexical form zenoh accepts in
 /// a config's `id` field *and* prints back everywhere it reports one.
 ///
-/// The accepted form is an allow-list, and it is zenoh 1.9's own (`uhlc::ID`'s
+/// The accepted form is an allow-list, and it is zenoh 1.10's own (`uhlc::ID`'s
 /// `FromStr`, reached through `zenoh_protocol::core::ZenohIdProto`): 1 to
 /// [`MAX_CHARS`] lowercase hexadecimal digits with no leading `0`. Each rule
 /// exists because zenoh either rejects the value or renders it differently:

@@ -26,12 +26,12 @@ tempfile = "3"
 rand = "0.10"
 
 # Optional deps
-# Exact-pinned; peppylib pins the same `=1.9.0` in its [dev-dependencies] so
+# Exact-pinned; peppylib pins the same `=1.10.0` in its [dev-dependencies] so
 # its test binaries share this build — bump the two together.
-zenoh = { version = "=1.9.0", optional = true }
+zenoh = { version = "=1.10.0", optional = true }
 # Raw-TLS reachability probe (`probe_tls_reachable`): a real rustls handshake to
 # verify a federation link validates (zenoh client-mode `open` is not a usable
-# signal). Versions match what zenoh 1.9 already resolves (rustls 0.23.41,
+# signal). Versions match what zenoh 1.10 already resolves (rustls 0.23.43,
 # tokio-rustls 0.26.4, rustls-pemfile 2.2.0, rustls-native-certs 0.8.4) so no
 # duplicate `rustls` enters the tree. tokio-rustls's default `ring` feature
 # provides the crypto provider, so `ClientConfig::builder()` works without

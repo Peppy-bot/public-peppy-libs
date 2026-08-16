@@ -82,7 +82,8 @@ impl ActionClientCase {
 }
 
 /// Pre-main: gives zenoh's global Net runtime more worker threads for this
-/// test binary. Stock zenoh 1.9.0 can deadlock its routing layer under the
+/// test binary. Stock zenoh (1.9.0 through at least 1.10.0 — the fix below
+/// has not shipped in a release) can deadlock its routing layer under the
 /// peer-session churn these tests generate: a thread holding the routing
 /// `ctrl_lock` parks in `block_in_place` waiting on the StartConditions
 /// mutex while the Net runtime's single default worker blocks on that same
@@ -147,8 +148,8 @@ fn ensure_test_fd_limit() {
 /// `ZENOH_SERIAL`. The guard is held for each test's lifetime via the field
 /// below, so acquiring the context is all a test needs to opt in.
 ///
-/// KNOWN FLAKE: zenoh 1.9.0 can deadlock its routing layer under the
-/// peer-session churn these tests generate (see
+/// KNOWN FLAKE: zenoh (1.9.0 through at least 1.10.0) can deadlock its
+/// routing layer under the peer-session churn these tests generate (see
 /// [`ensure_zenoh_net_runtime_workers`], which suppresses the trigger for
 /// this binary). If it ever fires anyway, the running test hangs forever and
 /// every later test queues on this mutex, so the whole binary looks stuck
