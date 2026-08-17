@@ -1,10 +1,19 @@
-//! Command sweep shared by the vcan fixture capture and the replay test.
-//!
-//! The differential fixtures in `tests/fixtures/` were captured by driving
-//! the C++-backed FFI build of this crate (enactic/openarm_can 1.2.8)
-//! through exactly these values on vcan; the replay test drives the native
-//! implementation through them and byte-diffs the recorded frames. This
-//! file must stay dependency-free: the capture harness includes it verbatim.
+// Command sweep shared by the vcan fixture capture and the replay tests.
+//
+// Included by `protocol.rs` (hardware-free encode replay) and by
+// `tests/vcan.rs` (bus-level replay), so it must stay dependency-free.
+//
+// The differential fixtures in `tests/fixtures/` were captured by driving
+// the C++-backed FFI build of this crate (enactic/openarm_can 1.2.8)
+// through exactly these values on vcan; the replay drives the native
+// implementation through them and byte-diffs the frames.
+//
+// The arm fixture's j3/j4 rows are the one deliberate departure from that
+// capture. Those joints report a VelocityMax of 10 rad/s on this hardware,
+// which the reference decodes as 8, so every non-saturating dq encodes
+// differently. Six lines carry our scale rather than the reference's; the
+// reference is wrong for these motors, so matching it would mean shipping a
+// 20% velocity error to keep a test green.
 
 /// MIT command tuples `(kp, kd, q, dq, tau)` broadcast to all seven arm
 /// joints. Covers the zero point, typical gains, full-scale, beyond-clamp,

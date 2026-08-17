@@ -2,6 +2,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::throttle::Throttle;
+
 use tracing::warn;
 
 use thiserror::Error;
@@ -34,7 +36,9 @@ pub struct Pacer {
     period: Duration,
     overruns: u32,
     worst_late: Duration,
-    last_report: Instant,
+    /// Rate gate for the overrun report, so a loop overrunning every tick
+    /// reports periodically rather than at tick rate.
+    report_gate: Throttle,
 }
 
 impl Pacer {
@@ -50,7 +54,7 @@ impl Pacer {
             period,
             overruns: 0,
             worst_late: Duration::ZERO,
-            last_report: Instant::now(),
+            report_gate: Throttle::started_at(OVERRUN_REPORT_PERIOD, Instant::now()),
         })
     }
 
@@ -86,7 +90,7 @@ impl Pacer {
     /// The overrun tally to report, if any overruns accumulated and the report
     /// interval has elapsed; resets the tally. `None` otherwise.
     fn due_report(&mut self, now: Instant) -> Option<OverrunReport> {
-        if self.overruns == 0 || now.duration_since(self.last_report) < OVERRUN_REPORT_PERIOD {
+        if self.overruns == 0 || !self.report_gate.admit_at(now) {
             return None;
         }
         let report = OverrunReport {
@@ -95,7 +99,6 @@ impl Pacer {
         };
         self.overruns = 0;
         self.worst_late = Duration::ZERO;
-        self.last_report = now;
         Some(report)
     }
 }
@@ -106,13 +109,13 @@ mod tests {
 
     const PERIOD: Duration = Duration::from_millis(10);
 
-    fn pacer_at(start: tokio::time::Instant) -> Pacer {
+    fn pacer_at(start: tokio::time::Instant, report_epoch: Instant) -> Pacer {
         Pacer {
             next_tick: start,
             period: PERIOD,
             overruns: 0,
             worst_late: Duration::ZERO,
-            last_report: Instant::now(),
+            report_gate: Throttle::started_at(OVERRUN_REPORT_PERIOD, report_epoch),
         }
     }
 
@@ -124,7 +127,7 @@ mod tests {
     #[test]
     fn schedule_keeps_absolute_timeline() {
         let start = tokio::time::Instant::now();
-        let mut p = pacer_at(start);
+        let mut p = pacer_at(start, Instant::now());
         // On-time ticks: deadlines land exactly one period apart, regardless of
         // where within the cycle the tick finishes (sleep overshoot corrects).
         assert_eq!(p.schedule(start), Some(start + PERIOD));
@@ -135,7 +138,7 @@ mod tests {
     #[test]
     fn schedule_treats_an_exact_deadline_as_on_time() {
         let start = tokio::time::Instant::now();
-        let mut p = pacer_at(start);
+        let mut p = pacer_at(start, Instant::now());
         // The tick finishes exactly on the deadline (now == next_tick after the
         // one-period advance): on time, not an overrun.
         assert_eq!(p.schedule(start + PERIOD), Some(start + PERIOD));
@@ -145,7 +148,7 @@ mod tests {
     #[test]
     fn schedule_tallies_overrun_and_reanchors() {
         let start = tokio::time::Instant::now();
-        let mut p = pacer_at(start);
+        let mut p = pacer_at(start, Instant::now());
         // The tick finishes half a period past its deadline: no sleep, tallied,
         // and the timeline restarts from the late finish.
         let late_finish = start + PERIOD + PERIOD / 2;
@@ -158,7 +161,7 @@ mod tests {
     #[test]
     fn schedule_keeps_worst_lateness() {
         let start = tokio::time::Instant::now();
-        let mut p = pacer_at(start);
+        let mut p = pacer_at(start, Instant::now());
         assert_eq!(p.schedule(start + PERIOD + PERIOD / 2), None);
         assert_eq!(p.schedule(p.next_tick + PERIOD + PERIOD / 4), None);
         assert_eq!(p.overruns, 2);
@@ -168,8 +171,8 @@ mod tests {
     #[test]
     fn due_report_only_after_interval_with_overruns() {
         let start = tokio::time::Instant::now();
-        let mut p = pacer_at(start);
-        let t0 = p.last_report;
+        let t0 = Instant::now();
+        let mut p = pacer_at(start, t0);
 
         // No overruns: nothing to report even after the interval.
         assert_eq!(p.due_report(t0 + OVERRUN_REPORT_PERIOD), None);
