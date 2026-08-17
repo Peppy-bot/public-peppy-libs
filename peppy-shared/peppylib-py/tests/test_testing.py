@@ -279,8 +279,27 @@ async def test_harness_core_boots_node_observes_first_publish_and_converges(tmp_
             await publisher.publish(b"alive")
             node_runner.on_shutdown(hook_ran.set)
 
+        # A mock service declared before the node exists: the reachability
+        # half of the barrier must make it visible to the node's session
+        # pre-setup (mirrors the Rust harness test).
+        mock_handle = await router.connect()
+        mock_service = await MockServiceCore.listen(
+            mock_handle, MOCK_CORE, MOCK_INSTANCE, _node_target("dep_node"), "get_info"
+        )
+        service_readiness = [
+            peppy_testing.ServiceReadiness(
+                target=_node_target("dep_node"),
+                name="get_info",
+                producer=ProducerRef(MOCK_CORE, MOCK_INSTANCE),
+            )
+        ]
+
         harness = await HarnessCore.start(
-            peppy_config_path, standalone_config, readiness, setup
+            peppy_config_path,
+            standalone_config,
+            readiness,
+            setup,
+            service_readiness=service_readiness,
         )
         assert harness.instance_id() == instance_id
         assert harness.bound_core_node() == "standalone-core"
@@ -291,6 +310,7 @@ async def test_harness_core_boots_node_observes_first_publish_and_converges(tmp_
 
         await harness.shutdown()
         assert hook_ran.is_set(), "shutdown() must run the node's registered shutdown hooks"
+        await mock_service.close()
 
 
 @pytest.mark.asyncio

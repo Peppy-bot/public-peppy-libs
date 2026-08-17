@@ -708,6 +708,31 @@ pub struct PublisherReadiness {
     pub topic: String,
 }
 
+/// Whether a [`ServiceReadiness`] entry probes a plain service queryable or an
+/// action's goal service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceReadinessKind {
+    Service,
+    Action,
+}
+
+/// One entry of the harness's pre-setup reachability barrier for mocked
+/// services and actions: the node under test is a *fresh caller*, so its very
+/// first `poll`/`send_goal` inside `setup` can race gossip discovery of a mock
+/// queryable that was declared long before the node's session existed. The
+/// harness therefore waits — on the node's own session — until each mock's
+/// queryable answers reachability probes, before `setup` runs.
+pub struct ServiceReadiness {
+    /// The identity the mock serves under (the dependency's node/contract
+    /// target).
+    pub target: SenderTarget,
+    /// Service or action name.
+    pub name: String,
+    /// The mock's wire identity, as seeded into the node's bound set.
+    pub producer: crate::messaging::ProducerRef,
+    pub kind: ServiceReadinessKind,
+}
+
 /// The node-invariant half of the generated test harness: builds the node
 /// in-process from an already-seeded [`StandaloneConfig`], runs the pre-setup
 /// readiness barrier, spawns the node's `setup`, and owns teardown
@@ -740,6 +765,7 @@ impl HarnessCore {
         peppy_config_path: impl Into<std::path::PathBuf>,
         standalone_config: StandaloneConfig,
         publisher_readiness: &[PublisherReadiness],
+        service_readiness: &[ServiceReadiness],
         setup: F,
     ) -> Result<Self>
     where
@@ -778,6 +804,38 @@ impl HarnessCore {
                      the mesh never routed it — this is a harness/mock wiring bug, not a node bug",
                     probe.topic, probe.link_id,
                 ))));
+            }
+        }
+
+        // Reachability barrier for mocked services/actions: the node is a
+        // fresh caller, so gate its session's discovery of each mock
+        // queryable before setup's first poll/send_goal can race it.
+        for probe in service_readiness {
+            match probe.kind {
+                ServiceReadinessKind::Service => {
+                    wait_service_reachable(
+                        node_runner.messenger(),
+                        processor.bound_core_node(),
+                        processor.bound_instance_id(),
+                        probe.target.clone(),
+                        &probe.name,
+                        &probe.producer,
+                        READINESS_TIMEOUT,
+                    )
+                    .await?;
+                }
+                ServiceReadinessKind::Action => {
+                    wait_action_reachable(
+                        node_runner.messenger(),
+                        processor.bound_core_node(),
+                        processor.bound_instance_id(),
+                        probe.target.clone(),
+                        &probe.name,
+                        &probe.producer,
+                        READINESS_TIMEOUT,
+                    )
+                    .await?;
+                }
             }
         }
 

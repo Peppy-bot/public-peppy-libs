@@ -358,12 +358,32 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
         topic: "status".to_string(),
     }];
 
+    // A mock service declared before the node exists: the reachability half
+    // of the barrier must make it visible to the node's session pre-setup.
+    let mock_handle = router.connect().await.expect("mock session");
+    let mock_service = peppylib::testing::MockServiceCore::listen(
+        &mock_handle,
+        "mock-core",
+        "mock-1",
+        node_target("dep_node"),
+        "get_info",
+    )
+    .await
+    .expect("mock service listens");
+    let service_readiness = [peppylib::testing::ServiceReadiness {
+        target: node_target("dep_node"),
+        name: "get_info".to_string(),
+        producer: peppylib::messaging::ProducerRef::new("mock-core", "mock-1"),
+        kind: peppylib::testing::ServiceReadinessKind::Service,
+    }];
+
     let hook_ran = Arc::new(AtomicBool::new(false));
     let hook_flag = Arc::clone(&hook_ran);
     let harness = HarnessCore::start::<EmptyParameters, _, _>(
         peppy_config_path,
         standalone_config,
         &readiness,
+        &service_readiness,
         move |_params, node_runner| async move {
             let processor = node_runner.processor();
             let publisher = TopicMessenger::declare_publisher(
@@ -403,6 +423,7 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
         "shutdown() must run the node's registered shutdown hooks"
     );
 
+    drop(mock_service);
     router.shutdown().await.expect("router shutdown");
 }
 
@@ -421,6 +442,7 @@ async fn harness_core_shutdown_propagates_setup_error() {
     let harness = HarnessCore::start::<EmptyParameters, _, _>(
         peppy_config_path,
         standalone_config,
+        &[],
         &[],
         |_params, _node_runner| async move {
             Err(PeppyError::Io(std::io::Error::other("setup boom")))

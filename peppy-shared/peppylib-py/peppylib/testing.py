@@ -600,6 +600,28 @@ class PublisherReadiness:
     link_id: str | None = None
 
 
+@dataclass
+class ServiceReadiness:
+    """One entry of the harness's pre-setup reachability barrier for mocked
+    services and actions: the node under test is a *fresh caller*, so its very
+    first ``poll``/``send_goal`` inside ``setup`` can race gossip discovery of
+    a mock queryable that was declared long before the node's session existed.
+    The harness therefore waits — on the node's own session — until each
+    mock's queryable answers reachability probes, before ``setup`` runs.
+    Mirrors Rust's ``ServiceReadiness``."""
+
+    #: The identity the mock serves under (the dependency's node/contract
+    #: target).
+    target: SenderTarget
+    #: Service or action name.
+    name: str
+    #: The mock's wire identity, as seeded into the node's bound set.
+    producer: ProducerRef
+    #: ``"service"`` for a plain service queryable, ``"action"`` for an
+    #: action's goal service.
+    kind: str = "service"
+
+
 SetupFn = Callable[[Any, NodeRunner], Awaitable[None]]
 
 
@@ -630,6 +652,7 @@ class HarnessCore:
         publisher_readiness: Sequence[PublisherReadiness],
         setup: SetupFn,
         parameters: Any = None,
+        service_readiness: Sequence[ServiceReadiness] = (),
     ) -> "HarnessCore":
         """Build and start the node under test. ``standalone_config`` must
         already carry the messaging endpoint, instance id, parameters, and one
@@ -674,6 +697,21 @@ class HarnessCore:
                     f"node's session within {READINESS_TIMEOUT}s; the mesh never routed "
                     "it — this is a harness/mock wiring bug, not a node bug"
                 )
+
+        # Reachability barrier for mocked services/actions: the node is a
+        # fresh caller, so gate its session's discovery of each mock
+        # queryable before setup's first poll/send_goal can race it.
+        for probe in service_readiness:
+            wait = wait_action_reachable if probe.kind == "action" else wait_service_reachable
+            await wait(
+                node_runner.messenger(),
+                node_runner.bound_core_node(),
+                node_runner.bound_instance_id(),
+                probe.target,
+                probe.name,
+                probe.producer,
+                READINESS_TIMEOUT,
+            )
 
         setup_task = asyncio.create_task(setup(parameters, node_runner))
         return cls(node_runner, setup_task)
