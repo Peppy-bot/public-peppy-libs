@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from peppylib import ProducerRef, SenderTarget, ServiceMessenger
+import peppylib.testing as peppy_testing
+from peppylib import ProducerRef, SenderTarget
 
 TEST_NODE_NAME = "test_node"
 TEST_NODE_TAG = "v1"
@@ -119,6 +120,10 @@ async def wait_for_service(
 
     `target` is the producer's full `(core_node, instance_id)` pair, or
     `None` to probe any matching producer.
+
+    The probe loop itself is the shared `peppylib.testing.wait_service_reachable`;
+    this wrapper interleaves the runner-thread liveness check so a crashed
+    runner fails the test immediately instead of timing out.
     """
     deadline = asyncio.get_event_loop().time() + timeout_secs
     while True:
@@ -126,16 +131,19 @@ async def wait_for_service(
             error = error_queue.get_nowait() if not error_queue.empty() else None
             pytest.fail(f"Runner exited early: {error}")
 
-        if await ServiceMessenger.is_reachable(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            SenderTarget.node(target_node_name, TEST_NODE_TAG),
-            service_name,
-            target,):
+        try:
+            await peppy_testing.wait_service_reachable(
+                messenger,
+                bound_core_node,
+                as_instance_id,
+                SenderTarget.node(target_node_name, TEST_NODE_TAG),
+                service_name,
+                target,
+                timeout=0.5,
+            )
             return
+        except TimeoutError:
+            pass
 
         if asyncio.get_event_loop().time() >= deadline:
             pytest.fail(f"{service_name} service did not become reachable")
-
-        await asyncio.sleep(0.05)

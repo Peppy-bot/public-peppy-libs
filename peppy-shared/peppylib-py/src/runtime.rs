@@ -886,6 +886,32 @@ impl PyNodeRunner {
         self.cached_messenger.clone()
     }
 
+    /// The cooperative-shutdown grace window, in seconds, that bounds the
+    /// registered shutdown hooks (daemon-resolved, or the built-in default in
+    /// standalone mode). The value a lifecycle-owning caller should pass to
+    /// [`run_shutdown_hooks`](Self::run_shutdown_hooks).
+    fn shutdown_grace_secs(&self) -> f64 {
+        self.inner.processor().shutdown_grace().as_secs_f64()
+    }
+
+    /// Run the registered shutdown hooks, bounded collectively by
+    /// `grace_secs`. `NodeBuilder().run(...)` does this itself on every exit
+    /// path; a caller that owns the runner's lifecycle directly (the
+    /// `peppylib.testing` harness over
+    /// [`new_standalone`](Self::new_standalone)) is responsible for this
+    /// convergence step. Takes the hooks out of the registry, so a second
+    /// call is harmless.
+    fn run_shutdown_hooks<'py>(&self, py: Python<'py>, grace_secs: f64) -> PyResult<Bound<'py, PyAny>> {
+        let grace = std::time::Duration::try_from_secs_f64(grace_secs).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid grace_secs: {e}"))
+        })?;
+        let runner = Arc::clone(&self.inner);
+        crate::py_future::future_into_py(py, async move {
+            runner.run_shutdown_hooks(grace).await;
+            Ok(())
+        })
+    }
+
     /// Get the core node this instance is bound to.
     fn bound_core_node(&self) -> &str {
         self.inner.processor().bound_core_node()

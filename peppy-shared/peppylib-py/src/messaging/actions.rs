@@ -687,7 +687,11 @@ impl PyPendingGoal {
 /// Python wrapper for [`peppylib::messaging::GoalContext`]. All methods take
 /// `&self`, so it can be shared across asyncio tasks; cancellation, completion,
 /// and feedback are all handled by the Rust engine.
-#[pyclass(name = "GoalContext")]
+///
+/// `weakref` so `peppylib.testing`'s mock action server can track live goal
+/// contexts without keeping them alive — a strong registry would defer the
+/// abandon-on-drop transition a test triggers by releasing its goal handle.
+#[pyclass(name = "GoalContext", weakref)]
 pub struct PyGoalContext {
     inner: Arc<GoalContext>,
 }
@@ -766,6 +770,17 @@ impl PyGoalContext {
                 .map_err(to_py_err)?;
             Ok(())
         })
+    }
+
+    /// Testing-only: disarm the drop-time close, so releasing this context
+    /// performs no `Abandoned` transition and emits no feedback end sentinel.
+    /// Exists for mock action servers simulating producer loss (see the Rust
+    /// `GoalContext::disarm_close_on_drop`); the wheel always ships it, the
+    /// same accepted trade-off as the inert generated mock subpackages. Never
+    /// call it from production node code — consumers rely on the abandon
+    /// transition it suppresses.
+    fn disarm_close_on_drop(&self) {
+        self.inner.disarm_close_on_drop();
     }
 }
 
