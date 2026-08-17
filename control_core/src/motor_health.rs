@@ -36,10 +36,15 @@ const MAX_STEP_S: f64 = 1.0;
 /// which warns sooner on loads that alternate. Loads here are quasi-static
 /// holds, this is an operator signal rather than a thermal model, and the
 /// winding temperature channel measures actual heat directly.
+///
+/// The average drives the warning level only, never critical: the payload
+/// spec's own 4.1 kg / 1 min hold sits near 1.8x continuous on the loaded
+/// joints, so a sustained threshold at any red-worthy value would fire
+/// during manufacturer-blessed holds. Critical is reserved for the
+/// channels that measure real danger directly: the instantaneous peak,
+/// the temperatures, and the fault frames.
 const TORQUE_WARN_ON: f64 = 0.90;
 const TORQUE_WARN_OFF: f64 = 0.75;
-const TORQUE_CRIT_ON: f64 = 1.0;
-const TORQUE_CRIT_OFF: f64 = 0.90;
 
 /// Release band for the instantaneous peak channel, as a fraction of the
 /// peak rating. The peak check is a bare threshold on a quantized reading,
@@ -64,8 +69,6 @@ const TEMP_HYSTERESIS_C: f64 = 5.0;
 
 const _: () = {
     assert!(TORQUE_WARN_ON > TORQUE_WARN_OFF);
-    assert!(TORQUE_CRIT_ON > TORQUE_CRIT_OFF);
-    assert!(TORQUE_CRIT_ON > TORQUE_WARN_ON);
     assert!(PEAK_RELEASE > 0.0 && PEAK_RELEASE < 1.0);
     assert!(TEMP_DRIVER_CRIT_C - TEMP_HYSTERESIS_C > TEMP_DRIVER_WARN_C);
     assert!(TEMP_WINDING_CRIT_C - TEMP_HYSTERESIS_C > TEMP_WINDING_WARN_C);
@@ -110,6 +113,20 @@ pub enum HealthLevel {
 impl HealthLevel {
     pub fn wire(self) -> u8 {
         self as u8
+    }
+
+    /// The level for a wire value, `None` for one outside the contract's
+    /// scale. The single inverse of [`Self::wire`], so a consumer cannot
+    /// drift its own decode table from the producer encoding.
+    pub fn from_wire(wire: u8) -> Option<Self> {
+        match wire {
+            0 => Some(Self::Nominal),
+            1 => Some(Self::Warning),
+            2 => Some(Self::Critical),
+            3 => Some(Self::Fault),
+            4 => Some(Self::NotReporting),
+            _ => None,
+        }
     }
 }
 
@@ -246,13 +263,8 @@ impl Latch {
 pub struct MotorHealthFilter {
     ratings: Ratings,
     fraction_ewma: Ewma,
-    /// The critical torque latch owes its engagement to an instantaneous
-    /// peak rather than to the EWMA crossing, so the cause stays PeakTorque
-    /// while hysteresis holds the latch below the sustained threshold.
-    crit_from_peak: bool,
     peak: Latch,
     torque_warn: Latch,
-    torque_crit: Latch,
     driver_warn: Latch,
     driver_crit: Latch,
     winding_warn: Latch,
@@ -267,10 +279,8 @@ impl MotorHealthFilter {
             ratings,
             fraction_ewma: Ewma::new(EWMA_TAU_S, MAX_STEP_S)
                 .expect("the tau and cap constants are positive"),
-            crit_from_peak: false,
             peak: Latch::default(),
             torque_warn: Latch::default(),
-            torque_crit: Latch::default(),
             driver_warn: Latch::default(),
             driver_crit: Latch::default(),
             winding_warn: Latch::default(),
@@ -330,19 +340,6 @@ impl MotorHealthFilter {
             self.ratings.peak_nm,
             self.ratings.peak_nm * PEAK_RELEASE,
         );
-        // Holds only what the average earned: the peak is its own channel,
-        // and the two combine in `verdict`.
-        self.torque_crit = self
-            .torque_crit
-            .updated(sustained, TORQUE_CRIT_ON, TORQUE_CRIT_OFF);
-        // The cause names the channel that engaged critical. A peak arriving
-        // while the sustained channel is already critical does not relabel a
-        // minute-long overload as a transient, and a peak that is the only
-        // critical-grade evidence is named as the peak even while the
-        // sustained average sits in the warning band: the two call for
-        // opposite operator actions.
-        self.crit_from_peak = self.peak.engaged() && !self.torque_crit.engaged();
-
         self.driver_warn = self.driver_warn.updated(
             sample.driver_temp.0,
             TEMP_DRIVER_WARN_C,
@@ -399,13 +396,10 @@ impl MotorHealthFilter {
                 Some(HealthCause::Fault("unrecognised state")),
             );
         }
-        let over_torque = if self.crit_from_peak {
-            HealthCause::PeakTorque
-        } else {
-            HealthCause::SustainedTorque
-        };
-        let critical = (self.torque_crit.engaged() || self.peak.engaged())
-            .then_some(over_torque)
+        let critical = self
+            .peak
+            .engaged()
+            .then_some(HealthCause::PeakTorque)
             .or_else(|| {
                 self.driver_crit
                     .engaged()
@@ -453,8 +447,8 @@ impl MotorHealthFilter {
 pub const MOTOR_ALERT_KIND: &str = "motor_condition";
 
 /// How often active alerts are re-emitted, so a consumer that starts late
-/// still learns of them. Producers declare a validity window comfortably
-/// above this on the wire.
+/// still learns of them. Comfortably inside the alert contract's 2000 ms
+/// re-emit ceiling, which is what consumers age alerts out against.
 pub const ALERT_HEARTBEAT_PERIOD: std::time::Duration = std::time::Duration::from_millis(1600);
 
 /// Health publish cadence shared by every producer, comfortably inside the
@@ -472,19 +466,12 @@ pub const STATE_STALE_AFTER: std::time::Duration = std::time::Duration::from_mil
 /// under a held load.
 pub const NOT_DRIVING_ESCALATE_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// How long a consumer may treat one health report as current, carried on
-/// the wire: three missed publishes at the contract's slowest allowed
-/// cadence.
-pub const HEALTH_VALID_FOR_MS: u32 = 1500;
-
-/// How long a consumer may hold an alert without a re-emission, carried on
-/// the wire: two missed [`ALERT_HEARTBEAT_PERIOD`] re-emits plus margin.
-pub const ALERT_VALID_FOR_MS: u32 = 5000;
-
 const _: () = {
-    assert!(2 * ALERT_HEARTBEAT_PERIOD.as_millis() < ALERT_VALID_FOR_MS as u128);
+    // The contract mandates a report at least every 500 ms; consumers age
+    // reports out on multiples of that cadence, on their own clocks.
     assert!(HEALTH_PERIOD.as_millis() <= 500);
-    assert!(3 * 500 == HEALTH_VALID_FOR_MS as u128);
+    // Alerts re-emit inside the contract's 2000 ms ceiling.
+    assert!(ALERT_HEARTBEAT_PERIOD.as_millis() < 2000);
 };
 
 /// Alert severity for a health level.
@@ -727,7 +714,10 @@ mod tests {
     }
 
     #[test]
-    fn sustained_spec_legal_hold_warns_then_escalates() {
+    fn a_sustained_overload_warns_and_never_escalates_on_the_average() {
+        // The payload spec's own 1-minute hold runs near 1.8x continuous,
+        // so the average may only warn: red is reserved for the peak, the
+        // temperatures, and the faults.
         let mut f = filter();
         assert_eq!(
             run(&mut f, sample(1.3 * RATED), 5.0).level,
@@ -737,10 +727,10 @@ mod tests {
             run(&mut f, sample(1.3 * RATED), 2.0).level,
             HealthLevel::Warning
         );
-        assert_eq!(
-            run(&mut f, sample(1.3 * RATED), 30.0).level,
-            HealthLevel::Critical
-        );
+        let held = run(&mut f, sample(1.3 * RATED), 60.0);
+        assert_eq!(held.level, HealthLevel::Warning);
+        assert_eq!(held.cause, Some(HealthCause::SustainedTorque));
+        assert!(held.torque_fraction > 1.0);
     }
 
     #[test]
@@ -795,19 +785,6 @@ mod tests {
             levels.iter().all(|l| *l == HealthLevel::Critical),
             "level flapped across the peak threshold: {levels:?}"
         );
-    }
-
-    #[test]
-    fn a_peak_does_not_relabel_an_already_sustained_overload() {
-        // The two causes call for opposite operator actions: "you bumped
-        // something" against "put the payload down".
-        let mut f = filter();
-        let sustained = run(&mut f, sample(1.2 * RATED), 60.0);
-        assert_eq!(sustained.cause, Some(HealthCause::SustainedTorque));
-        let spiked = f.step(sample(PEAK), DT);
-        assert_eq!(spiked.cause, Some(HealthCause::SustainedTorque));
-        let after = run(&mut f, sample(0.95 * RATED), 20.0);
-        assert_eq!(after.cause, Some(HealthCause::SustainedTorque));
     }
 
     #[test]
@@ -1193,6 +1170,22 @@ mod alert_tests {
         assert_eq!(gone[0].source, "left arm j5");
         assert_eq!(gone[0].severity, 3, "silence is at least as bad as a fault");
         assert!(gone[0].message.contains("stopped reporting"));
+    }
+
+    #[test]
+    fn every_level_round_trips_through_the_wire_and_junk_decodes_to_none() {
+        for level in [
+            HealthLevel::Nominal,
+            HealthLevel::Warning,
+            HealthLevel::Critical,
+            HealthLevel::Fault,
+            HealthLevel::NotReporting,
+        ] {
+            assert_eq!(HealthLevel::from_wire(level.wire()), Some(level));
+        }
+        for junk in [5, 6, 255] {
+            assert_eq!(HealthLevel::from_wire(junk), None);
+        }
     }
 
     #[test]
