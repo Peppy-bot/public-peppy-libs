@@ -78,6 +78,12 @@ fn zenohd_log_excerpt(log_path: &Path) -> String {
     }
 }
 
+/// Environment variable naming an explicit `zenohd` binary to run, taking
+/// precedence over every packaged/built candidate. The escape hatch for
+/// installed-wheel and installed-crate consumers whose build baked a
+/// build-machine `ZENOHD_BINARY_PATH` that does not exist on this host.
+pub const ZENOHD_PATH_VAR: &str = "PEPPY_ZENOHD_PATH";
+
 /// Resolve only release-authorized router artifacts: a binary packaged beside
 /// the current executable, or the exact content-tagged artifact embedded by
 /// pmi's build script. In particular this helper has no PATH input, which keeps
@@ -99,11 +105,87 @@ fn packaged_or_built_zenohd(
         .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
+/// A `zenohd` packaged beside the `peppy` binary found on `path_var`. Unlike a
+/// bare `zenohd` on PATH, this candidate has provenance: an installed peppy
+/// distribution ships its router next to the CLI, so the peppy install anchors
+/// which zenohd belongs with this workspace even when the *current* executable
+/// is not peppy itself (a node's test binary, an installed peppylib wheel).
+/// Release-authorized for that reason.
+fn zenohd_beside_peppy_on_path(path_var: Option<&std::ffi::OsStr>) -> Option<String> {
+    let path_var = path_var?;
+    for dir in env::split_paths(path_var) {
+        if dir.join("peppy").is_file() {
+            let candidate = dir.join("zenohd");
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Full resolution policy, ordered by provenance strength. Pure in its inputs
+/// so the order is testable without mutating process globals:
+/// 1. an explicit [`ZENOHD_PATH_VAR`] override (used verbatim — a missing file
+///    surfaces as the spawn error naming the operator's path, never a silent
+///    fallback to a different binary),
+/// 2. a `zenohd` packaged beside the current executable,
+/// 3. the exact artifact embedded by pmi's `build_zenoh` build script,
+/// 4. a `zenohd` beside the `peppy` binary found on PATH,
+/// 5. (debug builds only) a bare `zenohd` anywhere on PATH.
+fn resolve_zenohd_binary(
+    env_override: Option<std::ffi::OsString>,
+    current_executable: Option<&Path>,
+    built_artifact: Option<&Path>,
+    path_var: Option<&std::ffi::OsStr>,
+) -> Option<String> {
+    if let Some(explicit) = env_override.filter(|value| !value.is_empty()) {
+        return Some(explicit.to_string_lossy().into_owned());
+    }
+
+    if let Some(path) = packaged_or_built_zenohd(current_executable, built_artifact) {
+        return Some(path);
+    }
+
+    if let Some(path) = zenohd_beside_peppy_on_path(path_var) {
+        return Some(path);
+    }
+
+    // Developer builds may use an explicitly installed zenohd for fast
+    // iteration. Release builds deliberately compile this branch out: a
+    // bare `zenohd` picked up from PATH has no provenance and no guaranteed
+    // version relationship to the `zenoh` library this binary links, while
+    // every candidate above is packaged or built alongside it (or an explicit
+    // operator choice). Note that this follows the Cargo profile's
+    // `debug-assertions` setting rather than the profile name, so a release
+    // profile that turns debug assertions back on opts back into it.
+    #[cfg(debug_assertions)]
+    if let Some(path_var) = path_var {
+        for dir in env::split_paths(path_var) {
+            let candidate = dir.join("zenohd");
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    None
+}
+
 /// The Zenoh daemon binary facade. Zenohd is not accessible via the Rust API (or in a very limited fashion).
 /// This facade allows calling the binary in the background.
 pub struct ZenohdFacade {
     ownership: RouterOwnership,
     adopted: bool,
+    /// When set, the spawned zenohd is SIGKILLed by the kernel if the spawning
+    /// thread dies (`PR_SET_PDEATHSIG`, Linux only). Opted into only by the
+    /// ephemeral-router path — where the spawning runtime lives exactly as long
+    /// as the test that owns the router — so a SIGKILLed test process cannot
+    /// orphan its zenohd. Deliberately never set for daemon-managed routers:
+    /// the pdeathsig contract is per-*thread*, and tying a production router's
+    /// life to whichever runtime thread happened to spawn it would be fragile.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    kill_on_parent_death: bool,
     pub router_process: Option<Child>,
     pub zenoh_endpoint: ZenohEndpoint,
 }
@@ -139,6 +221,7 @@ impl ZenohdFacade {
                 router_id,
             },
             adopted: false,
+            kill_on_parent_death: false,
             router_process: None,
             zenoh_endpoint,
         })
@@ -151,40 +234,30 @@ impl ZenohdFacade {
         Self {
             ownership: RouterOwnership::External,
             adopted: false,
+            kill_on_parent_death: false,
             router_process: None,
             zenoh_endpoint,
         }
     }
 
+    /// Opt this managed router into kernel-enforced reaping: the spawned zenohd
+    /// receives SIGKILL when the spawning thread dies (`PR_SET_PDEATHSIG`;
+    /// no-op off Linux). See the field doc for why only the ephemeral-router
+    /// path sets this.
+    pub(crate) fn set_kill_on_parent_death(&mut self) {
+        self.kill_on_parent_death = true;
+    }
+
     fn get_zenohd_binary() -> Option<String> {
         let current_executable = env::current_exe().ok();
         let built_artifact = option_env!("ZENOHD_BINARY_PATH").map(Path::new);
-        if let Some(path) = packaged_or_built_zenohd(current_executable.as_deref(), built_artifact)
-        {
-            return Some(path);
-        }
-
-        // Developer builds may use an explicitly installed zenohd for fast
-        // iteration. Release builds deliberately compile this branch out: a
-        // `zenohd` picked up from PATH has no provenance and no guaranteed
-        // version relationship to the `zenoh` library this binary links, while
-        // the two candidates above are packaged or built alongside it. Note that
-        // this follows the Cargo profile's `debug-assertions` setting rather
-        // than the profile name, so a release profile that turns debug
-        // assertions back on opts back into it.
-        #[cfg(debug_assertions)]
-        {
-            if let Some(path_var) = env::var_os("PATH") {
-                for dir in env::split_paths(&path_var) {
-                    let candidate = dir.join("zenohd");
-                    if candidate.is_file() {
-                        return Some(candidate.to_string_lossy().into_owned());
-                    }
-                }
-            }
-        }
-
-        None
+        let path_var = env::var_os("PATH");
+        resolve_zenohd_binary(
+            env::var_os(ZENOHD_PATH_VAR),
+            current_executable.as_deref(),
+            built_artifact,
+            path_var.as_deref(),
+        )
     }
 
     fn connect_addr(&self) -> String {
@@ -450,10 +523,16 @@ impl ZenohdFacade {
             ));
         };
         let zenohd_path = zenohd_path.clone().ok_or_else(|| {
-            Error::ZenohdError(
-                "Zenohd binary not found. Release builds require a `zenohd` packaged next to `peppy` or the exact artifact produced by pmi's `build_zenoh` feature; a `zenohd` merely on PATH is not used."
-                    .to_string(),
-            )
+            Error::ZenohdError(format!(
+                "Zenohd binary not found. Checked, in order: the `{ZENOHD_PATH_VAR}` \
+                 environment variable (unset), a `zenohd` packaged beside the current \
+                 executable, the exact artifact produced by pmi's `build_zenoh` feature, \
+                 and a `zenohd` beside the `peppy` binary on PATH. Fix: set \
+                 `{ZENOHD_PATH_VAR}` to an explicit zenohd binary, or install a peppy \
+                 distribution (which ships zenohd next to `peppy`). A bare `zenohd` on \
+                 PATH is honored only in debug builds, because it has no guaranteed \
+                 version relationship to the linked zenoh library."
+            ))
         })?;
         let zenohd_config_path = zenohd_config_path.clone();
         let zenohd_log_path = zenohd_log_path.clone();
@@ -475,15 +554,35 @@ impl ZenohdFacade {
         let zenohd_log_level =
             env::var("PEPPY_ZENOHD_LOG").unwrap_or_else(|_| "zenoh=warn".to_string());
 
-        let child = Command::new(zenohd_path)
+        let mut command = Command::new(&zenohd_path);
+        command
             .env("ZENOH_CONFIG", zenohd_config_path.as_os_str())
             .env("RUST_LOG", zenohd_log_level)
             .arg("-c")
             .arg(&zenohd_config_path)
             .stdout(Stdio::from(log_file))
-            .stderr(Stdio::from(stderr_file))
+            .stderr(Stdio::from(stderr_file));
+        #[cfg(target_os = "linux")]
+        if self.kill_on_parent_death {
+            use std::os::unix::process::CommandExt;
+            // The one crate-wide unsafe opt-out (see lib.rs): `pre_exec` is
+            // unsafe by signature, so no safe equivalent exists.
+            // SAFETY: the pre_exec closure runs in the forked child before
+            // exec; prctl on the child's own process is async-signal-safe and
+            // touches no parent state.
+            #[allow(unsafe_code)]
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let child = command
             .spawn()
-            .map_err(|e| Error::BackendError(format!("Failed to start zenohd: {}", e)))?;
+            .map_err(|e| Error::BackendError(format!("Failed to start zenohd `{zenohd_path}`: {e}")))?;
 
         // Store the child before any async readiness wait. If the caller's
         // timeout cancels that wait, Drop or the next stop/start still owns it.
@@ -607,6 +706,107 @@ mod tests {
             packaged_or_built_zenohd(Some(&current_executable), Some(&built)),
             None,
             "missing authorized artifacts do not become a command-name/PATH fallback"
+        );
+    }
+
+    #[test]
+    fn explicit_env_override_wins_and_is_used_verbatim() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let package_dir = dir.path().join("package");
+        std::fs::create_dir(&package_dir).expect("create package dir");
+        let current_executable = package_dir.join("peppy");
+        let adjacent = package_dir.join("zenohd");
+        std::fs::write(&adjacent, b"packaged").expect("write adjacent artifact");
+        let operator_choice = dir.path().join("operator/zenohd");
+
+        // The override wins over an existing packaged candidate, and is used
+        // verbatim even though the file does not exist: a missing operator
+        // path must surface as a spawn error naming that path, not silently
+        // fall back to a different binary.
+        assert_eq!(
+            resolve_zenohd_binary(
+                Some(operator_choice.clone().into_os_string()),
+                Some(&current_executable),
+                None,
+                None,
+            ),
+            Some(operator_choice.to_string_lossy().into_owned()),
+        );
+
+        // An empty override is treated as unset (the common `VAR= cmd` shell
+        // idiom for clearing), falling through to the packaged candidate.
+        assert_eq!(
+            resolve_zenohd_binary(
+                Some(std::ffi::OsString::new()),
+                Some(&current_executable),
+                None,
+                None,
+            ),
+            Some(adjacent.to_string_lossy().into_owned()),
+        );
+    }
+
+    #[test]
+    fn peppy_adjacent_path_probe_requires_the_peppy_anchor() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let with_peppy = dir.path().join("with_peppy");
+        let without_peppy = dir.path().join("without_peppy");
+        std::fs::create_dir(&with_peppy).expect("create dir");
+        std::fs::create_dir(&without_peppy).expect("create dir");
+        std::fs::write(without_peppy.join("zenohd"), b"unanchored").expect("write");
+
+        let path_var = env::join_paths([&without_peppy, &with_peppy]).expect("join paths");
+
+        // A `zenohd` in a PATH directory with no `peppy` beside it is not a
+        // release-authorized candidate for this probe.
+        assert_eq!(zenohd_beside_peppy_on_path(Some(path_var.as_os_str())), None);
+
+        // Once a peppy install anchors the directory, its zenohd is used.
+        std::fs::write(with_peppy.join("peppy"), b"cli").expect("write");
+        std::fs::write(with_peppy.join("zenohd"), b"anchored").expect("write");
+        assert_eq!(
+            zenohd_beside_peppy_on_path(Some(path_var.as_os_str())),
+            Some(with_peppy.join("zenohd").to_string_lossy().into_owned()),
+        );
+
+        // A peppy install without a packaged zenohd contributes nothing.
+        std::fs::remove_file(with_peppy.join("zenohd")).expect("remove");
+        assert_eq!(zenohd_beside_peppy_on_path(Some(path_var.as_os_str())), None);
+    }
+
+    #[test]
+    fn resolution_order_prefers_packaged_over_peppy_adjacent() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let package_dir = dir.path().join("package");
+        let path_dir = dir.path().join("on_path");
+        std::fs::create_dir(&package_dir).expect("create dir");
+        std::fs::create_dir(&path_dir).expect("create dir");
+        let current_executable = package_dir.join("node_test_binary");
+        std::fs::write(path_dir.join("peppy"), b"cli").expect("write");
+        std::fs::write(path_dir.join("zenohd"), b"peppy-adjacent").expect("write");
+        let path_var = env::join_paths([&path_dir]).expect("join paths");
+
+        // With no packaged/built candidate, the peppy-adjacent probe answers.
+        assert_eq!(
+            resolve_zenohd_binary(
+                None,
+                Some(&current_executable),
+                None,
+                Some(path_var.as_os_str()),
+            ),
+            Some(path_dir.join("zenohd").to_string_lossy().into_owned()),
+        );
+
+        // A zenohd packaged beside the current executable outranks it.
+        std::fs::write(package_dir.join("zenohd"), b"packaged").expect("write");
+        assert_eq!(
+            resolve_zenohd_binary(
+                None,
+                Some(&current_executable),
+                None,
+                Some(path_var.as_os_str()),
+            ),
+            Some(package_dir.join("zenohd").to_string_lossy().into_owned()),
         );
     }
 
