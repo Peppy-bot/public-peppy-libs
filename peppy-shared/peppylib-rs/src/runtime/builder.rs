@@ -308,6 +308,31 @@ where
         })
     }
 
+    /// [`init`](Self::init), but always standalone: `PEPPY_RUNTIME_CONFIG` is
+    /// deliberately ignored (with a warning when set) instead of hijacking the
+    /// mode. This is the entry point for test harnesses, which build the node
+    /// in-process against their own router and must not be redirected to a
+    /// daemon by an environment variable inherited from the invoking shell.
+    pub fn init_standalone(self) -> Result<NodeContext<Params>> {
+        if std::env::var(config::consts::RUNTIME_CONFIG_VAR_NAME).is_ok() {
+            tracing::warn!(
+                "{} is set but ignored: init_standalone always runs standalone \
+                 (a test harness must not be hijacked into daemon mode by an \
+                 inherited environment)",
+                config::consts::RUNTIME_CONFIG_VAR_NAME
+            );
+        }
+        let config = self.standalone_config.clone().unwrap_or_default();
+        let processor = Processor::new_standalone(&self.peppy_config_path, &config)?;
+        let params: Params = crate::config::deserialize_parameters(processor.input_arguments())?;
+        Ok(NodeContext {
+            processor,
+            mode: ExecutionMode::Standalone(Box::new(config)),
+            cancellation_token: None,
+            params: Some(params),
+        })
+    }
+
     /// Run with a closure pattern.
     ///
     /// Creates a Tokio runtime internally. For custom runtime configuration

@@ -1,7 +1,9 @@
-// peppylib's shipped library contains no `unsafe`. This denies any new unsafe
-// crate-wide (production and test code alike); the only opt-out is the scoped
-// `#![allow(unsafe_code)]` in `messaging/tests.rs`, which needs load-bearing
-// FFI/ctor test infrastructure with no safe equivalent.
+// peppylib's shipped library contains no `unsafe` in production code paths.
+// This denies any new unsafe crate-wide; the only opt-outs are the two scoped
+// `#[allow(unsafe_code)]` helpers in the `testing` module (never compiled into
+// production builds — the `testing` feature is enabled via dev-dependencies
+// only), which need load-bearing FFI/ctor test infrastructure with no safe
+// equivalent.
 #![deny(unsafe_code)]
 
 mod error;
@@ -30,6 +32,13 @@ pub mod datastore;
 mod info;
 pub mod stack;
 pub use info::info;
+
+// Node-invariant test machinery (ephemeral router, mock cores, harness core)
+// for generated per-node test code and this workspace's own suites. Gated so
+// none of it can reach a production binary: node crates enable the feature
+// via `[dev-dependencies]`, which `cargo build` never resolves.
+#[cfg(feature = "testing")]
+pub mod testing;
 
 pub use types::{Message, Payload};
 

@@ -9,7 +9,7 @@ use core_node_api::{
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use peppylib::runtime::NodeRunner;
 use peppylib::stack;
-use pmi::ZenohdInstance;
+use peppylib::testing::EphemeralRouter;
 use tempfile::TempDir;
 
 use super::common::{
@@ -58,7 +58,7 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
 async fn setup_stub(
     graph: SerializedNodeGraph,
     host_name: &str,
-) -> (ZenohdInstance, TempDir, NodeRunner) {
+) -> (EphemeralRouter, TempDir, NodeRunner) {
     let (router, temp_dir, node_runner, server) = start_router_and_runner().await;
     spawn_stub_listener(server, graph, host_name).await;
     wait_until_reachable(node_runner.messenger(), ServiceId::StackList.name()).await;

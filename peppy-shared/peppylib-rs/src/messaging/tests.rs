@@ -1,19 +1,17 @@
-// The crate sets `#![deny(unsafe_code)]` in lib.rs. This test module is the one
-// place that needs `unsafe`, in exactly two pre-main helpers below: the
-// `#[ctor::ctor(unsafe)]` that sets `ZENOH_RUNTIME` before zenoh's lazy global
-// runtime initializes, and the `libc` getrlimit/setrlimit FFI that raises the
-// fd limit to avoid EMFILE flakes. Both are load-bearing and have no safe
-// equivalent. Each helper carries its own `#[allow(unsafe_code)]` so the
-// crate-wide deny still guards the rest of this file against accidental unsafe.
+// The test-environment machinery this module used to define inline (the
+// pre-main ZENOH_RUNTIME ctor, the fd-limit FFI, the mesh-serialization
+// mutex, the ephemeral router context) now ships once in `crate::testing`
+// (enabled for this crate's own tests via the cyclic self-dev-dependency),
+// where generated node test code shares it. These tests double as the
+// regression net for those helpers.
 
 use crate::types::Payload;
 use config::node::QoSProfile;
-use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Once};
 use std::time::Duration;
 use tokio::sync::oneshot;
 
@@ -81,147 +79,50 @@ impl ActionClientCase {
     }
 }
 
-/// Pre-main: gives zenoh's global Net runtime more worker threads for this
-/// test binary. Stock zenoh (1.9.0 through at least 1.10.0 — the fix below
-/// has not shipped in a release) can deadlock its routing layer under the
-/// peer-session churn these tests generate: a thread holding the routing
-/// `ctrl_lock` parks in `block_in_place` waiting on the StartConditions
-/// mutex while the Net runtime's single default worker blocks on that same
-/// `ctrl_lock`, wedging the mutex queue (fix pending upstream in
-/// https://github.com/eclipse-zenoh/zenoh/pull/2637). With more Net workers
-/// a free worker can always drain the mutex queue, which un-parks the lock
-/// holder; 80 runs of the three churn-heaviest tests reproduced no hang with
-/// 4 workers, versus a hang within ~23 runs on the single-worker default.
-///
-/// Runs before `main` so the variable is set before libtest spawns any
-/// thread and before zenoh's lazy global runtimes read it. Spawned zenohd
-/// child processes inherit it, which is harmless. An operator-provided
-/// `ZENOH_RUNTIME` wins. Remove once the upstream fix ships in a release.
-#[allow(unsafe_code)]
-#[ctor::ctor(unsafe)]
-fn ensure_zenoh_net_runtime_workers() {
-    if std::env::var_os("ZENOH_RUNTIME").is_none() {
-        // SAFETY: runs pre-main on the only live thread, so no other thread
-        // can concurrently read or write the process environment.
-        unsafe { std::env::set_var("ZENOH_RUNTIME", "(net: (worker_threads: 4))") };
-    }
-}
-
-/// Raises the process soft `nofile` limit once per test binary. Each test below
-/// spawns an ephemeral zenoh router, and running them in parallel can exhaust
-/// file descriptors under the macOS default soft limit of 256, surfacing as
-/// flaky `Too many open files` (EMFILE) errors. Bumping the soft limit toward
-/// the hard limit removes that ceiling without reducing test parallelism. Best
-/// effort: a failed syscall leaves the original limit in place and the real
-/// EMFILE error still surfaces.
-#[allow(unsafe_code)]
-fn ensure_test_fd_limit() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        // 8192 is comfortably above the peak concurrent router count and well
-        // under the macOS per-process cap (kern.maxfilesperproc).
-        const DESIRED_SOFT: libc::rlim_t = 8192;
-        // SAFETY: get/setrlimit operate on a stack-allocated rlimit and report
-        // failure through their return code, which we honor.
-        unsafe {
-            let mut limit = libc::rlimit {
-                rlim_cur: 0,
-                rlim_max: 0,
-            };
-            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
-                return;
-            }
-            let target = DESIRED_SOFT.min(limit.rlim_max);
-            if limit.rlim_cur >= target {
-                return;
-            }
-            limit.rlim_cur = target;
-            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
-        }
-    });
-}
-
-/// Serializes the zenoh router/peer tests in this binary. Running several
-/// independent peer meshes at once starves peer-mode gossip discovery (every
-/// peer opens listeners and forms links), which makes cold-start delivery flaky;
-/// one mesh at a time keeps discovery fast and deterministic. Mirrors pmi's
-/// `ZENOH_SERIAL`. The guard is held for each test's lifetime via the field
-/// below, so acquiring the context is all a test needs to opt in.
-///
-/// KNOWN FLAKE: zenoh (1.9.0 through at least 1.10.0) can deadlock its
-/// routing layer under the peer-session churn these tests generate (see
-/// [`ensure_zenoh_net_runtime_workers`], which suppresses the trigger for
-/// this binary). If it ever fires anyway, the running test hangs forever and
-/// every later test queues on this mutex, so the whole binary looks stuck
-/// ("test has been running for over 60 seconds" for several tests at once).
-/// It cannot be contained in-process: session teardown needs the deadlocked
-/// locks. Kill the run and retry; do not debug peppy for it.
-static ZENOH_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
+/// Thin expect-adapting wrapper over [`crate::testing::EphemeralRouter`],
+/// which owns every router/test-environment semantic these tests rely on: the
+/// pre-main ZENOH_RUNTIME worker ctor, the fd-limit raise, the per-process
+/// mesh-serialization guard (held for this context's lifetime), the zenoh-open
+/// readiness probe, and connect retries. Kept as a local name so the ~40 tests
+/// below read unchanged and panic with the same messages they always did.
 struct TestRouterContext {
-    instance: ZenohdInstance,
-    _serial: tokio::sync::MutexGuard<'static, ()>,
+    router: crate::testing::EphemeralRouter,
 }
 
 impl TestRouterContext {
     async fn start() -> Self {
-        let serial = ZENOH_SERIAL.lock().await;
-        ensure_test_fd_limit();
-        let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
-            .await
-            .expect("failed to start zenoh router for tests");
         Self {
-            instance,
-            _serial: serial,
+            router: crate::testing::EphemeralRouter::start()
+                .await
+                .expect("failed to start zenoh router for tests"),
         }
     }
 
     fn host(&self) -> &str {
-        &self.instance.host
+        self.router.host()
     }
 
     fn port(&self) -> u16 {
-        self.instance.port
+        self.router.port()
     }
 
     fn connection_target(&self) -> (String, u16) {
-        (self.instance.host.clone(), self.instance.port)
+        self.router.connection_target()
     }
 
     async fn messenger(&self) -> MessengerHandle {
-        connect_messenger(self.host(), self.port()).await
+        self.router
+            .connect()
+            .await
+            .expect("failed to connect messenger to the test router")
     }
 
-    async fn shutdown(mut self) {
-        self.instance
-            .messenger()
-            .stop_router()
+    async fn shutdown(self) {
+        self.router
+            .shutdown()
             .await
             .expect("Failed to shutdown router");
     }
-}
-
-async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
-    const MAX_RETRIES: u32 = 5;
-    const RETRY_DELAY: Duration = Duration::from_millis(200);
-
-    let mut last_error = None;
-    for attempt in 0..MAX_RETRIES {
-        match MessengerHandle::connect(host, port).await {
-            Ok(handle) => return handle,
-            Err(error) => {
-                last_error = Some(error);
-                if attempt + 1 < MAX_RETRIES {
-                    tokio::time::sleep(RETRY_DELAY).await;
-                }
-            }
-        }
-    }
-
-    panic!(
-        "failed to connect messenger to {host}:{port} after {MAX_RETRIES} attempts: {:?}",
-        last_error.unwrap()
-    );
 }
 
 /// The target-scoped infra subscription (`clock` / `daemon_heartbeat`
@@ -2134,7 +2035,9 @@ async fn service_handle_request_processes_multiple_messages() {
     let host = host.clone();
 
     let service_task = {
-        let service_expose_handle = connect_messenger(&host, port).await;
+        let service_expose_handle = crate::testing::connect_messenger(&host, port)
+            .await
+            .expect("failed to connect messenger to the test router");
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
             listener_core_node,
@@ -2314,7 +2217,9 @@ async fn single_service_communication_multiple_polls_and_callers() {
             requests.shuffle(&mut rng);
             let host = host.clone();
             let poll_service = tokio::spawn(async move {
-                let caller_handle = connect_messenger(&host, port).await;
+                let caller_handle = crate::testing::connect_messenger(&host, port)
+            .await
+            .expect("failed to connect messenger to the test router");
 
                 let mut caller_results = Vec::with_capacity(requests.len());
                 for (request_idx, request_payload) in requests {
@@ -3262,7 +3167,9 @@ async fn single_action_communication_multiple_polls() {
         let feedback_search_limit = total_clients;
 
         let handle = tokio::spawn(async move {
-            let caller_handle = connect_messenger(&host, port).await;
+            let caller_handle = crate::testing::connect_messenger(&host, port)
+            .await
+            .expect("failed to connect messenger to the test router");
 
             let mut goal_handle = ActionMessenger::send_goal(
                 &caller_handle,
