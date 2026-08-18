@@ -905,6 +905,19 @@ impl PyNodeRunner {
         let grace = std::time::Duration::try_from_secs_f64(grace_secs).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("invalid grace_secs: {e}"))
         })?;
+        // Under `NodeBuilder().run(...)` the hook loop slot was published when
+        // the runtime started the node's own loop. A lifecycle-owning caller
+        // (the `peppylib.testing` harness over `new_standalone`) drove `setup`
+        // on its own loop instead and the slot is still empty; publish the
+        // calling loop so hook coroutines run where setup's tasks and futures
+        // live, not on a one-off `asyncio.run` loop.
+        if let Ok(mut slot) = self.event_loop_slot.lock()
+            && slot.is_none()
+            && let Ok(asyncio) = py.import("asyncio")
+            && let Ok(running) = asyncio.call_method0("get_running_loop")
+        {
+            *slot = Some(running.unbind());
+        }
         let runner = Arc::clone(&self.inner);
         crate::py_future::future_into_py(py, async move {
             runner.run_shutdown_hooks(grace).await;

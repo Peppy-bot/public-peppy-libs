@@ -263,6 +263,7 @@ async def test_harness_core_boots_node_observes_first_publish_and_converges(tmp_
         readiness = [PublisherReadiness(target=_node_target("test_node"), topic="status")]
 
         hook_ran = asyncio.Event()
+        async_hook_finished = asyncio.Event()
 
         async def setup(params, node_runner):
             assert params is None
@@ -278,6 +279,24 @@ async def test_harness_core_boots_node_observes_first_publish_and_converges(tmp_
             # this deliverable.
             await publisher.publish(b"alive")
             node_runner.on_shutdown(hook_ran.set)
+
+            # A worker task on the harness loop plus an async hook awaiting it:
+            # the production shape of a decoder/pump teardown hook. Regression:
+            # the hook coroutine must run on the loop setup ran on (where this
+            # task lives), not on a one-off `asyncio.run` loop.
+            stop = asyncio.Event()
+
+            async def worker():
+                await stop.wait()
+
+            worker_task = asyncio.create_task(worker())
+
+            async def stop_worker():
+                stop.set()
+                await worker_task
+                async_hook_finished.set()
+
+            node_runner.on_shutdown(stop_worker)
 
         # A mock service declared before the node exists: the reachability
         # half of the barrier must make it visible to the node's session
@@ -310,6 +329,9 @@ async def test_harness_core_boots_node_observes_first_publish_and_converges(tmp_
 
         await harness.shutdown()
         assert hook_ran.is_set(), "shutdown() must run the node's registered shutdown hooks"
+        assert async_hook_finished.is_set(), (
+            "async shutdown hooks must run on the setup loop, where setup's tasks live"
+        )
         await mock_service.close()
 
 
