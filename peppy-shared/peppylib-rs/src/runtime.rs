@@ -12,7 +12,7 @@ pub use observation::{
     subscribe_observed_with_watch,
 };
 pub use pairing::{PeerSlot, PeerSubscription, subscribe_peer, subscribe_peer_with_watch};
-pub use processor::Processor;
+pub use processor::{Processor, STANDALONE_CORE_NODE};
 
 /// In-flight buffer between a slot's forwarding task and the consuming code,
 /// in messages, shared by the pairing and observer subscriptions. Deliberately

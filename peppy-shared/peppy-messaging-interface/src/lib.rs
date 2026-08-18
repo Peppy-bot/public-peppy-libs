@@ -5,7 +5,12 @@
 // (no zenoh) therefore does not compile. Every supported configuration enables
 // `zenoh` (the default). See the `tokio` note in Cargo.toml.
 
-#![forbid(unsafe_code)]
+// `deny` rather than `forbid` so exactly one scoped opt-out can exist: the
+// `pre_exec` + `prctl(PR_SET_PDEATHSIG)` block in `zenohd::facade` that lets the
+// kernel reap an ephemeral router when its SIGKILLed owner can run no Drop.
+// `pre_exec` is unsafe by signature, so there is no safe equivalent; any other
+// unsafe stays denied crate-wide (mirrors peppylib-rs's policy).
+#![deny(unsafe_code)]
 
 mod adapters;
 mod error;
@@ -63,8 +68,16 @@ pub use adapters::zenoh::ZenohAdapter;
 pub use adapters::zenoh::ZenohdInstance;
 #[cfg(feature = "router")]
 pub use zenohd::RouterHealthChecker;
+/// The environment variable naming an explicit `zenohd` binary, taking
+/// precedence over every packaged/built candidate in router resolution.
+#[cfg(feature = "router")]
+pub use zenohd::ZENOHD_PATH_VAR;
 #[cfg(feature = "router")]
 pub use zenohd::RouterLinksProbe;
+/// Router-process facade; its [`ZenohdFacade::resolved_zenohd_binary`] lets
+/// test tooling forward the resolved binary to child processes.
+#[cfg(feature = "router")]
+pub use zenohd::ZenohdFacade;
 #[cfg(feature = "zenoh")]
 pub use zenohd::{ZenohEndpoint, ZenohNetProtocol};
 // TLS material + the out-of-process router-config renderer. Available under the

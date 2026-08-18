@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+import peppylib.testing as peppy_testing
 from peppylib import (
     MessengerHandle,
     NodeRunner,
@@ -18,7 +19,6 @@ from peppylib import (
     SenderTarget,
     ServiceMessenger,
     StandaloneConfig,
-    ZenohdInstance,
 )
 
 CORE_NODE = "standalone-core"
@@ -43,20 +43,20 @@ def write_standalone_peppy_config(tmp_path: Path) -> Path:
 
 
 async def wait_until_reachable(messenger, service_name: str) -> None:
-    """Poll `is_reachable` until the service responds, bounded by a 5s deadline."""
-    deadline = asyncio.get_event_loop().time() + 5.0
-    while True:
-        if await ServiceMessenger.is_reachable(
+    """Poll `is_reachable` until the service responds, bounded by a 5s
+    deadline, via the shared `peppylib.testing` wait."""
+    try:
+        await peppy_testing.wait_service_reachable(
             messenger,
             CORE_NODE,
             CLIENT_INSTANCE,
             SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
             service_name,
-            ProducerRef(CORE_NODE, SERVER_INSTANCE),):
-            return
-        if asyncio.get_event_loop().time() >= deadline:
-            pytest.fail(f"{service_name} stub did not become reachable within 5s")
-        await asyncio.sleep(0.025)
+            ProducerRef(CORE_NODE, SERVER_INSTANCE),
+            timeout=5.0,
+        )
+    except TimeoutError:
+        pytest.fail(f"{service_name} stub did not become reachable within 5s")
 
 
 async def start_router_and_runner(tmp_path: Path):
@@ -68,7 +68,9 @@ async def start_router_and_runner(tmp_path: Path):
     router and runner for the duration of the test — dropping them tears down
     the messaging fabric.
     """
-    router = await ZenohdInstance.start_ephemeral("127.0.0.1")
+    # `peppylib.testing.EphemeralRouter` also serializes meshes within this
+    # loop and applies the fd-limit / ZENOH_RUNTIME test-process setup.
+    router = await peppy_testing.EphemeralRouter.start()
     # The node runner opens its session under a workspace namespace; the standalone
     # config carries no workspace id, so it resolves to the `local`
     # namespace. The stub server must open under that same namespace — zenoh

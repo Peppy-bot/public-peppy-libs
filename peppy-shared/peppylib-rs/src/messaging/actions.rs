@@ -1776,6 +1776,7 @@ impl PendingGoal {
             // `accept` is always awaited on the runtime, so a handle is
             // available here; `Drop` reuses it to spawn cleanup from any thread.
             runtime: tokio::runtime::Handle::current(),
+            close_on_drop: AtomicBool::new(true),
         })
     }
 
@@ -1811,6 +1812,12 @@ pub struct GoalContext {
     /// interpreter thread, so capturing the handle keeps cleanup identical
     /// across Rust and Python rather than silently degrading off-runtime.
     runtime: tokio::runtime::Handle,
+    /// Whether `Drop` performs its abandon-on-drop cleanup. Always `true` in
+    /// production; cleared only through the `testing`-gated
+    /// [`disarm_close_on_drop`](Self::disarm_close_on_drop). The field itself
+    /// is unconditional (a feature-dependent struct layout would be worse);
+    /// only the setter is gated.
+    close_on_drop: AtomicBool,
 }
 
 impl GoalContext {
@@ -1869,6 +1876,24 @@ impl GoalContext {
         self.deliver(GoalOutcome::Cancelled(result)).await
     }
 
+    /// Disarm the drop-time close: after this call, dropping the context
+    /// performs no `Abandoned` transition and emits no feedback end sentinel.
+    ///
+    /// This exists for exactly one consumer: mock action servers
+    /// ([`crate::testing::MockActionServerCore`]) simulating producer loss.
+    /// Stopping a mock mid-goal must let the consumer observe the producer's
+    /// liveliness token going absent
+    /// ([`crate::PeppyError::ActionFeedbackProducerGone`]); an armed drop
+    /// would race a clean feedback-end sentinel against that latch (the
+    /// consumer's feedback drain polls `biased`), making producer-loss
+    /// nondeterministic. Gated behind the `testing` feature on purpose — a
+    /// production node calling this would silently break the `Abandoned`
+    /// transition its consumers rely on.
+    #[cfg(feature = "testing")]
+    pub fn disarm_close_on_drop(&self) {
+        self.close_on_drop.store(false, Ordering::SeqCst);
+    }
+
     async fn deliver(&self, outcome: GoalOutcome) -> Result<()> {
         // Transition the slot to terminal, waking any parked result polls with
         // the typed outcome. The slot stays routable until the retention sweeper
@@ -1897,6 +1922,11 @@ const RESULT_RETENTION_GRACE: Duration = Duration::from_secs(30);
 
 impl Drop for GoalContext {
     fn drop(&mut self) {
+        // Disarmed by `disarm_close_on_drop` (testing only): drop silently, so
+        // a stopped mock's producer-loss signal is not raced by a clean close.
+        if !self.close_on_drop.load(Ordering::SeqCst) {
+            return;
+        }
         // If the goal already reached a terminal state (`complete` ran), there is
         // nothing to do: the sweeper evicts the terminal slot after its window.
         if self.slot.terminal.load(Ordering::SeqCst) {

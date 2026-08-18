@@ -300,6 +300,61 @@ async fn standalone_runner_succeed() {
         .expect("runner should return Ok");
 }
 
+/// `init_standalone` must not be hijacked into daemon mode by an inherited
+/// `PEPPY_RUNTIME_CONFIG`: with the variable pointing at a nonexistent runtime
+/// config (which would make `init()` fail resolving daemon mode), the context
+/// still comes up standalone with the provided config.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn init_standalone_ignores_inherited_runtime_config_env() {
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
+    let peppy_config = r#"{
+      peppy_schema: "node/v1",
+      manifest: {
+        name: "test_node",
+        tag: "v1",
+      },
+      execution: {
+        language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
+        run_cmd: ["./target/debug/test_node"]
+      },
+    }"#;
+    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+
+    // Point the daemon-mode variable at a config that does not exist; the
+    // guard holds the env lock so parallel tests cannot race the variable.
+    let bogus_runtime_config = temp_dir.path().join("does_not_exist.json5");
+    let _env_guard = EnvAndDirGuard::new(temp_dir.path(), &bogus_runtime_config);
+
+    let standalone_config = peppylib::runtime::StandaloneConfig::new()
+        .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
+        .with_instance_id(TEST_INSTANCE_ID);
+
+    let mut context = NodeBuilder::new()
+        .with_config_path(&peppy_config_path)
+        .standalone(standalone_config)
+        .init_standalone()
+        .expect("init_standalone must succeed despite PEPPY_RUNTIME_CONFIG being set");
+    assert!(context.is_standalone());
+    assert!(!context.is_daemon());
+    assert_eq!(context.instance_id(), TEST_INSTANCE_ID);
+    let parameters: Parameters = context.take_parameters().expect("parameters should parse");
+    assert_eq!(parameters.frequency_hz, TEST_FREQUENCY_HZ);
+
+    // `init()` under the same environment resolves daemon mode and fails on
+    // the bogus config — the exact hijack init_standalone exists to avoid.
+    let daemon_attempt = NodeBuilder::<Parameters>::new()
+        .with_config_path(&peppy_config_path)
+        .init();
+    assert!(
+        daemon_attempt.is_err(),
+        "init() should have been hijacked into daemon mode and failed"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_ready_but_not_healthy() {
     let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)

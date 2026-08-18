@@ -1,5 +1,5 @@
 use super::target::{PyProducerRef, PySenderTarget};
-use super::{PyMessengerHandle, future_into_py_unit, to_py_err};
+use super::{PyMessengerHandle, duration_from_secs_f64, future_into_py_unit, to_py_err};
 use crate::config::PyQoSProfile;
 use peppylib::messaging::{BoundSetSubscription, Subscription, TopicMessenger, TopicPublisher};
 use peppylib::types::{Message, Payload};
@@ -165,6 +165,47 @@ impl PyTopicMessenger {
         })
     }
 
+    /// A statically pinned peer-topic subscription: producer, pairing
+    /// target, and producer-side link_id all pinned — the exact wire shape
+    /// of a paired peer's subscription, without the pin-following machinery
+    /// (a test mock's pin never changes). Test-support seam
+    /// (`peppylib::testing`); generated pairing mocks use it to receive the
+    /// topics the node under test emits on its slot.
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn subscribe_peer_pinned<'py>(
+        py: Python<'py>,
+        messenger: &PyMessengerHandle,
+        as_core_node: String,
+        as_instance_id: String,
+        pairing_target: PySenderTarget,
+        peer: PyProducerRef,
+        peer_link_id: String,
+        to_topic: String,
+        qos: PyQoSProfile,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let handle = messenger.inner.clone();
+        let pairing_target = pairing_target.into_inner();
+        crate::py_future::future_into_py(py, async move {
+            let subscription = peppylib::testing::subscribe_peer_pinned(
+                &handle,
+                &as_core_node,
+                &as_instance_id,
+                pairing_target,
+                &peer.into_inner(),
+                &peer_link_id,
+                &to_topic,
+                qos.into(),
+            )
+            .await
+            .map_err(to_py_err)?;
+
+            Ok(PySubscription {
+                inner: Arc::new(Mutex::new(subscription)),
+            })
+        })
+    }
+
     /// Subscribe to a topic across a dep slot's complete bound producer
     /// set: one producer-pinned wire subscription per member of
     /// `bound_producers`, merged behind one [`PyBoundSetSubscription`]
@@ -212,6 +253,76 @@ impl PyTopicMessenger {
             Ok(PyBoundSetSubscription {
                 inner: Arc::new(Mutex::new(subscription)),
             })
+        })
+    }
+
+    /// Wait until a subscriber for this topic is known to the publisher's
+    /// session, or `timeout_secs` elapses; returns whether a match was
+    /// observed.
+    ///
+    /// In peer mode a freshly-connected publisher learns about existing
+    /// subscribers through gossip, which is not instantaneous, so its first
+    /// publish can be dropped before discovery propagates. Call this first
+    /// when the very first publish must reach an already-running subscriber;
+    /// it returns as soon as a match is observed (no fixed sleep). Mirrors
+    /// the Rust `TopicMessenger::wait_for_subscriber`.
+    #[staticmethod]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, timeout_secs))]
+    fn wait_for_subscriber<'py>(
+        py: Python<'py>,
+        messenger: &PyMessengerHandle,
+        as_core_node: String,
+        as_instance_id: String,
+        as_target: PySenderTarget,
+        as_topic_name: String,
+        timeout_secs: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        Self::wait_for_subscriber_with_link_id(
+            py,
+            messenger,
+            as_core_node,
+            as_instance_id,
+            as_target,
+            as_topic_name,
+            timeout_secs,
+            None,
+        )
+    }
+
+    /// [`wait_for_subscriber`](Self::wait_for_subscriber) for a publisher
+    /// bound under a concrete producer-side `link_id` (a pairing slot
+    /// publisher): the match is checked against the same keyexpr the
+    /// publisher will emit on, link_id segment included. `link_id` of `None`
+    /// matches the reserved default `_` segment.
+    #[staticmethod]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, as_target, as_topic_name, timeout_secs, link_id=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn wait_for_subscriber_with_link_id<'py>(
+        py: Python<'py>,
+        messenger: &PyMessengerHandle,
+        as_core_node: String,
+        as_instance_id: String,
+        as_target: PySenderTarget,
+        as_topic_name: String,
+        timeout_secs: f64,
+        link_id: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = duration_from_secs_f64("timeout_secs", timeout_secs)?;
+        let handle = messenger.inner.clone();
+        let as_target = as_target.into_inner();
+        crate::py_future::future_into_py(py, async move {
+            let matched = TopicMessenger::wait_for_subscriber_with_link_id(
+                &handle,
+                &as_core_node,
+                &as_instance_id,
+                as_target,
+                link_id.as_deref(),
+                &as_topic_name,
+                timeout,
+            )
+            .await
+            .map_err(to_py_err)?;
+            Ok(matched)
         })
     }
 

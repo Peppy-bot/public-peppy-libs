@@ -23,7 +23,7 @@ use core_node_api::encoding::{
 use peppylib::datastore::{self, DatastoreEntry, Encoding, StoredValue};
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use peppylib::runtime::NodeRunner;
-use pmi::ZenohdInstance;
+use peppylib::testing::EphemeralRouter;
 use tempfile::TempDir;
 
 use super::common::{
@@ -180,7 +180,7 @@ async fn spawn_datastore_stub(server: MessengerHandle) {
 /// Brings up the router/runner, spawns the stub, and waits for all endpoints
 /// to be reachable. The router and temp dir are returned so callers hold them
 /// for the test's duration.
-async fn setup_datastore_stub() -> (ZenohdInstance, TempDir, NodeRunner) {
+async fn setup_datastore_stub() -> (EphemeralRouter, TempDir, NodeRunner) {
     let (router, temp_dir, node_runner, server) = start_router_and_runner().await;
     spawn_datastore_stub(server).await;
     wait_until_reachable(node_runner.messenger(), ServiceId::DatastoreStore.name()).await;

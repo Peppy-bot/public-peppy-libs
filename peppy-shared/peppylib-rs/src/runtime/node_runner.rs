@@ -224,7 +224,13 @@ impl NodeRunner {
     /// cancelled, on every exit path. Takes the hooks out of the registry, so
     /// a second call (and any `Arc<NodeRunner>` reference cycle through a hook
     /// closure) is harmless.
-    pub(crate) async fn run_shutdown_hooks(&self, grace: Duration) {
+    ///
+    /// Public because a caller that owns the runner's lifecycle without going
+    /// through `NodeBuilder::run` — the test harness core here and its Python
+    /// twin over `NodeRunner.new_standalone` — is responsible for this exact
+    /// convergence step itself; the sensible grace to pass is
+    /// [`Processor::shutdown_grace`](crate::runtime::Processor::shutdown_grace).
+    pub async fn run_shutdown_hooks(&self, grace: Duration) {
         let hooks: Vec<ShutdownHook> = std::mem::take(
             &mut *self
                 .shutdown_hooks

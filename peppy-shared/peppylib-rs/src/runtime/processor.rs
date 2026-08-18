@@ -15,6 +15,13 @@ use tokio::sync::watch;
 
 use super::builder::StandaloneConfig;
 
+/// The core-node identity segment every standalone (daemon-less) node runs
+/// under. Generated test surfaces pin subscriptions and producer refs to the
+/// node-under-test with this same value (re-exported from
+/// [`crate::testing`]), so the mock's view of the node and the runtime's own
+/// cannot fork.
+pub const STANDALONE_CORE_NODE: &str = "standalone-core";
+
 /// Runtime processor that holds configuration for the node.
 #[derive(Clone)]
 pub struct Processor {
@@ -237,7 +244,7 @@ impl Processor {
             },
             &node_name,
             node_config.manifest.tag.as_str(),
-            "standalone-core",
+            STANDALONE_CORE_NODE,
         )?;
 
         let bound_producers = build_bound_producers(&runtime_config, &node_config)?;

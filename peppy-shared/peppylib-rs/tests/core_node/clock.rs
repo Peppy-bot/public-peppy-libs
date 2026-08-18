@@ -5,7 +5,7 @@ use core_node_api::encoding::{ClockResponse, ClockTick};
 use core_node_api::{ServiceId, TopicId};
 use peppylib::clock;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
-use pmi::ZenohdInstance;
+use peppylib::testing::EphemeralRouter;
 use tempfile::TempDir;
 
 use super::common::{
@@ -42,7 +42,7 @@ async fn spawn_clock_stub_listener(server: MessengerHandle, response: ClockRespo
 
 async fn setup_synchronize_stub(
     response: ClockResponse,
-) -> (ZenohdInstance, TempDir, peppylib::runtime::NodeRunner) {
+) -> (EphemeralRouter, TempDir, peppylib::runtime::NodeRunner) {
     let (router, temp_dir, node_runner, server) = start_router_and_runner().await;
     spawn_clock_stub_listener(server, response).await;
     wait_until_reachable(node_runner.messenger(), ServiceId::Clock.name()).await;

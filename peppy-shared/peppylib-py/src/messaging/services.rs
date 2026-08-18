@@ -1,6 +1,7 @@
 use peppylib::ServiceMessenger;
-use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext, ServiceTarget};
+use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext, ServiceResponder, ServiceTarget};
 use peppylib::types::Payload;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
@@ -63,6 +64,51 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
     }
 }
 
+/// Python wrapper for [`ServiceResponder`]: the reply handle paired with a
+/// request by [`PyServiceEndpoint::recv_next_request`]. Responding consumes
+/// the underlying token, so it is held behind an `Option` and taken on first
+/// use; a second respond raises `ValueError`.
+#[pyclass(name = "ServiceResponder")]
+pub struct PyServiceResponder {
+    inner: Arc<Mutex<Option<ServiceResponder>>>,
+}
+
+#[pymethods]
+impl PyServiceResponder {
+    /// Send the regular response payload for this request. The bytes are
+    /// opaque to the framework and round-trip unchanged.
+    fn respond<'py>(&self, py: Python<'py>, payload: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        super::future_into_py_unit(py, async move {
+            let responder = inner
+                .lock()
+                .await
+                .take()
+                .ok_or_else(|| PyValueError::new_err("ServiceResponder already used"))?;
+            responder
+                .respond(Payload::from(payload))
+                .await
+                .map_err(to_py_err)?;
+            Ok(())
+        })
+    }
+
+    /// Send a handler-error reply; the caller's `poll` surfaces `reason` as a
+    /// service error.
+    fn respond_error<'py>(&self, py: Python<'py>, reason: String) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        super::future_into_py_unit(py, async move {
+            let responder = inner
+                .lock()
+                .await
+                .take()
+                .ok_or_else(|| PyValueError::new_err("ServiceResponder already used"))?;
+            responder.respond_error(reason).await.map_err(to_py_err)?;
+            Ok(())
+        })
+    }
+}
+
 /// Python wrapper for a service endpoint that listens for incoming requests.
 #[pyclass(name = "ServiceEndpoint")]
 pub struct PyServiceEndpoint {
@@ -71,6 +117,32 @@ pub struct PyServiceEndpoint {
 
 #[pymethods]
 impl PyServiceEndpoint {
+    /// Wait for the next incoming request and return it with its reply
+    /// handle, instead of pushing it through a handler callable.
+    ///
+    /// Returns a `(ServiceRequestContext, ServiceResponder)` tuple, or `None`
+    /// when the listener has closed. This is the await-request → assert →
+    /// respond shape mock services are built from: the caller inspects the
+    /// request at its own pace and answers through the responder (each
+    /// request must be answered exactly once). The framework ACK has already
+    /// been sent when this returns, so the caller's `poll` is waiting on the
+    /// responder, bounded by its own response timeout.
+    fn recv_next_request<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        crate::py_future::future_into_py(py, async move {
+            let mut endpoint = inner.lock().await;
+            match endpoint.recv_next_request().await.map_err(to_py_err)? {
+                Some((context, responder)) => Ok(Some((
+                    PyServiceRequestContext::from(context),
+                    PyServiceResponder {
+                        inner: Arc::new(Mutex::new(Some(responder))),
+                    },
+                ))),
+                None => Ok(None),
+            }
+        })
+    }
+
     /// Handle the next incoming request using the provided handler callable.
     ///
     /// The handler receives a `ServiceRequestContext` and must return `bytes`.
@@ -270,6 +342,7 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     services_module.add_class::<PyServiceMessenger>()?;
     services_module.add_class::<PyServiceEndpoint>()?;
     services_module.add_class::<PyServiceRequestContext>()?;
+    services_module.add_class::<PyServiceResponder>()?;
     parent_module.add_submodule(&services_module)?;
     Ok(())
 }
