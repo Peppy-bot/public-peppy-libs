@@ -260,6 +260,123 @@ pub struct BimanualCollisionModel {
     /// surface speed bounds under their own joint travel. Rebuilt with `levers`;
     /// feeds [`clearance_step_bound`](Self::clearance_step_bound).
     opening_levers: [f64; 2],
+    /// How many of `bodies` came from the URDF. Runtime obstacles occupy
+    /// `bodies[urdf_body_count..]`: [`add_obstacle`](BimanualCollisionModel::add_obstacle)
+    /// only appends and
+    /// [`remove_obstacle`](BimanualCollisionModel::remove_obstacle) only removes
+    /// from that tail, so "is an obstacle" is the index test
+    /// `i >= urdf_body_count` and needs no per-body flag.
+    urdf_body_count: usize,
+    /// How many of `pairs` were derived at build, exclusions already applied.
+    /// Obstacle pairs are appended after them and are rebuilt wholesale by
+    /// [`rederive_obstacle_pairs`](BimanualCollisionModel::rederive_obstacle_pairs),
+    /// which is what keeps a build-time exclusion from being re-derived by an
+    /// insertion.
+    urdf_pair_count: usize,
+}
+
+/// A world-frame convex obstacle, fitted and ready to insert into a model with
+/// [`BimanualCollisionModel::add_obstacle`]. Opaque and only constructible
+/// through [`Obstacle::fit`], so a cloud that bounds no solid cannot reach a
+/// model. Fitting is the expensive half of an insertion, and this type is what
+/// lets a control-loop caller pay it off the loop and insert on it.
+#[derive(Debug)]
+pub struct Obstacle {
+    name: String,
+    hulls: Vec<Hull>,
+}
+
+/// Tightest fit an obstacle may ask for (m). Below the link standard there is
+/// nothing to gain: the hull of a flat-faced body is exact at any budget, and a
+/// curved one runs the plane count up long before this matters.
+pub const MIN_OBSTACLE_TOLERANCE_M: f64 = 1e-4;
+
+/// Loosest fit an obstacle may ask for (m). A looser fit is conservative, since
+/// the hull still contains the cloud, so this is not a safety bound: it is the
+/// point past which the hull stops describing the object and starts eating
+/// workspace the arms need. Ten centimetres carries a curved body of any size a
+/// workspace holds, by the hundredth-of-the-radius rule the fit follows.
+pub const MAX_OBSTACLE_TOLERANCE_M: f64 = 0.1;
+
+/// Thinnest an obstacle may be (m), measured on its axis-aligned bounding box.
+/// Under the fit's own deviation budget a body is thinner than the error it
+/// would be fitted with. Nothing downstream refuses such a cloud: the fit
+/// accepts a nanometre-thick slab and returns a hull no thicker, so this bound
+/// is the only thing standing between one and a contact query with no
+/// separating direction.
+const MIN_OBSTACLE_EXTENT_M: f64 = crate::assemble::MAX_DEVIATION_M;
+
+/// Widest an obstacle may be (m), measured the same way. The hull kernel's
+/// degeneracy tests are absolute, so a cloud kilometres across stops reading as
+/// a solid; refusing it here says so, where letting it through reports a 20 km
+/// box as "coplanar cloud has no volume".
+const MAX_OBSTACLE_EXTENT_M: f64 = 1_000.0;
+
+impl Obstacle {
+    /// Fit a convex obstacle to a world-frame point cloud, under the same
+    /// deviation budget as the URDF bodies.
+    ///
+    /// `tolerance_m` is how far the fitted hull may stand off the cloud, and it
+    /// is the caller's cost lever. The fit adds supporting planes until it holds,
+    /// every plane is a per-tick cost once the obstacle is live, and a curved
+    /// body needs roughly a hundredth of its radius: a 20 cm ball wants 2 mm, a
+    /// 1 m ball 10 mm. A flat-faced body (a wall, a table, a box) hulls to its
+    /// corners at any tolerance and pays nothing for a tight one. Asking for
+    /// tighter than the shape allows errors rather than silently costing the
+    /// control loop, and looser is always the conservative direction, since the
+    /// hull contains the cloud either way.
+    ///
+    /// Errors on an empty name, a tolerance outside
+    /// [`MIN_OBSTACLE_TOLERANCE_M`] to [`MAX_OBSTACLE_TOLERANCE_M`], a
+    /// non-finite coordinate, a cloud that bounds no solid (empty, collinear,
+    /// coplanar), or one whose bounding box is outside
+    /// [`MIN_OBSTACLE_EXTENT_M`] to [`MAX_OBSTACLE_EXTENT_M`] on any axis.
+    ///
+    /// That last reads the bounding box, so it bounds an axis-aligned body
+    /// exactly and a tilted one loosely: a tilted sliver has a fat bounding box
+    /// and passes, and the fit will take it, so a caller who cannot rule those
+    /// out should measure the hull it gets back. Within that limit it is doing
+    /// real work, not just phrasing: an over-large cloud would otherwise be
+    /// refused as "coplanar", and a paper-thin one would not be refused at
+    /// all.
+    pub fn fit(
+        name: &str,
+        points: &[Point3<f64>],
+        tolerance_m: f64,
+    ) -> Result<Self, CollisionError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(BuildError::UnnamedObstacle.into());
+        }
+        if !(tolerance_m.is_finite()
+            && (MIN_OBSTACLE_TOLERANCE_M..=MAX_OBSTACLE_TOLERANCE_M).contains(&tolerance_m))
+        {
+            return Err(BuildError::ToleranceOutOfRange {
+                body: name.to_string(),
+                tolerance_m,
+                min: MIN_OBSTACLE_TOLERANCE_M,
+                max: MAX_OBSTACLE_TOLERANCE_M,
+            }
+            .into());
+        }
+        if points
+            .iter()
+            .flat_map(|p| p.coords.iter())
+            .any(|c| !c.is_finite())
+        {
+            return Err(CollisionError::NonFinite);
+        }
+        check_extents(name, points)?;
+        Ok(Obstacle {
+            name: name.to_string(),
+            hulls: vec![crate::assemble::fit_one_hull(name, points, tolerance_m)?],
+        })
+    }
+
+    /// The name it will answer to once inserted.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// Configures and builds a [`BimanualCollisionModel`]; start from
@@ -433,15 +550,6 @@ impl BimanualCollisionModel {
         )?;
 
         let mut bodies: Vec<Body> = Vec::new();
-        let push_body = |bodies: &mut Vec<Body>, body: Body| -> Result<(), BuildError> {
-            if bodies.iter().any(|b| b.name == body.name) {
-                return Err(BuildError::DuplicateBody {
-                    name: body.name.clone(),
-                });
-            }
-            bodies.push(body);
-            Ok(())
-        };
         let mut links = fitted.links;
         for (name, hulls) in fitted.fixed {
             let bound = BoundingSphere::of(&hulls);
@@ -503,6 +611,8 @@ impl BimanualCollisionModel {
 
         let world_iso = vec![Isometry3::identity(); bodies.len()];
         Ok(Self {
+            urdf_body_count: bodies.len(),
+            urdf_pair_count: 0,
             left,
             right,
             bodies,
@@ -531,7 +641,7 @@ impl BimanualCollisionModel {
                     .push((self.bodies[a].name.clone(), self.bodies[b].name.clone()));
             }
         }
-        self.recompute_levers();
+        self.record_urdf_pairs();
         Ok(())
     }
 
@@ -572,7 +682,7 @@ impl BimanualCollisionModel {
                 Ok(Pair { a, b })
             })
             .collect::<Result<Vec<_>, BuildError>>()?;
-        self.recompute_levers();
+        self.record_urdf_pairs();
         Ok(())
     }
 
@@ -580,8 +690,10 @@ impl BimanualCollisionModel {
     /// side and joint, the max over pairs of the sum of both bodies' reaches on
     /// that side. Summing per pair is what keeps the bound sound for a same-side
     /// pair, whose two witnesses both move with that arm's joints. Called
-    /// whenever the pair list changes (build-time only, so recomputing the
-    /// per-body reaches here is free).
+    /// whenever the pair list changes (at build, and on every obstacle change;
+    /// recomputing the
+    /// per-body reaches costs two forward-kinematics passes, which an obstacle
+    /// insertion pays once, never per tick).
     fn recompute_levers(&mut self) {
         let reaches = body_reaches(&mut self.left, &mut self.right, &self.bodies);
         let side_reach = |body: usize, side: usize, j: usize| -> f64 {
@@ -625,17 +737,17 @@ impl BimanualCollisionModel {
                 .fold(0.0, f64::max);
             travel * r_max
         };
+        // Precomputed per body, as the joint reaches above are: the scan over a
+        // body's hull vertices is the expensive part, and the pair fold below
+        // would otherwise repeat it once per pair the body appears in.
+        let opening_reaches: Vec<f64> = self.bodies.iter().map(opening_reach).collect();
         let side_opening_reach = |body: usize, side: usize| -> f64 {
             let on_side = match self.bodies[body].placement {
                 Placement::Left(_) => side == 0,
                 Placement::Right(_) => side == 1,
                 Placement::Fixed => false,
             };
-            if on_side {
-                opening_reach(&self.bodies[body])
-            } else {
-                0.0
-            }
+            if on_side { opening_reaches[body] } else { 0.0 }
         };
         self.opening_levers = std::array::from_fn(|side| {
             self.pairs
@@ -668,6 +780,130 @@ impl BimanualCollisionModel {
             .collect()
     }
 
+    /// Insert a fitted world-frame obstacle, checked against every moving body
+    /// (both chains' links and their gripper fingers) and against nothing else:
+    /// the torso, the chain mounts, and other obstacles are all world-fixed, so
+    /// their distance to it never changes and could not inform a caller. Errors
+    /// if the name is already a body's.
+    ///
+    /// The pairs derived at build are left untouched, so an exclusion the
+    /// builder was given survives every insertion and removal.
+    pub fn add_obstacle(&mut self, obstacle: Obstacle) -> Result<(), CollisionError> {
+        let bound = BoundingSphere::of(&obstacle.hulls);
+        push_body(
+            &mut self.bodies,
+            Body {
+                name: obstacle.name,
+                local: obstacle.hulls,
+                placement: Placement::Fixed,
+                bound,
+                finger: None,
+            },
+        )?;
+        self.world_iso.push(Isometry3::identity());
+        self.rederive_obstacle_pairs();
+        Ok(())
+    }
+
+    /// Remove an obstacle added by [`add_obstacle`](Self::add_obstacle), with
+    /// its checked pairs. Errors on a name that is not a live obstacle's; a URDF
+    /// body is not removable.
+    pub fn remove_obstacle(&mut self, name: &str) -> Result<(), CollisionError> {
+        let index = self.obstacle_index(name)?;
+        self.bodies.remove(index);
+        self.world_iso.remove(index);
+        self.rederive_obstacle_pairs();
+        Ok(())
+    }
+
+    /// Remove every obstacle, returning how many there were.
+    pub fn clear_obstacles(&mut self) -> usize {
+        let removed = self.obstacle_count();
+        self.bodies.truncate(self.urdf_body_count);
+        self.world_iso.truncate(self.urdf_body_count);
+        self.rederive_obstacle_pairs();
+        removed
+    }
+
+    /// Record the pair list as the URDF's own and refresh the levers. Called
+    /// by the two build-time mutators, whose result is only the URDF pair set
+    /// while no obstacle has been added yet.
+    fn record_urdf_pairs(&mut self) {
+        debug_assert_eq!(
+            self.bodies.len(),
+            self.urdf_body_count,
+            "the build-time pair set is being recorded with obstacles present"
+        );
+        self.urdf_pair_count = self.pairs.len();
+        self.recompute_levers();
+    }
+
+    /// Rebuild every obstacle pair from the bodies, after any change to the
+    /// obstacle set. The obstacle pairs are wholly derived (each obstacle
+    /// against each moving body, with no structural rules and no exclusions to
+    /// respect), so deriving them again is both simpler and safer than editing
+    /// the pair list around a change: the URDF pairs below `urdf_pair_count`,
+    /// exclusions included, are never touched, and no body index can outlive
+    /// the body it pointed at.
+    fn rederive_obstacle_pairs(&mut self) {
+        self.pairs.truncate(self.urdf_pair_count);
+        let moving: Vec<usize> = self.moving_bodies().collect();
+        for obstacle in self.urdf_body_count..self.bodies.len() {
+            self.pairs
+                .extend(moving.iter().map(|&i| Pair { a: i, b: obstacle }));
+        }
+        self.recompute_levers();
+    }
+
+    /// Every body the arms carry, by index: the bodies an obstacle is checked
+    /// against, and the only ones whose pose a query has to place.
+    fn moving_bodies(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.bodies.len()).filter(|&i| !matches!(self.bodies[i].placement, Placement::Fixed))
+    }
+
+    /// How many obstacles are in force, without naming them.
+    pub fn obstacle_count(&self) -> usize {
+        self.bodies.len() - self.urdf_body_count
+    }
+
+    /// The live obstacles' names, in insertion order.
+    pub fn obstacle_names(&self) -> Vec<&str> {
+        self.bodies[self.urdf_body_count..]
+            .iter()
+            .map(|b| b.name.as_str())
+            .collect()
+    }
+
+    /// Signed surface distance from one obstacle to its nearest moving body at
+    /// the given configurations, ignoring every pair the obstacle is not in.
+    /// This is what weighs an obstacle against the *robot's* clearance to it
+    /// rather than against a self-collision pair that happens to be closer.
+    /// Errors on an unknown obstacle or a non-finite configuration.
+    pub fn obstacle_clearance(
+        &mut self,
+        name: &str,
+        q_left: &JointVec,
+        q_right: &JointVec,
+    ) -> Result<f64, CollisionError> {
+        ensure_finite(q_left, q_right)?;
+        let index = self.obstacle_index(name)?;
+        Ok(self
+            .closest_over(q_left, q_right, |p| p.a == index || p.b == index)?
+            .distance)
+    }
+
+    /// Resolve an obstacle's name to its body index. A URDF body's name does not
+    /// resolve: only obstacles are removable or separately measurable.
+    fn obstacle_index(&self, name: &str) -> Result<usize, CollisionError> {
+        self.bodies[self.urdf_body_count..]
+            .iter()
+            .position(|b| b.name == name)
+            .map(|i| i + self.urdf_body_count)
+            .ok_or_else(|| CollisionError::UnknownObstacle {
+                name: name.to_string(),
+            })
+    }
+
     /// The nearest checked pair at the given configurations: places the hulls by
     /// FK, then scans the pairs (broadphase-ordered) for the minimum signed
     /// distance. The shared core of [`min_distance`](Self::min_distance) and
@@ -676,6 +912,18 @@ impl BimanualCollisionModel {
         &mut self,
         q_left: &JointVec,
         q_right: &JointVec,
+    ) -> Result<Closest, CollisionError> {
+        self.closest_over(q_left, q_right, |_| true)
+    }
+
+    /// [`closest`](Self::closest) over the subset of checked pairs `keep`
+    /// admits, so a caller can ask about one body's clearance under the same
+    /// broadphase and prefilter as the full scan.
+    fn closest_over(
+        &mut self,
+        q_left: &JointVec,
+        q_right: &JointVec,
+        keep: impl Fn(&Pair) -> bool,
     ) -> Result<Closest, CollisionError> {
         self.place(q_left, q_right);
 
@@ -692,6 +940,7 @@ impl BimanualCollisionModel {
             .pairs
             .iter()
             .enumerate()
+            .filter(|(_, p)| keep(p))
             .map(|(i, p)| {
                 (
                     (centers[p.a] - centers[p.b]).norm()
@@ -948,6 +1197,10 @@ impl BimanualCollisionModel {
     /// Refresh the world pose of the moving bodies from FK. Finger bodies are
     /// additionally offset by their host link pose at the side's current opening.
     fn place(&mut self, q_left: &JointVec, q_right: &JointVec) {
+        // The `zip` below would drop a tail of bodies rather than place them,
+        // and the broadphase would then index a `world_iso` that no longer has
+        // a row for them.
+        debug_assert_eq!(self.bodies.len(), self.world_iso.len());
         let poses_l = link_poses(&mut self.left, q_left);
         let poses_r = link_poses(&mut self.right, q_right);
         let openings = self.openings;
@@ -1029,6 +1282,51 @@ fn body_reaches(left: &mut Arm, right: &mut Arm, bodies: &[Body]) -> Vec<JointVe
         .collect()
 }
 
+/// Reject a cloud whose bounding box is the wrong scale to be a workspace
+/// obstacle, naming the span measured, so a caller is told what it sent rather
+/// than what the hull kernel made of it. An empty cloud is the fit's own
+/// refusal to make.
+fn check_extents(name: &str, points: &[Point3<f64>]) -> Result<(), BuildError> {
+    let Some(first) = points.first() else {
+        return Ok(());
+    };
+    let (min, max) = points.iter().fold((*first, *first), |(lo, hi), p| {
+        (
+            Point3::from(lo.coords.inf(&p.coords)),
+            Point3::from(hi.coords.sup(&p.coords)),
+        )
+    });
+    let spans = max - min;
+    let degenerate = |reason: String| BuildError::DegenerateBody {
+        body: name.to_string(),
+        reason,
+    };
+    if spans.min() < MIN_OBSTACLE_EXTENT_M {
+        return Err(degenerate(format!(
+            "it is {:.2e} m thick, under the {MIN_OBSTACLE_EXTENT_M} m minimum",
+            spans.min()
+        )));
+    }
+    if spans.max() > MAX_OBSTACLE_EXTENT_M {
+        return Err(degenerate(format!(
+            "it spans {:.2e} m, over the {MAX_OBSTACLE_EXTENT_M} m maximum (check the units)",
+            spans.max()
+        )));
+    }
+    Ok(())
+}
+
+/// Append a body, refusing a name another body already answers to. The one
+/// gate for that, so a name is unique across the URDF bodies and the runtime
+/// obstacles alike.
+fn push_body(bodies: &mut Vec<Body>, body: Body) -> Result<(), BuildError> {
+    if bodies.iter().any(|b| b.name == body.name) {
+        return Err(BuildError::DuplicateBody { name: body.name });
+    }
+    bodies.push(body);
+    Ok(())
+}
+
 /// Reject NaN/inf joint values so queries fail safe instead of comparing
 /// against NaN downstream.
 fn ensure_finite(q_left: &JointVec, q_right: &JointVec) -> Result<(), CollisionError> {
@@ -1041,6 +1339,7 @@ fn ensure_finite(q_left: &JointVec, q_right: &JointVec) -> Result<(), CollisionE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assemble::MAX_DEVIATION_M;
     use crate::pairs::PairSpec;
 
     const URDF: &str = include_str!("../tests/fixtures/openarm_v10.urdf");
@@ -1486,7 +1785,34 @@ mod tests {
         // poses (clear, in-band, near-contact), directions, magnitudes, and
         // openings; each segment is also probed at interior points, since the
         // bound must hold along the whole segment, not just at its ends.
-        let mut m = model();
+        //
+        // Run twice: the bound has to dominate obstacle pairs as well as the
+        // URDF's own. The slab cuts through a link, so it wins the scan over
+        // some of the sampled poses instead of merely being present.
+        clearance_step_bound_dominates_on(&mut model(), None);
+        let mut with_obstacles = model();
+        with_obstacles
+            .add_obstacle(overlapping_slab())
+            .expect("add slab");
+        with_obstacles
+            .add_obstacle(obstacle("wall", WALL_MIN, WALL_MAX))
+            .expect("add wall");
+        let obstacle_wins = clearance_step_bound_dominates_on(&mut with_obstacles, Some("slab"));
+        assert!(
+            obstacle_wins > 0,
+            "no sampled step had an obstacle as the nearest pair, so the second \
+             run checked nothing the first did not"
+        );
+    }
+
+    /// Walk the sweep, returning how many samples had a body whose name starts
+    /// with `watch` as the nearest pair, so a caller can assert the run covered
+    /// what it was set up to cover.
+    fn clearance_step_bound_dominates_on(
+        m: &mut BimanualCollisionModel,
+        watch: Option<&str>,
+    ) -> usize {
+        let mut watched = 0_usize;
         let poses: [(JointVec, JointVec); 3] = [
             (
                 [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0],
@@ -1537,7 +1863,13 @@ mod tests {
                             let qlt: JointVec = std::array::from_fn(|i| ql[i] + t * sl[i]);
                             let qrt: JointVec = std::array::from_fn(|i| qr[i] + t * sr[i]);
                             m.set_gripper_openings(open_l + t * dopen[0], open_r + t * dopen[1]);
-                            let dt = m.min_distance(&qlt, &qrt).expect("query").distance;
+                            let p = m.min_distance(&qlt, &qrt).expect("query");
+                            let dt = p.distance;
+                            if watch
+                                .is_some_and(|w| p.link_a.starts_with(w) || p.link_b.starts_with(w))
+                            {
+                                watched += 1;
+                            }
                             assert!(
                                 (dt - d0).abs() <= bound + 1e-9,
                                 "step bound violated: |{dt:+.5} - {d0:+.5}| > {bound:.5} \
@@ -1549,6 +1881,7 @@ mod tests {
                 }
             }
         }
+        watched
     }
 
     #[test]
@@ -1734,5 +2067,726 @@ mod tests {
     fn model_is_send_for_task_ownership() {
         fn assert_send<T: Send>() {}
         assert_send::<BimanualCollisionModel>();
+        // A fitted obstacle is meant to be fitted on one thread and inserted
+        // from another; that is the whole reason the two are separate calls.
+        assert_send::<Obstacle>();
+    }
+
+    /// The eight corners of an axis-aligned box, the cloud an operator sends for
+    /// a wall. At the fixture's home pose both arms hang inside |y| < 0.226 and
+    /// |x| < 0.05, so a box beyond that clears them by a known margin.
+    fn box_points(min: [f64; 3], max: [f64; 3]) -> Vec<Point3<f64>> {
+        let mut points = Vec::with_capacity(8);
+        for x in [min[0], max[0]] {
+            for y in [min[1], max[1]] {
+                for z in [min[2], max[2]] {
+                    points.push(Point3::new(x, y, z));
+                }
+            }
+        }
+        points
+    }
+
+    fn obstacle(name: &str, min: [f64; 3], max: [f64; 3]) -> Obstacle {
+        Obstacle::fit(name, &box_points(min, max), MAX_DEVIATION_M).expect("box bounds a solid")
+    }
+
+    /// The plane the test wall presents to the arms, so the clearance to it is
+    /// a distance a test can derive rather than pin.
+    const WALL_FACE_Y: f64 = 0.3;
+    /// A wall standing off the left arm's outboard side, its inner face on
+    /// [`WALL_FACE_Y`] and clear of both arms at home.
+    const WALL_MIN: [f64; 3] = [-0.5, WALL_FACE_Y, 0.0];
+    const WALL_MAX: [f64; 3] = [0.5, 0.6, 1.0];
+
+    /// The gap from the wall's inner face to the outermost point of any moving
+    /// body, read off the placed hulls the query itself scans. The wall is a
+    /// slab normal to `y` and well clear of the arms, so the nearest approach
+    /// is exactly this span: an independent value to check the pair scan
+    /// against, where a pinned float would only restate one fit's output.
+    fn wall_gap_from_placed_hulls(m: &mut BimanualCollisionModel) -> f64 {
+        let moving: Vec<String> = m
+            .moving_bodies()
+            .map(|i| m.bodies[i].name.clone())
+            .collect();
+        let pieces = m.world_pieces(&home(), &home()).expect("pieces");
+        // Every fitted piece circumscribes its cloud and carries no sweep, so
+        // its vertices are its surface.
+        let outermost = pieces
+            .iter()
+            .filter(|(name, _)| moving.iter().any(|m| m == name))
+            .flat_map(|(_, ps)| ps.iter())
+            .flat_map(|p| p.vertices.iter().map(|v| v.y))
+            .fold(f64::NEG_INFINITY, f64::max);
+        WALL_FACE_Y - outermost
+    }
+
+    /// A slab through the left arm's link3, so it wins the scan at the poses
+    /// these tests use. Clear of the torso (|y| <= 0.095).
+    fn overlapping_slab() -> Obstacle {
+        obstacle("slab", [-0.5, 0.15, 0.5], [0.5, 0.6, 0.55])
+    }
+
+    fn home() -> JointVec {
+        [0.0; ARM_DOF]
+    }
+
+    #[test]
+    fn an_obstacle_measures_its_own_clearance_to_the_arms() {
+        let mut m = model();
+        m.add_obstacle(obstacle("wall", WALL_MIN, WALL_MAX))
+            .expect("add");
+        let expected = wall_gap_from_placed_hulls(&mut m);
+        let d = m
+            .obstacle_clearance("wall", &home(), &home())
+            .expect("clearance");
+        assert!(
+            (d - expected).abs() < 1e-6,
+            "wall clearance {d:+.5}, but the outermost moving hull point sits {expected:+.5} from its face"
+        );
+    }
+
+    #[test]
+    fn an_obstacles_clearance_follows_the_gripper_opening() {
+        // Finger bodies are placed at the live opening, and the outermost body
+        // at home is a finger, so closing the grippers must open the gap.
+        let mut m = model();
+        m.add_obstacle(obstacle("wall", WALL_MIN, WALL_MAX))
+            .expect("add");
+        m.set_gripper_openings(1.0, 1.0);
+        let open = m
+            .obstacle_clearance("wall", &home(), &home())
+            .expect("clearance");
+        m.set_gripper_openings(0.0, 0.0);
+        let closed = m
+            .obstacle_clearance("wall", &home(), &home())
+            .expect("clearance");
+        assert!(
+            closed > open + 1e-3,
+            "closing the grippers should recover clearance: open {open:+.4}, closed {closed:+.4}"
+        );
+    }
+
+    #[test]
+    fn an_obstacles_clearance_ignores_the_pairs_it_is_not_in() {
+        // At home with the grippers open the fixture's own nearest pair is in
+        // shallow penetration, so a global minimum would report that instead of
+        // the wall the caller asked about.
+        let mut m = model();
+        m.add_obstacle(obstacle("wall", WALL_MIN, WALL_MAX))
+            .expect("add");
+        let overall = m.min_distance(&home(), &home()).expect("query").distance;
+        let wall = m
+            .obstacle_clearance("wall", &home(), &home())
+            .expect("clearance");
+        assert!(
+            overall < 0.0 && wall > 0.0,
+            "setup: expected a self-pair nearer than the wall, got overall {overall:+.4} wall {wall:+.4}"
+        );
+    }
+
+    #[test]
+    fn an_obstacle_is_paired_with_every_moving_body_and_nothing_fixed() {
+        let mut m = model();
+        let moving: Vec<String> = m
+            .bodies
+            .iter()
+            .filter(|b| !matches!(b.placement, Placement::Fixed))
+            .map(|b| b.name.clone())
+            .collect();
+        m.add_obstacle(obstacle("wall", WALL_MIN, WALL_MAX))
+            .expect("add");
+        let mut partners: Vec<&str> = m
+            .checked_pairs()
+            .into_iter()
+            .filter_map(|(a, b)| match (a, b) {
+                ("wall", other) | (other, "wall") => Some(other),
+                _ => None,
+            })
+            .collect();
+        partners.sort_unstable();
+        let mut expected: Vec<&str> = moving.iter().map(String::as_str).collect();
+        expected.sort_unstable();
+        assert_eq!(partners, expected);
+    }
+
+    #[test]
+    fn two_obstacles_are_never_paired_with_each_other() {
+        let mut m = model();
+        m.add_obstacle(obstacle("wall", WALL_MIN, WALL_MAX))
+            .expect("add wall");
+        m.add_obstacle(obstacle("floor", [-1.0, -1.0, -0.2], [1.0, 1.0, -0.1]))
+            .expect("add floor");
+        assert!(
+            !m.checked_pairs()
+                .iter()
+                .any(|&(a, b)| matches!((a, b), ("wall", "floor") | ("floor", "wall"))),
+            "two world-fixed obstacles cannot inform a caller, so they must not be checked"
+        );
+    }
+
+    #[test]
+    fn an_obstacle_in_the_way_becomes_the_nearest_pair() {
+        let mut m = model();
+        m.add_obstacle(overlapping_slab()).expect("add");
+        let p = m.min_distance(&home(), &home()).expect("query");
+        assert!(
+            p.link_a == "slab" || p.link_b == "slab",
+            "expected the slab to win, got {} vs {} at {:+.4}",
+            p.link_a,
+            p.link_b,
+            p.distance
+        );
+        assert!(
+            p.distance < 0.0,
+            "the slab overlaps a link: {:+.4}",
+            p.distance
+        );
+    }
+
+    #[test]
+    fn the_gradient_at_an_obstacle_points_away_from_it() {
+        // What a velocity barrier needs from an obstacle pair: the obstacle is
+        // world-fixed and contributes nothing, so the whole gradient rides the
+        // moving witness, and a step along it must open the gap.
+        // Built with no URDF pairs, so the nearest pair is unambiguously the
+        // obstacle's; the pair derivation is covered on its own above.
+        let mut m = build(&[]).expect("model");
+        // A box in front of the left wrist, which swings in x under the shoulder.
+        m.add_obstacle(obstacle("wall", [0.12, 0.10, 0.15], [0.5, 0.30, 0.30]))
+            .expect("add");
+        let (ql, qr) = (home(), home());
+        let g = m.distance_gradient(&ql, &qr).expect("gradient defined");
+        assert!(
+            g.proximity.link_a == "wall" || g.proximity.link_b == "wall",
+            "setup: expected the wall to be the nearest pair, got {} vs {}",
+            g.proximity.link_a,
+            g.proximity.link_b
+        );
+        assert!(
+            g.grad_left.iter().any(|c| c.abs() > 1e-6),
+            "setup: the left arm must be able to move relative to this wall"
+        );
+        let before = g.proximity.distance;
+        let grad_left = g.grad_left;
+        let stepped: JointVec = std::array::from_fn(|j| ql[j] + 1e-3 * grad_left[j]);
+        let after = m.min_distance(&stepped, &qr).expect("query").distance;
+        assert!(
+            after > before,
+            "a step along the gradient must open the gap: {before:+.5} -> {after:+.5}"
+        );
+    }
+
+    /// The twelve triangles of an axis-aligned box, as an STL would carry it.
+    /// A partial surface would hull to a strictly smaller solid, which is the
+    /// thing the comparison below has to be able to catch.
+    fn box_stl_bytes(min: [f64; 3], max: [f64; 3]) -> Vec<u8> {
+        let corner = |i: usize| {
+            let pick = |axis: usize| {
+                if i >> axis & 1 == 0 {
+                    min[axis]
+                } else {
+                    max[axis]
+                }
+            };
+            [pick(0) as f32, pick(1) as f32, pick(2) as f32]
+        };
+        // Each face as two triangles, corners indexed by their x/y/z bits.
+        let faces = [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+        ];
+        let triangles: Vec<[[f32; 3]; 3]> = faces
+            .iter()
+            .flat_map(|f| {
+                [
+                    [corner(f[0]), corner(f[1]), corner(f[2])],
+                    [corner(f[0]), corner(f[2]), corner(f[3])],
+                ]
+            })
+            .collect();
+        crate::stl::stl_bytes(&triangles)
+    }
+
+    #[test]
+    fn an_obstacle_fitted_from_stl_bytes_matches_one_fitted_from_its_points() {
+        let bytes = box_stl_bytes(WALL_MIN, WALL_MAX);
+        let points = crate::parse_binary_stl(&bytes).expect("parse");
+        let mut from_stl = model();
+        from_stl
+            .add_obstacle(Obstacle::fit("wall", &points, MAX_DEVIATION_M).expect("fit"))
+            .expect("add");
+        let mut from_points = model();
+        from_points
+            .add_obstacle(obstacle("wall", WALL_MIN, WALL_MAX))
+            .expect("add");
+        // Compared away from home too: at home the witness lands on one face,
+        // where a smaller solid would still measure the same.
+        for (ql, qr) in [
+            (home(), home()),
+            ([0.0, 0.6, 0.0, 0.0, 0.0, 0.0, 0.0], home()),
+            ([0.0, 0.4, 0.0, 0.9, 0.0, 0.0, 0.0], home()),
+        ] {
+            let stl = from_stl
+                .obstacle_clearance("wall", &ql, &qr)
+                .expect("clearance");
+            let hull = from_points
+                .obstacle_clearance("wall", &ql, &qr)
+                .expect("clearance");
+            assert!(
+                (stl - hull).abs() < 1e-6,
+                "the same box through two readers must fit the same solid: \
+                 stl {stl:+.5}, points {hull:+.5}"
+            );
+        }
+    }
+
+    /// Points spread over a sphere of radius `r`, deterministically.
+    fn sphere_cloud(r: f64, n: usize) -> Vec<Point3<f64>> {
+        let mut state = 0x5eed_u64;
+        let mut unit = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 11) as f64) / ((1u64 << 53) as f64)
+        };
+        (0..n)
+            .map(|_| {
+                let z = 2.0 * unit() - 1.0;
+                let theta = 2.0 * std::f64::consts::PI * unit();
+                let band = (1.0 - z * z).sqrt();
+                Point3::new(r * band * theta.cos(), r * band * theta.sin(), r * z)
+            })
+            .collect()
+    }
+
+    /// The rim points of a `sides`-gon prism: a pillar, curved one way only.
+    fn cylinder_cloud(r: f64, height: f64, sides: usize) -> Vec<Point3<f64>> {
+        (0..sides)
+            .flat_map(|i| {
+                let a = 2.0 * std::f64::consts::PI * i as f64 / sides as f64;
+                let (x, y) = (r * a.cos(), r * a.sin());
+                [Point3::new(x, y, 0.0), Point3::new(x, y, height)]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_tolerance_outside_the_band_is_refused() {
+        let wall = box_points(WALL_MIN, WALL_MAX);
+        for bad in [
+            0.0,
+            -0.001,
+            f64::NAN,
+            f64::INFINITY,
+            MIN_OBSTACLE_TOLERANCE_M / 2.0,
+            MAX_OBSTACLE_TOLERANCE_M * 2.0,
+        ] {
+            let err = Obstacle::fit("wall", &wall, bad)
+                .expect_err("a tolerance outside the band is refused");
+            assert!(
+                matches!(
+                    err,
+                    CollisionError::Build(BuildError::ToleranceOutOfRange { .. })
+                ),
+                "tolerance {bad} refused for the wrong reason: {err}"
+            );
+        }
+        for good in [MIN_OBSTACLE_TOLERANCE_M, 0.001, MAX_OBSTACLE_TOLERANCE_M] {
+            Obstacle::fit("wall", &wall, good).expect("a tolerance in the band fits");
+        }
+    }
+
+    #[test]
+    fn a_looser_tolerance_buys_a_cheaper_hull() {
+        // The whole point of the parameter: the caller trades precision for
+        // per-tick cost, and cost is the hull's vertex count.
+        let ball = sphere_cloud(0.1, 1000);
+        let verts = |tolerance: f64| -> usize {
+            let mut m = build(&[]).expect("model");
+            m.add_obstacle(Obstacle::fit("ball", &ball, tolerance).expect("fit"))
+                .expect("add");
+            m.world_pieces(&home(), &home())
+                .expect("pieces")
+                .iter()
+                .filter(|(name, _)| *name == "ball")
+                .flat_map(|(_, ps)| ps.iter())
+                .map(|p| p.vertices.len())
+                .sum()
+        };
+        let tight = verts(0.001);
+        let loose = verts(0.01);
+        assert!(
+            loose < tight,
+            "a looser fit must cost fewer vertices: {loose} vs {tight}"
+        );
+    }
+
+    #[test]
+    fn a_doubly_curved_body_is_refused_where_a_singly_curved_one_fits() {
+        // The fit's plane budget was sized for robot links, whose worst mesh
+        // converges in 75 planes. It bounds what an obstacle may be, and the
+        // bound is about curvature, not size: a pillar needs planes only around
+        // its circumference, while a ball needs them over a whole solid angle
+        // and runs the budget out at a radius an operator could plausibly send.
+        let ball = Obstacle::fit("ball", &sphere_cloud(0.2, 1000), MAX_DEVIATION_M)
+            .expect_err("a 20 cm ball exceeds the plane budget at a 1 mm fit");
+        assert!(
+            matches!(
+                ball,
+                CollisionError::Build(BuildError::ToleranceTooTight { .. })
+            ),
+            "the refusal must name the tolerance, not read as a bad cloud: {ball}"
+        );
+        // The lever: the same ball at a hundredth of its radius.
+        Obstacle::fit("ball", &sphere_cloud(0.2, 1000), 0.002).expect("a 2 mm fit holds it");
+        Obstacle::fit("pillar", &cylinder_cloud(0.2, 1.0, 64), MAX_DEVIATION_M)
+            .expect("a pillar fits");
+        // Sparse sampling of the same ball fits, because the cloud's own hull is
+        // then a coarse polyhedron with genuinely flat faces. Refining the mesh
+        // an operator sends can therefore turn an accepted obstacle into a
+        // refused one, which is the surprising half of this boundary.
+        Obstacle::fit("coarse_ball", &sphere_cloud(0.2, 200), MAX_DEVIATION_M)
+            .expect("a coarse ball fits");
+    }
+
+    #[test]
+    fn a_cloud_that_bounds_no_solid_is_refused() {
+        let flat = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+        ];
+        let collinear: Vec<Point3<f64>> = (0..4).map(|i| Point3::new(i as f64, 0.0, 0.0)).collect();
+        for (case, points) in [
+            ("empty", [].as_slice()),
+            ("coplanar", &flat),
+            ("collinear", &collinear),
+        ] {
+            assert!(
+                Obstacle::fit("bad", points, MAX_DEVIATION_M).is_err(),
+                "a {case} cloud bounds no solid and must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cloud_outside_the_fittable_extents_is_refused_by_its_size() {
+        // Neither is refused for what it is without this check: the kernel
+        // calls the over-large one "coplanar", describing its own arithmetic
+        // rather than the caller's cloud, and it accepts the paper-thin one
+        // outright.
+        let paper_thin = Obstacle::fit(
+            "sliver",
+            &box_points([-1.0, -1.0, 0.0], [1.0, 1.0, 1e-9]),
+            MAX_DEVIATION_M,
+        )
+        .expect_err("thinner than the fit budget");
+        assert!(paper_thin.to_string().contains("thick"), "{paper_thin}");
+
+        let kilometres = Obstacle::fit("room", &box_points([-1e4; 3], [1e4; 3]), MAX_DEVIATION_M)
+            .expect_err("wider than the fittable range");
+        assert!(kilometres.to_string().contains("units"), "{kilometres}");
+
+        // The workspace-sized case in between is exactly what must still fit.
+        Obstacle::fit("wall", &box_points(WALL_MIN, WALL_MAX), MAX_DEVIATION_M)
+            .expect("a wall is fittable");
+    }
+
+    #[test]
+    fn an_obstacle_needs_a_name() {
+        for empty in ["", "   "] {
+            assert!(
+                Obstacle::fit(empty, &box_points(WALL_MIN, WALL_MAX), MAX_DEVIATION_M).is_err(),
+                "an unnamed obstacle could never be removed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_finite_point_is_refused() {
+        for bad in [f64::NAN, f64::INFINITY] {
+            let mut points = box_points(WALL_MIN, WALL_MAX);
+            points[0].y = bad;
+            assert!(matches!(
+                Obstacle::fit("wall", &points, MAX_DEVIATION_M),
+                Err(CollisionError::NonFinite)
+            ));
+        }
+    }
+
+    #[test]
+    fn a_name_already_taken_is_refused() {
+        let mut m = model();
+        m.add_obstacle(obstacle("wall", WALL_MIN, WALL_MAX))
+            .expect("add");
+        for taken in ["wall", "openarm_left_link3"] {
+            assert!(
+                m.add_obstacle(obstacle(taken, WALL_MIN, WALL_MAX)).is_err(),
+                "'{taken}' is already a body's name"
+            );
+        }
+        assert_eq!(m.obstacle_names(), ["wall"]);
+    }
+
+    #[test]
+    fn only_an_obstacle_can_be_removed_or_measured() {
+        let mut m = model();
+        for name in ["openarm_left_link3", "never_added"] {
+            assert!(
+                m.remove_obstacle(name).is_err(),
+                "'{name}' is not an obstacle"
+            );
+            assert!(
+                m.obstacle_clearance(name, &home(), &home()).is_err(),
+                "'{name}' is not an obstacle"
+            );
+        }
+    }
+
+    #[test]
+    fn removing_one_obstacle_leaves_the_others_measurable() {
+        // The removed body shifts every later body's index down one, so a
+        // surviving obstacle's pairs have to follow it. Measuring the third
+        // after removing the second is what catches a stale index.
+        let mut m = model();
+        for (name, min, max) in [
+            ("first", [-0.5, 0.30, 0.0], [0.5, 0.35, 1.0]),
+            ("second", [-0.5, 0.40, 0.0], [0.5, 0.45, 1.0]),
+            ("third", [-0.5, 0.50, 0.0], [0.5, 0.55, 1.0]),
+        ] {
+            m.add_obstacle(obstacle(name, min, max)).expect("add");
+        }
+        let before = m
+            .obstacle_clearance("third", &home(), &home())
+            .expect("clearance");
+        m.remove_obstacle("second").expect("remove");
+        assert_eq!(m.obstacle_names(), ["first", "third"]);
+        let after = m
+            .obstacle_clearance("third", &home(), &home())
+            .expect("clearance");
+        assert_eq!(before, after, "the third obstacle moved with the removal");
+    }
+
+    #[test]
+    fn removing_every_obstacle_restores_the_original_model() {
+        let mut m = model();
+        let pairs_before = sorted_pairs(&m);
+        let bound_before = m.clearance_step_bound(&[0.1; ARM_DOF], &[0.1; ARM_DOF], &[0.1; 2]);
+        m.add_obstacle(obstacle("wall", WALL_MIN, WALL_MAX))
+            .expect("add wall");
+        m.add_obstacle(overlapping_slab()).expect("add slab");
+        assert_eq!(m.clear_obstacles(), 2);
+        assert!(m.obstacle_names().is_empty());
+        assert_eq!(
+            sorted_pairs(&m),
+            pairs_before,
+            "the URDF pairs must come back exactly, not merely in the same number"
+        );
+        assert_eq!(
+            m.clearance_step_bound(&[0.1; ARM_DOF], &[0.1; ARM_DOF], &[0.1; 2]),
+            bound_before,
+            "the levers must return to the URDF-only model's"
+        );
+    }
+
+    /// Every checked pair by name, ordered, so two pair sets can be compared
+    /// for identity rather than for size.
+    fn sorted_pairs(m: &BimanualCollisionModel) -> Vec<(String, String)> {
+        let mut pairs: Vec<(String, String)> = m
+            .checked_pairs()
+            .into_iter()
+            .map(|(a, b)| {
+                if a <= b {
+                    (a.to_string(), b.to_string())
+                } else {
+                    (b.to_string(), a.to_string())
+                }
+            })
+            .collect();
+        pairs.sort();
+        pairs
+    }
+
+    #[test]
+    fn an_obstacle_pair_raises_the_step_bound_it_is_scanned_under() {
+        // The scan-skip bound is only sound if the levers follow the pair set.
+        // With the URDF pairs in place every cross-arm pair already dominates,
+        // so an obstacle can never raise the max and an omission would hide:
+        // built with no pairs the levers start at zero, and the obstacle's
+        // contribution is then the whole bound.
+        let mut m = build(&[]).expect("model");
+        let step = [0.1; ARM_DOF];
+        assert_eq!(
+            m.clearance_step_bound(&step, &step, &[0.0; 2]),
+            0.0,
+            "setup: no pairs means nothing can close"
+        );
+        m.add_obstacle(overlapping_slab()).expect("add");
+        let bound = m.clearance_step_bound(&step, &step, &[0.0; 2]);
+        assert!(
+            bound > 0.0,
+            "the obstacle's pairs never reached the step bound"
+        );
+        let moved: JointVec = std::array::from_fn(|j| home()[j] + step[j]);
+        let d0 = m.min_distance(&home(), &home()).expect("query").distance;
+        let d1 = m.min_distance(&moved, &home()).expect("query").distance;
+        assert!(
+            (d1 - d0).abs() <= bound + 1e-9,
+            "bound {bound:.5} did not dominate |{d1:+.5} - {d0:+.5}|"
+        );
+        m.remove_obstacle("slab").expect("remove");
+        assert_eq!(
+            m.clearance_step_bound(&step, &step, &[0.0; 2]),
+            0.0,
+            "the levers kept a removed obstacle's pairs"
+        );
+    }
+
+    #[test]
+    fn an_obstacle_can_be_removed_after_being_the_nearest_pair() {
+        // A removed body must leave the scan, not merely stop being reported.
+        let mut m = model();
+        let before = m.min_distance(&home(), &home()).expect("query").distance;
+        m.add_obstacle(overlapping_slab()).expect("add");
+        let p = m.min_distance(&home(), &home()).expect("query");
+        assert!(
+            p.link_a == "slab" || p.link_b == "slab",
+            "setup: the slab must win before it is removed"
+        );
+        m.remove_obstacle("slab").expect("remove");
+        let after = m.min_distance(&home(), &home()).expect("query");
+        assert!(
+            after.link_a != "slab" && after.link_b != "slab",
+            "a removed obstacle is still being scanned"
+        );
+        assert_eq!(after.distance, before, "the model did not return to itself");
+    }
+
+    #[test]
+    fn removing_the_first_obstacle_leaves_the_rest_measurable() {
+        // The boundary of the tail: the removed body is the first obstacle, so
+        // every surviving obstacle moves.
+        let mut m = model();
+        for (name, min, max) in [
+            ("first", [-0.5, 0.30, 0.0], [0.5, 0.35, 1.0]),
+            ("second", [-0.5, 0.40, 0.0], [0.5, 0.45, 1.0]),
+        ] {
+            m.add_obstacle(obstacle(name, min, max)).expect("add");
+        }
+        let before = m
+            .obstacle_clearance("second", &home(), &home())
+            .expect("clearance");
+        m.remove_obstacle("first").expect("remove");
+        assert_eq!(m.obstacle_names(), ["second"]);
+        assert_eq!(
+            m.obstacle_clearance("second", &home(), &home())
+                .expect("clearance"),
+            before
+        );
+    }
+
+    #[test]
+    fn an_obstacle_can_be_added_again_after_a_clear() {
+        // Clearing frees the names and the body slots the next insertion reuses.
+        let mut m = model();
+        m.add_obstacle(obstacle("wall", WALL_MIN, WALL_MAX))
+            .expect("add");
+        let before = m
+            .obstacle_clearance("wall", &home(), &home())
+            .expect("clearance");
+        assert_eq!(m.clear_obstacles(), 1);
+        m.add_obstacle(obstacle("wall", WALL_MIN, WALL_MAX))
+            .expect("the name is free again");
+        assert_eq!(
+            m.obstacle_clearance("wall", &home(), &home())
+                .expect("clearance"),
+            before
+        );
+    }
+
+    #[test]
+    fn an_obstacles_clearance_matches_a_brute_force_scan_of_its_own_pairs() {
+        // The filtered scan keeps the broadphase ordering and its early break;
+        // this is the check that the filter cannot drop a pair that would win.
+        let mut m = model();
+        m.add_obstacle(obstacle("wall", WALL_MIN, WALL_MAX))
+            .expect("add wall");
+        m.add_obstacle(overlapping_slab()).expect("add slab");
+        for (ql, qr) in [
+            (home(), home()),
+            ([0.0, 0.5, 0.0, 0.4, 0.0, 0.0, 0.0], home()),
+            ([0.2, 0.0, 0.3, 0.9, 0.0, 0.0, 0.0], [0.0; ARM_DOF]),
+        ] {
+            for name in ["wall", "slab"] {
+                let scanned = m.obstacle_clearance(name, &ql, &qr).expect("clearance");
+                let brute = brute_force_obstacle_clearance(&mut m, name, &ql, &qr);
+                assert!(
+                    (scanned - brute).abs() < 1e-9,
+                    "{name}: filtered scan {scanned:+.6}, brute force {brute:+.6}"
+                );
+            }
+        }
+    }
+
+    /// The minimum over every checked pair the named obstacle is in, with no
+    /// broadphase and no early break: the filtered scan's independent answer.
+    fn brute_force_obstacle_clearance(
+        m: &mut BimanualCollisionModel,
+        name: &str,
+        q_left: &JointVec,
+        q_right: &JointVec,
+    ) -> f64 {
+        let index = m.obstacle_index(name).expect("a live obstacle");
+        let partners: Vec<usize> = m
+            .pairs
+            .iter()
+            .filter(|p| p.a == index || p.b == index)
+            .map(|p| if p.a == index { p.b } else { p.a })
+            .collect();
+        m.place(q_left, q_right);
+        let mut best = f64::INFINITY;
+        for other in partners {
+            let (iso_a, iso_b) = (m.world_iso[index], m.world_iso[other]);
+            for ha in &m.bodies[index].local {
+                for hb in &m.bodies[other].local {
+                    let r = gjk::distance(&Placed::new(ha, iso_a), &Placed::new(hb, iso_b));
+                    best = best.min(r.distance);
+                }
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn an_exclusion_survives_obstacle_churn() {
+        let excluded = PairSpec::new("openarm_left_link7", "openarm_right_link7");
+        let mut m = BimanualCollisionModel::builder(
+            URDF,
+            MESHES,
+            "openarm_left_link0",
+            "openarm_right_link0",
+        )
+        .exclude(std::slice::from_ref(&excluded))
+        .build()
+        .expect("model");
+        let has_excluded_pair = |m: &BimanualCollisionModel| {
+            m.checked_pairs().iter().any(|&(a, b)| {
+                (a == excluded.a && b == excluded.b) || (a == excluded.b && b == excluded.a)
+            })
+        };
+        assert!(!has_excluded_pair(&m));
+        m.add_obstacle(obstacle("wall", WALL_MIN, WALL_MAX))
+            .expect("add");
+        m.remove_obstacle("wall").expect("remove");
+        assert!(
+            !has_excluded_pair(&m),
+            "an insertion must not re-derive the pairs the builder was told to drop"
+        );
     }
 }

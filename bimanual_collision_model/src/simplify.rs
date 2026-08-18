@@ -40,13 +40,16 @@ use srs_model::nalgebra::{Point3, Unit, Vector3};
 use crate::gjk::{self, Support};
 use crate::hull::{ConvexHull, exact_hull};
 
-/// Halfspace count at which the fit gives up. A budget this many supporting
-/// planes cannot meet means a pathologically round body, and erroring beats
-/// silently shipping a proxy looser than the caller asked for.
+/// Halfspace count at which the fit gives up: the stop condition an iterative
+/// fit needs, not a statement about what geometry is allowed.
 ///
-/// The worst of the eleven collision meshes converges in 75 planes at a 1 mm
-/// budget, so this leaves roughly sevenfold headroom: loose enough that no real
-/// part trips it, tight enough that a runaway stops in well under a second.
+/// The caller's control over the fit is `budget`, which is what decides how
+/// many planes a given shape needs. This only bounds how long a runaway may
+/// spin before erroring, and erroring beats silently shipping a proxy looser
+/// than the caller asked for. The worst of the eleven collision meshes
+/// converges in 75 planes at a 1 mm budget, so no robot part comes near it, and
+/// a caller who does trip it is told to loosen the budget rather than left to
+/// guess at this number.
 const MAX_PLANES: usize = 512;
 
 /// Squared-magnitude floor below which a dual facet is treated as collapsed.
@@ -105,6 +108,38 @@ pub struct Circumscribed {
     pub deviation: f64,
 }
 
+/// Why a cloud could not be circumscribed. The two are separated because only
+/// one of them is the caller's to fix: a degenerate cloud is the wrong shape at
+/// any budget, while a budget the plane count cannot meet is answered by asking
+/// for a looser one.
+#[derive(Debug, Clone)]
+pub enum FitFailure {
+    /// The cloud bounds no solid, or the fit broke down on it.
+    Degenerate(String),
+    /// The shape is too curved to hold this budget within [`MAX_PLANES`].
+    BudgetTooTight { planes: usize },
+}
+
+impl std::fmt::Display for FitFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Degenerate(reason) => write!(f, "{reason}"),
+            Self::BudgetTooTight { planes } => {
+                write!(
+                    f,
+                    "{planes} supporting planes still leave it outside the budget"
+                )
+            }
+        }
+    }
+}
+
+impl From<String> for FitFailure {
+    fn from(reason: String) -> Self {
+        Self::Degenerate(reason)
+    }
+}
+
 /// Fit `cloud` with a circumscribing polytope whose worst deviation from the
 /// cloud's convex hull is at most `budget` metres. The result contains every
 /// point of the cloud, so it never under-reports a distance to it.
@@ -112,17 +147,15 @@ pub struct Circumscribed {
 /// Errors on a non-finite or degenerate cloud (fewer than four points, collinear,
 /// coplanar), a non-positive budget, or a budget no plane count under
 /// [`MAX_PLANES`] can meet.
-pub fn circumscribe(cloud: &[Point3<f64>], budget: f64) -> Result<Circumscribed, String> {
+pub fn circumscribe(cloud: &[Point3<f64>], budget: f64) -> Result<Circumscribed, FitFailure> {
     if !(budget.is_finite() && budget > 0.0) {
-        return Err(format!(
-            "deviation budget must be finite and positive, got {budget}"
-        ));
+        return Err(format!("deviation budget must be finite and positive, got {budget}").into());
     }
     if let Some(bad) = cloud
         .iter()
         .find(|p| !p.coords.iter().all(|x| x.is_finite()))
     {
-        return Err(format!("mesh cloud holds a non-finite point {bad:?}"));
+        return Err(format!("mesh cloud holds a non-finite point {bad:?}").into());
     }
     let reference = Reference::new(exact_hull(cloud)?)?;
     let center = reference.center();
@@ -134,7 +167,9 @@ pub fn circumscribe(cloud: &[Point3<f64>], budget: f64) -> Result<Circumscribed,
     loop {
         let vertices = intersect(&planes, &center, extent_limit)?;
         if vertices.is_empty() {
-            return Err("the halfspace intersection has no vertices".into());
+            return Err("the halfspace intersection has no vertices"
+                .to_string()
+                .into());
         }
         let mut over: Vec<Overshoot> = vertices
             .iter()
@@ -176,7 +211,8 @@ pub fn circumscribe(cloud: &[Point3<f64>], budget: f64) -> Result<Circumscribed,
                 return Err(format!(
                     "vertex {:?} is {} m outside the mesh hull with no separating direction",
                     o.vertex, o.deviation
-                ));
+                )
+                .into());
             };
             if round.iter().any(|n| outward.dot(n) >= BATCH_SEPARATION) {
                 continue;
@@ -185,10 +221,9 @@ pub fn circumscribe(cloud: &[Point3<f64>], budget: f64) -> Result<Circumscribed,
             planes.push((outward, support_offset(cloud, &outward)));
         }
         if planes.len() > MAX_PLANES {
-            return Err(format!(
-                "{} supporting planes still leave a deviation over the {budget:.6} m budget",
-                planes.len()
-            ));
+            return Err(FitFailure::BudgetTooTight {
+                planes: planes.len(),
+            });
         }
     }
 }
@@ -265,7 +300,7 @@ fn intersect(
             (m, m.dot(&a.coords))
         };
         if t <= 0.0 {
-            return Err("a dual facet passes through the fit centre".into());
+            return Err("a dual facet passes through the fit centre".to_string());
         }
         let vertex = Point3::from(center.coords + m / t);
         let reach = (vertex - *center).norm();
@@ -299,7 +334,7 @@ struct Reference {
 impl Reference {
     fn new(hull: ConvexHull) -> Result<Reference, String> {
         if hull.vertices.is_empty() {
-            return Err("the reference hull has no vertices".into());
+            return Err("the reference hull has no vertices".to_string());
         }
         let mut adjacency: Vec<Vec<u32>> = vec![Vec::new(); hull.vertices.len()];
         for f in &hull.faces {

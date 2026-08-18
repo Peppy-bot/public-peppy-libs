@@ -62,25 +62,26 @@ pub fn load_stl(path: &str) -> Result<Vec<Point3<f64>>, String> {
     parse_binary_stl(&bytes).map_err(|e| format!("{path}: {e}"))
 }
 
+/// Build a binary STL with the given triangles (each three vertices).
+#[cfg(test)]
+pub(crate) fn stl_bytes(triangles: &[[[f32; 3]; 3]]) -> Vec<u8> {
+    let mut b = vec![0u8; HEADER_LEN];
+    b.extend_from_slice(&(triangles.len() as u32).to_le_bytes());
+    for tri in triangles {
+        b.extend_from_slice(&[0u8; 12]); // normal, ignored
+        for v in tri {
+            for c in v {
+                b.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        b.extend_from_slice(&[0u8; 2]); // attribute
+    }
+    b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Build a binary STL with the given triangles (each three vertices).
-    fn stl_bytes(triangles: &[[[f32; 3]; 3]]) -> Vec<u8> {
-        let mut b = vec![0u8; HEADER_LEN];
-        b.extend_from_slice(&(triangles.len() as u32).to_le_bytes());
-        for tri in triangles {
-            b.extend_from_slice(&[0u8; 12]); // normal, ignored
-            for v in tri {
-                for c in v {
-                    b.extend_from_slice(&c.to_le_bytes());
-                }
-            }
-            b.extend_from_slice(&[0u8; 2]); // attribute
-        }
-        b
-    }
 
     #[test]
     fn parses_vertices_in_order() {
