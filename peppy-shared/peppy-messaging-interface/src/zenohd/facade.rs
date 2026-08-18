@@ -260,6 +260,15 @@ impl ZenohdFacade {
         )
     }
 
+    /// The zenohd binary the current resolution rules select, if any — for
+    /// test tooling that must forward it to a child process via
+    /// [`ZENOHD_PATH_VAR`] (e.g. running a node's `cargo test` from an
+    /// environment that has no `peppy` on PATH: the node's vendored pmi has
+    /// no built artifact of its own to fall back on).
+    pub fn resolved_zenohd_binary() -> Option<String> {
+        Self::get_zenohd_binary()
+    }
+
     fn connect_addr(&self) -> String {
         let connect_host = if self.zenoh_endpoint.host() == "0.0.0.0" {
             "127.0.0.1"

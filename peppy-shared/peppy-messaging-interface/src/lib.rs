@@ -74,6 +74,10 @@ pub use zenohd::RouterHealthChecker;
 pub use zenohd::ZENOHD_PATH_VAR;
 #[cfg(feature = "router")]
 pub use zenohd::RouterLinksProbe;
+/// Router-process facade; its [`ZenohdFacade::resolved_zenohd_binary`] lets
+/// test tooling forward the resolved binary to child processes.
+#[cfg(feature = "router")]
+pub use zenohd::ZenohdFacade;
 #[cfg(feature = "zenoh")]
 pub use zenohd::{ZenohEndpoint, ZenohNetProtocol};
 // TLS material + the out-of-process router-config renderer. Available under the
