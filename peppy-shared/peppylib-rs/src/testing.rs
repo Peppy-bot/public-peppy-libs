@@ -31,6 +31,11 @@ use config::node::QoSProfile;
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use tracing::warn;
 
+// The identity segment generated test surfaces pin the node-under-test with;
+// re-exported here so peppygen's veneers reference it instead of embedding
+// the literal (see [`crate::runtime::processor::STANDALONE_CORE_NODE`]).
+pub use crate::runtime::STANDALONE_CORE_NODE;
+
 /// How long readiness waits (subscriber matching, service/action reachability)
 /// may take before failing loudly. Generous on purpose: every wait returns the
 /// moment its condition is observed, so the bound only prices the failure
@@ -131,6 +136,19 @@ static ZENOH_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// lifetime; [`EphemeralRouter::start`] acquires it internally.
 pub async fn acquire_mesh_serial() -> tokio::sync::MutexGuard<'static, ()> {
     ZENOH_SERIAL.lock().await
+}
+
+/// A process-unique test instance id (`test-<pid>-<counter>`): the default
+/// identity for a harness-booted node when no explicit id is supplied.
+/// Generated harnesses call this rather than each carrying their own counter,
+/// so ids from different nodes in one process can never collide.
+pub fn unique_test_instance_id() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "test-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    )
 }
 
 /// An external zenohd process on an ephemeral port, wrapped for tests: started
@@ -371,28 +389,17 @@ pub async fn wait_service_reachable(
     producer: &crate::messaging::ProducerRef,
     timeout: Duration,
 ) -> Result<()> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        if ServiceMessenger::is_reachable(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            to_target.clone(),
-            to_service_name,
-            crate::messaging::ServiceTarget::Producer(producer),
-        )
-        .await?
-        {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(Error::ServiceUnreachable {
-                instance_id: Some(producer.instance_id.clone()),
-                service_name: to_service_name.to_string(),
-            });
-        }
-        tokio::time::sleep(REACHABILITY_POLL_INTERVAL).await;
-    }
+    wait_reachable(
+        ServiceReadinessKind::Service,
+        messenger,
+        bound_core_node,
+        as_instance_id,
+        to_target,
+        to_service_name,
+        producer,
+        timeout,
+    )
+    .await
 }
 
 /// [`wait_service_reachable`] for an action's goal service.
@@ -405,24 +412,64 @@ pub async fn wait_action_reachable(
     producer: &crate::messaging::ProducerRef,
     timeout: Duration,
 ) -> Result<()> {
+    wait_reachable(
+        ServiceReadinessKind::Action,
+        messenger,
+        bound_core_node,
+        as_instance_id,
+        to_target,
+        to_action_name,
+        producer,
+        timeout,
+    )
+    .await
+}
+
+/// The shared probe loop behind the two `wait_*_reachable` helpers: poll the
+/// matching `is_reachable` probe until it answers or `timeout` expires.
+async fn wait_reachable(
+    kind: ServiceReadinessKind,
+    messenger: &MessengerHandle,
+    bound_core_node: &str,
+    as_instance_id: &str,
+    to_target: SenderTarget,
+    service_name: &str,
+    producer: &crate::messaging::ProducerRef,
+    timeout: Duration,
+) -> Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if crate::messaging::ActionMessenger::is_reachable(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            to_target.clone(),
-            to_action_name,
-            Some(producer),
-        )
-        .await?
-        {
+        let reachable = match kind {
+            ServiceReadinessKind::Service => {
+                ServiceMessenger::is_reachable(
+                    messenger,
+                    bound_core_node,
+                    as_instance_id,
+                    to_target.clone(),
+                    service_name,
+                    crate::messaging::ServiceTarget::Producer(producer),
+                )
+                .await?
+            }
+            ServiceReadinessKind::Action => {
+                crate::messaging::ActionMessenger::is_reachable(
+                    messenger,
+                    bound_core_node,
+                    as_instance_id,
+                    to_target.clone(),
+                    service_name,
+                    Some(producer),
+                )
+                .await?
+            }
+        };
+        if reachable {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(Error::ServiceUnreachable {
                 instance_id: Some(producer.instance_id.clone()),
-                service_name: to_action_name.to_string(),
+                service_name: service_name.to_string(),
             });
         }
         tokio::time::sleep(REACHABILITY_POLL_INTERVAL).await;
@@ -545,14 +592,6 @@ impl MockServiceCore {
         let _ = self.scripted.send(response);
     }
 
-    /// Enqueue several responses at once; equivalent to repeated
-    /// [`enqueue_response`](Self::enqueue_response) calls in order.
-    pub fn enqueue_responses(&self, responses: impl IntoIterator<Item = Payload>) {
-        for response in responses {
-            self.enqueue_response(response);
-        }
-    }
-
     /// Every request captured so far (scripted and manual alike), in arrival
     /// order.
     pub fn captured(&self) -> Vec<CapturedServiceRequest> {
@@ -562,15 +601,6 @@ impl MockServiceCore {
             .clone()
     }
 
-    /// [`captured`](Self::captured), draining the buffer.
-    pub fn take_captured(&self) -> Vec<CapturedServiceRequest> {
-        std::mem::take(
-            &mut *self
-                .captured
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        )
-    }
 }
 
 impl Drop for MockServiceCore {
@@ -690,14 +720,6 @@ pub struct MockPendingGoal {
 impl MockPendingGoal {
     pub fn goal_id(&self) -> &str {
         self.pending.goal_id()
-    }
-
-    pub fn core_node(&self) -> &str {
-        self.pending.core_node()
-    }
-
-    pub fn instance_id(&self) -> &str {
-        self.pending.instance_id()
     }
 
     /// The envelope-stripped goal request payload, ready to decode.
@@ -841,32 +863,17 @@ impl HarnessCore {
         // fresh caller, so gate its session's discovery of each mock
         // queryable before setup's first poll/send_goal can race it.
         for probe in service_readiness {
-            match probe.kind {
-                ServiceReadinessKind::Service => {
-                    wait_service_reachable(
-                        node_runner.messenger(),
-                        processor.bound_core_node(),
-                        processor.bound_instance_id(),
-                        probe.target.clone(),
-                        &probe.name,
-                        &probe.producer,
-                        READINESS_TIMEOUT,
-                    )
-                    .await?;
-                }
-                ServiceReadinessKind::Action => {
-                    wait_action_reachable(
-                        node_runner.messenger(),
-                        processor.bound_core_node(),
-                        processor.bound_instance_id(),
-                        probe.target.clone(),
-                        &probe.name,
-                        &probe.producer,
-                        READINESS_TIMEOUT,
-                    )
-                    .await?;
-                }
-            }
+            wait_reachable(
+                probe.kind,
+                node_runner.messenger(),
+                processor.bound_core_node(),
+                processor.bound_instance_id(),
+                probe.target.clone(),
+                &probe.name,
+                &probe.producer,
+                READINESS_TIMEOUT,
+            )
+            .await?;
         }
 
         let setup_task = spawn(setup(params, Arc::clone(&node_runner)));
@@ -884,22 +891,12 @@ impl HarnessCore {
         &self.node_runner
     }
 
-    /// The node's own session — the one its publishers and subscriptions live
-    /// on.
-    pub fn messenger(&self) -> &MessengerHandle {
-        self.node_runner.messenger()
-    }
-
     pub fn instance_id(&self) -> &str {
         self.node_runner.processor().bound_instance_id()
     }
 
     pub fn bound_core_node(&self) -> &str {
         self.node_runner.processor().bound_core_node()
-    }
-
-    pub fn cancellation_token(&self) -> &CancellationToken {
-        &self.cancellation_token
     }
 
     /// Whether the spawned `setup` has already returned (many setups register

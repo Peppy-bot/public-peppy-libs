@@ -19,12 +19,13 @@ equivalent test suites in public-peppy-libs to surface one early.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import os
 import warnings
 import weakref
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Iterable, Sequence
+from typing import Any, Awaitable, Callable, Sequence
 
 from peppylib import (
     ActionMessenger,
@@ -52,6 +53,21 @@ READINESS_TIMEOUT = 10.0
 _CONNECT_RETRIES = 5
 _CONNECT_RETRY_DELAY = 0.2
 _REACHABILITY_POLL_INTERVAL = 0.025
+
+#: The identity segment generated test surfaces pin the node-under-test with;
+#: the Python twin of the Rust runtime's ``STANDALONE_CORE_NODE`` constant, so
+#: peppygen's veneers reference it instead of embedding the literal.
+STANDALONE_CORE_NODE = "standalone-core"
+
+_INSTANCE_COUNTER = itertools.count()
+
+
+def unique_test_instance_id() -> str:
+    """A process-unique test instance id (``test-<pid>-<counter>``): the
+    default identity for a harness-booted node when no explicit id is
+    supplied. Generated harnesses call this rather than each carrying their
+    own counter, so ids from different nodes in one process cannot collide."""
+    return f"test-{os.getpid()}-{next(_INSTANCE_COUNTER)}"
 
 
 def prepare_test_process() -> None:
@@ -310,18 +326,16 @@ async def wait_service_reachable(
     queryable, and a service query that misses is a hard unreachable error,
     so callers gate on this first.
     """
-    deadline = asyncio.get_running_loop().time() + timeout
-    while True:
-        if await ServiceMessenger.is_reachable(
-            messenger, bound_core_node, as_instance_id, to_target, to_service_name, producer
-        ):
-            return
-        if asyncio.get_running_loop().time() >= deadline:
-            raise TimeoutError(
-                f"service `{to_service_name}` on {producer!r} did not become reachable "
-                f"within {timeout}s"
-            )
-        await asyncio.sleep(_REACHABILITY_POLL_INTERVAL)
+    await _wait_reachable(
+        "service",
+        messenger,
+        bound_core_node,
+        as_instance_id,
+        to_target,
+        to_service_name,
+        producer,
+        timeout,
+    )
 
 
 async def wait_action_reachable(
@@ -334,15 +348,39 @@ async def wait_action_reachable(
     timeout: float = READINESS_TIMEOUT,
 ) -> None:
     """:func:`wait_service_reachable` for an action's goal service."""
+    await _wait_reachable(
+        "action",
+        messenger,
+        bound_core_node,
+        as_instance_id,
+        to_target,
+        to_action_name,
+        producer,
+        timeout,
+    )
+
+
+async def _wait_reachable(
+    kind: str,
+    messenger: MessengerHandle,
+    bound_core_node: str,
+    as_instance_id: str,
+    to_target: SenderTarget,
+    name: str,
+    producer: ProducerRef | None,
+    timeout: float,
+) -> None:
+    """The shared probe loop behind the two ``wait_*_reachable`` helpers:
+    poll the matching ``is_reachable`` probe until it answers or ``timeout``
+    expires."""
+    probe = ActionMessenger.is_reachable if kind == "action" else ServiceMessenger.is_reachable
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
-        if await ActionMessenger.is_reachable(
-            messenger, bound_core_node, as_instance_id, to_target, to_action_name, producer
-        ):
+        if await probe(messenger, bound_core_node, as_instance_id, to_target, name, producer):
             return
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError(
-                f"action `{to_action_name}` on {producer!r} did not become reachable "
+                f"{kind} `{name}` on {producer!r} did not become reachable "
                 f"within {timeout}s"
             )
         await asyncio.sleep(_REACHABILITY_POLL_INTERVAL)
@@ -439,19 +477,10 @@ class MockServiceCore:
         request (FIFO across repeated calls)."""
         self._scripted.append(response)
 
-    def enqueue_responses(self, responses: Iterable[bytes]) -> None:
-        for response in responses:
-            self.enqueue_response(response)
-
     def captured(self) -> list[CapturedServiceRequest]:
         """Every request captured so far (scripted and manual alike), in
         arrival order."""
         return list(self._captured)
-
-    def take_captured(self) -> list[CapturedServiceRequest]:
-        taken = self._captured
-        self._captured = []
-        return taken
 
     async def close(self) -> None:
         """Stop the pump and report anything the test left dangling. Python
@@ -491,14 +520,6 @@ class MockPendingGoal:
     @property
     def goal_id(self) -> str:
         return self._pending.goal_id
-
-    @property
-    def core_node(self) -> str:
-        return self._pending.core_node
-
-    @property
-    def instance_id(self) -> str:
-        return self._pending.instance_id
 
     @property
     def request_bytes(self) -> bytes:
@@ -702,8 +723,8 @@ class HarnessCore:
         # fresh caller, so gate its session's discovery of each mock
         # queryable before setup's first poll/send_goal can race it.
         for probe in service_readiness:
-            wait = wait_action_reachable if probe.kind == "action" else wait_service_reachable
-            await wait(
+            await _wait_reachable(
+                probe.kind,
                 node_runner.messenger(),
                 node_runner.bound_core_node(),
                 node_runner.bound_instance_id(),
@@ -720,19 +741,11 @@ class HarnessCore:
     def node_runner(self) -> NodeRunner:
         return self._node_runner
 
-    def messenger(self) -> MessengerHandle:
-        """The node's own session — the one its publishers and subscriptions
-        live on."""
-        return self._node_runner.messenger()
-
     def instance_id(self) -> str:
         return self._node_runner.bound_instance_id()
 
     def bound_core_node(self) -> str:
         return self._node_runner.bound_core_node()
-
-    def cancellation_token(self) -> Any:
-        return self._node_runner.cancellation_token()
 
     def setup_finished(self) -> bool:
         """Whether the spawned ``setup`` has already returned (many setups

@@ -291,21 +291,7 @@ where
     /// - More control over the execution flow
     pub fn init(self) -> Result<NodeContext<Params>> {
         let resolved_mode = self.resolve_mode();
-        let processor = match &resolved_mode {
-            ExecutionMode::Daemon => Processor::new_daemon(&self.peppy_config_path)?,
-            ExecutionMode::Standalone(config) => {
-                Processor::new_standalone(&self.peppy_config_path, config)?
-            }
-        };
-
-        let params: Params = crate::config::deserialize_parameters(processor.input_arguments())?;
-
-        Ok(NodeContext {
-            processor,
-            mode: resolved_mode,
-            cancellation_token: None,
-            params: Some(params),
-        })
+        self.init_with_mode(resolved_mode)
     }
 
     /// [`init`](Self::init), but always standalone: `PEPPY_RUNTIME_CONFIG` is
@@ -323,11 +309,27 @@ where
             );
         }
         let config = self.standalone_config.clone().unwrap_or_default();
-        let processor = Processor::new_standalone(&self.peppy_config_path, &config)?;
+        self.init_with_mode(ExecutionMode::Standalone(Box::new(config)))
+    }
+
+    /// Builds the [`NodeContext`] for an already-resolved mode: processor
+    /// construction, eager parameter parse, context assembly. The single
+    /// body behind both [`init`](Self::init) and
+    /// [`init_standalone`](Self::init_standalone), so the harness path can
+    /// never diverge from production's context construction.
+    fn init_with_mode(self, resolved_mode: ExecutionMode) -> Result<NodeContext<Params>> {
+        let processor = match &resolved_mode {
+            ExecutionMode::Daemon => Processor::new_daemon(&self.peppy_config_path)?,
+            ExecutionMode::Standalone(config) => {
+                Processor::new_standalone(&self.peppy_config_path, config)?
+            }
+        };
+
         let params: Params = crate::config::deserialize_parameters(processor.input_arguments())?;
+
         Ok(NodeContext {
             processor,
-            mode: ExecutionMode::Standalone(Box::new(config)),
+            mode: resolved_mode,
             cancellation_token: None,
             params: Some(params),
         })
