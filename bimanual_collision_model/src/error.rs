@@ -15,6 +15,12 @@ pub enum CollisionError {
     #[error("no checked pairs to evaluate")]
     NoPairs,
 
+    /// A name did not resolve to a live runtime obstacle. A URDF body's name
+    /// lands here too: only obstacles are removable or separately measurable.
+    /// A lookup on a built model, which is why it is not a [`BuildError`].
+    #[error("unknown obstacle '{name}'")]
+    UnknownObstacle { name: String },
+
     /// The nearest pair's hull cores touch degenerately (the rounded surfaces
     /// overlap by the summed radii), so no separating direction, and thus no
     /// distance gradient, is defined.
@@ -52,9 +58,15 @@ pub enum BuildError {
     #[error("supplied clip regions for '{body}' are empty; provide at least one region")]
     EmptyRegions { body: String },
 
-    /// A body's own mesh could not be fitted (an empty, collinear, or coplanar
-    /// cloud, or one no plane budget could circumscribe).
-    #[error("'{body}' could not be fitted from its mesh: {reason}")]
+    /// An obstacle was offered without a name to answer to.
+    #[error("an obstacle needs a name")]
+    UnnamedObstacle,
+
+    /// A body's own point cloud could not be fitted (an empty, collinear, or
+    /// coplanar cloud, one no plane budget could circumscribe, or one the
+    /// wrong scale to stand in for a solid). The cloud is a link's mesh for a
+    /// URDF body and the caller's own for a runtime obstacle.
+    #[error("'{body}' could not be fitted: {reason}")]
     DegenerateBody { body: String, reason: String },
 
     /// A clip region caught too little of its body's mesh to bound a solid

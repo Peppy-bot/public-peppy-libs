@@ -23,7 +23,7 @@ use crate::{BuildError, ContainmentFailure};
 /// governor sees the piece and not the part, which is why it sits an order of
 /// magnitude under the millimetre-scale bands tuned over it. The face count
 /// needed to hold it falls out of how much the surface curves.
-const MAX_DEVIATION_M: f64 = 0.001;
+pub(crate) const MAX_DEVIATION_M: f64 = 0.001;
 /// A mesh point counts as inside a supplied hull when its signed distance is
 /// within this of the surface (metres), so on-boundary points pass.
 const CONTAIN_TOL: f64 = 1e-6;
@@ -248,12 +248,7 @@ fn fit_body(
     supplied: &HashMap<String, Vec<ClipRegion>>,
 ) -> Result<Vec<Hull>, BuildError> {
     let Some(regions) = supplied.get(name) else {
-        let fit =
-            circumscribe(verts, MAX_DEVIATION_M).map_err(|reason| BuildError::DegenerateBody {
-                body: name.to_string(),
-                reason,
-            })?;
-        return Ok(vec![Hull::new(&fit.hull, 0.0)?]);
+        return Ok(vec![fit_one_hull(name, verts)?]);
     };
     if regions.is_empty() {
         return Err(BuildError::EmptyRegions {
@@ -274,6 +269,18 @@ fn fit_body(
     }
     verify_contains(name, &hulls, verts)?;
     Ok(hulls)
+}
+
+/// Fit one circumscribing hull to a point cloud, the whole fit for a body with
+/// no clip-region decomposition. The planes support the cloud, so the hull
+/// contains it by construction and carries no sweep radius.
+pub(crate) fn fit_one_hull(name: &str, verts: &[Point3<f64>]) -> Result<Hull, BuildError> {
+    let fit =
+        circumscribe(verts, MAX_DEVIATION_M).map_err(|reason| BuildError::DegenerateBody {
+            body: name.to_string(),
+            reason,
+        })?;
+    Ok(Hull::new(&fit.hull, 0.0)?)
 }
 
 /// Error unless the supplied hulls conservatively contain the body's whole mesh

@@ -188,6 +188,44 @@ from a one-off reachability analysis outside this build.
 There is no per-pair rebasing: because the hulls are tight, `min_distance`
 reports the raw signed distance, and the band thresholds apply directly.
 
+## Workspace obstacles
+
+The URDF describes the robot; it says nothing about what the robot works
+next to. `Obstacle::fit` fits a convex body to a world-frame point cloud, and
+`add_obstacle` puts it in the arms' way for the rest of the run:
+
+```rust
+// From a point cloud, or from an STL through `parse_binary_stl(bytes)`, whose
+// error is a plain String rather than a CollisionError.
+let wall = Obstacle::fit("wall", &points)?;
+model.add_obstacle(wall)?;
+```
+
+An obstacle is checked against every moving body, both chains' links and their
+gripper fingers, and against nothing else: the torso, the chain mounts and other
+obstacles are all world-fixed, so their distance to it never changes and could
+not inform a caller. From there it is an ordinary body. `min_distance` and
+`distance_gradient` report it exactly as they report a self-collision pair, and
+because it never moves, the whole gradient rides the moving witness.
+
+`obstacle_clearance` measures one obstacle against the arms alone, ignoring
+every pair it is not in, which is what admits an obstacle on the robot's
+clearance *to it* rather than on a self-collision pair that happens to be
+nearer. `remove_obstacle`, `clear_obstacles` and `obstacle_names` manage the
+set. The obstacle pairs are derived rather than maintained: any change to the
+set rebuilds all of them, so the build-time pairs and their exclusions are
+never touched and no pair can outlive the body it named.
+
+A cloud has to bound a solid the fit can stand in for: between a millimetre and
+a kilometre across, measured on its bounding box. The lower bound is the fit's
+own deviation budget, under which a hull is thinner than the error it is fitted
+with; the upper bound is where the hull kernel's absolute degeneracy tests stop
+reading a real solid as one, and is far enough past any workspace that what it
+usually catches is a cloud sent in the wrong units.
+
+Fitting is deliberately separate from insertion because it is the expensive
+half: a control loop can fit a cloud off its tick and insert on it.
+
 ## The governor law
 
 `band.scale(d_now, d_next)` (on the caller's `GovernorBand`) returns the fraction of a commanded step to
@@ -328,7 +366,8 @@ src/
   urdf_collision.rs  URDF collision extraction, fixed poses, child transforms
   assemble.rs        construction-time hull decomposition of all bodies
   pairs.rs           pair specs (explicit lists for tests and tools)
-  model.rs           BimanualCollisionModel queries, pair derivation, exclusions
+  model.rs           BimanualCollisionModel queries, pair derivation, exclusions,
+                     runtime workspace obstacles
   governor.rs        direction-aware proximity scaling
 examples/
   visualize.rs       the HTML scene

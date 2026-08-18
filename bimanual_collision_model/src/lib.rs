@@ -1,4 +1,5 @@
-//! Runtime self-collision detection for a bimanual arm.
+//! Runtime collision distances for a bimanual arm: the robot against itself,
+//! and against the world-frame obstacles a caller puts in its way.
 //!
 //! Every link is conservatively wrapped, at model construction, in a small set
 //! of convex hulls fitted from its URDF collision mesh (most links one hull, a
@@ -19,6 +20,11 @@
 //!   surface distance over the checked pairs, negative meaning penetration.
 //! - [`BimanualCollisionModel::distance_gradient`] adds the analytic gradient of
 //!   that distance with respect to the joints, for a velocity-barrier caller.
+//!
+//! - [`BimanualCollisionModel::add_obstacle`] puts a world-frame convex
+//!   [`Obstacle`] (fitted from a point cloud, or from an STL through
+//!   [`parse_binary_stl`]) in the arms' way, checked against every moving body
+//!   for the rest of the run or until it is removed.
 //!
 //! The model is a pure distance oracle: it reports clearances and their gradient,
 //! and the caller decides how to throttle on them.
@@ -41,9 +47,10 @@ pub mod urdf_collision;
 pub use clip::ClipRegion;
 pub use error::{BuildError, CollisionError, ContainmentFailure};
 pub use model::{
-    BimanualCollisionModel, BodyPieces, Builder, DistanceGradient, PlacedPiece, Proximity,
+    BimanualCollisionModel, BodyPieces, Builder, DistanceGradient, Obstacle, PlacedPiece, Proximity,
 };
 pub use pairs::PairSpec;
+pub use stl::parse_binary_stl;
 
 /// Re-export the linear-algebra types so downstream crates use the same
 /// `nalgebra` version `srs_model` (and `k`) were built against. `Point3` is
