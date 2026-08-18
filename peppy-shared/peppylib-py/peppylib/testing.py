@@ -14,6 +14,14 @@ inert, and only test code ever imports ``peppylib.testing``.
 Semantics mirror ``peppylib-rs/src/testing.rs`` — mirror, not re-design; a
 behavior difference between the two is a bug here, and both sides carry
 equivalent test suites in public-peppy-libs to surface one early.
+
+Two members are deliberately Python-only, because the Rust harness gets the
+same guarantee from a language affordance rather than from a helper:
+:func:`resolve_node_dir` (Rust bakes the path at compile time via
+``concat!(env!("CARGO_MANIFEST_DIR"), …)``, so it never searches) and
+:class:`Mocks` (Rust drops its mock struct, so it needs no explicit
+``stop_all``). Neither has a Rust counterpart to drift from. Anything else
+appearing on one side only is a bug, not a precedent.
 """
 
 from __future__ import annotations
@@ -68,6 +76,86 @@ def unique_test_instance_id() -> str:
     supplied. Generated harnesses call this rather than each carrying their
     own counter, so ids from different nodes in one process cannot collide."""
     return f"test-{os.getpid()}-{next(_INSTANCE_COUNTER)}"
+
+
+def resolve_node_dir(
+    node_dir: str | os.PathLike[str] | None,
+    sync_time_node_dir: str,
+    config_file: str,
+) -> str:
+    """The node directory holding ``config_file``, resolved from three
+    sources in order: the explicit ``node_dir`` argument, else the nearest
+    ``config_file`` walking up from the current working directory, else
+    ``sync_time_node_dir`` (the absolute path baked into the generated
+    harness at sync time).
+
+    Python-only: the Rust harness resolves the same path at compile time from
+    ``CARGO_MANIFEST_DIR`` and never searches, so there is nothing here to
+    mirror. The generated veneer supplies the two per-node values; the search
+    itself is identical for every node, which is why it lives here rather
+    than being re-emitted into each one.
+
+    Raises ``RuntimeError`` naming every source it tried, so a harness that
+    cannot find its node says which of the three fixes applies."""
+    if node_dir is not None:
+        candidate = os.path.abspath(os.fspath(node_dir))
+        if os.path.isfile(os.path.join(candidate, config_file)):
+            return candidate
+        raise RuntimeError(
+            f"node_dir {candidate!r} does not contain {config_file}; pass "
+            f"the directory that holds the node's {config_file}"
+        )
+    current = os.getcwd()
+    while True:
+        if os.path.isfile(os.path.join(current, config_file)):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    if os.path.isfile(os.path.join(sync_time_node_dir, config_file)):
+        return sync_time_node_dir
+    raise RuntimeError(
+        f"could not locate the node's {config_file} from any source: "
+        "(1) no explicit node_dir= was passed to start(), so pass the node "
+        "directory explicitly; "
+        f"(2) no {config_file} was found walking up from the current "
+        f"working directory {os.getcwd()!r}, so run the tests from inside the "
+        "node directory; "
+        f"(3) the sync-time path {sync_time_node_dir!r} no longer holds one, "
+        "so the node has moved since generation; re-run peppy node sync"
+    )
+
+
+class Mocks:
+    """Every started mock, grouped by namespace (``deps`` / ``pairings`` /
+    ``observed``), one attribute per link. A test can consume an individual
+    mock (``await mock.stop()`` is producer-loss) without giving up the
+    harness.
+
+    The three groups are the generated per-node namespace objects; this class
+    only aggregates them and knows how to tear the whole set down. Python-only
+    for that last reason: Rust's ``Mocks`` is a plain struct whose fields drop,
+    so it needs no explicit stop pass."""
+
+    def __init__(self, deps: Any, pairings: Any, observed: Any) -> None:
+        self.deps = deps
+        self.pairings = pairings
+        self.observed = observed
+
+    async def stop_all(self) -> None:
+        """Stops every mock in every group, multi-instance slots included.
+        Each mock's own ``stop()`` is idempotent, so calling this after
+        stopping some by hand is safe; the harness calls it on shutdown."""
+        for group in (self.deps, self.pairings, self.observed):
+            for value in vars(group).values():
+                if value is None:
+                    continue
+                if isinstance(value, list):
+                    for mock in value:
+                        await mock.stop()
+                else:
+                    await value.stop()
 
 
 def prepare_test_process() -> None:

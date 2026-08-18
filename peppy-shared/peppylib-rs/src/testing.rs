@@ -13,6 +13,13 @@
 //! code can use it, but only compiles when the `testing` feature is enabled —
 //! node crates enable it via `[dev-dependencies]`, which `cargo build` never
 //! resolves, so none of this can reach a production binary.
+//!
+//! The Python twin (`peppylib-py/peppylib/testing.py`) mirrors this module
+//! member for member, plus exactly two of its own: `resolve_node_dir` and
+//! `Mocks`. Both cover ground a Rust harness gets for free — the config path
+//! is a compile-time `concat!(env!("CARGO_MANIFEST_DIR"), …)` const, and the
+//! generated `Mocks` struct tears down by `Drop` — so neither is a gap here.
+//! Any *other* asymmetry between the two files is a bug.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Once, PoisonError, Weak};
