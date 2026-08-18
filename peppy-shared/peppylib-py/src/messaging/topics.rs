@@ -165,6 +165,47 @@ impl PyTopicMessenger {
         })
     }
 
+    /// A statically pinned peer-topic subscription: producer, pairing
+    /// target, and producer-side link_id all pinned — the exact wire shape
+    /// of a paired peer's subscription, without the pin-following machinery
+    /// (a test mock's pin never changes). Test-support seam
+    /// (`peppylib::testing`); generated pairing mocks use it to receive the
+    /// topics the node under test emits on its slot.
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn subscribe_peer_pinned<'py>(
+        py: Python<'py>,
+        messenger: &PyMessengerHandle,
+        as_core_node: String,
+        as_instance_id: String,
+        pairing_target: PySenderTarget,
+        peer: PyProducerRef,
+        peer_link_id: String,
+        to_topic: String,
+        qos: PyQoSProfile,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let handle = messenger.inner.clone();
+        let pairing_target = pairing_target.into_inner();
+        crate::py_future::future_into_py(py, async move {
+            let subscription = peppylib::testing::subscribe_peer_pinned(
+                &handle,
+                &as_core_node,
+                &as_instance_id,
+                pairing_target,
+                &peer.into_inner(),
+                &peer_link_id,
+                &to_topic,
+                qos.into(),
+            )
+            .await
+            .map_err(to_py_err)?;
+
+            Ok(PySubscription {
+                inner: Arc::new(Mutex::new(subscription)),
+            })
+        })
+    }
+
     /// Subscribe to a topic across a dep slot's complete bound producer
     /// set: one producer-pinned wire subscription per member of
     /// `bound_producers`, merged behind one [`PyBoundSetSubscription`]

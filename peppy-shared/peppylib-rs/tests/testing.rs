@@ -462,3 +462,54 @@ async fn harness_core_shutdown_propagates_setup_error() {
 
     router.shutdown().await.expect("router shutdown");
 }
+
+/// The statically pinned peer subscription matches a slot-scoped publisher
+/// exactly (producer identity + pairing target + producer-side link_id), so
+/// a mock peer receives what the node emits on its pairing slot — the seam
+/// generated pairing mocks are built on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subscribe_peer_pinned_receives_slot_scoped_publishes() {
+    let router = EphemeralRouter::start().await.expect("start router");
+    let node_handle = router.connect().await.expect("node session");
+    let mock_handle = router.connect().await.expect("mock session");
+
+    let pairing = SenderTarget::pairing("arm_link", "v1").expect("pairing target");
+    let mut subscription = peppylib::testing::subscribe_peer_pinned(
+        &mock_handle,
+        "mock-core",
+        "mock-arm",
+        pairing.clone(),
+        &ProducerRef::new("standalone-core", "node_1"),
+        "arm",
+        "joint_commands",
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("pinned subscription");
+
+    // The publisher side is exactly how the node's generated slot-scoped
+    // publisher declares: pairing target + its own link_id.
+    let publisher = TestTopicPublisher::declare(
+        &node_handle,
+        "standalone-core",
+        "node_1",
+        pairing,
+        Some("arm"),
+        "joint_commands",
+        QoSProfile::Reliable,
+    )
+    .await
+    .expect("declare slot-scoped publisher");
+    publisher
+        .publish(Payload::from_static(b"cmd"))
+        .await
+        .expect("publish");
+
+    let message = tokio::time::timeout(Duration::from_secs(5), subscription.on_next_message())
+        .await
+        .expect("the slot-scoped publish must reach the pinned subscription")
+        .expect("subscription should be open");
+    assert_eq!(message.payload().as_ref(), b"cmd");
+
+    router.shutdown().await.expect("router shutdown");
+}

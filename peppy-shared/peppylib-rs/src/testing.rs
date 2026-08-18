@@ -324,6 +324,36 @@ impl TestTopicPublisher {
     }
 }
 
+/// A statically pinned peer-topic subscription: the exact wire shape a
+/// paired peer's (or observed-source consumer's) subscription has — producer,
+/// pairing target, and producer-side link_id all pinned — without the
+/// pin-following machinery, which a mock does not need (its pin never
+/// changes). This is how a generated pairing mock receives the topics the
+/// node under test emits on its slot.
+#[allow(clippy::too_many_arguments)]
+pub async fn subscribe_peer_pinned(
+    messenger: &MessengerHandle,
+    as_core_node: &str,
+    as_instance_id: &str,
+    pairing_target: SenderTarget,
+    peer: &crate::messaging::ProducerRef,
+    peer_link_id: &str,
+    to_topic: &str,
+    qos: QoSProfile,
+) -> Result<crate::messaging::Subscription> {
+    TopicMessenger::subscribe_peer_pinned(
+        messenger,
+        as_core_node,
+        as_instance_id,
+        pairing_target,
+        peer,
+        peer_link_id,
+        to_topic,
+        qos,
+    )
+    .await
+}
+
 /// Interval between reachability probes in the wait helpers below.
 const REACHABILITY_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
