@@ -367,3 +367,120 @@ async def test_prepare_test_process_sets_zenoh_runtime():
     )
     # Module import already ran; calling again is idempotent.
     peppy_testing.prepare_test_process()
+
+
+# --- resolve_node_dir / Mocks ------------------------------------------------
+#
+# Both are Python-only members of `peppylib.testing` (the Rust harness resolves
+# its config path at compile time and drops its mock struct), so unlike every
+# case above these have no counterpart in `peppylib-rs/tests/testing.rs`. They
+# used to be re-emitted into every generated harness, where the only thing that
+# could exercise them was a full node sync.
+
+
+def test_resolve_node_dir_prefers_the_explicit_argument(tmp_path):
+    explicit = tmp_path / "explicit"
+    explicit.mkdir()
+    (explicit / "peppy.json5").write_text("{}")
+    stale = str(tmp_path / "stale")
+
+    resolved = peppy_testing.resolve_node_dir(explicit, stale, "peppy.json5")
+
+    assert resolved == str(explicit.resolve())
+
+
+def test_resolve_node_dir_rejects_an_explicit_dir_without_the_config(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        peppy_testing.resolve_node_dir(empty, str(tmp_path), "peppy.json5")
+
+    # Names the directory it was handed, so the caller can see what it passed.
+    assert str(empty) in str(excinfo.value)
+    assert "peppy.json5" in str(excinfo.value)
+
+
+def test_resolve_node_dir_walks_up_from_the_working_directory(tmp_path, monkeypatch):
+    node = tmp_path / "node"
+    nested = node / "tests" / "deep"
+    nested.mkdir(parents=True)
+    (node / "peppy.json5").write_text("{}")
+    monkeypatch.chdir(nested)
+
+    resolved = peppy_testing.resolve_node_dir(None, str(tmp_path / "gone"), "peppy.json5")
+
+    assert Path(resolved).resolve() == node.resolve()
+
+
+def test_resolve_node_dir_falls_back_to_the_sync_time_path(tmp_path, monkeypatch):
+    node = tmp_path / "node"
+    node.mkdir()
+    (node / "peppy.json5").write_text("{}")
+    # An unrelated tree with no config anywhere above it, so the walk fails.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(peppy_testing.os, "getcwd", lambda: str(elsewhere))
+    monkeypatch.setattr(
+        peppy_testing.os.path,
+        "isfile",
+        lambda path: Path(path).resolve() == (node / "peppy.json5").resolve(),
+    )
+
+    resolved = peppy_testing.resolve_node_dir(None, str(node), "peppy.json5")
+
+    assert resolved == str(node)
+
+
+def test_resolve_node_dir_names_all_three_sources_when_none_resolve(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(peppy_testing.os.path, "isfile", lambda path: False)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        peppy_testing.resolve_node_dir(None, "/gone/node", "peppy.json5")
+
+    message = str(excinfo.value)
+    assert "no explicit node_dir=" in message
+    assert "walking up from the current" in message
+    assert "/gone/node" in message
+
+
+class _StubMock:
+    def __init__(self) -> None:
+        self.stopped = 0
+
+    async def stop(self) -> None:
+        self.stopped += 1
+
+
+class _Group:
+    def __init__(self, **members) -> None:
+        self.__dict__.update(members)
+
+
+@pytest.mark.asyncio
+async def test_mocks_stop_all_covers_scalars_lists_and_skips_vacant_slots():
+    scalar = _StubMock()
+    members = [_StubMock(), _StubMock()]
+    observed = _StubMock()
+    mocks = peppy_testing.Mocks(
+        deps=_Group(camera=scalar, camera_bank=members),
+        # A vacant optional pairing slot holds None and must not be stopped.
+        pairings=_Group(controller=None),
+        observed=_Group(watchers=observed),
+    )
+
+    await mocks.stop_all()
+
+    assert scalar.stopped == 1
+    assert [member.stopped for member in members] == [1, 1]
+    assert observed.stopped == 1
+
+
+@pytest.mark.asyncio
+async def test_mocks_stop_all_is_idempotent_over_an_empty_namespace():
+    mocks = peppy_testing.Mocks(deps=_Group(), pairings=_Group(), observed=_Group())
+
+    await mocks.stop_all()
+    await mocks.stop_all()
