@@ -101,6 +101,14 @@ jobs:
           pixi-version: v0.72.0
           manifest-path: peppy-shared/peppylib-py/pixi.toml
 
+      # Also pre-installed on the old self-hosted runner: peppylib-py's build.rs
+      # requires uv on PATH, and the Python suite launches its test nodes with
+      # `uv run`.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+
       # Python tests for the peppylib-py extension: `pixi run test` builds the
       # native module with `maturin develop` and runs the pytest suite.
       - name: Run peppylib-py Python tests
