@@ -20,10 +20,108 @@ use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
 
 use crate::core_node::transport::poll;
 use crate::error::{Error, Result};
-use crate::messaging::Subscription;
+use crate::messaging::{ServiceRequestContext, Subscription};
 use crate::runtime::{NodeRunner, TaskHandle, spawn};
+use crate::types::Payload;
 
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Failures observable from a [`ClockSource`]. Wall mode propagates a system
+/// clock error; sim mode reports a missing first tick.
+#[derive(Debug, thiserror::Error)]
+pub enum ClockSourceError {
+    #[error("system clock unavailable: {0}")]
+    Wall(String),
+    #[error("clock not ready: no external tick observed yet (sim mode)")]
+    NotReady,
+}
+
+/// Server-side abstraction over "what time is it". The `clock` service
+/// handler ([`handle_clock_request`]) and the periodic tick publishers go
+/// through this trait so a server can serve sim/replay timestamps without
+/// changing the wire. Lives here (not in the daemon) so the daemon and the
+/// test harness's clock stand-in serve literally the same semantics.
+pub trait ClockSource: Send + Sync {
+    fn now_ns(&self) -> std::result::Result<u64, ClockSourceError>;
+}
+
+/// Reads OS wall time. Used when the serving side resolves the clock source
+/// to `wall` (the default).
+pub struct WallClockSource;
+
+impl ClockSource for WallClockSource {
+    fn now_ns(&self) -> std::result::Result<u64, ClockSourceError> {
+        wall_now_ns().map_err(|e| ClockSourceError::Wall(e.to_string()))
+    }
+}
+
+/// Serves timestamps from a cache fed by a subscription to the `clock`
+/// topic. `0` is reserved as "no tick observed yet" so the handler can
+/// return `NotReady` instead of a misleading zero timestamp.
+pub struct SimClockSource {
+    cache: Arc<AtomicU64>,
+}
+
+impl SimClockSource {
+    pub fn new(cache: Arc<AtomicU64>) -> Self {
+        Self { cache }
+    }
+}
+
+impl ClockSource for SimClockSource {
+    fn now_ns(&self) -> std::result::Result<u64, ClockSourceError> {
+        match self.cache.load(Ordering::Relaxed) {
+            0 => Err(ClockSourceError::NotReady),
+            ns => Ok(ns),
+        }
+    }
+}
+
+/// Answers one `clock` service request from `source`: the server half of the
+/// NTP-style exchange [`synchronize`] performs. The single implementation of
+/// the t1/t2 stamping discipline, shared by the daemon's clock service and
+/// the test harness's stand-in.
+pub fn handle_clock_request(
+    source: &dyn ClockSource,
+    context: ServiceRequestContext,
+) -> Result<Payload> {
+    // Stamp t1 first: every line after this point inflates server processing
+    // time and corrupts the offset estimate the client computes.
+    let server_recv_time = source
+        .now_ns()
+        .map_err(|e| Error::InvalidServiceRequest {
+            identifier: context.message().instance_id().to_string(),
+            reason: e.to_string(),
+        })?;
+    let instance_id = context.message().instance_id().to_string();
+    handle_clock_request_inner(source, &context, server_recv_time).map_err(|e| {
+        Error::InvalidServiceRequest {
+            identifier: instance_id,
+            reason: e.to_string(),
+        }
+    })
+}
+
+fn handle_clock_request_inner(
+    source: &dyn ClockSource,
+    context: &ServiceRequestContext,
+    server_recv_time: u64,
+) -> Result<Payload> {
+    let request = ClockRequest::decode(context.message().payload_bytes().as_ref())?;
+
+    // Stamp t2 last: the response encode + send happens after this point and
+    // is part of the round-trip delay the client measures, not server time.
+    let server_send_time = source
+        .now_ns()
+        .map_err(|e| Error::InvalidServiceRequest {
+            identifier: context.message().instance_id().to_string(),
+            reason: e.to_string(),
+        })?;
+
+    ClockResponse::new(request.client_send_time, server_recv_time, server_send_time)
+        .encode()
+        .map_err(Into::into)
+}
 
 /// Wall-clock "now" in nanoseconds since the UNIX epoch — the canonical reader
 /// on the publish/poll paths and in tests. Returns an error if the system clock
@@ -123,7 +221,7 @@ pub struct PeppyClock {
 enum PeppyClockInner {
     Wall,
     Sim {
-        cache: Arc<AtomicU64>,
+        source: SimClockSource,
         // tokio's `JoinHandle` only detaches on drop, so the `Drop` impl
         // below must `abort()` to actually cancel the subscriber task.
         feeder: TaskHandle<Result<()>>,
@@ -147,10 +245,10 @@ impl PeppyClock {
     pub fn now_ns(&self) -> Result<u64> {
         match &self.inner {
             PeppyClockInner::Wall => Ok(wall_now_ns()?),
-            PeppyClockInner::Sim { cache, .. } => match cache.load(Ordering::Relaxed) {
-                0 => Err(Error::ClockNotReady),
-                ns => Ok(ns),
-            },
+            PeppyClockInner::Sim { source, .. } => source.now_ns().map_err(|error| match error {
+                ClockSourceError::NotReady => Error::ClockNotReady,
+                ClockSourceError::Wall(reason) => Error::Io(std::io::Error::other(reason)),
+            }),
         }
     }
 }
@@ -192,7 +290,10 @@ pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
     });
 
     Ok(PeppyClock {
-        inner: PeppyClockInner::Sim { cache, feeder },
+        inner: PeppyClockInner::Sim {
+            source: SimClockSource::new(cache),
+            feeder,
+        },
     })
 }
 
@@ -254,7 +355,7 @@ mod tests {
         });
         let clock = PeppyClock {
             inner: PeppyClockInner::Sim {
-                cache: cache_clone,
+                source: SimClockSource::new(cache_clone),
                 feeder,
             },
         };
@@ -266,6 +367,30 @@ mod tests {
 
         cache.store(42, Ordering::Relaxed);
         assert_eq!(clock.now_ns().expect("populated cache reads ok"), 42);
+    }
+}
+
+#[cfg(test)]
+mod clock_source_tests {
+    use super::*;
+
+    #[test]
+    fn wall_clock_source_returns_a_value() {
+        let now = WallClockSource.now_ns().expect("system clock available");
+        assert!(now > 0);
+    }
+
+    #[test]
+    fn sim_clock_source_reports_not_ready_until_first_tick() {
+        let cache = Arc::new(AtomicU64::new(0));
+        let source = SimClockSource::new(Arc::clone(&cache));
+        let err = source
+            .now_ns()
+            .expect_err("empty cache must surface NotReady");
+        assert!(matches!(err, ClockSourceError::NotReady));
+
+        cache.store(42, Ordering::Relaxed);
+        assert_eq!(source.now_ns().expect("cache populated"), 42);
     }
 }
 

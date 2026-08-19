@@ -21,10 +21,11 @@
 //! generated `Mocks` struct tears down by `Drop` — so neither is a gap here.
 //! Any *other* asymmetry between the two files is a bug.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Once, PoisonError, Weak};
 use std::time::Duration;
 
+use crate::clock::{ClockSource, ClockSourceError, SimClockSource, WallClockSource};
 use crate::error::{Error, Result};
 use crate::messaging::{
     ConcurrentAction, GoalContext, MessengerHandle, PendingGoal, SenderTarget, ServiceEndpoint,
@@ -35,6 +36,8 @@ use crate::runtime::{
 };
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
+use core_node_api::encoding::ClockTick;
+use core_node_api::{ServiceId, TopicId, names};
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use tracing::warn;
 
@@ -748,6 +751,246 @@ impl MockPendingGoal {
     /// Reject the goal with an optional human-readable reason.
     pub async fn reject(self, reason: Option<&str>, response: Payload) -> Result<()> {
         self.pending.reject(reason, response).await
+    }
+}
+
+/// The instance identity a [`MockClock`] serves under by default. Each test
+/// owns its own mesh (one router per harness), so a constant cannot collide
+/// across concurrently running harnesses.
+pub const MOCK_CLOCK_INSTANCE_ID: &str = "standalone-clock";
+
+/// Tick cadence of a wall-mode [`MockClock`]: the daemon's production default
+/// (10 Hz), so `peppylib::clock::subscribe` observes the same drumbeat under
+/// the harness as under a real stack.
+pub const MOCK_CLOCK_TICK_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Wall time plus a test-scripted signed skew: how a test reproduces "the
+/// daemon's clock disagrees with mine" without touching a host clock.
+struct SkewedWallSource {
+    offset_ns: Arc<AtomicI64>,
+}
+
+impl ClockSource for SkewedWallSource {
+    fn now_ns(&self) -> std::result::Result<u64, ClockSourceError> {
+        let now = WallClockSource.now_ns()?;
+        Ok(now.saturating_add_signed(self.offset_ns.load(Ordering::Relaxed)))
+    }
+}
+
+enum MockClockDriver {
+    Wall {
+        offset_ns: Arc<AtomicI64>,
+        ticker: TaskHandle<()>,
+    },
+    Sim {
+        cache: Arc<AtomicU64>,
+        publisher: TestTopicPublisher,
+    },
+}
+
+/// The daemon's clock surface under the harness: a `clock` service queryable
+/// answering `peppylib::clock::synchronize`'s NTP-style exchange (through the
+/// same [`handle_clock_request`](crate::clock::handle_clock_request) the
+/// daemon serves), plus the `clock` topic.
+///
+/// [`start_wall`](Self::start_wall) mirrors a wall-mode daemon: timestamps
+/// come from the OS clock (skewable via [`set_offset_ns`](Self::set_offset_ns)
+/// to script a daemon whose clock disagrees with the node's) and ticks are
+/// published automatically at [`MOCK_CLOCK_TICK_INTERVAL`].
+///
+/// [`start_sim`](Self::start_sim) mirrors a sim-mode daemon with the test
+/// playing the external simulator: nothing ticks until the test calls
+/// [`tick`](Self::tick), and `synchronize` answers "clock not ready" before
+/// the first tick, exactly as a real sim-mode stack would.
+pub struct MockClock {
+    core_node: String,
+    instance_id: String,
+    pump: TaskHandle<Result<()>>,
+    driver: MockClockDriver,
+}
+
+impl MockClock {
+    /// Serves the clock like a wall-mode daemon for `core_node` (under the
+    /// harness: [`STANDALONE_CORE_NODE`]): OS wall time behind the service
+    /// and a periodic tick publisher.
+    pub async fn start_wall(
+        messenger: &MessengerHandle,
+        core_node: &str,
+        instance_id: &str,
+    ) -> Result<Self> {
+        let offset_ns = Arc::new(AtomicI64::new(0));
+        let source: Arc<dyn ClockSource> = Arc::new(SkewedWallSource {
+            offset_ns: Arc::clone(&offset_ns),
+        });
+        let pump = Self::listen(messenger, core_node, instance_id, Arc::clone(&source)).await?;
+        let publisher = TopicMessenger::declare_publisher(
+            messenger,
+            core_node,
+            instance_id,
+            SenderTarget::node(core_node, names::CORE_NODE_TAG)?,
+            None,
+            TopicId::Clock.name(),
+            QoSProfile::SensorData,
+        )
+        .await?;
+        // Same loop shape as the daemon's wall-mode publisher: SensorData QoS
+        // (stale time is useless), skip catch-up bursts, a failed read or
+        // publish skips the tick rather than killing the stream. No cancel
+        // token: `Drop` aborts the task.
+        let ticker = spawn(async move {
+            let mut interval = tokio::time::interval(MOCK_CLOCK_TICK_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let now_ns = match source.now_ns() {
+                    Ok(t) => t,
+                    Err(e) => {
+                        warn!("mock clock tick skipped, {e}");
+                        continue;
+                    }
+                };
+                let payload = match ClockTick::new(now_ns).encode() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!("mock clock tick encode failed: {e}");
+                        continue;
+                    }
+                };
+                if let Err(e) = publisher.publish(payload).await {
+                    warn!("mock clock tick emit failed: {e}");
+                }
+            }
+        });
+        Ok(Self {
+            core_node: core_node.to_string(),
+            instance_id: instance_id.to_string(),
+            pump,
+            driver: MockClockDriver::Wall { offset_ns, ticker },
+        })
+    }
+
+    /// Serves the clock like a sim-mode daemon for `core_node`, with the test
+    /// as the external simulator: time advances only on [`tick`](Self::tick),
+    /// and until the first one the service answers "clock not ready".
+    pub async fn start_sim(
+        messenger: &MessengerHandle,
+        core_node: &str,
+        instance_id: &str,
+    ) -> Result<Self> {
+        let cache = Arc::new(AtomicU64::new(0));
+        let source: Arc<dyn ClockSource> = Arc::new(SimClockSource::new(Arc::clone(&cache)));
+        let pump = Self::listen(messenger, core_node, instance_id, source).await?;
+        let publisher = TestTopicPublisher::declare(
+            messenger,
+            core_node,
+            instance_id,
+            SenderTarget::node(core_node, names::CORE_NODE_TAG)?,
+            None,
+            TopicId::Clock.name(),
+            QoSProfile::SensorData,
+        )
+        .await?;
+        Ok(Self {
+            core_node: core_node.to_string(),
+            instance_id: instance_id.to_string(),
+            pump,
+            driver: MockClockDriver::Sim { cache, publisher },
+        })
+    }
+
+    async fn listen(
+        messenger: &MessengerHandle,
+        core_node: &str,
+        instance_id: &str,
+        source: Arc<dyn ClockSource>,
+    ) -> Result<TaskHandle<Result<()>>> {
+        let mut endpoint: ServiceEndpoint = ServiceMessenger::listen(
+            messenger,
+            core_node,
+            instance_id,
+            SenderTarget::node(core_node, names::CORE_NODE_TAG)?,
+            ServiceId::Clock.name(),
+        )
+        .await?;
+        Ok(spawn(async move {
+            endpoint
+                .handle_requests(move |context| {
+                    let source = Arc::clone(&source);
+                    async move { crate::clock::handle_clock_request(source.as_ref(), context) }
+                })
+                .await
+        }))
+    }
+
+    /// Advance sim time to `time_ns`: the service answers `synchronize` with
+    /// it from this call on (written before publishing, so a synchronize
+    /// issued right after `tick` returns can never observe the older value),
+    /// and a `ClockTick` is published for the node's clock subscription
+    /// (`peppygen::clock` in sim mode, `peppylib::clock::subscribe`).
+    ///
+    /// The first publish waits until the node's clock subscription is visible
+    /// ([`TestTopicPublisher`] semantics): ticking sim time at a node that
+    /// never reads it is a wiring bug surfaced as a loud error, not a silent
+    /// drop. `0` is the wire's not-ready sentinel and is clamped to `1`,
+    /// exactly as the daemon stores external ticks.
+    ///
+    /// Errors on a wall-mode clock, which ticks itself.
+    pub async fn tick(&self, time_ns: u64) -> Result<()> {
+        let MockClockDriver::Sim { cache, publisher } = &self.driver else {
+            return Err(Error::Io(std::io::Error::other(
+                "a wall-mode mock clock ticks itself; tick() drives sim mode only \
+                 (start the harness clock with start_sim / use_sim_time)",
+            )));
+        };
+        let stored = time_ns.max(1);
+        cache.store(stored, Ordering::Relaxed);
+        publisher.publish(ClockTick::new(stored).encode()?).await
+    }
+
+    /// Skew every timestamp a wall-mode clock serves (service stamps and
+    /// published ticks alike) by a signed offset from the OS clock: the
+    /// scripted stand-in for a daemon host whose clock drifted from the
+    /// node's, so offset-handling code is testable without touching a real
+    /// clock. Errors on a sim-mode clock, whose time is set absolutely by
+    /// [`tick`](Self::tick).
+    pub fn set_offset_ns(&self, offset_ns: i64) -> Result<()> {
+        match &self.driver {
+            MockClockDriver::Wall {
+                offset_ns: offset, ..
+            } => {
+                offset.store(offset_ns, Ordering::Relaxed);
+                Ok(())
+            }
+            MockClockDriver::Sim { .. } => Err(Error::Io(std::io::Error::other(
+                "a sim-mode mock clock has no wall time to skew; drive it with tick()",
+            ))),
+        }
+    }
+
+    /// The wire identity the clock serves under, as a probe-able producer.
+    pub fn producer_ref(&self) -> crate::messaging::ProducerRef {
+        crate::messaging::ProducerRef::new(&self.core_node, &self.instance_id)
+    }
+
+    /// This clock's entry for the harness's pre-setup reachability barrier,
+    /// so a `synchronize` in the node's `setup` cannot race gossip discovery
+    /// of the queryable.
+    pub fn readiness(&self) -> Result<ServiceReadiness> {
+        Ok(ServiceReadiness {
+            target: SenderTarget::node(&self.core_node, names::CORE_NODE_TAG)?,
+            name: ServiceId::Clock.name().to_string(),
+            producer: self.producer_ref(),
+            kind: ServiceReadinessKind::Service,
+        })
+    }
+}
+
+impl Drop for MockClock {
+    fn drop(&mut self) {
+        self.pump.abort();
+        if let MockClockDriver::Wall { ticker, .. } = &self.driver {
+            ticker.abort();
+        }
     }
 }
 

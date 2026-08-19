@@ -1177,6 +1177,17 @@ impl PyStandaloneConfig {
         }
     }
 
+    /// Resolve the node's `framework.use_sim_time` to `use_sim_time`, the
+    /// standalone spelling of a launcher's `framework: { use_sim_time: ... }`
+    /// override (defaults to `False`, wall mode). With `True`,
+    /// `peppylib.clock.for_node` (and the generated `peppygen.clock`)
+    /// installs the sim-time source exactly as a daemon launch would have.
+    fn with_use_sim_time(&self, use_sim_time: bool) -> Self {
+        Self {
+            inner: self.inner.clone().with_use_sim_time(use_sim_time),
+        }
+    }
+
     /// Pre-pair the pairing slot at `link_id` to the peer at
     /// `(peer_core_node, peer_instance_id)` whose complementary slot is
     /// `peer_link_id`. Standalone-mode stand-in for the daemon's `--pair`

@@ -48,6 +48,15 @@ pub struct StandaloneConfig {
     pub messaging_host: Option<String>,
     /// Messaging port (defaults to DEFAULT_ZENOH_PORT)
     pub messaging_port: Option<u16>,
+    /// Daemon-less stand-in for the launcher/daemon `use_sim_time`
+    /// resolution: lands verbatim in the node's resolved `framework` block,
+    /// so [`crate::clock::for_node`] (and the generated `peppygen::clock`)
+    /// installs the sim-time source exactly as a daemon launch would have.
+    /// `false` (the default) is wall mode. Sim mode has no time to serve
+    /// until something publishes a `ClockTick` on the `clock` topic; under
+    /// the generated test harness that is the harness's clock stand-in,
+    /// driven by the test.
+    pub use_sim_time: bool,
     /// Daemon-less pairing pins: pre-pair a declared pairing slot (keyed by
     /// its link_id) to a known peer, standing in for the daemon's live
     /// `peer_update` delivery during standalone development.
@@ -125,6 +134,14 @@ impl StandaloneConfig {
     pub fn with_messaging(mut self, host: impl Into<String>, port: u16) -> Self {
         self.messaging_host = Some(host.into());
         self.messaging_port = Some(port);
+        self
+    }
+
+    /// Resolve the node's `framework.use_sim_time` to `use_sim_time`, the
+    /// standalone spelling of a launcher's `framework: { use_sim_time: … }`
+    /// override (defaults to `false`, wall mode).
+    pub fn with_use_sim_time(mut self, use_sim_time: bool) -> Self {
+        self.use_sim_time = use_sim_time;
         self
     }
 

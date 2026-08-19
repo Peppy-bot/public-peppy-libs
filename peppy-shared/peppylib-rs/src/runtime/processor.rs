@@ -240,6 +240,13 @@ impl Processor {
             NodeInstanceConfig {
                 slot_bindings,
                 observation_seeds,
+                // Daemon-less stand-in for the launcher/daemon `use_sim_time`
+                // resolution: written to the same resolved `framework` field a
+                // daemon launch fills, so `clock::for_node` needs no
+                // standalone-specific branch.
+                framework: config::runtime::ResolvedFramework {
+                    use_sim_time: config.use_sim_time,
+                },
                 ..NodeInstanceConfig::new(instance_id_name)
             },
             &node_name,
@@ -1185,6 +1192,34 @@ mod tests {
         assert_eq!(processor.bound_core_node(), "standalone-core");
         assert_eq!(processor.messaging_host(), "127.0.0.1");
         assert_eq!(processor.messaging_port(), 7448);
+    }
+
+    #[test]
+    fn standalone_mode_resolves_use_sim_time_like_a_launch_would() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        let peppy_config_content = r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "my_node", tag: "v1" },
+            execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
+        }"#;
+        std::fs::write(&peppy_config_path, peppy_config_content)
+            .expect("peppy config should be written");
+
+        let wall = Processor::new_standalone(&peppy_config_path, &StandaloneConfig::new())
+            .expect("should create processor");
+        assert!(!wall.use_sim_time(), "wall mode is the default");
+
+        let sim = Processor::new_standalone(
+            &peppy_config_path,
+            &StandaloneConfig::new().with_use_sim_time(true),
+        )
+        .expect("should create processor");
+        assert!(
+            sim.use_sim_time(),
+            "with_use_sim_time must land in the resolved framework block"
+        );
     }
 
     #[test]
