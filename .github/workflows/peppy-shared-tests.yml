@@ -90,9 +90,19 @@ jobs:
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           cargo test --workspace --exclude peppylib-py --locked
 
+      # The retired self-hosted runner had pixi pre-installed; the Blacksmith
+      # runner image does not, so install it here. Pinned to the version the
+      # workspace's `requires-pixi` documents as tested (pixi.lock is format v7),
+      # and `pixi install` runs `--locked` by default so a stale lock fails CI
+      # instead of being silently re-resolved.
+      - name: Install pixi
+        uses: prefix-dev/setup-pixi@v0.10.1
+        with:
+          pixi-version: v0.72.0
+          manifest-path: peppy-shared/peppylib-py/pixi.toml
+
       # Python tests for the peppylib-py extension: `pixi run test` builds the
-      # native module with `maturin develop` and runs the pytest suite. Requires
-      # pixi + a Python toolchain on the runner.
+      # native module with `maturin develop` and runs the pytest suite.
       - name: Run peppylib-py Python tests
         working-directory: peppy-shared/peppylib-py
         run: |
