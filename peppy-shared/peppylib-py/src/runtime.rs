@@ -901,7 +901,11 @@ impl PyNodeRunner {
     /// [`new_standalone`](Self::new_standalone)) is responsible for this
     /// convergence step. Takes the hooks out of the registry, so a second
     /// call is harmless.
-    fn run_shutdown_hooks<'py>(&self, py: Python<'py>, grace_secs: f64) -> PyResult<Bound<'py, PyAny>> {
+    fn run_shutdown_hooks<'py>(
+        &self,
+        py: Python<'py>,
+        grace_secs: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let grace = std::time::Duration::try_from_secs_f64(grace_secs).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("invalid grace_secs: {e}"))
         })?;

@@ -440,17 +440,18 @@ async fn harness_core_shutdown_propagates_setup_error() {
         .with_messaging(router.host(), router.port())
         .with_instance_id("failing_setup_instance");
 
-    let harness = HarnessCore::start::<EmptyParameters, _, _>(
-        peppy_config_path,
-        standalone_config,
-        &[],
-        &[],
-        |_params, _node_runner| async move {
-            Err(PeppyError::Io(std::io::Error::other("setup boom")))
-        },
-    )
-    .await
-    .expect("harness start itself should succeed");
+    let harness =
+        HarnessCore::start::<EmptyParameters, _, _>(
+            peppy_config_path,
+            standalone_config,
+            &[],
+            &[],
+            |_params, _node_runner| async move {
+                Err(PeppyError::Io(std::io::Error::other("setup boom")))
+            },
+        )
+        .await
+        .expect("harness start itself should succeed");
 
     let err = harness
         .shutdown()
@@ -581,7 +582,9 @@ async fn mock_clock_wall_serves_synchronize_ticks_and_scripted_skew() {
     // orders of magnitude below the skew, so the assertion cannot flake on a
     // slow host.
     const HOUR_NS: i64 = 3_600_000_000_000;
-    clock.set_offset_ns(HOUR_NS).expect("wall clock accepts a skew");
+    clock
+        .set_offset_ns(HOUR_NS)
+        .expect("wall clock accepts a skew");
     let skewed = peppylib::clock::synchronize(&node_runner, Some(Duration::from_secs(5)))
         .await
         .expect("synchronize against the skewed clock");
@@ -609,7 +612,10 @@ async fn mock_clock_wall_serves_synchronize_ticks_and_scripted_skew() {
     );
 
     // Driving sim time at a wall clock is a test bug surfaced loudly.
-    let err = clock.tick(42).await.expect_err("wall clocks tick themselves");
+    let err = clock
+        .tick(42)
+        .await
+        .expect_err("wall clocks tick themselves");
     assert!(
         err.to_string().contains("wall-mode"),
         "unexpected error: {err}"

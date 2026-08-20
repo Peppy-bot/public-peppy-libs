@@ -38,8 +38,7 @@ use crate::wire::{
     ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 use crate::zenoh_config::{
-    SessionMode, TlsConfig, ZenohConfigSpec, connectable_host, peer_listen_endpoint,
-    render_config,
+    SessionMode, TlsConfig, ZenohConfigSpec, connectable_host, peer_listen_endpoint, render_config,
 };
 use config::namespace::Namespace;
 // `render_probe_config` and the `zenohd` module (facade/health/config-path) are

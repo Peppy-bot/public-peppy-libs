@@ -483,8 +483,11 @@ async def test_mock_clock_sim_drives_peppy_clock_and_synchronize(tmp_path):
                     assert node_clock.now_ns() == sim_ns
                     break
                 except RuntimeError:
+                    # `from None`: "clock not ready" is the expected state
+                    # while waiting, so chaining it onto the deadline failure
+                    # only buries the message that matters.
                     if asyncio.get_running_loop().time() >= deadline:
-                        raise AssertionError("sim tick never reached PeppyClock")
+                        raise AssertionError("sim tick never reached PeppyClock") from None
                     await asyncio.sleep(0.01)
 
             # `0` is the wire's not-ready sentinel; ticking it stores the

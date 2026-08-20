@@ -853,13 +853,9 @@ mod tests {
         .expect("test bundle parses")
     }
 
-    fn brightness_handler(
-        input: Value,
-    ) -> impl Future<Output = Result<Value, ToolCallError>> + Send {
-        async move {
-            let value = input["value"].as_i64().expect("validated integer");
-            Ok(json!({ "applied": value >= 0 }))
-        }
+    async fn brightness_handler(input: Value) -> Result<Value, ToolCallError> {
+        let value = input["value"].as_i64().expect("validated integer");
+        Ok(json!({ "applied": value >= 0 }))
     }
 
     fn built_server() -> ExposureServer {
@@ -929,18 +925,18 @@ mod tests {
         bundle
     }
 
-    fn record_handler(
+    async fn record_handler(
         _input: Value,
         _context: crate::tasks::ActionContext,
-    ) -> impl Future<Output = Result<Value, ActionExit>> + Send {
-        async move { Ok(json!({ "frames": 120 })) }
+    ) -> Result<Value, ActionExit> {
+        Ok(json!({ "frames": 120 }))
     }
 
-    fn resume_handler(
+    async fn resume_handler(
         _input: Value,
         _context: crate::tasks::ActionContext,
-    ) -> impl Future<Output = Result<Value, ActionExit>> + Send {
-        async move { Ok(json!({ "resumed": true })) }
+    ) -> Result<Value, ActionExit> {
+        Ok(json!({ "resumed": true }))
     }
 
     fn built_task_server() -> ExposureServer {

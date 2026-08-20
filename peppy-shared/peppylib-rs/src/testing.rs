@@ -437,6 +437,7 @@ pub async fn wait_action_reachable(
 
 /// The shared probe loop behind the two `wait_*_reachable` helpers: poll the
 /// matching `is_reachable` probe until it answers or `timeout` expires.
+#[allow(clippy::too_many_arguments)]
 async fn wait_reachable(
     kind: ServiceReadinessKind,
     messenger: &MessengerHandle,
@@ -538,7 +539,23 @@ impl MockServiceCore {
         let service_name_for_pump = service_name.clone();
 
         let pump = spawn(async move {
-            while let Ok(Some((context, responder))) = endpoint.recv_next_request().await {
+            loop {
+                // Spelled out rather than `while let Ok(Some(..))`: that form
+                // swallows a broken receive stream as an ordinary end of
+                // input, and the mock then goes quiet in a way the test can
+                // only observe as a timeout.
+                let (context, responder) = match endpoint.recv_next_request().await {
+                    Ok(Some(pair)) => pair,
+                    Ok(None) => break,
+                    Err(error) => {
+                        warn!(
+                            service = %service_name_for_pump,
+                            %error,
+                            "mock service request pump stopped"
+                        );
+                        break;
+                    }
+                };
                 captured_for_pump
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -610,7 +627,6 @@ impl MockServiceCore {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
-
 }
 
 impl Drop for MockServiceCore {
@@ -805,7 +821,7 @@ enum MockClockDriver {
 pub struct MockClock {
     core_node: String,
     instance_id: String,
-    pump: TaskHandle<Result<()>>,
+    pump: TaskHandle<()>,
     driver: MockClockDriver,
 }
 
@@ -903,7 +919,7 @@ impl MockClock {
         core_node: &str,
         instance_id: &str,
         source: Arc<dyn ClockSource>,
-    ) -> Result<TaskHandle<Result<()>>> {
+    ) -> Result<TaskHandle<()>> {
         let mut endpoint: ServiceEndpoint = ServiceMessenger::listen(
             messenger,
             core_node,
@@ -913,12 +929,19 @@ impl MockClock {
         )
         .await?;
         Ok(spawn(async move {
-            endpoint
+            // Nothing joins this handle (`Drop` aborts it), so the only way
+            // a broken receive stream can be seen is here: without the log a
+            // dead queryable reaches the test as an unexplained `synchronize`
+            // timeout.
+            if let Err(error) = endpoint
                 .handle_requests(move |context| {
                     let source = Arc::clone(&source);
                     async move { crate::clock::handle_clock_request(source.as_ref(), context) }
                 })
                 .await
+            {
+                warn!(%error, "mock clock service pump stopped");
+            }
         }))
     }
 
@@ -1153,9 +1176,7 @@ impl HarnessCore {
     /// their loops and return immediately; long-running ones never do until
     /// shutdown).
     pub fn setup_finished(&self) -> bool {
-        self.setup_task
-            .as_ref()
-            .is_none_or(TaskHandle::is_finished)
+        self.setup_task.as_ref().is_none_or(TaskHandle::is_finished)
     }
 
     /// Converge the node: see the type-level teardown contract. Returns the

@@ -905,17 +905,29 @@ class MockClock:
         """Stop the service pump and (in wall mode) the tick publisher.
         Python has no reliable drop hook for async teardown, so the
         veneer/harness must call this (Rust's core does the same in
-        ``Drop``)."""
-        for task in (self._pump, self._ticker):
-            if task is None:
-                continue
+        ``Drop``).
+
+        Both tasks are cancelled before either is awaited, so the ticker
+        cannot keep publishing while the pump drains — Rust's ``Drop`` aborts
+        them together. A task that ended in an error is reported as a warning
+        rather than raised: ``close`` runs in a test's teardown, where raising
+        would skip the rest of the cleanup and mask the failure the test was
+        actually reporting.
+        """
+        tasks = [task for task in (self._pump, self._ticker) if task is not None]
+        # Cleared up front: a task that refuses to die must not leave the
+        # clock looking closeable again.
+        self._pump = None
+        self._ticker = None
+        for task in tasks:
             task.cancel()
+        for task in tasks:
             try:
                 await task
             except asyncio.CancelledError:
                 pass
-        self._pump = None
-        self._ticker = None
+            except Exception as error:  # noqa: BLE001 — teardown reports, never raises
+                warnings.warn(f"mock clock task failed: {error}", stacklevel=1)
 
 
 @dataclass

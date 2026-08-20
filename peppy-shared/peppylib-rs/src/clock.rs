@@ -87,12 +87,10 @@ pub fn handle_clock_request(
 ) -> Result<Payload> {
     // Stamp t1 first: every line after this point inflates server processing
     // time and corrupts the offset estimate the client computes.
-    let server_recv_time = source
-        .now_ns()
-        .map_err(|e| Error::InvalidServiceRequest {
-            identifier: context.message().instance_id().to_string(),
-            reason: e.to_string(),
-        })?;
+    let server_recv_time = source.now_ns().map_err(|e| Error::InvalidServiceRequest {
+        identifier: context.message().instance_id().to_string(),
+        reason: e.to_string(),
+    })?;
     let instance_id = context.message().instance_id().to_string();
     handle_clock_request_inner(source, &context, server_recv_time).map_err(|e| {
         Error::InvalidServiceRequest {
@@ -111,12 +109,10 @@ fn handle_clock_request_inner(
 
     // Stamp t2 last: the response encode + send happens after this point and
     // is part of the round-trip delay the client measures, not server time.
-    let server_send_time = source
-        .now_ns()
-        .map_err(|e| Error::InvalidServiceRequest {
-            identifier: context.message().instance_id().to_string(),
-            reason: e.to_string(),
-        })?;
+    let server_send_time = source.now_ns().map_err(|e| Error::InvalidServiceRequest {
+        identifier: context.message().instance_id().to_string(),
+        reason: e.to_string(),
+    })?;
 
     ClockResponse::new(request.client_send_time, server_recv_time, server_send_time)
         .encode()
