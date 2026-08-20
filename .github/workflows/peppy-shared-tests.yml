@@ -32,7 +32,7 @@ jobs:
   # runner so that pull requests leaving `peppy-shared/` alone never queue against
   # the single self-hosted runner.
   changes:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       contents: read
       pull-requests: read
@@ -57,7 +57,7 @@ jobs:
   test:
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.peppy_shared == 'true'
-    runs-on: self-hosted
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     permissions:
       contents: read
       pull-requests: read
@@ -90,9 +90,27 @@ jobs:
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           cargo test --workspace --exclude peppylib-py --locked
 
+      # The retired self-hosted runner had pixi pre-installed; the Blacksmith
+      # runner image does not, so install it here. Pinned to the version the
+      # workspace's `requires-pixi` documents as tested (pixi.lock is format v7),
+      # and `pixi install` runs `--locked` by default so a stale lock fails CI
+      # instead of being silently re-resolved.
+      - name: Install pixi
+        uses: prefix-dev/setup-pixi@v0.10.1
+        with:
+          pixi-version: v0.72.0
+          manifest-path: peppy-shared/peppylib-py/pixi.toml
+
+      # Also pre-installed on the old self-hosted runner: peppylib-py's build.rs
+      # requires uv on PATH, and the Python suite launches its test nodes with
+      # `uv run`.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
       # Python tests for the peppylib-py extension: `pixi run test` builds the
-      # native module with `maturin develop` and runs the pytest suite. Requires
-      # pixi + a Python toolchain on the runner.
+      # native module with `maturin develop` and runs the pytest suite.
       - name: Run peppylib-py Python tests
         working-directory: peppy-shared/peppylib-py
         run: |
