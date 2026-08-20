@@ -589,9 +589,9 @@ impl ZenohdFacade {
                 });
             }
         }
-        let child = command
-            .spawn()
-            .map_err(|e| Error::BackendError(format!("Failed to start zenohd `{zenohd_path}`: {e}")))?;
+        let child = command.spawn().map_err(|e| {
+            Error::BackendError(format!("Failed to start zenohd `{zenohd_path}`: {e}"))
+        })?;
 
         // Store the child before any async readiness wait. If the caller's
         // timeout cancels that wait, Drop or the next stop/start still owns it.
@@ -768,7 +768,10 @@ mod tests {
 
         // A `zenohd` in a PATH directory with no `peppy` beside it is not a
         // release-authorized candidate for this probe.
-        assert_eq!(zenohd_beside_peppy_on_path(Some(path_var.as_os_str())), None);
+        assert_eq!(
+            zenohd_beside_peppy_on_path(Some(path_var.as_os_str())),
+            None
+        );
 
         // Once a peppy install anchors the directory, its zenohd is used.
         std::fs::write(with_peppy.join("peppy"), b"cli").expect("write");
@@ -780,7 +783,10 @@ mod tests {
 
         // A peppy install without a packaged zenohd contributes nothing.
         std::fs::remove_file(with_peppy.join("zenohd")).expect("remove");
-        assert_eq!(zenohd_beside_peppy_on_path(Some(path_var.as_os_str())), None);
+        assert_eq!(
+            zenohd_beside_peppy_on_path(Some(path_var.as_os_str())),
+            None
+        );
     }
 
     #[test]

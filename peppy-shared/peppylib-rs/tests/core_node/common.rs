@@ -9,9 +9,7 @@ use std::time::Duration;
 use config::node::QoSProfile;
 use core_node_api::names;
 use peppylib::messaging::SenderTarget;
-use peppylib::messaging::{
-    MessengerHandle, ProducerRef, TopicMessenger,
-};
+use peppylib::messaging::{MessengerHandle, ProducerRef, TopicMessenger};
 use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use peppylib::testing::EphemeralRouter;
 use peppylib::types::Payload;

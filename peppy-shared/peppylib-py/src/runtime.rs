@@ -901,7 +901,11 @@ impl PyNodeRunner {
     /// [`new_standalone`](Self::new_standalone)) is responsible for this
     /// convergence step. Takes the hooks out of the registry, so a second
     /// call is harmless.
-    fn run_shutdown_hooks<'py>(&self, py: Python<'py>, grace_secs: f64) -> PyResult<Bound<'py, PyAny>> {
+    fn run_shutdown_hooks<'py>(
+        &self,
+        py: Python<'py>,
+        grace_secs: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let grace = std::time::Duration::try_from_secs_f64(grace_secs).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("invalid grace_secs: {e}"))
         })?;
@@ -1174,6 +1178,17 @@ impl PyStandaloneConfig {
     fn with_node_name(&self, name: String) -> Self {
         Self {
             inner: self.inner.clone().with_node_name(name),
+        }
+    }
+
+    /// Resolve the node's `framework.use_sim_time` to `use_sim_time`, the
+    /// standalone spelling of a launcher's `framework: { use_sim_time: ... }`
+    /// override (defaults to `False`, wall mode). With `True`,
+    /// `peppylib.clock.for_node` (and the generated `peppygen.clock`)
+    /// installs the sim-time source exactly as a daemon launch would have.
+    fn with_use_sim_time(&self, use_sim_time: bool) -> Self {
+        Self {
+            inner: self.inner.clone().with_use_sim_time(use_sim_time),
         }
     }
 
