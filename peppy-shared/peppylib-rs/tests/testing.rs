@@ -15,10 +15,11 @@ use peppylib::messaging::{
     ActionMessenger, NonEmptyPayload, ProducerRef, SenderTarget, ServiceMessenger, ServiceTarget,
     TopicMessenger,
 };
-use peppylib::runtime::StandaloneConfig;
+use peppylib::runtime::{NodeRunner, Processor, StandaloneConfig};
 use peppylib::testing::{
-    EphemeralRouter, HarnessCore, MockActionServerCore, MockServiceCore, PublisherReadiness,
-    TestTopicPublisher, wait_action_reachable, wait_service_reachable,
+    EphemeralRouter, HarnessCore, MOCK_CLOCK_INSTANCE_ID, MockActionServerCore, MockClock,
+    MockServiceCore, PublisherReadiness, STANDALONE_CORE_NODE, TestTopicPublisher,
+    wait_action_reachable, wait_service_reachable,
 };
 use peppylib::types::Payload;
 use tempfile::TempDir;
@@ -439,17 +440,18 @@ async fn harness_core_shutdown_propagates_setup_error() {
         .with_messaging(router.host(), router.port())
         .with_instance_id("failing_setup_instance");
 
-    let harness = HarnessCore::start::<EmptyParameters, _, _>(
-        peppy_config_path,
-        standalone_config,
-        &[],
-        &[],
-        |_params, _node_runner| async move {
-            Err(PeppyError::Io(std::io::Error::other("setup boom")))
-        },
-    )
-    .await
-    .expect("harness start itself should succeed");
+    let harness =
+        HarnessCore::start::<EmptyParameters, _, _>(
+            peppy_config_path,
+            standalone_config,
+            &[],
+            &[],
+            |_params, _node_runner| async move {
+                Err(PeppyError::Io(std::io::Error::other("setup boom")))
+            },
+        )
+        .await
+        .expect("harness start itself should succeed");
 
     let err = harness
         .shutdown()
@@ -511,5 +513,197 @@ async fn subscribe_peer_pinned_receives_slot_scoped_publishes() {
         .expect("subscription should be open");
     assert_eq!(message.payload().as_ref(), b"cmd");
 
+    router.shutdown().await.expect("router shutdown");
+}
+
+/// A standalone `NodeRunner` against `router`, exactly what a harness-booted
+/// node's runtime looks like to `peppylib::clock`.
+async fn standalone_node_runner(
+    router: &EphemeralRouter,
+    temp_dir: &TempDir,
+    use_sim_time: bool,
+) -> NodeRunner {
+    let peppy_config_path = write_peppy_config(temp_dir);
+    let standalone_config = StandaloneConfig::new()
+        .with_messaging(router.host(), router.port())
+        .with_instance_id(CALLER_INSTANCE)
+        .with_use_sim_time(use_sim_time);
+    let processor = Processor::new_standalone(&peppy_config_path, &standalone_config)
+        .expect("standalone processor");
+    NodeRunner::new(processor).await.expect("node runner")
+}
+
+/// Gates the node's session on the mock clock's queryable, the exact entry
+/// the generated harness feeds its pre-setup barrier.
+async fn wait_clock_reachable(node_runner: &NodeRunner, clock: &MockClock) {
+    let readiness = clock.readiness().expect("clock readiness entry");
+    let processor = node_runner.processor();
+    wait_service_reachable(
+        node_runner.messenger(),
+        processor.bound_core_node(),
+        processor.bound_instance_id(),
+        readiness.target.clone(),
+        &readiness.name,
+        &readiness.producer,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("mock clock service should become reachable");
+}
+
+/// A wall-mode mock clock is a wall-mode daemon to the node: `synchronize`
+/// completes the NTP exchange, the `clock` topic ticks by itself, and a
+/// scripted skew shows up in both, so offset-handling code is testable
+/// without touching a host clock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mock_clock_wall_serves_synchronize_ticks_and_scripted_skew() {
+    let router = EphemeralRouter::start().await.expect("start router");
+    let clock_handle = router.connect().await.expect("clock session");
+    let temp_dir = TempDir::new().expect("temp dir");
+
+    let clock = MockClock::start_wall(&clock_handle, STANDALONE_CORE_NODE, MOCK_CLOCK_INSTANCE_ID)
+        .await
+        .expect("start wall mock clock");
+    let node_runner = standalone_node_runner(&router, &temp_dir, false).await;
+    wait_clock_reachable(&node_runner, &clock).await;
+
+    let sync = peppylib::clock::synchronize(&node_runner, Some(Duration::from_secs(5)))
+        .await
+        .expect("synchronize against the wall mock clock");
+    assert!(
+        sync.raw.server_recv_time <= sync.raw.server_send_time,
+        "t1 must be stamped before t2: {} > {}",
+        sync.raw.server_recv_time,
+        sync.raw.server_send_time,
+    );
+
+    // Script the daemon's clock an hour ahead. The measured offset must land
+    // near it: the slack prices a full round trip plus scheduling noise, four
+    // orders of magnitude below the skew, so the assertion cannot flake on a
+    // slow host.
+    const HOUR_NS: i64 = 3_600_000_000_000;
+    clock
+        .set_offset_ns(HOUR_NS)
+        .expect("wall clock accepts a skew");
+    let skewed = peppylib::clock::synchronize(&node_runner, Some(Duration::from_secs(5)))
+        .await
+        .expect("synchronize against the skewed clock");
+    assert!(
+        (skewed.offset_ns - HOUR_NS).abs() < HOUR_NS / 2,
+        "expected ~1h offset, got {} ns",
+        skewed.offset_ns,
+    );
+
+    // The periodic tick publisher carries the same skewed source.
+    let mut subscription = peppylib::clock::subscribe(&node_runner)
+        .await
+        .expect("subscribe to the clock topic");
+    let tick = tokio::time::timeout(Duration::from_secs(10), subscription.on_next_tick())
+        .await
+        .expect("a wall mock clock must tick by itself")
+        .expect("tick decodes")
+        .expect("subscription open");
+    let wall_now = peppylib::clock::wall_now_ns().expect("wall clock");
+    assert!(
+        tick.time > wall_now.saturating_add((HOUR_NS / 2) as u64),
+        "tick {} should carry the scripted skew (wall {})",
+        tick.time,
+        wall_now,
+    );
+
+    // Driving sim time at a wall clock is a test bug surfaced loudly.
+    let err = clock
+        .tick(42)
+        .await
+        .expect_err("wall clocks tick themselves");
+    assert!(
+        err.to_string().contains("wall-mode"),
+        "unexpected error: {err}"
+    );
+
+    drop(node_runner);
+    router.shutdown().await.expect("router shutdown");
+}
+
+/// A sim-mode mock clock reproduces a sim-mode stack with the test as the
+/// simulator: `synchronize` answers "clock not ready" before the first tick,
+/// `clock::for_node` installs the sim source off the standalone
+/// `use_sim_time`, and each `tick` lands in both the service's answers and
+/// the node's `PeppyClock`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mock_clock_sim_drives_peppy_clock_and_synchronize() {
+    let router = EphemeralRouter::start().await.expect("start router");
+    let clock_handle = router.connect().await.expect("clock session");
+    let temp_dir = TempDir::new().expect("temp dir");
+
+    let clock = MockClock::start_sim(&clock_handle, STANDALONE_CORE_NODE, MOCK_CLOCK_INSTANCE_ID)
+        .await
+        .expect("start sim mock clock");
+    let node_runner = standalone_node_runner(&router, &temp_dir, true).await;
+    wait_clock_reachable(&node_runner, &clock).await;
+
+    // Before the first tick, sim mode has no time to serve.
+    let err = peppylib::clock::synchronize(&node_runner, Some(Duration::from_secs(5)))
+        .await
+        .expect_err("sim mode must not serve time before the first tick");
+    assert!(
+        err.to_string().contains("clock not ready"),
+        "unexpected error: {err}"
+    );
+
+    // `for_node` reads the standalone-resolved `use_sim_time` and installs
+    // the sim source, whose read is an error until a tick arrives.
+    let peppy_clock = peppylib::clock::for_node(&node_runner)
+        .await
+        .expect("build PeppyClock");
+    assert!(
+        matches!(peppy_clock.now_ns(), Err(PeppyError::ClockNotReady)),
+        "sim clock must report not-ready before the first tick",
+    );
+
+    // The tick is written to the service cache before it is published, so
+    // this synchronize cannot observe the older (empty) state.
+    const SIM_NS: u64 = 42_000_000_000;
+    clock.tick(SIM_NS).await.expect("tick");
+    let sync = peppylib::clock::synchronize(&node_runner, Some(Duration::from_secs(5)))
+        .await
+        .expect("synchronize after the first tick");
+    assert_eq!(sync.raw.server_recv_time, SIM_NS);
+    assert_eq!(sync.raw.server_send_time, SIM_NS);
+
+    // The published tick reaches the node's PeppyClock; wait on observation,
+    // not on a fixed delay.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match peppy_clock.now_ns() {
+            Ok(ns) => {
+                assert_eq!(ns, SIM_NS);
+                break;
+            }
+            Err(PeppyError::ClockNotReady) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => panic!("sim tick never reached PeppyClock: {error}"),
+        }
+    }
+
+    // `0` is the wire's not-ready sentinel; ticking it stores the clamped 1.
+    clock.tick(0).await.expect("tick zero");
+    let clamped = peppylib::clock::synchronize(&node_runner, Some(Duration::from_secs(5)))
+        .await
+        .expect("synchronize after the clamped tick");
+    assert_eq!(clamped.raw.server_recv_time, 1);
+
+    // Skewing wall time at a sim clock is a test bug surfaced loudly.
+    let err = clock
+        .set_offset_ns(1)
+        .expect_err("sim clocks have no wall time to skew");
+    assert!(
+        err.to_string().contains("sim-mode"),
+        "unexpected error: {err}"
+    );
+
+    drop(peppy_clock);
+    drop(node_runner);
     router.shutdown().await.expect("router shutdown");
 }

@@ -1,5 +1,7 @@
 use peppylib::ServiceMessenger;
-use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext, ServiceResponder, ServiceTarget};
+use peppylib::messaging::{
+    ServiceEndpoint, ServiceRequestContext, ServiceResponder, ServiceTarget,
+};
 use peppylib::types::Payload;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;

@@ -790,7 +790,11 @@ mod tests {
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
         assert_eq!(
             decoded.selections,
-            vec!["mujoco".to_string(), "robot=mujoco".to_string(), "xr_commander".to_string()]
+            vec![
+                "mujoco".to_string(),
+                "robot=mujoco".to_string(),
+                "xr_commander".to_string()
+            ]
         );
     }
 

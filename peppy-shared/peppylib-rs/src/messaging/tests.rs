@@ -2218,8 +2218,8 @@ async fn single_service_communication_multiple_polls_and_callers() {
             let host = host.clone();
             let poll_service = tokio::spawn(async move {
                 let caller_handle = crate::testing::connect_messenger(&host, port)
-            .await
-            .expect("failed to connect messenger to the test router");
+                    .await
+                    .expect("failed to connect messenger to the test router");
 
                 let mut caller_results = Vec::with_capacity(requests.len());
                 for (request_idx, request_payload) in requests {
@@ -3168,8 +3168,8 @@ async fn single_action_communication_multiple_polls() {
 
         let handle = tokio::spawn(async move {
             let caller_handle = crate::testing::connect_messenger(&host, port)
-            .await
-            .expect("failed to connect messenger to the test router");
+                .await
+                .expect("failed to connect messenger to the test router");
 
             let mut goal_handle = ActionMessenger::send_goal(
                 &caller_handle,

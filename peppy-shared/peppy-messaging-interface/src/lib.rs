@@ -68,12 +68,12 @@ pub use adapters::zenoh::ZenohAdapter;
 pub use adapters::zenoh::ZenohdInstance;
 #[cfg(feature = "router")]
 pub use zenohd::RouterHealthChecker;
+#[cfg(feature = "router")]
+pub use zenohd::RouterLinksProbe;
 /// The environment variable naming an explicit `zenohd` binary, taking
 /// precedence over every packaged/built candidate in router resolution.
 #[cfg(feature = "router")]
 pub use zenohd::ZENOHD_PATH_VAR;
-#[cfg(feature = "router")]
-pub use zenohd::RouterLinksProbe;
 /// Router-process facade; its [`ZenohdFacade::resolved_zenohd_binary`] lets
 /// test tooling forward the resolved binary to child processes.
 #[cfg(feature = "router")]

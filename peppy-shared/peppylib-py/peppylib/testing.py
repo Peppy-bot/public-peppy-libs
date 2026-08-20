@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import os
+import time
 import warnings
 import weakref
 from collections import deque
@@ -51,6 +52,7 @@ from peppylib import (
     TopicPublisher,
     ZenohdInstance,
 )
+from peppylib.clock import ClockRequest, ClockResponse, ClockTick
 from peppylib.messaging.services import ServiceRequestContext, ServiceResponder
 
 #: How long readiness waits (subscriber matching, reachability) may take
@@ -690,6 +692,242 @@ class MockActionServerCore:
                 context.disarm_close_on_drop()
         self._live.clear()
         self._engine = None
+
+
+#: The instance identity a :class:`MockClock` serves under by default. Each
+#: test owns its own mesh (one router per harness), so a constant cannot
+#: collide across concurrently running harnesses.
+MOCK_CLOCK_INSTANCE_ID = "standalone-clock"
+
+#: Tick cadence of a wall-mode :class:`MockClock`, in seconds: the daemon's
+#: production default (10 Hz), so ``peppylib.clock.subscribe`` observes the
+#: same drumbeat under the harness as under a real stack.
+MOCK_CLOCK_TICK_INTERVAL = 0.1
+
+#: Tag of a core node's own service/topic identity (core-node-api's
+#: ``names::CORE_NODE_TAG``); the clock lives on the core-node target.
+_CORE_NODE_TAG = "core"
+
+#: The core node's clock service and topic names (``ServiceId::Clock`` /
+#: ``TopicId::Clock`` in core-node-api).
+_CLOCK_SERVICE = "clock"
+_CLOCK_TOPIC = "clock"
+
+#: Sim mode's "no tick observed yet" answer; the same reason string the Rust
+#: `ClockSourceError::NotReady` puts on the wire, so tests can match on
+#: "clock not ready" against either implementation.
+_CLOCK_NOT_READY = "clock not ready: no external tick observed yet (sim mode)"
+
+
+class MockClock:
+    """The daemon's clock surface under the harness: a ``clock`` service
+    queryable answering ``peppylib.clock.synchronize``'s NTP-style exchange
+    with the daemon's t1-first/t2-last stamping discipline, plus the ``clock``
+    topic.
+
+    :meth:`start_wall` mirrors a wall-mode daemon: timestamps come from the
+    OS clock (skewable via :meth:`set_offset_ns` to script a daemon whose
+    clock disagrees with the node's) and ticks are published automatically at
+    :data:`MOCK_CLOCK_TICK_INTERVAL`.
+
+    :meth:`start_sim` mirrors a sim-mode daemon with the test playing the
+    external simulator: nothing ticks until the test calls :meth:`tick`, and
+    ``synchronize`` answers "clock not ready" before the first tick, exactly
+    as a real sim-mode stack would.
+    """
+
+    def __init__(self, core_node: str, instance_id: str, sim: bool) -> None:
+        self._core_node = core_node
+        self._instance_id = instance_id
+        self._sim = sim
+        self._offset_ns = 0
+        self._sim_time_ns = 0
+        self._pump: asyncio.Task[None] | None = None
+        self._ticker: asyncio.Task[None] | None = None
+        self._sim_publisher: TestTopicPublisher | None = None
+
+    @classmethod
+    async def start_wall(
+        cls, messenger: MessengerHandle, core_node: str, instance_id: str
+    ) -> "MockClock":
+        """Serve the clock like a wall-mode daemon for ``core_node`` (under
+        the harness: :data:`STANDALONE_CORE_NODE`): OS wall time behind the
+        service and a periodic tick publisher."""
+        clock = cls(core_node, instance_id, sim=False)
+        await clock._listen(messenger)
+        publisher = await TopicMessenger.declare_publisher(
+            messenger,
+            core_node,
+            instance_id,
+            SenderTarget.node(core_node, _CORE_NODE_TAG),
+            _CLOCK_TOPIC,
+            QoSProfile.SensorData,
+        )
+        clock._ticker = asyncio.create_task(clock._run_ticker(publisher))
+        return clock
+
+    @classmethod
+    async def start_sim(
+        cls, messenger: MessengerHandle, core_node: str, instance_id: str
+    ) -> "MockClock":
+        """Serve the clock like a sim-mode daemon for ``core_node``, with the
+        test as the external simulator: time advances only on :meth:`tick`,
+        and until the first one the service answers "clock not ready"."""
+        clock = cls(core_node, instance_id, sim=True)
+        await clock._listen(messenger)
+        clock._sim_publisher = await TestTopicPublisher.declare(
+            messenger,
+            core_node,
+            instance_id,
+            SenderTarget.node(core_node, _CORE_NODE_TAG),
+            _CLOCK_TOPIC,
+            QoSProfile.SensorData,
+        )
+        return clock
+
+    async def _listen(self, messenger: MessengerHandle) -> None:
+        endpoint = await ServiceMessenger.listen(
+            messenger,
+            self._core_node,
+            self._instance_id,
+            SenderTarget.node(self._core_node, _CORE_NODE_TAG),
+            _CLOCK_SERVICE,
+        )
+        self._pump = asyncio.create_task(self._run_pump(endpoint))
+
+    def _source_now_ns(self) -> int:
+        """The served timestamp: skewed OS time in wall mode, the last tick
+        in sim mode. Raises ``RuntimeError`` while sim mode has no tick yet
+        (``0`` is the not-ready sentinel)."""
+        if self._sim:
+            if self._sim_time_ns == 0:
+                raise RuntimeError(_CLOCK_NOT_READY)
+            return self._sim_time_ns
+        # Negative skews clamp at the epoch, matching the Rust core's
+        # saturating arithmetic on the unsigned wire type.
+        return max(0, time.time_ns() + self._offset_ns)
+
+    async def _run_pump(self, endpoint: Any) -> None:
+        while True:
+            pair = await endpoint.recv_next_request()
+            if pair is None:
+                return
+            context, responder = pair
+            # Stamp t1 first: every line after this point inflates server
+            # processing time and corrupts the offset estimate the client
+            # computes.
+            try:
+                server_recv_time = self._source_now_ns()
+            except RuntimeError as error:
+                await responder.respond_error(str(error))
+                continue
+            try:
+                request = ClockRequest.decode(bytes(context.payload))
+            except ValueError as error:
+                await responder.respond_error(f"invalid clock request: {error}")
+                continue
+            # Stamp t2 last: the response encode + send happens after this
+            # point and is part of the round-trip delay the client measures,
+            # not server time.
+            server_send_time = self._source_now_ns()
+            response = ClockResponse(
+                request.client_send_time, server_recv_time, server_send_time
+            )
+            await responder.respond(response.encode())
+
+    async def _run_ticker(self, publisher: TopicPublisher) -> None:
+        # Same loop shape as the daemon's wall-mode publisher: SensorData QoS
+        # (stale time is useless) and a failed publish skips the tick rather
+        # than killing the stream.
+        while True:
+            await asyncio.sleep(MOCK_CLOCK_TICK_INTERVAL)
+            payload = ClockTick(self._source_now_ns()).encode()
+            try:
+                await publisher.publish(payload)
+            except Exception as error:  # noqa: BLE001, mock keeps ticking
+                warnings.warn(f"mock clock tick emit failed: {error}", stacklevel=1)
+
+    async def tick(self, time_ns: int) -> None:
+        """Advance sim time to ``time_ns``: the service answers
+        ``synchronize`` with it from this call on (written before publishing,
+        so a synchronize issued right after ``tick`` returns can never observe
+        the older value), and a ``ClockTick`` is published for the node's
+        clock subscription (``peppygen.clock`` in sim mode,
+        ``peppylib.clock.subscribe``).
+
+        The first publish waits until the node's clock subscription is
+        visible (:class:`TestTopicPublisher` semantics): ticking sim time at a
+        node that never reads it is a wiring bug surfaced as a loud error, not
+        a silent drop. ``0`` is the wire's not-ready sentinel and is clamped
+        to ``1``, exactly as the daemon stores external ticks.
+
+        Raises ``RuntimeError`` on a wall-mode clock, which ticks itself.
+        """
+        if not self._sim or self._sim_publisher is None:
+            raise RuntimeError(
+                "a wall-mode mock clock ticks itself; tick() drives sim mode only "
+                "(start the harness clock with start_sim / use_sim_time)"
+            )
+        stored = max(1, time_ns)
+        self._sim_time_ns = stored
+        await self._sim_publisher.publish(ClockTick(stored).encode())
+
+    def set_offset_ns(self, offset_ns: int) -> None:
+        """Skew every timestamp a wall-mode clock serves (service stamps and
+        published ticks alike) by a signed offset from the OS clock: the
+        scripted stand-in for a daemon host whose clock drifted from the
+        node's, so offset-handling code is testable without touching a real
+        clock. Raises ``RuntimeError`` on a sim-mode clock, whose time is set
+        absolutely by :meth:`tick`."""
+        if self._sim:
+            raise RuntimeError(
+                "a sim-mode mock clock has no wall time to skew; drive it with tick()"
+            )
+        self._offset_ns = offset_ns
+
+    def producer_ref(self) -> ProducerRef:
+        """The wire identity the clock serves under, as a probe-able
+        producer."""
+        return ProducerRef(self._core_node, self._instance_id)
+
+    def readiness(self) -> ServiceReadiness:
+        """This clock's entry for the harness's pre-setup reachability
+        barrier, so a ``synchronize`` in the node's ``setup`` cannot race
+        gossip discovery of the queryable."""
+        return ServiceReadiness(
+            target=SenderTarget.node(self._core_node, _CORE_NODE_TAG),
+            name=_CLOCK_SERVICE,
+            producer=self.producer_ref(),
+            kind="service",
+        )
+
+    async def close(self) -> None:
+        """Stop the service pump and (in wall mode) the tick publisher.
+        Python has no reliable drop hook for async teardown, so the
+        veneer/harness must call this (Rust's core does the same in
+        ``Drop``).
+
+        Both tasks are cancelled before either is awaited, so the ticker
+        cannot keep publishing while the pump drains — Rust's ``Drop`` aborts
+        them together. A task that ended in an error is reported as a warning
+        rather than raised: ``close`` runs in a test's teardown, where raising
+        would skip the rest of the cleanup and mask the failure the test was
+        actually reporting.
+        """
+        tasks = [task for task in (self._pump, self._ticker) if task is not None]
+        # Cleared up front: a task that refuses to die must not leave the
+        # clock looking closeable again.
+        self._pump = None
+        self._ticker = None
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as error:  # noqa: BLE001 — teardown reports, never raises
+                warnings.warn(f"mock clock task failed: {error}", stacklevel=1)
 
 
 @dataclass
