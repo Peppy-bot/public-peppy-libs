@@ -42,6 +42,27 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
+    /// A failure raised by the node's own logic rather than by the runtime: a
+    /// configuration it refuses, a precondition it cannot meet. The runtime
+    /// never constructs this.
+    ///
+    /// Every other variant describes something the runtime did, but a node's
+    /// `setup` and its service and action handlers all return this type, so
+    /// without this variant a node has nowhere to put its own refusal. The
+    /// alternatives, both of which appear across our nodes today, are wrapping
+    /// it in `Io` (where it reads to an operator as an I/O failure) or
+    /// panicking (which unwinds past `run_shutdown_hooks`, so the node leaks
+    /// whatever those hooks release).
+    ///
+    /// Deliberately not `#[from]`: an implicit conversion from any boxed error
+    /// would let `?` absorb anything into this type and undo the precision of
+    /// the variants around it. Construct it explicitly.
+    ///
+    /// `#[source]` rather than `transparent` so the wrapped error stays
+    /// reachable through [`std::error::Error::source`].
+    #[error("{0}")]
+    Node(#[source] Box<dyn std::error::Error + Send + Sync>),
+
     // -- system clock (set before the Unix epoch); produced by `clock::wall_now_ns`
     #[error("system clock unavailable: {0}")]
     SystemTime(#[from] std::time::SystemTimeError),
@@ -363,5 +384,62 @@ impl fmt::Display for InstanceSuffix<'_> {
         } else {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error as _;
+
+    /// Stands in for a node's own error type.
+    #[derive(Debug, Error)]
+    #[error("d_stop_m ({d_stop}) must be below d_safe_m ({d_safe})")]
+    struct Refusal {
+        d_stop: f64,
+        d_safe: f64,
+    }
+
+    fn refusal() -> Error {
+        Error::Node(Box::new(Refusal {
+            d_stop: 0.05,
+            d_safe: 0.02,
+        }))
+    }
+
+    #[test]
+    fn a_node_error_reaches_the_operator_with_its_own_message() {
+        // No prefix, no envelope: what the node wrote is what is read.
+        assert_eq!(
+            refusal().to_string(),
+            "d_stop_m (0.05) must be below d_safe_m (0.02)"
+        );
+    }
+
+    #[test]
+    fn a_node_error_keeps_its_source_reachable() {
+        // `Io` + `#[error(transparent)]` yields no source at all, so a wrapped
+        // node error is invisible to anything walking the chain. `#[source]`
+        // is what makes this variant different.
+        let wrapped = refusal();
+        let source = wrapped
+            .source()
+            .expect("the wrapped error must stay reachable");
+        assert_eq!(
+            source.to_string(),
+            "d_stop_m (0.05) must be below d_safe_m (0.02)"
+        );
+        assert!(
+            source.downcast_ref::<Refusal>().is_some(),
+            "the node's own type must survive the boxing"
+        );
+    }
+
+    #[test]
+    fn a_node_error_is_not_an_io_error() {
+        // The whole point: an operator reading the failure sees a refusal, not
+        // an I/O fault the node never had.
+        assert!(matches!(refusal(), Error::Node(_)));
+        assert!(!matches!(refusal(), Error::Io(_)));
     }
 }
