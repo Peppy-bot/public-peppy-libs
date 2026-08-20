@@ -152,6 +152,37 @@ impl std::fmt::Display for ContractCoverageMismatch {
 
 impl std::error::Error for ContractCoverageMismatch {}
 
+/// Tier B (raised where documents resolve): one document-backed entry whose
+/// `refine` block names things the resolved document does not admit, every
+/// problem at once. `document` names the resolved document the way the slot
+/// declares it (`contract `limb_motion:v1``, `pairing `joint_link:v1``).
+#[derive(Debug, Clone)]
+pub struct RefinementMismatch {
+    pub document: String,
+    pub link_id: String,
+    pub name: String,
+    pub problems: Vec<crate::internal::node::RefinementProblem>,
+}
+
+impl std::fmt::Display for RefinementMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "entry `{}` (link_id `{}`) refines {} in ways the document does not admit: ",
+            self.name, self.link_id, self.document
+        )?;
+        for (idx, problem) in self.problems.iter().enumerate() {
+            if idx > 0 {
+                f.write_str("; ")?;
+            }
+            write!(f, "{problem}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for RefinementMismatch {}
+
 /// Tier B (raised at node add/sync, where pairing documents resolve): the
 /// set-diff between one pairing slot and the pairing-backed
 /// entries referencing it. The pairing counterpart of
@@ -342,13 +373,25 @@ pub enum ParsingError {
 
     // -- manifest.implements + produced-interface entries
     #[error(
-        "Document-backed entry `{name}` (link_id `{link_id}`) in `{section}` must not carry `{field}` — shape and QoS come from the contract or pairing document the slot resolves to; a document-backed entry is exactly `{{link_id, name}}`"
+        "Document-backed entry `{name}` (link_id `{link_id}`) in `{section}` must not carry `{field}`: shape and QoS come from the contract or pairing document the slot resolves to; a document-backed entry carries `link_id`, `name`, and at most a `refine` block pinning the length of arrays the document leaves generic"
     )]
     LinkedEntryWithInlineShape {
         section: String,
         link_id: String,
         name: String,
         field: String,
+    },
+    #[error(
+        "Native entry `{name}` in `{section}` carries `refine`, which pins the length of arrays a contract or pairing document leaves generic; a native entry owns its shape and sets `$length` in its own `message_format`"
+    )]
+    RefineWithoutLinkId { section: String, name: String },
+    #[error(
+        "Consumed entry `{name}` (link_id `{link_id}`) in `{section}` carries `refine`, but the slot names a `depends_on.nodes` producer, whose native shape is taken as is; `refine` applies to entries whose slot resolves to a contract or pairing document"
+    )]
+    RefineOnNodeSlot {
+        section: String,
+        link_id: String,
+        name: String,
     },
     #[error("Entries in `{section}` require a non-empty `name`")]
     EmptyInterfaceName { section: String },
@@ -424,6 +467,10 @@ pub enum StructuredError {
         name: String,
         field: String,
     },
+    RefineWithoutLinkId {
+        section: String,
+        name: String,
+    },
     EmptyInterfaceName {
         section: String,
     },
@@ -459,6 +506,9 @@ impl From<StructuredError> for ParsingError {
                 name,
                 field,
             },
+            StructuredError::RefineWithoutLinkId { section, name } => {
+                ParsingError::RefineWithoutLinkId { section, name }
+            }
             StructuredError::EmptyInterfaceName { section } => {
                 ParsingError::EmptyInterfaceName { section }
             }
