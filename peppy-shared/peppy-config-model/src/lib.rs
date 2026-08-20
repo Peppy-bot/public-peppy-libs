@@ -45,7 +45,7 @@ pub use common::{
 pub use error::{
     ConsumedInterfaceOnlyContractBacked, ContractCoverageMismatch, Error as ConfigError,
     MissingInterface, PairingCoverageMismatch, ParsingError, RefinementMismatch,
-    deserialize_json5_with_structured_errors,
+    deserialize_json5_with_structured_errors, write_joined,
 };
 
 // -- consts --
@@ -83,11 +83,12 @@ pub mod node {
         MissingDependencyPolicy, NativeEmittedTopic, NativeExposedAction, NativeExposedService,
         NodeConfig, NodeConfigParser, NodeDependency, ObjectKind, ObjectSchema,
         PairingObserverDependency, PairingParticipantDependency, PeppygenLanguage, PrimitiveSchema,
-        QoSProfile, RefinementProblem, RefinementProblemKind, ResultServiceEndpoint,
+        QoSProfile, RefinementProblem, RefinementProblemKind, Refines, ResultServiceEndpoint,
         ResultServiceRefinement, SchemaType, ServiceInterfaces, ServiceRefinement, Toolchain,
         TopicInterfaces, TopicRefinement, TypeToken, collect_contract_implementation_edges,
         collect_dependency_specs, estimate_serialized_size, is_blocked_mount_source,
-        load_standalone_node_config, node_implements, validate_dependency_specs,
+        load_standalone_node_config, node_implements, refined, refined_ref,
+        validate_dependency_specs,
     };
 }
 

@@ -227,7 +227,9 @@ pub fn validate_dependency_specs(
         InterfaceKind::Action,
     ] {
         validate_consumed_items(
-            interfaces.consumed(kind),
+            interfaces
+                .consumed(kind)
+                .map(|(link_id, name, _)| (link_id, name)),
             kind,
             &resolved_deps,
             &declared_link_ids,

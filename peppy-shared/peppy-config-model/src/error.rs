@@ -164,6 +164,43 @@ pub struct RefinementMismatch {
     pub problems: Vec<crate::internal::node::RefinementProblem>,
 }
 
+impl RefinementMismatch {
+    /// The mismatch for an entry whose slot resolved to a contract.
+    pub fn for_contract(
+        contract: (&str, &str),
+        link_id: &str,
+        name: &str,
+        problems: Vec<crate::internal::node::RefinementProblem>,
+    ) -> Self {
+        Self::new("contract", contract, link_id, name, problems)
+    }
+
+    /// The mismatch for an entry whose slot resolved to a pairing.
+    pub fn for_pairing(
+        pairing: (&str, &str),
+        link_id: &str,
+        name: &str,
+        problems: Vec<crate::internal::node::RefinementProblem>,
+    ) -> Self {
+        Self::new("pairing", pairing, link_id, name, problems)
+    }
+
+    fn new(
+        kind: &str,
+        (document_name, tag): (&str, &str),
+        link_id: &str,
+        name: &str,
+        problems: Vec<crate::internal::node::RefinementProblem>,
+    ) -> Self {
+        Self {
+            document: format!("{kind} `{document_name}:{tag}`"),
+            link_id: link_id.to_owned(),
+            name: name.to_owned(),
+            problems,
+        }
+    }
+}
+
 impl std::fmt::Display for RefinementMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -171,13 +208,7 @@ impl std::fmt::Display for RefinementMismatch {
             "entry `{}` (link_id `{}`) refines {} in ways the document does not admit: ",
             self.name, self.link_id, self.document
         )?;
-        for (idx, problem) in self.problems.iter().enumerate() {
-            if idx > 0 {
-                f.write_str("; ")?;
-            }
-            write!(f, "{problem}")?;
-        }
-        Ok(())
+        write_joined(f, &self.problems, "; ")
     }
 }
 
@@ -266,16 +297,24 @@ fn write_labeled_lists(
             continue;
         }
         write!(f, "; {label}: [")?;
-        write_string_list(f, items)?;
+        write_joined(f, items, ", ")?;
         write!(f, "]")?;
     }
     Ok(())
 }
 
-fn write_string_list(f: &mut std::fmt::Formatter<'_>, items: &[String]) -> std::fmt::Result {
+/// Writes `items` separated by `separator`. The one renderer for the
+/// `, `-separated set-diffs and the `; `-separated aggregates every Tier B
+/// mismatch in this module — and the sync-side errors that carry them —
+/// render themselves as.
+pub fn write_joined<T: std::fmt::Display>(
+    f: &mut std::fmt::Formatter<'_>,
+    items: &[T],
+    separator: &str,
+) -> std::fmt::Result {
     for (idx, item) in items.iter().enumerate() {
         if idx > 0 {
-            write!(f, ", ")?;
+            f.write_str(separator)?;
         }
         write!(f, "{item}")?;
     }

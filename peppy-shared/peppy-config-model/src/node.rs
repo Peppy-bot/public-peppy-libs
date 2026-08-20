@@ -10,7 +10,7 @@ pub use message_size::{MessageSizeEstimate, estimate_serialized_size};
 pub use parse::{NodeConfigParser, load_standalone_node_config};
 pub use refine::{
     ActionRefinement, FieldRefinement, FormatRefinement, RefinementProblem, RefinementProblemKind,
-    ResultServiceRefinement, ServiceRefinement, TopicRefinement,
+    Refines, ResultServiceRefinement, ServiceRefinement, TopicRefinement, refined, refined_ref,
 };
 pub use types::{
     ActionInterfaces, ActionTopicEndpoint, ArrayKind, ArraySchema, Cardinality, ConsumedAction,

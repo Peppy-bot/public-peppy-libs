@@ -1,5 +1,6 @@
 use super::refine::{
-    ActionRefinement, FieldRefinement, FormatRefinement, ServiceRefinement, TopicRefinement,
+    ActionRefinement, FieldRefinement, FormatRefinement, ResultServiceRefinement,
+    ServiceRefinement, TopicRefinement,
 };
 use crate::{
     common::{ParameterSchema, ParameterSpec, resolve_parameter_path, type_token_name},
@@ -476,13 +477,17 @@ pub struct LinkedEntry<R> {
 }
 
 /// A document-backed `topics.emits` entry.
-pub type LinkedTopic = LinkedEntry<TopicRefinement>;
+pub type LinkedTopic = LinkedEntry<Box<TopicRefinement>>;
 /// A document-backed `services.exposes` entry.
-pub type LinkedService = LinkedEntry<ServiceRefinement>;
-/// A document-backed `actions.exposes` entry. The action block is boxed: its
-/// three optional endpoints dwarf the topic and service blocks, and
-/// `ExposedAction::Native` is boxed for the same reason.
+pub type LinkedService = LinkedEntry<Box<ServiceRefinement>>;
+/// A document-backed `actions.exposes` entry.
 pub type LinkedAction = LinkedEntry<Box<ActionRefinement>>;
+
+// Every refinement block is boxed. A block holds one `IndexMap` per format it
+// names, which is wider than the whole entry it hangs off, and it is absent on
+// nearly every entry: inlining it would grow each of these entries — resident
+// per node config and cloned per dependency lookup — several times over to
+// carry a `None`. `ExposedAction::Native` is boxed for the same reason.
 
 /// One document-backed produced entry, tagged with the section it is
 /// declared under so its refinement is the matching kind's block.
@@ -721,11 +726,11 @@ macro_rules! impl_produced_entry {
     };
 }
 
-impl_produced_entry!(EmittedTopic, plain NativeEmittedTopic, TopicRefinement, "topics.emits", {
+impl_produced_entry!(EmittedTopic, plain NativeEmittedTopic, Box<TopicRefinement>, "topics.emits", {
     qos_profile: Option<QoSProfile> => default,
     message_format: Option<MessageFormat> => keep,
 });
-impl_produced_entry!(ExposedService, plain NativeExposedService, ServiceRefinement, "services.exposes", {
+impl_produced_entry!(ExposedService, plain NativeExposedService, Box<ServiceRefinement>, "services.exposes", {
     request_message_format: Option<MessageFormat> => keep,
     response_message_format: Option<MessageFormat> => keep,
 });
@@ -809,7 +814,7 @@ pub struct ConsumedTopic {
     #[serde(deserialize_with = "deserialize_consumed_topic_name")]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refine: Option<TopicRefinement>,
+    pub refine: Option<Box<TopicRefinement>>,
 }
 
 /// A consumed service; `refine` follows the [`ConsumedTopic`] rule.
@@ -821,7 +826,7 @@ pub struct ConsumedService {
     #[serde(default)]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refine: Option<ServiceRefinement>,
+    pub refine: Option<Box<ServiceRefinement>>,
 }
 
 /// A consumed action; `refine` follows the [`ConsumedTopic`] rule. The
@@ -1521,9 +1526,11 @@ impl Interfaces {
             .chain(actions.iter().map(|e| (e.link_id(), e.name())))
     }
 
-    /// The consumed entries of `kind`, projected to `(link_id, name)`
-    /// pairs. Same shape as [`Interfaces::produced`].
-    pub fn consumed(&self, kind: InterfaceKind) -> impl Iterator<Item = (&str, &str)> {
+    /// The consumed entries of `kind`, projected to `(link_id, name,
+    /// refines)` — `refines` says the entry carries a `refine` block, which
+    /// parse-time validation checks against the slot it names. Same shape as
+    /// [`Interfaces::produced`].
+    pub fn consumed(&self, kind: InterfaceKind) -> impl Iterator<Item = (&str, &str, bool)> {
         let topics: &[ConsumedTopic] = match kind {
             InterfaceKind::Topic => self
                 .topics
@@ -1550,16 +1557,16 @@ impl Interfaces {
         };
         topics
             .iter()
-            .map(|c| (c.link_id.as_str(), c.name.as_str()))
+            .map(|c| (c.link_id.as_str(), c.name.as_str(), c.refine.is_some()))
             .chain(
                 services
                     .iter()
-                    .map(|c| (c.link_id.as_str(), c.name.as_str())),
+                    .map(|c| (c.link_id.as_str(), c.name.as_str(), c.refine.is_some())),
             )
             .chain(
                 actions
                     .iter()
-                    .map(|c| (c.link_id.as_str(), c.name.as_str())),
+                    .map(|c| (c.link_id.as_str(), c.name.as_str(), c.refine.is_some())),
             )
     }
 
@@ -1629,37 +1636,6 @@ impl Interfaces {
             .iter()
             .filter_map(|e| e.as_linked())
             .map(LinkedMember::Action);
-        topics.chain(services).chain(actions)
-    }
-
-    /// The consumed entries that carry a `refine` block, as
-    /// `(kind, link_id, name)`. Parse-time validation walks these to reject
-    /// a refinement on a slot that resolves to no document.
-    pub fn refined_consumed_entries(&self) -> impl Iterator<Item = (InterfaceKind, &str, &str)> {
-        let topics = self
-            .topics
-            .as_ref()
-            .and_then(|t| t.consumes.as_deref())
-            .unwrap_or_default()
-            .iter()
-            .filter(|c| c.refine.is_some())
-            .map(|c| (InterfaceKind::Topic, c.link_id.as_str(), c.name.as_str()));
-        let services = self
-            .services
-            .as_ref()
-            .and_then(|s| s.consumes.as_deref())
-            .unwrap_or_default()
-            .iter()
-            .filter(|c| c.refine.is_some())
-            .map(|c| (InterfaceKind::Service, c.link_id.as_str(), c.name.as_str()));
-        let actions = self
-            .actions
-            .as_ref()
-            .and_then(|a| a.consumes.as_deref())
-            .unwrap_or_default()
-            .iter()
-            .filter(|c| c.refine.is_some())
-            .map(|c| (InterfaceKind::Action, c.link_id.as_str(), c.name.as_str()));
         topics.chain(services).chain(actions)
     }
 }
@@ -1765,13 +1741,17 @@ impl Normalize for ServiceRefinement {
     }
 }
 
+impl Normalize for ResultServiceRefinement {
+    fn normalize(&mut self) {
+        self.response_message_format.normalize();
+    }
+}
+
 impl Normalize for ActionRefinement {
     fn normalize(&mut self) {
         normalize_opt(&mut self.goal_service);
         normalize_opt(&mut self.feedback_topic);
-        if let Some(result) = &mut self.result_service {
-            result.response_message_format.normalize();
-        }
+        normalize_opt(&mut self.result_service);
     }
 }
 

@@ -143,33 +143,27 @@ fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<(
     }
 
     for (kind, _) in KINDS {
-        for (link_id, _) in interfaces.consumed(kind) {
+        for (link_id, name, refines) in interfaces.consumed(kind) {
             if implements_link_ids.contains(link_id) {
                 return Err(ParsingError::ConsumedItemReferencesImplementsLinkId {
                     link_id: link_id.to_owned(),
                 }
                 .into());
             }
-        }
-    }
-
-    // `refine` pins arrays a document leaves generic, so it needs a document
-    // behind the slot: a consumed entry naming a `depends_on.nodes` producer
-    // takes that producer's native shape as is.
-    let node_link_ids: HashSet<&str> = manifest
-        .depends_on
-        .iter()
-        .flat_map(|d| d.nodes.iter())
-        .map(|n| n.link_id.as_str())
-        .collect();
-    for (kind, link_id, name) in interfaces.refined_consumed_entries() {
-        if node_link_ids.contains(link_id) {
-            return Err(ParsingError::RefineOnNodeSlot {
-                section: kind.consumed_section().to_owned(),
-                link_id: link_id.to_owned(),
-                name: name.to_owned(),
+            // `refine` pins arrays a document leaves generic, so it needs a
+            // document behind the slot: a consumed entry naming a
+            // `depends_on.nodes` producer takes that producer's native shape
+            // as is.
+            if refines
+                && depends_list_containing(manifest.depends_on.as_ref(), link_id) == Some("nodes")
+            {
+                return Err(ParsingError::RefineOnNodeSlot {
+                    section: kind.consumed_section().to_owned(),
+                    link_id: link_id.to_owned(),
+                    name: name.to_owned(),
+                }
+                .into());
             }
-            .into());
         }
     }
 
@@ -179,7 +173,7 @@ fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<(
     // applies to observers only.
     let consumed_topic_link_ids: HashSet<&str> = interfaces
         .consumed(InterfaceKind::Topic)
-        .map(|(link_id, _)| link_id)
+        .map(|(link_id, _, _)| link_id)
         .collect();
     for link_id in &observer_link_ids {
         if !consumed_topic_link_ids.contains(link_id) {

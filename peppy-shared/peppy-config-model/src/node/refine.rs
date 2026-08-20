@@ -31,8 +31,7 @@
 //! resolves, so `apply` reports those problems, all of them at once.
 
 use super::types::{
-    ActionTopicEndpoint, GoalServiceEndpoint, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService, ResultServiceEndpoint, SchemaType,
+    MessageFormat, NativeEmittedTopic, NativeExposedAction, NativeExposedService, SchemaType,
 };
 use crate::common::type_token_name;
 use indexmap::IndexMap;
@@ -41,6 +40,7 @@ use serde::{
     de::{self, Deserializer, MapAccess, Visitor},
     ser::{SerializeMap, Serializer},
 };
+use std::borrow::Cow;
 use std::fmt;
 
 /// Refinements keyed by field name, mirroring the fields of one
@@ -428,15 +428,15 @@ impl fmt::Display for RefinementProblem {
 
 /// How the document describes a schema node, for problem messages.
 fn describe(schema: &SchemaType) -> String {
-    match schema {
-        SchemaType::Type(token) => format!("a `{}`", type_token_name(token)),
-        SchemaType::Primitive(primitive) => format!("a `{}`", type_token_name(&primitive.kind)),
-        SchemaType::Array(_) => "an array".to_string(),
-        SchemaType::Object(_) => "an object".to_string(),
-    }
+    let article = match schema {
+        SchemaType::Array(_) | SchemaType::Object(_) => "an",
+        SchemaType::Type(_) | SchemaType::Primitive(_) => "a",
+    };
+    format!("{article} {}", describe_items(schema))
 }
 
-/// How the document describes an array's items, for problem messages.
+/// How the document describes an array's items, for problem messages. The
+/// same rendering [`describe`] prefixes with an article.
 fn describe_items(items: &SchemaType) -> String {
     match items {
         SchemaType::Type(token) => format!("`{}`", type_token_name(token)),
@@ -563,10 +563,47 @@ fn finish<T>(value: T, problems: Vec<RefinementProblem>) -> Result<T, Vec<Refine
     }
 }
 
-impl TopicRefinement {
-    /// The topic as the document declares it, with this refinement's pins
+/// Applying a `refine` block to the document member it belongs to. One impl
+/// per (block, member) pair, so a call site cannot pair a service block with
+/// a topic member.
+pub trait Refines<M> {
+    /// The member as the document declares it, with this refinement's pins
     /// applied, or every pin the document does not admit.
-    pub fn apply(
+    fn apply(&self, member: M) -> Result<M, Vec<RefinementProblem>>;
+}
+
+/// The member as the entry wants it: the entry's `refine` block applied when
+/// it carries one, the member untouched otherwise.
+pub fn refined<M, R: Refines<M>>(
+    refinement: Option<&R>,
+    member: M,
+) -> Result<M, Vec<RefinementProblem>> {
+    match refinement {
+        Some(refinement) => refinement.apply(member),
+        None => Ok(member),
+    }
+}
+
+/// [`refined`] for a member the caller only borrows out of a resolved
+/// document. The clone happens in the refining arm alone, so an entry
+/// without a `refine` block — nearly every entry — pays nothing to leave
+/// the document's member as it found it.
+pub fn refined_ref<'a, M, R>(
+    refinement: Option<&R>,
+    member: &'a M,
+) -> Result<Cow<'a, M>, Vec<RefinementProblem>>
+where
+    M: Clone,
+    R: Refines<M>,
+{
+    match refinement {
+        Some(refinement) => refinement.apply(member.clone()).map(Cow::Owned),
+        None => Ok(Cow::Borrowed(member)),
+    }
+}
+
+impl Refines<NativeEmittedTopic> for TopicRefinement {
+    fn apply(
         &self,
         mut topic: NativeEmittedTopic,
     ) -> Result<NativeEmittedTopic, Vec<RefinementProblem>> {
@@ -579,25 +616,10 @@ impl TopicRefinement {
         );
         finish(topic, problems)
     }
-
-    fn apply_to_feedback(
-        &self,
-        feedback: Option<&mut ActionTopicEndpoint>,
-        problems: &mut Vec<RefinementProblem>,
-    ) {
-        apply_to_slot(
-            Some(&self.message_format),
-            feedback.map(|endpoint| &mut endpoint.message_format),
-            "feedback_topic.message_format",
-            problems,
-        );
-    }
 }
 
-impl ServiceRefinement {
-    /// The service as the document declares it, with this refinement's pins
-    /// applied, or every pin the document does not admit.
-    pub fn apply(
+impl Refines<NativeExposedService> for ServiceRefinement {
+    fn apply(
         &self,
         mut service: NativeExposedService,
     ) -> Result<NativeExposedService, Vec<RefinementProblem>> {
@@ -616,65 +638,58 @@ impl ServiceRefinement {
         );
         finish(service, problems)
     }
-
-    fn apply_to_goal(
-        &self,
-        goal: Option<&mut GoalServiceEndpoint>,
-        problems: &mut Vec<RefinementProblem>,
-    ) {
-        let (request, response) = match goal {
-            Some(goal) => (
-                goal.request_message_format.as_mut(),
-                goal.response_message_format.as_mut(),
-            ),
-            None => (None, None),
-        };
-        apply_to_slot(
-            self.request_message_format.as_ref(),
-            request,
-            "goal_service.request_message_format",
-            problems,
-        );
-        apply_to_slot(
-            self.response_message_format.as_ref(),
-            response,
-            "goal_service.response_message_format",
-            problems,
-        );
-    }
 }
 
-impl ResultServiceRefinement {
-    fn apply_to_result(
-        &self,
-        result: Option<&mut ResultServiceEndpoint>,
-        problems: &mut Vec<RefinementProblem>,
-    ) {
-        apply_to_slot(
-            Some(&self.response_message_format),
-            result.and_then(|endpoint| endpoint.response_message_format.as_mut()),
-            "result_service.response_message_format",
-            problems,
-        );
-    }
-}
-
-impl ActionRefinement {
-    /// The action as the document declares it, with this refinement's pins
-    /// applied, or every pin the document does not admit.
-    pub fn apply(
+impl Refines<NativeExposedAction> for ActionRefinement {
+    /// The action's three endpoints are five format slots. Their paths are
+    /// the action's, so they are named here rather than by the topic and
+    /// service blocks, which stand alone on their own sections too.
+    fn apply(
         &self,
         mut action: NativeExposedAction,
     ) -> Result<NativeExposedAction, Vec<RefinementProblem>> {
         let mut problems = Vec::new();
         if let Some(goal) = &self.goal_service {
-            goal.apply_to_goal(action.goal_service.as_mut(), &mut problems);
+            let (request, response) = action.goal_service.as_mut().map_or((None, None), |slot| {
+                (
+                    slot.request_message_format.as_mut(),
+                    slot.response_message_format.as_mut(),
+                )
+            });
+            apply_to_slot(
+                goal.request_message_format.as_ref(),
+                request,
+                "goal_service.request_message_format",
+                &mut problems,
+            );
+            apply_to_slot(
+                goal.response_message_format.as_ref(),
+                response,
+                "goal_service.response_message_format",
+                &mut problems,
+            );
         }
         if let Some(feedback) = &self.feedback_topic {
-            feedback.apply_to_feedback(action.feedback_topic.as_mut(), &mut problems);
+            apply_to_slot(
+                Some(&feedback.message_format),
+                action
+                    .feedback_topic
+                    .as_mut()
+                    .map(|slot| &mut slot.message_format),
+                "feedback_topic.message_format",
+                &mut problems,
+            );
         }
         if let Some(result) = &self.result_service {
-            result.apply_to_result(action.result_service.as_mut(), &mut problems);
+            apply_to_slot(
+                Some(&result.response_message_format),
+                action
+                    .result_service
+                    .as_mut()
+                    .and_then(|slot| slot.response_message_format.as_mut()),
+                "result_service.response_message_format",
+                &mut problems,
+            );
         }
         finish(action, problems)
     }
