@@ -42,6 +42,16 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
+    /// A failure raised by the node's own logic rather than by the runtime: a
+    /// configuration it refuses, a precondition it cannot meet. Never
+    /// constructed by the runtime.
+    ///
+    /// Not `#[from]`, so `?` cannot absorb an arbitrary boxed error into this
+    /// type; `#[source]` rather than transparent, so the wrapped error stays
+    /// reachable through [`std::error::Error::source`].
+    #[error("{0}")]
+    Node(#[source] Box<dyn std::error::Error + Send + Sync>),
+
     // -- system clock (set before the Unix epoch); produced by `clock::wall_now_ns`
     #[error("system clock unavailable: {0}")]
     SystemTime(#[from] std::time::SystemTimeError),
