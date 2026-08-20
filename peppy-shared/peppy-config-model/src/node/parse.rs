@@ -94,12 +94,9 @@ fn validate_manifest_links(manifest: &Manifest) -> Result<()> {
 /// coverage, need the pairing document and are checked at node add/sync.
 fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<()> {
     const KINDS: [(InterfaceKind, &str); 3] = [
-        (InterfaceKind::Topic, super::types::EmittedTopic::SECTION),
-        (
-            InterfaceKind::Service,
-            super::types::ExposedService::SECTION,
-        ),
-        (InterfaceKind::Action, super::types::ExposedAction::SECTION),
+        (InterfaceKind::Topic, crate::node::EmittedTopic::SECTION),
+        (InterfaceKind::Service, crate::node::ExposedService::SECTION),
+        (InterfaceKind::Action, crate::node::ExposedAction::SECTION),
     ];
 
     let implements_link_ids: HashSet<&str> = manifest
@@ -146,10 +143,24 @@ fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<(
     }
 
     for (kind, _) in KINDS {
-        for (link_id, _) in interfaces.consumed(kind) {
+        for (link_id, name, refines) in interfaces.consumed(kind) {
             if implements_link_ids.contains(link_id) {
                 return Err(ParsingError::ConsumedItemReferencesImplementsLinkId {
                     link_id: link_id.to_owned(),
+                }
+                .into());
+            }
+            // `refine` pins arrays a document leaves generic, so it needs a
+            // document behind the slot: a consumed entry naming a
+            // `depends_on.nodes` producer takes that producer's native shape
+            // as is.
+            if refines
+                && depends_list_containing(manifest.depends_on.as_ref(), link_id) == Some("nodes")
+            {
+                return Err(ParsingError::RefineOnNodeSlot {
+                    section: kind.consumed_section().to_owned(),
+                    link_id: link_id.to_owned(),
+                    name: name.to_owned(),
                 }
                 .into());
             }
@@ -162,7 +173,7 @@ fn validate_interfaces(manifest: &Manifest, interfaces: &Interfaces) -> Result<(
     // applies to observers only.
     let consumed_topic_link_ids: HashSet<&str> = interfaces
         .consumed(InterfaceKind::Topic)
-        .map(|(link_id, _)| link_id)
+        .map(|(link_id, _, _)| link_id)
         .collect();
     for link_id in &observer_link_ids {
         if !consumed_topic_link_ids.contains(link_id) {
@@ -1847,5 +1858,255 @@ mod tests {
             execution: { language: "rust", run_cmd: ["./bin"] },
         }"#;
         NodeConfigParser::from_content(json5).expect("relay shape must parse");
+    }
+
+    // ─── `refine` on document-backed entries ────────────────────────────────
+
+    /// A node that implements a contract, consumes another, and plays a
+    /// pairing role, with a `refine` block on every document-backed entry
+    /// kind in both directions. `{refine}` is spliced in as the block's
+    /// body where the test needs a variation.
+    fn node_with_refinements() -> String {
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "seven_dof_arm",
+                tag: "v1",
+                implements: [{ name: "limb_motion", tag: "v1", link_id: "moves" }],
+                depends_on: {
+                    contracts: [{ name: "limb_motion", tag: "v1", link_id: "upstream" }],
+                    pairings: [{ name: "joint_link", tag: "v1", role: "follower", link_id: "leader" }],
+                },
+            },
+            interfaces: {
+                topics: {
+                    emits: [
+                        { link_id: "moves", name: "joint_states", refine: { message_format: { positions: { $length: 7 } } } },
+                        { link_id: "leader", name: "joint_states", refine: { message_format: { positions: { $length: 7 } } } },
+                    ],
+                    consumes: [
+                        { link_id: "upstream", name: "joint_states", refine: { message_format: { positions: { $length: 7 } } } },
+                        { link_id: "leader", name: "joint_setpoints", refine: { message_format: { positions: { $length: 7 } } } },
+                    ],
+                },
+                services: {
+                    exposes: [
+                        { link_id: "moves", name: "set_joints", refine: { request_message_format: { targets: { $length: 7 } } } },
+                    ],
+                    consumes: [
+                        { link_id: "upstream", name: "set_joints", refine: { response_message_format: { measured: { $length: 7 } } } },
+                    ],
+                },
+                actions: {
+                    exposes: [
+                        {
+                            link_id: "moves",
+                            name: "move_arm_joints",
+                            refine: {
+                                goal_service: { request_message_format: { joint_positions: { $length: 7 } } },
+                                result_service: { response_message_format: { final_joint_positions: { $length: 7 } } },
+                            },
+                        },
+                    ],
+                    consumes: [
+                        { link_id: "upstream", name: "move_arm_joints", refine: { feedback_topic: { message_format: { progress: { $length: 7 } } } } },
+                    ],
+                },
+            },
+            execution: { language: "rust", run_cmd: ["./bin"] },
+        }"#
+        .to_string()
+    }
+
+    #[test]
+    fn refine_parses_on_every_document_backed_entry_kind() {
+        let config = NodeConfigParser::from_content(&node_with_refinements())
+            .expect("refinements on document-backed entries parse");
+        let topics = config.interfaces.topics.as_ref().unwrap();
+        for emitted in topics.emits.as_ref().unwrap() {
+            let crate::node::EmittedTopic::Linked(linked) = emitted else {
+                panic!("every emit here is document-backed");
+            };
+            let refine = linked.refine.as_ref().expect("emit carries its refinement");
+            assert_eq!(
+                refine.message_format.0["positions"],
+                crate::node::FieldRefinement::Length(7)
+            );
+        }
+        for consumed in topics.consumes.as_ref().unwrap() {
+            assert!(
+                consumed.refine.is_some(),
+                "consume `{}` keeps its refinement",
+                consumed.name
+            );
+        }
+        let services = config.interfaces.services.as_ref().unwrap();
+        let crate::node::ExposedService::Linked(exposed) = &services.exposes.as_ref().unwrap()[0]
+        else {
+            panic!("the exposed service is document-backed");
+        };
+        assert!(
+            exposed
+                .refine
+                .as_ref()
+                .unwrap()
+                .request_message_format
+                .is_some()
+        );
+        assert!(
+            services.consumes.as_ref().unwrap()[0]
+                .refine
+                .as_ref()
+                .unwrap()
+                .response_message_format
+                .is_some()
+        );
+        let actions = config.interfaces.actions.as_ref().unwrap();
+        let crate::node::ExposedAction::Linked(exposed) = &actions.exposes.as_ref().unwrap()[0]
+        else {
+            panic!("the exposed action is document-backed");
+        };
+        let refine = exposed.refine.as_ref().unwrap();
+        assert!(refine.goal_service.is_some() && refine.result_service.is_some());
+        assert!(
+            actions.consumes.as_ref().unwrap()[0]
+                .refine
+                .as_ref()
+                .unwrap()
+                .feedback_topic
+                .is_some()
+        );
+    }
+
+    /// Serialization keeps the refinements, and normalization sorts their
+    /// keys, so two manifests that pin the same arrays in a different order
+    /// compare equal.
+    #[test]
+    fn refine_round_trips_and_normalizes() {
+        let config = NodeConfigParser::from_content(&node_with_refinements()).unwrap();
+        let serialized = serde_json5::to_string(&config).expect("serializes");
+        let reparsed: NodeConfig = serde_json5::from_str(&serialized).expect("re-parses");
+        assert_eq!(config.interfaces, reparsed.interfaces);
+
+        let reordered = node_with_refinements().replace(
+            "goal_service: { request_message_format: { joint_positions: { $length: 7 } } },\n                                result_service: { response_message_format: { final_joint_positions: { $length: 7 } } },",
+            "result_service: { response_message_format: { final_joint_positions: { $length: 7 } } },\n                                goal_service: { request_message_format: { joint_positions: { $length: 7 } } },",
+        );
+        assert_ne!(
+            reordered,
+            node_with_refinements(),
+            "the replacement must apply"
+        );
+        let reordered = NodeConfigParser::from_content(&reordered).unwrap();
+        assert!(config.interfaces.matches_unordered(&reordered.interfaces));
+    }
+
+    #[test]
+    fn refine_on_native_entry_rejected_per_section() {
+        for (section, interfaces) in [
+            (
+                "topics.emits",
+                r#"{ topics: { emits: [{ name: "joint_states", message_format: { positions: { $type: "array", $items: "f64" } }, refine: { message_format: { positions: { $length: 7 } } } }] } }"#,
+            ),
+            (
+                "services.exposes",
+                r#"{ services: { exposes: [{ name: "set_joints", refine: { request_message_format: { targets: { $length: 7 } } } }] } }"#,
+            ),
+            (
+                "actions.exposes",
+                r#"{ actions: { exposes: [{ name: "move", refine: { goal_service: { request_message_format: { targets: { $length: 7 } } } } }] } }"#,
+            ),
+        ] {
+            let result = NodeConfigParser::from_content(&node_with("", interfaces));
+            assert!(
+                matches!(
+                    result.as_ref().unwrap_err(),
+                    Error::Parsing(ParsingError::RefineWithoutLinkId { section: s, .. }) if s == section
+                ),
+                "{section}: expected RefineWithoutLinkId, got: {:?}",
+                result.unwrap_err()
+            );
+        }
+    }
+
+    /// A `depends_on.nodes` slot resolves to a producer's native shape, which
+    /// the consumer takes as is: there is no document whose generic arrays a
+    /// refinement could pin.
+    #[test]
+    fn refine_on_node_slot_consume_rejected_per_section() {
+        for (section, interfaces) in [
+            (
+                "topics.consumes",
+                r#"{ topics: { consumes: [{ link_id: "cam", name: "video_stream", refine: { message_format: { frame: { $length: 4 } } } }] } }"#,
+            ),
+            (
+                "services.consumes",
+                r#"{ services: { consumes: [{ link_id: "cam", name: "info", refine: { response_message_format: { size: { $length: 2 } } } }] } }"#,
+            ),
+            (
+                "actions.consumes",
+                r#"{ actions: { consumes: [{ link_id: "cam", name: "focus", refine: { goal_service: { request_message_format: { at: { $length: 2 } } } } }] } }"#,
+            ),
+        ] {
+            let json5 = format!(
+                r#"{{
+                    peppy_schema: "node/v1",
+                    manifest: {{
+                        name: "viewer",
+                        tag: "v1",
+                        depends_on: {{ nodes: [{{ name: "uvc_camera", tag: "v1", link_id: "cam" }}] }},
+                    }},
+                    interfaces: {interfaces},
+                    execution: {{ language: "rust", run_cmd: ["./bin"] }},
+                }}"#
+            );
+            let result = NodeConfigParser::from_content(&json5);
+            assert!(
+                matches!(
+                    result.as_ref().unwrap_err(),
+                    Error::Parsing(ParsingError::RefineOnNodeSlot { section: s, link_id, .. })
+                        if s == section && link_id == "cam"
+                ),
+                "{section}: expected RefineOnNodeSlot, got: {:?}",
+                result.unwrap_err()
+            );
+        }
+    }
+
+    /// The block's own structure is checked at parse time: an empty block,
+    /// a shape modifier inside it, or a leaf mixing `$length` with nested
+    /// fields is rejected before any document resolves.
+    #[test]
+    fn malformed_refine_blocks_rejected_at_parse_time() {
+        for (interfaces, needle) in [
+            (
+                r#"{ topics: { emits: [{ link_id: "moves", name: "joint_states", refine: {} }] } }"#,
+                "message_format",
+            ),
+            (
+                r#"{ topics: { emits: [{ link_id: "moves", name: "joint_states", refine: { message_format: {} } }] } }"#,
+                "empty format refinement",
+            ),
+            (
+                r#"{ topics: { emits: [{ link_id: "moves", name: "joint_states", refine: { message_format: { positions: { $type: "array", $length: 7 } } } }] } }"#,
+                "unknown modifier `$type`",
+            ),
+            (
+                r#"{ services: { exposes: [{ link_id: "moves", name: "set_joints", refine: {} }] } }"#,
+                "request_message_format",
+            ),
+            (
+                r#"{ actions: { exposes: [{ link_id: "moves", name: "move", refine: { goal_service: {} } }] } }"#,
+                "request_message_format",
+            ),
+        ] {
+            let err = NodeConfigParser::from_content(&node_with(
+                r#"{ name: "limb_motion", tag: "v1", link_id: "moves" }"#,
+                interfaces,
+            ))
+            .expect_err("malformed refine blocks must be rejected")
+            .to_string();
+            assert!(err.contains(needle), "expected `{needle}` in: {err}");
+        }
     }
 }

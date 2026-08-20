@@ -1,3 +1,7 @@
+use super::refine::{
+    ActionRefinement, FieldRefinement, FormatRefinement, ResultServiceRefinement,
+    ServiceRefinement, TopicRefinement,
+};
 use crate::{
     common::{ParameterSchema, ParameterSpec, resolve_parameter_path, type_token_name},
     error::ParsingError,
@@ -449,9 +453,12 @@ pub enum QoSProfile {
 
 /// A document-backed produced-interface entry: `{link_id, name}` where
 /// `link_id` names a slot and `name` selects one member of the document that
-/// slot resolves to (byte-equal). Shape and QoS come from that document, so
-/// inline `message_format` / `qos_profile` / endpoint fields are rejected at
-/// parse time.
+/// slot resolves to (byte-equal), plus an optional `refine` block. Shape and
+/// QoS come from that document, so inline `message_format` / `qos_profile` /
+/// endpoint fields are rejected at parse time; `refine` declares no shape, it
+/// pins the length of arrays the document leaves generic (see
+/// [`FormatRefinement`]). The refinement type `R` is the kind-specific block
+/// of the section the entry lives in.
 ///
 /// The name is direction-neutral on purpose: which document backs the entry
 /// depends on the slot it names. `services.exposes` and `actions.exposes`
@@ -462,9 +469,59 @@ pub enum QoSProfile {
 /// the pairing document instead.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct LinkedEntry {
+pub struct LinkedEntry<R> {
     pub link_id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refine: Option<R>,
+}
+
+/// A document-backed `topics.emits` entry.
+pub type LinkedTopic = LinkedEntry<Box<TopicRefinement>>;
+/// A document-backed `services.exposes` entry.
+pub type LinkedService = LinkedEntry<Box<ServiceRefinement>>;
+/// A document-backed `actions.exposes` entry.
+pub type LinkedAction = LinkedEntry<Box<ActionRefinement>>;
+
+// Every refinement block is boxed. A block holds one `IndexMap` per format it
+// names, which is wider than the whole entry it hangs off, and it is absent on
+// nearly every entry: inlining it would grow each of these entries — resident
+// per node config and cloned per dependency lookup — several times over to
+// carry a `None`. `ExposedAction::Native` is boxed for the same reason.
+
+/// One document-backed produced entry, tagged with the section it is
+/// declared under so its refinement is the matching kind's block.
+#[derive(Debug, Clone, Copy)]
+pub enum LinkedMember<'a> {
+    Topic(&'a LinkedTopic),
+    Service(&'a LinkedService),
+    Action(&'a LinkedAction),
+}
+
+impl LinkedMember<'_> {
+    pub fn kind(&self) -> InterfaceKind {
+        match self {
+            Self::Topic(_) => InterfaceKind::Topic,
+            Self::Service(_) => InterfaceKind::Service,
+            Self::Action(_) => InterfaceKind::Action,
+        }
+    }
+
+    pub fn link_id(&self) -> &str {
+        match self {
+            Self::Topic(e) => &e.link_id,
+            Self::Service(e) => &e.link_id,
+            Self::Action(e) => &e.link_id,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Topic(e) => &e.name,
+            Self::Service(e) => &e.name,
+            Self::Action(e) => &e.name,
+        }
+    }
 }
 
 /// A natively-declared emitted topic (no `link_id`): the node owns the shape.
@@ -487,7 +544,7 @@ pub struct NativeEmittedTopic {
 /// document declares it, for a topic this node's role emits).
 #[derive(Debug, Clone, PartialEq)]
 pub enum EmittedTopic {
-    Linked(LinkedEntry),
+    Linked(LinkedTopic),
     Native(NativeEmittedTopic),
 }
 
@@ -507,7 +564,7 @@ pub struct NativeExposedService {
 /// document-backed entry here is always contract-backed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExposedService {
-    Linked(LinkedEntry),
+    Linked(LinkedService),
     Native(NativeExposedService),
 }
 
@@ -531,7 +588,7 @@ pub struct NativeExposedAction {
 /// the enum small for the common document-backed case.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExposedAction {
-    Linked(LinkedEntry),
+    Linked(LinkedAction),
     Native(Box<NativeExposedAction>),
 }
 
@@ -545,6 +602,10 @@ pub enum ExposedAction {
 /// The wrap mode before the native type says how the `Native` variant holds
 /// its payload: `plain` stores the struct inline, `boxed` stores it behind a
 /// `Box` (for payloads large enough to trip `clippy::large_enum_variant`).
+/// The refinement type after it is the kind-specific `refine` block a
+/// document-backed entry of this section may carry; a native entry
+/// carrying one is rejected, since it owns its shape and sets `$length`
+/// directly.
 macro_rules! impl_produced_entry {
     (@native_field default $value:expr) => {
         $value.unwrap_or_default()
@@ -564,7 +625,7 @@ macro_rules! impl_produced_entry {
     (@native_wrap boxed $value:expr) => {
         Box::new($value)
     };
-    ($entry:ident, $wrap:tt $native:ident, $section:literal,
+    ($entry:ident, $wrap:tt $native:ident, $refine:ty, $section:literal,
      { $($field:ident : $ty:ty => $mode:tt),+ $(,)? }) => {
         impl $entry {
             /// Interface name: the document member selector for
@@ -585,7 +646,7 @@ macro_rules! impl_produced_entry {
                 }
             }
 
-            pub fn as_linked(&self) -> Option<&LinkedEntry> {
+            pub fn as_linked(&self) -> Option<&LinkedEntry<$refine>> {
                 match self {
                     Self::Linked(e) => Some(e),
                     Self::Native(_) => None,
@@ -631,6 +692,7 @@ macro_rules! impl_produced_entry {
                 struct Raw {
                     link_id: Option<String>,
                     name: Option<String>,
+                    refine: Option<$refine>,
                     $($field: $ty,)+
                 }
 
@@ -649,31 +711,53 @@ macro_rules! impl_produced_entry {
                             &name,
                             &[$((stringify!($field), raw.$field.is_some()),)+],
                         )?;
-                        Ok(Self::Linked(LinkedEntry { link_id, name }))
+                        Ok(Self::Linked(LinkedEntry { link_id, name, refine: raw.refine }))
                     }
-                    None => Ok(Self::Native(impl_produced_entry!(@native_wrap $wrap $native {
-                        name,
-                        $($field: impl_produced_entry!(@native_field $mode raw.$field),)+
-                    }))),
+                    None => {
+                        reject_refine_on_native($entry::SECTION, &name, raw.refine.is_some())?;
+                        Ok(Self::Native(impl_produced_entry!(@native_wrap $wrap $native {
+                            name,
+                            $($field: impl_produced_entry!(@native_field $mode raw.$field),)+
+                        })))
+                    }
                 }
             }
         }
     };
 }
 
-impl_produced_entry!(EmittedTopic, plain NativeEmittedTopic, "topics.emits", {
+impl_produced_entry!(EmittedTopic, plain NativeEmittedTopic, Box<TopicRefinement>, "topics.emits", {
     qos_profile: Option<QoSProfile> => default,
     message_format: Option<MessageFormat> => keep,
 });
-impl_produced_entry!(ExposedService, plain NativeExposedService, "services.exposes", {
+impl_produced_entry!(ExposedService, plain NativeExposedService, Box<ServiceRefinement>, "services.exposes", {
     request_message_format: Option<MessageFormat> => keep,
     response_message_format: Option<MessageFormat> => keep,
 });
-impl_produced_entry!(ExposedAction, boxed NativeExposedAction, "actions.exposes", {
+impl_produced_entry!(ExposedAction, boxed NativeExposedAction, Box<ActionRefinement>, "actions.exposes", {
     goal_service: Option<GoalServiceEndpoint> => keep,
     feedback_topic: Option<ActionTopicEndpoint> => keep,
     result_service: Option<ResultServiceEndpoint> => keep,
 });
+
+/// Rejects `refine` on a native entry: a refinement pins arrays a document
+/// leaves generic, and a native entry has no document behind it.
+fn reject_refine_on_native<E: de::Error>(
+    section: &'static str,
+    name: &str,
+    present: bool,
+) -> Result<(), E> {
+    if !present {
+        return Ok(());
+    }
+    Err(E::custom(
+        crate::error::StructuredError::RefineWithoutLinkId {
+            section: section.to_owned(),
+            name: name.to_owned(),
+        }
+        .json5_message(),
+    ))
+}
 
 /// Validates the (required, non-empty) `name` of a produced-interface entry,
 /// surfacing a [`StructuredError::EmptyInterfaceName`] through the serde
@@ -717,6 +801,11 @@ fn reject_inline_shape<E: de::Error>(
     Ok(())
 }
 
+/// A consumed topic: `link_id` names the `depends_on` slot it comes from and
+/// `name` the topic on that slot. `refine` pins the length of arrays a
+/// contract or pairing document leaves generic (see [`FormatRefinement`]);
+/// it is rejected when the slot names a `depends_on.nodes` producer, whose
+/// native shape is taken as is.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedTopic {
@@ -724,8 +813,11 @@ pub struct ConsumedTopic {
     pub link_id: String,
     #[serde(deserialize_with = "deserialize_consumed_topic_name")]
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refine: Option<Box<TopicRefinement>>,
 }
 
+/// A consumed service; `refine` follows the [`ConsumedTopic`] rule.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedService {
@@ -733,8 +825,12 @@ pub struct ConsumedService {
     pub link_id: String,
     #[serde(default)]
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refine: Option<Box<ServiceRefinement>>,
 }
 
+/// A consumed action; `refine` follows the [`ConsumedTopic`] rule. The
+/// action block is boxed for the same reason as in [`LinkedAction`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedAction {
@@ -742,6 +838,8 @@ pub struct ConsumedAction {
     pub link_id: String,
     #[serde(default)]
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refine: Option<Box<ActionRefinement>>,
 }
 
 /// The goal side of an exposed action. Both the request (the goal parameters)
@@ -1428,9 +1526,11 @@ impl Interfaces {
             .chain(actions.iter().map(|e| (e.link_id(), e.name())))
     }
 
-    /// The consumed entries of `kind`, projected to `(link_id, name)`
-    /// pairs. Same shape as [`Interfaces::produced`].
-    pub fn consumed(&self, kind: InterfaceKind) -> impl Iterator<Item = (&str, &str)> {
+    /// The consumed entries of `kind`, projected to `(link_id, name,
+    /// refines)` — `refines` says the entry carries a `refine` block, which
+    /// parse-time validation checks against the slot it names. Same shape as
+    /// [`Interfaces::produced`].
+    pub fn consumed(&self, kind: InterfaceKind) -> impl Iterator<Item = (&str, &str, bool)> {
         let topics: &[ConsumedTopic] = match kind {
             InterfaceKind::Topic => self
                 .topics
@@ -1457,16 +1557,16 @@ impl Interfaces {
         };
         topics
             .iter()
-            .map(|c| (c.link_id.as_str(), c.name.as_str()))
+            .map(|c| (c.link_id.as_str(), c.name.as_str(), c.refine.is_some()))
             .chain(
                 services
                     .iter()
-                    .map(|c| (c.link_id.as_str(), c.name.as_str())),
+                    .map(|c| (c.link_id.as_str(), c.name.as_str(), c.refine.is_some())),
             )
             .chain(
                 actions
                     .iter()
-                    .map(|c| (c.link_id.as_str(), c.name.as_str())),
+                    .map(|c| (c.link_id.as_str(), c.name.as_str(), c.refine.is_some())),
             )
     }
 
@@ -1505,13 +1605,13 @@ impl Interfaces {
     }
 
     /// Every document-backed produced entry across the three sections,
-    /// tagged with the [`InterfaceKind`] it is declared under — the single
-    /// traversal for the `manifest.implements` resolution and coverage
-    /// checks, and for the pairing emit-coverage check.
+    /// tagged as the [`LinkedMember`] of the section it is declared under:
+    /// the single traversal for the `manifest.implements` resolution and
+    /// coverage checks, and for the pairing emit-coverage check.
     ///
     /// Both slot kinds are yielded: callers that care about only one
     /// partition the stream by looking each `link_id` up in the manifest.
-    pub fn linked_entries(&self) -> impl Iterator<Item = (InterfaceKind, &LinkedEntry)> {
+    pub fn linked_entries(&self) -> impl Iterator<Item = LinkedMember<'_>> {
         let topics = self
             .topics
             .as_ref()
@@ -1519,7 +1619,7 @@ impl Interfaces {
             .unwrap_or_default()
             .iter()
             .filter_map(|e| e.as_linked())
-            .map(|e| (InterfaceKind::Topic, e));
+            .map(LinkedMember::Topic);
         let services = self
             .services
             .as_ref()
@@ -1527,7 +1627,7 @@ impl Interfaces {
             .unwrap_or_default()
             .iter()
             .filter_map(|e| e.as_linked())
-            .map(|e| (InterfaceKind::Service, e));
+            .map(LinkedMember::Service);
         let actions = self
             .actions
             .as_ref()
@@ -1535,7 +1635,7 @@ impl Interfaces {
             .unwrap_or_default()
             .iter()
             .filter_map(|e| e.as_linked())
-            .map(|e| (InterfaceKind::Action, e));
+            .map(LinkedMember::Action);
         topics.chain(services).chain(actions)
     }
 }
@@ -1610,33 +1710,100 @@ impl Normalize for MessageFormat {
     }
 }
 
+impl Normalize for FieldRefinement {
+    fn normalize(&mut self) {
+        match self {
+            FieldRefinement::Length(_) => {}
+            FieldRefinement::Items(nested) | FieldRefinement::Object(nested) => nested.normalize(),
+        }
+    }
+}
+
+impl Normalize for FormatRefinement {
+    fn normalize(&mut self) {
+        for value in self.0.values_mut() {
+            value.normalize();
+        }
+        self.0.sort_keys();
+    }
+}
+
+impl Normalize for TopicRefinement {
+    fn normalize(&mut self) {
+        self.message_format.normalize();
+    }
+}
+
+impl Normalize for ServiceRefinement {
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.request_message_format);
+        normalize_opt(&mut self.response_message_format);
+    }
+}
+
+impl Normalize for ResultServiceRefinement {
+    fn normalize(&mut self) {
+        self.response_message_format.normalize();
+    }
+}
+
+impl Normalize for ActionRefinement {
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.goal_service);
+        normalize_opt(&mut self.feedback_topic);
+        normalize_opt(&mut self.result_service);
+    }
+}
+
+impl<T: Normalize> Normalize for Box<T> {
+    fn normalize(&mut self) {
+        (**self).normalize();
+    }
+}
+
+impl<R: Normalize> Normalize for LinkedEntry<R> {
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.refine);
+    }
+}
+
 impl Normalize for EmittedTopic {
     fn normalize(&mut self) {
-        if let Self::Native(native) = self {
-            normalize_opt(&mut native.message_format);
+        match self {
+            Self::Linked(linked) => linked.normalize(),
+            Self::Native(native) => normalize_opt(&mut native.message_format),
         }
     }
 }
 
 impl Normalize for ConsumedTopic {
-    fn normalize(&mut self) {}
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.refine);
+    }
 }
 
 impl Normalize for ExposedService {
     fn normalize(&mut self) {
-        if let Self::Native(native) = self {
-            normalize_opt(&mut native.request_message_format);
-            normalize_opt(&mut native.response_message_format);
+        match self {
+            Self::Linked(linked) => linked.normalize(),
+            Self::Native(native) => {
+                normalize_opt(&mut native.request_message_format);
+                normalize_opt(&mut native.response_message_format);
+            }
         }
     }
 }
 
 impl Normalize for ConsumedService {
-    fn normalize(&mut self) {}
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.refine);
+    }
 }
 
 impl Normalize for ConsumedAction {
-    fn normalize(&mut self) {}
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.refine);
+    }
 }
 
 impl Normalize for GoalServiceEndpoint {
@@ -1660,15 +1827,12 @@ impl Normalize for ActionTopicEndpoint {
 
 impl Normalize for ExposedAction {
     fn normalize(&mut self) {
-        if let Self::Native(native) = self {
-            if let Some(gs) = &mut native.goal_service {
-                gs.normalize();
-            }
-            if let Some(ft) = &mut native.feedback_topic {
-                ft.normalize();
-            }
-            if let Some(rs) = &mut native.result_service {
-                rs.normalize();
+        match self {
+            Self::Linked(linked) => linked.normalize(),
+            Self::Native(native) => {
+                normalize_opt(&mut native.goal_service);
+                normalize_opt(&mut native.feedback_topic);
+                normalize_opt(&mut native.result_service);
             }
         }
     }
@@ -3141,10 +3305,12 @@ mod tests {
                 ConsumedTopic {
                     link_id: "node_b".into(),
                     name: "topic".into(),
+                    refine: None,
                 },
                 ConsumedTopic {
                     link_id: "node_a".into(),
                     name: "topic".into(),
+                    refine: None,
                 },
             ]),
         };
@@ -3154,10 +3320,12 @@ mod tests {
                 ConsumedTopic {
                     link_id: "node_a".into(),
                     name: "topic".into(),
+                    refine: None,
                 },
                 ConsumedTopic {
                     link_id: "node_b".into(),
                     name: "topic".into(),
+                    refine: None,
                 },
             ]),
         };
@@ -3176,10 +3344,12 @@ mod tests {
                 ConsumedService {
                     link_id: "node_b".into(),
                     name: "svc".into(),
+                    refine: None,
                 },
                 ConsumedService {
                     link_id: "node_a".into(),
                     name: "svc".into(),
+                    refine: None,
                 },
             ]),
         };
@@ -3189,10 +3359,12 @@ mod tests {
                 ConsumedService {
                     link_id: "node_a".into(),
                     name: "svc".into(),
+                    refine: None,
                 },
                 ConsumedService {
                     link_id: "node_b".into(),
                     name: "svc".into(),
+                    refine: None,
                 },
             ]),
         };
@@ -3210,10 +3382,12 @@ mod tests {
                 ConsumedAction {
                     link_id: "node_b".into(),
                     name: "act".into(),
+                    refine: None,
                 },
                 ConsumedAction {
                     link_id: "node_a".into(),
                     name: "act".into(),
+                    refine: None,
                 },
             ]),
         };
@@ -3223,10 +3397,12 @@ mod tests {
                 ConsumedAction {
                     link_id: "node_a".into(),
                     name: "act".into(),
+                    refine: None,
                 },
                 ConsumedAction {
                     link_id: "node_b".into(),
                     name: "act".into(),
+                    refine: None,
                 },
             ]),
         };

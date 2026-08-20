@@ -44,8 +44,8 @@ pub use common::{
 // -- error --
 pub use error::{
     ConsumedInterfaceOnlyContractBacked, ContractCoverageMismatch, Error as ConfigError,
-    MissingInterface, PairingCoverageMismatch, ParsingError,
-    deserialize_json5_with_structured_errors,
+    MissingInterface, PairingCoverageMismatch, ParsingError, RefinementMismatch,
+    deserialize_json5_with_structured_errors, write_joined,
 };
 
 // -- consts --
@@ -74,17 +74,20 @@ pub mod fingerprint {
 // -- node --
 pub mod node {
     pub use crate::internal::node::{
-        ActionInterfaces, ActionTopicEndpoint, ArrayKind, ArraySchema, Cardinality, ConsumedAction,
-        ConsumedService, ConsumedTopic, ContainerConfig, ContractImplementationEdge,
-        DependencySpec, DependsOn, EmittedTopic, Execution, ExposedAction, ExposedService,
-        GoalServiceEndpoint, ImplementsEntry, InterfaceKind, Interfaces, LinkedEntry, Manifest,
-        MessageFormat, MessageSizeEstimate, MissingDependencyPolicy, NativeEmittedTopic,
-        NativeExposedAction, NativeExposedService, NodeConfig, NodeConfigParser, NodeDependency,
-        ObjectKind, ObjectSchema, PairingObserverDependency, PairingParticipantDependency,
-        PeppygenLanguage, PrimitiveSchema, QoSProfile, ResultServiceEndpoint, SchemaType,
-        ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken,
-        collect_contract_implementation_edges, collect_dependency_specs, estimate_serialized_size,
-        is_blocked_mount_source, load_standalone_node_config, node_implements,
+        ActionInterfaces, ActionRefinement, ActionTopicEndpoint, ArrayKind, ArraySchema,
+        Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
+        ContractImplementationEdge, DependencySpec, DependsOn, EmittedTopic, Execution,
+        ExposedAction, ExposedService, FieldRefinement, FormatRefinement, GoalServiceEndpoint,
+        ImplementsEntry, InterfaceKind, Interfaces, LinkedAction, LinkedEntry, LinkedMember,
+        LinkedService, LinkedTopic, Manifest, MessageFormat, MessageSizeEstimate,
+        MissingDependencyPolicy, NativeEmittedTopic, NativeExposedAction, NativeExposedService,
+        NodeConfig, NodeConfigParser, NodeDependency, ObjectKind, ObjectSchema,
+        PairingObserverDependency, PairingParticipantDependency, PeppygenLanguage, PrimitiveSchema,
+        QoSProfile, RefinementProblem, RefinementProblemKind, Refines, ResultServiceEndpoint,
+        ResultServiceRefinement, SchemaType, ServiceInterfaces, ServiceRefinement, Toolchain,
+        TopicInterfaces, TopicRefinement, TypeToken, collect_contract_implementation_edges,
+        collect_dependency_specs, estimate_serialized_size, is_blocked_mount_source,
+        load_standalone_node_config, node_implements, refined, refined_ref,
         validate_dependency_specs,
     };
 }
