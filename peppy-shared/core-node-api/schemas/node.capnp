@@ -87,6 +87,13 @@ struct NodeAddGoal {
         # <name>:<tag>` — the receiving daemon is the coordinator of its own
         # add.
         resolveRef @10 :NodeAddResolveRefSource;
+        # JSON5-encoded pins of the `mcp_exposure` documents the built-in MCP
+        # server serves, one per exposure. The daemon materializes exactly
+        # these bytes and the contract bytes pinned in `pinsJson5`, derives
+        # the server's manifest from them, and registers the built-in node
+        # ready to start: nothing is fetched for a node, generated or built.
+        # Opaque text here for the same reason `pinned` is.
+        exposures @12 :Text;
     }
     # Optional SHA256 checksum for HTTP sources
     httpSha256 @6 :Text;
@@ -106,8 +113,9 @@ struct NodeAddGoal {
     # JSON5-encoded pins for the rest of a pinned batch: every transitive
     # node dependency of the `pinned` root, and every contract and pairing
     # document any manifest in the batch names. Populated exactly when the
-    # source is `pinned`. The daemon refuses a batch whose closure names an
-    # entry missing from this list rather than resolving it by name.
+    # source is `pinned` or `exposures` (for the latter: the contract pins
+    # the exposures reference). The daemon refuses a batch whose closure
+    # names an entry missing from this list rather than resolving it by name.
     pinsJson5 @11 :List(Text);
 }
 

@@ -42,6 +42,16 @@ pub enum NodeSource {
         name: String,
         tag: String,
     },
+    /// JSON5-encoded pins of the `mcp_exposure` documents the built-in MCP
+    /// server serves, one per exposure; the contract pins they reference
+    /// travel in [`NodeAddGoal::pins_json5`]. The daemon materializes
+    /// exactly these bytes, derives the server's manifest from them, and
+    /// registers the built-in node ready to start: nothing is fetched for a
+    /// node, generated or built. Opaque text here for the same reason
+    /// [`NodeSource::Pinned`] is.
+    Exposures {
+        pins_json5: String,
+    },
 }
 
 impl NodeSource {
@@ -117,6 +127,17 @@ impl NodeSource {
             pin_json5: pin_json5.to_owned(),
         })
     }
+
+    pub fn decode_exposures(pins_json5: &str) -> Result<Self> {
+        if pins_json5.trim().is_empty() {
+            return Err(crate::Error::Decoding(
+                "NodeSource.exposures must not be empty".to_owned(),
+            ));
+        }
+        Ok(Self::Exposures {
+            pins_json5: pins_json5.to_owned(),
+        })
+    }
 }
 
 fn validate_repo_node_name(value: &str, label: &str) -> Result<()> {
@@ -141,7 +162,8 @@ pub struct NodeAddGoal {
     /// JSON5-encoded pins for the rest of a pinned batch: every transitive
     /// node dependency of the [`NodeSource::Pinned`] root, and every
     /// contract and pairing document any manifest in the batch names.
-    /// Populated exactly when the source is `Pinned`. The daemon refuses a
+    /// Populated exactly when the source is `Pinned` or `Exposures` (for the
+    /// latter: the contract pins the exposures reference). The daemon refuses a
     /// batch whose closure names an entry missing from this list rather
     /// than resolving it by name.
     pub pins_json5: Vec<String>,
@@ -250,7 +272,8 @@ impl NodeAddGoal {
             NodeSource::Git { .. }
             | NodeSource::Http { .. }
             | NodeSource::Pinned { .. }
-            | NodeSource::ResolveRef { .. } => None,
+            | NodeSource::ResolveRef { .. }
+            | NodeSource::Exposures { .. } => None,
         }
     }
 
@@ -292,6 +315,9 @@ impl NodeAddGoal {
                     let mut resolve_ref = source.init_resolve_ref();
                     resolve_ref.set_name(name);
                     resolve_ref.set_tag(tag);
+                }
+                NodeSource::Exposures { pins_json5 } => {
+                    source.set_exposures(pins_json5);
                 }
             }
 
@@ -343,6 +369,7 @@ impl NodeAddGoal {
                     resolve_ref.get_tag()?.to_str()?,
                 )?
             }
+            Which::Exposures(pins) => NodeSource::decode_exposures(pins?.to_str()?)?,
         };
 
         let env_vars_reader = goal.get_env_vars()?;
@@ -491,12 +518,36 @@ mod tests {
         assert_eq!(decoded.pins_json5, goal.pins_json5);
     }
 
+    #[test]
+    fn node_add_goal_exposures_source_roundtrips_with_contract_pins() {
+        let exposures = r#"[{kind:"mcp_exposure",name:"camera_and_recording",tag:"v1"}]"#;
+        let goal = NodeAddGoal::from_source(
+            NodeSource::decode_exposures(exposures).expect("non-empty pins"),
+            "hash",
+            42,
+        )
+        .with_pins(vec![
+            r#"{kind:"contract",name:"rgb_camera",tag:"v1"}"#.to_owned(),
+        ]);
+        let decoded = NodeAddGoal::decode(&goal.encode().expect("encode")).expect("decode");
+        assert_eq!(
+            decoded.source,
+            NodeSource::Exposures {
+                pins_json5: exposures.to_owned()
+            }
+        );
+        assert_eq!(decoded.pins_json5, goal.pins_json5);
+        assert_eq!(decoded.fs_path(), None);
+    }
+
     /// An empty pin names nothing; refusing it at decode keeps the daemon
     /// from tripping over it later with a worse message.
     #[test]
     fn decode_pinned_rejects_empty_pin() {
         assert!(NodeSource::decode_pinned("").is_err());
         assert!(NodeSource::decode_pinned("   ").is_err());
+        assert!(NodeSource::decode_exposures("").is_err());
+        assert!(NodeSource::decode_exposures("   ").is_err());
     }
 
     #[test]
