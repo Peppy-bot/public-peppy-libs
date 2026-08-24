@@ -1,4 +1,4 @@
-//! Action-backed MCP tasks: the handler contract a generated action bridge
+//! Action-backed MCP tasks: the handler contract an action bridge
 //! implements and the context the runtime hands it while a goal runs.
 //!
 //! The runtime owns the whole MCP side of a task (creation, confirmation,

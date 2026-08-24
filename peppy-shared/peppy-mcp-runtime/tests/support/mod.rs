@@ -1,11 +1,18 @@
 //! Shared fixture and client helpers for the HTTP integration tests.
 //!
+//! The fixture is a set of two exposures served on one listener: two tags
+//! of one exposure, `camera_and_recording:v1` and `camera_and_recording:v2`,
+//! with identical public names but their own identity, prose, handlers, and
+//! clock. Every suite drives each endpoint through the real rmcp client
+//! over Streamable HTTP; the Peppy side is stubbed, so snapshots are fed
+//! through each server's ingest directly.
+//!
 //! Each integration test binary compiles this module separately and uses a
 //! subset of it, so unused-item warnings are suppressed for the module.
 #![allow(dead_code)]
 
 use peppy_mcp_catalog::ExposureBundle;
-use peppy_mcp_runtime::{ActionContext, ActionExit, Clock, ExposureServer, MCP_HTTP_PATH};
+use peppy_mcp_runtime::{ActionContext, ActionExit, Clock, ExposureServer, ExposureSet};
 use rmcp::model::{ClientCapabilities, ClientInfo, ProtocolVersion, UpdateTaskParams};
 use rmcp::service::ServiceError;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -25,19 +32,56 @@ pub const GUARD: Duration = Duration::from_secs(30);
 
 pub type Client = rmcp::service::RunningService<rmcp::RoleClient, ClientInfo>;
 
-pub fn loopback_bundle() -> ExposureBundle {
-    ExposureBundle::from_json_str(
-        r#"{
+/// What a test expects one endpoint of the fixture set to advertise and
+/// answer, so a suite can run the same assertions against each endpoint.
+#[derive(Debug, Clone)]
+pub struct Expected {
+    pub tag: &'static str,
+    pub title: &'static str,
+    pub instructions: &'static str,
+    /// The structured result of the `front_camera.info` tool.
+    pub info: Value,
+}
+
+/// The two exposures of the fixture set.
+pub fn fixture_exposures() -> [Expected; 2] {
+    [
+        Expected {
+            tag: "v1",
+            title: "OpenArm camera",
+            instructions: "Observe the front camera on this robot.",
+            info: json!({ "width": 640, "height": 480 }),
+        },
+        Expected {
+            tag: "v2",
+            title: "OpenArm rear camera",
+            instructions: "Observe the rear camera on this robot.",
+            info: json!({ "width": 1920, "height": 1080 }),
+        },
+    ]
+}
+
+/// The bundle of one fixture exposure: the same selection under each tag,
+/// with the tag's own identity and prose.
+pub fn fixture_bundle(expected: &Expected) -> ExposureBundle {
+    let json = BUNDLE_TEMPLATE
+        .replace("{tag}", expected.tag)
+        .replace("{title}", expected.title)
+        .replace("{instructions}", expected.instructions);
+    ExposureBundle::from_json_str(&json).expect("fixture bundle parses")
+}
+
+const BUNDLE_TEMPLATE: &str = r#"{
   "bundle_format": 1,
   "schema_mapping_version": 1,
-  "exposure": { "name": "camera_and_recording", "tag": "v1" },
+  "exposure": { "name": "camera_and_recording", "tag": "{tag}" },
   "server": {
-    "title": "OpenArm camera",
-    "instructions": "Observe the front camera on this robot."
+    "title": "{title}",
+    "instructions": "{instructions}"
   },
   "node": {
     "name": "camera_and_recording_mcp",
-    "tag": "v1",
+    "tag": "{tag}",
     "contracts": [
       { "name": "rgb_camera", "tag": "v1", "sha256": "aa", "link_id": "front_camera" },
       { "name": "episode_recording", "tag": "v1", "sha256": "bb", "link_id": "recorder" }
@@ -153,21 +197,28 @@ pub fn loopback_bundle() -> ExposureBundle {
       }
     }
   ]
-}"#,
-    )
-    .expect("loopback bundle parses")
-}
+}"#;
 
+/// One served endpoint of the fixture set, with the in-process handle its
+/// snapshots are fed through and the manual clock its policies run on.
 pub struct Endpoint {
     pub url: String,
+    pub path: String,
+    pub expected: Expected,
     pub server: ExposureServer,
     pub nanos: Arc<AtomicU64>,
+}
+
+/// The fixture set as served: every endpoint plus the listener they share.
+pub struct ServedSet {
+    pub base_url: String,
+    pub endpoints: Vec<Endpoint>,
     pub shutdown: tokio_util::sync::CancellationToken,
     served: tokio::task::JoinHandle<std::io::Result<()>>,
 }
 
-impl Endpoint {
-    /// Cancels the endpoint and settles the serve task. Ending a test this
+impl ServedSet {
+    /// Cancels the listener and settles the serve task. Ending a test this
     /// way is what turns a serve failure into a named failure here, rather
     /// than into whatever timed out downstream of it.
     pub async fn stop(self) {
@@ -176,45 +227,73 @@ impl Endpoint {
             .await
             .expect("the serve task ends once the token is cancelled")
             .expect("the serve task does not panic")
-            .expect("serving the endpoint succeeds");
+            .expect("serving the set succeeds");
+    }
+
+    /// The URL of a path on the shared listener.
+    pub fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.base_url)
     }
 }
 
-/// Serves the full loopback bundle: two tool handlers and the
-/// `recorder.record_episode` task handler on a manual clock.
-pub async fn start_endpoint() -> Endpoint {
+/// A server for one fixture exposure on its own manual clock, with the
+/// camera tool handlers registered and the task handler left to the caller.
+pub fn fixture_server(
+    expected: &Expected,
+) -> (peppy_mcp_runtime::ExposureServerBuilder, Arc<AtomicU64>) {
     let (clock, nanos) = manual_clock();
-    let server = with_camera_tools(ExposureServer::builder(loopback_bundle()).with_clock(clock))
-        .with_task(
-            "recorder.record_episode",
-            |input: Value, context: ActionContext| async move {
-                let episode = input["episode_name"]
-                    .as_str()
-                    .expect("validated string")
-                    .to_string();
-                context.report_feedback(format!("recording `{episode}`"));
-                if episode == "wait_for_cancel" {
-                    context.cancel_requested().await;
-                    return Err(ActionExit::Cancelled);
-                }
-                Ok(json!({ "frames": 120 }))
-            },
-        )
-        .build()
-        .expect("bundle and handlers agree");
-    serve(server, nanos).await
+    let builder = with_camera_tools(
+        ExposureServer::builder(fixture_bundle(expected)).with_clock(clock),
+        expected,
+    );
+    (builder, nanos)
 }
 
-/// Serves the loopback bundle stripped of its tasks, so the endpoint does
-/// not advertise the tasks extension.
-pub async fn start_task_less_endpoint() -> Endpoint {
-    let mut bundle = loopback_bundle();
-    bundle.tasks.clear();
-    let (clock, nanos) = manual_clock();
-    let server = with_camera_tools(ExposureServer::builder(bundle).with_clock(clock))
-        .build()
-        .expect("bundle and handlers agree");
-    serve(server, nanos).await
+/// The `recorder.record_episode` handler: reports the episode as feedback,
+/// parks on cancellation for `wait_for_cancel`, completes otherwise.
+pub async fn record_episode(input: Value, context: ActionContext) -> Result<Value, ActionExit> {
+    let episode = input["episode_name"]
+        .as_str()
+        .expect("validated string")
+        .to_string();
+    context.report_feedback(format!("recording `{episode}`"));
+    if episode == "wait_for_cancel" {
+        context.cancel_requested().await;
+        return Err(ActionExit::Cancelled);
+    }
+    Ok(json!({ "frames": 120 }))
+}
+
+/// Serves the full fixture set: both exposures with their tool handlers and
+/// the `recorder.record_episode` task handler.
+pub async fn start_set() -> ServedSet {
+    let mut servers = Vec::new();
+    for expected in fixture_exposures() {
+        let (builder, nanos) = fixture_server(&expected);
+        let server = builder
+            .with_task("recorder.record_episode", record_episode)
+            .build()
+            .expect("bundle and handlers agree");
+        servers.push((expected, server, nanos));
+    }
+    serve_set(servers).await
+}
+
+/// Serves the fixture set stripped of its tasks, so no endpoint advertises
+/// the tasks extension.
+pub async fn start_task_less_set() -> ServedSet {
+    let mut servers = Vec::new();
+    for expected in fixture_exposures() {
+        let mut bundle = fixture_bundle(&expected);
+        bundle.tasks.clear();
+        let (clock, nanos) = manual_clock();
+        let server =
+            with_camera_tools(ExposureServer::builder(bundle).with_clock(clock), &expected)
+                .build()
+                .expect("bundle and handlers agree");
+        servers.push((expected, server, nanos));
+    }
+    serve_set(servers).await
 }
 
 fn manual_clock() -> (Clock, Arc<AtomicU64>) {
@@ -228,10 +307,13 @@ fn manual_clock() -> (Clock, Arc<AtomicU64>) {
 
 fn with_camera_tools(
     builder: peppy_mcp_runtime::ExposureServerBuilder,
+    expected: &Expected,
 ) -> peppy_mcp_runtime::ExposureServerBuilder {
+    let info = expected.info.clone();
     builder
-        .with_tool("front_camera.info", |_input: Value| async move {
-            Ok(json!({ "width": 640, "height": 480 }))
+        .with_tool("front_camera.info", move |_input: Value| {
+            let info = info.clone();
+            async move { Ok(info) }
         })
         .with_tool("front_camera.set_brightness", |input: Value| async move {
             let value = input["value"].as_i64().expect("validated integer");
@@ -244,20 +326,41 @@ fn with_camera_tools(
         })
 }
 
-async fn serve(server: ExposureServer, nanos: Arc<AtomicU64>) -> Endpoint {
+/// Binds an OS-assigned loopback port and serves the servers as one set.
+pub async fn serve_set(servers: Vec<(Expected, ExposureServer, Arc<AtomicU64>)>) -> ServedSet {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("an OS-assigned loopback port binds");
     let address = listener
         .local_addr()
         .expect("bound listener has an address");
+    let base_url = format!("http://{address}");
+    let set = ExposureSet::new(
+        servers
+            .iter()
+            .map(|(_, server, _)| server.clone())
+            .collect(),
+    )
+    .expect("distinct exposures compose");
     let shutdown = tokio_util::sync::CancellationToken::new();
-    let served = tokio::spawn(server.clone().serve(listener, shutdown.clone()));
+    let served = tokio::spawn(set.serve(listener, shutdown.clone()));
 
-    Endpoint {
-        url: format!("http://{address}{MCP_HTTP_PATH}"),
-        server,
-        nanos,
+    let endpoints = servers
+        .into_iter()
+        .map(|(expected, server, nanos)| {
+            let path = server.endpoint_path();
+            Endpoint {
+                url: format!("{base_url}{path}"),
+                path,
+                expected,
+                server,
+                nanos,
+            }
+        })
+        .collect();
+    ServedSet {
+        base_url,
+        endpoints,
         shutdown,
         served,
     }

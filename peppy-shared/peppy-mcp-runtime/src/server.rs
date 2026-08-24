@@ -1,6 +1,7 @@
 //! The MCP server: a catalog-driven
-//! [`ServerHandler`](rmcp::ServerHandler) serving one exposure bundle over
-//! Streamable HTTP under MCP `2026-07-28`.
+//! [`ServerHandler`](rmcp::ServerHandler) per exposure bundle, and the
+//! [`ExposureSet`] serving several of them side by side over Streamable
+//! HTTP under MCP `2026-07-28`.
 
 use crate::clock::Clock;
 use crate::error::{BuildError, ToolCallError};
@@ -32,13 +33,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 
-/// The path the Streamable HTTP endpoint is mounted under.
-pub const MCP_HTTP_PATH: &str = "/mcp";
-
 /// `ttlMs` for the catalog-shaped results: discovery, `tools/list`, and
 /// `resources/list`. The catalog is fixed for the life of the server (a
-/// changed exposure regenerates the node), so clients may cache it for as
-/// long as they keep the connection.
+/// changed exposure restarts the process serving it), so clients may cache
+/// it for as long as they keep the connection.
 const CATALOG_TTL_MS: u64 = 3_600_000;
 
 /// Grace period the advertised task TTL carries on top of the exposure's
@@ -104,9 +102,9 @@ struct ServerState {
     tasks: HashMap<String, Arc<TaskState>>,
     /// `tools/list` order: the bundle's tools, then its tasks.
     tool_list: Vec<Tool>,
-    /// Task handles are in-memory and node-lifetime by design; every HTTP
-    /// session shares this manager, which is what lets a reconnecting
-    /// client keep polling an existing task id.
+    /// Task handles are in-memory and live as long as the serving process
+    /// by design; every HTTP session shares this manager, which is what
+    /// lets a reconnecting client keep polling an existing task id.
     manager: TaskManager,
     events: broadcast::Sender<ResourceUpdated>,
     clock: Clock,
@@ -123,7 +121,7 @@ pub struct ExposureServerBuilder {
 
 impl ExposureServerBuilder {
     /// Injects the time source for freshness and rate gating. Defaults to
-    /// the wall clock; a generated node passes its node clock so sim time
+    /// the wall clock; the host passes its sim-time-aware clock so sim time
     /// governs policies too.
     pub fn with_clock(mut self, clock: Clock) -> Self {
         self.clock = clock;
@@ -342,7 +340,8 @@ fn task_annotations(entry: &TaskEntry) -> ToolAnnotations {
 }
 
 /// The MCP server for one exposure bundle. Cheap to clone; all clones share
-/// the same snapshots, gates, and subscriptions.
+/// the same snapshots, gates, subscriptions, and task handles. It is served
+/// as one endpoint of an [`ExposureSet`].
 #[derive(Clone)]
 pub struct ExposureServer {
     state: Arc<ServerState>,
@@ -378,28 +377,28 @@ impl ExposureServer {
         })
     }
 
-    /// Serves the exposure on the listener until the token cancels. The
-    /// listener decides the address; bind it to `127.0.0.1` (the design's
-    /// trust boundary is the machine).
-    pub async fn serve(
+    /// The identity of the exposure this server serves.
+    pub fn exposure(&self) -> &BundleIdentity {
+        &self.state.exposure
+    }
+
+    /// The path an [`ExposureSet`] serves this exposure under, from
+    /// [`BundleIdentity::endpoint_path`].
+    pub fn endpoint_path(&self) -> String {
+        self.state.exposure.endpoint_path()
+    }
+
+    /// The Streamable HTTP service for this exposure. Sessions are per
+    /// service, so each endpoint of a set has its own; `shutdown` ends the
+    /// streams it holds open.
+    fn http_service(
         self,
-        listener: tokio::net::TcpListener,
-        shutdown: tokio_util::sync::CancellationToken,
-    ) -> std::io::Result<()> {
-        let manager = self.state.manager.clone();
+        shutdown: &tokio_util::sync::CancellationToken,
+    ) -> StreamableHttpService<Self, LocalSessionManager> {
         let config = StreamableHttpServerConfig::default()
             .with_legacy_session_mode(false)
             .with_cancellation_token(shutdown.child_token());
-        let service: StreamableHttpService<Self, LocalSessionManager> =
-            StreamableHttpService::new(move || Ok(self.clone()), Default::default(), config);
-        let router = axum::Router::new().nest_service(MCP_HTTP_PATH, service);
-        let served = axum::serve(listener, router)
-            .with_graceful_shutdown(shutdown.cancelled_owned())
-            .await;
-        // Task handles are node-lifetime: the endpoint going down aborts
-        // every still-running operation instead of leaking it.
-        manager.shutdown();
-        served
+        StreamableHttpService::new(move || Ok(self.clone()), Default::default(), config)
     }
 
     fn capabilities(&self) -> ServerCapabilities {
@@ -527,6 +526,88 @@ impl ExposureServer {
             Box::pin(run_task_operation(task, input, context))
         });
         Ok(CreateTaskResult::new(seed))
+    }
+}
+
+/// The exposures one process serves side by side on one listener, each at
+/// its own [`ExposureServer::endpoint_path`]. Endpoints share nothing but
+/// the listener:
+/// every exposure keeps its own catalog, snapshots, subscriptions, and task
+/// handles, so a public name, a subscription, or a task on one endpoint is
+/// unknown to the others.
+pub struct ExposureSet {
+    servers: Vec<ExposureServer>,
+}
+
+impl std::fmt::Debug for ExposureSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExposureSet")
+            .field("endpoints", &self.endpoint_paths())
+            .finish()
+    }
+}
+
+impl ExposureSet {
+    /// Composes the set from one server per exposure. At least one is
+    /// required, and two servers for the same exposure identity are refused:
+    /// they would claim one path.
+    pub fn new(servers: Vec<ExposureServer>) -> Result<Self, BuildError> {
+        if servers.is_empty() {
+            return Err(BuildError::NoExposures);
+        }
+        let mut paths = HashSet::new();
+        for server in &servers {
+            if !paths.insert(server.endpoint_path()) {
+                let exposure = server.exposure();
+                return Err(BuildError::DuplicateExposure {
+                    name: exposure.name.clone(),
+                    tag: exposure.tag.clone(),
+                });
+            }
+        }
+        Ok(Self { servers })
+    }
+
+    /// The servers of the set, in the order they were given.
+    pub fn servers(&self) -> &[ExposureServer] {
+        &self.servers
+    }
+
+    /// The endpoint paths the set serves, in server order.
+    pub fn endpoint_paths(&self) -> Vec<String> {
+        self.servers
+            .iter()
+            .map(ExposureServer::endpoint_path)
+            .collect()
+    }
+
+    /// Serves every exposure on the listener until the token cancels. Each
+    /// endpoint is exactly its path: any other path, a bare `/mcp` or a
+    /// longer path under an endpoint included, answers 404. The listener
+    /// decides the address; bind it to `127.0.0.1` (the design's trust
+    /// boundary is the machine).
+    pub async fn serve(
+        self,
+        listener: tokio::net::TcpListener,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> std::io::Result<()> {
+        let mut router = axum::Router::new();
+        let mut managers = Vec::with_capacity(self.servers.len());
+        for server in self.servers {
+            managers.push(server.state.manager.clone());
+            let path = server.endpoint_path();
+            router = router.route_service(&path, server.http_service(&shutdown));
+        }
+        let served = axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await;
+        // Task handles live as long as the process serving them: the
+        // listener going down aborts every still-running operation on every
+        // endpoint instead of leaking it.
+        for manager in managers {
+            manager.shutdown();
+        }
+        served
     }
 }
 
@@ -1294,6 +1375,53 @@ mod tests {
                 message.contains("deadline exceeded") && message.contains("2000 ms")
             }),
             "got {error:?}"
+        );
+    }
+
+    #[test]
+    fn the_endpoint_path_carries_the_exposure_identity() {
+        let server = built_server();
+        assert_eq!(server.endpoint_path(), "/camera_and_recording/v1/mcp");
+        assert_eq!(server.exposure().name, "camera_and_recording");
+    }
+
+    fn built_server_tagged(tag: &str) -> ExposureServer {
+        let mut bundle = test_bundle();
+        bundle.exposure.tag = tag.to_string();
+        ExposureServer::builder(bundle)
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .build()
+            .expect("bundle and handlers agree")
+    }
+
+    #[test]
+    fn a_set_lists_its_endpoints_in_order() {
+        let set = ExposureSet::new(vec![built_server_tagged("v2"), built_server_tagged("v1")])
+            .expect("distinct identities compose");
+        assert_eq!(
+            set.endpoint_paths(),
+            [
+                "/camera_and_recording/v2/mcp",
+                "/camera_and_recording/v1/mcp"
+            ]
+        );
+        assert_eq!(set.servers().len(), 2);
+    }
+
+    #[test]
+    fn a_set_refuses_an_exposure_listed_twice_and_an_empty_list() {
+        let error = ExposureSet::new(vec![built_server_tagged("v1"), built_server_tagged("v1")])
+            .expect_err("one identity cannot claim one path twice");
+        assert_eq!(
+            error,
+            BuildError::DuplicateExposure {
+                name: "camera_and_recording".to_string(),
+                tag: "v1".to_string(),
+            }
+        );
+        assert_eq!(
+            ExposureSet::new(Vec::new()).expect_err("nothing to serve"),
+            BuildError::NoExposures
         );
     }
 

@@ -40,3 +40,6 @@ rmcp = { version = "3.1.2", default-features = false, features = [
 ] }
 tokio = { version = "1", features = ["full", "test-util"] }
 anyhow = "1"
+# Plain HTTP requests for the paths a set must refuse (a bare `/mcp`, `/`,
+# unknown exposures); the version rmcp's client transport already builds.
+reqwest = { version = "0.13", default-features = false }

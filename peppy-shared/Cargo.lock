@@ -2550,8 +2550,13 @@ dependencies = [
 name = "peppy-mcp-catalog"
 version = "0.1.0"
 dependencies = [
+ "indexmap 2.14.0",
+ "jsonschema",
+ "peppy-config-model",
  "serde",
  "serde_json",
+ "serde_json5",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2564,6 +2569,7 @@ dependencies = [
  "image",
  "jsonschema",
  "peppy-mcp-catalog",
+ "reqwest",
  "rmcp",
  "serde",
  "serde_json",

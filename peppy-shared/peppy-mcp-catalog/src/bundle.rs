@@ -42,12 +42,11 @@ pub fn is_canonical_i64_decimal(text: &str) -> bool {
     }
 }
 
-/// The product of validating one exposure document against its pinned
-/// contracts: the public catalog (stable names, prose, policies, derived
-/// JSON Schemas) plus the identity and contract slots of the generated MCP
-/// server node. The bundle is committed next to its exposure document and
-/// regenerated on demand, so a drift check can refuse a catalog that no
-/// longer matches the document it was published from.
+/// The product of validating one exposure document against its contracts:
+/// the public catalog (stable names, prose, policies, derived JSON Schemas)
+/// plus the identity the endpoint advertises and the contract slots its
+/// targets become. A server derives it when it starts, and the catalog
+/// command prints it on demand; it is never an artifact of its own.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExposureBundle {
@@ -62,15 +61,14 @@ pub struct ExposureBundle {
 }
 
 impl ExposureBundle {
-    /// Canonical serialized form: pretty JSON with a trailing newline. These
-    /// are the bytes committed to a hub repository and the bytes the drift
-    /// check compares against.
+    /// Canonical serialized form: pretty JSON with a trailing newline, the
+    /// shape the catalog command prints.
     pub fn to_json_string(&self) -> String {
         let pretty = serde_json::to_string_pretty(self).expect("bundle serializes");
         format!("{pretty}\n")
     }
 
-    /// Parses a published bundle, refusing content whose format or schema
+    /// Parses a serialized bundle, refusing content whose format or schema
     /// mapping version this reader does not implement.
     pub fn from_json_str(content: &str) -> Result<Self, String> {
         #[derive(Deserialize)]
@@ -98,12 +96,22 @@ impl ExposureBundle {
     }
 }
 
-/// Identity of the exposure document the bundle was generated from.
+/// Identity of the exposure document the bundle was derived from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BundleIdentity {
     pub name: String,
     pub tag: String,
+}
+
+impl BundleIdentity {
+    /// The path the exposure is served under on its process's listener:
+    /// `/<name>/<tag>/mcp`. The path carries the whole identity, so two
+    /// tags of one exposure serve side by side and clients can tell them
+    /// apart.
+    pub fn endpoint_path(&self) -> String {
+        format!("/{}/{}/mcp", self.name, self.tag)
+    }
 }
 
 /// Server identity advertised through `server/discover`.
@@ -115,10 +123,9 @@ pub struct BundleServer {
     pub instructions: Option<String>,
 }
 
-/// The generated MCP server node: its identity and the contract slot each
-/// logical target becomes. The manifest generated from this declares one
-/// `depends_on.contracts` entry per pin, with the pin's `link_id` as the
-/// slot the launcher fills.
+/// The server identity the endpoint advertises through `server/discover`,
+/// and the contract slot each logical target becomes: one slot per pin,
+/// with the pin's `link_id` as the slot the launcher fills.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BundleNode {
@@ -127,7 +134,8 @@ pub struct BundleNode {
     pub contracts: Vec<BundleContractPin>,
 }
 
-/// One pinned contract slot of the generated node.
+/// One pinned contract slot: the contract bytes the exposure was validated
+/// against, and the slot a launcher binds a provider to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BundleContractPin {
@@ -261,6 +269,15 @@ mod tests {
         );
         let reparsed = ExposureBundle::from_json_str(&serialized).expect("round trips");
         assert_eq!(reparsed, bundle);
+    }
+
+    #[test]
+    fn the_endpoint_path_carries_the_whole_identity() {
+        let identity = BundleIdentity {
+            name: "arm_control".to_string(),
+            tag: "v2".to_string(),
+        };
+        assert_eq!(identity.endpoint_path(), "/arm_control/v2/mcp");
     }
 
     #[test]

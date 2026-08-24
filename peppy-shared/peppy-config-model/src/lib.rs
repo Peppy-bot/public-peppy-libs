@@ -17,6 +17,7 @@
 
 mod common;
 mod error;
+mod macros;
 mod parsing;
 
 /// Private module that contains all implementation modules.
@@ -61,8 +62,8 @@ pub mod consts {
 // -- fingerprint --
 pub mod fingerprint {
     pub use crate::internal::fingerprint::{
-        fingerprint_for_bytes, generate_node_config_fingerprint, read_codegen_fingerprint,
-        verify_codegen_fingerprint,
+        ManifestFingerprint, ManifestFingerprintError, fingerprint_for_bytes,
+        generate_node_config_fingerprint, read_codegen_fingerprint, verify_codegen_fingerprint,
     };
 
     #[cfg(feature = "fingerprint_test_helpers")]
@@ -77,9 +78,9 @@ pub mod node {
         ActionInterfaces, ActionRefinement, ActionTopicEndpoint, ArrayKind, ArraySchema,
         Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
         ContractImplementationEdge, DependencySpec, DependsOn, EmittedTopic, Execution,
-        ExposedAction, ExposedService, FieldRefinement, FormatRefinement, GoalServiceEndpoint,
-        ImplementsEntry, InterfaceKind, Interfaces, LinkedAction, LinkedEntry, LinkedMember,
-        LinkedService, LinkedTopic, Manifest, MessageFormat, MessageSizeEstimate,
+        ExposedAction, ExposedService, FieldRefinement, FormatRefinement, FormatRuleViolation,
+        GoalServiceEndpoint, ImplementsEntry, InterfaceKind, Interfaces, LinkedAction, LinkedEntry,
+        LinkedMember, LinkedService, LinkedTopic, Manifest, MessageFormat, MessageSizeEstimate,
         MissingDependencyPolicy, NativeEmittedTopic, NativeExposedAction, NativeExposedService,
         NodeConfig, NodeConfigParser, NodeDependency, ObjectKind, ObjectSchema,
         PairingObserverDependency, PairingParticipantDependency, PeppygenLanguage, PrimitiveSchema,

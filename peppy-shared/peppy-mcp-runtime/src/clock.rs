@@ -14,8 +14,8 @@ pub struct Clock {
 }
 
 impl Clock {
-    /// Wraps a nanosecond reading, such as a generated node's
-    /// `peppygen::clock::now_ns`.
+    /// Wraps a nanosecond reading, such as the host's sim-time-aware
+    /// clock.
     pub fn from_nanos_fn(now_nanos: impl Fn() -> u64 + Send + Sync + 'static) -> Self {
         Self {
             now_nanos: Arc::new(now_nanos),

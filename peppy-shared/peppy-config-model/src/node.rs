@@ -1,3 +1,4 @@
+mod format_rules;
 mod message_size;
 mod mount_policy;
 mod parse;
@@ -6,6 +7,7 @@ mod types;
 mod validation;
 
 // Re-export functions
+pub use format_rules::FormatRuleViolation;
 pub use message_size::{MessageSizeEstimate, estimate_serialized_size};
 pub use parse::{NodeConfigParser, load_standalone_node_config};
 pub use refine::{
