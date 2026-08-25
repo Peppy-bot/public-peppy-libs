@@ -9,14 +9,16 @@ edition.workspace = true
 # `config` stays in the peppy workspace (shared by many peppy crates); reach it
 # via a reverse path, the same way peppylib-rs does.
 config = { package = "peppy-config-model", path = "../peppy-config-model" }
-capnp = "0.27"
+# `unaligned`: messages are decoded in place from the transport's buffer,
+# which carries no alignment guarantee.
+capnp = { version = "0.27", features = ["unaligned"] }
 bytes = "1.10"
 chrono = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json5 = "0.2"
 thiserror = "2.0"
 url = "2"
-gix-url = "0.37"
+gix-url = "0.38"
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers" }

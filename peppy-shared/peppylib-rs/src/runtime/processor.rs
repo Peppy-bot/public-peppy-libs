@@ -67,14 +67,26 @@ impl Processor {
     /// [`new_daemon_from_path`](Self::new_daemon_from_path). Validates the
     /// fingerprint matches compiled code.
     pub fn new_daemon(peppy_config: impl AsRef<Path>) -> Result<Self> {
-        let launch_config_path = std::env::var(RUNTIME_CONFIG_VAR_NAME).map_err(|source| {
-            Error::MissingInstanceIdEnvVar {
-                var: RUNTIME_CONFIG_VAR_NAME,
-                source,
-            }
-        })?;
+        Self::new_daemon_from_path(peppy_config, &Self::launch_config_path_from_env()?)
+    }
 
-        Self::new_daemon_from_path(peppy_config, &launch_config_path)
+    /// Create processor for daemon mode from a manifest held in memory.
+    ///
+    /// For a node that ships no generated bindings and builds its manifest
+    /// itself: there is no codegen output whose fingerprint could be checked
+    /// against the manifest, so the manifest is taken as given. The launch
+    /// config comes from the `PEPPY_RUNTIME_CONFIG` env var, as in
+    /// [`new_daemon`](Self::new_daemon).
+    pub fn new_daemon_with_manifest(node_config: NodeConfig) -> Result<Self> {
+        let runtime_config = Self::load_runtime_config(&Self::launch_config_path_from_env()?)?;
+        Self::daemon_from_manifest(runtime_config, node_config)
+    }
+
+    fn launch_config_path_from_env() -> Result<String> {
+        std::env::var(RUNTIME_CONFIG_VAR_NAME).map_err(|source| Error::MissingInstanceIdEnvVar {
+            var: RUNTIME_CONFIG_VAR_NAME,
+            source,
+        })
     }
 
     /// Create processor for daemon mode from an explicit launch-config path.
@@ -102,6 +114,18 @@ impl Processor {
 
         let node_config: NodeConfig =
             serde_json5::from_str(&std::fs::read_to_string(peppy_config.as_ref())?)?;
+        Self::daemon_from_manifest(runtime_config, node_config)
+    }
+
+    /// The daemon-mode core every daemon constructor ends in: validates the
+    /// launch arguments against the manifest's parameter schema and builds
+    /// the slot caches from the launch config's bindings and the manifest's
+    /// `depends_on`. Public so an embedder holding both documents in memory
+    /// builds the same processor a spawned node builds from its files.
+    pub fn daemon_from_manifest(
+        runtime_config: RuntimeConfig,
+        node_config: NodeConfig,
+    ) -> Result<Self> {
         let validated_arguments = validate_node_arguments(
             runtime_config.node_instance.arguments.clone(),
             &node_config.execution.parameters,
@@ -137,7 +161,15 @@ impl Processor {
         config: &StandaloneConfig,
     ) -> Result<Self> {
         let node_config: NodeConfig = load_standalone_node_config(peppy_config.as_ref())?;
+        Self::standalone_from_manifest(node_config, config)
+    }
 
+    /// [`new_standalone`](Self::new_standalone) for a manifest held in
+    /// memory rather than read from `peppy.json5`.
+    pub fn standalone_from_manifest(
+        node_config: NodeConfig,
+        config: &StandaloneConfig,
+    ) -> Result<Self> {
         let arguments: BTreeMap<String, AnyType> = match &config.parameters {
             Some(params) => serde_json::from_value(params.clone()).map_err(|e| {
                 ParameterDeserializationError::single(format!("failed to parse parameters: {}", e))
@@ -1167,6 +1199,120 @@ mod tests {
         assert!(
             matches!(err, Error::CodegenFingerprintRead { .. }),
             "expected CodegenFingerprintRead error, got: {err:?}"
+        );
+    }
+
+    /// A manifest with one parameter and one contract slot, as a node that
+    /// builds its own manifest would hold it: never written to disk.
+    fn in_memory_manifest() -> config::node::NodeConfig {
+        serde_json5::from_str(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: {
+                    name: "built_in_server",
+                    tag: "v1",
+                    depends_on: {
+                        contracts: [{ name: "rgb_camera", tag: "v1", link_id: "camera" }],
+                    },
+                },
+                interfaces: {
+                    services: { consumes: [{ link_id: "camera", name: "video_stream_info" }] },
+                },
+                execution: {
+                    language: "rust",
+                    parameters: { port: { $type: "u16", $default: 8900 } },
+                },
+            }"#,
+        )
+        .expect("the manifest parses")
+    }
+
+    #[test]
+    fn daemon_mode_from_an_in_memory_manifest_needs_no_file_and_no_fingerprint() {
+        let runtime_config = RuntimeConfig::new(
+            "127.0.0.1",
+            7448,
+            config::runtime::NodeInstanceConfig {
+                arguments: BTreeMap::from([("port".to_string(), AnyType::Int(9000))]),
+                slot_bindings: BTreeMap::from([(
+                    "camera".to_string(),
+                    config::runtime::ProducerRef::new("epic-whale-6789", "the_camera").into(),
+                )]),
+                ..config::runtime::NodeInstanceConfig::new(
+                    config::runtime::Name::new("mcp").expect("valid instance id"),
+                )
+            },
+            "built_in_server",
+            "v1",
+            "epic-whale-6789",
+        )
+        .expect("runtime config builds");
+
+        let processor = Processor::daemon_from_manifest(runtime_config, in_memory_manifest())
+            .expect("the manifest and the launch config agree");
+
+        assert_eq!(processor.node_name(), "built_in_server");
+        assert_eq!(processor.bound_instance_id(), "mcp");
+        assert_eq!(processor.bound_core_node(), "epic-whale-6789");
+        let arguments = serde_json::to_value(processor.input_arguments()).unwrap();
+        assert_eq!(arguments["port"], serde_json::json!(9000));
+        assert_eq!(
+            processor.sole_bound_producer("camera"),
+            &config::runtime::ProducerRef::new("epic-whale-6789", "the_camera")
+        );
+    }
+
+    #[test]
+    fn daemon_mode_from_an_in_memory_manifest_still_validates_the_launch_arguments() {
+        let runtime_config = RuntimeConfig::new(
+            "127.0.0.1",
+            7448,
+            config::runtime::NodeInstanceConfig {
+                arguments: BTreeMap::from([(
+                    "port".to_string(),
+                    AnyType::String("not a port".to_string()),
+                )]),
+                slot_bindings: BTreeMap::from([(
+                    "camera".to_string(),
+                    config::runtime::ProducerRef::new("epic-whale-6789", "the_camera").into(),
+                )]),
+                ..config::runtime::NodeInstanceConfig::new(
+                    config::runtime::Name::new("mcp").expect("valid instance id"),
+                )
+            },
+            "built_in_server",
+            "v1",
+            "epic-whale-6789",
+        )
+        .expect("runtime config builds");
+
+        let error = Processor::daemon_from_manifest(runtime_config, in_memory_manifest())
+            .err()
+            .expect("a mistyped argument is refused");
+        assert!(
+            error.to_string().contains("port"),
+            "the refusal names the argument: {error}"
+        );
+    }
+
+    #[test]
+    fn standalone_mode_from_an_in_memory_manifest_reads_it_like_the_file() {
+        let config =
+            StandaloneConfig::new().with_bound_producer("camera", "standalone-core", "the_camera");
+        let processor = Processor::standalone_from_manifest(in_memory_manifest(), &config)
+            .expect("should create processor");
+
+        assert_eq!(processor.node_name(), "built_in_server");
+        assert_eq!(processor.bound_instance_id(), "standalone");
+        let arguments = serde_json::to_value(processor.input_arguments()).unwrap();
+        assert_eq!(
+            arguments["port"],
+            serde_json::json!(8900),
+            "the parameter default fills an omitted argument"
+        );
+        assert_eq!(
+            processor.sole_bound_producer("camera"),
+            &config::runtime::ProducerRef::new("standalone-core", "the_camera")
         );
     }
 

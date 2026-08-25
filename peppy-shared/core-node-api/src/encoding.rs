@@ -173,11 +173,15 @@ pub(crate) fn encode_message_non_empty(
         .expect("capnp serialize::write_message always emits a non-empty framed buffer"))
 }
 
-/// Decode bytes into a Cap'n Proto message reader.
+/// Decode bytes into a Cap'n Proto message reader over `data` itself: the
+/// segments are read in place, not copied out first.
 pub(crate) fn decode_message(
-    data: &[u8],
-) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
-    Ok(serialize::read_message(data, ReaderOptions::default())?)
+    mut data: &[u8],
+) -> Result<capnp::message::Reader<capnp::serialize::BufferSegments<&[u8]>>> {
+    Ok(serialize::read_message_from_flat_slice(
+        &mut data,
+        ReaderOptions::default(),
+    )?)
 }
 
 #[cfg(test)]

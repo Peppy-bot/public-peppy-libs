@@ -80,6 +80,7 @@ async fn stack_list_parses_graph_and_includes_daemon_identity() {
             healthy: true,
             slot_bindings: std::collections::BTreeMap::new(),
             pairing_slots: std::collections::BTreeMap::new(),
+            endpoints: Vec::new(),
         }],
     };
     let sensor = SerializedNode {

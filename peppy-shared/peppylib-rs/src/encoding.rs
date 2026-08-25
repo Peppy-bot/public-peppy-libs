@@ -109,13 +109,13 @@ pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload
     Ok(Payload::from(buffer))
 }
 
-/// Decode bytes into a Cap'n Proto message reader. Returns an owned segments
-/// reader. Crate-internal: used by the [`capnp_empty_message!`] macro and the
-/// action cancel-ack codec.
+/// Decode bytes into a Cap'n Proto message reader over `data` itself: the
+/// segments are read in place, not copied out first. Crate-internal: used
+/// by the [`capnp_empty_message!`] macro and the action cancel-ack codec.
 pub(crate) fn decode_message(
-    data: &[u8],
-) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
-    serialize::read_message(data, ReaderOptions::default())
+    mut data: &[u8],
+) -> Result<capnp::message::Reader<capnp::serialize::BufferSegments<&[u8]>>> {
+    serialize::read_message_from_flat_slice(&mut data, ReaderOptions::default())
         .map_err(|e| crate::error::Error::Deserialization(e.to_string()))
 }
 
