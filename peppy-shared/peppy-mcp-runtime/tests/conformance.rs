@@ -53,7 +53,7 @@ async fn discovery_advertises_versions_capabilities_and_caching() {
         let implementation = discovered
             .server_info()
             .expect("the server identity rides in the result _meta");
-        assert_eq!(implementation.name, "camera_and_recording_mcp");
+        assert_eq!(implementation.name, "camera_and_recording");
         assert_eq!(implementation.version, endpoint.expected.tag);
         assert_eq!(
             implementation.title.as_deref(),

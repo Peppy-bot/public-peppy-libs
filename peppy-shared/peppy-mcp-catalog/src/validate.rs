@@ -9,8 +9,8 @@
 //! repository machinery is the caller's job.
 
 use crate::bundle::{
-    BundleContractPin, BundleIdentity, BundleNode, BundleServer, EXPOSURE_BUNDLE_FORMAT,
-    ExposureBundle, ResourceEntry, ResourcePolicies, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
+    BundleContractPin, BundleIdentity, BundleServer, EXPOSURE_BUNDLE_FORMAT, ExposureBundle,
+    ResourceEntry, ResourcePolicies, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
 };
 use crate::document::{McpExposure, ServiceExposure, TopicExposure};
 use crate::policy::ImageFieldMap;
@@ -297,11 +297,7 @@ pub fn build_exposure_bundle(
                 title: exposure.server.title.clone(),
                 instructions: exposure.server.instructions.clone(),
             },
-            node: BundleNode {
-                name: format!("{}_mcp", exposure.manifest.name.as_str()),
-                tag: exposure.manifest.tag.clone(),
-                contracts: pins,
-            },
+            contracts: pins,
             resources,
             tools,
             tasks,

@@ -81,14 +81,10 @@ const BUNDLE_TEMPLATE: &str = r#"{
     "title": "{title}",
     "instructions": "{instructions}"
   },
-  "node": {
-    "name": "camera_and_recording_mcp",
-    "tag": "{tag}",
-    "contracts": [
-      { "name": "rgb_camera", "tag": "v1", "sha256": "aa", "link_id": "front_camera" },
-      { "name": "episode_recording", "tag": "v1", "sha256": "bb", "link_id": "recorder" }
-    ]
-  },
+  "contracts": [
+    { "name": "rgb_camera", "tag": "v1", "sha256": "aa", "link_id": "front_camera" },
+    { "name": "episode_recording", "tag": "v1", "sha256": "bb", "link_id": "recorder" }
+  ],
   "resources": [
     {
       "name": "front_camera.status",

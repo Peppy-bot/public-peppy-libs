@@ -9,24 +9,20 @@
     "title": "OpenArm camera and recording",
     "instructions": "Observe the front camera and record teleoperation episodes on this robot."
   },
-  "node": {
-    "name": "camera_and_recording_mcp",
-    "tag": "v1",
-    "contracts": [
-      {
-        "name": "rgb_camera",
-        "tag": "v1",
-        "sha256": "c4db5cee269b64fa3da3618748b71b7d92211c1813978b220b3c09720895c607",
-        "link_id": "front_camera"
-      },
-      {
-        "name": "episode_recording",
-        "tag": "v1",
-        "sha256": "86f972761e3ea31ee918071b11bcd68440210f1ecc20a9c445e5a7486cb110be",
-        "link_id": "recorder"
-      }
-    ]
-  },
+  "contracts": [
+    {
+      "name": "rgb_camera",
+      "tag": "v1",
+      "sha256": "c4db5cee269b64fa3da3618748b71b7d92211c1813978b220b3c09720895c607",
+      "link_id": "front_camera"
+    },
+    {
+      "name": "episode_recording",
+      "tag": "v1",
+      "sha256": "86f972761e3ea31ee918071b11bcd68440210f1ecc20a9c445e5a7486cb110be",
+      "link_id": "recorder"
+    }
+  ],
   "resources": [
     {
       "name": "front_camera.latest_frame",

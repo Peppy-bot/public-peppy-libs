@@ -54,7 +54,9 @@ pub struct ExposureBundle {
     pub schema_mapping_version: u32,
     pub exposure: BundleIdentity,
     pub server: BundleServer,
-    pub node: BundleNode,
+    /// The contract slot each logical target becomes: one slot per pin,
+    /// with the pin's `link_id` as the slot the launcher fills.
+    pub contracts: Vec<BundleContractPin>,
     pub resources: Vec<ResourceEntry>,
     pub tools: Vec<ToolEntry>,
     pub tasks: Vec<TaskEntry>,
@@ -96,7 +98,9 @@ impl ExposureBundle {
     }
 }
 
-/// Identity of the exposure document the bundle was derived from.
+/// Identity of the exposure document the bundle was derived from,
+/// advertised through `server/discover` as the implementation name and
+/// version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BundleIdentity {
@@ -114,24 +118,13 @@ impl BundleIdentity {
     }
 }
 
-/// Server identity advertised through `server/discover`.
+/// Title and instructions advertised through `server/discover`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BundleServer {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
-}
-
-/// The server identity the endpoint advertises through `server/discover`,
-/// and the contract slot each logical target becomes: one slot per pin,
-/// with the pin's `link_id` as the slot the launcher fills.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BundleNode {
-    pub name: String,
-    pub tag: String,
-    pub contracts: Vec<BundleContractPin>,
 }
 
 /// One pinned contract slot: the contract bytes the exposure was validated
@@ -228,13 +221,9 @@ mod tests {
   "schema_mapping_version": {schema_mapping_version},
   "exposure": {{ "name": "camera", "tag": "v1" }},
   "server": {{ "title": "Camera" }},
-  "node": {{
-    "name": "camera_mcp",
-    "tag": "v1",
-    "contracts": [
-      {{ "name": "rgb_camera", "tag": "v1", "sha256": "aa", "link_id": "front_camera" }}
-    ]
-  }},
+  "contracts": [
+    {{ "name": "rgb_camera", "tag": "v1", "sha256": "aa", "link_id": "front_camera" }}
+  ],
   "resources": [
     {{
       "name": "front_camera.status",
@@ -259,7 +248,7 @@ mod tests {
     fn parses_a_published_bundle_and_round_trips_it() {
         let bundle = ExposureBundle::from_json_str(&minimal_bundle_json(1, 1)).expect("parses");
         assert_eq!(bundle.exposure.name, "camera");
-        assert_eq!(bundle.node.contracts[0].link_id, "front_camera");
+        assert_eq!(bundle.contracts[0].link_id, "front_camera");
         assert_eq!(bundle.resources[0].policies.update.max_hz.get(), 2.0);
 
         let serialized = bundle.to_json_string();

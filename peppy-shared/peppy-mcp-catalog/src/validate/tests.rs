@@ -187,10 +187,8 @@ fn the_walkthrough_exposure_builds_its_bundle() {
     assert_eq!(bundle.bundle_format, EXPOSURE_BUNDLE_FORMAT);
     assert_eq!(bundle.schema_mapping_version, SCHEMA_MAPPING_VERSION);
     assert_eq!(bundle.exposure.name, "camera_and_recording");
-    assert_eq!(bundle.node.name, "camera_and_recording_mcp");
-    assert_eq!(bundle.node.tag, "v1");
+    assert_eq!(bundle.exposure.tag, "v1");
     let links: Vec<(&str, &str)> = bundle
-        .node
         .contracts
         .iter()
         .map(|pin| (pin.link_id.as_str(), pin.name.as_str()))
@@ -202,7 +200,7 @@ fn the_walkthrough_exposure_builds_its_bundle() {
             ("recorder", "episode_recording")
         ]
     );
-    assert_eq!(bundle.node.contracts[0].sha256, sha_of(CAMERA_CONTRACT));
+    assert_eq!(bundle.contracts[0].sha256, sha_of(CAMERA_CONTRACT));
 
     assert_eq!(bundle.resources.len(), 1);
     let frame = &bundle.resources[0];
@@ -311,7 +309,7 @@ fn a_reference_without_a_pin_is_validated_against_the_resolved_bytes() {
     assert!(!exposure.contains("sha256"), "the reference carries no pin");
     let bundle = build(&exposure, &[&fixture(CAMERA_CONTRACT)]);
     assert_eq!(
-        bundle.node.contracts[0].sha256,
+        bundle.contracts[0].sha256,
         sha_of(CAMERA_CONTRACT),
         "the bundle pins the bytes the exposure was validated against"
     );

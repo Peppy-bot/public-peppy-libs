@@ -94,7 +94,6 @@ struct TaskState {
 struct ServerState {
     server: BundleServer,
     exposure: BundleIdentity,
-    node_name: String,
     resources_by_uri: HashMap<String, Arc<ResourceState>>,
     resource_uri_by_name: HashMap<String, String>,
     resource_list: Vec<Resource>,
@@ -252,7 +251,6 @@ impl ExposureServerBuilder {
             state: Arc::new(ServerState {
                 server: bundle.server,
                 exposure: bundle.exposure,
-                node_name: bundle.node.name,
                 resources_by_uri,
                 resource_uri_by_name,
                 resource_list,
@@ -351,7 +349,7 @@ impl std::fmt::Debug for ExposureServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExposureServer")
             .field("exposure", &self.state.exposure.name)
-            .field("node", &self.state.node_name)
+            .field("tag", &self.state.exposure.tag)
             .finish_non_exhaustive()
     }
 }
@@ -711,7 +709,7 @@ impl ServerHandler for ExposureServer {
 
     fn get_info(&self) -> ServerInfo {
         let implementation = Implementation::new(
-            self.state.node_name.clone(),
+            self.state.exposure.name.clone(),
             self.state.exposure.tag.clone(),
         )
         .with_title(self.state.server.title.clone());
@@ -877,13 +875,9 @@ mod tests {
     "title": "OpenArm camera",
     "instructions": "Observe the front camera."
   },
-  "node": {
-    "name": "camera_and_recording_mcp",
-    "tag": "v1",
-    "contracts": [
-      { "name": "rgb_camera", "tag": "v1", "sha256": "aa", "link_id": "front_camera" }
-    ]
-  },
+  "contracts": [
+    { "name": "rgb_camera", "tag": "v1", "sha256": "aa", "link_id": "front_camera" }
+  ],
   "resources": [
     {
       "name": "front_camera.status",
@@ -1642,7 +1636,7 @@ mod tests {
     fn server_info_advertises_the_exposure_identity_and_2026_07_28() {
         let info = built_server().get_info();
         assert_eq!(info.protocol_version, ProtocolVersion::V_2026_07_28);
-        assert_eq!(info.server_info.name, "camera_and_recording_mcp");
+        assert_eq!(info.server_info.name, "camera_and_recording");
         assert_eq!(info.server_info.version, "v1");
         assert_eq!(
             info.instructions.as_deref(),
