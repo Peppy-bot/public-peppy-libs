@@ -568,11 +568,6 @@ impl ExposureSet {
         Ok(Self { servers })
     }
 
-    /// The servers of the set, in the order they were given.
-    pub fn servers(&self) -> &[ExposureServer] {
-        &self.servers
-    }
-
     /// The endpoint paths the set serves, in server order.
     pub fn endpoint_paths(&self) -> Vec<String> {
         self.servers
@@ -1405,7 +1400,7 @@ mod tests {
                 "/camera_and_recording/v1/mcp"
             ]
         );
-        assert_eq!(set.servers().len(), 2);
+        assert_eq!(set.endpoint_paths().len(), 2);
     }
 
     #[test]

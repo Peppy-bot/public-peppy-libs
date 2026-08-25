@@ -14,16 +14,14 @@
 mod support;
 
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, DetailedTask, ErrorCode,
-    GetTaskParams, ReadResourceRequestParams, ServerNotification, SubscriptionFilter, TaskStatus,
-    object,
+    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ErrorCode,
+    ReadResourceRequestParams, ServerNotification, SubscriptionFilter, TaskStatus, object,
 };
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 use support::{
     Client, FRAME_URI, GUARD, STATUS_URI, confirmation_accept, connect, connect_with_tasks,
-    protocol_error, sample_rgb8_frame, start_set,
+    poll_task_until, protocol_error, sample_rgb8_frame, start_set,
 };
 
 const MS: u64 = 1_000_000;
@@ -261,30 +259,6 @@ async fn a_real_client_walks_the_catalog_snapshots_and_tools() {
     }
 
     set.stop().await;
-}
-
-/// Polls `tasks/get` until the task satisfies `accept`; the wait is bounded
-/// by [`GUARD`] and driven by server responses, not by elapsed host time.
-async fn poll_task_until(
-    client: &Client,
-    task_id: &str,
-    description: &str,
-    accept: impl Fn(&DetailedTask) -> bool,
-) -> DetailedTask {
-    tokio::time::timeout(GUARD, async {
-        loop {
-            let result = client
-                .get_task(GetTaskParams::new(task_id))
-                .await
-                .expect("tasks/get answers");
-            if accept(&result.task) {
-                return result.task;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("task `{task_id}` never reached: {description}"))
 }
 
 async fn start_record_episode(client: &Client, episode_name: &str) -> String {

@@ -66,9 +66,13 @@ fn parse_exposure(exposure_json5: &str) -> McpExposure {
     serde_json5::from_str(exposure_json5).expect("exposure parses")
 }
 
-fn build(exposure_json5: &str, contracts: &[&Fixture]) -> ExposureBundle {
+fn validate(exposure_json5: &str, contracts: &[&Fixture]) -> ValidatedExposure {
     let resolved: Vec<ResolvedContract<'_>> = contracts.iter().map(|f| f.resolved()).collect();
     build_exposure_bundle(&parse_exposure(exposure_json5), &resolved).expect("exposure validates")
+}
+
+fn build(exposure_json5: &str, contracts: &[&Fixture]) -> ExposureBundle {
+    validate(exposure_json5, contracts).bundle
 }
 
 fn violations_of(exposure_json5: &str, contracts: &[&Fixture]) -> Vec<String> {
@@ -105,6 +109,73 @@ const INFO_TOOL: &str = r#"services: [
         deadline_ms: 2000,
     },
 ]"#;
+
+#[test]
+fn every_entry_is_bound_to_the_member_it_was_validated_against() {
+    let validated = validate(
+        WALKTHROUGH_EXPOSURE,
+        &[&fixture(CAMERA_CONTRACT), &fixture(RECORDING_CONTRACT)],
+    );
+    let bundle = &validated.bundle;
+
+    // Entry for entry: the slot is the entry's target, the member the one
+    // the entry names.
+    let bound: Vec<(&str, &str, &str, &str)> = validated
+        .resources()
+        .map(|(entry, bound)| {
+            (
+                entry.target.as_str(),
+                bound.slot.link_id.as_str(),
+                entry.member.as_str(),
+                bound.member.name.as_str(),
+            )
+        })
+        .chain(validated.tools().map(|(entry, bound)| {
+            (
+                entry.target.as_str(),
+                bound.slot.link_id.as_str(),
+                entry.member.as_str(),
+                bound.member.name.as_str(),
+            )
+        }))
+        .chain(validated.tasks().map(|(entry, bound)| {
+            (
+                entry.target.as_str(),
+                bound.slot.link_id.as_str(),
+                entry.member.as_str(),
+                bound.member.name.as_str(),
+            )
+        }))
+        .collect();
+    assert_eq!(
+        bound.len(),
+        bundle.resources.len() + bundle.tools.len() + bundle.tasks.len(),
+        "one bound member per entry"
+    );
+    for (target, link_id, member, bound_name) in &bound {
+        assert_eq!(target, link_id);
+        assert_eq!(member, bound_name);
+    }
+
+    // The bound member is the contract's own declaration, with the wire
+    // format a server lays out, behind the slot with its resolved bytes.
+    let (frame, topic) = validated.resources().next().expect("one resource");
+    assert_eq!(frame.member, "video_stream");
+    assert_eq!(topic.slot.name, "rgb_camera");
+    assert_eq!(topic.slot.tag, "v1");
+    assert_eq!(topic.slot.sha256, sha_of(CAMERA_CONTRACT));
+    assert!(
+        topic
+            .member
+            .message_format
+            .as_ref()
+            .is_some_and(|format| format.0.contains_key("frame")),
+        "the topic's format is the contract's"
+    );
+    let (_, recording) = validated.tasks().next().expect("one task");
+    assert_eq!(recording.slot.name, "episode_recording");
+    assert_eq!(recording.slot.link_id, "recorder");
+}
 
 #[test]
 fn the_walkthrough_exposure_builds_its_bundle() {

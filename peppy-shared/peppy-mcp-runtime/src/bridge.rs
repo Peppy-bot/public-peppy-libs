@@ -34,9 +34,14 @@ pub fn value_bool(value: &Value, name: &str) -> Result<bool, String> {
 }
 
 pub fn value_string(value: &Value, name: &str) -> Result<String, String> {
+    value_str(value, name).map(str::to_string)
+}
+
+/// The string a field holds, borrowed: for a writer that copies it onto the
+/// wire itself and has no use for an owned copy in between.
+pub fn value_str<'a>(value: &'a Value, name: &str) -> Result<&'a str, String> {
     value
         .as_str()
-        .map(str::to_string)
         .ok_or_else(|| format!("`{name}` is not a string"))
 }
 

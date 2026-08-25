@@ -13,7 +13,9 @@
 
 use peppy_mcp_catalog::ExposureBundle;
 use peppy_mcp_runtime::{ActionContext, ActionExit, Clock, ExposureServer, ExposureSet};
-use rmcp::model::{ClientCapabilities, ClientInfo, ProtocolVersion, UpdateTaskParams};
+use rmcp::model::{
+    ClientCapabilities, ClientInfo, DetailedTask, GetTaskParams, ProtocolVersion, UpdateTaskParams,
+};
 use rmcp::service::ServiceError;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -203,10 +205,16 @@ const BUNDLE_TEMPLATE: &str = r#"{
 /// snapshots are fed through and the manual clock its policies run on.
 pub struct Endpoint {
     pub url: String,
-    pub path: String,
     pub expected: Expected,
     pub server: ExposureServer,
     pub nanos: Arc<AtomicU64>,
+}
+
+impl Endpoint {
+    /// The path the endpoint is served at on the shared listener.
+    pub fn path(&self) -> String {
+        self.server.endpoint_path()
+    }
 }
 
 /// The fixture set as served: every endpoint plus the listener they share.
@@ -236,16 +244,15 @@ impl ServedSet {
     }
 }
 
-/// A server for one fixture exposure on its own manual clock, with the
-/// camera tool handlers registered and the task handler left to the caller.
+/// A server for one fixture exposure over `bundle` on its own manual
+/// clock, with the camera tool handlers registered and the task handler
+/// left to the caller.
 pub fn fixture_server(
     expected: &Expected,
+    bundle: ExposureBundle,
 ) -> (peppy_mcp_runtime::ExposureServerBuilder, Arc<AtomicU64>) {
     let (clock, nanos) = manual_clock();
-    let builder = with_camera_tools(
-        ExposureServer::builder(fixture_bundle(expected)).with_clock(clock),
-        expected,
-    );
+    let builder = with_camera_tools(ExposureServer::builder(bundle).with_clock(clock), expected);
     (builder, nanos)
 }
 
@@ -269,7 +276,7 @@ pub async fn record_episode(input: Value, context: ActionContext) -> Result<Valu
 pub async fn start_set() -> ServedSet {
     let mut servers = Vec::new();
     for expected in fixture_exposures() {
-        let (builder, nanos) = fixture_server(&expected);
+        let (builder, nanos) = fixture_server(&expected, fixture_bundle(&expected));
         let server = builder
             .with_task("recorder.record_episode", record_episode)
             .build()
@@ -286,11 +293,8 @@ pub async fn start_task_less_set() -> ServedSet {
     for expected in fixture_exposures() {
         let mut bundle = fixture_bundle(&expected);
         bundle.tasks.clear();
-        let (clock, nanos) = manual_clock();
-        let server =
-            with_camera_tools(ExposureServer::builder(bundle).with_clock(clock), &expected)
-                .build()
-                .expect("bundle and handlers agree");
+        let (builder, nanos) = fixture_server(&expected, bundle);
+        let server = builder.build().expect("bundle and handlers agree");
         servers.push((expected, server, nanos));
     }
     serve_set(servers).await
@@ -347,15 +351,11 @@ pub async fn serve_set(servers: Vec<(Expected, ExposureServer, Arc<AtomicU64>)>)
 
     let endpoints = servers
         .into_iter()
-        .map(|(expected, server, nanos)| {
-            let path = server.endpoint_path();
-            Endpoint {
-                url: format!("{base_url}{path}"),
-                path,
-                expected,
-                server,
-                nanos,
-            }
+        .map(|(expected, server, nanos)| Endpoint {
+            url: format!("{base_url}{}", server.endpoint_path()),
+            expected,
+            server,
+            nanos,
         })
         .collect();
     ServedSet {
@@ -397,6 +397,30 @@ pub fn protocol_error(error: ServiceError) -> rmcp::ErrorData {
         ServiceError::McpError(data) => data,
         other => panic!("expected a protocol error, got {other:?}"),
     }
+}
+
+/// Polls `tasks/get` until the task satisfies `accept`; the wait is bounded
+/// by [`GUARD`] and driven by server responses, not by elapsed host time.
+pub async fn poll_task_until(
+    client: &Client,
+    task_id: &str,
+    description: &str,
+    accept: impl Fn(&DetailedTask) -> bool,
+) -> DetailedTask {
+    tokio::time::timeout(GUARD, async {
+        loop {
+            let result = client
+                .get_task(GetTaskParams::new(task_id))
+                .await
+                .expect("tasks/get answers");
+            if accept(&result.task) {
+                return result.task;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("task `{task_id}` never reached: {description}"))
 }
 
 pub fn confirmation_accept(task_id: &str) -> UpdateTaskParams {

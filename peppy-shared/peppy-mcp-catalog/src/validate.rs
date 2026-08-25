@@ -2,10 +2,11 @@
 //! derives.
 //!
 //! [`build_exposure_bundle`] is a pure function: the exposure document and
-//! the resolved contracts go in, the bundle or the full list of violations
-//! comes out. It runs identically in a hub's index check, when a server
-//! starts, and in tests; resolving contract bytes out of the repository
-//! machinery is the caller's job.
+//! the resolved contracts go in, the validated exposure (the bundle beside
+//! the contract member behind each of its entries) or the full list of
+//! violations comes out. It runs identically in a hub's index check, when a
+//! server starts, and in tests; resolving contract bytes out of the
+//! repository machinery is the caller's job.
 
 use crate::bundle::{
     BundleContractPin, BundleIdentity, BundleNode, BundleServer, EXPOSURE_BUNDLE_FORMAT,
@@ -59,6 +60,56 @@ impl fmt::Display for ExposureValidationError {
 
 impl std::error::Error for ExposureValidationError {}
 
+/// The contract member behind one catalog entry, as validation resolved
+/// it: the slot the entry's target became, and the member it selects as
+/// the contract declares it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundMember<M> {
+    /// The contract slot behind the entry's target; its `link_id` is the
+    /// entry's `target`.
+    pub slot: BundleContractPin,
+    pub member: M,
+}
+
+impl<M: Clone> BoundMember<M> {
+    fn new(slot: &BundleContractPin, member: &M) -> Self {
+        Self {
+            slot: slot.clone(),
+            member: member.clone(),
+        }
+    }
+}
+
+/// A validated exposure: its bundle, and behind each entry the contract
+/// member validation checked it against, so a server binds an entry to
+/// that member rather than looking it up again by name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidatedExposure {
+    pub bundle: ExposureBundle,
+    resources: Vec<BoundMember<NativeEmittedTopic>>,
+    tools: Vec<BoundMember<NativeExposedService>>,
+    tasks: Vec<BoundMember<NativeExposedAction>>,
+}
+
+impl ValidatedExposure {
+    /// Each resource entry with the topic behind it.
+    pub fn resources(
+        &self,
+    ) -> impl Iterator<Item = (&ResourceEntry, &BoundMember<NativeEmittedTopic>)> {
+        self.bundle.resources.iter().zip(&self.resources)
+    }
+
+    /// Each tool entry with the service behind it.
+    pub fn tools(&self) -> impl Iterator<Item = (&ToolEntry, &BoundMember<NativeExposedService>)> {
+        self.bundle.tools.iter().zip(&self.tools)
+    }
+
+    /// Each task entry with the action behind it.
+    pub fn tasks(&self) -> impl Iterator<Item = (&TaskEntry, &BoundMember<NativeExposedAction>)> {
+        self.bundle.tasks.iter().zip(&self.tasks)
+    }
+}
+
 /// Validate `exposure` against `contracts` and derive its bundle.
 ///
 /// Validation succeeds only when every selected member exists in its
@@ -72,7 +123,7 @@ impl std::error::Error for ExposureValidationError {}
 pub fn build_exposure_bundle(
     exposure: &McpExposure,
     contracts: &[ResolvedContract<'_>],
-) -> Result<ExposureBundle, ExposureValidationError> {
+) -> Result<ValidatedExposure, ExposureValidationError> {
     let mut violations = Vec::new();
 
     let mut by_identity: BTreeMap<(&str, &str), &ResolvedContract<'_>> = BTreeMap::new();
@@ -90,8 +141,11 @@ pub fn build_exposure_bundle(
 
     let mut pins = Vec::new();
     let mut resources = Vec::new();
+    let mut resource_members = Vec::new();
     let mut tools = Vec::new();
+    let mut tool_members = Vec::new();
     let mut tasks = Vec::new();
+    let mut task_members = Vec::new();
 
     for (target_name, target) in &exposure.targets {
         let reference = &target.contract;
@@ -115,12 +169,12 @@ pub fn build_exposure_bundle(
             ));
             continue;
         }
-        pins.push(BundleContractPin {
+        let slot = BundleContractPin {
             name: reference.name.as_str().to_string(),
             tag: reference.tag.clone(),
             sha256: contract.sha256.to_string(),
             link_id: target_name.clone(),
-        });
+        };
 
         for topic in &target.topics {
             let Some(declared) = find_topic(contract, &topic.member) else {
@@ -133,13 +187,10 @@ pub fn build_exposure_bundle(
                 ));
                 continue;
             };
-            check_topic(
-                target_name,
-                topic,
-                declared,
-                &mut violations,
-                &mut resources,
-            );
+            if let Some(entry) = check_topic(target_name, topic, declared, &mut violations) {
+                resources.push(entry);
+                resource_members.push(BoundMember::new(&slot, declared));
+            }
         }
 
         for service in &target.services {
@@ -153,7 +204,10 @@ pub fn build_exposure_bundle(
                 ));
                 continue;
             };
-            check_service(target_name, service, declared, &mut violations, &mut tools);
+            if let Some(entry) = check_service(target_name, service, declared, &mut violations) {
+                tools.push(entry);
+                tool_members.push(BoundMember::new(&slot, declared));
+            }
         }
 
         for action in &target.actions {
@@ -222,42 +276,50 @@ pub fn build_exposure_bundle(
                 output_schema,
                 feedback_schema,
             });
+            task_members.push(BoundMember::new(&slot, declared));
         }
+        pins.push(slot);
     }
 
     if !violations.is_empty() {
         return Err(ExposureValidationError { violations });
     }
 
-    Ok(ExposureBundle {
-        bundle_format: EXPOSURE_BUNDLE_FORMAT,
-        schema_mapping_version: SCHEMA_MAPPING_VERSION,
-        exposure: BundleIdentity {
-            name: exposure.manifest.name.as_str().to_string(),
-            tag: exposure.manifest.tag.clone(),
+    Ok(ValidatedExposure {
+        bundle: ExposureBundle {
+            bundle_format: EXPOSURE_BUNDLE_FORMAT,
+            schema_mapping_version: SCHEMA_MAPPING_VERSION,
+            exposure: BundleIdentity {
+                name: exposure.manifest.name.as_str().to_string(),
+                tag: exposure.manifest.tag.clone(),
+            },
+            server: BundleServer {
+                title: exposure.server.title.clone(),
+                instructions: exposure.server.instructions.clone(),
+            },
+            node: BundleNode {
+                name: format!("{}_mcp", exposure.manifest.name.as_str()),
+                tag: exposure.manifest.tag.clone(),
+                contracts: pins,
+            },
+            resources,
+            tools,
+            tasks,
         },
-        server: BundleServer {
-            title: exposure.server.title.clone(),
-            instructions: exposure.server.instructions.clone(),
-        },
-        node: BundleNode {
-            name: format!("{}_mcp", exposure.manifest.name.as_str()),
-            tag: exposure.manifest.tag.clone(),
-            contracts: pins,
-        },
-        resources,
-        tools,
-        tasks,
+        resources: resource_members,
+        tools: tool_members,
+        tasks: task_members,
     })
 }
 
+/// The resource entry of a topic that validates; `None` records why it
+/// does not.
 fn check_topic(
     target_name: &str,
     topic: &TopicExposure,
     declared: &NativeEmittedTopic,
     violations: &mut Vec<String>,
-    resources: &mut Vec<ResourceEntry>,
-) {
+) -> Option<ResourceEntry> {
     let context = format!("target `{target_name}` topic `{}`", topic.member);
     let format = declared.message_format.as_ref();
     let schema = derive_schema(format, &context, violations);
@@ -268,8 +330,8 @@ fn check_topic(
 
     check_topic_size_policy(&context, topic, format, violations);
 
-    let Some(schema) = schema else { return };
-    resources.push(ResourceEntry {
+    let schema = schema?;
+    Some(ResourceEntry {
         name: topic.resource.as_str().to_string(),
         uri: format!("peppy://resource/{}", topic.resource),
         description: topic.description.clone(),
@@ -283,7 +345,7 @@ fn check_topic(
             on_oversize: topic.on_oversize,
         },
         schema,
-    });
+    })
 }
 
 /// A topic with a statically bounded payload is checked at validation; a
@@ -330,13 +392,14 @@ fn check_topic_size_policy(
     }
 }
 
+/// The tool entry of a service that validates; `None` records why it does
+/// not.
 fn check_service(
     target_name: &str,
     service: &ServiceExposure,
     declared: &NativeExposedService,
     violations: &mut Vec<String>,
-    tools: &mut Vec<ToolEntry>,
-) {
+) -> Option<ToolEntry> {
     let context = format!("target `{target_name}` service `{}`", service.member);
     let request_format = declared.request_message_format.as_ref();
     let response_format = declared.response_message_format.as_ref();
@@ -355,7 +418,7 @@ fn check_service(
     }
 
     let (Some(mut input_schema), Some(output_schema)) = (input_schema, output_schema) else {
-        return;
+        return None;
     };
     apply_restrictions(
         &context,
@@ -364,7 +427,7 @@ fn check_service(
         &mut input_schema,
         violations,
     );
-    tools.push(ToolEntry {
+    Some(ToolEntry {
         name: service.tool.as_str().to_string(),
         description: service.description.clone(),
         target: target_name.to_string(),
@@ -374,7 +437,7 @@ fn check_service(
         max_result_bytes: service.max_result_bytes,
         input_schema,
         output_schema,
-    });
+    })
 }
 
 /// Reflect `restrict` bounds into the derived input schema as

@@ -35,7 +35,9 @@ schemars = "1.2"
 jsonschema = "0.49"
 tokio-util = "0.7"
 tempfile = { version = "3.10", optional = true }
-capnp = "0.27"
+# `unaligned`: messages are decoded in place from the transport's buffer,
+# which carries no alignment guarantee.
+capnp = { version = "0.27", features = ["unaligned"] }
 # `testing`-only: the pre-main ZENOH_RUNTIME ctor and the fd-limit FFI in
 # `src/testing.rs`. Never resolved by a production build (see the `testing`
 # feature note below).

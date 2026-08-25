@@ -1,49 +1,33 @@
 //! Macros for the validated string newtypes peppy keys repository items on.
 //! Exported so the daemon-side repository model declares its own identities
-//! (git commits, item names) with the same boilerplate the fingerprint here
-//! uses, rather than a second copy of it.
+//! (git commits, item names, repository paths) with the same boilerplate the
+//! fingerprint here uses, rather than a second copy of it.
 
-/// Declares a fixed-width lowercase-hex string newtype: the struct, its
-/// error enum, `parse`, `as_str`, `Display`, and the `Deserialize` that
-/// routes through `parse` so a hand-edited document cannot state a value the
-/// rest of peppy could never key on.
+/// Declares a validated string newtype: the struct, `parse` through
+/// `$validate`, `as_str`, `Display`, comparison against `&str`, and the
+/// `Deserialize` that routes through `parse` so a hand-edited document
+/// cannot state a value the rest of peppy could never key on.
 ///
-/// Parsing lowercases, so a value written by hand in upper case compares
-/// equal to the one the tool that produced it reports.
+/// `$validate` is a `fn(&str) -> Result<String, $error>`: it decides both
+/// whether the raw text is acceptable and what is kept of it (trimmed,
+/// lowercased, as written).
 #[macro_export]
-macro_rules! hex_identity {
+macro_rules! validated_identity {
     (
         $(#[$meta:meta])*
         $name:ident,
-        $error:ident {
-            $empty:ident = $empty_msg:literal,
-            $malformed:ident = $malformed_msg:literal $(,)?
-        },
-        $width:literal $(,)?
+        $error:ty,
+        $validate:expr $(,)?
     ) => {
         $(#[$meta])*
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize)]
         #[serde(transparent)]
         pub struct $name(String);
 
-        #[derive(Debug, ::thiserror::Error, PartialEq, Eq)]
-        pub enum $error {
-            #[error($empty_msg)]
-            $empty,
-            #[error($malformed_msg)]
-            $malformed(String),
-        }
-
         impl $name {
             pub fn parse(raw: &str) -> ::core::result::Result<Self, $error> {
-                let value = raw.trim();
-                if value.is_empty() {
-                    return Err($error::$empty);
-                }
-                if value.len() != $width || !value.chars().all(|c| c.is_ascii_hexdigit()) {
-                    return Err($error::$malformed(value.to_owned()));
-                }
-                Ok(Self(value.to_ascii_lowercase()))
+                let validate: fn(&str) -> ::core::result::Result<String, $error> = $validate;
+                validate(raw).map(Self)
             }
 
             pub fn as_str(&self) -> &str {
@@ -68,6 +52,48 @@ macro_rules! hex_identity {
         }
 
         $crate::compares_to_str!($name);
+    };
+}
+
+/// Declares a fixed-width lowercase-hex string newtype and its error enum
+/// through [`validated_identity!`].
+///
+/// Parsing lowercases, so a value written by hand in upper case compares
+/// equal to the one the tool that produced it reports.
+#[macro_export]
+macro_rules! hex_identity {
+    (
+        $(#[$meta:meta])*
+        $name:ident,
+        $error:ident {
+            $empty:ident = $empty_msg:literal,
+            $malformed:ident = $malformed_msg:literal $(,)?
+        },
+        $width:literal $(,)?
+    ) => {
+        #[derive(Debug, ::thiserror::Error, PartialEq, Eq)]
+        pub enum $error {
+            #[error($empty_msg)]
+            $empty,
+            #[error($malformed_msg)]
+            $malformed(String),
+        }
+
+        $crate::validated_identity!(
+            $(#[$meta])*
+            $name,
+            $error,
+            |raw: &str| {
+                let value = raw.trim();
+                if value.is_empty() {
+                    return Err($error::$empty);
+                }
+                if value.len() != $width || !value.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err($error::$malformed(value.to_owned()));
+                }
+                Ok(value.to_ascii_lowercase())
+            }
+        );
     };
 }
 

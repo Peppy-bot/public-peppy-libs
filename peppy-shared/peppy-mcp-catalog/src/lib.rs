@@ -14,7 +14,8 @@
 //!
 //! - [`McpExposure`], the parsed document, coherent on its own.
 //! - [`build_exposure_bundle`] with [`ResolvedContract`], the validation and
-//!   derivation, reporting every violation at once.
+//!   derivation, reporting every violation at once; its [`ValidatedExposure`]
+//!   carries the bundle beside the contract member behind each entry.
 //! - [`message_format_to_json_schema`], the canonical mapping from
 //!   `message_format` definitions to the published JSON Schemas.
 //! - [`ExposureBundle`] with [`ExposureBundle::from_json_str`] and
@@ -47,4 +48,7 @@ pub use policy::{
     MaxHz, OversizePolicy, ServiceOperation, UpdatePolicy,
 };
 pub use schema::{MaxSerializedSize, max_serialized_json_bytes, message_format_to_json_schema};
-pub use validate::{ExposureValidationError, ResolvedContract, build_exposure_bundle};
+pub use validate::{
+    BoundMember, ExposureValidationError, ResolvedContract, ValidatedExposure,
+    build_exposure_bundle,
+};

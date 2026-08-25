@@ -16,8 +16,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use support::{
-    FRAME_URI, GUARD, STATUS_URI, connect, connect_with_tasks, fixture_exposures, fixture_server,
-    protocol_error, sample_rgb8_frame, serve_set, start_set,
+    FRAME_URI, GUARD, STATUS_URI, connect, connect_with_tasks, fixture_bundle, fixture_exposures,
+    fixture_server, poll_task_until, protocol_error, sample_rgb8_frame, serve_set, start_set,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -27,8 +27,8 @@ async fn identical_public_names_resolve_to_their_own_endpoint() {
         panic!("the fixture set has two endpoints");
     };
     assert_ne!(first.url, second.url);
-    assert_eq!(first.path, "/camera_and_recording/v1/mcp");
-    assert_eq!(second.path, "/camera_and_recording/v2/mcp");
+    assert_eq!(first.path(), "/camera_and_recording/v1/mcp");
+    assert_eq!(second.path(), "/camera_and_recording/v2/mcp");
 
     let first_client = connect(&first.url).await;
     let second_client = connect(&second.url).await;
@@ -54,7 +54,7 @@ async fn identical_public_names_resolve_to_their_own_endpoint() {
             called.structured_content,
             Some(endpoint.expected.info.clone()),
             "`front_camera.info` on {} is that endpoint's bridge",
-            endpoint.path
+            endpoint.path()
         );
     }
 
@@ -214,21 +214,10 @@ async fn a_task_handle_is_unknown_to_the_other_endpoint() {
         .cancel_task(CancelTaskParams::new(&*task_id))
         .await
         .expect("the creating endpoint cancels it");
-    let settled = tokio::time::timeout(GUARD, async {
-        loop {
-            let task = first_client
-                .get_task(GetTaskParams::new(&*task_id))
-                .await
-                .expect("tasks/get answers")
-                .task;
-            if task.status().is_terminal() {
-                return task;
-            }
-            tokio::task::yield_now().await;
-        }
+    let settled = poll_task_until(&first_client, &task_id, "a terminal status", |task| {
+        task.status().is_terminal()
     })
-    .await
-    .expect("the task settles");
+    .await;
     assert_eq!(settled.status(), TaskStatus::Cancelled);
 
     first_client.cancel().await.expect("client disconnects");
@@ -278,9 +267,10 @@ async fn only_the_exposures_endpoints_are_served() {
             .as_ref()
             .expect("the server identity is advertised");
         assert_eq!(
-            implementation.version, endpoint.expected.tag,
+            implementation.version,
+            endpoint.expected.tag,
             "{} serves its own exposure",
-            endpoint.path
+            endpoint.path()
         );
         client.cancel().await.expect("client disconnects");
     }
@@ -305,7 +295,7 @@ async fn stopping_the_set_aborts_running_tasks_on_every_endpoint() {
     for expected in fixture_exposures() {
         let flag = Arc::new(AtomicBool::new(false));
         aborted.push(Arc::clone(&flag));
-        let (builder, nanos) = fixture_server(&expected);
+        let (builder, nanos) = fixture_server(&expected, fixture_bundle(&expected));
         let server = builder
             .with_task(
                 "recorder.record_episode",
@@ -339,40 +329,18 @@ async fn stopping_the_set_aborts_running_tasks_on_every_endpoint() {
             panic!("expected a task handle, got {response:?}");
         };
         let task_id = created.task.task_id;
-        tokio::time::timeout(GUARD, async {
-            loop {
-                let task = client
-                    .get_task(GetTaskParams::new(&*task_id))
-                    .await
-                    .expect("tasks/get answers")
-                    .task;
-                if task.status() == TaskStatus::InputRequired {
-                    return;
-                }
-                tokio::task::yield_now().await;
-            }
+        poll_task_until(&client, &task_id, "parked for confirmation", |task| {
+            task.status() == TaskStatus::InputRequired
         })
-        .await
-        .expect("the task parks for confirmation");
+        .await;
         client
             .update_task(support::confirmation_accept(&task_id))
             .await
             .expect("the confirmation is delivered");
-        tokio::time::timeout(GUARD, async {
-            loop {
-                let task = client
-                    .get_task(GetTaskParams::new(&*task_id))
-                    .await
-                    .expect("tasks/get answers")
-                    .task;
-                if task.status() == TaskStatus::Working {
-                    return;
-                }
-                tokio::task::yield_now().await;
-            }
+        poll_task_until(&client, &task_id, "running the goal", |task| {
+            task.status() == TaskStatus::Working
         })
-        .await
-        .expect("the goal runs");
+        .await;
         clients.push(client);
     }
     for flag in &aborted {
