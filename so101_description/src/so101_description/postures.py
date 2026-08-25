@@ -12,7 +12,11 @@ from __future__ import annotations
 # on the shoulder, past the URDF's -1.745 floor (the model under-states the
 # real travel), so the target rests just inside it. Folded onto the base,
 # stable, minimal holding torque, safe to release.
-HOME_POSITIONS_RAD = (-0.05, -1.72, 1.68, 1.24, 0.32)
+# Wrist at 1.12, not the measured 1.24: the resting wrist lies ON the base,
+# and holding the measured value as a servo target presses into the contact
+# (sustained load, warm alerts). 1.12 hovers just clear, verified nominal
+# on hardware.
+HOME_POSITIONS_RAD = (-0.05, -1.72, 1.68, 1.12, 0.32)
 
 # The calibration middle: every joint at the center of its calibrated
 # travel (the lerobot-calibrate homing pose), maximally far from every hard
