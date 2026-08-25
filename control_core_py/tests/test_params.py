@@ -1,6 +1,7 @@
 import math
 
 import pytest
+
 from control_core_py.params import require_non_empty, require_positive, require_rate
 
 

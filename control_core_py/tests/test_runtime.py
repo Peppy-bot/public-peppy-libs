@@ -2,6 +2,7 @@
 capture-time wire stamps."""
 
 import asyncio
+import gc
 import time
 
 import pytest
@@ -183,3 +184,32 @@ def test_rate_meter_reports_measured_rate(monkeypatch, capsys):
     # The window resets: another sub-window of ticks stays silent.
     meter.tick()
     assert capsys.readouterr().out == ""
+
+
+async def test_tied_cancellation_and_receive_failure_leaves_no_orphan_exception():
+    class FailingSubscription:
+        async def next(self):
+            raise RuntimeError("wire failed")
+
+    class CancelledToken:
+        def is_cancelled(self):
+            return True
+
+        async def cancelled(self):
+            return None
+
+    captured = []
+    loop = asyncio.get_running_loop()
+    loop.set_exception_handler(lambda _loop, context: captured.append(context))
+    try:
+        # Both futures complete in the same event loop turn: cancellation
+        # wins, and the failed receive must still be awaited so its
+        # exception never surfaces as an orphan at garbage collection.
+        assert await runtime._next_message(FailingSubscription(), CancelledToken()) is None
+        for _ in range(3):
+            await asyncio.sleep(0)
+        gc.collect()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(None)
+    assert captured == []

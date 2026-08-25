@@ -117,6 +117,13 @@ async def _next_message(subscription, token: CancellationToken) -> Any:
         cancelled.cancel()
         if receive is not None:
             receive.cancel()
+        # Await both before returning: a receive that failed in the same
+        # turn cancellation won would otherwise hold an unretrieved
+        # exception and log at task teardown.
+        await asyncio.gather(
+            *(task for task in (cancelled, receive) if task is not None),
+            return_exceptions=True,
+        )
 
 
 async def messages(
