@@ -1,0 +1,102 @@
+name: Python libs Tests
+
+# CI for the repository's Python libraries (control_core_py, so101_description,
+# and any future sibling): every top-level directory holding a pyproject.toml
+# and a tests/ tree is discovered from the filesystem and runs its suite from
+# its own uv environment, resolved --frozen against its committed uv.lock.
+# The suites are self-contained unit tests: no peppy daemon, no container
+# runtime, no hardware.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '*/pyproject.toml'
+      - '*/src/**'
+      - '*/tests/**'
+      - '.github/workflows/python-libs-tests.yml'
+  # No `paths` filter here, mirroring peppy-shared-tests.yml: a required status
+  # check that a `paths` filter suppresses never reports at all and blocks the
+  # pull request with nothing to wait for. The path decision lives in the
+  # `changes` job instead, and a skipped `test` job reports success.
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: python-libs-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      python_libs: ${{ steps.filter.outputs.python_libs }}
+
+    steps:
+      # Reads changed files from the API on a pull request, no checkout needed;
+      # skipped on push, where the trigger's own `paths` filter decided.
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            python_libs:
+              - '*/pyproject.toml'
+              - '*/src/**'
+              - '*/tests/**'
+              - '.github/workflows/python-libs-tests.yml'
+
+  # Skipping reports the check as successful, letting pull requests that leave
+  # the Python libs alone satisfy a required check and merge.
+  test:
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.python_libs == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      # Pinned rather than latest: uv resolves and installs everything the
+      # suites run against, so its version is part of what a green run attests.
+      - name: Install uv
+        run: |
+          set -euo pipefail
+          curl -fsSL --connect-timeout 10 --max-time 120 \
+            https://astral.sh/uv/0.12.1/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Every discovered lib runs even after one fails, so a red run names
+      # every failing lib instead of the first. The trailing diff proves the
+      # frozen installs consumed the committed manifests and lockfiles.
+      - name: Run every Python lib's suite
+        run: |
+          set -euo pipefail
+          failed=()
+          for manifest in */pyproject.toml; do
+            lib=$(dirname "$manifest")
+            [ -d "$lib/tests" ] || continue
+            echo "::group::pytest: $lib"
+            if (cd "$lib" && uv sync --frozen --quiet && uv run --frozen pytest); then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::pytest failed in $lib"
+              failed+=("$lib")
+            fi
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "failing libs: ${failed[*]}" >&2
+            exit 1
+          fi
+
+      - name: Prove CI tested the committed manifests and lockfiles
+        run: git diff --exit-code -- '*pyproject.toml' '*uv.lock'
