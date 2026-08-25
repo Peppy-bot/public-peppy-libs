@@ -36,8 +36,8 @@ pub mod validate;
 
 pub use bundle::{
     BundleContractPin, BundleIdentity, BundleServer, EXPOSURE_BUNDLE_FORMAT, ExposureBundle,
-    I64_DECIMAL_PATTERN, ResourceEntry, ResourcePolicies, SCHEMA_MAPPING_VERSION,
-    TaskEntry, ToolEntry, U64_DECIMAL_PATTERN, is_canonical_i64_decimal, is_canonical_u64_decimal,
+    I64_DECIMAL_PATTERN, ResourceEntry, ResourcePolicies, SCHEMA_MAPPING_VERSION, TaskEntry,
+    ToolEntry, U64_DECIMAL_PATTERN, is_canonical_i64_decimal, is_canonical_u64_decimal,
 };
 pub use document::{
     ActionExposure, ExposureManifest, ExposureTarget, McpExposure, PinnedContractRef, PublicName,
