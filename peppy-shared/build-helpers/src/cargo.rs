@@ -47,11 +47,12 @@ fn git_tag_directives(tag: Option<&str>) -> Vec<String> {
 
 /// Platforms for which peppy ships a Cap'n Proto compiler.
 ///
-/// Build scripts must choose deliberately between [`Self::current_host`] when
-/// they will execute the compiler during the build and [`TryFrom<&str>`] when
-/// they will embed it into the target artifact.
+/// Private on purpose: build scripts never pick a platform themselves. They
+/// call [`host_capnp_for_execution`] to run the compiler and
+/// [`bundled_capnp_for_embedding`] to ship it inside the artifact, and each
+/// of those resolves the platform the only way that is correct for its use.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CapnpPlatform {
+enum CapnpPlatform {
     LinuxX86_64,
     LinuxAarch64,
     MacosAarch64,
@@ -59,7 +60,7 @@ pub enum CapnpPlatform {
 
 impl CapnpPlatform {
     /// Returns the platform on which the build script itself is running.
-    pub fn current_host() -> Option<Self> {
+    fn current_host() -> Option<Self> {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
             return Some(Self::LinuxX86_64);
@@ -126,40 +127,111 @@ impl TryFrom<&str> for CapnpPlatform {
     }
 }
 
-/// Finds the bundled Cap'n Proto binary for `platform` in `tools_dir`.
-pub fn find_bundled_capnp(tools_dir: &Path, platform: CapnpPlatform) -> Option<PathBuf> {
-    let binary_path = tools_dir.join(platform.binary_name());
-    if binary_path.exists() {
-        Some(binary_path)
-    } else {
-        None
-    }
-}
-
-/// Locate the bundled capnp binary that ships next to this crate, in
-/// `peppy-shared/peppy-config-model/tools/`, for an explicit platform.
+/// The tools dir that ships next to this crate, in
+/// `peppy-shared/peppy-config-model/tools/`.
 ///
-/// The lookup is resolved relative to *this crate's own* source directory,
+/// The path is resolved relative to *this crate's own* source directory,
 /// baked in at compile time via `CARGO_MANIFEST_DIR`. That makes it the single
 /// source of truth for every consumer, regardless of how `build-helpers` is
 /// pulled in:
 ///   - As a path dependency inside the `peppy-shared` workspace, the tools
 ///     dir is the real sibling on disk.
 ///   - As a cargo **git** dependency (for example from the `peppy` workspace),
-///     cargo checks out the whole `public-peppy-libs` repo, so the sibling tools
-///     dir rides along in that checkout — no superproject sibling or duplicated
-///     copy required.
-///
-/// This deliberately reads `build-helpers`'s own manifest dir, not the calling
-/// build script's, so the binary is found in the one place it lives rather than
-/// via fragile `../../../` paths from each consumer. Returns `Some(path)` if a
-/// binary matching `platform` exists.
-pub fn bundled_capnp_path(platform: CapnpPlatform) -> Option<PathBuf> {
-    let tools_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+///     cargo checks out the whole `public-peppy-libs` repo, so the sibling
+///     tools dir rides along in that checkout with no superproject sibling or
+///     duplicated copy required.
+fn bundled_tools_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("peppy-config-model")
-        .join("tools");
-    find_bundled_capnp(&tools_dir, platform)
+        .join("tools")
+}
+
+/// The calling build script's own `../peppy-config-model/tools` sibling,
+/// resolved from the `CARGO_MANIFEST_DIR` environment variable cargo sets at
+/// build-script run time.
+///
+/// Deployed flat-cache layouts copy each crate next to `peppy-config-model`
+/// without a reachable `build-helpers` checkout, so [`bundled_tools_dir`]
+/// points at nothing there and this sibling is where the binaries live. The
+/// manifest dir is canonicalized because such layouts reach crates through
+/// symlinks.
+fn caller_sibling_tools_dir() -> Option<PathBuf> {
+    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR")?);
+    let manifest_dir = manifest_dir.canonicalize().unwrap_or(manifest_dir);
+    Some(manifest_dir.parent()?.join("peppy-config-model").join("tools"))
+}
+
+/// Finds the capnp binary for `platform` in the first of `tools_dirs` that
+/// holds it.
+fn find_capnp_in(tools_dirs: &[PathBuf], platform: CapnpPlatform) -> Option<PathBuf> {
+    tools_dirs
+        .iter()
+        .map(|tools_dir| tools_dir.join(platform.binary_name()))
+        .find(|binary_path| binary_path.exists())
+}
+
+/// Path to the bundled Cap'n Proto compiler that runs on the machine
+/// executing the current build script.
+///
+/// Schema compilation always goes through this function: the generated Rust
+/// source is identical for every cargo target, so the compiler is picked by
+/// build host, never by target triple. On a cross-compile the target's
+/// binary cannot execute on the build machine; [`bundled_capnp_for_embedding`]
+/// serves the one consumer that ships the target's binary inside the
+/// artifact instead of running it.
+///
+/// The binary is searched for in [`bundled_tools_dir`] and then in
+/// [`caller_sibling_tools_dir`]. Emits a `cargo:rerun-if-changed` directive
+/// for the found binary so a compiler update triggers fresh code generation.
+/// Panics when the host platform has no bundled compiler or no search dir
+/// holds it, because a build script cannot recover from either.
+pub fn host_capnp_for_execution() -> PathBuf {
+    let platform = CapnpPlatform::current_host().unwrap_or_else(|| {
+        panic!(
+            "no bundled capnp compiler runs on build host {}/{}; supported hosts: \
+             linux/x86_64, linux/aarch64, macos/aarch64",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    });
+    let mut tools_dirs = vec![bundled_tools_dir()];
+    tools_dirs.extend(caller_sibling_tools_dir());
+    let binary_path = find_capnp_in(&tools_dirs, platform).unwrap_or_else(|| {
+        panic!(
+            "bundled capnp binary {} not found in any of: {}",
+            platform.binary_name(),
+            tools_dirs
+                .iter()
+                .map(|dir| dir.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    });
+    println!("cargo:rerun-if-changed={}", binary_path.display());
+    binary_path
+}
+
+/// Path to the bundled Cap'n Proto compiler built for `target`, for embedding
+/// into the compiled artifact.
+///
+/// The returned binary is payload, not a tool: on a cross-compile it does not
+/// run on the build machine, so it must never be executed by a build script.
+/// Build scripts that run the compiler use [`host_capnp_for_execution`].
+/// Returns [`UnsupportedCapnpTarget`] when `target` has no bundled compiler,
+/// and panics when the target is supported but the binary file is absent from
+/// [`bundled_tools_dir`], because that means the checkout itself is broken.
+pub fn bundled_capnp_for_embedding(target: &str) -> Result<PathBuf, UnsupportedCapnpTarget> {
+    let platform = CapnpPlatform::try_from(target)?;
+    let binary_path = bundled_tools_dir().join(platform.binary_name());
+    if !binary_path.exists() {
+        panic!(
+            "bundled capnp binary missing at {}; add it to \
+             peppy-shared/peppy-config-model/tools/",
+            binary_path.display()
+        );
+    }
+    Ok(binary_path)
 }
 
 /// Locate the `peppy-shared` directory that this crate lives inside.
@@ -323,33 +395,93 @@ mod tests {
     }
 
     #[test]
-    fn find_bundled_capnp_returns_none_for_empty_dir() {
+    fn find_capnp_in_returns_none_when_no_dir_holds_the_binary() {
         let dir = tempfile::tempdir().expect("temp dir");
         assert_eq!(
-            find_bundled_capnp(dir.path(), CapnpPlatform::LinuxX86_64),
+            find_capnp_in(&[dir.path().to_path_buf()], CapnpPlatform::LinuxX86_64),
             None
         );
     }
 
     #[test]
-    fn find_bundled_capnp_finds_requested_platform() {
+    fn find_capnp_in_finds_requested_platform() {
         let dir = tempfile::tempdir().expect("temp dir");
         let expected = dir.path().join("capnp_linux_aarch64");
         std::fs::write(&expected, b"").expect("create fake capnp");
         assert_eq!(
-            find_bundled_capnp(dir.path(), CapnpPlatform::LinuxAarch64),
+            find_capnp_in(&[dir.path().to_path_buf()], CapnpPlatform::LinuxAarch64),
             Some(expected)
         );
     }
 
     #[test]
-    fn find_bundled_capnp_ignores_wrongly_named_binary() {
+    fn find_capnp_in_ignores_wrongly_named_binary() {
         let dir = tempfile::tempdir().expect("temp dir");
         std::fs::write(dir.path().join("capnp_wrong_name"), b"").expect("create file");
         assert_eq!(
-            find_bundled_capnp(dir.path(), CapnpPlatform::MacosAarch64),
+            find_capnp_in(&[dir.path().to_path_buf()], CapnpPlatform::MacosAarch64),
             None
         );
+    }
+
+    #[test]
+    fn find_capnp_in_prefers_the_first_dir_that_holds_the_binary() {
+        let first = tempfile::tempdir().expect("temp dir");
+        let second = tempfile::tempdir().expect("temp dir");
+        let expected = first.path().join("capnp_macos_aarch64");
+        std::fs::write(&expected, b"").expect("create fake capnp");
+        std::fs::write(second.path().join("capnp_macos_aarch64"), b"").expect("create fake capnp");
+        assert_eq!(
+            find_capnp_in(
+                &[first.path().to_path_buf(), second.path().to_path_buf()],
+                CapnpPlatform::MacosAarch64
+            ),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn find_capnp_in_falls_through_to_a_later_dir() {
+        let empty = tempfile::tempdir().expect("temp dir");
+        let holding = tempfile::tempdir().expect("temp dir");
+        let expected = holding.path().join("capnp_linux_x86_64");
+        std::fs::write(&expected, b"").expect("create fake capnp");
+        assert_eq!(
+            find_capnp_in(
+                &[empty.path().to_path_buf(), holding.path().to_path_buf()],
+                CapnpPlatform::LinuxX86_64
+            ),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn host_capnp_for_execution_returns_the_host_platform_binary() {
+        let host_platform = CapnpPlatform::current_host().expect("supported build host");
+        let path = host_capnp_for_execution();
+        assert!(path.exists(), "{} should exist", path.display());
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(host_platform.binary_name())
+        );
+    }
+
+    #[test]
+    fn bundled_capnp_for_embedding_resolves_every_supported_target() {
+        for target in [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "aarch64-apple-darwin",
+        ] {
+            let path = bundled_capnp_for_embedding(target).expect(target);
+            assert!(path.exists(), "{} should exist", path.display());
+        }
+    }
+
+    #[test]
+    fn bundled_capnp_for_embedding_rejects_unsupported_target() {
+        let error = bundled_capnp_for_embedding("x86_64-pc-windows-msvc").expect_err("windows");
+        assert_eq!(error.target(), "x86_64-pc-windows-msvc");
     }
 
     #[test]
@@ -378,10 +510,10 @@ mod tests {
     }
 
     #[test]
-    fn bundled_capnp_path_resolves_every_supported_platform() {
+    fn bundled_tools_dir_holds_every_supported_platform_binary() {
         for platform in SUPPORTED_CAPNP_PLATFORMS {
             assert!(
-                bundled_capnp_path(platform).is_some(),
+                bundled_tools_dir().join(platform.binary_name()).exists(),
                 "expected a bundled capnp binary for {platform:?}"
             );
         }
@@ -392,7 +524,7 @@ mod tests {
         const EXPECTED_VERSION: &[u8] = b"Cap'n Proto version 1.5.0";
 
         for platform in SUPPORTED_CAPNP_PLATFORMS {
-            let path = bundled_capnp_path(platform).expect("bundled capnp path");
+            let path = bundled_tools_dir().join(platform.binary_name());
             let binary = std::fs::read(&path).expect("read bundled capnp binary");
             assert!(
                 binary

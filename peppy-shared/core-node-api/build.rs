@@ -14,36 +14,7 @@ fn main() {
         .canonicalize()
         .expect("Failed to canonicalize CARGO_MANIFEST_DIR");
 
-    // Single source of truth: the capnp binary bundled with `build-helpers`
-    // (`peppy-shared/peppy-config-model/tools`). Resolving it through
-    // build-helpers means every consumer shares one copy and works whether this
-    // crate is built in-tree or from a cargo git checkout. The in-place sibling
-    // (`../peppy-config-model/tools`) stays as a fallback for deployed flat-cache
-    // layouts where build-helpers' own copy may not be reachable.
-    let capnp_platform = build_helpers::CapnpPlatform::current_host().unwrap_or_else(|| {
-        panic!(
-            "No bundled capnp binary for build host {}/{}",
-            env::consts::OS,
-            env::consts::ARCH
-        )
-    });
-    let capnp_path = build_helpers::bundled_capnp_path(capnp_platform)
-        .or_else(|| {
-            let sibling_tools = manifest_dir
-                .parent()
-                .unwrap()
-                .join("peppy-config-model")
-                .join("tools");
-            build_helpers::find_bundled_capnp(&sibling_tools, capnp_platform)
-        })
-        .expect(
-            "Could not find capnp binary. Please install Cap'n Proto: https://capnproto.org/install.html",
-        );
-
-    // Regenerate when the bundled capnp binary changes, not just the schemas, so a
-    // capnp-binary update (new compiler version, different platform binary)
-    // triggers fresh code generation.
-    println!("cargo:rerun-if-changed={}", capnp_path.display());
+    let capnp_path = build_helpers::host_capnp_for_execution();
 
     let schemas_dir = manifest_dir.join("schemas");
     for entry in std::fs::read_dir(&schemas_dir).expect("Failed to read schemas directory") {
