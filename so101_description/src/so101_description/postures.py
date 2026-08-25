@@ -7,11 +7,12 @@ URDF's joint limits at startup.
 
 from __future__ import annotations
 
-# The lerobot calibration midpoint: every joint at the center of its
-# calibrated travel, the pose lerobot-calibrate is anchored on.
-HOME_POSITIONS_RAD = (0.0, 0.0, 0.0, 0.0, 0.0)
+# The collapsed park pose the arm ships in and rests in, measured on
+# hardware: folded onto its base, stable, minimal holding torque, safe to
+# release. Where move_to_home parks the arm before power-off.
+HOME_POSITIONS_RAD = (-0.05, -1.8, 1.68, 1.24, 0.32)
 
-# Tucked and raised, FK-verified on SO-ARM100's so101_new_calib.urdf: the
-# grasp frame pulls in to x=0.27 m and rises to z=0.28 m (the home pose sits
-# extended at x=0.39 m, z=0.23 m), well inside every joint limit.
-READY_POSITIONS_RAD = (0.0, -1.0, 1.0, -0.5, 0.0)
+# The calibration middle: every joint at the center of its calibrated
+# travel (the lerobot-calibrate homing pose), maximally far from every hard
+# stop. Where work starts.
+READY_POSITIONS_RAD = (0.0, 0.0, 0.0, 0.0, 0.0)
