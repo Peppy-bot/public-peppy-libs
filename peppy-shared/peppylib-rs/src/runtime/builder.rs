@@ -16,6 +16,7 @@ use crate::services::peer_update::listen_for_peer_update;
 use crate::services::ready::listen_for_node_ready;
 use crate::services::shutdown::listen_for_shutdown;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, NODE_CONFIG_FILE};
+use config::node::NodeConfig;
 
 /// Resolved execution mode for the node runtime
 #[derive(Debug, Clone)]
@@ -263,8 +264,20 @@ impl StandaloneConfig {
 /// - Otherwise, runs in standalone mode with the provided config (or defaults)
 pub struct NodeBuilder<Params> {
     standalone_config: Option<StandaloneConfig>,
-    peppy_config_path: PathBuf,
+    manifest: ManifestSource,
     _params: std::marker::PhantomData<Params>,
+}
+
+/// Where the builder takes the node's manifest from.
+#[derive(Debug, Clone)]
+enum ManifestSource {
+    /// A `peppy.json5` on disk, next to the generated bindings whose
+    /// codegen fingerprint daemon mode checks it against.
+    File(PathBuf),
+    /// A manifest the node built itself. Such a node ships no generated
+    /// bindings, so daemon mode has no fingerprint to check and takes the
+    /// manifest as given.
+    Value(Box<NodeConfig>),
 }
 
 impl<Params> NodeBuilder<Params>
@@ -275,7 +288,7 @@ where
     pub fn new() -> Self {
         Self {
             standalone_config: None,
-            peppy_config_path: PathBuf::from(NODE_CONFIG_FILE),
+            manifest: ManifestSource::File(PathBuf::from(NODE_CONFIG_FILE)),
             _params: std::marker::PhantomData,
         }
     }
@@ -292,7 +305,18 @@ where
 
     /// Use a custom peppy.json5 path
     pub fn with_config_path(mut self, path: impl Into<PathBuf>) -> Self {
-        self.peppy_config_path = path.into();
+        self.manifest = ManifestSource::File(path.into());
+        self
+    }
+
+    /// Use a manifest held in memory instead of a `peppy.json5` on disk.
+    ///
+    /// For a node that ships no generated bindings and builds its manifest
+    /// itself. In daemon mode there is no codegen output whose fingerprint
+    /// could be checked against the manifest, so it is taken as given;
+    /// standalone mode reads it exactly as it would read the file.
+    pub fn with_manifest(mut self, node_config: NodeConfig) -> Self {
+        self.manifest = ManifestSource::Value(Box::new(node_config));
         self
     }
 
@@ -335,10 +359,16 @@ where
     /// [`init_standalone`](Self::init_standalone), so the harness path can
     /// never diverge from production's context construction.
     fn init_with_mode(self, resolved_mode: ExecutionMode) -> Result<NodeContext<Params>> {
-        let processor = match &resolved_mode {
-            ExecutionMode::Daemon => Processor::new_daemon(&self.peppy_config_path)?,
-            ExecutionMode::Standalone(config) => {
-                Processor::new_standalone(&self.peppy_config_path, config)?
+        let processor = match (&resolved_mode, self.manifest) {
+            (ExecutionMode::Daemon, ManifestSource::File(path)) => Processor::new_daemon(&path)?,
+            (ExecutionMode::Daemon, ManifestSource::Value(node_config)) => {
+                Processor::new_daemon_with_manifest(*node_config)?
+            }
+            (ExecutionMode::Standalone(config), ManifestSource::File(path)) => {
+                Processor::new_standalone(&path, config)?
+            }
+            (ExecutionMode::Standalone(config), ManifestSource::Value(node_config)) => {
+                Processor::standalone_from_manifest(*node_config, config)?
             }
         };
 

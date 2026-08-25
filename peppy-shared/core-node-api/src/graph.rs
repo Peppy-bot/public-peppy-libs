@@ -163,6 +163,13 @@ pub struct SerializedInstance {
     /// decode for payloads that predate the field.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pairing_slots: BTreeMap<String, SerializedPairingSlot>,
+    /// The MCP endpoint URLs this instance serves, one per exposure, when
+    /// the instance is the built-in MCP server; empty for every other node.
+    /// What `peppy stack list` prints so an operator finds the URLs without
+    /// reading the launcher. Defaulted on decode for payloads that predate
+    /// the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoints: Vec<String>,
 }
 
 /// One pairing slot of a [`SerializedInstance`]: the declaring manifest's
@@ -323,6 +330,7 @@ mod tests {
                     healthy: true,
                     slot_bindings: BTreeMap::new(),
                     pairing_slots: BTreeMap::new(),
+                    endpoints: Vec::new(),
                 })
                 .collect(),
         }
@@ -475,11 +483,37 @@ mod tests {
             healthy: true,
             slot_bindings: bindings,
             pairing_slots: BTreeMap::new(),
+            endpoints: Vec::new(),
         };
 
         let json = serde_json::to_string(&instance).expect("serialize");
         let decoded: SerializedInstance = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, instance);
+    }
+
+    #[test]
+    fn instance_endpoints_round_trip_and_stay_off_the_wire_when_empty() {
+        let served = SerializedInstance {
+            instance_id: "mcp".to_string(),
+            state: InstanceState::Running,
+            healthy: true,
+            slot_bindings: BTreeMap::new(),
+            pairing_slots: BTreeMap::new(),
+            endpoints: vec!["http://127.0.0.1:8900/camera_and_recording/v1/mcp".to_string()],
+        };
+        let json = serde_json::to_string(&served).expect("serialize");
+        let decoded: SerializedInstance = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, served);
+
+        let plain = SerializedInstance {
+            endpoints: Vec::new(),
+            ..served
+        };
+        let json = serde_json::to_string(&plain).expect("serialize");
+        assert!(
+            !json.contains("endpoints"),
+            "a node that serves no endpoint carries no field: {json}"
+        );
     }
 
     #[test]
@@ -492,6 +526,7 @@ mod tests {
             healthy: true,
             slot_bindings: BTreeMap::new(),
             pairing_slots: BTreeMap::new(),
+            endpoints: Vec::new(),
         };
         let json = serde_json::to_string(&instance).expect("serialize");
         assert!(
@@ -536,6 +571,7 @@ mod tests {
             healthy: true,
             slot_bindings: BTreeMap::new(),
             pairing_slots,
+            endpoints: Vec::new(),
         };
 
         let json = serde_json::to_string(&instance).expect("serialize");

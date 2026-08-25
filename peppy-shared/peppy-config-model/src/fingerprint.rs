@@ -53,6 +53,29 @@ pub fn fingerprint_for_bytes(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
+crate::hex_identity!(
+    /// The SHA-256 of the bytes of the file that declares one item.
+    ///
+    /// What a machine compares to decide whether it already holds the same
+    /// item another machine is talking about. Provenance answers where
+    /// something came from; this answers whether it is the same thing, which
+    /// is the question that authorises reuse.
+    ManifestFingerprint,
+    ManifestFingerprintError {
+        Empty = "fingerprint is empty",
+        NotASha256 = "fingerprint is not 64 hexadecimal characters: {0}",
+    },
+    64
+);
+
+impl ManifestFingerprint {
+    /// The fingerprint of `bytes`, which is how every fingerprint peppy
+    /// records is produced.
+    pub fn of_bytes(bytes: &[u8]) -> Self {
+        Self(fingerprint_for_bytes(bytes))
+    }
+}
+
 /// Reads the codegen fingerprint from the generated output directory.
 ///
 /// The fingerprint file is located at `{peppy_config_dir}/{output_path}/{fingerprint_file}`.
@@ -258,5 +281,38 @@ mod tests {
             .expect("failed to write lib.rs");
 
         crate_dir
+    }
+    #[test]
+    fn a_manifest_fingerprint_is_the_lowercase_sha256_of_the_bytes() {
+        let fingerprint = ManifestFingerprint::of_bytes(b"contents");
+        assert_eq!(fingerprint.as_str(), fingerprint_for_bytes(b"contents"));
+        assert_eq!(fingerprint.as_str().len(), 64);
+
+        let upper = fingerprint.as_str().to_ascii_uppercase();
+        let parsed = ManifestFingerprint::parse(&format!("  {upper} ")).expect("parses");
+        assert_eq!(parsed, fingerprint, "parsing trims and lowercases");
+        assert!(parsed == fingerprint.as_str());
+        assert_eq!(parsed.to_string(), fingerprint.as_str());
+    }
+
+    #[test]
+    fn a_manifest_fingerprint_must_be_64_hex_characters() {
+        assert_eq!(
+            ManifestFingerprint::parse("  "),
+            Err(ManifestFingerprintError::Empty)
+        );
+        assert_eq!(
+            ManifestFingerprint::parse("abc"),
+            Err(ManifestFingerprintError::NotASha256("abc".to_string()))
+        );
+        let not_hex = "g".repeat(64);
+        assert_eq!(
+            ManifestFingerprint::parse(&not_hex),
+            Err(ManifestFingerprintError::NotASha256(not_hex))
+        );
+        let error = serde_json::from_str::<ManifestFingerprint>("\"abc\"")
+            .expect_err("deserialization routes through parse")
+            .to_string();
+        assert!(error.contains("not 64 hexadecimal characters"), "{error}");
     }
 }

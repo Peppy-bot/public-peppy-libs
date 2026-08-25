@@ -1,10 +1,11 @@
 //! Error types crossing the runtime's boundaries: building a server from a
-//! bundle, feeding snapshots through the topic policies, and reporting
-//! bridge failures back to MCP clients.
+//! bundle and composing servers into a set, feeding snapshots through the
+//! topic policies, and reporting bridge failures back to MCP clients.
 
 use std::fmt;
 
-/// Why a bundle plus its registered handlers cannot become a server.
+/// Why a bundle plus its registered handlers cannot become a server, or why
+/// servers cannot compose into a set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildError {
     /// A handler was registered under a name no tool entry carries.
@@ -19,6 +20,11 @@ pub enum BuildError {
     InvalidInputSchema { name: String, error: String },
     /// Two catalog entries collide on a public name or URI.
     DuplicateName { name: String },
+    /// A set was composed with no exposure to serve.
+    NoExposures,
+    /// Two servers in a set serve the same exposure identity, which is one
+    /// endpoint path.
+    DuplicateExposure { name: String, tag: String },
 }
 
 impl fmt::Display for BuildError {
@@ -50,6 +56,10 @@ impl fmt::Display for BuildError {
             }
             Self::DuplicateName { name } => {
                 write!(f, "catalog name `{name}` appears more than once")
+            }
+            Self::NoExposures => write!(f, "an exposure set must serve at least one exposure"),
+            Self::DuplicateExposure { name, tag } => {
+                write!(f, "exposure `{name}:{tag}` is listed more than once")
             }
         }
     }
