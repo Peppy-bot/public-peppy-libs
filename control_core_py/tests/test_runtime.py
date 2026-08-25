@@ -4,6 +4,8 @@ capture-time wire stamps."""
 import asyncio
 import time
 
+import pytest
+
 from control_core_py import runtime
 from control_core_py.runtime import SetpointError
 
@@ -68,6 +70,22 @@ async def test_ticks_pace_and_stop_on_cancel():
     assert seen == 5
 
 
+@pytest.mark.parametrize("period_s", [0.0, -0.01, float("nan")])
+async def test_ticks_reject_an_invalid_period(period_s):
+    with pytest.raises(ValueError):
+        async for _ in runtime.ticks(period_s, FakeToken()):
+            pass
+
+
+async def test_next_message_prefers_cancellation_over_a_ready_message():
+    # Both futures complete in the same event loop turn: the token is already
+    # cancelled and the subscription has a message queued.
+    token = FakeToken()
+    token.cancel()
+    subscription = FakeSubscription([Message(time.time(), "late")])
+    assert await runtime._next_message(subscription, token) is None
+
+
 async def run_gated(messages, handle, **kwargs):
     token = FakeToken()
     subscription = FakeSubscription(messages)
@@ -79,6 +97,15 @@ async def run_gated(messages, handle, **kwargs):
     await asyncio.wait_for(subscription.drained(), 2.0)
     token.cancel()
     await asyncio.wait_for(task, 2.0)
+
+
+@pytest.mark.parametrize("stale_timeout_s", [0.0, -1.0, float("nan")])
+async def test_consume_gated_rejects_an_invalid_stale_timeout(stale_timeout_s):
+    with pytest.raises(ValueError):
+        await runtime.consume_gated(
+            FakeSubscription([]), FakeToken(), "test", time.time,
+            stale_timeout_s, lambda m: None,
+        )
 
 
 async def test_consume_gated_drops_stale_future_and_unstampable():
@@ -139,3 +166,20 @@ def test_wire_timestamp_backdates_by_snapshot_age():
     stamp = runtime.wire_timestamp_s(clock_now_ns, captured)
     age = clock_now_ns / 1e9 - stamp
     assert 0.5 <= age < 0.6
+
+
+def test_rate_meter_reports_measured_rate(monkeypatch, capsys):
+    from control_core_py.runtime import RateMeter
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr("control_core_py.runtime.time.monotonic", lambda: clock["now"])
+    meter = RateMeter("test loop", target_hz=60, report_period_s=1.0)
+    for _ in range(61):
+        clock["now"] += 1.0 / 60.0
+        meter.tick()
+    out = capsys.readouterr().out
+    assert "test loop: 60.00 Hz measured" in out
+    assert "(target 60)" in out
+    # The window resets: another sub-window of ticks stays silent.
+    meter.tick()
+    assert capsys.readouterr().out == ""

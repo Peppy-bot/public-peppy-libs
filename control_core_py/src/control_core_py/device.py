@@ -14,6 +14,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 
+from control_core_py.params import require_positive
 from control_core_py.runtime import log
 
 # Bringup budget: connect plus calibration verification plus the first read.
@@ -54,7 +55,9 @@ class DeviceThread(ABC):
 
     def __init__(self, hardware, period_s: float, thread_name: str):
         self._hardware = hardware
-        self._period_s = period_s
+        # A non-positive or NaN period would turn the tick loop into a busy
+        # loop commanding the bus at an unbounded rate.
+        self._period_s = require_positive("period_s", period_s)
         self._ready = threading.Event()
         self._stop = threading.Event()
         self._bringup_error: Exception | None = None

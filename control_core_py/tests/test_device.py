@@ -24,8 +24,8 @@ class FakeHardware:
 
 
 class TickingLoop(device.DeviceThread):
-    def __init__(self, hardware, first_read_error: Exception | None = None):
-        super().__init__(hardware, period_s=0.001, thread_name="test-device")
+    def __init__(self, hardware, first_read_error: Exception | None = None, period_s=0.001):
+        super().__init__(hardware, period_s=period_s, thread_name="test-device")
         self.first_read_error = first_read_error
         self.ticked = threading.Event()
 
@@ -64,6 +64,12 @@ def test_failed_first_read_disconnects_before_raising():
         loop.start()
     # The port (and any torque enabled during connect) is released.
     assert hardware.disconnected
+
+
+@pytest.mark.parametrize("period_s", [0.0, -0.001, float("nan"), float("inf")])
+def test_invalid_period_is_rejected_before_the_thread_exists(period_s):
+    with pytest.raises(ValueError):
+        TickingLoop(FakeHardware(), period_s=period_s)
 
 
 def test_latest_slot_freshness():

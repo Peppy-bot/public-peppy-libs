@@ -10,6 +10,8 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
+from control_core_py.params import require_positive
+
 
 class SetpointError(ValueError):
     """A wire message that must not become a motion target."""
@@ -36,6 +38,34 @@ def log(message: str) -> None:
     print(f"[{_node_tag}] {message}", flush=True)
 
 
+class RateMeter:
+    """Measured cadence of a loop, logged periodically so a launch shows
+    whether the loop actually runs at its configured rate (control_core's
+    Pacer keeps the same accounting for the Rust nodes). One line per report
+    window; silent between reports."""
+
+    def __init__(self, label: str, target_hz: float, report_period_s: float = 10.0):
+        self._label = label
+        self._target_hz = target_hz
+        self._report_period_s = report_period_s
+        self._window_start = time.monotonic()
+        self._ticks = 0
+
+    def tick(self) -> None:
+        self._ticks += 1
+        now = time.monotonic()
+        elapsed = now - self._window_start
+        if elapsed < self._report_period_s:
+            return
+        measured = self._ticks / elapsed
+        log(
+            f"{self._label}: {measured:.2f} Hz measured over {elapsed:.0f}s "
+            f"(target {self._target_hz:g})"
+        )
+        self._window_start = now
+        self._ticks = 0
+
+
 class Latch:
     """Log a recurring condition once, re-arming once it clears."""
 
@@ -54,6 +84,7 @@ class Latch:
 async def ticks(period_s: float, token: CancellationToken) -> AsyncIterator[None]:
     """Yield once per period until the token cancels. Deadline-paced so the
     cadence does not drift; a slipped tick resyncs instead of bursting."""
+    require_positive("period_s", period_s)
     deadline = time.monotonic()
     while not token.is_cancelled():
         deadline += period_s
@@ -74,7 +105,9 @@ async def _next_message(subscription, token: CancellationToken) -> Any:
     try:
         receive = asyncio.ensure_future(subscription.next())
         await asyncio.wait([cancelled, receive], return_when=asyncio.FIRST_COMPLETED)
-        if not receive.done():
+        # Both can finish in the same event loop turn; cancellation wins so a
+        # message never becomes work after shutdown began.
+        if cancelled.done() or not receive.done():
             return None
         try:
             return receive.result()
@@ -125,6 +158,8 @@ async def consume_gated(
     e.g. a sim clock before its first tick, logs and continues, never
     killing the stream task.
     """
+    # A NaN timeout would make the age comparison vacuous and disarm the gate.
+    require_positive("stale_timeout_s", stale_timeout_s)
     rejected = Latch()
     stale = Latch()
     async for _producer, message in messages(subscription, token, label):
