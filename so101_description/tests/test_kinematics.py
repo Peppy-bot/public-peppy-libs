@@ -73,3 +73,18 @@ def test_streaming_solver_tracks_the_workspace_boundary(kinematics):
         )
         assert joints is not None
         assert all(math.isfinite(j) for j in joints)
+
+
+def test_ik_accepts_the_best_orientation_for_an_underactuated_pose(kinematics):
+    # Five joints underactuate the three orientation degrees of freedom, so
+    # acceptance is positional: a reachable position paired with an
+    # orientation the chain cannot meet still solves, landing the position
+    # and taking the solver's best orientation.
+    target_joints = (0.3, -0.5, 0.7, 0.2, 0.0)
+    position, reachable_orientation = kinematics.forward_kinematics(target_joints)
+    impossible_orientation = (0.0, 0.0, 0.0, 1.0)
+    assert reachable_orientation != pytest.approx(impossible_orientation)
+    solution = kinematics.inverse_kinematics(HOME, position, impossible_orientation)
+    assert solution is not None
+    reached, _ = kinematics.forward_kinematics(solution)
+    assert math.dist(reached, position) <= 0.01

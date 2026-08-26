@@ -78,3 +78,16 @@ def test_samples_stay_within_bounds(t):
     for j, value in enumerate(sample):
         low, high = sorted((START[j], END[j]))
         assert low - 1e-12 <= value <= high + 1e-12
+
+
+def test_mismatched_vector_lengths_are_refused():
+    with pytest.raises(ValueError, match="same length"):
+        minimum_jerk.plan((0.0, 0.0), (1.0, 1.0, 1.0), 0.0, CAPS)
+    with pytest.raises(ValueError, match="same length"):
+        minimum_jerk.min_duration_s(START, END, (1.0,))
+
+
+@pytest.mark.parametrize("cap", [0.0, -1.0, float("nan"), float("inf")])
+def test_unusable_velocity_caps_are_refused(cap):
+    with pytest.raises(ValueError, match="finite and positive"):
+        minimum_jerk.plan(START, END, 1.0, (2.0, 2.0, cap, 2.0, 2.0))

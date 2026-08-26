@@ -22,8 +22,15 @@ def _shape(u: float) -> float:
 def min_duration_s(
     start: tuple[float, ...], end: tuple[float, ...], velocity_caps: tuple[float, ...]
 ) -> float:
+    if not (len(start) == len(end) == len(velocity_caps)):
+        raise ValueError("start, end, and velocity_caps must be the same length")
+    if not all(math.isfinite(cap) and cap > 0.0 for cap in velocity_caps):
+        raise ValueError("velocity caps must be finite and positive")
     return max(
-        (abs(e - s) * QUINTIC_PEAK_VELOCITY / cap for s, e, cap in zip(start, end, velocity_caps)),
+        (
+            abs(e - s) * QUINTIC_PEAK_VELOCITY / cap
+            for s, e, cap in zip(start, end, velocity_caps, strict=True)
+        ),
         default=0.0,
     )
 
@@ -38,7 +45,7 @@ class Profile:
         if t_s >= self.duration_s or self.duration_s == 0.0:
             return self.end
         s = _shape(max(t_s, 0.0) / self.duration_s)
-        return tuple(a + (b - a) * s for a, b in zip(self.start, self.end))
+        return tuple(a + (b - a) * s for a, b in zip(self.start, self.end, strict=True))
 
     def done(self, t_s: float) -> bool:
         return t_s >= self.duration_s

@@ -46,7 +46,11 @@ class Kinematics:
         self, seed_rad: tuple[float, ...], position, orientation
     ) -> tuple[float, ...] | None:
         """Joint radians reaching the pose, or None when no verified solution
-        lands within tolerance of the target position."""
+        lands within tolerance of the target position. Position is the whole
+        acceptance test: five joints underactuate the three orientation
+        degrees of freedom, so the solver's best orientation (a soft,
+        low-weight objective in lerobot's solver) is taken rather than
+        gated behind a tolerance almost no reachable pose could meet."""
         target_matrix = matrix_from_pose(position, orientation)
         target_position = tuple(position)
         joints_deg = np.degrees(seed_rad)
@@ -79,4 +83,9 @@ class Kinematics:
 
     @staticmethod
     def _as_radians(joints_deg) -> tuple[float, ...]:
-        return tuple(float(v) for v in np.radians(joints_deg[: len(JOINT_NAMES)]))
+        values = tuple(float(v) for v in np.radians(joints_deg))
+        if len(values) != len(JOINT_NAMES):
+            raise ValueError(
+                f"solver returned {len(values)} joints, expected {len(JOINT_NAMES)}"
+            )
+        return values
