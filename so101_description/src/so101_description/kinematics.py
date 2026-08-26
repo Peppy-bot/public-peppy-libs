@@ -11,10 +11,10 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from so101_description.model import END_EFFECTOR_FRAME
-from so101_description.units import JOINT_NAMES
 
+from so101_description.model import END_EFFECTOR_FRAME
 from so101_description.transforms import matrix_from_pose, pose_from_matrix
+from so101_description.units import JOINT_NAMES
 
 # Positional acceptance for a verified point-to-point solution.
 IK_POSITION_TOLERANCE_M = 0.01
