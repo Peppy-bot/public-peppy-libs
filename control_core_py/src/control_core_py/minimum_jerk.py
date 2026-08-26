@@ -42,6 +42,8 @@ class Profile:
     duration_s: float
 
     def sample(self, t_s: float) -> tuple[float, ...]:
+        if not math.isfinite(t_s):
+            raise ValueError("sample time must be finite")
         if t_s >= self.duration_s or self.duration_s == 0.0:
             return self.end
         s = _shape(max(t_s, 0.0) / self.duration_s)
@@ -64,5 +66,7 @@ def plan(
     values = (*start, *end, requested_duration_s)
     if not all(math.isfinite(v) for v in values):
         raise ValueError("non-finite trajectory endpoint or duration")
+    if requested_duration_s < 0.0:
+        raise ValueError("requested duration must be non-negative")
     floor = min_duration_s(start, end, velocity_caps)
     return Profile(start=start, end=end, duration_s=max(requested_duration_s, floor))

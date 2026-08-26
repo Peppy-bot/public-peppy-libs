@@ -64,6 +64,20 @@ def test_nonfinite_inputs_are_refused():
         minimum_jerk.plan(START, END, math.inf, CAPS)
 
 
+def test_negative_requested_duration_is_refused():
+    with pytest.raises(ValueError, match="non-negative"):
+        minimum_jerk.plan(START, END, -1.0, CAPS)
+    with pytest.raises(ValueError, match="non-negative"):
+        minimum_jerk.plan(START, START, -1.0, CAPS)
+
+
+@pytest.mark.parametrize("t", [math.nan, math.inf, -math.inf])
+def test_nonfinite_sample_times_are_refused(t):
+    profile = minimum_jerk.plan(START, END, 2.0, CAPS)
+    with pytest.raises(ValueError, match="finite"):
+        profile.sample(t)
+
+
 def test_zero_move_completes_immediately():
     profile = minimum_jerk.plan(START, START, 0.0, CAPS)
     assert profile.duration_s == 0.0
