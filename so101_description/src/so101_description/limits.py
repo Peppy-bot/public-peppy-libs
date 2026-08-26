@@ -21,13 +21,19 @@ class JointLimits:
     upper: tuple[float, ...]
 
     def contains(self, positions: tuple[float, ...]) -> bool:
+        if len(positions) != len(self.lower):
+            return False
         return all(
-            lo <= p <= hi for p, lo, hi in zip(positions, self.lower, self.upper)
+            lo <= p <= hi
+            for p, lo, hi in zip(positions, self.lower, self.upper, strict=True)
         )
 
     def clamp(self, positions: tuple[float, ...]) -> tuple[float, ...]:
+        if len(positions) != len(self.lower):
+            raise ValueError("expected one position per joint")
         return tuple(
-            min(max(p, lo), hi) for p, lo, hi in zip(positions, self.lower, self.upper)
+            min(max(p, lo), hi)
+            for p, lo, hi in zip(positions, self.lower, self.upper, strict=True)
         )
 
 
