@@ -4,6 +4,16 @@ lerobot's solver speaks degrees and 4x4 matrices; everything above this module
 speaks joint_link radians and wire poses. IK is verified by FK before it is
 trusted: placo returns its best effort even far from the target, and an
 unreached pose must fail the caller instead of moving the arm somewhere else.
+
+What that verification costs, measured on poses reachable by construction (a
+random in-limits joint vector, its FK taken as the target): 14% of targets are
+refused when seeded from the ready posture and 39% when seeded from an
+arbitrary one, concentrated near the base (25% within 0.23 m, 7% beyond
+0.45 m). The cause is structural rather than a tuning miss. lerobot's
+inverse_kinematics is a single linearised step, so iterating it is a local
+descent from the seed and reaches only what the seed's branch reaches; a
+refusal means this branch did not arrive, not that the pose is unreachable.
+Callers that need the wider workspace re-seed and ask again.
 """
 
 from __future__ import annotations
