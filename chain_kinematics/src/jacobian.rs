@@ -43,11 +43,21 @@ pub type Jacobian<const N: usize> = SMatrix<f64, 6, N>;
 pub type JacobianPinv<const N: usize> = SMatrix<f64, N, 6>;
 
 /// Moore-Penrose (minimum-norm) right inverse `J⁺ = Jᵀ (J Jᵀ)⁻¹`, the joint rates
-/// of least norm that realize a commanded EE twist. Returns `None` when the
-/// Jacobian's smallest singular value is `<= eps`, i.e. at (or near) a singularity
-/// where the rate solution is ill-conditioned; use [`damped_pseudo_inverse`] there
-/// instead.
+/// of least norm that realize a commanded EE twist. Returns `None` whenever no
+/// such rates exist: at (or near) a singularity, where the smallest singular
+/// value is `<= eps` and the solution is ill-conditioned, and on a chain of
+/// fewer than six joints, which cannot meet an arbitrary six-dimensional twist
+/// in the first place. Use [`damped_pseudo_inverse`] in both cases, which
+/// answers everywhere at the cost of some tracking error.
 pub fn try_pseudo_inverse<const N: usize>(j: &Jacobian<N>, eps: f64) -> Option<JacobianPinv<N>> {
+    // An under-actuated chain has no right inverse, and its rank never announces
+    // that: a 6xN Jacobian with N < 6 has only N singular values, so the missing
+    // task directions never show up as small ones and the guard below cannot see
+    // them. Answering here would hand back a least-squares fit that does not
+    // realize the commanded twist, with nothing to say so.
+    if N < 6 {
+        return None;
+    }
     let svd = DMatrix::from_iterator(6, N, j.iter().copied()).svd(true, true);
     // A full-row-rank 6xN Jacobian has 6 singular values; the smallest gauges how
     // close it is to losing rank. Guarding on it (rather than letting the SVD
