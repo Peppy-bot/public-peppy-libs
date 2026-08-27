@@ -147,3 +147,49 @@ fn a_multi_slot_joint_anywhere_is_refused() {
         "expected a multi-slot refusal, got {err}"
     );
 }
+
+#[test]
+fn a_link_named_twice_is_refused() {
+    // Every joint addresses its parent and child by name, so a repeated link
+    // name makes the tree ambiguous: whichever link the lookup happens to find
+    // decides where the chain runs, and forward kinematics reports a pose built
+    // from the wrong body.
+    let duplicate = r#"<link name="a"/>"#;
+    let err = build::<2>(&urdf(BOUNDED, duplicate), JointSelection::PathOrder)
+        .expect_err("two links cannot share a name");
+    assert!(
+        matches!(&err, ChainError::Urdf(m) if m.contains("same name")),
+        "expected a duplicate-link refusal, got {err}"
+    );
+}
+
+#[test]
+fn a_link_with_two_parents_is_refused() {
+    // A closed loop is not a tree. Walking it from the tip up would reach the
+    // base by more than one route, and only one of them carries the transforms
+    // this chain would then pose.
+    let second_parent = r#"<joint name="j_loop" type="revolute">
+        <parent link="base"/><child link="b"/><axis xyz="1 0 0"/>
+        <limit lower="-1.0" upper="1.0" effort="1" velocity="1"/>
+      </joint>"#;
+    let err = build::<2>(&urdf(BOUNDED, second_parent), JointSelection::PathOrder)
+        .expect_err("a link reached two ways is not a tree");
+    assert!(
+        matches!(&err, ChainError::Urdf(m) if m.contains("two parent joints")),
+        "expected a two-parent refusal, got {err}"
+    );
+}
+
+#[test]
+fn a_urdf_with_two_roots_is_refused() {
+    // Two disconnected trees have no common frame, so "the base" is a choice
+    // rather than a fact, and every pose would be expressed against a root the
+    // caller never named.
+    let orphan = r#"<link name="island"/>"#;
+    let err = build::<2>(&urdf(BOUNDED, orphan), JointSelection::PathOrder)
+        .expect_err("two roots leave the base ambiguous");
+    assert!(
+        matches!(&err, ChainError::Urdf(m) if m.contains("exactly one root link")),
+        "expected a multiple-root refusal, got {err}"
+    );
+}
