@@ -83,6 +83,11 @@ pub(crate) const PARALLEL_SIN_EPS: f64 = 1e-6;
 /// their own and finding the `Isometry3`s do not match.
 pub use nalgebra;
 
+/// Re-export the chain this arm is built on, so a consumer holding an [`Arm`]
+/// can reach the topology-agnostic laws ([`Arm::chain`] feeds them) without
+/// naming a second version of the crate.
+pub use chain_kinematics;
+
 /// Test fixtures: load a concrete SRS arm (the OpenArm V1.0) from the bundled
 /// fixture URDF, giving the agnostic tests a real arm to check against.
 /// `side` is `"left"`/`"right"`; left vs right is encoded entirely by the link

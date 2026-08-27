@@ -131,3 +131,19 @@ fn the_midpoint_is_the_centre_of_the_range() {
     assert_eq!(b.midpoint(), 0.0);
     assert!(a.contains(a.midpoint()) && b.contains(b.midpoint()));
 }
+
+#[test]
+fn a_multi_slot_joint_anywhere_is_refused() {
+    // A floating joint needs six configuration values; posing it as anything
+    // simpler silently welds or misplaces every link below it.
+    let floater = r#"<link name="free"/>
+      <joint name="j_free" type="floating">
+        <parent link="base"/><child link="free"/>
+      </joint>"#;
+    let err = build::<2>(&urdf(BOUNDED, floater), JointSelection::PathOrder)
+        .expect_err("a floating joint cannot be posed by one value");
+    assert!(
+        matches!(&err, ChainError::Urdf(m) if m.contains("j_free") && m.contains("Floating")),
+        "expected a multi-slot refusal, got {err}"
+    );
+}

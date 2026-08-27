@@ -38,6 +38,7 @@
 
 mod chain;
 mod error;
+mod ik;
 mod jacobian;
 mod payload;
 mod rate;
@@ -46,6 +47,9 @@ mod tree;
 
 pub use chain::{Chain, ChainSpec, JointSelection, Posed};
 pub use error::ChainError;
+pub use ik::{
+    ACCEPT_ORIENTATION_RAD, ACCEPT_POSITION_M, Goal, Kinematics, SEED_TABLE_SIZE, SolveError,
+};
 pub use jacobian::{
     Jacobian, JacobianPinv, damped_pseudo_inverse, manipulability, null_space_projector,
     try_pseudo_inverse,

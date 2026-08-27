@@ -74,6 +74,38 @@ different solver.
 | `rate_step` | one damped resolved-rate step under a velocity budget and joint limits |
 | `ServoState` / `rollout` | a guarded Cartesian move, and the same law rolled out offline as its reachability proof |
 
+## Point-to-point: `inverse_kinematics`, `continue_to`, `track`
+
+The `Kinematics` type carries the surface frozen across this library and
+`chain_kinematics_py`: three entry points that answer different questions and
+whose refusals mean different things.
+
+| Entry | For | Search scope | A refusal means |
+|---|---|---|---|
+| `inverse_kinematics` | a planned move | whole workspace | nothing found reached it |
+| `continue_to` | following a path | the seed's neighbourhood only | this neighbourhood does not reach it |
+| `track` | streamed setpoints | one bounded descent | never refuses |
+
+An accepted solution is proven: forward kinematics on the chain itself puts it
+inside the tolerance. A refusal is the search giving up within its budget, not
+a proof of unreachability; a general chain has no closed form to prove with.
+Position alone is the acceptance test unless the goal names an orientation
+tolerance, because a chain under six actuated joints cannot meet an arbitrary
+orientation. `track` always returns an in-limit configuration and comes to rest
+against an unreachable target, so a held target gives a held answer rather than
+walking the arm around the workspace boundary.
+
+Targets are world-frame `Isometry3` values; the typed rotation is what keeps a
+wire quaternion's component order from being confused past the boundary.
+
+Qualification, `cargo test --release --test ik_quality` (poses reachable by
+construction, seeds unrelated to the answers):
+
+| | refused | worst position | orientations abandoned (>1 deg) |
+|---|---|---|---|
+| SO-101, 5 DOF, 1000 poses | 0 | 9.0e-4 m | 1 (worst 2.1 deg) |
+| OpenArm, 7 DOF, 300 poses | 0 | 8.5e-4 m | 0 |
+
 ## The servo law
 
 A discrete IK walk cannot cross the singular surface between two solution
@@ -104,6 +136,7 @@ src/
   tree.rs       the URDF arena: links, joints, adjacency, and the walks over it
   jacobian.rs   the Jacobian's inverses, generic over N
   rate.rs       one damped resolved-rate step
+  ik.rs         point-to-point IK: searched, verified, willing to refuse
   servo.rs      the leashed-reference Cartesian move and its offline rollout
   error.rs      what can go wrong building a chain
   payload.rs    the rigid body past the tip, lumped into the last segment
@@ -120,3 +153,6 @@ finite on an under-actuated (6x5) Jacobian.
 
 `tests/refusals.rs` covers the table above: every rule is checked both ways, so a
 refusal that would also reject a valid chain fails the suite.
+`tests/solve_quality.rs` is the point-to-point qualification: the debug build
+runs a fast subset of the same draws, and `--release` runs the full scale the
+numbers above are quoted at.

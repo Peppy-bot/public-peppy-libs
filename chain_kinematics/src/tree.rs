@@ -146,7 +146,7 @@ impl Tree {
                 name: j.name.clone(),
                 child,
                 origin: pose_of(&j.origin),
-                kind: kind_of(j),
+                kind: kind_of(j)?,
                 // An absent <limit> defaults both bounds to zero; a continuous
                 // joint is unbounded. Either way there is no range to report.
                 limit: ((j.limit.upper - j.limit.lower) != 0.0)
@@ -286,13 +286,24 @@ fn inertia_of(i: &urdf_rs::Inertia) -> Matrix3<f64> {
     )
 }
 
-fn kind_of(j: &urdf_rs::Joint) -> JointKind {
+/// The joint's kind, or a refusal for the kinds this library cannot pose.
+///
+/// A floating, planar or spherical joint occupies more than one configuration
+/// slot, so treating it as anything simpler silently welds or misplaces every
+/// link below it. Refused for the whole model, not just the chain: a multi-slot
+/// joint anywhere makes the tree's single-value-per-joint contract a lie.
+fn kind_of(j: &urdf_rs::Joint) -> Result<JointKind, String> {
     let axis = || Unit::new_normalize(Vector3::new(j.axis.xyz[0], j.axis.xyz[1], j.axis.xyz[2]));
-    match j.joint_type {
+    match &j.joint_type {
         urdf_rs::JointType::Revolute | urdf_rs::JointType::Continuous => {
-            JointKind::Revolute { axis: axis() }
+            Ok(JointKind::Revolute { axis: axis() })
         }
-        urdf_rs::JointType::Prismatic => JointKind::Prismatic { axis: axis() },
-        _ => JointKind::Fixed,
+        urdf_rs::JointType::Prismatic => Ok(JointKind::Prismatic { axis: axis() }),
+        urdf_rs::JointType::Fixed => Ok(JointKind::Fixed),
+        other => Err(format!(
+            "joint '{}' has type {other:?}, which needs more than one configuration \
+             value; supported joint types are revolute, continuous, prismatic and fixed",
+            j.name
+        )),
     }
 }

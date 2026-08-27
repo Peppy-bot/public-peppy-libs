@@ -11,51 +11,8 @@ use chain_kinematics::{
     ServoTolerances, damped_pseudo_inverse, manipulability,
 };
 
-const SO101: &str = include_str!("fixtures/so101_5dof.urdf");
-const OPENARM: &str = include_str!("fixtures/openarm_7dof.urdf");
-
-const SO101_JOINTS: [&str; 5] = [
-    "shoulder_pan",
-    "shoulder_lift",
-    "elbow_flex",
-    "wrist_flex",
-    "wrist_roll",
-];
-
-fn so101() -> Chain<5> {
-    let robot = urdf_rs::read_from_string(SO101).expect("parse SO-101");
-    Chain::<5>::from_urdf(
-        &robot,
-        &ChainSpec {
-            base_link: None,
-            tip_link: "gripper_frame_link",
-            joints: JointSelection::Named(&SO101_JOINTS),
-        },
-    )
-    .expect("SO-101 is a five-joint chain")
-}
-
-fn openarm() -> Chain<7> {
-    let robot = urdf_rs::read_from_string(OPENARM).expect("parse OpenArm");
-    Chain::<7>::from_urdf(
-        &robot,
-        &ChainSpec {
-            base_link: Some("openarm_left_link0"),
-            tip_link: "openarm_left_link7",
-            joints: JointSelection::PathOrder,
-        },
-    )
-    .expect("OpenArm is a seven-joint chain")
-}
-
-/// A configuration spread across each joint's range, deterministically.
-fn sample<const N: usize>(chain: &Chain<N>, k: usize) -> [f64; N] {
-    let limits = chain.limits();
-    std::array::from_fn(|i| {
-        let t = ((k + 1) as f64 * 0.618_033_988_749_894_9 * (i + 1) as f64).fract();
-        limits[i].lo + t * (limits[i].hi - limits[i].lo)
-    })
-}
+mod common;
+use common::{SO101, SO101_JOINTS, openarm, sample, so101};
 
 #[test]
 fn loads_arms_of_different_joint_counts() {

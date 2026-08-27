@@ -69,6 +69,14 @@ impl Arm {
         Ok(self)
     }
 
+    /// The arm as a plain serial chain: what the topology-agnostic operations in
+    /// [`chain_kinematics`] take. The chain carries this arm's tool frame and its
+    /// limits, elbow floor included, so a generic law run over it is run over the
+    /// same arm the SRS-specific methods here describe.
+    pub fn chain(&self) -> &chain_kinematics::Chain<ARM_DOF> {
+        self.fk.chain()
+    }
+
     /// Pose the arm at configuration `q` for forward-kinematics and dynamics
     /// reads. The returned [`Posed`] is a snapshot of that configuration's frames,
     /// so it can be held across other reads and two configurations can be compared
