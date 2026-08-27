@@ -19,12 +19,25 @@ from so101_description.units import JOINT_NAMES
 # Positional acceptance for a verified point-to-point solution.
 IK_POSITION_TOLERANCE_M = 0.01
 # lerobot's inverse_kinematics runs one QP step, sized for streaming small
-# deltas; a point-to-point solve iterates it until the verified error
-# converges. A near seed exits on the first pass.
+# deltas; a point-to-point solve iterates it until FK verifies the position.
 IK_MAX_ITERATIONS = 100
 # The streamed path is best effort: a few steps bound the per-tick cost, and
 # an out-of-reach pose tracks the workspace boundary instead of freezing.
 IK_STREAM_ITERATIONS = 3
+
+# Position and orientation are both soft objectives of one QP, minimising
+# `position_weight * |dp|^2 + orientation_weight * |dtheta|^2`. The terms are
+# metres against radians, so the weight ratio is not the trade: at lerobot's
+# default 0.01 a 20 degree miss outweighs a 7 mm miss by more than twenty to
+# one, and the solver spends position buying orientation. Five joints
+# underactuate three rotational degrees of freedom, so on this arm that
+# purchase is frequently impossible and the position is spent for nothing.
+#
+# Weighted this low the orientation objective still resolves the wrist onto
+# the pose it was given, reaching a reachable orientation within a third of a
+# degree, while an unreachable one stops taking the position with it. Zero is
+# not the answer; it abandons reachable orientations entirely.
+ORIENTATION_WEIGHT = 1e-4
 
 
 class Kinematics:
@@ -55,7 +68,9 @@ class Kinematics:
         target_position = tuple(position)
         joints_deg = np.degrees(seed_rad)
         for _ in range(IK_MAX_ITERATIONS):
-            joints_deg = self._step(joints_deg, target_matrix)
+            joints_deg = self._step(
+                joints_deg, target_matrix, ORIENTATION_WEIGHT
+            )
             solution_rad = self._as_radians(joints_deg)
             reached, _ = self.forward_kinematics(solution_rad)
             if math.dist(reached, target_position) <= IK_POSITION_TOLERANCE_M:
@@ -72,14 +87,21 @@ class Kinematics:
         target_matrix = matrix_from_pose(position, orientation)
         joints_deg = np.degrees(seed_rad)
         for _ in range(IK_STREAM_ITERATIONS):
-            joints_deg = self._step(joints_deg, target_matrix)
+            joints_deg = self._step(
+                joints_deg, target_matrix, ORIENTATION_WEIGHT
+            )
         solution_rad = self._as_radians(joints_deg)
         if not all(math.isfinite(v) for v in solution_rad):
             return None
         return solution_rad
 
-    def _step(self, joints_deg, target_matrix):
-        return self._solver.inverse_kinematics(joints_deg, target_matrix)
+    def _step(self, joints_deg, target_matrix, orientation_weight: float):
+        """One QP step. The orientation weight is stated at every call rather
+        than inherited from lerobot's signature default, because which pose
+        objective this arm should trade away is our decision, not theirs."""
+        return self._solver.inverse_kinematics(
+            joints_deg, target_matrix, orientation_weight=orientation_weight
+        )
 
     @staticmethod
     def _as_radians(joints_deg) -> tuple[float, ...]:

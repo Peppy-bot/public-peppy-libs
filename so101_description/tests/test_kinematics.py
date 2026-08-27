@@ -4,9 +4,11 @@ conversions, and the verified-solution gate."""
 import math
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from so101_description.kinematics import Kinematics
+from so101_description.transforms import relative_rotation_rad
 
 URDF = str(Path(__file__).parent / "assets" / "mini_so101.urdf")
 HOME = (0.0, 0.0, 0.0, 0.0, 0.0)
@@ -88,3 +90,75 @@ def test_ik_accepts_the_best_orientation_for_an_underactuated_pose(kinematics):
     assert solution is not None
     reached, _ = kinematics.forward_kinematics(solution)
     assert math.dist(reached, position) <= 0.01
+
+
+def rotated(orientation, axis, degrees):
+    """`orientation` turned about one of its own axes."""
+    half = math.radians(degrees) / 2.0
+    unit = np.array(axis, float) / np.linalg.norm(axis)
+    d = np.array([*(unit * math.sin(half)), math.cos(half)])
+    x1, y1, z1, w1 = orientation
+    x2, y2, z2, w2 = d
+    return (
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+    )
+
+
+def test_an_impossible_orientation_does_not_cost_the_position(kinematics):
+    # Five joints cannot turn the grasp point about its own x axis, and both
+    # pose objectives are soft, so the solver will trade position away to
+    # chase an orientation it can never reach. A move asks first for a place
+    # to be: the position it was given must survive the attempt.
+    seed = (0.0, 0.3, 0.4, 0.2, 0.0)
+    position, orientation = kinematics.forward_kinematics(seed)
+    solution = kinematics.inverse_kinematics(
+        seed, position, rotated(orientation, (1, 0, 0), 20)
+    )
+    assert solution is not None
+    reached, _ = kinematics.forward_kinematics(solution)
+    assert math.dist(reached, position) < 0.001
+
+
+def test_an_impossible_orientation_does_not_refuse_a_reachable_position(kinematics):
+    # The position here is reachable by construction. Weighted hard enough,
+    # the orientation objective drags the solve outside the position
+    # tolerance and the caller is told the pose is unreachable, naming the
+    # wrong cause.
+    seed = (0.0, 0.3, 0.4, 0.2, 0.0)
+    position, orientation = kinematics.forward_kinematics(seed)
+    assert kinematics.inverse_kinematics(
+        seed, position, rotated(orientation, (1, 0, 0), 90)
+    ) is not None
+
+
+def test_a_reachable_orientation_is_still_honoured(kinematics):
+    # The orientation weight is small, not absent: dropping it to zero would
+    # abandon the wrist orientations this arm can actually hold.
+    seed = (0.0, 0.3, 0.4, 0.2, 0.0)
+    position, orientation = kinematics.forward_kinematics(seed)
+    target = rotated(orientation, (0, 0, 1), 20)
+    solution = kinematics.inverse_kinematics(seed, position, target)
+    assert solution is not None
+    _, reached = kinematics.forward_kinematics(solution)
+    assert math.degrees(relative_rotation_rad(reached, target)) < 1.0
+
+
+def test_the_deployed_arm_still_reaches_an_orientation_it_can_hold():
+    # Against the real model, not the mini URDF: the seed already satisfies
+    # the requested position, so a solve that stopped at the first step
+    # inside the position tolerance would return before the orientation
+    # objective had moved the wrist at all.
+    from so101_description.model import KINEMATICS_URDF_PATH
+
+    kinematics = Kinematics(KINEMATICS_URDF_PATH)
+    seed = (0.0, 0.3, 0.4, 0.2, 0.0)
+    position, orientation = kinematics.forward_kinematics(seed)
+    target = rotated(orientation, (0, 0, 1), 20)
+    solution = kinematics.inverse_kinematics(seed, position, target)
+    assert solution is not None
+    reached_position, reached_orientation = kinematics.forward_kinematics(solution)
+    assert math.degrees(relative_rotation_rad(reached_orientation, target)) < 1.0
+    assert math.dist(reached_position, position) < 0.001
