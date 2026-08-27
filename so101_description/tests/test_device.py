@@ -1,4 +1,5 @@
-"""The lerobot device boundary: calibrated connect and the flat read."""
+"""The lerobot device boundary: calibrated connect, the flat read, and the
+channel-name convention on either side of it."""
 
 import pytest
 
@@ -58,3 +59,19 @@ def test_uncalibrated_device_disconnects_and_fails_the_launch():
     with pytest.raises(RuntimeError, match="calibration is missing"):
         device.connect_calibrated(robot, "arm")
     assert robot.disconnected
+
+
+def test_lerobot_channel_names_round_trip_to_bare_motor_names():
+    # lerobot keys position channels `<motor>.pos`; the wire and every
+    # node-side map use the bare name, and this is the only place that knows.
+    goals = {"shoulder_pan": 1.0, "gripper": 2.0}
+    channels = device.position_channels(goals)
+    assert channels == {"shoulder_pan.pos": 1.0, "gripper.pos": 2.0}
+    assert device.motor_positions(channels) == goals
+
+
+def test_a_channel_without_the_suffix_is_left_alone():
+    # removesuffix is not a strip: a name lerobot did not decorate must not
+    # lose characters that happen to match.
+    assert device.motor_positions({"gripper": 1.0}) == {"gripper": 1.0}
+    assert device.motor_positions({"pos": 1.0}) == {"pos": 1.0}

@@ -1,6 +1,6 @@
-"""The SO-family device boundary over lerobot: calibrated connection and the
-flat motor-list read (five joints then the gripper) both hardware nodes
-share."""
+"""The SO-family device boundary over lerobot: calibrated connection, the
+flat motor-list read (five joints then the gripper), and the wire-name
+convention on either side of it, all shared by both hardware nodes."""
 
 from __future__ import annotations
 
@@ -30,3 +30,26 @@ def read_positions_validated(hardware) -> tuple[tuple[float, ...], float]:
     if not all(math.isfinite(v) for v in values):
         raise ValueError("non-finite position read")
     return values[:NUM_JOINTS], values[NUM_JOINTS]
+
+
+# The fastest either hardware node may drive the bus. Six STS3215s share one
+# 1 Mbaud half-duplex line, and a goal write plus a position read must both
+# fit in every cycle. One fact about one bus, so both nodes state this same
+# ceiling rather than each deriving its own.
+BUS_MAX_RATE_HZ = 1000
+
+# lerobot names a motor's position channel `<motor>.pos`; peppy's wire and
+# every node-side map are keyed by the bare motor name.
+_POSITION_SUFFIX = ".pos"
+
+
+def motor_positions(channels: dict[str, float]) -> dict[str, float]:
+    """A lerobot observation or action keyed by bare motor name."""
+    return {
+        key.removesuffix(_POSITION_SUFFIX): value for key, value in channels.items()
+    }
+
+
+def position_channels(goals_by_motor: dict[str, float]) -> dict[str, float]:
+    """Goals keyed the way lerobot's action interface expects them."""
+    return {f"{motor}{_POSITION_SUFFIX}": value for motor, value in goals_by_motor.items()}
