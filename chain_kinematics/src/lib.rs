@@ -37,6 +37,7 @@
 #![forbid(unsafe_code)]
 
 mod chain;
+mod dynamics;
 mod error;
 mod ik;
 mod jacobian;

@@ -313,6 +313,13 @@ impl<const N: usize> Posed<'_, N> {
         self.joint_world[i].translation.vector
     }
 
+    /// How joint `i` moves. What a dynamics layer dispatches on: a revolute
+    /// joint's rate is an angular velocity about its axis, a prismatic one's a
+    /// linear velocity along it.
+    pub fn kind(&self, i: usize) -> JointKind {
+        self.chain.kinds[i]
+    }
+
     /// Mass of segment `i`.
     pub fn mass(&self, i: usize) -> f64 {
         self.chain.masses[i]

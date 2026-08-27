@@ -1,11 +1,10 @@
 //! Differential kinematics for the 7-DOF SRS arm.
 //!
 //! The maths is [`chain_kinematics::jacobian`]'s, generic over the joint count;
-//! this fixes it at [`ARM_DOF`] and hangs the conveniences off [`Posed`], which
-//! lives here and so cannot take them from another crate.
+//! this fixes it at [`ARM_DOF`] for the consumers that speak in this arm's
+//! shapes, and keeps the fixture-backed evidence that it holds on a real arm.
 
 use crate::ARM_DOF;
-use crate::fk::Posed;
 
 /// Geometric Jacobian of the end-effector: maps joint rates (rad/s) to the EE
 /// spatial twist, both in the arm base frame. Rows 0..3 are linear velocity
@@ -18,34 +17,6 @@ pub type JacobianPinv = chain_kinematics::JacobianPinv<ARM_DOF>;
 pub use chain_kinematics::{
     damped_pseudo_inverse, manipulability, null_space_projector, try_pseudo_inverse,
 };
-
-impl Posed<'_> {
-    /// Geometric Jacobian of the end-effector in the arm base frame; see
-    /// [`Jacobian`].
-    pub fn jacobian(&self) -> Jacobian {
-        self.inner().jacobian()
-    }
-
-    /// Minimum-norm pseudo-inverse of this posture's [`Jacobian`]; `None` at a
-    /// singularity. Convenience for the one-shot case. When you also need the
-    /// Jacobian itself, call [`jacobian`](Self::jacobian) once and pass it to the
-    /// free [`try_pseudo_inverse`] rather than recomputing it here.
-    pub fn try_pseudo_inverse(&self, eps: f64) -> Option<JacobianPinv> {
-        try_pseudo_inverse(&self.jacobian(), eps)
-    }
-
-    /// Damped-least-squares inverse of this posture's [`Jacobian`] (infallible for
-    /// `lambda > 0`). Convenience for a resolved-rate tick that needs only the
-    /// inverse; see [`damped_pseudo_inverse`].
-    pub fn damped_pseudo_inverse(&self, lambda: f64) -> JacobianPinv {
-        damped_pseudo_inverse(&self.jacobian(), lambda)
-    }
-
-    /// Manipulability of this posture; see [`manipulability`].
-    pub fn manipulability(&self) -> f64 {
-        manipulability(&self.jacobian())
-    }
-}
 
 #[cfg(test)]
 mod tests {

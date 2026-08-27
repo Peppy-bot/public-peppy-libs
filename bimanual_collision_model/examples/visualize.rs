@@ -231,7 +231,9 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
         .flat_map(|base| {
             let arm = Arm::from_urdf_file(&args.urdf, base).expect("arm");
             let posed = arm.at(&[0.0; ARM_DOF]);
-            (0..ARM_DOF).map(|i| posed.link_name(i)).collect::<Vec<_>>()
+            (0..ARM_DOF)
+                .map(|i| posed.link_name(i).to_string())
+                .collect::<Vec<_>>()
         })
         .collect();
     let attached: Vec<String> = chain_links
@@ -259,14 +261,14 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
             let name = posed.link_name(i);
             let pose = posed.link_pose_world(i);
             let mut verts: Vec<Point3<f64>> = urdf
-                .link_vertices(&name, &args.meshes)?
+                .link_vertices(name, &args.meshes)?
                 .iter()
                 .map(|v| pose * v)
                 .collect();
             // Fixed children ride with the link; movable children are the
             // gripper fingers, drawn at the requested opening.
             let mut fingers: Vec<(String, f64, f64)> = Vec::new();
-            for child in urdf.children_of(&name) {
+            for child in urdf.children_of(name) {
                 if chain_links.contains(&child) || urdf.collisions_of(&child).is_empty() {
                     continue;
                 }

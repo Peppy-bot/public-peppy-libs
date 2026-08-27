@@ -8,10 +8,9 @@
 //! shared ownership. A [`Chain`] is plain data, so forward kinematics is a pure
 //! function of a configuration and posing one can never race a read of another.
 //!
-//! Nothing here knows what an SRS arm is, or how many joints one has. It answers
+//! Nothing here knows what a robot is, or how many joints one has. It answers
 //! "where is every frame of this linkage at this configuration", for any serial
-//! path through any URDF; [`crate::fk`] is what imposes the seven-revolute rule
-//! on top.
+//! path through any URDF; whatever rule picks the path belongs to the caller.
 //!
 //! Conventions follow the URDF specification, so a chain built here agrees with
 //! any other conforming reader: a joint's `origin` is `translation(xyz)` composed

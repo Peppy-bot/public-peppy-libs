@@ -121,3 +121,25 @@ pub fn null_space_projector<const N: usize>(j: &Jacobian<N>, eps: f64) -> SMatri
         .expect("SVD pseudo-inverse only fails for eps < 0");
     SMatrix::<f64, N, N>::identity() - JacobianPinv::<N>::from_iterator(pinv.iter().copied()) * j
 }
+
+use crate::Posed;
+
+impl<const N: usize> Posed<'_, N> {
+    /// Minimum-norm pseudo-inverse of this posture's Jacobian; `None` at a
+    /// singularity. Convenience for the one-shot case: when the Jacobian is
+    /// also needed, compute it once and use the free functions.
+    pub fn try_pseudo_inverse(&self, eps: f64) -> Option<JacobianPinv<N>> {
+        try_pseudo_inverse(&self.jacobian(), eps)
+    }
+
+    /// Damped-least-squares inverse of this posture's Jacobian, defined
+    /// everywhere including singularities.
+    pub fn damped_pseudo_inverse(&self, lambda: f64) -> JacobianPinv<N> {
+        damped_pseudo_inverse(&self.jacobian(), lambda)
+    }
+
+    /// Yoshikawa manipulability of this posture.
+    pub fn manipulability(&self) -> f64 {
+        manipulability(&self.jacobian())
+    }
+}

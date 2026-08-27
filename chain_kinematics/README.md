@@ -66,7 +66,8 @@ different solver.
 | `Posed::{ee_pose, tip_pose, link_pose_world}` | frames, in the base frame the spec named |
 | `Posed::jacobian` | the 6xN geometric Jacobian, revolute and prismatic columns |
 | `Posed::point_world_jacobian` | the same, for an arbitrary witness point - what a collision-distance gradient needs |
-| `Posed::{mass, com_world, inertia_world}` | per-segment rigid-body data for a dynamics layer |
+| `Posed::{mass, com_world, inertia_world}` | per-segment rigid-body data |
+| `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics, revolute and prismatic joints alike, distal payload included |
 | `damped_pseudo_inverse` | `Jᵀ(J Jᵀ + λ²I)⁻¹`, defined everywhere including at singularities |
 | `try_pseudo_inverse` | Moore-Penrose, `None` at a singularity |
 | `null_space_projector` | `I − J⁺J`, for a secondary objective that must not disturb the end effector |
@@ -137,6 +138,7 @@ src/
   jacobian.rs   the Jacobian's inverses, generic over N
   rate.rs       one damped resolved-rate step
   ik.rs         point-to-point IK: searched, verified, willing to refuse
+  dynamics.rs   gravity and Coriolis feedforward over the posed chain
   servo.rs      the leashed-reference Cartesian move and its offline rollout
   error.rs      what can go wrong building a chain
   payload.rs    the rigid body past the tip, lumped into the last segment

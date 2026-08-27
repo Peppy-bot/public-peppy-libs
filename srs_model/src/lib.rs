@@ -36,10 +36,8 @@
 #![forbid(unsafe_code)]
 
 mod arm;
-mod coriolis;
 mod error;
 mod fk;
-mod gravity;
 mod ik;
 mod jacobian;
 mod model;
@@ -49,8 +47,12 @@ mod model;
 /// [`Arm::at`]; [`ArmAnglePolicy`] / [`Solution`] are the IK types.
 pub use arm::{Arm, DEFAULT_DLS_LAMBDA};
 pub use error::SrsError;
-pub use fk::Posed;
 pub use ik::{ArmAnglePolicy, Solution};
+
+/// The arm posed at one configuration: the chain's own read-only view, at
+/// seven joints. Every pose-dependent quantity, the feedforward dynamics
+/// included, is read through it, so it can only be queried after a pose.
+pub type Posed<'a> = chain_kinematics::Posed<'a, ARM_DOF>;
 
 /// Differential kinematics: the geometric [`Jacobian`] (read off a [`Posed`] view
 /// via [`Posed::jacobian`]) and its redundancy-aware inverses and helpers for

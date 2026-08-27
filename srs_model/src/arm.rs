@@ -5,10 +5,10 @@
 
 use nalgebra::{Isometry3, Vector3};
 
-use crate::fk::{ForwardKinematics, Posed};
+use crate::fk::ForwardKinematics;
 use crate::ik::{self, ArmAnglePolicy, Solution};
 use crate::model::ArmModel;
-use crate::{ARM_DOF, JointVec, Limit, SrsError};
+use crate::{ARM_DOF, JointVec, Limit, Posed, SrsError};
 
 /// Damping `lambda` for [`Arm::rate_step`] when the caller has no reason to pick
 /// another. Re-exported from `chain_kinematics`, which owns the step: an arm and

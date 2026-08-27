@@ -14,10 +14,10 @@
 //! a world quantity (it acts along world -Z).
 
 use chain_kinematics::{Chain, ChainSpec, JointKind, JointSelection, Tree};
-use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
+use nalgebra::Isometry3;
 
 use crate::SrsError;
-use crate::{ARM_DOF, JointVec, Limit};
+use crate::{ARM_DOF, JointVec, Limit, Posed};
 
 /// The arm's chain, with the SRS wrist already resolved.
 pub(crate) struct ForwardKinematics {
@@ -101,9 +101,7 @@ impl ForwardKinematics {
     }
 
     pub fn at(&self, q: &JointVec) -> Posed<'_> {
-        Posed {
-            inner: self.chain.at(q),
-        }
+        self.chain.at(q)
     }
 
     /// The fixed `world -> base` mount transform resolved from the URDF. It is
@@ -112,108 +110,6 @@ impl ForwardKinematics {
     /// log/verify which frame is in play rather than assume one.
     pub fn base_from_world(&self) -> Isometry3<f64> {
         self.chain.base_from_world()
-    }
-}
-
-/// The arm posed at one configuration: an immutable, read-only view obtained from
-/// [`Arm::at`](crate::Arm::at). Every pose-dependent quantity (EE pose, gravity,
-/// Coriolis) is read through here, so it can only be queried after a pose.
-pub struct Posed<'a> {
-    inner: chain_kinematics::Posed<'a, ARM_DOF>,
-}
-
-impl Posed<'_> {
-    /// End-effector pose in the arm base frame: the mounted tool's control point,
-    /// or the tip itself when no tool is mounted. This is the point the Jacobian
-    /// and [`Arm::solve_ik`](crate::Arm::solve_ik) work at, so a caller commands
-    /// and reads one frame throughout.
-    pub fn ee_pose(&self) -> Isometry3<f64> {
-        self.inner.ee_pose()
-    }
-
-    /// Tip-link (wrist) pose in the arm base frame: where the chain's 7th revolute
-    /// joint leaves the flange, before any mounted tool.
-    pub fn tip_pose(&self) -> Isometry3<f64> {
-        self.inner.tip_pose()
-    }
-
-    /// Gravity-compensation torques at this posture: the torque each joint must
-    /// apply to hold the arm against gravity (distal payload included).
-    pub fn gravity_torques(&self) -> JointVec {
-        crate::gravity::torques(self)
-    }
-
-    /// Coriolis + centripetal torques at joint velocity `qdot` for this posture.
-    pub fn coriolis_torques(&self, qdot: &JointVec) -> JointVec {
-        crate::coriolis::torques(self, qdot)
-    }
-
-    /// World-frame (URDF root) pose of segment `i`'s link frame: the link moved
-    /// by joint `i+1`, the frame URDF `<collision>`/`<visual>` origins of that
-    /// link are relative to. Both arms of a bimanual URDF share the root frame,
-    /// so poses from two `Arm`s compose directly (e.g. for collision checking).
-    pub fn link_pose_world(&self, i: usize) -> Isometry3<f64> {
-        self.inner.link_pose_world(i)
-    }
-
-    /// URDF name of segment `i`'s link (the link moved by joint `i+1`), e.g.
-    /// `openarm_left_link3`. Keys per-link data such as collision geometry.
-    pub fn link_name(&self, i: usize) -> String {
-        self.inner.link_name(i).to_string()
-    }
-
-    /// Linear-velocity Jacobian of a point rigidly attached to `segment`; see
-    /// [`chain_kinematics::Posed::point_world_jacobian`].
-    pub fn point_world_jacobian(
-        &self,
-        point: &Point3<f64>,
-        segment: usize,
-    ) -> [Vector3<f64>; ARM_DOF] {
-        self.inner.point_world_jacobian(point, segment)
-    }
-
-    /// World-frame revolute axis of joint `i`, re-expressed in the base frame.
-    pub(crate) fn axis_base(&self, i: usize) -> Vector3<f64> {
-        self.inner.axis_base(i)
-    }
-
-    /// Origin of joint `i`'s frame in the base frame. A point *on* the joint axis
-    /// (used for SRS line geometry, never joint4's offset frame origin alone).
-    pub(crate) fn origin_base(&self, i: usize) -> Vector3<f64> {
-        self.inner.origin_base(i)
-    }
-
-    // --- World-frame accessors (gravity is world -z). ---
-
-    /// The constant `world -> arm base` transform (this arm's fixed mounting on
-    /// the body). Converts world/body-frame targets into the arm base frame.
-    pub(crate) fn base_from_world(&self) -> Isometry3<f64> {
-        self.inner.base_from_world()
-    }
-
-    pub(crate) fn mass(&self, i: usize) -> f64 {
-        self.inner.mass(i)
-    }
-
-    pub(crate) fn axis_world(&self, i: usize) -> Vector3<f64> {
-        self.inner.axis_world(i)
-    }
-
-    pub(crate) fn origin_world(&self, i: usize) -> Vector3<f64> {
-        self.inner.origin_world(i)
-    }
-
-    pub(crate) fn com_world(&self, i: usize) -> Vector3<f64> {
-        self.inner.com_world(i)
-    }
-
-    pub(crate) fn inertia_world(&self, i: usize) -> Matrix3<f64> {
-        self.inner.inertia_world(i)
-    }
-
-    /// The underlying generic view, for the Jacobian conveniences.
-    pub(crate) fn inner(&self) -> &chain_kinematics::Posed<'_, ARM_DOF> {
-        &self.inner
     }
 }
 
@@ -261,6 +157,7 @@ fn find_srs_tip(tree: &Tree, base: usize) -> Result<usize, SrsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nalgebra::{Point3, Vector3};
 
     fn fk() -> ForwardKinematics {
         crate::test_support::v1_fk("left")

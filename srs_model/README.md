@@ -2,13 +2,15 @@
 
 Kinematics and dynamics for a **7-DOF SRS arm** (spherical shoulder, revolute
 elbow, spherical wrist): forward kinematics, closed-form arm-angle inverse
-kinematics, and gravity/Coriolis feedforward. Robot-agnostic - every dimension
+kinematics, and gravity/Coriolis validation on the real arm. Robot-agnostic - every dimension
 comes from the URDF the caller supplies, and a chain that is not SRS is refused
 at load. Pure Rust; no hardware, messaging, or async dependencies.
 
 The topology-agnostic half of this lives in
-[`chain_kinematics`](../chain_kinematics): the chain, the Jacobian, and the
-damped resolved-rate step. What stays here is what is genuinely SRS.
+[`chain_kinematics`](../chain_kinematics): the chain, the Jacobian, the damped
+resolved-rate step, and the gravity/Coriolis feedforward. What stays here is
+what is genuinely SRS; the dynamics are validated here, on this arm, against
+KDL reference values (`tests/dynamics.rs`).
 
 ## Quick start
 
@@ -30,7 +32,7 @@ let solution = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &q)?;
 |---|---|
 | `Arm::at(q)` | pose for FK and dynamics; `&self`, so two configurations compare side by side |
 | `Posed::{ee_pose, tip_pose}` | the tool control point, and the wrist before any tool |
-| `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics in the world frame, distal payload lumped into the last segment |
+| `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics (the chain's, at seven joints), payload included |
 | `Posed::jacobian` | the 6x7 geometric Jacobian and its redundancy-aware inverses |
 | `Arm::solve_ik` | closed-form arm-angle (Shimizu) IK under an [`ArmAnglePolicy`] |
 | `Arm::arm_angle` | the arm angle a configuration is already at |
