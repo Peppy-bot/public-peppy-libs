@@ -12,8 +12,7 @@ const V1_URDF: &str = "../openarm_description/assets/openarm_v10.urdf";
 #[test]
 fn builds_v2_srs_chain_for_both_arms() {
     for base in ["openarm_left_base_link", "openarm_right_base_link"] {
-        let mut arm =
-            Arm::from_urdf_file(V2_URDF, base).unwrap_or_else(|e| panic!("v2 {base}: {e}"));
+        let arm = Arm::from_urdf_file(V2_URDF, base).unwrap_or_else(|e| panic!("v2 {base}: {e}"));
 
         let limits = arm.limits();
         assert_eq!(limits.len(), ARM_DOF);

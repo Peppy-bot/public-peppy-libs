@@ -24,7 +24,7 @@ const ELBOW_FLEX_FLOOR: f64 = 0.05;
 #[test]
 fn from_seed_solves_every_reachable_target_from_a_bad_seed() {
     for side in ["left", "right"] {
-        let mut arm = common::arm(side);
+        let arm = common::arm(side);
         let mut rng = StdRng::seed_from_u64(0xBEEF);
         let lim = arm.limits();
         let sample = |rng: &mut StdRng| -> [f64; 7] {

@@ -36,7 +36,6 @@
 #![forbid(unsafe_code)]
 
 mod arm;
-mod chain;
 mod coriolis;
 mod error;
 mod fk;
@@ -44,7 +43,6 @@ mod gravity;
 mod ik;
 mod jacobian;
 mod model;
-mod payload;
 
 /// The library entry point: build an [`Arm`] from a URDF, then read FK, gravity,
 /// Coriolis, and IK off it. [`Posed`] is the read-only view returned by
@@ -69,22 +67,10 @@ pub const ARM_DOF: usize = 7;
 /// One joint-space configuration, j1..j7 in radians.
 pub type JointVec = [f64; ARM_DOF];
 
-/// Inclusive joint position limit, radians. Lives at the crate root because it is
-/// shared data of the URDF chain: the forward-kinematics layer reads it off the
-/// joints ([`Arm::limits`]) and the IK layer carries it for limit checks.
-#[derive(Debug, Clone, Copy)]
-pub struct Limit {
-    pub lo: f64,
-    pub hi: f64,
-}
-
-impl Limit {
-    /// True if `x` lies within `[lo, hi]`. Non-finite `x` (NaN/inf) compares
-    /// false on both sides, so it is rejected.
-    pub fn contains(&self, x: f64) -> bool {
-        self.lo <= x && x <= self.hi
-    }
-}
+/// Inclusive joint position limit, radians: the chain's own type, re-exported
+/// rather than mirrored, so the limits [`Arm::limits`] reports and the limits
+/// the IK checks against cannot be two structs that happen to agree.
+pub use chain_kinematics::Limit;
 
 /// Smallest sine of an angle between two unit axes (or two link directions) we
 /// treat as non-degenerate (~1e-6 rad). Below it the perpendicular / cross

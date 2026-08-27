@@ -229,7 +229,7 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
     let chain_links: Vec<String> = [&args.left_base, &args.right_base]
         .iter()
         .flat_map(|base| {
-            let mut arm = Arm::from_urdf_file(&args.urdf, base).expect("arm");
+            let arm = Arm::from_urdf_file(&args.urdf, base).expect("arm");
             let posed = arm.at(&[0.0; ARM_DOF]);
             (0..ARM_DOF).map(|i| posed.link_name(i)).collect::<Vec<_>>()
         })
@@ -253,7 +253,7 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
         (&args.left_base, &args.left, args.left_gripper),
         (&args.right_base, &args.right, args.right_gripper),
     ] {
-        let mut arm = Arm::from_urdf_file(&args.urdf, base).map_err(|e| e.to_string())?;
+        let arm = Arm::from_urdf_file(&args.urdf, base).map_err(|e| e.to_string())?;
         let posed = arm.at(q);
         for i in 0..ARM_DOF {
             let name = posed.link_name(i);

@@ -11,7 +11,7 @@ use srs_model::ArmAnglePolicy;
 
 #[test]
 fn fixture_round_trip() {
-    let mut arm = common::arm("left");
+    let arm = common::arm("left");
     let limits = arm.limits();
 
     // A small deterministic spread of in-limit, non-singular configurations.

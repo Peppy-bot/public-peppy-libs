@@ -118,7 +118,7 @@ impl Parity {
 
 /// Every quantity the OpenArm nodes read, for one side.
 fn record(side: &str) -> Parity {
-    let mut arm = common::arm(side);
+    let arm = common::arm(side);
     let limits = arm.limits();
     let mut g = Parity::default();
 

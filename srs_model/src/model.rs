@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn fixture_shoulder_and_wrist_axes_orthonormal_at_home() {
         for side in ["left", "right"] {
-            let mut fk = v1_fk(side);
+            let fk = v1_fk(side);
             let posed = fk.at(&[0.0; ARM_DOF]);
             let axes: [Vector3<f64>; ARM_DOF] = std::array::from_fn(|i| posed.axis_base(i));
             for (label, [i, j, k]) in [("shoulder", [0usize, 1, 2]), ("wrist", [4, 5, 6])] {

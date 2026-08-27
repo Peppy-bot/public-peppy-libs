@@ -98,7 +98,7 @@ mod tests {
     use std::f64::consts::FRAC_PI_2;
 
     fn coriolis_at(side: &str, q: &JointVec, qdot: &JointVec) -> JointVec {
-        let mut fk = v1_fk(side);
+        let fk = v1_fk(side);
         torques(&fk.at(q), qdot)
     }
 

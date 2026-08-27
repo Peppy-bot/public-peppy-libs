@@ -36,7 +36,7 @@ mod tests {
     use std::f64::consts::FRAC_PI_2;
 
     fn gravity_at(side: &str, q: &JointVec) -> JointVec {
-        let mut fk = v1_fk(side);
+        let fk = v1_fk(side);
         torques(&fk.at(q))
     }
 
@@ -101,7 +101,7 @@ mod tests {
                 .sum()
         }
         for side in ["left", "right"] {
-            let mut fk = v1_fk(side);
+            let fk = v1_fk(side);
             for q in [
                 [0.0; ARM_DOF],
                 [0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7],
