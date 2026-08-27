@@ -1,0 +1,133 @@
+//! What the loader will not accept, and why each one is a refusal rather than a
+//! caveat.
+//!
+//! Every case here would otherwise produce a plausible wrong answer: a pose the
+//! mechanism cannot hold, a joint confined to a range it does not have, or a `q`
+//! entry silently ignored. A chain that loads is one whose forward kinematics
+//! can be believed.
+
+use chain_kinematics::{Chain, ChainError, ChainSpec, JointSelection};
+
+/// A two-joint chain, with `extra` spliced in before the closing tag so each
+/// test varies exactly the one thing it is about.
+fn urdf(limit_b: &str, extra: &str) -> String {
+    format!(
+        r#"<?xml version="1.0"?><robot name="t">
+  <link name="base"/><link name="a"/><link name="b"/><link name="tip"/>
+  <joint name="j_a" type="revolute">
+    <parent link="base"/><child link="a"/><axis xyz="0 0 1"/>
+    <limit lower="-1.0" upper="1.0" effort="1" velocity="1"/>
+  </joint>
+  <joint name="j_b" type="revolute">
+    <parent link="a"/><child link="b"/><axis xyz="0 1 0"/>
+    <origin xyz="0 0 0.1"/>
+    {limit_b}
+  </joint>
+  <joint name="j_tip" type="fixed">
+    <parent link="b"/><child link="tip"/><origin xyz="0 0 0.1"/>
+  </joint>
+  {extra}
+</robot>"#
+    )
+}
+
+const BOUNDED: &str = r#"<limit lower="-2.0" upper="2.0" effort="1" velocity="1"/>"#;
+
+fn build<const N: usize>(urdf: &str, joints: JointSelection<'_>) -> Result<Chain<N>, ChainError> {
+    let robot = urdf_rs::read_from_string(urdf).expect("parse fixture");
+    Chain::<N>::from_urdf(
+        &robot,
+        &ChainSpec {
+            base_link: None,
+            tip_link: "tip",
+            joints,
+        },
+    )
+}
+
+#[test]
+fn the_two_joint_fixture_loads() {
+    build::<2>(&urdf(BOUNDED, ""), JointSelection::PathOrder).expect("fixture is a valid chain");
+}
+
+#[test]
+fn a_joint_named_twice_is_refused() {
+    // Otherwise the later slot wins and the earlier entry of `q` moves nothing,
+    // so the caller commands two joints and the arm honours one.
+    let err = build::<2>(&urdf(BOUNDED, ""), JointSelection::Named(&["j_a", "j_a"]))
+        .expect_err("a joint cannot be driven by two entries of q");
+    assert!(
+        matches!(&err, ChainError::DuplicateJoint(name) if name == "j_a"),
+        "expected a duplicate-joint refusal, got {err}"
+    );
+}
+
+#[test]
+fn an_actuated_joint_with_no_declared_range_is_refused() {
+    let err = build::<2>(&urdf("", ""), JointSelection::PathOrder)
+        .expect_err("a joint with no <limit> has no range to clamp into");
+    assert!(
+        matches!(&err, ChainError::UnusableLimit { joint, .. } if joint == "j_b"),
+        "expected an unusable-limit refusal, got {err}"
+    );
+}
+
+#[test]
+fn an_unbounded_actuated_joint_is_refused() {
+    // Not confined to a default range: a joint that turns freely would then be
+    // clamped out of motion the mechanism has.
+    let unbounded = r#"<limit lower="-INF" upper="INF" effort="1" velocity="1"/>"#;
+    let err = build::<2>(&urdf(unbounded, ""), JointSelection::PathOrder)
+        .expect_err("an infinite bound is not a bound");
+    assert!(
+        matches!(&err, ChainError::UnusableLimit { joint, lo, hi }
+            if joint == "j_b" && lo.is_infinite() && hi.is_infinite()),
+        "expected an unusable-limit refusal, got {err}"
+    );
+}
+
+#[test]
+fn a_mimic_coupling_onto_the_chain_is_refused() {
+    // `q` poses only the joints it names, so the follower would stay behind and
+    // the reported tip would be a pose the mechanism cannot reach.
+    let follower = r#"<link name="f"/>
+      <joint name="j_f" type="revolute">
+        <parent link="b"/><child link="f"/><axis xyz="0 0 1"/>
+        <limit lower="-1.0" upper="1.0" effort="1" velocity="1"/>
+        <mimic joint="j_b"/>
+      </joint>"#;
+    let err = build::<2>(&urdf(BOUNDED, follower), JointSelection::PathOrder)
+        .expect_err("a coupling with one end on the chain is not drivable here");
+    assert!(
+        matches!(&err, ChainError::MimicCoupling { follower, leader }
+            if follower == "j_f" && leader == "j_b"),
+        "expected a mimic refusal, got {err}"
+    );
+}
+
+#[test]
+fn a_mimic_coupling_clear_of_the_chain_loads() {
+    // A gripper's two fingers mimic each other past the tip. That is another
+    // mechanism's business, and refusing it would reject every real gripper.
+    let fingers = r#"<link name="f1"/><link name="f2"/>
+      <joint name="j_f1" type="prismatic">
+        <parent link="tip"/><child link="f1"/><axis xyz="0 1 0"/>
+        <limit lower="0.0" upper="0.04" effort="1" velocity="1"/>
+      </joint>
+      <joint name="j_f2" type="prismatic">
+        <parent link="tip"/><child link="f2"/><axis xyz="0 -1 0"/>
+        <limit lower="0.0" upper="0.04" effort="1" velocity="1"/>
+        <mimic joint="j_f1"/>
+      </joint>"#;
+    build::<2>(&urdf(BOUNDED, fingers), JointSelection::PathOrder)
+        .expect("a coupling below the tip is not this chain's concern");
+}
+
+#[test]
+fn the_midpoint_is_the_centre_of_the_range() {
+    let chain = build::<2>(&urdf(BOUNDED, ""), JointSelection::PathOrder).expect("fixture loads");
+    let [a, b] = chain.limits();
+    assert_eq!(a.midpoint(), 0.0);
+    assert_eq!(b.midpoint(), 0.0);
+    assert!(a.contains(a.midpoint()) && b.contains(b.midpoint()));
+}
