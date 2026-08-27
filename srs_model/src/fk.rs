@@ -1,37 +1,42 @@
-//! Forward kinematics for a 7-DOF SRS arm, built from a URDF via the `k` crate.
+//! Forward kinematics for a 7-DOF SRS arm over a URDF chain.
 //!
-//! `k` computes poses in the chain's root (world) frame. This type exposes both:
-//! **base-frame** accessors ([`ee_pose`](Posed::ee_pose),
+//! Poses come out of [`crate::chain`] in the URDF root (world) frame. This type
+//! exposes both: **base-frame** accessors ([`ee_pose`](Posed::ee_pose),
 //! `axis_base`, `origin_base`), re-expressed in the arm's own mount link so they
 //! line up with the SRS geometry in [`crate::model`] and the IK target frame; and
-//! **world-frame** accessors used by [`crate::gravity`] / [`crate::coriolis`], because gravity is a
-//! world quantity (acts along world -Z). The fixed `world -> base` transform that
-//! relates the two is captured once at load.
+//! **world-frame** accessors used by [`crate::gravity`] / [`crate::coriolis`],
+//! because gravity is a world quantity (acts along world -Z). The fixed
+//! `world -> base` transform relating the two is captured once at load.
 //!
-//! It is also the *independent* FK used to verify IK: it composes joint
+//! This is also the *independent* FK used to verify IK: it composes joint
 //! transforms straight from the URDF, sharing no code with the analytic solver,
 //! so an IK->FK round-trip is a genuine test.
+//!
+//! The seven-revolute rule lives here rather than in [`crate::chain`]: the chain
+//! poses any serial path through any URDF, and this layer is what insists the
+//! path be an SRS arm.
 
-use k::nalgebra::{Isometry3, Matrix3, Point3, Vector3};
-use k::{Chain, JointType, Node, SerialChain};
+use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
 
 use crate::SrsError;
-
+use crate::chain::{Chain, JointKind};
 use crate::payload::Payload;
 use crate::{ARM_DOF, JointVec, Limit};
 
-/// Parsed serial chain (base -> joint7) plus the constant `world -> base`
-/// transform and per-segment immutable data (axis, mass, COM, inertia)
-/// captured at load. Segment `i` is the link moved by joint `i`; its inertia
-/// is in the link frame (V1.0 URDF inertials use identity rpy).
+/// The arm's chain plus the per-segment immutable data (axis, mass, COM,
+/// inertia) captured at load. Segment `i` is the link moved by joint `i`; its
+/// inertia is in the link frame.
 pub(crate) struct ForwardKinematics {
-    chain: SerialChain<f64>,
-    /// The 7 revolute joint nodes in chain order.
-    joint_nodes: [Node<f64>; ARM_DOF],
-    /// The wrist (tip) node: the link after the 7th revolute joint, found by
-    /// walking the chain out from the base. The end-effector frame too, unless a
-    /// tool is mounted (see [`tool`](Self::tool)).
-    tip: Node<f64>,
+    chain: Chain,
+    /// Joint indices from the URDF root down to the tip, in order. Includes the
+    /// fixed mounting joints above the arm.
+    path: Vec<usize>,
+    /// Where each actuated joint sits in `path`, so `q[i]` and the world
+    /// transforms line up without re-walking.
+    actuated: [usize; ARM_DOF],
+    /// The tip link: the wrist, and the end-effector frame unless a tool is
+    /// mounted (see [`tool`](Self::tool)).
+    tip_link: usize,
     /// `world -> base_link`; constant because every joint between them is fixed.
     base_from_world: Isometry3<f64>,
     axes_local: [Vector3<f64>; ARM_DOF],
@@ -47,6 +52,10 @@ pub(crate) struct ForwardKinematics {
     /// the wrist. Identity until [`set_tool_link`](Self::set_tool_link), so a bare
     /// arm controls its tip.
     tool: Isometry3<f64>,
+    /// World transform of each `path` joint's child link, refreshed by
+    /// [`at`](Self::at). Holding it here is what makes `at` take `&mut self` and
+    /// every read through [`Posed`] follow a pose.
+    world: Vec<Isometry3<f64>>,
 }
 
 impl ForwardKinematics {
@@ -59,12 +68,11 @@ impl ForwardKinematics {
     /// caller passes (it is not a general N-DOF or non-SRS solver).
     pub fn from_urdf(urdf: &str, base_link: &str) -> Result<Self, SrsError> {
         let robot = urdf_rs::read_from_string(urdf).map_err(|e| format!("parse URDF: {e}"))?;
-        Self::from_chain(Chain::<f64>::from(robot), base_link)
+        Self::from_chain(Chain::from_robot(&robot)?, base_link)
     }
 
     /// Like [`from_urdf`](Self::from_urdf) but reads the URDF from a file path,
-    /// folding the IO error into the same `Result` so callers need not handle the
-    /// read separately.
+    /// folding the IO error into the same `Result`.
     pub fn from_urdf_file(path: &str, base_link: &str) -> Result<Self, SrsError> {
         let urdf = std::fs::read_to_string(path).map_err(|source| SrsError::UrdfRead {
             path: path.to_string(),
@@ -83,10 +91,11 @@ impl ForwardKinematics {
     /// well-ordered).
     pub fn limits(&self) -> [Limit; ARM_DOF] {
         std::array::from_fn(|i| {
-            let (lo, hi) = match &self.joint_nodes[i].joint().limits {
-                Some(range) => (range.min, range.max),
-                None => (-std::f64::consts::PI, std::f64::consts::PI),
-            };
+            let (lo, hi) = self
+                .chain
+                .joint(self.actuated_joint(i))
+                .limit
+                .unwrap_or((-std::f64::consts::PI, std::f64::consts::PI));
             Limit {
                 lo: lo.max(self.lower_floors[i]).min(hi),
                 hi,
@@ -116,26 +125,16 @@ impl ForwardKinematics {
     /// a movable joint is rejected, because its offset would silently change with
     /// that joint.
     pub(crate) fn set_tool_link(&mut self, link_name: &str) -> Result<(), SrsError> {
-        let mut path = Vec::new();
-        if !collect_fixed_path(&self.tip, link_name, &mut path) {
-            return Err(SrsError::Tool(format!(
-                "'{link_name}' is not a link fixed below the tip '{}'",
-                self.tip_link_name()
-            )));
-        }
-        self.tool = path
-            .iter()
-            .fold(Isometry3::identity(), |acc, joint| acc * joint);
+        self.tool = self
+            .chain
+            .fixed_path_to(self.tip_link, link_name)
+            .ok_or_else(|| {
+                SrsError::Tool(format!(
+                    "'{link_name}' is not a link fixed below the tip '{}'",
+                    self.chain.link(self.tip_link).name
+                ))
+            })?;
         Ok(())
-    }
-
-    /// The tip link's URDF name, for error messages.
-    fn tip_link_name(&self) -> String {
-        self.tip
-            .link()
-            .as_ref()
-            .map(|l| l.name.clone())
-            .unwrap_or_default()
     }
 
     /// The mounted `tip -> tool` transform (identity when none is mounted).
@@ -143,51 +142,44 @@ impl ForwardKinematics {
         self.tool
     }
 
-    fn from_chain(full: Chain<f64>, base_link: &str) -> Result<Self, SrsError> {
-        let base = full
-            .find_link(base_link)
-            .ok_or_else(|| format!("URDF missing base link '{base_link}'"))?
-            .clone();
+    /// The chain index of actuated joint `i`.
+    fn actuated_joint(&self, i: usize) -> usize {
+        self.path[self.actuated[i]]
+    }
 
-        // Pose the whole tree at home so the traversal and the frozen distal
-        // links are read off consistent world transforms.
-        full.update_transforms();
+    fn from_chain(chain: Chain, base_link: &str) -> Result<Self, SrsError> {
+        let base = chain
+            .link_index(base_link)
+            .ok_or_else(|| format!("URDF missing base link '{base_link}'"))?;
 
         // The SRS chain is implicit: walk ARM_DOF revolute joints out from the
         // base to find the wrist, then lump everything past it into the distal
-        // payload, before reducing to the serial base -> tip chain.
-        let tip = find_srs_tip(&base)?;
-        let payload = Payload::from_distal(&tip);
+        // payload.
+        let tip_link = find_srs_tip(&chain, base)?;
+        let payload = Payload::from_distal(&chain, tip_link);
 
-        let chain = SerialChain::from_end(&tip);
-        let joint_nodes = collect_revolute_nodes(&chain)?;
-        let axes_local = std::array::from_fn(|i| match joint_nodes[i].joint().joint_type {
-            JointType::Rotational { axis } => *axis.as_ref(),
-            _ => unreachable!("collect_revolute_nodes verified revolute"),
+        let path = chain.path_to(tip_link);
+        let actuated = actuated_slots(&chain, &path)?;
+        let axes_local = std::array::from_fn(|i| match chain.joint(path[actuated[i]]).kind {
+            JointKind::Revolute { axis } => axis.into_inner(),
+            _ => unreachable!("actuated_slots verified revolute"),
         });
 
         // Per-segment inertial data: segment i is the link rigidly attached
-        // downstream of joint i (its `Node`'s link).
+        // downstream of joint i.
         let mut masses = [0.0_f64; ARM_DOF];
         let mut coms_local = [Vector3::zeros(); ARM_DOF];
         let mut inertias_local = [Matrix3::zeros(); ARM_DOF];
-        for (i, node) in joint_nodes.iter().enumerate() {
-            let guard = node.link();
-            let inertial = &guard
-                .as_ref()
-                .ok_or_else(|| format!("joint {i} node has no link"))?
-                .inertial;
-            masses[i] = inertial.mass;
-            coms_local[i] = inertial.origin().translation.vector;
-            // Rotate the inertia into the link frame so a non-identity inertial
-            // rpy is handled (V1.0's are all identity, so this is a no-op there).
-            let r = *inertial.origin().rotation.to_rotation_matrix().matrix();
-            inertias_local[i] = r * inertial.inertia * r.transpose();
+        for i in 0..ARM_DOF {
+            let link = chain.link(chain.joint(path[actuated[i]]).child);
+            masses[i] = link.mass;
+            coms_local[i] = link.com;
+            inertias_local[i] = link.inertia;
         }
 
         // Fold the distal payload into the last segment. It is rigidly attached
         // to the wrist link, whose frame is segment ARM_DOF-1's frame (the tip is
-        // that node), so a bigger last link and a separate payload are the same
+        // that link), so a bigger last link and a separate payload are the same
         // rigid body. Gravity / Coriolis then carry it.
         if payload.mass > 0.0 {
             let last = ARM_DOF - 1;
@@ -198,36 +190,65 @@ impl ForwardKinematics {
             inertias_local[last] = merged.inertia;
         }
 
-        // Pose the serial chain at home, then read the fixed base-link world transform.
-        chain.set_joint_positions_unchecked(&[0.0; ARM_DOF]);
-        chain.update_transforms();
-        let base_world = base
-            .world_transform()
-            .ok_or("base link has no world transform")?;
-
-        Ok(Self {
+        let mut fk = Self {
+            world: vec![Isometry3::identity(); path.len()],
             chain,
-            joint_nodes,
-            tip,
-            base_from_world: base_world.inverse(),
+            path,
+            actuated,
+            tip_link,
+            base_from_world: Isometry3::identity(),
             axes_local,
             masses,
             coms_local,
             inertias_local,
             lower_floors: [f64::NEG_INFINITY; ARM_DOF],
             tool: Isometry3::identity(),
-        })
+        };
+
+        // Pose at home, then read the fixed base-link world transform. Every joint
+        // between the root and the base is fixed, so it does not move afterwards.
+        fk.at(&[0.0; ARM_DOF]);
+        let base_world = fk
+            .world_of_link(base)
+            .ok_or("base link has no world transform")?;
+        fk.base_from_world = base_world.inverse();
+        Ok(fk)
     }
 
-    /// Pose the chain at `q` and return a read-only view of it. `k`'s posing API is
-    /// itself `&self` (the chain caches transforms through interior mutability), so
-    /// the `&mut` here is deliberate, not a `k` requirement: it gives the returned
-    /// [`Posed`] exclusive access for its lifetime, making "pose, then read" a
-    /// type-enforced invariant (no accessor runs before a pose, and no re-pose can
-    /// race a read), not just a calling convention.
+    /// World transform of `link`, if it lies on the arm's path (or is the root).
+    fn world_of_link(&self, link: usize) -> Option<Isometry3<f64>> {
+        if link == self.chain.root() {
+            return Some(Isometry3::identity());
+        }
+        self.path
+            .iter()
+            .position(|&j| self.chain.joint(j).child == link)
+            .map(|slot| self.world[slot])
+    }
+
+    /// Pose the arm at configuration `q` and return a read-only view of it. The
+    /// `&mut` is what makes "pose, then read" an invariant rather than a calling
+    /// convention: the returned [`Posed`] holds exclusive access for its lifetime,
+    /// so no accessor runs before a pose and no re-pose races a read.
     pub fn at(&mut self, q: &JointVec) -> Posed<'_> {
-        self.chain.set_joint_positions_unchecked(q);
-        self.chain.update_transforms();
+        let Self {
+            chain, path, world, ..
+        } = self;
+        let mut here = Isometry3::identity();
+        let mut actuated = 0;
+        for (slot, &j) in path.iter().enumerate() {
+            let joint = chain.joint(j);
+            // Joints off the arm (the fixed mount above it) take no value.
+            let value = if joint.kind.is_movable() {
+                let v = q[actuated];
+                actuated += 1;
+                v
+            } else {
+                0.0
+            };
+            here *= joint.origin * joint.kind.motion(value);
+            world[slot] = here;
+        }
         Posed { fk: self }
     }
 
@@ -261,7 +282,8 @@ impl Posed<'_> {
     /// joint leaves the flange, before any mounted tool. Equal to
     /// [`ee_pose`](Self::ee_pose) on a bare arm; the two differ by the tool.
     pub fn tip_pose(&self) -> Isometry3<f64> {
-        self.to_base(&self.fk.tip)
+        // The tip is the child of the last joint on the path.
+        self.to_base(self.fk.world[self.fk.path.len() - 1])
     }
 
     /// Gravity-compensation torques at this posture: the torque each joint must
@@ -286,19 +308,15 @@ impl Posed<'_> {
     /// URDF name of segment `i`'s link (the link moved by joint `i+1`), e.g.
     /// `openarm_left_link3`. Keys per-link data such as collision geometry.
     pub fn link_name(&self, i: usize) -> String {
-        self.fk.joint_nodes[i]
-            .link()
-            .as_ref()
-            .expect("revolute joint node has a link (validated at load)")
-            .name
-            .clone()
+        let joint = self.fk.chain.joint(self.fk.path[self.fk.actuated[i]]);
+        self.fk.chain.link(joint.child).name.clone()
     }
 
     /// World-frame revolute axis of joint `i`, re-expressed in the base frame. A
     /// revolute axis is invariant under its own angle, so rotating the local axis
     /// by the joint's world rotation is exact.
     pub(crate) fn axis_base(&self, i: usize) -> Vector3<f64> {
-        self.to_base(&self.fk.joint_nodes[i])
+        self.to_base(self.joint_world(i))
             .rotation
             .transform_vector(&self.fk.axes_local[i])
     }
@@ -306,7 +324,7 @@ impl Posed<'_> {
     /// Origin of joint `i`'s frame in the base frame. A point *on* the joint axis
     /// (used for SRS line geometry, never joint4's offset frame origin alone).
     pub(crate) fn origin_base(&self, i: usize) -> Vector3<f64> {
-        self.to_base(&self.fk.joint_nodes[i]).translation.vector
+        self.to_base(self.joint_world(i)).translation.vector
     }
 
     /// The constant `world -> arm base` transform (this arm's fixed mounting on
@@ -378,36 +396,15 @@ impl Posed<'_> {
         r * self.fk.inertias_local[i] * r.transpose()
     }
 
+    /// World transform of actuated joint `i`'s frame, as posed by
+    /// [`ForwardKinematics::at`].
     fn joint_world(&self, i: usize) -> Isometry3<f64> {
-        self.fk.joint_nodes[i]
-            .world_transform()
-            .expect("node world transform")
+        self.fk.world[self.fk.actuated[i]]
     }
 
-    fn to_base(&self, node: &Node<f64>) -> Isometry3<f64> {
-        self.fk.base_from_world * node.world_transform().expect("node world transform")
+    fn to_base(&self, world: Isometry3<f64>) -> Isometry3<f64> {
+        self.fk.base_from_world * world
     }
-}
-
-/// Walk down from `node` for the link named `link_name`, pushing each joint's fixed
-/// origin onto `path`. Returns false if the link is not in this subtree or is
-/// reached through a joint that moves, so the caller cannot mount a frame whose
-/// offset is not constant.
-fn collect_fixed_path(node: &Node<f64>, link_name: &str, path: &mut Vec<Isometry3<f64>>) -> bool {
-    let children: Vec<Node<f64>> = node.children().to_vec();
-    for child in children {
-        if !matches!(child.joint().joint_type, JointType::Fixed) {
-            continue;
-        }
-        let origin = *child.joint().origin();
-        let found = child.link().as_ref().is_some_and(|l| l.name == link_name);
-        path.push(origin);
-        if found || collect_fixed_path(&child, link_name, path) {
-            return true;
-        }
-        path.pop();
-    }
-    false
 }
 
 /// Walk from `base` down the unique revolute-bearing path and return the link
@@ -416,71 +413,68 @@ fn collect_fixed_path(node: &Node<f64>, link_name: &str, path: &mut Vec<Isometry
 /// to a revolute joint; a fixed sensor branch or the (prismatic) gripper is
 /// skipped, and a genuine fork (two revolute branches) is rejected as not a
 /// single SRS arm.
-fn find_srs_tip(base: &Node<f64>) -> Result<Node<f64>, SrsError> {
-    let mut node = base.clone();
+fn find_srs_tip(chain: &Chain, base: usize) -> Result<usize, SrsError> {
+    let mut link = base;
     let mut revolute = 0;
     while revolute < ARM_DOF {
-        // Materialize children before filtering so the parent lock is released
-        // before `subtree_has_revolute` locks each child.
-        let children: Vec<Node<f64>> = node.children().to_vec();
-        let mut arm: Vec<Node<f64>> = children.into_iter().filter(subtree_has_revolute).collect();
-        node = match arm.len() {
-            1 => arm.pop().unwrap(),
-            0 => {
-                return Err(SrsError::NotSrsArm(format!(
+        let mut arm = chain.children_of(link).iter().filter(|&&j| {
+            matches!(chain.joint(j).kind, JointKind::Revolute { .. })
+                || chain.subtree_has_revolute(chain.joint(j).child)
+        });
+        let (Some(&joint), None) = (arm.next(), arm.next()) else {
+            let n = chain
+                .children_of(link)
+                .iter()
+                .filter(|&&j| {
+                    matches!(chain.joint(j).kind, JointKind::Revolute { .. })
+                        || chain.subtree_has_revolute(chain.joint(j).child)
+                })
+                .count();
+            return Err(SrsError::NotSrsArm(if n == 0 {
+                format!(
                     "chain from base reaches only {revolute} revolute joints; \
                      a 7-DOF SRS arm needs {ARM_DOF}"
-                )));
-            }
-            n => {
-                return Err(SrsError::NotSrsArm(format!(
+                )
+            } else {
+                format!(
                     "ambiguous arm: {n} revolute-bearing branches share one link; \
                      not a single SRS chain"
-                )));
-            }
+                )
+            }));
         };
-        if matches!(node.joint().joint_type, JointType::Rotational { .. }) {
+        if matches!(chain.joint(joint).kind, JointKind::Revolute { .. }) {
             revolute += 1;
         }
+        link = chain.joint(joint).child;
     }
-    Ok(node)
+    Ok(link)
 }
 
-/// Whether `node` or any of its descendants is reached through a revolute joint:
-/// marks the branch that continues the arm, versus a dead fixed mount or the
-/// gripper. `iter_descendants` includes `node` itself.
-fn subtree_has_revolute(node: &Node<f64>) -> bool {
-    node.iter_descendants()
-        .any(|d| matches!(d.joint().joint_type, JointType::Rotational { .. }))
-}
-
-/// Collect the [`ARM_DOF`] revolute joint nodes of the serial chain in order,
-/// rejecting any chain that does not reduce to exactly that. The fixed
-/// world/body mounting joints are skipped.
+/// Locate the [`ARM_DOF`] actuated joints within the root-to-tip `path`, as
+/// indices into it, rejecting any chain that does not reduce to exactly that.
 ///
 /// A clean 7-DOF SRS arm's *only* degrees of freedom are its seven revolute
 /// joints. Any other movable joint (e.g. a prismatic DOF interspersed on the
 /// path) is rejected: it would otherwise pass the revolute count below while
 /// `base_from_world` is frozen at home, silently building the wrong model
 /// instead of returning `Err`.
-fn collect_revolute_nodes(chain: &SerialChain<f64>) -> Result<[Node<f64>; ARM_DOF], SrsError> {
-    if let Some(extra) = chain.iter().find(|n| {
-        !matches!(
-            n.joint().joint_type,
-            JointType::Fixed | JointType::Rotational { .. }
-        )
-    }) {
+fn actuated_slots(chain: &Chain, path: &[usize]) -> Result<[usize; ARM_DOF], SrsError> {
+    if let Some(&extra) = path
+        .iter()
+        .find(|&&j| matches!(chain.joint(j).kind, JointKind::Prismatic { .. }))
+    {
         return Err(SrsError::NotSrsArm(format!(
             "SRS chain has a non-revolute movable joint '{}': not a 7-DOF revolute arm",
-            extra.joint().name
+            chain.joint(extra).name
         )));
     }
-    let nodes: Vec<Node<f64>> = chain
+    let slots: Vec<usize> = path
         .iter()
-        .filter(|n| matches!(n.joint().joint_type, JointType::Rotational { .. }))
-        .cloned()
+        .enumerate()
+        .filter(|(_, j)| matches!(chain.joint(**j).kind, JointKind::Revolute { .. }))
+        .map(|(slot, _)| slot)
         .collect();
-    nodes.try_into().map_err(|v: Vec<_>| {
+    slots.try_into().map_err(|v: Vec<_>| {
         SrsError::NotSrsArm(format!(
             "expected {ARM_DOF} revolute joints in the SRS chain, got {}",
             v.len()

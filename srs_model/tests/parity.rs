@@ -91,7 +91,12 @@ impl Parity {
                 values.len()
             );
             for (i, (&got, &exp)) in values.iter().zip(&want).enumerate() {
-                let ok = if tolerance == 0.0 {
+                // A recorded NaN is a real datum - an IK miss, or an undefined
+                // arm angle - so it has to compare equal to itself in both modes,
+                // which a difference test never does.
+                let ok = if got.is_nan() || exp.is_nan() {
+                    got.is_nan() && exp.is_nan()
+                } else if tolerance == 0.0 {
                     got.to_bits() == exp.to_bits()
                 } else {
                     (got - exp).abs() <= tolerance * exp.abs().max(1.0)

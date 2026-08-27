@@ -26,7 +26,7 @@
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use k::nalgebra::{Isometry3, Matrix3, Rotation3, Unit, Vector3, Vector6};
+use nalgebra::{Isometry3, Matrix3, Rotation3, Unit, Vector3, Vector6};
 
 use crate::jacobian::{Jacobian, manipulability};
 
@@ -830,7 +830,7 @@ mod tests {
     use super::*;
     use crate::fk::ForwardKinematics;
     use crate::test_support::{v1_fk, v1_limits, v1_model};
-    use k::nalgebra::{Isometry3, UnitQuaternion};
+    use nalgebra::{Isometry3, UnitQuaternion};
     use rand::RngExt;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
@@ -1145,22 +1145,70 @@ mod tests {
     }
 
     #[test]
-    fn poe_fk_matches_k_chain() {
+    fn poe_fk_matches_an_independent_chain() {
+        // Three implementations must agree on where the end effector is: the
+        // PoE screw map the IK is built on, this crate's own URDF chain, and the
+        // `k` crate reading the same URDF. The third is the point - the first two
+        // are ours, so on their own they could share a mistake. `k` is carried as
+        // a dev-dependency for exactly this and nothing else.
+        //
+        // Compared component-wise rather than by subtracting `Isometry3`s, so the
+        // check survives `k` and this crate resolving different `nalgebra`
+        // versions.
+        use k::nalgebra as kna;
+
         let mut fk = v1_fk("left");
         let m = ArmModel::from_fk(&mut fk).unwrap();
-        let q = [0.3, -0.4, 0.2, 0.8, -0.5, 0.3, 0.6];
-        let ee = pose(&mut fk, &q);
+        let q: JointVec = [0.3, -0.4, 0.2, 0.8, -0.5, 0.3, 0.6];
+
+        let ours = pose(&mut fk, &q);
         let p_poe = fk_poe_position(&m, &q);
         assert!(
-            (ee.translation.vector - p_poe).norm() < 1e-9,
-            "pos mismatch"
+            (ours.translation.vector - p_poe).norm() < 1e-9,
+            "PoE and chain FK disagree on position"
         );
         let r_poe = fk_poe_rotation(&m, &q);
-        let r_k = ee.rotation.to_rotation_matrix();
         assert!(
-            (r_poe.matrix() - r_k.matrix()).norm() < 1e-9,
-            "rot mismatch"
+            (r_poe.matrix() - ours.rotation.to_rotation_matrix().matrix()).norm() < 1e-9,
+            "PoE and chain FK disagree on orientation"
         );
+
+        let robot =
+            urdf_rs::read_from_string(crate::test_support::FIXTURE_URDF).expect("parse fixture");
+        let chain = k::Chain::<f64>::from(&robot);
+        let tip = chain
+            .find_link("openarm_left_link7")
+            .expect("fixture has link7");
+        let serial = k::SerialChain::from_end(tip);
+        serial.set_joint_positions_clamped(&q);
+        serial.update_transforms();
+        let base = chain
+            .find_link("openarm_left_link0")
+            .expect("fixture has link0")
+            .world_transform()
+            .expect("base world transform");
+        let theirs = base.inverse() * tip.world_transform().expect("tip world transform");
+
+        let dp = [
+            theirs.translation.vector.x - ours.translation.vector.x,
+            theirs.translation.vector.y - ours.translation.vector.y,
+            theirs.translation.vector.z - ours.translation.vector.z,
+        ];
+        assert!(
+            dp.iter().all(|d| d.abs() < 1e-9),
+            "independent chain disagrees on position by {dp:?}"
+        );
+        let theirs_r: kna::Matrix3<f64> = *theirs.rotation.to_rotation_matrix().matrix();
+        let ours_r = ours.rotation.to_rotation_matrix();
+        for r in 0..3 {
+            for c in 0..3 {
+                let d = theirs_r[(r, c)] - ours_r.matrix()[(r, c)];
+                assert!(
+                    d.abs() < 1e-9,
+                    "independent chain disagrees on orientation at ({r},{c}) by {d}"
+                );
+            }
+        }
     }
 
     // --- Direct unit tests for the pure helpers --------------------------

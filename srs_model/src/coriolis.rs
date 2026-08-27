@@ -11,7 +11,7 @@
 //! values (tree inverse dynamics, so the branched gripper is included);
 //! regenerate with `tools/kdl_reference.cpp`.
 
-use k::nalgebra::Vector3;
+use nalgebra::Vector3;
 
 use crate::JointVec;
 use crate::fk::Posed;

@@ -19,7 +19,7 @@
 //!
 //! All quantities are in the **arm base frame**, matching [`Posed::ee_pose`].
 
-use k::nalgebra::{Matrix6, SMatrix, Vector6};
+use nalgebra::{Matrix6, SMatrix, Vector6};
 
 use crate::ARM_DOF;
 use crate::fk::Posed;

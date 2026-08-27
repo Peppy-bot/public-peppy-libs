@@ -3,7 +3,7 @@
 //! handle. Build it once and everything hangs off it; the underlying FK chain and
 //! SRS model are internal.
 
-use k::nalgebra::{Isometry3, Vector3, Vector6};
+use nalgebra::{Isometry3, Vector3, Vector6};
 
 use crate::fk::{ForwardKinematics, Posed};
 use crate::ik::{self, ArmAnglePolicy, Solution};

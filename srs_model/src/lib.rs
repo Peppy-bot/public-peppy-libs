@@ -36,6 +36,7 @@
 #![forbid(unsafe_code)]
 
 mod arm;
+mod chain;
 mod coriolis;
 mod error;
 mod fk;
@@ -91,9 +92,10 @@ impl Limit {
 /// axes, straight arm). Sites that test a `sin²` quantity compare its square.
 pub(crate) const PARALLEL_SIN_EPS: f64 = 1e-6;
 
-/// Re-export the linear-algebra types so downstream crates use the same
-/// `nalgebra` version `k` was built against.
-pub use k::nalgebra;
+/// Re-export the linear-algebra types so downstream crates speak the same
+/// `nalgebra` version this crate was built against, rather than each picking
+/// their own and finding the `Isometry3`s do not match.
+pub use nalgebra;
 
 /// Test fixtures: load a concrete SRS arm (the OpenArm V1.0) from the bundled
 /// fixture URDF, giving the agnostic tests a real arm to check against.

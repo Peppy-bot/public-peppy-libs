@@ -13,8 +13,9 @@
 //! rigidly attached to `link7`, so a bigger last link and a separate payload are
 //! the same rigid body. Gravity / Coriolis then carry it as part of that segment.
 
-use k::Node;
-use k::nalgebra::{Isometry3, Matrix3, Point3, Vector3};
+use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
+
+use crate::chain::Chain;
 
 /// Lumped distal rigid body, in the tip-link frame. `inertia` is about `com`.
 #[derive(Debug, Clone, Copy)]
@@ -34,25 +35,15 @@ impl Payload {
         }
     }
 
-    /// Lump every link distal to `tip` into one rigid body in the tip frame. The
-    /// full chain must already be posed at home (`update_transforms`), so the
-    /// frozen distal link transforms are read straight off the cached poses.
-    pub(crate) fn from_distal(tip: &Node<f64>) -> Self {
-        let tip_world = tip.world_transform().expect("tip world transform");
-        let tip_inv = tip_world.inverse();
-
-        // (mass, COM in tip frame, inertia about that COM in tip frame).
-        let mut bodies: Vec<(f64, Vector3<f64>, Matrix3<f64>)> = Vec::new();
-        for node in tip.iter_descendants() {
-            // `iter_descendants` includes `tip` itself; it is the last SRS
-            // segment, already accounted for, not distal mass.
-            if node == *tip {
-                continue;
-            }
-            if let Some(body) = distal_body_in_tip(&node, &tip_inv) {
-                bodies.push(body);
-            }
-        }
+    /// Lump every link distal to `tip` into one rigid body in the tip frame.
+    /// Distal joints (a gripper's fingers) are frozen at zero, which is what
+    /// makes the lump a single rigid body at all.
+    pub(crate) fn from_distal(chain: &Chain, tip: usize) -> Self {
+        let bodies: Vec<(f64, Vector3<f64>, Matrix3<f64>)> = chain
+            .subtree_from(tip, &|_| 0.0)
+            .into_iter()
+            .filter_map(|(link, in_tip)| distal_body_in_tip(chain, link, &in_tip))
+            .collect();
         compose(&bodies)
     }
 
@@ -69,44 +60,20 @@ impl Payload {
     }
 }
 
-/// One distal node's rigid body, expressed in the tip frame:
-/// `(mass, COM, inertia about the COM)`, or `None` if the node is link-less or
-/// massless. The link guard and `world_transform()` both lock the node's
-/// non-reentrant mutex, so reading them is kept here, in order (guard dropped at
-/// the end of the inner block, before the transform), where it cannot overlap and
-/// deadlock.
+/// One distal link's rigid body expressed in the tip frame:
+/// `(mass, COM, inertia about the COM)`, or `None` for a massless link.
 fn distal_body_in_tip(
-    node: &Node<f64>,
-    tip_inv: &Isometry3<f64>,
+    chain: &Chain,
+    link: usize,
+    in_tip: &Isometry3<f64>,
 ) -> Option<(f64, Vector3<f64>, Matrix3<f64>)> {
-    let (mass, com_in_link, inertia_in_link) = {
-        let guard = node.link();
-        let link = guard.as_ref()?;
-        let mass = link.inertial.mass;
-        if mass == 0.0 {
-            return None;
-        }
-        // Rotate the COM inertia by the inertial's own rpy into the link frame.
-        let r = *link
-            .inertial
-            .origin()
-            .rotation
-            .to_rotation_matrix()
-            .matrix();
-        (
-            mass,
-            link.inertial.origin().translation.vector,
-            r * link.inertial.inertia * r.transpose(),
-        )
-    };
-
-    // Re-express the frozen distal link in the tip frame (constant at home).
-    let link_in_tip = tip_inv * node.world_transform().expect("distal world transform");
-    let com = link_in_tip
-        .transform_point(&Point3::from(com_in_link))
-        .coords;
-    let r = *link_in_tip.rotation.to_rotation_matrix().matrix();
-    Some((mass, com, r * inertia_in_link * r.transpose()))
+    let l = chain.link(link);
+    if l.mass == 0.0 {
+        return None;
+    }
+    let com = in_tip.transform_point(&Point3::from(l.com)).coords;
+    let r = *in_tip.rotation.to_rotation_matrix().matrix();
+    Some((l.mass, com, r * l.inertia * r.transpose()))
 }
 
 /// Combine several rigid bodies into one: total mass, mass-weighted COM, and the
@@ -178,11 +145,10 @@ mod tests {
         // 0.0219685), so the lumped COM is the mirror-symmetric average.
         use crate::test_support::FIXTURE_URDF;
         let robot = urdf_rs::read_from_string(FIXTURE_URDF).expect("parse fixture");
-        let chain = k::Chain::<f64>::from(robot);
-        chain.update_transforms();
-        let tip = chain.find_link("openarm_left_link7").expect("link7");
+        let chain = Chain::from_robot(&robot).expect("build fixture chain");
+        let tip = chain.link_index("openarm_left_link7").expect("link7");
 
-        let p = Payload::from_distal(tip);
+        let p = Payload::from_distal(&chain, tip);
         let finger_mass = 0.03602545343277134;
         assert!(
             (p.mass - 2.0 * finger_mass).abs() < 1e-12,
