@@ -196,6 +196,11 @@ impl Tree {
         &self.links[i]
     }
 
+    /// How many links the URDF declares: the range every link index falls in.
+    pub fn link_count(&self) -> usize {
+        self.links.len()
+    }
+
     pub fn joint(&self, i: usize) -> &Joint {
         &self.joints[i]
     }

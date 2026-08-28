@@ -55,7 +55,7 @@ pub use jacobian::{
     Jacobian, JacobianPinv, damped_pseudo_inverse, manipulability, null_space_projector,
     try_pseudo_inverse,
 };
-pub use payload::Payload;
+pub use payload::{Payload, segments_carrying};
 pub use rate::{DEFAULT_DLS_LAMBDA, rate_step};
 pub use servo::{
     EeCaps, NoSmoothing, ServoLimits, ServoState, ServoStep, ServoTolerances, Smoother,

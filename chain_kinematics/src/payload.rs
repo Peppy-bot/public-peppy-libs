@@ -1,18 +1,25 @@
-//! The rigid mass distal to a chain's tip: a gripper body, fingers, tools, or
-//! any fixed end-effector. The chain ends at the tip for kinematics, but a
-//! dynamics layer must still carry whatever hangs off it.
+//! The rigid mass a segment carries beyond its own link: a gripper body, its
+//! fingers, a tool, a bracket, a sensor pod. The chain runs through one link per
+//! actuated joint, but a dynamics layer must still carry everything bolted to
+//! each of them.
 //!
-//! Every link past the tip is lumped into one rigid body, with movable distal
-//! joints (e.g. gripper fingers) frozen at the URDF home pose. A set of bodies
-//! that share no relative motion *is* one rigid body, so the lump is exact for
-//! the frozen configuration; the only approximation is ignoring finger travel,
+//! A link rides on the deepest actuated joint above it, which is the last joint
+//! whose motion moves it. That is the whole rule, and it covers the branch past
+//! the tip as one case among several: a bracket hanging off the forearm rides on
+//! the elbow exactly as a gripper past the wrist rides on the last joint. Taking
+//! only the branch below the tip would drop the rest, and a jaw hanging beside
+//! the tip frame rather than under it is not an exotic URDF: the SO-101 is
+//! written that way.
+//!
+//! Each segment's extra bodies are lumped into one rigid body, with the joints
+//! among them frozen at the URDF home pose. A set of bodies that share no
+//! relative motion *is* one rigid body, so the lump is exact for the frozen
+//! configuration; the only approximation is ignoring travel on a frozen joint,
 //! which is second-order and cancels for a symmetric gripper.
 //!
-//! The lump is expressed in the tip-link frame and, at load, folded straight
-//! into the last segment's inertial ([`Payload::combined_with`]): the payload is
-//! rigidly attached to the tip link, so a bigger last segment and a separate
-//! payload are the same rigid body. A dynamics layer then carries it as part of
-//! that segment.
+//! The lump is expressed in the segment's own link frame and, at load, folded
+//! straight into that segment's inertial ([`Payload::combined_with`]): a bigger
+//! segment and a rigidly attached payload are the same rigid body.
 
 use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
 
@@ -36,39 +43,67 @@ impl Payload {
         }
     }
 
-    /// Lump every link distal to `tip` into one rigid body in the tip frame.
-    /// Distal joints (a gripper's fingers) are frozen at zero, which is what
-    /// makes the lump a single rigid body at all.
-    pub fn from_distal(tree: &Tree, tip: usize) -> Self {
+    /// Lump everything riding on `segment` into one rigid body, in the frame of
+    /// `link`, that segment's own link. `rides_on` is the attribution from
+    /// [`segments_carrying`]. The joints among the lumped bodies are frozen at
+    /// zero, which is what makes the lump a single rigid body at all.
+    pub fn carried_by(
+        tree: &Tree,
+        link: usize,
+        segment: usize,
+        rides_on: &[Option<usize>],
+    ) -> Self {
         let bodies: Vec<(f64, Vector3<f64>, Matrix3<f64>)> = tree
-            .subtree_from(tip, &|_| 0.0)
+            .subtree_from(link, &|_| 0.0)
             .into_iter()
-            .filter_map(|(link, in_tip)| distal_body_in_tip(tree, link, &in_tip))
+            .filter(|(below, _)| rides_on[*below] == Some(segment))
+            .filter_map(|(below, in_segment)| body_in_segment(tree, below, &in_segment))
             .collect();
         compose(&bodies)
     }
 
-    /// Combine this payload with a segment's rigid body, both in the same (tip)
-    /// frame with each `inertia` about its own COM, returning the merged body.
-    /// Used at load to fold the payload into the last segment's inertial.
+    /// Combine this payload with a segment's rigid body, both in that segment's
+    /// link frame with each `inertia` about its own COM, returning the merged
+    /// body. Used at load to fold the payload into the segment's inertial.
     pub fn combined_with(&self, mass: f64, com: Vector3<f64>, inertia: Matrix3<f64>) -> Payload {
         compose(&[(self.mass, self.com, self.inertia), (mass, com, inertia)])
     }
 }
 
-/// One distal link's rigid body expressed in the tip frame:
+/// Which segment each link rides on: the deepest actuated joint above it, which
+/// is the last joint whose motion moves it. `None` for a link above the first
+/// actuated joint, which no joint moves and which therefore weighs on none of
+/// them. `drives` maps a joint index to the entry of `q` that drives it.
+///
+/// Indexed by link, so a chain can attribute every link in the URDF once and
+/// then ask each segment what it carries.
+pub fn segments_carrying(tree: &Tree, base: usize, drives: &[Option<usize>]) -> Vec<Option<usize>> {
+    let mut rides_on = vec![None; tree.link_count()];
+    let mut stack = vec![(base, None)];
+    while let Some((link, carrier)) = stack.pop() {
+        for &joint in tree.children_of(link) {
+            let below = drives[joint].or(carrier);
+            let child = tree.joint(joint).child;
+            rides_on[child] = below;
+            stack.push((child, below));
+        }
+    }
+    rides_on
+}
+
+/// One link's rigid body expressed in a segment's frame:
 /// `(mass, COM, inertia about the COM)`, or `None` for a massless link.
-fn distal_body_in_tip(
+fn body_in_segment(
     tree: &Tree,
     link: usize,
-    in_tip: &Isometry3<f64>,
+    in_segment: &Isometry3<f64>,
 ) -> Option<(f64, Vector3<f64>, Matrix3<f64>)> {
     let l = tree.link(link);
     if l.mass == 0.0 {
         return None;
     }
-    let com = in_tip.transform_point(&Point3::from(l.com)).coords;
-    let r = *in_tip.rotation.to_rotation_matrix().matrix();
+    let com = in_segment.transform_point(&Point3::from(l.com)).coords;
+    let r = *in_segment.rotation.to_rotation_matrix().matrix();
     Some((l.mass, com, r * l.inertia * r.transpose()))
 }
 

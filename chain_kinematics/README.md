@@ -144,7 +144,7 @@ src/
   dynamics.rs   gravity and Coriolis feedforward over the posed chain
   servo.rs      the leashed-reference Cartesian move and its offline rollout
   error.rs      what can go wrong building a chain
-  payload.rs    the rigid body past the tip, lumped into the last segment
+  payload.rs    what each segment carries beyond its own link, lumped in
 ```
 
 ## Testing

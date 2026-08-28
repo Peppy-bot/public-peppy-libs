@@ -6,7 +6,7 @@ use nalgebra::{Isometry3, Matrix3, Point3, Vector3, Vector6};
 use crate::Limit;
 use crate::error::ChainError;
 use crate::jacobian::Jacobian;
-use crate::payload::Payload;
+use crate::payload::{Payload, segments_carrying};
 use crate::tree::{JointKind, Tree};
 
 /// Which joints along the chain the caller drives, and in what order.
@@ -117,18 +117,26 @@ impl<const N: usize> Chain<N> {
             rank_of[i] = rank;
         }
 
-        // Everything past the tip - a gripper, its fingers, a mounted tool - is
-        // rigidly attached to the last segment, so a bigger last segment and a
-        // separate payload are the same rigid body. Folding it in here is what
+        // A segment's link is not everything that segment carries: a gripper past
+        // the tip, a jaw hanging beside it, a bracket bolted to the forearm all
+        // move with the last actuated joint above them and weigh on it. Each rides
+        // on that joint, and folding it into that segment's inertial here is what
         // lets a dynamics layer read one inertial per segment and be right.
-        let payload = Payload::from_distal(&tree, tip_link);
-        if payload.mass > 0.0 && N > 0 {
-            let last = proximal_order[N - 1];
-            let merged =
-                payload.combined_with(masses[last], coms_local[last], inertias_local[last]);
-            masses[last] = merged.mass;
-            coms_local[last] = merged.com;
-            inertias_local[last] = merged.inertia;
+        let mut drives = vec![None; tree.joints().len()];
+        for (i, &slot) in actuated.iter().enumerate() {
+            drives[path[slot]] = Some(i);
+        }
+        let rides_on = segments_carrying(&tree, base_link, &drives);
+        for i in 0..N {
+            let link = tree.joint(path[actuated[i]]).child;
+            let carried = Payload::carried_by(&tree, link, i, &rides_on);
+            if carried.mass == 0.0 {
+                continue;
+            }
+            let merged = carried.combined_with(masses[i], coms_local[i], inertias_local[i]);
+            masses[i] = merged.mass;
+            coms_local[i] = merged.com;
+            inertias_local[i] = merged.inertia;
         }
 
         let mut driven_by = vec![None; path.len()];
