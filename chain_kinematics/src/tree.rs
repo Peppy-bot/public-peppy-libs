@@ -164,6 +164,18 @@ impl Tree {
                 roots.len()
             ));
         };
+        // One root is not enough to make a tree: a set of links joined in a ring
+        // has no root of its own, so a URDF carrying one alongside a real tree
+        // still presents exactly one. Every walk here follows `parent_joint`
+        // upward and would circle such a ring forever, so it is refused here
+        // rather than discovered as a hang.
+        if let Some(link) = unreached_from(&children, &joints, root, links.len()) {
+            return Err(format!(
+                "link '{}' is not reachable from root link '{}': the URDF's links \
+                 and joints do not form a single tree",
+                links[link].name, links[root].name
+            ));
+        }
 
         Ok(Self {
             links,
@@ -268,6 +280,28 @@ impl Tree {
     pub fn root(&self) -> usize {
         self.root
     }
+}
+
+/// The first link no walk down from `root` reaches, if any: proof that the
+/// links and joints are not one connected tree.
+fn unreached_from(
+    children: &[Vec<usize>],
+    joints: &[Joint],
+    root: usize,
+    links: usize,
+) -> Option<usize> {
+    let mut seen = vec![false; links];
+    seen[root] = true;
+    let mut queue = VecDeque::from([root]);
+    while let Some(at) = queue.pop_front() {
+        for &j in &children[at] {
+            let child = joints[j].child;
+            if !std::mem::replace(&mut seen[child], true) {
+                queue.push_back(child);
+            }
+        }
+    }
+    seen.iter().position(|reached| !reached)
 }
 
 /// URDF `<origin>` as a transform: `translation(xyz)` composed with the extrinsic

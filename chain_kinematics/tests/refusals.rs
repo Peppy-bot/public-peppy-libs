@@ -193,3 +193,26 @@ fn a_urdf_with_two_roots_is_refused() {
         "expected a multiple-root refusal, got {err}"
     );
 }
+
+#[test]
+fn a_ring_of_links_beside_the_tree_is_refused() {
+    // A ring has no root of its own: every link in it has a parent joint, so a
+    // URDF carrying one alongside a real tree still presents exactly one root and
+    // no link with two parents. Neither of the refusals above sees it, and every
+    // walk here follows a link's parent upward, which around a ring never ends.
+    let ring = r#"<link name="ring_x"/><link name="ring_y"/>
+      <joint name="j_ring_out" type="revolute">
+        <parent link="ring_x"/><child link="ring_y"/><axis xyz="0 0 1"/>
+        <limit lower="-1.0" upper="1.0" effort="1" velocity="1"/>
+      </joint>
+      <joint name="j_ring_back" type="revolute">
+        <parent link="ring_y"/><child link="ring_x"/><axis xyz="0 0 1"/>
+        <limit lower="-1.0" upper="1.0" effort="1" velocity="1"/>
+      </joint>"#;
+    let err = build::<2>(&urdf(BOUNDED, ring), JointSelection::PathOrder)
+        .expect_err("a ring is not part of the tree, and cannot be walked out of");
+    assert!(
+        matches!(&err, ChainError::Urdf(m) if m.contains("not reachable from root link")),
+        "expected an unreachable-link refusal, got {err}"
+    );
+}
