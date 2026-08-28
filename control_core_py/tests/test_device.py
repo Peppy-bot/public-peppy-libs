@@ -1,4 +1,4 @@
-"""DeviceThread lifecycle and the LatestSlot handoff."""
+"""DeviceThread lifecycle and the two latest-wins holders."""
 
 import threading
 import time
@@ -80,3 +80,36 @@ def test_latest_slot_freshness():
     assert slot.get() == 41
     time.sleep(0.02)
     assert slot.fresh(0.01) is None
+
+
+class TestLatestValue:
+    def test_a_fresh_value_carries_its_producers_capture_stamp(self):
+        holder = device.LatestValue()
+        holder.set(("a",), wire_timestamp_s=1234.5)
+        assert holder.fresh(1.0) == ("a",)
+        assert holder.wire_timestamp_s == 1234.5
+
+    def test_an_empty_holder_is_never_fresh(self):
+        assert device.LatestValue().fresh(1e9) is None
+
+    def test_a_value_older_than_the_window_is_not_fresh(self):
+        holder = device.LatestValue()
+        holder.set("a", wire_timestamp_s=1.0)
+        # The window is exclusive of nothing that has aged past it; a
+        # zero-length window admits only a value with no elapsed time.
+        time.sleep(0.02)
+        assert holder.fresh(0.01) is None
+        assert holder.fresh(10.0) == "a"
+
+    def test_clearing_forgets_the_value_however_recently_it_arrived(self):
+        holder = device.LatestValue()
+        holder.set("a", wire_timestamp_s=1.0)
+        holder.clear()
+        assert holder.fresh(1e9) is None
+        assert holder.wire_timestamp_s is None
+
+    def test_the_capture_stamp_cannot_be_omitted(self):
+        # A holder whose stamp can go missing puts publish time on the wire,
+        # where it reads as fresh; the type refuses rather than defaulting.
+        with pytest.raises(TypeError):
+            device.LatestValue().set("a")
