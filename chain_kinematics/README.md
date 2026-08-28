@@ -131,7 +131,7 @@ the rest of that controller's commands are.
 
 ## Layout
 
-```
+```text
 src/
   lib.rs        Chain, ChainSpec, JointSelection, Posed, Limit
   tree.rs       the URDF arena: links, joints, adjacency, and the walks over it
@@ -155,6 +155,6 @@ finite on an under-actuated (6x5) Jacobian.
 
 `tests/refusals.rs` covers the table above: every rule is checked both ways, so a
 refusal that would also reject a valid chain fails the suite.
-`tests/solve_quality.rs` is the point-to-point qualification: the debug build
+`tests/ik_quality.rs` is the point-to-point qualification: the debug build
 runs a fast subset of the same draws, and `--release` runs the full scale the
 numbers above are quoted at.

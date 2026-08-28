@@ -92,14 +92,14 @@ impl ForwardKinematics {
         self.chain.tool()
     }
 
-    /// Pose the arm at configuration `q` for forward-kinematics and dynamics
-    /// reads.
     /// The underlying generic chain, for the arm-level operations that are just
     /// the generic law applied at seven joints.
     pub fn chain(&self) -> &Chain<ARM_DOF> {
         &self.chain
     }
 
+    /// Pose the arm at configuration `q` for forward-kinematics and dynamics
+    /// reads.
     pub fn at(&self, q: &JointVec) -> Posed<'_> {
         self.chain.at(q)
     }
@@ -290,8 +290,8 @@ mod tests {
     fn rejects_chain_without_seven_revolute_joints() {
         // A prismatic-only arm must Err: walking out from the base finds no
         // revolute joints to reach the wrist, so it is not a 7-DOF SRS arm. (A
-        // prismatic joint *interspersed* among the 7 is caught separately by
-        // `collect_revolute_nodes`.)
+        // prismatic joint *interspersed* among the 7 is caught instead by the
+        // chain's joint count, which sees eight movable joints on the path.)
         let urdf = r#"<?xml version="1.0"?><robot name="x">
           <link name="base"/><link name="tip"/>
           <joint name="slide" type="prismatic">

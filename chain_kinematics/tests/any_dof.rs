@@ -226,8 +226,9 @@ fn a_tool_reached_through_a_moving_joint_is_refused() {
 
 #[test]
 fn poses_are_reported_in_the_named_base_frame() {
-    // With the base at the URDF root the transform is the identity; naming a link
-    // partway down moves the reported frame with it.
+    // The OpenArm chain names a base partway down the URDF, so the world -> base
+    // transform is not the identity, and a pose taken to world and back is the
+    // one it started as.
     let root_based = openarm();
     assert_ne!(root_based.base_from_world(), Isometry3::identity());
     let q = [0.2; 7];

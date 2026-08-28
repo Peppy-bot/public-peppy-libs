@@ -27,7 +27,7 @@
 //! own answers to (a local step has no notion of the workspace, a single
 //! orientation weight is wrong in both directions, a descent at an unreachable
 //! target orbits). The constants carry over with the mechanisms; the
-//! qualification suite in `tests/solve_quality.rs` is what holds them to the
+//! qualification suite in `tests/ik_quality.rs` is what holds them to the
 //! same measured bar.
 
 use nalgebra::{Isometry3, SMatrix, SVector, Vector3};
