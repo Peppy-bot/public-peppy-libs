@@ -4,7 +4,7 @@ channel-name convention on either side of it."""
 import pytest
 
 from so101_description import device
-from so101_description.units import MOTOR_NAMES, NUM_JOINTS
+from so101_description.units import GRIPPER_NAME, MOTOR_NAMES, NUM_JOINTS
 
 
 class FakeHardware:
@@ -77,8 +77,18 @@ def test_a_channel_without_the_suffix_is_left_alone():
     assert device.motor_positions({"pos": 1.0}) == {"pos": 1.0}
 
 
-def test_two_channels_naming_one_motor_are_refused():
+@pytest.mark.parametrize(
+    "channels",
+    [
+        {"wrist_flex.pos": 1.0, "wrist_flex": 2.0},
+        # Either order collides; neither may depend on which the dict visits
+        # first.
+        {"wrist_flex": 1.0, "wrist_flex.pos": 2.0},
+        {GRIPPER_NAME: 1.0, f"{GRIPPER_NAME}.pos": 2.0},
+    ],
+)
+def test_two_channels_naming_one_motor_are_refused(channels):
     # `.pos` stripping can collide; two readings for one joint cannot be
     # silently reduced to whichever the dict happened to visit last.
     with pytest.raises(ValueError):
-        device.motor_positions({"wrist_flex.pos": 1.0, "wrist_flex": 2.0})
+        device.motor_positions(channels)
