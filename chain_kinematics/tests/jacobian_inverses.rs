@@ -7,7 +7,7 @@
 //! projector yet, which is exactly why they are pinned here: an identity that is
 //! never checked is an identity that quietly stops holding.
 
-use chain_kinematics::nalgebra::SVector;
+use chain_kinematics::nalgebra::{DMatrix, SVector};
 use chain_kinematics::{
     Chain, damped_pseudo_inverse, manipulability, null_space_projector, try_pseudo_inverse,
 };
@@ -29,12 +29,14 @@ fn the_exact_inverse_realizes_the_twist_it_was_asked_for() {
     // J J⁺ = I on a chain with rank to spare: the joint rates it returns produce
     // exactly the commanded twist, which is the property that makes it "exact".
     let chain = openarm();
+    let mut checked = 0;
     for k in 0..24 {
         let q = sample(&chain, k);
         let j = chain.at(&q).jacobian();
         let Some(pinv) = try_pseudo_inverse(&j, EPS) else {
             continue;
         };
+        checked += 1;
         let realized = j * pinv;
         for r in 0..6 {
             for c in 0..6 {
@@ -47,6 +49,12 @@ fn the_exact_inverse_realizes_the_twist_it_was_asked_for() {
             }
         }
     }
+    // The samples that refuse are skipped, so without this the suite would pass
+    // on a `try_pseudo_inverse` that refused everything.
+    assert_eq!(
+        checked, 24,
+        "every sample should be well enough conditioned"
+    );
 }
 
 #[test]
@@ -210,4 +218,33 @@ fn the_null_space_grows_at_a_singularity() {
         singular > regular + 0.5,
         "the null space should grow at a singularity: {regular} regular vs {singular} singular"
     );
+}
+
+#[test]
+fn manipulability_is_the_product_of_the_singular_values_at_any_joint_count() {
+    // The index is a distance to a singularity, and a chain of fewer than six
+    // joints is not standing in one just for being short. Read off `J Jᵀ` alone
+    // it would be: that product is 6x6 of rank at most N, so its determinant is
+    // zero at every posture a five-joint arm can hold.
+    fn check<const N: usize>(chain: &Chain<N>, label: &str) {
+        for k in 0..24 {
+            let q = sample(chain, k);
+            let j = chain.at(&q).jacobian();
+            let singular = DMatrix::from_iterator(6, N, j.iter().copied())
+                .svd(false, false)
+                .singular_values;
+            let want: f64 = singular.iter().product();
+            let got = manipulability(&j);
+            assert!(
+                got > 0.0,
+                "{label} sample {k} is a healthy posture, but reads as singular"
+            );
+            assert!(
+                (got - want).abs() <= 1e-9 * want.max(1.0),
+                "{label} sample {k}: manipulability is {got}, the singular values multiply to {want}"
+            );
+        }
+    }
+    check(&so101(), "SO-101");
+    check(&openarm(), "OpenArm");
 }

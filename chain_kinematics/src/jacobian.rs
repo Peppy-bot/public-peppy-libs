@@ -102,14 +102,30 @@ pub fn damped_pseudo_inverse<const N: usize>(j: &Jacobian<N>, lambda: f64) -> Ja
     jt * inv
 }
 
-/// Yoshikawa manipulability index `√det(J Jᵀ)`: a scalar measure of how far the
-/// posture is from a singularity (0 exactly at one, larger is better-conditioned).
-/// Useful for monitoring a control loop or steering the redundancy away from
-/// singular regions.
+/// Yoshikawa manipulability index, the product of the Jacobian's singular
+/// values: a scalar measure of how far the posture is from a singularity (0
+/// exactly at one, larger is better-conditioned). Useful for monitoring a
+/// control loop or steering the redundancy away from singular regions.
+///
+/// Read off whichever Gram matrix is the smaller: `√det(J Jᵀ)` once the chain
+/// has six joints or more, and `√det(Jᵀ J)` below that, where `J Jᵀ` is 6x6 of
+/// rank at most `N` and so has determinant zero at every posture, singular or
+/// not. The two agree on a square Jacobian, and both are the product of the
+/// singular values, so the number means the same thing at any joint count.
+///
+/// The `N < 6` branch goes through a dynamically-sized matrix, which nalgebra
+/// needs to take an `NxN` determinant, and so allocates; the six-and-above
+/// branch is fixed-size throughout.
 pub fn manipulability<const N: usize>(j: &Jacobian<N>) -> f64 {
-    // det(J Jᵀ) is non-negative in exact arithmetic; clamp away rounding noise
-    // that can make a near-singular value slightly negative before the sqrt.
-    (j * j.transpose()).determinant().max(0.0).sqrt()
+    // The determinant is non-negative in exact arithmetic; clamp away rounding
+    // noise that can make a near-singular value slightly negative before the sqrt.
+    let gram = if N < 6 {
+        let dynamic = DMatrix::from_iterator(6, N, j.iter().copied());
+        (dynamic.transpose() * dynamic).determinant()
+    } else {
+        (j * j.transpose()).determinant()
+    };
+    gram.max(0.0).sqrt()
 }
 
 /// Exact null-space projector `N = I − J⁺J` for the redundant DOF, where `J⁺` is
