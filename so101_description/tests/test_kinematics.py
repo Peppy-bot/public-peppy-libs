@@ -162,3 +162,75 @@ def test_the_deployed_arm_still_reaches_an_orientation_it_can_hold():
     reached_position, reached_orientation = kinematics.forward_kinematics(solution)
     assert math.degrees(relative_rotation_rad(reached_orientation, target)) < 1.0
     assert math.dist(reached_position, position) < 0.001
+
+
+def test_a_caller_can_tighten_the_position_bar(kinematics):
+    # A bar far below what one linearised step converges to inside the
+    # iteration budget must refuse rather than round up to the default.
+    target = kinematics.forward_kinematics((0.4, 0.3, -0.5, 0.2, 0.1))
+    assert kinematics.inverse_kinematics(HOME, *target) is not None
+    assert (
+        kinematics.inverse_kinematics(
+            HOME, *target, position_tolerance_m=1e-12
+        )
+        is None
+    )
+
+
+def test_an_orientation_bar_refuses_what_the_wrist_cannot_reach(kinematics):
+    # Five joints underactuate three rotational degrees of freedom, so some
+    # reachable positions carry an unreachable orientation. The case is found
+    # rather than pinned: the descent is mildly path dependent, so a hardcoded
+    # pose can stop qualifying when the tests around it change.
+    reachable_but_turned = None
+    for seed_scale in range(1, 40):
+        angle = seed_scale * 0.13
+        position = kinematics.forward_kinematics(
+            (0.2, 0.3 - angle / 8, angle / 2, 0.1, 0.0)
+        )[0]
+        turned = (
+            math.sin(angle),
+            math.cos(angle) * math.sin(angle),
+            math.cos(angle),
+            math.sin(angle / 2),
+        )
+        norm = math.sqrt(sum(c * c for c in turned))
+        turned = tuple(c / norm for c in turned)
+        solution = kinematics.inverse_kinematics(HOME, position, turned)
+        if solution is None:
+            continue
+        missed = relative_rotation_rad(
+            kinematics.forward_kinematics(solution)[1], turned
+        )
+        if missed > 0.1:
+            reachable_but_turned = (position, turned, missed)
+            break
+    assert reachable_but_turned is not None, "no position-reachable orientation miss found"
+    position, turned, missed = reachable_but_turned
+    assert (
+        kinematics.inverse_kinematics(
+            HOME, position, turned, orientation_tolerance_rad=missed / 2
+        )
+        is None
+    )
+
+
+def test_a_generous_orientation_bar_still_accepts(kinematics):
+    target = kinematics.forward_kinematics((0.3, 0.2, -0.4, 0.1, 0.2))
+    assert (
+        kinematics.inverse_kinematics(
+            HOME, *target, orientation_tolerance_rad=math.pi
+        )
+        is not None
+    )
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.01, math.nan, math.inf])
+def test_an_unusable_tolerance_is_refused_rather_than_defaulted(kinematics, bad):
+    target = kinematics.forward_kinematics((0.1, 0.1, -0.2, 0.0, 0.0))
+    with pytest.raises(ValueError):
+        kinematics.inverse_kinematics(HOME, *target, position_tolerance_m=bad)
+    with pytest.raises(ValueError):
+        kinematics.inverse_kinematics(
+            HOME, *target, orientation_tolerance_rad=bad
+        )

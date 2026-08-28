@@ -23,7 +23,11 @@ import math
 import numpy as np
 
 from so101_description.model import END_EFFECTOR_FRAME
-from so101_description.transforms import matrix_from_pose, pose_from_matrix
+from so101_description.transforms import (
+    matrix_from_pose,
+    pose_from_matrix,
+    relative_rotation_rad,
+)
 from so101_description.units import JOINT_NAMES
 
 # Positional acceptance for a verified point-to-point solution.
@@ -50,6 +54,16 @@ IK_STREAM_ITERATIONS = 3
 ORIENTATION_WEIGHT = 1e-4
 
 
+def _bar(value: float | None, default: float) -> float:
+    """A caller's acceptance bar, or the default when unstated. A bar that is
+    not a usable positive distance is a caller error, not a reason to fall
+    back to the default."""
+    if value is None:
+        return default
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(f"tolerance must be finite and positive, got {value}")
+    return value
+
 class Kinematics:
     def __init__(self, urdf_path: str):
         from lerobot.model.kinematics import RobotKinematics
@@ -66,24 +80,38 @@ class Kinematics:
         return pose_from_matrix(matrix)
 
     def inverse_kinematics(
-        self, seed_rad: tuple[float, ...], position, orientation
+        self,
+        seed_rad: tuple[float, ...],
+        position,
+        orientation,
+        *,
+        position_tolerance_m: float | None = None,
+        orientation_tolerance_rad: float | None = None,
     ) -> tuple[float, ...] | None:
         """Joint radians reaching the pose, or None when no verified solution
-        lands within tolerance of the target position. Position is the whole
-        acceptance test: five joints underactuate the three orientation
-        degrees of freedom, so the solver's best orientation (a soft,
-        low-weight objective in lerobot's solver) is taken rather than
-        gated behind a tolerance almost no reachable pose could meet."""
+        meets the caller's bars.
+
+        `position_tolerance_m` defaults to IK_POSITION_TOLERANCE_M.
+        `orientation_tolerance_rad` defaults to no gate at all: five joints
+        underactuate the three orientation degrees of freedom, so the solver's
+        best orientation is taken rather than gated behind a bar almost no
+        reachable pose could meet. A caller that does care states one and gets
+        a refusal instead of a quiet approximation."""
+        position_bar = _bar(position_tolerance_m, IK_POSITION_TOLERANCE_M)
+        orientation_bar = _bar(orientation_tolerance_rad, math.inf)
         target_matrix = matrix_from_pose(position, orientation)
         target_position = tuple(position)
+        target_orientation = tuple(orientation)
         joints_deg = np.degrees(seed_rad)
         for _ in range(IK_MAX_ITERATIONS):
             joints_deg = self._step(
                 joints_deg, target_matrix, ORIENTATION_WEIGHT
             )
             solution_rad = self._as_radians(joints_deg)
-            reached, _ = self.forward_kinematics(solution_rad)
-            if math.dist(reached, target_position) <= IK_POSITION_TOLERANCE_M:
+            reached, reached_orientation = self.forward_kinematics(solution_rad)
+            if math.dist(reached, target_position) > position_bar:
+                continue
+            if relative_rotation_rad(reached_orientation, target_orientation) <= orientation_bar:
                 return solution_rad
         return None
 

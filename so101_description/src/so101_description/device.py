@@ -44,10 +44,19 @@ _POSITION_SUFFIX = ".pos"
 
 
 def motor_positions(channels: dict[str, float]) -> dict[str, float]:
-    """A lerobot observation or action keyed by bare motor name."""
-    return {
-        key.removesuffix(_POSITION_SUFFIX): value for key, value in channels.items()
-    }
+    """A lerobot observation or action keyed by bare motor name.
+
+    Stripping the suffix can collide (`wrist_flex.pos` and `wrist_flex` name
+    the same motor afterwards), and a collision means two readings for one
+    joint. Refused rather than resolved: nothing here can know which of them
+    the bus actually reported."""
+    positions: dict[str, float] = {}
+    for key, value in channels.items():
+        motor = key.removesuffix(_POSITION_SUFFIX)
+        if motor in positions:
+            raise ValueError(f"two channels name motor {motor}")
+        positions[motor] = value
+    return positions
 
 
 def position_channels(goals_by_motor: dict[str, float]) -> dict[str, float]:

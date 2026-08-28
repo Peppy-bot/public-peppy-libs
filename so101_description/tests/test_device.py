@@ -75,3 +75,10 @@ def test_a_channel_without_the_suffix_is_left_alone():
     # lose characters that happen to match.
     assert device.motor_positions({"gripper": 1.0}) == {"gripper": 1.0}
     assert device.motor_positions({"pos": 1.0}) == {"pos": 1.0}
+
+
+def test_two_channels_naming_one_motor_are_refused():
+    # `.pos` stripping can collide; two readings for one joint cannot be
+    # silently reduced to whichever the dict happened to visit last.
+    with pytest.raises(ValueError):
+        device.motor_positions({"wrist_flex.pos": 1.0, "wrist_flex": 2.0})
