@@ -7,7 +7,7 @@ def test_joint_round_trip():
     rad = (0.0, 0.5, -1.2, math.pi / 2, -math.pi)
     deg = units.joints_deg_from_rad(rad)
     back = units.joints_rad_from_deg(deg)
-    assert all(math.isclose(a, b, abs_tol=1e-12) for a, b in zip(rad, back))
+    assert all(math.isclose(a, b, abs_tol=1e-12) for a, b in zip(rad, back, strict=True))
 
 
 def test_gripper_round_trip():

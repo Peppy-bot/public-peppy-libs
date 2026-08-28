@@ -79,5 +79,5 @@ def pose_from_matrix(matrix: np.ndarray) -> tuple[tuple[float, float, float], tu
 def relative_rotation_rad(q0, q1) -> float:
     """Angle of the relative rotation between two unit quaternions; |dot|
     folds the double cover."""
-    dot = abs(sum(a * b for a, b in zip(q0, q1)))
+    dot = abs(sum(a * b for a, b in zip(q0, q1, strict=True)))
     return 2.0 * math.acos(min(1.0, dot))

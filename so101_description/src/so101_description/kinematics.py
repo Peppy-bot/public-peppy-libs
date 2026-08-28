@@ -74,6 +74,39 @@ class Kinematics:
             joint_names=list(JOINT_NAMES),
         )
 
+    def jacobian(self, positions_rad: tuple[float, ...]):
+        """The end-effector Jacobian at these joint positions: 6 rows by one
+        column per arm joint in wire order, linear velocity in rows 0..2 and
+        angular in rows 3..5, both in world-aligned axes.
+
+        `J @ dq` is the twist a joint step produces, and it is linear in that
+        step, which is what a speed cap needs: scaling a step by s scales its
+        end-effector speed by exactly s. Measuring the same thing by moving
+        the arm and differencing forward kinematics does not have that
+        property, because forward kinematics is not linear.
+
+        Local-world-aligned, not world: Pinocchio's world Jacobian gives the
+        twist of the body frame referred to the world origin, whose linear
+        part is not the tool point's velocity. Against a finite difference the
+        two disagree by tens of percent at every step size."""
+        robot = self._solver.robot
+        # The QP carries state between solves, and moving the model out from
+        # under it diverges a streaming solve by radians. This is a query, so
+        # it puts the configuration back before returning.
+        restore = {name: robot.get_joint(name) for name in JOINT_NAMES}
+        try:
+            for name, value in zip(JOINT_NAMES, positions_rad, strict=True):
+                robot.set_joint(name, value)
+            robot.update_kinematics()
+            columns = [robot.get_joint_v_offset(name) for name in JOINT_NAMES]
+            return np.asarray(
+                robot.frame_jacobian(END_EFFECTOR_FRAME, "local_world_aligned")
+            )[:, columns]
+        finally:
+            for name, value in restore.items():
+                robot.set_joint(name, value)
+            robot.update_kinematics()
+
     def forward_kinematics(self, positions_rad: tuple[float, ...]):
         """(position m, quaternion xyzw) of the end effector."""
         matrix = self._solver.forward_kinematics(np.degrees(positions_rad))
