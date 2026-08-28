@@ -69,7 +69,7 @@ different solver.
 | `Posed::{mass, com_world, inertia_world}` | per-segment rigid-body data |
 | `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics, revolute and prismatic joints alike, with everything each segment carries folded in |
 | `damped_pseudo_inverse` | `Jᵀ(J Jᵀ + λ²I)⁻¹`, defined everywhere including at singularities |
-| `try_pseudo_inverse` | Moore-Penrose, `None` at a singularity and on a chain of fewer than six joints, which has no right inverse at all; use the damped one for both |
+| `try_pseudo_inverse` | Moore-Penrose, `None` at a singularity and on a chain of fewer than six joints, whose pseudo-inverse exists but is not a right inverse, so no joint rates realize an arbitrary twist; use the damped one for both |
 | `null_space_projector` | `I − J⁺J`, for a secondary objective that must not disturb the end effector |
 | `manipulability` | Yoshikawa index, the product of the singular values, at any joint count |
 | `rate_step` | one damped resolved-rate step under a velocity budget and joint limits |
@@ -149,12 +149,13 @@ src/
 
 ## Testing
 
-`cargo test` drives two real robots through the same API - a five-joint SO-101
-and a seven-joint OpenArm - checking that every Jacobian column matches a central
-finite difference of the pose, that the servo law converges on both, that naming
-the joints fixes the order of `q`, that a wrong joint count is refused at load
-rather than silently ignoring part of `q`, and that the damped inverse stays
-finite on an under-actuated (6x5) Jacobian.
+`cargo test` drives the URDF models of two real robots through the same API - a
+five-joint SO-101 and a seven-joint OpenArm - checking that every Jacobian column
+matches a central difference of the pose, that the servo law converges on both,
+that naming the joints fixes the order of `q`, that a wrong joint count is
+refused at load rather than silently ignoring part of `q`, and that the damped
+inverse stays finite on an under-actuated (6x5) Jacobian. No hardware is
+involved; qualifying the law on a physical arm is a separate exercise.
 
 `tests/refusals.rs` covers the table above: every rule is checked both ways, so a
 refusal that would also reject a valid chain fails the suite.
