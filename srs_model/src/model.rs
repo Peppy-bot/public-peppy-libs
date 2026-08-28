@@ -7,7 +7,7 @@
 //! wrist `W` centers are computed from the joint *axis lines*, never from
 //! joint4's offset frame origin.
 
-use k::nalgebra::{Isometry3, Matrix3, Vector3};
+use nalgebra::{Isometry3, Matrix3, Vector3};
 
 use crate::fk::ForwardKinematics;
 use crate::{ARM_DOF, PARALLEL_SIN_EPS};
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn fixture_shoulder_and_wrist_axes_orthonormal_at_home() {
         for side in ["left", "right"] {
-            let mut fk = v1_fk(side);
+            let fk = v1_fk(side);
             let posed = fk.at(&[0.0; ARM_DOF]);
             let axes: [Vector3<f64>; ARM_DOF] = std::array::from_fn(|i| posed.axis_base(i));
             for (label, [i, j, k]) in [("shoulder", [0usize, 1, 2]), ("wrist", [4, 5, 6])] {
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn world_base_transform_matches_mount_and_round_trips() {
-        use k::nalgebra::{Point3, Translation3, UnitQuaternion};
+        use nalgebra::{Point3, Translation3, UnitQuaternion};
         let m = v1_model("left");
         // The arm base (link0) origin sits at the body->link0 mount in world:
         // (0, 0.031, 0.698). world->base must map that point to the origin.

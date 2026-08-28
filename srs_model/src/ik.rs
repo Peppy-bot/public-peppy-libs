@@ -26,7 +26,7 @@
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use k::nalgebra::{Isometry3, Matrix3, Rotation3, Unit, Vector3, Vector6};
+use nalgebra::{Isometry3, Matrix3, Rotation3, Unit, Vector3, Vector6};
 
 use crate::jacobian::{Jacobian, manipulability};
 
@@ -226,10 +226,7 @@ const SINGULAR_RADIUS: f64 = 1e-6;
 /// callers). A merely near-straight `q` still has a well-defined angle.
 pub(crate) fn arm_angle_of(model: &ArmModel, q: &JointVec) -> Option<f64> {
     let circle = circle_frame(model, fk_poe_position(model, q));
-    if circle.radius < SINGULAR_RADIUS {
-        return None;
-    }
-    Some(circle.angle(elbow_position(model, q)))
+    circle.azimuth(elbow_position(model, q))
 }
 
 /// Elbow center of configuration `q`: joints 1-3 carry the home elbow about S;
@@ -259,11 +256,16 @@ impl Circle {
         self.center + self.radius * (psi.cos() * self.a_hat + psi.sin() * self.b_hat)
     }
 
-    /// Arm angle of an elbow point, in this circle's `(a_hat, b_hat)` basis (the
-    /// inverse of [`elbow`](Self::elbow)).
-    fn angle(&self, elbow: Vector3<f64>) -> f64 {
-        let e = elbow - self.center;
-        f64::atan2(e.dot(&self.b_hat), e.dot(&self.a_hat))
+    /// Azimuth of a point about this circle's axis, in the `(a_hat, b_hat)`
+    /// basis: the inverse of [`elbow`](Self::elbow) for a point on the circle,
+    /// and the projected direction for one off it (a seed's elbow measured on
+    /// another configuration's circle). `None` when the point projects onto the
+    /// axis itself, where no direction is defined; for a point on the circle
+    /// that is exactly the [`SINGULAR_RADIUS`] straight-arm test.
+    fn azimuth(&self, p: Vector3<f64>) -> Option<f64> {
+        let e = p - self.center;
+        let (a, b) = (e.dot(&self.a_hat), e.dot(&self.b_hat));
+        (a.hypot(b) >= SINGULAR_RADIUS).then(|| f64::atan2(b, a))
     }
 }
 
@@ -362,7 +364,7 @@ pub(crate) fn solve(
             // a closed-form function of psi, so each joint limit maps to an exact
             // feasible-psi interval. Pick the feasible psi nearest the seed's arm
             // angle for continuity, then build q there.
-            let preferred = seed_arm_angle(model, seed).unwrap_or(0.0);
+            let preferred = ctx.preferred_psi(seed).unwrap_or(0.0);
             let intervals = ctx.feasible_psi_intervals(seed);
             let psi = nearest_feasible_psi(&intervals, preferred)?;
             ctx.solve_at_psi(psi, seed)
@@ -371,7 +373,7 @@ pub(crate) fn solve(
         ArmAnglePolicy::MaxManipulability { max_step_rad } => {
             // Anchor at the FromSeed angle (continuity, guaranteed feasible), then
             // step within the bounded window toward higher manipulability.
-            let preferred = seed_arm_angle(model, seed).unwrap_or(0.0);
+            let preferred = ctx.preferred_psi(seed).unwrap_or(0.0);
             let intervals = ctx.feasible_psi_intervals(seed);
             let psi0 = nearest_feasible_psi(&intervals, preferred)?;
             let (psi, q) = ctx.max_manipulability_step(psi0, max_step_rad, seed)?;
@@ -516,6 +518,20 @@ impl PsiSolve<'_> {
         Some((r_s, r_w))
     }
 
+    /// The seed's elbow azimuth measured on **this target's** redundancy circle,
+    /// so it is directly comparable with
+    /// [`feasible_psi_intervals`](Self::feasible_psi_intervals) and with the psi
+    /// that [`solve_at_psi`](Self::solve_at_psi) builds from. Measuring it on the
+    /// seed's own circle instead compares two angles taken against different
+    /// references, and the two circles' frames diverge as the seed's wrist center
+    /// moves away from the target's.
+    ///
+    /// `None` when the seed's elbow projects onto this circle's axis, where there
+    /// is no direction to preserve.
+    fn preferred_psi(&self, seed: &JointVec) -> Option<f64> {
+        self.circle.azimuth(elbow_position(self.model, seed))
+    }
+
     /// Best in-limit joint solution for a fixed arm angle `psi`, or `None` if no
     /// branch is in limits. Reach and `theta4` are already established by
     /// [`solve`].
@@ -545,14 +561,6 @@ impl PsiSolve<'_> {
         }
         best.map(|(_, q)| q)
     }
-}
-
-/// The seed's arm angle, or `None` only at the exact straight-arm singularity
-/// (elbow-circle radius below [`SINGULAR_RADIUS`]), where it has no well-defined
-/// arm angle. See [`SINGULAR_RADIUS`]: a near-straight seed still has one.
-fn seed_arm_angle(model: &ArmModel, seed: &JointVec) -> Option<f64> {
-    let circle = circle_frame(model, fk_poe_position(model, seed));
-    (circle.radius >= SINGULAR_RADIUS).then(|| circle.angle(elbow_position(model, seed)))
 }
 
 // ---------------------------------------------------------------------------
@@ -822,7 +830,7 @@ mod tests {
     use super::*;
     use crate::fk::ForwardKinematics;
     use crate::test_support::{v1_fk, v1_limits, v1_model};
-    use k::nalgebra::{Isometry3, UnitQuaternion};
+    use nalgebra::{Isometry3, UnitQuaternion};
     use rand::RngExt;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
@@ -1137,22 +1145,70 @@ mod tests {
     }
 
     #[test]
-    fn poe_fk_matches_k_chain() {
+    fn poe_fk_matches_an_independent_chain() {
+        // Three implementations must agree on where the end effector is: the
+        // PoE screw map the IK is built on, this crate's own URDF chain, and the
+        // `k` crate reading the same URDF. The third is the point - the first two
+        // are ours, so on their own they could share a mistake. `k` is carried as
+        // a dev-dependency for exactly this and nothing else.
+        //
+        // Compared component-wise rather than by subtracting `Isometry3`s, so the
+        // check survives `k` and this crate resolving different `nalgebra`
+        // versions.
+        use k::nalgebra as kna;
+
         let mut fk = v1_fk("left");
         let m = ArmModel::from_fk(&mut fk).unwrap();
-        let q = [0.3, -0.4, 0.2, 0.8, -0.5, 0.3, 0.6];
-        let ee = pose(&mut fk, &q);
+        let q: JointVec = [0.3, -0.4, 0.2, 0.8, -0.5, 0.3, 0.6];
+
+        let ours = pose(&mut fk, &q);
         let p_poe = fk_poe_position(&m, &q);
         assert!(
-            (ee.translation.vector - p_poe).norm() < 1e-9,
-            "pos mismatch"
+            (ours.translation.vector - p_poe).norm() < 1e-9,
+            "PoE and chain FK disagree on position"
         );
         let r_poe = fk_poe_rotation(&m, &q);
-        let r_k = ee.rotation.to_rotation_matrix();
         assert!(
-            (r_poe.matrix() - r_k.matrix()).norm() < 1e-9,
-            "rot mismatch"
+            (r_poe.matrix() - ours.rotation.to_rotation_matrix().matrix()).norm() < 1e-9,
+            "PoE and chain FK disagree on orientation"
         );
+
+        let robot =
+            urdf_rs::read_from_string(crate::test_support::FIXTURE_URDF).expect("parse fixture");
+        let chain = k::Chain::<f64>::from(&robot);
+        let tip = chain
+            .find_link("openarm_left_link7")
+            .expect("fixture has link7");
+        let serial = k::SerialChain::from_end(tip);
+        serial.set_joint_positions_clamped(&q);
+        serial.update_transforms();
+        let base = chain
+            .find_link("openarm_left_link0")
+            .expect("fixture has link0")
+            .world_transform()
+            .expect("base world transform");
+        let theirs = base.inverse() * tip.world_transform().expect("tip world transform");
+
+        let dp = [
+            theirs.translation.vector.x - ours.translation.vector.x,
+            theirs.translation.vector.y - ours.translation.vector.y,
+            theirs.translation.vector.z - ours.translation.vector.z,
+        ];
+        assert!(
+            dp.iter().all(|d| d.abs() < 1e-9),
+            "independent chain disagrees on position by {dp:?}"
+        );
+        let theirs_r: kna::Matrix3<f64> = *theirs.rotation.to_rotation_matrix().matrix();
+        let ours_r = ours.rotation.to_rotation_matrix();
+        for r in 0..3 {
+            for c in 0..3 {
+                let d = theirs_r[(r, c)] - ours_r.matrix()[(r, c)];
+                assert!(
+                    d.abs() < 1e-9,
+                    "independent chain disagrees on orientation at ({r},{c}) by {d}"
+                );
+            }
+        }
     }
 
     // --- Direct unit tests for the pure helpers --------------------------
@@ -1592,5 +1648,81 @@ mod tests {
             last_delta < 1e-3,
             "psi still moving {last_delta} rad after 60 chained solves"
         );
+    }
+
+    #[test]
+    fn from_seed_keeps_the_elbow_where_a_distant_seed_had_it() {
+        // `FromSeed` promises continuity: keep the elbow's azimuth about the
+        // shoulder-wrist axis. That azimuth has to be measured on the *target's*
+        // redundancy circle, because that is the frame the feasible-psi intervals
+        // and `solve_at_psi` live in. Measuring it on the seed's own circle
+        // instead compares angles taken against two different references, and the
+        // references diverge as the seed's wrist center moves away from the
+        // target's - up to pi apart at arm's length.
+        //
+        // So: whenever the seed's (target-frame) azimuth is itself feasible,
+        // `FromSeed` must return exactly that angle, however far the seed sits
+        // from the target. Measuring in the wrong frame fails this immediately.
+        let mut fk = v1_fk("left");
+        let lim = fk.limits();
+        let m = ArmModel::from_fk(&mut fk).unwrap();
+        let mut rng = StdRng::seed_from_u64(0x5EED);
+
+        let mut checked = 0;
+        let mut far = 0;
+        for _ in 0..3000 {
+            let q_t = sample_q(&mut rng, &lim);
+            let q_s = sample_q(&mut rng, &lim);
+            if q_t[3] < 0.2 || q_s[3] < 0.2 {
+                continue;
+            }
+            let target = pose(&mut fk, &q_t);
+            let p_w = target.translation.vector;
+            // Only distant seeds: a near seed cannot distinguish the two frames.
+            if (p_w - fk_poe_position(&m, &q_s)).norm() < 0.15 {
+                continue;
+            }
+            far += 1;
+
+            let d = (p_w - m.shoulder).norm();
+            let cos4 = ((d * d - m.l_su * m.l_su - m.l_uw * m.l_uw) / (2.0 * m.l_su * m.l_uw))
+                .clamp(-1.0, 1.0);
+            let ctx = PsiSolve {
+                model: &m,
+                limits: &lim,
+                r_d: target.rotation.to_rotation_matrix(),
+                p_w,
+                theta4: cos4.acos(),
+                circle: circle_frame(&m, p_w),
+            };
+            // Derived here from the target's circle directly, NOT via
+            // `preferred_psi`: a test that asks the code under test what the
+            // answer should be cannot fail when that code is wrong.
+            let e = elbow_position(&m, &q_s) - ctx.circle.center;
+            let (ax, bx) = (e.dot(&ctx.circle.a_hat), e.dot(&ctx.circle.b_hat));
+            if ax.hypot(bx) < SINGULAR_RADIUS {
+                continue;
+            }
+            let preferred = f64::atan2(bx, ax);
+            // Only assert where the preference is actually attainable; otherwise
+            // `nearest_feasible_psi` is correct to return something else.
+            if ctx.solve_at_psi(preferred, &q_s).is_none() {
+                continue;
+            }
+
+            let sol = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &q_s)
+                .expect("a feasible preferred psi must yield a solution");
+            assert!(
+                wrap_pi(sol.arm_angle - preferred).abs() < 1e-9,
+                "FromSeed drifted off a feasible preference by {:.4} rad \
+                 (got {:.4}, wanted {:.4})",
+                wrap_pi(sol.arm_angle - preferred).abs(),
+                sol.arm_angle,
+                preferred,
+            );
+            checked += 1;
+        }
+        println!("distant seeds: {far}, with a feasible preference: {checked}");
+        assert!(checked > 200, "too few distant feasible cases: {checked}");
     }
 }

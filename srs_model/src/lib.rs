@@ -36,22 +36,23 @@
 #![forbid(unsafe_code)]
 
 mod arm;
-mod coriolis;
 mod error;
 mod fk;
-mod gravity;
 mod ik;
 mod jacobian;
 mod model;
-mod payload;
 
 /// The library entry point: build an [`Arm`] from a URDF, then read FK, gravity,
 /// Coriolis, and IK off it. [`Posed`] is the read-only view returned by
 /// [`Arm::at`]; [`ArmAnglePolicy`] / [`Solution`] are the IK types.
 pub use arm::{Arm, DEFAULT_DLS_LAMBDA};
 pub use error::SrsError;
-pub use fk::Posed;
 pub use ik::{ArmAnglePolicy, Solution};
+
+/// The arm posed at one configuration: the chain's own read-only view, at
+/// seven joints. Every pose-dependent quantity, the feedforward dynamics
+/// included, is read through it, so it can only be queried after a pose.
+pub type Posed<'a> = chain_kinematics::Posed<'a, ARM_DOF>;
 
 /// Differential kinematics: the geometric [`Jacobian`] (read off a [`Posed`] view
 /// via [`Posed::jacobian`]) and its redundancy-aware inverses and helpers for
@@ -68,22 +69,10 @@ pub const ARM_DOF: usize = 7;
 /// One joint-space configuration, j1..j7 in radians.
 pub type JointVec = [f64; ARM_DOF];
 
-/// Inclusive joint position limit, radians. Lives at the crate root because it is
-/// shared data of the URDF chain: the forward-kinematics layer reads it off the
-/// joints ([`Arm::limits`]) and the IK layer carries it for limit checks.
-#[derive(Debug, Clone, Copy)]
-pub struct Limit {
-    pub lo: f64,
-    pub hi: f64,
-}
-
-impl Limit {
-    /// True if `x` lies within `[lo, hi]`. Non-finite `x` (NaN/inf) compares
-    /// false on both sides, so it is rejected.
-    pub fn contains(&self, x: f64) -> bool {
-        self.lo <= x && x <= self.hi
-    }
-}
+/// Inclusive joint position limit, radians: the chain's own type, re-exported
+/// rather than mirrored, so the limits [`Arm::limits`] reports and the limits
+/// the IK checks against cannot be two structs that happen to agree.
+pub use chain_kinematics::Limit;
 
 /// Smallest sine of an angle between two unit axes (or two link directions) we
 /// treat as non-degenerate (~1e-6 rad). Below it the perpendicular / cross
@@ -91,9 +80,15 @@ impl Limit {
 /// axes, straight arm). Sites that test a `sin²` quantity compare its square.
 pub(crate) const PARALLEL_SIN_EPS: f64 = 1e-6;
 
-/// Re-export the linear-algebra types so downstream crates use the same
-/// `nalgebra` version `k` was built against.
-pub use k::nalgebra;
+/// Re-export the linear-algebra types so downstream crates speak the same
+/// `nalgebra` version this crate was built against, rather than each picking
+/// their own and finding the `Isometry3`s do not match.
+pub use nalgebra;
+
+/// Re-export the chain this arm is built on, so a consumer holding an [`Arm`]
+/// can reach the topology-agnostic laws ([`Arm::chain`] feeds them) without
+/// naming a second version of the crate.
+pub use chain_kinematics;
 
 /// Test fixtures: load a concrete SRS arm (the OpenArm V1.0) from the bundled
 /// fixture URDF, giving the agnostic tests a real arm to check against.

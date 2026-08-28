@@ -419,7 +419,9 @@ impl BimanualCollisionModel {
         let home = [0.0; ARM_DOF];
         let chain_names = |arm: &mut Arm| -> Vec<String> {
             let posed = arm.at(&home);
-            (0..ARM_DOF).map(|i| posed.link_name(i)).collect()
+            (0..ARM_DOF)
+                .map(|i| posed.link_name(i).to_string())
+                .collect()
         };
         let left_names = chain_names(&mut left);
         let right_names = chain_names(&mut right);

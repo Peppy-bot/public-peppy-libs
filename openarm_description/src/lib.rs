@@ -726,6 +726,9 @@ mod tests {
         (joint.origin.xyz.0, r)
     }
 
+    /// Gated with its only caller: without the meshes the grasp-frame test that
+    /// uses it does not build either.
+    #[cfg(feature = "meshes")]
     fn rotate(r: [[f64; 3]; 3], p: [f64; 3]) -> [f64; 3] {
         std::array::from_fn(|i| r[i][0] * p[0] + r[i][1] * p[1] + r[i][2] * p[2])
     }

@@ -3,20 +3,17 @@
 //! handle. Build it once and everything hangs off it; the underlying FK chain and
 //! SRS model are internal.
 
-use k::nalgebra::{Isometry3, Vector3, Vector6};
+use nalgebra::{Isometry3, Vector3};
 
-use crate::fk::{ForwardKinematics, Posed};
+use crate::fk::ForwardKinematics;
 use crate::ik::{self, ArmAnglePolicy, Solution};
-use crate::jacobian::damped_pseudo_inverse;
 use crate::model::ArmModel;
-use crate::{ARM_DOF, JointVec, Limit, SrsError};
+use crate::{ARM_DOF, JointVec, Limit, Posed, SrsError};
 
-/// Damping `lambda` for [`Arm::rate_step`] when the caller has no reason to
-/// pick another: heavy enough to stay bounded through singular postures, light
-/// enough not to visibly lag a jog step. A streaming jog and a guarded servo
-/// that share the step share this too, so the two control paths cannot drift
-/// apart on damping alone.
-pub const DEFAULT_DLS_LAMBDA: f64 = 0.05;
+/// Damping `lambda` for [`Arm::rate_step`] when the caller has no reason to pick
+/// another. Re-exported from `chain_kinematics`, which owns the step: an arm and
+/// the generic chain under it cannot be damped differently.
+pub use chain_kinematics::DEFAULT_DLS_LAMBDA;
 
 /// A complete SRS arm built from a URDF: forward kinematics + gravity/Coriolis
 /// dynamics + closed-form inverse kinematics. The URDF is parsed once at
@@ -72,13 +69,20 @@ impl Arm {
         Ok(self)
     }
 
+    /// The arm as a plain serial chain: what the topology-agnostic operations in
+    /// [`chain_kinematics`] take. The chain carries this arm's tool frame and its
+    /// limits, elbow floor included, so a generic law run over it is run over the
+    /// same arm the SRS-specific methods here describe.
+    pub fn chain(&self) -> &chain_kinematics::Chain<ARM_DOF> {
+        self.fk.chain()
+    }
+
     /// Pose the arm at configuration `q` for forward-kinematics and dynamics
-    /// reads. Takes `&mut self` not because posing requires it (`k` poses through
-    /// interior mutability) but to enforce "pose, then read": the returned [`Posed`]
-    /// holds exclusive access for its lifetime, so reads (EE pose, gravity, Coriolis)
-    /// always follow a pose and never race a re-pose. See [`Posed::ee_pose`],
-    /// [`Posed::gravity_torques`], [`Posed::coriolis_torques`].
-    pub fn at(&mut self, q: &JointVec) -> Posed<'_> {
+    /// reads. The returned [`Posed`] is a snapshot of that configuration's frames,
+    /// so it can be held across other reads and two configurations can be compared
+    /// side by side. See [`Posed::ee_pose`], [`Posed::gravity_torques`],
+    /// [`Posed::coriolis_torques`].
+    pub fn at(&self, q: &JointVec) -> Posed<'_> {
         self.fk.at(q)
     }
 
@@ -154,7 +158,7 @@ impl Arm {
     /// position limits. The step the operator streaming jog and the backbone's
     /// guarded servo both run, shared so the two control paths cannot drift.
     pub fn rate_step(
-        &mut self,
+        &self,
         q: &JointVec,
         dp_world: Vector3<f64>,
         dw_world: Vector3<f64>,
@@ -162,25 +166,15 @@ impl Arm {
         dt_s: f64,
         lambda: f64,
     ) -> JointVec {
-        let to_base = self.base_from_world().rotation;
-        let dp = to_base * dp_world;
-        let dw = to_base * dw_world;
-        let twist = Vector6::new(dp.x, dp.y, dp.z, dw.x, dw.y, dw.z);
-        let jacobian = self.at(q).jacobian();
-        let mut dq = damped_pseudo_inverse(&jacobian, lambda) * twist;
-        let scale = (0..ARM_DOF)
-            .map(|i| {
-                let cap = max_joint_velocity_rad_s[i] * dt_s;
-                if dq[i].abs() > cap {
-                    cap / dq[i].abs()
-                } else {
-                    1.0
-                }
-            })
-            .fold(1.0_f64, f64::min);
-        dq *= scale;
-        let limits = self.limits();
-        std::array::from_fn(|i| (q[i] + dq[i]).clamp(limits[i].lo, limits[i].hi))
+        chain_kinematics::rate_step(
+            self.fk.chain(),
+            q,
+            dp_world,
+            dw_world,
+            max_joint_velocity_rad_s,
+            dt_s,
+            lambda,
+        )
     }
 }
 
@@ -231,7 +225,7 @@ mod tests {
         // straight-arm singularity so a refusal here is the limit doing the work
         // rather than the solver failing on conditioning.
         const FLOOR: f64 = 0.5;
-        let mut arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0")
+        let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0")
             .expect("load fixture")
             .with_lower_floor(3, FLOOR);
         assert_eq!(arm.limits()[3].lo, FLOOR, "the floor is reported");
@@ -317,7 +311,7 @@ mod tests {
 
     #[test]
     fn rate_step_respects_the_velocity_budget_and_limits() {
-        let mut arm = rate_arm();
+        let arm = rate_arm();
         // An absurd demand: the scaling must keep every joint inside its budget.
         let dp = Vector3::new(1.0, -1.0, 0.5);
         let q = arm.rate_step(
@@ -338,7 +332,7 @@ mod tests {
 
     #[test]
     fn rate_step_holds_still_on_a_zero_task() {
-        let mut arm = rate_arm();
+        let arm = rate_arm();
         let q = arm.rate_step(
             &RATE_Q,
             Vector3::zeros(),
@@ -362,12 +356,12 @@ mod tests {
 
     #[test]
     fn a_mounted_tool_moves_the_ee_frame_and_leaves_the_tip_where_it_was() {
-        let mut bare = rate_arm();
+        let bare = rate_arm();
         let bare_tip = bare.at(&RATE_Q).tip_pose();
         let bare_ee = bare.at(&RATE_Q).ee_pose();
         assert_eq!(bare_tip, bare_ee, "with no tool the EE frame is the tip");
 
-        let mut tooled = tooled_arm();
+        let tooled = tooled_arm();
         assert_eq!(
             tooled.at(&RATE_Q).tip_pose(),
             bare_tip,
@@ -391,7 +385,7 @@ mod tests {
     fn ik_round_trips_the_tool_frame_it_was_given() {
         // The whole point of the seam: a target expressed at the tool is reached at
         // the tool. A composition inverted anywhere lands a tool-length away.
-        let mut arm = tooled_arm();
+        let arm = tooled_arm();
         let target = arm.at(&RATE_Q).ee_pose();
         let seed: JointVec = std::array::from_fn(|i| RATE_Q[i] + 0.05);
         let solution = arm

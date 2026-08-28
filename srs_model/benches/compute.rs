@@ -23,7 +23,7 @@ const URDF: &str = include_str!("../tests/fixtures/openarm_v10.urdf");
 const BASE: &str = "openarm_left_link0";
 
 fn benchmarks(c: &mut Criterion) {
-    let mut arm = Arm::from_urdf(URDF, BASE).expect("load fixture arm");
+    let arm = Arm::from_urdf(URDF, BASE).expect("load fixture arm");
     // A non-singular configuration and a non-trivial velocity.
     let q: JointVec = [0.3, -0.4, 0.2, 0.8, -0.5, 0.3, 0.6];
     let qd: JointVec = [0.4, -0.3, 0.5, -0.2, 0.6, -0.1, 0.3];
