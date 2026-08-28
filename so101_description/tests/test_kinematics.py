@@ -35,7 +35,7 @@ def test_fk_varies_with_each_positioning_joint(kinematics):
         nudged = tuple(q + (0.3 if i == j else 0.0) for i, q in enumerate(bent_home))
         position, _ = kinematics.forward_kinematics(nudged)
         assert not all(
-            math.isclose(a, b, abs_tol=1e-9) for a, b in zip(position, reference)
+            math.isclose(a, b, abs_tol=1e-9) for a, b in zip(position, reference, strict=True)
         ), f"joint {j} did not move the end effector"
 
 
@@ -303,5 +303,5 @@ def test_asking_for_the_jacobian_does_not_disturb_a_streaming_solve():
             out.append(seed)
         return out
 
-    for undisturbed, interleaved in zip(run(False), run(True)):
+    for undisturbed, interleaved in zip(run(False), run(True), strict=True):
         assert np.allclose(undisturbed, interleaved, atol=1e-12)
