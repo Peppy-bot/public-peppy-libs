@@ -234,3 +234,74 @@ def test_an_unusable_tolerance_is_refused_rather_than_defaulted(kinematics, bad)
         kinematics.inverse_kinematics(
             HOME, *target, orientation_tolerance_rad=bad
         )
+
+
+def test_the_jacobian_predicts_end_effector_motion(kinematics):
+    # The property a speed cap depends on: J @ dq is the twist a joint step
+    # produces. Checked against a finite difference small enough that the
+    # second-order term is negligible.
+    import numpy as np
+
+    q = (0.3, -0.4, 0.6, 0.2, 0.5)
+    direction = np.array([1.0, -0.7, 0.4, 0.2, -0.9])
+    direction /= np.linalg.norm(direction)
+    step = direction * 1e-6
+    jacobian = kinematics.jacobian(q)
+    assert jacobian.shape == (6, 5)
+
+    predicted = np.linalg.norm((jacobian @ step)[:3])
+    here = np.array(kinematics.forward_kinematics(q)[0])
+    there = np.array(kinematics.forward_kinematics(tuple(np.array(q) + step))[0])
+    assert predicted == pytest.approx(np.linalg.norm(there - here), rel=1e-3)
+
+
+def test_the_jacobian_is_linear_in_the_step(kinematics):
+    # Why the governor uses it rather than differencing forward kinematics:
+    # halving the joint step must halve the end-effector speed exactly, so a
+    # cap can be met by one division instead of a search.
+    import numpy as np
+
+    q = (0.1, -0.6, 0.9, 0.3, -0.2)
+    jacobian = kinematics.jacobian(q)
+    step = np.array([0.4, -0.3, 0.2, 0.1, -0.5])
+    full = np.linalg.norm((jacobian @ step)[:3])
+    for scale in (0.5, 0.25, 0.1):
+        scaled = np.linalg.norm((jacobian @ (step * scale))[:3])
+        assert scaled == pytest.approx(scale * full, rel=1e-12)
+
+
+def test_the_jacobian_is_taken_at_the_tool_point(kinematics):
+    # The trap this closes: Pinocchio's world Jacobian refers the twist to the
+    # world origin, and its linear rows are not the tool's velocity. A pure
+    # shoulder rotation moves the tool, so the linear part cannot vanish.
+    import numpy as np
+
+    q = (0.0, -0.5, 0.8, 0.3, 0.0)
+    jacobian = kinematics.jacobian(q)
+    pan_only = np.array([1.0, 0.0, 0.0, 0.0, 0.0])
+    here = np.array(kinematics.forward_kinematics(q)[0])
+    radius = math.hypot(here[0], here[1])
+    assert radius > 0.05, "pick a posture where the tool is off the pan axis"
+    assert np.linalg.norm((jacobian @ pan_only)[:3]) == pytest.approx(radius, rel=1e-3)
+
+
+def test_asking_for_the_jacobian_does_not_disturb_a_streaming_solve():
+    # placo's solver carries state between solves. An earlier version of
+    # jacobian() moved the model and left it moved, which diverged an
+    # interleaved streaming solve by radians while every other test passed.
+    import numpy as np
+
+    def run(interleave: bool):
+        kinematics = Kinematics(URDF)
+        seed, out = HOME, []
+        for step in range(8):
+            target = (0.2 + step * 0.05, -0.3, 0.5, 0.1, 0.0)
+            position, orientation = kinematics.forward_kinematics(target)
+            if interleave:
+                kinematics.jacobian((0.9, -0.2, 0.4, 0.1, 0.3))
+            seed = kinematics.inverse_kinematics_streaming(seed, position, orientation)
+            out.append(seed)
+        return out
+
+    for undisturbed, interleaved in zip(run(False), run(True)):
+        assert np.allclose(undisturbed, interleaved, atol=1e-12)
