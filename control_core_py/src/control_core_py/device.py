@@ -47,6 +47,44 @@ class LatestSlot:
             return self._value
 
 
+class LatestValue:
+    """One latest-wins value with its arrival stamp and the producer's capture
+    stamp, for a holder that only ever lives on one event loop.
+
+    LatestSlot is the cross-thread form, lock-guarded for a device thread
+    handing values to an event loop. This one buys nothing from a lock and
+    carries two things that form needs no answer for: the stamp a relaying
+    node must forward downstream, so a value and the time it was captured
+    cannot desync, and a clear() for the consumer that must forget what it
+    was told rather than wait for it to age out.
+    """
+
+    def __init__(self) -> None:
+        self._value = None
+        self._stamp = 0.0
+        self.wire_timestamp_s: float | None = None
+
+    def set(self, value, wire_timestamp_s: float) -> None:
+        """Adopt a value and the time its producer captured it. The capture
+        stamp is required, not defaulted: a holder whose stamp can silently
+        go missing puts publish time on the wire, which reads as fresh."""
+        self._value = value
+        self._stamp = time.monotonic()
+        self.wire_timestamp_s = wire_timestamp_s
+
+    def fresh(self, timeout_s: float):
+        """The value if it arrived within the window, else None."""
+        if self._value is None or time.monotonic() - self._stamp > timeout_s:
+            return None
+        return self._value
+
+    def clear(self) -> None:
+        """Forget the value. The next fresh() reads None however recently it
+        arrived, for a consumer that must stop acting on what it was told."""
+        self._value = None
+        self.wire_timestamp_s = None
+
+
 class DeviceThread(ABC):
     """Owns the hardware thread. Start blocks until bringup succeeds or
     raises, so a node that cannot serve never reports as launched."""
