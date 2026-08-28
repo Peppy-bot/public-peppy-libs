@@ -23,7 +23,7 @@ impl<const N: usize> Posed<'_, N> {
     /// of the potential energy in `q`, which is what the tests check it
     /// against.
     pub fn gravity_torques(&self) -> [f64; N] {
-        // Joint j carries every downstream segment i (j..=last). Gravity on
+        // Joint j carries every segment at or below it on the chain. Gravity on
         // segment i is (0, 0, -m·g); a revolute joint feels its moment about
         // the axis, which reduces to m·g·(axis × r).z because gravity has only
         // a z component, and a prismatic joint feels the force along its axis,
@@ -31,7 +31,7 @@ impl<const N: usize> Posed<'_, N> {
         std::array::from_fn(|j| {
             let origin_j = self.origin_world(j);
             let axis_j = self.axis_world(j);
-            (j..N)
+            self.distal_from(j)
                 .map(|i| {
                     let weight = self.mass(i) * STANDARD_GRAVITY;
                     match self.kind(j) {
@@ -53,9 +53,14 @@ impl<const N: usize> Posed<'_, N> {
     /// A world-frame recursive Newton-Euler pass with `q̈ = 0` and gravity off,
     /// so only the velocity coupling remains; no mass matrix is materialized.
     pub fn coriolis_torques(&self, qdot: &[f64; N]) -> [f64; N] {
+        // Both passes walk the chain proximal to distal, which is not `0..N`:
+        // the order of `q` is the caller's. Everything is stored by the entry of
+        // `q` it belongs to, so the torques come back in the caller's order.
+        let order = self.proximal_order();
+
         // Forward pass: propagate angular velocity, angular acceleration, and
-        // the linear acceleration of each joint origin and link COM outward.
-        // Index 0 is the fixed base (zeros); index i+1 belongs to segment i.
+        // the linear acceleration of each joint origin and link COM outward,
+        // starting from a fixed base (zeros).
         // `slide` is a prismatic joint's linear rate along its axis, zero at a
         // revolute joint; it enters the accelerations twice, as the Coriolis
         // term of the sliding frame and as the rotation of the slide direction.
@@ -69,14 +74,14 @@ impl<const N: usize> Posed<'_, N> {
         let mut a_parent = Vector3::<f64>::zeros();
         let mut slide_parent = Vector3::<f64>::zeros();
         let mut prev_origin = Vector3::<f64>::zeros();
-        for i in 0..N {
+        for &i in order.iter() {
             let origin = self.origin_world(i);
             let axis = self.axis_world(i);
 
-            // Joint i's origin is rigidly set on link i-1 (plus the slide of a
-            // prismatic joint i-1, whose rate rides along as `slide_parent`),
-            // so its acceleration comes from the parent's (ω, α) and the
-            // Coriolis of that slide.
+            // Joint i's origin is rigidly set on the segment above it (plus that
+            // segment's slide, if a prismatic joint drives it, whose rate rides
+            // along as `slide_parent`), so its acceleration comes from the
+            // parent's (ω, α) and the Coriolis of that slide.
             let r = origin - prev_origin;
             let a_joint = a_parent
                 + alpha_parent.cross(&r)
@@ -119,7 +124,7 @@ impl<const N: usize> Posed<'_, N> {
         let mut n_child = Vector3::<f64>::zeros();
         let mut tau = [0.0_f64; N];
 
-        for i in (0..N).rev() {
+        for (rank, &i) in order.iter().enumerate().rev() {
             let origin = self.origin_world(i);
             let inertia = self.inertia_world(i);
 
@@ -129,11 +134,10 @@ impl<const N: usize> Posed<'_, N> {
             let force_joint = force_com + f_child;
 
             let r_com = self.com_world(i) - origin;
-            let r_child = if i + 1 < N {
-                self.origin_world(i + 1) - origin
-            } else {
+            let r_child = match order.get(rank + 1) {
+                Some(&child) => self.origin_world(child) - origin,
                 // Tip link has no child: f_child and n_child are zero.
-                Vector3::zeros()
+                None => Vector3::zeros(),
             };
             let moment_joint =
                 moment_com + r_com.cross(&force_com) + n_child + r_child.cross(&f_child);

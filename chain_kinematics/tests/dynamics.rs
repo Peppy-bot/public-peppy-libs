@@ -125,3 +125,116 @@ fn zero_velocity_couples_no_torque() {
         .coriolis_torques(&[0.0; 7]);
     assert_eq!(tau, [0.0; 7]);
 }
+
+/// The OpenArm's seven joints named out of order, so `q` runs in an order the
+/// linkage does not. `JointSelection::Named` exists to let a caller keep its wire
+/// order, which nothing guarantees matches the URDF's path order.
+const SCRAMBLED: [&str; 7] = [
+    "openarm_left_joint4",
+    "openarm_left_joint1",
+    "openarm_left_joint7",
+    "openarm_left_joint2",
+    "openarm_left_joint6",
+    "openarm_left_joint3",
+    "openarm_left_joint5",
+];
+
+/// Where each entry of [`SCRAMBLED`] sits in the path-ordered chain's `q`.
+const FROM_PATH_ORDER: [usize; 7] = [3, 0, 6, 1, 5, 2, 4];
+
+fn scrambled_openarm() -> Chain<7> {
+    let robot = urdf_rs::read_from_string(common::OPENARM).expect("parse OpenArm");
+    Chain::<7>::from_urdf(
+        &robot,
+        &ChainSpec {
+            base_link: Some("openarm_left_link0"),
+            tip_link: "openarm_left_link7",
+            joints: JointSelection::Named(&SCRAMBLED),
+        },
+    )
+    .expect("the same seven joints, named in another order")
+}
+
+#[test]
+fn the_torques_follow_the_chain_and_not_the_order_of_q() {
+    // Both recursions walk proximal to distal, which is the order of the linkage
+    // and not of `q`. Naming the same seven joints in another order must permute
+    // the torques and change nothing else: it is the same arm at the same pose.
+    let (path_order, scrambled) = (openarm(), scrambled_openarm());
+    let mut draws = SplitMix64(0x5EED_0DD5);
+    for k in 0..64 {
+        let q = draws.config(&path_order);
+        let qdot: [f64; 7] = std::array::from_fn(|_| draws.unit() * 2.0 - 1.0);
+        let permuted: [f64; 7] = std::array::from_fn(|i| q[FROM_PATH_ORDER[i]]);
+        let permuted_dot: [f64; 7] = std::array::from_fn(|i| qdot[FROM_PATH_ORDER[i]]);
+
+        let want = path_order.at(&q);
+        let got = scrambled.at(&permuted);
+        assert!(
+            (want.ee_pose().translation.vector - got.ee_pose().translation.vector).norm() < 1e-12,
+            "draw {k}: the two orders do not pose the same arm"
+        );
+
+        let (want_g, got_g) = (want.gravity_torques(), got.gravity_torques());
+        let (want_c, got_c) = (
+            want.coriolis_torques(&qdot),
+            got.coriolis_torques(&permuted_dot),
+        );
+        for i in 0..7 {
+            let j = FROM_PATH_ORDER[i];
+            assert!(
+                (want_g[j] - got_g[i]).abs() < 1e-9,
+                "draw {k}: gravity on '{}' is {} in path order and {} scrambled",
+                SCRAMBLED[i],
+                want_g[j],
+                got_g[i]
+            );
+            assert!(
+                (want_c[j] - got_c[i]).abs() < 1e-9,
+                "draw {k}: Coriolis on '{}' is {} in path order and {} scrambled",
+                SCRAMBLED[i],
+                want_c[j],
+                got_c[i]
+            );
+        }
+    }
+}
+
+#[test]
+fn the_joints_that_move_a_point_are_the_ones_above_it_on_the_chain() {
+    // A witness point on a segment is moved by the joints proximal to it and by
+    // no others. "Proximal" is a fact about the linkage, so a scrambled `q` must
+    // report the same per-joint contributions, at whatever entries it puts them,
+    // and zero the same joints.
+    use chain_kinematics::nalgebra::Point3;
+
+    let (path_order, scrambled) = (openarm(), scrambled_openarm());
+    let q = [0.3, -0.4, 0.2, 0.8, -0.5, 0.3, 0.6];
+    let permuted: [f64; 7] = std::array::from_fn(|i| q[FROM_PATH_ORDER[i]]);
+    let (posed, posed_scrambled) = (path_order.at(&q), scrambled.at(&permuted));
+
+    for segment in 0..7 {
+        let point = Point3::from(posed.link_pose_world(segment).translation.vector);
+        // The same segment, at the entry of `q` the scrambled chain gives it.
+        let as_named = FROM_PATH_ORDER
+            .iter()
+            .position(|&j| j == segment)
+            .expect("every path-order joint is named");
+        let want = posed.point_world_jacobian(&point, segment);
+        let got = posed_scrambled.point_world_jacobian(&point, as_named);
+        for (i, column) in got.iter().enumerate() {
+            let j = FROM_PATH_ORDER[i];
+            assert!(
+                (want[j] - column).norm() < 1e-12,
+                "segment {segment}: '{}' contributes {:?} in path order and {column:?} scrambled",
+                SCRAMBLED[i],
+                want[j]
+            );
+            assert!(
+                j <= segment || column.norm() == 0.0,
+                "segment {segment}: '{}' is below the point and still moves it: {column:?}",
+                SCRAMBLED[i]
+            );
+        }
+    }
+}

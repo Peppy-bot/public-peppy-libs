@@ -47,6 +47,14 @@ pub struct Chain<const N: usize> {
     /// drives it, if any. Kept explicitly because `JointSelection::Named` may put
     /// the actuated joints in any order, so their slots are not sorted.
     driven_by: Vec<Option<usize>>,
+    /// The entries of `q`, ordered proximal to distal along the chain. The order
+    /// of `q` is the caller's (a wire order, under `JointSelection::Named`) and
+    /// need not be the linkage's, so anything that walks the linkage - the
+    /// dynamics recursions, "which joints move this segment" - walks this.
+    proximal_order: [usize; N],
+    /// The inverse of `proximal_order`: how far down the chain each entry of `q`
+    /// sits, counting from 0 at the base.
+    rank_of: [usize; N],
     tip_link: usize,
     base_from_world: Isometry3<f64>,
     axes_local: [Vector3<f64>; N],
@@ -102,13 +110,20 @@ impl<const N: usize> Chain<N> {
         let mut coms_local: [Vector3<f64>; N] = std::array::from_fn(|i| seg(i).com);
         let mut inertias_local: [Matrix3<f64>; N] = std::array::from_fn(|i| seg(i).inertia);
 
+        let mut proximal_order: [usize; N] = std::array::from_fn(|i| i);
+        proximal_order.sort_by_key(|&i| actuated[i]);
+        let mut rank_of = [0usize; N];
+        for (rank, &i) in proximal_order.iter().enumerate() {
+            rank_of[i] = rank;
+        }
+
         // Everything past the tip - a gripper, its fingers, a mounted tool - is
         // rigidly attached to the last segment, so a bigger last segment and a
         // separate payload are the same rigid body. Folding it in here is what
         // lets a dynamics layer read one inertial per segment and be right.
         let payload = Payload::from_distal(&tree, tip_link);
         if payload.mass > 0.0 && N > 0 {
-            let last = N - 1;
+            let last = proximal_order[N - 1];
             let merged =
                 payload.combined_with(masses[last], coms_local[last], inertias_local[last]);
             masses[last] = merged.mass;
@@ -126,6 +141,8 @@ impl<const N: usize> Chain<N> {
             path,
             actuated,
             driven_by,
+            proximal_order,
+            rank_of,
             tip_link,
             base_from_world: Isometry3::identity(),
             axes_local,
@@ -338,6 +355,20 @@ impl<const N: usize> Posed<'_, N> {
         r * self.chain.inertias_local[i] * r.transpose()
     }
 
+    /// The entries of `q` at or below joint `i` on the chain: the segments joint
+    /// `i` carries, and the joints that move them. Not `i..N`, because the order
+    /// of `q` is the caller's and need not run proximal to distal.
+    pub(crate) fn distal_from(&self, i: usize) -> impl Iterator<Item = usize> + '_ {
+        self.chain.proximal_order[self.chain.rank_of[i]..]
+            .iter()
+            .copied()
+    }
+
+    /// The entries of `q`, ordered proximal to distal along the chain.
+    pub(crate) fn proximal_order(&self) -> [usize; N] {
+        self.chain.proximal_order
+    }
+
     /// Geometric Jacobian of the end effector in the base frame. Column `i` is
     /// joint `i`'s contribution: for a revolute joint the linear part is
     /// `zᵢ × (p_ee − pᵢ)` and the angular part is the axis; for a prismatic joint
@@ -368,9 +399,13 @@ impl<const N: usize> Posed<'_, N> {
     /// This is [`jacobian`](Self::jacobian)'s linear rows generalised to an
     /// arbitrary witness point, which is what a collision-distance gradient needs.
     pub fn point_world_jacobian(&self, point: &Point3<f64>, segment: usize) -> [Vector3<f64>; N] {
-        let last = segment.min(N - 1);
+        let rank_of = &self.chain.rank_of;
+        let last_rank = rank_of
+            .get(segment)
+            .copied()
+            .unwrap_or_else(|| N.saturating_sub(1));
         std::array::from_fn(|j| {
-            if j > last {
+            if rank_of[j] > last_rank {
                 return Vector3::zeros();
             }
             let z = self.axis_world(j);
