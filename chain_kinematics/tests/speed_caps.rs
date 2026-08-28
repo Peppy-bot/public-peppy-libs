@@ -28,10 +28,7 @@ fn limits<const N: usize>(linear_m_s: f64, angular_rad_s: f64) -> ServoLimits<N>
             linear_m_s,
             angular_rad_s,
         },
-        tolerances: ServoTolerances {
-            position_m: 1e-3,
-            orientation_rad: 1e-2,
-        },
+        tolerances: ServoTolerances::new(1e-3, 1e-2).expect("a reachable tolerance"),
         dt_s: DT,
     }
 }

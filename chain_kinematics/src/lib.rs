@@ -59,7 +59,7 @@ pub use payload::Payload;
 pub use rate::{DEFAULT_DLS_LAMBDA, rate_step};
 pub use servo::{
     EeCaps, NoSmoothing, ServoLimits, ServoState, ServoStep, ServoTolerances, Smoother,
-    interpolate, rate_step_toward, rollout,
+    TRACKING_FLOOR_M, ToleranceError, interpolate, rate_step_toward, rollout,
 };
 pub use tree::{JointKind, Tree};
 

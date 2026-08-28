@@ -127,7 +127,10 @@ edge should feel a wall, not a disconnect.
 
 Tolerances and the output smoother are the caller's: `Smoother` is a trait, so
 this crate needs no filter library and the servo's output is smoothed exactly as
-the rest of that controller's commands are.
+the rest of that controller's commands are. Arrival slack is parsed rather than
+taken as given (`ServoTolerances::new`): a step stops correcting position inside
+`TRACKING_FLOOR_M`, so a tolerance tighter than that is one the law would never
+meet, and it is refused where the number is given instead of timing the move out.
 
 ## Layout
 

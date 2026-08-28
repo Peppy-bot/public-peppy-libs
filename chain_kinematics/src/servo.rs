@@ -34,17 +34,58 @@ pub struct EeCaps {
 /// How close counts as arrived. Arrival is all it decides: the step deadband
 /// and the degenerate-line guard are the law's own ([`TRACKING_FLOOR_M`]), so a
 /// caller's slack changes when a move is done, never how it is tracked.
+///
+/// Parsed rather than taken as given, because the two are not independent: a
+/// position tolerance below the law's own floor is one the law stops correcting
+/// toward before it is met, so a move asking for it would run its whole budget
+/// and time out. Refused here, once, instead of read back as an unreachable goal.
 #[derive(Debug, Clone, Copy)]
 pub struct ServoTolerances {
-    pub position_m: f64,
-    pub orientation_rad: f64,
+    position_m: f64,
+    orientation_rad: f64,
+}
+
+impl ServoTolerances {
+    /// The arrival slack a move is judged against, or a refusal when the law
+    /// could not reach it.
+    pub fn new(position_m: f64, orientation_rad: f64) -> Result<Self, ToleranceError> {
+        if !(position_m.is_finite() && position_m >= TRACKING_FLOOR_M) {
+            return Err(ToleranceError::Position(position_m));
+        }
+        if !(orientation_rad.is_finite() && orientation_rad > 0.0) {
+            return Err(ToleranceError::Orientation(orientation_rad));
+        }
+        Ok(Self {
+            position_m,
+            orientation_rad,
+        })
+    }
+
+    pub fn position_m(&self) -> f64 {
+        self.position_m
+    }
+
+    pub fn orientation_rad(&self) -> f64 {
+        self.orientation_rad
+    }
+}
+
+/// An arrival slack the law cannot honour.
+#[derive(Debug, thiserror::Error)]
+pub enum ToleranceError {
+    #[error(
+        "position tolerance {0} m is not a finite distance at or above the law's          tracking floor of {TRACKING_FLOOR_M} m, below which it stops correcting"
+    )]
+    Position(f64),
+    #[error("orientation tolerance {0} rad is not a finite positive angle")]
+    Orientation(f64),
 }
 
 /// Position error below which a step stops correcting position, and below which
-/// a line is a pure reorientation. The tracking floor of the law itself: about
-/// the noise of a forward-kinematics evaluation, and the guard on the division
-/// by the line's length.
-const TRACKING_FLOOR_M: f64 = 1e-3;
+/// a line is a pure reorientation. The tracking floor of the law itself, and the
+/// guard on the division by the line's length. A caller cannot ask to arrive
+/// tighter than this: [`ServoTolerances::new`] refuses it.
+pub const TRACKING_FLOOR_M: f64 = 1e-3;
 
 /// Everything one servo tick runs under: the per-joint velocity budget, the
 /// end-effector speed caps, the arrival tolerances, and the control period.
@@ -179,8 +220,8 @@ impl<const N: usize, S: Smoother<N>> ServoState<N, S> {
         let goal_pos_err = (self.end.translation.vector - ee.translation.vector).norm();
         let goal_rot_err = ee.rotation.angle_to(&self.end.rotation);
         if self.reference_s >= 1.0
-            && goal_pos_err < tol.position_m
-            && goal_rot_err < tol.orientation_rad
+            && goal_pos_err < tol.position_m()
+            && goal_rot_err < tol.orientation_rad()
         {
             return ServoStep::Converged(*q);
         }
@@ -217,9 +258,13 @@ impl<const N: usize, S: Smoother<N>> ServoState<N, S> {
 ///
 /// Deterministic and identical to the runtime law, so an accepted goal executes
 /// the motion that was validated.
+///
+/// Takes the state by value: a rollout spends it, walking the reference to the
+/// goal, and a spent one restarted mid-line would answer for a move nobody asked
+/// for. The runtime builds its own.
 pub fn rollout<const N: usize, S: Smoother<N>>(
     chain: &Chain<N>,
-    state: &mut ServoState<N, S>,
+    mut state: ServoState<N, S>,
     seed: [f64; N],
     limits: &ServoLimits<N>,
     budget_s: f64,

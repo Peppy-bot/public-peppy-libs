@@ -8,7 +8,8 @@
 use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
 use chain_kinematics::{
     Chain, ChainSpec, EeCaps, JointSelection, NoSmoothing, ServoLimits, ServoState,
-    ServoTolerances, damped_pseudo_inverse, manipulability,
+    ServoTolerances, TRACKING_FLOOR_M, ToleranceError, damped_pseudo_inverse, manipulability,
+    rate_step_toward,
 };
 
 mod common;
@@ -154,10 +155,7 @@ fn the_servo_law_converges_on_both_robots() {
                 linear_m_s: 0.15,
                 angular_rad_s: 1.0,
             },
-            tolerances: ServoTolerances {
-                position_m: 1e-3,
-                orientation_rad: 1e-2,
-            },
+            tolerances: ServoTolerances::new(1e-3, 1e-2).expect("a reachable tolerance"),
             dt_s: 0.01,
         };
 
@@ -166,8 +164,8 @@ fn the_servo_law_converges_on_both_robots() {
         let start = chain.world_pose(&chain.at(&seed).ee_pose());
         let goal = chain.world_pose(&chain.at(&goal_q).ee_pose());
 
-        let mut state = ServoState::new(start, goal, 0.05, NoSmoothing);
-        let took = chain_kinematics::rollout(chain, &mut state, seed, &limits, 30.0);
+        let state = ServoState::new(start, goal, 0.05, NoSmoothing);
+        let took = chain_kinematics::rollout(chain, state, seed, &limits, 30.0);
         let took = took.unwrap_or_else(|| panic!("{label}: servo did not converge"));
         assert!(took > 0.0 && took < 30.0, "{label}: converged in {took}s");
     }
@@ -237,4 +235,76 @@ fn poses_are_reported_in_the_named_base_frame() {
     let ee = root_based.at(&q).ee_pose();
     assert!((back.translation.vector - ee.translation.vector).norm() < 1e-12);
     assert!(world.translation.vector != Vector3::zeros());
+}
+
+#[test]
+fn an_arrival_tolerance_the_law_would_never_reach_is_refused() {
+    // A step stops correcting position inside the law's tracking floor, so a move
+    // asked to arrive tighter than that could only spend its whole budget and
+    // time out. The floor itself is reachable and is the tightest that is, which
+    // `the_servo_law_converges_on_both_robots` runs at on both robots.
+    ServoTolerances::new(TRACKING_FLOOR_M, 1e-2)
+        .expect("the floor is the tightest arrival the law can reach");
+    for position_m in [
+        TRACKING_FLOOR_M * 0.999,
+        0.0,
+        -1e-3,
+        f64::NAN,
+        f64::INFINITY,
+    ] {
+        assert!(
+            matches!(
+                ServoTolerances::new(position_m, 1e-2),
+                Err(ToleranceError::Position(_))
+            ),
+            "{position_m} m is not an arrival the law can reach"
+        );
+    }
+    for orientation_rad in [0.0, -1e-2, f64::NAN, f64::INFINITY] {
+        assert!(
+            matches!(
+                ServoTolerances::new(1e-2, orientation_rad),
+                Err(ToleranceError::Orientation(_))
+            ),
+            "{orientation_rad} rad is not a finite positive angle"
+        );
+    }
+}
+
+#[test]
+fn a_step_stops_correcting_position_inside_the_tracking_floor() {
+    // The mechanism the refusal above stands on: within the floor the position
+    // term is dropped, so a target that close draws no motion at all and the
+    // error stops shrinking. No budget closes a gap nothing is correcting.
+    let chain = so101();
+    let q = [0.3, -0.4, 0.5, -0.3, 0.2];
+    let ee = chain.world_pose(&chain.at(&q).ee_pose());
+    let limits = ServoLimits {
+        max_joint_velocity: [2.0; 5],
+        ee: EeCaps {
+            linear_m_s: 0.15,
+            angular_rad_s: 1.0,
+        },
+        tolerances: ServoTolerances::new(TRACKING_FLOOR_M, 1e-2).expect("the floor is reachable"),
+        dt_s: 0.01,
+    };
+    let inside = Isometry3::from_parts(
+        Translation3::from(ee.translation.vector + Vector3::new(0.9 * TRACKING_FLOOR_M, 0.0, 0.0)),
+        ee.rotation,
+    );
+    assert_eq!(
+        rate_step_toward(&chain, &q, &ee, &inside, &limits),
+        q,
+        "a target inside the floor should draw no step"
+    );
+
+    let outside = Isometry3::from_parts(
+        Translation3::from(ee.translation.vector + Vector3::new(1.1 * TRACKING_FLOOR_M, 0.0, 0.0)),
+        ee.rotation,
+    );
+    assert_ne!(
+        rate_step_toward(&chain, &q, &ee, &outside, &limits),
+        q,
+        "a target outside the floor should draw one"
+    );
 }
