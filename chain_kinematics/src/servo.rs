@@ -39,7 +39,7 @@ pub struct EeCaps {
 /// position tolerance below the law's own floor is one the law stops correcting
 /// toward before it is met, so a move asking for it would run its whole budget
 /// and time out. Refused here, once, instead of read back as an unreachable goal.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ServoTolerances {
     position_m: f64,
     orientation_rad: f64,
@@ -70,8 +70,9 @@ impl ServoTolerances {
     }
 }
 
-/// An arrival slack the law cannot honour.
-#[derive(Debug, thiserror::Error)]
+/// An arrival slack the law cannot honour. Plain data, so a caller can carry the
+/// refusal in a type of its own without giving up `Copy`.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
 pub enum ToleranceError {
     #[error(
         "position tolerance {0} m is not a finite distance at or above the law's          tracking floor of {TRACKING_FLOOR_M} m, below which it stops correcting"
@@ -84,7 +85,8 @@ pub enum ToleranceError {
 /// Position error below which a step stops correcting position, and below which
 /// a line is a pure reorientation. The tracking floor of the law itself, and the
 /// guard on the division by the line's length. A caller cannot ask to arrive
-/// tighter than this: [`ServoTolerances::new`] refuses it.
+/// tighter than this: [`ServoTolerances::new`] refuses it, and at exactly this
+/// error a step still corrects, so the floor itself is an arrival that lands.
 pub const TRACKING_FLOOR_M: f64 = 1e-3;
 
 /// Everything one servo tick runs under: the per-joint velocity budget, the
@@ -130,9 +132,10 @@ impl<const N: usize> Smoother<N> for NoSmoothing {
 /// same bounded step as one millimetres away, which is what lets one law serve
 /// both a planned move and a live stream.
 ///
-/// It always returns a configuration. An unreachable target tracks the workspace
-/// boundary rather than refusing, because a teleoperator pushing past the edge
-/// should feel a wall, not a disconnect.
+/// It always returns a configuration. An unreachable target moves toward the
+/// closest pose this step can find and saturates there rather than refusing,
+/// because a teleoperator pushing past the edge should feel a wall, not a
+/// disconnect.
 pub fn rate_step_toward<const N: usize>(
     chain: &Chain<N>,
     q: &[f64; N],
@@ -142,8 +145,11 @@ pub fn rate_step_toward<const N: usize>(
 ) -> [f64; N] {
     let (caps, dt_s) = (limits.ee, limits.dt_s);
     let (dp, dw) = pose_error(ee, target);
-    // A deadband on position only: rotation has none.
-    let dp = if dp.norm() > TRACKING_FLOOR_M {
+    // A deadband on position only: rotation has none. Inclusive at the floor, so
+    // the set this stops correcting in is exactly the set the tightest accepted
+    // tolerance calls arrived; an error of exactly the floor would otherwise be
+    // neither corrected nor converged.
+    let dp = if dp.norm() >= TRACKING_FLOOR_M {
         dp * (caps.linear_m_s * dt_s / dp.norm()).min(1.0)
     } else {
         Vector3::zeros()

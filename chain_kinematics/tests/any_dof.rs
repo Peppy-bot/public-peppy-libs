@@ -7,7 +7,7 @@
 
 use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
 use chain_kinematics::{
-    Chain, ChainSpec, EeCaps, JointSelection, NoSmoothing, ServoLimits, ServoState,
+    Chain, ChainSpec, EeCaps, JointSelection, NoSmoothing, ServoLimits, ServoState, ServoStep,
     ServoTolerances, TRACKING_FLOOR_M, ToleranceError, damped_pseudo_inverse, manipulability,
     rate_step_toward,
 };
@@ -306,5 +306,86 @@ fn a_step_stops_correcting_position_inside_the_tracking_floor() {
         rate_step_toward(&chain, &q, &ee, &outside, &limits),
         q,
         "a target outside the floor should draw one"
+    );
+}
+
+/// One revolute joint about z at the origin, reaching a quarter metre out along
+/// x to its tip, which the joint therefore sweeps through y. Every coordinate is
+/// a dyadic rational, so the tip pose at `q = 0` is exact and an offset from it
+/// in y is exactly the number written down: the only way to put a pose error
+/// *on* the tracking floor rather than a rounding step off it.
+const DYADIC_ARM: &str = r#"<?xml version="1.0"?><robot name="dyadic">
+  <link name="base"/>
+  <link name="arm"/>
+  <link name="tip"/>
+  <joint name="spin" type="revolute">
+    <parent link="base"/><child link="arm"/><axis xyz="0 0 1"/>
+    <origin xyz="0 0 0"/>
+    <limit lower="-2.0" upper="2.0" effort="1" velocity="1"/>
+  </joint>
+  <joint name="reach" type="fixed">
+    <parent link="arm"/><child link="tip"/><origin xyz="0.25 0 0"/>
+  </joint>
+</robot>"#;
+
+#[test]
+fn a_pose_error_of_exactly_the_tracking_floor_is_still_corrected() {
+    // The floor is the tightest arrival a caller may ask for, and arrival is a
+    // strict comparison. So the set the step stops correcting in has to sit
+    // strictly inside the floor: an error of exactly the floor that drew no step
+    // would be neither corrected nor converged, and the move would spend its
+    // whole budget sitting on it.
+    let robot = urdf_rs::read_from_string(DYADIC_ARM).expect("parse the dyadic arm");
+    let chain = Chain::<1>::from_urdf(
+        &robot,
+        &ChainSpec {
+            base_link: None,
+            tip_link: "tip",
+            joints: JointSelection::PathOrder,
+        },
+    )
+    .expect("one revolute joint");
+
+    let q = [0.0];
+    let ee = chain.world_pose(&chain.at(&q).ee_pose());
+    assert_eq!(
+        ee.translation.vector,
+        Vector3::new(0.25, 0.0, 0.0),
+        "the fixture's tip must be exact for this test to sit on the floor"
+    );
+    let target = Isometry3::from_parts(Translation3::new(0.25, TRACKING_FLOOR_M, 0.0), ee.rotation);
+    assert_eq!(
+        (target.translation.vector - ee.translation.vector).norm(),
+        TRACKING_FLOOR_M,
+        "the error must be exactly the floor, not a rounding step past it"
+    );
+
+    let limits = ServoLimits {
+        max_joint_velocity: [2.0; 1],
+        ee: EeCaps {
+            linear_m_s: 0.15,
+            angular_rad_s: 1.0,
+        },
+        tolerances: ServoTolerances::new(TRACKING_FLOOR_M, 1e-2).expect("the floor is reachable"),
+        dt_s: 0.01,
+    };
+    assert_ne!(
+        rate_step_toward(&chain, &q, &ee, &target, &limits),
+        q,
+        "an error of exactly the floor must still draw a step"
+    );
+
+    let mut state = ServoState::new(ee, target, 0.05, NoSmoothing);
+    let mut walked = q;
+    let converged = (0..2000).any(|_| match state.step(&chain, &walked, &limits) {
+        ServoStep::Stepped(next) => {
+            walked = next;
+            false
+        }
+        ServoStep::Converged(_) => true,
+    });
+    assert!(
+        converged,
+        "a move of exactly the floor must arrive at the floor tolerance"
     );
 }

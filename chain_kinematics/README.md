@@ -67,11 +67,11 @@ different solver.
 | `Posed::jacobian` | the 6xN geometric Jacobian, revolute and prismatic columns |
 | `Posed::point_world_jacobian` | the same, for an arbitrary witness point - what a collision-distance gradient needs |
 | `Posed::{mass, com_world, inertia_world}` | per-segment rigid-body data |
-| `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics, revolute and prismatic joints alike, distal payload included |
+| `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics, revolute and prismatic joints alike, with everything each segment carries folded in |
 | `damped_pseudo_inverse` | `Jᵀ(J Jᵀ + λ²I)⁻¹`, defined everywhere including at singularities |
-| `try_pseudo_inverse` | Moore-Penrose, `None` at a singularity |
+| `try_pseudo_inverse` | Moore-Penrose, `None` at a singularity and on a chain of fewer than six joints, which has no right inverse at all; use the damped one for both |
 | `null_space_projector` | `I − J⁺J`, for a secondary objective that must not disturb the end effector |
-| `manipulability` | Yoshikawa index, `√det(J Jᵀ)` |
+| `manipulability` | Yoshikawa index, the product of the singular values, at any joint count |
 | `rate_step` | one damped resolved-rate step under a velocity budget and joint limits |
 | `ServoState` / `rollout` | a guarded Cartesian move, and the same law rolled out offline as its reachability proof |
 
@@ -121,9 +121,9 @@ reachability check: a goal that does not converge within the caller's budget is
 refused rather than started. That only works because the law is deterministic,
 so the motion that was validated is the motion that runs.
 
-The step always returns a configuration. An unreachable target tracks the
-workspace boundary rather than refusing, because a teleoperator pushing past the
-edge should feel a wall, not a disconnect.
+The step always returns a configuration. An unreachable target moves toward the
+closest pose the step can find and saturates there rather than refusing, because
+a teleoperator pushing past the edge should feel a wall, not a disconnect.
 
 Tolerances and the output smoother are the caller's: `Smoother` is a trait, so
 this crate needs no filter library and the servo's output is smoothed exactly as
