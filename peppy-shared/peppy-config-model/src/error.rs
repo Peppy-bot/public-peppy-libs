@@ -351,6 +351,14 @@ pub enum ParsingError {
         core_node: String,
         instance_id: String,
     },
+    #[error(
+        "Duplicate simulated-time participant `{0}`: each machine of a launch is published to exactly once"
+    )]
+    DuplicateSimTimeParticipant(String),
+    #[error(
+        "A simulated-time source with no participants is unrepresentable: resolve \"not a source\" to the absence of the value instead"
+    )]
+    EmptySimTimeParticipants,
 
     // -- build system
     #[error("Invalid toolchain {0}")]

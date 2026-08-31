@@ -273,11 +273,13 @@ impl Processor {
                 slot_bindings,
                 observation_seeds,
                 // Daemon-less stand-in for the launcher/daemon `use_sim_time`
-                // resolution: written to the same resolved `framework` field a
-                // daemon launch fills, so `clock::for_node` needs no
+                // and `publishes_sim_time` resolution: written to the same
+                // resolved `framework` field a daemon launch fills, so neither
+                // `clock::for_node` nor `SimTimePublisher::for_node` needs a
                 // standalone-specific branch.
                 framework: config::runtime::ResolvedFramework {
                     use_sim_time: config.use_sim_time,
+                    sim_time_source: standalone_sim_time_source(&config.sim_time_participants)?,
                 },
                 ..NodeInstanceConfig::new(instance_id_name)
             },
@@ -400,6 +402,17 @@ impl Processor {
     /// the wall-time and sim-time `PeppyClock` implementations.
     pub fn use_sim_time(&self) -> bool {
         self.runtime_config.node_instance.framework.use_sim_time
+    }
+
+    /// The machines this instance publishes simulated time to, one `clock`
+    /// topic each, present only when the launch declared it the time source.
+    /// Read by [`crate::clock::SimTimePublisher::for_node`].
+    pub fn sim_time_source(&self) -> Option<&config::runtime::SimTimeParticipants> {
+        self.runtime_config
+            .node_instance
+            .framework
+            .sim_time_source
+            .as_ref()
     }
 
     /// The runtime-resolved, immutable, ordered producer set bound to the
@@ -754,6 +767,29 @@ fn build_bound_producers(
         }
     }
     Ok(out)
+}
+
+/// Parses the standalone builder's participant list into the resolved form:
+/// an empty list is "not a source", anything else must be valid core-node
+/// names with no duplicates, exactly what a daemon-stamped launch delivers.
+fn standalone_sim_time_source(
+    core_nodes: &[String],
+) -> Result<Option<config::runtime::SimTimeParticipants>> {
+    if core_nodes.is_empty() {
+        return Ok(None);
+    }
+    let names = core_nodes
+        .iter()
+        .map(|core_node| {
+            Name::new(core_node.clone()).map_err(|e| Error::InvalidCoreNodeName {
+                node_name: core_node.clone(),
+                reason: e.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let participants =
+        config::runtime::SimTimeParticipants::try_from(names).map_err(config::ConfigError::from)?;
+    Ok(Some(participants))
 }
 
 #[cfg(test)]

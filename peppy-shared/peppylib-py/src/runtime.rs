@@ -1192,6 +1192,15 @@ impl PyStandaloneConfig {
         }
     }
 
+    /// Make this node the simulated-time source for `core_nodes`, the
+    /// standalone spelling of a launcher's `framework: { publishes_sim_time:
+    /// true }` (which the daemon resolves to every machine of the launch).
+    fn with_sim_time_participants(&self, core_nodes: Vec<String>) -> Self {
+        Self {
+            inner: self.inner.clone().with_sim_time_participants(core_nodes),
+        }
+    }
+
     /// Pre-pair the pairing slot at `link_id` to the peer at
     /// `(peer_core_node, peer_instance_id)` whose complementary slot is
     /// `peer_link_id`. Standalone-mode stand-in for the daemon's `--pair`

@@ -82,6 +82,9 @@ pub enum Error {
     #[error("clock not ready: no external tick observed yet on the `clock` topic (sim mode)")]
     ClockNotReady,
 
+    #[error("sim time did not reach every machine; unreached: {unreached}")]
+    SimTimeFanOut { unreached: String },
+
     #[error("internal encoding error for '{identifier}': {reason}")]
     InternalEncodingError { identifier: String, reason: String },
 

@@ -92,15 +92,24 @@ pub struct ParticipantReserveResponse {
     /// The participant's root entity instance id, folded into the
     /// coordinator's global instance-id uniqueness check.
     pub root_instance_id: String,
+    /// Whether the participant's daemon serves simulated time, so a launch
+    /// that places sim-time instances on a wall-mode machine is refused before
+    /// any stack is touched. Only meaningful on an accepted reservation.
+    pub serves_sim_time: bool,
 }
 
 impl ParticipantReserveResponse {
-    pub fn accepted(peppy_version: impl Into<String>, root_instance_id: impl Into<String>) -> Self {
+    pub fn accepted(
+        peppy_version: impl Into<String>,
+        root_instance_id: impl Into<String>,
+        serves_sim_time: bool,
+    ) -> Self {
         Self {
             accepted: true,
             rejection_reason: None,
             peppy_version: peppy_version.into(),
             root_instance_id: root_instance_id.into(),
+            serves_sim_time,
         }
     }
 
@@ -112,6 +121,7 @@ impl ParticipantReserveResponse {
             rejection_reason: Some(reason.into()),
             peppy_version: peppy_version.into(),
             root_instance_id: String::new(),
+            serves_sim_time: false,
         }
     }
 
@@ -124,6 +134,7 @@ impl ParticipantReserveResponse {
             response.set_rejection_reason(self.rejection_reason.as_deref().unwrap_or(""));
             response.set_peppy_version(&self.peppy_version);
             response.set_root_instance_id(&self.root_instance_id);
+            response.set_serves_sim_time(self.serves_sim_time);
         }
         encode_message(&builder)
     }
@@ -138,6 +149,7 @@ impl ParticipantReserveResponse {
             rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
             peppy_version: response.get_peppy_version()?.to_str()?.to_owned(),
             root_instance_id: response.get_root_instance_id()?.to_str()?.to_owned(),
+            serves_sim_time: response.get_serves_sim_time(),
         })
     }
 }
@@ -615,13 +627,19 @@ mod tests {
 
     #[test]
     fn reserve_response_round_trips_acceptance() {
-        let response =
-            ParticipantReserveResponse::accepted("v0.20.0-3-g8c7cbaa7", "core_node_gen_1");
-        let payload = response.encode().expect("encode");
-        let decoded = ParticipantReserveResponse::decode(payload.as_ref()).expect("decode");
-        assert_eq!(decoded, response);
-        assert!(decoded.accepted);
-        assert_eq!(decoded.root_instance_id, "core_node_gen_1");
+        for serves_sim_time in [false, true] {
+            let response = ParticipantReserveResponse::accepted(
+                "v0.20.0-3-g8c7cbaa7",
+                "core_node_gen_1",
+                serves_sim_time,
+            );
+            let payload = response.encode().expect("encode");
+            let decoded = ParticipantReserveResponse::decode(payload.as_ref()).expect("decode");
+            assert_eq!(decoded, response);
+            assert!(decoded.accepted);
+            assert_eq!(decoded.root_instance_id, "core_node_gen_1");
+            assert_eq!(decoded.serves_sim_time, serves_sim_time);
+        }
     }
 
     /// A refusal still reports the version so "busy" and "too old" are

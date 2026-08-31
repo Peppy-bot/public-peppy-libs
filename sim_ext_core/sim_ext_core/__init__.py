@@ -6,7 +6,6 @@ from .base import BridgePlugin
 from .config import BridgeConfig, PublisherEntry, SubscriberEntry
 from .bridges import (
     ActuatorCtrlBridge,
-    ClockBridge,
     ContactForcesBridge,
     EePoseBridge,
     GripperStateBridge,
@@ -23,7 +22,6 @@ __all__ = [
     "ActuatorCtrlBridge",
     "BridgeConfig",
     "BridgePlugin",
-    "ClockBridge",
     "ContactForcesBridge",
     "EePoseBridge",
     "GripperStateBridge",

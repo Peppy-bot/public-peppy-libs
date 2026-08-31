@@ -58,6 +58,12 @@ pub struct StandaloneConfig {
     /// the generated test harness that is the harness's clock stand-in,
     /// driven by the test.
     pub use_sim_time: bool,
+    /// Daemon-less stand-in for a launcher's `publishes_sim_time`: the core
+    /// nodes this node publishes simulated time to, one `clock` topic each.
+    /// Empty (the default) means the node is not a time source and
+    /// [`crate::clock::SimTimePublisher::for_node`] refuses it, exactly as
+    /// under a launch that did not declare it.
+    pub sim_time_participants: Vec<String>,
     /// Daemon-less pairing pins: pre-pair a declared pairing slot (keyed by
     /// its link_id) to a known peer, standing in for the daemon's live
     /// `peer_update` delivery during standalone development.
@@ -143,6 +149,18 @@ impl StandaloneConfig {
     /// override (defaults to `false`, wall mode).
     pub fn with_use_sim_time(mut self, use_sim_time: bool) -> Self {
         self.use_sim_time = use_sim_time;
+        self
+    }
+
+    /// Make this node the simulated-time source for `core_nodes`, the
+    /// standalone spelling of a launcher's `framework: { publishes_sim_time:
+    /// true }` (which the daemon resolves to every machine of the launch).
+    pub fn with_sim_time_participants<I, S>(mut self, core_nodes: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.sim_time_participants = core_nodes.into_iter().map(Into::into).collect();
         self
     }
 
