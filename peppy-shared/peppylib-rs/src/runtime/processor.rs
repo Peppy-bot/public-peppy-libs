@@ -276,10 +276,13 @@ impl Processor {
                 // and `publishes_sim_time` resolution: written to the same
                 // resolved `framework` field a daemon launch fills, so neither
                 // `clock::for_node` nor `SimTimePublisher::for_node` needs a
-                // standalone-specific branch.
+                // standalone-specific branch. Mirrors the launch rule that a
+                // declared source is inert under wall time: participants are
+                // still parsed, but resolve to no source.
                 framework: config::runtime::ResolvedFramework {
                     use_sim_time: config.use_sim_time,
-                    sim_time_source: standalone_sim_time_source(&config.sim_time_participants)?,
+                    sim_time_source: standalone_sim_time_source(&config.sim_time_participants)?
+                        .filter(|_| config.use_sim_time),
                 },
                 ..NodeInstanceConfig::new(instance_id_name)
             },

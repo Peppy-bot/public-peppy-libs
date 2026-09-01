@@ -179,3 +179,25 @@ async def test_an_undeclared_node_cannot_publish_sim_time(tmp_path):
         assert await clock.SimTimePublisher.for_node(node_runner) is None
     finally:
         await router.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_declared_source_in_wall_mode_gets_no_publisher(tmp_path):
+    """The standalone twin of a launch resolving a declared source against a
+    wall-serving daemon: the declaration is inert. Python twin of
+    `a_declared_source_in_wall_mode_gets_no_publisher`."""
+    router = await peppy_testing.EphemeralRouter.start()
+    try:
+        standalone_config = (
+            StandaloneConfig()
+            .with_messaging(router.host, router.port)
+            .with_instance_id(CLIENT_INSTANCE)
+            .with_use_sim_time(False)
+            .with_sim_time_participants(FLEET)
+        )
+        node_runner = await NodeRunner.new_standalone(
+            str(write_standalone_peppy_config(tmp_path)), standalone_config
+        )
+        assert await clock.SimTimePublisher.for_node(node_runner) is None
+    finally:
+        await router.stop()

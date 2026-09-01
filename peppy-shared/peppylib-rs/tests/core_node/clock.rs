@@ -122,8 +122,10 @@ const FLEET: [&str; 3] = ["cn-fleet-sim", "cn-fleet-robot-a", "cn-fleet-robot-b"
 
 /// A standalone runner declared the launch's time source for `FLEET`, the
 /// daemon-less spelling of `framework: { publishes_sim_time: true }` resolved
-/// against a three-machine placement.
-async fn start_time_source_runner() -> (
+/// against a three-machine placement, in the given clock mode.
+async fn start_time_source_runner(
+    use_sim_time: bool,
+) -> (
     EphemeralRouter,
     TempDir,
     peppylib::runtime::NodeRunner,
@@ -136,7 +138,7 @@ async fn start_time_source_runner() -> (
     let standalone_config = peppylib::runtime::StandaloneConfig::new()
         .with_messaging(router.host(), router.port())
         .with_instance_id(super::common::CLIENT_INSTANCE)
-        .with_use_sim_time(true)
+        .with_use_sim_time(use_sim_time)
         .with_sim_time_participants(FLEET);
     let processor =
         peppylib::runtime::Processor::new_standalone(&peppy_config_path, &standalone_config)
@@ -154,7 +156,7 @@ async fn start_time_source_runner() -> (
 /// timing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sim_time_publisher_reaches_every_participant() {
-    let (_router, _temp_dir, node_runner, observer) = start_time_source_runner().await;
+    let (_router, _temp_dir, node_runner, observer) = start_time_source_runner(true).await;
 
     let publisher = clock::SimTimePublisher::for_node(&node_runner)
         .await
@@ -214,5 +216,21 @@ async fn an_undeclared_node_cannot_publish_sim_time() {
     assert!(
         publisher.is_none(),
         "an undeclared node must get no publisher"
+    );
+}
+
+/// The standalone twin of a launch resolving a declared source against a
+/// wall-serving daemon: the declaration is inert, so a wall-mode node gets
+/// no publisher even with participants configured.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_declared_source_in_wall_mode_gets_no_publisher() {
+    let (_router, _temp_dir, node_runner, _observer) = start_time_source_runner(false).await;
+
+    let publisher = clock::SimTimePublisher::for_node(&node_runner)
+        .await
+        .expect("asking is not an error");
+    assert!(
+        publisher.is_none(),
+        "a wall-mode declaration must resolve to no publisher"
     );
 }
