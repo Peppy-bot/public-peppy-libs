@@ -15,12 +15,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use core_node_api::TopicId;
+use config::node::QoSProfile;
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
+use core_node_api::{TopicId, names};
 
 use crate::core_node::transport::poll;
 use crate::error::{Error, Result};
-use crate::messaging::{ServiceRequestContext, Subscription};
+use crate::messaging::{
+    SenderTarget, ServiceRequestContext, Subscription, TopicMessenger, TopicPublisher,
+};
 use crate::runtime::{NodeRunner, TaskHandle, spawn};
 use crate::types::Payload;
 
@@ -272,14 +275,10 @@ pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
     // Subscription destructor.
     let feeder = spawn(async move {
         while let Some(message) = subscription.on_next_message().await {
-            match ClockTick::decode(message.payload_bytes().as_ref()) {
-                Ok(tick) => {
-                    // 0 is the not-ready sentinel, so clamp to 1 if a
-                    // simulator ever publishes a literal zero.
-                    let stored = if tick.time == 0 { 1 } else { tick.time };
-                    feeder_cache.store(stored, Ordering::Relaxed);
-                }
-                Err(_) => continue,
+            // A decoded tick is never `0` (`ClockTick` clamps on decode), so
+            // storing it can never write the cache's not-ready sentinel.
+            if let Ok(tick) = ClockTick::decode(message.payload_bytes().as_ref()) {
+                feeder_cache.store(tick.time(), Ordering::Relaxed);
             }
         }
         Ok(())
@@ -297,6 +296,78 @@ pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
 pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
     let inner = crate::core_node::subscribe_core_topic(node_runner, TopicId::Clock.name()).await?;
     Ok(ClockSubscription { inner })
+}
+
+/// The launch's one source of simulated time: publishes each tick onto the
+/// `clock` topic of every machine the launch placed an instance on.
+///
+/// A daemon in sim mode and every sim-time node on its machine read the
+/// `clock` topic keyed by that machine's core node, so one publish per
+/// machine feeds all of them, and a machine nothing publishes to never becomes
+/// ready. Which machines those are is a launch fact the daemon stamps into
+/// the source's runtime config (`framework.sim_time_source`); the simulator
+/// itself names no machine.
+///
+/// One publisher per participant is declared up front so the per-tick path
+/// encodes once and publishes without touching the messenger lock.
+pub struct SimTimePublisher {
+    publishers: Vec<(String, TopicPublisher)>,
+}
+
+impl SimTimePublisher {
+    /// Builds the fan-out for `node_runner` from its resolved runtime
+    /// config, or `None` when the launch did not declare this instance its
+    /// time source (`framework: { publishes_sim_time: true }` on its launcher
+    /// entry). Holding a publisher IS being the source, so an undeclared
+    /// node cannot drive fleet time, and a node that may or may not be the
+    /// source branches on the one call instead of pre-checking.
+    pub async fn for_node(node_runner: &NodeRunner) -> Result<Option<Self>> {
+        let processor = node_runner.processor();
+        let Some(participants) = processor.sim_time_source() else {
+            return Ok(None);
+        };
+        let mut publishers = Vec::new();
+        for participant in participants {
+            let publisher = TopicMessenger::declare_publisher(
+                node_runner.messenger(),
+                processor.bound_core_node(),
+                processor.bound_instance_id(),
+                SenderTarget::node(participant.as_str(), names::CORE_NODE_TAG)?,
+                None,
+                TopicId::Clock.name(),
+                QoSProfile::SensorData,
+            )
+            .await?;
+            publishers.push((participant.to_string(), publisher));
+        }
+        Ok(Some(Self { publishers }))
+    }
+
+    /// The core nodes each tick reaches, in the order they are published to.
+    pub fn participants(&self) -> impl Iterator<Item = &str> {
+        self.publishers
+            .iter()
+            .map(|(core_node, _)| core_node.as_str())
+    }
+
+    /// Publishes `time_ns` to every participant. Every participant is tried
+    /// even after one fails, and the error names each machine that was not
+    /// reached: a machine silently left out is a machine whose time froze.
+    pub async fn publish(&self, time_ns: u64) -> Result<()> {
+        let payload = ClockTick::new(time_ns).encode()?;
+        let mut unreached = Vec::new();
+        for (core_node, publisher) in &self.publishers {
+            if let Err(error) = publisher.publish(payload.clone()).await {
+                unreached.push(format!("{core_node} ({error})"));
+            }
+        }
+        if unreached.is_empty() {
+            return Ok(());
+        }
+        Err(Error::SimTimeFanOut {
+            unreached: unreached.join(", "),
+        })
+    }
 }
 
 fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {

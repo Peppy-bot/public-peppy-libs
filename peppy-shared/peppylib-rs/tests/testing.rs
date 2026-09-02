@@ -605,9 +605,9 @@ async fn mock_clock_wall_serves_synchronize_ticks_and_scripted_skew() {
         .expect("subscription open");
     let wall_now = peppylib::clock::wall_now_ns().expect("wall clock");
     assert!(
-        tick.time > wall_now.saturating_add((HOUR_NS / 2) as u64),
+        tick.time() > wall_now.saturating_add((HOUR_NS / 2) as u64),
         "tick {} should carry the scripted skew (wall {})",
-        tick.time,
+        tick.time(),
         wall_now,
     );
 

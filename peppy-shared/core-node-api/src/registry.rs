@@ -361,7 +361,7 @@ methods! {
         /// restart.
         DaemonHeartbeat {
             name: "daemon_heartbeat",
-            summary: "Daemon liveness beacon; payload is a constant ClockTick(0), only arrival matters.",
+            summary: "Daemon liveness beacon; the payload is a constant ClockTick and only arrival matters.",
             message: ClockTick,
             schema: "clock.capnp",
         }

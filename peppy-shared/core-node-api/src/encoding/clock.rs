@@ -140,14 +140,32 @@ impl ClockOffsetResponse {
 /// One-way snapshot tick published on the `clock` topic. Use [`ClockResponse`]
 /// (the request/response service) when you need to bound the staleness with an
 /// NTP-style round-trip exchange.
+///
+/// A tick never carries `0`: every sim-time cache stores `0` as "no tick
+/// observed yet", so a tick that read `0` would be indistinguishable from no
+/// tick at all. The type enforces it at both boundaries, on construction and on
+/// decode, which is what lets a cache trust any tick it is handed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClockTick {
-    pub time: u64,
+    time: u64,
 }
 
 impl ClockTick {
-    pub fn new(time: u64) -> Self {
-        Self { time }
+    /// The smallest time a tick carries, since `0` is the not-ready sentinel.
+    pub const MIN_TIME_NS: u64 = 1;
+
+    /// A tick at `time_ns` nanoseconds, clamped up to [`Self::MIN_TIME_NS`].
+    pub fn new(time_ns: u64) -> Self {
+        Self {
+            time: time_ns.max(Self::MIN_TIME_NS),
+        }
+    }
+
+    /// The instant this tick carries, in nanoseconds on the publishing core
+    /// node's timeline: the Unix epoch in wall mode, and whatever origin the
+    /// simulator counts from under simulated time. Never `0`.
+    pub fn time(&self) -> u64 {
+        self.time
     }
 
     pub fn encode(&self) -> Result<Payload> {
@@ -159,12 +177,12 @@ impl ClockTick {
         encode_message(&builder)
     }
 
+    /// Decodes a tick, clamping a foreign publisher's literal `0` up to
+    /// [`Self::MIN_TIME_NS`] so the invariant holds for bytes off the wire too.
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let tick = reader.get_root::<clock_capnp::clock_tick::Reader>()?;
-        Ok(Self {
-            time: tick.get_time(),
-        })
+        Ok(Self::new(tick.get_time()))
     }
 }
 
@@ -228,5 +246,24 @@ mod tests {
         let tick = ClockTick::new(9_999_999);
         let bytes = tick.encode().expect("encode");
         assert_eq!(ClockTick::decode(&bytes).expect("decode"), tick);
+        assert_eq!(tick.time(), 9_999_999);
+    }
+
+    /// `0` is every sim-time cache's not-ready sentinel, so a tick cannot carry
+    /// it: construction clamps, and so does decoding bytes a publisher outside
+    /// this crate built with a literal zero.
+    #[test]
+    fn clock_tick_never_carries_the_not_ready_sentinel() {
+        assert_eq!(ClockTick::new(0).time(), ClockTick::MIN_TIME_NS);
+
+        let mut builder = Builder::new_default();
+        builder
+            .init_root::<clock_capnp::clock_tick::Builder>()
+            .set_time(0);
+        let raw_zero = encode_message(&builder).expect("encode");
+        assert_eq!(
+            ClockTick::decode(&raw_zero).expect("decode").time(),
+            ClockTick::MIN_TIME_NS
+        );
     }
 }

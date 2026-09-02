@@ -63,6 +63,12 @@ struct ParticipantReserveResponse {
     # The participant's root entity instance id, folded into the coordinator's
     # global instance-id uniqueness check.
     rootInstanceId @3 :Text;
+    # Whether this daemon serves simulated time (`--clock-source=sim`). A
+    # launch that runs anything on simulated time needs every machine it
+    # places sim-time instances on to serve it: a wall-mode daemon publishes
+    # its own wall ticks onto the very key those instances read, so the
+    # coordinator refuses the mix here, before any stack is touched.
+    servesSimTime @4 :Bool;
 }
 
 # The whole payload of `participant_release`, which names a launch and nothing

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
-use peppylib::clock::{ClockSync, PeppyClock, for_node, subscribe, synchronize};
+use peppylib::clock::{ClockSync, PeppyClock, SimTimePublisher, for_node, subscribe, synchronize};
 use peppylib::messaging::Subscription;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -148,7 +148,7 @@ impl PyClockTick {
 
     #[getter]
     fn time(&self) -> u64 {
-        self.inner.time
+        self.inner.time()
     }
 
     fn encode<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
@@ -311,6 +311,49 @@ fn clock_for_node_py<'py>(
     })
 }
 
+/// The launch's one source of simulated time. Mirrors
+/// [`peppylib::clock::SimTimePublisher`]: each `publish` lands the tick on the
+/// `clock` topic of every machine the launch placed an instance on.
+#[pyclass(name = "SimTimePublisher")]
+pub struct PySimTimePublisher {
+    inner: Arc<SimTimePublisher>,
+}
+
+#[pymethods]
+impl PySimTimePublisher {
+    /// Build the fan-out for `node_runner` from its resolved runtime
+    /// config, or `None` when the launch did not declare this instance its
+    /// time source (`framework: { publishes_sim_time: true }`). A node that
+    /// may or may not be the source branches on the one call.
+    #[staticmethod]
+    fn for_node<'py>(py: Python<'py>, node_runner: &PyNodeRunner) -> PyResult<Bound<'py, PyAny>> {
+        let runner = node_runner.inner.clone();
+        crate::py_future::future_into_py(py, async move {
+            let publisher = SimTimePublisher::for_node(&runner)
+                .await
+                .map_err(to_py_err)?;
+            Ok(publisher.map(|publisher| PySimTimePublisher {
+                inner: Arc::new(publisher),
+            }))
+        })
+    }
+
+    /// The core nodes each tick reaches, in publish order.
+    #[getter]
+    fn participants(&self) -> Vec<String> {
+        self.inner.participants().map(str::to_owned).collect()
+    }
+
+    /// Publish `time_ns` to every participant. Raises `RuntimeError` naming
+    /// every machine the tick did not reach.
+    fn publish<'py>(&self, py: Python<'py>, time_ns: u64) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        crate::py_future::future_into_py(py, async move {
+            inner.publish(time_ns).await.map_err(to_py_err)
+        })
+    }
+}
+
 /// Add the clock wire-type wrappers and `synchronize` to the parent
 /// `core_node` Python submodule.
 pub(crate) fn register_into(module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -320,6 +363,7 @@ pub(crate) fn register_into(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyClockSync>()?;
     module.add_class::<PyClockSubscription>()?;
     module.add_class::<PyPeppyClock>()?;
+    module.add_class::<PySimTimePublisher>()?;
     module.add_function(wrap_pyfunction!(synchronize_clock, module)?)?;
     module.add_function(wrap_pyfunction!(subscribe_clock_py, module)?)?;
     module.add_function(wrap_pyfunction!(clock_for_node_py, module)?)?;

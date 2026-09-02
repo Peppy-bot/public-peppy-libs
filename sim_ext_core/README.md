@@ -30,7 +30,6 @@ sim_ext_core = { git = "https://github.com/Peppy-bot/public-peppy-libs", subdire
 | `ImuBridge` | READ | imu |
 | `EePoseBridge` | READ | ee_pose |
 | `TfTreeBridge` | READ | tf_tree |
-| `ClockBridge` | READ | clock |
 | `OdometryBridge` | READ | odometry |
 | `WrenchBridge` | READ | wrench |
 | `ContactForcesBridge` | READ | contact_forces |
