@@ -83,6 +83,11 @@ impl RepoSource {
 pub struct RepoAddRequest {
     pub source: RepoSource,
     pub top: bool,
+    /// Explicit repository id to register the source under, or `None` to
+    /// auto-assign (`max + 1`, or `min - 1` when `top`). Callers that pin an
+    /// id should take it from a reserved band (>= 2000) so it can never
+    /// collide with a default a future peppy release ships.
+    pub id: Option<u64>,
 }
 
 impl RepoAddRequest {
@@ -90,6 +95,7 @@ impl RepoAddRequest {
         Self {
             source: RepoSource::Fs(path.into()),
             top: false,
+            id: None,
         }
     }
 
@@ -100,6 +106,7 @@ impl RepoAddRequest {
                 repo_ref,
             },
             top: false,
+            id: None,
         }
     }
 
@@ -108,11 +115,19 @@ impl RepoAddRequest {
         self
     }
 
+    pub fn with_id(mut self, id: u64) -> Self {
+        self.id = Some(id);
+        self
+    }
+
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<repo_capnp::repo_add_request::Builder>();
             request.set_top(self.top);
+            if let Some(id) = self.id {
+                request.reborrow().init_id().set_explicit(id);
+            }
             let mut source = request.reborrow().init_source();
             match &self.source {
                 RepoSource::Fs(path) => {
@@ -129,11 +144,18 @@ impl RepoAddRequest {
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
+        use crate::repo_capnp::repo_add_request::id::Which as IdWhich;
         use crate::repo_capnp::repo_add_request::source::Which;
 
         let reader = decode_message(data)?;
         let request = reader.get_root::<repo_capnp::repo_add_request::Reader>()?;
         let top = request.get_top();
+        // An `auto` discriminant is what a sender that never set the union
+        // leaves on the wire, so ids decode as `None` for every pre-id peer.
+        let id = match request.get_id().which()? {
+            IdWhich::Auto(()) => None,
+            IdWhich::Explicit(id) => Some(id),
+        };
         let source = match request.get_source().which()? {
             Which::Fs(path) => RepoSource::Fs(crate::encoding::decode_fs_path(
                 path?.to_str()?,
@@ -146,7 +168,7 @@ impl RepoAddRequest {
                 RepoSource::Git { repo_url, repo_ref }
             }
         };
-        Ok(Self { source, top })
+        Ok(Self { source, top, id })
     }
 }
 
@@ -305,6 +327,24 @@ mod tests {
         );
         let bytes = request.encode().expect("encode");
         assert_eq!(RepoAddRequest::decode(&bytes).expect("decode"), request);
+    }
+
+    #[test]
+    fn add_request_explicit_id_roundtrips() {
+        let request = RepoAddRequest::new_fs("/abs/path/to/repo").with_id(2000);
+        assert_eq!(request.id, Some(2000));
+        let bytes = request.encode().expect("encode");
+        assert_eq!(RepoAddRequest::decode(&bytes).expect("decode"), request);
+    }
+
+    #[test]
+    fn add_request_without_id_decodes_as_auto() {
+        // A request that never pins an id — including bytes a pre-id sender
+        // produced — must decode with `id: None`, never a bogus explicit id.
+        let request = RepoAddRequest::new_git("https://github.com/org/repo", None);
+        assert_eq!(request.id, None);
+        let bytes = request.encode().expect("encode");
+        assert_eq!(RepoAddRequest::decode(&bytes).expect("decode").id, None);
     }
 
     #[test]

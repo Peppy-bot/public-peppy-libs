@@ -20,6 +20,16 @@ struct RepoAddRequest {
     # When true, assign the new repo an id below the current minimum so it
     # takes top priority. Defaults to false (append with max+1).
     top @2 :Bool;
+    # How to assign the new repository's id. `auto` (the default, and what
+    # every pre-id message on the wire decodes as) keeps the historical
+    # behavior: max+1, or min-1 when top=true. `explicit` pins the caller's
+    # chosen id, so organization setups can register repositories from a
+    # reserved band (>= 2000) whose ids can never collide with a default a
+    # future peppy release ships.
+    id :union {
+        auto @3 :Void;
+        explicit @4 :UInt64;
+    }
 }
 
 struct RepoAddResponse {
