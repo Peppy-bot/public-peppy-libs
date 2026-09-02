@@ -68,6 +68,11 @@ struct LaunchGoal {
     # with no `components` requires and any other launcher fills from its
     # defaults.
     selections @10 :List(Text);
+    # Build every node of the launch from its staged sources even when
+    # storage already holds an artifact built from byte-identical sources.
+    # Forwarded to each node build the launch performs, on the coordinator
+    # and on every peer. Absent decodes as false, which reuses such artifacts.
+    rebuild @11 :Bool;
 }
 
 # One `--place <core-node-link>@<core-node>` wiring: the placeholder the

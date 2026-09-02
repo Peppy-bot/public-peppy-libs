@@ -178,6 +178,11 @@ struct NodeBuildGoal {
     force @4 :Bool;
     # See `NodeAddGoal.launchId`.
     launchId @5 :Text;
+    # Build from the staged sources even when storage already holds an
+    # artifact built from byte-identical sources. Absent decodes as false,
+    # which reuses such an artifact. Unrelated to `force`, which only cancels
+    # an in-flight build of the same node.
+    rebuild @6 :Bool;
 }
 
 struct NodeBuildGoalResponse {
