@@ -101,6 +101,11 @@ pub struct LaunchGoal {
     /// resolves the words against the document it read, for the same reason
     /// placement travels as intent.
     pub selections: Vec<String>,
+    /// Build every node of the launch from its staged sources even when
+    /// storage already holds an artifact built from byte-identical sources.
+    /// Forwarded to each node build the launch performs, on the coordinator
+    /// and on every peer.
+    pub rebuild: bool,
 }
 
 impl LaunchGoal {
@@ -122,6 +127,7 @@ impl LaunchGoal {
             launch_id: launch_id.into(),
             placement: PlacementSpec::default(),
             selections: Vec::new(),
+            rebuild: false,
         }
     }
 
@@ -137,6 +143,11 @@ impl LaunchGoal {
 
     pub fn with_selections(mut self, selections: Vec<String>) -> Self {
         self.selections = selections;
+        self
+    }
+
+    pub fn with_rebuild(mut self, rebuild: bool) -> Self {
+        self.rebuild = rebuild;
         self
     }
 
@@ -193,6 +204,8 @@ impl LaunchGoal {
             for (idx, word) in self.selections.iter().enumerate() {
                 selections.reborrow().set(idx as u32, word);
             }
+
+            goal.reborrow().set_rebuild(self.rebuild);
         }
         encode_message(&builder)
     }
@@ -308,6 +321,7 @@ impl LaunchGoal {
                 DEFAULT_IDLE_TIMEOUT_SECS,
             ),
             max_timeout_secs: if raw_max == 0 { None } else { Some(raw_max) },
+            rebuild: goal.get_rebuild(),
         })
     }
 }
@@ -691,6 +705,29 @@ mod tests {
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
         assert_eq!(goal, decoded);
         assert_eq!(decoded.max_timeout_secs, None);
+        assert!(!decoded.rebuild);
+    }
+
+    /// `--rebuild` travels with the launch so every node build it performs,
+    /// local or on a peer, ignores a cached artifact.
+    #[test]
+    fn launch_goal_roundtrips_rebuild() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Repository {
+                name: "openarm_v2".to_string(),
+            },
+            "launch-abc123",
+            1,
+            1,
+            1,
+            None,
+        )
+        .with_rebuild(true);
+
+        let bytes = goal.encode().expect("encode");
+        let decoded = LaunchGoal::decode(&bytes).expect("decode");
+        assert!(decoded.rebuild);
+        assert_eq!(goal, decoded);
     }
 
     #[test]

@@ -53,6 +53,10 @@ pub struct NodeBuildGoal {
     pub force: bool,
     /// See [`crate::encoding::NodeAddGoal::launch_id`].
     pub launch_id: Option<String>,
+    /// Build from the staged sources even when storage already holds an
+    /// artifact built from byte-identical sources. Independent of `force`,
+    /// which only cancels an in-flight build of the same node.
+    pub rebuild: bool,
 }
 
 impl NodeBuildGoal {
@@ -68,6 +72,7 @@ impl NodeBuildGoal {
             timeout_secs,
             force: false,
             launch_id: None,
+            rebuild: false,
         }
     }
 
@@ -78,6 +83,11 @@ impl NodeBuildGoal {
 
     pub fn with_force(mut self, force: bool) -> Self {
         self.force = force;
+        self
+    }
+
+    pub fn with_rebuild(mut self, rebuild: bool) -> Self {
+        self.rebuild = rebuild;
         self
     }
 
@@ -108,6 +118,7 @@ impl NodeBuildGoal {
             if let Some(launch_id) = &self.launch_id {
                 goal.reborrow().set_launch_id(launch_id);
             }
+            goal.reborrow().set_rebuild(self.rebuild);
         }
         encode_message(&builder)
     }
@@ -133,6 +144,7 @@ impl NodeBuildGoal {
             timeout_secs: goal.get_timeout_secs(),
             force: goal.get_force(),
             launch_id: optional_text(goal.get_launch_id()?.to_str()?),
+            rebuild: goal.get_rebuild(),
         })
     }
 }
@@ -338,6 +350,7 @@ mod tests {
         assert!(goal.env_vars.is_empty());
         assert_eq!(goal.timeout_secs, 30);
         assert!(!goal.force);
+        assert!(!goal.rebuild);
     }
 
     /// See `node_run_goal_round_trips_the_launch_it_belongs_to`: the add and
@@ -399,6 +412,31 @@ mod tests {
         let decoded = NodeBuildGoal::decode(&encoded).expect("decode");
         assert!(!decoded.force);
         assert_eq!(decoded, goal);
+    }
+
+    #[test]
+    fn node_build_goal_with_rebuild_true_roundtrip() {
+        let goal = NodeBuildGoal::new("node", "tag", 30).with_rebuild(true);
+        assert!(goal.rebuild);
+        let encoded = goal.encode().expect("encode");
+        let decoded = NodeBuildGoal::decode(&encoded).expect("decode");
+        assert!(decoded.rebuild);
+        assert_eq!(decoded, goal);
+    }
+
+    /// `force` cancels an in-flight build; `rebuild` ignores a cached
+    /// artifact. Either travels without implying the other.
+    #[test]
+    fn node_build_goal_rebuild_and_force_are_independent() {
+        let forced = NodeBuildGoal::new("node", "tag", 30).with_force(true);
+        let decoded = NodeBuildGoal::decode(&forced.encode().expect("encode")).expect("decode");
+        assert!(decoded.force);
+        assert!(!decoded.rebuild);
+
+        let rebuilt = NodeBuildGoal::new("node", "tag", 30).with_rebuild(true);
+        let decoded = NodeBuildGoal::decode(&rebuilt.encode().expect("encode")).expect("decode");
+        assert!(!decoded.force);
+        assert!(decoded.rebuild);
     }
 
     #[test]
