@@ -596,6 +596,32 @@ def test_resolve_node_dir_names_all_three_sources_when_none_resolve(tmp_path, mo
     assert "/gone/node" in message
 
 
+def test_resolve_node_dir_without_a_sync_time_path_still_walks_up(tmp_path, monkeypatch):
+    node = tmp_path / "node"
+    (node / "src").mkdir(parents=True)
+    (node / "peppy.json5").write_text("{}")
+    monkeypatch.chdir(node / "src")
+
+    resolved = peppy_testing.resolve_node_dir(None, None, "peppy.json5")
+
+    assert Path(resolved).resolve() == node.resolve()
+
+
+def test_resolve_node_dir_without_a_sync_time_path_says_so_when_nothing_resolves(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(peppy_testing.os.path, "isfile", lambda path: False)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        peppy_testing.resolve_node_dir(None, None, "peppy.json5")
+
+    message = str(excinfo.value)
+    assert "no explicit node_dir=" in message
+    assert "walking up from the current" in message
+    assert "staged copy of the node and carries no sync-time path" in message
+
+
 class _StubMock:
     def __init__(self) -> None:
         self.stopped = 0
