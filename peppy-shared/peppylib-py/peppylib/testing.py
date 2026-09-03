@@ -82,14 +82,16 @@ def unique_test_instance_id() -> str:
 
 def resolve_node_dir(
     node_dir: str | os.PathLike[str] | None,
-    sync_time_node_dir: str,
+    sync_time_node_dir: str | None,
     config_file: str,
 ) -> str:
     """The node directory holding ``config_file``, resolved from three
     sources in order: the explicit ``node_dir`` argument, else the nearest
     ``config_file`` walking up from the current working directory, else
     ``sync_time_node_dir`` (the absolute path baked into the generated
-    harness at sync time).
+    harness at sync time). A harness generated into a staged copy of the
+    node carries ``None`` there: the copy is gone once the build is over,
+    so only the first two sources apply.
 
     Python-only: the Rust harness resolves the same path at compile time from
     ``CARGO_MANIFEST_DIR`` and never searches, so there is nothing here to
@@ -115,17 +117,28 @@ def resolve_node_dir(
         if parent == current:
             break
         current = parent
-    if os.path.isfile(os.path.join(sync_time_node_dir, config_file)):
+    if sync_time_node_dir is not None and os.path.isfile(
+        os.path.join(sync_time_node_dir, config_file)
+    ):
         return sync_time_node_dir
+    if sync_time_node_dir is None:
+        sync_time_clause = (
+            "(3) this harness was generated into a staged copy of the node "
+            "and carries no sync-time path"
+        )
+    else:
+        sync_time_clause = (
+            f"(3) the sync-time path {sync_time_node_dir!r} no longer holds "
+            "one, so the node has moved since generation; re-run peppy node "
+            "sync"
+        )
     raise RuntimeError(
         f"could not locate the node's {config_file} from any source: "
         "(1) no explicit node_dir= was passed to start(), so pass the node "
         "directory explicitly; "
         f"(2) no {config_file} was found walking up from the current "
         f"working directory {os.getcwd()!r}, so run the tests from inside the "
-        "node directory; "
-        f"(3) the sync-time path {sync_time_node_dir!r} no longer holds one, "
-        "so the node has moved since generation; re-run peppy node sync"
+        f"node directory; {sync_time_clause}"
     )
 
 
