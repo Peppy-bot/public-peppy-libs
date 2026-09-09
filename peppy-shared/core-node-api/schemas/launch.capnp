@@ -86,6 +86,43 @@ struct CoreNodeLink {
     coreNode @1 :Text;
 }
 
+struct StackJoinGoal {
+    # The copy's name: the prefix of every instance id it mints, and the
+    # placement link the whole copy is wired by.
+    name @0 :Text;
+    # The option of a `zero_or_more` axis the copy runs.
+    option @1 :Text;
+    # `--with` words over the copied option's own axes, verbatim.
+    selections @2 :List(Text);
+    # Argument overrides for the copy's instances, each `(instanceId,
+    # argument)` pair named at most once.
+    arguments @3 :List(ArgumentOverride);
+    # Where the whole copy runs; absent decodes to the coordinator.
+    placement :union {
+        coordinator @4 :Void;
+        coreNode @5 :Text;
+    }
+    # The same budgets a LaunchGoal carries.
+    envVars @6 :List(EnvVar);
+    nodeAddIdleTimeoutSecs @7 :UInt64;
+    nodeBuildIdleTimeoutSecs @8 :UInt64;
+    nodeRunIdleTimeoutSecs @9 :UInt64;
+    maxTimeoutSecs @10 :UInt64;
+}
+
+# One argument of one of the copy's instances, given a new value.
+struct ArgumentOverride {
+    instanceId @0 :Text;
+    argument @1 :Text;
+    # The value as JSON5 text, holding only finite numbers.
+    value @2 :Text;
+}
+
+# Stop and remove the instances of one copy, by the name `stack join` gave it.
+struct StackRemoveGoal {
+    name @0 :Text;
+}
+
 struct LaunchGoalResponse {
     # Whether the goal was accepted
     accepted @0 :Bool;

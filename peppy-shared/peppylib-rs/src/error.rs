@@ -85,6 +85,12 @@ pub enum Error {
     #[error("sim time did not reach every machine; unreached: {unreached}")]
     SimTimeFanOut { unreached: String },
 
+    #[error(
+        "the simulation time source's participant listener stopped, so joins and removals \
+         cannot reach it; restart the time source node"
+    )]
+    SimTimeMembershipStopped,
+
     #[error("internal encoding error for '{identifier}': {reason}")]
     InternalEncodingError { identifier: String, reason: String },
 

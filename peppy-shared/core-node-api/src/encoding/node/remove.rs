@@ -10,6 +10,9 @@ pub struct NodeRemoveRequest {
     pub node_name: String,
     pub tag: String,
     pub stop_instances: bool,
+    /// The launch removing a node it added, which a daemon reserved for
+    /// that launch admits; `None` for a request a user typed.
+    pub launch_id: Option<String>,
 }
 
 impl NodeRemoveRequest {
@@ -18,11 +21,17 @@ impl NodeRemoveRequest {
             node_name: node_name.into(),
             tag: tag.into(),
             stop_instances: false,
+            launch_id: None,
         }
     }
 
     pub fn with_stop_instances(mut self, stop_instances: bool) -> Self {
         self.stop_instances = stop_instances;
+        self
+    }
+
+    pub fn with_launch_id(mut self, launch_id: impl Into<String>) -> Self {
+        self.launch_id = Some(launch_id.into());
         self
     }
 
@@ -33,6 +42,9 @@ impl NodeRemoveRequest {
             request.set_node_name(&self.node_name);
             request.set_stop_instances(self.stop_instances);
             request.set_tag(&self.tag);
+            if let Some(launch_id) = &self.launch_id {
+                request.set_launch_id(launch_id);
+            }
         }
         encode_message(&builder)
     }
@@ -44,6 +56,7 @@ impl NodeRemoveRequest {
             node_name: request.get_node_name()?.to_str()?.to_owned(),
             tag: request.get_tag()?.to_str()?.to_owned(),
             stop_instances: request.get_stop_instances(),
+            launch_id: optional_text(request.get_launch_id()?.to_str()?),
         })
     }
 }
@@ -134,6 +147,22 @@ mod tests {
         assert_eq!(decoded.node_name, "my_node");
         assert_eq!(decoded.tag, "v1");
         assert_eq!(decoded, request);
+    }
+
+    /// The launch id is what a reserved daemon admits the removal on, so it
+    /// has to survive the wire and be readable through the trait the daemon
+    /// gates on.
+    #[test]
+    fn remove_request_round_trips_a_launch_id() {
+        use crate::LaunchScoped;
+
+        let request = NodeRemoveRequest::new("my_node", "v1").with_launch_id("launch-abc123");
+        let decoded =
+            NodeRemoveRequest::decode(request.encode().expect("encode").as_ref()).expect("decode");
+        assert_eq!(decoded.launch_id.as_deref(), Some("launch-abc123"));
+        assert_eq!(decoded.launch_id(), Some("launch-abc123"));
+        assert_eq!(decoded, request);
+        assert_eq!(NodeRemoveRequest::new("my_node", "v1").launch_id(), None);
     }
 
     #[test]

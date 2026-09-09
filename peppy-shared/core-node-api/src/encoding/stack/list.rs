@@ -3,7 +3,23 @@ use capnp::message::Builder;
 use crate::node_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message, required_text};
+use crate::encoding::{
+    capnp_list_len, decode_message, encode_message, read_core_node_name, read_name, read_name_list,
+    read_text_list, required_text, required_text_list, write_text_list,
+};
+use config::runtime::{CoreNodeName, Name};
+
+/// One copy on the stack: a named instance of an option of a `zero_or_more`
+/// axis, where it runs, the instances it minted, and the `axis=option`
+/// words its own axes were filled with.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CopyInfo {
+    pub name: Name,
+    pub core_node: CoreNodeName,
+    pub instance_ids: Vec<Name>,
+    pub selections: Vec<String>,
+    pub option: String,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StackListRequest;
@@ -63,10 +79,17 @@ pub struct StackListResponse {
     /// `stack list` and discoverable by `stack reset --federated`, including
     /// one whose launch died before populating a slice.
     pub reservation: Option<LaunchIdentity>,
+    /// The copies the launch recorded on this daemon, each with the option it
+    /// copies, its host, its selections and its instances.
+    pub copies: Vec<CopyInfo>,
+    /// The cooperative shutdown grace this daemon is configured with, which
+    /// a destructive request's budget is derived from. An absent field reads
+    /// as 0, which a daemon configured to wait for no cleanup also reports.
+    pub shutdown_grace_secs: u64,
 }
 
 /// Which launch a slice belongs to, and who drove it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LaunchIdentity {
     pub launch_id: String,
     pub coordinator_core_node: String,
@@ -90,6 +113,8 @@ impl StackListResponse {
     ) -> Self {
         Self {
             graph_json: graph_json.into(),
+            copies: Vec::new(),
+            shutdown_grace_secs: config::peppy_config::DEFAULT_SHUTDOWN_GRACE_SECS,
             core_node: core_node.into(),
             instance_id: instance_id.into(),
             host_name: host_name.into(),
@@ -117,9 +142,30 @@ impl StackListResponse {
         {
             let mut response = builder.init_root::<node_capnp::stack_list_response::Builder>();
             response.set_graph_json(&self.graph_json);
+            response.set_shutdown_grace_secs(self.shutdown_grace_secs);
             response.set_core_node(&self.core_node);
             response.set_instance_id(&self.instance_id);
             response.set_host_name(&self.host_name);
+            let mut copies = response
+                .reborrow()
+                .init_copies(capnp_list_len(self.copies.len(), "copies")?);
+            for (index, member) in self.copies.iter().enumerate() {
+                let mut wire = copies.reborrow().get(index as u32);
+                wire.set_name(member.name.as_str());
+                wire.set_option(&member.option);
+                wire.set_core_node(member.core_node.as_str());
+                write_text_list(
+                    wire.reborrow().init_instance_ids(capnp_list_len(
+                        member.instance_ids.len(),
+                        "instance_ids",
+                    )?),
+                    &member.instance_ids,
+                );
+                write_text_list(
+                    wire.init_selections(capnp_list_len(member.selections.len(), "selections")?),
+                    &member.selections,
+                );
+            }
             let mut launch = response.reborrow().init_launch();
             match &self.launch {
                 Some(identity) => {
@@ -166,6 +212,29 @@ impl StackListResponse {
 
         Ok(Self {
             graph_json: response.get_graph_json()?.to_str()?.to_owned(),
+            shutdown_grace_secs: response.get_shutdown_grace_secs(),
+            copies: response
+                .get_copies()?
+                .iter()
+                .map(|member| {
+                    Ok(CopyInfo {
+                        name: read_name(member.get_name()?.to_str()?, "copies.name")?,
+                        core_node: read_core_node_name(
+                            member.get_core_node()?.to_str()?,
+                            "copies.core_node",
+                        )?,
+                        instance_ids: read_name_list(
+                            member.get_instance_ids()?,
+                            "copies.instance_ids",
+                        )?,
+                        selections: required_text_list(
+                            read_text_list(member.get_selections()?)?,
+                            "copies.selections",
+                        )?,
+                        option: required_text(member.get_option()?.to_str()?, "copies.option")?,
+                    })
+                })
+                .collect::<Result<_>>()?,
             core_node: response.get_core_node()?.to_str()?.to_owned(),
             instance_id: response.get_instance_id()?.to_str()?.to_owned(),
             host_name: response.get_host_name()?.to_str()?.to_owned(),
@@ -260,6 +329,46 @@ mod tests {
         assert_eq!(decoded.launch, None, "a local stack belongs to no launch");
     }
 
+    #[test]
+    fn response_preserves_copies_and_requires_their_identity() {
+        let mut response = StackListResponse::new("{}", "cn-atlas", "generation_1", "atlas");
+        response.copies.push(CopyInfo {
+            name: Name::new("alpha").unwrap(),
+            option: "openarm_v2".into(),
+            core_node: CoreNodeName::new("jetson-1").unwrap(),
+            instance_ids: vec![
+                Name::new("alpha_backbone_inst").unwrap(),
+                Name::new("alpha_commander_inst").unwrap(),
+            ],
+            selections: vec!["commander=xr_commander".into()],
+        });
+        assert_eq!(
+            StackListResponse::decode(&response.encode().unwrap()).unwrap(),
+            response
+        );
+        // A copy that arrives with a blank name, option, or host, or an
+        // instance id that is not a name, is refused at the wire boundary.
+        for (name, option, core_node, instance_id) in [
+            ("", "openarm_v2", "jetson-1", "alpha_arm_inst"),
+            ("alpha", "", "jetson-1", "alpha_arm_inst"),
+            ("alpha", "openarm_v2", "", "alpha_arm_inst"),
+            ("alpha", "openarm_v2", "jetson-1", "bad/id"),
+        ] {
+            let mut builder = Builder::new_default();
+            let mut wire = builder.init_root::<node_capnp::stack_list_response::Builder>();
+            let mut member = wire.reborrow().init_copies(1).get(0);
+            member.set_name(name);
+            member.set_option(option);
+            member.set_core_node(core_node);
+            member.init_instance_ids(1).set(0, instance_id);
+            let payload = encode_message(&builder).unwrap();
+            assert!(
+                StackListResponse::decode(&payload).is_err(),
+                "{name} {option} {core_node} {instance_id}"
+            );
+        }
+    }
+
     /// A slice is self-describing: it names the launch it belongs to and the
     /// coordinator that drove it, which is what lets a restarted coordinator
     /// rediscover its participants rather than lose them.
@@ -343,5 +452,24 @@ mod tests {
     #[test]
     fn response_decode_rejects_malformed() {
         assert!(StackListResponse::decode(b"not capnp").is_err());
+    }
+
+    #[test]
+    fn round_trip_preserves_the_daemons_shutdown_grace() {
+        let mut original = StackListResponse::new("{}", "robot", "root", "host");
+        original.shutdown_grace_secs = 3600;
+        let decoded = StackListResponse::decode(&original.encode().unwrap()).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    /// The configured grace travels verbatim, 0 included: a daemon that waits
+    /// for no cleanup is a daemon the config model admits.
+    #[test]
+    fn a_zero_shutdown_grace_decodes_as_zero() {
+        let mut original = StackListResponse::new("{}", "robot", "root", "host");
+        original.shutdown_grace_secs = 0;
+        let decoded = StackListResponse::decode(&original.encode().unwrap()).unwrap();
+        assert_eq!(decoded.shutdown_grace_secs, 0);
+        assert_eq!(decoded, original);
     }
 }

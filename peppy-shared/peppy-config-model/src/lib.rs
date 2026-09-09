@@ -96,9 +96,10 @@ pub mod node {
 // -- runtime --
 pub mod runtime {
     pub use crate::internal::runtime::{
-        BoundProducers, DiscoveryConfig, LifecycleRuntimeConfig, Name, NodeInstanceConfig,
-        NodeInstancePlan, ObservationSeedMember, ObservationSeeds, PairingSlotBinding, ProducerRef,
-        ResolvedFramework, RuntimeConfig, SimTimeParticipants, SlotBindings,
+        BoundProducers, CoreNodeName, CoreNodeNameError, DiscoveryConfig, LifecycleRuntimeConfig,
+        MAX_CORE_NODE_NAME_LEN, Name, NodeInstanceConfig, NodeInstancePlan, ObservationSeedMember,
+        ObservationSeeds, PairingSlotBinding, ProducerRef, ResolvedFramework, RuntimeConfig,
+        SELF_CORE_NODE, SimTimeParticipants, SlotBindings, first_duplicate,
     };
 }
 

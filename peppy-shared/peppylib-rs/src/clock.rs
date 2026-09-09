@@ -28,6 +28,9 @@ use crate::runtime::{NodeRunner, TaskHandle, spawn};
 use crate::types::Payload;
 
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+/// What a poisoned simulation-destinations lock reports: a thread panicked
+/// while replacing the set, so the publisher cannot say where ticks go.
+const DESTINATIONS_LOCK: &str = "simulation destinations lock";
 
 /// Failures observable from a [`ClockSource`]. Wall mode propagates a system
 /// clock error; sim mode reports a missing first tick.
@@ -298,6 +301,9 @@ pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
     Ok(ClockSubscription { inner })
 }
 
+/// One declared publisher per participant, keyed by its core node.
+type SimPublishers = Vec<(String, TopicPublisher)>;
+
 /// The launch's one source of simulated time: publishes each tick onto the
 /// `clock` topic of every machine the launch placed an instance on.
 ///
@@ -308,10 +314,19 @@ pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
 /// the source's runtime config (`framework.sim_time_source`); the simulator
 /// itself names no machine.
 ///
-/// One publisher per participant is declared up front so the per-tick path
-/// encodes once and publishes without touching the messenger lock.
+/// The coordinator updates destinations through `sim_time_participants` as
+/// copies join and leave. Each tick uses one complete snapshot, and
+/// a tick published after that listener stopped fails, naming the restart
+/// that brings it back.
 pub struct SimTimePublisher {
-    publishers: Vec<(String, TopicPublisher)>,
+    publishers: Arc<std::sync::RwLock<Arc<SimPublishers>>>,
+    membership_listener: TaskHandle<Result<()>>,
+}
+
+impl Drop for SimTimePublisher {
+    fn drop(&mut self) {
+        self.membership_listener.abort();
+    }
 }
 
 impl SimTimePublisher {
@@ -326,37 +341,84 @@ impl SimTimePublisher {
         let Some(participants) = processor.sim_time_source() else {
             return Ok(None);
         };
-        let mut publishers = Vec::new();
-        for participant in participants {
-            let publisher = TopicMessenger::declare_publisher(
+        let publishers = Arc::new(std::sync::RwLock::new(Arc::new(
+            sim_publishers(
                 node_runner.messenger(),
                 processor.bound_core_node(),
                 processor.bound_instance_id(),
-                SenderTarget::node(participant.as_str(), names::CORE_NODE_TAG)?,
-                None,
-                TopicId::Clock.name(),
-                QoSProfile::SensorData,
+                participants,
             )
-            .await?;
-            publishers.push((participant.to_string(), publisher));
-        }
-        Ok(Some(Self { publishers }))
+            .await?,
+        )));
+        let mut endpoint = crate::ServiceMessenger::listen(
+            node_runner.messenger(),
+            processor.bound_core_node(),
+            processor.bound_instance_id(),
+            SenderTarget::node(processor.node_name(), processor.node_tag())?,
+            core_node_api::ServiceId::SimTimeParticipants.name(),
+        )
+        .await?;
+        let destinations = Arc::clone(&publishers);
+        let messenger = node_runner.messenger().clone();
+        let core_node = processor.bound_core_node().to_owned();
+        let instance_id = processor.bound_instance_id().to_owned();
+        let membership_listener = spawn(async move {
+            endpoint
+                .handle_requests(|context| {
+                    let destinations = Arc::clone(&destinations);
+                    let messenger = messenger.clone();
+                    let core_node = core_node.clone();
+                    let instance_id = instance_id.clone();
+                    async move {
+                        let request = core_node_api::encoding::SimTimeParticipantsRequest::decode(
+                            context.message().payload_bytes().as_ref(),
+                        )?;
+                        let replacement = sim_publishers(
+                            &messenger,
+                            &core_node,
+                            &instance_id,
+                            &request.participants,
+                        )
+                        .await?;
+                        *destinations.write().expect(DESTINATIONS_LOCK) = Arc::new(replacement);
+                        core_node_api::encoding::SimTimeParticipantsResponse
+                            .encode()
+                            .map_err(Into::into)
+                    }
+                })
+                .await
+        });
+        Ok(Some(Self {
+            publishers,
+            membership_listener,
+        }))
+    }
+
+    /// The destinations as they stand, held past the lock so a publish walks
+    /// one complete set while a membership update installs the next.
+    fn snapshot(&self) -> Arc<SimPublishers> {
+        Arc::clone(&self.publishers.read().expect(DESTINATIONS_LOCK))
     }
 
     /// The core nodes each tick reaches, in the order they are published to.
-    pub fn participants(&self) -> impl Iterator<Item = &str> {
-        self.publishers
+    pub fn participants(&self) -> Vec<String> {
+        self.snapshot()
             .iter()
-            .map(|(core_node, _)| core_node.as_str())
+            .map(|(core_node, _)| core_node.clone())
+            .collect()
     }
 
     /// Publishes `time_ns` to every participant. Every participant is tried
     /// even after one fails, and the error names each machine that was not
     /// reached: a machine silently left out is a machine whose time froze.
     pub async fn publish(&self, time_ns: u64) -> Result<()> {
+        if self.membership_listener.is_finished() {
+            return Err(Error::SimTimeMembershipStopped);
+        }
         let payload = ClockTick::new(time_ns).encode()?;
         let mut unreached = Vec::new();
-        for (core_node, publisher) in &self.publishers {
+        let destinations = self.snapshot();
+        for (core_node, publisher) in destinations.iter() {
             if let Err(error) = publisher.publish(payload.clone()).await {
                 unreached.push(format!("{core_node} ({error})"));
             }
@@ -368,6 +430,31 @@ impl SimTimePublisher {
             unreached: unreached.join(", "),
         })
     }
+}
+
+/// One `clock` publisher per participant, declared in the order the
+/// participants are listed.
+async fn sim_publishers(
+    messenger: &crate::MessengerHandle,
+    core_node: &str,
+    instance_id: &str,
+    participants: &config::runtime::SimTimeParticipants,
+) -> Result<SimPublishers> {
+    let mut publishers = Vec::new();
+    for participant in participants {
+        let publisher = TopicMessenger::declare_publisher(
+            messenger,
+            core_node,
+            instance_id,
+            SenderTarget::node(participant.as_str(), names::CORE_NODE_TAG)?,
+            None,
+            TopicId::Clock.name(),
+            QoSProfile::SensorData,
+        )
+        .await?;
+        publishers.push((participant.to_string(), publisher));
+    }
+    Ok(publishers)
 }
 
 fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {
@@ -434,6 +521,28 @@ mod tests {
 
         cache.store(42, Ordering::Relaxed);
         assert_eq!(clock.now_ns().expect("populated cache reads ok"), 42);
+    }
+
+    /// A source whose membership listener has stopped hears no join and no
+    /// removal, so its destination set is frozen wherever the launch left it.
+    /// Publishing through it is refused, naming the restart that revives it.
+    #[tokio::test]
+    async fn publishing_without_a_membership_listener_is_refused() {
+        let mut membership_listener = spawn(async { Ok(()) });
+        (&mut membership_listener)
+            .await
+            .expect("the listener task joins")
+            .expect("the listener ends without error");
+        let publisher = SimTimePublisher {
+            publishers: Arc::new(std::sync::RwLock::new(Arc::new(Vec::new()))),
+            membership_listener,
+        };
+
+        let error = publisher
+            .publish(42)
+            .await
+            .expect_err("a stopped listener must refuse a tick");
+        assert!(matches!(error, Error::SimTimeMembershipStopped), "{error}");
     }
 }
 

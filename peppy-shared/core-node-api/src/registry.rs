@@ -155,6 +155,14 @@ methods! {
             response: ParticipantSliceBeginResponse,
             schema: "federation.capnp",
         }
+        ParticipantInstancesRemove {
+            name: "participant_instances_remove",
+            host: CoreNodeDaemon,
+            summary: "Remove selected instances from a reserved launch's slice.",
+            request: ParticipantInstancesRemoveRequest,
+            response: FederationVerdict,
+            schema: "federation.capnp",
+        }
         /// Records the second half of a CROSS-DAEMON pair on the daemon
         /// hosting the other endpoint, and delivers that endpoint its pin.
         /// A same-daemon pair never needs it: one registry holds both
@@ -202,6 +210,7 @@ methods! {
         NodeRemove {
             name: "node_remove",
             host: CoreNodeDaemon,
+            scope: launch,
             summary: "Remove a node entry from the stack.",
             request: NodeRemoveRequest,
             response: NodeRemoveResponse,
@@ -271,7 +280,16 @@ methods! {
             response: RepoRemoveResponse,
             schema: "repo.capnp",
         }
-        /// Framework service every *spawned node* (not the daemon) exposes.
+        /// Hosted by the running simulation time source.
+        SimTimeParticipants {
+            name: "sim_time_participants",
+            host: SpawnedNode,
+            summary: "Update the running simulation time source's participant set.",
+            request: SimTimeParticipantsRequest,
+            response: SimTimeParticipantsResponse,
+            schema: "clock.capnp",
+        }
+        /// Framework service every spawned node exposes.
         /// The daemon polls it during `peppy stack benchmark` to measure each
         /// producer's clock offset and normalize cross-host timestamps.
         ClockOffset {
@@ -289,6 +307,24 @@ methods! {
             name: "stack_launch",
             summary: "Launch a stack from a launcher manifest, streaming per-node progress.",
             goal: LaunchGoal,
+            goal_response: LaunchGoalResponse,
+            feedback: LaunchFeedback,
+            result: LaunchResult,
+            schema: "launch.capnp",
+        }
+        StackJoin {
+            name: "stack_join",
+            summary: "Add a copy of one of the running launcher's options to the stack.",
+            goal: StackJoinGoal,
+            goal_response: LaunchGoalResponse,
+            feedback: LaunchFeedback,
+            result: LaunchResult,
+            schema: "launch.capnp",
+        }
+        StackRemove {
+            name: "stack_remove",
+            summary: "Stop and remove the instances belonging to one copy.",
+            goal: StackRemoveGoal,
             goal_response: LaunchGoalResponse,
             feedback: LaunchFeedback,
             result: LaunchResult,
@@ -396,7 +432,7 @@ pub const SCHEMA_SOURCES: &[(&str, &str)] = &[
 /// Version of the wire protocol described by this registry. Feeds the AsyncAPI
 /// document's `info.version`. Bump the minor on additive methods/fields, the
 /// major on breaking wire changes.
-pub const WIRE_API_VERSION: &str = "0.2.0";
+pub const WIRE_API_VERSION: &str = "0.3.0";
 
 /// Version of this crate, for provenance only (not the wire version).
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");

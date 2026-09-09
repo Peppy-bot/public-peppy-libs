@@ -48,6 +48,20 @@ struct StackListResponse {
         none @6 :Void;
         identity @7 :LaunchIdentity;
     }
+    # The copies the serving coordinator runs.
+    copies @8 :List(CopyInfo);
+    # Configured cooperative shutdown grace, used to budget destructive requests.
+    shutdownGraceSecs @9 :UInt64;
+}
+
+# One copy on the stack: a named instance of an option of a `zero_or_more`
+# axis, where it runs, the instances it minted, and how its axes were filled.
+struct CopyInfo {
+    name @0 :Text;
+    coreNode @1 :Text;
+    instanceIds @2 :List(Text);
+    selections @3 :List(Text);
+    option @4 :Text;
 }
 
 # Which launch a stack slice belongs to, and who drove it.
@@ -467,6 +481,9 @@ struct NodeRemoveRequest {
     stopInstances @1 :Bool;
     # Tag of the node to remove
     tag @2 :Text;
+    # The launch removing a node it added, admitted on a daemon reserved
+    # for that launch; empty for a request a user typed
+    launchId @3 :Text;
 }
 
 struct NodeRemoveResponse {

@@ -1,7 +1,8 @@
 //! Cap'n Proto encoding utilities for clock-synchronization messages.
 //!
 //! See [`clock.capnp`](../../schemas/clock.capnp) for the wire-level NTP-style
-//! 4-timestamp exchange.
+//! 4-timestamp exchange, and for the simulation-time participant list a
+//! simulation's time source is handed after a copy joins or leaves.
 
 use capnp::message::Builder;
 
@@ -186,6 +187,50 @@ impl ClockTick {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SimTimeParticipantsRequest {
+    pub participants: config::runtime::SimTimeParticipants,
+}
+
+impl SimTimeParticipantsRequest {
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        let request = builder.init_root::<clock_capnp::sim_time_participants_request::Builder>();
+        let count = super::capnp_list_len(self.participants.iter().len(), "participants")?;
+        super::write_text_list(
+            request.init_participants(count),
+            self.participants.iter().map(|name| name.as_str()),
+        );
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let request = reader.get_root::<clock_capnp::sim_time_participants_request::Reader>()?;
+        let names = super::read_name_list(request.get_participants()?, "participants")?;
+        let participants = config::runtime::SimTimeParticipants::try_from(names)
+            .map_err(|error| crate::Error::Decoding(error.to_string()))?;
+        Ok(Self { participants })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SimTimeParticipantsResponse;
+
+impl SimTimeParticipantsResponse {
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        builder.init_root::<clock_capnp::sim_time_participants_response::Builder>();
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        reader.get_root::<clock_capnp::sim_time_participants_response::Reader>()?;
+        Ok(Self)
+    }
+}
+
 impl crate::encoding::Wire for ClockRequest {
     type Root = crate::clock_capnp::clock_request::Owned;
 }
@@ -204,6 +249,14 @@ impl crate::encoding::Wire for ClockOffsetResponse {
 
 impl crate::encoding::Wire for ClockTick {
     type Root = crate::clock_capnp::clock_tick::Owned;
+}
+
+impl crate::encoding::Wire for SimTimeParticipantsRequest {
+    type Root = clock_capnp::sim_time_participants_request::Owned;
+}
+
+impl crate::encoding::Wire for SimTimeParticipantsResponse {
+    type Root = clock_capnp::sim_time_participants_response::Owned;
 }
 
 #[cfg(test)]
@@ -264,6 +317,40 @@ mod tests {
         assert_eq!(
             ClockTick::decode(&raw_zero).expect("decode").time(),
             ClockTick::MIN_TIME_NS
+        );
+    }
+
+    #[test]
+    fn participant_updates_round_trip_and_reject_empty_or_duplicate_sets() {
+        let request = SimTimeParticipantsRequest {
+            participants: config::runtime::SimTimeParticipants::try_from(vec![
+                config::runtime::Name::new("cn-robot").unwrap(),
+            ])
+            .unwrap(),
+        };
+        assert_eq!(
+            SimTimeParticipantsRequest::decode(request.encode().unwrap().as_ref()).unwrap(),
+            request
+        );
+        for names in [vec![], vec!["cn-robot", "cn-robot"], vec!["bad/name"]] {
+            let mut message = Builder::new_default();
+            let request =
+                message.init_root::<clock_capnp::sim_time_participants_request::Builder>();
+            let mut participants = request.init_participants(names.len() as u32);
+            for (index, name) in names.iter().enumerate() {
+                participants.set(index as u32, name);
+            }
+            assert!(
+                SimTimeParticipantsRequest::decode(encode_message(&message).unwrap().as_ref())
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            SimTimeParticipantsResponse::decode(
+                SimTimeParticipantsResponse.encode().unwrap().as_ref()
+            )
+            .unwrap(),
+            SimTimeParticipantsResponse
         );
     }
 }

@@ -120,6 +120,78 @@ async fn subscribe_clock_yields_typed_ticks() {
 /// the machine the source runs on plus every other machine of the launch.
 const FLEET: [&str; 3] = ["cn-fleet-sim", "cn-fleet-robot-a", "cn-fleet-robot-b"];
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_running_time_source_updates_destinations_for_join_and_remove() {
+    use core_node_api::encoding::{SimTimeParticipantsRequest, SimTimeParticipantsResponse};
+    use peppylib::messaging::{SenderTarget, ServiceTarget, TopicMessenger};
+    let (_router, _directory, runner, observer) = start_time_source_runner(true).await;
+    let publisher = clock::SimTimePublisher::for_node(&runner)
+        .await
+        .unwrap()
+        .unwrap();
+    let late_host = "cn-fleet-late-robot";
+    let mut ticks = TopicMessenger::subscribe_target_scoped(
+        &observer,
+        late_host,
+        "clock_reader",
+        test_node_target(late_host),
+        TopicId::Clock.name(),
+        QoSProfile::SensorData,
+    )
+    .await
+    .unwrap();
+    wait_for_topic_subscriber(
+        runner.messenger(),
+        CORE_NODE,
+        super::common::CLIENT_INSTANCE,
+        test_node_target(late_host),
+        TopicId::Clock.name(),
+    )
+    .await;
+    let processor = runner.processor();
+    let source = SenderTarget::node(processor.node_name(), processor.node_tag()).unwrap();
+    let update = |names: Vec<&str>| SimTimeParticipantsRequest {
+        participants: config::runtime::SimTimeParticipants::try_from(
+            names
+                .into_iter()
+                .map(|name| config::runtime::Name::new(name).unwrap())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap(),
+    };
+    for destinations in [
+        vec![FLEET[0], FLEET[1], FLEET[2], late_host],
+        vec![FLEET[0], late_host],
+    ] {
+        let request = update(destinations.clone());
+        let response = ServiceMessenger::poll(
+            &observer,
+            processor.bound_core_node(),
+            "coordinator",
+            source.clone(),
+            ServiceId::SimTimeParticipants.name(),
+            ServiceTarget::CoreNode(processor.bound_core_node()),
+            request.encode().unwrap(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        SimTimeParticipantsResponse::decode(response.payload_bytes().as_ref()).unwrap();
+        assert_eq!(publisher.participants(), destinations);
+        publisher.publish(123_456).await.unwrap();
+        let tick = tokio::time::timeout(Duration::from_secs(2), ticks.on_next_message())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ClockTick::decode(tick.payload_bytes().as_ref())
+                .unwrap()
+                .time(),
+            123_456
+        );
+    }
+}
+
 /// A standalone runner declared the launch's time source for `FLEET`, the
 /// daemon-less spelling of `framework: { publishes_sim_time: true }` resolved
 /// against a three-machine placement, in the given clock mode.
@@ -162,7 +234,7 @@ async fn sim_time_publisher_reaches_every_participant() {
         .await
         .expect("a declared time source builds its fan-out")
         .expect("the launch declared this node the source");
-    assert_eq!(publisher.participants().collect::<Vec<_>>(), FLEET);
+    assert_eq!(publisher.participants(), FLEET);
 
     let mut subscriptions = Vec::with_capacity(FLEET.len());
     for core_node in FLEET {

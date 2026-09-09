@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use core_node_api::SerializedNodeGraph;
-use core_node_api::encoding::StackListRequest;
+use core_node_api::encoding::{CopyInfo, StackListRequest};
 
 use crate::core_node::transport::poll;
 use crate::error::{Error, Result};
@@ -22,6 +22,11 @@ const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone)]
 pub struct StackList {
     pub graph: SerializedNodeGraph,
+    /// The copies the serving coordinator runs.
+    pub copies: Vec<CopyInfo>,
+    /// The cooperative shutdown grace the serving daemon is configured with,
+    /// which a caller sizes a destructive request's budget from.
+    pub shutdown_grace_secs: u64,
     /// Presence identity of the serving daemon: its core-node name and
     /// daemon-generation instance id, matching its core-node presence token.
     pub core_node: String,
@@ -53,6 +58,8 @@ pub async fn list(
 
     Ok(StackList {
         graph,
+        copies: response.copies,
+        shutdown_grace_secs: response.shutdown_grace_secs,
         core_node: response.core_node,
         instance_id: response.instance_id,
         host_name: response.host_name,

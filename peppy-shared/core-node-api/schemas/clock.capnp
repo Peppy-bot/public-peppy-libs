@@ -44,3 +44,11 @@ struct ClockOffsetResponse {
     offsetNs @0 :Int64;
     roundTripDelayNs @1 :UInt64;
 }
+
+# Replaces the active time source's destinations after a copy joins or
+# leaves. The new set must be nonempty and contain distinct core node names.
+struct SimTimeParticipantsRequest {
+    participants @0 :List(Text);
+}
+
+struct SimTimeParticipantsResponse {}

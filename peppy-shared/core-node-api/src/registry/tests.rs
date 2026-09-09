@@ -43,6 +43,7 @@ fn pinned_service_name(id: ServiceId) -> &'static str {
         ServiceId::StackList => "stack_list",
         ServiceId::ParticipantReserve => "participant_reserve",
         ServiceId::ParticipantSliceBegin => "participant_slice_begin",
+        ServiceId::ParticipantInstancesRemove => "participant_instances_remove",
         ServiceId::PairCommit => "pair_commit",
         ServiceId::ParticipantRelease => "participant_release",
         ServiceId::RelationshipNotify => "relationship_notify",
@@ -56,6 +57,7 @@ fn pinned_service_name(id: ServiceId) -> &'static str {
         ServiceId::RepoList => "repo_list",
         ServiceId::RepoRemove => "repo_remove",
         ServiceId::ClockOffset => "clock_offset",
+        ServiceId::SimTimeParticipants => "sim_time_participants",
     }
 }
 
@@ -63,6 +65,8 @@ fn pinned_service_name(id: ServiceId) -> &'static str {
 fn pinned_action_name(id: ActionId) -> &'static str {
     match id {
         ActionId::StackLaunch => "stack_launch",
+        ActionId::StackJoin => "stack_join",
+        ActionId::StackRemove => "stack_remove",
         ActionId::StackBenchmark => "stack_benchmark",
         ActionId::NodeAdd => "node_add",
         ActionId::NodeBuild => "node_build",
