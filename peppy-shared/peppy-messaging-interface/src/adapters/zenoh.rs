@@ -113,6 +113,8 @@ pub struct ZenohdInstance {
     messenger: Option<Messenger>,
     pub host: String,
     pub port: u16,
+    /// Captured stdout and stderr of this router process.
+    pub log_path: std::path::PathBuf,
 }
 
 #[cfg(feature = "router")]
@@ -539,6 +541,12 @@ impl ZenohAdapter {
             // A lightweight client probe (no listener, no peer discovery) is the
             // cheapest reliable "router accepts sessions yet?" check.
             let probe_config = render_probe_config(ZenohNetProtocol::Tcp, host, port, None);
+            let log_path = adapter
+                .zenohd
+                .as_ref()
+                .and_then(zenohd::ZenohdFacade::managed_log_path)
+                .expect("ephemeral routers own their log file")
+                .to_path_buf();
             let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
 
             // Drop the port reservation before starting the router so zenohd can bind to it
@@ -557,6 +565,7 @@ impl ZenohAdapter {
                                 messenger: Some(messenger),
                                 host: host.to_string(),
                                 port,
+                                log_path,
                             });
                         }
                         Err(_) if attempt + 1 < max_attempts => {
@@ -960,6 +969,13 @@ impl MessengerBackend for ZenohAdapter {
                     }
                 };
                 let key_expr = sample.key_expr().as_str();
+                if tx.is_closed() {
+                    tracing::trace!(
+                        %key_expr,
+                        "discarding service reply after caller stopped waiting"
+                    );
+                    return;
+                }
                 let zbytes = sample.payload().clone();
                 let attachment_bytes = sample
                     .attachment()

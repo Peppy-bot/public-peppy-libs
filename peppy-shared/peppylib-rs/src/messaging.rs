@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod deadline_tests;
 #[cfg(all(test, feature = "zenoh"))]
 mod tests;
 
@@ -80,7 +82,7 @@ use std::sync::{
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::{
     sync::Mutex,
-    time::{Duration, Instant, sleep, timeout},
+    time::{Duration, Instant, sleep, timeout_at},
 };
 
 // services
@@ -328,6 +330,22 @@ impl std::future::IntoFuture for MessengerConnect {
     }
 }
 
+/// Bounds a service await by the caller's absolute deadline. A ready result
+/// cannot win after expiry, even when the executor resumes the future late.
+async fn within_service_deadline<F: std::future::Future>(
+    deadline: Option<Instant>,
+    future: F,
+) -> Option<F::Output> {
+    let Some(deadline) = deadline else {
+        return Some(future.await);
+    };
+    if Instant::now() >= deadline {
+        return None;
+    }
+    let result = timeout_at(deadline, future).await.ok()?;
+    (Instant::now() < deadline).then_some(result)
+}
+
 impl MessengerHandle {
     /// Build a handle from an already-shared `pmi::Messenger`. This is the
     /// escape hatch for consumers that construct and own the messenger
@@ -525,61 +543,54 @@ impl MessengerHandle {
         //
         // Cold-start retry (peer mode): a freshly-connected caller may not have
         // learned the target's queryable yet, so the query finalizes with no
-        // reply (`Ok(None)`) the instant it runs ahead of discovery. When that
-        // happens *before any Ack* — the target was never reached — re-issue the
+        // reply (a closed stream) the instant it runs ahead of discovery. When that
+        // happens before any Ack, the target was never reached: re-issue the
         // query within the caller's remaining budget so the call deterministically
         // waits for discovery to settle instead of failing immediately. Once an
         // Ack arrives the target is reachable, so a later miss is a genuine
         // `ServiceTimeout`, never a retry. This adds no happy-path overhead:
         // retries only fire on an actual cold-start miss.
         let reply = 'attempts: loop {
-            if let Some(deadline) = deadline
-                && Instant::now() >= deadline
-            {
-                return Err(unreachable());
-            }
-
-            let attempt_timeout = deadline.map(|d| d.saturating_duration_since(Instant::now()));
             let mut response_subscription = {
-                let messenger = self.messenger.lock().await;
-                messenger
-                    .call_service(sender, request_bytes.clone().into(), kind, attempt_timeout)
+                let messenger = within_service_deadline(deadline, self.messenger.lock())
                     .await
-                    .map_err(Error::PeppyMessagingInterface)?
+                    .ok_or_else(unreachable)?;
+                let attempt_timeout = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+                within_service_deadline(
+                    deadline,
+                    messenger.call_service(
+                        sender,
+                        request_bytes.clone().into(),
+                        kind,
+                        attempt_timeout,
+                    ),
+                )
+                .await
+                .ok_or_else(unreachable)?
+                .map_err(Error::PeppyMessagingInterface)?
             };
 
             let mut received_ack = false;
             loop {
-                let received = match deadline {
-                    Some(deadline) => {
-                        let remaining = deadline.saturating_duration_since(Instant::now());
-                        if remaining.is_zero() {
-                            return Err(if received_ack {
-                                timed_out()
-                            } else {
-                                unreachable()
-                            });
+                let received = within_service_deadline(deadline, response_subscription.rx.recv())
+                    .await
+                    .ok_or_else(|| {
+                        if received_ack {
+                            timed_out()
+                        } else {
+                            unreachable()
                         }
-                        match timeout(remaining, response_subscription.rx.recv()).await {
-                            Ok(maybe) => maybe,
-                            // Deadline elapsed with the query still open: a real
-                            // timeout (slow/absent target), not a cold-start miss.
-                            Err(_) => {
-                                return Err(if received_ack {
-                                    timed_out()
-                                } else {
-                                    unreachable()
-                                });
-                            }
-                        }
-                    }
-                    None => response_subscription.rx.recv().await,
-                };
+                    })?;
 
                 match received {
                     Some(reply) => match reply.kind() {
                         ServiceReplyKind::Ack => {
                             received_ack = true;
+                            tracing::trace!(
+                                service_name = %to_service_name,
+                                ?target_instance_id,
+                                "service request acknowledged"
+                            );
                             continue;
                         }
                         ServiceReplyKind::Response | ServiceReplyKind::HandlerError => {
@@ -593,8 +604,7 @@ impl MessengerHandle {
                         }
                         // Cold-start retry only makes sense against a bounded
                         // budget. With no timeout there is nothing to bound the
-                        // retry, so fail fast (matching the pre-retry behavior)
-                        // rather than re-probing forever.
+                        // retry, so fail fast rather than re-probing forever.
                         let Some(deadline) = deadline else {
                             return Err(unreachable());
                         };
