@@ -51,8 +51,6 @@ async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
     )
     assert response.copies == copies
     assert response.shutdown_grace_secs == 11
-    # An omitted grace keeps the daemon default the Rust constructor seeds.
-    assert StackListResponse(graph_json, "core", "gen-1", "robo-a").shutdown_grace_secs > 0
     response_bytes = response.encode()
 
     router, node_runner, server_handle = await start_router_and_runner(tmp_path)
@@ -116,7 +114,7 @@ def _mixed_state_graph_json() -> str:
 
 async def _stack_list_with_mixed_state(tmp_path):
     response_bytes = StackListResponse(
-        _mixed_state_graph_json(), "core", "gen-1", "robo-a"
+        _mixed_state_graph_json(), "core", "gen-1", "robo-a", copies=[], shutdown_grace_secs=5
     ).encode()
     router, node_runner, server_handle = await start_router_and_runner(tmp_path)
     try:

@@ -158,32 +158,20 @@ pub struct PyStackListResponse {
 
 #[pymethods]
 impl PyStackListResponse {
-    /// An omitted `shutdown_grace_secs` leaves the grace
-    /// [`StackListResponse::new`] seeds, the daemon default.
+    /// Every field the daemon fills: the graph, its identity, the copies it
+    /// hosts and its shutdown grace.
     #[new]
-    #[pyo3(signature = (
-        graph_json,
-        core_node,
-        instance_id,
-        host_name,
-        copies=None,
-        shutdown_grace_secs=None,
-    ))]
     fn new(
         graph_json: String,
         core_node: String,
         instance_id: String,
         host_name: String,
-        copies: Option<&Bound<'_, PyAny>>,
-        shutdown_grace_secs: Option<u64>,
+        copies: &Bound<'_, PyAny>,
+        shutdown_grace_secs: u64,
     ) -> PyResult<Self> {
         let mut inner = StackListResponse::new(graph_json, core_node, instance_id, host_name);
-        if let Some(copies) = copies {
-            inner.copies = pythonize::depythonize(copies)?;
-        }
-        if let Some(shutdown_grace_secs) = shutdown_grace_secs {
-            inner.shutdown_grace_secs = shutdown_grace_secs;
-        }
+        inner.copies = pythonize::depythonize(copies)?;
+        inner.shutdown_grace_secs = shutdown_grace_secs;
         Ok(Self { inner })
     }
 
