@@ -79,7 +79,7 @@ async fn stack_list_parses_graph_and_includes_daemon_identity() {
         core_node: CORE_NODE.to_string(),
         config_path: "/tmp/brain.json5".to_string(),
         artifact_path: None,
-        stage: Some(NodeStage::Ready),
+        stage: NodeStage::Ready,
         instances: vec![SerializedInstance {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
@@ -95,7 +95,7 @@ async fn stack_list_parses_graph_and_includes_daemon_identity() {
         core_node: CORE_NODE.to_string(),
         config_path: "/tmp/sensor.json5".to_string(),
         artifact_path: None,
-        stage: Some(NodeStage::Added),
+        stage: NodeStage::Added,
         instances: vec![],
     };
     let graph = SerializedNodeGraph {
@@ -128,7 +128,7 @@ async fn stack_list_parses_graph_and_includes_daemon_identity() {
         .find(|n| n.name == "brain")
         .expect("brain node should be present in the returned stack");
     assert_eq!(brain.core_node, CORE_NODE);
-    assert_eq!(brain.stage, Some(NodeStage::Ready));
+    assert_eq!(brain.stage, NodeStage::Ready);
     assert_eq!(brain.instances.len(), 1);
     assert_eq!(brain.instances[0].instance_id, "i1");
     assert_eq!(brain.instances[0].state, InstanceState::Running);

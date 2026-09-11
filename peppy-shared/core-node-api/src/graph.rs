@@ -199,13 +199,10 @@ pub struct SerializedNode {
     pub core_node: String,
     pub config_path: String,
     pub artifact_path: Option<String>,
-    /// Lifecycle stage name. `None` only for payloads produced by versions
-    /// that predate the stage field; current producers always populate it.
-    #[serde(default)]
-    pub stage: Option<NodeStage>,
+    /// Lifecycle stage name.
+    pub stage: NodeStage,
     /// All tracked instances with their per-instance state, including
     /// in-flight `Starting` instances.
-    #[serde(default)]
     pub instances: Vec<SerializedInstance>,
 }
 
@@ -233,12 +230,6 @@ impl SerializedNode {
         self.instances
             .iter()
             .filter(|i| i.state == InstanceState::Running)
-    }
-
-    /// Returns the lifecycle stage label, or "Unknown" for legacy payloads
-    /// that did not carry the stage field.
-    pub fn stage_label(&self) -> &'static str {
-        self.stage.map_or("Unknown", NodeStage::as_str)
     }
 }
 
@@ -321,7 +312,7 @@ mod tests {
             core_node: "test_core".into(),
             config_path: String::new(),
             artifact_path: None,
-            stage: Some(NodeStage::Ready),
+            stage: NodeStage::Ready,
             instances: instances
                 .iter()
                 .map(|(id, st)| SerializedInstance {
@@ -517,9 +508,9 @@ mod tests {
     }
 
     #[test]
-    fn instance_without_slot_bindings_omits_field_and_decodes_legacy_payload() {
+    fn instance_without_slot_bindings_omits_the_field_and_reads_it_back_empty() {
         // No bindings -> `skip_serializing_if` keeps the field out of the wire
-        // form, so it stays byte-compatible with pre-bindings payloads.
+        // form, and an absent field reads back empty.
         let instance = SerializedInstance {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
@@ -534,9 +525,8 @@ mod tests {
             "empty bindings must be omitted from the wire form: {json}"
         );
 
-        // A legacy payload that predates the field still decodes (default empty).
-        let legacy = r#"{"instance_id":"i1","state":"running"}"#;
-        let decoded: SerializedInstance = serde_json::from_str(legacy).expect("decode legacy");
+        let absent = r#"{"instance_id":"i1","state":"running"}"#;
+        let decoded: SerializedInstance = serde_json::from_str(absent).expect("decode");
         assert_eq!(decoded, instance);
         assert!(decoded.slot_bindings.is_empty());
     }
@@ -578,8 +568,8 @@ mod tests {
         let decoded: SerializedInstance = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, instance);
 
-        // No pairings -> the field is omitted, and legacy payloads decode
-        // with an empty map.
+        // No pairings -> the field is omitted, and an absent field reads
+        // back empty.
         let bare = SerializedInstance {
             pairing_slots: BTreeMap::new(),
             ..instance
@@ -589,8 +579,8 @@ mod tests {
             !json.contains("pairing_slots"),
             "empty pairing_slots must be omitted from the wire form: {json}"
         );
-        let legacy = r#"{"instance_id":"ctrl_1","state":"running"}"#;
-        let decoded: SerializedInstance = serde_json::from_str(legacy).expect("decode legacy");
+        let absent = r#"{"instance_id":"ctrl_1","state":"running"}"#;
+        let decoded: SerializedInstance = serde_json::from_str(absent).expect("decode");
         assert!(decoded.pairing_slots.is_empty());
     }
 
@@ -624,24 +614,6 @@ mod tests {
     fn label_joins_name_and_tag() {
         let node = make_node("router", "v2", &[]);
         assert_eq!(node.label(), "router:v2");
-    }
-
-    #[test]
-    fn stage_label_reports_stage_or_unknown() {
-        // make_node sets stage = Some(Ready).
-        assert_eq!(make_node("a", "v1", &[]).stage_label(), "Ready");
-
-        // A legacy payload with no stage reports "Unknown".
-        let legacy = SerializedNode {
-            name: "a".into(),
-            tag: "v1".into(),
-            core_node: "test_core".into(),
-            config_path: String::new(),
-            artifact_path: None,
-            stage: None,
-            instances: vec![],
-        };
-        assert_eq!(legacy.stage_label(), "Unknown");
     }
 
     #[test]
@@ -727,16 +699,15 @@ mod tests {
     }
 
     #[test]
-    fn node_decodes_payload_without_stage_or_instances() {
-        // Producers that predate `stage`/`instances` omit both; serde defaults
-        // them to `None`/empty rather than failing to parse.
-        let legacy =
+    fn node_rejects_payload_without_stage_or_instances() {
+        let bare =
             r#"{"name":"n","tag":"v1","core_node":"core-a","config_path":"","artifact_path":null}"#;
-        let decoded: SerializedNode = serde_json::from_str(legacy).expect("decode legacy node");
-        assert_eq!(decoded.core_node, "core-a");
-        assert_eq!(decoded.stage, None);
-        assert!(decoded.instances.is_empty());
-        assert_eq!(decoded.stage_label(), "Unknown");
+        let error = serde_json::from_str::<SerializedNode>(bare).expect_err("stage is required");
+        assert!(error.to_string().contains("stage"), "{error}");
+        let no_instances = r#"{"name":"n","tag":"v1","core_node":"core-a","config_path":"","artifact_path":null,"stage":"Ready"}"#;
+        let error = serde_json::from_str::<SerializedNode>(no_instances)
+            .expect_err("instances are required");
+        assert!(error.to_string().contains("instances"), "{error}");
     }
 
     #[test]
