@@ -28,12 +28,12 @@
               actuator_id: "u32"
             },
             command: "string", // e.g., "set_position", "toggle", "set_pwm"
-            value: "float", // e.g., position, speed, duty cycle
+            value: "f32", // e.g., position, speed, duty cycle
             status: "string", // "ok", "error", "busy"
             feedback: {
               $type: "object",
-              position: "float", // Actual measured position (if available)
-              current: "float", // Current consumption (if available)
+              position: "f32", // Actual measured position (if available)
+              current: "f32", // Current consumption (if available)
             }
           }
         }

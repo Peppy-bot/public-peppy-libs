@@ -95,7 +95,6 @@ pub struct NodeConfig {
 #[serde(rename_all = "lowercase")]
 pub enum TypeToken {
     Bool,
-    #[serde(alias = "str")]
     String,
     Bytes,
     Time,
@@ -107,12 +106,9 @@ pub enum TypeToken {
     I16,
     I32,
     I64,
-    #[serde(alias = "float")]
     F32,
-    #[serde(alias = "double")]
     F64,
 }
-// Derives above keep serde logic concise; `TypeToken` handles mapping of known strings.
 
 impl TypeToken {
     /// Whether this token encodes as a Cap'n Proto scalar, meaning a field
