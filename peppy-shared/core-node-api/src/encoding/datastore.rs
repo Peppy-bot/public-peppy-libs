@@ -86,9 +86,8 @@ pub enum DatastoreKeyError {
 
 /// Checks that `key` is a valid datastore key.
 ///
-/// Datastore keys are arbitrary strings carried in the payload (not a Zenoh
-/// keyexpr), so any character is allowed — slashes, dots, spaces and Unicode
-/// all round-trip. The only requirement is that the key is non-empty.
+/// Datastore keys are arbitrary non-empty strings carried in the payload:
+/// slashes, dots, spaces and Unicode all round-trip.
 fn validate_datastore_key(key: &str) -> core::result::Result<(), DatastoreKeyError> {
     if key.is_empty() {
         return Err(DatastoreKeyError::Empty);

@@ -393,7 +393,7 @@ async fn observation_update_service_applies_daemon_deliveries_end_to_end() {
     let (slot_tx, slot_rx) = watch::channel(ObservationState::unregistered());
     let slots: Arc<BTreeMap<String, watch::Sender<ObservationState>>> =
         Arc::new(BTreeMap::from([("observed_joints".to_string(), slot_tx)]));
-    let node_identity = SenderTarget::node("openarm_commander", "v1").expect("node target");
+    let node_identity = SenderTarget::node("openarm_web_commander", "v1").expect("node target");
     let _listener = listen_for_observation_update(
         &client.caller_handle,
         CORE,
