@@ -82,18 +82,6 @@ pub enum DatastoreKeyError {
     /// The key was the empty string.
     #[error("datastore key must not be empty")]
     Empty,
-
-    /// Retained for backwards compatibility. Datastore keys are now arbitrary
-    /// strings (any character is allowed), so this variant is no longer
-    /// produced; only [`Empty`](Self::Empty) is.
-    #[error(
-        "datastore key {key:?} contains the disallowed character {character:?} at byte {index}"
-    )]
-    ForbiddenCharacter {
-        key: String,
-        index: usize,
-        character: char,
-    },
 }
 
 /// Checks that `key` is a valid datastore key.
