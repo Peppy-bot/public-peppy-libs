@@ -302,13 +302,13 @@ mod tests {
         assert!(refusal.contains("`placement`"), "{refusal}");
     }
 
-    /// Zero on the wire is an absent budget; each decodes to its default.
+    /// An idle budget of 0 is refused at the wire, naming its phase.
     #[test]
-    fn absent_timeouts_decode_to_their_defaults() {
+    fn a_zero_idle_budget_is_refused() {
         let mut goal = goal("alpha");
-        goal.budgets = StackBudgets::new(0, 0, 0, None);
-        let decoded = StackJoinGoal::decode(&goal.encode().unwrap()).unwrap();
-        assert_eq!(decoded.budgets, StackBudgets::default());
+        goal.budgets = StackBudgets::new(0, 600, 600, None);
+        let refusal = decoding_error(StackJoinGoal::decode(&goal.encode().unwrap()));
+        assert!(refusal.contains("node_add_idle_timeout_secs"), "{refusal}");
     }
 
     #[test]

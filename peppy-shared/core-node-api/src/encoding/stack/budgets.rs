@@ -2,17 +2,16 @@
 //! a stack: `stack launch`, `stack join` and `stack remove`.
 
 use crate::Result;
-use crate::encoding::{required_text, with_default};
+use crate::encoding::required_text;
 use crate::launch_capnp;
 
-/// Default idle timeout in seconds for the add/build/run phases (used as fallback when 0 is
-/// received on the wire; Cap'n Proto defaults unset `UInt64` to 0).
+/// The idle budget in seconds of the add, build and run phases when the
+/// caller sets none.
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
 
 /// What every goal that adds nodes to a stack runs under: the caller's
 /// environment, forwarded to the builds and runs on the coordinator, and
-/// the idle budget of each phase. On the wire an absent timeout is 0 and
-/// decodes to its default.
+/// the idle budget of each phase, a positive number of seconds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackBudgets {
     pub env_vars: Vec<(String, String)>,
@@ -59,7 +58,8 @@ impl StackBudgets {
 
     /// The budgets as one goal's wire fields carry them. A defaulted variable
     /// name is refused: the receiving side exports what it is handed, and
-    /// there is no variable called the empty string.
+    /// there is no variable called the empty string. An idle budget of 0 is
+    /// refused: a phase idles for at least one second.
     pub(super) fn decode(
         env_vars: capnp::struct_list::Reader<'_, launch_capnp::env_var::Owned>,
         node_add_idle_timeout_secs: u64,
@@ -78,18 +78,18 @@ impl StackBudgets {
             .collect::<Result<_>>()?;
         Ok(Self {
             env_vars,
-            node_add_idle_timeout_secs: with_default(
+            node_add_idle_timeout_secs: idle_secs(
                 node_add_idle_timeout_secs,
-                DEFAULT_IDLE_TIMEOUT_SECS,
-            ),
-            node_build_idle_timeout_secs: with_default(
+                "node_add_idle_timeout_secs",
+            )?,
+            node_build_idle_timeout_secs: idle_secs(
                 node_build_idle_timeout_secs,
-                DEFAULT_IDLE_TIMEOUT_SECS,
-            ),
-            node_run_idle_timeout_secs: with_default(
+                "node_build_idle_timeout_secs",
+            )?,
+            node_run_idle_timeout_secs: idle_secs(
                 node_run_idle_timeout_secs,
-                DEFAULT_IDLE_TIMEOUT_SECS,
-            ),
+                "node_run_idle_timeout_secs",
+            )?,
             max_timeout_secs: (max_timeout_secs > 0).then_some(max_timeout_secs),
         })
     }
@@ -104,6 +104,16 @@ impl StackBudgets {
             entry.set_value(value);
         }
     }
+}
+
+/// An idle budget off the wire; the refusal names the field.
+fn idle_secs(value: u64, field: &str) -> Result<u64> {
+    if value == 0 {
+        return Err(crate::Error::Decoding(format!(
+            "`{field}` is 0; give the phase a positive number of seconds"
+        )));
+    }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -132,13 +142,21 @@ mod tests {
         StackBudgets::decode(goal.get_env_vars().expect("env vars"), add, build, run, max)
     }
 
-    /// Zero on the wire is an absent budget: the idle timeouts decode to their
-    /// default and the whole-operation deadline to `None`.
+    /// An idle budget of 0 is refused, naming its phase; a deadline of 0 is
+    /// no deadline.
     #[test]
-    fn absent_budgets_decode_to_their_defaults() {
+    fn a_zero_idle_budget_is_refused_and_a_zero_deadline_is_none() {
+        for (timeouts, field) in [
+            ([0, 1, 1, 0], "node_add_idle_timeout_secs"),
+            ([1, 0, 1, 0], "node_build_idle_timeout_secs"),
+            ([1, 1, 0, 0], "node_run_idle_timeout_secs"),
+        ] {
+            let refusal = decoding_error(decode_budgets(&[], timeouts));
+            assert!(refusal.contains(field), "{refusal}");
+        }
         assert_eq!(
-            decode_budgets(&[], [0, 0, 0, 0]).expect("decode"),
-            StackBudgets::default()
+            decode_budgets(&[], [1, 1, 1, 0]).expect("decode"),
+            StackBudgets::new(1, 1, 1, None)
         );
     }
 
@@ -163,7 +181,7 @@ mod tests {
     /// A defaulted key names no variable, so the decode refuses it.
     #[test]
     fn an_empty_env_var_key_is_refused() {
-        let refusal = decoding_error(decode_budgets(&[("", "/usr/bin")], [0, 0, 0, 0]));
+        let refusal = decoding_error(decode_budgets(&[("", "/usr/bin")], [1, 1, 1, 0]));
         assert!(refusal.contains("env_vars.key"), "{refusal}");
     }
 }
