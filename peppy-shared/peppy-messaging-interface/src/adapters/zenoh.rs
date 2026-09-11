@@ -28,9 +28,9 @@ use crate::error::{Error, Result};
 use crate::router_id::RouterId;
 use crate::types::{
     ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, IncomingRequest,
-    LivelinessEvent, LivelinessToken, LivelinessWatch, NO_TIMEOUT_SENTINEL, Payload, PresenceScope,
-    PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable, ServiceReply,
-    SubscriberBufferSizes, SubscriberQoS, TopicMessage, ZenohResponseToken,
+    LivelinessEvent, LivelinessToken, LivelinessWatch, Payload, PresenceScope, PublisherQoS,
+    ReplyStream, ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes,
+    SubscriberQoS, TopicMessage, ZenohResponseToken, service_query_lifetime,
 };
 use crate::wire::zenoh_format::{ServiceReplyAttachment, TopicAttachment, ZenohWireFormat};
 use crate::wire::{
@@ -909,7 +909,9 @@ impl MessengerBackend for ZenohAdapter {
         // instead of misclassifying the request as a default).
         let attachment = ZenohWireFormat::service_get_selector_attachment(sender, kind);
 
-        let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
+        // The zenoh-side `.timeout(...)` is the query's wire lifetime, not
+        // the caller's deadline; see `service_query_lifetime`.
+        let timeout = service_query_lifetime(timeout);
 
         let (tx, rx) = tokio::sync::mpsc::channel::<ServiceReply>(
             self.client_config
@@ -942,8 +944,18 @@ impl MessengerBackend for ZenohAdapter {
             .callback(move |reply| {
                 let sample = match reply.result() {
                     Ok(sample) => sample,
+                    // Producers reply with samples only (a handler error rides
+                    // in a sample's attachment), so an error reply is zenoh's
+                    // own `Timeout`: the query's wire lifetime ended. The
+                    // caller stopped waiting `LATE_REPLY_GRACE` earlier and
+                    // has reported the outcome, and zenoh's routing layer
+                    // warns about the expired query itself, so this is a
+                    // diagnostic, not an event.
                     Err(err) => {
-                        tracing::warn!(?err, "service reply contained an error");
+                        tracing::debug!(
+                            reason = %String::from_utf8_lossy(&err.payload().to_bytes()),
+                            "service query ended with a transport error reply"
+                        );
                         return;
                     }
                 };

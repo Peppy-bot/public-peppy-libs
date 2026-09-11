@@ -2,9 +2,9 @@ use super::super::error::{Error, Result};
 use super::super::types::{
     AbortOnDrop, ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, IncomingRequest,
     LivelinessEvent, LivelinessToken, LivelinessWatch, Message, Messenger, MessengerAdapter,
-    MessengerBackend, MockResponseToken, NO_TIMEOUT_SENTINEL, Payload, PresenceScope, PublisherQoS,
-    ReplyStream, ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes,
-    SubscriberQoS, Subscription, TopicMessage,
+    MessengerBackend, MockResponseToken, Payload, PresenceScope, PublisherQoS, ReplyStream,
+    ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes, SubscriberQoS,
+    Subscription, TopicMessage, service_query_lifetime,
 };
 use super::super::wire::zenoh_format::ZenohWireFormat;
 use super::super::wire::{
@@ -259,7 +259,7 @@ impl MessengerBackend for MockAdapter {
 
         let selector = ZenohWireFormat::service_get_selector(sender);
         let attachment = ZenohWireFormat::service_get_selector_attachment(sender, kind);
-        let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
+        let timeout = service_query_lifetime(timeout);
 
         let (reply_tx, mut reply_rx) = mpsc::channel::<ServiceReply>(
             SubscriberBufferSizes::default().size_for(SubscriberQoS::Standard),

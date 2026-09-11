@@ -88,9 +88,8 @@ fn wildcard_service_sender() -> ServiceWireSender {
 /// Two distinct producers (different `bound_core_node`) listen on the same
 /// service. Producer A responds immediately; producer B responds after a
 /// delay long enough that the consumer has already received A's reply and
-/// dropped the `ReplyStream`. With the FIFO handler this layout produced one
-/// ERROR log per late reply (typically: B's reply, plus zenoh's session
-/// timing-out the query). With the callback handler, late replies hit a
+/// dropped the `ReplyStream`. With the FIFO handler this layout produces one
+/// ERROR log per late reply. With the callback handler, late replies hit a
 /// closure that silently no-ops on a dropped consumer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wildcard_service_call_emits_no_fifo_errors() {
@@ -159,9 +158,9 @@ async fn wildcard_service_call_emits_no_fifo_errors() {
             &sender,
             Payload::from_bytes(Bytes::from_static(b"ping?")),
             ServiceQueryKind::UserRequest,
-            // Bound the zenoh-side `.timeout(...)` to one second so the
-            // session finalizes within the test rather than holding onto
-            // the query for `NO_TIMEOUT_SENTINEL` (24h).
+            // The caller's deadline. The query's wire lifetime outlives it
+            // by `LATE_REPLY_GRACE`, so server B's late reply below lands on
+            // a still-open query and reaches the dropped `ReplyStream`.
             Some(Duration::from_secs(1)),
         )
         .await
@@ -184,10 +183,9 @@ async fn wildcard_service_call_emits_no_fifo_errors() {
     );
     drop(reply_stream);
 
-    // Hold past server B's reply AND past the zenoh `.timeout(...)` so any
-    // session-side late deliveries finish flushing through the (now-absent)
-    // FIFO. If the regression returns, this is the window in which the
-    // ERROR log would have fired.
+    // Hold past server B's reply so its late delivery finishes flushing
+    // through the (now-absent) FIFO. If the regression returns, this is the
+    // window in which the ERROR log would have fired.
     tokio::time::sleep(Duration::from_millis(1_500)).await;
 
     // Both server tasks should have completed (B's response went into the
