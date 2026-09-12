@@ -8,8 +8,11 @@ use pmi::{
     Messenger, ResponseToken, SenderTarget, ServiceKind, ServiceQueryKind, ServiceQueryable,
     ServiceWireReceiver, ServiceWireSender, TopicMessage,
 };
-use std::{fmt, sync::Arc, time::Instant};
-use tokio::{sync::Mutex, time::Duration};
+use std::{fmt, sync::Arc};
+use tokio::{
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 use tracing::{error, warn};
 
 /// Outcome of running a user service handler — either a payload to surface

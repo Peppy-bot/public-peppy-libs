@@ -62,6 +62,7 @@ tempfile = "3.10"
 askama = "0.16"
 tokio = { version = "1", features = ["full", "test-util"] }
 tokio-util = "0.7"
+tracing-subscriber = "0.3"
 rand = "0.10"
 regex = "1"
 config = { package = "peppy-config-model", path = "../peppy-config-model", features = [

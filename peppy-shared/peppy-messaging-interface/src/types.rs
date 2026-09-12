@@ -145,6 +145,34 @@ impl From<QoSProfile> for SubscriberQoS {
 /// silently cap how long a service handler may run.
 pub(crate) const NO_TIMEOUT_SENTINEL: std::time::Duration = std::time::Duration::from_secs(86_400);
 
+/// How long a service query stays open on the wire after its caller stopped
+/// waiting for a reply.
+///
+/// The caller's deadline and the query's wire lifetime are two different
+/// bounds. The deadline is the caller's: peppylib's `poll_service` stops
+/// waiting when it passes and reports the outcome. The wire lifetime is the
+/// transport's: every hop (the calling session, the router, the producer's
+/// session) keeps the query pending until it completes or the lifetime ends,
+/// and once it ends zenoh sends its own `Timeout` error reply, rejects any
+/// later reply as unknown, and logs the rejection at every hop. Letting the
+/// lifetime outlive the deadline by this grace means a reply that lands after
+/// the caller gave up is delivered to the dropped reply stream and discarded
+/// quietly, so a producer that stalled for a few seconds (a swapped-out
+/// container VM, a saturated host) costs the caller one missed call and
+/// nothing else. Only a query that stays unanswered past the grace is a
+/// transport anomaly that zenoh reports. Ten seconds is zenoh's own default
+/// query lifetime.
+pub(crate) const LATE_REPLY_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Wire lifetime of a service query whose caller waits `timeout` for a reply:
+/// the caller's deadline plus [`LATE_REPLY_GRACE`], or [`NO_TIMEOUT_SENTINEL`]
+/// when the caller waits indefinitely.
+pub(crate) fn service_query_lifetime(timeout: Option<std::time::Duration>) -> std::time::Duration {
+    timeout.map_or(NO_TIMEOUT_SENTINEL, |deadline| {
+        deadline.saturating_add(LATE_REPLY_GRACE)
+    })
+}
+
 /// Defines the messaging interface.
 ///
 /// All methods take addressing structs from [`crate::wire`] rather than raw
@@ -200,9 +228,11 @@ pub trait MessengerBackend {
     /// `kind` rides on the query attachment so the producer can
     /// discriminate user requests from discovery probes without inspecting
     /// payload bytes. Query/reply correlation is internal to Zenoh — no
-    /// `request_id` threaded through the wire format. Pass `timeout: None`
-    /// to wait indefinitely (adapters substitute [`NO_TIMEOUT_SENTINEL`]
-    /// since the underlying Zenoh `get` requires a finite value).
+    /// `request_id` threaded through the wire format. `timeout` is how long
+    /// the caller waits for a reply; the query itself stays open on the wire
+    /// for [`service_query_lifetime`] of it, which outlives the caller's
+    /// deadline by [`LATE_REPLY_GRACE`] and stands in for "indefinitely"
+    /// with [`NO_TIMEOUT_SENTINEL`] when `timeout` is `None`.
     fn call_service(
         &self,
         sender: &ServiceWireSender,
@@ -1486,5 +1516,29 @@ mod tests {
             .await
             .expect("presence collection should succeed");
         assert_eq!(presences, vec![candidate]);
+    }
+
+    mod service_query_lifetime {
+        use crate::types::{LATE_REPLY_GRACE, NO_TIMEOUT_SENTINEL, service_query_lifetime};
+        use std::time::Duration;
+
+        #[test]
+        fn outlives_the_callers_deadline_by_the_grace() {
+            let deadline = Duration::from_secs(3);
+            assert_eq!(
+                service_query_lifetime(Some(deadline)),
+                deadline + LATE_REPLY_GRACE
+            );
+        }
+
+        #[test]
+        fn saturates_for_a_deadline_near_the_maximum() {
+            assert_eq!(service_query_lifetime(Some(Duration::MAX)), Duration::MAX);
+        }
+
+        #[test]
+        fn is_the_sentinel_when_the_caller_waits_indefinitely() {
+            assert_eq!(service_query_lifetime(None), NO_TIMEOUT_SENTINEL);
+        }
     }
 }
