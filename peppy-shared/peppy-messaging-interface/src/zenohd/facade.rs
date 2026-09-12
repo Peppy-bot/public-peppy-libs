@@ -342,6 +342,15 @@ impl ZenohdFacade {
         }
     }
 
+    pub(crate) fn managed_log_path(&self) -> Option<&Path> {
+        match &self.ownership {
+            RouterOwnership::Managed {
+                zenohd_log_path, ..
+            } => Some(zenohd_log_path),
+            RouterOwnership::External => None,
+        }
+    }
+
     /// The transport identity a managed router's config pins, so a re-render
     /// keeps it. `None` for an external router, whose config peppy neither
     /// wrote nor rewrites.

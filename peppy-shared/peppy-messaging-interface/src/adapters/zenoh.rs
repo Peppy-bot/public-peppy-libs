@@ -28,9 +28,9 @@ use crate::error::{Error, Result};
 use crate::router_id::RouterId;
 use crate::types::{
     ActionLivelinessProbe, CoreNodePresence, CoreNodePresenceList, IncomingRequest,
-    LivelinessEvent, LivelinessToken, LivelinessWatch, NO_TIMEOUT_SENTINEL, Payload, PresenceScope,
-    PublisherQoS, ReplyStream, ResponseToken, ServiceQueryable, ServiceReply,
-    SubscriberBufferSizes, SubscriberQoS, TopicMessage, ZenohResponseToken,
+    LivelinessEvent, LivelinessToken, LivelinessWatch, Payload, PresenceScope, PublisherQoS,
+    ReplyStream, ResponseToken, ServiceQueryable, ServiceReply, SubscriberBufferSizes,
+    SubscriberQoS, TopicMessage, ZenohResponseToken, service_query_lifetime,
 };
 use crate::wire::zenoh_format::{ServiceReplyAttachment, TopicAttachment, ZenohWireFormat};
 use crate::wire::{
@@ -113,6 +113,8 @@ pub struct ZenohdInstance {
     messenger: Option<Messenger>,
     pub host: String,
     pub port: u16,
+    /// Captured stdout and stderr of this router process.
+    pub log_path: std::path::PathBuf,
 }
 
 #[cfg(feature = "router")]
@@ -539,6 +541,12 @@ impl ZenohAdapter {
             // A lightweight client probe (no listener, no peer discovery) is the
             // cheapest reliable "router accepts sessions yet?" check.
             let probe_config = render_probe_config(ZenohNetProtocol::Tcp, host, port, None);
+            let log_path = adapter
+                .zenohd
+                .as_ref()
+                .and_then(zenohd::ZenohdFacade::managed_log_path)
+                .expect("ephemeral routers own their log file")
+                .to_path_buf();
             let mut messenger = Messenger::new(MessengerAdapter::Zenoh(adapter));
 
             // Drop the port reservation before starting the router so zenohd can bind to it
@@ -557,6 +565,7 @@ impl ZenohAdapter {
                                 messenger: Some(messenger),
                                 host: host.to_string(),
                                 port,
+                                log_path,
                             });
                         }
                         Err(_) if attempt + 1 < max_attempts => {
@@ -909,7 +918,9 @@ impl MessengerBackend for ZenohAdapter {
         // instead of misclassifying the request as a default).
         let attachment = ZenohWireFormat::service_get_selector_attachment(sender, kind);
 
-        let timeout = timeout.unwrap_or(NO_TIMEOUT_SENTINEL);
+        // The zenoh-side `.timeout(...)` is the query's wire lifetime, not
+        // the caller's deadline; see `service_query_lifetime`.
+        let timeout = service_query_lifetime(timeout);
 
         let (tx, rx) = tokio::sync::mpsc::channel::<ServiceReply>(
             self.client_config
@@ -942,12 +953,29 @@ impl MessengerBackend for ZenohAdapter {
             .callback(move |reply| {
                 let sample = match reply.result() {
                     Ok(sample) => sample,
+                    // Producers reply with samples only (a handler error rides
+                    // in a sample's attachment), so an error reply is zenoh's
+                    // own `Timeout`: the query's wire lifetime ended. The
+                    // caller stopped waiting `LATE_REPLY_GRACE` earlier and
+                    // has reported the outcome, and zenoh's routing layer
+                    // warns about the expired query itself, so this is a
+                    // diagnostic, not an event.
                     Err(err) => {
-                        tracing::warn!(?err, "service reply contained an error");
+                        tracing::debug!(
+                            reason = %String::from_utf8_lossy(&err.payload().to_bytes()),
+                            "service query ended with a transport error reply"
+                        );
                         return;
                     }
                 };
                 let key_expr = sample.key_expr().as_str();
+                if tx.is_closed() {
+                    tracing::trace!(
+                        %key_expr,
+                        "discarding service reply after caller stopped waiting"
+                    );
+                    return;
+                }
                 let zbytes = sample.payload().clone();
                 let attachment_bytes = sample
                     .attachment()
