@@ -60,7 +60,7 @@ const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(200);
 
 /// Pre-main: gives zenoh's global Net runtime more worker threads for every
 /// test binary that links this module. Stock zenoh (1.9.0 through at least
-/// 1.10.0 — the fix below has not shipped in a release) can deadlock its
+/// 1.10.1, the fix below has not shipped in a release) can deadlock its
 /// routing layer under peer-session churn: a thread holding the routing
 /// `ctrl_lock` parks in `block_in_place` waiting on the StartConditions
 /// mutex while the Net runtime's single default worker blocks on that same
@@ -131,7 +131,7 @@ pub fn ensure_test_fd_limit() {
 /// (every peer opens listeners and forms links), which makes cold-start
 /// delivery flaky; one mesh at a time keeps discovery fast and deterministic.
 ///
-/// KNOWN FLAKE: zenoh (1.9.0 through at least 1.10.0) can deadlock its
+/// KNOWN FLAKE: zenoh (1.9.0 through at least 1.10.1) can deadlock its
 /// routing layer under peer-session churn (see
 /// [`ensure_zenoh_net_runtime_workers`], which suppresses the trigger). If it
 /// ever fires anyway, the running test hangs forever and every later test

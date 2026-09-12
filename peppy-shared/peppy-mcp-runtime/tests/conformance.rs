@@ -87,44 +87,74 @@ async fn discovery_advertises_versions_capabilities_and_caching() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_initialize_client_negotiates_2026_07_28_but_gets_no_legacy_session() {
+async fn an_initialize_client_is_refused_with_the_supported_versions_listed() {
     let set = start_set().await;
+    let http = reqwest::Client::new();
     for endpoint in &set.endpoints {
-        // `ClientInfo::default()` requests the SDK's latest classic revision,
-        // which the runtime does not implement; `initialize` negotiation is
-        // bounded by the supported list, so the server answers with 2026-07-28.
+        // An `initialize` handshake selects the legacy session lifecycle
+        // whatever version it names. The endpoint serves the stateless
+        // 2026-07-28 lifecycle only (SEP-2567, legacy session mode off), so
+        // the handshake is refused outright with the supported versions
+        // listed, pointing the client at the discover flow.
+        let response = http
+            .post(&endpoint.url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": ProtocolVersion::LATEST,
+                    "capabilities": {},
+                    "clientInfo": { "name": "conformance", "version": "0" },
+                },
+            }))
+            .send()
+            .await
+            .expect("the listener answers");
+        // Legacy handshakes keep HTTP 200 and carry the JSON-RPC error as the
+        // single event of an SSE stream.
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("text/event-stream")),
+            "the refusal is streamed"
+        );
+        let stream = response.text().await.expect("the event stream ends");
+        let events: Vec<serde_json::Value> = stream
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(|data| serde_json::from_str(data).expect("a JSON-RPC message"))
+            .collect();
+        let [body] = events.as_slice() else {
+            panic!("expected exactly one JSON-RPC message, got {stream}");
+        };
+        assert_eq!(
+            body["error"]["code"],
+            json!(ErrorCode::UNSUPPORTED_PROTOCOL_VERSION.0)
+        );
+        assert_eq!(
+            body["error"]["data"]["requested"],
+            json!(ProtocolVersion::LATEST)
+        );
+        assert_eq!(
+            body["error"]["data"]["supported"],
+            json!([ProtocolVersion::V_2026_07_28])
+        );
+
+        // The SDK's initialize lifecycle runs that same handshake and cannot
+        // reach a session either.
         let transport = StreamableHttpClientTransport::from_config(
             StreamableHttpClientTransportConfig::with_uri(endpoint.url.clone()),
         );
-        let client = ClientInfo::default()
+        ClientInfo::default()
             .serve_with_lifecycle(transport, ClientLifecycleMode::Initialize)
             .await
-            .expect("the initialize handshake succeeds");
-
-        let info = client.peer_info().expect("initialize ran");
-        assert_eq!(info.protocol_version, ProtocolVersion::V_2026_07_28);
-
-        // The endpoint serves the stateless 2026-07-28 lifecycle only (SEP-2567,
-        // legacy session mode off): once on 2026-07-28, every request must carry
-        // self-contained `_meta`, which the legacy lifecycle never attaches. The
-        // follow-up is refused with the missing keys named, pointing the client
-        // at the discover flow.
-        let error = protocol_error(
-            client
-                .list_tools(None)
-                .await
-                .expect_err("legacy sessions are not retained"),
-        );
-        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
-        assert!(
-            error
-                .message
-                .contains("io.modelcontextprotocol/protocolVersion"),
-            "got {}",
-            error.message
-        );
-
-        client.cancel().await.expect("client disconnects");
+            .expect_err("no legacy session exists to initialize");
     }
     set.stop().await;
 }
