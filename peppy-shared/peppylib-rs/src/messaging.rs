@@ -330,20 +330,27 @@ impl std::future::IntoFuture for MessengerConnect {
     }
 }
 
-/// Bounds a service await by the caller's absolute deadline. A ready result
-/// cannot win after expiry, even when the executor resumes the future late.
+/// Waits for a service await until the caller's absolute deadline.
+///
+/// The deadline bounds the wait, never the outcome: a future that is ready
+/// when polled completes even when the caller's task resumes after the
+/// deadline, so a reply the producer already sent is never discarded for the
+/// caller's own scheduling latency. `None` when the deadline passes with the
+/// future still pending, which drops it.
 async fn within_service_deadline<F: std::future::Future>(
     deadline: Option<Instant>,
     future: F,
 ) -> Option<F::Output> {
-    let Some(deadline) = deadline else {
-        return Some(future.await);
-    };
-    if Instant::now() >= deadline {
-        return None;
+    match deadline {
+        Some(deadline) => timeout_at(deadline, future).await.ok(),
+        None => Some(future.await),
     }
-    let result = timeout_at(deadline, future).await.ok()?;
-    (Instant::now() < deadline).then_some(result)
+}
+
+/// Whether the caller's deadline has passed, so no query may be issued for it
+/// any more.
+fn service_deadline_passed(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|deadline| Instant::now() >= deadline)
 }
 
 impl MessengerHandle {
@@ -555,6 +562,14 @@ impl MessengerHandle {
                 let messenger = within_service_deadline(deadline, self.messenger.lock())
                     .await
                     .ok_or_else(unreachable)?;
+                // A query is issued only while the caller still waits for it. A
+                // lock acquired past the deadline (a contended lock, a retry
+                // backoff that ran late) would otherwise put a request on the
+                // wire that the producer executes while this caller reports it
+                // as unreachable.
+                if service_deadline_passed(deadline) {
+                    return Err(unreachable());
+                }
                 let attempt_timeout = deadline.map(|d| d.saturating_duration_since(Instant::now()));
                 within_service_deadline(
                     deadline,
