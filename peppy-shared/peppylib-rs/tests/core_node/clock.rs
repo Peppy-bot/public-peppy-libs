@@ -177,7 +177,7 @@ async fn a_running_time_source_updates_destinations_for_join_and_remove() {
         .await
         .unwrap();
         SimTimeParticipantsResponse::decode(response.payload_bytes().as_ref()).unwrap();
-        assert_eq!(publisher.participants(), destinations);
+        assert_eq!(publisher.participants().collect::<Vec<_>>(), destinations);
         publisher.publish(123_456).await.unwrap();
         let tick = tokio::time::timeout(Duration::from_secs(2), ticks.on_next_message())
             .await
@@ -234,7 +234,7 @@ async fn sim_time_publisher_reaches_every_participant() {
         .await
         .expect("a declared time source builds its fan-out")
         .expect("the launch declared this node the source");
-    assert_eq!(publisher.participants(), FLEET);
+    assert_eq!(publisher.participants().collect::<Vec<_>>(), FLEET);
 
     let mut subscriptions = Vec::with_capacity(FLEET.len());
     for core_node in FLEET {

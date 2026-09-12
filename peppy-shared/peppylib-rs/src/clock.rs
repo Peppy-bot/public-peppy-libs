@@ -401,11 +401,12 @@ impl SimTimePublisher {
     }
 
     /// The core nodes each tick reaches, in the order they are published to.
-    pub fn participants(&self) -> Vec<String> {
+    pub fn participants(&self) -> impl Iterator<Item = String> {
         self.snapshot()
             .iter()
             .map(|(core_node, _)| core_node.clone())
-            .collect()
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     /// Publishes `time_ns` to every participant. Every participant is tried
