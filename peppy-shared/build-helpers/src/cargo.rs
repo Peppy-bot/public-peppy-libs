@@ -159,7 +159,12 @@ fn bundled_tools_dir() -> PathBuf {
 fn caller_sibling_tools_dir() -> Option<PathBuf> {
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR")?);
     let manifest_dir = manifest_dir.canonicalize().unwrap_or(manifest_dir);
-    Some(manifest_dir.parent()?.join("peppy-config-model").join("tools"))
+    Some(
+        manifest_dir
+            .parent()?
+            .join("peppy-config-model")
+            .join("tools"),
+    )
 }
 
 /// Finds the capnp binary for `platform` in the first of `tools_dirs` that
