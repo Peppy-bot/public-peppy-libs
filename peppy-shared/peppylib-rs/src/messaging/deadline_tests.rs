@@ -116,17 +116,19 @@ async fn assert_no_request(handle: &MessengerHandle, queryable: &ServiceQueryabl
 }
 
 #[tokio::test(start_paused = true)]
-async fn expired_deadline_does_not_poll_the_future() {
+async fn a_ready_future_completes_after_the_deadline_has_passed() {
+    let deadline = Instant::now();
+    advance(BUDGET).await;
     let polled = Cell::new(false);
     let future = poll_fn(|_| {
         polled.set(true);
-        Poll::Ready(())
+        Poll::Ready(42)
     });
     assert_eq!(
-        within_service_deadline(Some(Instant::now()), future).await,
-        None
+        within_service_deadline(Some(deadline), future).await,
+        Some(42)
     );
-    assert!(!polled.get());
+    assert!(polled.get());
 }
 
 #[tokio::test(start_paused = true)]
@@ -141,23 +143,18 @@ async fn pending_issuance_is_cancelled_at_the_deadline() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn ready_issuance_cannot_win_at_or_after_expiry() {
+async fn a_result_ready_when_polled_wins_at_and_after_the_deadline() {
     for elapsed in [
         BUDGET - Duration::from_millis(1),
         BUDGET,
         BUDGET + Duration::from_millis(1),
     ] {
         let (tx, rx) = oneshot::channel();
-        let mut issuance = Box::pin(within_service_deadline(Some(Instant::now() + BUDGET), rx));
-        assert!(poll!(issuance.as_mut()).is_pending());
+        let mut wait = Box::pin(within_service_deadline(Some(Instant::now() + BUDGET), rx));
+        assert!(poll!(wait.as_mut()).is_pending());
         advance(elapsed).await;
         tx.send(42).unwrap();
-        let result = issuance.await;
-        if elapsed < BUDGET {
-            assert_eq!(result, Some(Ok(42)));
-        } else {
-            assert_eq!(result, None);
-        }
+        assert_eq!(wait.await, Some(Ok(42)), "elapsed {elapsed:?}");
     }
 }
 
@@ -299,7 +296,7 @@ async fn pending_reply_expiry_preserves_ack_classification() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn queued_terminal_replies_cannot_win_after_expiry() {
+async fn a_terminal_reply_in_hand_wins_when_the_caller_resumes_after_expiry() {
     for received_ack in [false, true] {
         for handler_error in [false, true] {
             let handle = mock_handle().await;
@@ -320,7 +317,8 @@ async fn queued_terminal_replies_cannot_win_after_expiry() {
                 assert!(poll_once(call.as_mut(), &wake).is_pending());
             }
             // Keep the caller parked after its timer fires. The transport
-            // still accepts a terminal reply during its independent grace.
+            // still accepts a terminal reply during its independent grace, and
+            // the producer has done the work by then.
             advance(BUDGET + Duration::from_millis(1)).await;
             wake.0.notified().await;
             if handler_error {
@@ -336,10 +334,30 @@ async fn queued_terminal_replies_cannot_win_after_expiry() {
                     .await
                     .unwrap();
             }
-            // Both the expired timer and the late terminal reply are ready
-            // before the caller resumes.
+            // Both the expired timer and the terminal reply are ready before
+            // the caller resumes: the reply in hand is what the caller gets.
             wake.0.notified().await;
-            assert_deadline_error(call.await, received_ack);
+            let result = call.await;
+            if handler_error {
+                match result.unwrap_err() {
+                    Error::ServiceError {
+                        instance_id,
+                        service_name,
+                        reason,
+                    } => {
+                        assert_eq!(instance_id.as_deref(), Some(PRODUCER));
+                        assert_eq!(service_name, SERVICE);
+                        assert_eq!(reason, "handler failed");
+                    }
+                    error => panic!("expected the handler error in hand, got {error:?}"),
+                }
+            } else {
+                assert_eq!(
+                    result.unwrap().payload(),
+                    &Payload::from_static(b"reply"),
+                    "ACK={received_ack}"
+                );
+            }
         }
     }
 }
