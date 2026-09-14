@@ -51,9 +51,9 @@ pub fn normalize_tag(tag: &str) -> String {
 /// which cannot be programmatically derived from this constant.
 pub const PYTHON_MIN_VERSION: &str = "3.11";
 
-/// Maximum Python version supported (exclusive, e.g. "3.14").
-/// Driven by pycapnp wheel availability (wheels not yet available for Python 3.14 as of Feb 2026).
-pub const PYTHON_MAX_VERSION: &str = "3.14";
+/// Maximum Python version supported (exclusive, e.g. "3.15").
+/// Bounded by the newest CPython minor release pycapnp publishes wheels for.
+pub const PYTHON_MAX_VERSION: &str = "3.15";
 
 #[cfg(test)]
 mod tests {
