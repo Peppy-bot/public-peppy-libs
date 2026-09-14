@@ -18,7 +18,7 @@ Homepage = "https://dev.peppy.bot"
 
 [build-system]
 # Same maturin floor as pixi.toml, which explains why it is 1.14.1.
-requires = ["maturin>=1.14.1,<2.0"]
+requires = ["maturin>=1.15.0,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
