@@ -17,7 +17,11 @@ pip = "*"
 zig = "*"
 
 [pypi-dependencies]
-maturin = ">=1.0,<2.0"
+# rustc >= 1.98 passes `-Wl,--fix-cortex-a53-843419` when linking for
+# aarch64-unknown-linux-gnu, and zig's linker rejects it. maturin 1.14.1 is the
+# first release whose bundled cargo-zigbuild (0.23) strips the flag, so older
+# versions fail `cross-linux-aarch64-release`.
+maturin = ">=1.14.1,<2.0"
 pytest = ">=9.0"
 pytest-asyncio = ">=1.3"
 
