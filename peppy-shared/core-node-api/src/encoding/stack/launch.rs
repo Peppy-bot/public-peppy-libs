@@ -10,16 +10,11 @@ use crate::{NonEmptyPayload, Payload, Result};
 
 use crate::encoding::{
     capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
+    write_text_list,
 };
 
-/// Default idle timeout in seconds for the add/build/run phases (used as fallback when 0 is
-/// received on the wire — Cap'n Proto defaults unset `UInt64` to 0).
-const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
-
-/// Applies a default value when a timeout field is 0 (Cap'n Proto defaults unset UInt64 to 0).
-fn with_timeout_default(value: u64, default: u64) -> u64 {
-    if value == 0 { default } else { value }
-}
+use super::budgets::StackBudgets;
+use super::read_selections;
 
 /// Where the launcher file lives.
 ///
@@ -80,13 +75,7 @@ impl Default for PlacementSpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchGoal {
     pub launcher_origin: LauncherOrigin,
-    pub env_vars: Vec<(String, String)>,
-    pub node_add_idle_timeout_secs: u64,
-    pub node_build_idle_timeout_secs: u64,
-    pub node_run_idle_timeout_secs: u64,
-    /// Whole-launch deadline. `None` means no overall deadline is enforced (only idle timeouts
-    /// apply). Wire encoding uses 0 as the sentinel for `None`.
-    pub max_timeout_secs: Option<u64>,
+    pub budgets: StackBudgets,
     /// Identity of this launch, minted by the caller. Every participant
     /// records it with its slice, so the global stack is rediscoverable by
     /// query from any machine rather than remembered in a coordinator's RAM.
@@ -112,28 +101,16 @@ impl LaunchGoal {
     pub fn new(
         launcher_origin: LauncherOrigin,
         launch_id: impl Into<String>,
-        node_add_idle_timeout_secs: u64,
-        node_build_idle_timeout_secs: u64,
-        node_run_idle_timeout_secs: u64,
-        max_timeout_secs: Option<u64>,
+        budgets: StackBudgets,
     ) -> Self {
         Self {
             launcher_origin,
-            env_vars: Vec::new(),
-            node_add_idle_timeout_secs,
-            node_build_idle_timeout_secs,
-            node_run_idle_timeout_secs,
-            max_timeout_secs,
+            budgets,
             launch_id: launch_id.into(),
             placement: PlacementSpec::default(),
             selections: Vec::new(),
             rebuild: false,
         }
-    }
-
-    pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
-        self.env_vars = env_vars;
-        self
     }
 
     pub fn with_placement(mut self, placement: PlacementSpec) -> Self {
@@ -156,23 +133,17 @@ impl LaunchGoal {
         {
             let mut goal = builder.init_root::<launch_capnp::launch_goal::Builder>();
 
-            let env_var_count = capnp_list_len(self.env_vars.len(), "LaunchGoal.env_vars")?;
-            let mut env_vars = goal.reborrow().init_env_vars(env_var_count);
-            for (idx, (key, value)) in self.env_vars.iter().enumerate() {
-                let mut env_var = env_vars.reborrow().get(idx as u32);
-                env_var.set_key(key);
-                env_var.set_value(value);
-            }
-
+            let env_var_count = capnp_list_len(self.budgets.env_vars.len(), "LaunchGoal.env_vars")?;
+            self.budgets
+                .write_env_vars(goal.reborrow().init_env_vars(env_var_count));
             goal.reborrow()
-                .set_node_add_idle_timeout_secs(self.node_add_idle_timeout_secs);
+                .set_node_add_idle_timeout_secs(self.budgets.node_add_idle_timeout_secs);
             goal.reborrow()
-                .set_node_build_idle_timeout_secs(self.node_build_idle_timeout_secs);
+                .set_node_build_idle_timeout_secs(self.budgets.node_build_idle_timeout_secs);
             goal.reborrow()
-                .set_node_run_idle_timeout_secs(self.node_run_idle_timeout_secs);
-            // 0 on the wire means "unset" (no overall deadline).
+                .set_node_run_idle_timeout_secs(self.budgets.node_run_idle_timeout_secs);
             goal.reborrow()
-                .set_max_timeout_secs(self.max_timeout_secs.unwrap_or(0));
+                .set_max_timeout_secs(self.budgets.max_timeout_secs.unwrap_or(0));
 
             goal.reborrow().set_launch_id(&self.launch_id);
 
@@ -200,10 +171,10 @@ impl LaunchGoal {
             }
 
             let selection_count = capnp_list_len(self.selections.len(), "LaunchGoal.selections")?;
-            let mut selections = goal.reborrow().init_selections(selection_count);
-            for (idx, word) in self.selections.iter().enumerate() {
-                selections.reborrow().set(idx as u32, word);
-            }
+            write_text_list(
+                goal.reborrow().init_selections(selection_count),
+                &self.selections,
+            );
 
             goal.reborrow().set_rebuild(self.rebuild);
         }
@@ -217,15 +188,13 @@ impl LaunchGoal {
         let reader = decode_message(data)?;
         let goal = reader.get_root::<launch_capnp::launch_goal::Reader>()?;
 
-        let env_vars_reader = goal.get_env_vars()?;
-        let mut env_vars = Vec::with_capacity(env_vars_reader.len() as usize);
-        for idx in 0..env_vars_reader.len() {
-            let env_var = env_vars_reader.get(idx);
-            env_vars.push((
-                env_var.get_key()?.to_str()?.to_owned(),
-                env_var.get_value()?.to_str()?.to_owned(),
-            ));
-        }
+        let budgets = StackBudgets::decode(
+            goal.get_env_vars()?,
+            goal.get_node_add_idle_timeout_secs(),
+            goal.get_node_build_idle_timeout_secs(),
+            goal.get_node_run_idle_timeout_secs(),
+            goal.get_max_timeout_secs(),
+        )?;
 
         let launcher_origin = match goal.get_launcher_origin().which()? {
             Which::Fs(fs) => LauncherOrigin::Fs(crate::encoding::decode_absolute_fs_path(
@@ -287,40 +256,14 @@ impl LaunchGoal {
             }
         };
 
-        let raw_max = goal.get_max_timeout_secs();
-
-        let selections_reader = goal.get_selections()?;
-        let mut selections = Vec::with_capacity(selections_reader.len() as usize);
-        for idx in 0..selections_reader.len() {
-            let word = selections_reader.get(idx)?.to_str()?;
-            if word.is_empty() {
-                return Err(crate::Error::Decoding(format!(
-                    "LaunchGoal.selections[{idx}] is empty: a `--with` entry is `option` or \
-                     `axis=option`, never blank"
-                )));
-            }
-            selections.push(word.to_owned());
-        }
+        let selections = read_selections(goal.get_selections()?, "LaunchGoal.selections")?;
 
         Ok(Self {
             launch_id: launch_id.to_owned(),
             placement,
             launcher_origin,
-            env_vars,
+            budgets,
             selections,
-            node_add_idle_timeout_secs: with_timeout_default(
-                goal.get_node_add_idle_timeout_secs(),
-                DEFAULT_IDLE_TIMEOUT_SECS,
-            ),
-            node_build_idle_timeout_secs: with_timeout_default(
-                goal.get_node_build_idle_timeout_secs(),
-                DEFAULT_IDLE_TIMEOUT_SECS,
-            ),
-            node_run_idle_timeout_secs: with_timeout_default(
-                goal.get_node_run_idle_timeout_secs(),
-                DEFAULT_IDLE_TIMEOUT_SECS,
-            ),
-            max_timeout_secs: if raw_max == 0 { None } else { Some(raw_max) },
             rebuild: goal.get_rebuild(),
         })
     }
@@ -662,26 +605,16 @@ impl crate::encoding::Wire for LaunchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn decoding_message(goal: &LaunchGoal) -> String {
-        let bytes = goal.encode().expect("encode");
-        match LaunchGoal::decode(&bytes).expect_err("decode should fail") {
-            crate::Error::Decoding(msg) => msg,
-            other => panic!("expected Decoding error, got {other:?}"),
-        }
-    }
+    use crate::encoding::decoding_error;
 
     #[test]
     fn launch_goal_roundtrips_fs_origin() {
         let goal = LaunchGoal::new(
             LauncherOrigin::Fs(PathBuf::from("/tmp/launcher.json5")),
             "launch-abc123",
-            10,
-            20,
-            30,
-            Some(99),
-        )
-        .with_env_vars(vec![("PATH".to_string(), "/usr/bin".to_string())]);
+            StackBudgets::new(10, 20, 30, Some(99))
+                .with_env_vars(vec![("PATH".to_string(), "/usr/bin".to_string())]),
+        );
 
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
@@ -695,16 +628,13 @@ mod tests {
                 name: "openarm01_sim_teleop".to_string(),
             },
             "launch-abc123",
-            5,
-            10,
-            15,
-            None,
+            StackBudgets::new(5, 10, 15, None),
         );
 
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
         assert_eq!(goal, decoded);
-        assert_eq!(decoded.max_timeout_secs, None);
+        assert_eq!(decoded.budgets.max_timeout_secs, None);
         assert!(!decoded.rebuild);
     }
 
@@ -717,10 +647,7 @@ mod tests {
                 name: "openarm_v2".to_string(),
             },
             "launch-abc123",
-            1,
-            1,
-            1,
-            None,
+            StackBudgets::new(1, 1, 1, None),
         )
         .with_rebuild(true);
 
@@ -737,10 +664,7 @@ mod tests {
                 name: "split_compute_manipulation".to_string(),
             },
             "launch-abc123",
-            5,
-            10,
-            15,
-            None,
+            StackBudgets::new(5, 10, 15, None),
         )
         .with_placement(PlacementSpec::Places(BTreeMap::from([
             ("robot_onboard".to_string(), "cn-robot-7".to_string()),
@@ -769,10 +693,7 @@ mod tests {
                 name: "split_compute_manipulation".to_string(),
             },
             "launch-abc123",
-            1,
-            1,
-            1,
-            None,
+            StackBudgets::new(1, 1, 1, None),
         )
         .with_placement(PlacementSpec::Local);
 
@@ -791,10 +712,7 @@ mod tests {
                 name: "teleop".to_string(),
             },
             "launch-abc123",
-            1,
-            1,
-            1,
-            None,
+            StackBudgets::new(1, 1, 1, None),
         );
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
@@ -812,10 +730,7 @@ mod tests {
                 name: "openarm_v2".to_string(),
             },
             "launch-abc123",
-            1,
-            1,
-            1,
-            None,
+            StackBudgets::new(1, 1, 1, None),
         )
         .with_selections(vec![
             "mujoco".to_string(),
@@ -843,10 +758,7 @@ mod tests {
         let goal = LaunchGoal::new(
             LauncherOrigin::Fs("/abs/launcher.json5".into()),
             "launch-abc123",
-            1,
-            1,
-            1,
-            None,
+            StackBudgets::new(1, 1, 1, None),
         );
         let bytes = goal.encode().expect("encode");
         let decoded = LaunchGoal::decode(&bytes).expect("decode");
@@ -861,19 +773,17 @@ mod tests {
         let goal = LaunchGoal::new(
             LauncherOrigin::Fs("/abs/launcher.json5".into()),
             "launch-abc123",
-            1,
-            1,
-            1,
-            None,
+            StackBudgets::new(1, 1, 1, None),
         )
         .with_selections(vec!["mujoco".to_string(), String::new()]);
 
-        let bytes = goal.encode().expect("encode");
-        let err = LaunchGoal::decode(&bytes).expect_err("empty selection must be refused");
+        let refusal = decoding_error(LaunchGoal::decode(&goal.encode().expect("encode")));
         assert!(
-            err.to_string().contains("selections[1] is empty"),
-            "unexpected error: {err}"
+            refusal.contains("`LaunchGoal.selections[1]` is empty"),
+            "{refusal}"
         );
+        assert!(refusal.contains("`axis=option`"), "{refusal}");
+        assert!(refusal.contains("stray comma"), "{refusal}");
     }
 
     /// Wiring two placeholders to the SAME machine is legitimate: a launcher
@@ -885,10 +795,7 @@ mod tests {
                 name: "split_compute_manipulation".to_string(),
             },
             "launch-abc123",
-            1,
-            1,
-            1,
-            None,
+            StackBudgets::new(1, 1, 1, None),
         )
         .with_placement(PlacementSpec::Places(BTreeMap::from([
             ("robot_onboard".to_string(), "cn-solo".to_string()),
@@ -911,12 +818,9 @@ mod tests {
                 name: "teleop".to_string(),
             },
             "",
-            1,
-            1,
-            1,
-            None,
+            StackBudgets::new(1, 1, 1, None),
         );
-        let msg = decoding_message(&goal);
+        let msg = decoding_error(LaunchGoal::decode(&goal.encode().expect("encode")));
         assert!(msg.contains("launch_id"), "got: {msg}");
         assert!(msg.contains("predates federated launch"), "got: {msg}");
     }
@@ -929,16 +833,13 @@ mod tests {
                     name: "teleop".to_string(),
                 },
                 "launch-abc123",
-                1,
-                1,
-                1,
-                None,
+                StackBudgets::new(1, 1, 1, None),
             )
             .with_placement(PlacementSpec::Places(BTreeMap::from([(
                 link_id.to_string(),
                 core_node.to_string(),
             )])));
-            let msg = decoding_message(&goal);
+            let msg = decoding_error(LaunchGoal::decode(&goal.encode().expect("encode")));
             assert!(msg.contains("empty link_id or core_node"), "got: {msg}");
         }
     }
@@ -951,12 +852,9 @@ mod tests {
         let goal = LaunchGoal::new(
             LauncherOrigin::Fs(PathBuf::from("relative/launcher.json5")),
             "launch-abc123",
-            1,
-            1,
-            1,
-            None,
+            StackBudgets::new(1, 1, 1, None),
         );
-        let msg = decoding_message(&goal);
+        let msg = decoding_error(LaunchGoal::decode(&goal.encode().expect("encode")));
         assert!(msg.contains("absolute"), "got: {msg}");
     }
 
@@ -967,12 +865,9 @@ mod tests {
                 name: "".to_string(),
             },
             "launch-abc123",
-            1,
-            1,
-            1,
-            None,
+            StackBudgets::new(1, 1, 1, None),
         );
-        let msg = decoding_message(&goal);
+        let msg = decoding_error(LaunchGoal::decode(&goal.encode().expect("encode")));
         assert!(msg.contains("repository name is empty"), "got: {msg}");
     }
 

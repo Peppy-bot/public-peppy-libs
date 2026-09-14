@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use core_node_api::SerializedNodeGraph;
-use core_node_api::encoding::{ContainerInfo, InfoResponse, StackListResponse};
+use core_node_api::encoding::{ContainerInfo, CopyInfo, InfoResponse, StackListResponse};
 use pyo3::exceptions::{PyKeyError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -158,11 +158,31 @@ pub struct PyStackListResponse {
 
 #[pymethods]
 impl PyStackListResponse {
+    /// Every field the daemon fills: the graph, its identity, the copies it
+    /// hosts and its shutdown grace.
     #[new]
-    fn new(graph_json: String, core_node: String, instance_id: String, host_name: String) -> Self {
-        Self {
-            inner: StackListResponse::new(graph_json, core_node, instance_id, host_name),
-        }
+    fn new(
+        graph_json: String,
+        core_node: String,
+        instance_id: String,
+        host_name: String,
+        copies: &Bound<'_, PyAny>,
+        shutdown_grace_secs: u64,
+    ) -> PyResult<Self> {
+        let mut inner = StackListResponse::new(graph_json, core_node, instance_id, host_name);
+        inner.copies = pythonize::depythonize(copies)?;
+        inner.shutdown_grace_secs = shutdown_grace_secs;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn copies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        Ok(pythonize(py, &self.inner.copies)?)
+    }
+
+    #[getter]
+    fn shutdown_grace_secs(&self) -> u64 {
+        self.inner.shutdown_grace_secs
     }
 
     #[getter]
@@ -203,6 +223,8 @@ impl PyStackListResponse {
 #[pyclass(name = "StackList")]
 pub struct PyStackList {
     graph: SerializedNodeGraph,
+    copies: Vec<CopyInfo>,
+    shutdown_grace_secs: u64,
     core_node: String,
     instance_id: String,
     host_name: String,
@@ -210,6 +232,16 @@ pub struct PyStackList {
 
 #[pymethods]
 impl PyStackList {
+    #[getter]
+    fn copies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        Ok(pythonize(py, &self.copies)?)
+    }
+
+    #[getter]
+    fn shutdown_grace_secs(&self) -> u64 {
+        self.shutdown_grace_secs
+    }
+
     #[getter]
     fn graph<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         pythonize(py, &self.graph).map_err(|e| {
@@ -285,6 +317,8 @@ fn stack_list<'py>(
             .map_err(to_py_err)?;
         Ok(PyStackList {
             graph: result.graph,
+            copies: result.copies,
+            shutdown_grace_secs: result.shutdown_grace_secs,
             core_node: result.core_node,
             instance_id: result.instance_id,
             host_name: result.host_name,

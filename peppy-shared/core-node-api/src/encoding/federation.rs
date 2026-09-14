@@ -6,14 +6,15 @@
 //! and idempotent.
 
 use capnp::message::Builder;
-use config::runtime::ProducerRef;
+use config::runtime::{CoreNodeName, Name, ProducerRef, first_duplicate};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::federation_capnp;
 use crate::{Payload, Result};
 
 use crate::encoding::{
-    capnp_list_len, decode_message, encode_message, optional_text, read_text_list, required_text,
-    write_text_list,
+    capnp_list_len, decode_message, encode_message, optional_text, read_core_node_name, read_name,
+    read_name_list, read_text_list, required_text, required_text_list, write_text_list,
 };
 
 /// Reserves one participant for one launch, carrying the pins for every
@@ -168,6 +169,12 @@ impl ParticipantReserveResponse {
 pub struct ParticipantSliceBeginRequest {
     pub launch_id: String,
     pub mount_sources: Vec<String>,
+    /// `true` adds to a slice of the same launch the participant already
+    /// holds; `false` replaces whatever slice it holds.
+    pub append: bool,
+    /// Per local source instance, the machines whose observers it reports
+    /// lifecycle events to; an empty set clears the instance's watchers.
+    pub lifecycle_watchers: BTreeMap<Name, BTreeSet<CoreNodeName>>,
 }
 
 impl ParticipantSliceBeginRequest {
@@ -175,6 +182,8 @@ impl ParticipantSliceBeginRequest {
         Self {
             launch_id: launch_id.into(),
             mount_sources,
+            append: false,
+            lifecycle_watchers: BTreeMap::new(),
         }
     }
 
@@ -184,6 +193,7 @@ impl ParticipantSliceBeginRequest {
             let mut request =
                 builder.init_root::<federation_capnp::participant_slice_begin_request::Builder>();
             request.set_launch_id(&self.launch_id);
+            request.set_append(self.append);
             let count = capnp_list_len(
                 self.mount_sources.len(),
                 "ParticipantSliceBeginRequest.mount_sources",
@@ -192,6 +202,16 @@ impl ParticipantSliceBeginRequest {
                 request.reborrow().init_mount_sources(count),
                 &self.mount_sources,
             );
+            let count = capnp_list_len(self.lifecycle_watchers.len(), "lifecycle_watchers")?;
+            let mut entries = request.init_lifecycle_watchers(count);
+            for (index, (instance, watchers)) in self.lifecycle_watchers.iter().enumerate() {
+                let mut entry = entries.reborrow().get(index as u32);
+                entry.set_instance_id(instance.as_str());
+                write_text_list(
+                    entry.init_core_nodes(capnp_list_len(watchers.len(), "core_nodes")?),
+                    watchers.iter().map(|watcher| watcher.as_str()),
+                );
+            }
         }
         encode_message(&builder)
     }
@@ -204,23 +224,38 @@ impl ParticipantSliceBeginRequest {
         let reader = decode_message(data)?;
         let request =
             reader.get_root::<federation_capnp::participant_slice_begin_request::Reader>()?;
+        let mut lifecycle_watchers = BTreeMap::new();
+        for entry in request.get_lifecycle_watchers()? {
+            let instance = read_name(
+                entry.get_instance_id()?.to_str()?,
+                "lifecycle_watchers.instance_id",
+            )?;
+            let watchers = entry
+                .get_core_nodes()?
+                .iter()
+                .map(|watcher| {
+                    read_core_node_name(watcher?.to_str()?, "lifecycle_watchers.core_nodes")
+                })
+                .collect::<Result<BTreeSet<_>>>()?;
+            if lifecycle_watchers
+                .insert(instance.clone(), watchers)
+                .is_some()
+            {
+                return Err(crate::Error::Decoding(format!(
+                    "`lifecycle_watchers` names `{instance}` twice"
+                )));
+            }
+        }
         Ok(Self {
             launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
             mount_sources: required_text_list(
                 read_text_list(request.get_mount_sources()?)?,
                 "mount_sources",
             )?,
+            append: request.get_append(),
+            lifecycle_watchers,
         })
     }
-}
-
-/// Refuses an empty entry in a list whose members each name something: a
-/// defaulted string in such a list is a hole, not a value.
-fn required_text_list(values: Vec<String>, field: &str) -> Result<Vec<String>> {
-    for (idx, value) in values.iter().enumerate() {
-        required_text(value, &format!("{field}[{idx}]"))?;
-    }
-    Ok(values)
 }
 
 /// The reply to `participant_slice_begin`: the verdict, plus the bind sources
@@ -285,6 +320,80 @@ impl ParticipantSliceBeginResponse {
             )?,
         })
     }
+}
+
+/// The instances one removal names: at least one, each once, in the order
+/// they are stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovedInstances(Vec<Name>);
+
+impl RemovedInstances {
+    pub fn as_slice(&self) -> &[Name] {
+        &self.0
+    }
+}
+
+/// Why a list of instance ids is not a removal.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RemovedInstancesError {
+    #[error("a removal names at least one instance")]
+    Empty,
+    #[error("a removal names `{0}` twice")]
+    Repeated(Name),
+}
+
+/// The single construction gate: an empty or repeating list cannot exist,
+/// decoded or built.
+impl TryFrom<Vec<Name>> for RemovedInstances {
+    type Error = RemovedInstancesError;
+
+    fn try_from(ids: Vec<Name>) -> std::result::Result<Self, RemovedInstancesError> {
+        if ids.is_empty() {
+            return Err(RemovedInstancesError::Empty);
+        }
+        if let Some(repeated) = first_duplicate(&ids) {
+            return Err(RemovedInstancesError::Repeated(repeated.clone()));
+        }
+        Ok(Self(ids))
+    }
+}
+
+/// Idempotent instance cleanup, authorized by both the reservation and slice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParticipantInstancesRemoveRequest {
+    pub launch_id: String,
+    pub instance_ids: RemovedInstances,
+}
+
+impl ParticipantInstancesRemoveRequest {
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        let mut request =
+            builder.init_root::<federation_capnp::participant_instances_remove_request::Builder>();
+        request.set_launch_id(&self.launch_id);
+        let instance_ids = self.instance_ids.as_slice();
+        let count = capnp_list_len(instance_ids.len(), "instance_ids")?;
+        write_text_list(request.init_instance_ids(count), instance_ids);
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let request =
+            reader.get_root::<federation_capnp::participant_instances_remove_request::Reader>()?;
+        Ok(Self {
+            launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
+            instance_ids: RemovedInstances::try_from(read_name_list(
+                request.get_instance_ids()?,
+                "instance_ids",
+            )?)
+            .map_err(|error| crate::Error::Decoding(format!("`instance_ids`: {error}")))?,
+        })
+    }
+}
+
+impl crate::encoding::Wire for ParticipantInstancesRemoveRequest {
+    type Root = federation_capnp::participant_instances_remove_request::Owned;
 }
 
 /// The reply to every federation exchange whose answer is "did you do it, and
@@ -751,6 +860,99 @@ mod tests {
         let error = ParticipantSliceBeginRequest::decode(payload.as_ref())
             .expect_err("empty launch id must fail");
         assert!(error.to_string().contains("launch_id"), "got: {error}");
+    }
+
+    #[test]
+    fn slice_begin_round_trips_append_mode() {
+        for append in [false, true] {
+            let request = ParticipantSliceBeginRequest {
+                append,
+                lifecycle_watchers: BTreeMap::from([
+                    (
+                        Name::new("arm_inst").unwrap(),
+                        BTreeSet::from([
+                            CoreNodeName::new("robot").unwrap(),
+                            CoreNodeName::new("cloud").unwrap(),
+                        ]),
+                    ),
+                    (Name::new("camera_inst").unwrap(), BTreeSet::new()),
+                ]),
+                ..ParticipantSliceBeginRequest::new("launch-abc123", Vec::new())
+            };
+            assert_eq!(
+                ParticipantSliceBeginRequest::decode(&request.encode().unwrap()).unwrap(),
+                request
+            );
+        }
+    }
+
+    #[test]
+    fn slice_begin_rejects_invalid_watcher_identities() {
+        for (instances, host) in [
+            (vec![""], "robot"),
+            (vec!["arm/inst"], "robot"),
+            (vec!["arm_inst", "arm_inst"], "robot"),
+            (vec!["arm_inst"], "self"),
+            (vec!["arm_inst"], "robot/cloud"),
+        ] {
+            let mut message = Builder::new_default();
+            let mut request =
+                message.init_root::<federation_capnp::participant_slice_begin_request::Builder>();
+            request.set_launch_id("launch-abc123");
+            let mut watchers = request.init_lifecycle_watchers(instances.len() as u32);
+            for (index, instance) in instances.iter().enumerate() {
+                let mut entry = watchers.reborrow().get(index as u32);
+                entry.set_instance_id(instance);
+                entry.init_core_nodes(1).set(0, host);
+            }
+            assert!(
+                ParticipantSliceBeginRequest::decode(&encode_message(&message).unwrap()).is_err(),
+                "accepted {instances:?} on {host}"
+            );
+        }
+    }
+
+    #[test]
+    fn instance_removal_round_trips() {
+        let request = ParticipantInstancesRemoveRequest {
+            launch_id: "launch-abc123".into(),
+            instance_ids: RemovedInstances::try_from(
+                ["alpha_backbone_inst", "alpha_commander_inst"]
+                    .into_iter()
+                    .map(|id| Name::new(id).unwrap())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap(),
+        };
+        assert_eq!(
+            ParticipantInstancesRemoveRequest::decode(&request.encode().unwrap()).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn instance_removal_rejects_missing_identity_and_invalid_targets() {
+        for (launch, names) in [
+            ("", vec!["alpha_backbone_inst"]),
+            ("launch-abc123", vec![]),
+            ("launch-abc123", vec!["alpha_inst", "alpha_inst"]),
+            ("launch-abc123", vec!["bad/name"]),
+        ] {
+            let mut message = Builder::new_default();
+            let mut request = message
+                .init_root::<federation_capnp::participant_instances_remove_request::Builder>(
+            );
+            request.set_launch_id(launch);
+            let mut ids = request.init_instance_ids(names.len() as u32);
+            for (index, name) in names.iter().enumerate() {
+                ids.set(index as u32, name);
+            }
+            assert!(
+                ParticipantInstancesRemoveRequest::decode(&encode_message(&message).unwrap())
+                    .is_err(),
+                "accepted launch {launch:?}, instances {names:?}"
+            );
+        }
     }
 
     fn pair_commit() -> PairCommitRequest {

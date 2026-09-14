@@ -1,3 +1,6 @@
+mod core_node_name;
+pub use core_node_name::{CoreNodeName, CoreNodeNameError, MAX_CORE_NODE_NAME_LEN, SELF_CORE_NODE};
+
 use crate::common::AnyType;
 use crate::consts::ALLOWED_CONFIG_CHARS;
 use crate::error::{ParsingError, Result};
@@ -134,6 +137,15 @@ impl ProducerRef {
     }
 }
 
+/// The first item repeating one before it, in declaration order.
+///
+/// The shared half of every distinct-members gate: each caller decides what
+/// an empty list means and names its own refusal for the item returned here.
+pub fn first_duplicate<T: Eq + std::hash::Hash>(items: &[T]) -> Option<&T> {
+    let mut seen = HashSet::with_capacity(items.len());
+    items.iter().find(|item| !seen.insert(*item))
+}
+
 /// The runtime-resolved, immutable, ordered producer set bound to one
 /// consumer slot. Order is the application declaration order (launcher
 /// array order / CLI flag occurrence order), preserved verbatim from the
@@ -191,17 +203,10 @@ impl TryFrom<Vec<ProducerRef>> for BoundProducers {
 
     fn try_from(producers: Vec<ProducerRef>) -> std::result::Result<Self, Self::Error> {
         // The first duplicated producer in declaration order names the error.
-        let duplicate = {
-            let mut seen = HashSet::with_capacity(producers.len());
-            producers
-                .iter()
-                .find(|producer| !seen.insert(*producer))
-                .cloned()
-        };
-        if let Some(duplicate) = duplicate {
+        if let Some(duplicate) = first_duplicate(&producers) {
             return Err(ParsingError::DuplicateBoundProducer {
-                core_node: duplicate.core_node,
-                instance_id: duplicate.instance_id,
+                core_node: duplicate.core_node.clone(),
+                instance_id: duplicate.instance_id.clone(),
             });
         }
         Ok(Self(producers))
@@ -443,14 +448,7 @@ impl TryFrom<Vec<Name>> for SimTimeParticipants {
         if participants.is_empty() {
             return Err(ParsingError::EmptySimTimeParticipants);
         }
-        let duplicate = {
-            let mut seen = HashSet::with_capacity(participants.len());
-            participants
-                .iter()
-                .find(|participant| !seen.insert(*participant))
-                .cloned()
-        };
-        if let Some(duplicate) = duplicate {
+        if let Some(duplicate) = first_duplicate(&participants) {
             return Err(ParsingError::DuplicateSimTimeParticipant(
                 duplicate.to_string(),
             ));

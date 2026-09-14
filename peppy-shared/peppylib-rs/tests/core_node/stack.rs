@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use core_node_api::ServiceId;
-use core_node_api::encoding::{StackListRequest, StackListResponse};
+use core_node_api::encoding::{CopyInfo, StackListRequest, StackListResponse};
 use core_node_api::{
     InstanceState, NodeStage, SerializedEdge, SerializedInstance, SerializedNode,
     SerializedNodeGraph,
@@ -40,11 +40,17 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
                 assert_eq!(inbound, StackListRequest::new());
                 let graph_json =
                     serde_json::to_string(&graph).expect("serialize SerializedNodeGraph");
-                Ok(
-                    StackListResponse::new(graph_json, CORE_NODE, SERVER_INSTANCE, host_name)
-                        .encode()
-                        .expect("encode StackListResponse"),
-                )
+                let mut response =
+                    StackListResponse::new(graph_json, CORE_NODE, SERVER_INSTANCE, host_name);
+                response.shutdown_grace_secs = 11;
+                response.copies = vec![CopyInfo {
+                    name: config::runtime::Name::new("alpha").unwrap(),
+                    option: "real".into(),
+                    core_node: config::runtime::CoreNodeName::new(CORE_NODE).unwrap(),
+                    instance_ids: vec![config::runtime::Name::new("alpha_arm_inst").unwrap()],
+                    selections: vec!["commander=web".into()],
+                }];
+                Ok(response.encode().expect("encode StackListResponse"))
             })
             .await
             .expect("handle_next_request should succeed");
@@ -73,7 +79,7 @@ async fn stack_list_parses_graph_and_includes_daemon_identity() {
         core_node: CORE_NODE.to_string(),
         config_path: "/tmp/brain.json5".to_string(),
         artifact_path: None,
-        stage: Some(NodeStage::Ready),
+        stage: NodeStage::Ready,
         instances: vec![SerializedInstance {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
@@ -89,7 +95,7 @@ async fn stack_list_parses_graph_and_includes_daemon_identity() {
         core_node: CORE_NODE.to_string(),
         config_path: "/tmp/sensor.json5".to_string(),
         artifact_path: None,
-        stage: Some(NodeStage::Added),
+        stage: NodeStage::Added,
         instances: vec![],
     };
     let graph = SerializedNodeGraph {
@@ -108,6 +114,13 @@ async fn stack_list_parses_graph_and_includes_daemon_identity() {
         .expect("stack_list should succeed");
 
     assert_eq!(result.graph, graph);
+    assert_eq!(result.shutdown_grace_secs, 11);
+    assert_eq!(result.copies.len(), 1);
+    assert_eq!(result.copies[0].name, "alpha");
+    assert_eq!(result.copies[0].option, "real");
+    assert_eq!(result.copies[0].instance_ids, ["alpha_arm_inst"]);
+    assert_eq!(result.copies[0].selections, ["commander=web"]);
+    assert_eq!(result.copies[0].core_node.as_str(), CORE_NODE);
     let brain = result
         .graph
         .nodes
@@ -115,7 +128,7 @@ async fn stack_list_parses_graph_and_includes_daemon_identity() {
         .find(|n| n.name == "brain")
         .expect("brain node should be present in the returned stack");
     assert_eq!(brain.core_node, CORE_NODE);
-    assert_eq!(brain.stage, Some(NodeStage::Ready));
+    assert_eq!(brain.stage, NodeStage::Ready);
     assert_eq!(brain.instances.len(), 1);
     assert_eq!(brain.instances[0].instance_id, "i1");
     assert_eq!(brain.instances[0].state, InstanceState::Running);

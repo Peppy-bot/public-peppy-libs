@@ -11,6 +11,7 @@ use crate::{NonEmptyPayload, Payload, Result};
 
 use crate::encoding::{
     capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
+    with_default,
 };
 
 /// Default timed samples per interface when the goal sends 0 (Cap'n Proto
@@ -18,10 +19,6 @@ use crate::encoding::{
 pub const DEFAULT_SAMPLES: u32 = 200;
 /// Default per-sample probe/observe timeout in milliseconds when the goal sends 0.
 pub const DEFAULT_PER_SAMPLE_TIMEOUT_MS: u64 = 2_000;
-
-fn with_default<T: PartialEq + Copy>(value: T, zero: T, default: T) -> T {
-    if value == zero { default } else { value }
-}
 
 // ---------------------------------------------------------------------------
 // Goal
@@ -62,11 +59,10 @@ impl StackBenchmarkGoal {
         let reader = decode_message(data)?;
         let goal = reader.get_root::<benchmark_capnp::stack_benchmark_goal::Reader>()?;
         Ok(Self {
-            samples: with_default(goal.get_samples(), 0, DEFAULT_SAMPLES),
+            samples: with_default(goal.get_samples(), DEFAULT_SAMPLES),
             warmup: goal.get_warmup(),
             per_sample_timeout_ms: with_default(
                 goal.get_per_sample_timeout_ms(),
-                0,
                 DEFAULT_PER_SAMPLE_TIMEOUT_MS,
             ),
         })

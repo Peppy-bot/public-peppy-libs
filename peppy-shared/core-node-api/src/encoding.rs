@@ -14,16 +14,20 @@ mod stack;
 // Note: there used to be a top-level `builder` module here. Build encoding
 // now lives at `node::builder` alongside `node::add`.
 
-pub use clock::{ClockOffsetRequest, ClockOffsetResponse, ClockRequest, ClockResponse, ClockTick};
+pub use clock::{
+    ClockOffsetRequest, ClockOffsetResponse, ClockRequest, ClockResponse, ClockTick,
+    SimTimeParticipantsRequest, SimTimeParticipantsResponse,
+};
 pub use datastore::{
     DatastoreGetRequest, DatastoreGetResponse, DatastoreKey, DatastoreKeyError, DatastoreListEntry,
     DatastoreListRequest, DatastoreListResponse, DatastoreRemoveRequest, DatastoreRemoveResponse,
     DatastoreStoreRequest, DatastoreStoreResponse,
 };
 pub use federation::{
-    FederationVerdict, PairCommitRequest, ParticipantReleaseRequest, ParticipantReserveRequest,
-    ParticipantReserveResponse, ParticipantSliceBeginRequest, ParticipantSliceBeginResponse,
-    RelationshipEvent, RelationshipNotification, RelationshipNotificationAck,
+    FederationVerdict, PairCommitRequest, ParticipantInstancesRemoveRequest,
+    ParticipantReleaseRequest, ParticipantReserveRequest, ParticipantReserveResponse,
+    ParticipantSliceBeginRequest, ParticipantSliceBeginResponse, RelationshipEvent,
+    RelationshipNotification, RelationshipNotificationAck, RemovedInstances, RemovedInstancesError,
 };
 pub use health::{HealthRequest, HealthResponse};
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
@@ -51,11 +55,14 @@ pub use stack::benchmark::{
     MeasurementKind, StackBenchmarkFeedback, StackBenchmarkGoal, StackBenchmarkGoalResponse,
     StackBenchmarkResult,
 };
+pub use stack::budgets::{DEFAULT_IDLE_TIMEOUT_SECS, StackBudgets};
+pub use stack::join::{ArgumentOverride, ArgumentOverrideError, JoinPlacement, StackJoinGoal};
 pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, PlacementSpec,
 };
-pub use stack::list::{LaunchIdentity, StackListRequest, StackListResponse};
+pub use stack::list::{CopyInfo, LaunchIdentity, StackListRequest, StackListResponse};
+pub use stack::remove::StackRemoveGoal;
 pub use stack::reset::{StackResetRequest, StackResetResponse};
 
 use capnp::introspect::Introspect;
@@ -74,6 +81,15 @@ use crate::{Payload, Result};
 pub trait Wire {
     /// The generated `Owned` marker of this codec's wire root struct.
     type Root: Introspect;
+}
+
+/// A wire integer of 0 is an absent field; it decodes to `default`.
+pub(crate) fn with_default<T: PartialEq + Default + Copy>(value: T, default: T) -> T {
+    if value == T::default() {
+        default
+    } else {
+        value
+    }
 }
 
 /// Converts an empty Cap'n Proto text field to `None`, non-empty to `Some(String)`.
@@ -100,13 +116,51 @@ pub(crate) fn required_text(value: &str, field: &str) -> Result<String> {
     Ok(value.to_owned())
 }
 
-/// Writes owned strings into an already-initialized `List(Text)` builder.
+/// A text field that must be a [`Name`](config::runtime::Name); the refusal
+/// names the field.
+pub(crate) fn read_name(value: &str, field: &str) -> Result<config::runtime::Name> {
+    config::runtime::Name::new(value).map_err(|e| crate::Error::Decoding(format!("`{field}`: {e}")))
+}
+
+/// A text field that must be a [`CoreNodeName`](config::runtime::CoreNodeName);
+/// the refusal names the field.
+pub(crate) fn read_core_node_name(
+    value: &str,
+    field: &str,
+) -> Result<config::runtime::CoreNodeName> {
+    config::runtime::CoreNodeName::new(value)
+        .map_err(|e| crate::Error::Decoding(format!("`{field}`: {e}")))
+}
+
+/// Refuses an empty entry in a list whose members each name something: a
+/// defaulted string in such a list is a hole, not a value.
+pub(crate) fn required_text_list(values: Vec<String>, field: &str) -> Result<Vec<String>> {
+    for (idx, value) in values.iter().enumerate() {
+        required_text(value, &format!("{field}[{idx}]"))?;
+    }
+    Ok(values)
+}
+
+/// Writes strings into an already-initialized `List(Text)` builder.
 ///
 /// Pairs with [`read_text_list`]. Callers size the list themselves through
-/// [`capnp_list_len`], because only they can name the field in the error.
-pub(crate) fn write_text_list(mut list: capnp::text_list::Builder<'_>, values: &[String]) {
-    for (idx, value) in values.iter().enumerate() {
-        list.set(idx as u32, value.as_str());
+/// [`capnp_list_len`], because only they can name the field in the error; the
+/// assertion here holds the values to that size, which is what makes the pair
+/// lossless.
+pub(crate) fn write_text_list<S, I>(mut list: capnp::text_list::Builder<'_>, values: I)
+where
+    S: AsRef<str>,
+    I: IntoIterator<Item = S>,
+    I::IntoIter: ExactSizeIterator,
+{
+    let values = values.into_iter();
+    assert_eq!(
+        list.len() as usize,
+        values.len(),
+        "a text list is sized for exactly the values written into it"
+    );
+    for (index, value) in values.enumerate() {
+        list.set(index as u32, value.as_ref());
     }
 }
 
@@ -117,6 +171,27 @@ pub(crate) fn read_text_list(list: capnp::text_list::Reader<'_>) -> Result<Vec<S
         values.push(list.get(idx)?.to_str()?.to_owned());
     }
     Ok(values)
+}
+
+/// A text list whose every entry must be a name; the refusal says which
+/// field held the one that is not.
+pub(crate) fn read_name_list(
+    list: capnp::text_list::Reader<'_>,
+    field: &str,
+) -> Result<Vec<config::runtime::Name>> {
+    read_text_list(list)?
+        .iter()
+        .map(|name| read_name(name, field))
+        .collect()
+}
+
+/// The message of a decode refusal, for tests that assert on it.
+#[cfg(test)]
+pub(crate) fn decoding_error<T: std::fmt::Debug>(result: Result<T>) -> String {
+    match result.expect_err("decode should fail") {
+        crate::Error::Decoding(message) => message,
+        other => panic!("expected a decoding error, got {other:?}"),
+    }
 }
 
 /// Decode a non-empty filesystem-path text field into a `PathBuf`.

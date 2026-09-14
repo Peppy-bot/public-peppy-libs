@@ -105,6 +105,17 @@ struct ParticipantSliceBeginRequest {
     # is free: registering a host path can restart the runtime VM, and paying
     # that once a container of this launch is running would kill it.
     mountSources @1 :List(Text);
+    # `true` adds to a slice of the same launch the participant already holds,
+    # as a join does; `false` replaces whatever slice it holds.
+    append @2 :Bool;
+    lifecycleWatchers @3 :List(InstanceWatchers);
+}
+
+# The machines watching one local source instance: the complete set, sent
+# once per slice change.
+struct InstanceWatchers {
+    instanceId @0 :Text;
+    coreNodes @1 :List(Text);
 }
 
 # The reply to `participant_slice_begin`, which owes the coordinator more than a
@@ -119,6 +130,13 @@ struct ParticipantSliceBeginResponse {
     # that a bind meant to name an existing file was a typo, and it must not go
     # silent because the machine it happened on is not the one being watched.
     autoCreatedMountSources @2 :List(Text);
+}
+
+# Remove only these instances from a reserved launch's existing slice.
+# Missing instances are already removed, so cleanup can be retried safely.
+struct ParticipantInstancesRemoveRequest {
+    launchId @0 :Text;
+    instanceIds @1 :List(Text);
 }
 
 # The reply to every federation exchange whose answer is "did you do it, and if

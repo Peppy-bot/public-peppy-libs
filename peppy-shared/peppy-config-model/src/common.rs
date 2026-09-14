@@ -738,12 +738,12 @@ fn check_f32(value: &AnyType) -> F32Check {
     }
 }
 
-/// Parse a primitive type-token name (with aliases). Returns `None` for unknown
-/// names so callers can build their own error messages with context.
+/// Parse a primitive type-token name. Returns `None` for unknown names so
+/// callers can build their own error messages with context.
 fn parse_type_token(name: &str) -> Option<TypeToken> {
     Some(match name {
         "bool" => TypeToken::Bool,
-        "string" | "str" => TypeToken::String,
+        "string" => TypeToken::String,
         "bytes" => TypeToken::Bytes,
         "time" => TypeToken::Time,
         "u8" => TypeToken::U8,
@@ -754,8 +754,8 @@ fn parse_type_token(name: &str) -> Option<TypeToken> {
         "i16" => TypeToken::I16,
         "i32" => TypeToken::I32,
         "i64" => TypeToken::I64,
-        "f32" | "float" => TypeToken::F32,
-        "f64" | "double" => TypeToken::F64,
+        "f32" => TypeToken::F32,
+        "f64" => TypeToken::F64,
         _ => return None,
     })
 }
@@ -1115,18 +1115,6 @@ mod tests {
                 default: None
             }
         );
-    }
-
-    #[test]
-    fn shorthand_alias_str_parses_as_string() {
-        let parsed: ParameterSpec = json5(r#""str""#);
-        assert!(matches!(
-            parsed,
-            ParameterSpec::Primitive {
-                kind: TypeToken::String,
-                default: None
-            }
-        ));
     }
 
     #[test]

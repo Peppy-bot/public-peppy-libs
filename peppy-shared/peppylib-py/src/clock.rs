@@ -341,7 +341,7 @@ impl PySimTimePublisher {
     /// The core nodes each tick reaches, in publish order.
     #[getter]
     fn participants(&self) -> Vec<String> {
-        self.inner.participants().map(str::to_owned).collect()
+        self.inner.participants().collect()
     }
 
     /// Publish `time_ns` to every participant. Raises `RuntimeError` naming
