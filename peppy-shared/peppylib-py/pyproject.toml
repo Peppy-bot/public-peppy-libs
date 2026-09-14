@@ -17,7 +17,8 @@ dependencies = []
 Homepage = "https://dev.peppy.bot"
 
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+# Same maturin floor as pixi.toml, which explains why it is 1.14.1.
+requires = ["maturin>=1.14.1,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
