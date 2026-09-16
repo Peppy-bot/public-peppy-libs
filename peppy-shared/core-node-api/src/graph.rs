@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use config::runtime::{PairingSlotBinding, SlotBindings};
+use config::runtime::{ClockBinding, PairingSlotBinding, SlotBindings};
 use serde::{Deserialize, Serialize};
 
 /// Per-instance lifecycle state. Wire representation is the lowercase variant
@@ -146,6 +146,12 @@ pub struct SerializedInstance {
     /// field is not read as spuriously unhealthy.
     #[serde(default = "default_instance_healthy")]
     pub healthy: bool,
+    /// The one clock this instance reads, mirroring
+    /// [`config::runtime::NodeInstanceConfig`]'s resolved framework. Wall time
+    /// is the default and is omitted, so a payload from a producer that
+    /// predates clock domains reads as the wall-time instance it was.
+    #[serde(default, skip_serializing_if = "ClockBinding::is_wall")]
+    pub clock: ClockBinding,
     /// Validator-resolved producers bound to each of this instance's
     /// `depends_on` slots, keyed by the consumer manifest's link id.
     /// Mirrors [`config::runtime::NodeInstanceConfig::slot_bindings`] and
@@ -319,6 +325,7 @@ mod tests {
                     instance_id: (*id).into(),
                     state: *st,
                     healthy: true,
+                    clock: ClockBinding::Wall,
                     slot_bindings: BTreeMap::new(),
                     pairing_slots: BTreeMap::new(),
                     endpoints: Vec::new(),
@@ -472,6 +479,7 @@ mod tests {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
             healthy: true,
+            clock: ClockBinding::Wall,
             slot_bindings: bindings,
             pairing_slots: BTreeMap::new(),
             endpoints: Vec::new(),
@@ -488,6 +496,7 @@ mod tests {
             instance_id: "mcp".to_string(),
             state: InstanceState::Running,
             healthy: true,
+            clock: ClockBinding::Wall,
             slot_bindings: BTreeMap::new(),
             pairing_slots: BTreeMap::new(),
             endpoints: vec!["http://127.0.0.1:8900/camera_and_recording/v1/mcp".to_string()],
@@ -515,6 +524,7 @@ mod tests {
             instance_id: "i1".to_string(),
             state: InstanceState::Running,
             healthy: true,
+            clock: ClockBinding::Wall,
             slot_bindings: BTreeMap::new(),
             pairing_slots: BTreeMap::new(),
             endpoints: Vec::new(),
@@ -559,6 +569,7 @@ mod tests {
             instance_id: "ctrl_1".to_string(),
             state: InstanceState::Running,
             healthy: true,
+            clock: ClockBinding::Wall,
             slot_bindings: BTreeMap::new(),
             pairing_slots,
             endpoints: Vec::new(),

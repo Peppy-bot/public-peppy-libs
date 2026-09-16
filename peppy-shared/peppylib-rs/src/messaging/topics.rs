@@ -307,13 +307,44 @@ impl TopicMessenger {
         to_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
+        Self::subscribe_target_scoped_with_link_id(
+            messenger,
+            as_core_node,
+            as_instance_id,
+            from_target,
+            None,
+            to_topic,
+            qos,
+        )
+        .await
+    }
+
+    /// [`Self::subscribe_target_scoped`] for an infra topic whose publisher
+    /// claims one producer-side `link_id`: the segment is a literal, while the
+    /// publisher's `(core_node, instance_id)` pair stays wildcarded.
+    ///
+    /// A daemon publishes `clock` and `daemon_heartbeat` under the reserved
+    /// default segment ([`pmi::DEFAULT_LINK_ID`]), and a clock domain hosted on
+    /// the same machine publishes on the same topic and target under the
+    /// domain's own `link_id`. Naming the segment is what keeps the two streams
+    /// apart for a subscriber that cannot know the daemon's per-boot
+    /// `instance_id`.
+    pub(crate) async fn subscribe_target_scoped_with_link_id(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        from_target: SenderTarget,
+        from_link_id: Option<&str>,
+        to_topic: &str,
+        qos: QoSProfile,
+    ) -> Result<Subscription> {
         let recv = TopicWireReceiver::new(
             as_core_node,
             as_instance_id,
             None,
             None,
             Some(from_target),
-            None,
+            from_link_id,
             to_topic,
         )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
@@ -355,6 +386,47 @@ impl TopicMessenger {
             Some(peer.instance_id.as_str()),
             Some(pairing_target),
             Some(peer_link_id),
+            to_topic,
+        )?;
+        let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
+        Ok(Subscription::new(subscription))
+    }
+
+    /// Subscribe to one topic pinned to the exact publisher that emits it:
+    /// its `(core_node, instance_id)` plus the producer-side `link_id`
+    /// segment, on a target the caller names.
+    ///
+    /// This is how a node follows one clock domain. A domain's ticks ride the
+    /// ordinary `clock` topic of the machine hosting the domain, under the
+    /// domain's own `link_id`, so they share that topic with the daemon's wall
+    /// ticks, which ride the reserved default segment. Every subscriber names
+    /// the segment it reads: a domain's here, the daemon's through
+    /// [`Self::subscribe_target_scoped_with_link_id`], so each stream carries
+    /// one publisher's ticks. Pinning every slot is also what makes a stale
+    /// lifetime's ticks unreachable: they carry a different `link_id`.
+    ///
+    /// Distinct from [`Self::subscribe_peer_pinned`], which pins the same wire
+    /// slots but asserts a pairing-shaped target, and from
+    /// [`Self::subscribe_target_scoped`], which leaves the publisher's identity
+    /// and `link_id` wildcarded.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn subscribe_publisher_pinned(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        from: &ProducerRef,
+        from_target: SenderTarget,
+        from_link_id: &str,
+        to_topic: &str,
+        qos: QoSProfile,
+    ) -> Result<Subscription> {
+        let recv = TopicWireReceiver::new(
+            as_core_node,
+            as_instance_id,
+            Some(from.core_node.as_str()),
+            Some(from.instance_id.as_str()),
+            Some(from_target),
+            Some(from_link_id),
             to_topic,
         )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;

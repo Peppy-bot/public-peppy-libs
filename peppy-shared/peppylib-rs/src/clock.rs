@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use config::node::QoSProfile;
+use config::runtime::{ClockBinding, ClockDomainId, ClockRole, ProducerRef};
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
 use core_node_api::{TopicId, names};
 
@@ -28,9 +29,6 @@ use crate::runtime::{NodeRunner, TaskHandle, spawn};
 use crate::types::Payload;
 
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
-/// What a poisoned simulation-destinations lock reports: a thread panicked
-/// while replacing the set, so the publisher cannot say where ticks go.
-const DESTINATIONS_LOCK: &str = "simulation destinations lock";
 
 /// Failures observable from a [`ClockSource`]. Wall mode propagates a system
 /// clock error; sim mode reports a missing first tick.
@@ -38,7 +36,7 @@ const DESTINATIONS_LOCK: &str = "simulation destinations lock";
 pub enum ClockSourceError {
     #[error("system clock unavailable: {0}")]
     Wall(String),
-    #[error("clock not ready: no external tick observed yet (sim mode)")]
+    #[error("clock not ready: this clock domain has published no tick yet")]
     NotReady,
 }
 
@@ -61,15 +59,15 @@ impl ClockSource for WallClockSource {
     }
 }
 
-/// Serves timestamps from a cache fed by a subscription to the `clock`
-/// topic. `0` is reserved as "no tick observed yet" so the handler can
-/// return `NotReady` instead of a misleading zero timestamp.
-pub struct SimClockSource {
+/// Serves timestamps from a domain's cache, filled by the subscription a
+/// consumer feeds or by the instant a publisher commits. `0` is reserved as
+/// "no tick observed yet" and reads back as [`ClockSourceError::NotReady`].
+struct SimClockSource {
     cache: Arc<AtomicU64>,
 }
 
 impl SimClockSource {
-    pub fn new(cache: Arc<AtomicU64>) -> Self {
+    fn new(cache: Arc<AtomicU64>) -> Self {
         Self { cache }
     }
 }
@@ -208,254 +206,252 @@ impl ClockSubscription {
 }
 
 /// User-facing clock handle used by hot-path code that needs "what time is
-/// it now" without knowing whether the node was launched in wall or sim
-/// mode. `now_ns` is sync, allocation-free, and safe to call repeatedly.
+/// it now" without knowing which clock its deployment gave it. `now_ns` is
+/// sync, allocation-free, and safe to call repeatedly.
 ///
-/// Build via [`for_node`]; the constructor decides which underlying
-/// source to install based on the daemon's resolved
-/// `framework.use_sim_time`. The generator emits a pre-bound
-/// `peppygen::clock::now_ns()` free function so user code never has to
-/// thread a `PeppyClock` instance around.
+/// Build via [`for_node`]; the constructor reads the instance's one binding
+/// and installs the matching source. The generator emits a pre-bound
+/// `peppygen::clock::now_ns()` free function so user code never threads a
+/// `PeppyClock` around.
 pub struct PeppyClock {
     inner: PeppyClockInner,
 }
 
 enum PeppyClockInner {
     Wall,
-    Sim {
+    /// Reads the domain's ticks as they arrive, cached by a feeder task.
+    Consumer {
         source: SimClockSource,
         // tokio's `JoinHandle` only detaches on drop, so the `Drop` impl
         // below must `abort()` to actually cancel the subscriber task.
         feeder: TaskHandle<Result<()>>,
+    },
+    /// Reads what this instance last committed through its
+    /// [`ClockPublisher`], which shares the same cache.
+    Publisher {
+        source: SimClockSource,
     },
 }
 
 impl Drop for PeppyClockInner {
     fn drop(&mut self) {
         match self {
-            PeppyClockInner::Wall => {}
-            PeppyClockInner::Sim { feeder, .. } => feeder.abort(),
+            PeppyClockInner::Wall | PeppyClockInner::Publisher { .. } => {}
+            PeppyClockInner::Consumer { feeder, .. } => feeder.abort(),
         }
     }
 }
 
 impl PeppyClock {
-    /// Read the current core-node-aligned time in nanoseconds since the
-    /// Unix epoch. In wall mode this is the local OS clock. In sim mode
-    /// this is the most recently observed `ClockTick`, or
-    /// [`Error::ClockNotReady`] if no tick has arrived yet.
+    /// Read the current time in nanoseconds since the Unix epoch, on this
+    /// instance's own clock. Wall time is the local OS clock. A simulated
+    /// domain is the last instant its publisher supplied, or
+    /// [`Error::ClockNotReady`] before the first one.
     pub fn now_ns(&self) -> Result<u64> {
-        match &self.inner {
-            PeppyClockInner::Wall => Ok(wall_now_ns()?),
-            PeppyClockInner::Sim { source, .. } => source.now_ns().map_err(|error| match error {
-                ClockSourceError::NotReady => Error::ClockNotReady,
-                ClockSourceError::Wall(reason) => Error::Io(std::io::Error::other(reason)),
-            }),
-        }
-    }
-}
-
-/// Build a [`PeppyClock`] for `node_runner`. Reads
-/// `framework.use_sim_time` off the daemon-resolved runtime config and
-/// installs either a wall-clock wrapper or a sim-clock subscriber.
-///
-/// In sim mode the constructor opens the `clock` subscription up front so
-/// the first `now_ns()` call after a tick has been published returns
-/// immediately without setup latency. The async surface is part of the
-/// constructor so the hot-path read stays sync.
-pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
-    if !node_runner.processor().use_sim_time() {
-        return Ok(PeppyClock {
-            inner: PeppyClockInner::Wall,
-        });
-    }
-
-    let cache = Arc::new(AtomicU64::new(0));
-    let mut subscription = subscribe(node_runner).await?.into_inner();
-    let feeder_cache = Arc::clone(&cache);
-    // The subscriber is detached: subscription drop happens via the
-    // TaskHandle field on PeppyClock, which aborts the task and walks the
-    // Subscription destructor.
-    let feeder = spawn(async move {
-        while let Some(message) = subscription.on_next_message().await {
-            // A decoded tick is never `0` (`ClockTick` clamps on decode), so
-            // storing it can never write the cache's not-ready sentinel.
-            if let Ok(tick) = ClockTick::decode(message.payload_bytes().as_ref()) {
-                feeder_cache.store(tick.time(), Ordering::Relaxed);
+        let source = match &self.inner {
+            PeppyClockInner::Wall => return Ok(wall_now_ns()?),
+            PeppyClockInner::Consumer { source, .. } | PeppyClockInner::Publisher { source } => {
+                source
             }
-        }
-        Ok(())
-    });
-
-    Ok(PeppyClock {
-        inner: PeppyClockInner::Sim {
-            source: SimClockSource::new(cache),
-            feeder,
-        },
-    })
-}
-
-/// Subscribe to the periodic `clock` topic on `node_runner`'s bound core node.
-pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
-    let inner = crate::core_node::subscribe_core_topic(node_runner, TopicId::Clock.name()).await?;
-    Ok(ClockSubscription { inner })
-}
-
-/// One declared publisher per participant, keyed by its core node.
-type SimPublishers = Vec<(String, TopicPublisher)>;
-
-/// The launch's one source of simulated time: publishes each tick onto the
-/// `clock` topic of every machine the launch placed an instance on.
-///
-/// A daemon in sim mode and every sim-time node on its machine read the
-/// `clock` topic keyed by that machine's core node, so one publish per
-/// machine feeds all of them, and a machine nothing publishes to never becomes
-/// ready. Which machines those are is a launch fact the daemon stamps into
-/// the source's runtime config (`framework.sim_time_source`); the simulator
-/// itself names no machine.
-///
-/// The coordinator updates destinations through `sim_time_participants` as
-/// copies join and leave. Each tick uses one complete snapshot, and
-/// a tick published after that listener stopped fails, naming the restart
-/// that brings it back.
-pub struct SimTimePublisher {
-    publishers: Arc<std::sync::RwLock<Arc<SimPublishers>>>,
-    membership_listener: TaskHandle<Result<()>>,
-}
-
-impl Drop for SimTimePublisher {
-    fn drop(&mut self) {
-        self.membership_listener.abort();
-    }
-}
-
-impl SimTimePublisher {
-    /// Builds the fan-out for `node_runner` from its resolved runtime
-    /// config, or `None` when the launch did not declare this instance its
-    /// time source (`framework: { publishes_sim_time: true }` on its launcher
-    /// entry). Holding a publisher IS being the source, so an undeclared
-    /// node cannot drive fleet time, and a node that may or may not be the
-    /// source branches on the one call instead of pre-checking.
-    pub async fn for_node(node_runner: &NodeRunner) -> Result<Option<Self>> {
-        let processor = node_runner.processor();
-        let Some(participants) = processor.sim_time_source() else {
-            return Ok(None);
         };
-        let publishers = Arc::new(std::sync::RwLock::new(Arc::new(
-            sim_publishers(
-                node_runner.messenger(),
-                processor.bound_core_node(),
-                processor.bound_instance_id(),
-                participants,
-            )
-            .await?,
-        )));
-        let mut endpoint = crate::ServiceMessenger::listen(
-            node_runner.messenger(),
-            processor.bound_core_node(),
-            processor.bound_instance_id(),
-            SenderTarget::node(processor.node_name(), processor.node_tag())?,
-            core_node_api::ServiceId::SimTimeParticipants.name(),
-        )
-        .await?;
-        let destinations = Arc::clone(&publishers);
-        let messenger = node_runner.messenger().clone();
-        let core_node = processor.bound_core_node().to_owned();
-        let instance_id = processor.bound_instance_id().to_owned();
-        let membership_listener = spawn(async move {
-            endpoint
-                .handle_requests(|context| {
-                    let destinations = Arc::clone(&destinations);
-                    let messenger = messenger.clone();
-                    let core_node = core_node.clone();
-                    let instance_id = instance_id.clone();
-                    async move {
-                        let request = core_node_api::encoding::SimTimeParticipantsRequest::decode(
-                            context.message().payload_bytes().as_ref(),
-                        )?;
-                        let replacement = sim_publishers(
-                            &messenger,
-                            &core_node,
-                            &instance_id,
-                            &request.participants,
-                        )
-                        .await?;
-                        *destinations.write().expect(DESTINATIONS_LOCK) = Arc::new(replacement);
-                        core_node_api::encoding::SimTimeParticipantsResponse
-                            .encode()
-                            .map_err(Into::into)
-                    }
-                })
-                .await
-        });
-        Ok(Some(Self {
-            publishers,
-            membership_listener,
-        }))
-    }
-
-    /// The destinations as they stand, held past the lock so a publish walks
-    /// one complete set while a membership update installs the next.
-    fn snapshot(&self) -> Arc<SimPublishers> {
-        Arc::clone(&self.publishers.read().expect(DESTINATIONS_LOCK))
-    }
-
-    /// The core nodes each tick reaches, in the order they are published to.
-    pub fn participants(&self) -> impl Iterator<Item = String> {
-        self.snapshot()
-            .iter()
-            .map(|(core_node, _)| core_node.clone())
-            .collect::<Vec<_>>()
-            .into_iter()
-    }
-
-    /// Publishes `time_ns` to every participant. Every participant is tried
-    /// even after one fails, and the error names each machine that was not
-    /// reached: a machine silently left out is a machine whose time froze.
-    pub async fn publish(&self, time_ns: u64) -> Result<()> {
-        if self.membership_listener.is_finished() {
-            return Err(Error::SimTimeMembershipStopped);
-        }
-        let payload = ClockTick::new(time_ns).encode()?;
-        let mut unreached = Vec::new();
-        let destinations = self.snapshot();
-        for (core_node, publisher) in destinations.iter() {
-            if let Err(error) = publisher.publish(payload.clone()).await {
-                unreached.push(format!("{core_node} ({error})"));
-            }
-        }
-        if unreached.is_empty() {
-            return Ok(());
-        }
-        Err(Error::SimTimeFanOut {
-            unreached: unreached.join(", "),
+        source.now_ns().map_err(|error| match error {
+            ClockSourceError::NotReady => Error::ClockNotReady,
+            ClockSourceError::Wall(reason) => Error::Io(std::io::Error::other(reason)),
         })
     }
 }
 
-/// One `clock` publisher per participant, declared in the order the
-/// participants are listed.
-async fn sim_publishers(
+/// Build a [`PeppyClock`] for `node_runner` from the clock its deployment
+/// bound it to.
+///
+/// A consumer opens its domain's subscription up front, so the first
+/// `now_ns()` after a tick lands returns without setup latency. A publisher
+/// opens nothing: it reads the cache its own [`ClockPublisher::publish`]
+/// commits to, because a source that waited for its own tick to return
+/// through a subscription could never produce the first one. The async
+/// surface is in the constructor so the hot-path read stays sync.
+pub async fn for_node(node_runner: &NodeRunner) -> Result<PeppyClock> {
+    let processor = node_runner.processor();
+    let binding = processor.clock().clone();
+    let cache = Arc::clone(processor.clock_cache());
+    let inner = match binding {
+        ClockBinding::Wall => PeppyClockInner::Wall,
+        ClockBinding::Sim {
+            role: ClockRole::Publisher,
+            ..
+        } => PeppyClockInner::Publisher {
+            source: SimClockSource::new(cache),
+        },
+        ClockBinding::Sim {
+            domain,
+            role: ClockRole::Consumer { publisher },
+        } => {
+            let mut subscription = subscribe_domain(node_runner, &domain, &publisher).await?;
+            let feeder_cache = Arc::clone(&cache);
+            // The subscriber is detached: subscription drop happens via the
+            // TaskHandle field on PeppyClock, which aborts the task and walks
+            // the Subscription destructor.
+            let feeder = spawn(async move {
+                while let Some(message) = subscription.on_next_message().await {
+                    // A decoded tick is never `0` (`ClockTick` clamps on
+                    // decode), so storing it can never write the cache's
+                    // not-ready sentinel.
+                    if let Ok(tick) = ClockTick::decode(message.payload_bytes().as_ref()) {
+                        feeder_cache.store(tick.time(), Ordering::Relaxed);
+                    }
+                }
+                Ok(())
+            });
+            PeppyClockInner::Consumer {
+                source: SimClockSource::new(cache),
+                feeder,
+            }
+        }
+    };
+    Ok(PeppyClock { inner })
+}
+
+/// The wire target a domain's ticks are published on: the `clock` topic of
+/// the machine hosting the domain, exactly where that machine's daemon
+/// publishes its own wall ticks. The `link_id` segment tells the two apart: a
+/// domain's carries its name and incarnation, the daemon's is the reserved
+/// default, and each subscription names the one it reads.
+fn domain_target(domain: &ClockDomainId) -> Result<crate::messaging::SenderTarget> {
+    Ok(SenderTarget::node(
+        domain.core_node.as_str(),
+        names::CORE_NODE_TAG,
+    )?)
+}
+
+/// Subscribe to `domain`'s stream, pinned to the instance that publishes it.
+async fn subscribe_domain(
+    node_runner: &NodeRunner,
+    domain: &ClockDomainId,
+    publisher: &ProducerRef,
+) -> Result<Subscription> {
+    let processor = node_runner.processor();
+    subscribe_domain_stream(
+        node_runner.messenger(),
+        processor.bound_core_node(),
+        processor.bound_instance_id(),
+        domain,
+        publisher,
+    )
+    .await
+}
+
+/// Subscribe to one domain's tick stream from outside a node runtime.
+///
+/// A node reads its own clock through [`for_node`], which needs no argument
+/// because its binding says which domain and whose ticks. This is the same
+/// subscription for a caller that holds only a messenger: the daemon hosting a
+/// domain watches it this way, so `peppy clock list` can say whether the
+/// domain has published an instant and what it was.
+pub async fn subscribe_domain_stream(
     messenger: &crate::MessengerHandle,
-    core_node: &str,
-    instance_id: &str,
-    participants: &config::runtime::SimTimeParticipants,
-) -> Result<SimPublishers> {
-    let mut publishers = Vec::new();
-    for participant in participants {
+    as_core_node: &str,
+    as_instance_id: &str,
+    domain: &ClockDomainId,
+    publisher: &ProducerRef,
+) -> Result<Subscription> {
+    TopicMessenger::subscribe_publisher_pinned(
+        messenger,
+        as_core_node,
+        as_instance_id,
+        publisher,
+        domain_target(domain)?,
+        &domain.link_id(),
+        TopicId::Clock.name(),
+        QoSProfile::SensorData,
+    )
+    .await
+}
+
+/// Subscribe to the ticks of this instance's own clock.
+///
+/// Under wall time that is the bound core node's periodic `clock` topic, on
+/// the reserved default `link_id` its daemon publishes under, so a domain
+/// hosted on that machine stays out of this stream. Under a simulated domain
+/// it is that domain's stream, whichever machine its publisher runs on, so a
+/// source reading this sees exactly what it sent.
+pub async fn subscribe(node_runner: &NodeRunner) -> Result<ClockSubscription> {
+    let processor = node_runner.processor();
+    let inner = match processor.clock().clone() {
+        ClockBinding::Wall => {
+            crate::core_node::subscribe_core_topic(node_runner, TopicId::Clock.name()).await?
+        }
+        ClockBinding::Sim { domain, role } => {
+            let publisher = match role {
+                ClockRole::Publisher => {
+                    ProducerRef::new(processor.bound_core_node(), processor.bound_instance_id())
+                }
+                ClockRole::Consumer { publisher } => publisher,
+            };
+            subscribe_domain(node_runner, &domain, &publisher).await?
+        }
+    };
+    Ok(ClockSubscription { inner })
+}
+
+/// The instance that supplies one simulated clock domain.
+///
+/// Held only by the instance a domain declaration named, so holding one IS
+/// being that domain's source. Each `publish` commits the instant locally and
+/// sends one tick on the domain's stream; every instance bound to the domain
+/// reads that stream, wherever it runs.
+pub struct ClockPublisher {
+    domain: ClockDomainId,
+    cache: Arc<AtomicU64>,
+    publisher: TopicPublisher,
+}
+
+impl ClockPublisher {
+    /// Builds the publisher for `node_runner` from its resolved binding, or
+    /// `None` when its deployment did not name it a domain's publisher. A node
+    /// that may or may not be a source branches on this one call.
+    pub async fn for_node(node_runner: &NodeRunner) -> Result<Option<Self>> {
+        let processor = node_runner.processor();
+        let ClockBinding::Sim {
+            domain,
+            role: ClockRole::Publisher,
+        } = processor.clock()
+        else {
+            return Ok(None);
+        };
+        let domain = domain.clone();
         let publisher = TopicMessenger::declare_publisher(
-            messenger,
-            core_node,
-            instance_id,
-            SenderTarget::node(participant.as_str(), names::CORE_NODE_TAG)?,
-            None,
+            node_runner.messenger(),
+            processor.bound_core_node(),
+            processor.bound_instance_id(),
+            domain_target(&domain)?,
+            Some(&domain.link_id()),
             TopicId::Clock.name(),
             QoSProfile::SensorData,
         )
         .await?;
-        publishers.push((participant.to_string(), publisher));
+        Ok(Some(Self {
+            domain,
+            cache: Arc::clone(processor.clock_cache()),
+            publisher,
+        }))
     }
-    Ok(publishers)
+
+    /// The domain this instance supplies.
+    pub fn domain(&self) -> &ClockDomainId {
+        &self.domain
+    }
+
+    /// Commits `time_ns` as this domain's current instant and sends it.
+    ///
+    /// The commit happens first, so the source's own `now_ns()` reports the
+    /// instant it is publishing rather than waiting for the tick to return
+    /// through a subscription, which is what lets it stamp the very data it
+    /// emits for this step.
+    pub async fn publish(&self, time_ns: u64) -> Result<()> {
+        let tick = ClockTick::new(time_ns);
+        self.cache.store(tick.time(), Ordering::Relaxed);
+        self.publisher.publish(tick.encode()?).await
+    }
 }
 
 fn compute_sync(t0: u64, t1: u64, t2: u64, t3: u64) -> (i64, u64) {
@@ -498,10 +494,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peppy_clock_sim_reports_not_ready_until_first_tick() {
-        // Construct a sim clock without spawning a real subscriber by
-        // skipping `for_node`. The feeder slot is filled with a
-        // parked task that keeps the type signature consistent.
+    async fn a_consumer_reports_not_ready_until_its_domain_ticks() {
+        // Build the consumer shape without a live subscription by skipping
+        // `for_node`; the feeder slot holds a parked task so the type is the
+        // one a real consumer carries.
         let cache = Arc::new(AtomicU64::new(0));
         let cache_clone = Arc::clone(&cache);
         let feeder = spawn(async move {
@@ -509,7 +505,7 @@ mod tests {
             Ok(())
         });
         let clock = PeppyClock {
-            inner: PeppyClockInner::Sim {
+            inner: PeppyClockInner::Consumer {
                 source: SimClockSource::new(cache_clone),
                 feeder,
             },
@@ -524,26 +520,25 @@ mod tests {
         assert_eq!(clock.now_ns().expect("populated cache reads ok"), 42);
     }
 
-    /// A source whose membership listener has stopped hears no join and no
-    /// removal, so its destination set is frozen wherever the launch left it.
-    /// Publishing through it is refused, naming the restart that revives it.
-    #[tokio::test]
-    async fn publishing_without_a_membership_listener_is_refused() {
-        let mut membership_listener = spawn(async { Ok(()) });
-        (&mut membership_listener)
-            .await
-            .expect("the listener task joins")
-            .expect("the listener ends without error");
-        let publisher = SimTimePublisher {
-            publishers: Arc::new(std::sync::RwLock::new(Arc::new(Vec::new()))),
-            membership_listener,
+    /// A publisher reads the instant it committed with nothing published and
+    /// no subscription open: producing the first tick cannot depend on reading
+    /// a clock only this instance advances.
+    #[test]
+    fn a_publisher_reads_what_it_committed_without_a_transport_echo() {
+        let cache = Arc::new(AtomicU64::new(0));
+        let clock = PeppyClock {
+            inner: PeppyClockInner::Publisher {
+                source: SimClockSource::new(Arc::clone(&cache)),
+            },
         };
 
-        let error = publisher
-            .publish(42)
-            .await
-            .expect_err("a stopped listener must refuse a tick");
-        assert!(matches!(error, Error::SimTimeMembershipStopped), "{error}");
+        let err = clock
+            .now_ns()
+            .expect_err("nothing committed yet is not ready");
+        assert!(matches!(err, Error::ClockNotReady), "got {err:?}");
+
+        cache.store(7, Ordering::Relaxed);
+        assert_eq!(clock.now_ns().expect("committed instant reads back"), 7);
     }
 }
 

@@ -275,7 +275,7 @@ struct RepoResolvedEntry {
 
 struct NodeRunGoal {
     # JSON5-encoded `NodeInstancePlan`: instance id, arguments, the
-    # unresolved `use_sim_time` override, and the resolved slot bindings.
+    # clock binding, and the resolved slot bindings.
     #
     # Deliberately a PLAN and not an assembled runtime config. A daemon owns
     # the runtime identity of every node it spawns, so the messaging
@@ -534,6 +534,11 @@ struct NodeInstanceInfo {
     # `depends_on.pairings` entry). Empty string when the node declares no
     # pairings.
     pairingSlotsJson @4 :Text;
+    # JSON-encoded `config::runtime::ClockBinding`: the one clock this instance
+    # reads, and its role in that clock's domain. Empty string for wall time,
+    # which is also what a message from a producer that predates clock domains
+    # reads as.
+    clockJson @5 :Text;
 }
 
 # Node info lookup result.

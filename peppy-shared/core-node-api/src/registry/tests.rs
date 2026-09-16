@@ -33,6 +33,7 @@ fn display_name(pd: &PayloadDescriptor) -> String {
 fn pinned_service_name(id: ServiceId) -> &'static str {
     match id {
         ServiceId::Clock => "clock",
+        ServiceId::ClockList => "clock_list",
         ServiceId::Info => "info",
         ServiceId::Health => "health",
         ServiceId::DatastoreStore => "datastore_store",
@@ -57,7 +58,6 @@ fn pinned_service_name(id: ServiceId) -> &'static str {
         ServiceId::RepoList => "repo_list",
         ServiceId::RepoRemove => "repo_remove",
         ServiceId::ClockOffset => "clock_offset",
-        ServiceId::SimTimeParticipants => "sim_time_participants",
     }
 }
 

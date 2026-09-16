@@ -11,6 +11,7 @@ use config::{
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use tokio::sync::watch;
 
 use super::builder::StandaloneConfig;
@@ -57,6 +58,13 @@ pub struct Processor {
     /// also gates the slot's seed at startup, so a floored slot cannot boot
     /// observing less than its manifest declares.
     observation_cardinalities: BTreeMap<String, Cardinality>,
+    /// The instant this instance's clock last saw, shared by every handle that
+    /// reads or writes it. A consumer's subscription feeds it; a publisher's
+    /// `publish` commits to it and reads it straight back, which is how a
+    /// source reports its own time without waiting for a transport echo.
+    /// `0` is "no tick yet", so a read before the first one is not ready.
+    /// Unused under wall time, where the OS clock answers.
+    clock_cache: Arc<AtomicU64>,
 }
 
 impl Processor {
@@ -144,6 +152,7 @@ impl Processor {
             pairing_slots,
             observation_slots,
             observation_cardinalities,
+            clock_cache: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -272,17 +281,12 @@ impl Processor {
             NodeInstanceConfig {
                 slot_bindings,
                 observation_seeds,
-                // Daemon-less stand-in for the launcher/daemon `use_sim_time`
-                // and `publishes_sim_time` resolution: written to the same
-                // resolved `framework` field a daemon launch fills, so neither
-                // `clock::for_node` nor `SimTimePublisher::for_node` needs a
-                // standalone-specific branch. Mirrors the launch rule that a
-                // declared source is inert under wall time: participants are
-                // still parsed, but resolve to no source.
+                // Daemon-less stand-in for a launcher's clock binding,
+                // written to the same resolved `framework` field a daemon
+                // launch fills, so neither `clock::for_node` nor
+                // `ClockPublisher::for_node` needs a standalone branch.
                 framework: config::runtime::ResolvedFramework {
-                    use_sim_time: config.use_sim_time,
-                    sim_time_source: standalone_sim_time_source(&config.sim_time_participants)?
-                        .filter(|_| config.use_sim_time),
+                    clock: config.clock.clone(),
                 },
                 ..NodeInstanceConfig::new(instance_id_name)
             },
@@ -322,6 +326,7 @@ impl Processor {
             pairing_slots,
             observation_slots,
             observation_cardinalities,
+            clock_cache: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -400,22 +405,18 @@ impl Processor {
         std::time::Duration::from_secs(self.runtime_config.lifecycle.shutdown_grace_secs)
     }
 
-    /// Daemon-resolved framework `use_sim_time` flag for this instance.
-    /// Read by [`crate::clock::for_node`] to pick between
-    /// the wall-time and sim-time `PeppyClock` implementations.
-    pub fn use_sim_time(&self) -> bool {
-        self.runtime_config.node_instance.framework.use_sim_time
+    /// The one clock this instance reads, and its role in that clock's
+    /// domain. Read by [`crate::clock::for_node`] to install the right
+    /// source, and by [`crate::clock::ClockPublisher::for_node`], which hands
+    /// a publisher out only to the instance a domain declaration named.
+    pub fn clock(&self) -> &config::runtime::ClockBinding {
+        &self.runtime_config.node_instance.framework.clock
     }
 
-    /// The machines this instance publishes simulated time to, one `clock`
-    /// topic each, present only when the launch declared it the time source.
-    /// Read by [`crate::clock::SimTimePublisher::for_node`].
-    pub fn sim_time_source(&self) -> Option<&config::runtime::SimTimeParticipants> {
-        self.runtime_config
-            .node_instance
-            .framework
-            .sim_time_source
-            .as_ref()
+    /// The instance's shared clock cache. See [`Self::clock_cache`] on the
+    /// struct field for why one instance has exactly one.
+    pub fn clock_cache(&self) -> &Arc<AtomicU64> {
+        &self.clock_cache
     }
 
     /// The runtime-resolved, immutable, ordered producer set bound to the
@@ -770,29 +771,6 @@ fn build_bound_producers(
         }
     }
     Ok(out)
-}
-
-/// Parses the standalone builder's participant list into the resolved form:
-/// an empty list is "not a source", anything else must be valid core-node
-/// names with no duplicates, exactly what a daemon-stamped launch delivers.
-fn standalone_sim_time_source(
-    core_nodes: &[String],
-) -> Result<Option<config::runtime::SimTimeParticipants>> {
-    if core_nodes.is_empty() {
-        return Ok(None);
-    }
-    let names = core_nodes
-        .iter()
-        .map(|core_node| {
-            Name::new(core_node.clone()).map_err(|e| Error::InvalidCoreNodeName {
-                node_name: core_node.clone(),
-                reason: e.to_string(),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let participants =
-        config::runtime::SimTimeParticipants::try_from(names).map_err(config::ConfigError::from)?;
-    Ok(Some(participants))
 }
 
 #[cfg(test)]
@@ -1380,7 +1358,7 @@ mod tests {
     }
 
     #[test]
-    fn standalone_mode_resolves_use_sim_time_like_a_launch_would() {
+    fn standalone_mode_resolves_the_clock_like_a_launch_would() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
 
         let peppy_config_path = temp_dir.path().join("peppy.json5");
@@ -1394,17 +1372,24 @@ mod tests {
 
         let wall = Processor::new_standalone(&peppy_config_path, &StandaloneConfig::new())
             .expect("should create processor");
-        assert!(!wall.use_sim_time(), "wall mode is the default");
+        assert!(wall.clock().is_wall(), "wall time is the default");
 
+        let domain = config::runtime::ClockDomainId::new(
+            config::runtime::Name::new("robot").expect("valid name"),
+            config::runtime::CoreNodeName::new("cn-sim").expect("valid core node name"),
+            config::runtime::ClockIncarnation::try_from(3).expect("non-zero"),
+        );
         let sim = Processor::new_standalone(
             &peppy_config_path,
-            &StandaloneConfig::new().with_use_sim_time(true),
+            &StandaloneConfig::new()
+                .with_clock(config::runtime::ClockBinding::publisher(domain.clone())),
         )
         .expect("should create processor");
         assert!(
-            sim.use_sim_time(),
-            "with_use_sim_time must land in the resolved framework block"
+            sim.clock().is_publisher(),
+            "with_clock must land in the resolved framework block"
         );
+        assert_eq!(sim.clock().domain(), Some(&domain));
     }
 
     #[test]

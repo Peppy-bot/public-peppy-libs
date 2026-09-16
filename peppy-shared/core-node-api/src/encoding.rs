@@ -15,8 +15,8 @@ mod stack;
 // now lives at `node::builder` alongside `node::add`.
 
 pub use clock::{
-    ClockOffsetRequest, ClockOffsetResponse, ClockRequest, ClockResponse, ClockTick,
-    SimTimeParticipantsRequest, SimTimeParticipantsResponse,
+    ClockConsumerInfo, ClockDomainInfo, ClockListRequest, ClockListResponse, ClockOffsetRequest,
+    ClockOffsetResponse, ClockRequest, ClockResponse, ClockTick,
 };
 pub use datastore::{
     DatastoreGetRequest, DatastoreGetResponse, DatastoreKey, DatastoreKeyError, DatastoreListEntry,

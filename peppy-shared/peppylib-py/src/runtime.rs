@@ -1181,23 +1181,12 @@ impl PyStandaloneConfig {
         }
     }
 
-    /// Resolve the node's `framework.use_sim_time` to `use_sim_time`, the
-    /// standalone spelling of a launcher's `framework: { use_sim_time: ... }`
-    /// override (defaults to `False`, wall mode). With `True`,
-    /// `peppylib.clock.for_node` (and the generated `peppygen.clock`)
-    /// installs the sim-time source exactly as a daemon launch would have.
-    fn with_use_sim_time(&self, use_sim_time: bool) -> Self {
+    /// Bind the node to `clock`, the standalone spelling of a launcher's
+    /// `framework: { clock: "<domain>" }` and of the publisher a domain
+    /// declaration names. Wall time is the default.
+    fn with_clock(&self, clock: &crate::clock::PyClockBinding) -> Self {
         Self {
-            inner: self.inner.clone().with_use_sim_time(use_sim_time),
-        }
-    }
-
-    /// Make this node the simulated-time source for `core_nodes`, the
-    /// standalone spelling of a launcher's `framework: { publishes_sim_time:
-    /// true }` (which the daemon resolves to every machine of the launch).
-    fn with_sim_time_participants(&self, core_nodes: Vec<String>) -> Self {
-        Self {
-            inner: self.inner.clone().with_sim_time_participants(core_nodes),
+            inner: self.inner.clone().with_clock(clock.inner.clone()),
         }
     }
 

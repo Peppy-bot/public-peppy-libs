@@ -358,7 +358,7 @@ async def test_harness_core_shutdown_propagates_setup_error(tmp_path):
             await harness.shutdown()
 
 
-async def _standalone_node_runner(router, tmp_path, use_sim_time: bool):
+async def _standalone_node_runner(router, tmp_path, clock_binding):
     """A standalone ``NodeRunner`` against ``router``, exactly what a
     harness-booted node's runtime looks like to ``peppylib.clock``."""
     from peppylib import NodeRunner
@@ -368,7 +368,7 @@ async def _standalone_node_runner(router, tmp_path, use_sim_time: bool):
         StandaloneConfig()
         .with_messaging(router.host, router.port)
         .with_instance_id(CALLER_INSTANCE)
-        .with_use_sim_time(use_sim_time)
+        .with_clock(clock_binding)
     )
     return await NodeRunner.new_standalone(str(peppy_config_path), standalone_config)
 
@@ -399,10 +399,10 @@ async def test_mock_clock_wall_serves_synchronize_ticks_and_scripted_skew(tmp_pa
 
     async with await EphemeralRouter.start() as router:
         clock_handle = await router.connect()
-        clock = await MockClock.start_wall(
-            clock_handle, STANDALONE_CORE_NODE, MOCK_CLOCK_INSTANCE_ID
+        clock = await MockClock.start(
+            clock_handle, STANDALONE_CORE_NODE, MOCK_CLOCK_INSTANCE_ID, "wall"
         )
-        node_runner = await _standalone_node_runner(router, tmp_path, use_sim_time=False)
+        node_runner = await _standalone_node_runner(router, tmp_path, clock.binding())
         try:
             await _wait_clock_reachable(node_runner, clock)
 
@@ -430,8 +430,9 @@ async def test_mock_clock_wall_serves_synchronize_ticks_and_scripted_skew(tmp_pa
                 f"tick {tick.time} should carry the scripted skew"
             )
 
-            # Driving sim time at a wall clock is a test bug surfaced loudly.
-            with pytest.raises(RuntimeError, match="wall-mode"):
+            # Driving a domain at a wall-time node is a test bug surfaced
+            # loudly.
+            with pytest.raises(RuntimeError, match="consumer"):
                 await clock.tick(42)
         finally:
             await clock.close()
@@ -440,43 +441,35 @@ async def test_mock_clock_wall_serves_synchronize_ticks_and_scripted_skew(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_mock_clock_sim_drives_peppy_clock_and_synchronize(tmp_path):
-    """A sim-mode mock clock reproduces a sim-mode stack with the test as the
-    simulator: ``synchronize`` answers "clock not ready" before the first
-    tick, ``for_node`` installs the sim source off the standalone
-    ``use_sim_time``, and each ``tick`` lands in both the service's answers
-    and the node's ``PeppyClock``."""
+async def test_mock_clock_consumer_drives_the_nodes_own_clock(tmp_path):
+    """A node booted onto the harness's simulated domain reads nothing until
+    the test supplies an instant, then reads exactly what it supplied. The
+    ``clock`` service keeps answering from wall time, which is what a daemon
+    serves whatever its instances read."""
     from peppylib import clock as peppy_clock
 
     async with await EphemeralRouter.start() as router:
         clock_handle = await router.connect()
-        clock = await MockClock.start_sim(
-            clock_handle, STANDALONE_CORE_NODE, MOCK_CLOCK_INSTANCE_ID
+        clock = await MockClock.start(
+            clock_handle, STANDALONE_CORE_NODE, MOCK_CLOCK_INSTANCE_ID, "consumer"
         )
-        node_runner = await _standalone_node_runner(router, tmp_path, use_sim_time=True)
+        node_runner = await _standalone_node_runner(router, tmp_path, clock.binding())
         try:
             await _wait_clock_reachable(node_runner, clock)
 
-            # Before the first tick, sim mode has no time to serve.
-            with pytest.raises(Exception, match="clock not ready"):
-                await peppy_clock.synchronize(node_runner, response_timeout_secs=5.0)
+            # The daemon's clock service serves wall time in every domain, so
+            # this answers before any tick.
+            sync = await peppy_clock.synchronize(node_runner, response_timeout_secs=5.0)
+            assert sync.raw.server_recv_time > 0
 
-            # `for_node` reads the standalone-resolved `use_sim_time` and
-            # installs the sim source, whose read errors until a tick arrives.
             node_clock = await peppy_clock.for_node(node_runner)
             with pytest.raises(RuntimeError):
                 node_clock.now_ns()
 
-            # The tick is written to the service cache before it is
-            # published, so this synchronize cannot observe the older state.
             sim_ns = 42_000_000_000
             await clock.tick(sim_ns)
-            sync = await peppy_clock.synchronize(node_runner, response_timeout_secs=5.0)
-            assert sync.raw.server_recv_time == sim_ns
-            assert sync.raw.server_send_time == sim_ns
 
-            # The published tick reaches the node's PeppyClock; wait on
-            # observation, not on a fixed delay.
+            # Wait on observation, not on a fixed delay.
             deadline = asyncio.get_running_loop().time() + 10.0
             while True:
                 try:
@@ -487,18 +480,45 @@ async def test_mock_clock_sim_drives_peppy_clock_and_synchronize(tmp_path):
                     # while waiting, so chaining it onto the deadline failure
                     # only buries the message that matters.
                     if asyncio.get_running_loop().time() >= deadline:
-                        raise AssertionError("sim tick never reached PeppyClock") from None
+                        raise AssertionError("the tick never reached PeppyClock") from None
                     await asyncio.sleep(0.01)
 
             # `0` is the wire's not-ready sentinel; ticking it stores the
             # clamped 1.
             await clock.tick(0)
-            clamped = await peppy_clock.synchronize(node_runner, response_timeout_secs=5.0)
-            assert clamped.raw.server_recv_time == 1
+        finally:
+            await clock.close()
+            del node_runner
+            gc.collect()
 
-            # Skewing wall time at a sim clock is a test bug surfaced loudly.
-            with pytest.raises(RuntimeError, match="sim-mode"):
-                clock.set_offset_ns(1)
+
+@pytest.mark.asyncio
+async def test_mock_clock_publisher_leaves_the_domain_to_the_node(tmp_path):
+    """A node booted as its domain's publisher supplies the time itself: the
+    harness publishes nothing, and driving the domain from the test is
+    refused."""
+    from peppylib import clock as peppy_clock
+
+    async with await EphemeralRouter.start() as router:
+        clock_handle = await router.connect()
+        clock = await MockClock.start(
+            clock_handle, STANDALONE_CORE_NODE, MOCK_CLOCK_INSTANCE_ID, "publisher"
+        )
+        node_runner = await _standalone_node_runner(router, tmp_path, clock.binding())
+        try:
+            await _wait_clock_reachable(node_runner, clock)
+
+            publisher = await peppy_clock.ClockPublisher.for_node(node_runner)
+            assert publisher is not None, "the harness named this node the publisher"
+
+            sim_ns = 5_000_000_000
+            await publisher.publish(sim_ns)
+
+            node_clock = await peppy_clock.for_node(node_runner)
+            assert node_clock.now_ns() == sim_ns, "a source reads what it committed"
+
+            with pytest.raises(RuntimeError, match="consumer"):
+                await clock.tick(1)
         finally:
             await clock.close()
             del node_runner

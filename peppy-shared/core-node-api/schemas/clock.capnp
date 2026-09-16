@@ -43,12 +43,52 @@ struct ClockOffsetRequest {
 struct ClockOffsetResponse {
     offsetNs @0 :Int64;
     roundTripDelayNs @1 :UInt64;
+    # The clock domain the reporting instance reads, as `name@coreNode`, or
+    # empty for wall time. An offset is only meaningful against the timeline it
+    # was measured on, and an instance reading a simulated domain reports zero:
+    # every peer it may connect to reads that same domain, so their instants
+    # are already comparable.
+    domain @2 :Text;
 }
 
-# Replaces the active time source's destinations after a copy joins or
-# leaves. The new set must be nonempty and contain distinct core node names.
-struct SimTimeParticipantsRequest {
-    participants @0 :List(Text);
+# One clock domain a daemon hosts: a name, the machine its publisher runs on,
+# and the lifetime it was minted for. Two domains are the same timeline only
+# when all three agree, which is why the incarnation travels.
+struct ClockDomainInfo {
+    name @0 :Text;
+    coreNode @1 :Text;
+    incarnation @2 :UInt64;
+    # The instance supplying this domain, on `coreNode`.
+    publisherInstanceId @3 :Text;
+    # The launch that started the publisher, and the daemon that drove it.
+    # They travel as a pair: both carry a value, or both are empty, which is
+    # how a publisher started by `peppy node run` reports having no launch.
+    launchId @4 :Text;
+    coordinatorCoreNode @5 :Text;
+    # Whether the domain has published an instant yet. A domain whose
+    # publisher stopped keeps its last one and reports `false` here only if it
+    # never published at all.
+    ready @6 :Bool;
+    # The last instant this daemon saw on the domain, or 0 for none.
+    lastTickNs @7 :UInt64;
 }
 
-struct SimTimeParticipantsResponse {}
+# One instance on the answering daemon that reads a domain, wherever that
+# domain is hosted.
+struct ClockConsumerInfo {
+    instanceId @0 :Text;
+    domainName @1 :Text;
+    domainCoreNode @2 :Text;
+    incarnation @3 :UInt64;
+}
+
+struct ClockListRequest {
+}
+
+struct ClockListResponse {
+    # The domains whose publisher runs on the answering daemon.
+    domains @0 :List(ClockDomainInfo);
+    # The instances on the answering daemon that read a domain, including
+    # domains hosted elsewhere.
+    consumers @1 :List(ClockConsumerInfo);
+}

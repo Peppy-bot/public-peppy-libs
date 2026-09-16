@@ -7,8 +7,9 @@
 use std::sync::Arc;
 
 use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
-use peppylib::clock::{ClockSync, PeppyClock, SimTimePublisher, for_node, subscribe, synchronize};
+use peppylib::clock::{ClockPublisher, ClockSync, PeppyClock, for_node, subscribe, synchronize};
 use peppylib::messaging::Subscription;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use tokio::sync::Mutex;
@@ -278,9 +279,9 @@ fn subscribe_clock_py<'py>(
 /// [`peppylib::clock::PeppyClock`]: hides whether the node was
 /// launched in wall or sim mode and exposes a sync `now_ns()` for hot paths.
 ///
-/// Build via [`clock_for_node_py`]. In sim mode the constructor opens the
-/// `clock` subscription up front so subsequent `now_ns()` reads from the
-/// in-memory cache.
+/// Build via [`clock_for_node_py`]. A consumer opens its domain's
+/// subscription up front so subsequent `now_ns()` reads from the in-memory
+/// cache; a publisher reads what it last committed.
 #[pyclass(name = "PeppyClock")]
 pub struct PyPeppyClock {
     inner: PeppyClock,
@@ -288,16 +289,16 @@ pub struct PyPeppyClock {
 
 #[pymethods]
 impl PyPeppyClock {
-    /// Read the current core-node-aligned time in nanoseconds since the
-    /// Unix epoch. Raises `RuntimeError` in sim mode if no `ClockTick` has
-    /// been observed yet.
+    /// Read the current time in nanoseconds since the Unix epoch, on this
+    /// instance's own clock. Raises `RuntimeError` if its domain has not
+    /// ticked yet.
     fn now_ns(&self) -> PyResult<u64> {
         self.inner.now_ns().map_err(to_py_err)
     }
 }
 
-/// Build a [`PyPeppyClock`] for `node_runner`. Reads the daemon-resolved
-/// `framework.use_sim_time` flag and installs the matching backend.
+/// Build a [`PyPeppyClock`] for `node_runner`. Reads the clock its deployment
+/// bound it to and installs the matching source.
 #[pyfunction]
 #[pyo3(name = "clock_for_node")]
 fn clock_for_node_py<'py>(
@@ -311,41 +312,114 @@ fn clock_for_node_py<'py>(
     })
 }
 
-/// The launch's one source of simulated time. Mirrors
-/// [`peppylib::clock::SimTimePublisher`]: each `publish` lands the tick on the
-/// `clock` topic of every machine the launch placed an instance on.
-#[pyclass(name = "SimTimePublisher")]
-pub struct PySimTimePublisher {
-    inner: Arc<SimTimePublisher>,
+/// The one clock an instance reads, and its role in that clock's domain.
+/// Built by a test or a standalone run to stand in for what a deployment
+/// would have bound.
+// Taken only by reference from Python, so it needs no extraction impl.
+#[pyclass(name = "ClockBinding", skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyClockBinding {
+    pub(crate) inner: config::runtime::ClockBinding,
+}
+
+fn domain_id(
+    name: &str,
+    core_node: &str,
+    incarnation: u64,
+) -> PyResult<config::runtime::ClockDomainId> {
+    Ok(config::runtime::ClockDomainId::new(
+        config::runtime::Name::new(name).map_err(|e| PyValueError::new_err(e.to_string()))?,
+        config::runtime::CoreNodeName::new(core_node)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?,
+        config::runtime::ClockIncarnation::try_from(incarnation)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?,
+    ))
 }
 
 #[pymethods]
-impl PySimTimePublisher {
-    /// Build the fan-out for `node_runner` from its resolved runtime
-    /// config, or `None` when the launch did not declare this instance its
-    /// time source (`framework: { publishes_sim_time: true }`). A node that
-    /// may or may not be the source branches on the one call.
+impl PyClockBinding {
+    /// The instance reads its own machine's clock.
+    #[staticmethod]
+    fn wall() -> Self {
+        Self {
+            inner: config::runtime::ClockBinding::Wall,
+        }
+    }
+
+    /// The instance reads the named domain, supplied by `publisher_instance_id`
+    /// on `publisher_core_node`.
+    #[staticmethod]
+    fn consumer(
+        name: &str,
+        core_node: &str,
+        incarnation: u64,
+        publisher_core_node: &str,
+        publisher_instance_id: &str,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: config::runtime::ClockBinding::consumer(
+                domain_id(name, core_node, incarnation)?,
+                config::runtime::ProducerRef::new(publisher_core_node, publisher_instance_id),
+            ),
+        })
+    }
+
+    /// The instance supplies the named domain.
+    #[staticmethod]
+    fn publisher(name: &str, core_node: &str, incarnation: u64) -> PyResult<Self> {
+        Ok(Self {
+            inner: config::runtime::ClockBinding::publisher(domain_id(
+                name,
+                core_node,
+                incarnation,
+            )?),
+        })
+    }
+
+    /// The domain as `name@core_node`, or `"wall"`.
+    fn __str__(&self) -> String {
+        self.inner.label()
+    }
+
+    /// The wire segment this binding's domain publishes its ticks under, or
+    /// `None` for wall time.
+    #[getter]
+    fn link_id(&self) -> Option<String> {
+        self.inner.domain().map(|domain| domain.link_id())
+    }
+}
+
+/// The instance that supplies one simulated clock domain. Mirrors
+/// [`peppylib::clock::ClockPublisher`]: each `publish` commits the instant
+/// locally and sends it on the domain's stream.
+#[pyclass(name = "ClockPublisher")]
+pub struct PyClockPublisher {
+    inner: Arc<ClockPublisher>,
+}
+
+#[pymethods]
+impl PyClockPublisher {
+    /// Build the publisher from `node_runner`'s resolved binding, or `None`
+    /// when its deployment did not name it a domain's publisher. A node that
+    /// may or may not be a source branches on this one call.
     #[staticmethod]
     fn for_node<'py>(py: Python<'py>, node_runner: &PyNodeRunner) -> PyResult<Bound<'py, PyAny>> {
         let runner = node_runner.inner.clone();
         crate::py_future::future_into_py(py, async move {
-            let publisher = SimTimePublisher::for_node(&runner)
-                .await
-                .map_err(to_py_err)?;
-            Ok(publisher.map(|publisher| PySimTimePublisher {
+            let publisher = ClockPublisher::for_node(&runner).await.map_err(to_py_err)?;
+            Ok(publisher.map(|publisher| PyClockPublisher {
                 inner: Arc::new(publisher),
             }))
         })
     }
 
-    /// The core nodes each tick reaches, in publish order.
+    /// The domain this instance supplies, as `name@core_node`.
     #[getter]
-    fn participants(&self) -> Vec<String> {
-        self.inner.participants().collect()
+    fn domain(&self) -> String {
+        self.inner.domain().to_string()
     }
 
-    /// Publish `time_ns` to every participant. Raises `RuntimeError` naming
-    /// every machine the tick did not reach.
+    /// Commit `time_ns` as the domain's current instant and send it.
     fn publish<'py>(&self, py: Python<'py>, time_ns: u64) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         crate::py_future::future_into_py(py, async move {
@@ -363,7 +437,8 @@ pub(crate) fn register_into(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyClockSync>()?;
     module.add_class::<PyClockSubscription>()?;
     module.add_class::<PyPeppyClock>()?;
-    module.add_class::<PySimTimePublisher>()?;
+    module.add_class::<PyClockPublisher>()?;
+    module.add_class::<PyClockBinding>()?;
     module.add_function(wrap_pyfunction!(synchronize_clock, module)?)?;
     module.add_function(wrap_pyfunction!(subscribe_clock_py, module)?)?;
     module.add_function(wrap_pyfunction!(clock_for_node_py, module)?)?;

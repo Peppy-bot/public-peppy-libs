@@ -305,6 +305,7 @@ pub enum ClockConfidence {
     SameHost,
     CrossHostCorrected,
     CrossHostFlagged,
+    SharedClock,
 }
 
 impl ClockConfidence {
@@ -314,6 +315,7 @@ impl ClockConfidence {
             Self::SameHost => "same-host",
             Self::CrossHostCorrected => "corrected",
             Self::CrossHostFlagged => "flagged",
+            Self::SharedClock => "shared-clock",
         }
     }
 
@@ -324,6 +326,7 @@ impl ClockConfidence {
             Self::SameHost => W::SameHost,
             Self::CrossHostCorrected => W::CrossHostCorrected,
             Self::CrossHostFlagged => W::CrossHostFlagged,
+            Self::SharedClock => W::SharedClock,
         }
     }
 
@@ -334,6 +337,7 @@ impl ClockConfidence {
             W::SameHost => Self::SameHost,
             W::CrossHostCorrected => Self::CrossHostCorrected,
             W::CrossHostFlagged => Self::CrossHostFlagged,
+            W::SharedClock => Self::SharedClock,
         }
     }
 }

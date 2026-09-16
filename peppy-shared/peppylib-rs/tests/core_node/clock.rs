@@ -1,10 +1,13 @@
 use std::time::Duration;
 
 use config::node::QoSProfile;
+use config::runtime::{
+    ClockBinding, ClockDomainId, ClockIncarnation, CoreNodeName, Name, ProducerRef,
+};
 use core_node_api::encoding::{ClockResponse, ClockTick};
-use core_node_api::{ServiceId, TopicId};
+use core_node_api::{ServiceId, TopicId, names};
 use peppylib::clock;
-use peppylib::messaging::{MessengerHandle, ServiceMessenger};
+use peppylib::messaging::{MessengerHandle, SenderTarget, ServiceMessenger, TopicMessenger};
 use peppylib::testing::EphemeralRouter;
 use tempfile::TempDir;
 
@@ -116,87 +119,26 @@ async fn subscribe_clock_yields_typed_ticks() {
     assert_eq!(tick, canned);
 }
 
-/// The core nodes a fleet launch would have stamped onto its time source:
-/// the machine the source runs on plus every other machine of the launch.
-const FLEET: [&str; 3] = ["cn-fleet-sim", "cn-fleet-robot-a", "cn-fleet-robot-b"];
+/// The instance a domain declaration names as its publisher.
+const SOURCE_INSTANCE: &str = "sim_inst";
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_running_time_source_updates_destinations_for_join_and_remove() {
-    use core_node_api::encoding::{SimTimeParticipantsRequest, SimTimeParticipantsResponse};
-    use peppylib::messaging::{SenderTarget, ServiceTarget, TopicMessenger};
-    let (_router, _directory, runner, observer) = start_time_source_runner(true).await;
-    let publisher = clock::SimTimePublisher::for_node(&runner)
-        .await
-        .unwrap()
-        .unwrap();
-    let late_host = "cn-fleet-late-robot";
-    let mut ticks = TopicMessenger::subscribe_target_scoped(
-        &observer,
-        late_host,
-        "clock_reader",
-        test_node_target(late_host),
-        TopicId::Clock.name(),
-        QoSProfile::SensorData,
+/// A domain on this test's machine, at the given lifetime.
+fn domain(incarnation: u64) -> ClockDomainId {
+    ClockDomainId::new(
+        Name::new("robot").expect("valid name"),
+        CoreNodeName::new(CORE_NODE).expect("valid core node name"),
+        ClockIncarnation::try_from(incarnation).expect("non-zero"),
     )
-    .await
-    .unwrap();
-    wait_for_topic_subscriber(
-        runner.messenger(),
-        CORE_NODE,
-        super::common::CLIENT_INSTANCE,
-        test_node_target(late_host),
-        TopicId::Clock.name(),
-    )
-    .await;
-    let processor = runner.processor();
-    let source = SenderTarget::node(processor.node_name(), processor.node_tag()).unwrap();
-    let update = |names: Vec<&str>| SimTimeParticipantsRequest {
-        participants: config::runtime::SimTimeParticipants::try_from(
-            names
-                .into_iter()
-                .map(|name| config::runtime::Name::new(name).unwrap())
-                .collect::<Vec<_>>(),
-        )
-        .unwrap(),
-    };
-    for destinations in [
-        vec![FLEET[0], FLEET[1], FLEET[2], late_host],
-        vec![FLEET[0], late_host],
-    ] {
-        let request = update(destinations.clone());
-        let response = ServiceMessenger::poll(
-            &observer,
-            processor.bound_core_node(),
-            "coordinator",
-            source.clone(),
-            ServiceId::SimTimeParticipants.name(),
-            ServiceTarget::CoreNode(processor.bound_core_node()),
-            request.encode().unwrap(),
-            Duration::from_secs(5),
-        )
-        .await
-        .unwrap();
-        SimTimeParticipantsResponse::decode(response.payload_bytes().as_ref()).unwrap();
-        assert_eq!(publisher.participants().collect::<Vec<_>>(), destinations);
-        publisher.publish(123_456).await.unwrap();
-        let tick = tokio::time::timeout(Duration::from_secs(2), ticks.on_next_message())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            ClockTick::decode(tick.payload_bytes().as_ref())
-                .unwrap()
-                .time(),
-            123_456
-        );
-    }
 }
 
-/// A standalone runner declared the launch's time source for `FLEET`, the
-/// daemon-less spelling of `framework: { publishes_sim_time: true }` resolved
-/// against a three-machine placement, in the given clock mode.
-async fn start_time_source_runner(
-    use_sim_time: bool,
+fn source_ref() -> ProducerRef {
+    ProducerRef::new(CORE_NODE, SOURCE_INSTANCE)
+}
+
+/// A standalone runner bound to `clock`, the daemon-less spelling of the
+/// binding a launch or a `peppy node run` would have stamped on it.
+async fn start_runner_with_clock(
+    clock: ClockBinding,
 ) -> (
     EphemeralRouter,
     TempDir,
@@ -210,8 +152,7 @@ async fn start_time_source_runner(
     let standalone_config = peppylib::runtime::StandaloneConfig::new()
         .with_messaging(router.host(), router.port())
         .with_instance_id(super::common::CLIENT_INSTANCE)
-        .with_use_sim_time(use_sim_time)
-        .with_sim_time_participants(FLEET);
+        .with_clock(clock);
     let processor =
         peppylib::runtime::Processor::new_standalone(&peppy_config_path, &standalone_config)
             .expect("standalone processor");
@@ -221,88 +162,225 @@ async fn start_time_source_runner(
     (router, temp_dir, node_runner, observer)
 }
 
-/// One publish lands one tick on every participant's `clock` key, each
-/// observed by a subscriber scoped exactly the way that machine's daemon and
-/// sim-time nodes scope theirs. The publisher waits for every subscriber to
-/// be routed before the tick goes out, so nothing here depends on discovery
-/// timing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sim_time_publisher_reaches_every_participant() {
-    let (_router, _temp_dir, node_runner, observer) = start_time_source_runner(true).await;
-
-    let publisher = clock::SimTimePublisher::for_node(&node_runner)
+/// Publishes one tick on `domain`'s stream as the instance that supplies it,
+/// once a subscriber for that exact stream is routed. Reports whether one was.
+async fn publish_domain_tick(
+    observer: &MessengerHandle,
+    domain: &ClockDomainId,
+    time_ns: u64,
+) -> bool {
+    let link_id = domain.link_id();
+    let target =
+        SenderTarget::node(domain.core_node.as_str(), names::CORE_NODE_TAG).expect("valid target");
+    let routed = TopicMessenger::wait_for_subscriber_with_link_id(
+        observer,
+        CORE_NODE,
+        SOURCE_INSTANCE,
+        target.clone(),
+        Some(&link_id),
+        TopicId::Clock.name(),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("waiting for a subscriber is not an error");
+    let publisher = TopicMessenger::declare_publisher(
+        observer,
+        CORE_NODE,
+        SOURCE_INSTANCE,
+        target,
+        Some(&link_id),
+        TopicId::Clock.name(),
+        QoSProfile::SensorData,
+    )
+    .await
+    .expect("declare the domain's publisher");
+    publisher
+        .publish(ClockTick::new(time_ns).encode().expect("encode tick"))
         .await
-        .expect("a declared time source builds its fan-out")
-        .expect("the launch declared this node the source");
-    assert_eq!(publisher.participants().collect::<Vec<_>>(), FLEET);
-
-    let mut subscriptions = Vec::with_capacity(FLEET.len());
-    for core_node in FLEET {
-        let subscription = peppylib::messaging::TopicMessenger::subscribe_target_scoped(
-            &observer,
-            core_node,
-            "daemon_or_sim_node_on_that_machine",
-            test_node_target(core_node),
-            TopicId::Clock.name(),
-            QoSProfile::SensorData,
-        )
-        .await
-        .expect("subscribe as a machine of the fleet");
-        wait_for_topic_subscriber(
-            node_runner.messenger(),
-            CORE_NODE,
-            super::common::CLIENT_INSTANCE,
-            test_node_target(core_node),
-            TopicId::Clock.name(),
-        )
-        .await;
-        subscriptions.push((core_node, subscription));
-    }
-
-    const SIM_NS: u64 = 42_000_000_000;
-    publisher.publish(SIM_NS).await.expect("publish fans out");
-
-    for (core_node, mut subscription) in subscriptions {
-        let message = tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
-            .await
-            .unwrap_or_else(|_| panic!("`{core_node}` received no tick within 2 s"))
-            .unwrap_or_else(|| panic!("`{core_node}` subscription closed"));
-        let tick = ClockTick::decode(message.payload_bytes().as_ref()).expect("decode tick");
-        assert_eq!(
-            tick.time(),
-            SIM_NS,
-            "`{core_node}` read a different instant"
-        );
-    }
+        .expect("publish the tick");
+    routed
 }
 
-/// A node the launch never declared its time source gets no publisher, and
-/// with it no way to drive fleet time, whatever clock mode it runs in.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_undeclared_node_cannot_publish_sim_time() {
-    let (_router, _temp_dir, node_runner, _server) = start_router_and_runner().await;
+/// Reads `now_ns` until it answers or the budget runs out: the feeder task
+/// caches a tick a moment after the wire delivers it.
+async fn wait_for_now_ns(clock: &clock::PeppyClock) -> Option<u64> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(now) = clock.now_ns() {
+            return Some(now);
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    None
+}
 
-    let publisher = clock::SimTimePublisher::for_node(&node_runner)
-        .await
-        .expect("asking is not an error");
+/// A consumer reads the instants its domain's publisher supplies, and reads
+/// nothing before the first one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_consumer_reads_the_ticks_of_its_domain() {
+    const SIM_NS: u64 = 42_000_000_000;
+    let (_router, _dir, runner, observer) =
+        start_runner_with_clock(ClockBinding::consumer(domain(1), source_ref())).await;
+
+    let clock = clock::for_node(&runner).await.expect("build the clock");
     assert!(
-        publisher.is_none(),
-        "an undeclared node must get no publisher"
+        clock.now_ns().is_err(),
+        "a domain that has not ticked is not ready"
+    );
+
+    assert!(
+        publish_domain_tick(&observer, &domain(1), SIM_NS).await,
+        "the consumer's subscription must be routed before the tick goes out"
+    );
+
+    assert_eq!(
+        wait_for_now_ns(&clock).await,
+        Some(SIM_NS),
+        "the consumer reads the instant its publisher supplied"
     );
 }
 
-/// The standalone twin of a launch resolving a declared source against a
-/// wall-serving daemon: the declaration is inert, so a wall-mode node gets
-/// no publisher even with participants configured.
+/// Reusing a domain name mints a new lifetime, and a consumer left on the old
+/// one reads nothing from it: the replacement's ticks address a stream the old
+/// consumer never subscribed to. This is what stops a replacement from
+/// silently rebinding the consumers of the domain it replaces.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_declared_source_in_wall_mode_gets_no_publisher() {
-    let (_router, _temp_dir, node_runner, _observer) = start_time_source_runner(false).await;
+async fn a_consumer_of_an_earlier_lifetime_reads_nothing_from_the_replacement() {
+    let (_router, _dir, runner, observer) =
+        start_runner_with_clock(ClockBinding::consumer(domain(1), source_ref())).await;
 
-    let publisher = clock::SimTimePublisher::for_node(&node_runner)
+    let clock = clock::for_node(&runner).await.expect("build the clock");
+
+    // The replacement publishes under the same name on the same machine.
+    publish_domain_tick(&observer, &domain(2), 99_000_000_000).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert!(
+        clock.now_ns().is_err(),
+        "a replacement's ticks must not reach a consumer of the earlier lifetime"
+    );
+}
+
+/// The instance a domain names supplies its time: it reads back what it
+/// committed before anything returns through the transport, and its domain
+/// carries that same instant to whoever reads it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_publisher_reads_its_committed_time_and_its_domain_carries_it() {
+    const SIM_NS: u64 = 7_000_000_000;
+    let (_router, _dir, runner, _observer) =
+        start_runner_with_clock(ClockBinding::publisher(domain(1))).await;
+
+    let publisher = clock::ClockPublisher::for_node(&runner)
+        .await
+        .expect("asking is not an error")
+        .expect("the binding names this instance the publisher");
+    assert_eq!(publisher.domain(), &domain(1));
+
+    let reader = clock::for_node(&runner).await.expect("build the clock");
+    assert!(
+        reader.now_ns().is_err(),
+        "a publisher that has committed nothing is not ready"
+    );
+
+    // Its own subscription, which must see exactly what it sends.
+    let mut ticks = clock::subscribe(&runner).await.expect("subscribe");
+
+    publisher
+        .publish(SIM_NS)
+        .await
+        .expect("publish the instant");
+
+    assert_eq!(
+        reader.now_ns().expect("the committed instant reads back"),
+        SIM_NS,
+        "a source reads its own clock without waiting for a transport echo"
+    );
+
+    let tick = tokio::time::timeout(Duration::from_secs(5), ticks.on_next_tick())
+        .await
+        .expect("a tick arrives within 5 s")
+        .expect("on_next_tick should not error")
+        .expect("the subscription stays open");
+    assert_eq!(tick.time(), SIM_NS);
+}
+
+/// An instance whose deployment named it no domain gets no publisher, and with
+/// it no way to drive anyone's time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_instance_named_no_domain_cannot_publish() {
+    let (_router, _temp_dir, node_runner, _server) = start_router_and_runner().await;
+
+    let publisher = clock::ClockPublisher::for_node(&node_runner)
         .await
         .expect("asking is not an error");
     assert!(
         publisher.is_none(),
-        "a wall-mode declaration must resolve to no publisher"
+        "a wall-time instance must get no publisher"
+    );
+}
+
+/// A consumer is bound to a domain, not granted authority over it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_consumer_cannot_publish_its_domain() {
+    let (_router, _dir, runner, _observer) =
+        start_runner_with_clock(ClockBinding::consumer(domain(1), source_ref())).await;
+
+    let publisher = clock::ClockPublisher::for_node(&runner)
+        .await
+        .expect("asking is not an error");
+    assert!(
+        publisher.is_none(),
+        "binding to a domain grants no authority to supply it"
+    );
+}
+
+/// A wall-time instance reads its daemon's ticks and nobody else's. A domain
+/// hosted on the same machine publishes on the same topic and target, under
+/// its own `link_id`, and a wall subscription pinned to the daemon's reserved
+/// segment neither routes to it nor carries its instants.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wall_subscription_reads_only_its_daemons_ticks() {
+    const WALL_NS: u64 = 1_700_000_000_123_456_789;
+    const DOMAIN_NS: u64 = 42_000_000_000;
+    let (_router, _dir, runner, observer) = start_runner_with_clock(ClockBinding::Wall).await;
+
+    let mut ticks = clock::subscribe(&runner).await.expect("subscribe");
+
+    assert!(
+        !publish_domain_tick(&observer, &domain(1), DOMAIN_NS).await,
+        "a wall subscription must not route to a domain's stream"
+    );
+
+    wait_for_topic_subscriber(
+        &observer,
+        CORE_NODE,
+        SERVER_INSTANCE,
+        test_node_target(CORE_NODE),
+        TopicId::Clock.name(),
+    )
+    .await;
+    publish_once(
+        &observer,
+        CORE_NODE,
+        SERVER_INSTANCE,
+        test_node_target(CORE_NODE),
+        TopicId::Clock.name(),
+        QoSProfile::SensorData,
+        ClockTick::new(WALL_NS).encode().expect("encode tick"),
+    )
+    .await
+    .expect("publish the wall tick");
+
+    // The domain's tick went out first, so a subscription that matched its
+    // stream would deliver it before the wall tick published here.
+    let tick = tokio::time::timeout(Duration::from_secs(5), ticks.on_next_tick())
+        .await
+        .expect("a tick arrives within 5 s")
+        .expect("on_next_tick should not error")
+        .expect("the subscription stays open");
+    assert_eq!(
+        tick.time(),
+        WALL_NS,
+        "a wall subscription read a simulated domain's instant"
     );
 }

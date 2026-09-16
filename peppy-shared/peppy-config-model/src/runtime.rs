@@ -1,4 +1,6 @@
+mod clock;
 mod core_node_name;
+pub use clock::{ClockBinding, ClockDomainId, ClockIncarnation, ClockRole, ZeroIncarnation};
 pub use core_node_name::{CoreNodeName, CoreNodeNameError, MAX_CORE_NODE_NAME_LEN, SELF_CORE_NODE};
 
 use crate::common::AnyType;
@@ -399,99 +401,17 @@ pub struct NodeInstancePlan {
     pub instance_id: Name,
     #[serde(default)]
     pub arguments: BTreeMap<String, AnyType>,
-    /// Per-instance `use_sim_time` override, still unresolved. `None` means
-    /// "whatever this daemon's default is", which only the spawning daemon
-    /// knows, hence [`Option`] here and a concrete `bool` in
-    /// [`ResolvedFramework`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub use_sim_time: Option<bool>,
-    /// Present on exactly the instance the launcher declared the launch's
-    /// time source (`framework.publishes_sim_time`): the machines whose
-    /// `clock` topic it feeds. Launch-scoped, hence carried on the plan
-    /// rather than resolved by the spawning daemon, which knows only its own
-    /// machine.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sim_time_source: Option<SimTimeParticipants>,
+    /// The one clock this instance reads for its lifetime, and its role in
+    /// that clock's domain. Resolved by whoever planned the change, a launch's
+    /// coordinator or the CLI, because a domain's identity spans machines and
+    /// the spawning daemon knows only its own. Wall time is the default.
+    #[serde(default, skip_serializing_if = "ClockBinding::is_wall")]
+    pub clock: ClockBinding,
     /// Resolved producers per consumer slot, each already stamped with the
     /// core node it lives on, so a producer on another daemon addresses
     /// identically to a local one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: SlotBindings,
-}
-
-/// The machines a launch's declared simulated-time source publishes to, one
-/// `clock` topic each: every machine the launch placed an instance on. At
-/// least one (the source's own machine is placed by definition), each named
-/// once. "Not a source" is the absence of this value, never an empty list,
-/// so holding a `SimTimeParticipants` IS being the source.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "Vec<Name>", into = "Vec<Name>")]
-pub struct SimTimeParticipants(Vec<Name>);
-
-impl SimTimeParticipants {
-    pub fn iter(&self) -> std::slice::Iter<'_, Name> {
-        self.0.iter()
-    }
-
-    pub fn contains(&self, core_node: &Name) -> bool {
-        self.0.contains(core_node)
-    }
-}
-
-/// The single construction gate, mirroring [`BoundProducers`]: the
-/// deserializer delegates here, so an empty or duplicated participant set
-/// cannot exist, deserialized or built.
-impl TryFrom<Vec<Name>> for SimTimeParticipants {
-    type Error = ParsingError;
-
-    fn try_from(participants: Vec<Name>) -> std::result::Result<Self, Self::Error> {
-        if participants.is_empty() {
-            return Err(ParsingError::EmptySimTimeParticipants);
-        }
-        if let Some(duplicate) = first_duplicate(&participants) {
-            return Err(ParsingError::DuplicateSimTimeParticipant(
-                duplicate.to_string(),
-            ));
-        }
-        Ok(Self(participants))
-    }
-}
-
-impl From<SimTimeParticipants> for Vec<Name> {
-    fn from(participants: SimTimeParticipants) -> Self {
-        participants.0
-    }
-}
-
-impl<'a> IntoIterator for &'a SimTimeParticipants {
-    type Item = &'a Name;
-    type IntoIter = std::slice::Iter<'a, Name>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
-    }
-}
-
-/// An instance asked to READ simulated time from a daemon that serves wall
-/// time.
-///
-/// A wall-mode daemon publishes its own wall ticks onto the exact `clock` key
-/// such an instance reads, so the two would alternate and `now_ns` would
-/// return whichever landed last. Refused where the plan becomes a config,
-/// which every spawn path goes through, rather than tolerated.
-///
-/// Declaring a time SOURCE is not refused the same way: a source on a
-/// wall-mode machine simply publishes nothing (see
-/// [`NodeInstancePlan::resolve`]), because there is no simulated time for it
-/// to carry and a wall-mode stack is already coherent without it.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "instance `{instance_id}` runs on simulated time (`framework.use_sim_time: true`) but this \
-     daemon serves wall time; start the daemon with `peppy service serve --clock-source=sim`, \
-     or drop the instance's `use_sim_time` override"
-)]
-pub struct SimTimeOnWallDaemon {
-    pub instance_id: Name,
 }
 
 impl NodeInstancePlan {
@@ -501,56 +421,30 @@ impl NodeInstancePlan {
         Self {
             instance_id,
             arguments: BTreeMap::new(),
-            use_sim_time: None,
-            sim_time_source: None,
+            clock: ClockBinding::Wall,
             slot_bindings: BTreeMap::new(),
         }
     }
 
-    /// Resolves this plan into a node instance config by applying the
-    /// spawning daemon's own `use_sim_time` default where the plan declined
-    /// to override it. The single place a plan becomes a config, which is why
-    /// the clock rules live here.
+    /// Turns this plan into the config a node receives. The single place a
+    /// plan becomes a config, which every spawn path goes through.
     ///
-    /// An instance that READS simulated time needs a daemon serving it, so a
-    /// wall-mode daemon refuses one. The reverse (`use_sim_time: false` on a
-    /// sim-mode daemon) is legal: that instance reads its OS clock and
-    /// touches no topic.
-    ///
-    /// An instance declared the launch's SOURCE keeps that role only on a
-    /// daemon serving simulated time. On a wall-mode machine there is no
-    /// simulated time to publish and the daemon's own ticks already carry the
-    /// stack, so the declaration resolves to no source at all and the
-    /// instance publishes nothing. That is what lets one launcher describe a
-    /// robot whether or not the operator started the daemon in sim mode.
-    pub fn resolve(
-        self,
-        daemon_use_sim_time: bool,
-    ) -> std::result::Result<NodeInstanceConfig, SimTimeOnWallDaemon> {
-        if !daemon_use_sim_time && self.use_sim_time == Some(true) {
-            return Err(SimTimeOnWallDaemon {
-                instance_id: self.instance_id,
-            });
-        }
-        let sim_time_source = if daemon_use_sim_time {
-            self.sim_time_source
-        } else {
-            None
-        };
-        Ok(NodeInstanceConfig {
+    /// The clock travels whole: a domain's identity names the machine its
+    /// publisher runs on, so it means the same thing on every daemon that
+    /// reads it. A daemon still refuses a publisher plan for a domain hosted
+    /// elsewhere, which it checks where it knows its own name.
+    pub fn resolve(self) -> NodeInstanceConfig {
+        NodeInstanceConfig {
             instance_id: self.instance_id,
             arguments: self.arguments,
-            framework: ResolvedFramework {
-                use_sim_time: self.use_sim_time.unwrap_or(daemon_use_sim_time),
-                sim_time_source,
-            },
+            framework: ResolvedFramework { clock: self.clock },
             slot_bindings: self.slot_bindings,
             pairing_slots: BTreeMap::new(),
             // Stamped by the spawning daemon after resolution: the seed
             // carries daemon-held state (source generations and liveness)
             // that a plan, by design, does not know.
             observation_seeds: BTreeMap::new(),
-        })
+        }
     }
 }
 
@@ -561,11 +455,9 @@ impl NodeInstancePlan {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedFramework {
-    #[serde(default)]
-    pub use_sim_time: bool,
-    /// See [`NodeInstancePlan::sim_time_source`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sim_time_source: Option<SimTimeParticipants>,
+    /// See [`NodeInstancePlan::clock`].
+    #[serde(default, skip_serializing_if = "ClockBinding::is_wall")]
+    pub clock: ClockBinding,
 }
 
 fn default_true() -> bool {
@@ -798,18 +690,22 @@ mod tests {
         serde_json5::from_str(&populated).map_err(|err| Error::Parsing(err.into()))
     }
 
-    /// `use_sim_time` round-trips through serialize/deserialize, and a
-    /// runtime config written before this field existed (no `framework` key)
-    /// still parses cleanly with `use_sim_time = false`.
+    /// A clock binding round-trips through serialize/deserialize, and a
+    /// runtime config carrying no `framework` key reads as wall time.
     #[test]
-    fn resolved_framework_round_trip_and_back_compat() {
-        let with_sim: RuntimeConfig = serde_json5::from_str(
+    fn resolved_framework_round_trip_and_wall_default() {
+        let simulated: RuntimeConfig = serde_json5::from_str(
             r#"{
                 messaging_host: "127.0.0.1",
                 messaging_port: 7448,
                 node_instance: {
                     instance_id: "camera_front",
-                    framework: { use_sim_time: true }
+                    framework: { clock: { sim: {
+                        domain: { name: "robot", core_node: "cn-sim", incarnation: 7 },
+                        role: { consumer: {
+                            publisher: { core_node: "cn-sim", instance_id: "sim_inst" }
+                        } },
+                    } } }
                 },
                 node_name: "camera",
                 node_tag: "v1",
@@ -817,144 +713,72 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert!(with_sim.node_instance.framework.use_sim_time);
+        let clock = simulated.node_instance.framework.clock.clone();
+        assert_eq!(clock.label(), "robot@cn-sim");
+        assert_eq!(
+            clock.publisher_ref(),
+            Some(&ProducerRef::new("cn-sim", "sim_inst"))
+        );
 
-        let serialized = serde_json5::to_string(&with_sim).unwrap();
+        let serialized = serde_json5::to_string(&simulated).unwrap();
         let reparsed: RuntimeConfig = serde_json5::from_str(&serialized).unwrap();
-        assert!(reparsed.node_instance.framework.use_sim_time);
+        assert_eq!(reparsed.node_instance.framework.clock, clock);
 
-        let legacy = runtime_config_from_json("camera_front").unwrap();
-        assert!(!legacy.node_instance.framework.use_sim_time);
-        assert!(legacy.node_instance.framework.sim_time_source.is_none());
+        let without_framework = runtime_config_from_json("camera_front").unwrap();
+        assert!(without_framework.node_instance.framework.clock.is_wall());
     }
 
-    fn plan(use_sim_time: Option<bool>, participants: &[&str]) -> NodeInstancePlan {
+    fn domain(incarnation: u64) -> ClockDomainId {
+        ClockDomainId::new(
+            Name::new("robot").expect("valid name"),
+            CoreNodeName::new("cn-sim").expect("valid core node name"),
+            ClockIncarnation::try_from(incarnation).expect("non-zero"),
+        )
+    }
+
+    fn plan(clock: ClockBinding) -> NodeInstancePlan {
         NodeInstancePlan {
-            use_sim_time,
-            sim_time_source: source(participants),
+            clock,
             ..NodeInstancePlan::new(Name::new("inst_1").expect("valid name"))
         }
     }
 
-    /// The test spelling of "a source publishing to these machines", or
-    /// `None` for "not a source".
-    fn source(participants: &[&str]) -> Option<SimTimeParticipants> {
-        if participants.is_empty() {
-            return None;
-        }
-        let names = participants
-            .iter()
-            .map(|name| Name::new(*name).expect("valid name"))
-            .collect::<Vec<_>>();
-        Some(SimTimeParticipants::try_from(names).expect("valid participants"))
+    /// The clock a change planned is the clock the node receives, in every
+    /// role. A domain names the machine its publisher runs on, so the daemon
+    /// that spawns the node supplies no part of it.
+    #[test]
+    fn resolve_carries_the_clock_whole() {
+        let publisher = ClockBinding::publisher(domain(7));
+        assert_eq!(plan(publisher.clone()).resolve().framework.clock, publisher);
+
+        let consumer = ClockBinding::consumer(domain(7), ProducerRef::new("cn-sim", "sim_inst"));
+        assert_eq!(plan(consumer.clone()).resolve().framework.clock, consumer);
+
+        assert!(plan(ClockBinding::Wall).resolve().framework.clock.is_wall());
     }
 
-    /// The construction gate refuses the two sets a source list must never
-    /// be: empty (that is "not a source", spelled as absence) and duplicated
-    /// (one machine would be published to twice).
+    /// Wall time is the absence of a binding on the wire, so a plan and a
+    /// config for an instance reading its own machine's clock carry no clock
+    /// field at all.
     #[test]
-    fn sim_time_participants_reject_empty_and_duplicates() {
-        assert!(matches!(
-            SimTimeParticipants::try_from(Vec::new()),
-            Err(ParsingError::EmptySimTimeParticipants)
-        ));
-        let duplicated = vec![
-            Name::new("cn-a").unwrap(),
-            Name::new("cn-b").unwrap(),
-            Name::new("cn-a").unwrap(),
-        ];
-        match SimTimeParticipants::try_from(duplicated) {
-            Err(ParsingError::DuplicateSimTimeParticipant(name)) => assert_eq!(name, "cn-a"),
-            other => panic!("expected DuplicateSimTimeParticipant, got {other:?}"),
-        }
-    }
-
-    /// Reading simulated time needs a daemon serving it, because a wall-mode
-    /// daemon floods the very key such an instance reads. Every other
-    /// combination resolves, including forcing wall time on a sim-mode daemon.
-    #[test]
-    fn resolve_refuses_a_sim_time_reader_on_a_wall_daemon() {
-        let refused = plan(Some(true), &[])
-            .resolve(false)
-            .expect_err("a sim-time reader on a wall daemon is refused");
-        assert_eq!(refused.instance_id, "inst_1");
+    fn wall_is_omitted_from_serialized_plans_and_configs() {
+        let wall = plan(ClockBinding::Wall);
+        let serialized_plan = serde_json5::to_string(&wall).unwrap();
         assert!(
-            refused.to_string().contains("--clock-source=sim"),
-            "the refusal names the remedy: {refused}"
+            !serialized_plan.contains("clock"),
+            "wall carries no field: {serialized_plan}"
         );
 
+        let serialized_config = serde_json5::to_string(&wall.resolve()).unwrap();
         assert!(
-            plan(Some(true), &[])
-                .resolve(true)
-                .unwrap()
-                .framework
-                .use_sim_time
+            !serialized_config.contains("clock"),
+            "wall carries no field: {serialized_config}"
         );
+
+        let simulated = serde_json5::to_string(&plan(ClockBinding::publisher(domain(7)))).unwrap();
         assert!(
-            !plan(Some(false), &[])
-                .resolve(true)
-                .unwrap()
-                .framework
-                .use_sim_time
-        );
-        assert!(
-            !plan(None, &[])
-                .resolve(false)
-                .unwrap()
-                .framework
-                .use_sim_time
-        );
-        assert!(
-            plan(None, &[])
-                .resolve(true)
-                .unwrap()
-                .framework
-                .use_sim_time
-        );
-    }
-
-    /// A declared time source on a wall-mode daemon publishes nothing rather
-    /// than failing: the launcher describes a robot, and whether that robot
-    /// runs on simulated time is the operator's `--clock-source` choice. This
-    /// is what keeps a simulated launcher working unchanged against a daemon
-    /// started in the default wall mode.
-    #[test]
-    fn a_declared_source_is_inert_on_a_wall_daemon() {
-        let on_wall = plan(None, &["cn-a", "cn-b"])
-            .resolve(false)
-            .expect("a source on a wall daemon resolves");
-        assert!(on_wall.framework.sim_time_source.is_none());
-        assert!(!on_wall.framework.use_sim_time);
-
-        let on_sim = plan(None, &["cn-a", "cn-b"])
-            .resolve(true)
-            .expect("a source on a sim daemon resolves");
-        assert!(on_sim.framework.sim_time_source.is_some());
-    }
-
-    /// The participant list survives the plan-to-config step and the wire,
-    /// and its absence reads as "not the source".
-    #[test]
-    fn resolve_carries_the_sim_time_source_to_the_source_only() {
-        let resolved = plan(None, &["cn-a", "cn-b"]).resolve(true).unwrap();
-        assert_eq!(
-            resolved.framework.sim_time_source,
-            source(&["cn-a", "cn-b"])
-        );
-
-        let follower = plan(None, &[]).resolve(true).unwrap();
-        assert!(follower.framework.sim_time_source.is_none());
-
-        let serialized = serde_json5::to_string(&resolved).unwrap();
-        let reparsed: NodeInstanceConfig = serde_json5::from_str(&serialized).unwrap();
-        assert_eq!(
-            reparsed.framework.sim_time_source,
-            resolved.framework.sim_time_source
-        );
-        let follower_serialized = serde_json5::to_string(&follower).unwrap();
-        assert!(
-            !follower_serialized.contains("sim_time_source"),
-            "a non-source is omitted on the wire: {follower_serialized}"
+            simulated.contains("robot") && simulated.contains("cn-sim"),
+            "a domain travels whole: {simulated}"
         );
     }
 

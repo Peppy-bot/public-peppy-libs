@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Once, PoisonError, Weak};
 use std::time::Duration;
 
-use crate::clock::{ClockSource, ClockSourceError, SimClockSource, WallClockSource};
+use crate::clock::{ClockSource, ClockSourceError, WallClockSource};
 use crate::error::{Error, Result};
 use crate::messaging::{
     ConcurrentAction, GoalContext, MessengerHandle, PendingGoal, SenderTarget, ServiceEndpoint,
@@ -45,6 +45,7 @@ use tracing::warn;
 // re-exported here so peppygen's veneers reference it instead of embedding
 // the literal (see [`crate::runtime::processor::STANDALONE_CORE_NODE`]).
 pub use crate::runtime::STANDALONE_CORE_NODE;
+use config::runtime::{ClockDomainId, ClockIncarnation};
 
 /// How long readiness waits (subscriber matching, service/action reachability)
 /// may take before failing loudly. Generous on purpose: every wait returns the
@@ -153,7 +154,7 @@ pub async fn acquire_mesh_serial() -> tokio::sync::MutexGuard<'static, ()> {
 /// Generated harnesses call this rather than each carrying their own counter,
 /// so ids from different nodes in one process can never collide.
 pub fn unique_test_instance_id() -> String {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     format!(
         "test-{}-{}",
         std::process::id(),
@@ -780,6 +781,27 @@ pub const MOCK_CLOCK_INSTANCE_ID: &str = "standalone-clock";
 /// the harness as under a real stack.
 pub const MOCK_CLOCK_TICK_INTERVAL: Duration = Duration::from_millis(100);
 
+/// The simulated domain a harness offers, named once so a test reading a log
+/// or a key sees the same word the harness config uses.
+pub const HARNESS_CLOCK_DOMAIN: &str = "harness";
+
+/// Which clock a harness boots its node on, the test-side spelling of a
+/// deployment's `framework.clock` and of the publisher a domain declaration
+/// names.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HarnessClock {
+    /// The node reads its own machine's clock, as an instance whose
+    /// deployment names no domain does.
+    #[default]
+    Wall,
+    /// The node reads the harness's simulated domain, and the test supplies
+    /// its time with [`MockClock::tick`].
+    Consumer,
+    /// The node publishes the harness's simulated domain. The test supplies no
+    /// time; it reads what the node sends with `peppylib::clock::subscribe`.
+    Publisher,
+}
+
 /// Wall time plus a test-scripted signed skew: how a test reproduces "the
 /// daemon's clock disagrees with mine" without touching a host clock.
 struct SkewedWallSource {
@@ -794,14 +816,14 @@ impl ClockSource for SkewedWallSource {
 }
 
 enum MockClockDriver {
-    Wall {
-        offset_ns: Arc<AtomicI64>,
-        ticker: TaskHandle<()>,
-    },
-    Sim {
-        cache: Arc<AtomicU64>,
-        publisher: TestTopicPublisher,
-    },
+    /// Publishes wall ticks on the core node's own `clock` key, as a daemon
+    /// does.
+    Wall { ticker: TaskHandle<()> },
+    /// Stands in for a simulator: publishes the harness domain's stream, and
+    /// only when the test says so.
+    Domain { publisher: TestTopicPublisher },
+    /// Publishes nothing, because the node under test publishes the domain.
+    Silent,
 }
 
 /// The daemon's clock surface under the harness: a `clock` service queryable
@@ -809,108 +831,141 @@ enum MockClockDriver {
 /// same [`handle_clock_request`](crate::clock::handle_clock_request) the
 /// daemon serves), plus the `clock` topic.
 ///
-/// [`start_wall`](Self::start_wall) mirrors a wall-mode daemon: timestamps
-/// come from the OS clock (skewable via [`set_offset_ns`](Self::set_offset_ns)
-/// to script a daemon whose clock disagrees with the node's) and ticks are
-/// published automatically at [`MOCK_CLOCK_TICK_INTERVAL`].
+/// [`HarnessClock::Wall`] mirrors an instance reading its machine's clock:
+/// ticks are published automatically at [`MOCK_CLOCK_TICK_INTERVAL`].
+/// [`HarnessClock::Consumer`] mirrors one bound to a simulated domain, with
+/// the test playing the simulator: nothing ticks until it calls
+/// [`tick`](Self::tick). [`HarnessClock::Publisher`] mirrors the instance a
+/// domain declaration names, and the harness publishes nothing at all.
 ///
-/// [`start_sim`](Self::start_sim) mirrors a sim-mode daemon with the test
-/// playing the external simulator: nothing ticks until the test calls
-/// [`tick`](Self::tick), and `synchronize` answers "clock not ready" before
-/// the first tick, exactly as a real sim-mode stack would.
+/// The `clock` service answers from OS wall time in every mode, skewable via
+/// [`set_offset_ns`](Self::set_offset_ns), because that is what a daemon
+/// serves whatever its instances read.
 pub struct MockClock {
     core_node: String,
     instance_id: String,
     pump: TaskHandle<()>,
+    /// Skew applied to every timestamp the `clock` service answers with, in
+    /// every mode: the service serves wall time whatever the node reads.
+    offset_ns: Arc<AtomicI64>,
+    clock: HarnessClock,
     driver: MockClockDriver,
 }
 
 impl MockClock {
-    /// Serves the clock like a wall-mode daemon for `core_node` (under the
-    /// harness: [`STANDALONE_CORE_NODE`]): OS wall time behind the service
-    /// and a periodic tick publisher.
-    pub async fn start_wall(
+    /// Serves the daemon's clock surface for `core_node` (under the harness:
+    /// [`STANDALONE_CORE_NODE`]) in the shape `clock` asks for.
+    ///
+    /// The `clock` SERVICE always answers from OS wall time, skewable with
+    /// [`set_offset_ns`](Self::set_offset_ns), because a daemon serves wall
+    /// time whatever its instances read. What differs per mode is the tick
+    /// stream: wall ticks on the core node's key, the harness domain's stream
+    /// driven by [`tick`](Self::tick), or nothing at all when the node itself
+    /// publishes the domain.
+    pub async fn start(
         messenger: &MessengerHandle,
         core_node: &str,
         instance_id: &str,
+        clock: HarnessClock,
     ) -> Result<Self> {
         let offset_ns = Arc::new(AtomicI64::new(0));
         let source: Arc<dyn ClockSource> = Arc::new(SkewedWallSource {
             offset_ns: Arc::clone(&offset_ns),
         });
         let pump = Self::listen(messenger, core_node, instance_id, Arc::clone(&source)).await?;
-        let publisher = TopicMessenger::declare_publisher(
-            messenger,
-            core_node,
-            instance_id,
-            SenderTarget::node(core_node, names::CORE_NODE_TAG)?,
-            None,
-            TopicId::Clock.name(),
-            QoSProfile::SensorData,
-        )
-        .await?;
-        // Same loop shape as the daemon's wall-mode publisher: SensorData QoS
-        // (stale time is useless), skip catch-up bursts, a failed read or
-        // publish skips the tick rather than killing the stream. No cancel
-        // token: `Drop` aborts the task.
-        let ticker = spawn(async move {
-            let mut interval = tokio::time::interval(MOCK_CLOCK_TICK_INTERVAL);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                interval.tick().await;
-                let now_ns = match source.now_ns() {
-                    Ok(t) => t,
-                    Err(e) => {
-                        warn!("mock clock tick skipped, {e}");
-                        continue;
+        let driver = match clock {
+            HarnessClock::Wall => {
+                let publisher = TopicMessenger::declare_publisher(
+                    messenger,
+                    core_node,
+                    instance_id,
+                    SenderTarget::node(core_node, names::CORE_NODE_TAG)?,
+                    None,
+                    TopicId::Clock.name(),
+                    QoSProfile::SensorData,
+                )
+                .await?;
+                // Same loop shape as the daemon's wall-mode publisher:
+                // SensorData QoS (stale time is useless), skip catch-up
+                // bursts, a failed read or publish skips the tick rather than
+                // killing the stream. No cancel token: `Drop` aborts the task.
+                let ticker = spawn(async move {
+                    let mut interval = tokio::time::interval(MOCK_CLOCK_TICK_INTERVAL);
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    loop {
+                        interval.tick().await;
+                        let now_ns = match source.now_ns() {
+                            Ok(t) => t,
+                            Err(e) => {
+                                warn!("mock clock tick skipped, {e}");
+                                continue;
+                            }
+                        };
+                        let payload = match ClockTick::new(now_ns).encode() {
+                            Ok(p) => p,
+                            Err(e) => {
+                                warn!("mock clock tick encode failed: {e}");
+                                continue;
+                            }
+                        };
+                        if let Err(e) = publisher.publish(payload).await {
+                            warn!("mock clock tick emit failed: {e}");
+                        }
                     }
-                };
-                let payload = match ClockTick::new(now_ns).encode() {
-                    Ok(p) => p,
-                    Err(e) => {
-                        warn!("mock clock tick encode failed: {e}");
-                        continue;
-                    }
-                };
-                if let Err(e) = publisher.publish(payload).await {
-                    warn!("mock clock tick emit failed: {e}");
-                }
+                });
+                MockClockDriver::Wall { ticker }
             }
-        });
+            HarnessClock::Consumer => {
+                let domain = Self::domain_of(core_node)?;
+                let link_id = domain.link_id();
+                let publisher = TestTopicPublisher::declare(
+                    messenger,
+                    core_node,
+                    instance_id,
+                    SenderTarget::node(core_node, names::CORE_NODE_TAG)?,
+                    Some(&link_id),
+                    TopicId::Clock.name(),
+                    QoSProfile::SensorData,
+                )
+                .await?;
+                MockClockDriver::Domain { publisher }
+            }
+            HarnessClock::Publisher => MockClockDriver::Silent,
+        };
         Ok(Self {
             core_node: core_node.to_string(),
             instance_id: instance_id.to_string(),
             pump,
-            driver: MockClockDriver::Wall { offset_ns, ticker },
+            offset_ns,
+            clock,
+            driver,
         })
     }
 
-    /// Serves the clock like a sim-mode daemon for `core_node`, with the test
-    /// as the external simulator: time advances only on [`tick`](Self::tick),
-    /// and until the first one the service answers "clock not ready".
-    pub async fn start_sim(
-        messenger: &MessengerHandle,
-        core_node: &str,
-        instance_id: &str,
-    ) -> Result<Self> {
-        let cache = Arc::new(AtomicU64::new(0));
-        let source: Arc<dyn ClockSource> = Arc::new(SimClockSource::new(Arc::clone(&cache)));
-        let pump = Self::listen(messenger, core_node, instance_id, source).await?;
-        let publisher = TestTopicPublisher::declare(
-            messenger,
-            core_node,
-            instance_id,
-            SenderTarget::node(core_node, names::CORE_NODE_TAG)?,
-            None,
-            TopicId::Clock.name(),
-            QoSProfile::SensorData,
-        )
-        .await?;
-        Ok(Self {
-            core_node: core_node.to_string(),
-            instance_id: instance_id.to_string(),
-            pump,
-            driver: MockClockDriver::Sim { cache, publisher },
+    /// The harness's simulated domain on `core_node`. One incarnation, since a
+    /// harness boots one node once.
+    fn domain_of(core_node: &str) -> Result<ClockDomainId> {
+        Ok(ClockDomainId::new(
+            config::runtime::Name::new(HARNESS_CLOCK_DOMAIN)
+                .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?,
+            config::runtime::CoreNodeName::new(core_node)
+                .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?,
+            ClockIncarnation::try_from(1).expect("one is not zero"),
+        ))
+    }
+
+    /// The binding the node under test boots with, which the generated
+    /// harness hands to `StandaloneConfig::with_clock`.
+    pub fn binding(&self) -> Result<config::runtime::ClockBinding> {
+        Ok(match self.clock {
+            HarnessClock::Wall => config::runtime::ClockBinding::Wall,
+            HarnessClock::Consumer => config::runtime::ClockBinding::consumer(
+                Self::domain_of(&self.core_node)?,
+                self.producer_ref(),
+            ),
+            HarnessClock::Publisher => {
+                config::runtime::ClockBinding::publisher(Self::domain_of(&self.core_node)?)
+            }
         })
     }
 
@@ -945,49 +1000,37 @@ impl MockClock {
         }))
     }
 
-    /// Advance sim time to `time_ns`: the service answers `synchronize` with
-    /// it from this call on (written before publishing, so a synchronize
-    /// issued right after `tick` returns can never observe the older value),
-    /// and a `ClockTick` is published for the node's clock subscription
-    /// (`peppygen::clock` in sim mode, `peppylib::clock::subscribe`).
+    /// Advance the harness domain to `time_ns` and publish it, for a node
+    /// booted [`HarnessClock::Consumer`].
     ///
     /// The first publish waits until the node's clock subscription is visible
-    /// ([`TestTopicPublisher`] semantics): ticking sim time at a node that
-    /// never reads it is a wiring bug surfaced as a loud error, not a silent
-    /// drop. `0` is the wire's not-ready sentinel and is clamped to `1`,
-    /// exactly as the daemon stores external ticks.
+    /// ([`TestTopicPublisher`] semantics): ticking a domain no node reads is a
+    /// wiring bug surfaced as a loud error, not a silent drop. `0` is the
+    /// wire's not-ready sentinel and is clamped to `1`.
     ///
-    /// Errors on a wall-mode clock, which ticks itself.
+    /// Errors in the other modes: a wall-mode clock ticks itself, and a node
+    /// publishing its own domain is the only thing that may advance it.
     pub async fn tick(&self, time_ns: u64) -> Result<()> {
-        let MockClockDriver::Sim { cache, publisher } = &self.driver else {
-            return Err(Error::Io(std::io::Error::other(
-                "a wall-mode mock clock ticks itself; tick() drives sim mode only \
-                 (start the harness clock with start_sim / use_sim_time)",
-            )));
+        let MockClockDriver::Domain { publisher } = &self.driver else {
+            return Err(Error::Io(std::io::Error::other(format!(
+                "tick() drives a node booted HarnessClock::Consumer; this harness booted \
+                 {:?}. A wall-mode clock ticks itself, and a publisher node supplies its own \
+                 domain",
+                self.clock
+            ))));
         };
-        let stored = time_ns.max(1);
-        cache.store(stored, Ordering::Relaxed);
-        publisher.publish(ClockTick::new(stored).encode()?).await
+        publisher
+            .publish(ClockTick::new(time_ns.max(1)).encode()?)
+            .await
     }
 
-    /// Skew every timestamp a wall-mode clock serves (service stamps and
-    /// published ticks alike) by a signed offset from the OS clock: the
-    /// scripted stand-in for a daemon host whose clock drifted from the
-    /// node's, so offset-handling code is testable without touching a real
-    /// clock. Errors on a sim-mode clock, whose time is set absolutely by
-    /// [`tick`](Self::tick).
-    pub fn set_offset_ns(&self, offset_ns: i64) -> Result<()> {
-        match &self.driver {
-            MockClockDriver::Wall {
-                offset_ns: offset, ..
-            } => {
-                offset.store(offset_ns, Ordering::Relaxed);
-                Ok(())
-            }
-            MockClockDriver::Sim { .. } => Err(Error::Io(std::io::Error::other(
-                "a sim-mode mock clock has no wall time to skew; drive it with tick()",
-            ))),
-        }
+    /// Skew every timestamp the `clock` service answers with, by a signed
+    /// offset from the OS clock: the scripted stand-in for a daemon host whose
+    /// clock drifted from the node's, so offset handling is testable without
+    /// touching a real clock. Also skews a wall-mode clock's published ticks,
+    /// which come from the same source.
+    pub fn set_offset_ns(&self, offset_ns: i64) {
+        self.offset_ns.store(offset_ns, Ordering::Relaxed);
     }
 
     /// The wire identity the clock serves under, as a probe-able producer.
@@ -1011,7 +1054,7 @@ impl MockClock {
 impl Drop for MockClock {
     fn drop(&mut self) {
         self.pump.abort();
-        if let MockClockDriver::Wall { ticker, .. } = &self.driver {
+        if let MockClockDriver::Wall { ticker } = &self.driver {
             ticker.abort();
         }
     }

@@ -726,77 +726,105 @@ _CORE_NODE_TAG = "core"
 _CLOCK_SERVICE = "clock"
 _CLOCK_TOPIC = "clock"
 
-#: Sim mode's "no tick observed yet" answer; the same reason string the Rust
-#: `ClockSourceError::NotReady` puts on the wire, so tests can match on
-#: "clock not ready" against either implementation.
-_CLOCK_NOT_READY = "clock not ready: no external tick observed yet (sim mode)"
+#: The simulated domain a harness offers, named once so a test reading a log
+#: or a key sees the same word the harness config uses.
+HARNESS_CLOCK_DOMAIN = "harness"
+
+#: One incarnation: a harness boots one node once, so its domain has one
+#: lifetime.
+HARNESS_CLOCK_INCARNATION = 1
+
+#: The clocks a harness can boot a node on, the test-side spelling of a
+#: deployment's `framework.clock` and of the publisher a domain declaration
+#: names.
+HARNESS_CLOCKS = ("wall", "consumer", "publisher")
 
 
 class MockClock:
     """The daemon's clock surface under the harness: a ``clock`` service
     queryable answering ``peppylib.clock.synchronize``'s NTP-style exchange
-    with the daemon's t1-first/t2-last stamping discipline, plus the ``clock``
-    topic.
+    with the daemon's t1-first/t2-last stamping discipline, plus whichever
+    tick stream the node's clock calls for.
 
-    :meth:`start_wall` mirrors a wall-mode daemon: timestamps come from the
-    OS clock (skewable via :meth:`set_offset_ns` to script a daemon whose
-    clock disagrees with the node's) and ticks are published automatically at
-    :data:`MOCK_CLOCK_TICK_INTERVAL`.
+    ``"wall"`` mirrors an instance reading its machine's clock: ticks are
+    published automatically at :data:`MOCK_CLOCK_TICK_INTERVAL`. ``"consumer"``
+    mirrors one bound to a simulated domain, with the test playing the
+    simulator: nothing ticks until it calls :meth:`tick`. ``"publisher"``
+    mirrors the instance a domain declaration names, and the harness publishes
+    nothing at all.
 
-    :meth:`start_sim` mirrors a sim-mode daemon with the test playing the
-    external simulator: nothing ticks until the test calls :meth:`tick`, and
-    ``synchronize`` answers "clock not ready" before the first tick, exactly
-    as a real sim-mode stack would.
+    The service answers from OS wall time in every mode, skewable via
+    :meth:`set_offset_ns`, because that is what a daemon serves whatever its
+    instances read.
     """
 
-    def __init__(self, core_node: str, instance_id: str, sim: bool) -> None:
+    def __init__(self, core_node: str, instance_id: str, clock: str) -> None:
         self._core_node = core_node
         self._instance_id = instance_id
-        self._sim = sim
+        self._clock = clock
         self._offset_ns = 0
-        self._sim_time_ns = 0
         self._pump: asyncio.Task[None] | None = None
         self._ticker: asyncio.Task[None] | None = None
-        self._sim_publisher: TestTopicPublisher | None = None
+        self._domain_publisher: TestTopicPublisher | None = None
 
     @classmethod
-    async def start_wall(
-        cls, messenger: MessengerHandle, core_node: str, instance_id: str
+    async def start(
+        cls,
+        messenger: MessengerHandle,
+        core_node: str,
+        instance_id: str,
+        clock: str = "wall",
     ) -> "MockClock":
-        """Serve the clock like a wall-mode daemon for ``core_node`` (under
-        the harness: :data:`STANDALONE_CORE_NODE`): OS wall time behind the
-        service and a periodic tick publisher."""
-        clock = cls(core_node, instance_id, sim=False)
-        await clock._listen(messenger)
-        publisher = await TopicMessenger.declare_publisher(
-            messenger,
-            core_node,
-            instance_id,
-            SenderTarget.node(core_node, _CORE_NODE_TAG),
-            _CLOCK_TOPIC,
-            QoSProfile.SensorData,
-        )
-        clock._ticker = asyncio.create_task(clock._run_ticker(publisher))
-        return clock
+        """Serve the clock surface for ``core_node`` (under the harness:
+        :data:`STANDALONE_CORE_NODE`) in the shape ``clock`` asks for, one of
+        :data:`HARNESS_CLOCKS`."""
+        if clock not in HARNESS_CLOCKS:
+            raise ValueError(
+                f"unknown harness clock {clock!r}; choose one of "
+                f"{', '.join(sorted(HARNESS_CLOCKS))}"
+            )
+        self = cls(core_node, instance_id, clock)
+        await self._listen(messenger)
+        if clock == "wall":
+            publisher = await TopicMessenger.declare_publisher(
+                messenger,
+                core_node,
+                instance_id,
+                SenderTarget.node(core_node, _CORE_NODE_TAG),
+                _CLOCK_TOPIC,
+                QoSProfile.SensorData,
+            )
+            self._ticker = asyncio.create_task(self._run_ticker(publisher))
+        elif clock == "consumer":
+            self._domain_publisher = await TestTopicPublisher.declare(
+                messenger,
+                core_node,
+                instance_id,
+                SenderTarget.node(core_node, _CORE_NODE_TAG),
+                _CLOCK_TOPIC,
+                QoSProfile.SensorData,
+                link_id=self.binding().link_id,
+            )
+        return self
 
-    @classmethod
-    async def start_sim(
-        cls, messenger: MessengerHandle, core_node: str, instance_id: str
-    ) -> "MockClock":
-        """Serve the clock like a sim-mode daemon for ``core_node``, with the
-        test as the external simulator: time advances only on :meth:`tick`,
-        and until the first one the service answers "clock not ready"."""
-        clock = cls(core_node, instance_id, sim=True)
-        await clock._listen(messenger)
-        clock._sim_publisher = await TestTopicPublisher.declare(
-            messenger,
-            core_node,
-            instance_id,
-            SenderTarget.node(core_node, _CORE_NODE_TAG),
-            _CLOCK_TOPIC,
-            QoSProfile.SensorData,
+    def binding(self) -> Any:
+        """The binding the node under test boots with, which the generated
+        harness hands to ``StandaloneConfig.with_clock``."""
+        from .clock import ClockBinding
+
+        if self._clock == "wall":
+            return ClockBinding.wall()
+        if self._clock == "consumer":
+            return ClockBinding.consumer(
+                HARNESS_CLOCK_DOMAIN,
+                self._core_node,
+                HARNESS_CLOCK_INCARNATION,
+                self._core_node,
+                self._instance_id,
+            )
+        return ClockBinding.publisher(
+            HARNESS_CLOCK_DOMAIN, self._core_node, HARNESS_CLOCK_INCARNATION
         )
-        return clock
 
     async def _listen(self, messenger: MessengerHandle) -> None:
         endpoint = await ServiceMessenger.listen(
@@ -809,13 +837,8 @@ class MockClock:
         self._pump = asyncio.create_task(self._run_pump(endpoint))
 
     def _source_now_ns(self) -> int:
-        """The served timestamp: skewed OS time in wall mode, the last tick
-        in sim mode. Raises ``RuntimeError`` while sim mode has no tick yet
-        (``0`` is the not-ready sentinel)."""
-        if self._sim:
-            if self._sim_time_ns == 0:
-                raise RuntimeError(_CLOCK_NOT_READY)
-            return self._sim_time_ns
+        """The served timestamp: skewed OS time, in every mode. A daemon
+        serves wall time whatever its instances read."""
         # Negative skews clamp at the epoch, matching the Rust core's
         # saturating arithmetic on the unsigned wire type.
         return max(0, time.time_ns() + self._offset_ns)
@@ -829,11 +852,7 @@ class MockClock:
             # Stamp t1 first: every line after this point inflates server
             # processing time and corrupts the offset estimate the client
             # computes.
-            try:
-                server_recv_time = self._source_now_ns()
-            except RuntimeError as error:
-                await responder.respond_error(str(error))
-                continue
+            server_recv_time = self._source_now_ns()
             try:
                 request = ClockRequest.decode(bytes(context.payload))
             except ValueError as error:
@@ -861,41 +880,31 @@ class MockClock:
                 warnings.warn(f"mock clock tick emit failed: {error}", stacklevel=1)
 
     async def tick(self, time_ns: int) -> None:
-        """Advance sim time to ``time_ns``: the service answers
-        ``synchronize`` with it from this call on (written before publishing,
-        so a synchronize issued right after ``tick`` returns can never observe
-        the older value), and a ``ClockTick`` is published for the node's
-        clock subscription (``peppygen.clock`` in sim mode,
-        ``peppylib.clock.subscribe``).
+        """Advance the harness domain to ``time_ns`` and publish it, for a
+        node booted ``"consumer"``.
 
         The first publish waits until the node's clock subscription is
-        visible (:class:`TestTopicPublisher` semantics): ticking sim time at a
-        node that never reads it is a wiring bug surfaced as a loud error, not
-        a silent drop. ``0`` is the wire's not-ready sentinel and is clamped
-        to ``1``, exactly as the daemon stores external ticks.
+        visible (:class:`TestTopicPublisher` semantics): ticking a domain no
+        node reads is a wiring bug surfaced as a loud error, not a silent
+        drop. ``0`` is the wire's not-ready sentinel and is clamped to ``1``.
 
-        Raises ``RuntimeError`` on a wall-mode clock, which ticks itself.
+        Raises ``RuntimeError`` in the other modes: a wall-time clock ticks
+        itself, and a publisher node supplies its own domain.
         """
-        if not self._sim or self._sim_publisher is None:
+        if self._domain_publisher is None:
             raise RuntimeError(
-                "a wall-mode mock clock ticks itself; tick() drives sim mode only "
-                "(start the harness clock with start_sim / use_sim_time)"
+                "tick() drives a node booted clock=\"consumer\"; this harness booted "
+                f'clock="{self._clock}". A wall-time clock ticks itself, and a '
+                "publisher node supplies its own domain"
             )
-        stored = max(1, time_ns)
-        self._sim_time_ns = stored
-        await self._sim_publisher.publish(ClockTick(stored).encode())
+        await self._domain_publisher.publish(ClockTick(max(1, time_ns)).encode())
 
     def set_offset_ns(self, offset_ns: int) -> None:
-        """Skew every timestamp a wall-mode clock serves (service stamps and
-        published ticks alike) by a signed offset from the OS clock: the
-        scripted stand-in for a daemon host whose clock drifted from the
-        node's, so offset-handling code is testable without touching a real
-        clock. Raises ``RuntimeError`` on a sim-mode clock, whose time is set
-        absolutely by :meth:`tick`."""
-        if self._sim:
-            raise RuntimeError(
-                "a sim-mode mock clock has no wall time to skew; drive it with tick()"
-            )
+        """Skew every timestamp the ``clock`` service answers with, by a
+        signed offset from the OS clock: the scripted stand-in for a daemon
+        host whose clock drifted from the node's, so offset-handling code is
+        testable without touching a real clock. Also skews a wall-mode
+        clock's published ticks, which come from the same source."""
         self._offset_ns = offset_ns
 
     def producer_ref(self) -> ProducerRef:
@@ -921,11 +930,10 @@ class MockClock:
         ``Drop``).
 
         Both tasks are cancelled before either is awaited, so the ticker
-        cannot keep publishing while the pump drains — Rust's ``Drop`` aborts
-        them together. A task that ended in an error is reported as a warning
-        rather than raised: ``close`` runs in a test's teardown, where raising
-        would skip the rest of the cleanup and mask the failure the test was
-        actually reporting.
+        cannot keep publishing while the pump drains. A task that ended in an
+        error is reported as a warning rather than raised: ``close`` runs in a
+        test's teardown, where raising would skip the rest of the cleanup and
+        mask the failure the test was actually reporting.
         """
         tasks = [task for task in (self._pump, self._ticker) if task is not None]
         # Cleared up front: a task that refuses to die must not leave the

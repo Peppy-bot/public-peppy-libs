@@ -64,6 +64,9 @@ enum ClockConfidence {
     crossHostCorrected @2;
     # Cross-host, but the corrected delta was implausible and was suppressed.
     crossHostFlagged @3;
+    # Both endpoints read one simulated clock domain, so the instants they
+    # stamp are already on one timeline and no host offset applies.
+    sharedClock @4;
 }
 
 struct InterfaceLatency {

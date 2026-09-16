@@ -79,17 +79,8 @@ pub enum Error {
     #[error("invalid service request '{identifier}': {reason}")]
     InvalidServiceRequest { identifier: String, reason: String },
 
-    #[error("clock not ready: no external tick observed yet on the `clock` topic (sim mode)")]
+    #[error("clock not ready: this instance's clock domain has published no tick yet")]
     ClockNotReady,
-
-    #[error("sim time did not reach every machine; unreached: {unreached}")]
-    SimTimeFanOut { unreached: String },
-
-    #[error(
-        "the simulation time source's participant listener stopped, so joins and removals \
-         cannot reach it; restart the time source node"
-    )]
-    SimTimeMembershipStopped,
 
     #[error("internal encoding error for '{identifier}': {reason}")]
     InternalEncodingError { identifier: String, reason: String },

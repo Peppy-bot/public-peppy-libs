@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use capnp::message::Builder;
 use config::node::NodeConfig;
-use config::runtime::SlotBindings;
+use config::runtime::{ClockBinding, SlotBindings};
 
 use crate::graph::{InstanceState, NodeStage, SerializedPairingSlot};
 use crate::node_capnp;
@@ -75,6 +75,10 @@ pub struct NodeInstanceInfo {
     /// node declares no pairings. Lets the CLI's `--pair` preflight see
     /// which slots of a running instance are already claimed.
     pub pairing_slots: BTreeMap<String, SerializedPairingSlot>,
+    /// The one clock this instance reads. Lets a `node run` preflight hold a
+    /// new instance's connections to the same clock rule a launch applies,
+    /// against the instances already running.
+    pub clock: ClockBinding,
 }
 
 /// Body of a successful `node_info` lookup — carries all metadata about a
@@ -170,6 +174,17 @@ impl NodeInfoResponse {
                                 })?
                             };
                             entry.set_pairing_slots_json(&pairing_slots_json);
+                            let clock_json = if inst.clock.is_wall() {
+                                String::new()
+                            } else {
+                                serde_json5::to_string(&inst.clock).map_err(|e| {
+                                    crate::Error::Encoding(format!(
+                                        "failed to serialize clock for instance `{}`: {}",
+                                        inst.instance_id, e
+                                    ))
+                                })?
+                            };
+                            entry.set_clock_json(&clock_json);
                         }
                     }
                     // Only set the field when present; leaving it unset writes
@@ -240,12 +255,21 @@ impl NodeInfoResponse {
                                 ))
                             })?
                         };
+                    let clock_json = entry.get_clock_json()?.to_str()?;
+                    let clock: ClockBinding = if clock_json.is_empty() {
+                        ClockBinding::Wall
+                    } else {
+                        serde_json5::from_str(clock_json).map_err(|e| {
+                            crate::Error::Decoding(format!("failed to deserialize clock: {}", e))
+                        })?
+                    };
                     instances.push(NodeInstanceInfo {
                         instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
                         state,
                         healthy: entry.get_healthy(),
                         slot_bindings,
                         pairing_slots,
+                        clock,
                     });
                 }
                 let add_log_path =
@@ -394,6 +418,14 @@ mod tests {
                     healthy: true,
                     slot_bindings: bindings_a.clone(),
                     pairing_slots: pairing_slots_a.clone(),
+                    clock: ClockBinding::consumer(
+                        config::runtime::ClockDomainId::new(
+                            config::runtime::Name::new("robot").expect("valid name"),
+                            config::runtime::CoreNodeName::new("cn-sim").expect("valid name"),
+                            config::runtime::ClockIncarnation::try_from(7).expect("non-zero"),
+                        ),
+                        config::runtime::ProducerRef::new("cn-sim", "sim_inst"),
+                    ),
                 },
                 NodeInstanceInfo {
                     instance_id: "inst-no-bindings".to_string(),
@@ -401,6 +433,7 @@ mod tests {
                     healthy: false,
                     slot_bindings: BTreeMap::new(),
                     pairing_slots: BTreeMap::new(),
+                    clock: ClockBinding::Wall,
                 },
             ],
             add_log_path: None,
