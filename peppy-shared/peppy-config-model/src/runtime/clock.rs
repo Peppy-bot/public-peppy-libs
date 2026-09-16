@@ -29,21 +29,49 @@ use std::num::NonZeroU64;
 pub struct ClockIncarnation(NonZeroU64);
 
 impl ClockIncarnation {
+    /// The largest value a lifetime may take.
+    ///
+    /// A runtime config reaches a spawned node as JSON5, whose numbers are
+    /// IEEE doubles, so an integer above this comes back rounded. A lifetime
+    /// that changed in transit addresses a different `link_id` from the one
+    /// its publisher writes, so the node subscribes to a key nothing fills
+    /// and its domain never reports ready.
+    pub const MAX: u64 = 1 << 53;
+
     pub fn get(self) -> u64 {
         self.0.get()
     }
 }
 
-/// A zero read off the wire, where the field is a plain integer.
+/// A value that cannot serve as a lifetime, read off the wire or out of a
+/// config where the field is a plain integer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("a clock incarnation is never zero; zero is the wire's \"no tick observed\" sentinel")]
-pub struct ZeroIncarnation;
+pub enum InvalidIncarnation {
+    #[error("a clock incarnation is never zero; zero is the wire's \"no tick observed\" sentinel")]
+    Zero,
+    #[error(
+        "clock incarnation {0} is above {max}, so it cannot survive the JSON5 a runtime config \
+         travels as: the value a node reads back would address a different clock stream from \
+         the one its publisher writes",
+        max = ClockIncarnation::MAX
+    )]
+    TooLarge(u64),
+}
 
 impl TryFrom<u64> for ClockIncarnation {
-    type Error = ZeroIncarnation;
+    type Error = InvalidIncarnation;
 
+    /// Refuses both values a lifetime can never take: zero, the wire's
+    /// not-observed sentinel, and anything a JSON5 number cannot carry
+    /// intact. Rejecting here catches a rounded value wherever it enters,
+    /// including one this process never minted.
     fn try_from(value: u64) -> Result<Self, Self::Error> {
-        NonZeroU64::new(value).map(Self).ok_or(ZeroIncarnation)
+        if value > Self::MAX {
+            return Err(InvalidIncarnation::TooLarge(value));
+        }
+        NonZeroU64::new(value)
+            .map(Self)
+            .ok_or(InvalidIncarnation::Zero)
     }
 }
 
@@ -201,9 +229,35 @@ mod tests {
         )
     }
 
+    /// A runtime config crosses to a spawned node as JSON5, whose numbers are
+    /// doubles. Every value the type admits has to survive that trip, or the
+    /// node reads a lifetime its daemon never chose.
+    #[test]
+    fn every_admitted_lifetime_survives_a_json5_round_trip() {
+        for value in [1, 2, 1_000_000, ClockIncarnation::MAX - 1, ClockIncarnation::MAX] {
+            let held = ClockIncarnation::try_from(value).expect("inside the range");
+            let text = serde_json5::to_string(&held).expect("serializes");
+            let back: ClockIncarnation = serde_json5::from_str(&text).expect("parses");
+            assert_eq!(back, held, "lifetime changed in transit: {text}");
+        }
+    }
+
+    /// The value that broke a three-machine launch: a draw from the whole u64
+    /// range, which JSON5 rounds to a neighbour no publisher writes.
+    #[test]
+    fn a_lifetime_too_large_for_a_config_is_refused() {
+        let rounded = 7_714_581_040_992_002_510u64;
+        assert_eq!(
+            ClockIncarnation::try_from(rounded),
+            Err(InvalidIncarnation::TooLarge(rounded))
+        );
+        assert!(ClockIncarnation::try_from(ClockIncarnation::MAX + 1).is_err());
+        assert!(ClockIncarnation::try_from(u64::MAX).is_err());
+    }
+
     #[test]
     fn a_zero_incarnation_is_refused() {
-        assert_eq!(ClockIncarnation::try_from(0), Err(ZeroIncarnation));
+        assert_eq!(ClockIncarnation::try_from(0), Err(InvalidIncarnation::Zero));
         assert_eq!(incarnation(1).get(), 1);
     }
 
@@ -218,7 +272,7 @@ mod tests {
     /// and reserves `_` on its own. The rendering must never produce one.
     #[test]
     fn a_link_id_is_a_usable_wire_segment() {
-        let link_id = domain("robot", "cn-sim", u64::MAX).link_id();
+        let link_id = domain("robot", "cn-sim", ClockIncarnation::MAX).link_id();
         assert!(!link_id.contains('/'));
         assert!(!link_id.contains('@'));
         assert!(!link_id.is_empty());

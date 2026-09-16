@@ -100,7 +100,7 @@ pub mod runtime {
         CoreNodeNameError, DiscoveryConfig, LifecycleRuntimeConfig, MAX_CORE_NODE_NAME_LEN, Name,
         NodeInstanceConfig, NodeInstancePlan, ObservationSeedMember, ObservationSeeds,
         PairingSlotBinding, ProducerRef, ResolvedFramework, RuntimeConfig, SELF_CORE_NODE,
-        SlotBindings, ZeroIncarnation, first_duplicate,
+        SlotBindings, InvalidIncarnation, first_duplicate,
     };
 }
 
