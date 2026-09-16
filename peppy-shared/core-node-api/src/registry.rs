@@ -280,13 +280,15 @@ methods! {
             response: RepoRemoveResponse,
             schema: "repo.capnp",
         }
-        /// Hosted by the running simulation time source.
-        SimTimeParticipants {
-            name: "sim_time_participants",
-            host: SpawnedNode,
-            summary: "Update the running simulation time source's participant set.",
-            request: SimTimeParticipantsRequest,
-            response: SimTimeParticipantsResponse,
+        /// Lists the clock domains this daemon hosts and the instances on it
+        /// that read one, so `peppy clock list` can show every managed domain
+        /// across a federation and a `--clock` reference can be resolved.
+        ClockList {
+            name: "clock_list",
+            host: CoreNodeDaemon,
+            summary: "List the clock domains this daemon hosts and its instances that read one.",
+            request: ClockListRequest,
+            response: ClockListResponse,
             schema: "clock.capnp",
         }
         /// Framework service every spawned node exposes.

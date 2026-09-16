@@ -6,6 +6,11 @@
 //! the core daemon, polls it per producer to normalize cross-host topic
 //! timestamps into the core-node clock base.
 //!
+//! An instance reading a simulated clock domain answers with its domain and no
+//! offset. Every peer it may hold a clock-dependent connection to reads that
+//! same domain, so the timestamps the benchmark compares are already on one
+//! timeline; a wall-derived correction applied to them would move them off it.
+//!
 //! Like `node_health`, this is framework plumbing — it never invokes any user
 //! interface handler, so it does not violate the benchmark's no-trigger
 //! guarantee.
@@ -73,7 +78,14 @@ async fn handle_clock_offset_request(
             reason: format!("clock synchronize against core node failed: {err}"),
         })?;
 
-    ClockOffsetResponse::new(sync.offset_ns, sync.round_trip_delay_ns)
-        .encode()
-        .map_err(Into::into)
+    // The exchange runs in every domain: it measures this host's wall clock
+    // against its daemon's, which is what a round-trip delay means, and the
+    // daemon serves wall time whatever its instances read.
+    let response = match node_runner.processor().clock().domain() {
+        Some(domain) => {
+            ClockOffsetResponse::in_domain(sync.round_trip_delay_ns, domain.to_string())
+        }
+        None => ClockOffsetResponse::new(sync.offset_ns, sync.round_trip_delay_ns),
+    };
+    response.encode().map_err(Into::into)
 }

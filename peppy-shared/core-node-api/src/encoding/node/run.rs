@@ -899,6 +899,16 @@ mod tests {
         NodeInstancePlan::new(config::runtime::Name::new(instance_id).expect("valid name"))
     }
 
+    /// A publisher binding, so a plan on the wire carries a whole clock
+    /// identity: the domain's name, its machine and its incarnation.
+    fn sim_clock() -> config::runtime::ClockBinding {
+        config::runtime::ClockBinding::publisher(config::runtime::ClockDomainId::new(
+            config::runtime::Name::new("robot").expect("valid name"),
+            config::runtime::CoreNodeName::new("cn-sim").expect("valid core node name"),
+            config::runtime::ClockIncarnation::try_from(7).expect("non-zero"),
+        ))
+    }
+
     #[test]
     fn node_run_goal_new_has_empty_env_vars() {
         let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 30);
@@ -923,7 +933,7 @@ mod tests {
     fn node_run_goal_roundtrip_instance_plan_fields() {
         let goal = NodeRunGoal::new(
             NodeInstancePlan {
-                use_sim_time: Some(true),
+                clock: sim_clock(),
                 slot_bindings: BTreeMap::from([(
                     "camera".to_owned(),
                     config::runtime::BoundProducers::try_from(vec![
@@ -942,7 +952,7 @@ mod tests {
         let encoded = goal.encode().expect("encode");
         let decoded = NodeRunGoal::decode(&encoded).expect("decode");
         assert_eq!(decoded, goal);
-        assert_eq!(decoded.instance_plan.use_sim_time, Some(true));
+        assert_eq!(decoded.instance_plan.clock, sim_clock());
         assert_eq!(
             decoded.instance_plan.slot_bindings["camera"].as_slice()[0].core_node,
             "cn-robot-7"
@@ -1330,11 +1340,7 @@ mod tests {
     /// one place instead of two.
     #[test]
     fn an_instance_plan_names_no_endpoint_and_no_daemon() {
-        let serialized = serde_json5::to_string(&NodeInstancePlan {
-            use_sim_time: Some(false),
-            ..plan("inst_1")
-        })
-        .expect("serialize");
+        let serialized = serde_json5::to_string(&plan("inst_1")).expect("serialize");
 
         for forbidden in [
             "messaging_host",

@@ -109,95 +109,155 @@ async def test_subscribe_clock_yields_typed_ticks(tmp_path):
     assert tick.time == 1_700_000_000_123_456_789
 
 
-# The core nodes a fleet launch would have stamped onto its time source.
-FLEET = ["cn-fleet-sim", "cn-fleet-robot-a", "cn-fleet-robot-b"]
+# The instance a domain declaration names as its publisher, and the domain it
+# supplies on this test's machine.
+SOURCE_INSTANCE = "sim_inst"
+DOMAIN = "robot"
+
+
+def _link_id(incarnation: int) -> str:
+    """The wire segment a domain's ticks ride under, matching Rust's
+    ``ClockDomainId::link_id``."""
+    return f"{DOMAIN}_{incarnation:016x}"
+
+
+async def _runner_with_clock(router, tmp_path, binding):
+    """A standalone runner bound to ``binding``, the daemon-less spelling of
+    what a launch or a `peppy node run` would have stamped on it."""
+    standalone_config = (
+        StandaloneConfig()
+        .with_messaging(router.host, router.port)
+        .with_instance_id(CLIENT_INSTANCE)
+        .with_clock(binding)
+    )
+    return await NodeRunner.new_standalone(
+        str(write_standalone_peppy_config(tmp_path)), standalone_config
+    )
 
 
 @pytest.mark.asyncio
-async def test_sim_time_publisher_reaches_every_participant(tmp_path):
-    """One publish lands the tick on every participant's `clock` key, each
-    observed by a subscriber scoped the way that machine's daemon and sim-time
-    nodes scope theirs. Python twin of `sim_time_publisher_reaches_every_participant`."""
+async def test_a_consumer_reads_the_ticks_of_its_domain(tmp_path):
+    """A consumer reads the instants its domain's publisher supplies, and
+    reads nothing before the first one. Python twin of
+    `a_consumer_reads_the_ticks_of_its_domain`."""
+    sim_ns = 42_000_000_000
     router = await peppy_testing.EphemeralRouter.start()
     try:
         observer = await MessengerHandle.from_host_port_with_namespace(router.host, router.port)
-        standalone_config = (
-            StandaloneConfig()
-            .with_messaging(router.host, router.port)
-            .with_instance_id(CLIENT_INSTANCE)
-            .with_use_sim_time(True)
-            .with_sim_time_participants(FLEET)
+        binding = clock.ClockBinding.consumer(DOMAIN, CORE_NODE, 1, CORE_NODE, SOURCE_INSTANCE)
+        node_runner = await _runner_with_clock(router, tmp_path, binding)
+
+        node_clock = await clock.for_node(node_runner)
+        with pytest.raises(RuntimeError):
+            node_clock.now_ns()
+
+        # Waits for a subscriber on this exact key, the domain's link_id
+        # included, before its first publish: a tick sent into an unrouted
+        # stream would be dropped and the test would read a hang as a bug.
+        publisher = await peppy_testing.TestTopicPublisher.declare(
+            observer,
+            CORE_NODE,
+            SOURCE_INSTANCE,
+            SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
+            "clock",
+            QoSProfile.SensorData,
+            link_id=_link_id(1),
         )
-        node_runner = await NodeRunner.new_standalone(
-            str(write_standalone_peppy_config(tmp_path)), standalone_config
-        )
+        await publisher.publish(clock.ClockTick(time=sim_ns).encode())
 
-        publisher = await clock.SimTimePublisher.for_node(node_runner)
-        assert publisher is not None, "the launch declared this node the source"
-        assert publisher.participants == FLEET
-
-        subscriptions = []
-        for core_node in FLEET:
-            # Each machine's daemon and sim-time nodes read the `clock` key
-            # under that machine's own core-node target; pinned here to the
-            # source's producer identity, which is what the fan-out publishes as.
-            subscription = await TopicMessenger.subscribe(
-                observer,
-                core_node,
-                "daemon_or_sim_node_on_that_machine",
-                SenderTarget.node(core_node, CORE_NODE_TAG),
-                "clock",
-                ProducerRef(CORE_NODE, CLIENT_INSTANCE),
-                QoSProfile.SensorData,
-            )
-            assert await TopicMessenger.wait_for_subscriber(
-                node_runner.messenger(),
-                CORE_NODE,
-                CLIENT_INSTANCE,
-                SenderTarget.node(core_node, CORE_NODE_TAG),
-                "clock",
-                2.0,
-            ), f"no subscriber for `{core_node}` routed within 2s"
-            subscriptions.append((core_node, subscription))
-
-        await publisher.publish(42_000_000_000)
-
-        for core_node, subscription in subscriptions:
-            message = await asyncio.wait_for(subscription.on_next_message(), timeout=2.0)
-            assert message is not None, f"`{core_node}` subscription closed"
-            assert clock.ClockTick.decode(message.payload).time == 42_000_000_000
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while True:
+            try:
+                assert node_clock.now_ns() == sim_ns
+                break
+            except RuntimeError:
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise AssertionError("the domain's tick never reached the node") from None
+                await asyncio.sleep(0.01)
     finally:
         await router.stop()
 
 
 @pytest.mark.asyncio
-async def test_an_undeclared_node_cannot_publish_sim_time(tmp_path):
-    """A node the launch never declared its time source gets no publisher,
-    and with it no way to drive fleet time."""
-    router, node_runner, _server_handle = await start_router_and_runner(tmp_path)
-    try:
-        assert await clock.SimTimePublisher.for_node(node_runner) is None
-    finally:
-        await router.stop()
-
-
-@pytest.mark.asyncio
-async def test_a_declared_source_in_wall_mode_gets_no_publisher(tmp_path):
-    """The standalone twin of a launch resolving a declared source against a
-    wall-serving daemon: the declaration is inert. Python twin of
-    `a_declared_source_in_wall_mode_gets_no_publisher`."""
+async def test_a_consumer_of_an_earlier_lifetime_reads_nothing_from_the_replacement(tmp_path):
+    """Reusing a domain name mints a new lifetime, whose ticks address a
+    stream the old consumer never subscribed to. This is what stops a
+    replacement from silently rebinding the consumers it replaces."""
     router = await peppy_testing.EphemeralRouter.start()
     try:
-        standalone_config = (
-            StandaloneConfig()
-            .with_messaging(router.host, router.port)
-            .with_instance_id(CLIENT_INSTANCE)
-            .with_use_sim_time(False)
-            .with_sim_time_participants(FLEET)
+        observer = await MessengerHandle.from_host_port_with_namespace(router.host, router.port)
+        binding = clock.ClockBinding.consumer(DOMAIN, CORE_NODE, 1, CORE_NODE, SOURCE_INSTANCE)
+        node_runner = await _runner_with_clock(router, tmp_path, binding)
+        node_clock = await clock.for_node(node_runner)
+
+        # The replacement publishes under the same name on the same machine.
+        publisher = await TopicMessenger.declare_publisher(
+            observer,
+            CORE_NODE,
+            SOURCE_INSTANCE,
+            SenderTarget.node(CORE_NODE, CORE_NODE_TAG),
+            "clock",
+            QoSProfile.SensorData,
+            _link_id(2),
         )
-        node_runner = await NodeRunner.new_standalone(
-            str(write_standalone_peppy_config(tmp_path)), standalone_config
+        await publisher.publish(clock.ClockTick(time=99_000_000_000).encode())
+        await asyncio.sleep(0.5)
+
+        with pytest.raises(RuntimeError):
+            node_clock.now_ns()
+    finally:
+        await router.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_publisher_reads_its_committed_time_and_its_domain_carries_it(tmp_path):
+    """The instance a domain names supplies its time: it reads back what it
+    committed before anything returns through the transport, and its domain
+    carries that same instant."""
+    sim_ns = 7_000_000_000
+    router = await peppy_testing.EphemeralRouter.start()
+    try:
+        binding = clock.ClockBinding.publisher(DOMAIN, CORE_NODE, 1)
+        node_runner = await _runner_with_clock(router, tmp_path, binding)
+
+        publisher = await clock.ClockPublisher.for_node(node_runner)
+        assert publisher is not None, "the binding names this instance the publisher"
+        assert publisher.domain == f"{DOMAIN}@{CORE_NODE}"
+
+        reader = await clock.for_node(node_runner)
+        with pytest.raises(RuntimeError):
+            reader.now_ns()
+
+        subscription = await clock.subscribe(node_runner)
+        await publisher.publish(sim_ns)
+
+        assert reader.now_ns() == sim_ns, (
+            "a source reads its own clock without waiting for a transport echo"
         )
-        assert await clock.SimTimePublisher.for_node(node_runner) is None
+        tick = await asyncio.wait_for(subscription.on_next_tick(), timeout=5.0)
+        assert tick is not None and tick.time == sim_ns
+    finally:
+        await router.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_instance_named_no_domain_cannot_publish(tmp_path):
+    """An instance whose deployment named it no domain gets no publisher, and
+    with it no way to drive anyone's time."""
+    router, node_runner, _server_handle = await start_router_and_runner(tmp_path)
+    try:
+        assert await clock.ClockPublisher.for_node(node_runner) is None
+    finally:
+        await router.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_consumer_cannot_publish_its_domain(tmp_path):
+    """A consumer is bound to a domain, not granted authority over it."""
+    router = await peppy_testing.EphemeralRouter.start()
+    try:
+        binding = clock.ClockBinding.consumer(DOMAIN, CORE_NODE, 1, CORE_NODE, SOURCE_INSTANCE)
+        node_runner = await _runner_with_clock(router, tmp_path, binding)
+        assert await clock.ClockPublisher.for_node(node_runner) is None
     finally:
         await router.stop()
