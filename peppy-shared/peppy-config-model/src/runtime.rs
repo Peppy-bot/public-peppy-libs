@@ -1,6 +1,6 @@
 mod clock;
 mod core_node_name;
-pub use clock::{ClockBinding, ClockDomainId, ClockIncarnation, ClockRole, ZeroIncarnation};
+pub use clock::{ClockBinding, ClockDomainId, ClockIncarnation, ClockRole, InvalidIncarnation};
 pub use core_node_name::{CoreNodeName, CoreNodeNameError, MAX_CORE_NODE_NAME_LEN, SELF_CORE_NODE};
 
 use crate::common::AnyType;
