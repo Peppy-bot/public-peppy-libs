@@ -4,6 +4,7 @@
 //! set), and [`PyObservedSubscription`] (receive the observed sources'
 //! publishes on one topic, yielded as `(source, message)`).
 
+use super::pairing::PyPeerInfo;
 use super::target::PyProducerRef;
 use super::topics::PyTopicMessage;
 use peppylib::messaging::ObservedSource;
@@ -14,11 +15,12 @@ use tokio::sync::Mutex;
 
 /// One pairing an observer slot observes: the observed instance's full
 /// `(core_node, instance_id)` wire address plus the producer-side link_id of the
-/// observed pairing slot. Returned by `ObservationSlot.source()` and
+/// observed pairing slot, and the pair's other end when the plan named the
+/// pair by it. Returned by `ObservationSlot.source()` and
 /// `ObservationSlotSet.sources()`, and tagged onto every message an
 /// `ObservedSubscription` yields; it is the member's full identity, so members
-/// sharing one instance stay distinct. `frozen, eq, hash` make it usable
-/// directly as a `dict` key for per-member demux, mirroring the Rust
+/// sharing one instance, or one slot, stay distinct. `frozen, eq, hash` make
+/// it usable directly as a `dict` key for per-member demux, mirroring the Rust
 /// `HashMap<ObservedSource, _>` idiom. Purely local configuration state; there
 /// is no health-derived helper, because a third node's health is not knowable
 /// here.
@@ -31,11 +33,17 @@ pub struct PyObservedSource {
 #[pymethods]
 impl PyObservedSource {
     #[new]
-    fn new(producer: PyProducerRef, source_link_id: String) -> Self {
+    #[pyo3(signature = (producer, source_link_id, peer = None))]
+    fn new(
+        producer: PyProducerRef,
+        source_link_id: String,
+        peer: Option<PyRef<'_, PyPeerInfo>>,
+    ) -> Self {
         Self {
             inner: ObservedSource {
                 producer: producer.into_inner(),
                 source_link_id,
+                peer: peer.map(|peer| peer.inner.clone()),
             },
         }
     }
@@ -52,9 +60,24 @@ impl PyObservedSource {
         &self.inner.source_link_id
     }
 
+    /// The pair's other end when the plan named the pair by it: the peer the
+    /// source publishes to and the link_id of the peer's slot. `None` when
+    /// this member observes every pair of the source's slot.
+    #[getter]
+    fn peer(&self) -> Option<PyPeerInfo> {
+        self.inner.peer.clone().map(PyPeerInfo::from)
+    }
+
     fn __repr__(&self) -> String {
+        let peer = match &self.inner.peer {
+            Some(peer) => format!(
+                "PeerInfo(producer=ProducerRef({:?}, {:?}), peer_link_id={:?})",
+                peer.producer.core_node, peer.producer.instance_id, peer.peer_link_id
+            ),
+            None => "None".to_string(),
+        };
         format!(
-            "ObservedSource(producer=ProducerRef({:?}, {:?}), source_link_id={:?})",
+            "ObservedSource(producer=ProducerRef({:?}, {:?}), source_link_id={:?}, peer={peer})",
             self.inner.producer.core_node,
             self.inner.producer.instance_id,
             self.inner.source_link_id

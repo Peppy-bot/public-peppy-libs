@@ -44,14 +44,11 @@ impl SlotUpdate for ObservationUpdateRequest {
     /// Replace-wholesale: a delivery carries the slot's complete member set, so
     /// members it omits are gone from the slot and the plan's order is the
     /// order the slot holds.
-    fn merge_into(&self, state: &mut ObservationState) -> bool {
-        let new_state = ObservationState {
+    fn to_state(&self) -> ObservationState {
+        ObservationState {
             sequence: self.sequence,
             members: self.members.clone(),
-        };
-        let changed = *state != new_state;
-        *state = new_state;
-        changed
+        }
     }
 
     fn log_detail(&self) -> String {
@@ -114,6 +111,7 @@ mod tests {
             source: ObservedSource {
                 producer: ProducerRef::new("core_a", instance),
                 source_link_id: "commander".to_string(),
+                peer: None,
             },
             source_generation: generation,
             source_live: live,
