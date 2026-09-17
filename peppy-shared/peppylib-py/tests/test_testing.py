@@ -12,6 +12,7 @@ import pytest
 import peppylib.testing as peppy_testing
 from peppylib import (
     ActionMessenger,
+    PeerInfo,
     ProducerRef,
     QoSProfile,
     SenderTarget,
@@ -233,6 +234,46 @@ async def test_topic_publisher_first_publish_is_delivered():
         )
         with pytest.raises(RuntimeError, match="nobody_listens"):
             await orphan.publish(b"lost")
+
+
+@pytest.mark.asyncio
+async def test_pairing_publisher_to_a_peer_reaches_its_pinned_subscriber():
+    """A mock playing one end of a pair publishes to the node's slot, and
+    the node's pinned subscription on that slot is what the first publish
+    waits for."""
+    async with await EphemeralRouter.start() as router:
+        node_handle = await router.connect()
+        mock_handle = await router.connect()
+        pairing = SenderTarget.pairing("arm_link", "v1")
+
+        mock = ProducerRef(MOCK_CORE, MOCK_INSTANCE)
+        subscription = await TopicMessenger.subscribe_peer_pinned(
+            node_handle,
+            CALLER_CORE,
+            CALLER_INSTANCE,
+            "arm",
+            pairing,
+            mock,
+            "controller",
+            "joint_commands",
+            QoSProfile.Reliable,
+        )
+
+        publisher = await TestTopicPublisher.declare_to_peer(
+            mock_handle,
+            MOCK_CORE,
+            MOCK_INSTANCE,
+            pairing,
+            "controller",
+            "joint_commands",
+            QoSProfile.Reliable,
+            PeerInfo(ProducerRef(CALLER_CORE, CALLER_INSTANCE), "arm"),
+        )
+        await publisher.publish(b"cmd-1")
+
+        received = await asyncio.wait_for(subscription.on_next_message(), timeout=5.0)
+        assert received is not None
+        assert received.payload == b"cmd-1"
 
 
 @pytest.mark.asyncio

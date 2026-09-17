@@ -34,7 +34,8 @@ SEEDED_SLOTS_CONFIG = """{
     tag: "v1",
     depends_on: {
       pairings: [
-        { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
+        { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
+        { name: "arm_link", tag: "v1", role: "controller", link_id: "limbs", cardinality: "zero_or_more" }
       ],
       nodes: [
         { name: "camera", tag: "v1", link_id: "main" },
@@ -75,6 +76,8 @@ def _seeded_config(router) -> StandaloneConfig:
         .with_messaging(router.host, router.port)
         .with_instance_id("standalone_1")
         .with_peer_pin("arm", "core_x", "arm_1", "controller")
+        .with_peer_pin_in_copy("limbs", "core_x", "left_1", "engine", "robot_a")
+        .with_peer_pin("limbs", "core_x", "left_2", "engine")
         .with_bound_producer("main", "core_x", "camera_1")
         .with_vacant_producer_slot("wrist_camera")
         .with_observed_source("sole_arm", "core_x", "left_arm", "commander")
@@ -123,9 +126,11 @@ async def test_standalone_seeds_every_slot_kind(monkeypatch):
             def setup_fn(params, node_runner, results):
                 assert params.frequency_hz == 10.0
 
-                # A pinned pairing slot reads as already paired.
+                # A pinned pairing slot reads as already paired; a multi slot
+                # holds every pin with the copy it was seeded in.
                 peer = node_runner.peer("arm").paired()
                 results.put(("peer", peer))
+                results.put(("limbs", node_runner.peer_set("limbs").members()))
 
                 # Producer bindings: the sole one, the vacant one, and the
                 # zero_or_more slot left unseeded entirely.
@@ -174,6 +179,10 @@ async def test_standalone_seeds_every_slot_kind(monkeypatch):
     assert seen["peer"] is not None, "a pinned pairing slot boots paired"
     assert seen["peer"].producer.instance_id == "arm_1"
     assert seen["peer"].peer_link_id == "controller"
+    assert [(m.info.producer.instance_id, m.copy) for m in seen["limbs"]] == [
+        ("left_1", "robot_a"),
+        ("left_2", None),
+    ]
 
     assert seen["main"].instance_id == "camera_1"
     assert seen["wrist"] is None, "a vacant zero_or_one slot binds nothing"

@@ -268,6 +268,8 @@ pub struct TestTopicPublisher {
     as_instance_id: String,
     as_target: SenderTarget,
     link_id: Option<String>,
+    /// The peer a pairing publisher addresses; `None` on every other target.
+    peer: Option<crate::messaging::PeerInfo>,
     topic: String,
     matched: AtomicBool,
     readiness_timeout: Duration,
@@ -303,6 +305,46 @@ impl TestTopicPublisher {
             as_instance_id: as_instance_id.to_string(),
             as_target,
             link_id: link_id.map(str::to_string),
+            peer: None,
+            topic: topic.to_string(),
+            matched: AtomicBool::new(false),
+            readiness_timeout: READINESS_TIMEOUT,
+        })
+    }
+
+    /// Declares a pairing publisher from the mock's slot `link_id` to `peer`
+    /// (the node under test, on its slot), for a mock playing the other end
+    /// of a pair.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn declare_to_peer(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        as_target: SenderTarget,
+        link_id: &str,
+        topic: &str,
+        qos: QoSProfile,
+        peer: crate::messaging::PeerInfo,
+    ) -> Result<Self> {
+        let publisher = TopicMessenger::declare_pairing_publisher(
+            messenger,
+            as_core_node,
+            as_instance_id,
+            as_target.clone(),
+            link_id,
+            topic,
+            qos,
+            &peer,
+        )
+        .await?;
+        Ok(Self {
+            publisher,
+            messenger: messenger.clone(),
+            as_core_node: as_core_node.to_string(),
+            as_instance_id: as_instance_id.to_string(),
+            as_target,
+            link_id: Some(link_id.to_string()),
+            peer: Some(peer),
             topic: topic.to_string(),
             matched: AtomicBool::new(false),
             readiness_timeout: READINESS_TIMEOUT,
@@ -320,16 +362,33 @@ impl TestTopicPublisher {
     /// is visible, or `timeout` elapses; returns whether one matched. Marks
     /// the publisher matched on success so later publishes skip the wait.
     pub async fn wait_for_subscriber(&self, timeout: Duration) -> Result<bool> {
-        let matched = TopicMessenger::wait_for_subscriber_with_link_id(
-            &self.messenger,
-            &self.as_core_node,
-            &self.as_instance_id,
-            self.as_target.clone(),
-            self.link_id.as_deref(),
-            &self.topic,
-            timeout,
-        )
-        .await?;
+        let matched = match (&self.peer, self.link_id.as_deref()) {
+            (Some(peer), Some(link_id)) => {
+                TopicMessenger::wait_for_pairing_subscriber(
+                    &self.messenger,
+                    &self.as_core_node,
+                    &self.as_instance_id,
+                    self.as_target.clone(),
+                    link_id,
+                    &self.topic,
+                    peer,
+                    timeout,
+                )
+                .await?
+            }
+            _ => {
+                TopicMessenger::wait_for_subscriber_with_link_id(
+                    &self.messenger,
+                    &self.as_core_node,
+                    &self.as_instance_id,
+                    self.as_target.clone(),
+                    self.link_id.as_deref(),
+                    &self.topic,
+                    timeout,
+                )
+                .await?
+            }
+        };
         if matched {
             self.matched.store(true, Ordering::SeqCst);
         }
@@ -354,16 +413,16 @@ impl TestTopicPublisher {
 }
 
 /// A statically pinned peer-topic subscription: the exact wire shape a
-/// paired peer's (or observed-source consumer's) subscription has — producer,
-/// pairing target, and producer-side link_id all pinned — without the
-/// pin-following machinery, which a mock does not need (its pin never
-/// changes). This is how a generated pairing mock receives the topics the
-/// node under test emits on its slot.
+/// paired peer's subscription has, the producer's triple and the mock's own
+/// slot `as_link_id` both pinned, without the pin-following machinery, which
+/// a mock does not need (its pin never changes). This is how a generated
+/// pairing mock receives the topics the node under test emits on its slot.
 #[allow(clippy::too_many_arguments)]
 pub async fn subscribe_peer_pinned(
     messenger: &MessengerHandle,
     as_core_node: &str,
     as_instance_id: &str,
+    as_link_id: &str,
     pairing_target: SenderTarget,
     peer: &crate::messaging::ProducerRef,
     peer_link_id: &str,
@@ -377,6 +436,10 @@ pub async fn subscribe_peer_pinned(
         pairing_target,
         peer,
         peer_link_id,
+        pmi::PairingRecipient::Slot(
+            pmi::Segment::try_link_id(as_link_id)
+                .map_err(|e| Error::PeppyMessagingInterface(e.into()))?,
+        ),
         to_topic,
         qos,
     )
@@ -820,8 +883,9 @@ enum MockClockDriver {
     /// does.
     Wall { ticker: TaskHandle<()> },
     /// Stands in for a simulator: publishes the harness domain's stream, and
-    /// only when the test says so.
-    Domain { publisher: TestTopicPublisher },
+    /// only when the test says so. Boxed: the publisher carries its whole wire
+    /// identity, which dwarfs the other variants.
+    Domain { publisher: Box<TestTopicPublisher> },
     /// Publishes nothing, because the node under test publishes the domain.
     Silent,
 }
@@ -928,7 +992,9 @@ impl MockClock {
                     QoSProfile::SensorData,
                 )
                 .await?;
-                MockClockDriver::Domain { publisher }
+                MockClockDriver::Domain {
+                    publisher: Box::new(publisher),
+                }
             }
             HarnessClock::Publisher => MockClockDriver::Silent,
         };
@@ -1073,6 +1139,9 @@ pub struct PublisherReadiness {
     /// The node's own producer-side link_id for slot-scoped publishers
     /// (pairing slots); `None` for plain emitted topics.
     pub link_id: Option<String>,
+    /// The mock peer a pairing publisher addresses; `None` for plain emitted
+    /// topics.
+    pub peer: Option<crate::messaging::PeerInfo>,
     pub topic: String,
 }
 
@@ -1155,16 +1224,33 @@ impl HarnessCore {
         // the node's declare_publisher will use.
         let processor = node_runner.processor();
         for probe in publisher_readiness {
-            let matched = TopicMessenger::wait_for_subscriber_with_link_id(
-                node_runner.messenger(),
-                processor.bound_core_node(),
-                processor.bound_instance_id(),
-                probe.target.clone(),
-                probe.link_id.as_deref(),
-                &probe.topic,
-                READINESS_TIMEOUT,
-            )
-            .await?;
+            let matched = match (&probe.peer, probe.link_id.as_deref()) {
+                (Some(peer), Some(link_id)) => {
+                    TopicMessenger::wait_for_pairing_subscriber(
+                        node_runner.messenger(),
+                        processor.bound_core_node(),
+                        processor.bound_instance_id(),
+                        probe.target.clone(),
+                        link_id,
+                        &probe.topic,
+                        peer,
+                        READINESS_TIMEOUT,
+                    )
+                    .await?
+                }
+                _ => {
+                    TopicMessenger::wait_for_subscriber_with_link_id(
+                        node_runner.messenger(),
+                        processor.bound_core_node(),
+                        processor.bound_instance_id(),
+                        probe.target.clone(),
+                        probe.link_id.as_deref(),
+                        &probe.topic,
+                        READINESS_TIMEOUT,
+                    )
+                    .await?
+                }
+            };
             if !matched {
                 return Err(Error::Io(std::io::Error::other(format!(
                     "readiness barrier: the harness subscription for topic `{}` (link_id {:?}) \
