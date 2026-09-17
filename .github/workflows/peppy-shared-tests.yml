@@ -163,17 +163,34 @@ jobs:
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           cargo test --workspace --exclude peppylib-py --locked
 
-      # Installed here rather than assumed of the runner: the self-hosted box is
-      # provisioned outside this repository, so a workflow that leaned on what
-      # happens to be on it would break with no commit to blame. Pinned to the
-      # version the workspace's `requires-pixi` documents as tested (pixi.lock
-      # is format v7), and `pixi install` runs `--locked` by default so a stale
-      # lock fails CI instead of being silently re-resolved.
+      # Installed by hand rather than through prefix-dev/setup-pixi: that action
+      # aborts when `$PIXI_HOME/bin/pixi` already exists ("Destination file path
+      # ... already exists"), which is the normal state of a runner that is
+      # reused rather than discarded with the job. It is also not the only pixi
+      # on the box — peppy's own CI installs one for its build scripts — so the
+      # install goes to a directory keyed by this repository's pinned version.
+      # Two repositories pinning different versions then each install once and
+      # neither overwrites the other, where a shared ~/.pixi would have them
+      # reinstalling over each other on every alternating job.
+      #
+      # Pinned to the version the workspace's `requires-pixi` documents as
+      # tested (pixi.lock is format v7). `pixi install` runs `--locked` by
+      # default, so a stale lock fails CI here instead of being silently
+      # re-resolved by the `pixi run` below.
       - name: Install pixi
-        uses: prefix-dev/setup-pixi@v0.10.1
-        with:
-          pixi-version: v0.72.0
-          manifest-path: peppy-shared/peppylib-py/pixi.toml
+        run: |
+          set -euo pipefail
+          pixi_pin=0.72.0
+          pixi_home="$HOME/.cache/peppy-shared-pixi-$pixi_pin"
+          if [ -x "$pixi_home/bin/pixi" ]; then
+            echo "pixi $pixi_pin already installed at $pixi_home"
+          else
+            curl -fsSL https://pixi.sh/install.sh \
+              | PIXI_HOME="$pixi_home" PIXI_VERSION="v$pixi_pin" PIXI_NO_PATH_UPDATE=1 sh
+          fi
+          echo "$pixi_home/bin" >> "$GITHUB_PATH"
+          "$pixi_home/bin/pixi" --version
+          "$pixi_home/bin/pixi" install --manifest-path peppy-shared/peppylib-py/pixi.toml
 
       # Installed here for the same reason: peppylib-py's build.rs requires uv
       # on PATH, and the Python suite launches its test nodes with `uv run`.
