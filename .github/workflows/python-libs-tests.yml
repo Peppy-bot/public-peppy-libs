@@ -27,11 +27,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # As in peppy-shared-tests.yml: a GitHub-hosted runner, so a pull request that
-  # leaves the Python libs alone never queues against the single self-hosted
-  # runner, which runs one job at a time.
+  # As in peppy-shared-tests.yml: decides whether the Python libs were touched,
+  # so an unrelated pull request skips the `test` job rather than building it.
+  # Runs on the self-hosted runner like everything else, so it queues behind
+  # whatever the box is building before it can rule a pull request out.
   changes:
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     permissions:
       contents: read
       pull-requests: read
@@ -57,7 +58,7 @@ jobs:
   test:
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.python_libs == 'true'
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
+    runs-on: self-hosted
     timeout-minutes: 20
     permissions:
       contents: read

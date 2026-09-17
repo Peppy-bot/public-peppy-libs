@@ -28,11 +28,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Decides whether a pull request touches the workspace. Runs on a GitHub-hosted
-  # runner so that pull requests leaving `peppy-shared/` alone never queue against
-  # the single self-hosted runner, which runs one job at a time.
+  # Decides whether a pull request touches the workspace, so that a pull request
+  # leaving `peppy-shared/` alone skips the `test` job below rather than building
+  # it. The filter reads the changed files from the API and needs no checkout, but
+  # it runs on the self-hosted runner like everything else, so it queues behind
+  # whatever the box is building before it can rule a pull request out.
   changes:
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     permissions:
       contents: read
       pull-requests: read
@@ -57,7 +59,7 @@ jobs:
   test:
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.peppy_shared == 'true'
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
+    runs-on: self-hosted
     permissions:
       contents: read
       pull-requests: read
