@@ -30,9 +30,9 @@ env:
 jobs:
   # Decides whether a pull request touches the workspace. Runs on a GitHub-hosted
   # runner so that pull requests leaving `peppy-shared/` alone never queue against
-  # the single self-hosted runner.
+  # the single self-hosted runner, which runs one job at a time.
   changes:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
@@ -57,7 +57,7 @@ jobs:
   test:
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.peppy_shared == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
     permissions:
       contents: read
       pull-requests: read
@@ -90,20 +90,20 @@ jobs:
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           cargo test --workspace --exclude peppylib-py --locked
 
-      # The retired self-hosted runner had pixi pre-installed; the Blacksmith
-      # runner image does not, so install it here. Pinned to the version the
-      # workspace's `requires-pixi` documents as tested (pixi.lock is format v7),
-      # and `pixi install` runs `--locked` by default so a stale lock fails CI
-      # instead of being silently re-resolved.
+      # Installed here rather than assumed of the runner: the self-hosted box is
+      # provisioned outside this repository, so a workflow that leaned on what
+      # happens to be on it would break with no commit to blame. Pinned to the
+      # version the workspace's `requires-pixi` documents as tested (pixi.lock
+      # is format v7), and `pixi install` runs `--locked` by default so a stale
+      # lock fails CI instead of being silently re-resolved.
       - name: Install pixi
         uses: prefix-dev/setup-pixi@v0.10.1
         with:
           pixi-version: v0.72.0
           manifest-path: peppy-shared/peppylib-py/pixi.toml
 
-      # Also pre-installed on the old self-hosted runner: peppylib-py's build.rs
-      # requires uv on PATH, and the Python suite launches its test nodes with
-      # `uv run`.
+      # Installed here for the same reason: peppylib-py's build.rs requires uv
+      # on PATH, and the Python suite launches its test nodes with `uv run`.
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.1
         with:
