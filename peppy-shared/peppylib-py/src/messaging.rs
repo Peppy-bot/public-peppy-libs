@@ -8,7 +8,9 @@ mod topics;
 pub(crate) use observation::{
     PyObservationSlot, PyObservationSlotSet, PyObservedSource, PyObservedSubscription,
 };
-pub(crate) use pairing::{PyPeerInfo, PyPeerSlot, PyPeerSubscription};
+pub(crate) use pairing::{
+    PyPeerInfo, PyPeerMember, PyPeerPublisher, PyPeerSlot, PyPeerSlotSet, PyPeerSubscription,
+};
 pub(crate) use target::{PyProducerRef, PySenderTarget};
 
 use config::namespace::Namespace;
@@ -44,6 +46,7 @@ pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
         }
         PeppyError::UnknownPairingSlot { .. }
         | PeppyError::UnknownObservationSlot { .. }
+        | PeppyError::PeerNotPaired { .. }
         | PeppyError::TargetNotBound { .. } => PyValueError::new_err(err.to_string()),
         PeppyError::ServiceUnreachable { .. }
         | PeppyError::ActionResultUnreachable { .. }
@@ -267,8 +270,11 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     messaging_module.add_class::<PySenderTarget>()?;
     messaging_module.add_class::<PyProducerRef>()?;
     messaging_module.add_class::<PyPeerInfo>()?;
+    messaging_module.add_class::<PyPeerMember>()?;
     messaging_module.add_class::<PyPeerSlot>()?;
+    messaging_module.add_class::<PyPeerSlotSet>()?;
     messaging_module.add_class::<PyPeerSubscription>()?;
+    messaging_module.add_class::<PyPeerPublisher>()?;
     messaging_module.add_class::<PyObservedSource>()?;
     messaging_module.add_class::<PyObservationSlot>()?;
     messaging_module.add_class::<PyObservationSlotSet>()?;

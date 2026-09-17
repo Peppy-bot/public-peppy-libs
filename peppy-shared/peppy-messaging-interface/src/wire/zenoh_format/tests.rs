@@ -4,6 +4,7 @@
 //! real router live in `peppy-messaging-interface/tests/wire.rs`.
 
 use super::*;
+use crate::wire::WirePeer;
 use crate::wire::{Segment, SenderTarget};
 use config::namespace::Namespace;
 
@@ -55,6 +56,7 @@ fn topic_publish_node_target() {
         as_target: node("uvc_camera", "v1"),
         link_id: Segment::default_link_id(),
         as_topic_name: seg("video_stream"),
+        to_peer: None,
     };
     assert_eq!(
         ZenohWireFormat::topic_publish(&sender),
@@ -70,6 +72,7 @@ fn topic_publish_with_contract_normalizes_tag() {
         as_target: contract_target("manipulator", "v1-beta-2"),
         link_id: Segment::default_link_id(),
         as_topic_name: seg("joint_states"),
+        to_peer: None,
     };
     assert_eq!(
         ZenohWireFormat::topic_publish(&sender),
@@ -85,6 +88,7 @@ fn topic_publish_with_concrete_link_id() {
         as_target: contract_target("depth_camera", "v1"),
         link_id: seg("wrist_left_camera"),
         as_topic_name: seg("video_stream"),
+        to_peer: None,
     };
     assert_eq!(
         ZenohWireFormat::topic_publish(&sender),
@@ -93,39 +97,241 @@ fn topic_publish_with_concrete_link_id() {
 }
 
 #[test]
-fn topic_publish_pairing_target_stamps_own_slot_link_id() {
-    // Pairing publishers are slot-scoped: the link_id segment carries the
-    // publisher's OWN slot link_id, never the default `_` sentinel.
-    let sender = TopicWireSender {
-        as_core_node: seg("core_a"),
-        as_instance_id: seg("arm_1"),
-        as_target: pairing("arm_link", "v1"),
-        link_id: seg("controller"),
-        as_topic_name: seg("joint_states"),
-    };
+fn topic_publish_pairing_names_both_ends() {
+    // A pairing emission fills the recipient slots a subscriber pins as its
+    // own, carries the publisher's OWN slot link_id at the link_id segment,
+    // and ends with the peer's slot, so a slot holding several pairs reaches
+    // one peer per publish.
+    let sender = TopicWireSender::to_peer(
+        "core_a",
+        "arm_1",
+        pairing("arm_link", "v1"),
+        "controller",
+        "joint_states",
+        WirePeer::new("core_b", "ctrl_1", "arm").unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         ZenohWireFormat::topic_publish(&sender),
-        "*/core_a/*/arm_1/topic/pairing/arm_link/v1/controller/joint_states"
+        "core_b/core_a/ctrl_1/arm_1/topic/pairing/arm_link/v1/controller/joint_states/arm"
     );
 }
 
 #[test]
-fn topic_subscribe_pairing_full_triple_pin() {
-    // A paired subscription pins all three peer coordinates: core_node,
-    // instance_id, and the PEER's slot link_id — no wildcard anywhere.
-    let receiver = TopicWireReceiver {
-        as_core_node: seg("core_a"),
-        as_instance_id: seg("ctrl_1"),
-        from_core_node: Some(seg("core_a")),
-        from_instance_id: Some(seg("arm_1")),
-        from_target: Some(pairing("arm_link", "v1")),
-        from_link_id: Some(seg("controller")),
-        to_topic: seg("joint_states"),
-    };
+fn topic_subscribe_paired_pins_both_ends() {
+    // A paired subscription pins the peer's three coordinates and its own
+    // slot: the exact key one pairing emission is published on.
+    let receiver = TopicWireReceiver::paired(
+        "core_b",
+        "ctrl_1",
+        pairing("arm_link", "v1"),
+        &WirePeer::new("core_a", "arm_1", "controller").unwrap(),
+        "arm",
+        "joint_states",
+    )
+    .unwrap();
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
-        "core_a/core_a/ctrl_1/arm_1/topic/pairing/arm_link/v1/controller/joint_states"
+        "core_b/core_a/ctrl_1/arm_1/topic/pairing/arm_link/v1/controller/joint_states/arm"
     );
+}
+
+#[test]
+fn topic_subscribe_observing_is_open_on_the_recipient() {
+    // An observer pins the source's coordinates and leaves the recipient
+    // slots open, so it hears the emission to every peer of that slot.
+    let receiver = TopicWireReceiver::observing(
+        "core_c",
+        "rec_1",
+        pairing("arm_link", "v1"),
+        &WirePeer::new("core_a", "arm_1", "controller").unwrap(),
+        "joint_states",
+    )
+    .unwrap();
+    assert_eq!(
+        ZenohWireFormat::topic_subscribe(&receiver),
+        "*/core_a/*/arm_1/topic/pairing/arm_link/v1/controller/joint_states/*"
+    );
+}
+
+#[test]
+fn topic_subscribe_observing_a_pair_pins_the_peer() {
+    // An observation pinned to a pair fills the recipient slots and the
+    // trailing segment with the peer's coordinates: the exact key the source
+    // publishes its emissions to that one peer on.
+    let receiver = TopicWireReceiver::observing_pair(
+        "core_c",
+        "rec_1",
+        pairing("arm_link", "v1"),
+        &WirePeer::new("core_a", "arm_1", "controller").unwrap(),
+        &WirePeer::new("core_b", "ctrl_1", "arm").unwrap(),
+        "joint_states",
+    )
+    .unwrap();
+    assert_eq!(
+        ZenohWireFormat::topic_subscribe(&receiver),
+        "core_b/core_a/ctrl_1/arm_1/topic/pairing/arm_link/v1/controller/joint_states/arm"
+    );
+}
+
+#[test]
+fn topic_publish_from_a_scalar_slot_leaves_its_peer_open() {
+    // A scalar slot's emission names no peer: its one pair's peer selects it
+    // through the peer's own pinned subscription.
+    let sender = TopicWireSender::to_sole_peer(
+        "core_a",
+        "arm_1",
+        pairing("arm_link", "v1"),
+        "controller",
+        "joint_states",
+    )
+    .unwrap();
+    assert_eq!(
+        ZenohWireFormat::topic_publish(&sender),
+        "*/core_a/*/arm_1/topic/pairing/arm_link/v1/controller/joint_states/*"
+    );
+    let paired = ZenohWireFormat::topic_subscribe(
+        &TopicWireReceiver::paired(
+            "core_b",
+            "ctrl_1",
+            pairing("arm_link", "v1"),
+            &WirePeer::new("core_a", "arm_1", "controller").unwrap(),
+            "arm",
+            "joint_states",
+        )
+        .unwrap(),
+    );
+    let observing = ZenohWireFormat::topic_subscribe(
+        &TopicWireReceiver::observing(
+            "core_c",
+            "rec_1",
+            pairing("arm_link", "v1"),
+            &WirePeer::new("core_a", "arm_1", "controller").unwrap(),
+            "joint_states",
+        )
+        .unwrap(),
+    );
+    let publish = ZenohWireFormat::topic_publish(&sender);
+    assert!(keyexprs_match(&publish, &paired));
+    assert!(keyexprs_match(&publish, &observing));
+}
+
+#[test]
+fn a_pairing_emission_reaches_its_peer_and_its_observers_only() {
+    // Two peers on one slot: the emission to `ctrl_1` matches ctrl_1's paired
+    // subscription, any observer of the slot and an observer pinned to
+    // ctrl_1's pair, and never ctrl_2's subscription or an observer pinned to
+    // ctrl_2's pair.
+    let to_ctrl_1 = ZenohWireFormat::topic_publish(
+        &TopicWireSender::to_peer(
+            "core_a",
+            "arm_1",
+            pairing("arm_link", "v1"),
+            "controllers",
+            "joint_states",
+            WirePeer::new("core_b", "ctrl_1", "arm").unwrap(),
+        )
+        .unwrap(),
+    );
+    let paired = |instance: &str| {
+        ZenohWireFormat::topic_subscribe(
+            &TopicWireReceiver::paired(
+                "core_b",
+                instance,
+                pairing("arm_link", "v1"),
+                &WirePeer::new("core_a", "arm_1", "controllers").unwrap(),
+                "arm",
+                "joint_states",
+            )
+            .unwrap(),
+        )
+    };
+    let observing = ZenohWireFormat::topic_subscribe(
+        &TopicWireReceiver::observing(
+            "core_c",
+            "rec_1",
+            pairing("arm_link", "v1"),
+            &WirePeer::new("core_a", "arm_1", "controllers").unwrap(),
+            "joint_states",
+        )
+        .unwrap(),
+    );
+    let observing_pair_of = |instance: &str| {
+        ZenohWireFormat::topic_subscribe(
+            &TopicWireReceiver::observing_pair(
+                "core_c",
+                "rec_1",
+                pairing("arm_link", "v1"),
+                &WirePeer::new("core_a", "arm_1", "controllers").unwrap(),
+                &WirePeer::new("core_b", instance, "arm").unwrap(),
+                "joint_states",
+            )
+            .unwrap(),
+        )
+    };
+    assert!(keyexprs_match(&to_ctrl_1, &paired("ctrl_1")));
+    assert!(!keyexprs_match(&to_ctrl_1, &paired("ctrl_2")));
+    assert!(keyexprs_match(&to_ctrl_1, &observing));
+    assert!(keyexprs_match(&to_ctrl_1, &observing_pair_of("ctrl_1")));
+    assert!(!keyexprs_match(&to_ctrl_1, &observing_pair_of("ctrl_2")));
+}
+
+#[test]
+fn a_pairing_key_without_its_recipient_is_refused() {
+    assert!(matches!(
+        TopicWireSender::new(
+            "core_a",
+            "arm_1",
+            pairing("arm_link", "v1"),
+            Some("controller"),
+            "joint_states"
+        ),
+        Err(crate::error::Error::PairingPublishNamesNoPeer)
+    ));
+    assert!(matches!(
+        TopicWireSender::to_peer(
+            "core_a",
+            "arm_1",
+            node("uvc_camera", "v1"),
+            "controller",
+            "joint_states",
+            WirePeer::new("core_b", "ctrl_1", "arm").unwrap(),
+        ),
+        Err(crate::error::Error::PeerOnNonPairingPublish)
+    ));
+    assert!(matches!(
+        TopicWireReceiver::new(
+            "core_b",
+            "ctrl_1",
+            Some("core_a"),
+            Some("arm_1"),
+            Some(pairing("arm_link", "v1")),
+            Some("controller"),
+            "joint_states"
+        ),
+        Err(crate::error::Error::PairingSubscriptionNamesNoRecipient)
+    ));
+    assert!(matches!(
+        TopicWireReceiver::observing(
+            "core_c",
+            "rec_1",
+            contract_target("arm_link", "v1"),
+            &WirePeer::new("core_a", "arm_1", "controller").unwrap(),
+            "joint_states",
+        ),
+        Err(crate::error::Error::RecipientOnNonPairingSubscription)
+    ));
+}
+
+/// Single-chunk wildcard matching of two keyexprs, segment by segment: the
+/// rule the wire relies on, checked here without a transport.
+fn keyexprs_match(publish: &str, subscribe: &str) -> bool {
+    let (p, s): (Vec<&str>, Vec<&str>) =
+        (publish.split('/').collect(), subscribe.split('/').collect());
+    p.len() == s.len()
+        && p.iter()
+            .zip(&s)
+            .all(|(a, b)| *a == "*" || *b == "*" || a == b)
 }
 
 #[test]
@@ -134,13 +340,17 @@ fn topic_pairing_and_contract_keyexprs_never_match() {
     // discriminators produce disjoint keyexprs, so a fully-wildcarded
     // contract subscription (wildcarded elsewhere, `contract` literal at
     // the discriminator slot) can never receive pairing traffic.
-    let pairing_publish = ZenohWireFormat::topic_publish(&TopicWireSender {
-        as_core_node: seg("core_a"),
-        as_instance_id: seg("arm_1"),
-        as_target: pairing("arm_link", "v1"),
-        link_id: seg("controller"),
-        as_topic_name: seg("joint_states"),
-    });
+    let pairing_publish = ZenohWireFormat::topic_publish(
+        &TopicWireSender::to_peer(
+            "core_a",
+            "arm_1",
+            pairing("arm_link", "v1"),
+            "controller",
+            "joint_states",
+            WirePeer::new("core_b", "ctrl_1", "arm").unwrap(),
+        )
+        .unwrap(),
+    );
     let wildcard_subscribe = ZenohWireFormat::topic_subscribe(&TopicWireReceiver {
         as_core_node: seg("core_a"),
         as_instance_id: seg("obs_1"),
@@ -149,6 +359,7 @@ fn topic_pairing_and_contract_keyexprs_never_match() {
         from_target: Some(contract_target("arm_link", "v1")),
         from_link_id: None,
         to_topic: seg("joint_states"),
+        pairing_recipient: None,
     });
     let publish_discriminator = pairing_publish.split('/').nth(5);
     let subscribe_discriminator = wildcard_subscribe.split('/').nth(5);
@@ -166,6 +377,7 @@ fn topic_subscribe_targeted_node() {
         from_target: Some(node("uvc_camera", "v1")),
         from_link_id: None,
         to_topic: seg("video_stream"),
+        pairing_recipient: None,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -183,6 +395,7 @@ fn topic_subscribe_with_concrete_link_id() {
         from_target: Some(contract_target("depth_camera", "v1")),
         from_link_id: Some(seg("wrist_left_camera")),
         to_topic: seg("video_stream"),
+        pairing_recipient: None,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -200,6 +413,7 @@ fn topic_subscribe_untargeted_publisher_core_uses_wildcard() {
         from_target: Some(node("uvc_camera", "v1")),
         from_link_id: None,
         to_topic: seg("video_stream"),
+        pairing_recipient: None,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -217,6 +431,7 @@ fn topic_subscribe_contract_target() {
         from_target: Some(contract_target("manipulator", "v1")),
         from_link_id: None,
         to_topic: seg("joint_states"),
+        pairing_recipient: None,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -234,6 +449,7 @@ fn topic_subscribe_fully_untargeted_wildcards_all_slots() {
         from_target: None,
         from_link_id: None,
         to_topic: seg("video_stream"),
+        pairing_recipient: None,
     };
     assert_eq!(
         ZenohWireFormat::topic_subscribe(&receiver),
@@ -259,6 +475,7 @@ fn parse_topic_keyexpr_roundtrips_through_topic_publish() {
         as_target: node("sensor", "v1"),
         link_id: Segment::default_link_id(),
         as_topic_name: seg("humidity"),
+        to_peer: None,
     };
     let key = ZenohWireFormat::topic_publish(&sender);
     let parsed = ZenohWireFormat::parse_topic_keyexpr(&key).expect("should parse");
@@ -941,6 +1158,7 @@ fn topic_publish_distinguishes_node_and_contract_with_same_name_tag() {
         as_target: node("placeholder", "v1"),
         link_id: Segment::default_link_id(),
         as_topic_name: seg("frames"),
+        to_peer: None,
     };
     let mut as_node = common.clone();
     as_node.as_target = node("widget", "v1");
@@ -1021,6 +1239,7 @@ fn topic_subscribe_node_only_segment_does_not_match_contract_publisher() {
         from_target: Some(node("widget", "v1")),
         from_link_id: None,
         to_topic: seg("frames"),
+        pairing_recipient: None,
     };
     let publisher_as_node = TopicWireSender {
         as_core_node: seg("core_a"),
@@ -1028,6 +1247,7 @@ fn topic_subscribe_node_only_segment_does_not_match_contract_publisher() {
         as_target: node("widget", "v1"),
         link_id: Segment::default_link_id(),
         as_topic_name: seg("frames"),
+        to_peer: None,
     };
     let publisher_as_contract = TopicWireSender {
         as_core_node: seg("core_a"),
@@ -1035,6 +1255,7 @@ fn topic_subscribe_node_only_segment_does_not_match_contract_publisher() {
         as_target: contract_target("widget", "v1"),
         link_id: Segment::default_link_id(),
         as_topic_name: seg("frames"),
+        to_peer: None,
     };
 
     let sub_key = ZenohWireFormat::topic_subscribe(&receiver);
@@ -1066,6 +1287,7 @@ fn topic_subscribe_contract_only_segment_does_not_match_node_publisher() {
         from_target: Some(contract_target("widget", "v1")),
         from_link_id: None,
         to_topic: seg("frames"),
+        pairing_recipient: None,
     };
     let sub_key = ZenohWireFormat::topic_subscribe(&receiver);
     assert!(sub_key.contains("/topic/contract/widget/v1/*/frames"));
@@ -1086,6 +1308,7 @@ fn topic_subscribe_untargeted_wildcards_discriminator_too() {
         from_target: None,
         from_link_id: None,
         to_topic: seg("frames"),
+        pairing_recipient: None,
     };
     let key = ZenohWireFormat::topic_subscribe(&receiver);
     assert!(

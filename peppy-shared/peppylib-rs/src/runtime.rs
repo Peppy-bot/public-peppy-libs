@@ -11,7 +11,11 @@ pub use observation::{
     ObservationSlot, ObservationSlotSet, ObservedTopicSubscription, subscribe_observed,
     subscribe_observed_with_watch,
 };
-pub use pairing::{PeerSlot, PeerSubscription, subscribe_peer, subscribe_peer_with_watch};
+pub use pairing::{
+    PeerPublisher, PeerSlot, PeerSlotSet, PeerSubscription, declare_peer_publisher,
+    declare_peer_publisher_with_watch, declare_sole_peer_publisher, subscribe_peer,
+    subscribe_peer_with_watch,
+};
 pub use processor::{Processor, STANDALONE_CORE_NODE};
 
 /// In-flight buffer between a slot's forwarding task and the consuming code,

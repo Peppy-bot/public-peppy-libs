@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use config::node::QoSProfile;
-use peppylib::messaging::{MessengerHandle, SenderTarget, TopicMessenger};
+use peppylib::messaging::{MessengerHandle, PeerInfo, SenderTarget, TopicMessenger};
 use peppylib::types::Payload;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::sync::Arc;
@@ -35,9 +35,9 @@ pub async fn wait_for_topic_subscriber(
     );
 }
 
-/// Declares a slot-scoped publisher: the wire link_id segment carries the
-/// producer's OWN slot link_id, which is what a pinned consumer (a pairing peer
-/// or an observer member) subscribes against.
+/// Declares a pairing publisher from the producer's OWN slot `link_id` to
+/// `peer`: the wire shape a pinned consumer (the paired peer, or an observer
+/// of that slot) subscribes against.
 pub async fn declare_pinned_publisher(
     handle: &MessengerHandle,
     core_node: &str,
@@ -45,15 +45,17 @@ pub async fn declare_pinned_publisher(
     target: SenderTarget,
     link_id: &str,
     topic_name: &str,
+    peer: &PeerInfo,
 ) -> peppylib::messaging::TopicPublisher {
-    TopicMessenger::declare_publisher(
+    TopicMessenger::declare_pairing_publisher(
         handle,
         core_node,
         instance_id,
         target,
-        Some(link_id),
+        link_id,
         topic_name,
         QoSProfile::Reliable,
+        peer,
     )
     .await
     .expect("pinned publisher should declare")
@@ -71,14 +73,16 @@ pub async fn wait_for_pinned_wire_sub(
     target: SenderTarget,
     link_id: &str,
     topic_name: &str,
+    peer: &PeerInfo,
 ) {
-    let matched = TopicMessenger::wait_for_subscriber_with_link_id(
+    let matched = TopicMessenger::wait_for_pairing_subscriber(
         handle,
         core_node,
         producer_instance,
         target,
-        Some(link_id),
+        link_id,
         topic_name,
+        peer,
         Duration::from_secs(2),
     )
     .await
@@ -103,16 +107,18 @@ pub async fn wait_for_pinned_wire_sub_gone(
     target: SenderTarget,
     link_id: &str,
     topic_name: &str,
+    peer: &PeerInfo,
 ) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
-        let matched = TopicMessenger::wait_for_subscriber_with_link_id(
+        let matched = TopicMessenger::wait_for_pairing_subscriber(
             handle,
             core_node,
             producer_instance,
             target.clone(),
-            Some(link_id),
+            link_id,
             topic_name,
+            peer,
             Duration::from_millis(25),
         )
         .await

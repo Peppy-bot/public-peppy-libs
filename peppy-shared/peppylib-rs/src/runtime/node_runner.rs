@@ -69,18 +69,64 @@ impl NodeRunner {
         &self.processor
     }
 
-    /// Handle onto the pairing slot declared at `link_id` in
-    /// `depends_on.pairings`. Exposes the slot's live pin state:
-    /// `peer(link_id)?.paired()` returns the current peer (if any) and
-    /// `wait_paired()` awaits one. Errors if the manifest declares no such
-    /// slot.
+    /// Handle onto the scalar pairing slot declared at `link_id` in
+    /// `depends_on.pairings` (a `one` or `zero_or_one` slot). Exposes the
+    /// slot's live pair: `peer(link_id)?.paired()` returns the current peer
+    /// (if any) and `wait_paired()` awaits one. Errors if the manifest
+    /// declares no such slot, and panics if it declares one with a
+    /// multi-peer cardinality, which is read through [`Self::peer_set`].
     pub fn peer(&self, link_id: &str) -> crate::error::Result<super::PeerSlot> {
+        let cardinality = self.pairing_slot_cardinality(link_id)?;
+        if !cardinality.is_scalar() {
+            super::pairing::pairing_shape_panic(link_id, "peer()", cardinality.as_str());
+        }
+        Ok(super::PeerSlot::new(
+            link_id,
+            cardinality,
+            self.peer_set_watch(link_id)?,
+        ))
+    }
+
+    /// Handle onto the multi-peer pairing slot declared at `link_id` in
+    /// `depends_on.pairings` (a `one_or_more` or `zero_or_more` slot).
+    /// Exposes every pair the slot holds, in establishment order, through
+    /// `members()` or `peers()`. Errors if the manifest declares no such
+    /// slot, and panics if it declares one with a scalar cardinality, which
+    /// is read through [`Self::peer`].
+    pub fn peer_set(&self, link_id: &str) -> crate::error::Result<super::PeerSlotSet> {
+        let cardinality = self.pairing_slot_cardinality(link_id)?;
+        if cardinality.is_scalar() {
+            super::pairing::pairing_shape_panic(link_id, "peer_set()", cardinality.as_str());
+        }
+        Ok(super::PeerSlotSet::new(self.peer_set_watch(link_id)?))
+    }
+
+    /// The copy this instance belongs to, as the launch composed it; `None`
+    /// for an instance run outside a copy.
+    pub fn copy(&self) -> Option<&str> {
+        self.processor.copy()
+    }
+
+    fn pairing_slot_cardinality(
+        &self,
+        link_id: &str,
+    ) -> crate::error::Result<config::node::Cardinality> {
         self.processor
-            .peer_pin_watch(link_id)
-            .map(super::PeerSlot::new)
+            .pairing_slot_cardinality(link_id)
             .ok_or_else(|| crate::error::Error::UnknownPairingSlot {
                 link_id: link_id.to_string(),
             })
+    }
+
+    fn peer_set_watch(
+        &self,
+        link_id: &str,
+    ) -> crate::error::Result<tokio::sync::watch::Receiver<crate::messaging::PeerSetState>> {
+        self.processor.peer_set_watch(link_id).ok_or_else(|| {
+            crate::error::Error::UnknownPairingSlot {
+                link_id: link_id.to_string(),
+            }
+        })
     }
 
     /// Handle onto the scalar observer slot declared at `link_id` in

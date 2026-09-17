@@ -165,12 +165,87 @@ impl PyTopicMessenger {
         })
     }
 
+    /// [`wait_for_subscriber`](Self::wait_for_subscriber) for a pairing
+    /// publisher from this node's slot `link_id` to `peer`: the match is
+    /// checked against the keyexpr that publisher emits on, both ends of
+    /// the pair included.
+    #[staticmethod]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, pairing_target, link_id, as_topic_name, peer, timeout_secs))]
+    #[allow(clippy::too_many_arguments)]
+    fn wait_for_pairing_subscriber<'py>(
+        py: Python<'py>,
+        messenger: &PyMessengerHandle,
+        as_core_node: String,
+        as_instance_id: String,
+        pairing_target: PySenderTarget,
+        link_id: String,
+        as_topic_name: String,
+        peer: &super::PyPeerInfo,
+        timeout_secs: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let timeout = duration_from_secs_f64("timeout_secs", timeout_secs)?;
+        let handle = messenger.inner.clone();
+        let pairing_target = pairing_target.into_inner();
+        let peer = peer.inner.clone();
+        crate::py_future::future_into_py(py, async move {
+            let matched = TopicMessenger::wait_for_pairing_subscriber(
+                &handle,
+                &as_core_node,
+                &as_instance_id,
+                pairing_target,
+                &link_id,
+                &as_topic_name,
+                &peer,
+                timeout,
+            )
+            .await
+            .map_err(to_py_err)?;
+            Ok(matched)
+        })
+    }
+
+    /// Declares a pairing publisher from the mock's slot `link_id` to `peer`
+    /// (the node under test, on its slot): the wire shape a pairing emission
+    /// has, for a mock playing the other end of a pair.
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn declare_pairing_publisher<'py>(
+        py: Python<'py>,
+        messenger: &PyMessengerHandle,
+        as_core_node: String,
+        as_instance_id: String,
+        pairing_target: PySenderTarget,
+        link_id: String,
+        as_topic_name: String,
+        qos: PyQoSProfile,
+        peer: &super::PyPeerInfo,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let handle = messenger.inner.clone();
+        let pairing_target = pairing_target.into_inner();
+        let peer = peer.inner.clone();
+        crate::py_future::future_into_py(py, async move {
+            let publisher = TopicMessenger::declare_pairing_publisher(
+                &handle,
+                &as_core_node,
+                &as_instance_id,
+                pairing_target,
+                &link_id,
+                &as_topic_name,
+                qos.into(),
+                &peer,
+            )
+            .await
+            .map_err(to_py_err)?;
+            Ok(PyTopicPublisher { inner: publisher })
+        })
+    }
+
     /// A statically pinned peer-topic subscription: producer, pairing
-    /// target, and producer-side link_id all pinned — the exact wire shape
-    /// of a paired peer's subscription, without the pin-following machinery
-    /// (a test mock's pin never changes). Test-support seam
-    /// (`peppylib::testing`); generated pairing mocks use it to receive the
-    /// topics the node under test emits on its slot.
+    /// target, producer-side link_id and the mock's own slot `as_link_id`
+    /// all pinned, the exact wire shape of a paired peer's subscription,
+    /// without the pin-following machinery (a test mock's pin never
+    /// changes). Test-support seam (`peppylib::testing`); generated pairing
+    /// mocks use it to receive the topics the node under test emits to them.
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
     fn subscribe_peer_pinned<'py>(
@@ -178,6 +253,7 @@ impl PyTopicMessenger {
         messenger: &PyMessengerHandle,
         as_core_node: String,
         as_instance_id: String,
+        as_link_id: String,
         pairing_target: PySenderTarget,
         peer: PyProducerRef,
         peer_link_id: String,
@@ -191,6 +267,7 @@ impl PyTopicMessenger {
                 &handle,
                 &as_core_node,
                 &as_instance_id,
+                &as_link_id,
                 pairing_target,
                 &peer.into_inner(),
                 &peer_link_id,
@@ -373,7 +450,7 @@ impl PyTopicMessenger {
 /// `publish` skips the central messenger lock; clone-cheap (an `Arc` bump).
 #[pyclass(name = "TopicPublisher")]
 pub struct PyTopicPublisher {
-    inner: TopicPublisher,
+    pub(crate) inner: TopicPublisher,
 }
 
 #[pymethods]

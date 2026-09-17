@@ -4,13 +4,13 @@
 //! delivery never waits on user `setup_fn`; daemon-authoritative, so a caller
 //! whose core_node is not this node's own daemon is rejected before slot state
 //! is touched; and sequence-gated and idempotent, so a delayed retry can never
-//! roll a slot back (a strictly-smaller sequence is stale, an equal one is an
-//! idempotent retry, a larger one supersedes).
+//! roll a slot back (a strictly-smaller sequence is stale, an equal one
+//! asserts the state the slot already holds, a larger one supersedes).
 //!
 //! Each service supplies only its request type via [`SlotUpdate`]: the wire
-//! decode, the slot key, and how one absolute request merges into the slot's
-//! watch state. The daemon-only guard, the sequence gate, unknown-slot
-//! rejection, and the shared [`SlotUpdateResponse`] ack live here once.
+//! decode, the slot key, and the whole slot state one absolute request
+//! asserts. The daemon-only guard, the sequence gate, unknown-slot rejection,
+//! and the shared [`SlotUpdateResponse`] ack live here once.
 
 use crate::encoding::slot_update::SlotUpdateResponse;
 use crate::messaging::{SenderTarget, ServiceRequestContext};
@@ -27,8 +27,9 @@ use tracing::{debug, warn};
 /// it. Implemented by the per-service request types (`PeerUpdateRequest`,
 /// `ObservationUpdateRequest`).
 pub(crate) trait SlotUpdate: Sized {
-    /// The per-slot watch payload this update mutates.
-    type State: Clone + Send + Sync + 'static;
+    /// The per-slot watch payload this update replaces. Compared whole, so a
+    /// repeat of a sequence is checked against what the slot already holds.
+    type State: Clone + PartialEq + Send + Sync + 'static;
 
     /// Wire service name, also used in the daemon-only rejection message.
     const SERVICE: &'static str;
@@ -43,10 +44,10 @@ pub(crate) trait SlotUpdate: Sized {
     /// The sequence the slot currently holds, read for the stale-delivery gate.
     fn state_sequence(state: &Self::State) -> u64;
 
-    /// Overwrite the slot with this absolute update, returning whether anything
-    /// changed (which drives watch notification). The sequence gate has already
-    /// passed, so this update always supersedes what the slot held.
-    fn merge_into(&self, state: &mut Self::State) -> bool;
+    /// The whole slot state this update asserts. A delivery carries every
+    /// member the slot holds, so the shared core compares and replaces rather
+    /// than merging member by member.
+    fn to_state(&self) -> Self::State;
 
     /// Extra structured fields for the receipt debug log, beyond
     /// link_id/sequence (e.g. `paired=true`).
@@ -143,19 +144,38 @@ where
             request.link_id()
         ));
     };
+    let asserted = request.to_state();
     let mut stale = false;
+    let mut conflicting = false;
     sender.send_if_modified(|state| {
-        if request.sequence() < U::state_sequence(state) {
+        let held = U::state_sequence(state);
+        if request.sequence() < held {
             stale = true;
             return false;
         }
-        // Absolute state: an equal sequence is an idempotent retry, a larger one
-        // supersedes. `merge_into` reports whether watchers must be notified.
-        request.merge_into(state)
+        if request.sequence() == held {
+            // One sequence, one state: a repeat of the sequence the slot
+            // already holds is an idempotent retry and asserts the same
+            // members. Two different states under one sequence are two answers
+            // to one question, and applying either leaves the slot disagreeing
+            // with whoever sent the other.
+            conflicting = *state != asserted;
+            return false;
+        }
+        *state = asserted.clone();
+        true
     });
     if stale {
-        SlotUpdateResponse::stale()
-    } else {
-        SlotUpdateResponse::accepted()
+        return SlotUpdateResponse::stale();
     }
+    if conflicting {
+        return SlotUpdateResponse::rejected(format!(
+            "{} for {} `{}` repeats sequence {} asserting different state",
+            U::SERVICE,
+            U::UNKNOWN_SLOT_NOUN,
+            request.link_id(),
+            request.sequence()
+        ));
+    }
+    SlotUpdateResponse::accepted()
 }

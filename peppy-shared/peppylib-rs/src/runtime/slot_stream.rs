@@ -20,10 +20,12 @@
 //! the set convergence, the one-subscription-per-pin invariant, the fair merge
 //! across members, the stale filter, and teardown live here once.
 
+use crate::error::Result;
 use crate::messaging::{MessengerHandle, ProducerRef, SenderTarget, Subscription, TopicMessenger};
 use crate::runtime::TaskHandle;
 use crate::types::Message;
 use config::node::QoSProfile;
+use pmi::PairingRecipient;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tracing::warn;
@@ -52,6 +54,12 @@ pub(crate) trait FollowedSlot: Send + Sync + 'static {
     fn producer(pin: &Self::Pin) -> &ProducerRef;
     /// The producer-side link_id segment of that producer's publishes.
     fn producer_link_id(pin: &Self::Pin) -> &str;
+    /// The recipient this pin's subscription stands for: the slot-wide
+    /// `slot_recipient` for a participant pin and for an observation of a
+    /// whole slot, or the one peer an observation is pinned to.
+    fn recipient(_pin: &Self::Pin, slot_recipient: &PairingRecipient) -> Result<PairingRecipient> {
+        Ok(slot_recipient.clone())
+    }
 }
 
 /// One slot's live message stream. Owns the forwarding task (aborted on drop)
@@ -100,12 +108,14 @@ impl<S: FollowedSlot> Drop for SlotStream<S> {
 
 /// Spawns the forwarding task and returns the stream. The public
 /// `subscribe_*_with_watch` seams are one-line calls to this.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_slot_stream<S: FollowedSlot>(
     messenger: MessengerHandle,
     as_core_node: String,
     as_instance_id: String,
     watch_rx: watch::Receiver<S::State>,
     pairing_target: SenderTarget,
+    recipient: PairingRecipient,
     topic: String,
     qos: QoSProfile,
 ) -> SlotStream<S> {
@@ -116,6 +126,7 @@ pub(crate) fn spawn_slot_stream<S: FollowedSlot>(
         as_instance_id,
         watch_rx.clone(),
         pairing_target,
+        recipient,
         topic,
         qos,
         tx,
@@ -138,6 +149,7 @@ async fn forward_messages<S: FollowedSlot>(
     as_instance_id: String,
     mut watch_rx: watch::Receiver<S::State>,
     pairing_target: SenderTarget,
+    recipient: PairingRecipient,
     topic: String,
     qos: QoSProfile,
     tx: mpsc::Sender<(Arc<S::Pin>, Message)>,
@@ -164,6 +176,7 @@ async fn forward_messages<S: FollowedSlot>(
                 &as_core_node,
                 &as_instance_id,
                 &pairing_target,
+                &recipient,
                 &topic,
                 &qos,
             )
@@ -259,6 +272,7 @@ async fn converge_subscriptions<S: FollowedSlot>(
     as_core_node: &str,
     as_instance_id: &str,
     pairing_target: &SenderTarget,
+    slot_recipient: &PairingRecipient,
     topic: &str,
     qos: &QoSProfile,
 ) -> Vec<(Arc<S::Pin>, Subscription)> {
@@ -282,7 +296,7 @@ async fn converge_subscriptions<S: FollowedSlot>(
     // The owed declarations are mutually independent, so a multi-member slot
     // waits out one declare round-trip rather than N in series. Each result is
     // filed by its `desired` position, never by completion order.
-    let declared = futures::future::join_all(pending.iter().map(|(_, pin)| {
+    let declared = futures::future::join_all(pending.iter().map(|(_, pin)| async move {
         TopicMessenger::subscribe_peer_pinned(
             messenger,
             as_core_node,
@@ -290,9 +304,11 @@ async fn converge_subscriptions<S: FollowedSlot>(
             pairing_target.clone(),
             S::producer(pin),
             S::producer_link_id(pin),
+            S::recipient(pin, slot_recipient)?,
             topic,
             qos.clone(),
         )
+        .await
     }))
     .await;
 

@@ -28,7 +28,7 @@ pub use bound_set::NonEmptyProducers;
 pub use observation::{
     NonEmptyObservedSources, ObservationState, ObservedMemberState, ObservedSource,
 };
-pub use pairing::{PeerInfo, PeerPinState};
+pub use pairing::{PeerInfo, PeerMember, PeerSetState};
 pub use presence::CoreNodePresenceMessenger;
 pub use services::{
     ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder, ServiceTarget,

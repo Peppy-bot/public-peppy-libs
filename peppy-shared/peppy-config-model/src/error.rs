@@ -463,13 +463,9 @@ pub enum ParsingError {
     )]
     ConsumedItemReferencesImplementsLinkId { link_id: String },
     #[error(
-        "Participant pairing slot `{link_id}` in depends_on.pairings carries a `cardinality` key: a pairing is strictly 1:1 between two complementary slots, so there is no set to size; a slot a deployment may run with no peer is declared `optional: true` instead. `cardinality` is valid on depends_on.nodes, depends_on.contracts and depends_on.pairing_observers entries"
+        "Pairing slot `{link_id}` in {section} carries an `optional` key. A slot that may run with no peer declares `cardinality: \"zero_or_one\"`; `cardinality` takes the same four spellings on every depends_on list"
     )]
-    CardinalityOnPairingSlot { link_id: String },
-    #[error(
-        "Observer pairing slot `{link_id}` in depends_on.pairing_observers carries an `optional` key: an observer claims no endpoint and takes no peer, so it has nothing to waive; a slot that may observe nothing declares `cardinality: \"zero_or_one\"` instead. `optional` is valid on depends_on.pairings entries"
-    )]
-    OptionalOnObserverSlot { link_id: String },
+    OptionalOnPairingSlot { link_id: String, section: String },
     #[error(
         "Pairing slot `{link_id}` declares no `role`. Every entry in depends_on.pairings names the role this node plays, and every entry in depends_on.pairing_observers names the role it observes"
     )]
@@ -513,11 +509,9 @@ pub enum StructuredError {
     EmptyInterfaceName {
         section: String,
     },
-    CardinalityOnPairingSlot {
+    OptionalOnPairingSlot {
         link_id: String,
-    },
-    OptionalOnObserverSlot {
-        link_id: String,
+        section: String,
     },
     PairingSlotMissingRole {
         link_id: String,
@@ -551,11 +545,8 @@ impl From<StructuredError> for ParsingError {
             StructuredError::EmptyInterfaceName { section } => {
                 ParsingError::EmptyInterfaceName { section }
             }
-            StructuredError::CardinalityOnPairingSlot { link_id } => {
-                ParsingError::CardinalityOnPairingSlot { link_id }
-            }
-            StructuredError::OptionalOnObserverSlot { link_id } => {
-                ParsingError::OptionalOnObserverSlot { link_id }
+            StructuredError::OptionalOnPairingSlot { link_id, section } => {
+                ParsingError::OptionalOnPairingSlot { link_id, section }
             }
             StructuredError::PairingSlotMissingRole { link_id } => {
                 ParsingError::PairingSlotMissingRole { link_id }

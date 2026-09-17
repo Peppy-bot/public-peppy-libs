@@ -55,13 +55,15 @@ pub fn service_channel_address(
     )
 }
 
-/// Topic publish channel key expression, mirroring
+/// Topic publish channel key expression for a non-pairing `target`, mirroring
 /// [`super::zenoh_format::ZenohWireFormat::topic_publish`]:
 /// `*/{as_core}/*/{as_instance}/topic/{discriminator}/{name}/{tag}/{link_id}/{topic_name}`.
 ///
-/// The two leading wildcards are the subscriber identity slots, which the
-/// publish shape always wildcards. `as_core` / `as_instance` are the
-/// publisher's (daemon's) identity.
+/// The two leading wildcards are the subscriber identity slots, which this
+/// shape always wildcards. `as_core` / `as_instance` are the publisher's
+/// (daemon's) identity. A pairing publish names its recipient in a further
+/// trailing segment that this grammar does not carry, so a pairing target
+/// renders a key the wire never publishes on.
 pub fn topic_channel_address(
     as_core: &str,
     as_instance: &str,
