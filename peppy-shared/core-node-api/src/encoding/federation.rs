@@ -482,6 +482,11 @@ pub struct PairCommitRequest {
     pub peer: ProducerRef,
     pub peer_link_id: String,
     pub peer_role: String,
+    /// The declared cardinality of the peer's slot: only a scalar slot is
+    /// taken by one pair.
+    pub peer_cardinality: config::node::Cardinality,
+    /// The copy the peer's instance belongs to; `None` outside a copy.
+    pub peer_copy: Option<config::runtime::Name>,
 }
 
 impl PairCommitRequest {
@@ -495,6 +500,13 @@ impl PairCommitRequest {
             request.set_local_role(&self.local_role);
             request.set_peer_link_id(&self.peer_link_id);
             request.set_peer_role(&self.peer_role);
+            request.set_peer_cardinality(self.peer_cardinality.as_str());
+            request.set_peer_copy(
+                self.peer_copy
+                    .as_ref()
+                    .map(|copy| copy.as_str())
+                    .unwrap_or(""),
+            );
             write_instance_address(request.reborrow().init_local(), &self.local);
             write_instance_address(request.init_peer(), &self.peer);
         }
@@ -513,6 +525,22 @@ impl PairCommitRequest {
             peer: read_instance_address(request.get_peer()?, "peer")?,
             peer_link_id: required_text(request.get_peer_link_id()?.to_str()?, "peer_link_id")?,
             peer_role: required_text(request.get_peer_role()?.to_str()?, "peer_role")?,
+            peer_cardinality: required_text(
+                request.get_peer_cardinality()?.to_str()?,
+                "peer_cardinality",
+            )?
+            .parse()
+            .map_err(|spelling| {
+                crate::Error::Decoding(format!(
+                    "peer_cardinality `{spelling}` is none of one, zero_or_one, one_or_more, zero_or_more"
+                ))
+            })?,
+            peer_copy: match request.get_peer_copy()?.to_str()? {
+                "" => None,
+                copy => Some(config::runtime::Name::new(copy).map_err(|e| {
+                    crate::Error::Decoding(format!("peer_copy is not a name: {e}"))
+                })?),
+            },
         })
     }
 }
@@ -950,6 +978,8 @@ mod tests {
             peer: ProducerRef::new("cn-atlas", "planner_inst"),
             peer_link_id: "delegation".to_owned(),
             peer_role: "planner".to_owned(),
+            peer_cardinality: config::node::Cardinality::ZeroOrMore,
+            peer_copy: Some(config::runtime::Name::new("bravo").unwrap()),
         }
     }
 

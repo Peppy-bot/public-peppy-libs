@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use config::runtime::{ClockBinding, PairingSlotBinding, SlotBindings};
+use config::node::Cardinality;
+use config::runtime::{ClockBinding, PairedPeer, SlotBindings};
 use serde::{Deserialize, Serialize};
 
 /// Per-instance lifecycle state. Wire representation is the lowercase variant
@@ -187,7 +188,15 @@ pub struct SerializedPairingSlot {
     pub pairing_tag: String,
     /// The role this instance plays in the pairing.
     pub role: String,
-    pub binding: PairingSlotBinding,
+    /// The pairs the slot holds right now, in establishment order; empty
+    /// while unpaired.
+    pub peers: Vec<PairedPeer>,
+    /// The slot's declared cardinality, so a reader can tell a slot holding
+    /// no pair by design from one whose peer is missing. Defaulted on decode
+    /// for payloads from a producer that predates the field, which reads them
+    /// as `one` and so as missing a peer.
+    #[serde(default, skip_serializing_if = "Cardinality::is_one")]
+    pub cardinality: Cardinality,
 }
 
 /// Decode default for [`SerializedInstance::healthy`]: assume healthy when the
@@ -550,10 +559,12 @@ mod tests {
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
                 role: "controller".to_string(),
-                binding: PairingSlotBinding::Paired {
+                cardinality: Cardinality::One,
+                peers: vec![config::runtime::PairedPeer {
                     peer: ProducerRef::new("core_a", "arm_1"),
                     peer_link_id: "controller".to_string(),
-                },
+                    copy: None,
+                }],
             },
         );
         pairing_slots.insert(
@@ -562,7 +573,8 @@ mod tests {
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
                 role: "controller".to_string(),
-                binding: PairingSlotBinding::Unpaired,
+                cardinality: Cardinality::ZeroOrMore,
+                peers: Vec::new(),
             },
         );
         let instance = SerializedInstance {
