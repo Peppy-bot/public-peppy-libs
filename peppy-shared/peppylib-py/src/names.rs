@@ -2,9 +2,10 @@ use names_generator2::get_random;
 use pyo3::prelude::*;
 use rand::rng;
 
-/// Generate a random name in the format "adjective_noun".
+/// Generate a random name in the format "adjective-animal-###".
 ///
-/// Returns a randomly generated name string like "happy_panda" or "clever_fox".
+/// Returns a randomly generated name string like "elegant-swine-421" or
+/// "intrepid-porcupine-731".
 #[pyfunction]
 fn generate_name() -> String {
     get_random(rng())
