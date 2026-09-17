@@ -70,6 +70,29 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The hosted runner images shipped Rust; the self-hosted box is
+      # provisioned outside this repository and ships none, so the toolchain is
+      # installed here for the same reason pixi and uv are below — a workflow
+      # that leaned on what happens to be on the box would break with no commit
+      # to blame. Both halves are skipped when already satisfied, so a warm box
+      # pays nothing: the runner takes one job at a time, and re-resolving a
+      # toolchain in every job would be pure queue time.
+      - name: Install Rust toolchain
+        run: |
+          set -euo pipefail
+          if ! command -v rustup > /dev/null; then
+            echo "rustup absent; installing"
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          if ! rustup default 2>/dev/null | grep -q '^stable-'; then
+            rustup toolchain install stable --profile minimal
+            rustup default stable
+          fi
+          rustc --version
+
       # Give this run its own peppy data root so the reused self-hosted runner
       # does not accumulate or collide on /tmp/.peppy across runs.
       - name: Set up isolated peppy data root
