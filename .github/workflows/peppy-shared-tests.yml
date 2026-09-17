@@ -28,11 +28,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Decides whether a pull request touches the workspace. Runs on a GitHub-hosted
-  # runner so that pull requests leaving `peppy-shared/` alone never queue against
-  # the single self-hosted runner.
+  # Decides whether a pull request touches the workspace, so that a pull request
+  # leaving `peppy-shared/` alone skips the `test` job below rather than building
+  # it. The filter reads the changed files from the API and needs no checkout, but
+  # it runs on the self-hosted runner like everything else, so it queues behind
+  # whatever the box is building before it can rule a pull request out.
   changes:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: self-hosted
     permissions:
       contents: read
       pull-requests: read
@@ -57,7 +59,7 @@ jobs:
   test:
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.peppy_shared == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: self-hosted
     permissions:
       contents: read
       pull-requests: read
@@ -67,6 +69,77 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      # The hosted runner images shipped Rust; the self-hosted box is
+      # provisioned outside this repository and ships none, so the toolchain is
+      # installed here for the same reason pixi and uv are below — a workflow
+      # that leaned on what happens to be on the box would break with no commit
+      # to blame. Both halves are skipped when already satisfied, so a warm box
+      # pays nothing: the runner takes one job at a time, and re-resolving a
+      # toolchain in every job would be pure queue time.
+      - name: Install Rust toolchain
+        run: |
+          set -euo pipefail
+          if ! command -v rustup > /dev/null; then
+            echo "rustup absent; installing"
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          if ! rustup default 2>/dev/null | grep -q '^stable-'; then
+            rustup toolchain install stable --profile minimal
+            rustup default stable
+          fi
+          rustc --version
+
+      # The box's own cargo configuration sets a `rustc-wrapper` of sccache
+      # (nothing in this repository does), and cargo fails outright when the
+      # wrapper it is told to use is not on disk: `could not execute process
+      # .../sccache .../rustc -vV (never executed)`. So install it when it is
+      # missing, skip when it is already there, and fall back to disabling the
+      # wrapper for this job if the download fails — a slower build beats a red
+      # suite over a compiler cache. The musl build is static, so it needs no
+      # runtime libraries.
+      - name: Install sccache when the runner's cargo config expects one
+        shell: bash
+        env:
+          SCCACHE_VERSION: v0.18.0
+        run: |
+          set -uo pipefail
+          # `cargo config get` would answer this directly but is nightly-only, so
+          # read the two places the setting can reach a stable cargo: the
+          # environment, and the user-global cargo config where the box's own
+          # setting lives. A workspace .cargo/config.toml could set it too; none in
+          # this repository does.
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          wrapper="${RUSTC_WRAPPER:-${CARGO_BUILD_RUSTC_WRAPPER:-}}"
+          if [ -z "$wrapper" ]; then
+            for config in "$cargo_home/config.toml" "$cargo_home/config"; do
+              [ -f "$config" ] || continue
+              wrapper=$(sed -n 's/^[[:space:]]*rustc-wrapper[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$config" | head -1)
+              [ -n "$wrapper" ] && break
+            done
+          fi
+          if [ -z "$wrapper" ]; then
+            echo "no rustc-wrapper configured; nothing to install"
+            exit 0
+          fi
+          if [ -x "$wrapper" ] || command -v "$(basename "$wrapper")" > /dev/null; then
+            echo "rustc-wrapper $wrapper is already available"
+            exit 0
+          fi
+          echo "rustc-wrapper $wrapper is configured but absent; installing sccache $SCCACHE_VERSION"
+          tarball="sccache-$SCCACHE_VERSION-x86_64-unknown-linux-musl"
+          url="https://github.com/mozilla/sccache/releases/download/$SCCACHE_VERSION/$tarball.tar.gz"
+          if curl -fsSL --connect-timeout 10 --max-time 180 "$url" | tar -xzf - -C "$RUNNER_TEMP"; then
+            mkdir -p "$HOME/.cargo/bin"
+            install -m 0755 "$RUNNER_TEMP/$tarball/sccache" "$HOME/.cargo/bin/sccache"
+            "$HOME/.cargo/bin/sccache" --version
+          else
+            echo "::warning::could not install sccache; building without the wrapper"
+            echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+          fi
 
       # Give this run its own peppy data root so the reused self-hosted runner
       # does not accumulate or collide on /tmp/.peppy across runs.
@@ -90,20 +163,37 @@ jobs:
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           cargo test --workspace --exclude peppylib-py --locked
 
-      # The retired self-hosted runner had pixi pre-installed; the Blacksmith
-      # runner image does not, so install it here. Pinned to the version the
-      # workspace's `requires-pixi` documents as tested (pixi.lock is format v7),
-      # and `pixi install` runs `--locked` by default so a stale lock fails CI
-      # instead of being silently re-resolved.
+      # Installed by hand rather than through prefix-dev/setup-pixi: that action
+      # aborts when `$PIXI_HOME/bin/pixi` already exists ("Destination file path
+      # ... already exists"), which is the normal state of a runner that is
+      # reused rather than discarded with the job. It is also not the only pixi
+      # on the box — peppy's own CI installs one for its build scripts — so the
+      # install goes to a directory keyed by this repository's pinned version.
+      # Two repositories pinning different versions then each install once and
+      # neither overwrites the other, where a shared ~/.pixi would have them
+      # reinstalling over each other on every alternating job.
+      #
+      # Pinned to the version the workspace's `requires-pixi` documents as
+      # tested (pixi.lock is format v7). `pixi install` runs `--locked` by
+      # default, so a stale lock fails CI here instead of being silently
+      # re-resolved by the `pixi run` below.
       - name: Install pixi
-        uses: prefix-dev/setup-pixi@v0.10.1
-        with:
-          pixi-version: v0.72.0
-          manifest-path: peppy-shared/peppylib-py/pixi.toml
+        run: |
+          set -euo pipefail
+          pixi_pin=0.72.0
+          pixi_home="$HOME/.cache/peppy-shared-pixi-$pixi_pin"
+          if [ -x "$pixi_home/bin/pixi" ]; then
+            echo "pixi $pixi_pin already installed at $pixi_home"
+          else
+            curl -fsSL https://pixi.sh/install.sh \
+              | PIXI_HOME="$pixi_home" PIXI_VERSION="v$pixi_pin" PIXI_NO_PATH_UPDATE=1 sh
+          fi
+          echo "$pixi_home/bin" >> "$GITHUB_PATH"
+          "$pixi_home/bin/pixi" --version
+          "$pixi_home/bin/pixi" install --manifest-path peppy-shared/peppylib-py/pixi.toml
 
-      # Also pre-installed on the old self-hosted runner: peppylib-py's build.rs
-      # requires uv on PATH, and the Python suite launches its test nodes with
-      # `uv run`.
+      # Installed here for the same reason: peppylib-py's build.rs requires uv
+      # on PATH, and the Python suite launches its test nodes with `uv run`.
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.1
         with:
