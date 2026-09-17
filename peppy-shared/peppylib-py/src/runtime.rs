@@ -1009,15 +1009,95 @@ impl PyNodeRunner {
             .map_err(crate::messaging::to_py_err)
     }
 
-    /// Handle onto the pairing slot declared at `link_id` in
-    /// `depends_on.pairings`: `peer(link_id).paired()` returns the current
-    /// peer's identity (or `None` while unpaired) and `wait_paired()` awaits
-    /// one. Raises `ValueError` if the manifest declares no such slot.
+    /// Handle onto the scalar pairing slot declared at `link_id` in
+    /// `depends_on.pairings` (a `one` or `zero_or_one` slot):
+    /// `peer(link_id).paired()` returns the current peer's identity (or
+    /// `None` while unpaired) and `wait_paired()` awaits one. Raises
+    /// `ValueError` if the manifest declares no such slot, and panics if it
+    /// declares one with a multi-peer cardinality, which is read through
+    /// `peer_set`.
     fn peer(&self, link_id: &str) -> PyResult<crate::messaging::PyPeerSlot> {
         self.inner
             .peer(link_id)
             .map(|slot| crate::messaging::PyPeerSlot { inner: slot })
             .map_err(crate::messaging::to_py_err)
+    }
+
+    /// Handle onto the multi-peer pairing slot declared at `link_id` in
+    /// `depends_on.pairings` (a `one_or_more` or `zero_or_more` slot):
+    /// `peer_set(link_id).peers()` returns every peer it currently holds, in
+    /// establishment order. Raises `ValueError` if the manifest declares no
+    /// such slot, and panics if it declares one with a scalar cardinality,
+    /// which is read through `peer`.
+    fn peer_set(&self, link_id: &str) -> PyResult<crate::messaging::PyPeerSlotSet> {
+        self.inner
+            .peer_set(link_id)
+            .map(|set| crate::messaging::PyPeerSlotSet { inner: set })
+            .map_err(crate::messaging::to_py_err)
+    }
+
+    /// The copy this instance belongs to, as the launch composed it; `None`
+    /// for an instance run outside a copy.
+    fn copy(&self) -> Option<&str> {
+        self.inner.copy()
+    }
+
+    /// Declares the publisher for one topic of the scalar pairing slot at
+    /// `link_id`: a `TopicPublisher` whose `publish` reaches the one paired
+    /// peer and is a no-op while unpaired. Spliced by the generated
+    /// `peppygen.paired_topics.<link_id>.<topic>.declare_publisher` call
+    /// sites of scalar slots; `pairing_name` / `pairing_tag` / `topic` come
+    /// from the pairing doc via codegen constants.
+    fn declare_sole_peer_publisher<'py>(
+        &self,
+        py: Python<'py>,
+        link_id: String,
+        pairing_name: String,
+        pairing_tag: String,
+        topic: String,
+        qos: crate::config::PyQoSProfile,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let node_runner = Arc::clone(&self.inner);
+        crate::py_future::future_into_py(py, async move {
+            let publisher = peppylib::runtime::declare_sole_peer_publisher(
+                &node_runner,
+                &link_id,
+                &pairing_name,
+                &pairing_tag,
+                &topic,
+                qos.into(),
+            )
+            .await
+            .map_err(crate::messaging::to_py_err)?;
+            Ok(crate::messaging::PyTopicPublisher { inner: publisher })
+        })
+    }
+
+    /// Declares the publisher for one topic of the multi pairing slot at
+    /// `link_id`. Spliced by the generated
+    /// `peppygen.paired_topics.<link_id>.<topic>.declare_publisher` call
+    /// sites of multi slots; `pairing_name` / `pairing_tag` / `topic` come
+    /// from the pairing doc via codegen constants.
+    fn declare_peer_publisher(
+        &self,
+        link_id: &str,
+        pairing_name: &str,
+        pairing_tag: &str,
+        topic: &str,
+        qos: crate::config::PyQoSProfile,
+    ) -> PyResult<crate::messaging::PyPeerPublisher> {
+        peppylib::runtime::declare_peer_publisher(
+            &self.inner,
+            link_id,
+            pairing_name,
+            pairing_tag,
+            topic,
+            qos.into(),
+        )
+        .map(|publisher| crate::messaging::PyPeerPublisher {
+            inner: Arc::new(publisher),
+        })
+        .map_err(crate::messaging::to_py_err)
     }
 
     /// Subscribe to one peer-emitted topic of the pairing slot at `link_id`.
@@ -1192,9 +1272,11 @@ impl PyStandaloneConfig {
 
     /// Pre-pair the pairing slot at `link_id` to the peer at
     /// `(peer_core_node, peer_instance_id)` whose complementary slot is
-    /// `peer_link_id`. Standalone-mode stand-in for the daemon's `--pair`
-    /// delivery; ignored (with a warning) if the manifest declares no such
-    /// slot.
+    /// `peer_link_id`. Repeat calls with the same `link_id` accumulate in
+    /// call order, mirroring how repeated `--link KEY@instance` flags fill a
+    /// multi slot; a scalar slot takes at most one, and a second one fails
+    /// startup. Standalone-mode stand-in for the daemon's pair delivery;
+    /// ignored (with a warning) if the manifest declares no such slot.
     fn with_peer_pin(
         &self,
         link_id: String,
@@ -1208,6 +1290,28 @@ impl PyStandaloneConfig {
                 peer_core_node,
                 peer_instance_id,
                 peer_link_id,
+            ),
+        }
+    }
+
+    /// `with_peer_pin` for a peer that belongs to the copy named `copy`, as
+    /// a `stack join` stamps it: the member the node reads for this pair
+    /// carries that copy name.
+    fn with_peer_pin_in_copy(
+        &self,
+        link_id: String,
+        peer_core_node: String,
+        peer_instance_id: String,
+        peer_link_id: String,
+        copy: String,
+    ) -> Self {
+        Self {
+            inner: self.inner.clone().with_peer_pin_in_copy(
+                link_id,
+                peer_core_node,
+                peer_instance_id,
+                peer_link_id,
+                copy,
             ),
         }
     }

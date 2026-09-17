@@ -37,4 +37,14 @@ struct ObservedMember {
     # Whether this member's source instance is currently in a non-terminal
     # state.
     sourceLive @4 :Bool;
+    # The pair's other end when the plan named the pair by it: the peer the
+    # source publishes to and the link_id of the peer's slot. Absent, the
+    # member observes every pair of the source's slot.
+    peer @5 :ObservedPeer;
+}
+
+struct ObservedPeer {
+    coreNode @0 :Text;
+    instanceId @1 :Text;
+    linkId @2 :Text;
 }

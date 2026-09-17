@@ -389,10 +389,12 @@ mod tests {
                     pairing_name: "arm_link".to_string(),
                     pairing_tag: "v1".to_string(),
                     role: "controller".to_string(),
-                    binding: config::runtime::PairingSlotBinding::Paired {
+                    cardinality: config::node::Cardinality::One,
+                    peers: vec![config::runtime::PairedPeer {
                         peer: ProducerRef::new("core_a", "arm_1"),
                         peer_link_id: "controller".to_string(),
-                    },
+                        copy: None,
+                    }],
                 },
             ),
             (
@@ -401,7 +403,8 @@ mod tests {
                     pairing_name: "gripper_link".to_string(),
                     pairing_tag: "v1".to_string(),
                     role: "controller".to_string(),
-                    binding: config::runtime::PairingSlotBinding::Unpaired,
+                    cardinality: config::node::Cardinality::ZeroOrMore,
+                    peers: Vec::new(),
                 },
             ),
         ]

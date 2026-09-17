@@ -27,6 +27,17 @@ pub enum Error {
     InvalidSegment(SegmentError),
     #[from]
     InvalidSenderTarget(SenderTargetError),
+    /// A pairing publish was built without the peer it is for. Every pairing
+    /// publish is addressed to one peer of its slot.
+    PairingPublishNamesNoPeer,
+    /// Only a pairing publish names a peer: contract and node emissions are
+    /// addressed to whoever subscribes.
+    PeerOnNonPairingPublish,
+    /// A pairing subscription says which recipient it stands for: its own
+    /// slot, or any peer when it observes the pairing.
+    PairingSubscriptionNamesNoRecipient,
+    /// Only a pairing subscription names a recipient.
+    RecipientOnNonPairingSubscription,
 }
 
 impl core::fmt::Display for Error {

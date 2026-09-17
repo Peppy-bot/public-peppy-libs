@@ -3,7 +3,7 @@
 //! contract.
 
 use crate::error::{Error, Result};
-use crate::messaging::{ObservedMemberState, ObservedSource, ProducerRef};
+use crate::messaging::{ObservedMemberState, ObservedSource, PeerInfo, ProducerRef};
 use crate::observation_update_capnp;
 use crate::types::Payload;
 
@@ -34,6 +34,12 @@ impl ObservationUpdateRequest {
                 wire.set_source_link_id(&member.source.source_link_id);
                 wire.set_source_generation(member.source_generation);
                 wire.set_source_live(member.source_live);
+                if let Some(peer) = &member.source.peer {
+                    let mut wire_peer = wire.init_peer();
+                    wire_peer.set_core_node(&peer.producer.core_node);
+                    wire_peer.set_instance_id(&peer.producer.instance_id);
+                    wire_peer.set_link_id(&peer.peer_link_id);
+                }
             }
         }
         super::encode_message(&builder)
@@ -52,6 +58,32 @@ impl ObservationUpdateRequest {
         let mut members: Vec<ObservedMemberState> = Vec::with_capacity(wire_members.len() as usize);
         for idx in 0..wire_members.len() {
             let wire = wire_members.get(idx);
+            let peer = if wire.has_peer() {
+                let wire_peer = wire
+                    .get_peer()
+                    .map_err(|e| Error::Deserialization(e.to_string()))?;
+                Some(PeerInfo {
+                    producer: ProducerRef::new(
+                        super::read_text(
+                            wire_peer.get_core_node(),
+                            "observation_update",
+                            "peer.coreNode",
+                        )?,
+                        super::read_text(
+                            wire_peer.get_instance_id(),
+                            "observation_update",
+                            "peer.instanceId",
+                        )?,
+                    ),
+                    peer_link_id: super::read_text(
+                        wire_peer.get_link_id(),
+                        "observation_update",
+                        "peer.linkId",
+                    )?,
+                })
+            } else {
+                None
+            };
             let source = ObservedSource {
                 producer: ProducerRef::new(
                     super::read_text(
@@ -70,13 +102,15 @@ impl ObservationUpdateRequest {
                     "observation_update",
                     "sourceLinkId",
                 )?,
+                peer,
             };
-            // A member's identity is its `(source, source_link_id)` pair, and a
-            // slot holds each identity once. Repeating one would give the slot
-            // two subscriptions to one pairing and make the position of every
-            // later member ambiguous, so the delivery is refused whole. A slot's
-            // member set is small, so the already-decoded members are the
-            // lookup: no side table, and no per-member clone to key it.
+            // A member's identity is its `(source, source_link_id, peer)`
+            // triple, and a slot holds each identity once. Repeating one would
+            // give the slot two subscriptions to one pairing and make the
+            // position of every later member ambiguous, so the delivery is
+            // refused whole. A slot's member set is small, so the
+            // already-decoded members are the lookup: no side table, and no
+            // per-member clone to key it.
             if members.iter().any(|member| member.source == source) {
                 return Err(Error::Deserialization(format!(
                     "observation_update for slot `{link_id}` lists `{}/{}` on `{}` twice: a \
@@ -107,9 +141,27 @@ mod tests {
             source: ObservedSource {
                 producer: ProducerRef::new("core_a", instance),
                 source_link_id: "commander".to_string(),
+                peer: None,
             },
             source_generation: generation,
             source_live: live,
+        }
+    }
+
+    /// A member pinned to one pair of `instance`'s slot, by the pair's other
+    /// end.
+    fn pinned_member(instance: &str, peer_instance: &str) -> ObservedMemberState {
+        ObservedMemberState {
+            source: ObservedSource {
+                producer: ProducerRef::new("core_a", instance),
+                source_link_id: "commander".to_string(),
+                peer: Some(PeerInfo {
+                    producer: ProducerRef::new("core_b", peer_instance),
+                    peer_link_id: "arm".to_string(),
+                }),
+            },
+            source_generation: 1,
+            source_live: true,
         }
     }
 
@@ -145,10 +197,12 @@ mod tests {
                     source: ObservedSource {
                         producer: ProducerRef::new("core_b", "arm_3"),
                         source_link_id: "gripper".to_string(),
+                        peer: None,
                     },
                     source_generation: 3,
                     source_live: true,
                 },
+                pinned_member("engine_1", "ctrl_2"),
             ],
         };
         let decoded = round_trip(&several);
@@ -159,13 +213,14 @@ mod tests {
                 .iter()
                 .map(|m| m.source.producer.instance_id.as_str())
                 .collect::<Vec<_>>(),
-            ["arm_2", "arm_1", "arm_3"],
+            ["arm_2", "arm_1", "arm_3", "engine_1"],
             "plan order survives the wire"
         );
     }
 
     /// One source instance observed through two of ITS own pairing slots is two
-    /// distinct members, while the same pairing listed twice is refused.
+    /// distinct members, as are two of its pairs on one slot observed each by
+    /// its peer, while the same pairing listed twice is refused.
     #[test]
     fn decode_rejects_a_repeated_member_identity() {
         let repeated = ObservationUpdateRequest {
@@ -189,6 +244,7 @@ mod tests {
                     source: ObservedSource {
                         producer: ProducerRef::new("core_a", "arm_1"),
                         source_link_id: "gripper".to_string(),
+                        peer: None,
                     },
                     source_generation: 1,
                     source_live: true,
@@ -199,5 +255,15 @@ mod tests {
             round_trip(&two_slots_of_one_source),
             two_slots_of_one_source
         );
+
+        let two_pairs_of_one_slot = ObservationUpdateRequest {
+            link_id: "observed_arm".to_string(),
+            sequence: 1,
+            members: vec![
+                pinned_member("engine_1", "ctrl_1"),
+                pinned_member("engine_1", "ctrl_2"),
+            ],
+        };
+        assert_eq!(round_trip(&two_pairs_of_one_slot), two_pairs_of_one_slot);
     }
 }

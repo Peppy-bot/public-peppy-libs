@@ -1,9 +1,12 @@
-use super::{MessengerHandle, ProducerRef};
+use super::{MessengerHandle, PeerInfo, ProducerRef};
 use crate::error::{Error, Result};
 use crate::runtime::CancellationToken;
 use crate::types::{Message, Payload};
 use config::node::QoSProfile;
-use pmi::{MessengerPublisher, SenderTarget, TopicWireReceiver, TopicWireSender};
+use pmi::{
+    MessengerPublisher, PairingRecipient, SenderTarget, TopicWireReceiver, TopicWireSender,
+    WirePeer,
+};
 
 use std::sync::Arc;
 use tracing::warn;
@@ -360,7 +363,8 @@ impl TopicMessenger {
     /// This is the shared pinned-subscribe seam for both pairing forms: a
     /// participant pins its current peer (an unpaired slot has no wire
     /// subscription at all, so there is no wildcard shape to build), and an
-    /// observer pins its configured source. Both are pairing-discriminator
+    /// observer pins its configured source, and the one peer of it when the
+    /// observation is pinned to a pair. Both are pairing-discriminator
     /// traffic and both pin every wire slot, so the `is_pairing` assertion holds
     /// for either caller. Applications never construct raw key expressions;
     /// every pinned subscription comes through this seam.
@@ -372,22 +376,36 @@ impl TopicMessenger {
         pairing_target: SenderTarget,
         peer: &ProducerRef,
         peer_link_id: &str,
+        recipient: PairingRecipient,
         to_topic: &str,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        debug_assert!(
-            pairing_target.is_pairing(),
-            "subscribe_peer_pinned requires a pairing-shaped target, got {pairing_target:?}"
-        );
-        let recv = TopicWireReceiver::new(
-            as_core_node,
-            as_instance_id,
-            Some(peer.core_node.as_str()),
-            Some(peer.instance_id.as_str()),
-            Some(pairing_target),
-            Some(peer_link_id),
-            to_topic,
-        )?;
+        let producer = WirePeer::new(&peer.core_node, &peer.instance_id, peer_link_id)?;
+        let recv = match recipient {
+            PairingRecipient::Slot(own_link_id) => TopicWireReceiver::paired(
+                as_core_node,
+                as_instance_id,
+                pairing_target,
+                &producer,
+                own_link_id.as_str(),
+                to_topic,
+            )?,
+            PairingRecipient::Any => TopicWireReceiver::observing(
+                as_core_node,
+                as_instance_id,
+                pairing_target,
+                &producer,
+                to_topic,
+            )?,
+            PairingRecipient::Peer(peer) => TopicWireReceiver::observing_pair(
+                as_core_node,
+                as_instance_id,
+                pairing_target,
+                &producer,
+                &peer,
+                to_topic,
+            )?,
+        };
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         Ok(Subscription::new(subscription))
     }
@@ -405,8 +423,8 @@ impl TopicMessenger {
     /// one publisher's ticks. Pinning every slot is also what makes a stale
     /// lifetime's ticks unreachable: they carry a different `link_id`.
     ///
-    /// Distinct from [`Self::subscribe_peer_pinned`], which pins the same wire
-    /// slots but asserts a pairing-shaped target, and from
+    /// Distinct from [`Self::subscribe_peer_pinned`], which asserts a
+    /// pairing-shaped target and names the recipient it stands for, and from
     /// [`Self::subscribe_target_scoped`], which leaves the publisher's identity
     /// and `link_id` wildcarded.
     #[allow(clippy::too_many_arguments)]
@@ -431,6 +449,85 @@ impl TopicMessenger {
         )?;
         let subscription = messenger.subscribe_to_topic(&recv, qos).await?;
         Ok(Subscription::new(subscription))
+    }
+
+    /// Declares the publisher for pairing emissions from this node's scalar
+    /// slot `link_id`: one wire publisher addressed to whichever peer holds
+    /// the slot's one pair, so a publish while unpaired reaches nobody.
+    pub async fn declare_sole_peer_publisher(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        pairing_target: SenderTarget,
+        link_id: &str,
+        as_topic_name: &str,
+        qos: QoSProfile,
+    ) -> Result<TopicPublisher> {
+        let sender = TopicWireSender::to_sole_peer(
+            as_core_node,
+            as_instance_id,
+            pairing_target,
+            link_id,
+            as_topic_name,
+        )?;
+        let inner = messenger
+            .declare_topic_publisher(&sender, qos.into())
+            .await?;
+        Ok(TopicPublisher::new(Arc::new(inner)))
+    }
+
+    /// Whether a subscriber matching a pairing emission from this node's
+    /// slot `link_id` to `peer` is visible, within `timeout`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn wait_for_pairing_subscriber(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        pairing_target: SenderTarget,
+        link_id: &str,
+        as_topic_name: &str,
+        peer: &PeerInfo,
+        timeout: std::time::Duration,
+    ) -> Result<bool> {
+        let sender = pairing_sender(
+            as_core_node,
+            as_instance_id,
+            pairing_target,
+            link_id,
+            as_topic_name,
+            peer,
+        )?;
+        messenger
+            .wait_for_matching_subscriber(&sender, timeout)
+            .await
+    }
+
+    /// Declares the publisher for pairing emissions from this node's slot
+    /// `link_id` to `peer`: one wire publisher per pair, which is what a
+    /// [`crate::runtime::PeerPublisher`] keeps per peer of its slot.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn declare_pairing_publisher(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        pairing_target: SenderTarget,
+        link_id: &str,
+        as_topic_name: &str,
+        qos: QoSProfile,
+        peer: &PeerInfo,
+    ) -> Result<TopicPublisher> {
+        let sender = pairing_sender(
+            as_core_node,
+            as_instance_id,
+            pairing_target,
+            link_id,
+            as_topic_name,
+            peer,
+        )?;
+        let inner = messenger
+            .declare_topic_publisher(&sender, qos.into())
+            .await?;
+        Ok(TopicPublisher::new(Arc::new(inner)))
     }
 
     /// Waits until a subscriber for this topic is known to the publisher's
@@ -516,6 +613,30 @@ impl TopicMessenger {
             .await?;
         Ok(TopicPublisher::new(Arc::new(inner)))
     }
+}
+
+/// The wire sender of a pairing emission: this node's slot to one peer.
+fn pairing_sender(
+    as_core_node: &str,
+    as_instance_id: &str,
+    pairing_target: SenderTarget,
+    link_id: &str,
+    as_topic_name: &str,
+    peer: &PeerInfo,
+) -> Result<TopicWireSender> {
+    let to_peer = WirePeer::new(
+        &peer.producer.core_node,
+        &peer.producer.instance_id,
+        &peer.peer_link_id,
+    )?;
+    Ok(TopicWireSender::to_peer(
+        as_core_node,
+        as_instance_id,
+        pairing_target,
+        link_id,
+        as_topic_name,
+        to_peer,
+    )?)
 }
 
 /// Lock-free per-topic publisher returned by

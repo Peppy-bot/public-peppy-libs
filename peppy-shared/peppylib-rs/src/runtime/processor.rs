@@ -1,12 +1,12 @@
 use std::path::Path;
 
 use crate::error::{Error, ParameterDeserializationError, Result};
-use crate::messaging::{ObservationState, ObservedMemberState, PeerInfo, PeerPinState};
+use crate::messaging::{ObservationState, ObservedMemberState, PeerMember, PeerSetState};
 use config::{
     AnyType, NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
     node::{Cardinality, NodeConfig, PairingObserverDependency, load_standalone_node_config},
-    runtime::{Name, NodeInstanceConfig, PairingSlotBinding, RuntimeConfig},
+    runtime::{Name, NodeInstanceConfig, RuntimeConfig},
     validate_node_arguments,
 };
 use std::collections::BTreeMap;
@@ -40,11 +40,17 @@ pub struct Processor {
     bound_producers: BTreeMap<String, config::runtime::BoundProducers>,
     /// One live pairing-slot channel per `depends_on.pairings` entry, keyed
     /// by the slot's link_id. The map's key set is fixed at startup (slots
-    /// are declared in the manifest); only the channel values move — the
-    /// daemon mutates them over the `peer_update` service, and per-slot
-    /// `PeerSubscription`s / `PeerSlot`s observe them. Behind an `Arc` so
-    /// `Processor::clone` shares the live channels instead of forking them.
-    pairing_slots: Arc<BTreeMap<String, watch::Sender<PeerPinState>>>,
+    /// are declared in the manifest); only the channel values move: the
+    /// daemon replaces them over the `peer_update` service, and per-slot
+    /// `PeerSubscription`s, `PeerSlot`s, `PeerSlotSet`s and `PeerPublisher`s
+    /// observe them. Behind an `Arc` so `Processor::clone` shares the live
+    /// channels instead of forking them.
+    pairing_slots: Arc<BTreeMap<String, watch::Sender<PeerSetState>>>,
+    /// Each pairing slot's declared `cardinality`, keyed by link_id and read
+    /// from the same manifest entries that seed `pairing_slots`. It picks the
+    /// slot's handle (`peer` vs `peer_set`) and which accessor that slot's
+    /// generated module calls.
+    pairing_cardinalities: BTreeMap<String, Cardinality>,
     /// One live observation-slot channel per `depends_on.pairing_observers`
     /// entry, keyed by the slot's link_id. Same lifecycle shape as
     /// `pairing_slots`: the key set is fixed at startup and the daemon mutates
@@ -140,7 +146,8 @@ impl Processor {
         )?;
 
         let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
-        let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
+        let pairing_cardinalities = build_pairing_cardinalities(&node_config);
+        let pairing_slots = build_pairing_slots(&runtime_config, &pairing_cardinalities)?;
         let observation_cardinalities = build_observer_cardinalities(&node_config);
         let observation_slots =
             build_observation_slots(&runtime_config, &observation_cardinalities)?;
@@ -150,6 +157,7 @@ impl Processor {
             validated_arguments,
             bound_producers,
             pairing_slots,
+            pairing_cardinalities,
             observation_slots,
             observation_cardinalities,
             clock_cache: Arc::new(AtomicU64::new(0)),
@@ -268,11 +276,54 @@ impl Processor {
                     .map(|source| config::runtime::ObservationSeedMember {
                         source: source.producer.clone(),
                         source_link_id: source.source_link_id.clone(),
+                        peer: source
+                            .peer
+                            .as_ref()
+                            .map(config::runtime::ObservedPeer::from),
                         source_generation: 0,
                         source_live: true,
                     })
                     .collect(),
             );
+        }
+
+        // Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a
+        // pairing slot's pairs, standing in for the set the daemon stamps
+        // into a spawned node's boot config. Undeclared link_ids are ignored
+        // with a warning, on the same terms as `bound_producers` above; a
+        // scalar slot seeded with two pairs fails `build_pairing_slots`.
+        let pairing_cardinalities = build_pairing_cardinalities(&node_config);
+        let mut pairing_slots_seed = config::runtime::PairingSlots::new();
+        for (link_id, pins) in &config.peer_pins {
+            if !pairing_cardinalities.contains_key(link_id) {
+                tracing::warn!(
+                    link_id = %link_id,
+                    "StandaloneConfig peer pin names an undeclared pairing slot; ignoring"
+                );
+                continue;
+            }
+            let pairs = pins
+                .iter()
+                .map(|pin| {
+                    let copy = pin
+                        .copy
+                        .as_deref()
+                        .map(|copy| {
+                            Name::new(copy).map_err(|e| Error::InvalidCopyName {
+                                link_id: link_id.clone(),
+                                copy: copy.to_string(),
+                                reason: e.to_string(),
+                            })
+                        })
+                        .transpose()?;
+                    Ok(config::runtime::PairedPeer {
+                        peer: pin.info.producer.clone(),
+                        peer_link_id: pin.info.peer_link_id.clone(),
+                        copy,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            pairing_slots_seed.insert(link_id.clone(), pairs);
         }
 
         let runtime_config = RuntimeConfig::new(
@@ -281,6 +332,7 @@ impl Processor {
             NodeInstanceConfig {
                 slot_bindings,
                 observation_seeds,
+                pairing_slots: pairing_slots_seed,
                 // Daemon-less stand-in for a launcher's clock binding,
                 // written to the same resolved `framework` field a daemon
                 // launch fills, so neither `clock::for_node` nor
@@ -296,34 +348,16 @@ impl Processor {
         )?;
 
         let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
-        let pairing_slots = build_pairing_slots(&runtime_config, &node_config);
+        let pairing_slots = build_pairing_slots(&runtime_config, &pairing_cardinalities)?;
         let observation_slots =
             build_observation_slots(&runtime_config, &observation_cardinalities)?;
-
-        // Daemon-less development: `StandaloneConfig::with_peer_pin` seeds a
-        // slot as already-paired, standing in for the daemon's live
-        // `peer_update` delivery. `send_replace`, not `send`: no receiver
-        // exists yet (the first `peer(...)` subscribes later), and `send`
-        // discards the value on a receiver-less channel.
-        for (link_id, pin) in &config.peer_pins {
-            if let Some(sender) = pairing_slots.get(link_id) {
-                sender.send_replace(PeerPinState {
-                    sequence: 1,
-                    pin: Some(pin.clone()),
-                });
-            } else {
-                tracing::warn!(
-                    link_id = %link_id,
-                    "StandaloneConfig peer pin names an undeclared pairing slot; ignoring"
-                );
-            }
-        }
 
         Ok(Self {
             runtime_config,
             validated_arguments,
             bound_producers,
             pairing_slots,
+            pairing_cardinalities,
             observation_slots,
             observation_cardinalities,
             clock_cache: Arc::new(AtomicU64::new(0)),
@@ -551,17 +585,33 @@ impl Processor {
     /// The live watch channel for the pairing slot declared at `link_id`, or
     /// `None` when the manifest declares no such slot. Used by
     /// [`crate::runtime::NodeRunner::peer`] and the generated
-    /// `subscribe_peer` seam to observe pins; the `peer_update` service uses
+    /// `subscribe_peer` seam to observe the slot's pairs; the `peer_update` service uses
     /// the sender side via [`Self::pairing_slot_senders`].
-    pub(crate) fn peer_pin_watch(&self, link_id: &str) -> Option<watch::Receiver<PeerPinState>> {
+    pub(crate) fn peer_set_watch(&self, link_id: &str) -> Option<watch::Receiver<PeerSetState>> {
         self.pairing_slots.get(link_id).map(|tx| tx.subscribe())
+    }
+
+    /// The declared cardinality of the pairing slot at `link_id`, or `None`
+    /// when the manifest declares no such slot.
+    pub(crate) fn pairing_slot_cardinality(&self, link_id: &str) -> Option<Cardinality> {
+        self.pairing_cardinalities.get(link_id).copied()
+    }
+
+    /// The copy this instance belongs to, as the launch composed it; `None`
+    /// for an instance run outside a copy.
+    pub fn copy(&self) -> Option<&str> {
+        self.runtime_config
+            .node_instance
+            .copy
+            .as_ref()
+            .map(|copy| copy.as_str())
     }
 
     /// Shared handle to all pairing-slot channels, handed to the pre-setup
     /// `peer_update` service listener.
     pub(crate) fn pairing_slot_senders(
         &self,
-    ) -> Arc<BTreeMap<String, watch::Sender<PeerPinState>>> {
+    ) -> Arc<BTreeMap<String, watch::Sender<PeerSetState>>> {
         Arc::clone(&self.pairing_slots)
     }
 
@@ -681,40 +731,78 @@ fn build_observer_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Ca
         .collect()
 }
 
-/// Seed one watch channel per **participant** pairing slot declared in
-/// `depends_on.pairings`. The initial value comes from the boot config's
-/// `pairing_slots` map when present (the daemon always ships `Unpaired` —
-/// pairs arrive live over `peer_update` — but the mapping is honored so the
-/// boot contract stays a plain data translation), defaulting to `Unpaired`.
+/// One watch channel per declared `depends_on.pairings` slot, seeded with the
+/// pairs the boot config's `pairing_slots` entry carries for it. A
+/// daemon-spawned instance seeds empty and its pairs arrive over
+/// `peer_update` once it commits to Running, so a seed may hold fewer pairs
+/// than the slot's floor. A scalar slot's seed holds at most one: several
+/// pairs are [`Error::PairingSeedNotScalar`], since the generated code reads
+/// the slot through `peer()`, which has one peer to answer. A seed naming an
+/// undeclared slot or repeating one pair is refused the way
+/// [`build_observation_slots`] refuses the same two.
 ///
-/// `depends_on.pairing_observers` is not read here: an observer never occupies a
-/// peer pin and receives no `peer_update`. Its source pin arrives over
-/// `observation_update` into a separate observation-slot channel.
+/// An observer slot is not a pairing slot: it holds no peer set and receives
+/// no `peer_update`. Its source pins arrive over `observation_update` into a
+/// separate observation-slot channel.
 fn build_pairing_slots(
     runtime_config: &RuntimeConfig,
-    node_config: &NodeConfig,
-) -> Arc<BTreeMap<String, watch::Sender<PeerPinState>>> {
-    let mut out = BTreeMap::new();
-    if let Some(deps) = node_config.manifest.depends_on.as_ref() {
-        for dep in &deps.pairings {
-            let initial = match runtime_config.node_instance.pairing_slots.get(&dep.link_id) {
-                Some(PairingSlotBinding::Paired { peer, peer_link_id }) => PeerPinState {
-                    sequence: 0,
-                    pin: Some(PeerInfo {
-                        producer: crate::messaging::ProducerRef::new(
-                            peer.core_node.clone(),
-                            peer.instance_id.clone(),
-                        ),
-                        peer_link_id: peer_link_id.clone(),
-                    }),
-                },
-                Some(PairingSlotBinding::Unpaired) | None => PeerPinState::unpaired(),
-            };
-            let (tx, _rx) = watch::channel(initial);
-            out.insert(dep.link_id.clone(), tx);
-        }
+    cardinalities: &BTreeMap<String, Cardinality>,
+) -> Result<Arc<BTreeMap<String, watch::Sender<PeerSetState>>>> {
+    let seeds = &runtime_config.node_instance.pairing_slots;
+    if let Some(link_id) = seeds.keys().find(|k| !cardinalities.contains_key(*k)) {
+        return Err(Error::PairingSeedUndeclared {
+            link_id: link_id.clone(),
+        });
     }
-    Arc::new(out)
+
+    cardinalities
+        .iter()
+        .map(|(link_id, cardinality)| {
+            let seeded: Vec<PeerMember> = seeds
+                .get(link_id)
+                .map(|pairs| pairs.iter().map(PeerMember::from).collect())
+                .unwrap_or_default();
+            // A pair is one peer to this slot, and a slot holds each peer
+            // once. The identity is the peer triple, which is what the wire
+            // decoder keys its own duplicate refusal on.
+            let mut identities = std::collections::HashSet::with_capacity(seeded.len());
+            for member in &seeded {
+                if !identities.insert(&member.info) {
+                    return Err(Error::PairingSeedDuplicate {
+                        link_id: link_id.clone(),
+                        core_node: member.info.producer.core_node.clone(),
+                        instance_id: member.info.producer.instance_id.clone(),
+                        peer_link_id: member.info.peer_link_id.clone(),
+                    });
+                }
+            }
+            if !cardinality.admits_seed(seeded.len()) {
+                return Err(Error::PairingSeedNotScalar {
+                    link_id: link_id.clone(),
+                    cardinality: cardinality.as_str().to_string(),
+                    count: seeded.len(),
+                });
+            }
+            let (tx, _rx) = watch::channel(PeerSetState::seeded(seeded));
+            Ok((link_id.clone(), tx))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()
+        .map(Arc::new)
+}
+
+/// Each pairing slot's declared `cardinality`, from the manifest.
+fn build_pairing_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Cardinality> {
+    node_config
+        .manifest
+        .depends_on
+        .as_ref()
+        .map(|deps| {
+            deps.pairings
+                .iter()
+                .map(|dep| (dep.link_id.clone(), dep.cardinality))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Pre-resolve the ordered bound producer set for every `link_id` declared
@@ -1506,16 +1594,118 @@ mod tests {
             .expect("should create processor");
 
         let watch_rx = processor
-            .peer_pin_watch("arm")
+            .peer_set_watch("arm")
             .expect("declared slot should have a channel");
         let state = watch_rx.borrow();
-        let pin = state
-            .pin
-            .as_ref()
-            .expect("seeded pin should survive until the first subscriber");
-        assert_eq!(pin.producer.core_node, "core_a");
-        assert_eq!(pin.producer.instance_id, "arm_1");
-        assert_eq!(pin.peer_link_id, "controller");
+        let [member] = state.members.as_slice() else {
+            panic!("the seeded pair should survive until the first subscriber");
+        };
+        assert_eq!(member.info.producer.core_node, "core_a");
+        assert_eq!(member.info.producer.instance_id, "arm_1");
+        assert_eq!(member.info.peer_link_id, "controller");
+        assert_eq!(member.copy, None);
+    }
+
+    /// Manifest fixture with one scalar and one multi pairing slot.
+    const PAIRING_SLOTS_CONFIG: &str = r#"{
+        peppy_schema: "node/v1",
+        manifest: {
+            name: "my_node",
+            tag: "v1",
+            depends_on: {
+                pairings: [
+                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
+                    { name: "arm_link", tag: "v1", role: "controller", link_id: "limbs", cardinality: "zero_or_more" },
+                ],
+            },
+        },
+        execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
+    }"#;
+
+    #[test]
+    fn standalone_mode_seeds_a_multi_slot_with_every_pin_and_its_copy() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&peppy_config_path, PAIRING_SLOTS_CONFIG)
+            .expect("peppy config should be written");
+
+        let config = StandaloneConfig::new()
+            .with_peer_pin_in_copy("limbs", "core_a", "left_1", "engine", "robot_a")
+            .with_peer_pin("limbs", "core_a", "left_2", "engine");
+        let processor = Processor::new_standalone(&peppy_config_path, &config)
+            .expect("should create processor");
+
+        let watch_rx = processor
+            .peer_set_watch("limbs")
+            .expect("declared slot should have a channel");
+        let state = watch_rx.borrow();
+        let copies: Vec<(String, Option<String>)> = state
+            .members
+            .iter()
+            .map(|member| {
+                (
+                    member.info.producer.instance_id.clone(),
+                    member.copy.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            copies,
+            vec![
+                ("left_1".to_string(), Some("robot_a".to_string())),
+                ("left_2".to_string(), None),
+            ]
+        );
+        assert!(
+            processor
+                .peer_set_watch("arm")
+                .expect("declared slot should have a channel")
+                .borrow()
+                .members
+                .is_empty(),
+            "an unseeded slot boots unpaired"
+        );
+    }
+
+    #[test]
+    fn standalone_mode_refuses_two_pins_on_a_scalar_slot() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&peppy_config_path, PAIRING_SLOTS_CONFIG)
+            .expect("peppy config should be written");
+
+        let config = StandaloneConfig::new()
+            .with_peer_pin("arm", "core_a", "arm_1", "controller")
+            .with_peer_pin("arm", "core_a", "arm_2", "controller");
+        let Err(err) = Processor::new_standalone(&peppy_config_path, &config) else {
+            panic!("a scalar slot holds one pair");
+        };
+        assert!(
+            matches!(
+                &err,
+                crate::error::Error::PairingSeedNotScalar { link_id, count: 2, .. } if link_id == "arm"
+            ),
+            "got: {err:?}"
+        );
+        assert!(err.to_string().contains("one_or_more"), "{err}");
+    }
+
+    #[test]
+    fn standalone_mode_refuses_a_copy_that_is_not_a_name() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config_path = temp_dir.path().join("peppy.json5");
+        std::fs::write(&peppy_config_path, PAIRING_SLOTS_CONFIG)
+            .expect("peppy config should be written");
+
+        let config = StandaloneConfig::new()
+            .with_peer_pin_in_copy("limbs", "core_a", "left_1", "engine", "robot a");
+        let Err(err) = Processor::new_standalone(&peppy_config_path, &config) else {
+            panic!("a copy is a name");
+        };
+        assert!(
+            matches!(&err, crate::error::Error::InvalidCopyName { copy, .. } if copy == "robot a"),
+            "got: {err:?}"
+        );
     }
 
     #[test]

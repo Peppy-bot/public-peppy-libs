@@ -6,14 +6,16 @@
 //! [`crate::runtime::ObservedTopicSubscription`] /
 //! [`crate::runtime::ObservationSlot`] observe it.
 
-use super::ProducerRef;
+use super::{PeerInfo, ProducerRef};
 
 /// One observed source: the observed instance's full `(core_node,
 /// instance_id)` address plus the producer-side link_id of the pairing slot
-/// being observed. The triple pins the source's publishes exactly (core,
-/// instance, producer-side link_id segment), which is both what an observer
-/// subscription is declared against and the member's full identity, so members
-/// sharing one instance stay distinct.
+/// being observed, and, when the plan named one pair of that slot by its other
+/// end, that peer. The triple pins the source's publishes exactly (core,
+/// instance, producer-side link_id segment), the peer narrows them to the one
+/// pair, and together they are both what an observer subscription is declared
+/// against and the member's full identity, so members sharing one instance,
+/// or one slot, stay distinct.
 ///
 /// Returned by `NodeRunner::observation_slot(link_id)`'s `source()` and
 /// `observation_slot_set(link_id)`'s `sources()`, surfaced by the generated
@@ -33,6 +35,11 @@ pub struct ObservedSource {
     pub producer: ProducerRef,
     /// The producer-side link_id of the observed pairing slot.
     pub source_link_id: String,
+    /// The pair's other end, when the plan named the pair by it: the peer the
+    /// source publishes to and the link_id of the peer's slot. `None`
+    /// observes every pair of the source's slot, each tagged with this same
+    /// source.
+    pub peer: Option<PeerInfo>,
 }
 
 /// The documented demux idiom keys a map on an `ObservedSource`, so the bounds
@@ -207,6 +214,7 @@ impl From<&config::runtime::ObservationSeedMember> for ObservedMemberState {
             source: ObservedSource {
                 producer: seed.source.clone(),
                 source_link_id: seed.source_link_id.clone(),
+                peer: seed.peer.as_ref().map(PeerInfo::from),
             },
             source_generation: seed.source_generation,
             source_live: seed.source_live,
@@ -223,12 +231,31 @@ mod tests {
             ObservedSource {
                 producer: ProducerRef::new("core-1234", "left_arm"),
                 source_link_id: "joint_states".to_string(),
+                peer: None,
             },
             ObservedSource {
                 producer: ProducerRef::new("core-1234", "right_arm"),
                 source_link_id: "joint_states".to_string(),
+                peer: None,
             },
         ]
+    }
+
+    /// Two observations of one source slot pinned to different pairs are two
+    /// members, and neither is the observation of the whole slot: the peer is
+    /// part of the identity a demux map keys on.
+    #[test]
+    fn the_peer_is_part_of_a_members_identity() {
+        let whole_slot = sources().remove(0);
+        let pinned_to = |instance: &str| ObservedSource {
+            peer: Some(PeerInfo {
+                producer: ProducerRef::new("core-1234", instance),
+                peer_link_id: "left_arm_link".to_string(),
+            }),
+            ..whole_slot.clone()
+        };
+        assert_ne!(pinned_to("alpha_backbone"), pinned_to("bravo_backbone"));
+        assert_ne!(pinned_to("alpha_backbone"), whole_slot);
     }
 
     #[test]

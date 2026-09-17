@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use capnp::message::Builder;
-use config::runtime::{NodeInstancePlan, ProducerRef};
+use config::runtime::{NodeInstancePlan, ObservedPeer, ProducerRef};
 
 use crate::node_capnp;
 use crate::{NonEmptyPayload, Payload, Result};
@@ -55,6 +55,11 @@ pub struct RemotePeerPairing {
     pub pairing_tag: String,
     /// The role the peer's manifest declares for its side of the pair.
     pub peer_role: String,
+    /// The cardinality the peer's manifest declares for its slot: only a
+    /// scalar slot is taken by one pair.
+    pub peer_cardinality: config::node::Cardinality,
+    /// The copy the peer's instance belongs to; `None` outside a copy.
+    pub peer_copy: Option<config::runtime::Name>,
 }
 
 impl PairTarget {
@@ -98,11 +103,11 @@ impl std::fmt::Display for PairTarget {
 }
 
 /// One pairing an observer slot taps, carried by
-/// [`NodeRunGoal::planned_observations`]: the source instance and the
-/// source-side participant slot the source publishes the observed role under.
-/// Unlike a [`PairTarget`] the source slot is always resolved (the planner
-/// fills it). The pair of the two fields is the member's identity within its
-/// slot.
+/// [`NodeRunGoal::planned_observations`]: the source instance, the
+/// source-side participant slot the source publishes the observed role under,
+/// and, when the plan named the pair by its other end, that peer. Unlike a
+/// [`PairTarget`] the source slot is always resolved (the planner fills it).
+/// The three fields together are the member's identity within its slot.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ObservationTarget {
     /// The source instance, addressed for the same self-describing-placement
@@ -112,6 +117,9 @@ pub struct ObservationTarget {
     /// events.
     pub source: ProducerRef,
     pub source_link_id: String,
+    /// The pair's other end, when the plan named the pair by it; `None`
+    /// observes every pair of the source's slot.
+    pub peer: Option<ObservedPeer>,
 }
 
 impl ObservationTarget {
@@ -123,6 +131,7 @@ impl ObservationTarget {
         Self {
             source: ProducerRef::new(source_core_node, source_instance_id),
             source_link_id: source_link_id.into(),
+            peer: None,
         }
     }
 }
@@ -133,7 +142,15 @@ impl std::fmt::Display for ObservationTarget {
             f,
             "{}/{}@{}",
             self.source.instance_id, self.source_link_id, self.source.core_node
-        )
+        )?;
+        match &self.peer {
+            Some(peer) => write!(
+                f,
+                " to {}/{}@{}",
+                peer.peer.instance_id, peer.peer_link_id, peer.peer.core_node
+            ),
+            None => Ok(()),
+        }
     }
 }
 
@@ -180,14 +197,14 @@ impl ObservationTargets {
     pub fn new(
         observer_link_id: &str,
         targets: Vec<ObservationTarget>,
-    ) -> std::result::Result<Self, DuplicateObservationTarget> {
+    ) -> std::result::Result<Self, Box<DuplicateObservationTarget>> {
         // The first duplicated member in plan order names the error.
         let mut seen = HashSet::with_capacity(targets.len());
         if let Some(duplicate) = targets.iter().find(|target| !seen.insert(*target)) {
-            return Err(DuplicateObservationTarget {
+            return Err(Box::new(DuplicateObservationTarget {
                 observer_link_id: observer_link_id.to_string(),
                 target: duplicate.clone(),
-            });
+            }));
         }
         Ok(Self(targets))
     }
@@ -267,12 +284,14 @@ pub struct NodeRunGoal {
     pub tag: String,
     pub env_vars: Vec<(String, String)>,
     pub timeout_secs: u64,
-    /// Pairing requests from `--pair <link_id>@<peer_instance>[/<peer_link_id>]`
-    /// or a launch plan, keyed by the starting node's own slot link_id.
+    /// Pairing requests from `--link <link_id>@<peer_instance>[/<peer_link_id>]`
+    /// or a launch plan, keyed by the starting node's own slot link_id and
+    /// holding every pair that slot takes, in the order the plan lists them:
+    /// one for a scalar slot, one per peer for a multi slot.
     /// Commands to the daemon, not resolved config: the daemon validates and
     /// reserves each pair BEFORE spawning and delivers it live after the
     /// instance commits to Running.
-    pub requested_pairs: BTreeMap<String, PairTarget>,
+    pub requested_pairs: BTreeMap<String, Vec<PairTarget>>,
     /// Pairing slots deliberately left unpaired, keyed by this instance's
     /// slot link_id; each value is the reason the deployment wrote down
     /// (`--vacant-link <link_id>=<why>`, or the launcher's
@@ -287,7 +306,7 @@ pub struct NodeRunGoal {
     /// future peer. A launch-mechanism marker, not user intent: the slot
     /// boots unpaired and needs no action, unlike a `vacant_pairs` entry
     /// which records a deliberate opt-out. Never set by the CLI.
-    pub covered_pairs: BTreeMap<String, PairTarget>,
+    pub covered_pairs: BTreeMap<String, Vec<PairTarget>>,
     /// Observer requests from `--link <observer_link>@<source>[/<source_link>]`
     /// or a launch plan, keyed by the starting node's own observer-slot
     /// link_id and holding that slot's whole ordered member set. Commands to
@@ -342,7 +361,10 @@ impl NodeRunGoal {
         self
     }
 
-    pub fn with_requested_pairs(mut self, requested_pairs: BTreeMap<String, PairTarget>) -> Self {
+    pub fn with_requested_pairs(
+        mut self,
+        requested_pairs: BTreeMap<String, Vec<PairTarget>>,
+    ) -> Self {
         self.requested_pairs = requested_pairs;
         self
     }
@@ -352,7 +374,7 @@ impl NodeRunGoal {
         self
     }
 
-    pub fn with_covered_pairs(mut self, covered_pairs: BTreeMap<String, PairTarget>) -> Self {
+    pub fn with_covered_pairs(mut self, covered_pairs: BTreeMap<String, Vec<PairTarget>>) -> Self {
         self.covered_pairs = covered_pairs;
         self
     }
@@ -422,8 +444,10 @@ impl NodeRunGoal {
 
             goal.reborrow().set_timeout_secs(self.timeout_secs);
 
-            let pair_count =
-                capnp_list_len(self.requested_pairs.len(), "NodeRunGoal.requested_pairs")?;
+            let pair_count = capnp_list_len(
+                total_pairs(&self.requested_pairs),
+                "NodeRunGoal.requested_pairs",
+            )?;
             fill_pair_requests(
                 goal.reborrow().init_requested_pairs(pair_count),
                 &self.requested_pairs,
@@ -435,8 +459,10 @@ impl NodeRunGoal {
                 &self.vacant_pairs,
             );
 
-            let covered_count =
-                capnp_list_len(self.covered_pairs.len(), "NodeRunGoal.covered_pairs")?;
+            let covered_count = capnp_list_len(
+                total_pairs(&self.covered_pairs),
+                "NodeRunGoal.covered_pairs",
+            )?;
             fill_pair_requests(
                 goal.reborrow().init_covered_pairs(covered_count),
                 &self.covered_pairs,
@@ -501,16 +527,26 @@ impl NodeRunGoal {
     }
 }
 
-/// Writes a `link_id -> PairTarget` map into an initialized
-/// `List(PairRequest)` builder ([`NodeRunGoal::requested_pairs`] and
-/// [`NodeRunGoal::covered_pairs`] share the wire shape). An unpinned
-/// `peer_link_id` is encoded as the empty string, and an absent
-/// `remote_peer` as an all-empty `remotePeer` struct.
+/// How many `PairRequest` entries a slot map occupies on the wire: one per
+/// pair, so a multi slot holding three pairs takes three.
+fn total_pairs(pairs: &BTreeMap<String, Vec<PairTarget>>) -> usize {
+    pairs.values().map(Vec::len).sum()
+}
+
+/// Writes a `link_id -> pairs` map into an initialized `List(PairRequest)`
+/// builder ([`NodeRunGoal::requested_pairs`] and
+/// [`NodeRunGoal::covered_pairs`] share the wire shape). One entry per pair,
+/// so a multi slot's pairs are several entries sharing one `linkId`, in the
+/// slot's order. An unpinned `peer_link_id` is encoded as the empty string,
+/// and an absent `remote_peer` as an all-empty `remotePeer` struct.
 fn fill_pair_requests(
     mut list: capnp::struct_list::Builder<'_, node_capnp::pair_request::Owned>,
-    pairs: &BTreeMap<String, PairTarget>,
+    pairs: &BTreeMap<String, Vec<PairTarget>>,
 ) {
-    for (idx, (link_id, target)) in pairs.iter().enumerate() {
+    let flattened = pairs
+        .iter()
+        .flat_map(|(link_id, targets)| targets.iter().map(move |target| (link_id, target)));
+    for (idx, (link_id, target)) in flattened.enumerate() {
         let mut pair = list.reborrow().get(idx as u32);
         pair.set_link_id(link_id);
         pair.set_peer_link_id(target.peer_link_id.as_deref().unwrap_or(""));
@@ -519,6 +555,14 @@ fn fill_pair_requests(
             builder.set_pairing_name(&remote.pairing_name);
             builder.set_pairing_tag(&remote.pairing_tag);
             builder.set_peer_role(&remote.peer_role);
+            builder.set_peer_cardinality(remote.peer_cardinality.as_str());
+            builder.set_peer_copy(
+                remote
+                    .peer_copy
+                    .as_ref()
+                    .map(|copy| copy.as_str())
+                    .unwrap_or(""),
+            );
         }
         write_instance_address(pair.init_peer(), &target.peer);
     }
@@ -526,11 +570,12 @@ fn fill_pair_requests(
 
 /// Inverse of [`fill_pair_requests`]: an empty `peerLinkId` decodes to
 /// `None` (unpinned), and an empty `remotePeer.pairingName` to no remote
-/// verdict.
+/// verdict. Entries sharing a `linkId` accumulate into that slot's pair
+/// list, keeping wire order.
 fn read_pair_requests(
     list: capnp::struct_list::Reader<'_, node_capnp::pair_request::Owned>,
-) -> Result<BTreeMap<String, PairTarget>> {
-    let mut pairs = BTreeMap::new();
+) -> Result<BTreeMap<String, Vec<PairTarget>>> {
+    let mut pairs: BTreeMap<String, Vec<PairTarget>> = BTreeMap::new();
     for idx in 0..list.len() {
         let pair = list.get(idx);
         let remote = pair.get_remote_peer()?;
@@ -552,16 +597,35 @@ fn read_pair_requests(
                     remote.get_peer_role()?.to_str()?,
                     "NodeRunGoal pair request remote_peer.peer_role",
                 )?,
+                peer_cardinality: required_text(
+                    remote.get_peer_cardinality()?.to_str()?,
+                    "NodeRunGoal pair request remote_peer.peer_cardinality",
+                )?
+                .parse()
+                .map_err(|spelling| {
+                    crate::Error::Decoding(format!(
+                        "NodeRunGoal pair request remote_peer.peer_cardinality `{spelling}` is none \
+                         of one, zero_or_one, one_or_more, zero_or_more"
+                    ))
+                })?,
+                peer_copy: match remote.get_peer_copy()?.to_str()? {
+                    "" => None,
+                    copy => Some(config::runtime::Name::new(copy).map_err(|e| {
+                        crate::Error::Decoding(format!(
+                            "NodeRunGoal pair request remote_peer.peer_copy is not a name: {e}"
+                        ))
+                    })?),
+                },
             })
         };
-        pairs.insert(
-            pair.get_link_id()?.to_str()?.to_owned(),
-            PairTarget {
+        pairs
+            .entry(pair.get_link_id()?.to_str()?.to_owned())
+            .or_default()
+            .push(PairTarget {
                 peer: read_instance_address(pair.get_peer()?, "NodeRunGoal pair request")?,
                 peer_link_id: optional_text(pair.get_peer_link_id()?.to_str()?),
                 remote_peer,
-            },
-        );
+            });
     }
     Ok(pairs)
 }
@@ -648,7 +712,12 @@ fn fill_observation_requests(
         for (member_idx, target) in targets.iter().enumerate() {
             let mut member = members.reborrow().get(member_idx as u32);
             member.set_source_link_id(&target.source_link_id);
-            write_instance_address(member.init_source(), &target.source);
+            write_instance_address(member.reborrow().init_source(), &target.source);
+            if let Some(peer) = &target.peer {
+                let mut wire_peer = member.init_peer();
+                wire_peer.set_link_id(&peer.peer_link_id);
+                write_instance_address(wire_peer.init_instance(), &peer.peer);
+            }
         }
     }
 }
@@ -679,6 +748,21 @@ fn read_observation_requests(
         let targets = (0..members.len())
             .map(|member_idx| {
                 let member = members.get(member_idx);
+                let peer = if member.has_peer() {
+                    let wire_peer = member.get_peer()?;
+                    Some(ObservedPeer {
+                        peer: read_instance_address(
+                            wire_peer.get_instance()?,
+                            "NodeRunGoal observation request peer",
+                        )?,
+                        peer_link_id: required_text(
+                            wire_peer.get_link_id()?.to_str()?,
+                            "NodeRunGoal observation request peer link_id",
+                        )?,
+                    })
+                } else {
+                    None
+                };
                 Ok(ObservationTarget {
                     source: read_instance_address(
                         member.get_source()?,
@@ -688,6 +772,7 @@ fn read_observation_requests(
                         member.get_source_link_id()?.to_str()?,
                         "NodeRunGoal observation request source_link_id",
                     )?,
+                    peer,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -989,15 +1074,19 @@ mod tests {
         let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 30)
             .with_requested_pairs(
                 [
-                    ("arm".to_owned(), PairTarget::new("arm_1", "cn-local")),
+                    ("arm".to_owned(), vec![PairTarget::new("arm_1", "cn-local")]),
                     (
                         "gripper".to_owned(),
-                        PairTarget::pinned("grip_1", "controller", "cn-local"),
+                        vec![PairTarget::pinned("grip_1", "controller", "cn-local")],
                     ),
                     // The cross-daemon case: same shape, different core node.
                     (
                         "deliberation".to_owned(),
-                        PairTarget::pinned("planner_inst", "deliberator", "cn-atlas-h100"),
+                        vec![PairTarget::pinned(
+                            "planner_inst",
+                            "deliberator",
+                            "cn-atlas-h100",
+                        )],
                     ),
                 ]
                 .into_iter()
@@ -1014,7 +1103,7 @@ mod tests {
             .with_covered_pairs(
                 [(
                     "left".to_owned(),
-                    PairTarget::pinned("cmd_1", "left_arm", "cn-local"),
+                    vec![PairTarget::pinned("cmd_1", "left_arm", "cn-local")],
                 )]
                 .into_iter()
                 .collect(),
@@ -1031,13 +1120,15 @@ mod tests {
         let decoded = NodeRunGoal::decode(&encoded).expect("decode");
         assert_eq!(decoded, goal);
         // An unpinned target's empty peerLinkId decodes back to None.
-        assert_eq!(decoded.requested_pairs["arm"].peer_link_id, None);
+        assert_eq!(decoded.requested_pairs["arm"][0].peer_link_id, None);
         assert_eq!(
-            decoded.requested_pairs["gripper"].peer_link_id.as_deref(),
+            decoded.requested_pairs["gripper"][0]
+                .peer_link_id
+                .as_deref(),
             Some("controller")
         );
         assert_eq!(
-            decoded.requested_pairs["deliberation"].peer.core_node,
+            decoded.requested_pairs["deliberation"][0].peer.core_node,
             "cn-atlas-h100"
         );
         assert_eq!(
@@ -1046,7 +1137,7 @@ mod tests {
         );
         assert_eq!(
             decoded.covered_pairs["left"],
-            PairTarget::pinned("cmd_1", "left_arm", "cn-local")
+            vec![PairTarget::pinned("cmd_1", "left_arm", "cn-local")]
         );
         assert_eq!(
             decoded.planned_observations["observed_arm"].as_slice(),
@@ -1074,14 +1165,22 @@ mod tests {
 
     /// A multi-member observer slot travels as one request, and the order the
     /// plan wrote survives the wire: the node's `sources()` is that order, so
-    /// a deployment can associate member N with its own Nth command slot.
+    /// a deployment can associate member N with its own Nth command slot. A
+    /// member pinned to one pair carries that pair's other end.
     #[test]
     fn node_run_goal_roundtrip_multi_member_observation_preserves_order() {
+        let pinned = ObservationTarget {
+            peer: Some(ObservedPeer {
+                peer: ProducerRef::new("cn-local", "backbone_1"),
+                peer_link_id: "left_arm_link".to_string(),
+            }),
+            ..ObservationTarget::new("follower_1", "joint", "cn-atlas-h100")
+        };
         let targets = ObservationTargets::new(
             "observed_joints",
             vec![
                 ObservationTarget::new("follower_2", "joint", "cn-local"),
-                ObservationTarget::new("follower_1", "joint", "cn-atlas-h100"),
+                pinned.clone(),
             ],
         )
         .expect("distinct members");
@@ -1097,9 +1196,9 @@ mod tests {
             decoded.planned_observations["observed_joints"].as_slice(),
             [
                 ObservationTarget::new("follower_2", "joint", "cn-local"),
-                ObservationTarget::new("follower_1", "joint", "cn-atlas-h100"),
+                pinned,
             ],
-            "plan order is not sorted away on the wire"
+            "plan order is not sorted away on the wire, and a pinned member keeps its peer"
         );
     }
 
@@ -1138,6 +1237,35 @@ mod tests {
         .expect("distinct source slots are distinct members");
     }
 
+    /// A multi slot's pairs travel as one `PairRequest` per pair, all sharing
+    /// that slot's link_id, and decode back into the slot's list in wire
+    /// order. This is what lets one instance hold several pairs on one slot.
+    #[test]
+    fn node_run_goal_roundtrip_carries_every_pair_of_a_multi_slot() {
+        let goal = NodeRunGoal::new(plan("engine_1"), "sim_engine", "v1", 0).with_requested_pairs(
+            [(
+                "limbs".to_owned(),
+                vec![
+                    PairTarget::pinned("ctrl_1", "arm", "cn-local"),
+                    PairTarget::pinned("ctrl_2", "arm", "cn-local"),
+                    PairTarget::pinned("ctrl_3", "arm", "cn-atlas-h100"),
+                ],
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let decoded = NodeRunGoal::decode(&goal.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, goal);
+        assert_eq!(
+            decoded.requested_pairs["limbs"]
+                .iter()
+                .map(|pair| pair.peer.instance_id.as_str())
+                .collect::<Vec<_>>(),
+            ["ctrl_1", "ctrl_2", "ctrl_3"],
+            "every pair of the slot survives, in the order the plan wrote them"
+        );
+    }
+
     /// The coordinator's verdict about a peer this daemon cannot inspect is
     /// what makes a cross-machine pair committable at all: the receiver holds
     /// no manifest for the far side, so the pairing identity and the peer's
@@ -1148,24 +1276,36 @@ mod tests {
             .with_requested_pairs(
                 [(
                     "deliberation".to_owned(),
-                    PairTarget::pinned("planner_inst", "deliberation", "cn-atlas-h100")
-                        .with_remote_peer(RemotePeerPairing {
-                            pairing_name: "deliberation_link".to_owned(),
-                            pairing_tag: "v1".to_owned(),
-                            peer_role: "planner".to_owned(),
-                        }),
+                    vec![
+                        PairTarget::pinned("planner_inst", "deliberation", "cn-atlas-h100")
+                            .with_remote_peer(RemotePeerPairing {
+                                pairing_name: "deliberation_link".to_owned(),
+                                pairing_tag: "v1".to_owned(),
+                                peer_role: "planner".to_owned(),
+                                peer_cardinality: config::node::Cardinality::ZeroOrMore,
+                                peer_copy: Some(config::runtime::Name::new("atlas").unwrap()),
+                            }),
+                    ],
                 )]
                 .into_iter()
                 .collect(),
             );
         let decoded = NodeRunGoal::decode(&goal.encode().expect("encode")).expect("decode");
         assert_eq!(decoded, goal);
-        let remote = decoded.requested_pairs["deliberation"]
+        let remote = decoded.requested_pairs["deliberation"][0]
             .remote_peer
             .as_ref()
             .expect("a peer on another machine carries the planner's verdict");
         assert_eq!(remote.peer_role, "planner");
         assert_eq!(remote.pairing_name, "deliberation_link");
+        assert_eq!(
+            remote.peer_cardinality,
+            config::node::Cardinality::ZeroOrMore
+        );
+        assert_eq!(
+            remote.peer_copy.as_ref().map(|copy| copy.as_str()),
+            Some("atlas")
+        );
     }
 
     /// A same-daemon peer carries no verdict: the local manifests are the
@@ -1173,12 +1313,12 @@ mod tests {
     #[test]
     fn a_same_daemon_peer_carries_no_remote_verdict() {
         let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 0).with_requested_pairs(
-            [("arm".to_owned(), PairTarget::new("arm_1", "cn-local"))]
+            [("arm".to_owned(), vec![PairTarget::new("arm_1", "cn-local")])]
                 .into_iter()
                 .collect(),
         );
         let decoded = NodeRunGoal::decode(&goal.encode().expect("encode")).expect("decode");
-        assert_eq!(decoded.requested_pairs["arm"].remote_peer, None);
+        assert_eq!(decoded.requested_pairs["arm"][0].remote_peer, None);
     }
 
     /// Placement is never inferred from an absent field, so a pair or
@@ -1187,7 +1327,7 @@ mod tests {
     #[test]
     fn node_run_goal_decode_rejects_pair_without_a_core_node() {
         let goal = NodeRunGoal::new(plan("inst_1"), "node", "tag", 0).with_requested_pairs(
-            [("arm".to_owned(), PairTarget::new("arm_1", ""))]
+            [("arm".to_owned(), vec![PairTarget::new("arm_1", "")])]
                 .into_iter()
                 .collect(),
         );

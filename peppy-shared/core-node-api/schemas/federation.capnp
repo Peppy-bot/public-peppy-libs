@@ -187,6 +187,13 @@ struct PairCommitRequest {
     peer @5 :InstanceAddress;
     peerLinkId @6 :Text;
     peerRole @7 :Text;
+    # The declared cardinality of the peer's slot, one of the four spellings
+    # a manifest writes: the receiver holds the far half of every pair that
+    # slot takes part in, and only a scalar slot is taken by one pair.
+    peerCardinality @8 :Text;
+    # The copy the peer's instance belongs to; empty for an instance run
+    # outside a copy.
+    peerCopy @9 :Text;
 }
 
 # Best-effort notification from the daemon that owns an instance to a daemon

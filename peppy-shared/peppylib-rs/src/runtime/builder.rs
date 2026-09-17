@@ -29,6 +29,14 @@ pub(crate) enum ExecutionMode {
     Standalone(Box<StandaloneConfig>),
 }
 
+/// One pair a standalone pairing slot holds at boot: the peer's identity and
+/// the copy it belongs to, `None` outside a copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerPin {
+    pub info: crate::messaging::PeerInfo,
+    pub copy: Option<String>,
+}
+
 /// Configuration for standalone execution.
 ///
 /// All fields are optional with sensible defaults:
@@ -57,10 +65,11 @@ pub struct StandaloneConfig {
     /// time to read until its publisher ticks, which under the generated test
     /// harness is the harness's clock stand-in, driven by the test.
     pub clock: config::runtime::ClockBinding,
-    /// Daemon-less pairing pins: pre-pair a declared pairing slot (keyed by
-    /// its link_id) to a known peer, standing in for the daemon's live
-    /// `peer_update` delivery during standalone development.
-    pub peer_pins: std::collections::BTreeMap<String, crate::messaging::PeerInfo>,
+    /// Daemon-less pairing pins: the pairs each declared pairing slot (keyed
+    /// by its link_id) holds at boot, standing in for the set the daemon
+    /// stamps into a spawned node's boot config. A scalar slot holds at most
+    /// one.
+    pub peer_pins: std::collections::BTreeMap<String, Vec<PeerPin>>,
     /// Daemon-less consumer-slot bindings: the ordered producer set bound
     /// to each declared `depends_on` slot (keyed by its link_id), standing
     /// in for the launcher's validated binding map during standalone
@@ -147,26 +156,68 @@ impl StandaloneConfig {
 
     /// Pre-pair the pairing slot at `link_id` to the peer at
     /// `(peer_core_node, peer_instance_id)` whose complementary slot is
-    /// `peer_link_id`. Standalone-mode stand-in for the daemon's `--pair`
-    /// delivery; ignored (with a warning) if the manifest declares no such
-    /// slot.
+    /// `peer_link_id`. Repeat calls with the same `link_id` accumulate in
+    /// call order, mirroring how repeated `--link KEY@instance` flags fill a
+    /// multi slot; a scalar slot takes at most one, and a second one fails
+    /// startup. Standalone-mode stand-in for the daemon's pair delivery;
+    /// ignored (with a warning) if the manifest declares no such slot.
     pub fn with_peer_pin(
-        mut self,
+        self,
         link_id: impl Into<String>,
         peer_core_node: impl Into<String>,
         peer_instance_id: impl Into<String>,
         peer_link_id: impl Into<String>,
     ) -> Self {
-        self.peer_pins.insert(
-            link_id.into(),
-            crate::messaging::PeerInfo {
-                producer: crate::messaging::ProducerRef::new(
-                    peer_core_node.into(),
-                    peer_instance_id.into(),
-                ),
-                peer_link_id: peer_link_id.into(),
-            },
-        );
+        self.push_peer_pin(
+            link_id,
+            peer_core_node,
+            peer_instance_id,
+            peer_link_id,
+            None,
+        )
+    }
+
+    /// [`with_peer_pin`](Self::with_peer_pin) for a peer that belongs to the
+    /// copy named `copy`, as a `stack join` stamps it: the member the node
+    /// reads for this pair carries that copy name.
+    pub fn with_peer_pin_in_copy(
+        self,
+        link_id: impl Into<String>,
+        peer_core_node: impl Into<String>,
+        peer_instance_id: impl Into<String>,
+        peer_link_id: impl Into<String>,
+        copy: impl Into<String>,
+    ) -> Self {
+        self.push_peer_pin(
+            link_id,
+            peer_core_node,
+            peer_instance_id,
+            peer_link_id,
+            Some(copy.into()),
+        )
+    }
+
+    fn push_peer_pin(
+        mut self,
+        link_id: impl Into<String>,
+        peer_core_node: impl Into<String>,
+        peer_instance_id: impl Into<String>,
+        peer_link_id: impl Into<String>,
+        copy: Option<String>,
+    ) -> Self {
+        self.peer_pins
+            .entry(link_id.into())
+            .or_default()
+            .push(PeerPin {
+                info: crate::messaging::PeerInfo {
+                    producer: crate::messaging::ProducerRef::new(
+                        peer_core_node.into(),
+                        peer_instance_id.into(),
+                    ),
+                    peer_link_id: peer_link_id.into(),
+                },
+                copy,
+            });
         self
     }
 
@@ -241,6 +292,7 @@ impl StandaloneConfig {
                     source_instance_id.into(),
                 ),
                 source_link_id: source_link_id.into(),
+                peer: None,
             });
         self
     }

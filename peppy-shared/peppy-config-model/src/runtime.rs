@@ -283,21 +283,41 @@ impl<'de> Deserialize<'de> for BoundProducers {
 /// unbound state, and no discovery fallback.
 pub type SlotBindings = BTreeMap<String, BoundProducers>;
 
-/// State of one participant pairing slot (a `depends_on.pairings` entry) of a node
-/// instance. Deliberately NOT part of `slot_bindings`: slot bindings feed
-/// the immutable consumer-filter cache, while a pairing slot is live-mutable
-/// over the node's lifetime (the daemon delivers pins via the `peer_update`
-/// service). In boot configs every declared slot is `Unpaired` — all pairs,
-/// including those requested at `node run`, arrive over the live channel
-/// after the instance commits to Running.
+/// One pair a participant pairing slot holds: the peer instance's wire
+/// address, the link_id of the peer's own complementary slot, and the copy
+/// the peer's instance belongs to (`None` for an instance run outside a
+/// copy). A node holding several pairs from several copies groups them by
+/// `copy`. The boot-config and node-info twin of the wire's `PeerMember`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PairingSlotBinding {
-    Paired {
-        peer: ProducerRef,
-        peer_link_id: String,
-    },
-    Unpaired,
+#[serde(deny_unknown_fields)]
+pub struct PairedPeer {
+    pub peer: ProducerRef,
+    pub peer_link_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<Name>,
+}
+
+/// The pairs of every participant pairing slot (a `depends_on.pairings`
+/// entry) of a node instance, keyed by slot link_id, each set in
+/// establishment order. A scalar slot holds zero or one; a multi slot holds
+/// what its cardinality admits. Deliberately NOT part of `slot_bindings`:
+/// slot bindings feed the immutable consumer-filter cache, while a pairing
+/// slot is live-mutable over the node's lifetime (the daemon delivers its
+/// set via the `peer_update` service). In boot configs every declared slot
+/// is empty: all pairs, including those requested at `node run`, arrive over
+/// the live channel after the instance commits to Running.
+pub type PairingSlots = BTreeMap<String, Vec<PairedPeer>>;
+
+/// The other end of the pair an observation is pinned to: the peer instance
+/// the observed source publishes to, and the link_id of the peer's slot in
+/// that pair. An observation the plan names by the peer's end carries one; an
+/// observation named by the source alone observes every pair of the source's
+/// slot and carries none.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct ObservedPeer {
+    pub peer: ProducerRef,
+    pub peer_link_id: String,
 }
 
 /// One member of one observer slot as the daemon stamped it at spawn time:
@@ -311,6 +331,10 @@ pub enum PairingSlotBinding {
 pub struct ObservationSeedMember {
     pub source: ProducerRef,
     pub source_link_id: String,
+    /// The pair this member is pinned to, by its other end; `None` observes
+    /// every pair of the source's slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<ObservedPeer>,
     pub source_generation: u64,
     pub source_live: bool,
 }
@@ -318,7 +342,7 @@ pub struct ObservationSeedMember {
 /// Boot-time member sets of every observer slot (a `depends_on.pairing_observers`
 /// entry) of a node instance, keyed by slot link_id, each set in plan order.
 ///
-/// Deliberately UNLIKE `pairing_slots` (which boots all-Unpaired): observer
+/// Deliberately UNLIKE `pairing_slots` (which boots empty): observer
 /// membership is launch-time configuration the same way `slot_bindings` is,
 /// and the daemon delivers it to a running instance only after that instance
 /// reaches Running, which a node's setup runs strictly before. Without the
@@ -333,6 +357,11 @@ pub type ObservationSeeds = BTreeMap<String, Vec<ObservationSeedMember>>;
 #[serde(deny_unknown_fields)]
 pub struct NodeInstanceConfig {
     pub instance_id: Name,
+    /// The copy this instance belongs to, as the launch composed it; `None`
+    /// for an instance run outside a copy. Read by nodes that hold pairs
+    /// from several copies and tell the copies apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<Name>,
     #[serde(default)]
     pub arguments: BTreeMap<String, AnyType>,
     #[serde(default)]
@@ -347,15 +376,14 @@ pub struct NodeInstanceConfig {
     /// the runtime's per-slot bound-producer cache.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_bindings: SlotBindings,
-    /// Boot-time state of every pairing slot declared in
-    /// `depends_on.pairings`, keyed by slot link_id. Always maps each
-    /// declared slot to [`PairingSlotBinding::Unpaired`] — pairs requested
-    /// via `--pair` / launcher `pairings:` are delivered live over the
-    /// `peer_update` service after the instance commits to Running, so
-    /// there is exactly one delivery mechanism. Empty when the manifest
-    /// declares no pairings.
+    /// Boot-time pairs of every pairing slot declared in
+    /// `depends_on.pairings`, keyed by slot link_id. Every declared slot boots
+    /// empty: pairs requested via `--link` / launcher `links:` are delivered
+    /// live over the `peer_update` service after the instance commits to
+    /// Running, so there is exactly one delivery mechanism. Empty when the
+    /// manifest declares no pairings.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub pairing_slots: BTreeMap<String, PairingSlotBinding>,
+    pub pairing_slots: PairingSlots,
     /// Boot-time member sets of the instance's observer slots, stamped by
     /// the daemon at spawn (see [`ObservationSeeds`]). Empty when the
     /// manifest declares no `pairing_observers`, and on a slot the plan
@@ -372,6 +400,7 @@ impl NodeInstanceConfig {
     pub fn new(instance_id: Name) -> Self {
         Self {
             instance_id,
+            copy: None,
             arguments: BTreeMap::new(),
             framework: ResolvedFramework::default(),
             slot_bindings: BTreeMap::new(),
@@ -399,6 +428,10 @@ impl NodeInstanceConfig {
 #[serde(deny_unknown_fields)]
 pub struct NodeInstancePlan {
     pub instance_id: Name,
+    /// The copy this instance belongs to, as the launch composed it; `None`
+    /// for an instance run outside a copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<Name>,
     #[serde(default)]
     pub arguments: BTreeMap<String, AnyType>,
     /// The one clock this instance reads for its lifetime, and its role in
@@ -420,6 +453,7 @@ impl NodeInstancePlan {
     pub fn new(instance_id: Name) -> Self {
         Self {
             instance_id,
+            copy: None,
             arguments: BTreeMap::new(),
             clock: ClockBinding::Wall,
             slot_bindings: BTreeMap::new(),
@@ -436,6 +470,7 @@ impl NodeInstancePlan {
     pub fn resolve(self) -> NodeInstanceConfig {
         NodeInstanceConfig {
             instance_id: self.instance_id,
+            copy: self.copy,
             arguments: self.arguments,
             framework: ResolvedFramework { clock: self.clock },
             slot_bindings: self.slot_bindings,
@@ -1171,46 +1206,57 @@ mod tests {
         assert_eq!(instance_id, "cam");
     }
 
-    /// Pin the wire contract of `PairingSlotBinding` (contrast with the
-    /// plain-array `slot_bindings` shape pinned above): internally tagged on
-    /// `kind`, snake_case, full `(core_node, instance_id)` peer address plus
-    /// the peer's slot link_id. This shape travels boot configs and
-    /// `stack list` output.
+    /// Pin the wire contract of `PairedPeer` (contrast with the plain-array
+    /// `slot_bindings` shape pinned above): full `(core_node, instance_id)`
+    /// peer address, the peer's slot link_id, and the peer's copy only when
+    /// it has one. This shape travels boot configs and `stack list` output.
     #[test]
-    fn pairing_slot_binding_serde_contract() {
+    fn paired_peer_serde_contract() {
         use serde_json::json;
 
         let cases = [
             (
-                PairingSlotBinding::Paired {
+                PairedPeer {
                     peer: ProducerRef::new("core_a", "arm_1"),
                     peer_link_id: "controller".to_string(),
+                    copy: None,
                 },
                 json!({
-                    "kind": "paired",
                     "peer": { "core_node": "core_a", "instance_id": "arm_1" },
                     "peer_link_id": "controller"
                 }),
             ),
-            (PairingSlotBinding::Unpaired, json!({ "kind": "unpaired" })),
+            (
+                PairedPeer {
+                    peer: ProducerRef::new("core_a", "bravo_backbone_inst"),
+                    peer_link_id: "left_arm_link".to_string(),
+                    copy: Some(Name::new("bravo").unwrap()),
+                },
+                json!({
+                    "peer": { "core_node": "core_a", "instance_id": "bravo_backbone_inst" },
+                    "peer_link_id": "left_arm_link",
+                    "copy": "bravo"
+                }),
+            ),
         ];
         for (value, expected) in cases {
-            let encoded = serde_json::to_value(&value).expect("serialize PairingSlotBinding");
-            assert_eq!(encoded, expected, "PairingSlotBinding JSON shape changed");
-            let decoded: PairingSlotBinding =
-                serde_json::from_value(expected).expect("deserialize PairingSlotBinding");
-            assert_eq!(decoded, value, "PairingSlotBinding did not round-trip");
+            let encoded = serde_json::to_value(&value).expect("serialize PairedPeer");
+            assert_eq!(encoded, expected, "PairedPeer JSON shape changed");
+            let decoded: PairedPeer =
+                serde_json::from_value(expected).expect("deserialize PairedPeer");
+            assert_eq!(decoded, value, "PairedPeer did not round-trip");
         }
     }
 
-    /// A runtime config written before `pairing_slots` existed parses with an
-    /// empty map, and an empty map is omitted on serialize so existing
-    /// configs stay byte-identical.
+    /// A runtime config that names no `pairing_slots` parses with an empty
+    /// map, and an empty map is omitted on serialize so such configs stay
+    /// byte-identical. A slot's value is its pairs in order: none, one, or
+    /// several.
     #[test]
     fn pairing_slots_default_and_round_trip() {
-        let legacy = runtime_config_from_json("camera_front").unwrap();
-        assert!(legacy.node_instance.pairing_slots.is_empty());
-        let serialized = serde_json5::to_string(&legacy).unwrap();
+        let bare = runtime_config_from_json("camera_front").unwrap();
+        assert!(bare.node_instance.pairing_slots.is_empty());
+        let serialized = serde_json5::to_string(&bare).unwrap();
         assert!(
             !serialized.contains("pairing_slots"),
             "empty pairing_slots should not be serialized: {serialized}"
@@ -1221,39 +1267,47 @@ mod tests {
                 messaging_host: "127.0.0.1",
                 messaging_port: 7448,
                 node_instance: {
-                    instance_id: "ctrl_1",
+                    instance_id: "engine_1",
+                    copy: "sim",
                     pairing_slots: {
-                        arm: { kind: "unpaired" },
-                        gripper: {
-                            kind: "paired",
-                            peer: { core_node: "core_a", instance_id: "grip_1" },
-                            peer_link_id: "controller"
-                        }
+                        arm: [],
+                        left_arm: [
+                            { peer: { core_node: "core_a", instance_id: "alpha_backbone_inst" }, peer_link_id: "left_arm_link", copy: "alpha" },
+                            { peer: { core_node: "core_b", instance_id: "bravo_backbone_inst" }, peer_link_id: "left_arm_link", copy: "bravo" }
+                        ]
                     }
                 },
-                node_name: "arm_controller",
+                node_name: "sim_engine",
                 node_tag: "v1",
                 bound_core_node: "core_node"
             }"#,
         )
         .unwrap();
         assert_eq!(
-            with_slots.node_instance.pairing_slots.get("arm"),
-            Some(&PairingSlotBinding::Unpaired)
+            with_slots.node_instance.copy,
+            Some(Name::new("sim").unwrap())
         );
         assert_eq!(
-            with_slots.node_instance.pairing_slots.get("gripper"),
-            Some(&PairingSlotBinding::Paired {
-                peer: ProducerRef::new("core_a", "grip_1"),
-                peer_link_id: "controller".to_string(),
-            })
+            with_slots.node_instance.pairing_slots.get("arm"),
+            Some(&Vec::new())
         );
+        let left_arm = &with_slots.node_instance.pairing_slots["left_arm"];
+        assert_eq!(
+            left_arm
+                .iter()
+                .map(|pair| pair.peer.instance_id.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha_backbone_inst", "bravo_backbone_inst"],
+            "pairs keep their order"
+        );
+        assert_eq!(left_arm[1].copy, Some(Name::new("bravo").unwrap()));
         let reparsed: RuntimeConfig =
             serde_json5::from_str(&serde_json5::to_string(&with_slots).unwrap()).unwrap();
         assert_eq!(
             reparsed.node_instance.pairing_slots,
             with_slots.node_instance.pairing_slots
         );
+        assert_eq!(reparsed.node_instance.copy, with_slots.node_instance.copy);
     }
 
     #[test]

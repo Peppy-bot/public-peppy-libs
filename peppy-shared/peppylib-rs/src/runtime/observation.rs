@@ -24,6 +24,7 @@ use crate::runtime::NodeRunner;
 use crate::runtime::slot_stream::{FollowedSlot, SlotStream, spawn_slot_stream};
 use crate::types::Message;
 use config::node::QoSProfile;
+use pmi::{PairingRecipient, WirePeer};
 use tokio::sync::watch;
 
 /// The panic every cardinality-typed observer accessor raises when the shape it
@@ -188,9 +189,9 @@ impl ObservationSlotSet {
 
 /// The observer slot kind for the shared [`slot_stream`] engine. An observer
 /// follows one `(source generation, source pin)` per member: the pin is the
-/// source's wire triple, and the generation tells a reused-instance_id
-/// incarnation apart from its predecessor, whose publishes are byte-identical on
-/// the wire.
+/// source's wire triple, plus the peer when the member is pinned to one pair,
+/// and the generation tells a reused-instance_id incarnation apart from its
+/// predecessor, whose publishes are byte-identical on the wire.
 ///
 /// [`slot_stream`]: crate::runtime::slot_stream
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +230,19 @@ impl FollowedSlot for ObservedFollow {
 
     fn producer_link_id(pin: &ObservedPin) -> &str {
         &pin.source.source_link_id
+    }
+
+    /// A member pinned to one pair subscribes to the source's publishes to
+    /// that peer alone; every other member takes the slot's open recipient.
+    fn recipient(pin: &ObservedPin, slot_recipient: &PairingRecipient) -> Result<PairingRecipient> {
+        match &pin.source.peer {
+            Some(peer) => Ok(PairingRecipient::Peer(WirePeer::new(
+                &peer.producer.core_node,
+                &peer.producer.instance_id,
+                &peer.peer_link_id,
+            )?)),
+            None => Ok(slot_recipient.clone()),
+        }
     }
 }
 
@@ -311,6 +325,7 @@ pub fn subscribe_observed_with_watch(
             as_instance_id,
             watch_rx,
             pairing_target,
+            pmi::PairingRecipient::Any,
             topic,
             qos,
         ),
@@ -327,10 +342,21 @@ mod tests {
             source: ObservedSource {
                 producer: ProducerRef::new("core_a", instance),
                 source_link_id: "commander".to_string(),
+                peer: None,
             },
             source_generation: generation,
             source_live: true,
         }
+    }
+
+    /// A member of `instance`'s slot pinned to its pair with `peer_instance`.
+    fn pinned_member(instance: &str, peer_instance: &str) -> ObservedMemberState {
+        let mut member = member(instance, 1);
+        member.source.peer = Some(crate::messaging::PeerInfo {
+            producer: ProducerRef::new("core_a", peer_instance),
+            peer_link_id: "arm".to_string(),
+        });
+        member
     }
 
     fn state(members: Vec<ObservedMemberState>) -> ObservationState {
@@ -477,5 +503,24 @@ mod tests {
             "an incarnation change must redeclare that member"
         );
         assert!(ObservedFollow::desired(&ObservationState::unregistered()).is_empty());
+    }
+
+    /// A member pinned to a pair subscribes as that pair's peer; a member of
+    /// the whole slot subscribes as any peer. Two members of one source slot
+    /// pinned to different pairs are two pins.
+    #[test]
+    fn a_pinned_member_subscribes_as_its_pairs_peer() {
+        let open = PairingRecipient::Any;
+        let pins = ObservedFollow::desired(&state(vec![
+            pinned_member("engine_1", "ctrl_1"),
+            pinned_member("engine_1", "ctrl_2"),
+            member("engine_1", 1),
+        ]));
+        assert_ne!(pins[0], pins[1]);
+        assert_eq!(
+            ObservedFollow::recipient(&pins[0], &open).unwrap(),
+            PairingRecipient::Peer(WirePeer::new("core_a", "ctrl_1", "arm").unwrap())
+        );
+        assert_eq!(ObservedFollow::recipient(&pins[2], &open).unwrap(), open);
     }
 }

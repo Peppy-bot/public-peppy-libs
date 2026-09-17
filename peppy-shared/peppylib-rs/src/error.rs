@@ -100,6 +100,45 @@ pub enum Error {
     #[error("pairing slot channel closed (runtime torn down while waiting for a peer)")]
     PairingSlotClosed,
 
+    #[error("pairing slot `{link_id}` holds no pair with {peer}, so nothing is published to it")]
+    PeerNotPaired { link_id: String, peer: String },
+
+    #[error(
+        "pairing slot `{link_id}` is seeded with {count} pairs, but its cardinality `{cardinality}` holds at most one: declare `one_or_more` or `zero_or_more` on the slot, or seed one pair"
+    )]
+    PairingSeedNotScalar {
+        link_id: String,
+        cardinality: String,
+        count: usize,
+    },
+
+    /// One pair appears twice in a pairing slot's seed. A slot holds each pair
+    /// once, in its seed as in every live delivery.
+    #[error(
+        "pairing slot `{link_id}` seeds the pair with peer `{core_node}/{instance_id}` (slot `{peer_link_id}`) twice; a slot holds each pair once"
+    )]
+    PairingSeedDuplicate {
+        link_id: String,
+        core_node: String,
+        instance_id: String,
+        peer_link_id: String,
+    },
+
+    /// The boot config seeds a pairing slot the manifest does not declare:
+    /// component version skew (stale codegen, or a daemon working from a
+    /// different manifest), never a user error.
+    #[error(
+        "boot config seeds pairing slot `{link_id}`, which this node's manifest does not declare"
+    )]
+    PairingSeedUndeclared { link_id: String },
+
+    #[error("copy name `{copy}` on the pin of pairing slot `{link_id}` is not a name: {reason}")]
+    InvalidCopyName {
+        link_id: String,
+        copy: String,
+        reason: String,
+    },
+
     // -- observation (pairing observers)
     #[error(
         "unknown observer slot '{link_id}': the manifest declares no depends_on.pairing_observers entry with that link_id"

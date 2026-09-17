@@ -356,6 +356,7 @@ async fn harness_core_boots_node_observes_first_publish_and_converges() {
     let readiness = [PublisherReadiness {
         target: node_target("test_node"),
         link_id: None,
+        peer: None,
         topic: "status".to_string(),
     }];
 
@@ -465,10 +466,11 @@ async fn harness_core_shutdown_propagates_setup_error() {
     router.shutdown().await.expect("router shutdown");
 }
 
-/// The statically pinned peer subscription matches a slot-scoped publisher
-/// exactly (producer identity + pairing target + producer-side link_id), so
-/// a mock peer receives what the node emits on its pairing slot — the seam
-/// generated pairing mocks are built on.
+/// The statically pinned peer subscription matches a pairing publisher
+/// exactly (producer identity, pairing target, producer-side link_id, and
+/// the mock's own slot as the recipient), so a mock peer receives what the
+/// node emits to it on its pairing slot: the seam generated pairing mocks
+/// are built on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subscribe_peer_pinned_receives_slot_scoped_publishes() {
     let router = EphemeralRouter::start().await.expect("start router");
@@ -480,6 +482,7 @@ async fn subscribe_peer_pinned_receives_slot_scoped_publishes() {
         &mock_handle,
         "mock-core",
         "mock-arm",
+        "controller",
         pairing.clone(),
         &ProducerRef::new("standalone-core", "node_1"),
         "arm",
@@ -489,16 +492,20 @@ async fn subscribe_peer_pinned_receives_slot_scoped_publishes() {
     .await
     .expect("pinned subscription");
 
-    // The publisher side is exactly how the node's generated slot-scoped
-    // publisher declares: pairing target + its own link_id.
-    let publisher = TestTopicPublisher::declare(
+    // The publisher side is exactly how the node's generated pairing
+    // publisher declares: pairing target, its own link_id, and the peer.
+    let publisher = TestTopicPublisher::declare_to_peer(
         &node_handle,
         "standalone-core",
         "node_1",
         pairing,
-        Some("arm"),
+        "arm",
         "joint_commands",
         QoSProfile::Reliable,
+        peppylib::messaging::PeerInfo {
+            producer: ProducerRef::new("mock-core", "mock-arm"),
+            peer_link_id: "controller".to_string(),
+        },
     )
     .await
     .expect("declare slot-scoped publisher");

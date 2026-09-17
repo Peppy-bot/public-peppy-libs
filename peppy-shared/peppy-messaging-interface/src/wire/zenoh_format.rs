@@ -9,8 +9,8 @@
 
 use crate::types::{CoreNodePresence, PresenceScope};
 use crate::wire::{
-    ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, Segment, SenderTarget, ServiceKind,
-    ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
+    ActionWireReceiver, ActionWireSender, DEFAULT_LINK_ID, PairingRecipient, Segment, SenderTarget,
+    ServiceKind, ServiceWireReceiver, ServiceWireSender, TopicWireReceiver, TopicWireSender,
 };
 use std::fmt;
 
@@ -75,16 +75,33 @@ impl ZenohWireFormat {
         })
     }
 
-    /// `*/{as_core}/*/{as_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{as_topic}`
+    /// `{to_core|*}/{as_core}/{to_inst|*}/{as_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{as_topic}`,
+    /// with `/{to_link_id}` appended on a pairing emission to a named peer and
+    /// `/*` on one from a scalar slot. The recipient slots are the ones a
+    /// subscriber pins as its own, so a pairing emission that fills them
+    /// reaches one peer, a scalar slot's reaches whoever pinned its one pair,
+    /// and every other emission reaches whoever subscribes.
     pub(crate) fn topic_publish(s: &TopicWireSender) -> String {
         let (discriminator, name, tag) = target_segments(Some(&s.as_target));
-        format!(
-            "{SINGLE_CHUNK_WILDCARD}/{}/{SINGLE_CHUNK_WILDCARD}/{}/topic/{discriminator}/{name}/{tag}/{}/{}",
+        let (to_core, to_inst) = match &s.to_peer {
+            Some(peer) => (peer.core_node.as_str(), peer.instance_id.as_str()),
+            None => (SINGLE_CHUNK_WILDCARD, SINGLE_CHUNK_WILDCARD),
+        };
+        let key = format!(
+            "{to_core}/{}/{to_inst}/{}/topic/{discriminator}/{name}/{tag}/{}/{}",
             s.as_core_node, s.as_instance_id, s.link_id, s.as_topic_name,
-        )
+        );
+        match &s.to_peer {
+            Some(peer) => format!("{key}/{}", peer.link_id),
+            None if s.as_target.is_pairing() => format!("{key}/{SINGLE_CHUNK_WILDCARD}"),
+            None => key,
+        }
     }
 
-    /// `{as_core}/{from_core|*}/{as_inst}/{from_inst|*}/topic/{discriminator|*}/{name|*}/{tag|*}/{link_id|*}/{to_topic}`
+    /// `{as_core}/{from_core|*}/{as_inst}/{from_inst|*}/topic/{discriminator|*}/{name|*}/{tag|*}/{link_id|*}/{to_topic}`,
+    /// with `/{own_link_id}` appended by a paired subscription, the recipient
+    /// slots and that trailing segment filled with the peer's by an
+    /// observation pinned to a pair, and wildcarded by an observing one.
     pub(crate) fn topic_subscribe(r: &TopicWireReceiver) -> String {
         let from_core = r.from_core_node.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
         let from_inst = r
@@ -93,10 +110,25 @@ impl ZenohWireFormat {
             .unwrap_or(SINGLE_CHUNK_WILDCARD);
         let (discriminator, name, tag) = target_segments(r.from_target.as_ref());
         let link_id = r.from_link_id.as_deref().unwrap_or(SINGLE_CHUNK_WILDCARD);
-        format!(
-            "{}/{from_core}/{}/{from_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{}",
-            r.as_core_node, r.as_instance_id, r.to_topic,
-        )
+        let (as_core, as_inst) = match &r.pairing_recipient {
+            Some(PairingRecipient::Any) => (SINGLE_CHUNK_WILDCARD, SINGLE_CHUNK_WILDCARD),
+            Some(PairingRecipient::Peer(peer)) => {
+                (peer.core_node.as_str(), peer.instance_id.as_str())
+            }
+            Some(PairingRecipient::Slot(_)) | None => {
+                (r.as_core_node.as_str(), r.as_instance_id.as_str())
+            }
+        };
+        let key = format!(
+            "{as_core}/{from_core}/{as_inst}/{from_inst}/topic/{discriminator}/{name}/{tag}/{link_id}/{}",
+            r.to_topic,
+        );
+        match &r.pairing_recipient {
+            Some(PairingRecipient::Slot(own_link_id)) => format!("{key}/{own_link_id}"),
+            Some(PairingRecipient::Peer(peer)) => format!("{key}/{}", peer.link_id),
+            Some(PairingRecipient::Any) => format!("{key}/{SINGLE_CHUNK_WILDCARD}"),
+            None => key,
+        }
     }
 
     // ─── Services ─────────────────────────────────────────────────────────

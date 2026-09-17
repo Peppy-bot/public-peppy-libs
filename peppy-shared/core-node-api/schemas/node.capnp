@@ -296,16 +296,18 @@ struct NodeRunGoal {
     envVars @3 :List(EnvVar);
     # Timeout in seconds for the run operation (used to report remaining time when busy)
     timeoutSecs @4 :UInt64;
-    # Pairing requests from `--pair <link_id>@<peer_instance>[/<peer_link_id>]`
+    # Pairing requests from `--link <link_id>@<peer_instance>[/<peer_link_id>]`
     # or a launch plan: commands to the daemon, not resolved config. The
     # daemon validates and reserves each pair BEFORE spawning and delivers it
-    # live after the instance commits to Running.
+    # live after the instance commits to Running. One entry per pair, so a
+    # multi-cardinality slot contributes several entries sharing one linkId,
+    # in the order the plan lists them.
     requestedPairs @5 :List(PairRequest);
     # Pairing slots deliberately left unpaired via `--vacant-link
     # <link_id>=<why>` / the launcher's `links: { <link_id>: { vacant:
     # "<why>" } }`, each carrying the reason the deployment wrote down. Legal
-    # only on a slot the manifest declares `optional: true`; the daemon
-    # re-checks that against its own copy of the manifest. Together with
+    # only on a slot the manifest declares `cardinality: "zero_or_one"`; the
+    # daemon re-checks that against its own copy of the manifest. Together with
     # requestedPairs and coveredPairs these must cover every pairing slot of
     # the manifest or the daemon rejects the run.
     vacantPairs @6 :List(VacantPair);
@@ -314,7 +316,7 @@ struct NodeRunGoal {
     # each entry names that future peer. A launch-mechanism marker, not user
     # intent: the slot boots unpaired and needs no action, unlike a
     # vacantPairs entry which records a deliberate opt-out. Never set by
-    # the CLI.
+    # the CLI. One entry per pair, like requestedPairs.
     coveredPairs @7 :List(PairRequest);
     # Observer requests from `--link <observer_link>@<source_instance>[/<source_link>]`
     # or a launch plan: the observer slots of this instance and the source each
@@ -372,7 +374,8 @@ struct VacantPair {
 }
 
 struct PairRequest {
-    # The starting node's own pairing-slot link_id.
+    # The starting node's own pairing-slot link_id. Repeated across entries
+    # when that slot holds several pairs.
     linkId @0 :Text;
     # The peer instance this slot pairs with.
     peer @1 :InstanceAddress;
@@ -406,6 +409,11 @@ struct RemotePeerPairing {
     pairingTag @1 :Text;
     # The role the peer's manifest declares for its side of the pair.
     peerRole @2 :Text;
+    # The cardinality the peer's manifest declares for its slot, one of the
+    # four spellings a manifest writes.
+    peerCardinality @3 :Text;
+    # The copy the peer's instance belongs to; empty outside a copy.
+    peerCopy @4 :Text;
 }
 
 struct ObservationRequest {
@@ -431,6 +439,15 @@ struct ObservationMember {
     # observer's fully-pinned subscription. Always resolved by the planner (the
     # CLI preflight or the launcher), never empty.
     sourceLinkId @1 :Text;
+    # The pair's other end when the plan named the pair by it: the peer the
+    # source publishes to and the link_id of the peer's slot. Absent, the
+    # member observes every pair of the source's slot.
+    peer @2 :ObservedPeer;
+}
+
+struct ObservedPeer {
+    instance @0 :InstanceAddress;
+    linkId @1 :Text;
 }
 
 struct NodeRunGoalResponse {

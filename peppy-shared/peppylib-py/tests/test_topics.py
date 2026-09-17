@@ -11,6 +11,7 @@ from peppylib import (
     MessengerHandle,
     ObservedSource,
     PeerInfo,
+    PeerMember,
     ProducerRef,
     QoSProfile,
     SenderTarget,
@@ -72,7 +73,20 @@ def test_observed_source_is_structured_and_hashable():
 
     assert repr(left) == (
         'ObservedSource(producer=ProducerRef("core_a", "backbone_1"), '
-        'source_link_id="left_arm")'
+        'source_link_id="left_arm", peer=None)'
+    )
+
+    # A member pinned to one pair of a slot carries the pair's other end, and
+    # is distinct from the member observing the whole slot.
+    alpha = PeerInfo(ProducerRef("core_a", "alpha_backbone_inst"), "left_arm_link")
+    pinned = ObservedSource(ProducerRef("core_a", "engine_1"), "left_arm", alpha)
+    assert pinned.peer == alpha
+    assert left.peer is None
+    assert pinned != ObservedSource(ProducerRef("core_a", "engine_1"), "left_arm")
+    assert repr(pinned) == (
+        'ObservedSource(producer=ProducerRef("core_a", "engine_1"), '
+        'source_link_id="left_arm", peer=PeerInfo(producer=ProducerRef("core_a", '
+        '"alpha_backbone_inst"), peer_link_id="left_arm_link"))'
     )
 
 
@@ -99,6 +113,23 @@ def test_peer_info_is_structured_and_hashable():
         'PeerInfo(producer=ProducerRef("core_a", "arm_1"), '
         'peer_link_id="controller")'
     )
+
+
+def test_peer_member_carries_the_copy_beside_the_identity():
+    """`PeerMember` is a pair as a slot holds it: the peer's identity plus
+    the copy the peer belongs to, which is `None` outside a copy."""
+    info = PeerInfo(ProducerRef("core_a", "bravo_backbone_inst"), "left_arm_link")
+    member = PeerMember(info, "bravo")
+    assert member.info == info
+    assert member.copy == "bravo"
+    assert PeerMember(info).copy is None
+    assert member == PeerMember(info, "bravo")
+    assert member != PeerMember(info)
+    assert repr(member) == (
+        'PeerMember(info=PeerInfo(producer=ProducerRef("core_a", "bravo_backbone_inst"), '
+        'peer_link_id="left_arm_link"), copy="bravo")'
+    )
+    assert repr(PeerMember(info)).endswith("copy=None)")
 
 
 @pytest.mark.asyncio

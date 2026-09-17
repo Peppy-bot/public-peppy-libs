@@ -8,7 +8,7 @@ mod common;
 use common::get_client_server;
 use config::node::QoSProfile;
 use peppylib::messaging::{
-    MessengerHandle, ObservationState, ObservedMemberState, ObservedSource, ProducerRef,
+    MessengerHandle, ObservationState, ObservedMemberState, ObservedSource, PeerInfo, ProducerRef,
     SenderTarget, TopicPublisher,
 };
 use peppylib::runtime::{ObservedTopicSubscription, subscribe_observed_with_watch};
@@ -29,6 +29,15 @@ fn pairing_target() -> SenderTarget {
     SenderTarget::pairing(PAIRING_NAME, PAIRING_TAG).expect("test pairing target")
 }
 
+/// The peer every source publishes to. An observer hears a source's emission
+/// whichever peer it is for, so the tests address one nominal controller.
+fn nominal_peer() -> PeerInfo {
+    PeerInfo {
+        producer: ProducerRef::new(CORE, "ctrl_x"),
+        peer_link_id: "arm".to_string(),
+    }
+}
+
 fn member(instance_id: &str, generation: u64) -> ObservedMemberState {
     member_on_link(instance_id, SOURCE_SLOT_LINK_ID, generation)
 }
@@ -40,6 +49,7 @@ fn member_on_link(instance_id: &str, source_link_id: &str, generation: u64) -> O
         source: ObservedSource {
             producer: ProducerRef::new(CORE, instance_id),
             source_link_id: source_link_id.to_string(),
+            peer: None,
         },
         source_generation: generation,
         source_live: true,
@@ -66,6 +76,7 @@ async fn declare_source_publisher_on_link(
         pairing_target(),
         source_link_id,
         TOPIC,
+        &nominal_peer(),
     )
     .await
 }
@@ -105,6 +116,7 @@ async fn wait_for_source_wire_sub_on_link(
         pairing_target(),
         source_link_id,
         TOPIC,
+        &nominal_peer(),
     )
     .await;
 }
@@ -119,6 +131,7 @@ async fn wait_for_source_wire_sub_gone(handle: &MessengerHandle, source_instance
         pairing_target(),
         SOURCE_SLOT_LINK_ID,
         TOPIC,
+        &nominal_peer(),
     )
     .await;
 }
@@ -133,6 +146,7 @@ async fn expect_message(
         &ObservedSource {
             producer: ProducerRef::new(CORE, expected_producer),
             source_link_id: SOURCE_SLOT_LINK_ID.to_string(),
+            peer: None,
         },
         expected_payload,
     )
@@ -356,6 +370,7 @@ async fn members_sharing_one_instance_are_told_apart_by_source_link_id() {
         &ObservedSource {
             producer: ProducerRef::new(CORE, "backbone_1"),
             source_link_id: "left_arm".to_string(),
+            peer: None,
         },
         b"left setpoints",
     )
@@ -370,10 +385,93 @@ async fn members_sharing_one_instance_are_told_apart_by_source_link_id() {
         &ObservedSource {
             producer: ProducerRef::new(CORE, "backbone_1"),
             source_link_id: "right_arm".to_string(),
+            peer: None,
         },
         b"right setpoints",
     )
     .await;
+}
+
+/// An observation pinned to one pair of a multi slot hears that pair alone:
+/// the engine publishes to two controllers on one slot, the observer named the
+/// pair by `ctrl_1`, and the copy for `ctrl_2` never reaches it. Observing the
+/// slot itself hears every pair, tagged with the one source.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_observation_pinned_to_a_pair_hears_that_pair_only() {
+    let (client, shared) = get_client_server().await;
+    let source_handle = MessengerHandle::from_shared(shared);
+    let ctrl = |instance: &str| PeerInfo {
+        producer: ProducerRef::new(CORE, instance),
+        peer_link_id: "arm".to_string(),
+    };
+    let publisher_to = async |instance: &str| {
+        common::declare_pinned_publisher(
+            &source_handle,
+            CORE,
+            "engine_1",
+            pairing_target(),
+            "limbs",
+            TOPIC,
+            &ctrl(instance),
+        )
+        .await
+    };
+    let to_ctrl_1 = publisher_to("ctrl_1").await;
+    let to_ctrl_2 = publisher_to("ctrl_2").await;
+    let wait_for_wire_sub_to = async |instance: &str| {
+        common::wait_for_pinned_wire_sub(
+            &source_handle,
+            CORE,
+            "engine_1",
+            pairing_target(),
+            "limbs",
+            TOPIC,
+            &ctrl(instance),
+        )
+        .await
+    };
+
+    let (tx, watch_rx) = watch::channel(ObservationState::unregistered());
+    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let pinned = ObservedSource {
+        producer: ProducerRef::new(CORE, "engine_1"),
+        source_link_id: "limbs".to_string(),
+        peer: Some(ctrl("ctrl_1")),
+    };
+    tx.send(state(
+        1,
+        vec![ObservedMemberState {
+            source: pinned.clone(),
+            source_generation: 1,
+            source_live: true,
+        }],
+    ))
+    .expect("watch send");
+    wait_for_wire_sub_to("ctrl_1").await;
+
+    // The copy for the other pair goes out first; the pinned observer's next
+    // message is the one for its own pair, and nothing follows it.
+    to_ctrl_2
+        .publish(Payload::from_static(b"for ctrl_2"))
+        .await
+        .expect("publish");
+    to_ctrl_1
+        .publish(Payload::from_static(b"for ctrl_1"))
+        .await
+        .expect("publish");
+    expect_message_from_source(&mut subscription, &pinned, b"for ctrl_1").await;
+    expect_silence(&mut subscription).await;
+
+    // The same slot observed whole hears both pairs under one tag.
+    let whole_slot = member_on_link("engine_1", "limbs", 1);
+    tx.send(state(2, vec![whole_slot.clone()]))
+        .expect("watch send");
+    wait_for_wire_sub_to("ctrl_2").await;
+    to_ctrl_2
+        .publish(Payload::from_static(b"for ctrl_2"))
+        .await
+        .expect("publish");
+    expect_message_from_source(&mut subscription, &whole_slot.source, b"for ctrl_2").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
