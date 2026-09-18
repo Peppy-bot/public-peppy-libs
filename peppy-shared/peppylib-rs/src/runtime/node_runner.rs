@@ -10,6 +10,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
+use super::endpoints::{AnnouncedEndpoint, AnnouncedEndpoints, EndpointBinding};
 use super::processor::Processor;
 
 /// A registered shutdown hook: an async cleanup unit run by the runtime after
@@ -23,11 +24,13 @@ type ShutdownHook = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 /// - Runtime configuration via `processor()`
 /// - Cancellation token for graceful shutdown via `cancellation_token()`
 /// - Shutdown cleanup registration via `on_shutdown()`
+/// - Endpoint announcement via `announce_endpoint()`
 pub struct NodeRunner {
     messenger: MessengerHandle,
     processor: Processor,
     cancellation_token: CancellationToken,
     shutdown_hooks: Mutex<Vec<ShutdownHook>>,
+    endpoints: Mutex<AnnouncedEndpoints>,
 }
 
 impl NodeRunner {
@@ -51,12 +54,59 @@ impl NodeRunner {
                 .scope(SessionScope::Discovery(processor.discovery()))
                 .await?;
 
+        let endpoints = AnnouncedEndpoints::new(processor.declared_endpoints().clone());
         Ok(Self {
             messenger,
             processor,
             cancellation_token,
             shutdown_hooks: Mutex::new(Vec::new()),
+            endpoints: Mutex::new(endpoints),
         })
+    }
+
+    /// Announces the socket the node bound for the endpoint the manifest
+    /// declares as `label` under `execution.endpoints`. Called inside
+    /// `setup_fn`, after the bind, with the address the listener reports:
+    /// the daemon turns it into the URLs an operator opens.
+    ///
+    /// Refused for a label the manifest does not declare, for a second
+    /// announcement of one label, once setup has returned, and for a scheme
+    /// or path that breaks [`EndpointBinding`]'s rules.
+    pub fn announce_endpoint(&self, label: &str, binding: EndpointBinding) -> Result<()> {
+        self.endpoints
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .announce(label, binding)
+    }
+
+    /// Ends the announcement window and checks the set against the
+    /// manifest: every declared label must have been announced. The runtime
+    /// calls this when `setup_fn` returns; a caller that owns the runner's
+    /// lifecycle without going through `NodeBuilder::run` (the test harness
+    /// core) does the same once its setup returns. Answers the sealed set, in
+    /// label order.
+    pub fn seal_endpoints(&self) -> Result<Vec<AnnouncedEndpoint>> {
+        self.endpoints
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .seal()
+    }
+
+    /// The endpoints announced so far, in label order, sealed or not.
+    pub fn announced_endpoints(&self) -> Vec<AnnouncedEndpoint> {
+        self.endpoints
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .snapshot()
+    }
+
+    /// Whether the manifest declares any endpoint, which is what decides
+    /// whether the runtime offers the `node_endpoints` service.
+    pub(crate) fn declares_endpoints(&self) -> bool {
+        self.endpoints
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .declares_any()
     }
 
     /// Get reference to the messenger handle

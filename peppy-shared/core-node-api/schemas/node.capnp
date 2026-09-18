@@ -465,6 +465,23 @@ struct NodeRunFeedback {
     line @1 :Text;
 }
 
+# What an operator does with an endpoint's URL: `page` is opened in a
+# browser, `mcp` is attached to by an MCP client. Mirrors the manifest's
+# `execution.endpoints.<label>.kind`.
+enum EndpointKind {
+    page @0;
+    mcp @1;
+}
+
+# One endpoint an instance serves: the label its manifest declares, the kind
+# the declaration gives it, and the URLs the daemon hosting it expanded the
+# bound socket into, one per host interface address.
+struct InstanceEndpoint {
+    label @0 :Text;
+    kind @1 :EndpointKind;
+    urls @2 :List(Text);
+}
+
 struct NodeRunResult {
     # Whether the run was successful
     success @0 :Bool;
@@ -472,6 +489,9 @@ struct NodeRunResult {
     errorMessage @1 :Text;
     # Process ID of the running node (0 if not available or failed)
     pid @2 :UInt32;
+    # The endpoints the started instance serves, in label order; empty for a
+    # node that declares none or for a failed run.
+    endpoints @3 :List(InstanceEndpoint);
 }
 
 # Node Stop service
@@ -556,6 +576,9 @@ struct NodeInstanceInfo {
     # which is also what a message from a producer that predates clock domains
     # reads as.
     clockJson @5 :Text;
+    # The endpoints the instance serves, in label order; empty for a node
+    # that declares none.
+    endpoints @6 :List(InstanceEndpoint);
 }
 
 # Node info lookup result.

@@ -16,13 +16,14 @@ pub use refine::{
 };
 pub use types::{
     ActionInterfaces, ActionTopicEndpoint, ArrayKind, ArraySchema, Cardinality, ConsumedAction,
-    ConsumedService, ConsumedTopic, ContainerConfig, DependsOn, EmittedTopic, Execution,
-    ExposedAction, ExposedService, GoalServiceEndpoint, ImplementsEntry, InterfaceKind, Interfaces,
-    LinkedAction, LinkedEntry, LinkedMember, LinkedService, LinkedTopic, Manifest, MessageFormat,
-    NativeEmittedTopic, NativeExposedAction, NativeExposedService, NodeConfig, NodeDependency,
-    ObjectKind, ObjectSchema, PairingObserverDependency, PairingParticipantDependency,
-    PeppygenLanguage, PrimitiveSchema, QoSProfile, ResultServiceEndpoint, SchemaType,
-    ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, is_blocked_mount_source,
+    ConsumedService, ConsumedTopic, ContainerConfig, DependsOn, EmittedTopic, EndpointDeclaration,
+    EndpointDeclarations, EndpointKind, EndpointLabel, Execution, ExposedAction, ExposedService,
+    GoalServiceEndpoint, ImplementsEntry, InterfaceKind, Interfaces, LinkedAction, LinkedEntry,
+    LinkedMember, LinkedService, LinkedTopic, Manifest, MessageFormat, NativeEmittedTopic,
+    NativeExposedAction, NativeExposedService, NodeConfig, NodeDependency, ObjectKind,
+    ObjectSchema, PairingObserverDependency, PairingParticipantDependency, PeppygenLanguage,
+    PrimitiveSchema, QoSProfile, ResultServiceEndpoint, SchemaType, ServiceInterfaces, Toolchain,
+    TopicInterfaces, TypeToken, is_blocked_mount_source,
 };
 pub use validation::{
     ContractImplementationEdge, DependencySpec, MissingDependencyPolicy,

@@ -349,7 +349,10 @@ pub fn load_standalone_node_config(path: impl AsRef<Path>) -> Result<NodeConfig>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{error::Error, node::ContainerConfig};
+    use crate::{
+        error::Error,
+        node::{ContainerConfig, EndpointKind, EndpointLabel},
+    };
     use tempfile::NamedTempFile;
 
     /// Test helper: borrows the `ContainerConfig` from a parsed config.
@@ -1315,6 +1318,204 @@ mod tests {
         assert_eq!(
             c.lima_shell_extra_args.as_deref().unwrap(),
             &[] as &[String]
+        );
+    }
+
+    /// A manifest with the given `execution.endpoints` body, the rest minimal.
+    fn config_with_endpoints(endpoints: &str) -> String {
+        format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{ name: "panel_node", tag: "v1" }},
+                execution: {{
+                    language: "rust",
+                    run_cmd: ["./bin"],
+                    endpoints: {endpoints},
+                }},
+            }}"#
+        )
+    }
+
+    #[test]
+    fn endpoints_parse_with_one_and_with_several_labels() {
+        let one = NodeConfigParser::from_content(&config_with_endpoints(
+            r#"{ panel: { kind: "page", description: "The operator panel." } }"#,
+        ))
+        .expect("one endpoint parses");
+        let panel = one
+            .execution
+            .endpoints
+            .get("panel")
+            .expect("the declared label");
+        assert_eq!(panel.kind, EndpointKind::Page);
+        assert_eq!(panel.description, "The operator panel.");
+
+        let several = NodeConfigParser::from_content(&config_with_endpoints(
+            r#"{
+                viewer: { kind: "page", description: "The viewer page." },
+                camera_v1: { kind: "mcp", description: "The camera exposure." },
+                panel2: { kind: "page", description: "A second panel." },
+            }"#,
+        ))
+        .expect("several endpoints parse");
+        let labels: Vec<&str> = several
+            .execution
+            .endpoints
+            .keys()
+            .map(EndpointLabel::as_str)
+            .collect();
+        assert_eq!(labels, ["camera_v1", "panel2", "viewer"]);
+        assert_eq!(
+            several.execution.endpoints["camera_v1"].kind,
+            EndpointKind::Mcp
+        );
+    }
+
+    #[test]
+    fn endpoints_absent_parse_as_empty() {
+        let config = NodeConfigParser::from_content(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "plain_node", tag: "v1" },
+                execution: { language: "rust", run_cmd: ["./bin"] },
+            }"#,
+        )
+        .expect("a manifest without endpoints parses");
+        assert!(config.execution.endpoints.is_empty());
+    }
+
+    #[test]
+    fn an_invalid_endpoint_label_is_refused_naming_it() {
+        for label in ["Panel", "1panel", "pa-nel", ""] {
+            let json5 = config_with_endpoints(&format!(
+                r#"{{ "{label}": {{ kind: "page", description: "A page." }} }}"#
+            ));
+            let error =
+                NodeConfigParser::from_content(&json5).expect_err("the label must be refused");
+            match &error {
+                Error::Parsing(ParsingError::InvalidEndpointLabel { label: named }) => {
+                    assert_eq!(named, label);
+                }
+                other => panic!("label `{label}`: expected InvalidEndpointLabel, got {other:?}"),
+            }
+            assert!(
+                error.to_string().contains(&format!("`{label}`")),
+                "the message names the label: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_endpoint_kinds_parse() {
+        let config = NodeConfigParser::from_content(&config_with_endpoints(
+            r#"{
+                page_one: { kind: "page", description: "A page." },
+                mcp_one: { kind: "mcp", description: "An MCP endpoint." },
+            }"#,
+        ))
+        .expect("both kinds parse");
+        assert_eq!(
+            config.execution.endpoints["page_one"].kind,
+            EndpointKind::Page
+        );
+        assert_eq!(
+            config.execution.endpoints["mcp_one"].kind,
+            EndpointKind::Mcp
+        );
+    }
+
+    #[test]
+    fn a_missing_or_unknown_endpoint_kind_is_refused_naming_the_label_and_the_kinds() {
+        let cases = [
+            (r#"{ panel: { description: "A page." } }"#, ""),
+            (
+                r#"{ panel: { kind: "web", description: "A page." } }"#,
+                "web",
+            ),
+            (
+                r#"{ panel: { kind: "MCP", description: "A page." } }"#,
+                "MCP",
+            ),
+            (r#"{ panel: { kind: "", description: "A page." } }"#, ""),
+        ];
+        for (endpoints, expected_kind) in cases {
+            let error = NodeConfigParser::from_content(&config_with_endpoints(endpoints))
+                .expect_err("the kind must be refused");
+            match &error {
+                Error::Parsing(ParsingError::InvalidEndpointKind { label, kind }) => {
+                    assert_eq!(label, "panel");
+                    assert_eq!(kind, expected_kind);
+                }
+                other => panic!("{endpoints}: expected InvalidEndpointKind, got {other:?}"),
+            }
+            let message = error.to_string();
+            assert!(message.contains("`panel`"), "names the label: {message}");
+            assert!(
+                message.contains("`page`") && message.contains("`mcp`"),
+                "lists both kinds: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_or_empty_endpoint_description_is_refused_naming_the_label() {
+        for endpoints in [
+            r#"{ viewer: { kind: "page" } }"#,
+            r#"{ viewer: { kind: "page", description: "" } }"#,
+            r#"{ viewer: { kind: "page", description: "   " } }"#,
+        ] {
+            let error = NodeConfigParser::from_content(&config_with_endpoints(endpoints))
+                .expect_err("the description must be refused");
+            match &error {
+                Error::Parsing(ParsingError::EmptyEndpointDescription { label }) => {
+                    assert_eq!(label, "viewer");
+                }
+                other => panic!("{endpoints}: expected EmptyEndpointDescription, got {other:?}"),
+            }
+            assert!(
+                error.to_string().contains("`viewer`"),
+                "names the label: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_key_in_an_endpoint_declaration_is_refused() {
+        let error = NodeConfigParser::from_content(&config_with_endpoints(
+            r#"{ panel: { kind: "page", description: "A page.", port: 8765 } }"#,
+        ))
+        .expect_err("an unknown key must be refused");
+        assert!(
+            error.to_string().contains("port"),
+            "the refusal names the stray key: {error}"
+        );
+    }
+
+    #[test]
+    fn execution_round_trips_through_serde_with_endpoints() {
+        let config = NodeConfigParser::from_content(&config_with_endpoints(
+            r#"{
+                panel: { kind: "page", description: "The operator panel." },
+                camera_v1: { kind: "mcp", description: "The camera exposure." },
+            }"#,
+        ))
+        .expect("parses");
+        let json = serde_json::to_string(&config.execution).expect("serializes");
+        assert!(
+            json.contains(r#""endpoints":{"camera_v1":{"kind":"mcp","description":"The camera exposure."},"panel":{"kind":"page","description":"The operator panel."}}"#),
+            "{json}"
+        );
+        let restored: Execution = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(restored.endpoints, config.execution.endpoints);
+
+        let plain: Execution = serde_json::from_str(r#"{"language":"rust","run_cmd":["./bin"]}"#)
+            .expect("deserializes");
+        assert!(plain.endpoints.is_empty());
+        assert!(
+            !serde_json::to_string(&plain)
+                .expect("serializes")
+                .contains("endpoints"),
+            "an empty declaration set stays off the wire"
         );
     }
 

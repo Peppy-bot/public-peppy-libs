@@ -9,9 +9,20 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use config::node::Cardinality;
+use config::node::{Cardinality, EndpointKind};
 use config::runtime::{ClockBinding, PairedPeer, SlotBindings};
 use serde::{Deserialize, Serialize};
+
+/// One endpoint an instance serves, as every listing reports it: the label
+/// the manifest declares it under, the kind the declaration gives it, and
+/// the URLs the daemon hosting the instance expanded the bound socket into,
+/// one per host interface address, loopback first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceEndpoint {
+    pub label: String,
+    pub kind: EndpointKind,
+    pub urls: Vec<String>,
+}
 
 /// Per-instance lifecycle state. Wire representation is the lowercase variant
 /// name (`"starting"`, `"running"`, `"finished"`, `"failed"`).
@@ -170,13 +181,12 @@ pub struct SerializedInstance {
     /// decode for payloads that predate the field.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pairing_slots: BTreeMap<String, SerializedPairingSlot>,
-    /// The MCP endpoint URLs this instance serves, one per exposure, when
-    /// the instance is the built-in MCP server; empty for every other node.
-    /// What `peppy stack list` prints so an operator finds the URLs without
-    /// reading the launcher. Defaulted on decode for payloads that predate
-    /// the field.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub endpoints: Vec<String>,
+    /// The endpoints this instance serves, in label order: what `peppy stack
+    /// list` prints so an operator finds the URLs without reading the node.
+    /// Empty for a node whose manifest declares none, and always on the wire
+    /// so a reader sees the set the daemon holds.
+    #[serde(default)]
+    pub endpoints: Vec<InstanceEndpoint>,
 }
 
 /// One pairing slot of a [`SerializedInstance`]: the declaring manifest's
@@ -500,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn instance_endpoints_round_trip_and_stay_off_the_wire_when_empty() {
+    fn instance_endpoints_round_trip_with_their_kind_and_are_always_on_the_wire() {
         let served = SerializedInstance {
             instance_id: "mcp".to_string(),
             state: InstanceState::Running,
@@ -508,9 +518,25 @@ mod tests {
             clock: ClockBinding::Wall,
             slot_bindings: BTreeMap::new(),
             pairing_slots: BTreeMap::new(),
-            endpoints: vec!["http://127.0.0.1:8900/camera_and_recording/v1/mcp".to_string()],
+            endpoints: vec![
+                InstanceEndpoint {
+                    label: "camera_v1".to_string(),
+                    kind: EndpointKind::Mcp,
+                    urls: vec!["http://127.0.0.1:8900/camera/v1/mcp".to_string()],
+                },
+                InstanceEndpoint {
+                    label: "panel".to_string(),
+                    kind: EndpointKind::Page,
+                    urls: vec![
+                        "http://127.0.0.1:8765".to_string(),
+                        "http://192.168.1.5:8765".to_string(),
+                    ],
+                },
+            ],
         };
         let json = serde_json::to_string(&served).expect("serialize");
+        assert!(json.contains(r#""kind":"mcp""#), "{json}");
+        assert!(json.contains(r#""kind":"page""#), "{json}");
         let decoded: SerializedInstance = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, served);
 
@@ -520,9 +546,11 @@ mod tests {
         };
         let json = serde_json::to_string(&plain).expect("serialize");
         assert!(
-            !json.contains("endpoints"),
-            "a node that serves no endpoint carries no field: {json}"
+            json.contains(r#""endpoints":[]"#),
+            "a node that serves no endpoint still carries the empty set: {json}"
         );
+        let decoded: SerializedInstance = serde_json::from_str(&json).expect("deserialize");
+        assert!(decoded.endpoints.is_empty());
     }
 
     #[test]

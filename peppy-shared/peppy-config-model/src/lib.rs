@@ -77,8 +77,9 @@ pub mod node {
     pub use crate::internal::node::{
         ActionInterfaces, ActionRefinement, ActionTopicEndpoint, ArrayKind, ArraySchema,
         Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, ContainerConfig,
-        ContractImplementationEdge, DependencySpec, DependsOn, EmittedTopic, Execution,
-        ExposedAction, ExposedService, FieldRefinement, FormatRefinement, FormatRuleViolation,
+        ContractImplementationEdge, DependencySpec, DependsOn, EmittedTopic, EndpointDeclaration,
+        EndpointDeclarations, EndpointKind, EndpointLabel, Execution, ExposedAction,
+        ExposedService, FieldRefinement, FormatRefinement, FormatRuleViolation,
         GoalServiceEndpoint, ImplementsEntry, InterfaceKind, Interfaces, LinkedAction, LinkedEntry,
         LinkedMember, LinkedService, LinkedTopic, Manifest, MessageFormat, MessageSizeEstimate,
         MissingDependencyPolicy, NativeEmittedTopic, NativeExposedAction, NativeExposedService,

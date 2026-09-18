@@ -1042,6 +1042,77 @@ impl PyNodeRunner {
         self.inner.copy()
     }
 
+    /// Announces the socket the node bound for the endpoint the manifest
+    /// declares as `label` under `execution.endpoints`: `scheme` is the URI
+    /// scheme token it serves (`http`, `https`), `host` and `port` the
+    /// address the listener reports back, `path` `""` or a path starting
+    /// with `/`. Called inside `setup`, after the bind; the daemon turns the
+    /// binding into the URLs an operator opens.
+    ///
+    /// Raises `ValueError` for a label the manifest does not declare, for a
+    /// second announcement of one label, once setup has returned, for a host
+    /// that is not an IP literal, and for a scheme or path that breaks the
+    /// rules above.
+    #[pyo3(signature = (label, scheme, host, port, path = String::new()))]
+    fn announce_endpoint(
+        &self,
+        label: &str,
+        scheme: String,
+        host: &str,
+        port: u16,
+        path: String,
+    ) -> PyResult<()> {
+        let ip: std::net::IpAddr = host.parse().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "endpoint `{label}` has an invalid binding: host `{host}` is not an IP literal \
+                 (announce the address the listener bound, e.g. `0.0.0.0` or `127.0.0.1`)"
+            ))
+        })?;
+        self.inner
+            .announce_endpoint(
+                label,
+                peppylib::runtime::EndpointBinding {
+                    scheme,
+                    address: std::net::SocketAddr::new(ip, port),
+                    path,
+                },
+            )
+            .map_err(crate::messaging::to_py_err)
+    }
+
+    /// Ends the announcement window and checks the set against the
+    /// manifest: every declared label must have been announced.
+    /// `NodeBuilder().run(...)` does this itself when `setup` returns; a
+    /// caller that owns the runner's lifecycle directly (the
+    /// `peppylib.testing` harness over
+    /// [`new_standalone`](Self::new_standalone)) does it once its setup
+    /// returns. Raises `ValueError` naming a declared label that was not
+    /// announced.
+    fn seal_endpoints(&self) -> PyResult<()> {
+        self.inner
+            .seal_endpoints()
+            .map(drop)
+            .map_err(crate::messaging::to_py_err)
+    }
+
+    /// The endpoints announced so far, in label order, each as
+    /// `(label, scheme, host, port, path)`.
+    fn announced_endpoints(&self) -> Vec<(String, String, String, u16, String)> {
+        self.inner
+            .announced_endpoints()
+            .into_iter()
+            .map(|endpoint| {
+                (
+                    endpoint.label,
+                    endpoint.binding.scheme,
+                    endpoint.binding.address.ip().to_string(),
+                    endpoint.binding.address.port(),
+                    endpoint.binding.path,
+                )
+            })
+            .collect()
+    }
+
     /// Declares the publisher for one topic of the scalar pairing slot at
     /// `link_id`: a `TopicPublisher` whose `publish` reaches the one paired
     /// peer and is a no-op while unpaired. Spliced by the generated

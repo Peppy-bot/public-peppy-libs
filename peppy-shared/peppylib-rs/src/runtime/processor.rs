@@ -5,11 +5,14 @@ use crate::messaging::{ObservationState, ObservedMemberState, PeerMember, PeerSe
 use config::{
     AnyType, NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
-    node::{Cardinality, NodeConfig, PairingObserverDependency, load_standalone_node_config},
+    node::{
+        Cardinality, EndpointLabel, NodeConfig, PairingObserverDependency,
+        load_standalone_node_config,
+    },
     runtime::{Name, NodeInstanceConfig, RuntimeConfig},
     validate_node_arguments,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::sync::watch;
@@ -71,6 +74,10 @@ pub struct Processor {
     /// `0` is "no tick yet", so a read before the first one is not ready.
     /// Unused under wall time, where the OS clock answers.
     clock_cache: Arc<AtomicU64>,
+    /// The labels the manifest declares under `execution.endpoints`: the set
+    /// [`crate::runtime::NodeRunner::announce_endpoint`] admits, and the set
+    /// setup must cover before the runtime seals it.
+    endpoint_labels: BTreeSet<EndpointLabel>,
 }
 
 impl Processor {
@@ -161,6 +168,7 @@ impl Processor {
             observation_slots,
             observation_cardinalities,
             clock_cache: Arc::new(AtomicU64::new(0)),
+            endpoint_labels: declared_endpoint_labels(&node_config),
         })
     }
 
@@ -361,6 +369,7 @@ impl Processor {
             observation_slots,
             observation_cardinalities,
             clock_cache: Arc::new(AtomicU64::new(0)),
+            endpoint_labels: declared_endpoint_labels(&node_config),
         })
     }
 
@@ -644,6 +653,18 @@ impl Processor {
     ) -> Arc<BTreeMap<String, watch::Sender<ObservationState>>> {
         Arc::clone(&self.observation_slots)
     }
+
+    /// The labels the manifest declares under `execution.endpoints`, in
+    /// label order; empty for a node that serves nothing.
+    pub fn declared_endpoints(&self) -> &BTreeSet<EndpointLabel> {
+        &self.endpoint_labels
+    }
+}
+
+/// The endpoint labels of `node_config`, the set the runtime admits
+/// announcements for and checks setup against.
+fn declared_endpoint_labels(node_config: &NodeConfig) -> BTreeSet<EndpointLabel> {
+    node_config.execution.endpoints.keys().cloned().collect()
 }
 
 /// Every observer slot declared in `depends_on.pairing_observers`, as an

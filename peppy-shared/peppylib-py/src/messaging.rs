@@ -47,7 +47,12 @@ pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
         PeppyError::UnknownPairingSlot { .. }
         | PeppyError::UnknownObservationSlot { .. }
         | PeppyError::PeerNotPaired { .. }
-        | PeppyError::TargetNotBound { .. } => PyValueError::new_err(err.to_string()),
+        | PeppyError::TargetNotBound { .. }
+        | PeppyError::UndeclaredEndpoint { .. }
+        | PeppyError::EndpointAlreadyAnnounced { .. }
+        | PeppyError::EndpointsSealed { .. }
+        | PeppyError::InvalidEndpointBinding { .. }
+        | PeppyError::EndpointNotAnnounced { .. } => PyValueError::new_err(err.to_string()),
         PeppyError::ServiceUnreachable { .. }
         | PeppyError::ActionResultUnreachable { .. }
         | PeppyError::ActionFeedbackProducerGone { .. } => {

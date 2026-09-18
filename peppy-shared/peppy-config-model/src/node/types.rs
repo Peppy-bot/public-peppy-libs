@@ -14,6 +14,7 @@ use serde::{
     de::{self, Deserializer, MapAccess, Visitor},
 };
 use std::{
+    collections::BTreeMap,
     fmt::{self, Formatter},
     str::FromStr,
 };
@@ -1318,6 +1319,168 @@ impl DependsOn {
     }
 }
 
+/// What an operator does with the URL of an endpoint a node serves. It
+/// drives how every listing groups and headlines the endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EndpointKind {
+    /// Opened in a browser.
+    Page,
+    /// Attached to by an MCP client.
+    Mcp,
+}
+
+impl EndpointKind {
+    /// The manifest spelling of the kind.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EndpointKind::Page => "page",
+            EndpointKind::Mcp => "mcp",
+        }
+    }
+
+    /// The accepted manifest spellings, quoted in the refusal of any other
+    /// value.
+    pub const ACCEPTED: &'static str =
+        "`page` (opened in a browser) or `mcp` (attached to by an MCP client)";
+
+    fn parse(kind: &str) -> Option<Self> {
+        match kind {
+            "page" => Some(EndpointKind::Page),
+            "mcp" => Some(EndpointKind::Mcp),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for EndpointKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The label of an endpoint in `execution.endpoints`: ASCII lowercase
+/// letters, digits and underscores, starting with a letter. A node announces
+/// the socket it bound under this label, and every listing names the endpoint
+/// by it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(into = "String")]
+pub struct EndpointLabel(String);
+
+impl EndpointLabel {
+    pub fn new(label: impl Into<String>) -> std::result::Result<Self, ParsingError> {
+        let label = label.into();
+        if Self::is_valid(&label) {
+            Ok(Self(label))
+        } else {
+            Err(ParsingError::InvalidEndpointLabel { label })
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn is_valid(label: &str) -> bool {
+        let mut chars = label.chars();
+        chars.next().is_some_and(|first| first.is_ascii_lowercase())
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    }
+}
+
+impl<'de> Deserialize<'de> for EndpointLabel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        EndpointLabel::new(raw).map_err(|err| de::Error::custom(err.to_string()))
+    }
+}
+
+impl From<EndpointLabel> for String {
+    fn from(label: EndpointLabel) -> Self {
+        label.0
+    }
+}
+
+impl std::borrow::Borrow<str> for EndpointLabel {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for EndpointLabel {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for EndpointLabel {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// One socket a node binds during setup, as `execution.endpoints` declares
+/// it. The declaration says that a socket is served under the label, never
+/// where: the node decides the address at bind time and announces what it
+/// got, and the daemon reports the URLs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EndpointDeclaration {
+    pub kind: EndpointKind,
+    /// Non-empty prose: what `peppy node info` shows for the endpoint.
+    pub description: String,
+}
+
+/// The endpoint declarations of a manifest, keyed by label.
+pub type EndpointDeclarations = BTreeMap<EndpointLabel, EndpointDeclaration>;
+
+/// Deserializes `execution.endpoints`, refusing a label that breaks the label
+/// rule, a kind other than the two accepted ones, and a missing or empty
+/// description, each as a structured error naming the label.
+fn deserialize_endpoints<'de, D>(deserializer: D) -> Result<EndpointDeclarations, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RawEndpointDeclaration {
+        kind: Option<String>,
+        description: Option<String>,
+    }
+
+    let raw: BTreeMap<String, RawEndpointDeclaration> = BTreeMap::deserialize(deserializer)?;
+    let structured =
+        |error: crate::error::StructuredError| de::Error::custom(error.json5_message());
+    let mut endpoints = BTreeMap::new();
+    for (label, declaration) in raw {
+        let label = EndpointLabel::new(label.clone()).map_err(|_| {
+            structured(crate::error::StructuredError::InvalidEndpointLabel { label })
+        })?;
+        let kind = declaration
+            .kind
+            .as_deref()
+            .and_then(EndpointKind::parse)
+            .ok_or_else(|| {
+                structured(crate::error::StructuredError::InvalidEndpointKind {
+                    label: label.to_string(),
+                    kind: declaration.kind.clone().unwrap_or_default(),
+                })
+            })?;
+        let description = declaration
+            .description
+            .filter(|description| !description.trim().is_empty())
+            .ok_or_else(|| {
+                structured(crate::error::StructuredError::EmptyEndpointDescription {
+                    label: label.to_string(),
+                })
+            })?;
+        endpoints.insert(label, EndpointDeclaration { kind, description });
+    }
+    Ok(endpoints)
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Execution {
     pub language: PeppygenLanguage,
@@ -1329,6 +1492,10 @@ pub struct Execution {
     pub run_cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container: Option<ContainerConfig>,
+    /// The sockets this node binds during setup, keyed by label. Empty for a
+    /// node that serves nothing.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub endpoints: EndpointDeclarations,
 }
 
 /// Custom deserialization for [`Execution`] so a missing `language` field
@@ -1348,6 +1515,8 @@ impl<'de> Deserialize<'de> for Execution {
             build_cmd: Option<Vec<String>>,
             run_cmd: Option<Vec<String>>,
             container: Option<ContainerConfig>,
+            #[serde(default, deserialize_with = "deserialize_endpoints")]
+            endpoints: EndpointDeclarations,
         }
 
         let raw = RawExecution::deserialize(deserializer)?;
@@ -1362,6 +1531,7 @@ impl<'de> Deserialize<'de> for Execution {
             build_cmd: raw.build_cmd,
             run_cmd: raw.run_cmd,
             container: raw.container,
+            endpoints: raw.endpoints,
         })
     }
 }

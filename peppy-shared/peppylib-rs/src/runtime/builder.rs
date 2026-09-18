@@ -10,6 +10,7 @@ use crate::runtime::TaskHandle;
 use crate::runtime::node_runner::NodeRunner;
 use crate::runtime::processor::Processor;
 use crate::services::clock_offset::listen_for_clock_offset;
+use crate::services::endpoints::listen_for_node_endpoints;
 use crate::services::health::listen_for_node_health;
 use crate::services::observation_update::listen_for_observation_update;
 use crate::services::peer_update::listen_for_peer_update;
@@ -611,10 +612,14 @@ where
                         return Ok(());
                     }
                 }
+                // Setup is over: the announced endpoints are sealed and checked
+                // against the manifest before anything reports them.
+                let endpoints = node_runner.seal_endpoints()?;
                 run_post_setup_services(
                     Arc::clone(&node_runner),
                     pre_setup,
                     cancellation_token.clone(),
+                    endpoints,
                 )
                 .await
             }
@@ -664,6 +669,9 @@ where
         // convergence below so hooks registered before the failure still run.
         let run_result = async {
             setup_fn(parameters, Arc::clone(&node_runner)).await?;
+            // The same check daemon mode runs: every declared endpoint was
+            // announced. There is no daemon to report the set to.
+            node_runner.seal_endpoints()?;
 
             // Wait for a shutdown signal (or programmatic cancel) before exiting
             info!("Node running. Press Ctrl+C to shutdown.");
@@ -807,6 +815,7 @@ async fn run_post_setup_services(
     node_runner: Arc<NodeRunner>,
     pre_setup: PreSetupHandles,
     cancellation_token: CancellationToken,
+    endpoints: Vec<crate::runtime::AnnouncedEndpoint>,
 ) -> Result<()> {
     let PreSetupHandles {
         ready_handle,
@@ -847,9 +856,9 @@ async fn run_post_setup_services(
     // offset to the core node to normalize cross-host topic timestamps. It runs
     // an on-demand clock exchange; no user code is involved.
     let clock_offset_handle =
-        listen_for_clock_offset(Arc::clone(&node_runner), as_identity).await?;
+        listen_for_clock_offset(Arc::clone(&node_runner), as_identity.clone()).await?;
 
-    let handles = vec![
+    let mut handles = vec![
         ready_handle,
         health_handle,
         clock_offset_handle,
@@ -857,6 +866,22 @@ async fn run_post_setup_services(
         observation_update_handle,
         shutdown_handle,
     ];
+
+    // `node_endpoints` exists only for a node whose manifest declares
+    // endpoints: the daemon polls it at start for exactly those nodes, and a
+    // node that serves nothing has nothing to answer.
+    if node_runner.declares_endpoints() {
+        handles.push(
+            listen_for_node_endpoints(
+                node_runner.messenger(),
+                processor.bound_core_node(),
+                processor.bound_instance_id(),
+                as_identity,
+                endpoints,
+            )
+            .await?,
+        );
+    }
 
     tokio::select! {
         result = wait_for_handles(handles) => {
