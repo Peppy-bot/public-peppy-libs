@@ -8,10 +8,12 @@ use capnp::message::Builder;
 use crate::launch_capnp;
 use crate::{NonEmptyPayload, Payload, Result};
 
+use crate::encoding::endpoints::{read_launch_endpoints, write_launch_endpoints};
 use crate::encoding::{
     capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
-    write_text_list,
+    required_text, write_text_list,
 };
+use crate::graph::InstanceEndpoint;
 
 use super::budgets::StackBudgets;
 use super::read_selections;
@@ -451,6 +453,22 @@ pub struct LaunchResult {
     pub node_add_logs: Vec<NodeAddLogEntry>,
     pub node_build_logs: Vec<NodeBuildLogEntry>,
     pub node_run_logs: Vec<NodeRunLogEntry>,
+    /// The endpoints of every started instance that serves one, in start
+    /// order, each stamped with the core node hosting it.
+    pub instance_endpoints: Vec<InstanceEndpoints>,
+}
+
+/// The endpoints of one started instance, as the daemon hosting it expanded
+/// them against its own interfaces; a coordinator forwards them with that
+/// daemon's core node name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceEndpoints {
+    pub instance_id: String,
+    /// Node label in "name:tag" format.
+    pub node_label: String,
+    /// Core node hosting the instance.
+    pub core_node: String,
+    pub endpoints: Vec<InstanceEndpoint>,
 }
 
 impl LaunchResult {
@@ -462,6 +480,7 @@ impl LaunchResult {
             node_add_logs: Vec::new(),
             node_build_logs: Vec::new(),
             node_run_logs: Vec::new(),
+            instance_endpoints: Vec::new(),
         }
     }
 
@@ -482,6 +501,12 @@ impl LaunchResult {
         self.node_add_logs = add_logs;
         self.node_build_logs = build_logs;
         self.node_run_logs = run_logs;
+        self
+    }
+
+    /// The endpoints of the instances the operation started.
+    pub fn with_instance_endpoints(mut self, instance_endpoints: Vec<InstanceEndpoints>) -> Self {
+        self.instance_endpoints = instance_endpoints;
         self
     }
 
@@ -527,6 +552,21 @@ impl LaunchResult {
                 e.set_log_path(entry.log_path.to_string_lossy().as_ref());
                 e.set_failed(entry.failed);
                 e.set_core_node(&entry.core_node);
+            }
+
+            let instance_count = capnp_list_len(
+                self.instance_endpoints.len(),
+                "LaunchResult.instance_endpoints",
+            )?;
+            let mut instances = result.reborrow().init_instance_endpoints(instance_count);
+            for (i, entry) in self.instance_endpoints.iter().enumerate() {
+                let mut e = instances.reborrow().get(i as u32);
+                e.set_instance_id(&entry.instance_id);
+                e.set_node_label(&entry.node_label);
+                e.set_core_node(&entry.core_node);
+                let endpoint_count =
+                    capnp_list_len(entry.endpoints.len(), "InstanceEndpoints.endpoints")?;
+                write_launch_endpoints(e.init_endpoints(endpoint_count), &entry.endpoints)?;
             }
         }
         encode_message(&builder)
@@ -575,6 +615,21 @@ impl LaunchResult {
             });
         }
 
+        let instances_reader = result.get_instance_endpoints()?;
+        let mut instance_endpoints = Vec::with_capacity(instances_reader.len() as usize);
+        for i in 0..instances_reader.len() {
+            let e = instances_reader.get(i);
+            instance_endpoints.push(InstanceEndpoints {
+                instance_id: required_text(
+                    e.get_instance_id()?.to_str()?,
+                    "InstanceEndpoints.instance_id",
+                )?,
+                node_label: e.get_node_label()?.to_str()?.to_owned(),
+                core_node: e.get_core_node()?.to_str()?.to_owned(),
+                endpoints: read_launch_endpoints(e.get_endpoints()?)?,
+            });
+        }
+
         Ok(Self {
             success: result.get_success(),
             log_path,
@@ -582,6 +637,7 @@ impl LaunchResult {
             node_add_logs,
             node_build_logs,
             node_run_logs,
+            instance_endpoints,
         })
     }
 }
@@ -1002,5 +1058,39 @@ mod tests {
     #[test]
     fn launch_result_decode_rejects_malformed() {
         assert!(LaunchResult::decode(b"not capnp").is_err());
+    }
+
+    /// The endpoints of every started instance ride the result with the core
+    /// node that expanded them; a launch that started nothing serving
+    /// carries the empty list.
+    #[test]
+    fn launch_result_roundtrips_instance_endpoints() {
+        let result = LaunchResult::success("/var/log/launch.log").with_instance_endpoints(vec![
+            InstanceEndpoints {
+                instance_id: "panel_inst".to_string(),
+                node_label: "openarm_web_commander:v1".to_string(),
+                core_node: "cn-robot-arm".to_string(),
+                endpoints: crate::encoding::endpoints::sample_endpoints(),
+            },
+            InstanceEndpoints {
+                instance_id: "sim_inst".to_string(),
+                node_label: "waldo:v1".to_string(),
+                core_node: "cn-gpu-box".to_string(),
+                endpoints: vec![InstanceEndpoint {
+                    label: "viewer".to_string(),
+                    kind: config::node::EndpointKind::Page,
+                    urls: vec!["https://127.0.0.1:8080/".to_string()],
+                }],
+            },
+        ]);
+        let bytes = result.encode().expect("encode");
+        let decoded = LaunchResult::decode(bytes.as_ref()).expect("decode");
+        assert_eq!(decoded, result);
+        assert_eq!(decoded.instance_endpoints[1].core_node, "cn-gpu-box");
+
+        let empty = LaunchResult::success("/var/log/launch.log");
+        let decoded =
+            LaunchResult::decode(empty.encode().expect("encode").as_ref()).expect("decode");
+        assert!(decoded.instance_endpoints.is_empty());
     }
 }

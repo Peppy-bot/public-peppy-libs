@@ -8,10 +8,11 @@ use capnp::message::Builder;
 use config::node::NodeConfig;
 use config::runtime::{ClockBinding, SlotBindings};
 
-use crate::graph::{InstanceState, NodeStage, SerializedPairingSlot};
+use crate::graph::{InstanceEndpoint, InstanceState, NodeStage, SerializedPairingSlot};
 use crate::node_capnp;
 use crate::{Payload, Result};
 
+use crate::encoding::endpoints::{read_node_endpoints, write_node_endpoints};
 use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
 
 /// Request payload for the `node_info` service.
@@ -79,6 +80,10 @@ pub struct NodeInstanceInfo {
     /// new instance's connections to the same clock rule a launch applies,
     /// against the instances already running.
     pub clock: ClockBinding,
+    /// The endpoints the instance serves, in label order, mirroring
+    /// [`crate::graph::SerializedInstance::endpoints`]. Empty for a node
+    /// whose manifest declares none.
+    pub endpoints: Vec<InstanceEndpoint>,
 }
 
 /// Body of a successful `node_info` lookup — carries all metadata about a
@@ -185,6 +190,12 @@ impl NodeInfoResponse {
                                 })?
                             };
                             entry.set_clock_json(&clock_json);
+                            let endpoint_count =
+                                capnp_list_len(inst.endpoints.len(), "NodeInstanceInfo.endpoints")?;
+                            write_node_endpoints(
+                                entry.init_endpoints(endpoint_count),
+                                &inst.endpoints,
+                            )?;
                         }
                     }
                     // Only set the field when present; leaving it unset writes
@@ -270,6 +281,7 @@ impl NodeInfoResponse {
                         slot_bindings,
                         pairing_slots,
                         clock,
+                        endpoints: read_node_endpoints(entry.get_endpoints()?)?,
                     });
                 }
                 let add_log_path =
@@ -429,6 +441,7 @@ mod tests {
                         ),
                         config::runtime::ProducerRef::new("cn-sim", "sim_inst"),
                     ),
+                    endpoints: crate::encoding::endpoints::sample_endpoints(),
                 },
                 NodeInstanceInfo {
                     instance_id: "inst-no-bindings".to_string(),
@@ -437,6 +450,7 @@ mod tests {
                     slot_bindings: BTreeMap::new(),
                     pairing_slots: BTreeMap::new(),
                     clock: ClockBinding::Wall,
+                    endpoints: Vec::new(),
                 },
             ],
             add_log_path: None,
@@ -457,6 +471,15 @@ mod tests {
                 assert_eq!(
                     info.instances[0].slot_bindings, bindings_a,
                     "slot_bindings should round-trip for the first instance"
+                );
+                assert_eq!(
+                    info.instances[0].endpoints,
+                    crate::encoding::endpoints::sample_endpoints(),
+                    "endpoints round-trip with their kind and every URL"
+                );
+                assert!(
+                    info.instances[1].endpoints.is_empty(),
+                    "a node that declares no endpoint round-trips the empty set"
                 );
                 assert!(
                     info.instances[1].slot_bindings.is_empty(),

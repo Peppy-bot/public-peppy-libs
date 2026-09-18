@@ -1,4 +1,5 @@
 mod builder;
+mod endpoints;
 mod node_runner;
 pub(crate) mod observation;
 mod pairing;
@@ -6,6 +7,7 @@ mod processor;
 mod slot_stream;
 
 pub use builder::{NodeBuilder, NodeContext, StandaloneConfig};
+pub use endpoints::{AnnouncedEndpoint, EndpointBinding};
 pub use node_runner::NodeRunner;
 pub use observation::{
     ObservationSlot, ObservationSlotSet, ObservedTopicSubscription, subscribe_observed,

@@ -235,6 +235,420 @@ async fn daemon_runner_succeed() {
         .expect("runner should return Ok");
 }
 
+/// A manifest declaring `panel` and `viewer` under `execution.endpoints`,
+/// with the one parameter the test `Parameters` type reads.
+const ENDPOINTS_PEPPY_CONFIG: &str = r#"{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "test_node",
+    tag: "v1",
+  },
+  execution: {
+    language: "rust",
+    parameters: {
+      frequency_hz: "f64"
+    },
+    run_cmd: ["./target/debug/test_node"],
+    endpoints: {
+      panel: { kind: "page", description: "The operator panel." },
+      viewer: { kind: "page", description: "The viewer page." },
+    },
+  },
+}"#;
+
+fn binding(scheme: &str, address: &str, path: &str) -> peppylib::runtime::EndpointBinding {
+    peppylib::runtime::EndpointBinding {
+        scheme: scheme.to_string(),
+        address: address.parse().expect("a socket address"),
+        path: path.to_string(),
+    }
+}
+
+/// Inside setup, a declared label is announced once; an undeclared label and
+/// a second announcement are refused naming the label. Once setup returned
+/// the set is sealed, so a late announcement is refused too, and the sealed
+/// set is what the runner reports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_runner_announces_declared_endpoints_during_setup_only() {
+    let _env_guard = EnvAndDirGuard::new_standalone();
+
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
+    std::fs::write(&peppy_config_path, ENDPOINTS_PEPPY_CONFIG)
+        .expect("failed to write peppy config");
+
+    let standalone_config = StandaloneConfig::new()
+        .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
+        .with_messaging(&router_host, router_port)
+        .with_instance_id(TEST_INSTANCE_ID);
+
+    let (setup_tx, setup_rx) =
+        tokio::sync::oneshot::channel::<std::sync::Arc<peppylib::runtime::NodeRunner>>();
+    let runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new()
+            .with_config_path(&peppy_config_path)
+            .standalone(standalone_config)
+            .run(|_parameters: Parameters, node_runner| async move {
+                node_runner
+                    .announce_endpoint("panel", binding("http", "0.0.0.0:8765", ""))
+                    .expect("a declared label is accepted");
+                let undeclared = node_runner
+                    .announce_endpoint("admin", binding("http", "127.0.0.1:9000", ""))
+                    .expect_err("an undeclared label is refused");
+                assert!(
+                    matches!(undeclared, PeppyError::UndeclaredEndpoint { ref label } if label == "admin"),
+                    "{undeclared}"
+                );
+                let twice = node_runner
+                    .announce_endpoint("panel", binding("http", "0.0.0.0:8766", ""))
+                    .expect_err("a second announcement is refused");
+                assert!(
+                    matches!(twice, PeppyError::EndpointAlreadyAnnounced { ref label } if label == "panel"),
+                    "{twice}"
+                );
+                node_runner
+                    .announce_endpoint("viewer", binding("https", "127.0.0.1:8080", "/"))
+                    .expect("the second declared label is accepted");
+                let _ = setup_tx.send(node_runner);
+                Ok(())
+            })
+    });
+
+    let node_runner = tokio::time::timeout(Duration::from_secs(5), setup_rx)
+        .await
+        .expect("runner setup should complete")
+        .expect("runner setup signal should be sent");
+
+    // Setup has returned by the time the runner handed itself out, but the
+    // seal happens right after; wait on the observable consequence rather
+    // than on time.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let sealed = loop {
+        match node_runner.announce_endpoint("panel", binding("http", "0.0.0.0:8765", "")) {
+            Err(PeppyError::EndpointsSealed { label }) => break label,
+            Err(PeppyError::EndpointAlreadyAnnounced { .. }) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            other => panic!("expected the set to seal after setup, got {other:?}"),
+        }
+    };
+    assert_eq!(sealed, "panel");
+    let announced: Vec<(String, String)> = node_runner
+        .announced_endpoints()
+        .into_iter()
+        .map(|endpoint| (endpoint.label, endpoint.binding.address.to_string()))
+        .collect();
+    assert_eq!(
+        announced,
+        [
+            ("panel".to_string(), "0.0.0.0:8765".to_string()),
+            ("viewer".to_string(), "127.0.0.1:8080".to_string()),
+        ]
+    );
+
+    node_runner.cancellation_token().cancel();
+    tokio::time::timeout(Duration::from_secs(10), runner_task)
+        .await
+        .expect("runner should exit")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+}
+
+/// A setup that returns without announcing a declared label fails the run,
+/// naming the label.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_runner_fails_when_a_declared_endpoint_is_not_announced() {
+    let _env_guard = EnvAndDirGuard::new_standalone();
+
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let peppy_config_path = temp_dir.path().join(NODE_CONFIG_FILE);
+    std::fs::write(&peppy_config_path, ENDPOINTS_PEPPY_CONFIG)
+        .expect("failed to write peppy config");
+
+    let standalone_config = StandaloneConfig::new()
+        .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
+        .with_messaging(&router_host, router_port)
+        .with_instance_id(TEST_INSTANCE_ID);
+
+    let runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new()
+            .with_config_path(&peppy_config_path)
+            .standalone(standalone_config)
+            .run(|_parameters: Parameters, node_runner| async move {
+                node_runner
+                    .announce_endpoint("panel", binding("http", "0.0.0.0:8765", ""))
+                    .expect("a declared label is accepted");
+                Ok(())
+            })
+    });
+
+    let error = tokio::time::timeout(Duration::from_secs(10), runner_task)
+        .await
+        .expect("runner should exit")
+        .expect("runner task should not panic")
+        .expect_err("a declared label left unannounced fails the run");
+    assert!(
+        matches!(error, PeppyError::EndpointNotAnnounced { ref label } if label == "viewer"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("`viewer`"), "{error}");
+}
+
+/// Writes the daemon-mode runtime config for `peppy_config` and points the
+/// environment at it, returning the guard that holds both. Shared by the
+/// daemon-mode endpoint tests below.
+fn write_daemon_runtime_config(
+    temp_dir: &Path,
+    peppy_config: &str,
+    router_host: &str,
+    router_port: u16,
+) -> EnvAndDirGuard {
+    let peppy_config_path = temp_dir.join(NODE_CONFIG_FILE);
+    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+    let runtime_config = RuntimeConfig::new(
+        router_host,
+        router_port,
+        NodeInstanceConfig {
+            arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
+                .expect("runtime args should parse"),
+            ..NodeInstanceConfig::new(
+                Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
+            )
+        },
+        TEST_NODE_NAME,
+        "v1",
+        TEST_CORE_NODE,
+    )
+    .expect("runtime config should build");
+    let runtime_config_path = temp_dir.join("peppy_runtime.json5");
+    runtime_config
+        .save_json5_launch_config(&runtime_config_path)
+        .expect("failed to write runtime config");
+    EnvAndDirGuard::new(temp_dir, &runtime_config_path)
+}
+
+/// Polls `service` on the daemon-mode test node until it answers or the
+/// runner exits, returning the reply payload.
+async fn poll_test_node_service(
+    messenger: &peppylib::MessengerHandle,
+    runner_task: &mut tokio::task::JoinHandle<Result<(), PeppyError>>,
+    service: &str,
+    request: Payload,
+) -> Payload {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if runner_task.is_finished() {
+            let result = runner_task.await.expect("runner task should not panic");
+            panic!("runner exited early: {result:?}");
+        }
+        match peppylib::ServiceMessenger::poll(
+            messenger,
+            TEST_CORE_NODE,
+            SHUTDOWN_SENDER_INSTANCE_ID,
+            test_node_target(TEST_NODE_NAME),
+            service,
+            ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+            request.clone(),
+            Duration::from_millis(500),
+        )
+        .await
+        {
+            Ok(response) => return response.payload(),
+            Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await
+            }
+            Err(err) => panic!("`{service}` never answered: {err}"),
+        }
+    }
+}
+
+/// In daemon mode a node whose manifest declares endpoints offers
+/// `node_endpoints` once setup returned, answering with the sealed set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_runner_offers_node_endpoints_for_a_manifest_that_declares_them() {
+    use peppylib::encoding::endpoints::{NodeEndpointsRequest, NodeEndpointsResponse};
+    use peppylib::messaging::NODE_ENDPOINTS_SERVICE;
+
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let _env_guard = write_daemon_runtime_config(
+        temp_dir.path(),
+        ENDPOINTS_PEPPY_CONFIG,
+        &router_host,
+        router_port,
+    );
+
+    let mut runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new().run(|_parameters: Parameters, node_runner| async move {
+            node_runner
+                .announce_endpoint("panel", binding("http", "0.0.0.0:8765", ""))
+                .expect("declared");
+            node_runner
+                .announce_endpoint("viewer", binding("https", "[::]:8080", "/"))
+                .expect("declared");
+            Ok(())
+        })
+    });
+
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger");
+    let request = NodeEndpointsRequest::new()
+        .encode()
+        .expect("failed to encode endpoints request");
+    let reply = poll_test_node_service(
+        &messenger,
+        &mut runner_task,
+        NODE_ENDPOINTS_SERVICE,
+        request,
+    )
+    .await;
+    let response = NodeEndpointsResponse::decode(&reply).expect("endpoints response decodes");
+    let announced: Vec<(String, String, String, String)> = response
+        .endpoints
+        .into_iter()
+        .map(|endpoint| {
+            (
+                endpoint.label,
+                endpoint.binding.scheme,
+                endpoint.binding.address.to_string(),
+                endpoint.binding.path,
+            )
+        })
+        .collect();
+    assert_eq!(
+        announced,
+        [
+            (
+                "panel".to_string(),
+                "http".to_string(),
+                "0.0.0.0:8765".to_string(),
+                String::new()
+            ),
+            (
+                "viewer".to_string(),
+                "https".to_string(),
+                "[::]:8080".to_string(),
+                "/".to_string()
+            ),
+        ]
+    );
+
+    let shutdown_response = peppylib::ServiceMessenger::poll(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        test_node_target(TEST_NODE_NAME),
+        SHUTDOWN_SERVICE,
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+        Payload::from_static(b"shutdown"),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("shutdown service should respond");
+    assert_eq!(shutdown_response.instance_id(), TEST_INSTANCE_ID);
+    tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
+        .await
+        .expect("runner should exit")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+}
+
+/// A node whose manifest declares no endpoint never offers `node_endpoints`:
+/// once `node_health` answers (registered in the same post-setup step), the
+/// endpoints service is still unreachable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_runner_offers_no_node_endpoints_for_a_manifest_without_them() {
+    use peppylib::messaging::NODE_ENDPOINTS_SERVICE;
+
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let peppy_config = r#"{
+      peppy_schema: "node/v1",
+      manifest: { name: "test_node", tag: "v1" },
+      execution: {
+        language: "rust",
+        parameters: { frequency_hz: "f64" },
+        run_cmd: ["./target/debug/test_node"]
+      },
+    }"#;
+    let _env_guard =
+        write_daemon_runtime_config(temp_dir.path(), peppy_config, &router_host, router_port);
+
+    let mut runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new().run(|_parameters: Parameters, _node_runner| async move { Ok(()) })
+    });
+
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger");
+    let health_request = NodeHealthRequest::new()
+        .encode()
+        .expect("failed to encode health request");
+    let reply = poll_test_node_service(
+        &messenger,
+        &mut runner_task,
+        NODE_HEALTH_SERVICE,
+        health_request,
+    )
+    .await;
+    NodeHealthResponse::decode(&reply).expect("health response should decode");
+
+    let endpoints_reachable = peppylib::ServiceMessenger::is_reachable(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        test_node_target(TEST_NODE_NAME),
+        NODE_ENDPOINTS_SERVICE,
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+    )
+    .await
+    .expect("reachability check should succeed");
+    assert!(
+        !endpoints_reachable,
+        "a node that declares no endpoint must not offer `node_endpoints`"
+    );
+
+    let shutdown_response = peppylib::ServiceMessenger::poll(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        test_node_target(TEST_NODE_NAME),
+        SHUTDOWN_SERVICE,
+        ServiceTarget::Producer(&ProducerRef::new(TEST_CORE_NODE, TEST_INSTANCE_ID)),
+        Payload::from_static(b"shutdown"),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("shutdown service should respond");
+    assert_eq!(shutdown_response.instance_id(), TEST_INSTANCE_ID);
+    tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
+        .await
+        .expect("runner should exit")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn standalone_runner_succeed() {
     use peppylib::runtime::CancellationToken;

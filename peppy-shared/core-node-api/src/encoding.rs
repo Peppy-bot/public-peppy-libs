@@ -4,6 +4,7 @@
 //! used in the core-node services.
 mod clock;
 mod datastore;
+mod endpoints;
 mod federation;
 mod health;
 mod info;
@@ -58,8 +59,9 @@ pub use stack::benchmark::{
 pub use stack::budgets::{DEFAULT_IDLE_TIMEOUT_SECS, StackBudgets};
 pub use stack::join::{ArgumentOverride, ArgumentOverrideError, JoinPlacement, StackJoinGoal};
 pub use stack::launch::{
-    LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, PlacementSpec,
+    InstanceEndpoints, LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse,
+    LaunchResult, LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
+    PlacementSpec,
 };
 pub use stack::list::{CopyInfo, LaunchIdentity, StackListRequest, StackListResponse};
 pub use stack::remove::StackRemoveGoal;

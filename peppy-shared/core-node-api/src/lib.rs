@@ -51,8 +51,8 @@ pub mod registry;
 pub use env::FORBIDDEN_ENV_KEYS;
 pub use error::{Error, Result};
 pub use graph::{
-    InstanceState, NodeNotFound, NodeStage, SerializedEdge, SerializedInstance, SerializedNode,
-    SerializedNodeGraph, SerializedPairingSlot,
+    InstanceEndpoint, InstanceState, NodeNotFound, NodeStage, SerializedEdge, SerializedInstance,
+    SerializedNode, SerializedNodeGraph, SerializedPairingSlot,
 };
 pub use payload::{EmptyPayloadError, NonEmptyPayload, Payload};
 pub use registry::{ActionGoal, ActionId, LaunchScoped, ServiceId, ServiceRequest, TopicId};

@@ -65,3 +65,8 @@ mod observation_update_capnp {
 mod slot_update_capnp {
     include!(concat!(env!("OUT_DIR"), "/slot_update_capnp.rs"));
 }
+
+#[allow(clippy::all)]
+mod endpoints_capnp {
+    include!(concat!(env!("OUT_DIR"), "/endpoints_capnp.rs"));
+}

@@ -10,10 +10,12 @@ use crate::node_capnp;
 use crate::{NonEmptyPayload, Payload, Result};
 
 use super::builder::FeedbackStream;
+use crate::encoding::endpoints::{read_node_endpoints, write_node_endpoints};
 use crate::encoding::{
     capnp_list_len, decode_message, encode_message, encode_message_non_empty, optional_text,
     read_text_list, required_text, write_text_list,
 };
+use crate::graph::InstanceEndpoint;
 
 /// One peer reference carried by [`NodeRunGoal::requested_pairs`] /
 /// [`NodeRunGoal::covered_pairs`]: the peer instance and, optionally, the
@@ -908,6 +910,10 @@ pub struct NodeRunResult {
     pub error_message: Option<String>,
     /// Process ID of the started node (None if not available or failed).
     pub pid: Option<u32>,
+    /// The endpoints the started instance serves, in label order, as the
+    /// daemon hosting it expanded them; empty for a node that declares none
+    /// and for a failed run.
+    pub endpoints: Vec<InstanceEndpoint>,
 }
 
 impl NodeRunResult {
@@ -916,6 +922,7 @@ impl NodeRunResult {
             success,
             error_message,
             pid,
+            endpoints: Vec::new(),
         }
     }
 
@@ -927,6 +934,12 @@ impl NodeRunResult {
         Self::new(false, Some(error_message.into()), None)
     }
 
+    /// The endpoints the started instance serves.
+    pub fn with_endpoints(mut self, endpoints: Vec<InstanceEndpoint>) -> Self {
+        self.endpoints = endpoints;
+        self
+    }
+
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
@@ -936,6 +949,8 @@ impl NodeRunResult {
                 result.set_error_message(error_message);
             }
             result.set_pid(self.pid.unwrap_or(0));
+            let endpoint_count = capnp_list_len(self.endpoints.len(), "NodeRunResult.endpoints")?;
+            write_node_endpoints(result.init_endpoints(endpoint_count), &self.endpoints)?;
         }
         encode_message(&builder)
     }
@@ -954,6 +969,7 @@ impl NodeRunResult {
             success: result.get_success(),
             error_message,
             pid,
+            endpoints: read_node_endpoints(result.get_endpoints()?)?,
         })
     }
 }
@@ -1687,5 +1703,20 @@ mod tests {
     #[test]
     fn node_run_result_decode_rejects_malformed_bytes() {
         assert!(NodeRunResult::decode(&[0xde, 0xad, 0xbe, 0xef]).is_err());
+    }
+
+    /// The endpoints a started instance serves ride the result, with their
+    /// kind and every URL; a node that declares none carries the empty set.
+    #[test]
+    fn node_run_result_roundtrips_endpoints() {
+        let endpoints = crate::encoding::endpoints::sample_endpoints();
+        let result = NodeRunResult::success(42).with_endpoints(endpoints.clone());
+        let decoded = NodeRunResult::decode(&result.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.endpoints, endpoints);
+        assert_eq!(decoded, result);
+
+        let plain = NodeRunResult::success(42);
+        let decoded = NodeRunResult::decode(&plain.encode().expect("encode")).expect("decode");
+        assert!(decoded.endpoints.is_empty());
     }
 }

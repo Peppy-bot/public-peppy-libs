@@ -367,6 +367,19 @@ pub enum ParsingError {
     // -- node config: execution
     #[error("Node config `execution.language` is required when an execution block is defined")]
     MissingExecutionLanguage,
+    #[error(
+        "Invalid endpoint label `{label}` in `execution.endpoints`: a label is ASCII lowercase letters, digits and underscores, starting with a letter"
+    )]
+    InvalidEndpointLabel { label: String },
+    #[error(
+        "Endpoint `{label}` in `execution.endpoints` declares kind `{kind}`; the kind is {accepted}",
+        accepted = crate::internal::node::EndpointKind::ACCEPTED
+    )]
+    InvalidEndpointKind { label: String, kind: String },
+    #[error(
+        "Endpoint `{label}` in `execution.endpoints` needs a non-empty `description`: it is what tells a reader of the manifest what the endpoint serves"
+    )]
+    EmptyEndpointDescription { label: String },
 
     // -- container config: mount paths
     #[error(
@@ -516,6 +529,16 @@ pub enum StructuredError {
     PairingSlotMissingRole {
         link_id: String,
     },
+    InvalidEndpointLabel {
+        label: String,
+    },
+    InvalidEndpointKind {
+        label: String,
+        kind: String,
+    },
+    EmptyEndpointDescription {
+        label: String,
+    },
 }
 
 impl StructuredError {
@@ -550,6 +573,15 @@ impl From<StructuredError> for ParsingError {
             }
             StructuredError::PairingSlotMissingRole { link_id } => {
                 ParsingError::PairingSlotMissingRole { link_id }
+            }
+            StructuredError::InvalidEndpointLabel { label } => {
+                ParsingError::InvalidEndpointLabel { label }
+            }
+            StructuredError::InvalidEndpointKind { label, kind } => {
+                ParsingError::InvalidEndpointKind { label, kind }
+            }
+            StructuredError::EmptyEndpointDescription { label } => {
+                ParsingError::EmptyEndpointDescription { label }
             }
         }
     }

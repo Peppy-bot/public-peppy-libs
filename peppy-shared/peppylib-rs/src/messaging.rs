@@ -88,6 +88,11 @@ use tokio::{
 // services
 pub const NODE_HEALTH_SERVICE: &str = "node_health";
 pub const NODE_READY_SERVICE: &str = "node_ready";
+/// Framework service a node exposes when its manifest declares
+/// `execution.endpoints`: the daemon reads the sockets the node bound during
+/// setup, one per declared label, and turns them into the URLs it reports.
+/// Registered post-setup next to `node_health`, once the set is sealed.
+pub const NODE_ENDPOINTS_SERVICE: &str = "node_endpoints";
 pub const SHUTDOWN_SERVICE: &str = "shutdown";
 /// Framework service every node exposes: the daemon delivers absolute
 /// pairing-slot state (pair, re-pin, clear) over it. Registered pre-setup —

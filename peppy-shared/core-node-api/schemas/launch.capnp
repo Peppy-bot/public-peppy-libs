@@ -183,6 +183,35 @@ struct NodeBuildLog {
     coreNode @3 :Text;
 }
 
+# What an operator does with an endpoint's URL: `page` is opened in a
+# browser, `mcp` is attached to by an MCP client. Every schema in this
+# directory is self-contained, so this mirrors `node.capnp`'s enum.
+enum EndpointKind {
+    page @0;
+    mcp @1;
+}
+
+# One endpoint an instance serves: its declared label and kind, and the URLs
+# the daemon hosting the instance expanded the bound socket into.
+struct LaunchEndpoint {
+    label @0 :Text;
+    kind @1 :EndpointKind;
+    urls @2 :List(Text);
+}
+
+# The endpoints of one started instance. The URLs were expanded by the daemon
+# that hosts the instance against its own interfaces, so a coordinator only
+# forwards them with that daemon's core node name.
+struct InstanceEndpoints {
+    # Instance ID
+    instanceId @0 :Text;
+    # Node label in "name:tag" format
+    nodeLabel @1 :Text;
+    # Core node hosting the instance
+    coreNode @2 :Text;
+    endpoints @3 :List(LaunchEndpoint);
+}
+
 struct LaunchResult {
     # Whether the launch was successful
     success @0 :Bool;
@@ -196,4 +225,6 @@ struct LaunchResult {
     nodeRunLogs @4 :List(NodeRunLog);
     # Per-node build log entries
     nodeBuildLogs @5 :List(NodeBuildLog);
+    # The endpoints of every started instance that serves one, in start order.
+    instanceEndpoints @6 :List(InstanceEndpoints);
 }

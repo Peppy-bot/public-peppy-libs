@@ -1278,7 +1278,16 @@ impl HarnessCore {
             .await?;
         }
 
-        let setup_task = spawn(setup(params, Arc::clone(&node_runner)));
+        // Setup ends with the same check production runs: every endpoint the
+        // manifest declares was announced, and nothing can be announced after.
+        let setup_future = setup(params, Arc::clone(&node_runner));
+        let setup_task = spawn({
+            let node_runner = Arc::clone(&node_runner);
+            async move {
+                setup_future.await?;
+                node_runner.seal_endpoints().map(drop)
+            }
+        });
 
         Ok(Self {
             node_runner,

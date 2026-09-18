@@ -1143,7 +1143,14 @@ class HarnessCore:
                 READINESS_TIMEOUT,
             )
 
-        setup_task = asyncio.create_task(setup(parameters, node_runner))
+        async def setup_then_seal() -> None:
+            # Setup ends with the same check production runs: every endpoint
+            # the manifest declares was announced, and nothing can be
+            # announced after.
+            await setup(parameters, node_runner)
+            node_runner.seal_endpoints()
+
+        setup_task = asyncio.create_task(setup_then_seal())
         return cls(node_runner, setup_task)
 
     @property

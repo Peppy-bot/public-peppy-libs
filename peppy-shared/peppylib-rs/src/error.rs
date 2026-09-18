@@ -145,6 +145,30 @@ pub enum Error {
     )]
     UnknownObservationSlot { link_id: String },
 
+    // -- endpoints (`execution.endpoints`)
+    #[error(
+        "endpoint `{label}` is not declared: the manifest's `execution.endpoints` names no such label, so nothing can be announced under it"
+    )]
+    UndeclaredEndpoint { label: String },
+
+    #[error(
+        "endpoint `{label}` is already announced; a label is announced once, with the socket the node bound"
+    )]
+    EndpointAlreadyAnnounced { label: String },
+
+    #[error(
+        "endpoint `{label}` cannot be announced after setup returned: the announced set is sealed when `setup_fn` returns, so every announcement belongs inside setup"
+    )]
+    EndpointsSealed { label: String },
+
+    #[error("endpoint `{label}` has an invalid binding: {reason}")]
+    InvalidEndpointBinding { label: String, reason: String },
+
+    #[error(
+        "endpoint `{label}` is declared in the manifest's `execution.endpoints` but setup returned without announcing it: call `announce_endpoint` with the socket the node bound"
+    )]
+    EndpointNotAnnounced { label: String },
+
     // -- topics/services/actions errors
     #[error(
         "service '{service_name}'{instance_suffix} is unreachable",
