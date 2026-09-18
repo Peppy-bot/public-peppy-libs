@@ -96,10 +96,7 @@ pub struct ParticipantReserveResponse {
 }
 
 impl ParticipantReserveResponse {
-    pub fn accepted(
-        peppy_version: impl Into<String>,
-        root_instance_id: impl Into<String>,
-    ) -> Self {
+    pub fn accepted(peppy_version: impl Into<String>, root_instance_id: impl Into<String>) -> Self {
         Self {
             accepted: true,
             rejection_reason: None,

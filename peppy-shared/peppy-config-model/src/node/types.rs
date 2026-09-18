@@ -1388,16 +1388,6 @@ impl EndpointLabel {
     }
 }
 
-impl<'de> Deserialize<'de> for EndpointLabel {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        EndpointLabel::new(raw).map_err(|err| de::Error::custom(err.to_string()))
-    }
-}
-
 impl From<EndpointLabel> for String {
     fn from(label: EndpointLabel) -> Self {
         label.0
@@ -1429,7 +1419,9 @@ impl fmt::Display for EndpointLabel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EndpointDeclaration {
     pub kind: EndpointKind,
-    /// Non-empty prose: what `peppy node info` shows for the endpoint.
+    /// Non-empty prose saying what the endpoint serves, for the reader of
+    /// the manifest. It stays in the manifest: the daemon reports an
+    /// endpoint by label and kind, and no listing carries this text today.
     pub description: String,
 }
 

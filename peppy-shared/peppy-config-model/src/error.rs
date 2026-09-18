@@ -377,7 +377,7 @@ pub enum ParsingError {
     )]
     InvalidEndpointKind { label: String, kind: String },
     #[error(
-        "Endpoint `{label}` in `execution.endpoints` needs a non-empty `description`: it is what `peppy node info` shows for the endpoint"
+        "Endpoint `{label}` in `execution.endpoints` needs a non-empty `description`: it is what tells a reader of the manifest what the endpoint serves"
     )]
     EmptyEndpointDescription { label: String },
 

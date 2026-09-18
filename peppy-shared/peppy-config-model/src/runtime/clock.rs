@@ -234,7 +234,13 @@ mod tests {
     /// node reads a lifetime its daemon never chose.
     #[test]
     fn every_admitted_lifetime_survives_a_json5_round_trip() {
-        for value in [1, 2, 1_000_000, ClockIncarnation::MAX - 1, ClockIncarnation::MAX] {
+        for value in [
+            1,
+            2,
+            1_000_000,
+            ClockIncarnation::MAX - 1,
+            ClockIncarnation::MAX,
+        ] {
             let held = ClockIncarnation::try_from(value).expect("inside the range");
             let text = serde_json5::to_string(&held).expect("serializes");
             let back: ClockIncarnation = serde_json5::from_str(&text).expect("parses");

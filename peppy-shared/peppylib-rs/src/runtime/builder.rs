@@ -829,6 +829,28 @@ async fn run_post_setup_services(
     let as_identity =
         crate::messaging::SenderTarget::node(processor.node_name(), processor.node_tag())?;
 
+    // `node_endpoints` exists only for a node whose manifest declares
+    // endpoints: the daemon polls it at start for exactly those nodes, and a
+    // node that serves nothing has nothing to answer. Declared before
+    // `node_health` because the daemon's endpoint query follows the health
+    // reply immediately; registering it after would leave the service two
+    // awaits behind at that moment, costing every such instance a wasted
+    // query and its retry backoff.
+    let endpoints_handle = if node_runner.declares_endpoints() {
+        Some(
+            listen_for_node_endpoints(
+                node_runner.messenger(),
+                processor.bound_core_node(),
+                processor.bound_instance_id(),
+                as_identity.clone(),
+                endpoints,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+
     // `node_health` stays in post-setup on purpose: many tests use
     // `wait_for_health` as a "setup completed" signal — they spawn a
     // consumer, wait for its health endpoint, and only then send shutdown,
@@ -856,7 +878,7 @@ async fn run_post_setup_services(
     // offset to the core node to normalize cross-host topic timestamps. It runs
     // an on-demand clock exchange; no user code is involved.
     let clock_offset_handle =
-        listen_for_clock_offset(Arc::clone(&node_runner), as_identity.clone()).await?;
+        listen_for_clock_offset(Arc::clone(&node_runner), as_identity).await?;
 
     let mut handles = vec![
         ready_handle,
@@ -866,22 +888,7 @@ async fn run_post_setup_services(
         observation_update_handle,
         shutdown_handle,
     ];
-
-    // `node_endpoints` exists only for a node whose manifest declares
-    // endpoints: the daemon polls it at start for exactly those nodes, and a
-    // node that serves nothing has nothing to answer.
-    if node_runner.declares_endpoints() {
-        handles.push(
-            listen_for_node_endpoints(
-                node_runner.messenger(),
-                processor.bound_core_node(),
-                processor.bound_instance_id(),
-                as_identity,
-                endpoints,
-            )
-            .await?,
-        );
-    }
+    handles.extend(endpoints_handle);
 
     tokio::select! {
         result = wait_for_handles(handles) => {

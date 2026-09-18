@@ -1063,10 +1063,15 @@ impl PyNodeRunner {
         path: String,
     ) -> PyResult<()> {
         let ip: std::net::IpAddr = host.parse().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "endpoint `{label}` has an invalid binding: host `{host}` is not an IP literal \
-                 (announce the address the listener bound, e.g. `0.0.0.0` or `127.0.0.1`)"
-            ))
+            // The same variant the Rust binding refuses a malformed scheme or
+            // path with, so both languages word an invalid binding alike.
+            crate::messaging::to_py_err(peppylib::PeppyError::InvalidEndpointBinding {
+                label: label.to_string(),
+                reason: format!(
+                    "host `{host}` is not an IP literal (announce the address the listener \
+                     bound, e.g. `0.0.0.0` or `127.0.0.1`)"
+                ),
+            })
         })?;
         self.inner
             .announce_endpoint(

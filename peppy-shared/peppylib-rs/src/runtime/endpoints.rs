@@ -122,8 +122,26 @@ impl AnnouncedEndpoints {
                 });
             }
         }
+        let sealed = self.snapshot();
+        // Named once, on the transition, so a node's own log says what it
+        // serves. Under a daemon the reported URLs expand these against every
+        // host address; standalone there is no daemon to report them at all,
+        // and this line is the only place the operator reads them.
+        if !self.sealed {
+            for endpoint in &sealed {
+                let EndpointBinding {
+                    scheme,
+                    address,
+                    path,
+                } = &endpoint.binding;
+                tracing::info!(
+                    "endpoint `{}` bound at {scheme}://{address}{path}",
+                    endpoint.label
+                );
+            }
+        }
         self.sealed = true;
-        Ok(self.snapshot())
+        Ok(sealed)
     }
 
     /// The announced set so far, in label order.
