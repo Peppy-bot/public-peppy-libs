@@ -1,11 +1,10 @@
 name: Python libs Tests
 
-# CI for the repository's Python libraries (control_core_py, so101_description,
-# and any future sibling): every top-level directory holding a pyproject.toml
-# and a tests/ tree is discovered from the filesystem and runs its suite from
-# its own uv environment, resolved --frozen against its committed uv.lock.
-# The suites are self-contained unit tests: no peppy daemon, no container
-# runtime, no hardware.
+# CI for the repository's Python libraries: every top-level directory holding a
+# pyproject.toml and a tests/ tree is discovered from the filesystem and runs
+# its suite from its own uv environment, resolved --frozen against its
+# committed uv.lock. The suites are self-contained unit tests: no peppy daemon,
+# no container runtime, no hardware.
 
 on:
   push:
@@ -15,7 +14,7 @@ on:
       - '*/src/**'
       - '*/tests/**'
       - '.github/workflows/python-libs-tests.yml'
-  # No `paths` filter here, mirroring peppy-shared-tests.yml: a required status
+  # No `paths` filter here, mirroring rust-crates-tests.yml: a required status
   # check that a `paths` filter suppresses never reports at all and blocks the
   # pull request with nothing to wait for. The path decision lives in the
   # `changes` job instead, and a skipped `test` job reports success.
@@ -27,7 +26,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # As in peppy-shared-tests.yml: decides whether the Python libs were touched,
+  # As in rust-crates-tests.yml: decides whether the Python libs were touched,
   # so an unrelated pull request skips the `test` job rather than building it.
   # Runs on the self-hosted runner like everything else, so it queues behind
   # whatever the box is building before it can rule a pull request out.
