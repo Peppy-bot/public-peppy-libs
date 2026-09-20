@@ -5,8 +5,8 @@ edition = "2024"
 description = "Forward kinematics, the geometric Jacobian, and damped resolved-rate inverse kinematics for any serial chain read from a URDF. Robot-agnostic and generic over the number of joints. Pure Rust, no hardware or messaging deps."
 
 # A workspace root of its own, so cargo's search for one ends at this manifest
-# whatever sits above the tree. `peppy-shared/build-helpers/tests/sealed_tree.rs`
-# holds every package of the tree to that.
+# whatever sits above this repository, which is what lets a consumer pull the
+# package by git from any checkout layout.
 [workspace]
 
 [dependencies]

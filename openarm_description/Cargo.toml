@@ -5,8 +5,8 @@ edition = "2024"
 description = "The OpenArm robot descriptions (v1.0 and v2.0): the single embedded source of truth for the URDFs (and, behind the `meshes` feature, the collision meshes), plus the constants and joint limits describing their control margins, selected by HardwareVersion. Pure data, no solver deps."
 
 # A workspace root of its own, so cargo's search for one ends at this manifest
-# whatever sits above the tree. `peppy-shared/build-helpers/tests/sealed_tree.rs`
-# holds every package of the tree to that.
+# whatever sits above this repository, which is what lets a consumer pull the
+# package by git from any checkout layout.
 [workspace]
 
 [features]
