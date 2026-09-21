@@ -4,7 +4,7 @@ What a simulation engine node knows about the robots it stands, whatever its phy
 
 | Module | What it holds |
 |---|---|
-| `registry` | The robots in the scene, by the name each stands under: who may join, who holds which robot, and the lease a robot keeps while its pairs are its model's. |
+| `registry` | The robots in the scene, by the name each stands under: who may join, who holds which robot, and the lease a robot keeps while its pairs are its model's, running from the first time a limb reaches it. |
 | `pairs` | The four pairing slots an engine declares (`arms`, `grippers`, `rgb_cameras`, `rgbd_cameras`) and what each pair names: its robot, and its limb or its camera. |
 | `models` | One entry per robot model, with its checks, and the table that pairs those entries with an engine's own. |
 | `cameras` | The camera configuration of a model's entry, the z16 depth wire format, and per-camera frame pacing. |
@@ -36,7 +36,7 @@ known.engine                     # the engine's own entry, as written
 
 ## The match
 
-`ModelEntry.mismatch(held)` compares what a robot holds on the four slots with what its model has, and names both lists when they differ: a limb or a camera the model lacks, or a limb the model has and no pair drives. A camera the model has may go unpaired, since a camera nobody views is not rendered. An engine renews a robot's lease only while its pairs match, so a robot paired as another model does not stay, and `ModelEntry.holds_every_limb(held)` is what a robot's readiness asks.
+`ModelEntry.mismatch(held)` compares what a robot holds on the four slots with what its model has, and names both lists when they differ: a limb or a camera the model lacks, or a limb the model has and no pair drives. A camera the model has may go unpaired, since a camera nobody views is not rendered. An engine renews a robot's lease only while its pairs match, so a robot paired as another model does not stay; a robot no limb reached yet has no lease running (`Registry.note_limbs_reached` starts it, `Robot.lease_ran_out` reads it), its stay is its attach goal's until one does, and `ModelEntry.holds_every_limb(held)` is what a robot's readiness asks.
 
 ## Tests
 
