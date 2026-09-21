@@ -1,19 +1,19 @@
-"""FK/IK over lerobot's placo-based RobotKinematics, radians at this boundary.
+"""FK/IK over placo's kinematics solver, radians at this boundary.
 
-lerobot's solver speaks degrees and 4x4 matrices; everything above this module
-speaks joint_link radians and wire poses. IK is verified by FK before it is
-trusted: placo returns its best effort even far from the target, and an
-unreached pose must fail the caller instead of moving the arm somewhere else.
+placo speaks 4x4 matrices; everything above this module speaks joint_link
+radians and wire poses. IK is verified by FK before it is trusted: placo
+returns its best effort even far from the target, and an unreached pose must
+fail the caller instead of moving the arm somewhere else.
 
 What that verification costs, measured on poses reachable by construction (a
 random in-limits joint vector, its FK taken as the target): 14% of targets are
 refused when seeded from the ready posture and 39% when seeded from an
 arbitrary one, concentrated near the base (25% within 0.23 m, 7% beyond
-0.45 m). The cause is structural rather than a tuning miss. lerobot's
-inverse_kinematics is a single linearised step, so iterating it is a local
-descent from the seed and reaches only what the seed's branch reaches; a
-refusal means this branch did not arrive, not that the pose is unreachable.
-Callers that need the wider workspace re-seed and ask again.
+0.45 m). The cause is structural rather than a tuning miss. A solve is a
+single linearised QP step, so iterating it is a local descent from the seed
+and reaches only what the seed's branch reaches; a refusal means this branch
+did not arrive, not that the pose is unreachable. Callers that need the wider
+workspace re-seed and ask again.
 """
 
 from __future__ import annotations
@@ -32,8 +32,8 @@ from so101_description.units import JOINT_NAMES
 
 # Positional acceptance for a verified point-to-point solution.
 IK_POSITION_TOLERANCE_M = 0.01
-# lerobot's inverse_kinematics runs one QP step, sized for streaming small
-# deltas; a point-to-point solve iterates it until FK verifies the position.
+# A solve runs one QP step, sized for streaming small deltas; a
+# point-to-point solve iterates it until FK verifies the position.
 IK_MAX_ITERATIONS = 100
 # The streamed path is best effort: a few steps bound the per-tick cost, and
 # an out-of-reach pose tracks the workspace boundary instead of freezing.
@@ -41,9 +41,9 @@ IK_STREAM_ITERATIONS = 3
 
 # Position and orientation are both soft objectives of one QP, minimising
 # `position_weight * |dp|^2 + orientation_weight * |dtheta|^2`. The terms are
-# metres against radians, so the weight ratio is not the trade: at lerobot's
-# default 0.01 a 20 degree miss outweighs a 7 mm miss by more than twenty to
-# one, and the solver spends position buying orientation. Five joints
+# metres against radians, so the weight ratio is not the trade: at 0.01 a 20
+# degree miss outweighs a 7 mm miss by more than twenty to one, and the
+# solver spends position buying orientation. Five joints
 # underactuate three rotational degrees of freedom, so on this arm that
 # purchase is frequently impossible and the position is spent for nothing.
 #
@@ -52,6 +52,9 @@ IK_STREAM_ITERATIONS = 3
 # degree, while an unreachable one stops taking the position with it. Zero is
 # not the answer; it abandons reachable orientations entirely.
 ORIENTATION_WEIGHT = 1e-4
+# The position objective's weight, the unit the orientation weight is
+# measured against.
+POSITION_WEIGHT = 1.0
 
 
 def _bar(value: float | None, default: float) -> float:
@@ -65,14 +68,25 @@ def _bar(value: float | None, default: float) -> float:
     return value
 
 class Kinematics:
-    def __init__(self, urdf_path: str):
-        from lerobot.model.kinematics import RobotKinematics
+    """The arm's model loaded once, with the QP that solves the end effector's
+    pose over it. The import is deferred to here so hardware-only consumers
+    of this package never load the solver stack."""
 
-        self._solver = RobotKinematics(
-            urdf_path=urdf_path,
-            target_frame_name=END_EFFECTOR_FRAME,
-            joint_names=list(JOINT_NAMES),
-        )
+    def __init__(self, urdf_path: str):
+        import placo  # pylint: disable=C0415
+
+        self._robot = placo.RobotWrapper(urdf_path)
+        self._solver = placo.KinematicsSolver(self._robot)
+        self._solver.mask_fbase(True)
+        self._tip = self._solver.add_frame_task(END_EFFECTOR_FRAME, np.eye(4))
+
+    def _set_joints(self, positions_rad) -> None:
+        for name, value in zip(JOINT_NAMES, positions_rad, strict=True):
+            self._robot.set_joint(name, float(value))
+        self._robot.update_kinematics()
+
+    def _joints(self) -> tuple[float, ...]:
+        return tuple(float(self._robot.get_joint(name)) for name in JOINT_NAMES)
 
     def jacobian(self, positions_rad: tuple[float, ...]):
         """The end-effector Jacobian at these joint positions: 6 rows by one
@@ -89,28 +103,23 @@ class Kinematics:
         twist of the body frame referred to the world origin, whose linear
         part is not the tool point's velocity. Against a finite difference the
         two disagree by tens of percent at every step size."""
-        robot = self._solver.robot
         # The QP carries state between solves, and moving the model out from
         # under it diverges a streaming solve by radians. This is a query, so
         # it puts the configuration back before returning.
-        restore = {name: robot.get_joint(name) for name in JOINT_NAMES}
+        restore = self._joints()
         try:
-            for name, value in zip(JOINT_NAMES, positions_rad, strict=True):
-                robot.set_joint(name, value)
-            robot.update_kinematics()
-            columns = [robot.get_joint_v_offset(name) for name in JOINT_NAMES]
+            self._set_joints(positions_rad)
+            columns = [self._robot.get_joint_v_offset(name) for name in JOINT_NAMES]
             return np.asarray(
-                robot.frame_jacobian(END_EFFECTOR_FRAME, "local_world_aligned")
+                self._robot.frame_jacobian(END_EFFECTOR_FRAME, "local_world_aligned")
             )[:, columns]
         finally:
-            for name, value in restore.items():
-                robot.set_joint(name, value)
-            robot.update_kinematics()
+            self._set_joints(restore)
 
     def forward_kinematics(self, positions_rad: tuple[float, ...]):
         """(position m, quaternion xyzw) of the end effector."""
-        matrix = self._solver.forward_kinematics(np.degrees(positions_rad))
-        return pose_from_matrix(matrix)
+        self._set_joints(positions_rad)
+        return pose_from_matrix(self._robot.get_T_world_frame(END_EFFECTOR_FRAME))
 
     def inverse_kinematics(
         self,
@@ -135,12 +144,9 @@ class Kinematics:
         target_matrix = matrix_from_pose(position, orientation)
         target_position = tuple(position)
         target_orientation = tuple(orientation)
-        joints_deg = np.degrees(seed_rad)
+        solution_rad = tuple(seed_rad)
         for _ in range(IK_MAX_ITERATIONS):
-            joints_deg = self._step(
-                joints_deg, target_matrix, ORIENTATION_WEIGHT
-            )
-            solution_rad = self._as_radians(joints_deg)
+            solution_rad = self._step(solution_rad, target_matrix)
             reached, reached_orientation = self.forward_kinematics(solution_rad)
             if math.dist(reached, target_position) > position_bar:
                 continue
@@ -156,29 +162,24 @@ class Kinematics:
         workspace boundary instead of freezing the arm. None only for a
         solution the solver corrupted (non-finite)."""
         target_matrix = matrix_from_pose(position, orientation)
-        joints_deg = np.degrees(seed_rad)
+        solution_rad = tuple(seed_rad)
         for _ in range(IK_STREAM_ITERATIONS):
-            joints_deg = self._step(
-                joints_deg, target_matrix, ORIENTATION_WEIGHT
-            )
-        solution_rad = self._as_radians(joints_deg)
+            solution_rad = self._step(solution_rad, target_matrix)
         if not all(math.isfinite(v) for v in solution_rad):
             return None
         return solution_rad
 
-    def _step(self, joints_deg, target_matrix, orientation_weight: float):
-        """One QP step. The orientation weight is stated at every call rather
-        than inherited from lerobot's signature default, because which pose
-        objective this arm should trade away is our decision, not theirs."""
-        return self._solver.inverse_kinematics(
-            joints_deg, target_matrix, orientation_weight=orientation_weight
-        )
-
-    @staticmethod
-    def _as_radians(joints_deg) -> tuple[float, ...]:
-        values = tuple(float(v) for v in np.radians(joints_deg))
-        if len(values) != len(JOINT_NAMES):
-            raise ValueError(
-                f"solver returned {len(values)} joints, expected {len(JOINT_NAMES)}"
-            )
-        return values
+    def _step(self, seed_rad, target_matrix) -> tuple[float, ...]:
+        """One QP step from the seed toward the pose, both objectives soft
+        at the weights above: the joint radians it lands on. The seed is
+        written to the model without updating its kinematics: the QP
+        linearises at the configuration the last query left, which within
+        a solve is the seed itself, and on the first step of a solve is the
+        pose queried last."""
+        for name, value in zip(JOINT_NAMES, seed_rad, strict=True):
+            self._robot.set_joint(name, float(value))
+        self._tip.T_world_frame = target_matrix
+        self._tip.configure(END_EFFECTOR_FRAME, "soft", POSITION_WEIGHT, ORIENTATION_WEIGHT)
+        self._solver.solve(True)
+        self._robot.update_kinematics()
+        return self._joints()
