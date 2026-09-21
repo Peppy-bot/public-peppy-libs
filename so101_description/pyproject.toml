@@ -10,9 +10,9 @@ requires-python = ">=3.12,<3.14"
 dependencies = ["control_core_py", "numpy>=1.26"]
 
 [project.optional-dependencies]
-# The kinematics module wraps lerobot's placo solver; hardware-only
-# consumers skip the extra and the solver stack with it.
-kinematics = ["lerobot[kinematics]>=0.6,<0.7"]
+# The kinematics module runs placo's solver; hardware-only consumers skip
+# the extra and the solver stack with it.
+kinematics = ["placo>=0.9.6,<0.9.16"]
 
 [tool.uv.sources]
 control_core_py = { path = "../control_core_py" }
@@ -21,7 +21,7 @@ control_core_py = { path = "../control_core_py" }
 packages = ["src/so101_description"]
 
 [dependency-groups]
-dev = ["pytest>=8", "lerobot[kinematics]>=0.6,<0.7"]
+dev = ["pytest>=8", "placo>=0.9.6,<0.9.16"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
