@@ -7,9 +7,11 @@ limbs reach it through its own pairs, and the copy the engine reads on a pair
 is the name the robot attached under, which is how one robot's limbs are told
 from another's.
 
-A robot stays while its pairs are the ones its model asks for: the pairs
-dissolve when its nodes stop, and a robot that has not held them past its
-lease leaves the scene.
+A robot's limbs reach it once their nodes are up, however long that takes,
+and until the first of them does its stay is its attach goal's. From then on
+it stays while its pairs are the ones its model asks for: the pairs dissolve
+when its nodes stop, and a robot that has not held them past its lease
+leaves the scene.
 """
 
 from __future__ import annotations
@@ -45,10 +47,10 @@ class Robot:
     entry: ModelEntry
     caller: Caller
     stood: bool = False
-    # When this robot last held the pairs its model asks for, set as it is
-    # reserved so a robot that never pairs gives its name back once its
-    # lease lapses.
-    last_paired_s: float = 0.0
+    # When this robot last held the pairs its model asks for, or when a limb
+    # first reached it while they never were; None until a limb reaches it,
+    # so no lease runs while its nodes are still starting.
+    last_paired_s: float | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     @property
@@ -59,6 +61,14 @@ class Robot:
         with self.lock:
             return self.stood
 
+    def lease_ran_out(self, now_s: float, lease_s: float) -> bool:
+        """Whether the robot's pairs have not been its model's for the
+        lease. A robot no limb ever reached has no lease running: its stay
+        is its goal's."""
+        with self.lock:
+            last = self.last_paired_s
+        return last is not None and now_s - last > lease_s
+
 
 class Registry:
     """The robots in the scene, by the name each stands under."""
@@ -67,7 +77,7 @@ class Registry:
         self._robots: dict[str, Robot] = {}
         self._lock = threading.Lock()
 
-    def admit(self, name: str, entry: ModelEntry, caller: Caller, now_s: float) -> bool:
+    def admit(self, name: str, entry: ModelEntry, caller: Caller) -> bool:
         """Admits this caller's robot under `name`, and says whether it was
         already standing. Raises when a robot of another caller stands under
         the name, when this caller stands another robot, or when this caller
@@ -77,8 +87,8 @@ class Registry:
         the same live copy: the robot stays exactly as it is and the new goal
         hosts it, which is what an initializer that died and came back does.
 
-        The lease runs from here: a robot that attaches and never pairs its
-        limbs gives its name back like any other."""
+        No lease runs yet: the robot stays for as long as the goal admitting
+        it does, until a limb first reaches it."""
         if not name:
             raise ValueError("a robot stands under the name of the copy it runs as")
         with self._lock:
@@ -103,21 +113,16 @@ class Registry:
                     raise ValueError(
                         f"{caller} already stands a robot in this scene, as '{other.name}'"
                     )
-            self._robots[name] = Robot(
-                name=name, entry=entry, caller=caller, last_paired_s=now_s
-            )
+            self._robots[name] = Robot(name=name, entry=entry, caller=caller)
             return False
 
-    def stand(self, name: str, now_s: float) -> None:
-        """Records that the engine has stood the reserved robot, and gives it
-        its lease back: standing it takes as long as the scene's recompile
-        does."""
+    def stand(self, name: str) -> None:
+        """Records that the engine has stood the reserved robot."""
         robot = self.of_name(name)
         if robot is None:
             return
         with robot.lock:
             robot.stood = True
-            robot.last_paired_s = now_s
 
     def release(self, name: str) -> Robot | None:
         """Gives a name back. Returns the robot that stood under it."""
@@ -166,10 +171,22 @@ class Registry:
             with robot.lock:
                 robot.last_paired_s = now_s
 
+    def note_limbs_reached(self, name: str, now_s: float) -> None:
+        """Starts the named robot's lease the first time a limb reaches it:
+        from then on its pairs are held to being its model's."""
+        robot = self.of_name(name)
+        if robot is None:
+            return
+        with robot.lock:
+            if robot.last_paired_s is None:
+                robot.last_paired_s = now_s
+
     def renew(self, now_s: float) -> None:
-        """Gives every robot in the scene its lease back. The scene takes no
-        commands while it is being changed, so the robots already in it are
-        held to their leases from the moment it takes them again."""
+        """Gives every robot whose lease runs its lease back. The scene takes
+        no commands while it is being changed, so the robots already in it
+        are held to their leases from the moment it takes them again; a
+        robot no limb reached yet has no lease to give back."""
         for robot in self.robots():
             with robot.lock:
-                robot.last_paired_s = now_s
+                if robot.last_paired_s is not None:
+                    robot.last_paired_s = now_s
