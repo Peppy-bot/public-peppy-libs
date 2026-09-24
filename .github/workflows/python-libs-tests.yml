@@ -28,10 +28,9 @@ concurrency:
 jobs:
   # As in rust-crates-tests.yml: decides whether the Python libs were touched,
   # so an unrelated pull request skips the `test` job rather than building it.
-  # Runs on the self-hosted runner like everything else, so it queues behind
-  # whatever the box is building before it can rule a pull request out.
+  # The smallest RunsOn runner: it reads the changed files from the API.
   changes:
-    runs-on: self-hosted
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8  # custom Peppy AMI
     permissions:
       contents: read
       pull-requests: read
@@ -57,7 +56,7 @@ jobs:
   test:
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.python_libs == 'true'
-    runs-on: self-hosted
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=4/ram=8+16  # custom Peppy AMI
     timeout-minutes: 20
     permissions:
       contents: read
