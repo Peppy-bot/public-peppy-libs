@@ -39,7 +39,7 @@ jobs:
   # skips the `test` job rather than building it. Reads changed files from the
   # API and needs no checkout, so it takes the smallest RunsOn runner.
   changes:
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a  # custom Peppy AMI
     permissions:
       contents: read
       pull-requests: read
@@ -74,10 +74,12 @@ jobs:
   test:
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.rust_crates == 'true'
-    # 16 vCPU with 2 GB each on the current AMD and Intel compute-optimized
-    # families, and the sticky disk that holds the shared target directory
-    # and the cargo registry.
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=16/ram=32/family=c7a+c7i+c8a+c8i/volume=150gb:gp3:500mbs:6000iops/sticky=rust-crates:60gb  # custom Peppy AMI
+    # 8 vCPU with 16 or 32 GB on the AMD families c8a, c7a, m8a and m7a,
+    # where one vCPU is a full core: a run keeps 3 cores busy on average and
+    # 5 at its peak, and uses near 2 GB. The root disk is 50 GB
+    # (a run writes under 10 GB there), and the sticky disk holds the shared
+    # target directory and the cargo registry.
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=8/ram=16+32/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=rust-crates:60gb  # custom Peppy AMI
     permissions:
       contents: read
     env:
