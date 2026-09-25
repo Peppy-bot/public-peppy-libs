@@ -4,8 +4,11 @@ name: Rust crates Tests
 # Cargo.toml is discovered from the filesystem and runs its own suite. Each is
 # its own workspace root with its own lockfile, so they cannot be tested as one
 # `cargo test --workspace`; they share a target directory instead, so a
-# dependency two of them have in common is compiled once and the box's cache
-# carries it between runs.
+# dependency two of them have in common is compiled once, and the test job's
+# sticky disk carries it between runs. RunsOn restores that disk from the
+# newest snapshot of the same branch, or of main for a branch's first run, and
+# snapshots it after the job; a pull request's run reads main's snapshot but
+# never writes it, and the push to main is what keeps it current.
 
 on:
   push:
@@ -34,11 +37,9 @@ env:
 jobs:
   # Decides whether the Rust crates were touched, so an unrelated pull request
   # skips the `test` job rather than building it. Reads changed files from the
-  # API and needs no checkout, but it runs on the self-hosted runner like
-  # everything else, so it queues behind whatever the box is building before it
-  # can rule a pull request out.
+  # API and needs no checkout, so it takes the smallest RunsOn runner.
   changes:
-    runs-on: self-hosted
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a  # custom Peppy AMI
     permissions:
       contents: read
       pull-requests: read
@@ -73,7 +74,12 @@ jobs:
   test:
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.rust_crates == 'true'
-    runs-on: self-hosted
+    # 8 vCPU with 16 or 32 GB on the AMD families c8a, c7a, m8a and m7a,
+    # where one vCPU is a full core: a run keeps 3 cores busy on average and
+    # 5 at its peak, and uses near 2 GB. The root disk is 50 GB
+    # (a run writes under 10 GB there), and the sticky disk holds the shared
+    # target directory and the cargo registry.
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=8/ram=16+32/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=rust-crates:60gb  # custom Peppy AMI
     permissions:
       contents: read
     env:
@@ -84,10 +90,19 @@ jobs:
         with:
           persist-credentials: false
 
-      # The self-hosted box is provisioned outside this repository and ships no
-      # Rust, so the toolchain is installed here: a workflow that leaned on what
-      # happens to be on the box would break with no commit to blame. Both
-      # halves are skipped when already satisfied, so a warm box pays nothing.
+      # After the checkout, so the workspace-relative target directory
+      # resolves under it.
+      - uses: runs-on/action@efac073ea2507ec18797de3a81704201ade11d9d # v2.3.1
+        with:
+          sticky_cache: |
+            cargo
+            custom,path=target
+
+      # The runner image is provisioned outside this repository, so the
+      # toolchain is made sure of here: a workflow that leaned on what happens
+      # to be in the image would break with no commit to blame. Both halves
+      # are skipped when already satisfied, so the image's own stable
+      # toolchain costs nothing.
       - name: Install Rust toolchain
         run: |
           set -euo pipefail
@@ -103,54 +118,6 @@ jobs:
             rustup default stable
           fi
           rustc --version
-
-      # The box's own cargo configuration sets a `rustc-wrapper` of sccache
-      # (nothing in this repository does), and cargo fails outright when the
-      # wrapper it is told to use is not on disk: `could not execute process
-      # .../sccache .../rustc -vV (never executed)`. So install it when it is
-      # missing, skip when it is already there, and fall back to disabling the
-      # wrapper for this job if the download fails: a slower build beats a red
-      # suite over a compiler cache. The musl build is static, so it needs no
-      # runtime libraries.
-      - name: Install sccache when the runner's cargo config expects one
-        shell: bash
-        env:
-          SCCACHE_VERSION: v0.18.0
-        run: |
-          set -uo pipefail
-          # `cargo config get` would answer this directly but is nightly-only, so
-          # read the two places the setting can reach a stable cargo: the
-          # environment, and the user-global cargo config where the box's own
-          # setting lives. A workspace .cargo/config.toml could set it too; none
-          # in this repository does.
-          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
-          wrapper="${RUSTC_WRAPPER:-${CARGO_BUILD_RUSTC_WRAPPER:-}}"
-          if [ -z "$wrapper" ]; then
-            for config in "$cargo_home/config.toml" "$cargo_home/config"; do
-              [ -f "$config" ] || continue
-              wrapper=$(sed -n 's/^[[:space:]]*rustc-wrapper[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$config" | head -1)
-              [ -n "$wrapper" ] && break
-            done
-          fi
-          if [ -z "$wrapper" ]; then
-            echo "no rustc-wrapper configured; nothing to install"
-            exit 0
-          fi
-          if [ -x "$wrapper" ] || command -v "$(basename "$wrapper")" > /dev/null; then
-            echo "rustc-wrapper $wrapper is already available"
-            exit 0
-          fi
-          echo "rustc-wrapper $wrapper is configured but absent; installing sccache $SCCACHE_VERSION"
-          tarball="sccache-$SCCACHE_VERSION-x86_64-unknown-linux-musl"
-          url="https://github.com/mozilla/sccache/releases/download/$SCCACHE_VERSION/$tarball.tar.gz"
-          if curl -fsSL --connect-timeout 10 --max-time 180 "$url" | tar -xzf - -C "$RUNNER_TEMP"; then
-            mkdir -p "$HOME/.cargo/bin"
-            install -m 0755 "$RUNNER_TEMP/$tarball/sccache" "$HOME/.cargo/bin/sccache"
-            "$HOME/.cargo/bin/sccache" --version
-          else
-            echo "::warning::could not install sccache; building without the wrapper"
-            echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
-          fi
 
       # Every discovered crate runs even after one fails, so a red run names
       # every failing crate instead of the first. `--all-features` because a
