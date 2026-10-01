@@ -98,6 +98,11 @@ jobs:
             cargo
             custom,path=target
 
+      # Writes what the sticky disk holds and what grew in it to the job
+      # summary at the end of the job. Its post step runs before the one of
+      # runs-on/action above, which unmounts the disk.
+      - uses: Peppy-bot/peppy/.github/actions/sticky-disk-report@dev
+
       # The runner image is provisioned outside this repository, so the
       # toolchain is made sure of here: a workflow that leaned on what happens
       # to be in the image would break with no commit to blame. Both halves
