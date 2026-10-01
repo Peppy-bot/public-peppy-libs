@@ -20,6 +20,9 @@
 //! - [`HardwareVersion::tcp_link`] names one side's tool-center-point frame in the bundled
 //!   URDF, so poses are commanded and reported at the grasp point (see the method docs for
 //!   the frame convention).
+//! - [`HardwareVersion::camera_mounts`] lists where the generation's design carries its
+//!   cameras: each one's name, the URDF link it is fixed to, and its pose in that link's
+//!   frame, the numbers the simulation places its rendered cameras by.
 //!
 //! Pure data: this crate carries no solver dependency. A consumer that wants a kinematic
 //! model builds it from these, e.g.
@@ -56,6 +59,47 @@ impl Side {
         }
     }
 }
+
+/// Where a generation's design carries one camera: fixed to `parent_link` of the
+/// bundled URDF, at `position` and `quat_wxyz` in that link's frame. The camera looks
+/// along its own `-z` with `+y` as image-up, the convention MJCF and USD cameras
+/// share, so an identity `quat_wxyz` looks along the parent's `-z` axis. The numbers
+/// are the ones `sim_robot_core`'s model of the generation places its rendered
+/// cameras by, and a test pins the two to each other.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CameraMount {
+    /// The name the camera runs under on the robot (`wrist_left`, `chest`).
+    pub name: &'static str,
+    /// The URDF link the camera is fixed to.
+    pub parent_link: &'static str,
+    /// Position in the parent link's frame, metres.
+    pub position: [f64; 3],
+    /// Orientation in the parent link's frame, `[w, x, y, z]`.
+    pub quat_wxyz: [f64; 4],
+}
+
+/// The v2 design's cameras: a camera on each wrist, on the gripper's base link, and
+/// the head camera on the torso.
+const V2_CAMERA_MOUNTS: &[CameraMount] = &[
+    CameraMount {
+        name: "wrist_left",
+        parent_link: "openarm_left_ee_base_link",
+        position: [0.023, 0.0182, -0.10236],
+        quat_wxyz: [0.6762086, -0.2067369, -0.0493266, -0.7053855],
+    },
+    CameraMount {
+        name: "wrist_right",
+        parent_link: "openarm_right_ee_base_link",
+        position: [0.023, -0.0182, -0.10236],
+        quat_wxyz: [0.7053830, 0.0493258, 0.2067371, -0.6762112],
+    },
+    CameraMount {
+        name: "chest",
+        parent_link: "openarm_body_link0",
+        position: [0.0792, 0.0315, 0.7941],
+        quat_wxyz: [0.6861027, 0.1710647, -0.1710647, -0.6861027],
+    },
+];
 
 /// An OpenArm hardware generation. A node parses its `hardware_version` parameter into
 /// this once (parse, don't validate) and then reads the bundled description through it.
@@ -162,6 +206,15 @@ impl HardwareVersion {
         match (self, side) {
             (Self::V1 | Self::V2, Side::Left) => "openarm_left_tcp",
             (Self::V1 | Self::V2, Side::Right) => "openarm_right_tcp",
+        }
+    }
+
+    /// The cameras this generation's design carries, each where the design fixes it
+    /// (see [`CameraMount`]). v1 carries none.
+    pub fn camera_mounts(self) -> &'static [CameraMount] {
+        match self {
+            Self::V1 => &[],
+            Self::V2 => V2_CAMERA_MOUNTS,
         }
     }
 }
@@ -913,6 +966,74 @@ mod tests {
     #[cfg(feature = "meshes")]
     fn rotate(r: [[f64; 3]; 3], p: [f64; 3]) -> [f64; 3] {
         std::array::from_fn(|i| r[i][0] * p[0] + r[i][1] * p[1] + r[i][2] * p[2])
+    }
+
+    #[test]
+    fn camera_mounts_hang_off_links_the_urdf_carries_and_v1_carries_none() {
+        assert!(HardwareVersion::V1.camera_mounts().is_empty());
+        let v2 = parsed(HardwareVersion::V2);
+        let mounts = HardwareVersion::V2.camera_mounts();
+        assert_eq!(
+            mounts.iter().map(|m| m.name).collect::<Vec<_>>(),
+            ["wrist_left", "wrist_right", "chest"]
+        );
+        for mount in mounts {
+            assert!(
+                v2.links.iter().any(|l| l.name == mount.parent_link),
+                "{}: the v2 URDF carries no link {}",
+                mount.name,
+                mount.parent_link
+            );
+            let norm = mount.quat_wxyz.iter().map(|c| c * c).sum::<f64>().sqrt();
+            assert!(
+                (norm - 1.0).abs() < 1e-6,
+                "{}: quat norm {norm}",
+                mount.name
+            );
+        }
+        // The chest camera is the head camera's left lens front.
+        let chest = mounts.iter().find(|m| m.name == "chest").unwrap();
+        for (axis, (actual, lens)) in chest.position.iter().zip(LENS_FRONTS_M[0]).enumerate() {
+            assert!(
+                (actual - lens).abs() < 1e-4,
+                "chest camera axis {axis}: {actual} is not the left lens front {lens}"
+            );
+        }
+    }
+
+    #[test]
+    fn camera_mounts_are_the_simulation_models() {
+        // The simulation renders its cameras where its model of the generation
+        // puts them, and a robot reports the same design values on hardware:
+        // the two files carry one set of numbers.
+        let model: serde_json::Value = json5::from_str(include_str!(
+            "../../sim_robot_core/src/sim_robot_core/models/openarm_v2.json5"
+        ))
+        .expect("the v2 model parses");
+        let cameras = model["cameras"]
+            .as_array()
+            .expect("the model lists cameras");
+        let mounts = HardwareVersion::V2.camera_mounts();
+        assert_eq!(cameras.len(), mounts.len());
+        for (camera, mount) in cameras.iter().zip(mounts) {
+            assert_eq!(camera["name"].as_str().unwrap(), mount.name);
+            assert_eq!(camera["parent_link"].as_str().unwrap(), mount.parent_link);
+            let numbers = |field: &str| -> Vec<f64> {
+                camera[field]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_f64().unwrap())
+                    .collect()
+            };
+            assert_eq!(numbers("pos"), mount.position, "{}: position", mount.name);
+            assert_eq!(
+                numbers("quat_wxyz"),
+                mount.quat_wxyz,
+                "{}: orientation",
+                mount.name
+            );
+        }
     }
 
     #[test]
