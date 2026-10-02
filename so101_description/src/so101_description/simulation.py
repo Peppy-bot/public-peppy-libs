@@ -1,14 +1,19 @@
 """What every simulation of the SO-101 agrees on and no URDF says: the posture
-a simulated arm starts in, how far its jaw is open then, and where its front
+a simulated arm starts in, how far its jaw is open then, and where its wrist
 camera sits.
 
-On hardware the front camera is a webcam the user places over the front of
-the workspace, so there is no measured pose to copy. The simulated one stands
-at one fixed spot in the base link's frame, in front of the arm and above the
-table, looking back at the workspace: the camera looks along its own -Z with
-+Y as image-up, the convention MJCF <camera> and UsdGeom.Camera share. Its
-stream is the hardware camera's 720p at 30 frames per second, so a dataset
-recorded in a simulation has the image shape of one recorded on hardware.
+On hardware the wrist camera is an Innomaker U20CAM-1080P, the 32x32 mm UVC
+module of SO-ARM100's wrist camera mount, screwed to the gripper and looking
+past the fixed jaw at the grasp. The simulated one has the pose of MuJoCo
+Menagerie's wrist_cam on that mount, in the gripper link's frame: 55 mm along
+its +Y and 45 mm along its -Z, the way the jaw tips point, turned 0.57 rad
+about its x axis so that the tool point is in view. The camera looks along its
+own -Z with +Y as image-up, the convention MJCF <camera> and UsdGeom.Camera
+share. Its vertical field of view is the one a pinhole camera has with the
+module's 106 degree horizontal field of view across a 16:9 image; the lens's
+barrel distortion is not modelled. Its stream is the hardware camera's 720p at
+30 frames per second, so a dataset recorded in a simulation has the image
+shape of one recorded on hardware.
 
 The facts live in simulation.json beside this module, so an engine written in
 another language reads the same bytes; each engine's model is held to them by
@@ -36,8 +41,8 @@ _POSTURES_RAD = {
 
 
 @dataclass(frozen=True)
-class FrontCamera:
-    """The simulated front camera: its name on the robot, the URDF link it
+class WristCamera:
+    """The simulated wrist camera: its name on the robot, the URDF link it
     hangs from, its pose in that link's frame, and its stream."""
 
     name: str
@@ -95,9 +100,9 @@ def start_positions_rad() -> dict[str, float]:
     return {**dict(arm), GRIPPER_NAME: jaw}
 
 
-def front_camera() -> FrontCamera:
-    camera = _read()["front_camera"]
-    return FrontCamera(
+def wrist_camera() -> WristCamera:
+    camera = _read()["wrist_camera"]
+    return WristCamera(
         name=camera["name"],
         parent_link=camera["parent_link"],
         pos=tuple(float(v) for v in camera["pos"]),

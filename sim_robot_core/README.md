@@ -15,7 +15,7 @@ An engine declares one slot per kind of pair, each holding any number of pairs. 
 
 - a pair's robot is the copy it carries, which is the name the robot attached under. A pair with no copy belongs to a robot launched outside one, and outside a copy there is one robot in the scene for it to belong to;
 - a limb pair's limb is the link the pair comes from on the robot's side, so a backbone names its downstream links after its limbs: `left_arm: "simulation_inst/arms"` for an OpenArm, `arm: "simulation_inst/arms"` for an SO-101;
-- a camera pair's camera is its relay's name in the copy (`wrist_left`, `front`), which is the relay's instance id without the copy's prefix.
+- a camera pair's camera is its relay's name in the copy (`wrist_left`, `wrist`), which is the relay's instance id without the copy's prefix.
 
 A new robot, limb or camera changes no engine's interface.
 

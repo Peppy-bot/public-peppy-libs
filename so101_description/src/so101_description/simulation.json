@@ -1,12 +1,12 @@
 {
   "start_posture": "home",
   "start_gripper_opening": 0.0,
-  "front_camera": {
-    "name": "front",
-    "parent_link": "base_link",
-    "pos": [0.6, 0.0, 0.32],
-    "quat_wxyz": [0.607512, 0.3618414, 0.3618414, 0.607512],
-    "fovy_deg": 60.0,
+  "wrist_camera": {
+    "name": "wrist",
+    "parent_link": "gripper_link",
+    "pos": [0.0, 0.055, -0.045],
+    "quat_wxyz": [0.9596617, -0.2811575, 0.0, 0.0],
+    "fovy_deg": 73.48,
     "color": { "width": 1280, "height": 720 },
     "fps": 30
   }
