@@ -50,12 +50,12 @@ class TestShippedEntries:
         assert v2.rgb_camera_names() == ["wrist_left", "wrist_right"]
         assert v2.rgbd_camera_names() == ["chest"]
 
-    def test_the_so101_is_one_arm_one_jaw_and_a_front_camera(self):
+    def test_the_so101_is_one_arm_one_jaw_and_a_wrist_camera(self):
         so101 = shipped_entry("so101")
         assert (so101.arm_names(), so101.arm_joint_counts()) == (["arm"], [5])
         assert so101.gripper_names() == ["gripper"]
         assert so101.grippers[0].closed_at == CLOSED_AT_LOWER_LIMIT
-        assert (so101.rgb_camera_names(), so101.rgbd_camera_names()) == (["front"], [])
+        assert (so101.rgb_camera_names(), so101.rgbd_camera_names()) == (["wrist"], [])
 
     def test_a_model_with_no_entry_names_the_ones_that_have_one(self):
         with pytest.raises(ValueError, match="the entries are openarm_v1, openarm_v2, so101"):
@@ -98,10 +98,10 @@ class TestTheMatch:
         assert so101.mismatch(extra) is not None
 
     def test_a_camera_of_the_wrong_kind_is_foreign(self):
-        depth_front = Held(
-            arms=SO101_LIMBS.arms, grippers=SO101_LIMBS.grippers, rgbd_cameras=frozenset({"front"})
+        depth_wrist = Held(
+            arms=SO101_LIMBS.arms, grippers=SO101_LIMBS.grippers, rgbd_cameras=frozenset({"wrist"})
         )
-        assert shipped_entry("so101").foreign(depth_front) == Held(rgbd_cameras=frozenset({"front"}))
+        assert shipped_entry("so101").foreign(depth_wrist) == Held(rgbd_cameras=frozenset({"wrist"}))
 
     def test_a_camera_on_a_model_with_no_rig_is_foreign(self):
         v1_rig = Held(

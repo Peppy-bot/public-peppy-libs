@@ -55,11 +55,11 @@ class TestWhatAPairNames:
         assert camera_of(member("alpha_wrist_left", "simulation")) == "wrist_left"
 
     def test_a_relay_outside_a_copy_runs_under_the_name_the_launcher_wrote(self):
-        assert camera_of(member("front", "simulation", copy=None)) == "front"
+        assert camera_of(member("wrist", "simulation", copy=None)) == "wrist"
 
     def test_a_relay_that_does_not_carry_its_copys_prefix_keeps_its_whole_id(self):
         """Such an id names no camera of any model, so the match refuses it."""
-        assert camera_of(member("bravo_front", "simulation", copy="alpha")) == "bravo_front"
+        assert camera_of(member("bravo_wrist", "simulation", copy="alpha")) == "bravo_wrist"
         assert camera_of(member("alpha_", "simulation", copy="alpha")) == "alpha_"
 
     def test_one_misnamed_relay_does_not_stop_the_reading_of_the_other_pairs(self):
@@ -83,7 +83,7 @@ class TestPairTable:
         pairs = table(
             arms=[member("alpha_backbone_inst", "left_arm"), member("charlo_backbone_inst", "arm", "charlo")],
             grippers=[member("charlo_backbone_inst", "gripper", "charlo")],
-            rgb_cameras=[member("charlo_front", "simulation", "charlo")],
+            rgb_cameras=[member("charlo_wrist", "simulation", "charlo")],
             rgbd_cameras=[member("alpha_chest", "simulation")],
         )
         assert pairs.held() == {
@@ -91,7 +91,7 @@ class TestPairTable:
             "charlo": Held(
                 arms=frozenset({"arm"}),
                 grippers=frozenset({"gripper"}),
-                rgb_cameras=frozenset({"front"}),
+                rgb_cameras=frozenset({"wrist"}),
             ),
         }
 
@@ -124,10 +124,10 @@ class TestPairTable:
         assert pairs.peer_of(GRIPPERS, "bravo", "right_gripper") is None
 
     def test_a_frame_goes_to_the_relay_of_its_own_camera(self):
-        front = member("charlo_front", "simulation", "charlo")
-        pairs = table(rgb_cameras=[front])
-        assert pairs.peer_of(RGB_CAMERAS, "charlo", "front") == front.info
-        assert pairs.peer_of(RGBD_CAMERAS, "charlo", "front") is None
+        wrist = member("charlo_wrist", "simulation", "charlo")
+        pairs = table(rgb_cameras=[wrist])
+        assert pairs.peer_of(RGB_CAMERAS, "charlo", "wrist") == wrist.info
+        assert pairs.peer_of(RGBD_CAMERAS, "charlo", "wrist") is None
 
     def test_a_robot_with_no_pair_holds_nothing(self):
         assert table().held_by("alpha") == Held()

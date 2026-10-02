@@ -1,7 +1,7 @@
-// An SO-101: one five-joint arm carrying a single-jaw gripper, and a front
+// An SO-101: one five-joint arm carrying a single-jaw gripper, and a wrist
 // camera. The limbs are named as the robot answers to them in limb_motion and
 // limb_state, which is also the link each one's pair comes from on the
-// backbone. Joint names, the start posture and the front camera are
+// backbone. Joint names, the start posture and the wrist camera are
 // so101_description's, and tests/test_so101_entry.py holds this entry to it.
 {
   // The five arm joints, base to wrist, in the order the arm's pair carries
@@ -20,18 +20,17 @@
     { name: "gripper", fingers: ["gripper"], closed_at: "lower_limit" },
   ],
 
-  // The front camera, in the base link's frame: in front of the arm and above
-  // the table, looking back at the workspace. The camera looks along its own
-  // -Z with +Y as image-up. On hardware it is a webcam the user places, so the
-  // simulated one stands at one fixed spot and streams the hardware camera's
-  // 720p at 30 frames per second.
+  // The wrist camera, in the gripper link's frame: the 32x32 mm UVC module on
+  // SO-ARM100's wrist camera mount, looking past the fixed jaw at the grasp.
+  // The camera looks along its own -Z with +Y as image-up. It streams the
+  // hardware camera's 720p at 30 frames per second.
   cameras: [
     {
-      name: "front",
-      parent_link: "base_link",
-      pos: [0.6, 0.0, 0.32],
-      quat_wxyz: [0.607512, 0.3618414, 0.3618414, 0.607512],
-      fovy_deg: 60.0,
+      name: "wrist",
+      parent_link: "gripper_link",
+      pos: [0.0, 0.055, -0.045],
+      quat_wxyz: [0.9596617, -0.2811575, 0.0, 0.0],
+      fovy_deg: 73.48,
       color: { width: 1280, height: 720 },
       fps: 30,
     },

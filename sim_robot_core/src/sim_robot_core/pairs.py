@@ -11,7 +11,7 @@ which robot, limb or camera a pair is, so every pair is read for it:
 - a limb pair's limb is the link the pair comes from on the robot's side, so
   a backbone names its downstream links after its limbs (`left_arm`, `arm`);
 - a camera pair's camera is its relay's name in the copy (`wrist_left`,
-  `front`): the relay's instance id without the copy's prefix.
+  `wrist`): the relay's instance id without the copy's prefix.
 
 A new robot, limb or camera therefore changes no engine's interface.
 """

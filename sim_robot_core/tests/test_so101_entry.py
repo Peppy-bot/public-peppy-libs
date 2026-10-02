@@ -1,6 +1,6 @@
 """The SO-101 entry, held to so101_description: the hardware's source of
 truth for joint names, the limb vocabulary, the start posture and the
-simulated front camera."""
+simulated wrist camera."""
 
 from __future__ import annotations
 
@@ -27,9 +27,9 @@ def test_every_joint_starts_where_the_description_says():
     assert SO101.start_posture == pytest.approx(simulation.start_positions_rad())
 
 
-def test_the_front_camera_is_the_descriptions():
+def test_the_wrist_camera_is_the_descriptions():
     (camera,) = SO101.cameras
-    described = simulation.front_camera()
+    described = simulation.wrist_camera()
     assert (camera.name, camera.parent_link) == (described.name, described.parent_link)
     assert camera.pos == pytest.approx(described.pos)
     assert camera.quat_wxyz == pytest.approx(described.quat_wxyz)
