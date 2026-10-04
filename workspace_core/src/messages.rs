@@ -1,0 +1,489 @@
+//! The one-line text of each verdict, so that an answer on the robot and one
+//! in a simulation say the same thing in the same words. A camera is named
+//! by the name it runs under on the robot (`chest` reads "the chest
+//! camera").
+
+use crate::fit::{Fit, Rectangle};
+use crate::grasp::GraspDirection;
+use crate::grid::REACH_TOLERANCE;
+use crate::verdict::{Reach, View};
+
+/// The perception camera of a robot as the message of a surface names it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SurfaceCamera<'a> {
+    /// The name it runs under on the robot.
+    pub name: &'a str,
+    /// How far it stands above the surface's top, in metres: below 0 when
+    /// the top is above it.
+    pub above_top: f64,
+}
+
+/// The message of one point or object: whether an arm reaches it and whether
+/// `camera`, the robot's perception camera, sees it.
+pub fn point_message(reach: &Reach, view: &View, camera: Option<&str>) -> String {
+    let camera = camera_phrase(camera);
+    match (reach, view.passes()) {
+        (Reach::Reached { arm }, true) => match view {
+            View::Seen => format!("Workable: {arm} reaches it and {camera} sees it."),
+            _ => format!("Workable: {arm} reaches it; {NO_CAMERA}."),
+        },
+        (Reach::Reached { arm }, false) => {
+            format!(
+                "Not workable: {arm} reaches it, but {}.",
+                view_failure(view, &camera)
+            )
+        }
+        (Reach::Short { by }, true) => match view {
+            View::Seen => format!("Not workable: {}; {camera} sees it.", shortfall(*by)),
+            _ => format!("Not workable: {}; {NO_CAMERA}.", shortfall(*by)),
+        },
+        (Reach::Short { by }, false) => format!(
+            "Not workable: {}, and {}.",
+            shortfall(*by),
+            view_failure(view, &camera)
+        ),
+    }
+}
+
+/// The message of a surface the robot's fit to is `fit`, its perception
+/// camera `camera`. Where to put objects on a workable surface is the
+/// caller's to add, in the frame it answers in
+/// ([`robot_frame_placement`] for the robot frame).
+pub fn surface_message(fit: &Fit, camera: Option<SurfaceCamera<'_>>) -> String {
+    match fit {
+        Fit::Workable { area, .. } => format!("Workable: {area:.3} m²."),
+        Fit::NotMeasured => {
+            "Not measured: no point of its top is found under the grid in front of the robot."
+                .to_owned()
+        }
+        Fit::NotReachable => format!(
+            "Not reachable: no arm reaches any point of it with its gripper pointing {}.",
+            directions()
+        ),
+        Fit::NotVisible { reach, view } => {
+            let phrase = camera_phrase(camera.map(|camera| camera.name));
+            if let Some(camera) = camera.filter(|camera| camera.above_top <= 0.0) {
+                let above = -camera.above_top;
+                // A height that rounds to 0.00 m reads as level.
+                if above < 0.005 {
+                    return format!(
+                        "Not visible: the surface is level with {phrase}, which cannot see it."
+                    );
+                }
+                return format!(
+                    "Not visible: the surface is {above:.2} m above {phrase}, which cannot see it."
+                );
+            }
+            let reached = ahead_of_the_robot(reach);
+            match view {
+                Some(view) => format!(
+                    "Not visible: the arms reach it {reached} and {phrase} sees it {}, but it sees no point an arm reaches.",
+                    ahead_of_the_robot(view)
+                ),
+                None => format!(
+                    "Not visible: the arms reach it {reached}, but {phrase} sees none of it."
+                ),
+            }
+        }
+        Fit::TooLittleRoom { area, min } => format!(
+            "Too little room: {area:.3} m² is workable, under the {min:.3} m² that holds a few objects."
+        ),
+    }
+}
+
+/// Why an answer checks no point's view ([`View::NoCamera`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unchecked<'a> {
+    /// The robot has no perception camera.
+    NoPerceptionCamera,
+    /// The answer cannot read the field of view of `camera`, the robot's
+    /// perception camera: no camera geometry is linked for it.
+    NoCameraGeometry { camera: &'a str },
+}
+
+/// The sentence an answer that checks no point's view adds, once, saying
+/// why.
+pub fn unchecked_view_message(why: Unchecked<'_>) -> String {
+    match why {
+        Unchecked::NoPerceptionCamera => {
+            "The view is not checked: the robot has no perception camera.".to_owned()
+        }
+        Unchecked::NoCameraGeometry { camera } => format!(
+            "The view is not checked: no camera geometry is linked for {}.",
+            camera_phrase(Some(camera))
+        ),
+    }
+}
+
+/// What an answer that checks several points, objects or surfaces counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Counted {
+    Points,
+    Objects,
+    Surfaces,
+}
+
+impl Counted {
+    fn noun(self, count: usize) -> &'static str {
+        match (self, count) {
+            (Self::Points, 1) => "point",
+            (Self::Points, _) => "points",
+            (Self::Objects, 1) => "object",
+            (Self::Objects, _) => "objects",
+            (Self::Surfaces, 1) => "surface",
+            (Self::Surfaces, _) => "surfaces",
+        }
+    }
+}
+
+/// The message of an answer that checks `count` points, objects or
+/// surfaces: how many of them the robot can work, `workable` of them, then,
+/// when `unchecked` says why the answer checks no view, that sentence.
+pub fn answer_message(
+    workable: usize,
+    count: usize,
+    counted: Counted,
+    unchecked: Option<Unchecked<'_>>,
+) -> String {
+    let count = workable_count_message(workable, count, counted);
+    match unchecked {
+        Some(why) => format!("{count} {}", unchecked_view_message(why)),
+        None => count,
+    }
+}
+
+/// How many of the `count` points, objects or surfaces an answer checks the
+/// robot can work: `workable` of them.
+fn workable_count_message(workable: usize, count: usize, counted: Counted) -> String {
+    let noun = counted.noun(count);
+    match (workable, count) {
+        (_, 1) if workable == 1 => format!("The {noun} is workable."),
+        (0, 1) => format!("The {noun} is not workable."),
+        (all, _) if all == count => format!("All {count} {noun} are workable."),
+        (0, _) => format!("None of the {count} {noun} is workable."),
+        (1, _) => format!("1 of the {count} {noun} is workable."),
+        (some, _) => format!("{some} of the {count} {noun} are workable."),
+    }
+}
+
+/// Where to put objects on a workable surface, said in the robot frame.
+pub fn robot_frame_placement(rectangle: &Rectangle) -> String {
+    format!(
+        "Put items {} and {} in the robot frame.",
+        between("x", rectangle.x),
+        between("y", rectangle.y)
+    )
+}
+
+/// The clause of a point no camera is asked about ([`View::NoCamera`]): the
+/// answer says why once, for every point.
+const NO_CAMERA: &str = "its view is not checked";
+
+fn camera_phrase(camera: Option<&str>) -> String {
+    match camera {
+        Some(name) => format!("the {name} camera"),
+        None => "the perception camera".to_owned(),
+    }
+}
+
+/// How far short of a point the closest arm stops.
+fn shortfall(by: f64) -> String {
+    if by > REACH_TOLERANCE {
+        format!("it is out of reach by {by:.2} m")
+    } else {
+        format!(
+            "no arm reaches it with its gripper pointing {}",
+            directions()
+        )
+    }
+}
+
+/// The grasp directions, as a message lists them: `down or forward`.
+fn directions() -> String {
+    GraspDirection::ALL
+        .iter()
+        .map(|direction| direction.name())
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
+/// Why `view` keeps the point from being workable.
+fn view_failure(view: &View, camera: &str) -> String {
+    match view {
+        View::OutsideField => format!("it is outside the field of view of {camera}"),
+        View::OutOfDepth => format!("it is outside the depth range of {camera}"),
+        View::HiddenBy(what) => format!("{what} hides it from {camera}"),
+        View::NoCamera | View::Seen => unreachable!("a view that passes keeps nothing from it"),
+    }
+}
+
+/// How far ahead of the robot the points of `rectangle` lie, in words that
+/// hold in the robot's frame and in a world's alike.
+fn ahead_of_the_robot(rectangle: &Rectangle) -> String {
+    match rectangle.x {
+        [low, high] if low == high => format!("{low:.2} m ahead of the robot"),
+        [low, high] => format!("from {low:.2} to {high:.2} m ahead of the robot"),
+    }
+}
+
+fn between(axis: &str, [low, high]: [f64; 2]) -> String {
+    if low == high {
+        format!("at {axis} {low:.2} m")
+    } else {
+        format!("between {axis} {low:.2} and {high:.2} m")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reached() -> Reach {
+        Reach::Reached {
+            arm: "right_arm".into(),
+        }
+    }
+
+    #[test]
+    fn each_verdict_of_a_point_has_one_fixed_message() {
+        let chest = Some("chest");
+        let short = Reach::Short { by: 0.6 };
+        let cases = [
+            (
+                reached(),
+                View::Seen,
+                "Workable: right_arm reaches it and the chest camera sees it.",
+            ),
+            (
+                reached(),
+                View::NoCamera,
+                "Workable: right_arm reaches it; its view is not checked.",
+            ),
+            (
+                reached(),
+                View::OutsideField,
+                "Not workable: right_arm reaches it, but it is outside the field of view of the chest camera.",
+            ),
+            (
+                reached(),
+                View::OutOfDepth,
+                "Not workable: right_arm reaches it, but it is outside the depth range of the chest camera.",
+            ),
+            (
+                reached(),
+                View::HiddenBy("object obj_1 (object/cube)".into()),
+                "Not workable: right_arm reaches it, but object obj_1 (object/cube) hides it from the chest camera.",
+            ),
+            (
+                short.clone(),
+                View::Seen,
+                "Not workable: it is out of reach by 0.60 m; the chest camera sees it.",
+            ),
+            (
+                short.clone(),
+                View::NoCamera,
+                "Not workable: it is out of reach by 0.60 m; its view is not checked.",
+            ),
+            (
+                short,
+                View::OutsideField,
+                "Not workable: it is out of reach by 0.60 m, and it is outside the field of view of the chest camera.",
+            ),
+            (
+                Reach::Short { by: 0.004 },
+                View::Seen,
+                "Not workable: no arm reaches it with its gripper pointing down or forward; the chest camera sees it.",
+            ),
+        ];
+        for (reach, view, expected) in cases {
+            assert_eq!(point_message(&reach, &view, chest), expected);
+        }
+    }
+
+    #[test]
+    fn each_verdict_of_a_surface_has_one_fixed_message() {
+        let chest = |above_top| SurfaceCamera {
+            name: "chest",
+            above_top,
+        };
+        let reach = Rectangle {
+            x: [0.2, 0.32],
+            y: [-0.3, 0.3],
+        };
+        let rectangle = Rectangle {
+            x: [0.22, 0.36],
+            y: [-0.2, 0.2],
+        };
+        let cases = [
+            (
+                Fit::Workable {
+                    area: 0.052,
+                    rectangle,
+                },
+                chest(0.34),
+                "Workable: 0.052 m².",
+            ),
+            (
+                Fit::NotMeasured,
+                chest(0.34),
+                "Not measured: no point of its top is found under the grid in front of the robot.",
+            ),
+            (
+                Fit::NotReachable,
+                chest(0.34),
+                "Not reachable: no arm reaches any point of it with its gripper pointing down or forward.",
+            ),
+            (
+                Fit::NotVisible { reach, view: None },
+                chest(-0.17),
+                "Not visible: the surface is 0.17 m above the chest camera, which cannot see it.",
+            ),
+            (
+                Fit::NotVisible { reach, view: None },
+                chest(-0.005),
+                "Not visible: the surface is 0.01 m above the chest camera, which cannot see it.",
+            ),
+            (
+                Fit::NotVisible { reach, view: None },
+                chest(-0.0049),
+                "Not visible: the surface is level with the chest camera, which cannot see it.",
+            ),
+            (
+                Fit::NotVisible { reach, view: None },
+                chest(0.0),
+                "Not visible: the surface is level with the chest camera, which cannot see it.",
+            ),
+            (
+                Fit::NotVisible { reach, view: None },
+                chest(0.1),
+                "Not visible: the arms reach it from 0.20 to 0.32 m ahead of the robot, but the chest camera sees none of it.",
+            ),
+            (
+                Fit::NotVisible {
+                    reach: Rectangle {
+                        x: [0.3, 0.3],
+                        y: [-0.1, 0.1],
+                    },
+                    view: None,
+                },
+                chest(0.1),
+                "Not visible: the arms reach it 0.30 m ahead of the robot, but the chest camera sees none of it.",
+            ),
+            (
+                Fit::NotVisible {
+                    reach,
+                    view: Some(Rectangle {
+                        x: [0.4, 0.64],
+                        y: [-0.3, 0.3],
+                    }),
+                },
+                chest(0.1),
+                "Not visible: the arms reach it from 0.20 to 0.32 m ahead of the robot and the chest camera sees it from 0.40 to 0.64 m ahead of the robot, but it sees no point an arm reaches.",
+            ),
+            (
+                Fit::NotVisible {
+                    reach: Rectangle {
+                        x: [0.2, 0.5],
+                        y: [-0.3, 0.3],
+                    },
+                    view: Some(Rectangle {
+                        x: [0.4, 0.9],
+                        y: [-0.1, 0.1],
+                    }),
+                },
+                chest(0.1),
+                "Not visible: the arms reach it from 0.20 to 0.50 m ahead of the robot and the chest camera sees it from 0.40 to 0.90 m ahead of the robot, but it sees no point an arm reaches.",
+            ),
+            (
+                Fit::TooLittleRoom {
+                    area: 0.02,
+                    min: 0.03,
+                },
+                chest(0.34),
+                "Too little room: 0.020 m² is workable, under the 0.030 m² that holds a few objects.",
+            ),
+        ];
+        for (fit, camera, expected) in cases {
+            assert_eq!(surface_message(&fit, Some(camera)), expected);
+        }
+        assert_eq!(
+            surface_message(&Fit::NotReachable, None),
+            surface_message(&Fit::NotReachable, Some(chest(0.3)))
+        );
+    }
+
+    #[test]
+    fn an_answer_that_checks_no_view_says_why_once() {
+        assert_eq!(
+            unchecked_view_message(Unchecked::NoPerceptionCamera),
+            "The view is not checked: the robot has no perception camera."
+        );
+        assert_eq!(
+            unchecked_view_message(Unchecked::NoCameraGeometry { camera: "chest" }),
+            "The view is not checked: no camera geometry is linked for the chest camera."
+        );
+    }
+
+    #[test]
+    fn the_count_of_workable_points_or_objects_reads_as_a_sentence() {
+        let cases = [
+            (1, 1, Counted::Points, "The point is workable."),
+            (0, 1, Counted::Objects, "The object is not workable."),
+            (3, 3, Counted::Points, "All 3 points are workable."),
+            (0, 2, Counted::Objects, "None of the 2 objects is workable."),
+            (1, 4, Counted::Points, "1 of the 4 points is workable."),
+            (2, 5, Counted::Objects, "2 of the 5 objects are workable."),
+            (1, 1, Counted::Surfaces, "The surface is workable."),
+            (
+                0,
+                3,
+                Counted::Surfaces,
+                "None of the 3 surfaces is workable.",
+            ),
+        ];
+        for (workable, count, counted, expected) in cases {
+            assert_eq!(workable_count_message(workable, count, counted), expected);
+        }
+    }
+
+    #[test]
+    fn an_answer_says_how_many_it_can_work_then_why_it_checks_no_view() {
+        assert_eq!(
+            answer_message(2, 3, Counted::Objects, None),
+            "2 of the 3 objects are workable."
+        );
+        assert_eq!(
+            answer_message(1, 2, Counted::Surfaces, Some(Unchecked::NoPerceptionCamera)),
+            "1 of the 2 surfaces is workable. The view is not checked: the robot has no perception camera."
+        );
+        assert_eq!(
+            answer_message(
+                0,
+                1,
+                Counted::Points,
+                Some(Unchecked::NoCameraGeometry { camera: "chest" })
+            ),
+            "The point is not workable. The view is not checked: no camera geometry is linked for the chest camera."
+        );
+    }
+
+    #[test]
+    fn a_placement_in_the_robot_frame_names_both_spans_or_the_one_value_of_a_line() {
+        let rectangle = Rectangle {
+            x: [0.22, 0.36],
+            y: [-0.2, 0.2],
+        };
+        assert_eq!(
+            robot_frame_placement(&rectangle),
+            "Put items between x 0.22 and 0.36 m and between y -0.20 and 0.20 m in the robot frame."
+        );
+        let line = Rectangle {
+            x: [0.3, 0.3],
+            y: [-0.1, 0.1],
+        };
+        assert_eq!(
+            robot_frame_placement(&line),
+            "Put items at x 0.30 m and between y -0.10 and 0.10 m in the robot frame."
+        );
+    }
+}

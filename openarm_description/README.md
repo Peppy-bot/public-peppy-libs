@@ -14,8 +14,9 @@ stays reusable by any consumer (a viz tool, a sim bridge) without pulling a solv
 - `ELBOW_SINGULARITY_FLOOR_RAD` / `ELBOW_JOINT_INDEX` describe the elbow control margin
   (see below).
 - `HardwareVersion::camera_mounts()` lists the cameras the generation's design carries:
-  each one's name, the URDF link it is fixed to, and its pose in that link's frame (a
-  camera looking along its own `-z` with `+y` as image-up). The numbers are the ones
+  each one's name, the URDF link it is fixed to, its pose in that link's frame (a
+  camera looking along its own `-z` with `+y` as image-up) and the depths it measures,
+  for a camera that gives depth (the v2 chest camera alone). The numbers are the ones
   `sim_robot_core`'s model of the generation renders its cameras by, pinned to it by a
   test; v1 carries none.
 
