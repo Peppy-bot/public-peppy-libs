@@ -13,7 +13,8 @@
 //!   [`GraspOrientation::all`] lists, eight rolls about each direction, and
 //!   does not check the roll the gripper ends at.
 //! - **View** ([`View`]): the point lies inside the perception camera's field
-//!   of view and depth range ([`Camera::view_of`]). Each side adds its own
+//!   of view, and its depth stream reads a depth for it ([`Depth`],
+//!   [`Camera::view_of`]). Each side adds its own
 //!   test of what hides the point; only a simulation can say
 //!   [`View::HiddenBy`].
 //! - **The perception camera** ([`perception_camera`]) is the robot's one
@@ -50,7 +51,8 @@ pub mod messages;
 mod verdict;
 
 pub use camera::{
-    Camera, CameraFacts, Intrinsics, PerceptionCameraError, perception_camera, view_of,
+    Camera, CameraFacts, Depth, DepthModel, Intrinsics, PerceptionCameraError, UnknownDepthModel,
+    perception_camera, view_of,
 };
 pub use fit::{
     Fit, Rectangle, fit, largest_workable_rectangle, nearest_workable, reach_bounds, view_bounds,

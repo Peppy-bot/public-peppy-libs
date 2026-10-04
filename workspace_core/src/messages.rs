@@ -74,14 +74,14 @@ pub fn surface_message(fit: &Fit, camera: Option<SurfaceCamera<'_>>) -> String {
                     "Not visible: the surface is {above:.2} m above {phrase}, which cannot see it."
                 );
             }
-            let reached = x_span(reach);
+            let reached = ahead_of_the_robot(reach);
             match view {
                 Some(view) => format!(
-                    "Not visible: the arms reach {reached} of it and {phrase} sees {} of it, but it sees no point an arm reaches.",
-                    x_span(view)
+                    "Not visible: the arms reach it {reached} and {phrase} sees it {}, but it sees no point an arm reaches.",
+                    ahead_of_the_robot(view)
                 ),
                 None => format!(
-                    "Not visible: the arms reach {reached} of it, but {phrase} sees none of it."
+                    "Not visible: the arms reach it {reached}, but {phrase} sees none of it."
                 ),
             }
         }
@@ -217,10 +217,12 @@ fn view_failure(view: &View, camera: &str) -> String {
     }
 }
 
-fn x_span(rectangle: &Rectangle) -> String {
+/// How far ahead of the robot the points of `rectangle` lie, in words that
+/// hold in the robot's frame and in a world's alike.
+fn ahead_of_the_robot(rectangle: &Rectangle) -> String {
     match rectangle.x {
-        [low, high] if low == high => format!("x {low:.2} m"),
-        [low, high] => format!("x {low:.2} to {high:.2} m"),
+        [low, high] if low == high => format!("{low:.2} m ahead of the robot"),
+        [low, high] => format!("from {low:.2} to {high:.2} m ahead of the robot"),
     }
 }
 
@@ -354,7 +356,18 @@ mod tests {
             (
                 Fit::NotVisible { reach, view: None },
                 chest(0.1),
-                "Not visible: the arms reach x 0.20 to 0.32 m of it, but the chest camera sees none of it.",
+                "Not visible: the arms reach it from 0.20 to 0.32 m ahead of the robot, but the chest camera sees none of it.",
+            ),
+            (
+                Fit::NotVisible {
+                    reach: Rectangle {
+                        x: [0.3, 0.3],
+                        y: [-0.1, 0.1],
+                    },
+                    view: None,
+                },
+                chest(0.1),
+                "Not visible: the arms reach it 0.30 m ahead of the robot, but the chest camera sees none of it.",
             ),
             (
                 Fit::NotVisible {
@@ -365,7 +378,7 @@ mod tests {
                     }),
                 },
                 chest(0.1),
-                "Not visible: the arms reach x 0.20 to 0.32 m of it and the chest camera sees x 0.40 to 0.64 m of it, but it sees no point an arm reaches.",
+                "Not visible: the arms reach it from 0.20 to 0.32 m ahead of the robot and the chest camera sees it from 0.40 to 0.64 m ahead of the robot, but it sees no point an arm reaches.",
             ),
             (
                 Fit::NotVisible {
@@ -379,7 +392,7 @@ mod tests {
                     }),
                 },
                 chest(0.1),
-                "Not visible: the arms reach x 0.20 to 0.50 m of it and the chest camera sees x 0.40 to 0.90 m of it, but it sees no point an arm reaches.",
+                "Not visible: the arms reach it from 0.20 to 0.50 m ahead of the robot and the chest camera sees it from 0.40 to 0.90 m ahead of the robot, but it sees no point an arm reaches.",
             ),
             (
                 Fit::TooLittleRoom {

@@ -77,3 +77,50 @@ fn a_pose_the_arm_takes_falls_short_by_nothing_and_a_far_one_by_its_distance_pas
             .is_none()
     );
 }
+
+#[test]
+fn a_point_falls_short_by_the_least_shortfall_of_a_pose_there_in_any_orientation() {
+    let arm = Arm::from_urdf_file(V2_URDF, "openarm_left_base_link")
+        .and_then(|arm| arm.with_tool_link("openarm_left_tcp"))
+        .expect("v2 left arm with its tool");
+    // Directions spread evenly over the sphere (a Fibonacci lattice): each
+    // turns the tool so the wrist center stands that way from the target.
+    let wrist_offset = arm.tool().inverse().translation.vector;
+    let directions = (0..4000).map(|i| {
+        let z = 1.0 - (2.0 * f64::from(i) + 1.0) / 4000.0;
+        let azimuth = f64::from(i) * std::f64::consts::PI * (3.0 - 5f64.sqrt());
+        let ring = (1.0 - z * z).sqrt();
+        Vector3::new(ring * azimuth.cos(), ring * azimuth.sin(), z)
+    });
+    let orientations: Vec<UnitQuaternion<f64>> = directions
+        .map(|direction| {
+            UnitQuaternion::rotation_between(&wrist_offset, &direction).unwrap_or_else(|| {
+                UnitQuaternion::from_axis_angle(&Vector3::x_axis(), std::f64::consts::PI)
+            })
+        })
+        .collect();
+    let least = |target: Vector3<f64>| {
+        orientations
+            .iter()
+            .map(|&rotation| {
+                arm.reach_shortfall(&Isometry3::from_parts(Translation3::from(target), rotation))
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    for target in [
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(0.3, -0.1, 0.2),
+        Vector3::new(0.9, 0.2, -0.3),
+        Vector3::new(-0.4, 1.1, 0.6),
+        Vector3::new(3.0, -2.0, 1.0),
+    ] {
+        let shortfall = arm.position_shortfall(&target);
+        let sampled = least(target);
+        assert!(
+            shortfall <= sampled + 1e-9 && sampled - shortfall < 1e-3,
+            "{target:?}: {shortfall} against the least sampled {sampled}"
+        );
+    }
+    assert_eq!(arm.position_shortfall(&Vector3::new(0.3, -0.1, 0.2)), 0.0);
+    assert!(arm.position_shortfall(&Vector3::new(3.0, -2.0, 1.0)) > 2.0);
+}

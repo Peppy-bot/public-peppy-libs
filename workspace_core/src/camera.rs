@@ -1,5 +1,7 @@
 //! The camera a robot finds items with, and what it sees.
 
+use std::str::FromStr;
+
 use crate::verdict::View;
 
 /// What the perception camera rule reads of one of a robot's cameras.
@@ -86,6 +88,65 @@ impl Intrinsics {
     }
 }
 
+/// What a camera's depth sample of a point is (`depth_model` of
+/// `camera_geometry:v1`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DepthModel {
+    /// The distance from the camera to the plane through the point, square
+    /// to the optical axis: the point's optical `z` (`"z"`).
+    Z,
+    /// The straight-line distance from the camera to the point
+    /// (`"range"`).
+    Range,
+}
+
+impl DepthModel {
+    /// The sample a camera of this model reads for `local`, a point of its
+    /// optical frame.
+    fn sample(self, local: [f64; 3]) -> f64 {
+        match self {
+            Self::Z => local[2],
+            Self::Range => local.iter().map(|value| value * value).sum::<f64>().sqrt(),
+        }
+    }
+}
+
+/// A depth model `camera_geometry:v1` does not name.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("unknown depth model '{0}': camera_geometry:v1 names \"z\" and \"range\"")]
+pub struct UnknownDepthModel(pub String);
+
+impl FromStr for DepthModel {
+    type Err = UnknownDepthModel;
+
+    /// The model `camera_geometry:v1` names `name`.
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        match name {
+            "z" => Ok(Self::Z),
+            "range" => Ok(Self::Range),
+            other => Err(UnknownDepthModel(other.to_owned())),
+        }
+    }
+}
+
+/// What a camera's depth stream measures.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Depth {
+    pub model: DepthModel,
+    /// The samples it can read, nearest and farthest, in metres: a point
+    /// whose sample falls outside them reads no depth.
+    pub range: [f64; 2],
+}
+
+impl Depth {
+    /// Whether the stream reads a depth for `local`, a point of the
+    /// camera's optical frame.
+    fn reads(&self, local: [f64; 3]) -> bool {
+        let [nearest, farthest] = self.range;
+        (nearest..=farthest).contains(&self.model.sample(local))
+    }
+}
+
 /// A camera placed in a frame, and what it measures.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
@@ -98,24 +159,20 @@ pub struct Camera {
     pub rotation: [f64; 9],
     /// The pinhole model of its colour stream.
     pub intrinsics: Intrinsics,
-    /// The depths it measures along its optical axis, nearest and farthest,
-    /// in metres; none when it gives no depth.
-    pub depth_range: Option<[f64; 2]>,
+    /// What its depth stream measures; none when it gives no depth.
+    pub depth: Option<Depth>,
 }
 
 impl Camera {
     /// What the camera makes of `point`: seen when it lies inside its field
-    /// of view and its depth range. What may hide the point is not asked.
+    /// of view and its depth stream reads a depth for it. What may hide the
+    /// point is not asked.
     pub fn view_of(&self, point: [f64; 3]) -> View {
         let local = self.in_optical_frame(point);
         if !self.intrinsics.holds(local) {
             return View::OutsideField;
         }
-        let depth = local[2];
-        if self
-            .depth_range
-            .is_some_and(|[near, far]| depth < near || depth > far)
-        {
+        if self.depth.is_some_and(|depth| !depth.reads(local)) {
             return View::OutOfDepth;
         }
         View::Seen
@@ -190,7 +247,10 @@ mod tests {
             // -Z, +Z (the view) its +X.
             rotation: [0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
             intrinsics: Intrinsics::from_vertical_fov(60f64.to_radians(), 64, 48),
-            depth_range: Some([0.2, 3.0]),
+            depth: Some(Depth {
+                model: DepthModel::Z,
+                range: [0.2, 3.0],
+            }),
         }
     }
 
@@ -260,6 +320,35 @@ mod tests {
     }
 
     #[test]
+    fn a_range_camera_reads_the_straight_line_distance_and_a_z_camera_the_optical_z() {
+        // 2.9 m ahead and 0.8 m to the left: optical z 2.9, inside the depth
+        // range, but 3.01 m from the camera, beyond it.
+        let point = [2.9, 0.8, 1.0];
+        assert_eq!(ahead().view_of(point), View::Seen);
+        let range = Camera {
+            depth: Some(Depth {
+                model: DepthModel::Range,
+                range: [0.2, 3.0],
+            }),
+            ..ahead()
+        };
+        assert_eq!(range.view_of(point), View::OutOfDepth);
+        assert_eq!(range.view_of([2.9, 0.7, 1.0]), View::Seen, "2.98 m away");
+    }
+
+    #[test]
+    fn a_depth_model_is_parsed_from_the_name_camera_geometry_gives_it() {
+        assert_eq!("z".parse(), Ok(DepthModel::Z));
+        assert_eq!("range".parse(), Ok(DepthModel::Range));
+        let unknown = "disparity".parse::<DepthModel>().unwrap_err();
+        assert_eq!(unknown, UnknownDepthModel("disparity".into()));
+        assert_eq!(
+            unknown.to_string(),
+            "unknown depth model 'disparity': camera_geometry:v1 names \"z\" and \"range\""
+        );
+    }
+
+    #[test]
     fn a_point_above_the_camera_in_front_of_a_camera_that_looks_down_is_outside_its_field() {
         // Tilted 60° below the horizon: the optical axis is (cos 60°, 0,
         // -sin 60°) and the image's down (-sin 60°, 0, -cos 60°).
@@ -281,9 +370,9 @@ mod tests {
     }
 
     #[test]
-    fn a_camera_without_depth_measures_no_depth_range_and_no_camera_is_not_asked() {
+    fn a_camera_without_depth_reads_every_depth_and_no_camera_is_not_asked() {
         let colour_only = Camera {
-            depth_range: None,
+            depth: None,
             ..ahead()
         };
         assert_eq!(colour_only.view_of([0.1, 0.0, 1.0]), View::Seen);

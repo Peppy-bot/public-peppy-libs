@@ -18,7 +18,7 @@ rotations): no math library, no robot description, no world.
 | Reachable (`Reach`) | Some arm brings its grasp point within `REACH_TOLERANCE` (0.01 m) of the target with its approach axis within `GRASP_ANGLE_TOLERANCE` (0.05 rad) of a grasp direction, solved at each grasp orientation; the roll the gripper ends at is not checked. |
 | Surface target | `ABOVE_SURFACE` (0.04 m) above a point of the surface. |
 | Perception camera (`perception_camera`) | The robot's one camera that gives depth and that no arm carries. None: no view check. Several: an error naming them. |
-| Visible (`View`) | Inside the perception camera's field of view and depth range (`Camera::view_of`). Each side adds its own test of what hides a point; only a simulation says `View::HiddenBy`. |
+| Visible (`View`) | Inside the perception camera's field of view, and where its depth stream reads a depth: its sample of the point, the optical z or the straight-line distance as its depth model says (`DepthModel`), lies inside its depth range (`Camera::view_of`). Each side adds its own test of what hides a point; only a simulation says `View::HiddenBy`. |
 | Workable | Reachable and visible; reachable alone for a robot without a perception camera. |
 | Room to work | The workable points cover at least `MIN_WORKABLE_AREA` (0.03 m²). |
 

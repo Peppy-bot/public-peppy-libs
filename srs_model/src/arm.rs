@@ -126,6 +126,22 @@ impl Arm {
         (distance - straight).max(folded - distance).max(0.0)
     }
 
+    /// How far the end-effector point `target` lies beyond the arm's reach in
+    /// every orientation, in metres: the least [`reach_shortfall`](Self::reach_shortfall)
+    /// of a pose at `target`, over all its orientations. The wrist center then
+    /// lies anywhere on the sphere the tool origin's distance from the tip spans
+    /// about `target`, so this is how far that sphere stands outside the wrist
+    /// center's shell; 0 when they meet. `target` is a point of the **arm base
+    /// frame**. The joint limits are not asked, as for `reach_shortfall`.
+    pub fn position_shortfall(&self, target: &Vector3<f64>) -> f64 {
+        let distance = (target - self.model.shoulder).norm();
+        let tool = self.fk.tool().translation.vector.norm();
+        let (nearest, farthest) = ((distance - tool).abs(), distance + tool);
+        let straight = self.model.l_su + self.model.l_uw;
+        let folded = (self.model.l_su - self.model.l_uw).abs();
+        (nearest - straight).max(folded - farthest).max(0.0)
+    }
+
     /// The arm angle of configuration `q`, or `None` at the straight-arm
     /// singularity where it is geometrically undefined.
     pub fn arm_angle(&self, q: &JointVec) -> Option<f64> {
