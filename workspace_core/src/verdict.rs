@@ -38,7 +38,8 @@ impl Reach {
 /// What a robot's perception camera makes of a point.
 #[derive(Clone, Debug, PartialEq)]
 pub enum View {
-    /// The robot has no perception camera, so nothing is asked of it.
+    /// No camera is asked: the robot has no perception camera, or the
+    /// answer cannot read its camera's field of view.
     NoCamera,
     /// The camera sees the point.
     Seen,
@@ -96,11 +97,17 @@ pub struct GridPoint {
 }
 
 impl GridPoint {
-    /// Whether the robot can work the point: an arm reaches it and the
-    /// perception camera, when the robot has one, sees it.
+    /// Whether the robot can work the point ([`workable`]).
     pub fn workable(&self) -> bool {
-        self.reach.reached() && self.view.passes()
+        workable(&self.reach, &self.view)
     }
+}
+
+/// Whether a robot can work a point or an object whose reach is `reach` and
+/// whose view is `view`: an arm reaches it and the perception camera sees
+/// it, or is not asked.
+pub fn workable(reach: &Reach, view: &View) -> bool {
+    reach.reached() && view.passes()
 }
 
 #[cfg(test)]

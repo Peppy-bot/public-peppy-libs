@@ -51,11 +51,12 @@ impl Grid {
     }
 
     /// The point at `row` and `lane`: `x` ahead of the robot, `y` to its
-    /// left.
+    /// left, each to the nanometre, so that an answer reads 0.3 rather than
+    /// the sum of steps that lands beside it.
     pub fn point(&self, row: usize, lane: usize) -> (f64, f64) {
         (
-            self.x[0] + row as f64 * self.step_x,
-            self.y[0] + lane as f64 * self.step_y,
+            to_nanometre(self.x[0] + row as f64 * self.step_x),
+            to_nanometre(self.y[0] + lane as f64 * self.step_y),
         )
     }
 
@@ -79,6 +80,11 @@ impl Grid {
         let lane = nearest_step(y, self.y[0], self.step_y)?;
         (row < self.rows() && lane < self.lanes()).then_some((row, lane))
     }
+}
+
+/// `value` rounded to the nanometre.
+fn to_nanometre(value: f64) -> f64 {
+    (value * 1e9).round() / 1e9
 }
 
 /// How many whole steps of `step` fit from `low` to `high`.
@@ -133,14 +139,11 @@ mod tests {
         let points = grid.points();
         assert_eq!((grid.rows(), grid.lanes()), (51, 13));
         assert_eq!(points.len(), 51 * 13);
-        let close = |(x, y): (f64, f64), (ex, ey): (f64, f64)| {
-            (x - ex).abs() < 1e-12 && (y - ey).abs() < 1e-12
-        };
-        assert!(close(points[0], (0.0, -0.3)), "{:?}", points[0]);
-        assert!(close(points[12], (0.0, 0.3)), "{:?}", points[12]);
-        assert!(close(points[13], (0.02, -0.3)), "{:?}", points[13]);
-        let last = points[points.len() - 1];
-        assert!(close(last, (1.0, 0.3)), "{last:?}");
+        assert_eq!(points[0], (0.0, -0.3));
+        assert_eq!(points[12], (0.0, 0.3));
+        assert_eq!(points[13], (0.02, -0.3));
+        assert_eq!(points[points.len() - 1], (1.0, 0.3));
+        assert_eq!(grid.point(15, 4), (0.3, -0.1), "a point reads as written");
         assert!((grid.cell_area() - 0.001).abs() < 1e-15);
     }
 

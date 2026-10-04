@@ -59,4 +59,4 @@ pub use grasp::{GRASP_ROLLS, GraspDirection, GraspOrientation, angle_between};
 pub use grid::{
     ABOVE_SURFACE, GRASP_ANGLE_TOLERANCE, Grid, Limits, MIN_WORKABLE_AREA, REACH_TOLERANCE,
 };
-pub use verdict::{GridPoint, Reach, View};
+pub use verdict::{GridPoint, Reach, View, workable};

@@ -32,4 +32,5 @@ rotations): no math library, no robot description, no world.
 | `nearest_workable(points, target)` | the workable point nearest a target, where to move an object to |
 | `Camera::view_of`, `view_of` | the field-of-view and depth test of a point, for a camera in the optical convention (+X right, +Y down, +Z along the view) with OpenCV intrinsics |
 | `Intrinsics::from_vertical_fov` | the pinhole model of a rendered camera from its vertical field of view and image size |
-| `messages::{point_message, surface_message, robot_frame_placement}` | the one-line text of each verdict |
+| `workable(reach, view)` | whether a point or an object is workable: reached, and seen or not asked |
+| `messages::{point_message, surface_message, robot_frame_placement, workable_count_message}` | the one-line text of each verdict, and of how many checked points or objects are workable |

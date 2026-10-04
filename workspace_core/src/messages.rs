@@ -85,6 +85,38 @@ pub fn surface_message(fit: &Fit, camera: Option<SurfaceCamera<'_>>) -> String {
     }
 }
 
+/// What an answer that checks several points or objects counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Counted {
+    Points,
+    Objects,
+}
+
+impl Counted {
+    fn noun(self, count: usize) -> &'static str {
+        match (self, count) {
+            (Self::Points, 1) => "point",
+            (Self::Points, _) => "points",
+            (Self::Objects, 1) => "object",
+            (Self::Objects, _) => "objects",
+        }
+    }
+}
+
+/// How many of the `count` points or objects an answer checks the robot
+/// can work: `workable` of them.
+pub fn workable_count_message(workable: usize, count: usize, counted: Counted) -> String {
+    let noun = counted.noun(count);
+    match (workable, count) {
+        (_, 1) if workable == 1 => format!("The {noun} is workable."),
+        (0, 1) => format!("The {noun} is not workable."),
+        (all, _) if all == count => format!("All {count} {noun} are workable."),
+        (0, _) => format!("None of the {count} {noun} is workable."),
+        (1, _) => format!("1 of the {count} {noun} is workable."),
+        (some, _) => format!("{some} of the {count} {noun} are workable."),
+    }
+}
+
 /// Where to put objects on a workable surface, said in the robot frame.
 pub fn robot_frame_placement(rectangle: &Rectangle) -> String {
     format!(
@@ -94,7 +126,9 @@ pub fn robot_frame_placement(rectangle: &Rectangle) -> String {
     )
 }
 
-const NO_CAMERA: &str = "the robot has no perception camera, so its view is not checked";
+/// The clause of a point no camera is asked about ([`View::NoCamera`]): the
+/// answer says why once, for every point.
+const NO_CAMERA: &str = "its view is not checked";
 
 fn camera_phrase(camera: Option<&str>) -> String {
     match camera {
@@ -172,7 +206,7 @@ mod tests {
             (
                 reached(),
                 View::NoCamera,
-                "Workable: right_arm reaches it; the robot has no perception camera, so its view is not checked.",
+                "Workable: right_arm reaches it; its view is not checked.",
             ),
             (
                 reached(),
@@ -197,7 +231,7 @@ mod tests {
             (
                 short.clone(),
                 View::NoCamera,
-                "Not workable: it is out of reach by 0.60 m; the robot has no perception camera, so its view is not checked.",
+                "Not workable: it is out of reach by 0.60 m; its view is not checked.",
             ),
             (
                 short,
@@ -285,6 +319,21 @@ mod tests {
             surface_message(&Fit::NotReachable, None),
             surface_message(&Fit::NotReachable, Some(chest(0.3)))
         );
+    }
+
+    #[test]
+    fn the_count_of_workable_points_or_objects_reads_as_a_sentence() {
+        let cases = [
+            (1, 1, Counted::Points, "The point is workable."),
+            (0, 1, Counted::Objects, "The object is not workable."),
+            (3, 3, Counted::Points, "All 3 points are workable."),
+            (0, 2, Counted::Objects, "None of the 2 objects is workable."),
+            (1, 4, Counted::Points, "1 of the 4 points is workable."),
+            (2, 5, Counted::Objects, "2 of the 5 objects are workable."),
+        ];
+        for (workable, count, counted, expected) in cases {
+            assert_eq!(workable_count_message(workable, count, counted), expected);
+        }
     }
 
     #[test]
