@@ -408,6 +408,19 @@ mod tests {
             largest_workable_rectangle(&points, &GRID),
             rectangle([0.2, 0.3], [-0.2, -0.1]),
         );
+        let points = surface([
+            "--.--", //
+            ".....", //
+            "--.--", //
+            "--.--", //
+            "--.--",
+        ]);
+        // A row and a column of 5 points, both across the midline: the row,
+        // nearer the robot.
+        assert_rectangle(
+            largest_workable_rectangle(&points, &GRID),
+            rectangle([0.3, 0.3], [-0.2, 0.2]),
+        );
     }
 
     #[test]
@@ -474,6 +487,18 @@ mod tests {
         let [x, y] = nearest_workable(&points, [0.0, -0.2]).unwrap();
         assert!((x - 0.4).abs() < 1e-12 && y.abs() < 1e-12, "{x} {y}");
         assert_eq!(nearest_workable(&surface(["-----"; 5]), [0.3, 0.0]), None);
+        // Of points as near, the one nearest the robot, then the one furthest
+        // to its right.
+        let ahead_and_behind = surface(["--.--", "-----", "--.--", "-----", "-----"]);
+        assert_eq!(
+            nearest_workable(&ahead_and_behind, [0.3, 0.0]),
+            Some([0.2, 0.0])
+        );
+        let either_side = surface(["-----", "-.-.-", "-----", "-----", "-----"]);
+        assert_eq!(
+            nearest_workable(&either_side, [0.3, 0.0]),
+            Some([0.3, -0.1])
+        );
     }
 
     #[test]

@@ -165,18 +165,6 @@ fn a_pose_just_beyond_the_reach_is_solved_on_the_reach_within_the_tolerance() {
     let missed = (reached.translation.vector - near.translation.vector).norm();
     assert!(missed < tolerance, "{missed}");
     assert!(reached.rotation.angle_to(&near.rotation) < 1e-6);
-    // Just inside the shell, past the elbow's floor: solved within the
-    // tolerance too.
-    let inside = Translation3::from(outward * -0.0001) * beyond(1e-9);
-    assert_eq!(arm.reach_shortfall(&inside), 0.0);
-    assert!(
-        arm.solve_ik(&inside, ArmAnglePolicy::FromSeed, &seed)
-            .is_none()
-    );
-    assert!(
-        arm.solve_ik_within(&inside, tolerance, ArmAnglePolicy::FromSeed, &seed)
-            .is_some()
-    );
     let far = beyond(0.02);
     assert!(
         arm.solve_ik_within(&far, tolerance, ArmAnglePolicy::FromSeed, &seed)
@@ -188,5 +176,85 @@ fn a_pose_just_beyond_the_reach_is_solved_on_the_reach_within_the_tolerance() {
             .map(|solution| solution.q),
         arm.solve_ik(&taken, ArmAnglePolicy::FromSeed, &seed)
             .map(|solution| solution.q)
+    );
+}
+
+#[test]
+fn a_pose_just_past_the_elbows_fold_is_solved_within_the_tolerance() {
+    let arm = Arm::from_urdf_file(V2_URDF, "openarm_left_base_link")
+        .map(|arm| arm.with_lower_floor(3, 0.05))
+        .and_then(|arm| arm.with_tool_link("openarm_left_tcp"))
+        .expect("v2 left arm with its tool");
+    let elbow = arm.limits()[3];
+    // The pose the arm takes with its elbow folded `past` beyond its limit,
+    // which the forward kinematics computes and no solution reaches.
+    let folded = |past: f64| {
+        arm.at(&[0.2, 0.3, 0.1, elbow.hi + past, 0.2, 0.3, 0.1])
+            .ee_pose()
+    };
+    let beyond = |shortfall: f64| {
+        let (mut low, mut high) = (0.0, 0.5);
+        for _ in 0..60 {
+            let middle = (low + high) / 2.0;
+            if arm.reach_shortfall(&folded(middle)) < shortfall {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        folded(high)
+    };
+    let tolerance = 0.01;
+    let seed = [0.2, 0.3, 0.1, elbow.hi - 0.1, 0.2, 0.3, 0.1];
+    let near = beyond(0.005);
+    assert!((arm.reach_shortfall(&near) - 0.005).abs() < 1e-9);
+    assert!(
+        arm.solve_ik(&near, ArmAnglePolicy::FromSeed, &seed)
+            .is_none()
+    );
+    let solution = arm
+        .solve_ik_within(&near, tolerance, ArmAnglePolicy::FromSeed, &seed)
+        .expect("5 mm past the elbow's fold is within 1 cm");
+    let reached = arm.at(&solution.q).ee_pose();
+    let missed = (reached.translation.vector - near.translation.vector).norm();
+    assert!(missed < tolerance, "{missed}");
+    assert!(reached.rotation.angle_to(&near.rotation) < 1e-6);
+    assert!(
+        arm.solve_ik_within(&beyond(0.025), tolerance, ArmAnglePolicy::FromSeed, &seed)
+            .is_none()
+    );
+}
+
+#[test]
+fn the_reach_is_the_elbows_and_a_target_that_is_not_finite_falls_short_by_nan() {
+    let arm = Arm::from_urdf_file(V2_URDF, "openarm_left_base_link")
+        .map(|arm| arm.with_lower_floor(3, 0.05))
+        .expect("v2 left arm");
+    let (inner, outer) = arm.wrist_reach();
+    let elbow = arm.limits()[3];
+    // The poses of the elbow at its two limits stand on the reach's edges.
+    for (flex, edge) in [(elbow.lo, outer), (elbow.hi, inner)] {
+        let pose = arm.at(&[0.0, 0.4, 0.0, flex, 0.0, 0.0, 0.0]).ee_pose();
+        assert!(arm.reach_shortfall(&pose) < 1e-9, "flex {flex}");
+        // Past the floor the arm straightens, past the upper limit it folds.
+        let past = if edge == outer { -0.05 } else { 0.05 };
+        let beyond = arm
+            .at(&[0.0, 0.4, 0.0, flex + past, 0.0, 0.0, 0.0])
+            .ee_pose();
+        assert!(arm.reach_shortfall(&beyond) > 1e-5, "flex {flex} {past:+}");
+    }
+    assert!(inner > 0.1 && outer < 0.44, "{inner} {outer}");
+    let nowhere = Isometry3::from_parts(
+        Translation3::new(f64::NAN, 0.0, 0.0),
+        UnitQuaternion::identity(),
+    );
+    assert!(arm.reach_shortfall(&nowhere).is_nan());
+    assert!(
+        arm.position_shortfall(&Vector3::new(f64::INFINITY, 0.0, 0.0))
+            .is_nan()
+    );
+    assert!(
+        arm.solve_ik_within(&nowhere, 0.01, ArmAnglePolicy::FromSeed, &[0.0; ARM_DOF])
+            .is_none()
     );
 }

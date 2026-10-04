@@ -35,8 +35,9 @@ let solution = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &q)?;
 | `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics (the chain's, at seven joints), payload included |
 | `Posed::jacobian` | the 6x7 geometric Jacobian and its redundancy-aware inverses |
 | `Arm::solve_ik` | closed-form arm-angle (Shimizu) IK under an [`ArmAnglePolicy`] |
-| `Arm::reach_shortfall` | how far a target lies beyond the arm's reach: its wrist center's distance outside the shell the wrist sweeps |
-| `Arm::solve_ik_within` | `solve_ik`, or, for a target just beyond the reach, the same orientation moved onto the reach: the end-effector stops within a tolerance of the target |
+| `Arm::wrist_reach` | the nearest and farthest the wrist center stands from the shoulder within the elbow's limits |
+| `Arm::reach_shortfall` | how far a target lies beyond the arm's reach: its wrist center's distance outside `wrist_reach` |
+| `Arm::solve_ik_within` | `solve_ik`, or, for a target whose wrist center stands within a tolerance of an edge of its reach, outside or inside it, the same orientation moved into the reach: the end-effector stops within the tolerance of the target |
 | `Arm::position_shortfall` | how far a point lies beyond the arm's reach in every orientation: the least `reach_shortfall` of a pose there |
 | `Arm::arm_angle` | the arm angle a configuration is already at |
 | `Arm::rate_step` | one damped resolved-rate step (`chain_kinematics`'s, at seven joints) |

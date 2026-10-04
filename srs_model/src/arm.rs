@@ -15,10 +15,13 @@ use crate::{ARM_DOF, JointVec, Limit, Posed, SrsError};
 /// the generic chain under it cannot be damped differently.
 pub use chain_kinematics::DEFAULT_DLS_LAMBDA;
 
-/// How far past an edge of the wrist center's shell [`Arm::solve_ik_within`]
-/// moves a target at least, and how far short of its tolerance it stops at most,
-/// in metres: clear of the straight and the folded arm, where the arm angle is
-/// undefined.
+/// The elbow's index in the joint vector, j4: the joint whose flex sets the
+/// wrist center's distance from the shoulder.
+const ELBOW: usize = 3;
+
+/// How far past an edge of the wrist center's reach [`Arm::solve_ik_within`]
+/// moves a target at least, and how far short of its tolerance its deepest move
+/// stops, in metres: clear of the edge itself.
 pub const SHELL_MARGIN: f64 = 1e-4;
 
 /// A complete SRS arm built from a URDF: forward kinematics + gravity/Coriolis
@@ -118,13 +121,13 @@ impl Arm {
     }
 
     /// [`solve_ik`](Self::solve_ik) for `target`, or, when its wrist center stands
-    /// within `tolerance` metres of an edge of the shell it sweeps, outside or
-    /// inside it, for the pose of the same orientation moved straight into the
-    /// shell: first just past that edge ([`SHELL_MARGIN`]), then as far in as
-    /// `tolerance` allows, since the joint limits can keep the arm off the edge
-    /// itself (an elbow held off the straight arm). The end-effector then stops
-    /// less than `tolerance` from `target`. `None` when none of these poses admits
-    /// an in-limit solution.
+    /// less than `tolerance` metres from an edge of its reach
+    /// ([`reach_shortfall`](Self::reach_shortfall)), outside or inside it, for the
+    /// pose of the same orientation moved straight into the reach: first just past
+    /// that edge, then as far in as `tolerance` allows ([`SHELL_MARGIN`] short of
+    /// it), since the other joints' limits can keep the arm off the edge itself.
+    /// The end-effector then stops less than `tolerance` from `target`. `None` when
+    /// none of these poses admits an in-limit solution.
     pub fn solve_ik_within(
         &self,
         target: &Isometry3<f64>,
@@ -135,20 +138,21 @@ impl Arm {
         if let Some(solution) = self.solve_ik(target, arm_angle, seed) {
             return Some(solution);
         }
-        let outward = (target * self.fk.tool().inverse()).translation.vector - self.model.shoulder;
+        let outward = self.wrist_center(target) - self.model.shoulder;
         let distance = outward.norm();
-        if distance == 0.0 {
+        // A wrist center on the shoulder has no direction to move along, and one
+        // that is not finite none at all.
+        if !(distance > 0.0 && distance.is_finite()) {
             return None;
         }
-        // Near the straight arm the wrist center moves toward the shoulder, near
-        // the folded arm away from it; `beyond` is how far it stands past that
-        // edge, below 0 inside the shell.
-        let straight = self.model.l_su + self.model.l_uw;
-        let folded = (self.model.l_su - self.model.l_uw).abs();
-        let (toward, beyond) = if distance > (straight + folded) / 2.0 {
-            (-1.0, distance - straight)
+        // Near the outer edge the wrist center moves toward the shoulder, near the
+        // inner one away from it; `beyond` is how far it stands past that edge,
+        // below 0 inside the reach.
+        let (inner, outer) = self.wrist_reach();
+        let (toward, beyond) = if distance > (inner + outer) / 2.0 {
+            (-1.0, distance - outer)
         } else {
-            (1.0, folded - distance)
+            (1.0, inner - distance)
         };
         if beyond <= -tolerance || beyond.max(0.0) + SHELL_MARGIN >= tolerance {
             return None;
@@ -162,18 +166,17 @@ impl Arm {
     }
 
     /// How far the end-effector `target` lies beyond the arm's reach, in metres:
-    /// how far its wrist center stands outside the shell the wrist center sweeps,
-    /// between the folded and the straight arm; 0 inside that shell. `target` is in
-    /// the **arm base frame**, and a tool-frame target on an arm with a tool, as for
-    /// [`solve_ik`](Self::solve_ik). The joint limits are not asked: a target inside
-    /// the shell may still admit no in-limit solution, so this measures how far a
-    /// target out of reach is from the arm, not whether a target is reachable.
+    /// how far its wrist center stands outside the distances from the shoulder
+    /// the elbow's limits allow ([`wrist_reach`](Self::wrist_reach)); 0 inside
+    /// them, and NaN for a target that is not finite. `target` is in the **arm
+    /// base frame**, and a tool-frame target on an arm with a tool, as for
+    /// [`solve_ik`](Self::solve_ik). The other joints' limits are not asked: a
+    /// target inside may still admit no in-limit solution, so this measures how
+    /// far a target out of reach is from the arm, not whether a target is
+    /// reachable.
     pub fn reach_shortfall(&self, target: &Isometry3<f64>) -> f64 {
-        let wrist = (target * self.fk.tool().inverse()).translation.vector;
-        let distance = (wrist - self.model.shoulder).norm();
-        let straight = self.model.l_su + self.model.l_uw;
-        let folded = (self.model.l_su - self.model.l_uw).abs();
-        (distance - straight).max(folded - distance).max(0.0)
+        let distance = (self.wrist_center(target) - self.model.shoulder).norm();
+        self.outside_reach(distance, distance)
     }
 
     /// How far the end-effector point `target` lies beyond the arm's reach in
@@ -181,15 +184,44 @@ impl Arm {
     /// of a pose at `target`, over all its orientations. The wrist center then
     /// lies anywhere on the sphere the tool origin's distance from the tip spans
     /// about `target`, so this is how far that sphere stands outside the wrist
-    /// center's shell; 0 when they meet. `target` is a point of the **arm base
-    /// frame**. The joint limits are not asked, as for `reach_shortfall`.
+    /// center's reach; 0 when they meet, and NaN for a target that is not finite.
+    /// `target` is a point of the **arm base frame**.
     pub fn position_shortfall(&self, target: &Vector3<f64>) -> f64 {
         let distance = (target - self.model.shoulder).norm();
         let tool = self.fk.tool().translation.vector.norm();
-        let (nearest, farthest) = ((distance - tool).abs(), distance + tool);
-        let straight = self.model.l_su + self.model.l_uw;
-        let folded = (self.model.l_su - self.model.l_uw).abs();
-        (nearest - straight).max(folded - farthest).max(0.0)
+        self.outside_reach((distance - tool).abs(), distance + tool)
+    }
+
+    /// The distances from the shoulder the wrist center takes within the elbow's
+    /// limits, nearest and farthest, in metres: the elbow's flex sets the
+    /// distance by the law of cosines, the straight arm (flex 0) the farthest.
+    pub fn wrist_reach(&self) -> (f64, f64) {
+        let Limit { lo, hi } = self.fk.limits()[ELBOW];
+        let (upper, fore) = (self.model.l_su, self.model.l_uw);
+        let at = |flex: f64| {
+            let flex = flex.clamp(0.0, std::f64::consts::PI);
+            (upper * upper + fore * fore + 2.0 * upper * fore * flex.cos())
+                .max(0.0)
+                .sqrt()
+        };
+        (at(hi), at(lo))
+    }
+
+    /// Where the wrist center stands for the end-effector `target`, in the arm
+    /// base frame: the tip the closed form solves for.
+    fn wrist_center(&self, target: &Isometry3<f64>) -> Vector3<f64> {
+        (target * self.fk.tool().inverse()).translation.vector
+    }
+
+    /// How far the wrist center distances from `nearest` to `farthest` from the
+    /// shoulder stand outside [`wrist_reach`](Self::wrist_reach): 0 when they
+    /// meet it, NaN when they are not finite.
+    fn outside_reach(&self, nearest: f64, farthest: f64) -> f64 {
+        if !(nearest.is_finite() && farthest.is_finite()) {
+            return f64::NAN;
+        }
+        let (inner, outer) = self.wrist_reach();
+        (nearest - outer).max(inner - farthest).max(0.0)
     }
 
     /// The arm angle of configuration `q`, or `None` at the straight-arm
