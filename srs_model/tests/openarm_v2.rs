@@ -66,8 +66,14 @@ fn a_pose_the_arm_takes_falls_short_by_nothing_and_a_far_one_by_its_distance_pas
             UnitQuaternion::identity(),
         )
     };
-    let (near, far) = (arm.reach_shortfall(&at(20.0)), arm.reach_shortfall(&at(21.0)));
+    let (near, far) = (
+        arm.reach_shortfall(&at(20.0)),
+        arm.reach_shortfall(&at(21.0)),
+    );
     assert!(near > 18.0, "{near}");
     assert!((far - near - 1.0).abs() < 0.01, "{near} then {far}");
-    assert!(arm.solve_ik(&at(20.0), ArmAnglePolicy::FromSeed, &[0.0; ARM_DOF]).is_none());
+    assert!(
+        arm.solve_ik(&at(20.0), ArmAnglePolicy::FromSeed, &[0.0; ARM_DOF])
+            .is_none()
+    );
 }

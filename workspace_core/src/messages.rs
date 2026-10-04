@@ -63,15 +63,21 @@ pub fn surface_message(fit: &Fit, camera: Option<SurfaceCamera<'_>>) -> String {
         Fit::NotVisible { reach, view } => {
             let phrase = camera_phrase(camera.map(|camera| camera.name));
             if let Some(camera) = camera.filter(|camera| camera.above_top <= 0.0) {
+                let above = -camera.above_top;
+                // A height that rounds to 0.00 m reads as level.
+                if above < 0.005 {
+                    return format!(
+                        "Not visible: the surface is level with {phrase}, which cannot see it."
+                    );
+                }
                 return format!(
-                    "Not visible: the surface is {:.2} m above {phrase}, which cannot see it.",
-                    -camera.above_top
+                    "Not visible: the surface is {above:.2} m above {phrase}, which cannot see it."
                 );
             }
             let reached = x_span(reach);
             match view {
                 Some(view) => format!(
-                    "Not visible: the arms reach {reached} of it and {phrase} sees {}, so no point is both.",
+                    "Not visible: the arms reach {reached} of it and {phrase} sees {} of it, but it sees no point an arm reaches.",
                     x_span(view)
                 ),
                 None => format!(
@@ -81,6 +87,30 @@ pub fn surface_message(fit: &Fit, camera: Option<SurfaceCamera<'_>>) -> String {
         }
         Fit::TooLittleRoom { area, min } => format!(
             "Too little room: {area:.3} m² is workable, under the {min:.3} m² that holds a few objects."
+        ),
+    }
+}
+
+/// Why an answer checks no point's view ([`View::NoCamera`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unchecked<'a> {
+    /// The robot has no perception camera.
+    NoPerceptionCamera,
+    /// The answer cannot read the field of view of `camera`, the robot's
+    /// perception camera: no camera geometry is linked for it.
+    NoCameraGeometry { camera: &'a str },
+}
+
+/// The sentence an answer that checks no point's view adds, once, saying
+/// why.
+pub fn unchecked_view_message(why: Unchecked<'_>) -> String {
+    match why {
+        Unchecked::NoPerceptionCamera => {
+            "The view is not checked: the robot has no perception camera.".to_owned()
+        }
+        Unchecked::NoCameraGeometry { camera } => format!(
+            "The view is not checked: no camera geometry is linked for {}.",
+            camera_phrase(Some(camera))
         ),
     }
 }
@@ -289,6 +319,21 @@ mod tests {
             ),
             (
                 Fit::NotVisible { reach, view: None },
+                chest(-0.005),
+                "Not visible: the surface is 0.01 m above the chest camera, which cannot see it.",
+            ),
+            (
+                Fit::NotVisible { reach, view: None },
+                chest(-0.0049),
+                "Not visible: the surface is level with the chest camera, which cannot see it.",
+            ),
+            (
+                Fit::NotVisible { reach, view: None },
+                chest(0.0),
+                "Not visible: the surface is level with the chest camera, which cannot see it.",
+            ),
+            (
+                Fit::NotVisible { reach, view: None },
                 chest(0.1),
                 "Not visible: the arms reach x 0.20 to 0.32 m of it, but the chest camera sees none of it.",
             ),
@@ -301,7 +346,21 @@ mod tests {
                     }),
                 },
                 chest(0.1),
-                "Not visible: the arms reach x 0.20 to 0.32 m of it and the chest camera sees x 0.40 to 0.64 m, so no point is both.",
+                "Not visible: the arms reach x 0.20 to 0.32 m of it and the chest camera sees x 0.40 to 0.64 m of it, but it sees no point an arm reaches.",
+            ),
+            (
+                Fit::NotVisible {
+                    reach: Rectangle {
+                        x: [0.2, 0.5],
+                        y: [-0.3, 0.3],
+                    },
+                    view: Some(Rectangle {
+                        x: [0.4, 0.9],
+                        y: [-0.1, 0.1],
+                    }),
+                },
+                chest(0.1),
+                "Not visible: the arms reach x 0.20 to 0.50 m of it and the chest camera sees x 0.40 to 0.90 m of it, but it sees no point an arm reaches.",
             ),
             (
                 Fit::TooLittleRoom {
@@ -318,6 +377,18 @@ mod tests {
         assert_eq!(
             surface_message(&Fit::NotReachable, None),
             surface_message(&Fit::NotReachable, Some(chest(0.3)))
+        );
+    }
+
+    #[test]
+    fn an_answer_that_checks_no_view_says_why_once() {
+        assert_eq!(
+            unchecked_view_message(Unchecked::NoPerceptionCamera),
+            "The view is not checked: the robot has no perception camera."
+        );
+        assert_eq!(
+            unchecked_view_message(Unchecked::NoCameraGeometry { camera: "chest" }),
+            "The view is not checked: no camera geometry is linked for the chest camera."
         );
     }
 

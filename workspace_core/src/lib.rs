@@ -7,10 +7,11 @@
 //! camera sees it:
 //!
 //! - **Reach** ([`Reach`]): some arm brings its grasp point within
-//!   [`REACH_TOLERANCE`] of the point with its gripper pointing one of the
-//!   [`GraspDirection`]s, at one of the rolls [`GraspOrientation::all`] lists.
-//!   Each side solves for those orientations with its own inverse
-//!   kinematics.
+//!   [`REACH_TOLERANCE`] of the point with its gripper's approach axis within
+//!   [`GRASP_ANGLE_TOLERANCE`] of one of the [`GraspDirection`]s. Each side
+//!   solves with its own inverse kinematics at every orientation
+//!   [`GraspOrientation::all`] lists, eight rolls about each direction, and
+//!   does not check the roll the gripper ends at.
 //! - **View** ([`View`]): the point lies inside the perception camera's field
 //!   of view and depth range ([`Camera::view_of`]). Each side adds its own
 //!   test of what hides the point; only a simulation can say
