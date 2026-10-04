@@ -53,7 +53,7 @@ pub fn surface_message(fit: &Fit, camera: Option<SurfaceCamera<'_>>) -> String {
     match fit {
         Fit::Workable { area, .. } => format!("Workable: {area:.3} m²."),
         Fit::NotMeasured => {
-            "Not measured: no point of its top lies under the grid in front of the robot."
+            "Not measured: no point of its top is found under the grid in front of the robot."
                 .to_owned()
         }
         Fit::NotReachable => format!(
@@ -326,7 +326,7 @@ mod tests {
             (
                 Fit::NotMeasured,
                 chest(0.34),
-                "Not measured: no point of its top lies under the grid in front of the robot.",
+                "Not measured: no point of its top is found under the grid in front of the robot.",
             ),
             (
                 Fit::NotReachable,
