@@ -124,3 +124,54 @@ fn a_point_falls_short_by_the_least_shortfall_of_a_pose_there_in_any_orientation
     assert_eq!(arm.position_shortfall(&Vector3::new(0.3, -0.1, 0.2)), 0.0);
     assert!(arm.position_shortfall(&Vector3::new(3.0, -2.0, 1.0)) > 2.0);
 }
+
+#[test]
+fn a_pose_just_beyond_the_reach_is_solved_on_the_reach_within_the_tolerance() {
+    let arm = Arm::from_urdf_file(V2_URDF, "openarm_left_base_link")
+        .and_then(|arm| arm.with_tool_link("openarm_left_tcp"))
+        .expect("v2 left arm with its tool");
+    // A pose of the nearly straight arm, pushed out along the arm's reach
+    // until its wrist center stands `beyond` outside the shell.
+    let seed = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
+    let taken = arm.at(&seed).ee_pose();
+    let outward = taken.translation.vector.normalize();
+    let pushed = |by: f64| Translation3::from(outward * by) * taken;
+    let beyond = |shortfall: f64| {
+        let (mut low, mut high) = (0.0, 0.5);
+        for _ in 0..60 {
+            let middle = (low + high) / 2.0;
+            if arm.reach_shortfall(&pushed(middle)) < shortfall {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        pushed(high)
+    };
+    let tolerance = 0.01;
+    let near = beyond(0.005);
+    assert!((arm.reach_shortfall(&near) - 0.005).abs() < 1e-9);
+    assert!(
+        arm.solve_ik(&near, ArmAnglePolicy::FromSeed, &seed)
+            .is_none()
+    );
+    let solution = arm
+        .solve_ik_within(&near, tolerance, ArmAnglePolicy::FromSeed, &seed)
+        .expect("5 mm beyond the reach is within 1 cm");
+    let reached = arm.at(&solution.q).ee_pose();
+    let missed = (reached.translation.vector - near.translation.vector).norm();
+    assert!(missed < tolerance, "{missed}");
+    assert!(reached.rotation.angle_to(&near.rotation) < 1e-6);
+    let far = beyond(0.02);
+    assert!(
+        arm.solve_ik_within(&far, tolerance, ArmAnglePolicy::FromSeed, &seed)
+            .is_none()
+    );
+    // A pose the arm takes is solved as it is.
+    assert_eq!(
+        arm.solve_ik_within(&taken, tolerance, ArmAnglePolicy::FromSeed, &seed)
+            .map(|solution| solution.q),
+        arm.solve_ik(&taken, ArmAnglePolicy::FromSeed, &seed)
+            .map(|solution| solution.q)
+    );
+}
