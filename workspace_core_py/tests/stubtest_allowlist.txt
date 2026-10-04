@@ -1,0 +1,6 @@
+# What stubtest may find in the module and not in its types. maturin lays the
+# package out as an __init__.py that imports every name of the extension
+# module, the inner workspace_core_py.workspace_core_py, and takes its
+# __all__. The types are those of the package, and they name the same names.
+workspace_core_py.__all__
+workspace_core_py.workspace_core_py
