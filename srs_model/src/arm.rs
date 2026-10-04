@@ -111,6 +111,21 @@ impl Arm {
         )
     }
 
+    /// How far the end-effector `target` lies beyond the arm's reach, in metres:
+    /// how far its wrist center stands outside the shell the wrist center sweeps,
+    /// between the folded and the straight arm; 0 inside that shell. `target` is in
+    /// the **arm base frame**, and a tool-frame target on an arm with a tool, as for
+    /// [`solve_ik`](Self::solve_ik). The joint limits are not asked: a target inside
+    /// the shell may still admit no in-limit solution, so this measures how far a
+    /// target out of reach is from the arm, not whether a target is reachable.
+    pub fn reach_shortfall(&self, target: &Isometry3<f64>) -> f64 {
+        let wrist = (target * self.fk.tool().inverse()).translation.vector;
+        let distance = (wrist - self.model.shoulder).norm();
+        let straight = self.model.l_su + self.model.l_uw;
+        let folded = (self.model.l_su - self.model.l_uw).abs();
+        (distance - straight).max(folded - distance).max(0.0)
+    }
+
     /// The arm angle of configuration `q`, or `None` at the straight-arm
     /// singularity where it is geometrically undefined.
     pub fn arm_angle(&self, q: &JointVec) -> Option<f64> {

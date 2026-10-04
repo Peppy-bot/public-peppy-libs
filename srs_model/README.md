@@ -35,6 +35,7 @@ let solution = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &q)?;
 | `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics (the chain's, at seven joints), payload included |
 | `Posed::jacobian` | the 6x7 geometric Jacobian and its redundancy-aware inverses |
 | `Arm::solve_ik` | closed-form arm-angle (Shimizu) IK under an [`ArmAnglePolicy`] |
+| `Arm::reach_shortfall` | how far a target lies beyond the arm's reach: its wrist center's distance outside the shell the wrist sweeps |
 | `Arm::arm_angle` | the arm angle a configuration is already at |
 | `Arm::rate_step` | one damped resolved-rate step (`chain_kinematics`'s, at seven joints) |
 | `Arm::chain` | the arm as a plain serial chain, for the generic laws |
