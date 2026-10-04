@@ -76,28 +76,35 @@ pub struct CameraMount {
     pub position: [f64; 3],
     /// Orientation in the parent link's frame, `[w, x, y, z]`.
     pub quat_wxyz: [f64; 4],
+    /// The depths the camera measures, nearest and farthest, metres; none for a
+    /// camera that gives colour alone.
+    pub depth_range: Option<[f64; 2]>,
 }
 
-/// The v2 design's cameras: a camera on each wrist, on the gripper's base link, and
-/// the head camera on the torso.
+/// The v2 design's cameras: a colour camera on each wrist, on the gripper's base
+/// link, and the head camera on the torso, which gives depth.
 const V2_CAMERA_MOUNTS: &[CameraMount] = &[
     CameraMount {
         name: "wrist_left",
         parent_link: "openarm_left_ee_base_link",
         position: [0.023, 0.0182, -0.10236],
         quat_wxyz: [0.6762086, -0.2067369, -0.0493266, -0.7053855],
+        depth_range: None,
     },
     CameraMount {
         name: "wrist_right",
         parent_link: "openarm_right_ee_base_link",
         position: [0.023, -0.0182, -0.10236],
         quat_wxyz: [0.7053830, 0.0493258, 0.2067371, -0.6762112],
+        depth_range: None,
     },
     CameraMount {
         name: "chest",
         parent_link: "openarm_body_link0",
         position: [0.0792, 0.0315, 0.7941],
         quat_wxyz: [0.6861027, 0.1710647, -0.1710647, -0.6861027],
+        // The ZED Mini's hardware depth range.
+        depth_range: Some([0.1, 10.0]),
     },
 ];
 
@@ -1033,7 +1040,23 @@ mod tests {
                 "{}: orientation",
                 mount.name
             );
+            let depth = camera.get("depth").map(|depth| {
+                let bound = |field: &str| depth[field].as_f64().unwrap();
+                [bound("min_depth_m"), bound("max_range_m")]
+            });
+            assert_eq!(depth, mount.depth_range, "{}: depth range", mount.name);
         }
+    }
+
+    #[test]
+    fn the_chest_camera_alone_gives_depth() {
+        let depth: Vec<_> = HardwareVersion::V2
+            .camera_mounts()
+            .iter()
+            .filter(|mount| mount.depth_range.is_some())
+            .map(|mount| mount.name)
+            .collect();
+        assert_eq!(depth, ["chest"]);
     }
 
     #[test]
