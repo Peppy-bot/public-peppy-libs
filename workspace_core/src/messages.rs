@@ -115,11 +115,12 @@ pub fn unchecked_view_message(why: Unchecked<'_>) -> String {
     }
 }
 
-/// What an answer that checks several points or objects counts.
+/// What an answer that checks several points, objects or surfaces counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Counted {
     Points,
     Objects,
+    Surfaces,
 }
 
 impl Counted {
@@ -129,13 +130,31 @@ impl Counted {
             (Self::Points, _) => "points",
             (Self::Objects, 1) => "object",
             (Self::Objects, _) => "objects",
+            (Self::Surfaces, 1) => "surface",
+            (Self::Surfaces, _) => "surfaces",
         }
     }
 }
 
-/// How many of the `count` points or objects an answer checks the robot
-/// can work: `workable` of them.
-pub fn workable_count_message(workable: usize, count: usize, counted: Counted) -> String {
+/// The message of an answer that checks `count` points, objects or
+/// surfaces: how many of them the robot can work, `workable` of them, then,
+/// when `unchecked` says why the answer checks no view, that sentence.
+pub fn answer_message(
+    workable: usize,
+    count: usize,
+    counted: Counted,
+    unchecked: Option<Unchecked<'_>>,
+) -> String {
+    let count = workable_count_message(workable, count, counted);
+    match unchecked {
+        Some(why) => format!("{count} {}", unchecked_view_message(why)),
+        None => count,
+    }
+}
+
+/// How many of the `count` points, objects or surfaces an answer checks the
+/// robot can work: `workable` of them.
+fn workable_count_message(workable: usize, count: usize, counted: Counted) -> String {
     let noun = counted.noun(count);
     match (workable, count) {
         (_, 1) if workable == 1 => format!("The {noun} is workable."),
@@ -401,10 +420,38 @@ mod tests {
             (0, 2, Counted::Objects, "None of the 2 objects is workable."),
             (1, 4, Counted::Points, "1 of the 4 points is workable."),
             (2, 5, Counted::Objects, "2 of the 5 objects are workable."),
+            (1, 1, Counted::Surfaces, "The surface is workable."),
+            (
+                0,
+                3,
+                Counted::Surfaces,
+                "None of the 3 surfaces is workable.",
+            ),
         ];
         for (workable, count, counted, expected) in cases {
             assert_eq!(workable_count_message(workable, count, counted), expected);
         }
+    }
+
+    #[test]
+    fn an_answer_says_how_many_it_can_work_then_why_it_checks_no_view() {
+        assert_eq!(
+            answer_message(2, 3, Counted::Objects, None),
+            "2 of the 3 objects are workable."
+        );
+        assert_eq!(
+            answer_message(1, 2, Counted::Surfaces, Some(Unchecked::NoPerceptionCamera)),
+            "1 of the 2 surfaces is workable. The view is not checked: the robot has no perception camera."
+        );
+        assert_eq!(
+            answer_message(
+                0,
+                1,
+                Counted::Points,
+                Some(Unchecked::NoCameraGeometry { camera: "chest" })
+            ),
+            "The point is not workable. The view is not checked: no camera geometry is linked for the chest camera."
+        );
     }
 
     #[test]
