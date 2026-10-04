@@ -127,12 +127,15 @@ fn a_point_falls_short_by_the_least_shortfall_of_a_pose_there_in_any_orientation
 
 #[test]
 fn a_pose_just_beyond_the_reach_is_solved_on_the_reach_within_the_tolerance() {
+    // The elbow held 0.05 rad off the straight arm, as the OpenArm backbone
+    // holds it: the arm cannot reach the shell's outer edge itself.
     let arm = Arm::from_urdf_file(V2_URDF, "openarm_left_base_link")
+        .map(|arm| arm.with_lower_floor(3, 0.05))
         .and_then(|arm| arm.with_tool_link("openarm_left_tcp"))
         .expect("v2 left arm with its tool");
     // A pose of the nearly straight arm, pushed out along the arm's reach
     // until its wrist center stands `beyond` outside the shell.
-    let seed = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
+    let seed = [0.0, 0.0, 0.0, 0.06, 0.0, 0.0, 0.0];
     let taken = arm.at(&seed).ee_pose();
     let outward = taken.translation.vector.normalize();
     let pushed = |by: f64| Translation3::from(outward * by) * taken;
@@ -162,6 +165,18 @@ fn a_pose_just_beyond_the_reach_is_solved_on_the_reach_within_the_tolerance() {
     let missed = (reached.translation.vector - near.translation.vector).norm();
     assert!(missed < tolerance, "{missed}");
     assert!(reached.rotation.angle_to(&near.rotation) < 1e-6);
+    // Just inside the shell, past the elbow's floor: solved within the
+    // tolerance too.
+    let inside = Translation3::from(outward * -0.0001) * beyond(1e-9);
+    assert_eq!(arm.reach_shortfall(&inside), 0.0);
+    assert!(
+        arm.solve_ik(&inside, ArmAnglePolicy::FromSeed, &seed)
+            .is_none()
+    );
+    assert!(
+        arm.solve_ik_within(&inside, tolerance, ArmAnglePolicy::FromSeed, &seed)
+            .is_some()
+    );
     let far = beyond(0.02);
     assert!(
         arm.solve_ik_within(&far, tolerance, ArmAnglePolicy::FromSeed, &seed)

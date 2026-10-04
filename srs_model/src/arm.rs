@@ -15,9 +15,10 @@ use crate::{ARM_DOF, JointVec, Limit, Posed, SrsError};
 /// the generic chain under it cannot be damped differently.
 pub use chain_kinematics::DEFAULT_DLS_LAMBDA;
 
-/// How far inside the wrist center's shell [`Arm::solve_ik_within`] moves a
-/// target that lies just outside it, in metres: clear of the straight and the
-/// folded arm, where the arm angle is undefined.
+/// How far past an edge of the wrist center's shell [`Arm::solve_ik_within`]
+/// moves a target at least, and how far short of its tolerance it stops at most,
+/// in metres: clear of the straight and the folded arm, where the arm angle is
+/// undefined.
 pub const SHELL_MARGIN: f64 = 1e-4;
 
 /// A complete SRS arm built from a URDF: forward kinematics + gravity/Coriolis
@@ -117,11 +118,13 @@ impl Arm {
     }
 
     /// [`solve_ik`](Self::solve_ik) for `target`, or, when its wrist center stands
-    /// outside the shell it sweeps by at most `tolerance` metres
-    /// ([`reach_shortfall`](Self::reach_shortfall)), for the pose of the same
-    /// orientation moved straight onto that shell, just inside it
-    /// ([`SHELL_MARGIN`]): the end-effector then stops less than `tolerance` from
-    /// `target`. `None` when neither admits an in-limit solution.
+    /// within `tolerance` metres of an edge of the shell it sweeps, outside or
+    /// inside it, for the pose of the same orientation moved straight into the
+    /// shell: first just past that edge ([`SHELL_MARGIN`]), then as far in as
+    /// `tolerance` allows, since the joint limits can keep the arm off the edge
+    /// itself (an elbow held off the straight arm). The end-effector then stops
+    /// less than `tolerance` from `target`. `None` when none of these poses admits
+    /// an in-limit solution.
     pub fn solve_ik_within(
         &self,
         target: &Isometry3<f64>,
@@ -132,25 +135,30 @@ impl Arm {
         if let Some(solution) = self.solve_ik(target, arm_angle, seed) {
             return Some(solution);
         }
-        let shortfall = self.reach_shortfall(target);
-        if shortfall == 0.0 || shortfall + SHELL_MARGIN >= tolerance {
-            return None;
-        }
         let outward = (target * self.fk.tool().inverse()).translation.vector - self.model.shoulder;
         let distance = outward.norm();
         if distance == 0.0 {
             return None;
         }
-        // Beyond the straight arm the wrist center moves toward the shoulder,
-        // inside the folded arm away from it.
-        let toward = if distance > self.model.l_su + self.model.l_uw {
-            -1.0
+        // Near the straight arm the wrist center moves toward the shoulder, near
+        // the folded arm away from it; `beyond` is how far it stands past that
+        // edge, below 0 inside the shell.
+        let straight = self.model.l_su + self.model.l_uw;
+        let folded = (self.model.l_su - self.model.l_uw).abs();
+        let (toward, beyond) = if distance > (straight + folded) / 2.0 {
+            (-1.0, distance - straight)
         } else {
-            1.0
+            (1.0, folded - distance)
         };
-        let moved =
-            Translation3::from(outward * (toward * (shortfall + SHELL_MARGIN) / distance)) * target;
-        self.solve_ik(&moved, arm_angle, seed)
+        if beyond <= -tolerance || beyond.max(0.0) + SHELL_MARGIN >= tolerance {
+            return None;
+        }
+        [beyond.max(0.0) + SHELL_MARGIN, tolerance - SHELL_MARGIN]
+            .into_iter()
+            .find_map(|by| {
+                let moved = Translation3::from(outward * (toward * by / distance)) * target;
+                self.solve_ik(&moved, arm_angle, seed)
+            })
     }
 
     /// How far the end-effector `target` lies beyond the arm's reach, in metres:
