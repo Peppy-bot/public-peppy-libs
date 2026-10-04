@@ -8,10 +8,11 @@
 //!
 //! - **Reach** ([`Reach`]): some arm brings its grasp point within
 //!   [`REACH_TOLERANCE`] of the point with its gripper's approach axis within
-//!   [`GRASP_ANGLE_TOLERANCE`] of one of the [`GraspDirection`]s. Each side
-//!   solves with its own inverse kinematics at every orientation
-//!   [`GraspOrientation::all`] lists, eight rolls about each direction, and
-//!   does not check the roll the gripper ends at.
+//!   [`GRASP_ANGLE_TOLERANCE`] of one of the [`GraspDirection`]s; the roll the
+//!   gripper ends at about that direction is not checked. Each side solves
+//!   with its own inverse kinematics: a solver of full poses tries each
+//!   orientation [`GraspOrientation::all`] lists, eight rolls about each
+//!   direction.
 //! - **View** ([`View`]): the point lies inside the perception camera's field
 //!   of view, and its depth stream reads a depth for it ([`Depth`],
 //!   [`Camera::view_of`]). Each side adds its own
@@ -27,6 +28,11 @@
 //! cover at least [`MIN_WORKABLE_AREA`], and finds the largest rectangle of
 //! them to put objects in. The [`messages`] module gives the one-line text of
 //! each verdict.
+//!
+//! The [`design`] module gives the `workspace:v1` answer of a robot from its
+//! design, around the reach its own solver gives: the parsing of a request,
+//! the reach of the surfaces measured last, and the composition of each
+//! answer, so that every robot answers alike.
 //!
 //! Frames and values:
 //!
@@ -44,6 +50,7 @@
 #![forbid(unsafe_code)]
 
 mod camera;
+pub mod design;
 mod fit;
 mod grasp;
 mod grid;
@@ -52,7 +59,7 @@ mod verdict;
 
 pub use camera::{
     Camera, CameraFacts, Depth, DepthModel, Intrinsics, PerceptionCameraError, UnknownDepthModel,
-    perception_camera, view_of,
+    perception_camera,
 };
 pub use fit::{
     Fit, Rectangle, fit, largest_workable_rectangle, nearest_workable, reach_bounds, view_bounds,

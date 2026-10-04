@@ -188,12 +188,6 @@ impl Camera {
     }
 }
 
-/// What `camera`, the robot's perception camera, makes of `point`:
-/// [`View::NoCamera`] for a robot without one.
-pub fn view_of(camera: Option<&Camera>, point: [f64; 3]) -> View {
-    camera.map_or(View::NoCamera, |camera| camera.view_of(point))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,13 +364,11 @@ mod tests {
     }
 
     #[test]
-    fn a_camera_without_depth_reads_every_depth_and_no_camera_is_not_asked() {
+    fn a_camera_without_depth_reads_every_depth() {
         let colour_only = Camera {
             depth: None,
             ..ahead()
         };
         assert_eq!(colour_only.view_of([0.1, 0.0, 1.0]), View::Seen);
-        assert_eq!(view_of(None, [1.0, 0.0, 1.0]), View::NoCamera);
-        assert_eq!(view_of(Some(&ahead()), [1.0, 0.0, 1.0]), View::Seen);
     }
 }
