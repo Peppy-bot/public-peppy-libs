@@ -1,0 +1,39 @@
+[build-system]
+# 1.9.4 is the first maturin that tells PyO3 it builds an extension module
+# (PYO3_BUILD_EXTENSION_MODULE), so that the module does not link libpython.
+requires = ["maturin>=1.9.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "workspace_core_py"
+# The version and the description of Cargo.toml.
+dynamic = ["version", "description"]
+requires-python = ">=3.12,<3.14"
+dependencies = []
+
+[dependency-groups]
+# mypy gives stubtest, which tests/test_types.py runs to compare the types of
+# the module with the module.
+dev = ["pytest>=8", "mypy>=2.4"]
+
+[tool.maturin]
+# Build the committed Cargo.lock exactly. The package holds the extension
+# module and its types, workspace_core_py.pyi.
+locked = true
+
+[tool.uv]
+# uv builds the package again when one of these changes: the Rust sources of
+# the bindings and of workspace_core and the types of the module, not only
+# this manifest.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "src/**/*.rs" },
+    { file = "workspace_core_py.pyi" },
+    { file = "../workspace_core/Cargo.toml" },
+    { file = "../workspace_core/src/**/*.rs" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

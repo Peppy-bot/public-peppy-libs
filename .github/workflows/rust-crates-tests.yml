@@ -19,6 +19,8 @@ on:
       - '*/src/**'
       - '*/tests/**'
       - '*/assets/**'
+      - '*/.cargo/**'
+      - '.github/actions/rust-toolchain/**'
       - '.github/workflows/rust-crates-tests.yml'
   # No `paths` filter here, mirroring python-libs-tests.yml: a required status
   # check that a `paths` filter suppresses never reports at all and blocks the
@@ -59,6 +61,8 @@ jobs:
               - '*/src/**'
               - '*/tests/**'
               - '*/assets/**'
+              - '*/.cargo/**'
+              - '.github/actions/rust-toolchain/**'
               - '.github/workflows/rust-crates-tests.yml'
 
   # Skipping reports the check as successful, letting pull requests that leave
@@ -103,26 +107,7 @@ jobs:
       # runs-on/action above, which unmounts the disk.
       - uses: Peppy-bot/peppy/.github/actions/sticky-disk-report@dev
 
-      # The runner image is provisioned outside this repository, so the
-      # toolchain is made sure of here: a workflow that leaned on what happens
-      # to be in the image would break with no commit to blame. Both halves
-      # are skipped when already satisfied, so the image's own stable
-      # toolchain costs nothing.
-      - name: Install Rust toolchain
-        run: |
-          set -euo pipefail
-          if ! command -v rustup > /dev/null; then
-            echo "rustup absent; installing"
-            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
-              | sh -s -- -y --profile minimal --default-toolchain stable
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-            export PATH="$HOME/.cargo/bin:$PATH"
-          fi
-          if ! rustup default 2>/dev/null | grep -q '^stable-'; then
-            rustup toolchain install stable --profile minimal
-            rustup default stable
-          fi
-          rustc --version
+      - uses: ./.github/actions/rust-toolchain
 
       # Every discovered crate runs even after one fails, so a red run names
       # every failing crate instead of the first. `--all-features` because a

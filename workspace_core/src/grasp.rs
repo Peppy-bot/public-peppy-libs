@@ -2,15 +2,16 @@
 //!
 //! A gripper's grasp frame has its origin at the grasp point, its +Z along
 //! the direction the gripper approaches in (out of the gripper) and its +Y
-//! along the axis its jaws close on. A reach is tried with the approach axis
-//! along each [`GraspDirection`], at each of [`GRASP_ROLLS`] rolls about it.
+//! along the axis its jaws close on. A solver of full poses tries a reach with
+//! the approach axis along each [`GraspDirection`], at each of [`GRASP_ROLLS`]
+//! rolls about it.
 
 use std::f64::consts::TAU;
 
-/// How many rolls about its approach axis each grasp direction is tried at,
-/// evenly spaced from 0: every 45°. A parallel gripper rolled half a turn
-/// closes on the same line, but its wrist reaches the two differently, so
-/// both are tried.
+/// How many rolls about its approach axis a solver of full poses tries each
+/// grasp direction at, evenly spaced from 0: every 45°. A parallel gripper
+/// rolled half a turn closes on the same line, but its wrist reaches the two
+/// differently, so both are tried.
 pub const GRASP_ROLLS: usize = 8;
 
 /// A way the gripper points when it grasps, in the robot frame.
@@ -61,8 +62,9 @@ pub struct GraspOrientation {
 }
 
 impl GraspOrientation {
-    /// Every orientation a reach is tried at, in order: each direction of
-    /// [`GraspDirection::ALL`], at each of [`GRASP_ROLLS`] rolls from 0.
+    /// Every orientation a solver of full poses tries a reach at, in order:
+    /// each direction of [`GraspDirection::ALL`], at each of [`GRASP_ROLLS`]
+    /// rolls from 0.
     pub fn all() -> impl Iterator<Item = Self> {
         GraspDirection::ALL.into_iter().flat_map(|direction| {
             (0..GRASP_ROLLS).map(move |step| Self {

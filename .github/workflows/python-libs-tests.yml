@@ -4,15 +4,23 @@ name: Python libs Tests
 # pyproject.toml and a tests/ tree is discovered from the filesystem and runs
 # its suite from its own uv environment, resolved --frozen against its
 # committed uv.lock. The suites are self-contained unit tests: no peppy daemon,
-# no container runtime, no hardware.
+# no container runtime, no hardware. A library with a Rust extension module
+# builds it when uv installs it, from its committed Cargo.lock and its Rust
+# siblings here, so the job has the Rust toolchain too.
 
 on:
   push:
     branches: [main]
     paths:
       - '*/pyproject.toml'
+      - '*/uv.lock'
       - '*/src/**'
       - '*/tests/**'
+      - '*/*.pyi'
+      - '*/Cargo.toml'
+      - '*/Cargo.lock'
+      - '*/.cargo/**'
+      - '.github/actions/rust-toolchain/**'
       - '.github/workflows/python-libs-tests.yml'
   # No `paths` filter here, mirroring rust-crates-tests.yml: a required status
   # check that a `paths` filter suppresses never reports at all and blocks the
@@ -47,8 +55,14 @@ jobs:
           filters: |
             python_libs:
               - '*/pyproject.toml'
+              - '*/uv.lock'
               - '*/src/**'
               - '*/tests/**'
+              - '*/*.pyi'
+              - '*/Cargo.toml'
+              - '*/Cargo.lock'
+              - '*/.cargo/**'
+              - '.github/actions/rust-toolchain/**'
               - '.github/workflows/python-libs-tests.yml'
 
   # Skipping reports the check as successful, letting pull requests that leave
@@ -66,6 +80,10 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+
+      # For the libraries that build a Rust extension module when uv installs
+      # them.
+      - uses: ./.github/actions/rust-toolchain
 
       # Pinned rather than latest: uv resolves and installs everything the
       # suites run against, so its version is part of what a green run attests.

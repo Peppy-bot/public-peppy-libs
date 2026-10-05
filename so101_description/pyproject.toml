@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "so101_description"
 version = "0.1.0"
-description = "The SO-101's identity for its peppy nodes: joint and motor names, wire-unit conversions, limb-name vocabulary, named postures, setpoint parsing shaped by the STS3215's constraints, and the embedded URDF with its limits, kinematics, and pose transforms. openarm_description's sibling for the lerobot SO-ARM family."
+description = "The SO-101's identity for its peppy nodes: joint and motor names, wire-unit conversions, limb-name vocabulary, named postures, setpoint parsing shaped by the STS3215's constraints, the embedded URDF with its limits, kinematics, and pose transforms, and the approach solver of its workspace answer (ApproachSolver): the least distance the grasp point comes to a position, and joints that bring it there with the gripper's approach axis along a direction. openarm_description's sibling for the lerobot SO-ARM family."
 requires-python = ">=3.12,<3.14"
 dependencies = ["control_core_py", "numpy>=1.26"]
 
@@ -16,12 +16,16 @@ kinematics = ["placo>=0.9.6,<0.9.16"]
 
 [tool.uv.sources]
 control_core_py = { path = "../control_core_py" }
+# The approach solver's tests take the grid, the bars and the grasp
+# directions of a workspace answer from workspace_core_py, a PyO3 extension
+# that uv builds from its source, so the tests need cargo.
+workspace_core_py = { path = "../workspace_core_py" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/so101_description"]
 
 [dependency-groups]
-dev = ["pytest>=8", "placo>=0.9.6,<0.9.16"]
+dev = ["pytest>=8", "placo>=0.9.6,<0.9.16", "workspace_core_py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

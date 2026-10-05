@@ -1,0 +1,7 @@
+# `cargo test` in this directory builds and links the extension module as
+# maturin builds it: without libpython, which Python supplies when it loads
+# the module. Otherwise PyO3 links libpython into the test binary, and a host
+# without the Python development library cannot link it. The bindings are
+# tested from Python (tests/), in an interpreter.
+[env]
+PYO3_BUILD_EXTENSION_MODULE = "1"

@@ -1,0 +1,28 @@
+name: Rust toolchain
+description: >-
+  Makes sure that the job has the stable Rust toolchain: rustup, then stable
+  as its default toolchain. The runner image is provisioned outside this
+  repository, so a workflow that leans on what happens to be in the image
+  breaks with no commit to blame. Each half is skipped when the image already
+  satisfies it, so the image's own stable toolchain costs nothing. Run it
+  after the checkout, which supplies this action.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v rustup > /dev/null; then
+          echo "rustup absent; installing"
+          curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+        if ! rustup default 2>/dev/null | grep -q '^stable-'; then
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+        fi
+        rustc --version

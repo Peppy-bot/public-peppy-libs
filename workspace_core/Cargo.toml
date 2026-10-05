@@ -2,7 +2,7 @@
 name = "workspace_core"
 version = "0.1.0"
 edition = "2024"
-description = "Where a robot can work: the grid, limits, grasp directions, perception camera rule, field-of-view test, verdicts, largest workable rectangle and messages that a robot's answer from its design and a simulation's answer from its world share. Pure Rust on plain arrays, no math library, no hardware or messaging deps."
+description = "Where a robot can work: the grid, limits, grasp directions, perception camera rule, field-of-view test, verdicts, largest workable rectangle and messages that a robot's answer from its design and a simulation's answer from its world share, and the workspace:v1 answer of a robot from its design around the reach its own solver gives (request parsing, reach memo, answer composition). Pure Rust on plain arrays, no math library, no hardware or messaging deps."
 
 # A workspace root of its own, so cargo's search for one ends at this manifest
 # whatever sits above this repository, which is what lets a consumer pull the
