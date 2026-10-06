@@ -48,8 +48,9 @@ impl ClipRegion {
     /// Boundary-inclusive, so a triangle lying in a bound plane is kept and
     /// adjoining regions both cover it.
     pub(crate) fn clip_triangles(&self, soup: &[Point3<f64>]) -> Vec<Point3<f64>> {
-        let mut points: Vec<Point3<f64>> = soup
-            .chunks_exact(3)
+        let (triangles, _) = soup.as_chunks::<3>();
+        let mut points: Vec<Point3<f64>> = triangles
+            .iter()
             .flat_map(|tri| self.clip_triangle(tri))
             .collect();
         points.sort_by(|p, q| {
@@ -63,7 +64,7 @@ impl ClipRegion {
 
     /// Sutherland-Hodgman: the triangle successively clipped against each
     /// finite bound plane. Empty once the polygon falls entirely outside.
-    fn clip_triangle(&self, tri: &[Point3<f64>]) -> Vec<Point3<f64>> {
+    fn clip_triangle(&self, tri: &[Point3<f64>; 3]) -> Vec<Point3<f64>> {
         let mut poly = tri.to_vec();
         for axis in 0..3 {
             for (bound, keep_below) in [(self.min[axis], false), (self.max[axis], true)] {

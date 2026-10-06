@@ -319,13 +319,9 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
 
 /// Keep every k-th triangle so each body stays under [`MAX_WIRE_TRIS`].
 fn decimate(verts: &[Point3<f64>]) -> Vec<Point3<f64>> {
-    let step = (verts.len() / 3).div_ceil(MAX_WIRE_TRIS).max(1);
-    verts
-        .chunks_exact(3)
-        .step_by(step)
-        .flatten()
-        .copied()
-        .collect()
+    let (triangles, _) = verts.as_chunks::<3>();
+    let step = triangles.len().div_ceil(MAX_WIRE_TRIS).max(1);
+    triangles.iter().step_by(step).flatten().copied().collect()
 }
 
 /// One hull piece as render data: the faces offset outward by any rounding
