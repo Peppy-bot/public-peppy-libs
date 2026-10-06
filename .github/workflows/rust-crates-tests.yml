@@ -90,13 +90,13 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       # After the checkout, so the workspace-relative target directory
       # resolves under it.
-      - uses: runs-on/action@efac073ea2507ec18797de3a81704201ade11d9d # v2.3.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
         with:
           sticky_cache: |
             cargo
