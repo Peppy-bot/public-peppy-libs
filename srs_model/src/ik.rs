@@ -1150,7 +1150,9 @@ mod tests {
         // PoE screw map the IK is built on, this crate's own URDF chain, and the
         // `k` crate reading the same URDF. The third is the point - the first two
         // are ours, so on their own they could share a mistake. `k` is carried as
-        // a dev-dependency for exactly this and nothing else.
+        // a dev-dependency for exactly this and nothing else. It loads the
+        // fixture file with its own URDF parser, so the only thing it shares
+        // with this crate's chain is the file.
         //
         // Compared component-wise rather than by subtracting `Isometry3`s, so the
         // check survives `k` and this crate resolving different `nalgebra`
@@ -1173,9 +1175,8 @@ mod tests {
             "PoE and chain FK disagree on orientation"
         );
 
-        let robot =
-            urdf_rs::read_from_string(crate::test_support::FIXTURE_URDF).expect("parse fixture");
-        let chain = k::Chain::<f64>::from(&robot);
+        let chain = k::Chain::<f64>::from_urdf_file(crate::test_support::FIXTURE_URDF_PATH)
+            .expect("k loads the fixture");
         let tip = chain
             .find_link("openarm_left_link7")
             .expect("fixture has link7");

@@ -12,7 +12,7 @@ description = "Runtime self-collision detection for a bimanual arm: URDF-fitted 
 [dependencies]
 srs_model = { path = "../srs_model" }
 thiserror = "2"
-urdf-rs = "0.9"
+urdf-rs = "0.10"
 
 [dev-dependencies]
 rand = "0.10"

@@ -99,11 +99,24 @@ pub(crate) mod test_support {
     use crate::fk::ForwardKinematics;
     use crate::model::ArmModel;
 
+    /// The fixture URDF's path, a literal that `include_str!` also takes.
+    macro_rules! fixture_urdf_path {
+        () => {
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/openarm_v10.urdf"
+            )
+        };
+    }
+
     /// A concrete SRS arm used only as a test fixture: the real OpenArm V1.0
     /// description, gripper fingers included, so the distal-payload path is
     /// exercised by simply loading it. Production callers pass their own URDF via
     /// the node configuration; this is wired only under `cfg(test)`.
-    pub(crate) const FIXTURE_URDF: &str = include_str!("../tests/fixtures/openarm_v10.urdf");
+    pub(crate) const FIXTURE_URDF: &str = include_str!(fixture_urdf_path!());
+
+    /// The path of the fixture URDF, for a reader that loads a file.
+    pub(crate) const FIXTURE_URDF_PATH: &str = fixture_urdf_path!();
 
     /// Base link where the fixture's 7-DOF chain for `side` starts.
     fn base(side: &str) -> String {
