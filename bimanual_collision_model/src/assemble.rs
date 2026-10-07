@@ -293,12 +293,12 @@ fn verify_contains(name: &str, hulls: &[Hull], verts: &[Point3<f64>]) -> Result<
             });
         }
     }
-    for tri in verts.chunks_exact(3) {
-        let t = [tri[0], tri[1], tri[2]];
-        if min_altitude(&t) < SLIVER_ALTITUDE {
+    let (triangles, _) = verts.as_chunks::<3>();
+    for t in triangles {
+        if min_altitude(t) < SLIVER_ALTITUDE {
             continue;
         }
-        if !face_in_union(hulls, &t)? {
+        if !face_in_union(hulls, t)? {
             return Err(BuildError::HullMissesMesh {
                 body: name.to_string(),
                 kind: ContainmentFailure::FaceEscapes,

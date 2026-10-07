@@ -12,7 +12,7 @@ description = "Forward kinematics, the geometric Jacobian, and damped resolved-r
 [dependencies]
 nalgebra = "0.35"
 thiserror = "2"
-urdf-rs = "0.9"
+urdf-rs = "0.10"
 
 [dev-dependencies]
 approx = "0.5"

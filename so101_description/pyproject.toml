@@ -11,8 +11,10 @@ dependencies = ["control_core_py", "numpy>=1.26"]
 
 [project.optional-dependencies]
 # The kinematics module runs placo's solver; hardware-only consumers skip
-# the extra and the solver stack with it.
-kinematics = ["placo>=0.9.6,<0.9.16"]
+# the extra and the solver stack with it. A placo 0.x minor release can
+# change its QP and its API, so the extra stays inside the minor that the
+# solvers of the kinematics module are checked on.
+kinematics = ["placo>=0.10.1,<0.11"]
 
 [tool.uv.sources]
 control_core_py = { path = "../control_core_py" }
@@ -25,7 +27,7 @@ workspace_core_py = { path = "../workspace_core_py" }
 packages = ["src/so101_description"]
 
 [dependency-groups]
-dev = ["pytest>=8", "placo>=0.9.6,<0.9.16", "workspace_core_py"]
+dev = ["pytest>=8", "so101_description[kinematics]", "workspace_core_py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

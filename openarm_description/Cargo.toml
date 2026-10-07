@@ -22,10 +22,10 @@ name = "emit_meshes"
 required-features = ["meshes"]
 
 [dependencies]
-urdf-rs = "0.9"
+urdf-rs = "0.10"
 
 [dev-dependencies]
 # The camera mounts are pinned to the simulation's model of the generation,
 # a json5 file of this repository, read by the test alone.
-json5 = "0.4"
+json5 = "1.3"
 serde_json = "1"
