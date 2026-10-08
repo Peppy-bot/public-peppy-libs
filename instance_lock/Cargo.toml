@@ -1,0 +1,16 @@
+[package]
+name = "instance_lock"
+version = "0.1.0"
+edition = "2024"
+description = "One running instance per device: an exclusive advisory lock on a file, taken in one syscall and released by the kernel when the holding process exits."
+
+# A workspace root of its own, so cargo's search for one ends at this manifest
+# whatever sits above this repository, which is what lets a consumer pull the
+# package by git from any checkout layout.
+[workspace]
+
+[dependencies]
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
