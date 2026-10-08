@@ -446,11 +446,6 @@ impl MotorHealthFilter {
 /// filing a winding at 105 C under "overload" would misroute it.
 pub const MOTOR_ALERT_KIND: &str = "motor_condition";
 
-/// How often active alerts are re-emitted, so a consumer that starts late
-/// still learns of them. Comfortably inside the alert contract's 2000 ms
-/// re-emit ceiling, which is what consumers age alerts out against.
-pub const ALERT_HEARTBEAT_PERIOD: std::time::Duration = std::time::Duration::from_millis(1600);
-
 /// Health publish cadence shared by every producer, comfortably inside the
 /// contract's 500 ms floor.
 pub const HEALTH_PERIOD: std::time::Duration = std::time::Duration::from_millis(200);
@@ -466,40 +461,80 @@ pub const STATE_STALE_AFTER: std::time::Duration = std::time::Duration::from_mil
 /// under a held load.
 pub const NOT_DRIVING_ESCALATE_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// How often a producer re-publishes its unchanged alert set.
+///
+/// The set goes out whenever it changes, so this is the floor that bounds
+/// three things a change alone cannot: the age of the measurement each
+/// message carries, the recovery of a consumer that lost or refused a
+/// message, and a consumer's judgement that a producer has gone quiet.
+/// Comfortably inside the alert contract's 2000 ms ceiling, which is what
+/// consumers age a producer's set out against.
+pub const ALERT_FLOOR_PERIOD: std::time::Duration = std::time::Duration::from_millis(1600);
+
 const _: () = {
     // The contract mandates a report at least every 500 ms; consumers age
     // reports out on multiples of that cadence, on their own clocks.
     assert!(HEALTH_PERIOD.as_millis() <= 500);
-    // Alerts re-emit inside the contract's 2000 ms ceiling.
-    assert!(ALERT_HEARTBEAT_PERIOD.as_millis() < 2000);
+    // The alert set re-publishes inside the contract's 2000 ms ceiling.
+    assert!(ALERT_FLOOR_PERIOD.as_millis() < 2000);
 };
 
-/// Alert severity for a health level.
+/// The severity scale of the alert contract: 1 warning, 2 critical, 3 fault.
 ///
-/// The alert wire carries 0..=3 while health carries a fifth level for a
-/// motor that stopped answering. Narrowed by a total match rather than by
-/// passing the level's own encoding through, so a level the alert scale has
-/// no room for cannot reach the wire and be dropped by every consumer.
-///
-/// Silence lands on the fault severity: a motor that has stopped answering
-/// is at least as serious as one that said it faulted, because it has not
-/// said anything.
-pub fn severity_of(level: HealthLevel) -> u8 {
-    match level {
-        HealthLevel::Nominal => 0,
-        HealthLevel::Warning => 1,
-        HealthLevel::Critical => 2,
-        HealthLevel::Fault | HealthLevel::NotReporting => 3,
+/// A listed alert is active, so the scale has no value for a healthy motor
+/// and `of_level` answers `None` for one. The wire value is produced and
+/// parsed here alone, so a producer and a consumer cannot disagree on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AlertSeverity {
+    Warning,
+    Critical,
+    Fault,
+}
+
+impl AlertSeverity {
+    pub fn wire(self) -> u8 {
+        match self {
+            Self::Warning => 1,
+            Self::Critical => 2,
+            Self::Fault => 3,
+        }
+    }
+
+    /// The severity a wire value names, or `None` outside the scale.
+    pub fn from_wire(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::Warning),
+            2 => Some(Self::Critical),
+            3 => Some(Self::Fault),
+            _ => None,
+        }
+    }
+
+    /// The severity of a health level, or `None` for a nominal motor.
+    ///
+    /// Silence lands on the fault severity: a motor that has stopped
+    /// answering is at least as serious as one that said it faulted, because
+    /// it has not said anything.
+    pub fn of_level(level: HealthLevel) -> Option<Self> {
+        match level {
+            HealthLevel::Nominal => None,
+            HealthLevel::Warning => Some(Self::Warning),
+            HealthLevel::Critical => Some(Self::Critical),
+            HealthLevel::Fault | HealthLevel::NotReporting => Some(Self::Fault),
+        }
     }
 }
 
-/// The operator-facing one-liner for a report's condition, naming the
-/// measurement that drove it.
-/// Private to the raiser: every raised alert is non-nominal, and a
-/// non-nominal verdict always carries its cause, so the expect below is an
-/// invariant.
-fn describe(report: &MotorHealth) -> String {
-    match report.cause.expect("only conditions are described") {
+/// The operator-facing one-liner for a condition, naming the measurement
+/// that drove it.
+///
+/// The cause comes from the report's own verdict, so the two always agree
+/// and the measurement named is the one the level was judged on. Each
+/// message carries the reading of the round it went out in, and the set
+/// re-publishes every [`ALERT_FLOOR_PERIOD`], so the number an operator
+/// reads is at most that old.
+fn describe(cause: HealthCause, report: &MotorHealth) -> String {
+    match cause {
         HealthCause::SustainedTorque => format!(
             "holding {:.0}% of rated torque",
             report.torque_fraction * 100.0
@@ -523,122 +558,116 @@ fn describe(report: &MotorHealth) -> String {
     }
 }
 
-/// One alert to publish.
+/// One alert a producer holds active.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Alert {
     pub source: String,
-    pub severity: u8,
+    pub severity: AlertSeverity,
     pub message: String,
 }
 
-/// One proposed publish: the wire alert plus the per-motor state to commit
-/// once it is actually out.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pending {
-    motor: usize,
-    next: Option<(u8, HealthCause)>,
-    pub alert: Alert,
+/// One motor's condition, as the raiser compares it between rounds.
+type Condition = Option<(AlertSeverity, HealthCause)>;
+
+/// The set of active alerts a round of reports owes the wire, with the
+/// per-motor conditions to commit once it is out.
+///
+/// The conditions and the alerts come from one pass, and only the raiser
+/// that produced the set reads the conditions, so a published set and the
+/// state recorded for it cannot drift apart.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AlertSet<const N: usize> {
+    conditions: [Condition; N],
+    alerts: Vec<Alert>,
 }
 
-/// One round's proposals. `heartbeat` marks that this round re-emitted the
-/// actives; commit it with [`AlertRaiser::mark_heartbeat`] only if every
-/// item was sent, so a failed re-emit retries next round.
-#[derive(Debug, Default)]
-pub struct Batch {
-    pub items: Vec<Pending>,
-    pub heartbeat: bool,
+impl<const N: usize> AlertSet<N> {
+    /// Every alert the producer holds active, to publish as one message.
+    pub fn alerts(&self) -> &[Alert] {
+        &self.alerts
+    }
 }
 
-/// Plans which alerts to emit from successive health reports: transitions
-/// as they appear, active alerts again on the heartbeat.
+/// What the last published set recorded.
+struct Sent<const N: usize> {
+    conditions: [Condition; N],
+    at: std::time::Instant,
+}
+
+/// Plans the alert set a producer publishes from successive health reports:
+/// every motor with a condition, published whenever any motor's
+/// (severity, cause) changes and again every [`ALERT_FLOOR_PERIOD`], so a
+/// message that omits a motor clears it.
 ///
-/// Pure planning, two-phase: [`AlertRaiser::due`] proposes what to publish
-/// and the caller commits each item with [`AlertRaiser::mark_sent`] only
-/// after its publish succeeds, so a failed send is retried next round
-/// instead of being silently recorded as delivered.
+/// The first round always owes a set, empty while every motor is nominal, so
+/// the topic holds a message for a consumer that subscribes later and that
+/// consumer can tell a healthy producer from one that has not started.
 ///
-/// A motor raises at most one alert, identified by `(source, kind)` where
-/// source is that motor's label. Transitions are keyed on (severity, cause),
-/// not the message text: the message carries the live measurement, which
-/// moves every tick and must not re-trigger the reliable topic at the
-/// sample rate.
-pub struct AlertRaiser {
+/// Pure planning, two-phase: [`AlertRaiser::due`] proposes the set and the
+/// caller commits it with [`AlertRaiser::mark_sent`] only after its publish
+/// succeeds, so a failed send is retried next round.
+///
+/// A motor holds at most one alert, identified by `(source, kind)` where
+/// source is that motor's label. Changes are keyed on (severity, cause), so
+/// a measurement moving inside a band does not re-trigger the topic at the
+/// sample rate; the floor is what refreshes the number it carries.
+///
+/// `N` is the motor count, so a report slice of the wrong length and a set
+/// from another raiser are both compile errors.
+pub struct AlertRaiser<const N: usize> {
     /// One operator-facing label per motor, the alert's `source`: an arm
     /// passes "left arm j1".."left arm j7", a gripper its single name.
-    sources: Vec<String>,
-    published: Vec<Option<(u8, HealthCause)>>,
-    last_heartbeat: Option<std::time::Instant>,
+    sources: [String; N],
+    /// The last published set, `None` until one is sent.
+    sent: Option<Sent<N>>,
 }
 
-impl AlertRaiser {
-    pub fn new(sources: Vec<String>) -> Self {
-        assert!(
-            !sources.is_empty(),
-            "a raiser without motors raises nothing"
-        );
+impl<const N: usize> AlertRaiser<N> {
+    pub fn new(sources: [String; N]) -> Self {
+        const { assert!(N > 0, "a raiser without motors raises nothing") };
         Self {
-            published: vec![None; sources.len()],
             sources,
-            last_heartbeat: None,
+            sent: None,
         }
     }
 
-    /// The publishes owed for these reports at `now`: every motor whose
-    /// (severity, cause) changed, including a severity-0 clear, plus every
-    /// active alert once [`ALERT_HEARTBEAT_PERIOD`] has elapsed. A motor
-    /// with no condition and no published alert owes nothing.
-    pub fn due(&self, reports: &[MotorHealth], now: std::time::Instant) -> Batch {
-        assert_eq!(reports.len(), self.sources.len(), "one report per motor");
-        let heartbeat = self
-            .last_heartbeat
-            .is_none_or(|t| now.duration_since(t) >= ALERT_HEARTBEAT_PERIOD);
-        let items = reports
+    /// The set these reports owe at `now`: `Some` when any motor's
+    /// (severity, cause) differs from the last published set, when the floor
+    /// has elapsed since it went out, or when nothing has been published yet.
+    /// A motor counts as conditioned only when its level is non-nominal and
+    /// it carries a cause, so a severity the contract has no value for
+    /// cannot reach the wire.
+    pub fn due(&self, reports: &[MotorHealth; N], now: std::time::Instant) -> Option<AlertSet<N>> {
+        let conditions: [Condition; N] = std::array::from_fn(|motor| {
+            let report = &reports[motor];
+            AlertSeverity::of_level(report.level).zip(report.cause)
+        });
+        if let Some(sent) = &self.sent {
+            let floor_elapsed = now.duration_since(sent.at) >= ALERT_FLOOR_PERIOD;
+            if sent.conditions == conditions && !floor_elapsed {
+                return None;
+            }
+        }
+        let alerts = conditions
             .iter()
             .enumerate()
-            .filter_map(|(motor, report)| {
-                let next = report.cause.map(|cause| (severity_of(report.level), cause));
-                match (next, self.published[motor]) {
-                    (Some(_), _) if next != self.published[motor] || heartbeat => Some(Pending {
-                        motor,
-                        next,
-                        alert: self.raised(motor, report),
-                    }),
-                    (None, Some(_)) => Some(Pending {
-                        motor,
-                        next,
-                        alert: self.cleared(motor),
-                    }),
-                    _ => None,
-                }
+            .filter_map(|(motor, condition)| {
+                condition.map(|(severity, cause)| Alert {
+                    source: self.sources[motor].clone(),
+                    severity,
+                    message: describe(cause, &reports[motor]),
+                })
             })
             .collect();
-        Batch { items, heartbeat }
+        Some(AlertSet { conditions, alerts })
     }
 
-    /// Records one proposed publish as delivered.
-    pub fn mark_sent(&mut self, pending: &Pending) {
-        self.published[pending.motor] = pending.next;
-    }
-
-    /// Records a fully-delivered heartbeat round.
-    pub fn mark_heartbeat(&mut self, now: std::time::Instant) {
-        self.last_heartbeat = Some(now);
-    }
-
-    fn raised(&self, motor: usize, report: &MotorHealth) -> Alert {
-        Alert {
-            source: self.sources[motor].clone(),
-            severity: severity_of(report.level),
-            message: describe(report),
-        }
-    }
-
-    fn cleared(&self, motor: usize) -> Alert {
-        Alert {
-            source: self.sources[motor].clone(),
-            severity: 0,
-            message: "recovered".to_string(),
-        }
+    /// Records a published set, sent at `now`.
+    pub fn mark_sent(&mut self, set: &AlertSet<N>, now: std::time::Instant) {
+        self.sent = Some(Sent {
+            conditions: set.conditions,
+            at: now,
+        });
     }
 }
 
@@ -978,17 +1007,32 @@ mod tests {
     fn non_finite_dt_is_rejected() {
         filter().step(sample(0.0), f64::NAN);
     }
+
+    #[test]
+    fn every_level_round_trips_through_the_wire_and_junk_decodes_to_none() {
+        for level in [
+            HealthLevel::Nominal,
+            HealthLevel::Warning,
+            HealthLevel::Critical,
+            HealthLevel::Fault,
+            HealthLevel::NotReporting,
+        ] {
+            assert_eq!(HealthLevel::from_wire(level.wire()), Some(level));
+        }
+        for junk in [5, 6, 255] {
+            assert_eq!(HealthLevel::from_wire(junk), None);
+        }
+    }
 }
 
 #[cfg(test)]
 mod alert_tests {
     use super::*;
-    use std::time::Instant;
 
     const N: usize = 7;
 
-    fn arm_sources() -> Vec<String> {
-        (1..=N).map(|j| format!("left arm j{j}")).collect()
+    fn arm_sources() -> [String; N] {
+        std::array::from_fn(|i| format!("left arm j{}", i + 1))
     }
 
     fn nominal() -> MotorHealth {
@@ -1018,125 +1062,178 @@ mod alert_tests {
         }
     }
 
-    fn all_nominal() -> Vec<MotorHealth> {
-        vec![nominal(); N]
+    fn all_nominal() -> [MotorHealth; N] {
+        std::array::from_fn(|_| nominal())
     }
 
-    fn reports(motor: usize, report: MotorHealth) -> Vec<MotorHealth> {
+    fn reports(motor: usize, report: MotorHealth) -> [MotorHealth; N] {
         let mut all = all_nominal();
         all[motor] = report;
         all
     }
 
-    /// due + mark everything sent, as the publisher does on success.
-    fn step(raiser: &mut AlertRaiser, all: &[MotorHealth], now: Instant) -> Vec<Alert> {
-        let batch = raiser.due(all, now);
-        for pending in &batch.items {
-            raiser.mark_sent(pending);
-        }
-        if batch.heartbeat {
-            raiser.mark_heartbeat(now);
-        }
-        batch.items.into_iter().map(|p| p.alert).collect()
+    /// A fixed instant to measure the floor against.
+    fn t0() -> std::time::Instant {
+        std::time::Instant::now()
+    }
+
+    /// due + mark sent at `now`, as the publisher does on success: the alerts
+    /// of the set owed, or `None` when nothing is owed.
+    fn step<const M: usize>(
+        raiser: &mut AlertRaiser<M>,
+        all: &[MotorHealth; M],
+        now: std::time::Instant,
+    ) -> Option<Vec<Alert>> {
+        let set = raiser.due(all, now)?;
+        raiser.mark_sent(&set, now);
+        Some(set.alerts().to_vec())
+    }
+
+    /// A raiser that has published its opening set at `now`, which is where a
+    /// running producer spends its life.
+    fn started(now: std::time::Instant) -> AlertRaiser<N> {
+        let mut raiser = AlertRaiser::new(arm_sources());
+        let opening = step(&mut raiser, &all_nominal(), now).expect("the opening set is owed");
+        assert!(opening.is_empty(), "a quiet arm opens with an empty set");
+        raiser
     }
 
     #[test]
-    fn a_quiet_arm_raises_nothing() {
+    fn the_opening_set_goes_out_once_even_when_every_motor_is_quiet() {
+        // The topic retains one message, so a consumer that subscribes later
+        // reads this one and can tell a quiet arm from an arm that never
+        // started.
+        let t0 = t0();
         let mut raiser = AlertRaiser::new(arm_sources());
-        assert!(step(&mut raiser, &all_nominal(), Instant::now()).is_empty());
-        assert!(step(&mut raiser, &all_nominal(), Instant::now()).is_empty());
+        assert_eq!(
+            step(&mut raiser, &all_nominal(), t0),
+            Some(Vec::new()),
+            "the first round owes an empty set"
+        );
+        assert!(step(&mut raiser, &all_nominal(), t0).is_none());
+        assert!(
+            step(&mut raiser, &all_nominal(), t0 + ALERT_FLOOR_PERIOD).is_some(),
+            "the floor re-publishes the empty set"
+        );
     }
 
     #[test]
-    fn a_warning_raises_once_and_clears_once() {
-        let mut raiser = AlertRaiser::new(arm_sources());
-        let t0 = Instant::now();
-        let raised = step(&mut raiser, &reports(1, warned(0.93)), t0);
+    fn the_unchanged_set_goes_out_again_on_the_floor() {
+        // The floor is what lets a consumer age a quiet producer out and what
+        // recovers a consumer that lost or refused a message.
+        let t0 = t0();
+        let mut raiser = started(t0);
+        let raised = step(&mut raiser, &reports(2, warned(0.93)), t0).expect("the raise is owed");
+        assert_eq!(raised.len(), 1);
+
+        let just_under = t0 + ALERT_FLOOR_PERIOD - std::time::Duration::from_millis(1);
+        assert!(
+            step(&mut raiser, &reports(2, warned(0.93)), just_under).is_none(),
+            "nothing is owed before the floor elapses"
+        );
+        let again = step(
+            &mut raiser,
+            &reports(2, warned(0.93)),
+            t0 + ALERT_FLOOR_PERIOD,
+        )
+        .expect("the floor is owed");
+        assert_eq!(again, raised, "the same set goes out again");
+    }
+
+    #[test]
+    fn the_floor_refreshes_the_measurement_the_message_carries() {
+        // A number in the text is read by an operator long after the
+        // condition began, so the floor bounds how stale it can be.
+        let t0 = t0();
+        let mut raiser = started(t0);
+        let raised = step(&mut raiser, &reports(0, warned(0.91)), t0).expect("the raise is owed");
+        assert_eq!(raised[0].message, "holding 91% of rated torque");
+
+        assert!(
+            step(&mut raiser, &reports(0, warned(0.99)), t0).is_none(),
+            "a moving measurement is not a condition change"
+        );
+        let refreshed = step(
+            &mut raiser,
+            &reports(0, warned(0.99)),
+            t0 + ALERT_FLOOR_PERIOD,
+        )
+        .expect("the floor is owed");
+        assert_eq!(
+            refreshed[0].message, "holding 99% of rated torque",
+            "the floor carries the latest reading, not the raise-time one"
+        );
+    }
+
+    #[test]
+    fn a_warning_publishes_the_set_once_and_its_clear_once() {
+        let t0 = t0();
+        let mut raiser = started(t0);
+        let raised = step(&mut raiser, &reports(1, warned(0.93)), t0).expect("the raise is owed");
         assert_eq!(raised.len(), 1);
         assert_eq!(raised[0].source, "left arm j2");
-        assert_eq!(raised[0].severity, 1);
-        assert!(raised[0].message.contains("93%"));
+        assert_eq!(raised[0].severity, AlertSeverity::Warning);
 
         assert!(
-            step(&mut raiser, &reports(1, warned(0.94)), t0).is_empty(),
-            "the moving measurement does not re-raise inside a heartbeat"
+            step(&mut raiser, &reports(1, warned(0.94)), t0).is_none(),
+            "a condition that holds steady publishes once inside the floor"
         );
 
-        let cleared = step(&mut raiser, &all_nominal(), t0);
-        assert_eq!(cleared.len(), 1);
-        assert_eq!(cleared[0].severity, 0);
+        let cleared = step(&mut raiser, &all_nominal(), t0).expect("the clear is owed");
+        assert!(
+            cleared.is_empty(),
+            "a motor with no condition is not listed"
+        );
+        assert!(step(&mut raiser, &all_nominal(), t0).is_none());
     }
 
     #[test]
-    fn actives_re_emit_on_the_heartbeat() {
-        let mut raiser = AlertRaiser::new(arm_sources());
-        let t0 = Instant::now();
-        step(&mut raiser, &reports(0, warned(0.93)), t0);
-        assert!(step(&mut raiser, &reports(0, warned(0.93)), t0).is_empty());
-        let beat = step(
-            &mut raiser,
-            &reports(0, warned(0.97)),
-            t0 + ALERT_HEARTBEAT_PERIOD,
-        );
-        assert_eq!(beat.len(), 1, "the active alert re-emits");
-        assert_eq!(beat[0].source, "left arm j1");
-        assert!(
-            beat[0].message.contains("97%"),
-            "the re-emit carries the latest measurement, not the raise-time one"
-        );
-    }
+    fn escalation_replaces_the_motors_alert() {
+        let t0 = t0();
+        let mut raiser = started(t0);
+        let warned_set =
+            step(&mut raiser, &reports(3, warned(0.93)), t0).expect("the raise is owed");
+        assert_eq!(warned_set.len(), 1);
+        assert_eq!(warned_set[0].severity, AlertSeverity::Warning);
+        assert_eq!(warned_set[0].message, "holding 93% of rated torque");
 
-    #[test]
-    fn a_failed_heartbeat_round_retries_immediately() {
-        let mut raiser = AlertRaiser::new(arm_sources());
-        let t0 = Instant::now();
-        step(&mut raiser, &reports(0, warned(0.93)), t0);
-        let beat = raiser.due(&reports(0, warned(0.93)), t0 + ALERT_HEARTBEAT_PERIOD);
-        assert!(beat.heartbeat && beat.items.len() == 1);
-        // Not marked: the next round still owes the re-emit.
-        let again = raiser.due(&reports(0, warned(0.93)), t0 + ALERT_HEARTBEAT_PERIOD);
-        assert!(
-            again.heartbeat && again.items.len() == 1,
-            "an undelivered heartbeat round is owed until it fully sends"
-        );
-    }
-
-    #[test]
-    fn escalation_replaces_the_motors_alert_rather_than_adding_one() {
-        let mut raiser = AlertRaiser::new(arm_sources());
-        let t0 = Instant::now();
-        step(&mut raiser, &reports(3, warned(0.93)), t0);
         let escalated = MotorHealth {
             level: HealthLevel::Critical,
             cause: Some(HealthCause::WindingTemperature),
             winding_temp: WindingTempC(92.0),
             ..nominal()
         };
-        let raised = step(&mut raiser, &reports(3, escalated), t0);
-        assert_eq!(raised.len(), 1);
-        assert_eq!(raised[0].severity, 2);
+        let raised = step(&mut raiser, &reports(3, escalated), t0).expect("the escalation is owed");
+        assert_eq!(raised.len(), 1, "one entry per motor");
+        assert_eq!(raised[0].source, "left arm j4");
+        assert_eq!(raised[0].severity, AlertSeverity::Critical);
         assert_eq!(raised[0].message, "motor winding at 92 C");
     }
 
     #[test]
     fn two_motors_alert_independently() {
-        let mut raiser = AlertRaiser::new(arm_sources());
-        let t0 = Instant::now();
+        let t0 = t0();
+        let mut raiser = started(t0);
         let mut all = all_nominal();
         all[2] = warned(0.93);
         all[5] = warned(0.95);
-        let raised = step(&mut raiser, &all, t0);
+        let raised = step(&mut raiser, &all, t0).expect("the raises are owed");
         assert_eq!(raised.len(), 2);
         assert_eq!(raised[0].source, "left arm j3");
         assert_eq!(raised[1].source, "left arm j6");
+
+        all[5] = nominal();
+        let kept = step(&mut raiser, &all, t0).expect("one clear is owed");
+        assert_eq!(kept.len(), 1, "the other motor's alert stays listed");
+        assert_eq!(kept[0].source, "left arm j3");
     }
 
     #[test]
     fn a_silent_motor_raises_its_own_alert_and_does_not_hide_the_others() {
         // A motor that stops answering is the failure this feature exists to
         // catch, and it must not suppress a second motor's fault either.
-        let mut raiser = AlertRaiser::new(arm_sources());
-        let t0 = Instant::now();
+        let t0 = t0();
+        let mut raiser = started(t0);
         let mut all = all_nominal();
         all[4] = silent();
         all[6] = MotorHealth {
@@ -1144,77 +1241,116 @@ mod alert_tests {
             cause: Some(HealthCause::Fault("overload")),
             ..nominal()
         };
-        let raised = step(&mut raiser, &all, t0);
+        let raised = step(&mut raiser, &all, t0).expect("the raises are owed");
         assert_eq!(
             raised.len(),
             2,
-            "both the silent motor and the fault report"
+            "the silent motor and the faulted one both alert"
         );
-        let sources: Vec<&str> = raised.iter().map(|a| a.source.as_str()).collect();
-        assert!(sources.contains(&"left arm j5"));
-        assert!(sources.contains(&"left arm j7"));
+        assert_eq!(raised[0].source, "left arm j5");
+        assert_eq!(raised[0].severity, AlertSeverity::Fault);
+        assert_eq!(raised[1].source, "left arm j7");
     }
 
     #[test]
     fn a_motor_that_goes_silent_escalates_rather_than_letting_its_alert_lapse() {
-        // Leaving the alert to age out is worse than saying nothing: the
-        // banner disappears while the joint is still limp, and the operator
-        // reads that as the problem having resolved itself.
-        let mut raiser = AlertRaiser::new(arm_sources());
-        let t0 = Instant::now();
-        let warned_alert = step(&mut raiser, &reports(4, warned(0.93)), t0);
-        assert_eq!(warned_alert[0].severity, 1);
+        // Going quiet while warned must not read as a clear: the operator's
+        // banner disappearing while the joint is still limp reads as the
+        // problem having resolved itself.
+        let t0 = t0();
+        let mut raiser = started(t0);
+        let warned_alert =
+            step(&mut raiser, &reports(4, warned(0.93)), t0).expect("the raise is owed");
+        assert_eq!(warned_alert[0].severity, AlertSeverity::Warning);
 
-        let gone = step(&mut raiser, &reports(4, silent()), t0);
-        assert_eq!(gone.len(), 1, "going silent is itself a transition");
+        let gone = step(&mut raiser, &reports(4, silent()), t0).expect("going silent is a change");
+        assert_eq!(gone.len(), 1);
         assert_eq!(gone[0].source, "left arm j5");
-        assert_eq!(gone[0].severity, 3, "silence is at least as bad as a fault");
+        assert_eq!(
+            gone[0].severity,
+            AlertSeverity::Fault,
+            "silence is at least as bad as a fault"
+        );
         assert!(gone[0].message.contains("stopped reporting"));
     }
 
     #[test]
-    fn every_level_round_trips_through_the_wire_and_junk_decodes_to_none() {
-        for level in [
-            HealthLevel::Nominal,
-            HealthLevel::Warning,
-            HealthLevel::Critical,
-            HealthLevel::Fault,
-            HealthLevel::NotReporting,
+    fn the_severity_scale_starts_at_a_warning_and_round_trips() {
+        // A listed alert is active, so a nominal motor has no severity at
+        // all, and both consumers drop an entry carrying a 0.
+        assert_eq!(AlertSeverity::of_level(HealthLevel::Nominal), None);
+        assert_eq!(
+            AlertSeverity::of_level(HealthLevel::Warning),
+            Some(AlertSeverity::Warning)
+        );
+        assert_eq!(
+            AlertSeverity::of_level(HealthLevel::Critical),
+            Some(AlertSeverity::Critical)
+        );
+        assert_eq!(
+            AlertSeverity::of_level(HealthLevel::Fault),
+            Some(AlertSeverity::Fault)
+        );
+        assert_eq!(
+            AlertSeverity::of_level(HealthLevel::NotReporting),
+            Some(AlertSeverity::Fault),
+            "silence is at least as bad as a fault"
+        );
+
+        for severity in [
+            AlertSeverity::Warning,
+            AlertSeverity::Critical,
+            AlertSeverity::Fault,
         ] {
-            assert_eq!(HealthLevel::from_wire(level.wire()), Some(level));
+            assert_eq!(AlertSeverity::from_wire(severity.wire()), Some(severity));
         }
-        for junk in [5, 6, 255] {
-            assert_eq!(HealthLevel::from_wire(junk), None);
+        assert_eq!(AlertSeverity::Warning.wire(), 1);
+        assert_eq!(AlertSeverity::Critical.wire(), 2);
+        assert_eq!(AlertSeverity::Fault.wire(), 3);
+        for outside in [0, 4, 255] {
+            assert_eq!(AlertSeverity::from_wire(outside), None, "{outside}");
         }
     }
 
     #[test]
-    fn a_level_the_alert_scale_has_no_room_for_cannot_reach_the_wire() {
-        // Health carries five levels and the alert wire carries four. Passing
-        // the level's own encoding through would put a 4 on a field every
-        // consumer rejects, dropping the alert silently and forever.
-        for level in [
-            HealthLevel::Nominal,
-            HealthLevel::Warning,
-            HealthLevel::Critical,
-            HealthLevel::Fault,
-            HealthLevel::NotReporting,
-        ] {
-            assert!(severity_of(level) <= 3, "{level:?}");
-        }
-        assert_eq!(severity_of(HealthLevel::NotReporting), 3);
+    fn a_level_without_a_cause_is_not_a_condition() {
+        // `verdict` pairs a nominal level with no cause, and the two halves
+        // are read together, so a report assembled by hand cannot put a
+        // severity the contract has no value for on the wire.
+        let t0 = t0();
+        let mut raiser = started(t0);
+        let nominal_with_cause = MotorHealth {
+            level: HealthLevel::Nominal,
+            cause: Some(HealthCause::SustainedTorque),
+            ..nominal()
+        };
+        assert!(
+            step(&mut raiser, &reports(0, nominal_with_cause), t0).is_none(),
+            "no condition, so nothing is owed"
+        );
+        let level_without_cause = MotorHealth {
+            level: HealthLevel::Critical,
+            cause: None,
+            ..nominal()
+        };
+        assert!(
+            step(&mut raiser, &reports(0, level_without_cause), t0).is_none(),
+            "a level with no cause has nothing to describe"
+        );
     }
 
     #[test]
     fn a_fault_names_the_kind_and_says_the_joint_is_limp() {
-        let mut raiser = AlertRaiser::new(vec!["right arm j7".to_string()]);
+        let t0 = t0();
+        let mut raiser = AlertRaiser::new(["right arm j7".to_string()]);
+        step(&mut raiser, &[nominal()], t0).expect("the opening set is owed");
         let faulted = MotorHealth {
             level: HealthLevel::Fault,
             cause: Some(HealthCause::Fault("overload")),
             ..nominal()
         };
-        let raised = step(&mut raiser, &[faulted], Instant::now());
-        assert_eq!(raised[0].severity, 3);
+        let raised = step(&mut raiser, &[faulted], t0).expect("the fault is owed");
+        assert_eq!(raised[0].severity, AlertSeverity::Fault);
         assert_eq!(
             raised[0].message,
             "overload: the motor cut out and the joint is limp"
@@ -1222,31 +1358,37 @@ mod alert_tests {
     }
 
     #[test]
-    fn an_unsent_alert_is_retried_next_round() {
-        // The publisher only marks what actually went out; a raise whose
-        // publish failed must come back immediately, and a clear whose
-        // publish failed must not leave a phantom alert behind.
-        let mut raiser = AlertRaiser::new(arm_sources());
-        let t0 = Instant::now();
-        let first = raiser.due(&reports(0, warned(0.93)), t0);
-        assert_eq!(first.items.len(), 1);
-        // Publish failed: nothing marked.
-        let retry = raiser.due(&reports(0, warned(0.93)), t0);
-        assert_eq!(retry.items.len(), 1, "the unsent raise comes back");
-        raiser.mark_sent(&retry.items[0]);
+    fn an_unsent_set_is_owed_until_it_sends() {
+        // The publisher only marks what actually went out: a set whose
+        // publish failed comes back next round, and so does the clear.
+        let t0 = t0();
+        let mut raiser = started(t0);
+        let first = raiser
+            .due(&reports(0, warned(0.93)), t0)
+            .expect("the raise is owed");
+        let retry = raiser
+            .due(&reports(0, warned(0.93)), t0)
+            .expect("the unsent raise comes back");
+        assert_eq!(retry, first);
+        raiser.mark_sent(&retry, t0);
 
-        let clear = raiser.due(&all_nominal(), t0);
-        assert_eq!(clear.items.len(), 1);
-        // Clear publish failed: nothing marked.
-        let clear_retry = raiser.due(&all_nominal(), t0);
-        assert_eq!(clear_retry.items.len(), 1, "the unsent clear comes back");
+        let clear = raiser.due(&all_nominal(), t0).expect("the clear is owed");
+        assert!(clear.alerts().is_empty());
+        assert_eq!(
+            raiser
+                .due(&all_nominal(), t0)
+                .expect("the unsent clear comes back"),
+            clear
+        );
     }
 
     #[test]
     fn a_single_motor_component_alerts_under_its_own_name() {
         // A gripper is one motor whose label is the whole component name.
-        let mut raiser = AlertRaiser::new(vec!["left gripper".to_string()]);
-        let raised = step(&mut raiser, &[warned(0.93)], Instant::now());
+        let t0 = t0();
+        let mut raiser = AlertRaiser::new(["left gripper".to_string()]);
+        step(&mut raiser, &[nominal()], t0).expect("the opening set is owed");
+        let raised = step(&mut raiser, &[warned(0.93)], t0).expect("the raise is owed");
         assert_eq!(raised[0].source, "left gripper");
     }
 }
