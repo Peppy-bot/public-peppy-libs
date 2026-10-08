@@ -16,6 +16,14 @@
 //! one the other instances use by binding [`LOCK_DIR`] into the container, with
 //! a `mount_paths` entry in the node manifest. The directory must already
 //! exist, and a claim naming one that does not is refused.
+//!
+//! The lock is `flock(2)`, which the kernel enforces between the open file
+//! descriptions of one inode on a local filesystem. So the directory belongs on
+//! the filesystem of the machine whose devices it stands for. On a macOS daemon
+//! the containers run inside the Lima guest and the guest's own `/tmp` is what
+//! they share, which is where peppy keeps its guest coordination files
+//! (`GUEST_PGID_DIR`); a host directory mounted into the guest answers to the
+//! mount's locking semantics instead of the kernel's.
 
 use std::fs::{File, TryLockError};
 use std::io::{Read, Write};
