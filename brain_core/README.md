@@ -56,7 +56,7 @@ def main() -> None:
 ```
 
 The parameters the core reads are `limbs`, `perception_model`,
-`perception_gallery`, `perception_confidence` and `camera_name`.
+`perception_gallery` and `camera_name`.
 
 ## The parts
 

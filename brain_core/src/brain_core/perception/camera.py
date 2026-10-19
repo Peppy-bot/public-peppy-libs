@@ -63,16 +63,6 @@ class Intrinsics:
         if self.distortion_model not in DISTORTION_MODELS:
             raise ValueError(f"unknown distortion model {self.distortion_model!r}; known: {', '.join(DISTORTION_MODELS)}")
 
-    @classmethod
-    def from_fovy(cls, fovy_deg: float, width: int, height: int) -> "Intrinsics":
-        """A rendered camera with no lens: the vertical field of view gives
-        the focal length and the image centre is the principal point. For
-        tests and fixtures; a real camera answers get_color_intrinsics."""
-        if not (0.0 < fovy_deg < 180.0):
-            raise ValueError(f"the field of view must be between 0 and 180 degrees, got {fovy_deg}")
-        focal = (height / 2.0) / math.tan(math.radians(fovy_deg) / 2.0)
-        return cls(width, height, focal, focal, width / 2.0, height / 2.0)
-
     def scaled_to(self, width: int, height: int) -> "Intrinsics":
         """The same camera at another image size: focal lengths and the
         principal point follow the pixels (pixel centres, so (c + 0.5) s - 0.5)."""
@@ -197,25 +187,6 @@ def undistort(model: str, coefficients: Sequence[float], xd: float, yd: float) -
         x = (xd - dx) / radial
         y = (yd - dy) / radial
     return x, y
-
-
-def distort(model: str, coefficients: Sequence[float], x: float, y: float) -> tuple[float, float]:
-    """The distorted normalised point the lens makes of the ideal one (x, y):
-    the exact inverse of `undistort`, for projecting and for tests."""
-    if model == NONE:
-        return x, y
-    if model not in (PLUMB_BOB, INVERSE_PLUMB_BOB):
-        raise ValueError(f"distortion model {model!r} is not one camera_geometry names: {DISTORTION_MODELS}")
-    if model == PLUMB_BOB:
-        return _apply(coefficients, x, y)
-    # Under "inverse_plumb_bob" the polynomial undistorts, so distorting is
-    # the iteration, from the ideal point.
-    xd, yd = x, y
-    for _ in range(_UNDISTORT_ITERATIONS):
-        radial, dx, dy = _terms(coefficients, xd, yd)
-        xd = (x - dx) / radial
-        yd = (y - dy) / radial
-    return xd, yd
 
 
 def _apply(coefficients: Sequence[float], x: float, y: float) -> tuple[float, float]:

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import PARAMS, FakeCtx, FakeDetector, FakeManipulator, depth_frame, records_of, rgb_frame
+from conftest import CAMERA_16X12, PARAMS, FakeCtx, FakeDetector, FakeManipulator, depth_frame, records_of, rgb_frame
 from fake_peppygen import abort as abort_action
 from fake_peppygen import drop_item as drop_action
 from fake_peppygen import fake_bindings
@@ -43,15 +43,13 @@ def make_brain(*, detector=None, manipulator=None, ticks=None) -> Brain:
 
 
 def with_frames(brain: Brain, depth_m: float = 1.0) -> None:
-    from brain_core.perception.camera import Intrinsics
-
     brain.frames.add_color(rgb_frame(16, 12))
     brain.frames.add_depth(depth_frame(depth_m, 16, 12))
     brain.frames.depth_unit = 0.001
     # The camera has answered where its pixels point, a 90 degree lens, and
     # the robot where it stands: at the origin, looking along +Z.
     brain.perceiver.set_camera(
-        brain.camera.with_intrinsics(Intrinsics.from_fovy(90.0, 16, 12)).with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+        brain.camera.with_intrinsics(CAMERA_16X12).with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
     )
 
 

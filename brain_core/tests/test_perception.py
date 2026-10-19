@@ -11,15 +11,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import NEVER, FakeDetector, FakeToken, camera_poses, depth_frame, rgb_frame
-from fake_peppygen import VacantSlot, fake_bindings
+from conftest import CAMERA_16X12, NEVER, FakeDetector, FakeToken, camera_poses, depth_frame, rgb_frame
+from fake_peppygen import VacantSlot
 from brain_core.perception.camera import (
     INVERSE_PLUMB_BOB,
     NONE,
     PLUMB_BOB,
     CameraModel,
     Intrinsics,
-    distort,
     pixel_to_ray,
     rotate,
     undistort,
@@ -32,7 +31,7 @@ from brain_core.ports import Box, CancelToken, Coverage, Detection, Refusal
 
 # At the robot frame's origin, looking along its +Z: the identity pose.
 AT_ORIGIN = CameraModel().with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
-IDENTITY = AT_ORIGIN.with_intrinsics(Intrinsics.from_fovy(90.0, 16, 12))
+IDENTITY = AT_ORIGIN.with_intrinsics(CAMERA_16X12)
 
 
 def close(a, b, tolerance=1e-6):
@@ -54,18 +53,16 @@ def test_the_camera_pose_the_robot_reports_is_checked_and_normalised():
     assert camera.placed and not camera.ready
     with pytest.raises(ValueError, match="intrinsics are not known yet"):
         camera.deproject(1.0, 1.0, 1.0, 16, 12)
-    unplaced = CameraModel().with_intrinsics(Intrinsics.from_fovy(90.0, 16, 12))
+    unplaced = CameraModel().with_intrinsics(CAMERA_16X12)
     assert not unplaced.placed and not unplaced.ready
     with pytest.raises(ValueError, match="pose is not known yet"):
         unplaced.deproject(1.0, 1.0, 1.0, 16, 12)
     with pytest.raises(ValueError, match="pose is not known yet"):
         unplaced.forward()
-    assert camera.with_intrinsics(Intrinsics.from_fovy(90.0, 16, 12)).ready
+    assert camera.with_intrinsics(CAMERA_16X12).ready
 
 
 def test_intrinsics_are_checked_and_scale_with_the_image():
-    with pytest.raises(ValueError):
-        Intrinsics.from_fovy(0.0, 16, 12)
     with pytest.raises(ValueError, match="positive finite focal"):
         Intrinsics(16, 12, 0.0, 6.0, 8.0, 6.0)
     with pytest.raises(ValueError, match="unknown distortion model"):
@@ -106,21 +103,24 @@ def test_a_pixel_becomes_a_ray_through_the_intrinsics_with_no_lens():
     # length to the right is 45 degrees.
     assert close(pixel_to_ray(639.5, 359.5, 738.1, 738.1, 639.5, 359.5, NONE, ()), (0.0, 0.0))
     assert close(pixel_to_ray(639.5 + 738.1, 359.5, 738.1, 738.1, 639.5, 359.5, NONE, ()), (1.0, 0.0))
-    # deproject is the same path with the field of view for the focal length.
+    # deproject is the same path.
     assert close(IDENTITY.deproject(8.0 + 6.0, 6.0, 2.0, 16, 12), (2.0, 0.0, 2.0))
 
 
 def test_plumb_bob_round_trips_through_distort_and_undistort():
-    # The forward polynomial distorts an ideal point; undistorting by
-    # iteration brings it back, out to the image corners.
-    for point in [(0.0, 0.0), (0.3, -0.2), (-0.6, 0.35), (0.8, 0.45)]:
-        distorted = distort(PLUMB_BOB, LENS, *point)
-        assert not close(distorted, point, 1e-4) or point == (0.0, 0.0)
-        assert close(undistort(PLUMB_BOB, LENS, *distorted), point, 1e-9)
-    # And the same round trip the other way for the inverse model.
-    for point in [(0.3, -0.2), (-0.6, 0.35)]:
-        distorted = distort(INVERSE_PLUMB_BOB, LENS, *point)
-        assert close(undistort(INVERSE_PLUMB_BOB, LENS, *distorted), point, 1e-9)
+    # The lens distorts an ideal point by the forward polynomial, written
+    # out here; undistorting by iteration brings it back, out to the image
+    # corners.
+    k1, k2, p1, p2, k3 = LENS
+    for x, y in [(0.0, 0.0), (0.3, -0.2), (-0.6, 0.35), (0.8, 0.45)]:
+        r2 = x * x + y * y
+        radial = 1.0 + r2 * (k1 + r2 * (k2 + r2 * k3))
+        distorted = (
+            x * radial + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x),
+            y * radial + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y,
+        )
+        assert not close(distorted, (x, y), 1e-4) or (x, y) == (0.0, 0.0)
+        assert close(undistort(PLUMB_BOB, LENS, *distorted), (x, y), 1e-9)
 
 
 def test_the_inverse_model_applies_the_polynomial_once_from_the_distorted_point():
@@ -198,7 +198,9 @@ CHEST_ORIENTATION = quaternion_product((0.1710647, -0.1710647, -0.6861027, 0.686
 def test_the_chest_pose_the_backbone_reports_looks_ahead_and_down():
     # The OpenArm v2 chest camera faces the robot's +X, 62 degrees below the
     # horizon, and the image's +Y (down the picture) leans forward and down.
-    chest = CameraModel().with_pose(CHEST_POSITION, CHEST_ORIENTATION).with_intrinsics(Intrinsics.from_fovy(52.0, 1280, 720))
+    # Its colour intrinsics: a 52 degree vertical field of view over 720
+    # rows is a focal length of 360 / tan(26 degrees), and no lens.
+    chest = CameraModel().with_pose(CHEST_POSITION, CHEST_ORIENTATION).with_intrinsics(Intrinsics(1280, 720, 738.1, 738.1, 640.0, 360.0))
     forward = chest.forward()
     assert close(forward, (math.cos(math.radians(62)), 0.0, -math.sin(math.radians(62))), 1e-3)
     assert close(rotate(chest.pose.orientation, (0.0, 1.0, 0.0)), (-math.sin(math.radians(62)), 0.0, -math.cos(math.radians(62))), 1e-3)
@@ -490,20 +492,6 @@ async def test_a_load_that_fails_becomes_the_reason_every_search_is_refused_with
         await perceiver.scan([], CancelToken(), timeout_s=0.0)
 
 
-def test_the_confidence_parameter_reaches_the_detector_unless_it_is_zero():
-    from brain_core.brain import Brain
-    from brain_core.manipulation.none import NoneManipulator
-    from conftest import PARAMS
-
-    detector = FakeDetector()
-    detector.min_confidence = 0.25
-    params = SimpleNamespace(**{**PARAMS, "perception_confidence": 0.10})
-    assert Brain(params, None, fake_bindings(), detector, NoneManipulator()).perceiver.detector.min_confidence == 0.10
-    detector.min_confidence = 0.25
-    params = SimpleNamespace(**{**PARAMS, "perception_confidence": 0.0})
-    assert Brain(params, None, fake_bindings(), detector, NoneManipulator()).perceiver.detector.min_confidence == 0.25
-
-
 async def test_a_scan_waits_for_the_cameras_intrinsics_and_names_the_slot():
     from brain_core.perception.geometry import VACANT, intrinsics_from
 
@@ -620,7 +608,7 @@ async def test_the_robot_is_asked_again_until_it_places_the_camera(monkeypatch):
     # answers with success and names the camera: not answered, not measured
     # yet, a robot without that camera, then the answer.
     frames = store_with([rgb_frame(16, 12)], [depth_frame(1.0, 16, 12)])
-    perceiver = Perceiver(FakeDetector(), frames, CameraModel().with_intrinsics(Intrinsics.from_fovy(90.0, 16, 12)))
+    perceiver = Perceiver(FakeDetector(), frames, CameraModel().with_intrinsics(CAMERA_16X12))
     assert not perceiver.available
     with pytest.raises(Refusal, match="pose has not been received from the robot"):
         await perceiver.scan([], CancelToken(), 1.0)

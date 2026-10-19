@@ -16,7 +16,6 @@ from ..ports import Box, Coverage, Deadline
 
 class NoneDetector:
     name = "none"
-    min_confidence = 0.0
 
     @property
     def available(self) -> bool:

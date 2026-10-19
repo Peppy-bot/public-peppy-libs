@@ -52,8 +52,6 @@ class Brain:
         self.frames = FrameStore()
         self.camera = CameraModel()
         self.perceiver = Perceiver(detector, self.frames, self.camera)
-        if params.perception_confidence > 0.0:
-            self.perceiver.detector.min_confidence = params.perception_confidence
         self.manipulator: Manipulator = manipulator
         self.sequencer = Sequencer(stopper=self._stop_lane)
         self._now = now or bindings.clock.now_ns

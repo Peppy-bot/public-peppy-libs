@@ -15,15 +15,20 @@ from typing import Iterator, Optional, Sequence
 import numpy as np
 import pytest
 
+from brain_core.perception.camera import Intrinsics
 from brain_core.ports import Box, CancelToken, Coverage, Deadline, Gripper, Item, Outcome, Pose
 
 PARAMS = {
     "limbs": "left_arm:left_gripper,right_arm:right_gripper",
     "perception_model": "",
     "perception_gallery": "",
-    "perception_confidence": 0.0,
     "camera_name": "chest",
 }
+
+# The colour intrinsics camera_geometry gives for a 16 x 12 camera with a
+# 90 degree lens and none of its distortion: one focal length is half the
+# image height, and the principal point is the image centre.
+CAMERA_16X12 = Intrinsics(16, 12, 6.0, 6.0, 8.0, 6.0)
 
 # A deadline no search reaches, and one every search has passed.
 NEVER = Deadline(at=float("inf"), budget_s=float("inf"))
@@ -83,7 +88,6 @@ class FakeDetector:
         self.loaded: Optional[tuple[str, str]] = None
         self.vocabulary: list[str] = []
         self.deadlines: list[Deadline] = []
-        self.min_confidence = 0.0
 
     @property
     def available(self) -> bool:

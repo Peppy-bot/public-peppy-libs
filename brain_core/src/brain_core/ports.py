@@ -216,13 +216,17 @@ class Detector(Protocol):
     """The swappable piece of perception: a model that finds boxes in one
     RGB image. The core does everything around it: frames, depth, the
     camera model, duplicate boxes, ids. `detect` and `load` may block; the
-    core runs each in a thread of its own."""
+    core runs each in a thread of its own.
+
+    One box per object: a detector that names one object twice, under one
+    label or under two ("mug" and "cup"), returns one box for it. Only the
+    model knows that two labels name one object, so the core merges only
+    the boxes of one label (`perceiver.merge_duplicates`), and never across
+    labels, which would delete real objects that overlap in the picture.
+    Each detector keeps the confidence its boxes are kept at, in its own
+    measure of it."""
 
     name: str
-    # The confidence a detection is kept at, 0 to 1, in the backend's own
-    # measure of it. The brain sets it from the perception_confidence
-    # parameter before the load when that parameter is above zero.
-    min_confidence: float
 
     @property
     def available(self) -> bool: ...
@@ -230,9 +234,9 @@ class Detector(Protocol):
     def load(self, model: str, gallery: str) -> None:
         """`model` is the perception_model parameter, the identifier of a
         model the backend reads; `gallery` the perception_gallery parameter,
-        a directory of pictures of particular items. Each backend says what
-        it makes of them, and fails the load naming a value it does not
-        take."""
+        the name of an enrolment set the node ships, or empty. Each backend
+        says what it makes of them, and fails the load naming a value it
+        does not take."""
         ...
 
     def set_vocabulary(self, phrases: Sequence[str]) -> None:
