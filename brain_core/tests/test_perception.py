@@ -342,11 +342,9 @@ async def test_a_scan_turns_boxes_into_world_detections():
     # Its centre is off the picture, where the depth frame has no reading.
     off_the_picture = Box("bowl", 0.5, 30, 30, 40, 40)
     detector = FakeDetector([Box("cup", 0.9, 6, 4, 10, 8), duplicate, off_the_picture])
-    perceiver = Perceiver(detector, frames, IDENTITY)
-    await perceiver.load("weights.pt", "/gallery")
-    assert detector.loaded == ("weights.pt", "/gallery")
-    look = await perceiver.scan(["cup"], CancelToken(), timeout_s=0.0)
-    assert detector.vocabulary == ["cup"]
+    perceiver = Perceiver(frames, IDENTITY)
+    look = await perceiver.scan(detector, ["cup"], CancelToken(), timeout_s=0.0)
+    assert detector.phrases == [["cup"]]
     detections = look.detections
     assert len(detections) == 1
     assert detections[0].label == "cup" and detections[0].confidence == 0.9
@@ -360,8 +358,9 @@ async def test_a_scan_turns_boxes_into_world_detections():
     # The detector is handed the search's deadline: the default budget for
     # a zero timeout, the caller's otherwise.
     assert detector.deadlines[-1].budget_s == DEFAULT_TIMEOUT_S
-    await perceiver.scan([], CancelToken(), timeout_s=2.5)
+    await perceiver.scan(detector, [], CancelToken(), timeout_s=2.5)
     assert detector.deadlines[-1].budget_s == 2.5
+    assert detector.phrases[-1] == []
 
 
 def test_a_look_names_its_frame_its_age_and_every_box_for_the_log():
@@ -384,23 +383,14 @@ def test_a_look_names_its_frame_its_age_and_every_box_for_the_log():
     assert nothing.describe(10_000_000_000) == "frame 7 taken 0.00 s before the search, no box"
 
 
-async def test_a_detectors_calls_run_in_daemon_threads_of_their_own():
-    threads: dict[str, threading.Thread] = {}
+async def test_a_blocking_call_runs_in_a_daemon_thread_of_its_own():
+    def compute(value):
+        return threading.current_thread(), value * 2
 
-    class Recording(FakeDetector):
-        def load(self, model, gallery):
-            threads["load"] = threading.current_thread()
-
-        def detect(self, image, deadline):
-            threads["detect"] = threading.current_thread()
-            return []
-
-    perceiver = Perceiver(Recording(), store_with([rgb_frame()], [depth_frame(1.0)]), IDENTITY)
-    await perceiver.load("", "")
-    await perceiver.scan([], CancelToken(), 0.0)
-    assert threads["load"].daemon and threads["detect"].daemon
-    assert threads["load"] is not threading.main_thread()
-    assert threads["load"].name == "brain-load" and threads["detect"].name == "brain-detect"
+    thread, doubled = await in_daemon_thread(compute, 21)
+    assert doubled == 42
+    assert thread.daemon and thread is not threading.main_thread()
+    assert thread.name == "brain-compute"
 
     def boom():
         raise ValueError("in the thread")
@@ -409,104 +399,44 @@ async def test_a_detectors_calls_run_in_daemon_threads_of_their_own():
         await in_daemon_thread(boom)
 
 
-async def test_a_scan_is_refused_without_a_detector_or_without_frames():
+async def test_the_none_detector_is_never_ready_and_finds_nothing():
     from brain_core.perception.none import NoneDetector
 
-    frames = FrameStore()
+    assert NoneDetector().why_unavailable() == "perception_model is 'none'"
     assert NoneDetector().scan_coverage() == Coverage()
-    assert NoneDetector().detect(None, NEVER) == []
-    none = Perceiver(NoneDetector(), frames, IDENTITY)
-    with pytest.raises(Refusal, match="perception_backend is 'none'"):
-        await none.scan([], CancelToken(), 0.0)
-    fake = Perceiver(FakeDetector(), frames, IDENTITY)
-    with pytest.raises(Refusal, match="no camera frame received"):
-        await fake.scan([], CancelToken(), 0.0)
-    assert not fake.available
-    fake.frames.add_color(rgb_frame(align_mode="none"))
-    fake.frames.add_depth(depth_frame(1.0, align_mode="none"))
-    fake.frames.depth_unit = 0.001
-    with pytest.raises(Refusal, match="no perception source: the camera's depth is not aligned"):
-        await fake.scan([], CancelToken(), 0.0)
+    assert await NoneDetector().detect(None, [], NEVER) == []
 
 
-async def test_the_none_backend_refuses_a_model_or_a_gallery_it_cannot_read():
-    from brain_core.perception.none import NoneDetector
-
-    NoneDetector().load("", "")
-    for model, gallery in (("weights", ""), ("", "/gallery")):
-        with pytest.raises(ValueError, match="perception_backend 'none' loads no model"):
-            NoneDetector().load(model, gallery)
-
-
-async def test_a_backend_loads_in_the_background_and_searches_wait_on_it():
-    # The node's start must not wait on a model that takes a minute to
-    # load, so the load runs beside it and a search meanwhile is refused as
-    # still loading, not as no backend.
-    class SlowDetector(FakeDetector):
-        def __init__(self) -> None:
-            super().__init__()
-            self.ready = False
-            self.entered = threading.Event()
-            self.release = threading.Event()
-
-        @property
-        def available(self) -> bool:
-            return self.ready
-
-        def load(self, model: str, gallery: str) -> None:
-            self.entered.set()
-            self.release.wait(5.0)
-            self.loaded = (model, gallery)
-            self.ready = True
-
-    detector = SlowDetector()
-    frames = FrameStore()
-    perceiver = Perceiver(detector, frames, IDENTITY)
-    task = perceiver.start_loading("", "gallery")
-    await asyncio.wait_for(asyncio.to_thread(detector.entered.wait), 5.0)
-    assert not task.done()
-    assert perceiver.why_unavailable() == "no perception source: perception_backend 'fake' is still loading"
-    with pytest.raises(Refusal, match="still loading"):
-        await perceiver.scan([], CancelToken(), timeout_s=0.0)
-    detector.release.set()
-    await perceiver.loaded()
-    assert detector.loaded == ("", "gallery") and detector.available
+async def test_a_scan_is_refused_without_frames_or_with_frames_that_are_not_aligned():
+    perceiver = Perceiver(FrameStore(), IDENTITY)
+    detector = FakeDetector()
+    with pytest.raises(Refusal, match="^no perception source: no camera frame received$"):
+        await perceiver.scan(detector, [], CancelToken(), 0.0)
     assert perceiver.why_unavailable() == "no perception source: no camera frame received"
-
-
-async def test_a_load_that_fails_becomes_the_reason_every_search_is_refused_with():
-    class BrokenDetector(FakeDetector):
-        @property
-        def available(self) -> bool:
-            return False
-
-        def load(self, model: str, gallery: str) -> None:
-            raise ValueError(f"gallery {gallery} is not a directory the node can see")
-
-    perceiver = Perceiver(BrokenDetector(), FrameStore(), IDENTITY)
-    await perceiver.start_loading("", "/nowhere")
-    assert perceiver.why_unavailable() == (
-        "no perception source: perception_backend 'fake' could not load: gallery /nowhere is not a directory the node can see"
-    )
-    with pytest.raises(Refusal, match="could not load: gallery /nowhere"):
-        await perceiver.scan([], CancelToken(), timeout_s=0.0)
+    perceiver.frames.add_color(rgb_frame(align_mode="none"))
+    perceiver.frames.add_depth(depth_frame(1.0, align_mode="none"))
+    perceiver.frames.depth_unit = 0.001
+    with pytest.raises(Refusal, match="no perception source: the camera's depth is not aligned"):
+        await perceiver.scan(detector, [], CancelToken(), 0.0)
+    assert detector.phrases == []
 
 
 async def test_a_scan_waits_for_the_cameras_intrinsics_and_names_the_slot():
     from brain_core.perception.geometry import VACANT, intrinsics_from
 
     frames = store_with([rgb_frame(16, 12)], [depth_frame(1.0, 16, 12)])
-    perceiver = Perceiver(FakeDetector([Box("mug", 0.9, 4, 4, 8, 8)]), frames, AT_ORIGIN)
-    assert not perceiver.available
+    perceiver = Perceiver(frames, AT_ORIGIN)
+    detector = FakeDetector([Box("mug", 0.9, 4, 4, 8, 8)])
+    assert perceiver.why_unavailable() != ""
     with pytest.raises(Refusal, match="intrinsics have not been received"):
-        await perceiver.scan([], CancelToken(), 1.0)
+        await perceiver.scan(detector, [], CancelToken(), 1.0)
     perceiver.intrinsics_reason = VACANT
     with pytest.raises(Refusal, match="geometry slot is vacant"):
-        await perceiver.scan([], CancelToken(), 1.0)
+        await perceiver.scan(detector, [], CancelToken(), 1.0)
     answer = SimpleNamespace(width=16, height=12, fx=6.0, fy=6.0, cx=8.0, cy=6.0, distortion_model="none", distortion=[])
     perceiver.set_camera(perceiver.camera.with_intrinsics(intrinsics_from(answer)))
-    assert perceiver.available and perceiver.intrinsics_reason == ""
-    found = await perceiver.scan([], CancelToken(), 1.0)
+    assert perceiver.why_unavailable() == "" and perceiver.intrinsics_reason == ""
+    found = await perceiver.scan(detector, [], CancelToken(), 1.0)
     assert [d.label for d in found.detections] == ["mug"]
     with pytest.raises(ValueError, match="unknown distortion model"):
         intrinsics_from(SimpleNamespace(width=16, height=12, fx=6.0, fy=6.0, cx=8.0, cy=6.0, distortion_model="fisheye", distortion=[]))
@@ -526,7 +456,7 @@ async def test_the_camera_is_asked_again_until_it_knows_its_geometry(monkeypatch
     # colour not known yet (what a sim relay says before its simulation
     # speaks), depth not known, a depth model the brain does not read, an
     # unusable pinhole, then the answer.
-    perceiver = Perceiver(FakeDetector(), FrameStore(), AT_ORIGIN)
+    perceiver = Perceiver(FrameStore(), AT_ORIGIN)
     colour = [
         TimeoutError("no answer"),
         colour_answer(False, "no camera geometry received from the simulation yet"),
@@ -565,7 +495,7 @@ async def test_the_camera_is_asked_again_until_it_knows_its_geometry(monkeypatch
 
 
 async def test_a_camera_that_never_knows_its_geometry_is_asked_until_the_node_stops(monkeypatch):
-    perceiver = Perceiver(FakeDetector(), FrameStore(), AT_ORIGIN)
+    perceiver = Perceiver(FrameStore(), AT_ORIGIN)
     token = FakeToken()
     asked = 0
 
@@ -589,7 +519,7 @@ async def test_a_camera_that_never_knows_its_geometry_is_asked_until_the_node_st
 
 
 async def test_a_vacant_geometry_slot_is_the_reason_at_once():
-    perceiver = Perceiver(FakeDetector(), FrameStore(), AT_ORIGIN)
+    perceiver = Perceiver(FrameStore(), AT_ORIGIN)
     await asyncio.wait_for(geometry.learn_intrinsics(None, FakeToken(), perceiver, VacantSlot, VacantSlot), 1.0)
     assert perceiver.intrinsics_reason == geometry.VACANT
 
@@ -608,10 +538,10 @@ async def test_the_robot_is_asked_again_until_it_places_the_camera(monkeypatch):
     # answers with success and names the camera: not answered, not measured
     # yet, a robot without that camera, then the answer.
     frames = store_with([rgb_frame(16, 12)], [depth_frame(1.0, 16, 12)])
-    perceiver = Perceiver(FakeDetector(), frames, CameraModel().with_intrinsics(CAMERA_16X12))
-    assert not perceiver.available
+    perceiver = Perceiver(frames, CameraModel().with_intrinsics(CAMERA_16X12))
+    assert perceiver.why_unavailable() != ""
     with pytest.raises(Refusal, match="pose has not been received from the robot"):
-        await perceiver.scan([], CancelToken(), 1.0)
+        await perceiver.scan(FakeDetector(), [], CancelToken(), 1.0)
     answers = [
         TimeoutError("no answer"),
         poses_answer(False, "the robot has not measured its joints yet"),
@@ -639,11 +569,11 @@ async def test_the_robot_is_asked_again_until_it_places_the_camera(monkeypatch):
     assert answers == []
     assert perceiver.camera.ready and perceiver.pose_reason == ""
     assert perceiver.camera.pose.position == (0.1, 0.2, 0.3)
-    assert perceiver.available
+    assert perceiver.why_unavailable() == ""
 
 
 async def test_a_vacant_camera_mounts_slot_is_the_reason_at_once():
-    perceiver = Perceiver(FakeDetector(), FrameStore(), CameraModel())
+    perceiver = Perceiver(FrameStore(), CameraModel())
     await asyncio.wait_for(geometry.learn_camera_pose(None, FakeToken(), perceiver, "chest", VacantSlot), 1.0)
     assert perceiver.pose_reason == geometry.MOUNTS_VACANT
     assert not perceiver.camera.placed

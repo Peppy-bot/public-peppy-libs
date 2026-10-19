@@ -55,23 +55,22 @@ def main() -> None:
     NodeBuilder().run(setup)
 ```
 
-The parameters the core reads are `limbs`, `perception_model`,
-`perception_gallery` and `camera_name`.
+The parameters the core reads are `limbs` and `camera_name`.
 
 ## The parts
 
 | Module | What it holds |
 |---|---|
-| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Outcome`, `Pose`), `Refusal`, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, and the two ports a backend implements: `Detector` and `Manipulator` |
+| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Outcome`, `Pose`), the roles a model serves (`Role`, `parse_role`), `Refusal`, `ExpectedFailure`, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, and the two ports a backend implements: `Detector` (an awaited `detect`, and `why_unavailable`) and `Manipulator` |
 | `words` | The one rule for whether a description names a label |
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
 | `state` | The grippers, the known items and their ids, and the rules that resolve a goal's names |
-| `sequencer` | One sequence at a time per lane (`PERCEPTION`, `MANIPULATION`), and the way to stop the one that runs |
+| `sequencer` | One sequence at a time per lane (a lane is a `Role`), lane-less jobs beside them, and the way to stop the ones that run |
 | `robot` | The proxy to the backbone: one limb_motion goal per move, and `stop`, which cancels every move in flight |
 | `brain` | The parts assembled, and `run_guarded`, where every goal is admitted, completed the way the contract asks and logged |
 | `handlers` | One module per exposed member |
 | `serve`, `waiting` | The loop of an exposed action or service, and the one way a loop waits on the node's token |
-| `perception` | The `Perceiver` (frames in, world detections out), the frame store, the camera model and the geometry learners, and `NoneDetector` |
+| `perception` | The `Perceiver` (frames in, world detections out), the frame store, the camera model and the geometry learners, `in_daemon_thread` for a detector whose model blocks, and `NoneDetector` |
 | `manipulation` | `NoneManipulator` |
 | `bindings`, `node` | The generated modules a node passes in, and the shared entry |
 

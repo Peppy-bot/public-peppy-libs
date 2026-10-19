@@ -76,30 +76,27 @@ class FakeToken:
 
 
 class FakeDetector:
-    """Returns the boxes the test hands it, and records the vocabulary and
-    the deadlines it was given. Its scans name every label unless the test
-    hands it a coverage."""
+    """Returns the boxes the test hands it, and records the phrases and the
+    deadlines of each search. Its scans name every label unless the test
+    hands it a coverage; it can search unless the test hands it a reason it
+    cannot."""
 
     name = "fake"
 
-    def __init__(self, boxes: Optional[list[Box]] = None, coverage: Coverage = Coverage(every_label=True)) -> None:
+    def __init__(
+        self, boxes: Optional[list[Box]] = None, coverage: Coverage = Coverage(every_label=True), unavailable: str = ""
+    ) -> None:
         self.boxes = boxes or []
         self.coverage = coverage
-        self.loaded: Optional[tuple[str, str]] = None
-        self.vocabulary: list[str] = []
+        self.unavailable = unavailable
+        self.phrases: list[list[str]] = []
         self.deadlines: list[Deadline] = []
 
-    @property
-    def available(self) -> bool:
-        return True
+    def why_unavailable(self) -> str:
+        return self.unavailable
 
-    def load(self, model: str, gallery: str) -> None:
-        self.loaded = (model, gallery)
-
-    def set_vocabulary(self, phrases: Sequence[str]) -> None:
-        self.vocabulary = list(phrases)
-
-    def detect(self, image: np.ndarray, deadline: Deadline) -> list[Box]:
+    async def detect(self, image: np.ndarray, phrases: Sequence[str], deadline: Deadline) -> list[Box]:
+        self.phrases.append(list(phrases))
         self.deadlines.append(deadline)
         return list(self.boxes)
 
@@ -122,9 +119,8 @@ class FakeManipulator:
         self.robot = None
         self._began = asyncio.Event()
 
-    @property
-    def available(self) -> bool:
-        return True
+    def why_unavailable(self) -> str:
+        return ""
 
     async def start(self, robot) -> None:
         self.robot = robot

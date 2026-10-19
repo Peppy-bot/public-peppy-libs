@@ -6,12 +6,12 @@ contract defines it; a running search does not appear here.
 
 from __future__ import annotations
 
-from ..sequencer import MANIPULATION
+from ..ports import Role
 
 
 def handle(brain, _request):
     """The node's generated get_state Response."""
-    job = brain.sequencer.running(MANIPULATION)
+    job = brain.sequencer.running(Role.MANIPULATION)
     names, holding, held = brain.state.snapshot()
     return brain.bindings.get_state.Response(
         current_action=job.action if job is not None else "",

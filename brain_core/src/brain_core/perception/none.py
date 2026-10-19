@@ -1,10 +1,8 @@
-"""The detector that is not there: `perception_backend: "none"`.
+"""The detector that is not there: `perception_model: "none"`.
 
-It loads nothing and is never available, so both searches are refused
-with "no perception source", exactly what the contract asks of a brain
-that cannot see. Every other member keeps working. A perception_model or
-perception_gallery set beside it names something it cannot read, so the
-load fails saying so rather than the setting going unread.
+It is never ready, so both searches are refused with "no perception
+source: perception_model is 'none'", what the contract asks of a brain
+that cannot see. Every other member keeps working.
 """
 
 from __future__ import annotations
@@ -17,18 +15,10 @@ from ..ports import Box, Coverage, Deadline
 class NoneDetector:
     name = "none"
 
-    @property
-    def available(self) -> bool:
-        return False
+    def why_unavailable(self) -> str:
+        return "perception_model is 'none'"
 
-    def load(self, model: str, gallery: str) -> None:
-        if model.strip() or gallery.strip():
-            raise ValueError("perception_backend 'none' loads no model: perception_model and perception_gallery must be empty")
-
-    def set_vocabulary(self, phrases: Sequence[str]) -> None:
-        return None
-
-    def detect(self, image, deadline: Deadline) -> list[Box]:
+    async def detect(self, image, phrases: Sequence[str], deadline: Deadline) -> list[Box]:
         return []
 
     def scan_coverage(self) -> Coverage:

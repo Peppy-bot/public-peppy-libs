@@ -119,7 +119,7 @@ async def test_scan_and_grab_are_refused_without_backends_but_the_rules_still_sp
     ctx = grab_goal(gripper_name="left_gripper", position=[0.5, 0.1, 0.7])
     await grab_item.run(brain, ctx)
     assert ctx.completed["success"] is False
-    assert ctx.completed["message"] == "no manipulation backend: manipulation_backend is 'none'"
+    assert ctx.completed["message"] == "no manipulation model: manipulation_model is 'none'"
     assert ctx.completed["gripper_name"] == "" and ctx.completed["item_id"] == ""
 
     ctx = drop_goal()
@@ -155,7 +155,7 @@ async def test_scan_then_identify_then_grab_by_id_then_place():
     await identify_item.run(brain, ctx)
     assert ctx.completed["success"] is True
     assert ctx.completed["item_id"] == "cup_1-t0"
-    assert detector.vocabulary == ["cup"]
+    assert detector.phrases[-1] == ["cup"]
     assert ctx.completed["orientation"] is None
     assert ctx.completed["region"] == [7.0, 5.0, 9.0, 7.0]
     assert ctx.completed["camera"] == "chest"
@@ -312,7 +312,7 @@ async def test_identify_reports_nothing_found_as_a_failed_result():
 
 async def test_a_search_that_stops_at_its_deadline_is_a_failed_result_and_frees_the_lane():
     class TimingOut(FakeDetector):
-        def detect(self, image, deadline):
+        async def detect(self, image, phrases, deadline):
             raise SearchTimeout(deadline.budget_s)
 
     brain = make_brain(detector=TimingOut([Box("cup", 0.9, 7, 5, 9, 7)]))
@@ -427,9 +427,9 @@ async def test_a_search_logs_the_frame_it_looked_at_each_box_and_the_item_it_ret
     class Slow(FakeDetector):
         """Takes 0.84 s of the brain's clock to answer."""
 
-        def detect(self, image, deadline):
+        async def detect(self, image, phrases, deadline):
             ticks.now_ns += 840_000_000
-            return super().detect(image, deadline)
+            return await super().detect(image, phrases, deadline)
 
     brain = make_brain(detector=Slow([Box("cup", 0.9, 7, 5, 9, 7), Box("cup", 0.85, 7, 5, 9, 7.2)]), ticks=ticks)
     with_frames(brain)
@@ -468,7 +468,7 @@ async def test_a_search_refused_before_it_looked_logs_the_reason_alone(brain_log
 
 async def test_a_search_that_failed_logs_its_traceback(brain_log):
     class Broken(FakeDetector):
-        def detect(self, image, deadline):
+        async def detect(self, image, phrases, deadline):
             raise RuntimeError("the GPU is gone")
 
     brain = make_brain(detector=Broken())

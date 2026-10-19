@@ -1,6 +1,6 @@
-"""The seams of the brain: the plain data that crosses them, the two
-interfaces a backend implements, the cancel token every long call takes,
-and the deadline every search carries.
+"""The seams of the brain: the plain data that crosses them, the roles a
+model serves, the two interfaces a backend implements, the cancel token
+every long call takes, and the deadline every search carries.
 
 The core owns every contract rule. A backend only answers one question:
 "what do you see in this image" (a `Detector`) or "do this with the arm"
@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Optional, Protocol, Sequence
 
 Vec3 = tuple[float, float, float]
@@ -25,6 +26,17 @@ Region = tuple[float, float, float, float]
 class Refusal(Exception):
     """A goal the contracts say to refuse in the result, or a sequence that
     failed: `message` becomes the result's message and success is false."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class ExpectedFailure(Exception):
+    """A goal that failed the way the brain expects some goals to fail,
+    such as an error a model's provider returned: the goal completes as
+    failed with `message`, and its log line carries no traceback. Any other
+    exception is a fault, and its log line carries the traceback."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
@@ -50,6 +62,25 @@ class SearchTimeout(Exception):
     def __init__(self, budget_s: float) -> None:
         super().__init__(f"the search did not finish within {budget_s:g} s")
         self.budget_s = budget_s
+
+
+class Role(StrEnum):
+    """A part of the brain's work that a model does, as brain_model names
+    it, and the lane its goals run in: perception finds and names items
+    (scan_items, identify_item), manipulation moves them (grab_item,
+    drop_item, place_item)."""
+
+    PERCEPTION = "perception"
+    MANIPULATION = "manipulation"
+
+
+def parse_role(text: str, roles: Sequence[Role]) -> Role:
+    """The role `text` names among `roles`, the roles a brain has, or the
+    refusal that the brain runs no model for it."""
+    for role in roles:
+        if text == role.value:
+            return role
+    raise Refusal(f"this brain runs no model for the role '{text}'")
 
 
 @dataclass(frozen=True)
@@ -215,8 +246,9 @@ class Outcome:
 class Detector(Protocol):
     """The swappable piece of perception: a model that finds boxes in one
     RGB image. The core does everything around it: frames, depth, the
-    camera model, duplicate boxes, ids. `detect` and `load` may block; the
-    core runs each in a thread of its own.
+    camera model, duplicate boxes, ids. The core awaits `detect` on the
+    event loop, so a detector whose model blocks runs its compute through
+    `perceiver.in_daemon_thread`.
 
     One box per object: a detector that names one object twice, under one
     label or under two ("mug" and "cup"), returns one box for it. Only the
@@ -228,31 +260,22 @@ class Detector(Protocol):
 
     name: str
 
-    @property
-    def available(self) -> bool: ...
-
-    def load(self, model: str, gallery: str) -> None:
-        """`model` is the perception_model parameter, the identifier of a
-        model the backend reads; `gallery` the perception_gallery parameter,
-        the name of an enrolment set the node ships, or empty. Each backend
-        says what it makes of them, and fails the load naming a value it
-        does not take."""
+    def why_unavailable(self) -> str:
+        """Why a search is refused now, in a few words, or "" when the
+        detector can search: a model still loading, a load that failed, or
+        no model at all."""
         ...
 
-    def set_vocabulary(self, phrases: Sequence[str]) -> None:
-        """The labels to look for. Empty means the detector's own
-        vocabulary, which is what a scan asks for."""
-        ...
-
-    def detect(self, image, deadline: Deadline) -> list[Box]:
-        """`image` is an H x W x 3 uint8 RGB array. The detector checks
-        `deadline` between its stages and raises `SearchTimeout` once it has
-        passed."""
+    async def detect(self, image, phrases: Sequence[str], deadline: Deadline) -> list[Box]:
+        """`image` is an H x W x 3 uint8 RGB array, `phrases` the labels to
+        look for: empty means the detector's own vocabulary, which is what a
+        scan asks for. The detector checks `deadline` between its stages and
+        raises `SearchTimeout` once it has passed."""
         ...
 
     def scan_coverage(self) -> Coverage:
-        """The labels a scan, a search with the empty vocabulary, can name;
-        nothing while the backend is not loaded."""
+        """The labels a scan, a search with no phrases, can name; nothing
+        while the detector cannot search."""
         ...
 
 
@@ -263,8 +286,10 @@ class Manipulator(Protocol):
 
     name: str
 
-    @property
-    def available(self) -> bool: ...
+    def why_unavailable(self) -> str:
+        """Why a manipulation goal is refused now, in a few words, or ""
+        when the manipulator can move."""
+        ...
 
     async def start(self, robot) -> None: ...
 

@@ -5,7 +5,10 @@ import asyncio
 import pytest
 
 from brain_core.ports import Cancelled, Refusal
-from brain_core.sequencer import MANIPULATION, PERCEPTION, Sequencer
+from brain_core.ports import Role
+from brain_core.sequencer import Sequencer
+
+PERCEPTION, MANIPULATION = Role.PERCEPTION, Role.MANIPULATION
 
 
 async def test_a_second_sequence_in_a_lane_is_refused_by_name():
@@ -69,3 +72,40 @@ async def test_a_callers_cancel_is_marked_as_such():
     await sequencer.cancel(job, "cancelled by the caller", by_caller=True)
     assert job.cancel.cancelled and job.cancel.by_caller
     assert job.elapsed_s(now_ns=2_500_000_000) == 2.5
+
+
+async def test_a_lane_less_job_holds_no_lane_and_is_refused_once_closed():
+    sequencer = Sequencer()
+    switch = sequencer.start(None, "switch_model", now_ns=0)
+    assert switch.lane is None
+    # Both lanes stay free beside it.
+    sequencer.finish(sequencer.start(MANIPULATION, "grab_item", now_ns=1))
+    sequencer.finish(sequencer.start(PERCEPTION, "scan_items", now_ns=1))
+    sequencer.close()
+    with pytest.raises(Refusal, match="^the node is shutting down$"):
+        sequencer.start(None, "switch_model", now_ns=2)
+    sequencer.finish(switch)
+    assert switch.done.is_set()
+
+
+async def test_stopping_the_lane_less_jobs_sets_each_token_and_waits_for_each():
+    stopped_lanes: list = []
+
+    async def stopper(lane) -> None:
+        stopped_lanes.append(lane)
+
+    sequencer = Sequencer(stopper=stopper)
+    jobs = [sequencer.start(None, "switch_model", now_ns=0) for _ in range(2)]
+
+    async def worker(job):
+        await job.cancel.wait()
+        assert (job.cancel.reason, job.cancel.by_caller) == ("aborted: the node is shutting down", False)
+        sequencer.finish(job)
+
+    workers = [asyncio.create_task(worker(job)) for job in jobs]
+    await asyncio.wait_for(sequencer.stop_laneless("aborted: the node is shutting down"), 1.0)
+    await asyncio.gather(*workers)
+    assert all(job.done.is_set() for job in jobs)
+    # A lane-less job has no lane to halt.
+    assert stopped_lanes == []
+    await asyncio.wait_for(sequencer.stop_laneless("again"), 1.0)

@@ -3,7 +3,7 @@ picture the scan looked at, in one result."""
 
 from __future__ import annotations
 
-from ..sequencer import PERCEPTION
+from ..ports import Role
 
 ZERO = dict(
     item_ids=[], labels=[], positions=[], confidences=[], regions=[], camera="", image_width=0, image_height=0,
@@ -18,8 +18,11 @@ async def run(brain, ctx) -> None:
     goal = ctx.request().data
 
     async def body(job) -> dict:
-        look = await brain.look(job, [], goal.timeout_s)
-        items = brain.state.remember(look.detections, brain.now(), coverage=brain.perceiver.detector.scan_coverage())
+        # One detector for the whole scan: the look and the coverage that
+        # says which unseen items it drops.
+        detector = brain.detector
+        look = await brain.look(job, detector, [], goal.timeout_s)
+        items = brain.state.remember(look.detections, brain.now(), coverage=detector.scan_coverage())
         return dict(
             item_ids=[item.item_id for item in items],
             labels=[item.label for item in items],
@@ -32,4 +35,4 @@ async def run(brain, ctx) -> None:
             frame_timestamp=look.frame_timestamp,
         )
 
-    await brain.run_guarded(ctx, PERCEPTION, "scan_items", body, ZERO)
+    await brain.run_guarded(ctx, Role.PERCEPTION, "scan_items", body, ZERO)

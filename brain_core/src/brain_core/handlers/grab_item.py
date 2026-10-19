@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from ..ports import Refusal
-from ..sequencer import MANIPULATION
+from ..ports import Refusal, Role
 
 ZERO = dict(gripper_name="", item_id="")
 
@@ -12,12 +11,13 @@ async def run(brain, ctx) -> None:
     goal = ctx.request().data
 
     async def body(job) -> dict:
+        manipulator = brain.manipulator
         state = brain.state
         # The item first: its position decides which free gripper suits it.
         known = state.item_to_grab(goal.item_id) if goal.item_id else None
         near = known.position if known is not None else tuple(goal.position)
         gripper = state.gripper_for_grab(goal.gripper_name, near)
-        manipulator = brain.manipulator_or_refuse()
+        brain.manipulator_or_refuse(manipulator)
         item = known
         if item is None:
             orientation = tuple(goal.orientation) if goal.orientation is not None else None
@@ -29,4 +29,4 @@ async def run(brain, ctx) -> None:
         state.set_held(gripper, item.item_id)
         return dict(gripper_name=gripper.name, item_id=item.item_id)
 
-    await brain.run_guarded(ctx, MANIPULATION, "grab_item", body, ZERO)
+    await brain.run_guarded(ctx, Role.MANIPULATION, "grab_item", body, ZERO)

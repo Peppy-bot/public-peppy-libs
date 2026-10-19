@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from ..ports import Pose, Refusal
-from ..sequencer import MANIPULATION
+from ..ports import Pose, Refusal, Role
 
 ZERO = dict(gripper_name="", item_id="", final_position=[0.0, 0.0, 0.0])
 
@@ -12,9 +11,10 @@ async def run(brain, ctx) -> None:
     goal = ctx.request().data
 
     async def body(job) -> dict:
+        manipulator = brain.manipulator
         state = brain.state
         gripper = state.holder(goal.gripper_name)
-        manipulator = brain.manipulator_or_refuse()
+        brain.manipulator_or_refuse(manipulator)
         orientation = tuple(goal.orientation) if goal.orientation is not None else None
         pose = Pose(tuple(goal.position), orientation)
         outcome = await manipulator.place(gripper, pose, job.cancel)
@@ -25,4 +25,4 @@ async def run(brain, ctx) -> None:
         item_id = state.clear_held_placed(gripper, final, pose.orientation)
         return dict(gripper_name=gripper.name, item_id=item_id, final_position=list(final))
 
-    await brain.run_guarded(ctx, MANIPULATION, "place_item", body, ZERO)
+    await brain.run_guarded(ctx, Role.MANIPULATION, "place_item", body, ZERO)

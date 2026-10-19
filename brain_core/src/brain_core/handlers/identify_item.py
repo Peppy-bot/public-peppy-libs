@@ -4,8 +4,7 @@ looked at."""
 
 from __future__ import annotations
 
-from ..ports import Coverage, Refusal
-from ..sequencer import PERCEPTION
+from ..ports import Coverage, Refusal, Role
 from ..state import best_match
 
 ZERO = dict(
@@ -19,8 +18,9 @@ async def run(brain, ctx) -> None:
     description = goal.description.strip()
 
     async def body(job) -> dict:
+        detector = brain.detector
         phrases = [description] if description else []
-        look = await brain.look(job, phrases, goal.timeout_s)
+        look = await brain.look(job, detector, phrases, goal.timeout_s)
         best = best_match(look.detections, description)
         if best is None:
             if description:
@@ -43,4 +43,4 @@ async def run(brain, ctx) -> None:
             frame_timestamp=look.frame_timestamp,
         )
 
-    await brain.run_guarded(ctx, PERCEPTION, "identify_item", body, ZERO, asked=f"'{description}'")
+    await brain.run_guarded(ctx, Role.PERCEPTION, "identify_item", body, ZERO, asked=f"'{description}'")

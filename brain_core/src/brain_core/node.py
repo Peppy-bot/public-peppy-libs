@@ -42,7 +42,7 @@ async def setup(
     node_runner.on_shutdown(brain.shutdown)
     logger.info(
         "grippers %s, perception '%s', manipulation '%s'",
-        brain.state.gripper_names(), brain.perceiver.detector.name, brain.manipulator.name,
+        brain.state.gripper_names(), brain.detector.name, brain.manipulator.name,
     )
     # Per-goal tasks live here so a goal in flight is never collected
     # before it completes.

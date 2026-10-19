@@ -4,7 +4,7 @@ itself, so it never appears in get_state."""
 
 from __future__ import annotations
 
-from ..sequencer import MANIPULATION
+from ..ports import Role
 
 
 async def run(brain, ctx) -> None:
@@ -12,14 +12,15 @@ async def run(brain, ctx) -> None:
     started = brain.now()
     reason = goal.reason.strip() or "aborted"
     try:
-        stopped = await brain.sequencer.stop(MANIPULATION, f"aborted: {reason}")
+        stopped = await brain.sequencer.stop(Role.MANIPULATION, f"aborted: {reason}")
     except Exception as error:
-        await ctx.complete(success=False, message=f"abort failed: {error!r}", aborted_action="", action_time=0.0)
+        await ctx.complete(
+            success=False, message=f"abort failed: {error!r}", aborted_action="", action_time=brain.elapsed_s(started)
+        )
         return
-    elapsed = max(0.0, (brain.now() - started) / 1e9)
     await ctx.complete(
         success=True,
         message="" if stopped else "no sequence was running",
         aborted_action=stopped or "",
-        action_time=elapsed,
+        action_time=brain.elapsed_s(started),
     )
