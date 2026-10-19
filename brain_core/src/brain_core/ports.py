@@ -303,3 +303,36 @@ class Manipulator(Protocol):
         """Halt whatever is in flight; the running call returns soon
         after, reporting it was stopped."""
         ...
+
+
+class ModelSource(Protocol):
+    """Where a brain's models come from: the node's own, under the names it
+    gives them. The core asks it which roles the brain has, which names
+    each role accepts, the entry a name stands for, and the backend an
+    entry runs: a `Detector` for perception, a `Manipulator` for
+    manipulation. An entry is the source's own type; the core passes it
+    from `offered` to `start` or `prepare` and reads nothing in it."""
+
+    def roles(self) -> Sequence[Role]:
+        """The roles the brain has, in the order get_model lists them."""
+        ...
+
+    def names(self, role: Role) -> Sequence[str]:
+        """The models `role` accepts, what list_models gives for it."""
+        ...
+
+    def offered(self, role: Role, name: str) -> object:
+        """The entry of the model `name` for `role`, or a Refusal in the
+        brain's own words when the role does not offer it."""
+        ...
+
+    def start(self, entry: object) -> object:
+        """The backend of `entry` at the node's start, with no network
+        call; a ValueError names what stops the node."""
+        ...
+
+    async def prepare(self, entry: object) -> object:
+        """The backend of `entry` for a switch, checked before the switch
+        hands it over: a hosted model is reached once. A Refusal or an
+        ExpectedFailure says why it cannot serve."""
+        ...

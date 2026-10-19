@@ -8,10 +8,8 @@ from types import SimpleNamespace
 
 import fake_peppygen
 import pytest
-from conftest import PARAMS, FakeCtx, FakeDetector, FakeManipulator, FakeToken, camera_poses, records_of
+from conftest import FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, camera_poses, make_brain, records_of
 from fake_peppygen import fake_bindings
-
-from brain_core.brain import Brain
 from brain_core.handlers import abort
 from brain_core.perception.frames import FrameStore
 from brain_core.ports import ExpectedFailure, Refusal, Role
@@ -36,7 +34,7 @@ async def test_the_geometry_learners_give_the_perceiver_its_camera_and_the_brain
         get_depth_intrinsics=answering(depth),
         get_camera_poses=answering(camera_poses()),
     )
-    brain = Brain(SimpleNamespace(**PARAMS), None, bindings, FakeDetector(), FakeManipulator())
+    brain = await make_brain(bindings=bindings)
     assert not brain.perceiver.camera.ready
     # The camera slot is vacant, so the frame follower returns at once; the
     # two learners return once they have their answer.
@@ -48,30 +46,6 @@ async def test_the_geometry_learners_give_the_perceiver_its_camera_and_the_brain
     assert not hasattr(brain, "camera") and not hasattr(brain, "frames")
 
 
-class Ticks:
-    """A clock the test advances by hand, in nanoseconds; with `step_ns`,
-    it also moves on by that much at every reading."""
-
-    def __init__(self, step_ns: int = 0) -> None:
-        self.now_ns = 1_000_000_000
-        self.step_ns = step_ns
-
-    def __call__(self) -> int:
-        reading = self.now_ns
-        self.now_ns += self.step_ns
-        return reading
-
-
-def make_brain(ticks: Ticks, *, detector=None, manipulator=None) -> Brain:
-    from brain_core.manipulation.none import NoneManipulator
-    from brain_core.perception.none import NoneDetector
-
-    return Brain(
-        SimpleNamespace(**PARAMS), None, fake_bindings(), detector or NoneDetector(), manipulator or NoneManipulator(),
-        now=ticks, run_token="t0",
-    )
-
-
 GRAB_ZERO = dict(gripper_name="", item_id="")
 
 
@@ -81,7 +55,7 @@ def grab_ctx() -> FakeCtx:
 
 async def test_action_time_is_the_elapsed_time_whatever_the_outcome():
     ticks = Ticks()
-    brain = make_brain(ticks)
+    brain = await make_brain(ticks=ticks)
 
     def taking(seconds: float, then):
         async def body(job) -> dict:
@@ -121,7 +95,7 @@ async def test_action_time_is_the_elapsed_time_whatever_the_outcome():
 async def test_a_cancelled_or_aborted_goal_reports_its_elapsed_time():
     ticks = Ticks()
     manipulator = FakeManipulator(wait_for_stop=True)
-    brain = make_brain(ticks, manipulator=manipulator)
+    brain = await make_brain(ticks=ticks, manipulator=manipulator)
 
     async def grab(job) -> dict:
         outcome = await manipulator.grab(SimpleNamespace(item_id="cup"), SimpleNamespace(name="left_gripper"), 0.0, job.cancel)
@@ -147,7 +121,7 @@ async def test_a_cancelled_or_aborted_goal_reports_its_elapsed_time():
 
 
 async def test_an_expected_failure_completes_as_failed_with_one_line_and_no_traceback(caplog):
-    brain = make_brain(Ticks())
+    brain = await make_brain()
 
     async def body(job) -> dict:
         job.notes.append("frame 3, no box")
@@ -177,7 +151,7 @@ class CountingFrames(FrameStore):
 
 async def test_the_detectors_reason_comes_before_any_frame_is_read_then_the_perceivers():
     detector = FakeDetector(unavailable="perception_model 'sam3_siglip' is still loading")
-    brain = make_brain(Ticks(), detector=detector)
+    brain = await make_brain(detector=detector)
     frames = CountingFrames()
     brain.perceiver.frames = frames
     job = brain.sequencer.start(Role.PERCEPTION, "scan_items", 0)
@@ -191,7 +165,7 @@ async def test_the_detectors_reason_comes_before_any_frame_is_read_then_the_perc
 
 
 async def test_a_lane_less_job_holds_no_lane_and_a_shutdown_aborts_it():
-    brain = make_brain(Ticks())
+    brain = await make_brain()
     began = asyncio.Event()
 
     async def wait_for_a_stop(job) -> dict:
@@ -217,7 +191,7 @@ async def test_a_lane_less_job_holds_no_lane_and_a_shutdown_aborts_it():
 
 
 async def test_a_lane_less_job_cancelled_by_its_caller_completes_as_cancelled():
-    brain = make_brain(Ticks())
+    brain = await make_brain()
     began = asyncio.Event()
 
     async def wait_for_a_stop(job) -> dict:

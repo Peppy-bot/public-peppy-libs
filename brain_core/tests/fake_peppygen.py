@@ -74,6 +74,11 @@ class abort(_ExposedAction):
         async def complete(self, *, success, message, aborted_action, action_time): ...
 
 
+class switch_model(_ExposedAction):
+    class GoalContext:
+        async def complete(self, *, success, message, role, model, action_time): ...
+
+
 class get_state:
     SERVICE_NAME = "get_state"
 

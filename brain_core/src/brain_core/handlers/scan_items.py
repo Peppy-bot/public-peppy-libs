@@ -20,7 +20,7 @@ async def run(brain, ctx) -> None:
     async def body(job) -> dict:
         # One detector for the whole scan: the look and the coverage that
         # says which unseen items it drops.
-        detector = brain.detector
+        detector = brain.models.current(Role.PERCEPTION)
         look = await brain.look(job, detector, [], goal.timeout_s)
         items = brain.state.remember(look.detections, brain.now(), coverage=detector.scan_coverage())
         return dict(

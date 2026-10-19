@@ -11,7 +11,7 @@ async def run(brain, ctx) -> None:
     goal = ctx.request().data
 
     async def body(job) -> dict:
-        manipulator = brain.manipulator
+        manipulator = brain.models.current(Role.MANIPULATION)
         state = brain.state
         # The item first: its position decides which free gripper suits it.
         known = state.item_to_grab(goal.item_id) if goal.item_id else None

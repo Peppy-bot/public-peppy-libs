@@ -1,5 +1,6 @@
-"""The brain assembled: the core parts, the two backends the node passes
-in, and the one way every action runs a sequence and completes its goal.
+"""The brain assembled: the core parts, the model of each role from the
+node's model source, and the one way every action runs a sequence and
+completes its goal.
 
 `run_guarded` is where the contracts' result rules are applied for every
 goal that runs a sequence: a refusal or a failure completes with success
@@ -24,7 +25,8 @@ from .perception.camera import CameraModel
 from .perception.frames import FrameStore
 from .perception.geometry import learn_camera_pose, learn_intrinsics
 from .perception.perceiver import Look, Perceiver
-from .ports import Cancelled, Detector, ExpectedFailure, Manipulator, Refusal, Role
+from .models import Models
+from .ports import Cancelled, Detector, ExpectedFailure, Manipulator, ModelSource, Refusal, Role
 from .robot import Robot
 from .sequencer import Job, Sequencer
 from .state import State, new_run_token
@@ -42,8 +44,7 @@ class Brain:
         params,
         node_runner,
         bindings: Bindings,
-        detector: Detector,
-        manipulator: Manipulator,
+        source: ModelSource,
         *,
         now: Optional[Callable[[], int]] = None,
         run_token: Optional[str] = None,
@@ -56,9 +57,8 @@ class Brain:
         # The perceiver alone holds the frames and the camera model: the
         # geometry learners give it each new camera model.
         self.perceiver = Perceiver(FrameStore(), CameraModel())
-        self.detector: Detector = detector
-        self.manipulator: Manipulator = manipulator
         self.sequencer = Sequencer(stopper=self._stop_lane)
+        self.models = Models(source, self.sequencer, self.robot)
         self._now = now or bindings.clock.now_ns
 
     def now(self) -> int:
@@ -69,8 +69,12 @@ class Brain:
         return max(0.0, (self.now() - started_ns) / 1e9)
 
     async def start(self) -> None:
-        """Hands the manipulator the robot, once."""
-        await self.manipulator.start(self.robot)
+        """Sets the model of each role the parameters name, once. A
+        ValueError names what stops the node."""
+        await self.models.start({
+            Role.PERCEPTION: self.params.perception_model,
+            Role.MANIPULATION: self.params.manipulation_model,
+        })
 
     def background(self, token) -> list[asyncio.Task]:
         """The loops that run beside the action loops: the camera follower,
@@ -120,8 +124,10 @@ class Brain:
         return manipulator
 
     async def _stop_lane(self, lane: Role) -> None:
+        # The manipulation model is the one the running goal read: the lane
+        # rule keeps a switch from changing it while the goal runs.
         if lane == Role.MANIPULATION:
-            await self.manipulator.stop()
+            await self.models.current(Role.MANIPULATION).stop()
             await self.robot.stop()
 
     async def run_guarded(self, ctx, lane: Optional[Role], action: str, body: Body, zero: dict, asked: str = "") -> None:

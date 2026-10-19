@@ -18,7 +18,7 @@ async def run(brain, ctx) -> None:
     description = goal.description.strip()
 
     async def body(job) -> dict:
-        detector = brain.detector
+        detector = brain.models.current(Role.PERCEPTION)
         phrases = [description] if description else []
         look = await brain.look(job, detector, phrases, goal.timeout_s)
         best = best_match(look.detections, description)

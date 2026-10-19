@@ -11,7 +11,7 @@ async def run(brain, ctx) -> None:
     goal = ctx.request().data
 
     async def body(job) -> dict:
-        manipulator = brain.manipulator
+        manipulator = brain.models.current(Role.MANIPULATION)
         state = brain.state
         gripper = state.holder(goal.gripper_name)
         outcome = await brain.manipulator_or_refuse(manipulator).drop(gripper, job.cancel)

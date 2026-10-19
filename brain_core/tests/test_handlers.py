@@ -4,14 +4,12 @@ log, with no router and no robot."""
 
 import asyncio
 import logging
-from types import SimpleNamespace
 
 import pytest
 
-from conftest import CAMERA_16X12, PARAMS, FakeCtx, FakeDetector, FakeManipulator, depth_frame, records_of, rgb_frame
+from conftest import CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, Ticks, depth_frame, make_brain, records_of, rgb_frame
 from fake_peppygen import abort as abort_action
 from fake_peppygen import drop_item as drop_action
-from fake_peppygen import fake_bindings
 from fake_peppygen import grab_item as grab_action
 from fake_peppygen import identify_item as identify_action
 from fake_peppygen import place_item as place_action
@@ -19,27 +17,7 @@ from fake_peppygen import scan_items as scan_action
 
 from brain_core.brain import Brain
 from brain_core.handlers import abort, drop_item, get_state, grab_item, identify_item, place_item, scan_items
-from brain_core.manipulation.none import NoneManipulator
-from brain_core.perception.none import NoneDetector
 from brain_core.ports import Box, Coverage, SearchTimeout
-
-
-class Ticks:
-    """A clock the test advances by hand, in nanoseconds."""
-
-    def __init__(self) -> None:
-        self.now_ns = 1_000_000_000
-
-    def __call__(self) -> int:
-        return self.now_ns
-
-
-def make_brain(*, detector=None, manipulator=None, ticks=None) -> Brain:
-    params = SimpleNamespace(**PARAMS)
-    return Brain(
-        params, None, fake_bindings(), detector or NoneDetector(), manipulator or NoneManipulator(),
-        now=ticks or Ticks(), run_token="t0",
-    )
 
 
 def with_frames(brain: Brain, depth_m: float = 1.0) -> None:
@@ -95,7 +73,7 @@ def lines(log) -> list[str]:
 
 
 async def test_get_state_starts_idle_with_the_configured_grippers():
-    brain = make_brain()
+    brain = await make_brain()
     response = state_of(brain)
     assert response.current_action == ""
     assert response.current_action_elapsed_s == 0.0
@@ -105,7 +83,7 @@ async def test_get_state_starts_idle_with_the_configured_grippers():
 
 
 async def test_scan_and_grab_are_refused_without_backends_but_the_rules_still_speak_first():
-    brain = make_brain()
+    brain = await make_brain()
     ctx = scan_goal()
     await scan_items.run(brain, ctx)
     assert ctx.completed["success"] is False
@@ -135,7 +113,7 @@ async def test_scan_then_identify_then_grab_by_id_then_place():
     detector = FakeDetector([Box("cup", 0.9, 7, 5, 9, 7), Box("banana", 0.7, 1, 1, 3, 3)])
     manipulator = FakeManipulator()
     ticks = Ticks()
-    brain = make_brain(detector=detector, manipulator=manipulator, ticks=ticks)
+    brain = await make_brain(detector=detector, manipulator=manipulator, ticks=ticks)
     with_frames(brain, depth_m=1.0)
 
     ctx = scan_goal()
@@ -187,7 +165,7 @@ async def test_scan_then_identify_then_grab_by_id_then_place():
 async def test_a_grab_of_an_item_a_gripper_holds_is_refused_naming_the_gripper():
     detector = FakeDetector([Box("cup", 0.9, 7, 5, 9, 7)])
     manipulator = FakeManipulator()
-    brain = make_brain(detector=detector, manipulator=manipulator)
+    brain = await make_brain(detector=detector, manipulator=manipulator)
     with_frames(brain)
     await scan_items.run(brain, scan_goal())
     await grab_item.run(brain, grab_goal(gripper_name="left_gripper", item_id="cup_1-t0"))
@@ -206,7 +184,7 @@ async def test_a_grab_of_an_item_a_gripper_holds_is_refused_naming_the_gripper()
 
 async def test_a_grab_by_pose_mints_an_id_and_a_failed_grab_changes_nothing():
     manipulator = FakeManipulator(fail="nothing grasped")
-    brain = make_brain(manipulator=manipulator)
+    brain = await make_brain(manipulator=manipulator)
     ctx = grab_goal(gripper_name="right_gripper", position=[0.5, -0.1, 0.7])
     await grab_item.run(brain, ctx)
     assert ctx.completed["success"] is False and ctx.completed["message"] == "nothing grasped"
@@ -227,7 +205,7 @@ async def test_a_grab_by_pose_mints_an_id_and_a_failed_grab_changes_nothing():
 
 async def test_a_search_under_other_words_returns_the_scans_id():
     detector = FakeDetector([Box("mustard bottle", 0.9, 7, 5, 9, 7)])
-    brain = make_brain(detector=detector)
+    brain = await make_brain(detector=detector)
     with_frames(brain)
     scan = scan_goal()
     await scan_items.run(brain, scan)
@@ -247,7 +225,7 @@ async def test_a_description_names_whole_words_only():
     # A scan under the vocabulary returns general names; a description
     # that shares letters with one of them, or only stopwords, names none.
     detector = FakeDetector([Box("thermos", 0.9, 7, 5, 9, 7), Box("candle", 0.8, 1, 1, 3, 3), Box("feather", 0.7, 4, 4, 6, 6)])
-    brain = make_brain(detector=detector)
+    brain = await make_brain(detector=detector)
     with_frames(brain)
     for description in ("the coffee can please", "can", "the mug"):
         ctx = identify_goal(description)
@@ -261,7 +239,7 @@ async def test_a_description_names_whole_words_only():
 
 async def test_a_scan_keeps_an_item_only_a_description_finds():
     detector = FakeDetector([Box("cup", 0.9, 7, 5, 9, 7)], coverage=Coverage(frozenset({"cup"})))
-    brain = make_brain(detector=detector, manipulator=FakeManipulator())
+    brain = await make_brain(detector=detector, manipulator=FakeManipulator())
     with_frames(brain)
     await scan_items.run(brain, scan_goal())
 
@@ -282,7 +260,7 @@ async def test_a_scan_keeps_an_item_only_a_description_finds():
 
 async def test_a_placed_item_keeps_its_id_in_the_next_scan():
     detector = FakeDetector([Box("cup", 0.9, 7, 5, 9, 7)])
-    brain = make_brain(detector=detector, manipulator=FakeManipulator())
+    brain = await make_brain(detector=detector, manipulator=FakeManipulator())
     with_frames(brain, depth_m=1.0)
     await scan_items.run(brain, scan_goal())
     await grab_item.run(brain, grab_goal(gripper_name="", item_id="cup_1-t0"))
@@ -301,7 +279,7 @@ async def test_a_placed_item_keeps_its_id_in_the_next_scan():
 
 
 async def test_identify_reports_nothing_found_as_a_failed_result():
-    brain = make_brain(detector=FakeDetector([Box("bowl", 0.9, 7, 5, 9, 7)]))
+    brain = await make_brain(detector=FakeDetector([Box("bowl", 0.9, 7, 5, 9, 7)]))
     with_frames(brain)
     ctx = identify_goal("cup")
     await identify_item.run(brain, ctx)
@@ -315,7 +293,7 @@ async def test_a_search_that_stops_at_its_deadline_is_a_failed_result_and_frees_
         async def detect(self, image, phrases, deadline):
             raise SearchTimeout(deadline.budget_s)
 
-    brain = make_brain(detector=TimingOut([Box("cup", 0.9, 7, 5, 9, 7)]))
+    brain = await make_brain(detector=TimingOut([Box("cup", 0.9, 7, 5, 9, 7)]))
     with_frames(brain)
     ctx = scan_goal(timeout_s=0.5)
     await scan_items.run(brain, ctx)
@@ -328,7 +306,7 @@ async def test_a_search_that_stops_at_its_deadline_is_a_failed_result_and_frees_
 async def test_one_manipulation_at_a_time_and_abort_stops_it_without_touching_holding():
     manipulator = FakeManipulator(wait_for_stop=True)
     ticks = Ticks()
-    brain = make_brain(manipulator=manipulator, ticks=ticks)
+    brain = await make_brain(manipulator=manipulator, ticks=ticks)
     first = grab_goal(gripper_name="left_gripper", position=[0.5, 0.1, 0.7])
     running = asyncio.create_task(grab_item.run(brain, first))
     await manipulator.begun()
@@ -360,7 +338,7 @@ async def test_one_manipulation_at_a_time_and_abort_stops_it_without_touching_ho
 
 async def test_a_callers_cancel_completes_the_goal_as_cancelled():
     manipulator = FakeManipulator(wait_for_stop=True)
-    brain = make_brain(manipulator=manipulator)
+    brain = await make_brain(manipulator=manipulator)
     ctx = grab_goal(gripper_name="left_gripper", position=[0.5, 0.1, 0.7])
     running = asyncio.create_task(grab_item.run(brain, ctx))
     await manipulator.begun()
@@ -376,7 +354,7 @@ async def test_a_callers_cancel_completes_the_goal_as_cancelled():
 async def test_a_search_may_run_beside_a_manipulation():
     detector = FakeDetector([Box("cup", 0.9, 7, 5, 9, 7)])
     manipulator = FakeManipulator(wait_for_stop=True)
-    brain = make_brain(detector=detector, manipulator=manipulator)
+    brain = await make_brain(detector=detector, manipulator=manipulator)
     with_frames(brain)
     grab = grab_goal(gripper_name="left_gripper", position=[0.5, 0.1, 0.7])
     running = asyncio.create_task(grab_item.run(brain, grab))
@@ -391,7 +369,7 @@ async def test_a_search_may_run_beside_a_manipulation():
 
 async def test_shutdown_stops_the_running_sequence_as_aborted():
     manipulator = FakeManipulator(wait_for_stop=True)
-    brain = make_brain(manipulator=manipulator)
+    brain = await make_brain(manipulator=manipulator)
     ctx = grab_goal(gripper_name="left_gripper", position=[0.5, 0.1, 0.7])
     running = asyncio.create_task(grab_item.run(brain, ctx))
     await manipulator.begun()
@@ -407,7 +385,7 @@ async def test_shutdown_stops_the_running_sequence_as_aborted():
 
 async def test_a_goal_that_arrives_once_the_shutdown_began_is_refused():
     manipulator = FakeManipulator(wait_for_stop=True)
-    brain = make_brain(detector=FakeDetector([Box("cup", 0.9, 7, 5, 9, 7)]), manipulator=manipulator)
+    brain = await make_brain(detector=FakeDetector([Box("cup", 0.9, 7, 5, 9, 7)]), manipulator=manipulator)
     with_frames(brain)
     running = asyncio.create_task(grab_item.run(brain, grab_goal(gripper_name="left_gripper", position=[0.5, 0.1, 0.7])))
     await manipulator.begun()
@@ -431,7 +409,7 @@ async def test_a_search_logs_the_frame_it_looked_at_each_box_and_the_item_it_ret
             ticks.now_ns += 840_000_000
             return await super().detect(image, phrases, deadline)
 
-    brain = make_brain(detector=Slow([Box("cup", 0.9, 7, 5, 9, 7), Box("cup", 0.85, 7, 5, 9, 7.2)]), ticks=ticks)
+    brain = await make_brain(detector=Slow([Box("cup", 0.9, 7, 5, 9, 7), Box("cup", 0.85, 7, 5, 9, 7.2)]), ticks=ticks)
     with_frames(brain)
     # The frames were taken at 1.0 s of the brain's clock.
     ticks.now_ns = 1_250_000_000
@@ -448,10 +426,10 @@ async def test_a_search_logs_the_frame_it_looked_at_each_box_and_the_item_it_ret
 
 
 async def test_a_search_that_found_nothing_logs_whether_the_detector_boxed_anything(brain_log):
-    no_depth = make_brain(detector=FakeDetector([Box("cup", 0.9, 7, 5, 9, 7)]))
+    no_depth = await make_brain(detector=FakeDetector([Box("cup", 0.9, 7, 5, 9, 7)]))
     with_frames(no_depth, depth_m=0.0)
     await identify_item.run(no_depth, identify_goal("cup"))
-    no_box = make_brain(detector=FakeDetector())
+    no_box = await make_brain(detector=FakeDetector())
     with_frames(no_box)
     await identify_item.run(no_box, identify_goal(""))
     assert lines(brain_log) == [
@@ -461,7 +439,7 @@ async def test_a_search_that_found_nothing_logs_whether_the_detector_boxed_anyth
 
 
 async def test_a_search_refused_before_it_looked_logs_the_reason_alone(brain_log):
-    brain = make_brain(detector=FakeDetector([Box("cup", 0.9, 7, 5, 9, 7)]))
+    brain = await make_brain(detector=FakeDetector([Box("cup", 0.9, 7, 5, 9, 7)]))
     await identify_item.run(brain, identify_goal("  cup "))
     assert lines(brain_log) == ["identify_item 'cup' refused after 0.00 s: no perception source: no camera frame received"]
 
@@ -471,7 +449,7 @@ async def test_a_search_that_failed_logs_its_traceback(brain_log):
         async def detect(self, image, phrases, deadline):
             raise RuntimeError("the GPU is gone")
 
-    brain = make_brain(detector=Broken())
+    brain = await make_brain(detector=Broken())
     with_frames(brain)
     ctx = scan_goal()
     await scan_items.run(brain, ctx)
@@ -485,7 +463,7 @@ async def test_a_search_that_failed_logs_its_traceback(brain_log):
 async def test_a_manipulation_goal_logs_how_it_ended(brain_log):
     manipulator = FakeManipulator(wait_for_stop=True)
     ticks = Ticks()
-    brain = make_brain(manipulator=manipulator, ticks=ticks)
+    brain = await make_brain(manipulator=manipulator, ticks=ticks)
     first = grab_goal(gripper_name="left_gripper", position=[0.5, 0.1, 0.7])
     running = asyncio.create_task(grab_item.run(brain, first))
     await manipulator.begun()

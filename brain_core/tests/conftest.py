@@ -15,13 +15,16 @@ from typing import Iterator, Optional, Sequence
 import numpy as np
 import pytest
 
+from brain_core.brain import Brain
+from brain_core.manipulation.none import NoneManipulator
 from brain_core.perception.camera import Intrinsics
-from brain_core.ports import Box, CancelToken, Coverage, Deadline, Gripper, Item, Outcome, Pose
+from brain_core.perception.none import NoneDetector
+from brain_core.ports import Box, CancelToken, Coverage, Deadline, Gripper, Item, Outcome, Pose, Refusal, Role
 
 PARAMS = {
     "limbs": "left_arm:left_gripper,right_arm:right_gripper",
-    "perception_model": "",
-    "perception_gallery": "",
+    "perception_model": "none",
+    "manipulation_model": "none",
     "camera_name": "chest",
 }
 
@@ -232,3 +235,90 @@ def depth_frame(depth_m: float, width: int = 16, height: int = 12, unit: float =
         height=height,
         frame=np.full((height, width), value, dtype="<u2").tobytes(),
     )
+
+
+class Ticks:
+    """A clock the test advances by hand, in nanoseconds; with `step_ns`,
+    it also moves on by that much at every reading."""
+
+    def __init__(self, step_ns: int = 0) -> None:
+        self.now_ns = 1_000_000_000
+        self.step_ns = step_ns
+
+    def __call__(self) -> int:
+        reading = self.now_ns
+        self.now_ns += self.step_ns
+        return reading
+
+
+class FakeSource:
+    """A brain's models as the test sets them: per role, the names it
+    offers and the backend of each. An entry is (role, name). `prepare`
+    waits on `gate` when the test sets one, and raises `failure` when the
+    test sets one; `preparing` resolves once a prepare has begun."""
+
+    def __init__(self, offers: dict) -> None:
+        self.offers = offers
+        self.started: list[tuple] = []
+        self.prepared: list[tuple] = []
+        self.gate: Optional[asyncio.Event] = None
+        self.failure: Optional[Exception] = None
+        self.preparing = asyncio.Event()
+
+    @classmethod
+    def of(cls, detector, manipulator, **more_perception) -> "FakeSource":
+        """A source that offers `detector` under its name, and the other
+        detectors `more_perception` names, for perception, and
+        `manipulator` under its name for manipulation."""
+        return cls({
+            Role.PERCEPTION: {detector.name: detector, **more_perception},
+            Role.MANIPULATION: {manipulator.name: manipulator},
+        })
+
+    def roles(self):
+        return tuple(self.offers)
+
+    def names(self, role):
+        return list(self.offers[role])
+
+    def offered(self, role, name):
+        if name not in self.offers[role]:
+            raise Refusal(f"'{name}' is not a {role} model here; see list_models")
+        return (role, name)
+
+    def start(self, entry):
+        self.started.append(entry)
+        role, name = entry
+        return self.offers[role][name]
+
+    async def prepare(self, entry):
+        self.prepared.append(entry)
+        self.preparing.set()
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.failure is not None:
+            raise self.failure
+        role, name = entry
+        return self.offers[role][name]
+
+
+async def make_brain(
+    *, detector=None, manipulator=None, source=None, ticks=None, bindings=None, perception_model=None, manipulation_model=None
+) -> Brain:
+    """A started brain on fake bindings whose roles run `detector` and
+    `manipulator`, the none backends when not given, from `source` or from
+    a FakeSource that offers those two. The model parameters name the two,
+    unless the test names others."""
+    from fake_peppygen import fake_bindings
+
+    detector = detector or NoneDetector()
+    manipulator = manipulator or NoneManipulator()
+    source = source or FakeSource.of(detector, manipulator)
+    params = SimpleNamespace(**{
+        **PARAMS,
+        "perception_model": perception_model or detector.name,
+        "manipulation_model": manipulation_model or manipulator.name,
+    })
+    brain = Brain(params, None, bindings or fake_bindings(), source, now=ticks or Ticks(), run_token="t0")
+    await brain.start()
+    return brain

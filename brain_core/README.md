@@ -19,7 +19,8 @@ brain_core @ git+https://github.com/Peppy-bot/public-peppy-libs.git@<commit>#sub
 ```
 
 Its entry point builds `Bindings` from its peppygen package and hands them to
-`brain_core.node.setup` with its two backends:
+`brain_core.node.setup` with its `ModelSource`, the models the node can run
+for each role:
 
 ```python
 from functools import partial
@@ -47,7 +48,7 @@ BINDINGS = Bindings(
 
 
 async def setup(params, node_runner):
-    return await node.setup(params, node_runner, BINDINGS, MyDetector(), MyManipulator())
+    return await node.setup(params, node_runner, BINDINGS, MyModels(params))
 
 
 def main() -> None:
@@ -55,21 +56,23 @@ def main() -> None:
     NodeBuilder().run(setup)
 ```
 
-The parameters the core reads are `limbs` and `camera_name`.
+The parameters the core reads are `limbs`, `camera_name`, and the starting
+model of each role, `perception_model` and `manipulation_model`.
 
 ## The parts
 
 | Module | What it holds |
 |---|---|
-| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Outcome`, `Pose`), the roles a model serves (`Role`, `parse_role`), `Refusal`, `ExpectedFailure`, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, and the two ports a backend implements: `Detector` (an awaited `detect`, and `why_unavailable`) and `Manipulator` |
+| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Outcome`, `Pose`), the roles a model serves (`Role`, `parse_role`), `Refusal`, `ExpectedFailure`, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the two ports a backend implements, `Detector` (an awaited `detect`, and `why_unavailable`) and `Manipulator`, and the port a node implements, `ModelSource` |
 | `words` | The one rule for whether a description names a label |
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
 | `state` | The grippers, the known items and their ids, and the rules that resolve a goal's names |
 | `sequencer` | One sequence at a time per lane (a lane is a `Role`), lane-less jobs beside them, and the way to stop the ones that run |
 | `robot` | The proxy to the backbone: one limb_motion goal per move, and `stop`, which cancels every move in flight |
+| `models` | The model of each role, and the switch rule: a goal uses only its own role's model, and a switch never changes the model of a goal that runs |
 | `brain` | The parts assembled, and `run_guarded`, where every goal is admitted, completed the way the contract asks and logged |
 | `handlers` | One module per exposed member |
-| `serve`, `waiting` | The loop of an exposed action or service, and the one way a loop waits on the node's token |
+| `serve`, `waiting` | The loop of an exposed action or service, and the one way a part waits unless a stop comes first |
 | `perception` | The `Perceiver` (frames in, world detections out), the frame store, the camera model and the geometry learners, `in_daemon_thread` for a detector whose model blocks, and `NoneDetector` |
 | `manipulation` | `NoneManipulator` |
 | `bindings`, `node` | The generated modules a node passes in, and the shared entry |

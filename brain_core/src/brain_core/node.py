@@ -1,7 +1,7 @@
 """The entry every brain node shares. Wiring only: build the brain with the
-node's generated modules and the backends the node selected, and start one
-loop per exposed member plus the camera follower. The rules live in the
-core, the moves and the model behind the two ports."""
+node's generated modules and its model source, and start one loop per
+exposed member plus the camera follower. The rules live in the core, the
+moves and the models behind the ports."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from .handlers import grab_item as grab_item_handler
 from .handlers import identify_item as identify_item_handler
 from .handlers import place_item as place_item_handler
 from .handlers import scan_items as scan_items_handler
-from .ports import Detector, Manipulator
+from .ports import ModelSource, Role
 from .serve import serve_action, serve_service
 
 logger = logging.getLogger(__name__)
@@ -29,20 +29,18 @@ async def setup(
     params,
     node_runner,
     bindings: Bindings,
-    detector: Detector,
-    manipulator: Manipulator,
+    source: ModelSource,
 ) -> list[asyncio.Task]:
     """A brain node's setup: `params` are the node's parameters, `bindings`
-    its generated modules, `detector` and `manipulator` the backends the
-    node selected."""
+    its generated modules, `source` where its models come from."""
     await bindings.clock.init(node_runner)
     token = node_runner.cancellation_token()
-    brain = Brain(params, node_runner, bindings, detector, manipulator)
+    brain = Brain(params, node_runner, bindings, source)
     await brain.start()
     node_runner.on_shutdown(brain.shutdown)
     logger.info(
         "grippers %s, perception '%s', manipulation '%s'",
-        brain.state.gripper_names(), brain.detector.name, brain.manipulator.name,
+        brain.state.gripper_names(), brain.models.current_name(Role.PERCEPTION), brain.models.current_name(Role.MANIPULATION),
     )
     # Per-goal tasks live here so a goal in flight is never collected
     # before it completes.

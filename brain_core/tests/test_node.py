@@ -6,7 +6,7 @@ import asyncio
 import logging
 from types import SimpleNamespace
 
-from conftest import PARAMS, FakeDetector, FakeManipulator, FakeToken, records_of
+from conftest import PARAMS, FakeDetector, FakeManipulator, FakeSource, FakeToken, records_of
 from fake_peppygen import fake_bindings
 
 from brain_core.node import configure_logging, setup
@@ -30,8 +30,10 @@ async def test_a_brain_node_boots_and_stops_on_its_token(caplog):
     runner = FakeRunner()
     bindings = fake_bindings()
     detector, manipulator = FakeDetector(), FakeManipulator()
+    source = FakeSource.of(detector, manipulator)
+    params = SimpleNamespace(**{**PARAMS, "perception_model": "fake", "manipulation_model": "fake"})
     with records_of(caplog, "brain_core.node") as log:
-        loops = await setup(SimpleNamespace(**PARAMS), runner, bindings, detector, manipulator)
+        loops = await setup(params, runner, bindings, source)
     assert bindings.clock.initialised_with is runner
     assert manipulator.robot is not None
     assert [record.getMessage() for record in log.records] == [
