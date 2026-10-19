@@ -95,6 +95,32 @@ class get_state:
         await asyncio.Event().wait()
 
 
+class get_model:
+    SERVICE_NAME = "get_model"
+
+    @dataclass
+    class Response:
+        roles: list[str]
+        models: list[str]
+
+    @staticmethod
+    async def handle_next_request(node_runner, handler):
+        await asyncio.Event().wait()
+
+
+class list_models:
+    SERVICE_NAME = "list_models"
+
+    @dataclass
+    class Response:
+        roles: list[str]
+        models: list[str]
+
+    @staticmethod
+    async def handle_next_request(node_runner, handler):
+        await asyncio.Event().wait()
+
+
 class ResultStatus(IntEnum):
     COMPLETED = 0
     CANCELLED = 1
@@ -236,6 +262,9 @@ def fake_bindings(**overrides) -> Bindings:
         place_item=place_item,
         abort=abort,
         get_state=get_state,
+        switch_model=switch_model,
+        get_model=get_model,
+        list_models=list_models,
     )
     modules.update(overrides)
     return Bindings(**modules)

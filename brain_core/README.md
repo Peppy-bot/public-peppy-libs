@@ -1,8 +1,8 @@
 # brain_core
 
-The code every brain node shares. A brain serves `item_perception:v1` and
-`item_manipulation:v1` over a robot that `limb_motion:v1` drives and a camera
-that `rgbd_camera:v1` streams. brain_core holds the contract rules (item ids,
+The code every brain node shares. A brain serves `item_perception:v1`,
+`item_manipulation:v1` and `brain_model:v1` over a robot that `limb_motion:v1`
+drives and a camera that `rgbd_camera:v1` streams. brain_core holds the contract rules (item ids,
 the gripper table, the lanes, the result rules), the robot proxy, the camera
 frames and geometry, and the loop of each exposed member. A node brings its
 generated peppygen modules and its backends, and calls `node.setup`.
@@ -31,8 +31,10 @@ from peppygen.consumed_services.camera import depth_stream_info
 from peppygen.consumed_services.camera_mounts import get_camera_poses
 from peppygen.consumed_services.geometry import get_color_intrinsics, get_depth_intrinsics
 from peppygen.consumed_topics.camera import depth_stream, video_stream
+from peppygen.exposed_actions.brain_model import switch_model
 from peppygen.exposed_actions.item_manipulation import abort, drop_item, grab_item, place_item
 from peppygen.exposed_actions.item_perception import identify_item, scan_items
+from peppygen.exposed_services.brain_model import get_model, list_models
 from peppygen.exposed_services.item_manipulation import get_state
 
 from brain_core import node
@@ -44,6 +46,7 @@ BINDINGS = Bindings(
     get_color_intrinsics=get_color_intrinsics, get_depth_intrinsics=get_depth_intrinsics,
     get_camera_poses=get_camera_poses, scan_items=scan_items, identify_item=identify_item,
     grab_item=grab_item, drop_item=drop_item, place_item=place_item, abort=abort, get_state=get_state,
+    switch_model=switch_model, get_model=get_model, list_models=list_models,
 )
 
 

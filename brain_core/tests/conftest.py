@@ -259,6 +259,7 @@ class FakeSource:
 
     def __init__(self, offers: dict) -> None:
         self.offers = offers
+        self.asked: list[tuple] = []
         self.started: list[tuple] = []
         self.prepared: list[tuple] = []
         self.gate: Optional[asyncio.Event] = None
@@ -282,6 +283,7 @@ class FakeSource:
         return list(self.offers[role])
 
     def offered(self, role, name):
+        self.asked.append((role, name))
         if name not in self.offers[role]:
             raise Refusal(f"'{name}' is not a {role} model here; see list_models")
         return (role, name)

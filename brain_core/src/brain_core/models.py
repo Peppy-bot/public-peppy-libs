@@ -53,8 +53,12 @@ class Models:
 
     async def start(self, names: Mapping[Role, str]) -> None:
         """Sets the model of each role at the node's start, `names` the
-        parameters that name them. A ValueError names a model a role does
-        not offer, and stops the node."""
+        parameters that name them. A ValueError stops the node: a source
+        without every role, since the brain serves the goals of both, or a
+        model a role does not offer."""
+        missing = [role.value for role in Role if role not in self._source.roles()]
+        if missing:
+            raise ValueError(f"the model source has no role {', '.join(missing)}: a brain runs a model for every role, 'none' included")
         for role in self._source.roles():
             name = names[role]
             try:

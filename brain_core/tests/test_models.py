@@ -9,7 +9,7 @@ import fake_peppygen
 import pytest
 from conftest import CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeSource, depth_frame, make_brain, rgb_frame
 
-from brain_core.handlers import abort, drop_item, grab_item, scan_items
+from brain_core.handlers import abort, drop_item, grab_item, scan_items, switch_model
 from brain_core.manipulation.none import NoneManipulator
 from brain_core.ports import Box, ExpectedFailure, Refusal, Role
 
@@ -67,14 +67,9 @@ async def brain_with(source: FakeSource, manipulation_model: str = "none"):
 
 
 def switch(brain, role: Role, name: str):
-    """A switch_model goal for `role` and the run of it, as the handler
-    runs it: a lane-less job whose body asks the models to switch."""
+    """A switch_model goal for `role`, and its run."""
     ctx = FakeCtx(fake_peppygen.switch_model, role=role.value, model=name)
-
-    async def body(job) -> dict:
-        return dict(role=role.value, model=await brain.models.switch(role, name, job))
-
-    return ctx, brain.run_guarded(ctx, None, "switch_model", body, SWITCH_ZERO)
+    return ctx, switch_model.run(brain, ctx)
 
 
 async def switched(brain, role: Role, name: str) -> FakeCtx:

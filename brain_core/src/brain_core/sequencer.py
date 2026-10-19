@@ -7,9 +7,10 @@ place_item. get_state reports the manipulation lane only; a running search
 never appears there, so a caller that reads "identify_item is running" is
 never talked out of a grab.
 
-A lane-less job runs beside both lanes and holds neither. It gets what a
-lane's job gets: the refusal once the sequencer is closed, a token a cancel
-sets, and the stop of a shutdown.
+A lane-less job runs beside both lanes and holds neither: switch_model,
+which checks the lane of its role itself (`Models.switch`). It gets what a
+lane's job gets: the refusal once the sequencer is closed, a token a
+cancel sets, and the stop of a shutdown.
 
 A stop is the same whether the caller cancelled its own goal or anyone
 sent abort: the job's token is set, the lane's stopper halts the backend

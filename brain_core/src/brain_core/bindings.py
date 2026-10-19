@@ -50,3 +50,9 @@ class Bindings:
     place_item: Any
     abort: Any
     get_state: Any
+
+    # brain_model:v1 (peppygen.exposed_actions.brain_model and
+    # peppygen.exposed_services.brain_model).
+    switch_model: Any
+    get_model: Any
+    list_models: Any

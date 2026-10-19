@@ -14,11 +14,14 @@ from .bindings import Bindings
 from .brain import Brain
 from .handlers import abort as abort_handler
 from .handlers import drop_item as drop_item_handler
+from .handlers import get_model as get_model_handler
 from .handlers import get_state as get_state_handler
 from .handlers import grab_item as grab_item_handler
 from .handlers import identify_item as identify_item_handler
+from .handlers import list_models as list_models_handler
 from .handlers import place_item as place_item_handler
 from .handlers import scan_items as scan_items_handler
+from .handlers import switch_model as switch_model_handler
 from .ports import ModelSource, Role
 from .serve import serve_action, serve_service
 
@@ -52,13 +55,19 @@ async def setup(
         (bindings.drop_item, drop_item_handler.run),
         (bindings.place_item, place_item_handler.run),
         (bindings.abort, abort_handler.run),
+        (bindings.switch_model, switch_model_handler.run),
     ]
     loops = [
         asyncio.create_task(serve_action(module, node_runner, token, goal_tasks, partial(run, brain)))
         for module, run in actions
     ]
-    loops.append(
-        asyncio.create_task(serve_service(bindings.get_state, node_runner, token, partial(get_state_handler.handle, brain)))
+    services = [
+        (bindings.get_state, get_state_handler.handle),
+        (bindings.get_model, get_model_handler.handle),
+        (bindings.list_models, list_models_handler.handle),
+    ]
+    loops.extend(
+        asyncio.create_task(serve_service(module, node_runner, token, partial(handle, brain))) for module, handle in services
     )
     loops.extend(brain.background(token))
     return loops
