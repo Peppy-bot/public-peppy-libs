@@ -43,13 +43,13 @@ def make_brain(*, detector=None, manipulator=None, ticks=None) -> Brain:
 
 
 def with_frames(brain: Brain, depth_m: float = 1.0) -> None:
-    brain.frames.add_color(rgb_frame(16, 12))
-    brain.frames.add_depth(depth_frame(depth_m, 16, 12))
-    brain.frames.depth_unit = 0.001
+    brain.perceiver.frames.add_color(rgb_frame(16, 12))
+    brain.perceiver.frames.add_depth(depth_frame(depth_m, 16, 12))
+    brain.perceiver.frames.depth_unit = 0.001
     # The camera has answered where its pixels point, a 90 degree lens, and
     # the robot where it stands: at the origin, looking along +Z.
     brain.perceiver.set_camera(
-        brain.camera.with_intrinsics(CAMERA_16X12).with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+        brain.perceiver.camera.with_intrinsics(CAMERA_16X12).with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
     )
 
 
@@ -403,6 +403,22 @@ async def test_shutdown_stops_the_running_sequence_as_aborted():
     assert state_of(brain).current_action == ""
     # Idle lanes make a shutdown a no-op.
     await asyncio.wait_for(brain.shutdown(), 1.0)
+
+
+async def test_a_goal_that_arrives_once_the_shutdown_began_is_refused():
+    manipulator = FakeManipulator(wait_for_stop=True)
+    brain = make_brain(detector=FakeDetector([Box("cup", 0.9, 7, 5, 9, 7)]), manipulator=manipulator)
+    with_frames(brain)
+    running = asyncio.create_task(grab_item.run(brain, grab_goal(gripper_name="left_gripper", position=[0.5, 0.1, 0.7])))
+    await manipulator.begun()
+    await asyncio.wait_for(brain.shutdown(), 1.0)
+    await running
+    # The lanes are free again, and still every goal is refused.
+    for run, ctx in ((grab_item.run, grab_goal(gripper_name="right_gripper", position=[0.5, -0.1, 0.7])), (scan_items.run, scan_goal())):
+        await run(brain, ctx)
+        assert ctx.completed["success"] is False
+        assert ctx.completed["message"] == "the node is shutting down"
+    assert len(manipulator.calls) == 1
 
 
 async def test_a_search_logs_the_frame_it_looked_at_each_box_and_the_item_it_returned(brain_log):

@@ -9,6 +9,10 @@ lane only; a running search never appears there, so a caller that reads
 A stop is the same whether the caller cancelled its own goal or anyone
 sent abort: the job's token is set, the lane's stopper halts the backend
 and the move in flight, and the job finishes on its own.
+
+`close` is the first thing a shutdown does: from then on every sequence
+is refused with "the node is shutting down", so a goal that arrives while
+the lanes stop never finds a free lane.
 """
 
 from __future__ import annotations
@@ -23,6 +27,8 @@ PERCEPTION = "perception"
 MANIPULATION = "manipulation"
 
 Stopper = Callable[[str], Awaitable[None]]
+
+SHUTTING_DOWN = "the node is shutting down"
 
 
 @dataclass
@@ -44,19 +50,27 @@ class Sequencer:
     def __init__(self, stopper: Optional[Stopper] = None) -> None:
         self._running: dict[str, Job] = {}
         self._stopper = stopper
+        self._closed = False
 
     def running(self, lane: str) -> Optional[Job]:
         return self._running.get(lane)
 
     def start(self, lane: str, action: str, now_ns: int) -> Job:
         """Admits a sequence into its lane, or refuses it naming the one
-        that runs, as the contracts ask."""
+        that runs, as the contracts ask; once closed, refuses every one."""
+        if self._closed:
+            raise Refusal(SHUTTING_DOWN)
         running = self._running.get(lane)
         if running is not None:
             raise Refusal(f"{running.action} is running")
         job = Job(lane=lane, action=action, started_ns=now_ns)
         self._running[lane] = job
         return job
+
+    def close(self) -> None:
+        """Refuses every sequence from now on. The ones that run go on
+        until they are stopped or end."""
+        self._closed = True
 
     def finish(self, job: Job) -> None:
         if self._running.get(job.lane) is job:

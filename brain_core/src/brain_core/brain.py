@@ -49,9 +49,9 @@ class Brain:
         self.bindings = bindings
         self.state = State(parse_limbs(params.limbs), new_run_token() if run_token is None else run_token)
         self.robot = Robot(node_runner, bindings.move_arm, bindings.move_gripper, bindings.standard_qos)
-        self.frames = FrameStore()
-        self.camera = CameraModel()
-        self.perceiver = Perceiver(detector, self.frames, self.camera)
+        # The perceiver alone holds the frames and the camera model: the
+        # geometry learners give it each new camera model.
+        self.perceiver = Perceiver(detector, FrameStore(), CameraModel())
         self.manipulator: Manipulator = manipulator
         self.sequencer = Sequencer(stopper=self._stop_lane)
         self._now = now or bindings.clock.now_ns
@@ -73,7 +73,9 @@ class Brain:
         asking the robot where the camera stands."""
         b = self.bindings
         return [
-            asyncio.create_task(self.frames.run(self.node_runner, token, b.video_stream, b.depth_stream, b.depth_stream_info)),
+            asyncio.create_task(
+                self.perceiver.frames.run(self.node_runner, token, b.video_stream, b.depth_stream, b.depth_stream_info)
+            ),
             asyncio.create_task(
                 learn_intrinsics(self.node_runner, token, self.perceiver, b.get_color_intrinsics, b.get_depth_intrinsics)
             ),
@@ -83,9 +85,11 @@ class Brain:
         ]
 
     async def shutdown(self) -> None:
-        """The shutdown hook: stop what runs while the messenger is still
-        connected, so in-flight moves end as cancelled rather than
-        abandoned."""
+        """The shutdown hook: refuse every new goal first, so none finds a
+        lane the stops below just freed, then stop what runs while the
+        messenger is still connected, so in-flight moves end as cancelled
+        rather than abandoned."""
+        self.sequencer.close()
         await self.sequencer.stop(MANIPULATION, "aborted: the node is shutting down")
         await self.sequencer.stop(PERCEPTION, "aborted: the node is shutting down")
         await self.robot.stop()

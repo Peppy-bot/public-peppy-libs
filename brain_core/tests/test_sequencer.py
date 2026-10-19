@@ -21,6 +21,19 @@ async def test_a_second_sequence_in_a_lane_is_refused_by_name():
     sequencer.start(MANIPULATION, "drop_item", now_ns=2)
 
 
+async def test_a_closed_sequencer_refuses_every_sequence_and_lets_the_running_one_end():
+    sequencer = Sequencer()
+    job = sequencer.start(MANIPULATION, "grab_item", now_ns=0)
+    sequencer.close()
+    for lane, action in ((MANIPULATION, "drop_item"), (PERCEPTION, "scan_items")):
+        with pytest.raises(Refusal, match="^the node is shutting down$"):
+            sequencer.start(lane, action, now_ns=1)
+    assert sequencer.running(MANIPULATION) is job
+    sequencer.finish(job)
+    with pytest.raises(Refusal, match="^the node is shutting down$"):
+        sequencer.start(MANIPULATION, "grab_item", now_ns=2)
+
+
 async def test_stopping_an_idle_lane_reports_nothing():
     assert await Sequencer().stop(MANIPULATION, "aborted") is None
 
