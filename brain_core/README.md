@@ -20,34 +20,18 @@ brain_core @ git+https://github.com/Peppy-bot/public-peppy-libs.git@<commit>#sub
 
 Its entry point builds `Bindings` from its peppygen package and hands them to
 `brain_core.node.setup` with its `ModelSource`, the models the node can run
-for each role:
+for each role. `Bindings.from_generated` finds each module where every
+brain's peppygen puts it, so the node's manifest names its slots
+`limb_motion`, `camera`, `geometry` and `camera_mounts`, as both brains do:
 
 ```python
-from functools import partial
-
-from peppygen import NodeBuilder, QoSProfile, clock
-from peppygen.consumed_actions.limb_motion import move_arm, move_gripper
-from peppygen.consumed_services.camera import depth_stream_info
-from peppygen.consumed_services.camera_mounts import get_camera_poses
-from peppygen.consumed_services.geometry import get_color_intrinsics, get_depth_intrinsics
-from peppygen.consumed_topics.camera import depth_stream, video_stream
-from peppygen.exposed_actions.brain_model import switch_model
-from peppygen.exposed_actions.item_manipulation import abort, drop_item, grab_item, place_item
-from peppygen.exposed_actions.item_perception import identify_item, scan_items
-from peppygen.exposed_services.brain_model import get_model, list_models
-from peppygen.exposed_services.item_manipulation import get_state
+import peppygen
+from peppygen import NodeBuilder
 
 from brain_core import node
 from brain_core.bindings import Bindings
 
-BINDINGS = Bindings(
-    clock=clock, standard_qos=QoSProfile.Standard, move_arm=move_arm, move_gripper=move_gripper,
-    video_stream=video_stream, depth_stream=depth_stream, depth_stream_info=depth_stream_info,
-    get_color_intrinsics=get_color_intrinsics, get_depth_intrinsics=get_depth_intrinsics,
-    get_camera_poses=get_camera_poses, scan_items=scan_items, identify_item=identify_item,
-    grab_item=grab_item, drop_item=drop_item, place_item=place_item, abort=abort, get_state=get_state,
-    switch_model=switch_model, get_model=get_model, list_models=list_models,
-)
+BINDINGS = Bindings.from_generated(peppygen)
 
 
 async def setup(params, node_runner):
