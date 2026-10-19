@@ -17,7 +17,7 @@ from fake_peppygen import scan_items as scan_action
 
 from brain_core.brain import Brain
 from brain_core.handlers import abort, drop_item, get_state, grab_item, identify_item, place_item, scan_items
-from brain_core.ports import Box, Coverage, SearchTimeout
+from brain_core.ports import Box, Coverage, Role, SearchTimeout
 
 
 def with_frames(brain: Brain, depth_m: float = 1.0) -> None:
@@ -201,6 +201,41 @@ async def test_a_grab_by_pose_mints_an_id_and_a_failed_grab_changes_nothing():
     assert ctx.completed["success"] is True
     assert ctx.completed["gripper_name"] == "right_gripper" and ctx.completed["item_id"] == "item_1-t0"
     assert state_of(brain).holding == [False, False]
+
+
+async def test_a_dropped_item_is_forgotten_and_a_drop_that_does_not_end_changes_nothing():
+    manipulator = FakeManipulator()
+    brain = await make_brain(manipulator=manipulator)
+    grab = grab_goal(gripper_name="left_gripper", position=[0.5, 0.1, 0.7])
+    await grab_item.run(brain, grab)
+    item_id = grab.completed["item_id"]
+
+    # A drop that fails, or that an abort stops, leaves the item held and known.
+    manipulator.fail = "the jaws did not open"
+    failed = drop_goal()
+    await drop_item.run(brain, failed)
+    assert failed.completed["success"] is False
+    manipulator.fail, manipulator.wait_for_stop = "", True
+    stopped = drop_goal()
+    running = asyncio.create_task(drop_item.run(brain, stopped))
+    # The grab and the failed drop already began a sequence each, so wait
+    # for this drop to hold the lane rather than on the manipulator.
+    while brain.sequencer.running(Role.MANIPULATION) is None:
+        await asyncio.sleep(0)
+    await abort.run(brain, abort_goal("operator"))
+    await running
+    assert stopped.completed["message"] == "aborted: operator"
+    assert state_of(brain).held_item_ids == [item_id, ""] and item_id in brain.state.items
+
+    manipulator.wait_for_stop = False
+    dropped = drop_goal()
+    await drop_item.run(brain, dropped)
+    assert (dropped.completed["success"], dropped.completed["item_id"]) == (True, item_id)
+    assert state_of(brain).held_item_ids == ["", ""] and item_id not in brain.state.items
+    again = grab_goal(gripper_name="left_gripper", item_id=item_id)
+    await grab_item.run(brain, again)
+    assert again.completed["message"] == f"unknown item '{item_id}': scan or identify it again"
+    assert [call[0] for call in manipulator.calls] == ["grab", "drop", "drop", "drop"]
 
 
 async def test_a_search_under_other_words_returns_the_scans_id():

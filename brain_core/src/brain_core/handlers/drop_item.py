@@ -1,4 +1,5 @@
-"""drop_item: open a gripper where it is and release what it holds."""
+"""drop_item: open a gripper where it is and release what it holds. The
+brain forgets the dropped item (`State.forget_dropped`)."""
 
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ async def run(brain, ctx) -> None:
         job.cancel.check()
         if not outcome.success:
             raise Refusal(outcome.message or "the release failed")
-        item_id = state.clear_held(gripper)
+        item_id = state.forget_dropped(gripper)
         return dict(gripper_name=gripper.name, item_id=item_id)
 
     await brain.run_guarded(ctx, Role.MANIPULATION, "drop_item", body, ZERO)

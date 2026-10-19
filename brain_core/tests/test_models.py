@@ -9,7 +9,7 @@ import fake_peppygen
 import pytest
 from conftest import CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeSource, depth_frame, make_brain, rgb_frame
 
-from brain_core.handlers import abort, drop_item, grab_item, scan_items, switch_model
+from brain_core.handlers import abort, grab_item, place_item, scan_items, switch_model
 from brain_core.manipulation.none import NoneManipulator
 from brain_core.ports import Box, ExpectedFailure, Refusal, Role
 
@@ -153,12 +153,12 @@ async def test_a_grab_never_asks_the_perception_model():
     by_pose = grab_goal()
     await grab_item.run(brain, by_pose)
     assert by_pose.completed["success"] is True
-    await drop_item.run(brain, FakeCtx(fake_peppygen.drop_item, gripper_name=""))
+    await place_item.run(brain, FakeCtx(fake_peppygen.place_item, gripper_name="", position=[0.6, 0.2, 0.75], orientation=None))
     # The item's position comes from the brain's memory, not from a look.
     by_id = grab_goal(item_id=by_pose.completed["item_id"], position=[0.0, 0.0, 0.0])
     await grab_item.run(brain, by_id)
     assert by_id.completed["success"] is True
-    assert [call[0] for call in manipulator.calls] == ["grab", "drop", "grab"]
+    assert [call[0] for call in manipulator.calls] == ["grab", "place", "grab"]
 
 
 async def test_a_perception_switch_succeeds_during_a_grab():

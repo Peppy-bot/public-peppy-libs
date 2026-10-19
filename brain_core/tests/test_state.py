@@ -95,7 +95,7 @@ def test_the_holder_rules_for_drop_and_place():
     with pytest.raises(Refusal, match="more than one gripper"):
         state.holder("")
     assert state.holder("right_gripper").name == "right_gripper"
-    assert state.clear_held(state.grippers["right_gripper"]) == "cup_2"
+    assert state.forget_dropped(state.grippers["right_gripper"]) == "cup_2"
     assert state.snapshot() == (["left_gripper", "right_gripper"], [True, False], ["cup_1", ""])
 
 
@@ -203,7 +203,7 @@ def test_no_detection_matches_an_item_a_gripper_holds():
     assert set(state.items) == {"cup_1-t0", "cup_2-t0"}
 
 
-def test_a_placed_item_keeps_its_id_where_it_was_put_and_a_dropped_one_stays_where_it_was_grabbed():
+def test_a_placed_item_keeps_its_id_where_it_was_put_and_a_dropped_one_is_forgotten():
     state = make_state()
     state.remember([Detection("cup", (0.5, 0.1, 0.7), 0.9), Detection("bowl", (0.4, -0.1, 0.7), 0.9)], now_ns=1, coverage=EVERY)
     left, right = state.grippers["left_gripper"], state.grippers["right_gripper"]
@@ -213,10 +213,16 @@ def test_a_placed_item_keeps_its_id_where_it_was_put_and_a_dropped_one_stays_whe
     assert state.items["cup_1-t0"].position == (0.6, -0.2, 0.75)
     assert state.items["cup_1-t0"].orientation == (0.0, 0.0, 0.0, 1.0)
     state.set_held(right, "bowl_1-t0")
-    assert state.clear_held(right) == "bowl_1-t0"
-    assert state.items["bowl_1-t0"].position == (0.4, -0.1, 0.7)
-    seen = state.remember([Detection("cup", (0.61, -0.2, 0.74), 0.9)], now_ns=2, coverage=EVERY)
-    assert seen[0].item_id == "cup_1-t0"
+    assert state.forget_dropped(right) == "bowl_1-t0"
+    assert not right.holding and "bowl_1-t0" not in state.items
+    with pytest.raises(Refusal, match="^unknown item 'bowl_1-t0': scan or identify it again$"):
+        state.item_to_grab("bowl_1-t0")
+    # The next look keeps the placed cup's id and gives the bowl a new one,
+    # even where it was grabbed.
+    seen = state.remember(
+        [Detection("cup", (0.61, -0.2, 0.74), 0.9), Detection("bowl", (0.4, -0.1, 0.7), 0.9)], now_ns=2, coverage=EVERY
+    )
+    assert [item.item_id for item in seen] == ["cup_1-t0", "bowl_2-t0"]
 
 
 def test_ids_carry_the_run_token_so_an_earlier_runs_id_is_refused():
@@ -231,7 +237,7 @@ def test_ids_carry_the_run_token_so_an_earlier_runs_id_is_refused():
 
 def test_unknown_items_are_refused_and_pose_grabs_get_an_id():
     state = make_state()
-    with pytest.raises(Refusal, match="unknown item 'cup_9-t0'"):
+    with pytest.raises(Refusal, match="^unknown item 'cup_9-t0': scan or identify it again$"):
         state.item("cup_9-t0")
     with pytest.raises(Refusal, match="unknown item 'cup_9-t0'"):
         state.item_to_grab("cup_9-t0")
@@ -250,7 +256,7 @@ def test_an_item_a_gripper_holds_cannot_be_grabbed_again():
     with pytest.raises(Refusal, match="item 'cup_1-t0' is held by gripper 'left_gripper'"):
         state.item_to_grab("cup_1-t0")
     assert state.item_to_grab("bowl_1-t0").item_id == "bowl_1-t0"
-    state.clear_held(state.grippers["left_gripper"])
+    state.clear_held_placed(state.grippers["left_gripper"], (0.6, 0.1, 0.7), None)
     assert state.item_to_grab("cup_1-t0").item_id == "cup_1-t0"
 
 

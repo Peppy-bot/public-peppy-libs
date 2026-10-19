@@ -24,8 +24,11 @@ Rules written down here because the code depends on them:
   it refreshes what it found and drops nothing. An item that moved further
   than the radius gets a new id, and a covering scan drops the old one.
 - Released items. A place_item moves the item to the pose it was put at,
-  so the next scan keeps its id. A drop_item leaves it at the position it
-  was grabbed at, since nothing measured where it landed.
+  so the next scan keeps its id, and a grab by that id reaches it with no
+  look between. A drop_item forgets the item: nothing measured where it
+  landed, so the brain no longer accounts for it, its id is refused from
+  then on, and the next look that sees the item gives it a new one. A grab
+  by the old id is refused rather than sent to where the item was.
 - Regions. An item carries the region of the look that last saw it, in
   that look's picture. A look that did not see a known item it keeps
   clears the region: the picture has moved on, and a region of an older
@@ -140,18 +143,19 @@ class State:
     def set_held(self, gripper: Gripper, item_id: str) -> None:
         gripper.held_item_id = item_id
 
-    def clear_held(self, gripper: Gripper) -> str:
-        """Releases what the gripper holds and returns its id. The item
-        keeps the position it was grabbed at."""
-        item_id = gripper.held_item_id or ""
-        gripper.held_item_id = None
+    def forget_dropped(self, gripper: Gripper) -> str:
+        """Releases what the gripper holds after a drop_item and returns its
+        id. Nothing measured where the item landed, so the item is
+        forgotten: its id is refused from then on."""
+        item_id = self._release(gripper)
+        self.items.pop(item_id, None)
         return item_id
 
     def clear_held_placed(self, gripper: Gripper, position: Vec3, orientation: Optional[Quat]) -> str:
         """Releases what the gripper holds at the pose place_item put it at
         and returns its id. The item takes that pose, so the next scan finds
         it where it stands and keeps its id."""
-        item_id = self.clear_held(gripper)
+        item_id = self._release(gripper)
         item = self.items.get(item_id)
         if item is not None:
             item.position = position
@@ -172,7 +176,7 @@ class State:
     def item(self, item_id: str) -> Item:
         item = self.items.get(item_id)
         if item is None:
-            raise Refusal(f"unknown item '{item_id}'")
+            raise Refusal(f"unknown item '{item_id}': scan or identify it again")
         return item
 
     def item_to_grab(self, item_id: str) -> Item:
@@ -216,6 +220,11 @@ class State:
     def mint_from_pose(self, position: Vec3, orientation: Optional[Quat], now_ns: int) -> Item:
         """An id for an item a goal addressed by pose rather than by id."""
         return self._mint("item", position, orientation, 0.0, now_ns)
+
+    def _release(self, gripper: Gripper) -> str:
+        item_id = gripper.held_item_id or ""
+        gripper.held_item_id = None
+        return item_id
 
     def _held_ids(self) -> set[str]:
         return {gripper.held_item_id for gripper in self.grippers.values() if gripper.held_item_id is not None}
