@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "brain_core"
+version = "0.1.0"
+description = "The code every brain node shares: the item_perception and item_manipulation rules, the limb_motion robot proxy, the camera frames and geometry, and the goal loops. The node passes in its generated peppygen modules and its backends; no peppygen here."
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    # Frames as arrays for the detector and the depth lookup; Pillow decodes
+    # the mjpeg colour encoding the camera contracts allow.
+    "numpy>=1.26",
+    "pillow>=10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/brain_core"]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.25"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
