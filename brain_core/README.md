@@ -55,7 +55,7 @@ def main() -> None:
     NodeBuilder().run(setup)
 ```
 
-The parameters the core reads are `gripper_names`, `perception_model`,
+The parameters the core reads are `limbs`, `perception_model`,
 `perception_gallery`, `perception_confidence` and `camera_name`.
 
 ## The parts
@@ -64,6 +64,7 @@ The parameters the core reads are `gripper_names`, `perception_model`,
 |---|---|
 | `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Outcome`, `Pose`), `Refusal`, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, and the two ports a backend implements: `Detector` and `Manipulator` |
 | `words` | The one rule for whether a description names a label |
+| `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
 | `state` | The grippers, the known items and their ids, and the rules that resolve a goal's names |
 | `sequencer` | One sequence at a time per lane (`PERCEPTION`, `MANIPULATION`), and the way to stop the one that runs |
 | `robot` | The proxy to the backbone: one limb_motion goal per move, and `stop`, which cancels every move in flight |

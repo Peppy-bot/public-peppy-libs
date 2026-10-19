@@ -18,7 +18,7 @@ import pytest
 from brain_core.ports import Box, CancelToken, Coverage, Deadline, Gripper, Item, Outcome, Pose
 
 PARAMS = {
-    "gripper_names": "left_gripper,right_gripper",
+    "limbs": "left_arm:left_gripper,right_arm:right_gripper",
     "perception_model": "",
     "perception_gallery": "",
     "perception_confidence": 0.0,

@@ -3,8 +3,9 @@ flag, item ids across looks and runs, and the best match for a description."""
 
 import pytest
 
+from brain_core.limbs import Limb, parse_limbs
 from brain_core.ports import Coverage, Detection, Refusal
-from brain_core.state import State, arm_of, best_match, new_run_token
+from brain_core.state import State, best_match, new_run_token
 from brain_core.words import content_words, named_by, normalised
 
 # A scan that can name anything, and a search by description, which covers nothing.
@@ -12,12 +13,16 @@ EVERY = Coverage(every_label=True)
 NOTHING = Coverage()
 
 
+TWO_ARMS = parse_limbs("left_arm:left_gripper,right_arm:right_gripper")
+ONE_ARM = (Limb("left_arm", "left_gripper"),)
+
+
 def make_state(run_token: str = "t0") -> State:
-    return State(["left_gripper", "right_gripper"], run_token)
+    return State(TWO_ARMS, run_token)
 
 
 def test_a_region_follows_the_look_that_last_saw_the_item():
-    state = State(["left_gripper"], "t0")
+    state = State(ONE_ARM, "t0")
     [cup] = state.remember([Detection("cup", (0.5, 0.1, 0.7), 0.9, region=(1.0, 2.0, 3.0, 4.0))], now_ns=1, coverage=EVERY)
     assert cup.region == (1.0, 2.0, 3.0, 4.0)
     # A search by description sees it elsewhere in its own picture.
@@ -31,26 +36,30 @@ def test_a_region_follows_the_look_that_last_saw_the_item():
     assert state.mint_from_pose((0.2, 0.2, 0.7), None, now_ns=4).region is None
 
 
-def test_arm_names_follow_the_backbone_side_naming():
-    assert arm_of("left_gripper") == "left_arm"
-    assert arm_of("right_gripper") == "right_arm"
-    assert make_state().grippers["left_gripper"].arm == "left_arm"
+def test_each_gripper_carries_the_arm_its_limb_names_in_the_limbs_order():
+    state = make_state()
+    assert state.gripper_names() == ["left_gripper", "right_gripper"]
+    assert state.grippers["left_gripper"].arm == "left_arm"
+    assert state.grippers["right_gripper"].arm == "right_arm"
+    # The SO-101 names its one limb with no side.
+    so101 = State(parse_limbs("arm:gripper"), "t0")
+    assert so101.grippers["gripper"].arm == "arm"
 
 
-def test_gripper_names_must_be_present_and_distinct():
-    with pytest.raises(ValueError):
-        State([""], "t0")
-    with pytest.raises(ValueError):
-        State(["a", "a"], "t0")
+def test_a_gripper_without_a_side_in_its_name_is_taken_in_the_limbs_order():
+    state = State(parse_limbs("arm_b:gripper_b,arm_a:gripper_a"), "t0")
+    assert state.gripper_for_grab("", (0.5, -0.2, 0.7)).name == "gripper_b"
+    state.set_held(state.grippers["gripper_b"], "cup_1")
+    assert state.gripper_for_grab("", (0.5, -0.2, 0.7)).name == "gripper_a"
 
 
 def test_the_run_token_must_be_letters_and_digits():
     for token in ("", "a-b", "a b", "a_b"):
         with pytest.raises(ValueError, match="run_token must be letters and digits"):
-            State(["left_gripper"], token)
+            State(ONE_ARM, token)
     token = new_run_token()
     assert len(token) == 6 and int(token, 16) >= 0
-    assert State(["left_gripper"], token).run_token == token
+    assert State(ONE_ARM, token).run_token == token
 
 
 def test_named_gripper_for_a_grab_must_exist_and_be_free():

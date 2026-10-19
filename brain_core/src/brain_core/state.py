@@ -35,17 +35,21 @@ Rules written down here because the code depends on them:
   Refusals, failures, cancels and aborts leave the flag as it was. A grab
   of an item a gripper holds is refused naming that gripper: the item is
   in its jaws, not at the position it was grabbed at.
-- Gripper to arm. The backbone names both by side, so `left_gripper`
-  drives with `left_arm`. That is `arm_of`, the one function to change for
-  a robot that names its limbs differently.
+- Gripper to arm. Each gripper carries the arm the `limbs` parameter
+  pairs it with (`limbs.parse_limbs`), so a backend drives `gripper.arm`
+  and no rule is read into the names.
+- A free gripper by side. A grab that names no gripper takes a free one on
+  the item's side when the gripper names say a side ("left" or "right");
+  any other name takes the first free gripper, in the `limbs` order.
 """
 
 from __future__ import annotations
 
 import math
 import secrets
-from typing import Iterable, Optional, Sequence
+from typing import Optional, Sequence
 
+from .limbs import Limb
 from .ports import Coverage, Detection, Gripper, Item, Quat, Refusal, Vec3
 from .words import named_by
 
@@ -56,15 +60,6 @@ def new_run_token() -> str:
     """The token every id of one brain process carries: six hex digits, so
     two runs share one with a chance of 1 in 16.7 million."""
     return secrets.token_hex(3)
-
-
-def arm_of(gripper_name: str) -> str:
-    """The limb_motion arm name for a gripper name, by the backbone's side
-    naming: `<side>_gripper` drives with `<side>_arm`."""
-    suffix = "_gripper"
-    if gripper_name.endswith(suffix):
-        return gripper_name[: -len(suffix)] + "_arm"
-    return gripper_name + "_arm"
 
 
 def distance(a: Vec3, b: Vec3) -> float:
@@ -88,15 +83,12 @@ def best_match(detections: Sequence[Detection], description: str) -> Optional[De
 
 
 class State:
-    def __init__(self, gripper_names: Iterable[str], run_token: str, match_radius_m: float = MATCH_RADIUS_M) -> None:
-        names = [name.strip() for name in gripper_names if name.strip()]
-        if not names:
-            raise ValueError("gripper_names must name at least one gripper")
-        if len(set(names)) != len(names):
-            raise ValueError("gripper_names must be distinct")
+    def __init__(self, limbs: Sequence[Limb], run_token: str, match_radius_m: float = MATCH_RADIUS_M) -> None:
+        """`limbs` as `limbs.parse_limbs` gives them: at least one, each arm
+        and each gripper named once."""
         if not run_token.isalnum():
             raise ValueError(f"run_token must be letters and digits, got {run_token!r}")
-        self.grippers: dict[str, Gripper] = {name: Gripper(name=name, arm=arm_of(name)) for name in names}
+        self.grippers: dict[str, Gripper] = {limb.gripper: Gripper(name=limb.gripper, arm=limb.arm) for limb in limbs}
         self.items: dict[str, Item] = {}
         self.run_token = run_token
         self.match_radius_m = match_radius_m

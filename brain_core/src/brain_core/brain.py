@@ -17,6 +17,7 @@ import logging
 from typing import Awaitable, Callable, Optional, Sequence
 
 from .bindings import Bindings
+from .limbs import parse_limbs
 from .perception.camera import CameraModel
 from .perception.frames import FrameStore
 from .perception.geometry import learn_camera_pose, learn_intrinsics
@@ -46,7 +47,7 @@ class Brain:
         self.params = params
         self.node_runner = node_runner
         self.bindings = bindings
-        self.state = State(params.gripper_names.split(","), new_run_token() if run_token is None else run_token)
+        self.state = State(parse_limbs(params.limbs), new_run_token() if run_token is None else run_token)
         self.robot = Robot(node_runner, bindings.move_arm, bindings.move_gripper, bindings.standard_qos)
         self.frames = FrameStore()
         self.camera = CameraModel()
