@@ -12,11 +12,17 @@ generated per node, so the node passes its modules in through `Bindings`.
 
 ## Using it
 
-A node depends on brain_core by commit:
+A node depends on brain_core by commit. Both brains pin it in
+`[tool.uv.sources]`, the way `so101/backbone` pins its shared libraries:
 
+```toml
+[tool.uv.sources]
+brain_core = { git = "https://github.com/Peppy-bot/public-peppy-libs", subdirectory = "brain_core", rev = "<commit>" }
 ```
-brain_core @ git+https://github.com/Peppy-bot/public-peppy-libs.git@<commit>#subdirectory=brain_core
-```
+
+uv fetches a git source with git, and the `peppybot/python-uv-base` image has
+no git, so the node's `apptainer.def` installs it in `%post` before
+`uv sync`, as nodes-hub's `ai_brain_vla/apptainer.def` does.
 
 Its entry point builds `Bindings` from its peppygen package and hands them to
 `brain_core.node.setup` with its `ModelSource`, the models the node can run
@@ -74,6 +80,46 @@ The tests run every core rule against fakes of the generated modules
 (`tests/fake_peppygen.py`): no peppygen, no router, no robot and no model.
 
 ## How it works
+
+### Where it sits
+
+Both brains are thin: each brings only its models, and brain_core holds the
+shared work. A dotted arrow is a manifest relation or a hand-over at run time.
+
+```mermaid
+flowchart TB
+    subgraph MH["mcp-hub"]
+        MCP["robot_control:v1<br/>MCP exposure"]
+    end
+    subgraph CH["contracts-hub"]
+        direction LR
+        BM["brain_model:v1"]
+        IC["item_perception:v1 +<br/>item_manipulation:v1"]
+    end
+    subgraph NH["nodes-hub"]
+        direction LR
+        VLA["ai_brain_vla<br/>SAM 3 + SigLIP"]
+        VLM["vlm_router_brain<br/>catalog → any-llm"]
+    end
+    TORCH["torch +<br/>transformers"]
+    BC["brain_core<br/>public-peppy-libs"]
+    ANY["any-llm-sdk"]
+    MCP -->|exposes| BM
+    MCP -->|exposes| IC
+    BM -.->|implemented by| VLA
+    BM -.->|implemented by| VLM
+    IC -.->|implemented by| VLA
+    IC -.->|implemented by| VLM
+    VLA -->|imports| TORCH
+    VLA -->|pinned import| BC
+    VLA -.->|Bindings| BC
+    VLM -->|pinned import| BC
+    VLM -.->|Bindings| BC
+    VLM -->|imports| ANY
+```
+
+brain_core receives each node's `Bindings` and its `ModelSource`; the
+catalog and any-llm stay inside the router, and torch inside ai_brain_vla.
 
 ### Structure
 
