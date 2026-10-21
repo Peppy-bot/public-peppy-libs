@@ -13,9 +13,9 @@ use chain_kinematics::{
 };
 
 mod common;
-use chain_kinematics::properties::{TOLERANCE, configs};
 use common::properties::{ChainProperty, TIP, chain_of, joint_name, on_a_drawn_robot};
 use common::{SO101, openarm, sample, so101};
+use kinematics_properties::{TOLERANCE, configs};
 
 #[test]
 fn loads_arms_of_different_joint_counts() {

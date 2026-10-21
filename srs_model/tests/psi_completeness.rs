@@ -10,8 +10,8 @@
 
 mod common;
 
-use chain_kinematics::properties::configs;
 use common::properties::sides;
+use kinematics_properties::configs;
 
 /// The seed is a second, unrelated configuration, whose arm angle is not the
 /// target's, so the solver searches the feasible ψ set. The explicit case is a

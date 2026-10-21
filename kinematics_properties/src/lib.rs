@@ -2,12 +2,11 @@
 //! chain's limits, directions and rotations in space, and the tolerance the
 //! properties share.
 
+use chain_kinematics::Limit;
+use chain_kinematics::nalgebra::{Rotation3, Unit, Vector3};
 use hegel::TestCase;
 use hegel::generators as gs;
-use nalgebra::{Rotation3, Unit, Vector3};
 use std::f64::consts::PI;
-
-use crate::Limit;
 
 /// Largest miss a property allows, in metres or radians. A defect these
 /// properties look for misses by far more.

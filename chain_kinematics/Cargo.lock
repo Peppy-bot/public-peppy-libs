@@ -61,8 +61,8 @@ name = "chain_kinematics"
 version = "0.1.0"
 dependencies = [
  "approx",
- "chain_kinematics",
  "hegeltest",
+ "kinematics_properties",
  "nalgebra",
  "thiserror 2.0.21",
  "urdf-rs",
@@ -167,6 +167,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "kinematics_properties"
+version = "0.1.0"
+dependencies = [
+ "chain_kinematics",
+ "hegeltest",
 ]
 
 [[package]]

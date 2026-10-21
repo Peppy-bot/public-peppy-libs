@@ -141,8 +141,8 @@ pub(crate) mod test_support {
     }
 }
 
-/// The property tests' tolerance and generators, the same file the integration
-/// tests reach as `common::properties`.
+/// The arm sides and the straight-arm band the property tests share, the same
+/// file the integration tests reach as `common::properties`.
 #[cfg(test)]
 #[path = "../tests/common/properties.rs"]
 pub(crate) mod properties;

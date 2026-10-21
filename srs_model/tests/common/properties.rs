@@ -1,7 +1,7 @@
 //! The arm sides and the straight-arm band the property tests share: the unit
 //! tests (the crate includes this file as `properties` under `cfg(test)`) and
 //! the integration tests (`common::properties`). Configurations, directions
-//! and rotations come from `chain_kinematics::properties`.
+//! and rotations come from `kinematics_properties`.
 //!
 //! The file is compiled into the unit tests and into each integration test
 //! crate, so items unused by one of them are expected; the allow keeps clippy's

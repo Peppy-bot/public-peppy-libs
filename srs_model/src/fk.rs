@@ -158,8 +158,8 @@ fn find_srs_tip(tree: &Tree, base: usize) -> Result<usize, SrsError> {
 mod tests {
     use super::*;
     use crate::properties::sides;
-    use chain_kinematics::properties::{TOLERANCE, configs};
     use hegel::generators as gs;
+    use kinematics_properties::{TOLERANCE, configs};
     use nalgebra::{Point3, Vector3};
 
     fn fk() -> ForwardKinematics {

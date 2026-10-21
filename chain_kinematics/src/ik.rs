@@ -565,9 +565,9 @@ impl SplitMix64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::properties::{TOLERANCE, configs};
     use hegel::TestCase;
     use hegel::generators as gs;
+    use kinematics_properties::TOLERANCE;
 
     /// The objective `bounded_step` minimises, its Hessian and its pull, as
     /// `0.5 xᵀ H x - pullᵀ x`.
@@ -603,7 +603,7 @@ mod tests {
                 hi: a.max(b),
             }
         });
-        let q = tc.draw(configs(limits));
+        let q = limits.map(|limit| tc.draw(gs::floats().min_value(limit.lo).max_value(limit.hi)));
 
         let step = bounded_step(&jacobian, &q, &limits, dp, dw, weight);
         let (hessian, pull) = objective(&jacobian, dp, dw, weight);

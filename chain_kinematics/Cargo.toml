@@ -9,15 +9,12 @@ description = "Forward kinematics, the geometric Jacobian, and damped resolved-r
 # package by git from any checkout layout.
 [workspace]
 
-[features]
-hegel = ["dep:hegeltest"]
-
 [dependencies]
 nalgebra = "0.35"
 thiserror = "2"
 urdf-rs = "0.10"
-hegeltest = { version = "0.50", features = ["static-engine"], optional = true }
 
 [dev-dependencies]
 approx = "0.5"
-chain_kinematics = { path = ".", features = ["hegel"] }
+hegeltest = { version = "0.50", features = ["static-engine"] }
+kinematics_properties = { path = "../kinematics_properties" }

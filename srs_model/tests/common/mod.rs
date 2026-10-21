@@ -7,7 +7,7 @@
 //! expected; the allow keeps clippy's -D warnings gate meaningful for the rest.
 #![allow(dead_code)]
 
-use chain_kinematics::properties::TOLERANCE;
+use kinematics_properties::TOLERANCE;
 use properties::STRAIGHT_ELBOW_BAND;
 use srs_model::{Arm, ArmAnglePolicy, ELBOW, JointVec};
 

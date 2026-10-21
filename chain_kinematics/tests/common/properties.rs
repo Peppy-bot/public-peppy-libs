@@ -1,12 +1,12 @@
 //! The Hegel generators this crate's property tests share beyond
-//! `chain_kinematics::properties`: robots of any serial shape, their chains,
+//! `kinematics_properties`: robots of any serial shape, their chains,
 //! and poses past a chain's reach.
 
 use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
-use chain_kinematics::properties::{TOLERANCE, angles, rotations, unit_vectors};
 use chain_kinematics::{ACCEPT_POSITION_M, Chain, ChainSpec, JointSelection, Limit};
 use hegel::TestCase;
 use hegel::generators as gs;
+use kinematics_properties::{TOLERANCE, angles, rotations, unit_vectors};
 use std::f64::consts::PI;
 use urdf_rs::{Axis, JointLimit, JointType, LinkName, Pose, Robot, Vec3};
 

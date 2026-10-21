@@ -46,11 +46,6 @@ mod rate;
 mod servo;
 mod tree;
 
-/// The Hegel generators and the tolerance that the property tests of this crate
-/// and of the crates built on it share, behind the `hegel` feature.
-#[cfg(feature = "hegel")]
-pub mod properties;
-
 pub use chain::{Chain, ChainSpec, JointSelection, Posed};
 pub use error::ChainError;
 pub use ik::{

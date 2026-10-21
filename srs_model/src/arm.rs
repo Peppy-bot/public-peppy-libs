@@ -291,7 +291,7 @@ impl Arm {
 mod tests {
     use super::*;
     use crate::properties::STRAIGHT_ELBOW_BAND;
-    use chain_kinematics::properties::{TOLERANCE, configs};
+    use kinematics_properties::{TOLERANCE, configs};
 
     const FIXTURE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),

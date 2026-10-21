@@ -942,8 +942,8 @@ mod tests {
     use crate::fk::ForwardKinematics;
     use crate::properties::{STRAIGHT_ELBOW_BAND, sides};
     use crate::test_support::{v1_fk, v1_limits, v1_model};
-    use chain_kinematics::properties::{TOLERANCE, angles, configs, rotations, unit_vectors};
     use hegel::generators as gs;
+    use kinematics_properties::{TOLERANCE, angles, configs, rotations, unit_vectors};
     use nalgebra::{Isometry3, UnitQuaternion};
     use rand::RngExt;
     use rand::SeedableRng;

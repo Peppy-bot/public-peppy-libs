@@ -6,8 +6,8 @@
 
 mod common;
 
-use chain_kinematics::properties::configs;
 use common::properties::sides;
+use kinematics_properties::configs;
 use srs_model::{ARM_DOF, ArmAnglePolicy, ELBOW, Limit};
 
 /// The explicit cases hold joint 7 on a limit at a posture where it touches
