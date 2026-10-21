@@ -4,6 +4,9 @@
 # Build artifacts (Cargo build directory, present per-workspace/-crate).
 target/
 
+# Failing examples Hegel property tests keep for replay (per crate).
+.hegel/
+
 # Backtraces emitted on panic.
 *.rs.bk
 
