@@ -409,21 +409,37 @@ impl<const N: usize> Kinematics<N> {
     }
 }
 
-/// Which bound of its limit a joint's step is held at in [`bounded_step`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Held {
-    Free,
-    AtLower,
-    AtUpper,
+/// The quadratic the descent's step minimises, `0.5 xᵀ H x - pullᵀ x` over the
+/// step `x`: the position error, the orientation error at `orientation_weight`,
+/// and the step's own size at [`SOLVE_DAMPING`] squared. Returns the Hessian
+/// `H`, positive definite for finite inputs through the damping, and the pull.
+fn step_objective<const N: usize>(
+    jacobian: &Jacobian<N>,
+    dp: Vector3<f64>,
+    dw: Vector3<f64>,
+    orientation_weight: f64,
+) -> (SMatrix<f64, N, N>, SVector<f64, N>) {
+    let position_rows = jacobian.fixed_rows::<3>(0);
+    let rotation_rows = jacobian.fixed_rows::<3>(3);
+    let hessian = position_rows.transpose() * position_rows
+        + (rotation_rows.transpose() * rotation_rows) * orientation_weight
+        + SMatrix::<f64, N, N>::identity() * (SOLVE_DAMPING * SOLVE_DAMPING);
+    let pull =
+        position_rows.transpose() * dp + (rotation_rows.transpose() * dw) * orientation_weight;
+    (hessian, pull)
 }
 
-/// The descent's step from `q`: the damped weighted least-squares step that
-/// keeps every joint inside `limits`. It minimises the position error, the
-/// orientation error at `orientation_weight`, and the step's own size at
-/// [`SOLVE_DAMPING`] squared, over the box the limits leave each joint. The
-/// damping makes the quadratic strictly convex, and an active set solves it
-/// exactly: a joint stays on a bound while the objective presses it outward,
-/// and leaves the bound once the objective pulls it back in.
+/// The bound of its limit a joint's step is held at in [`bounded_step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bound {
+    Lower,
+    Upper,
+}
+
+/// The descent's step from `q`: the minimiser of [`step_objective`] over the
+/// box `limits` leave each joint. The objective is strictly convex, and an
+/// active set solves it exactly: a joint stays on a bound while the objective
+/// presses it outward, and leaves the bound once the objective pulls it back in.
 fn bounded_step<const N: usize>(
     jacobian: &Jacobian<N>,
     q: &[f64; N],
@@ -432,27 +448,28 @@ fn bounded_step<const N: usize>(
     dw: Vector3<f64>,
     orientation_weight: f64,
 ) -> SVector<f64, N> {
-    let position_rows = jacobian.fixed_rows::<3>(0);
-    let rotation_rows = jacobian.fixed_rows::<3>(3);
-    let hessian = position_rows.transpose() * position_rows
-        + (rotation_rows.transpose() * rotation_rows) * orientation_weight
-        + SMatrix::<f64, N, N>::identity() * (SOLVE_DAMPING * SOLVE_DAMPING);
-    let pull =
-        position_rows.transpose() * dp + (rotation_rows.transpose() * dw) * orientation_weight;
+    // Each round moves the step onto a bound or frees a joint. A step still
+    // short of the optimum after this many rounds per joint is returned as it
+    // stands, inside the limits.
+    const ROUNDS_PER_JOINT: usize = 8;
+
+    let (hessian, pull) = step_objective(jacobian, dp, dw, orientation_weight);
     let lower = SVector::<f64, N>::from_fn(|joint, _| limits[joint].lo - q[joint]);
     let upper = SVector::<f64, N>::from_fn(|joint, _| limits[joint].hi - q[joint]);
+    let edge = |joint: usize, bound: Bound| match bound {
+        Bound::Lower => lower[joint],
+        Bound::Upper => upper[joint],
+    };
 
     // The minimiser with the `held` joints fixed at their bounds: the normal
     // equations' rows of the free joints, and an identity row pinning each
     // held joint at its bound.
-    let minimiser = |held: &[Held; N]| -> SVector<f64, N> {
-        let pinned = SVector::<f64, N>::from_fn(|joint, _| match held[joint] {
-            Held::Free => 0.0,
-            Held::AtLower => lower[joint],
-            Held::AtUpper => upper[joint],
+    let minimiser = |held: &[Option<Bound>; N]| -> SVector<f64, N> {
+        let pinned = SVector::<f64, N>::from_fn(|joint, _| {
+            held[joint].map_or(0.0, |bound| edge(joint, bound))
         });
         let system = SMatrix::<f64, N, N>::from_fn(|row, column| {
-            if held[row] == Held::Free && held[column] == Held::Free {
+            if held[row].is_none() && held[column].is_none() {
                 hessian[(row, column)]
             } else if row == column {
                 1.0
@@ -461,8 +478,8 @@ fn bounded_step<const N: usize>(
             }
         });
         let rhs = SVector::<f64, N>::from_fn(|row, _| match held[row] {
-            Held::Free => pull[row] - (hessian.row(row) * pinned)[0],
-            Held::AtLower | Held::AtUpper => pinned[row],
+            None => pull[row] - (hessian.row(row) * pinned)[0],
+            Some(bound) => edge(row, bound),
         });
         system
             .cholesky()
@@ -470,41 +487,29 @@ fn bounded_step<const N: usize>(
             .solve(&rhs)
     };
 
-    let mut held = [Held::Free; N];
+    let mut held: [Option<Bound>; N] = [None; N];
     let mut step = SVector::<f64, N>::zeros();
-    // Each round moves to a bound or frees a joint, and the objective never
-    // rises, so the rounds a box of N joints takes stay far under the cap.
-    for _ in 0..8 * N + 8 {
+    for _ in 0..ROUNDS_PER_JOINT * (N + 1) {
         let target = minimiser(&held);
         let direction = target - step;
         let blocking = (0..N)
-            .filter(|&joint| held[joint] == Held::Free)
+            .filter(|&joint| held[joint].is_none())
             .filter_map(|joint| {
-                if target[joint] < lower[joint] {
-                    Some((
-                        (lower[joint] - step[joint]) / direction[joint],
-                        joint,
-                        Held::AtLower,
-                    ))
+                let bound = if target[joint] < lower[joint] {
+                    Bound::Lower
                 } else if target[joint] > upper[joint] {
-                    Some((
-                        (upper[joint] - step[joint]) / direction[joint],
-                        joint,
-                        Held::AtUpper,
-                    ))
+                    Bound::Upper
                 } else {
-                    None
-                }
+                    return None;
+                };
+                let fraction = (edge(joint, bound) - step[joint]) / direction[joint];
+                Some((fraction, joint, bound))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0));
         if let Some((fraction, joint, bound)) = blocking {
             step += direction * fraction.clamp(0.0, 1.0);
-            step[joint] = if bound == Held::AtLower {
-                lower[joint]
-            } else {
-                upper[joint]
-            };
-            held[joint] = bound;
+            step[joint] = edge(joint, bound);
+            held[joint] = Some(bound);
             continue;
         }
         step = target;
@@ -513,13 +518,13 @@ fn bounded_step<const N: usize>(
         let gradient = hessian * step - pull;
         let pulled_inside = (0..N)
             .filter_map(|joint| match held[joint] {
-                Held::AtLower if gradient[joint] < 0.0 => Some((joint, -gradient[joint])),
-                Held::AtUpper if gradient[joint] > 0.0 => Some((joint, gradient[joint])),
+                Some(Bound::Lower) if gradient[joint] < 0.0 => Some((joint, -gradient[joint])),
+                Some(Bound::Upper) if gradient[joint] > 0.0 => Some((joint, gradient[joint])),
                 _ => None,
             })
             .max_by(|a, b| a.1.total_cmp(&b.1));
         match pulled_inside {
-            Some((joint, _)) => held[joint] = Held::Free,
+            Some((joint, _)) => held[joint] = None,
             None => return step,
         }
     }
@@ -569,21 +574,6 @@ mod tests {
     use hegel::generators as gs;
     use kinematics_properties::TOLERANCE;
 
-    /// The objective `bounded_step` minimises, its Hessian and its pull, as
-    /// `0.5 xᵀ H x - pullᵀ x`.
-    fn objective<const N: usize>(
-        jacobian: &Jacobian<N>,
-        dp: Vector3<f64>,
-        dw: Vector3<f64>,
-        weight: f64,
-    ) -> (SMatrix<f64, N, N>, SVector<f64, N>) {
-        let (p, r) = (jacobian.fixed_rows::<3>(0), jacobian.fixed_rows::<3>(3));
-        let hessian = p.transpose() * p
-            + (r.transpose() * r) * weight
-            + SMatrix::<f64, N, N>::identity() * (SOLVE_DAMPING * SOLVE_DAMPING);
-        (hessian, p.transpose() * dp + (r.transpose() * dw) * weight)
-    }
-
     fn check<const N: usize>(tc: &TestCase) {
         let entries: Vec<f64> = (0..6 * N)
             .map(|_| tc.draw(gs::floats().min_value(-1.0).max_value(1.0)))
@@ -606,7 +596,7 @@ mod tests {
         let q = limits.map(|limit| tc.draw(gs::floats().min_value(limit.lo).max_value(limit.hi)));
 
         let step = bounded_step(&jacobian, &q, &limits, dp, dw, weight);
-        let (hessian, pull) = objective(&jacobian, dp, dw, weight);
+        let (hessian, pull) = step_objective(&jacobian, dp, dw, weight);
         let value = |x: &SVector<f64, N>| 0.5 * (x.transpose() * hessian * x)[0] - pull.dot(x);
         let gradient = hessian * step - pull;
         for joint in 0..N {
