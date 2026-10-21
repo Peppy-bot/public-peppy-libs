@@ -13,7 +13,10 @@ use chain_kinematics::{
 };
 
 mod common;
-use common::{SO101, SO101_JOINTS, openarm, sample, so101};
+use common::properties::{
+    ChainProperty, TIP, TOLERANCE, chain_of, configs, joint_name, on_a_drawn_robot,
+};
+use common::{SO101, openarm, sample, so101};
 
 #[test]
 fn loads_arms_of_different_joint_counts() {
@@ -30,13 +33,16 @@ fn loads_arms_of_different_joint_counts() {
 }
 
 /// The strongest check that forward kinematics and the Jacobian agree: every
-/// column against a central finite difference of the pose, on both robots.
-#[test]
-fn jacobian_matches_finite_difference() {
-    fn check<const N: usize>(chain: &Chain<N>, label: &str) {
-        let h = 1e-7;
-        for k in 0..24 {
-            let q = sample(chain, k);
+/// column against a central finite difference of the pose, on chains of every
+/// shape.
+#[hegel::test]
+fn jacobian_matches_finite_difference(tc: hegel::TestCase) {
+    struct MatchesFiniteDifference;
+    impl ChainProperty for MatchesFiniteDifference {
+        fn check<const N: usize>(tc: &hegel::TestCase, robot: &urdf_rs::Robot) {
+            let chain = chain_of::<N>(robot);
+            let q = tc.draw(configs(chain.limits()));
+            let h = 1e-7;
             let j = chain.at(&q).jacobian();
             for i in 0..N {
                 let (mut qp, mut qm) = (q, q);
@@ -51,59 +57,54 @@ fn jacobian_matches_finite_difference() {
                 {
                     let got = j[(row, i)];
                     assert!(
-                        (got - want).abs() < 1e-5,
-                        "{label} column {i} row {row}: {got} vs finite difference {want}"
+                        (got - want).abs() < TOLERANCE,
+                        "column {i} row {row}: {got} vs finite difference {want}"
                     );
                 }
             }
         }
     }
-    check(&so101(), "SO-101");
-    check(&openarm(), "OpenArm");
+    on_a_drawn_robot::<MatchesFiniteDifference>(&tc);
 }
 
 /// Naming the joints fixes the order of `q`, which is the whole reason the order
 /// is an input: it is usually the robot's wire order, which no URDF knows.
-#[test]
-fn named_selection_fixes_the_joint_order() {
-    let robot = urdf_rs::read_from_string(SO101).expect("parse SO-101");
-    let spec = |names: &'static [&'static str]| ChainSpec {
-        base_link: None,
-        tip_link: "gripper_frame_link",
-        joints: JointSelection::Named(names),
-    };
-    let forward = Chain::<5>::from_urdf(&robot, &spec(&SO101_JOINTS)).unwrap();
-    const REVERSED: [&str; 5] = [
-        "wrist_roll",
-        "wrist_flex",
-        "elbow_flex",
-        "shoulder_lift",
-        "shoulder_pan",
-    ];
-    let reversed = Chain::<5>::from_urdf(&robot, &spec(&REVERSED)).unwrap();
-
-    let q = [0.1, -0.2, 0.3, -0.4, 0.5];
-    let mut flipped = q;
-    flipped.reverse();
-    let a = forward.at(&q).ee_pose();
-    let b = reversed.at(&flipped).ee_pose();
-    assert!(
-        (a.translation.vector - b.translation.vector).norm() < 1e-12
-            && a.rotation.angle_to(&b.rotation) < 1e-12,
-        "reversing the names and the values must describe the same pose"
-    );
-    // And path order agrees with the names given in path order.
-    let path_order = Chain::<5>::from_urdf(
-        &robot,
-        &ChainSpec {
-            base_link: None,
-            tip_link: "gripper_frame_link",
-            joints: JointSelection::PathOrder,
-        },
-    )
-    .unwrap();
-    let c = path_order.at(&q).ee_pose();
-    assert!((a.translation.vector - c.translation.vector).norm() < 1e-12);
+#[hegel::test]
+fn named_selection_fixes_the_joint_order(tc: hegel::TestCase) {
+    struct NamesFixTheOrder;
+    impl ChainProperty for NamesFixTheOrder {
+        fn check<const N: usize>(tc: &hegel::TestCase, robot: &urdf_rs::Robot) {
+            let names: Vec<String> = (1..=N).map(joint_name).collect();
+            let in_path_order: Vec<&str> = names.iter().map(String::as_str).collect();
+            let reversed_order: Vec<&str> = in_path_order.iter().rev().copied().collect();
+            let named = |order: &[&str]| {
+                Chain::<N>::from_urdf(
+                    robot,
+                    &ChainSpec {
+                        base_link: None,
+                        tip_link: TIP,
+                        joints: JointSelection::Named(order),
+                    },
+                )
+                .expect("every drawn joint is on the path")
+            };
+            let (forward, reversed) = (named(&in_path_order), named(&reversed_order));
+            let q = tc.draw(configs(forward.limits()));
+            let mut flipped = q;
+            flipped.reverse();
+            let a = forward.at(&q).ee_pose();
+            let b = reversed.at(&flipped).ee_pose();
+            assert!(
+                (a.translation.vector - b.translation.vector).norm() < TOLERANCE
+                    && a.rotation.angle_to(&b.rotation) < TOLERANCE,
+                "reversing the names and the values must describe the same pose"
+            );
+            // And path order agrees with the names given in path order.
+            let c = chain_of::<N>(robot).at(&q).ee_pose();
+            assert!((a.translation.vector - c.translation.vector).norm() < TOLERANCE);
+        }
+    }
+    on_a_drawn_robot::<NamesFixTheOrder>(&tc);
 }
 
 #[test]
