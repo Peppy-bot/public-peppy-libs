@@ -306,21 +306,28 @@ mod tests {
             assert!(l.lo <= l.hi, "joint {i}: lo {} > hi {}", l.lo, l.hi);
         }
         // j4 (elbow) is one-sided in the V1.0 URDF: lower bound at 0.
-        assert!(limits[3].lo.abs() < 1e-9, "j4 lower = {}", limits[3].lo);
+        assert!(
+            limits[ELBOW].lo.abs() < 1e-9,
+            "j4 lower = {}",
+            limits[ELBOW].lo
+        );
     }
 
     #[test]
     fn with_lower_floor_raises_only_the_targeted_lower_bound() {
         let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture");
         let base = arm.limits();
-        // The fixture's elbow (j4, index 3) has a mechanical lower bound of 0.0.
-        let floored = arm.with_lower_floor(3, 0.05).limits();
+        // The fixture's elbow has a mechanical lower bound of 0.0.
+        let floored = arm.with_lower_floor(ELBOW, 0.05).limits();
 
         assert_eq!(
-            floored[3].lo, 0.05,
+            floored[ELBOW].lo, 0.05,
             "targeted joint's lower bound is raised"
         );
-        assert_eq!(floored[3].hi, base[3].hi, "upper bound is untouched");
+        assert_eq!(
+            floored[ELBOW].hi, base[ELBOW].hi,
+            "upper bound is untouched"
+        );
         for i in [0, 1, 2, 4, 5, 6] {
             assert_eq!(
                 floored[i].lo, base[i].lo,
@@ -338,16 +345,16 @@ mod tests {
         const FLOOR: f64 = 0.5;
         let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0")
             .expect("load fixture")
-            .with_lower_floor(3, FLOOR);
-        assert_eq!(arm.limits()[3].lo, FLOOR, "the floor is reported");
+            .with_lower_floor(ELBOW, FLOOR);
+        assert_eq!(arm.limits()[ELBOW].lo, FLOOR, "the floor is reported");
 
         let under: JointVec = [0.1, 0.2, 0.0, 0.30, 0.0, 0.3, 0.0];
         let target = arm.at(&under).ee_pose();
         if let Some(s) = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &under) {
             assert!(
-                s.q[3] >= FLOOR,
+                s.q[ELBOW] >= FLOOR,
                 "IK returned j4 = {} under the {FLOOR} floor it reports",
-                s.q[3]
+                s.q[ELBOW]
             );
         }
     }
@@ -356,9 +363,9 @@ mod tests {
     fn with_lower_floor_below_the_mechanical_limit_is_a_noop() {
         let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture");
         let base = arm.limits();
-        let floored = arm.with_lower_floor(3, -10.0).limits();
+        let floored = arm.with_lower_floor(ELBOW, -10.0).limits();
         assert_eq!(
-            floored[3].lo, base[3].lo,
+            floored[ELBOW].lo, base[ELBOW].lo,
             "a floor under the limit does not lower it"
         );
     }

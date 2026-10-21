@@ -5,7 +5,7 @@
 //! the SRS concurrency checks so gravity/Coriolis feedforward evaluates.
 
 use srs_model::nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
-use srs_model::{ARM_DOF, Arm, ArmAnglePolicy};
+use srs_model::{ARM_DOF, Arm, ArmAnglePolicy, ELBOW};
 
 const V2_URDF: &str = "../openarm_description/assets/openarm_v20.urdf";
 const V1_URDF: &str = "../openarm_description/assets/openarm_v10.urdf";
@@ -18,7 +18,7 @@ fn builds_v2_srs_chain_for_both_arms() {
         let limits = arm.limits();
         assert_eq!(limits.len(), ARM_DOF);
         assert_eq!(
-            limits[3].lo, 0.0,
+            limits[ELBOW].lo, 0.0,
             "{base}: elbow (j4) mechanical lower is 0.0"
         );
 
@@ -130,7 +130,7 @@ fn a_pose_just_beyond_the_reach_is_solved_on_the_reach_within_the_tolerance() {
     // The elbow held 0.05 rad off the straight arm, as the OpenArm backbone
     // holds it: the arm cannot reach the shell's outer edge itself.
     let arm = Arm::from_urdf_file(V2_URDF, "openarm_left_base_link")
-        .map(|arm| arm.with_lower_floor(3, 0.05))
+        .map(|arm| arm.with_lower_floor(ELBOW, 0.05))
         .and_then(|arm| arm.with_tool_link("openarm_left_tcp"))
         .expect("v2 left arm with its tool");
     // A pose of the nearly straight arm, pushed out along the arm's reach
@@ -182,10 +182,10 @@ fn a_pose_just_beyond_the_reach_is_solved_on_the_reach_within_the_tolerance() {
 #[test]
 fn a_pose_just_past_the_elbows_fold_is_solved_within_the_tolerance() {
     let arm = Arm::from_urdf_file(V2_URDF, "openarm_left_base_link")
-        .map(|arm| arm.with_lower_floor(3, 0.05))
+        .map(|arm| arm.with_lower_floor(ELBOW, 0.05))
         .and_then(|arm| arm.with_tool_link("openarm_left_tcp"))
         .expect("v2 left arm with its tool");
-    let elbow = arm.limits()[3];
+    let elbow = arm.limits()[ELBOW];
     // The pose the arm takes with its elbow folded `past` beyond its limit,
     // which the forward kinematics computes and no solution reaches.
     let folded = |past: f64| {
@@ -228,10 +228,10 @@ fn a_pose_just_past_the_elbows_fold_is_solved_within_the_tolerance() {
 #[test]
 fn the_reach_is_the_elbows_and_a_target_that_is_not_finite_falls_short_by_nan() {
     let arm = Arm::from_urdf_file(V2_URDF, "openarm_left_base_link")
-        .map(|arm| arm.with_lower_floor(3, 0.05))
+        .map(|arm| arm.with_lower_floor(ELBOW, 0.05))
         .expect("v2 left arm");
     let (inner, outer) = arm.wrist_reach();
-    let elbow = arm.limits()[3];
+    let elbow = arm.limits()[ELBOW];
     // The poses of the elbow at its two limits stand on the reach's edges.
     for (flex, edge) in [(elbow.lo, outer), (elbow.hi, inner)] {
         let pose = arm.at(&[0.0, 0.4, 0.0, flex, 0.0, 0.0, 0.0]).ee_pose();

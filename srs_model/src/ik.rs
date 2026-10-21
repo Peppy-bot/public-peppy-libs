@@ -31,7 +31,7 @@ use nalgebra::{Isometry3, Matrix3, Rotation3, Unit, Vector3, Vector6};
 use chain_kinematics::manipulability;
 
 use crate::model::ArmModel;
-use crate::{ARM_DOF, Jacobian, JointVec, Limit, PARALLEL_SIN_EPS};
+use crate::{ARM_DOF, ELBOW, Jacobian, JointVec, Limit, PARALLEL_SIN_EPS, SHOULDER, WRIST};
 
 /// How to resolve the redundant arm angle when the caller doesn't pin it.
 #[derive(Debug, Clone, Copy)]
@@ -572,7 +572,7 @@ impl PsiSolve<'_> {
 
         // Shoulder rotation R_s maps the home upper-arm frame to the target one.
         let u0 = (model.elbow_home - model.shoulder) / model.l_su;
-        let a4 = model.axes[3];
+        let a4 = model.axes[ELBOW];
         let r_s = frame_map(u0, a4, e_t, n_plane);
 
         // Rotation through joint 4, then the residual wrist rotation to invert.
@@ -631,8 +631,8 @@ impl PsiSolve<'_> {
                 (self.limits[first], self.limits[last]),
             )
         };
-        let shoulders = limb(&r_s, [0, 1, 2]);
-        let wrists = limb(&r_w, [4, 5, 6]);
+        let shoulders = limb(&r_s, SHOULDER);
+        let wrists = limb(&r_w, WRIST);
 
         // Keep the in-limits branch nearest the seed. Each joint is normalized
         // into its limit window so the returned value itself respects the
@@ -776,14 +776,14 @@ impl PsiSolve<'_> {
             return Vec::new(); // straight arm: feasibility is "none" for every psi
         };
 
-        let bs = Matrix3::from_columns(&[model.axes[0], model.axes[1], model.axes[2]]);
-        let bw = Matrix3::from_columns(&[model.axes[4], model.axes[5], model.axes[6]]);
+        let bs = Matrix3::from_columns(&SHOULDER.map(|joint| model.axes[joint]));
+        let bw = Matrix3::from_columns(&WRIST.map(|joint| model.axes[joint]));
         let (sa_s, cb_s, cc_s) = euler_matrix_coeffs(&bs, &rs0, &rsp, &rsn);
         let (sa_w, cb_w, cc_w) = euler_matrix_coeffs(&bw, &rw0, &rwp, &rwn);
 
         let mut events = Vec::new();
-        let shoulder_limits = [self.limits[0], self.limits[1], self.limits[2]];
-        let wrist_limits = [self.limits[4], self.limits[5], self.limits[6]];
+        let shoulder_limits = SHOULDER.map(|joint| self.limits[joint]);
+        let wrist_limits = WRIST.map(|joint| self.limits[joint]);
         limb_event_angles(
             &sa_s,
             &cb_s,
@@ -938,7 +938,6 @@ fn wrap_pi(x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ELBOW;
     use crate::fk::ForwardKinematics;
     use crate::properties::{STRAIGHT_ELBOW_BAND, sides};
     use crate::test_support::{v1_fk, v1_limits, v1_model};
@@ -988,11 +987,11 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(7);
         for _ in 0..500 {
             let q = sample_q(&mut rng, &lim);
-            if q[3] < 0.1 {
+            if q[ELBOW] < 0.1 {
                 continue;
             }
             let target = pose(&mut fk, &q);
-            let psi = arm_angle_of(&m, &q).expect("q is non-singular (q[3] >= 0.1)");
+            let psi = arm_angle_of(&m, &q).expect("q is non-singular (q[ELBOW] >= 0.1)");
             let sol = solve(&m, &lim, &target, ArmAnglePolicy::Fixed(psi), &q)
                 .expect("exact psi should solve");
             // Same branch as seed: each joint within a small tolerance.
@@ -1114,7 +1113,7 @@ mod tests {
         let mut targets = 0;
         for _ in 0..200 {
             let q = sample_q(&mut rng, &lim);
-            if q[3] < 0.2 {
+            if q[ELBOW] < 0.2 {
                 continue; // comfortably off the straight-arm boundary
             }
             let target = pose(&mut fk, &q);
@@ -1532,7 +1531,7 @@ mod tests {
         let (mut ok, mut total) = (0, 0);
         for _ in 0..1500 {
             let q = sample_q(&mut rng, &lim);
-            if q[3] < 0.2 {
+            if q[ELBOW] < 0.2 {
                 continue; // keep targets comfortably off the straight-arm boundary
             }
             total += 1;
@@ -1666,11 +1665,11 @@ mod tests {
             |a: &JointVec, b: &JointVec| a.iter().zip(b).all(|(x, y)| wrap_pi(x - y).abs() < 1e-4);
         for _ in 0..300 {
             let q = sample_q(&mut rng, &lim);
-            if q[3] < 0.3 {
+            if q[ELBOW] < 0.3 {
                 continue;
             }
             let target = pose(&mut fk, &q);
-            let psi = arm_angle_of(&m, &q).expect("q is non-singular (q[3] >= 0.1)");
+            let psi = arm_angle_of(&m, &q).expect("q is non-singular (q[ELBOW] >= 0.1)");
             // Collect distinct in-limit branches at this fixed arm angle.
             let mut branches: Vec<JointVec> = Vec::new();
             for _ in 0..50 {
@@ -1846,7 +1845,7 @@ mod tests {
         for _ in 0..3000 {
             let q_t = sample_q(&mut rng, &lim);
             let q_s = sample_q(&mut rng, &lim);
-            if q_t[3] < 0.2 || q_s[3] < 0.2 {
+            if q_t[ELBOW] < 0.2 || q_s[ELBOW] < 0.2 {
                 continue;
             }
             let target = pose(&mut fk, &q_t);

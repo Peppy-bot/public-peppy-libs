@@ -68,6 +68,14 @@ pub const ARM_DOF: usize = 7;
 /// wrist center's distance from the shoulder.
 pub const ELBOW: usize = 3;
 
+/// The shoulder's joints in the joint vector, j1..j3, whose axes meet at the
+/// shoulder center.
+pub(crate) const SHOULDER: [usize; 3] = [0, 1, 2];
+
+/// The wrist's joints in the joint vector, j5..j7, whose axes meet at the
+/// wrist center.
+pub(crate) const WRIST: [usize; 3] = [4, 5, 6];
+
 /// One joint-space configuration, j1..j7 in radians.
 pub type JointVec = [f64; ARM_DOF];
 
