@@ -7,6 +7,8 @@
 
 use chain_kinematics::{Chain, ChainSpec, JointSelection};
 
+pub mod properties;
+
 pub const SO101: &str = include_str!("../fixtures/so101_5dof.urdf");
 pub const OPENARM: &str = include_str!("../fixtures/openarm_7dof.urdf");
 
