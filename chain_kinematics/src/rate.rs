@@ -53,16 +53,56 @@ pub fn rate_step<const N: usize>(
 }
 
 /// A pose difference as a world-frame twist: the translation, and the rotation
-/// as an axis-angle vector. Shared by the callers that build a task error.
+/// as an axis-angle vector. Shared by the callers that build a task error. A
+/// rotation whose quaternion vector part is within rounding of zero is none, so
+/// equal orientations draw exactly no correction; any other is read off the
+/// quaternion, whose half-angle `atan2` stays finite down to the smallest angle.
 pub(crate) fn pose_error(
     from: &Isometry3<f64>,
     to: &Isometry3<f64>,
 ) -> (Vector3<f64>, Vector3<f64>) {
     let dp = to.translation.vector - from.translation.vector;
-    let dr = (to.rotation * from.rotation.inverse()).to_rotation_matrix();
-    let dw = dr
-        .axis_angle()
-        .map(|(axis, angle)| axis.into_inner() * angle)
-        .unwrap_or_else(Vector3::zeros);
+    let dr = to.rotation * from.rotation.inverse();
+    let dw = if dr.imag().norm() <= f64::EPSILON {
+        Vector3::zeros()
+    } else {
+        dr.scaled_axis()
+    };
     (dp, dw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nalgebra::{Unit, UnitQuaternion};
+
+    #[test]
+    fn the_smallest_rotations_give_a_finite_twist() {
+        // A rotation under about 1.5e-8 rad can have a matrix trace that rounds
+        // past 3, outside the domain of the matrix angle's arccosine; the
+        // quaternion reading has no such edge. The twist matches the angle to
+        // within the rounding of the composed rotations.
+        let base = UnitQuaternion::from_axis_angle(
+            &Unit::new_normalize(Vector3::new(0.3, -0.2, 0.9)),
+            1.1,
+        );
+        let from = Isometry3::from_parts(Vector3::zeros().into(), base);
+        for k in 0..2000 {
+            let angle = 10f64.powf(-16.0 + 8.0 * f64::from(k) / 2000.0);
+            let axis = Unit::new_normalize(Vector3::new(
+                f64::from(k).sin(),
+                (f64::from(k) * 1.3).cos(),
+                0.7,
+            ));
+            let to = Isometry3::from_parts(
+                Vector3::zeros().into(),
+                UnitQuaternion::from_axis_angle(&axis, angle) * base,
+            );
+            let (_, dw) = pose_error(&from, &to);
+            assert!(
+                dw.iter().all(|v| v.is_finite()) && (dw.norm() - angle).abs() < 1e-15,
+                "a {angle:e} rad rotation gave the twist {dw:?}"
+            );
+        }
+    }
 }
