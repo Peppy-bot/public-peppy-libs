@@ -6,11 +6,9 @@
 //! self-consistency check would not catch.
 
 mod common;
-use common::{openarm, so101};
+use common::{OPENARM, openarm, so101};
 
 use chain_kinematics::{Chain, ChainSpec, JointSelection, Payload, Tree, segments_carrying};
-
-const OPENARM: &str = include_str!("fixtures/openarm_7dof.urdf");
 
 /// Every gram below the chain's base rides on exactly one segment, so the
 /// segment masses have to add up to the robot. The invariant a dynamics layer

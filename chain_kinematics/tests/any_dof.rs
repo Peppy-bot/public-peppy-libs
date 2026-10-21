@@ -5,15 +5,22 @@
 //! five actuated joints with a gripper branching off the last link; the OpenArm
 //! is seven with a two-finger gripper past the wrist. Neither is special-cased.
 
-use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
+use chain_kinematics::nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion, Vector3};
 use chain_kinematics::{
     Chain, ChainSpec, EeCaps, JointSelection, NoSmoothing, ServoLimits, ServoState, ServoStep,
-    ServoTolerances, TRACKING_FLOOR_M, ToleranceError, damped_pseudo_inverse, manipulability,
-    rate_step_toward,
+    ServoTolerances, TRACKING_FLOOR_M, rate_step_toward,
 };
+use hegel::TestCase;
+use hegel::generators as gs;
+use kinematics_properties::{TOLERANCE, angles, configs, unit_vectors};
+use urdf_rs::Robot;
 
 mod common;
-use common::{SO101, SO101_JOINTS, openarm, sample, so101};
+use common::properties::{
+    ChainProperty, TIP, chain_ending_at, chain_of, link_name, named_chain_of, on_a_drawn_robot,
+    permutations,
+};
+use common::{SO101, openarm, so101};
 
 #[test]
 fn loads_arms_of_different_joint_counts() {
@@ -29,81 +36,106 @@ fn loads_arms_of_different_joint_counts() {
     }
 }
 
-/// The strongest check that forward kinematics and the Jacobian agree: every
-/// column against a central finite difference of the pose, on both robots.
-#[test]
-fn jacobian_matches_finite_difference() {
-    fn check<const N: usize>(chain: &Chain<N>, label: &str) {
-        let h = 1e-7;
-        for k in 0..24 {
-            let q = sample(chain, k);
-            let j = chain.at(&q).jacobian();
-            for i in 0..N {
-                let (mut qp, mut qm) = (q, q);
-                qp[i] += h;
-                qm[i] -= h;
-                let (a, b) = (chain.at(&qp).ee_pose(), chain.at(&qm).ee_pose());
-                let lin = (a.translation.vector - b.translation.vector) / (2.0 * h);
-                let ang = (a.rotation * b.rotation.inverse()).scaled_axis() / (2.0 * h);
-                for (row, want) in [lin.x, lin.y, lin.z, ang.x, ang.y, ang.z]
-                    .into_iter()
-                    .enumerate()
-                {
-                    let got = j[(row, i)];
-                    assert!(
-                        (got - want).abs() < 1e-5,
-                        "{label} column {i} row {row}: {got} vs finite difference {want}"
-                    );
-                }
-            }
+/// The servo limits these tests drive at: 2 rad/s a joint, 0.15 m/s and 1 rad/s
+/// at the end effector, a 100 Hz tick, and arrival within `position_m` and
+/// 1e-2 rad.
+fn servo_limits<const N: usize>(position_m: f64) -> ServoLimits<N> {
+    ServoLimits {
+        max_joint_velocity: [2.0; N],
+        ee: EeCaps {
+            linear_m_s: 0.15,
+            angular_rad_s: 1.0,
+        },
+        tolerances: ServoTolerances::new(position_m, 1e-2).expect("a reachable tolerance"),
+        dt_s: 0.01,
+    }
+}
+
+/// Asserts every column of `chain`'s Jacobian at `q` against a central finite
+/// difference of the end-effector pose.
+fn assert_jacobian_matches_finite_difference<const N: usize>(chain: &Chain<N>, q: [f64; N]) {
+    const STEP: f64 = 1e-7;
+    let j = chain.at(&q).jacobian();
+    for i in 0..N {
+        let (mut qp, mut qm) = (q, q);
+        qp[i] += STEP;
+        qm[i] -= STEP;
+        let (a, b) = (chain.at(&qp).ee_pose(), chain.at(&qm).ee_pose());
+        let lin = (a.translation.vector - b.translation.vector) / (2.0 * STEP);
+        let ang = (a.rotation * b.rotation.inverse()).scaled_axis() / (2.0 * STEP);
+        for (row, want) in [lin.x, lin.y, lin.z, ang.x, ang.y, ang.z]
+            .into_iter()
+            .enumerate()
+        {
+            let got = j[(row, i)];
+            assert!(
+                (got - want).abs() < TOLERANCE,
+                "column {i} row {row}: {got} vs finite difference {want}"
+            );
         }
     }
-    check(&so101(), "SO-101");
-    check(&openarm(), "OpenArm");
+}
+
+/// The strongest check that forward kinematics and the Jacobian agree: every
+/// column against a central finite difference of the pose, on chains of every
+/// shape.
+#[hegel::test]
+fn jacobian_matches_finite_difference(tc: TestCase) {
+    struct MatchesFiniteDifference;
+    impl ChainProperty for MatchesFiniteDifference {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let chain = chain_of::<N>(robot);
+            let q = tc.draw(configs(chain.limits()));
+            assert_jacobian_matches_finite_difference(&chain, q);
+        }
+    }
+    on_a_drawn_robot::<MatchesFiniteDifference>(&tc);
+}
+
+/// A mounted tool moves the point the Jacobian describes: its columns are the
+/// rates of the tool frame, not of the link the tool is mounted on.
+#[hegel::test]
+fn the_jacobian_follows_a_mounted_tool(tc: TestCase) {
+    struct FollowsTheTool;
+    impl ChainProperty for FollowsTheTool {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let tooled = chain_ending_at::<N>(robot, &link_name(N))
+                .with_tool_link(TIP)
+                .expect("the drawn tip is fixed below the last link");
+            let q = tc.draw(configs(tooled.limits()));
+            assert_jacobian_matches_finite_difference(&tooled, q);
+        }
+    }
+    on_a_drawn_robot::<FollowsTheTool>(&tc);
 }
 
 /// Naming the joints fixes the order of `q`, which is the whole reason the order
 /// is an input: it is usually the robot's wire order, which no URDF knows.
-#[test]
-fn named_selection_fixes_the_joint_order() {
-    let robot = urdf_rs::read_from_string(SO101).expect("parse SO-101");
-    let spec = |names: &'static [&'static str]| ChainSpec {
-        base_link: None,
-        tip_link: "gripper_frame_link",
-        joints: JointSelection::Named(names),
-    };
-    let forward = Chain::<5>::from_urdf(&robot, &spec(&SO101_JOINTS)).unwrap();
-    const REVERSED: [&str; 5] = [
-        "wrist_roll",
-        "wrist_flex",
-        "elbow_flex",
-        "shoulder_lift",
-        "shoulder_pan",
-    ];
-    let reversed = Chain::<5>::from_urdf(&robot, &spec(&REVERSED)).unwrap();
-
-    let q = [0.1, -0.2, 0.3, -0.4, 0.5];
-    let mut flipped = q;
-    flipped.reverse();
-    let a = forward.at(&q).ee_pose();
-    let b = reversed.at(&flipped).ee_pose();
-    assert!(
-        (a.translation.vector - b.translation.vector).norm() < 1e-12
-            && a.rotation.angle_to(&b.rotation) < 1e-12,
-        "reversing the names and the values must describe the same pose"
-    );
-    // And path order agrees with the names given in path order.
-    let path_order = Chain::<5>::from_urdf(
-        &robot,
-        &ChainSpec {
-            base_link: None,
-            tip_link: "gripper_frame_link",
-            joints: JointSelection::PathOrder,
-        },
-    )
-    .unwrap();
-    let c = path_order.at(&q).ee_pose();
-    assert!((a.translation.vector - c.translation.vector).norm() < 1e-12);
+/// Named in any order, a chain is the same arm with its values and limits
+/// permuted alike.
+#[hegel::test]
+fn named_selection_fixes_the_joint_order(tc: TestCase) {
+    struct NamesFixTheOrder;
+    impl ChainProperty for NamesFixTheOrder {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let order = tc.draw(permutations(N));
+            let (path_order, named) = (chain_of::<N>(robot), named_chain_of::<N>(robot, &order));
+            let q = tc.draw(configs(path_order.limits()));
+            let permuted: [f64; N] = std::array::from_fn(|i| q[order[i]]);
+            assert_eq!(
+                named.limits(),
+                std::array::from_fn(|i| path_order.limits()[order[i]]),
+                "the limits follow the names"
+            );
+            let (a, b) = (path_order.at(&q).ee_pose(), named.at(&permuted).ee_pose());
+            assert!(
+                (a.translation.vector - b.translation.vector).norm() < TOLERANCE
+                    && a.rotation.angle_to(&b.rotation) < TOLERANCE,
+                "naming the joints in {order:?} and permuting the values must describe the same pose"
+            );
+        }
+    }
+    on_a_drawn_robot::<NamesFixTheOrder>(&tc);
 }
 
 #[test]
@@ -126,38 +158,12 @@ fn a_wrong_joint_count_is_refused_at_load() {
     );
 }
 
-#[test]
-fn the_damped_inverse_serves_an_under_actuated_chain() {
-    // Five joints cannot meet an arbitrary six-dimensional twist. The damped
-    // inverse must still return a bounded least-squares answer rather than
-    // failing, which is what lets one control law drive both robots.
-    let chain = so101();
-    for k in 0..16 {
-        let q = sample(&chain, k);
-        let j = chain.at(&q).jacobian();
-        let pinv = damped_pseudo_inverse(&j, 0.05);
-        assert!(
-            pinv.iter().all(|x| x.is_finite()),
-            "damped inverse must stay finite on a 6x5 Jacobian"
-        );
-        assert!(manipulability(&j).is_finite());
-    }
-}
-
 /// The servo law is the crate's reason to exist, so it has to drive a robot it
 /// was not written for.
 #[test]
 fn the_servo_law_converges_on_both_robots() {
     fn run<const N: usize>(chain: &Chain<N>, seed: [f64; N], label: &str) {
-        let limits = ServoLimits {
-            max_joint_velocity: [2.0; N],
-            ee: EeCaps {
-                linear_m_s: 0.15,
-                angular_rad_s: 1.0,
-            },
-            tolerances: ServoTolerances::new(1e-3, 1e-2).expect("a reachable tolerance"),
-            dt_s: 0.01,
-        };
+        let limits = servo_limits::<N>(1e-3);
 
         // A goal the chain provably reaches: the pose of another configuration.
         let goal_q: [f64; N] = std::array::from_fn(|i| seed[i] * 0.4);
@@ -173,17 +179,27 @@ fn the_servo_law_converges_on_both_robots() {
     run(&openarm(), [0.3, -0.4, 0.2, 0.8, -0.5, 0.3, 0.6], "OpenArm");
 }
 
-#[test]
-fn a_held_orientation_is_held_exactly_along_the_whole_line() {
+#[hegel::test]
+fn a_held_orientation_is_held_exactly_along_the_whole_line(tc: TestCase) {
     // A pure-translation move interpolates between two orientations that are the
     // same one, where slerp divides one vanishing sine by another. It stays inside
     // any tolerance, but it is not the identity, so over a move's length the held
     // orientation walks. Taking the endpoint there is what pins it.
-    let hold = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.3);
-    let at = |x: f64| Isometry3::from_parts(Translation3::new(x, 0.0, 0.0), hold);
-    let (from, to) = (at(0.0), at(0.25));
+    let hold = UnitQuaternion::from_axis_angle(
+        &Unit::new_normalize(tc.draw(unit_vectors())),
+        tc.draw(angles()),
+    );
+    let end = || {
+        Isometry3::from_parts(
+            Translation3::from(
+                tc.draw(unit_vectors()) * tc.draw(gs::floats().min_value(0.0).max_value(1.0)),
+            ),
+            hold,
+        )
+    };
+    let (from, to) = (end(), end());
     for k in 0..=20 {
-        let s = k as f64 / 20.0;
+        let s = f64::from(k) / 20.0;
         let held = chain_kinematics::interpolate(&from, &to, s).rotation;
         assert_eq!(
             held,
@@ -194,22 +210,40 @@ fn a_held_orientation_is_held_exactly_along_the_whole_line() {
     }
 }
 
-#[test]
-fn a_tool_frame_moves_the_end_effector_and_not_the_tip() {
-    let bare = openarm();
-    let tooled = openarm()
-        .with_tool_link("openarm_left_tcp")
-        .expect("the OpenArm URDF carries a tcp frame");
-    let q = [0.3, -0.4, 0.2, 0.8, -0.5, 0.3, 0.6];
-    assert_eq!(bare.at(&q).tip_pose(), tooled.at(&q).tip_pose());
-    let tool = tooled.tool();
-    assert!(
-        tool.translation.vector.norm() > 0.1,
-        "tcp should sit off the tip"
-    );
-    let expected = bare.at(&q).tip_pose() * tool;
-    let ee = tooled.at(&q).ee_pose();
-    assert!((ee.translation.vector - expected.translation.vector).norm() < 1e-12);
+#[hegel::test]
+fn a_tool_frame_moves_the_end_effector_and_not_the_tip(tc: TestCase) {
+    // Mounting the drawn tip as a tool on the last link: the tip pose stays the
+    // link's, and the end effector is the tool frame on it, the frame a chain
+    // ending at the tool link reports.
+    struct ToolFrame;
+    impl ChainProperty for ToolFrame {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let bare = chain_ending_at::<N>(robot, &link_name(N));
+            let tooled = chain_ending_at::<N>(robot, &link_name(N))
+                .with_tool_link(TIP)
+                .expect("the drawn tip is fixed below the last link");
+            let q = tc.draw(configs(bare.limits()));
+            assert_eq!(bare.at(&q).tip_pose(), tooled.at(&q).tip_pose());
+            let ee = tooled.at(&q).ee_pose();
+            for (label, want) in [
+                (
+                    "the tip with the tool",
+                    bare.at(&q).tip_pose() * tooled.tool(),
+                ),
+                (
+                    "a chain ending at the tool",
+                    chain_of::<N>(robot).at(&q).ee_pose(),
+                ),
+            ] {
+                assert!(
+                    (ee.translation.vector - want.translation.vector).norm() < TOLERANCE
+                        && ee.rotation.angle_to(&want.rotation) < TOLERANCE,
+                    "the end effector {ee:?} is off {label} at {want:?}"
+                );
+            }
+        }
+    }
+    on_a_drawn_robot::<ToolFrame>(&tc);
 }
 
 #[test]
@@ -237,76 +271,59 @@ fn poses_are_reported_in_the_named_base_frame() {
     assert!(world.translation.vector != Vector3::zeros());
 }
 
-#[test]
-fn an_arrival_tolerance_the_law_would_never_reach_is_refused() {
+#[hegel::test]
+#[hegel::explicit_test_case(slack = TRACKING_FLOOR_M)]
+#[hegel::explicit_test_case(slack = TRACKING_FLOOR_M.next_down())]
+fn an_arrival_tolerance_the_law_would_never_reach_is_refused(tc: TestCase) {
     // A step stops correcting position inside the law's tracking floor, so a move
     // asked to arrive tighter than that could only spend its whole budget and
-    // time out. The floor itself is reachable and is the tightest that is, which
-    // `the_servo_law_converges_on_both_robots` runs at on both robots.
-    ServoTolerances::new(TRACKING_FLOOR_M, 1e-2)
-        .expect("the floor is the tightest arrival the law can reach");
-    for position_m in [
-        TRACKING_FLOOR_M * 0.999,
-        0.0,
-        -1e-3,
-        f64::NAN,
-        f64::INFINITY,
-    ] {
-        assert!(
-            matches!(
-                ServoTolerances::new(position_m, 1e-2),
-                Err(ToleranceError::Position(_))
-            ),
-            "{position_m} m is not an arrival the law can reach"
-        );
-    }
-    for orientation_rad in [0.0, -1e-2, f64::NAN, f64::INFINITY] {
-        assert!(
-            matches!(
-                ServoTolerances::new(1e-2, orientation_rad),
-                Err(ToleranceError::Orientation(_))
-            ),
-            "{orientation_rad} rad is not a finite positive angle"
-        );
-    }
-}
-
-#[test]
-fn a_step_stops_correcting_position_inside_the_tracking_floor() {
-    // The mechanism the refusal above stands on: within the floor the position
-    // term is dropped, so a target that close draws no motion at all and the
-    // error stops shrinking. No budget closes a gap nothing is correcting.
-    let chain = so101();
-    let q = [0.3, -0.4, 0.5, -0.3, 0.2];
-    let ee = chain.world_pose(&chain.at(&q).ee_pose());
-    let limits = ServoLimits {
-        max_joint_velocity: [2.0; 5],
-        ee: EeCaps {
-            linear_m_s: 0.15,
-            angular_rad_s: 1.0,
-        },
-        tolerances: ServoTolerances::new(TRACKING_FLOOR_M, 1e-2).expect("the floor is reachable"),
-        dt_s: 0.01,
-    };
-    let inside = Isometry3::from_parts(
-        Translation3::from(ee.translation.vector + Vector3::new(0.9 * TRACKING_FLOOR_M, 0.0, 0.0)),
-        ee.rotation,
+    // time out. A position slack parses exactly when it is finite and at least
+    // the floor, the tightest the law reaches, which
+    // `the_servo_law_converges_on_both_robots` runs at on both robots; an
+    // orientation slack, exactly when it is finite and positive.
+    let slack: f64 = tc.draw(gs::floats());
+    assert_eq!(
+        ServoTolerances::new(slack, 1e-2).is_ok(),
+        slack.is_finite() && slack >= TRACKING_FLOOR_M,
+        "position slack {slack} m"
     );
     assert_eq!(
-        rate_step_toward(&chain, &q, &ee, &inside, &limits),
-        q,
-        "a target inside the floor should draw no step"
+        ServoTolerances::new(1e-2, slack).is_ok(),
+        slack.is_finite() && slack > 0.0,
+        "orientation slack {slack} rad"
     );
+}
 
-    let outside = Isometry3::from_parts(
-        Translation3::from(ee.translation.vector + Vector3::new(1.1 * TRACKING_FLOOR_M, 0.0, 0.0)),
-        ee.rotation,
-    );
-    assert_ne!(
-        rate_step_toward(&chain, &q, &ee, &outside, &limits),
-        q,
-        "a target outside the floor should draw one"
-    );
+#[hegel::test]
+fn a_step_stops_correcting_position_inside_the_tracking_floor(tc: TestCase) {
+    // The mechanism the refusal above stands on: within the floor the position
+    // term is dropped, so a target that close draws no motion at all and the
+    // error stops shrinking. No budget closes a gap nothing is correcting. The
+    // step judges the error it measures, so the property does too.
+    struct NoStep;
+    impl ChainProperty for NoStep {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let chain = chain_of::<N>(robot);
+            let q = tc.draw(configs(chain.limits()));
+            let ee = chain.world_pose(&chain.at(&q).ee_pose());
+            let offset = tc.draw(unit_vectors())
+                * tc.draw(gs::floats().min_value(0.0).max_value(TRACKING_FLOOR_M));
+            let inside = Isometry3::from_parts(
+                Translation3::from(ee.translation.vector + offset),
+                ee.rotation,
+            );
+            if (inside.translation.vector - ee.translation.vector).norm() >= TRACKING_FLOOR_M {
+                return;
+            }
+            let limits = servo_limits::<N>(TRACKING_FLOOR_M);
+            assert_eq!(
+                rate_step_toward(&chain, &q, &ee, &inside, &limits),
+                q,
+                "a target {offset:?} away, inside the floor, should draw no step"
+            );
+        }
+    }
+    on_a_drawn_robot::<NoStep>(&tc);
 }
 
 /// One revolute joint about z at the origin, reaching a quarter metre out along
@@ -360,15 +377,7 @@ fn a_pose_error_of_exactly_the_tracking_floor_is_still_corrected() {
         "the error must be exactly the floor, not a rounding step past it"
     );
 
-    let limits = ServoLimits {
-        max_joint_velocity: [2.0; 1],
-        ee: EeCaps {
-            linear_m_s: 0.15,
-            angular_rad_s: 1.0,
-        },
-        tolerances: ServoTolerances::new(TRACKING_FLOOR_M, 1e-2).expect("the floor is reachable"),
-        dt_s: 0.01,
-    };
+    let limits = servo_limits::<1>(TRACKING_FLOOR_M);
     assert_ne!(
         rate_step_toward(&chain, &q, &ee, &target, &limits),
         q,

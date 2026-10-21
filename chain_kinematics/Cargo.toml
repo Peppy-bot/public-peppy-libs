@@ -16,3 +16,5 @@ urdf-rs = "0.10"
 
 [dev-dependencies]
 approx = "0.5"
+hegeltest = { version = "0.50", features = ["static-engine"] }
+kinematics_properties = { path = "../kinematics_properties" }

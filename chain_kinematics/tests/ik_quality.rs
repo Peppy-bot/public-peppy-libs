@@ -9,8 +9,13 @@
 mod common;
 
 use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion};
-use chain_kinematics::{Goal, Kinematics};
+use chain_kinematics::{ACCEPT_POSITION_M, Goal, Kinematics};
+use common::properties::{ChainProperty, chain_of, on_a_drawn_robot, unreachable_poses};
 use common::{SplitMix64, openarm, so101};
+use hegel::TestCase;
+use hegel::generators as gs;
+use kinematics_properties::configs;
+use urdf_rs::Robot;
 
 fn kin5() -> Kinematics<5> {
     Kinematics::new(so101())
@@ -124,33 +129,71 @@ fn track_comes_to_rest_against_an_unreachable_target() {
     run(&kin7(), "OpenArm");
 }
 
-#[test]
-fn identical_solves_answer_identically() {
-    // The determinism contract, with an unrelated solve between the two calls
-    // so any hidden state would show.
-    let kinematics = kin5();
-    let mut rng = SplitMix64(3);
-    let goal = Goal::at(kinematics.forward_kinematics(&rng.config(kinematics.chain())));
-    let seed = kinematics.limits().map(|l| l.midpoint());
-    let first = kinematics.inverse_kinematics(&seed, &goal);
-    let unrelated_seed = rng.config(kinematics.chain());
-    let unrelated = Goal::at(kinematics.forward_kinematics(&rng.config(kinematics.chain())));
-    let _ = kinematics.inverse_kinematics(&unrelated_seed, &unrelated);
-    let second = kinematics.inverse_kinematics(&seed, &goal);
-    assert_eq!(first, second);
+#[hegel::test]
+fn track_never_moves_away_from_its_target(tc: TestCase) {
+    // The descent keeps the best configuration it reaches, with the seed among
+    // its candidates, so a tick never ends farther from the target than it began.
+    struct Approaches;
+    impl ChainProperty for Approaches {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let kinematics = Kinematics::new(chain_of::<N>(robot));
+            let target = tc.draw(unreachable_poses(kinematics.chain()));
+            let miss = |q: &[f64; N]| {
+                (kinematics.forward_kinematics(q).translation.vector - target.translation.vector)
+                    .norm()
+            };
+            let start = tc.draw(configs(kinematics.limits()));
+            std::iter::successors(Some(start), |q| Some(kinematics.track(q, &target)))
+                .take(200)
+                .collect::<Vec<_>>()
+                .windows(2)
+                .enumerate()
+                .for_each(|(tick, pair)| {
+                    assert!(
+                        miss(&pair[1]) <= miss(&pair[0]),
+                        "tick {tick}: the miss grew from {} to {}",
+                        miss(&pair[0]),
+                        miss(&pair[1])
+                    );
+                });
+        }
+    }
+    on_a_drawn_robot::<Approaches>(&tc);
 }
 
-#[test]
-fn an_unreachable_target_is_refused() {
-    let kinematics = kin5();
-    let seed = kinematics.limits().map(|l| l.midpoint());
-    let far = Isometry3::from_parts(Translation3::new(0.0, 0.0, 5.0), UnitQuaternion::identity());
-    assert!(
-        kinematics
-            .inverse_kinematics(&seed, &Goal::at(far))
-            .is_none()
-    );
-    assert!(kinematics.continue_to(&seed, &Goal::at(far)).is_none());
+#[hegel::test]
+fn identical_solves_answer_identically(tc: TestCase) {
+    // The determinism contract, with an unrelated solve between the two calls
+    // so any hidden state would show.
+    struct Deterministic;
+    impl ChainProperty for Deterministic {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let kinematics = Kinematics::new(chain_of::<N>(robot));
+            let limits = kinematics.limits();
+            let goal = Goal::at(kinematics.forward_kinematics(&tc.draw(configs(limits))));
+            let seed = tc.draw(configs(limits));
+            let first = kinematics.inverse_kinematics(&seed, &goal);
+            let unrelated = Goal::at(kinematics.forward_kinematics(&tc.draw(configs(limits))));
+            let _ = kinematics.inverse_kinematics(&tc.draw(configs(limits)), &unrelated);
+            assert_eq!(first, kinematics.inverse_kinematics(&seed, &goal));
+        }
+    }
+    on_a_drawn_robot::<Deterministic>(&tc);
+}
+
+#[hegel::test]
+fn an_unreachable_target_is_refused(tc: TestCase) {
+    struct Refused;
+    impl ChainProperty for Refused {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let kinematics = Kinematics::new(chain_of::<N>(robot));
+            let goal = Goal::at(tc.draw(unreachable_poses(kinematics.chain())));
+            let seed = tc.draw(configs(kinematics.limits()));
+            assert!(kinematics.inverse_kinematics(&seed, &goal).is_none());
+            assert!(kinematics.continue_to(&seed, &goal).is_none());
+        }
+    }
+    on_a_drawn_robot::<Refused>(&tc);
 }
 
 #[test]
@@ -175,19 +218,22 @@ fn a_caller_named_position_bar_loosens_acceptance_per_goal() {
     assert!((reached.translation.vector - far.translation.vector).norm() <= 10.0);
 }
 
-#[test]
-fn tolerances_are_parsed_at_the_boundary() {
+#[hegel::test]
+fn tolerances_are_parsed_at_the_boundary(tc: TestCase) {
+    // A bar parses exactly when it is a positive, finite number.
     let goal = Goal::at(Isometry3::identity());
-    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-        assert!(
-            goal.position_within(bad).is_err(),
-            "position bar {bad} must not parse"
-        );
-        assert!(
-            goal.orientation_within(bad).is_err(),
-            "orientation bar {bad} must not parse"
-        );
-    }
+    let bar: f64 = tc.draw(gs::floats());
+    let valid = bar.is_finite() && bar > 0.0;
+    assert_eq!(
+        goal.position_within(bar).is_ok(),
+        valid,
+        "position bar {bar}"
+    );
+    assert_eq!(
+        goal.orientation_within(bar).is_ok(),
+        valid,
+        "orientation bar {bar}"
+    );
 }
 
 #[test]
@@ -199,45 +245,90 @@ fn a_non_finite_seed_is_rejected() {
     let _ = kinematics.track(&seed, &Isometry3::identity());
 }
 
-#[test]
-fn a_seed_outside_limits_is_clamped_not_refused() {
-    let kinematics = kin5();
-    let mut rng = SplitMix64(5);
-    let target = kinematics.forward_kinematics(&rng.config(kinematics.chain()));
-    let solved = kinematics
-        .inverse_kinematics(&[1.0e3; 5], &Goal::at(target))
-        .expect("a wild seed is clamped, then solved from");
-    assert!(
-        kinematics
-            .limits()
-            .iter()
-            .zip(solved)
-            .all(|(l, v)| l.contains(v)),
-        "the answer must be in limits"
-    );
+#[hegel::test]
+fn every_answer_is_in_limits_and_reaches_the_goal(tc: TestCase) {
+    // From any finite seed, in limits or far outside them: a seed is clamped
+    // before the search, so whatever the search answers is a configuration the
+    // chain can hold, and it reaches the goal within the acceptance bar.
+    struct Sound;
+    impl ChainProperty for Sound {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let kinematics = Kinematics::new(chain_of::<N>(robot));
+            let limits = kinematics.limits();
+            let target = kinematics.forward_kinematics(&tc.draw(configs(limits)));
+            let seed: [f64; N] =
+                tc.draw(gs::arrays(gs::floats().min_value(-1.0e3).max_value(1.0e3)));
+            let Some(solved) = kinematics.inverse_kinematics(&seed, &Goal::at(target)) else {
+                return;
+            };
+            assert!(
+                limits.iter().zip(solved).all(|(l, v)| l.contains(v)),
+                "the answer {solved:?} must be in limits"
+            );
+            let chain = kinematics.chain();
+            let reached = chain.at(&solved).ee_pose().translation.vector;
+            let wanted = chain.base_pose(&target).translation.vector;
+            assert!(
+                (reached - wanted).norm() <= ACCEPT_POSITION_M,
+                "the answer {solved:?} misses by {:.2e} m",
+                (reached - wanted).norm()
+            );
+        }
+    }
+    on_a_drawn_robot::<Sound>(&tc);
 }
 
 #[test]
-fn continue_to_stays_in_the_seed_neighbourhood() {
+fn continue_to_follows_a_step_while_a_joint_rests_on_a_limit() {
+    // Every joint starts on a limit, and the step's least-squares answer pushes
+    // joint 2, which slides along the same line as joint 1, below its lower
+    // limit of 0: joint 1 alone carries the step.
+    let urdf = r#"<robot name="t">
+  <link name="link_0"/><link name="link_1"/><link name="link_2"/><link name="link_3"/>
+  <link name="link_4"/><link name="tip"/>
+  <joint name="joint_1" type="prismatic"><parent link="link_0"/><child link="link_1"/>
+    <axis xyz="1 0 0"/><limit lower="-0.125" upper="0" effort="1" velocity="1"/></joint>
+  <joint name="joint_2" type="prismatic"><parent link="link_1"/><child link="link_2"/>
+    <axis xyz="1 0 0"/><limit lower="0" upper="0.125" effort="1" velocity="1"/></joint>
+  <joint name="joint_3" type="prismatic"><parent link="link_2"/><child link="link_3"/>
+    <origin rpy="0 0.125 0"/><axis xyz="1 0 0"/>
+    <limit lower="-0.125" upper="0" effort="1" velocity="1"/></joint>
+  <joint name="joint_4" type="prismatic"><parent link="link_3"/><child link="link_4"/>
+    <origin rpy="0 1 0"/><axis xyz="1 0 0"/>
+    <limit lower="-0.125" upper="0" effort="1" velocity="1"/></joint>
+  <joint name="tip_joint" type="fixed"><parent link="link_4"/><child link="tip"/></joint>
+</robot>"#;
+    let robot = urdf_rs::read_from_string(urdf).expect("parse fixture");
+    let kinematics = Kinematics::new(chain_of::<4>(&robot));
+    let goal = Goal::at(kinematics.forward_kinematics(&[-0.03125, 0.0, 0.0, 0.0]));
+    assert!(kinematics.continue_to(&[0.0; 4], &goal).is_some());
+}
+
+#[hegel::test]
+fn continue_to_stays_in_the_seed_neighbourhood(tc: TestCase) {
     // A path's next sample: solvable from the previous one, and answered with
     // the continuation rather than a distant reconfiguration.
-    let kinematics = kin5();
-    let limits = kinematics.limits();
-    let mut rng = SplitMix64(9);
-    let q0 = rng.config(kinematics.chain());
-    let q1: [f64; 5] =
-        std::array::from_fn(|i| limits[i].clamp(q0[i] + if i % 2 == 0 { 0.05 } else { -0.05 }));
-    let target = kinematics.forward_kinematics(&q1);
-    let stepped = kinematics
-        .continue_to(&q0, &Goal::at(target))
-        .expect("the next sample of a path stays solvable from the previous one");
-    let drift = stepped
-        .iter()
-        .zip(q0)
-        .map(|(a, b)| (a - b).abs())
-        .fold(0.0_f64, f64::max);
-    assert!(
-        drift < 0.5,
-        "continue_to jumped {drift:.2} rad away from its seed"
-    );
+    struct Continues;
+    impl ChainProperty for Continues {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let kinematics = Kinematics::new(chain_of::<N>(robot));
+            let limits = kinematics.limits();
+            let q0 = tc.draw(configs(limits));
+            let step: [f64; N] = tc.draw(gs::arrays(gs::floats().min_value(-0.05).max_value(0.05)));
+            let q1: [f64; N] = std::array::from_fn(|i| limits[i].clamp(q0[i] + step[i]));
+            let stepped = kinematics
+                .continue_to(&q0, &Goal::at(kinematics.forward_kinematics(&q1)))
+                .unwrap_or_else(|| panic!("the step from {q0:?} to {q1:?} is unsolvable"));
+            let drift = stepped
+                .iter()
+                .zip(q0)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                drift < 0.5,
+                "continue_to jumped {drift:.2} away from its seed {q0:?}"
+            );
+        }
+    }
+    on_a_drawn_robot::<Continues>(&tc);
 }

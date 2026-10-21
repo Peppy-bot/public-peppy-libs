@@ -5,7 +5,10 @@
 //! expected; the allow keeps clippy's -D warnings gate meaningful for the rest.
 #![allow(dead_code)]
 
-use chain_kinematics::{Chain, ChainSpec, JointSelection};
+use chain_kinematics::nalgebra::DMatrix;
+use chain_kinematics::{Chain, ChainSpec, Jacobian, JointSelection};
+
+pub mod properties;
 
 pub const SO101: &str = include_str!("../fixtures/so101_5dof.urdf");
 pub const OPENARM: &str = include_str!("../fixtures/openarm_7dof.urdf");
@@ -44,21 +47,12 @@ pub fn openarm() -> Chain<7> {
     .expect("OpenArm is a seven-joint chain")
 }
 
-/// A configuration spread across each joint's range, deterministically.
-pub fn sample<const N: usize>(chain: &Chain<N>, k: usize) -> [f64; N] {
-    let limits = chain.limits();
-    std::array::from_fn(|i| {
-        let t = ((k + 1) as f64 * 0.618_033_988_749_894_9 * (i + 1) as f64).fract();
-        limits[i].lo + t * (limits[i].hi - limits[i].lo)
-    })
-}
-
 /// SplitMix64: a tiny deterministic generator for uniform test draws, so a
 /// suite's verdict is a function of the code alone.
 pub struct SplitMix64(pub u64);
 
 impl SplitMix64 {
-    pub fn next_u64(&mut self) -> u64 {
+    fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -67,7 +61,7 @@ impl SplitMix64 {
     }
 
     /// Uniform in [0, 1): the top 53 bits, a full mantissa's worth.
-    pub fn unit(&mut self) -> f64 {
+    fn unit(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
     }
 
@@ -80,4 +74,22 @@ impl SplitMix64 {
         }
         q
     }
+}
+
+/// The singular values of `j`, from the eigenvalues of whichever Gram matrix is
+/// the smaller: `Jᵀ J` below six joints, one value per joint, and `J Jᵀ` from
+/// six up, six values. nalgebra 0.35's SVD misreports some rank-deficient
+/// Jacobians, and its symmetric eigen-decomposition reads them right.
+pub fn singular_values<const N: usize>(j: &Jacobian<N>) -> Vec<f64> {
+    let j = DMatrix::from_iterator(6, N, j.iter().copied());
+    let gram = if N < 6 {
+        j.transpose() * &j
+    } else {
+        &j * j.transpose()
+    };
+    gram.symmetric_eigen()
+        .eigenvalues
+        .iter()
+        .map(|&value| value.max(0.0).sqrt())
+        .collect()
 }

@@ -39,7 +39,6 @@ mod arm;
 mod error;
 mod fk;
 mod ik;
-mod jacobian;
 mod model;
 
 /// The library entry point: build an [`Arm`] from a URDF, then read FK, gravity,
@@ -54,17 +53,28 @@ pub use ik::{ArmAnglePolicy, Solution};
 /// included, is read through it, so it can only be queried after a pose.
 pub type Posed<'a> = chain_kinematics::Posed<'a, ARM_DOF>;
 
-/// Differential kinematics: the geometric [`Jacobian`] (read off a [`Posed`] view
-/// via [`Posed::jacobian`]) and its redundancy-aware inverses and helpers for
-/// velocity-level control.
-pub use jacobian::{
-    Jacobian, JacobianPinv, damped_pseudo_inverse, manipulability, null_space_projector,
-    try_pseudo_inverse,
-};
+/// The geometric Jacobian of the end effector at seven joints, read off a
+/// [`Posed`] view via [`Posed::jacobian`]: maps joint rates (rad/s) to the EE
+/// spatial twist, both in the arm base frame. Rows 0..3 are linear velocity
+/// (m/s), rows 3..6 are angular velocity (rad/s). Its damped inverse and its
+/// manipulability are [`Posed`] methods too.
+pub type Jacobian = chain_kinematics::Jacobian<ARM_DOF>;
 
 /// Degrees of freedom of the arm. The URDF chain is validated against this at
 /// load (the closed-form arm-angle redundancy resolution is specific to 7 DOF).
 pub const ARM_DOF: usize = 7;
+
+/// The elbow's index in the joint vector, j4: the joint whose flex sets the
+/// wrist center's distance from the shoulder.
+pub const ELBOW: usize = 3;
+
+/// The shoulder's joints in the joint vector, j1..j3, whose axes meet at the
+/// shoulder center.
+pub(crate) const SHOULDER: [usize; 3] = [0, 1, 2];
+
+/// The wrist's joints in the joint vector, j5..j7, whose axes meet at the
+/// wrist center.
+pub(crate) const WRIST: [usize; 3] = [4, 5, 6];
 
 /// One joint-space configuration, j1..j7 in radians.
 pub type JointVec = [f64; ARM_DOF];
@@ -98,6 +108,7 @@ pub use chain_kinematics;
 pub(crate) mod test_support {
     use crate::fk::ForwardKinematics;
     use crate::model::ArmModel;
+    use std::sync::LazyLock;
 
     /// The fixture URDF's path, a literal that `include_str!` also takes.
     macro_rules! fixture_urdf_path {
@@ -123,12 +134,22 @@ pub(crate) mod test_support {
         format!("openarm_{side}_link0")
     }
 
-    pub(crate) fn v1_fk(side: &str) -> ForwardKinematics {
-        ForwardKinematics::from_urdf(FIXTURE_URDF, &base(side)).expect("load fixture fk")
+    /// The fixture's forward kinematics for `side`, parsed once per test binary.
+    pub(crate) fn v1_fk(side: &str) -> &'static ForwardKinematics {
+        fn load(side: &str) -> ForwardKinematics {
+            ForwardKinematics::from_urdf(FIXTURE_URDF, &base(side)).expect("load fixture fk")
+        }
+        static LEFT: LazyLock<ForwardKinematics> = LazyLock::new(|| load("left"));
+        static RIGHT: LazyLock<ForwardKinematics> = LazyLock::new(|| load("right"));
+        match side {
+            "left" => &LEFT,
+            "right" => &RIGHT,
+            _ => panic!("the fixture's arms are \"left\" and \"right\", not {side:?}"),
+        }
     }
 
     pub(crate) fn v1_model(side: &str) -> ArmModel {
-        ArmModel::from_fk(&mut v1_fk(side)).expect("load fixture model")
+        ArmModel::from_fk(v1_fk(side)).expect("load fixture model")
     }
 
     /// The fixture's joint limits, the solver's in-limit test (see `ik::solve`).
@@ -136,3 +157,9 @@ pub(crate) mod test_support {
         v1_fk(side).limits()
     }
 }
+
+/// The arm sides and the straight-arm band the property tests share, the same
+/// file the integration tests reach as `common::properties`.
+#[cfg(test)]
+#[path = "../tests/common/properties.rs"]
+pub(crate) mod properties;

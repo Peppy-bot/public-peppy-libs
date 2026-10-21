@@ -28,10 +28,10 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use nalgebra::{Isometry3, Matrix3, Rotation3, Unit, Vector3, Vector6};
 
-use crate::jacobian::{Jacobian, manipulability};
+use chain_kinematics::manipulability;
 
 use crate::model::ArmModel;
-use crate::{ARM_DOF, JointVec, Limit, PARALLEL_SIN_EPS};
+use crate::{ARM_DOF, ELBOW, Jacobian, JointVec, Limit, PARALLEL_SIN_EPS, SHOULDER, WRIST};
 
 /// How to resolve the redundant arm angle when the caller doesn't pin it.
 #[derive(Debug, Clone, Copy)]
@@ -82,24 +82,12 @@ fn screw_point(
 /// Forward kinematics from the PoE screw data: EE position in the base frame.
 /// Independent path from the `k`-chain FK; the two must agree (see tests),
 /// which validates the screw axes/points the IK relies on.
-pub(crate) fn fk_poe_position(model: &ArmModel, q: &JointVec) -> Vector3<f64> {
+fn fk_poe_position(model: &ArmModel, q: &JointVec) -> Vector3<f64> {
     let mut p = model.home_tip.translation.vector;
     for i in (0..ARM_DOF).rev() {
         p = screw_point(model.axes[i], model.points[i], q[i], p);
     }
     p
-}
-
-/// Full PoE forward rotation: `exp(w1 q1)...exp(w7 q7) * R_home`. Only the
-/// rotation cross-check in the tests needs it (the production path uses the
-/// position map via `arm_angle_of`).
-#[cfg(test)]
-pub(crate) fn fk_poe_rotation(model: &ArmModel, q: &JointVec) -> Rotation3<f64> {
-    let mut r = model.home_tip.rotation.to_rotation_matrix();
-    for i in (0..ARM_DOF).rev() {
-        r = exp_so3(model.axes[i], q[i]) * r;
-    }
-    r
 }
 
 // ---------------------------------------------------------------------------
@@ -119,8 +107,8 @@ fn subproblem1(axis: Vector3<f64>, p: Vector3<f64>, q: Vector3<f64>) -> f64 {
 /// Numerically-zero slack for the O(1) algebraic quantities in the closed-form
 /// solvers: the subproblem-2 discriminant `gamma`(²) (below it the two branches
 /// coincide) and, in [`sincos_roots`], the `a sin + b cos` amplitude and the
-/// `|cos|`-past-1 roundoff. All are O(1) for this arm's orthogonal axes, so this
-/// is a roundoff floor, not a degeneracy angle.
+/// half-width below which its two roots are one. All are O(1) for this arm's
+/// orthogonal axes, so this is a roundoff floor, not a degeneracy angle.
 const ALGEBRAIC_EPS: f64 = 1e-9;
 
 /// Minimum `sin(angle)` between the probe axis and `w3` in [`decompose_three_axes`].
@@ -194,6 +182,80 @@ fn decompose_three_axes(
             (t1, t2, t3)
         })
         .collect()
+}
+
+/// Rounding slack on a joint limit (radians): a joint the closed form puts at
+/// most this far past a limit is that limit, rounded.
+const LIMIT_SLACK: f64 = 1e-9;
+
+/// `branches` of a spherical limb's decomposition, plus, when the limb is at its
+/// gimbal lock, each branch's outer joints re-split nearest the seed's.
+///
+/// At the lock the middle joint turns the last axis onto `±first`, so the two
+/// outer joints turn about one line and the limb's rotation `r` fixes only
+/// `t1 ± t3`: every split of that sum reaches `r`, and the decomposition
+/// returns an arbitrary one. The split nearest `seed` within `limits` keeps a
+/// solve continuous with the configuration it starts from.
+fn with_lock_splits(
+    branches: Vec<(f64, f64, f64)>,
+    r: &Rotation3<f64>,
+    (first, last): (Vector3<f64>, Vector3<f64>),
+    seed: (f64, f64),
+    limits: (Limit, Limit),
+) -> Vec<(f64, f64, f64)> {
+    /// Largest sine between the first axis and the last axis carried through `r`
+    /// at which the limb counts as locked. Re-splitting the outer joints there
+    /// moves the limb by at most this times a turn (6e-8 rad); past it, rounding
+    /// leaves the decomposition's outer joints within 1e-8 rad.
+    const LOCK_SIN: f64 = 1e-8;
+    let carried = r * last;
+    if carried.cross(&first).norm() >= LOCK_SIN {
+        return branches;
+    }
+    let sign = carried.dot(&first).signum();
+    let splits: Vec<(f64, f64, f64)> = branches
+        .iter()
+        .filter_map(|&(t1, t2, t3)| {
+            split_nearest(t1 + sign * t3, sign, seed, limits).map(|(u1, u3)| (u1, t2, u3))
+        })
+        .collect();
+    branches.into_iter().chain(splits).collect()
+}
+
+/// The split `(t1, t3)` of `t1 + sign * t3 = sum` (mod 2π) nearest the seed's
+/// outer joints with both inside `limits`, or `None` if no split fits them. A
+/// seed with both joints on limits has the corner as its only split, which
+/// rounding can leave [`LIMIT_SLACK`] outside them.
+fn split_nearest(
+    sum: f64,
+    sign: f64,
+    (seed_first, seed_last): (f64, f64),
+    (first, last): (Limit, Limit),
+) -> Option<(f64, f64)> {
+    let seed_sum = seed_first + sign * seed_last;
+    let nearest_sum = seed_sum + wrap_pi(sum - seed_sum);
+    [nearest_sum, nearest_sum - TAU, nearest_sum + TAU]
+        .into_iter()
+        .filter_map(|sum| {
+            // t3 = sign * (sum - t1) inside `last` bounds t1 to an interval.
+            let (from_last_lo, from_last_hi) = if sign > 0.0 {
+                (sum - last.hi, sum - last.lo)
+            } else {
+                (sum + last.lo, sum + last.hi)
+            };
+            let (lo, hi) = (first.lo.max(from_last_lo), first.hi.min(from_last_hi));
+            (lo <= hi + LIMIT_SLACK).then(|| {
+                let hi = hi.max(lo);
+                // Nearest point of the line t1 + sign * t3 = sum to the seed.
+                let t1 = (0.5 * (seed_first + sum - sign * seed_last)).clamp(lo, hi);
+                (t1, sign * (sum - t1))
+            })
+        })
+        .min_by(|x, y| {
+            let cost =
+                |&(t1, t3): &(f64, f64)| (t1 - seed_first).powi(2) + (t3 - seed_last).powi(2);
+            cost(x).total_cmp(&cost(y))
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -325,57 +387,18 @@ pub(crate) fn solve(
     arm_angle: ArmAnglePolicy,
     seed: &JointVec,
 ) -> Option<Solution> {
-    let r_d = target.rotation.to_rotation_matrix();
-    let p_d = target.translation.vector;
-    if !(p_d.x.is_finite() && p_d.y.is_finite() && p_d.z.is_finite()) {
-        return None; // reject NaN/Inf position up front
-    }
-    if !r_d.matrix().iter().all(|x| x.is_finite()) {
-        return None; // reject NaN/Inf orientation up front
-    }
-    let p_w = p_d; // EE origin coincides with the wrist center
-    let d = (p_w - model.shoulder).norm();
-    if d > model.l_su + model.l_uw - REACH_EPS || d < (model.l_su - model.l_uw).abs() + REACH_EPS {
-        return None; // unreachable / straight-arm singular boundary
-    }
-
-    // theta4: elbow flex from reach alone.
-    let cos4 = ((d * d - model.l_su * model.l_su - model.l_uw * model.l_uw)
-        / (2.0 * model.l_su * model.l_uw))
-        .clamp(-1.0, 1.0);
-    let theta4 = cos4.acos();
-
-    // The elbow circle depends only on the wrist center, so compute it once and
-    // reuse it across all arm angles.
-    let ctx = PsiSolve {
-        model,
-        limits,
-        r_d,
-        p_w,
-        theta4,
-        circle: circle_frame(model, p_w),
-    };
+    let ctx = PsiSolve::new(model, limits, target)?;
     match arm_angle {
         ArmAnglePolicy::Fixed(psi) => ctx
             .solve_at_psi(psi, seed)
             .map(|q| Solution { q, arm_angle: psi }),
-        ArmAnglePolicy::FromSeed => {
-            // The redundancy circle is resolved analytically: every joint angle is
-            // a closed-form function of psi, so each joint limit maps to an exact
-            // feasible-psi interval. Pick the feasible psi nearest the seed's arm
-            // angle for continuity, then build q there.
-            let preferred = ctx.preferred_psi(seed).unwrap_or(0.0);
-            let intervals = ctx.feasible_psi_intervals(seed);
-            let psi = nearest_feasible_psi(&intervals, preferred)?;
-            ctx.solve_at_psi(psi, seed)
-                .map(|q| Solution { q, arm_angle: psi })
-        }
+        ArmAnglePolicy::FromSeed => ctx
+            .seeded_solution(seed)
+            .map(|(psi, q)| Solution { q, arm_angle: psi }),
         ArmAnglePolicy::MaxManipulability { max_step_rad } => {
             // Anchor at the FromSeed angle (continuity, guaranteed feasible), then
             // step within the bounded window toward higher manipulability.
-            let preferred = ctx.preferred_psi(seed).unwrap_or(0.0);
-            let intervals = ctx.feasible_psi_intervals(seed);
-            let psi0 = nearest_feasible_psi(&intervals, preferred)?;
+            let (psi0, _) = ctx.seeded_solution(seed)?;
             let (psi, q) = ctx.max_manipulability_step(psi0, max_step_rad, seed)?;
             Some(Solution {
                 q,
@@ -398,6 +421,49 @@ struct PsiSolve<'a> {
     p_w: Vector3<f64>,
     theta4: f64,
     circle: Circle,
+}
+
+impl<'a> PsiSolve<'a> {
+    /// The solve of `target` within `limits`, or `None` when the target is not
+    /// finite or its wrist center lies outside the reach, the straight-arm band
+    /// included.
+    fn new(
+        model: &'a ArmModel,
+        limits: &'a [Limit; ARM_DOF],
+        target: &Isometry3<f64>,
+    ) -> Option<Self> {
+        let r_d = target.rotation.to_rotation_matrix();
+        let p_d = target.translation.vector;
+        if !(p_d.x.is_finite() && p_d.y.is_finite() && p_d.z.is_finite()) {
+            return None; // reject NaN/Inf position up front
+        }
+        if !r_d.matrix().iter().all(|x| x.is_finite()) {
+            return None; // reject NaN/Inf orientation up front
+        }
+        let p_w = p_d; // EE origin coincides with the wrist center
+        let d = (p_w - model.shoulder).norm();
+        if d > model.l_su + model.l_uw - REACH_EPS
+            || d < (model.l_su - model.l_uw).abs() + REACH_EPS
+        {
+            return None; // unreachable / straight-arm singular boundary
+        }
+
+        // theta4: elbow flex from reach alone.
+        let cos4 = ((d * d - model.l_su * model.l_su - model.l_uw * model.l_uw)
+            / (2.0 * model.l_su * model.l_uw))
+            .clamp(-1.0, 1.0);
+
+        // The elbow circle depends only on the wrist center, so compute it once
+        // and reuse it across all arm angles.
+        Some(PsiSolve {
+            model,
+            limits,
+            r_d,
+            p_w,
+            theta4: cos4.acos(),
+            circle: circle_frame(model, p_w),
+        })
+    }
 }
 
 impl PsiSolve<'_> {
@@ -508,7 +574,7 @@ impl PsiSolve<'_> {
 
         // Shoulder rotation R_s maps the home upper-arm frame to the target one.
         let u0 = (model.elbow_home - model.shoulder) / model.l_su;
-        let a4 = model.axes[3];
+        let a4 = model.axes[ELBOW];
         let r_s = frame_map(u0, a4, e_t, n_plane);
 
         // Rotation through joint 4, then the residual wrist rotation to invert.
@@ -532,6 +598,25 @@ impl PsiSolve<'_> {
         self.circle.azimuth(elbow_position(self.model, seed))
     }
 
+    /// The `FromSeed` arm angle and its solution: the seed's own arm angle when a
+    /// solution exists there (continuity), else the feasible arm angle nearest
+    /// it. The redundancy circle is resolved analytically: every joint angle is
+    /// a closed-form function of psi, so each joint limit maps to an exact
+    /// feasible-psi interval. At a gimbal lock the limit events of the two outer
+    /// joints are read off near-zero matrix entries, so the interval search can
+    /// miss a feasible set that is the seed's own arm angle alone.
+    fn seeded_solution(&self, seed: &JointVec) -> Option<(f64, JointVec)> {
+        let preferred = self.preferred_psi(seed);
+        if let Some(found) =
+            preferred.and_then(|psi| self.solve_at_psi(psi, seed).map(|q| (psi, q)))
+        {
+            return Some(found);
+        }
+        let intervals = self.feasible_psi_intervals(seed);
+        let psi = nearest_feasible_psi(&intervals, preferred.unwrap_or(0.0))?;
+        self.solve_at_psi(psi, seed).map(|q| (psi, q))
+    }
+
     /// Best in-limit joint solution for a fixed arm angle `psi`, or `None` if no
     /// branch is in limits. Reach and `theta4` are already established by
     /// [`solve`].
@@ -539,8 +624,17 @@ impl PsiSolve<'_> {
         let model = self.model;
         let (r_s, r_w) = self.shoulder_wrist_rotations(psi)?;
 
-        let shoulders = decompose_three_axes(&r_s, model.axes[0], model.axes[1], model.axes[2]);
-        let wrists = decompose_three_axes(&r_w, model.axes[4], model.axes[5], model.axes[6]);
+        let limb = |r: &Rotation3<f64>, [first, middle, last]: [usize; 3]| {
+            with_lock_splits(
+                decompose_three_axes(r, model.axes[first], model.axes[middle], model.axes[last]),
+                r,
+                (model.axes[first], model.axes[last]),
+                (seed[first], seed[last]),
+                (self.limits[first], self.limits[last]),
+            )
+        };
+        let shoulders = limb(&r_s, SHOULDER);
+        let wrists = limb(&r_w, WRIST);
 
         // Keep the in-limits branch nearest the seed. Each joint is normalized
         // into its limit window so the returned value itself respects the
@@ -581,8 +675,9 @@ impl PsiSolve<'_> {
 // feasibility test per arc) yields the exact feasible set. This is the Shimizu /
 // Elias-Wen feasible-arm-angle computation cited in the README, specialized to
 // the model's PoE axes. See `tests/psi_completeness.rs` for the end-to-end
-// guarantee this buys, and `ik::tests::feasible_intervals_match_brute_force` for
-// the check that the analytic set equals a fine-grained feasibility scan.
+// guarantee this buys, and
+// `ik::tests::the_feasible_intervals_hold_the_arm_angles_that_solve` for the
+// check that the analytic set is the set of arm angles a fixed policy solves.
 
 /// Step taken just inside a feasible arc when the nearest feasible arm angle
 /// lands on an arc boundary (radians), so the exact-limit endpoint clears the
@@ -591,18 +686,20 @@ impl PsiSolve<'_> {
 /// rather than overshooting a thin one.
 const PSI_BOUNDARY_NUDGE: f64 = 1e-6;
 
-/// All `psi in (-pi, pi]` solving `a sin psi + b cos psi = c`.
+/// All `psi in (-pi, pi]` solving `a sin psi + b cos psi = c`, a tangency that
+/// misses `c` by at most [`LIMIT_SLACK`] included: a joint whose travel peaks
+/// within that slack of a limit is on the limit for the limit check, so the
+/// peak is a feasibility boundary however small the travel's amplitude.
 fn sincos_roots(a: f64, b: f64, c: f64) -> Vec<f64> {
     // a sin psi + b cos psi = r cos(psi - phi), with r = hypot(a, b).
     let r = a.hypot(b);
     if r < ALGEBRAIC_EPS {
         return Vec::new(); // no psi dependence: this limit yields no boundary
     }
-    let ratio = c / r;
-    if ratio.abs() > 1.0 + ALGEBRAIC_EPS {
+    if c.abs() > r + LIMIT_SLACK {
         return Vec::new(); // limit never reached on this circle
     }
-    let delta = ratio.clamp(-1.0, 1.0).acos();
+    let delta = (c / r).clamp(-1.0, 1.0).acos();
     let phi = a.atan2(b);
     if delta < ALGEBRAIC_EPS {
         vec![wrap_pi(phi)]
@@ -669,7 +766,8 @@ fn limb_event_angles(
 }
 
 /// The exact set of feasible arm angles for this target, as `(start, end)` arcs
-/// in radians (`end` may exceed `pi` for the wrap-around arc). Empty if no arm
+/// in radians (`end` may exceed `pi` for the wrap-around arc, and equals `start`
+/// for a single feasible arm angle). Empty if no arm
 /// angle is feasible (including the straight-arm pose, where `R_s` is undefined
 /// for every `psi`).
 impl PsiSolve<'_> {
@@ -683,14 +781,14 @@ impl PsiSolve<'_> {
             return Vec::new(); // straight arm: feasibility is "none" for every psi
         };
 
-        let bs = Matrix3::from_columns(&[model.axes[0], model.axes[1], model.axes[2]]);
-        let bw = Matrix3::from_columns(&[model.axes[4], model.axes[5], model.axes[6]]);
+        let bs = Matrix3::from_columns(&SHOULDER.map(|joint| model.axes[joint]));
+        let bw = Matrix3::from_columns(&WRIST.map(|joint| model.axes[joint]));
         let (sa_s, cb_s, cc_s) = euler_matrix_coeffs(&bs, &rs0, &rsp, &rsn);
         let (sa_w, cb_w, cc_w) = euler_matrix_coeffs(&bw, &rw0, &rwp, &rwn);
 
         let mut events = Vec::new();
-        let shoulder_limits = [self.limits[0], self.limits[1], self.limits[2]];
-        let wrist_limits = [self.limits[4], self.limits[5], self.limits[6]];
+        let shoulder_limits = SHOULDER.map(|joint| self.limits[joint]);
+        let wrist_limits = WRIST.map(|joint| self.limits[joint]);
         limb_event_angles(
             &sa_s,
             &cb_s,
@@ -712,9 +810,12 @@ impl PsiSolve<'_> {
     }
 }
 
-/// Partition the circle at `events` and keep the arcs whose interior is feasible.
-/// Events need no de-duplication: coincident ones only yield zero-width arcs,
-/// which are harmless (their would-be interior collapses to a single, already
+/// Partition the circle at `events` and keep the arcs whose interior is feasible,
+/// plus, as the single-angle arc `(event, event)`, each feasible event between
+/// two infeasible arcs: there a joint touches a limit without crossing it, and
+/// that arm angle is the only one reaching the target. Events need no
+/// de-duplication: coincident ones only yield zero-width arcs, which are
+/// harmless (their would-be interior collapses to a single, already
 /// feasibility-classified point).
 fn intervals_from_events(mut events: Vec<f64>, feasible: impl Fn(f64) -> bool) -> Vec<(f64, f64)> {
     events.sort_by(|a, b| a.partial_cmp(b).expect("psi roots are finite"));
@@ -727,24 +828,36 @@ fn intervals_from_events(mut events: Vec<f64>, feasible: impl Fn(f64) -> bool) -
         };
     }
     let n = events.len();
-    let mut intervals = Vec::new();
-    for k in 0..n {
-        let start = events[k];
-        let end = if k + 1 < n {
-            events[k + 1]
-        } else {
-            events[0] + TAU
-        };
-        if feasible(wrap_pi(0.5 * (start + end))) {
-            intervals.push((start, end));
-        }
-    }
-    intervals
+    let arcs: Vec<(f64, f64)> = (0..n)
+        .map(|k| {
+            let end = if k + 1 < n {
+                events[k + 1]
+            } else {
+                events[0] + TAU
+            };
+            (events[k], end)
+        })
+        .collect();
+    let arc_feasible: Vec<bool> = arcs
+        .iter()
+        .map(|&(start, end)| feasible(wrap_pi(0.5 * (start + end))))
+        .collect();
+    // Event k starts arc k and ends arc k - 1.
+    let touches = (0..n)
+        .filter(|&k| !arc_feasible[k] && !arc_feasible[(k + n - 1) % n] && feasible(events[k]))
+        .map(|k| (events[k], events[k]));
+    arcs.iter()
+        .zip(&arc_feasible)
+        .filter(|&(_, &is_feasible)| is_feasible)
+        .map(|(&arc, _)| arc)
+        .chain(touches)
+        .collect()
 }
 
 /// The feasible arm angle closest (on the circle) to `preferred`, or `None` if
 /// no arm angle is feasible. When the nearest point is an arc boundary it is
-/// nudged just inside the arc so the returned angle is strictly feasible.
+/// nudged just inside the arc so the returned angle is strictly feasible; a
+/// single-angle arc yields that angle.
 fn nearest_feasible_psi(intervals: &[(f64, f64)], preferred: f64) -> Option<f64> {
     let mut best: Option<(f64, f64)> = None; // (circular distance, psi)
     for &(start, end) in intervals {
@@ -785,16 +898,17 @@ fn frame_map(
 
 /// Normalize each joint to its 2π-equivalent inside the limit window and return
 /// the wrapped configuration, or `None` if any joint has no in-limit
-/// representative. Returning the wrapped value (not the raw atan2 output)
-/// guarantees the solution itself respects the declared limits.
+/// representative. A representative within rounding of a limit is clamped onto
+/// it, so a target that holds a joint exactly at a limit is solved, and every
+/// returned joint lies inside its declared limits.
 fn normalize_into_limits(limits: &[Limit; ARM_DOF], q: &JointVec) -> Option<JointVec> {
     let mut out = [0.0; ARM_DOF];
     for (slot, (&v, l)) in out.iter_mut().zip(q.iter().zip(limits)) {
         let w = wrap_into(v, l.lo, l.hi);
-        if !l.contains(w) {
+        if !(l.lo - LIMIT_SLACK <= w && w <= l.hi + LIMIT_SLACK) {
             return None;
         }
-        *slot = w;
+        *slot = l.clamp(w);
     }
     Some(out)
 }
@@ -820,7 +934,8 @@ fn wrap_into(x: f64, lo: f64, hi: f64) -> f64 {
     mid + wrap_pi(x - mid)
 }
 
-/// Wrap an angle to the half-open principal range `[-π, π)`.
+/// Wrap an angle to the principal range `[-π, π]`: rounding takes the float
+/// just below `-π` to `π`.
 fn wrap_pi(x: f64) -> f64 {
     (x + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
 }
@@ -829,23 +944,24 @@ fn wrap_pi(x: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::fk::ForwardKinematics;
+    use crate::properties::{STRAIGHT_ELBOW_BAND, sides};
     use crate::test_support::{v1_fk, v1_limits, v1_model};
+    use hegel::generators as gs;
+    use kinematics_properties::{TOLERANCE, angles, configs, rotations, unit_vectors};
     use nalgebra::{Isometry3, UnitQuaternion};
-    use rand::RngExt;
-    use rand::SeedableRng;
-    use rand::rngs::StdRng;
 
-    /// Uniform in-limit joint sample. Tests seed a `StdRng` with a fixed
-    /// constant, so the spread is reproducible (no flaky randomness).
-    fn sample_q(rng: &mut StdRng, limits: &[Limit; ARM_DOF]) -> JointVec {
-        std::array::from_fn(|i| {
-            let l = limits[i];
-            rng.random_range(l.lo..l.hi)
-        })
+    /// Full PoE forward rotation: `exp(w1 q1)...exp(w7 q7) * R_home`, the
+    /// rotation half of the PoE map the IK is built on.
+    fn fk_poe_rotation(model: &ArmModel, q: &JointVec) -> Rotation3<f64> {
+        let mut r = model.home_tip.rotation.to_rotation_matrix();
+        for i in (0..ARM_DOF).rev() {
+            r = exp_so3(model.axes[i], q[i]) * r;
+        }
+        r
     }
 
     /// EE pose at `q` (thin wrapper; `ee_pose` already poses the chain).
-    fn pose(fk: &mut ForwardKinematics, q: &JointVec) -> Isometry3<f64> {
+    fn pose(fk: &ForwardKinematics, q: &JointVec) -> Isometry3<f64> {
         fk.at(q).ee_pose()
     }
 
@@ -855,141 +971,65 @@ mod tests {
         Isometry3::from_parts(p.into(), UnitQuaternion::from_rotation_matrix(&r))
     }
 
-    #[test]
-    fn round_trip_random_samples() {
-        let mut fk = v1_fk("left");
-        let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
-        let mut rng = StdRng::seed_from_u64(0xC0FFEE);
-
-        let n = 5000;
-        let (mut ok, mut singular, mut fail) = (0, 0, 0);
-        for _ in 0..n {
-            let q = sample_q(&mut rng, &lim);
-            // Skip near the straight-arm boundary (expected singular misses).
-            if q[3] < 0.05 {
-                singular += 1;
-                continue;
-            }
-            let target = pose(&mut fk, &q);
-            let p_d = target.translation.vector;
-
-            let Some(sol) = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &q) else {
-                fail += 1;
-                continue;
-            };
-            // Every returned joint must respect its declared limit, not just a
-            // 2π-equivalent of it.
-            for (i, (&v, l)) in sol.q.iter().zip(&lim).enumerate() {
-                assert!(
-                    l.contains(v),
-                    "joint {i} = {v} outside [{}, {}]",
-                    l.lo,
-                    l.hi
-                );
-            }
-            let got = pose(&mut fk, &sol.q);
-            let pos_err = (got.translation.vector - p_d).norm();
-            let rot_err = got.rotation.angle_to(&target.rotation);
-            if pos_err < 1e-6 && rot_err < 1e-6 {
-                ok += 1;
-            } else {
-                fail += 1;
-            }
-        }
-        let solved = n - singular;
-        println!("round-trip: {ok}/{solved} ok, {fail} fail, {singular} skipped(singular)");
-        // Non-singular failures indicate a branch-sign or frame bug.
-        assert!(
-            fail as f64 / (solved as f64) < 0.01,
-            "{fail}/{solved} non-singular failures"
-        );
+    /// A whole number of turns, positive or negative.
+    fn turns() -> gs::IntegerGenerator<i32> {
+        gs::integers().min_value(-3).max_value(3)
     }
 
-    #[test]
-    fn self_consistency_recovers_seed() {
-        let mut fk = v1_fk("left");
-        let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
-        let mut rng = StdRng::seed_from_u64(7);
-        for _ in 0..500 {
-            let q = sample_q(&mut rng, &lim);
-            if q[3] < 0.1 {
-                continue;
-            }
-            let target = pose(&mut fk, &q);
-            let psi = arm_angle_of(&m, &q).expect("q is non-singular (q[3] >= 0.1)");
-            let sol = solve(&m, &lim, &target, ArmAnglePolicy::Fixed(psi), &q)
-                .expect("exact psi should solve");
-            // Same branch as seed: each joint within a small tolerance.
-            for (i, (&got, &want)) in sol.q.iter().zip(&q).enumerate() {
-                assert!(
-                    wrap_pi(got - want).abs() < 1e-5,
-                    "joint {i}: got {got} want {want}"
-                );
-            }
-        }
+    /// A point in the cube of half-width 1 m about the origin.
+    #[hegel::composite]
+    fn points(tc: &hegel::TestCase) -> Vector3<f64> {
+        Vector3::from(tc.draw(gs::arrays(gs::floats().min_value(-1.0).max_value(1.0))))
     }
 
-    #[test]
-    fn right_arm_round_trip() {
-        let mut fk = v1_fk("right");
-        let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
-        let mut rng = StdRng::seed_from_u64(99);
-        let mut checked = 0;
-        for _ in 0..1000 {
-            let q = sample_q(&mut rng, &lim);
-            if q[3] < 0.1 {
-                continue;
-            }
-            let target = pose(&mut fk, &q);
-            let sol = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &q)
-                .expect("right-arm target should solve");
-            let got = pose(&mut fk, &sol.q);
-            assert!((got.translation.vector - target.translation.vector).norm() < 1e-6);
-            assert!(got.rotation.angle_to(&target.rotation) < 1e-6);
-            checked += 1;
-        }
-        assert!(
-            checked > 800,
-            "too few right-arm samples checked: {checked}"
-        );
-    }
-
-    #[test]
-    fn arm_angle_sweep_holds_pose() {
-        // The whole redundancy circle maps to the same EE pose: solving at many
-        // arm angles (not the seed's) must still close the round-trip. This is
-        // the non-circular check that psi is a true redundancy parameter.
-        let mut fk = v1_fk("left");
-        let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
-        let mut rng = StdRng::seed_from_u64(2024);
-        let q = loop {
-            let q = sample_q(&mut rng, &lim);
-            if q[3] > 0.5 {
-                break q;
-            }
+    /// A configuration's own pose, solved with that configuration as the seed,
+    /// returns the configuration: `FromSeed` keeps the arm angle the seed holds,
+    /// a fixed policy at that arm angle reaches the same joints, and either keeps
+    /// the shoulder and wrist branch the seed is on. The fixture's limits leave
+    /// one branch per arm angle, so the limits are the fixture's or a full turn
+    /// either way on every joint but the elbow, whose flex the reach fixes; that
+    /// window holds every branch. The explicit case is the hanging home posture,
+    /// its elbow near straight.
+    #[hegel::test]
+    #[hegel::explicit_test_case(
+        side = "left",
+        wide = false,
+        fixed = false,
+        q = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
+    )]
+    fn a_configuration_seeded_with_itself_solves_back_to_itself(tc: hegel::TestCase) {
+        let side = tc.draw(sides());
+        let fk = v1_fk(side);
+        let m = ArmModel::from_fk(fk).unwrap();
+        let fixture = fk.limits();
+        let wide = tc.draw(gs::booleans());
+        let lim = if wide {
+            std::array::from_fn(|joint| match joint {
+                ELBOW => fixture[ELBOW],
+                _ => Limit { lo: -TAU, hi: TAU },
+            })
+        } else {
+            fixture
         };
-        let target = pose(&mut fk, &q);
-        let p_d = target.translation.vector;
-
-        let mut feasible = 0;
-        for k in 0..72 {
-            let psi = -std::f64::consts::PI + k as f64 * std::f64::consts::TAU / 72.0;
-            if let Some(sol) = solve(&m, &lim, &target, ArmAnglePolicy::Fixed(psi), &q) {
-                let got = pose(&mut fk, &sol.q);
-                assert!(
-                    (got.translation.vector - p_d).norm() < 1e-6
-                        && got.rotation.angle_to(&target.rotation) < 1e-6,
-                    "psi={psi}: pose drift",
-                );
-                feasible += 1;
-            }
+        let fixed = tc.draw(gs::booleans());
+        let q = tc.draw(configs(lim));
+        if q[ELBOW] < STRAIGHT_ELBOW_BAND {
+            return;
         }
-        // The seed's own arm angle is feasible, so at least a contiguous arc is.
-        assert!(feasible > 0, "no feasible arm angle found");
+        let policy = if fixed {
+            ArmAnglePolicy::Fixed(arm_angle_of(&m, &q).expect("a bent elbow has an arm angle"))
+        } else {
+            ArmAnglePolicy::FromSeed
+        };
+        let target = pose(fk, &q);
+        let solution = solve(&m, &lim, &target, policy, &q)
+            .unwrap_or_else(|| panic!("no solution for the pose of {q:?} seeded with itself"));
+        for (joint, (&got, &want)) in solution.q.iter().zip(&q).enumerate() {
+            assert!(
+                wrap_pi(got - want).abs() < TOLERANCE,
+                "joint {joint} solved to {got} for the pose of {q:?} seeded with itself"
+            );
+        }
     }
 
     #[test]
@@ -1000,13 +1040,13 @@ mod tests {
         // This is the one test that exercises the README's continuity guarantee:
         // along a smooth path the joints move smoothly, with no branch flip or psi
         // jump, while every pose is still hit exactly.
-        let mut fk = v1_fk("left");
+        let fk = v1_fk("left");
         let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
+        let m = ArmModel::from_fk(fk).unwrap();
 
         // A comfortable mid-range posture, well off the straight-arm singularity.
         let q0 = [0.2, -0.3, 0.3, 1.0, -0.4, 0.5, 0.3];
-        let home = pose(&mut fk, &q0);
+        let home = pose(fk, &q0);
         let p0 = home.translation.vector;
         let r0 = home.rotation;
         // Orthonormal basis for the position circle (base-frame X and Z).
@@ -1026,7 +1066,7 @@ mod tests {
             let sol = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &seed)
                 .expect("trajectory point should solve");
 
-            let got = pose(&mut fk, &sol.q);
+            let got = pose(fk, &sol.q);
             assert!(
                 (got.translation.vector - p_d).norm() < 1e-6,
                 "pos drift at step {k}"
@@ -1070,82 +1110,64 @@ mod tests {
         );
     }
 
-    #[test]
-    fn feasible_intervals_match_brute_force() {
-        // The analytic feasible-ψ set must agree with a fine brute-force scan:
-        // no reachable ψ marked infeasible, and no infeasible ψ marked feasible,
-        // save the single scan cell straddling an exact limit boundary. A missing
-        // event (an unbracketed feasibility transition) shows up as a disagreement
-        // far from any interval edge.
-        let mut fk = v1_fk("left");
+    /// The feasible intervals hold the arm angles a fixed policy solves: an arm
+    /// angle inside an interval solves, a solution at an arm angle outside every
+    /// interval holds a joint within [`TOLERANCE`] of a limit, and the pose of a
+    /// configuration with its elbow bent past the band has a feasible arm angle.
+    /// The explicit case holds joint 1 on its lower limit at the peak of its
+    /// travel over the arm angles, which a nearly straight elbow makes 2e-3 rad
+    /// high: its limit event is a tangency that misses by 2e-12.
+    #[hegel::test]
+    #[hegel::explicit_test_case(
+        side = "left",
+        q = [-3.4906589999999995, -1.0, 0.0, 0.001953125, 0.0, 0.0, 0.0],
+        seed = [0.0; 7],
+        psi = 0.0
+    )]
+    fn the_feasible_intervals_hold_the_arm_angles_that_solve(tc: hegel::TestCase) {
+        let side = tc.draw(sides());
+        let fk = v1_fk(side);
         let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
-        let mut rng = StdRng::seed_from_u64(0xA11CE);
-        let seed = [0.1, -0.2, 0.15, 0.7, -0.3, 0.25, 0.2];
-
-        const GRID: usize = 1440;
-        let step = TAU / GRID as f64;
-
-        let in_intervals = |intervals: &[(f64, f64)], psi: f64| {
-            intervals
-                .iter()
-                .any(|&(s, e)| s + (psi - s).rem_euclid(TAU) <= e)
-        };
-        let edge_dist = |intervals: &[(f64, f64)], psi: f64| {
-            intervals
-                .iter()
-                .flat_map(|&(s, e)| [wrap_pi(psi - s).abs(), wrap_pi(psi - e).abs()])
-                .fold(f64::INFINITY, f64::min)
-        };
-
-        let mut targets = 0;
-        for _ in 0..200 {
-            let q = sample_q(&mut rng, &lim);
-            if q[3] < 0.2 {
-                continue; // comfortably off the straight-arm boundary
-            }
-            let target = pose(&mut fk, &q);
-            let r_d = target.rotation.to_rotation_matrix();
-            let p_w = target.translation.vector;
-
-            let d = (p_w - m.shoulder).norm();
-            let cos4 = ((d * d - m.l_su * m.l_su - m.l_uw * m.l_uw) / (2.0 * m.l_su * m.l_uw))
-                .clamp(-1.0, 1.0);
-            let theta4 = cos4.acos();
-            let ctx = PsiSolve {
-                model: &m,
-                limits: &lim,
-                r_d,
-                p_w,
-                theta4,
-                circle: circle_frame(&m, p_w),
-            };
-            let intervals = ctx.feasible_psi_intervals(&seed);
+        let m = ArmModel::from_fk(fk).unwrap();
+        let q = tc.draw(configs(lim));
+        let seed = tc.draw(configs(lim));
+        let psi = tc.draw(angles());
+        let target = pose(fk, &q);
+        let Some(ctx) = PsiSolve::new(&m, &lim, &target) else {
             assert!(
-                !intervals.is_empty(),
-                "no feasible psi for a reachable target"
+                q[ELBOW] < STRAIGHT_ELBOW_BAND,
+                "the pose of {q:?} is outside the reach"
             );
-
-            for k in 0..GRID {
-                let psi = -PI + k as f64 * step;
-                let brute = ctx.solve_at_psi(psi, &seed).is_some();
-                let analytic = in_intervals(&intervals, psi);
-                if brute != analytic {
-                    assert!(
-                        edge_dist(&intervals, psi) <= 1.5 * step,
-                        "psi={psi:.5}: analytic={analytic} brute={brute}, {:.5} rad \
-                         from any interval edge (an unbracketed feasibility transition)",
-                        edge_dist(&intervals, psi),
-                    );
-                }
+            return;
+        };
+        let intervals = ctx.feasible_psi_intervals(&seed);
+        assert!(
+            q[ELBOW] < STRAIGHT_ELBOW_BAND || !intervals.is_empty(),
+            "no feasible arm angle for the pose of {q:?}"
+        );
+        let inside = intervals
+            .iter()
+            .any(|&(start, end)| start + (psi - start).rem_euclid(TAU) <= end);
+        match solve(&m, &lim, &target, ArmAnglePolicy::Fixed(psi), &seed) {
+            None => assert!(
+                !inside,
+                "the arm angle {psi} lies in {intervals:?} and does not solve"
+            ),
+            Some(solution) => {
+                let on_a_limit = solution.q.iter().zip(&lim).any(|(&value, limit)| {
+                    value - limit.lo <= TOLERANCE || limit.hi - value <= TOLERANCE
+                });
+                assert!(
+                    inside || on_a_limit,
+                    "the arm angle {psi} solves to {:?} outside {intervals:?}",
+                    solution.q
+                );
             }
-            targets += 1;
         }
-        assert!(targets > 100, "too few targets checked: {targets}");
     }
 
-    #[test]
-    fn poe_fk_matches_an_independent_chain() {
+    #[hegel::test]
+    fn poe_fk_matches_an_independent_chain(tc: hegel::TestCase) {
         // Three implementations must agree on where the end effector is: the
         // PoE screw map the IK is built on, this crate's own URDF chain, and the
         // `k` crate reading the same URDF. The third is the point - the first two
@@ -1159,32 +1181,37 @@ mod tests {
         // versions.
         use k::nalgebra as kna;
 
-        let mut fk = v1_fk("left");
-        let m = ArmModel::from_fk(&mut fk).unwrap();
-        let q: JointVec = [0.3, -0.4, 0.2, 0.8, -0.5, 0.3, 0.6];
+        let side = tc.draw(sides());
+        let fk = v1_fk(side);
+        let m = ArmModel::from_fk(fk).unwrap();
+        let q = tc.draw(configs(fk.limits()));
 
-        let ours = pose(&mut fk, &q);
+        let ours = pose(fk, &q);
         let p_poe = fk_poe_position(&m, &q);
         assert!(
-            (ours.translation.vector - p_poe).norm() < 1e-9,
+            (ours.translation.vector - p_poe).norm() < TOLERANCE,
             "PoE and chain FK disagree on position"
         );
         let r_poe = fk_poe_rotation(&m, &q);
         assert!(
-            (r_poe.matrix() - ours.rotation.to_rotation_matrix().matrix()).norm() < 1e-9,
+            (r_poe.matrix() - ours.rotation.to_rotation_matrix().matrix()).norm() < TOLERANCE,
             "PoE and chain FK disagree on orientation"
         );
 
-        let chain = k::Chain::<f64>::from_urdf_file(crate::test_support::FIXTURE_URDF_PATH)
-            .expect("k loads the fixture");
+        // One tree holds both arms; each case sets all seven joints of its side.
+        static CHAIN: std::sync::LazyLock<k::Chain<f64>> = std::sync::LazyLock::new(|| {
+            k::Chain::<f64>::from_urdf_file(crate::test_support::FIXTURE_URDF_PATH)
+                .expect("k loads the fixture")
+        });
+        let chain = &*CHAIN;
         let tip = chain
-            .find_link("openarm_left_link7")
+            .find_link(&format!("openarm_{side}_link7"))
             .expect("fixture has link7");
         let serial = k::SerialChain::from_end(tip);
         serial.set_joint_positions_clamped(&q);
         serial.update_transforms();
         let base = chain
-            .find_link("openarm_left_link0")
+            .find_link(&format!("openarm_{side}_link0"))
             .expect("fixture has link0")
             .world_transform()
             .expect("base world transform");
@@ -1196,7 +1223,7 @@ mod tests {
             theirs.translation.vector.z - ours.translation.vector.z,
         ];
         assert!(
-            dp.iter().all(|d| d.abs() < 1e-9),
+            dp.iter().all(|d| d.abs() < TOLERANCE),
             "independent chain disagrees on position by {dp:?}"
         );
         let theirs_r: kna::Matrix3<f64> = *theirs.rotation.to_rotation_matrix().matrix();
@@ -1205,7 +1232,7 @@ mod tests {
             for c in 0..3 {
                 let d = theirs_r[(r, c)] - ours_r.matrix()[(r, c)];
                 assert!(
-                    d.abs() < 1e-9,
+                    d.abs() < TOLERANCE,
                     "independent chain disagrees on orientation at ({r},{c}) by {d}"
                 );
             }
@@ -1214,190 +1241,280 @@ mod tests {
 
     // --- Direct unit tests for the pure helpers --------------------------
 
-    #[test]
-    fn wrap_pi_maps_into_principal_range() {
-        use std::f64::consts::{PI, TAU};
-        assert!((wrap_pi(0.0) - 0.0).abs() < 1e-12);
-        assert!((wrap_pi(3.0) - 3.0).abs() < 1e-12);
-        assert!((wrap_pi(3.0 + TAU) - 3.0).abs() < 1e-12);
-        assert!((wrap_pi(-3.0 - TAU) + 3.0).abs() < 1e-12);
-        // Result is always within [-π, π).
-        for k in -20..20 {
-            let w = wrap_pi(0.3 + k as f64 * TAU);
-            assert!(w > -PI - 1e-9 && w <= PI + 1e-9, "out of range: {w}");
+    #[hegel::test]
+    fn wrap_pi_returns_an_alias_in_the_principal_range(tc: hegel::TestCase) {
+        let angle = tc.draw(angles());
+        let turns = tc.draw(turns());
+        let wrapped = wrap_pi(angle + f64::from(turns) * TAU);
+        let apart = (wrapped - angle) / TAU;
+        assert!(
+            (-PI..=PI).contains(&wrapped) && (apart - apart.round()).abs() < TOLERANCE,
+            "wrap_pi({angle} + {turns} turns) = {wrapped}"
+        );
+    }
+
+    #[hegel::test]
+    fn wrap_into_returns_the_alias_inside_a_joint_window(tc: hegel::TestCase) {
+        let limits = v1_limits(tc.draw(sides()));
+        let Limit { lo, hi } = limits[tc.draw(gs::integers::<usize>().max_value(ARM_DOF - 1))];
+        let inside = tc.draw(gs::floats().min_value(lo).max_value(hi));
+        let x = inside + f64::from(tc.draw(turns())) * TAU;
+        let wrapped = wrap_into(x, lo, hi);
+        assert!(
+            (wrapped - inside).abs() < TOLERANCE,
+            "wrap_into({x}, {lo}, {hi}) = {wrapped}; the alias inside is {inside}"
+        );
+    }
+
+    #[hegel::test]
+    fn normalize_into_limits_recovers_every_in_limit_configuration(tc: hegel::TestCase) {
+        let limits = v1_limits(tc.draw(sides()));
+        let q = tc.draw(configs(limits));
+        let turns: [i32; ARM_DOF] = tc.draw(gs::arrays(turns()));
+        let raw: JointVec = std::array::from_fn(|joint| q[joint] + f64::from(turns[joint]) * TAU);
+        let normalized = normalize_into_limits(&limits, &raw)
+            .unwrap_or_else(|| panic!("no in-limit alias found for {raw:?}, though {q:?} is one"));
+        for (joint, ((&got, &want), limit)) in normalized.iter().zip(&q).zip(&limits).enumerate() {
+            assert!(
+                limit.contains(got) && (got - want).abs() < TOLERANCE,
+                "joint {joint}: normalized to {got}; the in-limit alias is {want} in [{}, {}]",
+                limit.lo,
+                limit.hi
+            );
         }
     }
 
-    #[test]
-    fn wrap_into_finds_in_window_alias() {
-        // Symmetric window: identity for in-window values.
-        assert!((wrap_into(0.5, -1.0, 1.0) - 0.5).abs() < 1e-12);
-        // A value 2π below the window maps up into it.
-        assert!((wrap_into(0.5 - std::f64::consts::TAU, -1.0, 1.0) - 0.5).abs() < 1e-12);
-        // Asymmetric j1-like window: a near-(-π) value has its +2π alias in range.
-        let (lo, hi) = (-1.396, 3.49);
-        let w = wrap_into(-3.0, lo, hi);
-        assert!((w - (-3.0 + std::f64::consts::TAU)).abs() < 1e-9 && (lo..=hi).contains(&w));
-        // One-sided j4 window keeps an in-range value put.
-        assert!((wrap_into(1.0, 0.0, 2.443) - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn normalize_into_limits_wraps_or_rejects() {
-        let lim = v1_limits("left");
-        // A raw j1 = -3.0 is outside [-1.396, 3.49] but its +2π alias is in.
-        let raw = [-3.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0];
-        let out = normalize_into_limits(&lim, &raw).expect("alias is in range");
-        for (v, l) in out.iter().zip(&lim) {
-            assert!(l.contains(*v), "{v} not in [{},{}]", l.lo, l.hi);
+    /// At a gimbal lock (shoulder: joint 2 turns joint 3's axis onto joint 1's;
+    /// wrist: joint 6 turns joint 7's onto joint 5's) the outer two joints turn
+    /// about one line, so every split of their sum reaches the pose; FromSeed
+    /// solving a seed's own pose returns the seed's split. The fixture's joint 6
+    /// stops short of the wrist lock, so the wrist case widens it to a full turn.
+    /// The explicit cases are a seed whose split no single outer joint can hold,
+    /// one whose outer joints both rest on limits, so its split is the corner,
+    /// and one whose corner, with joint 5 on a limit and the elbow nearly
+    /// straight, leaves the seed's own arm angle as the only feasible one.
+    #[hegel::test]
+    #[hegel::explicit_test_case(
+        side = "left",
+        middle = 1usize,
+        lock = -FRAC_PI_2,
+        q = [1.0, -FRAC_PI_2, 1.4, 1.0, 0.1, 0.2, 0.1]
+    )]
+    #[hegel::explicit_test_case(
+        side = "right",
+        middle = 1usize,
+        lock = FRAC_PI_2,
+        q = [v1_limits("right")[0].hi, FRAC_PI_2, v1_limits("right")[2].hi, 1.0, 0.0, 0.0, 0.0]
+    )]
+    #[hegel::explicit_test_case(
+        side = "left",
+        middle = 1usize,
+        lock = -FRAC_PI_2,
+        q = [
+            v1_limits("left")[0].hi,
+            -FRAC_PI_2,
+            v1_limits("left")[2].hi,
+            0.004107937311346177,
+            v1_limits("left")[4].hi,
+            0.0,
+            0.0
+        ]
+    )]
+    fn from_seed_returns_the_seed_at_a_gimbal_lock(tc: hegel::TestCase) {
+        let side = tc.draw(sides());
+        let fk = v1_fk(side);
+        let m = ArmModel::from_fk(fk).unwrap();
+        let middle = tc.draw(gs::sampled_from([1usize, 5].as_slice()));
+        let widened: [Limit; ARM_DOF] = std::array::from_fn(|joint| match (joint, middle) {
+            (5, 5) => Limit { lo: -PI, hi: PI },
+            _ => fk.limits()[joint],
+        });
+        let locks: Vec<f64> = [-FRAC_PI_2, FRAC_PI_2]
+            .into_iter()
+            .filter(|&lock| widened[middle].contains(lock))
+            .collect();
+        let lock = tc.draw(gs::sampled_from(locks));
+        let pinned: [Limit; ARM_DOF] = std::array::from_fn(|joint| match joint {
+            _ if joint == middle => Limit { lo: lock, hi: lock },
+            ELBOW => Limit {
+                lo: STRAIGHT_ELBOW_BAND,
+                ..widened[joint]
+            },
+            _ => widened[joint],
+        });
+        let q = tc.draw(configs(pinned));
+        let target = pose(fk, &q);
+        let solution = solve(&m, &widened, &target, ArmAnglePolicy::FromSeed, &q)
+            .unwrap_or_else(|| panic!("the {side} arm's own pose at {q:?} is unsolvable"));
+        for (joint, (&got, &want)) in solution.q.iter().zip(&q).enumerate() {
+            assert!(
+                wrap_pi(got - want).abs() < TOLERANCE,
+                "joint {joint}: got {got}, want {want}; the seed's split was not kept"
+            );
         }
-        // A value with no in-window alias (j6 window is narrow) is rejected.
-        let bad = [0.0, 0.0, 0.0, 0.5, 0.0, std::f64::consts::PI, 0.0];
-        assert!(normalize_into_limits(&lim, &bad).is_none());
+    }
+
+    /// The whole redundancy circle maps to the same EE pose: on an arm whose
+    /// joints turn a full circle, every arm angle solves the pose of every bent
+    /// configuration, and each solution reaches it. This is the non-circular
+    /// check that psi is a true redundancy parameter.
+    #[hegel::test]
+    fn every_arm_angle_solves_the_pose_of_an_unlimited_arm(tc: hegel::TestCase) {
+        let side = tc.draw(sides());
+        let fk = v1_fk(side);
+        let m = ArmModel::from_fk(fk).unwrap();
+        let unlimited = [Limit { lo: -PI, hi: PI }; ARM_DOF];
+        let bent: [Limit; ARM_DOF] = std::array::from_fn(|joint| match joint {
+            ELBOW => Limit {
+                lo: STRAIGHT_ELBOW_BAND,
+                ..fk.limits()[joint]
+            },
+            _ => unlimited[joint],
+        });
+        let q = tc.draw(configs(bent));
+        let psi = tc.draw(angles());
+        let target = pose(fk, &q);
+        let solution = solve(&m, &unlimited, &target, ArmAnglePolicy::Fixed(psi), &q)
+            .unwrap_or_else(|| panic!("arm angle {psi} does not solve the pose of {q:?}"));
+        let reached = pose(fk, &solution.q);
+        let position_miss = (reached.translation.vector - target.translation.vector).norm();
+        let orientation_miss = reached.rotation.angle_to(&target.rotation);
+        assert!(
+            position_miss < TOLERANCE && orientation_miss < TOLERANCE,
+            "arm angle {psi} missed the pose of {q:?} by {position_miss:.2e} m and \
+             {orientation_miss:.2e} rad"
+        );
+    }
+
+    #[hegel::test]
+    fn normalize_into_limits_refuses_a_joint_with_no_alias_in_its_window(tc: hegel::TestCase) {
+        let limits = v1_limits(tc.draw(sides()));
+        let q = tc.draw(configs(limits));
+        let joint = tc.draw(gs::integers::<usize>().max_value(ARM_DOF - 1));
+        let Limit { lo, hi } = limits[joint];
+        let outside = tc.draw(
+            gs::floats()
+                .min_value(hi + TOLERANCE)
+                .max_value(lo + TAU - TOLERANCE),
+        );
+        let turns = tc.draw(turns());
+        let raw: JointVec = std::array::from_fn(|j| {
+            if j == joint {
+                outside + f64::from(turns) * TAU
+            } else {
+                q[j]
+            }
+        });
+        assert!(
+            normalize_into_limits(&limits, &raw).is_none(),
+            "joint {joint} = {} has no alias in [{lo}, {hi}], yet {raw:?} normalized",
+            raw[joint]
+        );
+    }
+
+    #[hegel::test]
+    fn subproblem1_recovers_the_rotation_angle(tc: hegel::TestCase) {
+        // Only p's component off the axis rotates, and its scale cancels, so a
+        // point one unit off the axis at any height stands for every point.
+        let frame = tc.draw(rotations());
+        let height: f64 = tc.draw(gs::floats().min_value(-1.0).max_value(1.0));
+        let (axis, p) = (frame * Vector3::z(), frame * Vector3::new(1.0, 0.0, height));
+        let theta = tc.draw(angles());
+        let recovered = subproblem1(axis, p, exp_so3(axis, theta) * p);
+        assert!(
+            wrap_pi(recovered - theta).abs() < TOLERANCE,
+            "recovered {recovered} rad from a {theta} rad rotation"
+        );
+    }
+
+    #[hegel::test]
+    fn subproblem2_finds_a_branch_reaching_every_reachable_target(tc: hegel::TestCase) {
+        let frame = tc.draw(rotations());
+        let (w1, w2) = (frame * Vector3::x(), frame * Vector3::y());
+        let p = tc.draw(points());
+        let (t1, t2) = (tc.draw(angles()), tc.draw(angles()));
+        let q = exp_so3(w1, t1) * exp_so3(w2, t2) * p;
+        let branches = subproblem2(w1, w2, p, q);
+        assert!(
+            branches
+                .iter()
+                .any(|&(b1, b2)| (exp_so3(w1, b1) * exp_so3(w2, b2) * p - q).norm() < TOLERANCE),
+            "no branch of {branches:?} reaches {q:?}"
+        );
+    }
+
+    #[hegel::test]
+    fn subproblem2_refuses_parallel_axes(tc: hegel::TestCase) {
+        let w1 = tc.draw(unit_vectors());
+        let w2 = if tc.draw(gs::booleans()) { w1 } else { -w1 };
+        let (p, q) = (tc.draw(points()), tc.draw(points()));
+        assert!(subproblem2(w1, w2, p, q).is_empty());
     }
 
     #[test]
-    fn subproblem1_recovers_rotation_angle() {
-        let axis = Vector3::z();
-        let p = Vector3::new(1.0, 0.0, 0.3); // off-axis component rotates
-        for &theta in &[0.0, 0.5, -1.2, 3.0] {
-            let q = exp_so3(axis, theta) * p;
-            assert!((wrap_pi(subproblem1(axis, p, q) - theta)).abs() < 1e-9);
-        }
-    }
-
-    #[test]
-    fn subproblem2_solves_and_rejects() {
-        let w1 = Vector3::z();
-        let w2 = Vector3::x();
+    fn subproblem2_refuses_a_target_off_the_reachable_circle() {
+        // Rotation about x keeps p's x-component (0.4), and rotation about z then
+        // keeps the resulting z-component, so a same-norm pure-+z target is
+        // unreachable: gamma_sq < 0.
         let p = Vector3::new(0.4, 0.5, 0.6);
-        let (a, b) = (0.7, -0.9);
-        let q = exp_so3(w1, a) * exp_so3(w2, b) * p;
-        let sols = subproblem2(w1, w2, p, q);
-        assert!(!sols.is_empty());
-        // At least one branch reproduces q.
-        assert!(sols.iter().any(|&(t1, t2)| {
-            let got = exp_so3(w1, t1) * exp_so3(w2, t2) * p;
-            (got - q).norm() < 1e-9
-        }));
-        // Parallel axes -> no solution.
-        assert!(subproblem2(w1, w1, p, q).is_empty());
-        // Geometrically inconsistent target -> gamma_sq < 0 -> no solution.
-        // Rotation about x can't change p's x-component (0.4), so a same-norm
-        // pure-+z target is unreachable.
         let unreachable = Vector3::z() * p.norm();
-        assert!(subproblem2(w1, w2, p, unreachable).is_empty());
+        assert!(subproblem2(Vector3::z(), Vector3::x(), p, unreachable).is_empty());
     }
 
-    #[test]
-    fn decompose_three_axes_reconstructs_rotation() {
-        let (w1, w2, w3) = (Vector3::z(), Vector3::x(), Vector3::y());
-        let r = exp_so3(w1, 0.6) * exp_so3(w2, -0.4) * exp_so3(w3, 1.1);
-        let sols = decompose_three_axes(&r, w1, w2, w3);
-        assert!(!sols.is_empty());
-        assert!(sols.iter().any(|&(t1, t2, t3)| {
-            let got = exp_so3(w1, t1) * exp_so3(w2, t2) * exp_so3(w3, t3);
-            (got.matrix() - r.matrix()).norm() < 1e-9
-        }));
+    #[hegel::test]
+    fn decompose_three_axes_reconstructs_the_rotation(tc: hegel::TestCase) {
+        // Either handedness of axis frame, as the two mirrored arms have.
+        let frame = tc.draw(rotations());
+        let (w1, w2) = (frame * Vector3::x(), frame * Vector3::y());
+        let w3 = if tc.draw(gs::booleans()) {
+            w1.cross(&w2)
+        } else {
+            w2.cross(&w1)
+        };
+        let (t1, t2, t3) = (tc.draw(angles()), tc.draw(angles()), tc.draw(angles()));
+        let r = exp_so3(w1, t1) * exp_so3(w2, t2) * exp_so3(w3, t3);
+        let branches = decompose_three_axes(&r, w1, w2, w3);
+        assert!(
+            branches.iter().any(|&(b1, b2, b3)| {
+                let rebuilt = exp_so3(w1, b1) * exp_so3(w2, b2) * exp_so3(w3, b3);
+                (rebuilt.matrix() - r.matrix()).norm() < TOLERANCE
+            }),
+            "no branch of {branches:?} rebuilds {r:?}"
+        );
     }
 
-    #[test]
-    fn frame_map_sends_home_frame_to_target() {
-        let x0 = Vector3::y();
-        let y0 = Vector3::z();
-        let x1 = Vector3::x();
-        let y1 = Vector3::y();
+    #[hegel::test]
+    fn frame_map_is_the_rotation_taking_one_frame_to_the_other(tc: hegel::TestCase) {
+        let (from, to) = (tc.draw(rotations()), tc.draw(rotations()));
+        let (x0, y0) = (from * Vector3::x(), from * Vector3::y());
+        let (x1, y1) = (to * Vector3::x(), to * Vector3::y());
         let r = frame_map(x0, y0, x1, y1);
-        assert!((r * x0 - x1).norm() < 1e-9);
-        assert!((r * y0 - y1).norm() < 1e-9);
+        assert!((r * x0 - x1).norm() < TOLERANCE && (r * y0 - y1).norm() < TOLERANCE);
+        let m = r.matrix();
+        assert!(
+            (m.transpose() * m - Matrix3::identity()).norm() < TOLERANCE
+                && (m.determinant() - 1.0).abs() < TOLERANCE,
+            "frame_map returned {m}, which is not a rotation"
+        );
     }
 
-    #[test]
-    fn unreachable_target_returns_none() {
+    #[hegel::test]
+    fn a_target_beyond_the_reach_is_refused(tc: hegel::TestCase) {
         let m = v1_model("left");
         let lim = v1_limits("left");
-        // Far beyond max reach (l_su + l_uw = 0.436 from the shoulder).
-        let p_d = m.shoulder + Vector3::new(1.0, 0.0, 0.0);
-        let target = iso(Rotation3::identity(), p_d);
-        assert!(solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &[0.0; ARM_DOF]).is_none());
-    }
-
-    #[test]
-    fn infeasible_arm_angle_returns_none() {
-        let mut fk = v1_fk("left");
-        let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
-        let q = [0.2, -0.3, 0.1, 0.9, 0.2, -0.1, 0.3];
-        let target = pose(&mut fk, &q);
-        // Sweep arm angle; an out-of-band psi must drive every joint branch out
-        // of limits for at least some value, yielding None there.
-        let any_none = (0..360).any(|d| {
-            let psi = (d as f64).to_radians();
-            solve(&m, &lim, &target, ArmAnglePolicy::Fixed(psi), &q).is_none()
-        });
-        assert!(any_none, "expected some arm angle to be infeasible");
-    }
-
-    #[test]
-    fn near_singular_seed_still_solves() {
-        // A seed at the singular home pose (q4 = 0) carries no usable arm angle,
-        // so FromSeed must resolve from the feasible set and still recover a
-        // solution for reachable targets rather than returning None.
-        let mut fk = v1_fk("left");
-        let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
-        let mut rng = StdRng::seed_from_u64(11);
-        let home = [0.0; ARM_DOF]; // q4 = 0: the singular seed
-        let (mut ok, mut total) = (0, 0);
-        for _ in 0..1500 {
-            let q = sample_q(&mut rng, &lim);
-            if q[3] < 0.2 {
-                continue; // keep targets comfortably off the straight-arm boundary
-            }
-            total += 1;
-            let target = pose(&mut fk, &q);
-            if let Some(sol) = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &home) {
-                let got = pose(&mut fk, &sol.q);
-                assert!((got.translation.vector - target.translation.vector).norm() < 1e-6);
-                assert!(got.rotation.angle_to(&target.rotation) < 1e-6);
-                ok += 1;
-            }
-        }
-        let rate = ok as f64 / total as f64;
-        println!("singular-seed solve rate: {ok}/{total} = {rate:.3}");
-        assert!(rate > 0.98, "singular seed solved only {ok}/{total}");
-    }
-
-    #[test]
-    fn near_straight_seed_reproduces_its_own_configuration() {
-        // A near-straight seed (e.g. the hanging home pose at q4 ≈ 0.05) is not at
-        // the singularity: its elbow-circle radius is millimetres, not zero, so its
-        // arm angle is well-defined. FromSeed must return the seed itself when
-        // solving for the seed's own pose, rather than reconfiguring in place to a
-        // different feasible arm angle for the same end-effector pose.
-        let mut fk = v1_fk("left");
-        let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
-        let seeds = [
-            [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0],   // hanging home
-            [0.3, -0.2, 0.1, 0.03, 0.4, 0.1, -0.2], // near-straight, off-axis
-        ];
-        for seed in seeds {
-            // These are near-straight but not singular: the arm angle is defined.
-            assert!(
-                arm_angle_of(&m, &seed).is_some(),
-                "near-straight seed should still have a defined arm angle: {seed:?}"
-            );
-            let target = pose(&mut fk, &seed);
-            let sol = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &seed)
-                .expect("the seed's own pose is solvable");
-            for (i, (&got, &want)) in sol.q.iter().zip(&seed).enumerate() {
-                assert!(
-                    wrap_pi(got - want).abs() < 1e-6,
-                    "joint {i}: got {got}, want {want} — seed not reproduced (arm-angle jump?)"
-                );
-            }
-        }
+        // The tip rides the wrist center at a fixed distance, so no configuration
+        // takes it farther from the shoulder than the two links plus that hand.
+        let hand = (m.home_tip.translation.vector - m.wrist_home).norm();
+        let reach = m.l_su + m.l_uw + hand;
+        let direction = tc.draw(unit_vectors());
+        let distance = tc.draw(
+            gs::floats()
+                .min_value(reach + TOLERANCE)
+                .max_value(2.0 * reach),
+        );
+        let seed = tc.draw(configs(lim));
+        let target = iso(tc.draw(rotations()), m.shoulder + direction * distance);
+        assert!(solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &seed).is_none());
     }
 
     #[test]
@@ -1406,13 +1523,13 @@ mod tests {
         // seeding each solve from the previous solution, must keep every joint step
         // small: the solution tracks the seed continuously, with no instantaneous
         // reconfiguration as the arm leaves the near-singular region.
-        let mut fk = v1_fk("left");
+        let fk = v1_fk("left");
         let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
+        let m = ArmModel::from_fk(fk).unwrap();
         let start_q = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0]; // hanging
         let reach_q = [0.0, -0.3, 0.0, 1.2, 0.0, 0.4, 0.0]; // bent reach
-        let start = pose(&mut fk, &start_q);
-        let end = pose(&mut fk, &reach_q);
+        let start = pose(fk, &start_q);
+        let end = pose(fk, &reach_q);
 
         let n = 500; // ~5 s move at 100 Hz
         let mut seed = start_q;
@@ -1445,174 +1562,84 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rejects_non_finite_target() {
+    #[hegel::test]
+    fn a_target_with_a_non_finite_coordinate_is_refused(tc: hegel::TestCase) {
         let m = v1_model("left");
         let lim = v1_limits("left");
-        let r = Rotation3::identity();
-        let seed = [0.0; ARM_DOF];
-        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(
-                solve(
-                    &m,
-                    &lim,
-                    &iso(r, Vector3::new(bad, 0.0, 0.2)),
-                    ArmAnglePolicy::FromSeed,
-                    &seed
-                )
-                .is_none()
-            );
-            assert!(
-                solve(
-                    &m,
-                    &lim,
-                    &iso(r, Vector3::new(0.1, bad, 0.2)),
-                    ArmAnglePolicy::Fixed(0.0),
-                    &seed
-                )
-                .is_none()
-            );
-        }
+        let finite = tc.draw(points());
+        let axis = tc.draw(gs::integers::<usize>().max_value(2));
+        let non_finite = tc.draw(gs::sampled_from(
+            [f64::NAN, f64::INFINITY, f64::NEG_INFINITY].as_slice(),
+        ));
+        let position =
+            Vector3::from_fn(|row, _| if row == axis { non_finite } else { finite[row] });
+        let policy = if tc.draw(gs::booleans()) {
+            ArmAnglePolicy::FromSeed
+        } else {
+            ArmAnglePolicy::Fixed(tc.draw(angles()))
+        };
+        let seed = tc.draw(configs(lim));
+        let target = iso(Rotation3::identity(), position);
+        assert!(solve(&m, &lim, &target, policy, &seed).is_none());
     }
 
-    #[test]
-    fn branch_selection_follows_seed() {
-        // The discrete shoulder/wrist branch is chosen nearest the seed: seeding
-        // with a given branch must return that branch. NOTE: the OpenArm's real
-        // joint limits prune every target to a single in-limit branch, so the
-        // tie-break is never exercised in production; we widen the limits here to
-        // expose the alternate branches and verify the selection logic.
-        let mut fk = v1_fk("left");
-        let m = ArmModel::from_fk(&mut fk).unwrap();
-        let mut lim = fk.limits();
-        for l in &mut lim {
-            l.lo = -3.2;
-            l.hi = 3.2;
-        }
-        let mut rng = StdRng::seed_from_u64(123);
-        let same =
-            |a: &JointVec, b: &JointVec| a.iter().zip(b).all(|(x, y)| wrap_pi(x - y).abs() < 1e-4);
-        for _ in 0..300 {
-            let q = sample_q(&mut rng, &lim);
-            if q[3] < 0.3 {
-                continue;
-            }
-            let target = pose(&mut fk, &q);
-            let psi = arm_angle_of(&m, &q).expect("q is non-singular (q[3] >= 0.1)");
-            // Collect distinct in-limit branches at this fixed arm angle.
-            let mut branches: Vec<JointVec> = Vec::new();
-            for _ in 0..50 {
-                let s = sample_q(&mut rng, &lim);
-                if let Some(sol) = solve(&m, &lim, &target, ArmAnglePolicy::Fixed(psi), &s)
-                    && !branches.iter().any(|e| same(e, &sol.q))
-                {
-                    branches.push(sol.q);
-                }
-            }
-            if branches.len() < 2 {
-                continue;
-            }
-            // Seeding with each distinct branch returns that branch.
-            for b in &branches {
-                let got = solve(&m, &lim, &target, ArmAnglePolicy::Fixed(psi), b)
-                    .unwrap()
-                    .q;
-                assert!(same(b, &got), "seed branch not returned: {b:?} -> {got:?}");
-            }
-            return; // verified on the first multi-branch target
-        }
-        panic!("no target with >=2 distinct branches found");
+    /// The PoE Jacobian that scores manipulability equals the chain's geometric
+    /// Jacobian entrywise, on either arm.
+    #[hegel::test]
+    fn poe_jacobian_matches_chain_jacobian(tc: hegel::TestCase) {
+        let side = tc.draw(sides());
+        let fk = v1_fk(side);
+        let m = ArmModel::from_fk(fk).unwrap();
+        let q = tc.draw(configs(fk.limits()));
+        let err = (jacobian_poe(&m, &q) - fk.at(&q).jacobian()).abs().max();
+        assert!(err < TOLERANCE, "the Jacobians at {q:?} disagree by {err}");
     }
 
-    #[test]
-    fn poe_jacobian_matches_chain_jacobian() {
-        // The PoE Jacobian scoring manipulability must agree with the k-chain
-        // geometric Jacobian entrywise, for both mirror arms.
-        let mut rng = StdRng::seed_from_u64(11);
-        for side in ["left", "right"] {
-            let mut fk = v1_fk(side);
-            let lim = fk.limits();
-            let m = ArmModel::from_fk(&mut fk).unwrap();
-            for _ in 0..25 {
-                let q = sample_q(&mut rng, &lim);
-                let poe = jacobian_poe(&m, &q);
-                let chain = fk.at(&q).jacobian();
-                let err = (poe - chain).abs().max();
-                assert!(err < 1e-9, "{side}: Jacobians disagree by {err}");
-            }
-        }
-    }
-
-    #[test]
-    fn max_manipulability_zero_step_matches_from_seed() {
-        let mut rng = StdRng::seed_from_u64(12);
-        let mut fk = v1_fk("left");
+    /// A manipulability step solves exactly when `FromSeed` does, from the
+    /// `FromSeed` anchor: it hits the pose, moves the arm angle at most the step,
+    /// never scores below the anchor, and a step of zero returns the anchor.
+    #[hegel::test]
+    fn max_manipulability_tracks_the_target_and_never_scores_below_from_seed(tc: hegel::TestCase) {
+        let side = tc.draw(sides());
+        let fk = v1_fk(side);
         let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
-        for _ in 0..25 {
-            let q = sample_q(&mut rng, &lim);
-            let target = pose(&mut fk, &q);
-            let seed = sample_q(&mut rng, &lim);
-            let from_seed = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &seed);
-            let zero_step = solve(
-                &m,
-                &lim,
-                &target,
-                ArmAnglePolicy::MaxManipulability { max_step_rad: 0.0 },
-                &seed,
-            );
-            match (from_seed, zero_step) {
-                (None, None) => {}
-                (Some(a), Some(b)) => {
-                    assert!((0..ARM_DOF).all(|i| (a.q[i] - b.q[i]).abs() < 1e-9));
-                }
-                (a, b) => panic!("solvability diverged: {a:?} vs {b:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn max_manipulability_tracks_the_target_and_never_scores_below_from_seed() {
-        // Across random targets: the optimized solve hits the pose exactly, moves
-        // psi at most the step bound from the FromSeed anchor, and never returns a
-        // posture with lower manipulability than FromSeed's.
-        let mut rng = StdRng::seed_from_u64(13);
-        let mut fk = v1_fk("left");
-        let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
-        let step = 0.05;
-        let mut solved = 0;
-        for _ in 0..40 {
-            let q = sample_q(&mut rng, &lim);
-            let target = pose(&mut fk, &q);
-            let seed = sample_q(&mut rng, &lim);
-            let Some(anchor) = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &seed) else {
-                continue;
-            };
-            let sol = solve(
-                &m,
-                &lim,
-                &target,
-                ArmAnglePolicy::MaxManipulability { max_step_rad: step },
-                &seed,
-            )
-            .expect("solvable exactly when FromSeed is");
-            let got = pose(&mut fk, &sol.q);
-            assert!((got.translation.vector - target.translation.vector).norm() < 1e-6);
-            assert!(got.rotation.angle_to(&target.rotation) < 1e-6);
+        let m = ArmModel::from_fk(fk).unwrap();
+        let q = tc.draw(configs(lim));
+        let seed = tc.draw(configs(lim));
+        let step: f64 = tc.draw(gs::floats().min_value(0.0).max_value(PI));
+        let target = pose(fk, &q);
+        let policy = ArmAnglePolicy::MaxManipulability { max_step_rad: step };
+        let Some(anchor) = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &seed) else {
             assert!(
-                wrap_pi(sol.arm_angle - anchor.arm_angle).abs() <= step + 1e-9,
-                "psi stepped past the bound"
+                solve(&m, &lim, &target, policy, &seed).is_none(),
+                "a step solved the pose of {q:?}, which FromSeed refuses"
             );
-            let w_anchor = manipulability(&jacobian_poe(&m, &anchor.q));
-            let w_opt = manipulability(&jacobian_poe(&m, &sol.q));
+            return;
+        };
+        let sol =
+            solve(&m, &lim, &target, policy, &seed).expect("solvable exactly when FromSeed is");
+        let got = pose(fk, &sol.q);
+        assert!((got.translation.vector - target.translation.vector).norm() < TOLERANCE);
+        assert!(got.rotation.angle_to(&target.rotation) < TOLERANCE);
+        assert!(
+            wrap_pi(sol.arm_angle - anchor.arm_angle).abs() <= step + TOLERANCE,
+            "the arm angle stepped {} past the {step} bound",
+            wrap_pi(sol.arm_angle - anchor.arm_angle).abs()
+        );
+        let w_anchor = manipulability(&jacobian_poe(&m, &anchor.q));
+        let w_opt = manipulability(&jacobian_poe(&m, &sol.q));
+        assert!(
+            w_opt >= w_anchor - TOLERANCE,
+            "manipulability regressed: {w_opt} < {w_anchor}"
+        );
+        if step == 0.0 {
             assert!(
-                w_opt >= w_anchor - 1e-12,
-                "manipulability regressed: {w_opt} < {w_anchor}"
+                (0..ARM_DOF).all(|joint| (sol.q[joint] - anchor.q[joint]).abs() < TOLERANCE),
+                "a zero step moved {:?} to {:?}",
+                anchor.q,
+                sol.q
             );
-            solved += 1;
         }
-        assert!(solved > 20, "too few solvable samples ({solved}) to trust");
     }
 
     #[test]
@@ -1620,11 +1647,11 @@ mod tests {
         // Chaining solves at a fixed target (seeding each with the previous
         // solution, as the planner and the servo loop do) must climb toward a
         // manipulability ridge and settle there, not oscillate.
-        let mut fk = v1_fk("left");
+        let fk = v1_fk("left");
         let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
+        let m = ArmModel::from_fk(fk).unwrap();
         let q0 = [0.2, -0.3, 0.3, 1.0, -0.4, 0.5, 0.3];
-        let target = pose(&mut fk, &q0);
+        let target = pose(fk, &q0);
         let mut seed = q0;
         let mut w_prev = manipulability(&jacobian_poe(&m, &q0));
         let mut psi_prev = arm_angle_of(&m, &q0).unwrap();
@@ -1651,79 +1678,43 @@ mod tests {
         );
     }
 
-    #[test]
-    fn from_seed_keeps_the_elbow_where_a_distant_seed_had_it() {
-        // `FromSeed` promises continuity: keep the elbow's azimuth about the
-        // shoulder-wrist axis. That azimuth has to be measured on the *target's*
-        // redundancy circle, because that is the frame the feasible-psi intervals
-        // and `solve_at_psi` live in. Measuring it on the seed's own circle
-        // instead compares angles taken against two different references, and the
-        // references diverge as the seed's wrist center moves away from the
-        // target's - up to pi apart at arm's length.
-        //
-        // So: whenever the seed's (target-frame) azimuth is itself feasible,
-        // `FromSeed` must return exactly that angle, however far the seed sits
-        // from the target. Measuring in the wrong frame fails this immediately.
-        let mut fk = v1_fk("left");
+    /// `FromSeed` keeps the elbow's azimuth about the shoulder-wrist axis where
+    /// the seed had it, measured on the target's redundancy circle: the frame the
+    /// feasible intervals and `solve_at_psi` live in. The seed's own circle is a
+    /// different reference, up to pi apart at arm's length. So whenever the
+    /// seed's azimuth on the target's circle is feasible, `FromSeed` returns
+    /// exactly that arm angle, however far the seed sits from the target.
+    #[hegel::test]
+    fn from_seed_keeps_the_elbow_where_the_seed_had_it(tc: hegel::TestCase) {
+        let side = tc.draw(sides());
+        let fk = v1_fk(side);
         let lim = fk.limits();
-        let m = ArmModel::from_fk(&mut fk).unwrap();
-        let mut rng = StdRng::seed_from_u64(0x5EED);
-
-        let mut checked = 0;
-        let mut far = 0;
-        for _ in 0..3000 {
-            let q_t = sample_q(&mut rng, &lim);
-            let q_s = sample_q(&mut rng, &lim);
-            if q_t[3] < 0.2 || q_s[3] < 0.2 {
-                continue;
-            }
-            let target = pose(&mut fk, &q_t);
-            let p_w = target.translation.vector;
-            // Only distant seeds: a near seed cannot distinguish the two frames.
-            if (p_w - fk_poe_position(&m, &q_s)).norm() < 0.15 {
-                continue;
-            }
-            far += 1;
-
-            let d = (p_w - m.shoulder).norm();
-            let cos4 = ((d * d - m.l_su * m.l_su - m.l_uw * m.l_uw) / (2.0 * m.l_su * m.l_uw))
-                .clamp(-1.0, 1.0);
-            let ctx = PsiSolve {
-                model: &m,
-                limits: &lim,
-                r_d: target.rotation.to_rotation_matrix(),
-                p_w,
-                theta4: cos4.acos(),
-                circle: circle_frame(&m, p_w),
-            };
-            // Derived here from the target's circle directly, NOT via
-            // `preferred_psi`: a test that asks the code under test what the
-            // answer should be cannot fail when that code is wrong.
-            let e = elbow_position(&m, &q_s) - ctx.circle.center;
-            let (ax, bx) = (e.dot(&ctx.circle.a_hat), e.dot(&ctx.circle.b_hat));
-            if ax.hypot(bx) < SINGULAR_RADIUS {
-                continue;
-            }
-            let preferred = f64::atan2(bx, ax);
-            // Only assert where the preference is actually attainable; otherwise
-            // `nearest_feasible_psi` is correct to return something else.
-            if ctx.solve_at_psi(preferred, &q_s).is_none() {
-                continue;
-            }
-
-            let sol = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &q_s)
-                .expect("a feasible preferred psi must yield a solution");
-            assert!(
-                wrap_pi(sol.arm_angle - preferred).abs() < 1e-9,
-                "FromSeed drifted off a feasible preference by {:.4} rad \
-                 (got {:.4}, wanted {:.4})",
-                wrap_pi(sol.arm_angle - preferred).abs(),
-                sol.arm_angle,
-                preferred,
-            );
-            checked += 1;
+        let m = ArmModel::from_fk(fk).unwrap();
+        let q = tc.draw(configs(lim));
+        let seed = tc.draw(configs(lim));
+        let target = pose(fk, &q);
+        let Some(ctx) = PsiSolve::new(&m, &lim, &target) else {
+            return;
+        };
+        // The azimuth comes from the target's circle here, apart from
+        // `preferred_psi`, so a defect there cannot pass on its own answer.
+        let e = elbow_position(&m, &seed) - ctx.circle.center;
+        let (ax, bx) = (e.dot(&ctx.circle.a_hat), e.dot(&ctx.circle.b_hat));
+        if ax.hypot(bx) < SINGULAR_RADIUS {
+            return;
         }
-        println!("distant seeds: {far}, with a feasible preference: {checked}");
-        assert!(checked > 200, "too few distant feasible cases: {checked}");
+        let preferred = f64::atan2(bx, ax);
+        if ctx.solve_at_psi(preferred, &seed).is_none() {
+            return;
+        }
+        let sol = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &seed)
+            .expect("a feasible preferred psi yields a solution");
+        assert!(
+            wrap_pi(sol.arm_angle - preferred).abs() < TOLERANCE,
+            "FromSeed drifted off a feasible preference by {} rad (got {}, wanted {})",
+            wrap_pi(sol.arm_angle - preferred).abs(),
+            sol.arm_angle,
+            preferred,
+        );
     }
 }

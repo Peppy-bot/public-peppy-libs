@@ -10,7 +10,7 @@
 use nalgebra::{Isometry3, Matrix3, Vector3};
 
 use crate::fk::ForwardKinematics;
-use crate::{ARM_DOF, PARALLEL_SIN_EPS};
+use crate::{ARM_DOF, ELBOW, PARALLEL_SIN_EPS, SHOULDER, WRIST};
 
 /// Constant kinematic model of one OpenArm: PoE screw data plus the SRS
 /// shoulder/elbow/wrist centers and link lengths.
@@ -61,24 +61,16 @@ impl ArmModel {
     ///
     /// The [`Arm`](crate::Arm) facade builds the FK once and calls this so the
     /// URDF is parsed a single time for both FK/dynamics and IK.
-    pub fn from_fk(fk: &mut ForwardKinematics) -> Result<Self, String> {
+    pub fn from_fk(fk: &ForwardKinematics) -> Result<Self, String> {
         let fk = fk.at(&[0.0; ARM_DOF]); // pose at home; read everything off this view
         let home_tip = fk.tip_pose();
         let axes: [Vector3<f64>; ARM_DOF] = std::array::from_fn(|i| fk.axis_base(i));
         let points: [Vector3<f64>; ARM_DOF] = std::array::from_fn(|i| fk.origin_base(i));
 
-        let shoulder = concurrency(&[
-            (axes[0], points[0]),
-            (axes[1], points[1]),
-            (axes[2], points[2]),
-        ])
-        .ok_or("shoulder axes (j1-j3) are not concurrent: not an SRS arm")?;
-        let wrist_home = concurrency(&[
-            (axes[4], points[4]),
-            (axes[5], points[5]),
-            (axes[6], points[6]),
-        ])
-        .ok_or("wrist axes (j5-j7) are not concurrent: not an SRS arm")?;
+        let shoulder = concurrency(&SHOULDER.map(|joint| (axes[joint], points[joint])))
+            .ok_or("shoulder axes (j1-j3) are not concurrent: not an SRS arm")?;
+        let wrist_home = concurrency(&WRIST.map(|joint| (axes[joint], points[joint])))
+            .ok_or("wrist axes (j5-j7) are not concurrent: not an SRS arm")?;
 
         // The closed-form IK decomposes the shoulder/wrist rotations on orthonormal
         // spherical bases (`frame_map` inverts by transpose), so a concurrent-but-
@@ -86,13 +78,10 @@ impl ArmModel {
         // triplet's axes to be mutually orthogonal. |cos| between two unit axes is
         // the sine of their deviation from perpendicular, so the angular
         // [`PARALLEL_SIN_EPS`] is the right gate (not the length tolerance).
-        let oblique = [
-            ("shoulder (j1-j3)", [0usize, 1, 2]),
-            ("wrist (j5-j7)", [4, 5, 6]),
-        ]
-        .into_iter()
-        .flat_map(|(label, [i, j, k])| [(label, i, j), (label, j, k), (label, i, k)])
-        .find(|&(_, a, b)| axes[a].dot(&axes[b]).abs() > PARALLEL_SIN_EPS);
+        let oblique = [("shoulder (j1-j3)", SHOULDER), ("wrist (j5-j7)", WRIST)]
+            .into_iter()
+            .flat_map(|(label, [i, j, k])| [(label, i, j), (label, j, k), (label, i, k)])
+            .find(|&(_, a, b)| axes[a].dot(&axes[b]).abs() > PARALLEL_SIN_EPS);
         if let Some((label, a, b)) = oblique {
             return Err(format!(
                 "{label}: axes j{} and j{} are not orthogonal (|cos|={:.6}): \
@@ -118,16 +107,18 @@ impl ArmModel {
         }
 
         // E*: point on joint-4's axis line closest to the S-W line.
-        let elbow_home =
-            closest_point_on_line((points[3], axes[3]), (shoulder, wrist_home - shoulder))
-                .ok_or("elbow axis (j4) is parallel to the shoulder-wrist line")?;
+        let elbow_home = closest_point_on_line(
+            (points[ELBOW], axes[ELBOW]),
+            (shoulder, wrist_home - shoulder),
+        )
+        .ok_or("elbow axis (j4) is parallel to the shoulder-wrist line")?;
 
         // j4's axis must actually *intersect* the S-W line (SRS), not merely
         // pass near it: closest_point_on_line yields a point even for skew lines.
         let sw_dir = (wrist_home - shoulder).normalize();
         // j4 must be perpendicular to the S-W line (SRS elbow), so the elbow
         // redundancy circle the solver builds is well-defined.
-        let j4_cos = axes[3].dot(&sw_dir).abs();
+        let j4_cos = axes[ELBOW].dot(&sw_dir).abs();
         if j4_cos > PARALLEL_SIN_EPS {
             return Err(format!(
                 "elbow axis (j4) is not perpendicular to the shoulder-wrist line \
@@ -240,7 +231,7 @@ mod tests {
             let fk = v1_fk(side);
             let posed = fk.at(&[0.0; ARM_DOF]);
             let axes: [Vector3<f64>; ARM_DOF] = std::array::from_fn(|i| posed.axis_base(i));
-            for (label, [i, j, k]) in [("shoulder", [0usize, 1, 2]), ("wrist", [4, 5, 6])] {
+            for (label, [i, j, k]) in [("shoulder", SHOULDER), ("wrist", WRIST)] {
                 for idx in [i, j, k] {
                     assert!(
                         (axes[idx].norm() - 1.0).abs() < 1e-9,
@@ -307,7 +298,11 @@ mod tests {
             assert!(l.lo < l.hi, "joint {i}: {l:?}");
         }
         // Joint 4 (elbow) is one-sided per URDF: lower bound at 0.
-        assert!(limits[3].lo.abs() < 1e-6, "j4 lower = {}", limits[3].lo);
+        assert!(
+            limits[ELBOW].lo.abs() < 1e-6,
+            "j4 lower = {}",
+            limits[ELBOW].lo
+        );
     }
 
     #[test]

@@ -33,7 +33,7 @@ let solution = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &q)?;
 | `Arm::at(q)` | pose for FK and dynamics; `&self`, so two configurations compare side by side |
 | `Posed::{ee_pose, tip_pose}` | the tool control point, and the wrist before any tool |
 | `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics (the chain's, at seven joints), payload included |
-| `Posed::jacobian` | the 6x7 geometric Jacobian and its redundancy-aware inverses |
+| `Posed::jacobian` | the 6x7 geometric Jacobian, its damped inverse and its manipulability |
 | `Arm::solve_ik` | closed-form arm-angle (Shimizu) IK under an [`ArmAnglePolicy`] |
 | `Arm::wrist_reach` | the nearest and farthest the wrist center stands from the shoulder within the elbow's limits |
 | `Arm::reach_shortfall` | how far a target lies beyond the arm's reach: its wrist center's distance outside `wrist_reach` |
@@ -81,15 +81,20 @@ otherwise return a pose the arm cannot hold.
 ## Testing
 
 ```sh
-cargo test          # unit, round-trip, psi completeness, parity fixture
-cargo bench         # FK, Jacobian, dynamics and IK on the 100 Hz path
+cargo test                                     # unit, round-trip, psi completeness, parity fixture
+HEGEL_TEST_CASES=100000 cargo test --release   # every property at 100000 cases
+cargo bench                                    # FK, Jacobian, dynamics and IK on the 100 Hz path
 ```
 
-Four suites carry most of the weight:
+The kinematics are checked as [Hegel](https://hegel.dev) properties over drawn
+configurations, seeds, arm angles and targets on both arms of the fixture,
+drawn by the generators [`kinematics_properties`](../kinematics_properties)
+shares with `chain_kinematics`. Four suites carry most of the weight:
 
-- **`tests/psi_completeness.rs`** - the analytic feasible-psi intervals miss no
-  reachable arm angle, over 3000 seeded targets per side.
-- **`tests/round_trip.rs`** - IK inverts FK, per policy.
+- **`tests/psi_completeness.rs`** - `FromSeed` solves every reachable target
+  from any seed.
+- **`tests/round_trip.rs`** - IK inverts FK for every bent elbow and refuses
+  every straight-arm pose.
 - **`tests/parity.rs`** - a recorded fixture of FK, Jacobians, dynamics, IK
   solutions and servo steps, asserted through the public API only. It is the
   parity gate: a refactor that changes a number fails here rather than on the

@@ -8,16 +8,12 @@ use nalgebra::{Isometry3, Translation3, Vector3};
 use crate::fk::ForwardKinematics;
 use crate::ik::{self, ArmAnglePolicy, Solution};
 use crate::model::ArmModel;
-use crate::{ARM_DOF, JointVec, Limit, Posed, SrsError};
+use crate::{ARM_DOF, ELBOW, JointVec, Limit, Posed, SrsError};
 
 /// Damping `lambda` for [`Arm::rate_step`] when the caller has no reason to pick
 /// another. Re-exported from `chain_kinematics`, which owns the step: an arm and
 /// the generic chain under it cannot be damped differently.
 pub use chain_kinematics::DEFAULT_DLS_LAMBDA;
-
-/// The elbow's index in the joint vector, j4: the joint whose flex sets the
-/// wrist center's distance from the shoulder.
-const ELBOW: usize = 3;
 
 /// How far past an edge of the wrist center's reach [`Arm::solve_ik_within`]
 /// moves a target at least, and how far short of its tolerance its deepest move
@@ -38,16 +34,16 @@ impl Arm {
     /// (`base_link`). Returns `Err` if the chain is missing, too short, or not a
     /// clean SRS arm.
     pub fn from_urdf(urdf: &str, base_link: &str) -> Result<Self, SrsError> {
-        let mut fk = ForwardKinematics::from_urdf(urdf, base_link)?;
-        let model = ArmModel::from_fk(&mut fk)?;
+        let fk = ForwardKinematics::from_urdf(urdf, base_link)?;
+        let model = ArmModel::from_fk(&fk)?;
         Ok(Self { fk, model })
     }
 
     /// Like [`from_urdf`](Self::from_urdf) but reads the URDF from a file path,
     /// folding the IO error into the same `Result`.
     pub fn from_urdf_file(path: &str, base_link: &str) -> Result<Self, SrsError> {
-        let mut fk = ForwardKinematics::from_urdf_file(path, base_link)?;
-        let model = ArmModel::from_fk(&mut fk)?;
+        let fk = ForwardKinematics::from_urdf_file(path, base_link)?;
+        let model = ArmModel::from_fk(&fk)?;
         Ok(Self { fk, model })
     }
 
@@ -294,6 +290,8 @@ impl Arm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::properties::STRAIGHT_ELBOW_BAND;
+    use kinematics_properties::{TOLERANCE, configs};
 
     const FIXTURE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -308,21 +306,28 @@ mod tests {
             assert!(l.lo <= l.hi, "joint {i}: lo {} > hi {}", l.lo, l.hi);
         }
         // j4 (elbow) is one-sided in the V1.0 URDF: lower bound at 0.
-        assert!(limits[3].lo.abs() < 1e-9, "j4 lower = {}", limits[3].lo);
+        assert!(
+            limits[ELBOW].lo.abs() < 1e-9,
+            "j4 lower = {}",
+            limits[ELBOW].lo
+        );
     }
 
     #[test]
     fn with_lower_floor_raises_only_the_targeted_lower_bound() {
         let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture");
         let base = arm.limits();
-        // The fixture's elbow (j4, index 3) has a mechanical lower bound of 0.0.
-        let floored = arm.with_lower_floor(3, 0.05).limits();
+        // The fixture's elbow has a mechanical lower bound of 0.0.
+        let floored = arm.with_lower_floor(ELBOW, 0.05).limits();
 
         assert_eq!(
-            floored[3].lo, 0.05,
+            floored[ELBOW].lo, 0.05,
             "targeted joint's lower bound is raised"
         );
-        assert_eq!(floored[3].hi, base[3].hi, "upper bound is untouched");
+        assert_eq!(
+            floored[ELBOW].hi, base[ELBOW].hi,
+            "upper bound is untouched"
+        );
         for i in [0, 1, 2, 4, 5, 6] {
             assert_eq!(
                 floored[i].lo, base[i].lo,
@@ -340,16 +345,16 @@ mod tests {
         const FLOOR: f64 = 0.5;
         let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0")
             .expect("load fixture")
-            .with_lower_floor(3, FLOOR);
-        assert_eq!(arm.limits()[3].lo, FLOOR, "the floor is reported");
+            .with_lower_floor(ELBOW, FLOOR);
+        assert_eq!(arm.limits()[ELBOW].lo, FLOOR, "the floor is reported");
 
         let under: JointVec = [0.1, 0.2, 0.0, 0.30, 0.0, 0.3, 0.0];
         let target = arm.at(&under).ee_pose();
         if let Some(s) = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &under) {
             assert!(
-                s.q[3] >= FLOOR,
+                s.q[ELBOW] >= FLOOR,
                 "IK returned j4 = {} under the {FLOOR} floor it reports",
-                s.q[3]
+                s.q[ELBOW]
             );
         }
     }
@@ -358,9 +363,9 @@ mod tests {
     fn with_lower_floor_below_the_mechanical_limit_is_a_noop() {
         let arm = Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture");
         let base = arm.limits();
-        let floored = arm.with_lower_floor(3, -10.0).limits();
+        let floored = arm.with_lower_floor(ELBOW, -10.0).limits();
         assert_eq!(
-            floored[3].lo, base[3].lo,
+            floored[ELBOW].lo, base[ELBOW].lo,
             "a floor under the limit does not lower it"
         );
     }
@@ -387,20 +392,20 @@ mod tests {
         Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture")
     }
 
-    fn ee_world(arm: &mut Arm, q: &JointVec) -> Isometry3<f64> {
+    fn ee_world(arm: &Arm, q: &JointVec) -> Isometry3<f64> {
         let base = arm.at(q).ee_pose();
         arm.world_pose(&base)
     }
 
-    fn tip_world(arm: &mut Arm, q: &JointVec) -> Isometry3<f64> {
+    fn tip_world(arm: &Arm, q: &JointVec) -> Isometry3<f64> {
         let base = arm.at(q).tip_pose();
         arm.world_pose(&base)
     }
 
     #[test]
     fn rate_step_moves_the_ee_along_the_commanded_direction() {
-        let mut arm = rate_arm();
-        let before = ee_world(&mut arm, &RATE_Q);
+        let arm = rate_arm();
+        let before = ee_world(&arm, &RATE_Q);
         let dp = Vector3::new(3e-3, 0.0, 0.0);
         let q = arm.rate_step(
             &RATE_Q,
@@ -410,7 +415,7 @@ mod tests {
             RATE_DT,
             RATE_LAMBDA,
         );
-        let after = ee_world(&mut arm, &q);
+        let after = ee_world(&arm, &q);
         let moved = after.translation.vector - before.translation.vector;
         assert!(
             moved.dot(&dp) / dp.norm_squared() > 0.5,
@@ -461,10 +466,14 @@ mod tests {
     // a test that passes cannot be one that ignores the tool.
     const TOOL_LINK: &str = "openarm_left_tcp";
 
-    fn tooled_arm() -> Arm {
-        rate_arm()
-            .with_tool_link(TOOL_LINK)
-            .expect("the fixture carries the tool link")
+    /// The fixture's left arm with the tool mounted, built once per test binary.
+    fn tooled_arm() -> &'static Arm {
+        static TOOLED: std::sync::LazyLock<Arm> = std::sync::LazyLock::new(|| {
+            rate_arm()
+                .with_tool_link(TOOL_LINK)
+                .expect("the fixture carries the tool link")
+        });
+        &TOOLED
     }
 
     #[test]
@@ -494,25 +503,30 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ik_round_trips_the_tool_frame_it_was_given() {
+    #[hegel::test]
+    fn ik_round_trips_the_tool_frame_it_was_given(tc: hegel::TestCase) {
         // The whole point of the seam: a target expressed at the tool is reached at
         // the tool. A composition inverted anywhere lands a tool-length away.
         let arm = tooled_arm();
-        let target = arm.at(&RATE_Q).ee_pose();
-        let seed: JointVec = std::array::from_fn(|i| RATE_Q[i] + 0.05);
-        let solution = arm
-            .solve_ik(&target, ArmAnglePolicy::FromSeed, &seed)
-            .expect("a pose reached by FK is reachable");
+        let q = tc.draw(configs(arm.limits()));
+        let seed = tc.draw(configs(arm.limits()));
+        let target = arm.at(&q).ee_pose();
+        let Some(solution) = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &seed) else {
+            assert!(
+                q[ELBOW] < STRAIGHT_ELBOW_BAND,
+                "no IK solution from {seed:?} for the tool pose of {q:?}"
+            );
+            return;
+        };
         let reached = arm.at(&solution.q).ee_pose();
         assert!(
-            (reached.translation.vector - target.translation.vector).norm() < 1e-9,
+            (reached.translation.vector - target.translation.vector).norm() < TOLERANCE,
             "IK reached {:?}, wanted {:?}",
             reached.translation.vector,
             target.translation.vector
         );
         assert!(
-            reached.rotation.angle_to(&target.rotation) < 1e-9,
+            reached.rotation.angle_to(&target.rotation) < TOLERANCE,
             "IK reached a {:.6} rad different orientation",
             reached.rotation.angle_to(&target.rotation)
         );
@@ -523,9 +537,9 @@ mod tests {
         // The sharpest statement that the Jacobian moved with the frame: a rotation
         // task holds the point it is taken at and swings everything else. Left at
         // the tip, this would drag the tool point through a tool-length arc.
-        let mut arm = tooled_arm();
-        let tip_before = tip_world(&mut arm, &RATE_Q);
-        let ee_before = ee_world(&mut arm, &RATE_Q);
+        let arm = tooled_arm();
+        let tip_before = tip_world(arm, &RATE_Q);
+        let ee_before = ee_world(arm, &RATE_Q);
         let dw = Vector3::new(0.0, 0.0, 1e-2);
         let q = arm.rate_step(
             &RATE_Q,
@@ -535,8 +549,8 @@ mod tests {
             RATE_DT,
             RATE_LAMBDA,
         );
-        let tip_after = tip_world(&mut arm, &q);
-        let ee_after = ee_world(&mut arm, &q);
+        let tip_after = tip_world(arm, &q);
+        let ee_after = ee_world(arm, &q);
 
         let turned = ee_after.rotation.angle_to(&ee_before.rotation);
         assert!(

@@ -157,9 +157,12 @@ fn find_srs_tip(tree: &Tree, base: usize) -> Result<usize, SrsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::properties::sides;
+    use hegel::generators as gs;
+    use kinematics_properties::{TOLERANCE, configs};
     use nalgebra::{Point3, Vector3};
 
-    fn fk() -> ForwardKinematics {
+    fn fk() -> &'static ForwardKinematics {
         crate::test_support::v1_fk("left")
     }
 
@@ -173,41 +176,32 @@ mod tests {
         }
     }
 
-    #[test]
-    fn point_world_jacobian_matches_finite_difference() {
+    #[hegel::test]
+    fn point_world_jacobian_matches_finite_difference(tc: hegel::TestCase) {
         let h = 1e-6;
-        let configs: [JointVec; 3] = [
-            [0.3, -0.2, 0.5, 0.4, -0.6, 0.2, 0.1],
-            [-0.5, 0.4, -0.3, 0.8, 0.5, -0.4, 0.7],
-            [0.1, 0.1, 0.1, 0.3, 0.1, 0.1, 0.1],
-        ];
-        // A fixed offset in each link's frame, so the same material point is tracked
-        // across the perturbed configurations.
-        let offset = Point3::new(0.05, -0.03, 0.04);
-        for side in ["left", "right"] {
-            let fk = crate::test_support::v1_fk(side);
-            for q in configs {
-                for segment in 0..ARM_DOF {
-                    let point = fk.at(&q).link_pose_world(segment) * offset;
-                    let cols = fk.at(&q).point_world_jacobian(&point, segment);
-                    for j in 0..ARM_DOF {
-                        let mut qp = q;
-                        let mut qm = q;
-                        qp[j] += h;
-                        qm[j] -= h;
-                        let pp = fk.at(&qp).link_pose_world(segment) * offset;
-                        let pm = fk.at(&qm).link_pose_world(segment) * offset;
-                        let fd = (pp.coords - pm.coords) / (2.0 * h);
-                        // For j > segment the column is zero and the point does not
-                        // move (a distal joint), so both sides are ~0.
-                        assert!(
-                            (cols[j] - fd).norm() < 1e-5,
-                            "{side} segment {segment} joint {j} off by {}",
-                            (cols[j] - fd).norm()
-                        );
-                    }
-                }
-            }
+        let fk = crate::test_support::v1_fk(tc.draw(sides()));
+        let q = tc.draw(configs(fk.limits()));
+        let segment = tc.draw(gs::integers::<usize>().max_value(ARM_DOF - 1));
+        // A fixed offset in the segment's frame, so the same material point is
+        // tracked across the perturbed configurations.
+        let offset = Point3::from(tc.draw(gs::arrays(gs::floats().min_value(-0.1).max_value(0.1))));
+        let point = fk.at(&q).link_pose_world(segment) * offset;
+        let cols = fk.at(&q).point_world_jacobian(&point, segment);
+        for j in 0..ARM_DOF {
+            let mut qp = q;
+            let mut qm = q;
+            qp[j] += h;
+            qm[j] -= h;
+            let pp = fk.at(&qp).link_pose_world(segment) * offset;
+            let pm = fk.at(&qm).link_pose_world(segment) * offset;
+            let fd = (pp.coords - pm.coords) / (2.0 * h);
+            // For j > segment the column is zero and the point does not move (a
+            // distal joint), so both sides are ~0.
+            assert!(
+                (cols[j] - fd).norm() < TOLERANCE,
+                "segment {segment} joint {j} off by {}",
+                (cols[j] - fd).norm()
+            );
         }
     }
 
