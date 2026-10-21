@@ -1,32 +1,17 @@
-//! Differential kinematics: the geometric Jacobian's inverses, generic over the
-//! number of joints.
+//! Differential kinematics: the geometric Jacobian's damped inverse and its
+//! manipulability, generic over the number of joints.
 //!
 //! A chain has `N` joints but an end-effector twist is 6-dimensional, so the
-//! Jacobian is **6xN**. When `N > 6` it has no square inverse and the surplus
-//! degrees of freedom are a null space to be resolved; when `N < 6` not every
-//! twist is achievable and these give the least-squares answer. Two inverses
-//! cover the usual control schemes:
-//!
-//! - [`try_pseudo_inverse`] is the Moore-Penrose (minimum-norm) right inverse,
-//!   returning `None` at a singularity where the Jacobian drops rank.
-//! - [`damped_pseudo_inverse`] is the damped-least-squares inverse, always
-//!   defined, trading tracking accuracy for conditioning near singularities.
-//!   This is the one a resolved-rate loop runs every tick.
-//!
-//! [`manipulability`] reports proximity to a singularity, and
-//! [`null_space_projector`] maps a secondary joint-rate objective (posture,
-//! joint-limit avoidance, elbow placement) into the Jacobian's null space so it
-//! does not disturb the end effector.
+//! Jacobian is **6xN**. When `N > 6` the surplus degrees of freedom are a null
+//! space; when `N < 6` not every twist is achievable. [`damped_pseudo_inverse`]
+//! is the damped-least-squares inverse, defined at every posture and trading
+//! tracking accuracy for conditioning near singularities: the inverse a
+//! resolved-rate loop runs every tick. [`manipulability`] reports proximity to a
+//! singularity.
 //!
 //! All quantities are in the frame the Jacobian was taken in.
 
 use nalgebra::{DMatrix, Matrix6, SMatrix};
-
-// nalgebra's SVD is written against type-level integers and cannot be named over
-// a generic `Const<N>`, so the two decomposing functions below go through a
-// dynamically-sized matrix. That costs an allocation, which is why neither is on
-// the control path: a resolved-rate tick runs `damped_pseudo_inverse`, which is
-// a fixed-size Cholesky and allocates nothing.
 
 /// Floor on `λ²` in [`damped_pseudo_inverse`], keeping `J Jᵀ + λ²I` strictly
 /// positive-definite (hence invertible) even if a caller passes `lambda = 0` or a
@@ -42,54 +27,23 @@ pub type Jacobian<const N: usize> = SMatrix<f64, 6, N>;
 /// A (pseudo-)inverse of the [`Jacobian`]: maps an EE twist to joint rates.
 pub type JacobianPinv<const N: usize> = SMatrix<f64, N, 6>;
 
-/// Moore-Penrose (minimum-norm) right inverse `J⁺ = Jᵀ (J Jᵀ)⁻¹`, the joint rates
-/// of least norm that realize a commanded EE twist. Returns `None` whenever no
-/// such rates exist: at (or near) a singularity, where the smallest singular
-/// value is `<= eps` and the solution is ill-conditioned, and on a chain of
-/// fewer than six joints, which cannot meet an arbitrary six-dimensional twist
-/// in the first place. Use [`damped_pseudo_inverse`] in both cases, which
-/// answers everywhere at the cost of some tracking error.
-pub fn try_pseudo_inverse<const N: usize>(j: &Jacobian<N>, eps: f64) -> Option<JacobianPinv<N>> {
-    // An under-actuated chain has no right inverse, and its rank never announces
-    // that: a 6xN Jacobian with N < 6 has only N singular values, so the missing
-    // task directions never show up as small ones and the guard below cannot see
-    // them. Answering here would hand back a least-squares fit that does not
-    // realize the commanded twist, with nothing to say so.
-    if N < 6 {
-        return None;
-    }
-    let svd = DMatrix::from_iterator(6, N, j.iter().copied()).svd(true, true);
-    // A full-row-rank 6xN Jacobian has 6 singular values; the smallest gauges how
-    // close it is to losing rank. Guarding on it (rather than letting the SVD
-    // silently zero small values) is what makes this the fallible variant.
-    let s_min = svd
-        .singular_values
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min);
-    if s_min <= eps {
-        return None;
-    }
-    let pinv = svd.pseudo_inverse(eps).ok()?;
-    Some(JacobianPinv::<N>::from_iterator(pinv.iter().copied()))
-}
-
-/// Damped-least-squares inverse `J⁺ = Jᵀ (J Jᵀ + λ²I)⁻¹`. Unlike
-/// [`try_pseudo_inverse`] it is defined everywhere, including at singularities: the
-/// damping bounds the joint rates at the cost of some tracking error. A
+/// Damped-least-squares inverse `J⁺ = Jᵀ (J Jᵀ + λ²I)⁻¹`, defined everywhere,
+/// including at singularities: the damping bounds the joint rates at the cost
+/// of some tracking error. A
 /// resolved-rate controller runs this every tick; pick `lambda` (~1e-2) to trade
 /// tracking accuracy against rate magnitude near singularities.
 ///
 /// Only `λ²` enters, so the sign of `lambda` is irrelevant. A zero or non-finite
 /// `lambda` is clamped to a negligible internal floor so the result stays defined
 /// rather than inverting a singular matrix; that floor is not a meaningful damping,
-/// so pass a genuine value. This inverse never fails.
+/// so pass a genuine value. A `lambda` whose square overflows damps at the largest
+/// finite square. This inverse never fails.
 pub fn damped_pseudo_inverse<const N: usize>(j: &Jacobian<N>, lambda: f64) -> JacobianPinv<N> {
-    // λ² must be strictly positive for J Jᵀ + λ²I to be SPD; clamp a zero or
-    // non-finite lambda to the floor so Cholesky always succeeds and this stays
-    // infallible.
+    // λ² must be strictly positive and finite for J Jᵀ + λ²I to be SPD; clamp a
+    // zero or non-finite lambda to the floor and an overflowing square to the
+    // largest finite one, so Cholesky always succeeds and this stays infallible.
     let lambda2 = if lambda.is_finite() {
-        (lambda * lambda).max(MIN_DAMPING_SQ)
+        (lambda * lambda).clamp(MIN_DAMPING_SQ, f64::MAX)
     } else {
         MIN_DAMPING_SQ
     };
@@ -128,36 +82,9 @@ pub fn manipulability<const N: usize>(j: &Jacobian<N>) -> f64 {
     gram.max(0.0).sqrt()
 }
 
-/// Exact null-space projector `N = I − J⁺J` for the redundant DOF, where `J⁺` is
-/// the Moore-Penrose inverse of `j`. Joint rates `N q̇` produce no end-effector
-/// motion, so a secondary objective (posture, joint-limit avoidance, elbow
-/// placement) can be added as `task + N q̇₀` without disturbing the commanded
-/// twist. `N` is a true orthogonal projector (symmetric and idempotent).
-///
-/// It is built from the Moore-Penrose inverse on purpose: `I − J_dls⁺J` from a
-/// damped inverse is only an *approximate* projector and leaks secondary motion
-/// into the twist, so even a damped-least-squares controller should track its task
-/// with the damped inverse but project the secondary term with this. `eps` is the
-/// singular-value rank tolerance; the projector stays exact at singularities, where
-/// the null space simply grows.
-pub fn null_space_projector<const N: usize>(j: &Jacobian<N>, eps: f64) -> SMatrix<f64, N, N> {
-    let pinv = DMatrix::from_iterator(6, N, j.iter().copied())
-        .svd(true, true)
-        .pseudo_inverse(eps)
-        .expect("SVD pseudo-inverse only fails for eps < 0");
-    SMatrix::<f64, N, N>::identity() - JacobianPinv::<N>::from_iterator(pinv.iter().copied()) * j
-}
-
 use crate::Posed;
 
 impl<const N: usize> Posed<'_, N> {
-    /// Minimum-norm pseudo-inverse of this posture's Jacobian; `None` at a
-    /// singularity. Convenience for the one-shot case: when the Jacobian is
-    /// also needed, compute it once and use the free functions.
-    pub fn try_pseudo_inverse(&self, eps: f64) -> Option<JacobianPinv<N>> {
-        try_pseudo_inverse(&self.jacobian(), eps)
-    }
-
     /// Damped-least-squares inverse of this posture's Jacobian, defined
     /// everywhere including singularities.
     pub fn damped_pseudo_inverse(&self, lambda: f64) -> JacobianPinv<N> {

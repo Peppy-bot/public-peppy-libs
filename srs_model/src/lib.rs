@@ -39,7 +39,6 @@ mod arm;
 mod error;
 mod fk;
 mod ik;
-mod jacobian;
 mod model;
 
 /// The library entry point: build an [`Arm`] from a URDF, then read FK, gravity,
@@ -54,13 +53,12 @@ pub use ik::{ArmAnglePolicy, Solution};
 /// included, is read through it, so it can only be queried after a pose.
 pub type Posed<'a> = chain_kinematics::Posed<'a, ARM_DOF>;
 
-/// Differential kinematics: the geometric [`Jacobian`] (read off a [`Posed`] view
-/// via [`Posed::jacobian`]) and its redundancy-aware inverses and helpers for
-/// velocity-level control.
-pub use jacobian::{
-    Jacobian, JacobianPinv, damped_pseudo_inverse, manipulability, null_space_projector,
-    try_pseudo_inverse,
-};
+/// The geometric Jacobian of the end effector at seven joints, read off a
+/// [`Posed`] view via [`Posed::jacobian`]: maps joint rates (rad/s) to the EE
+/// spatial twist, both in the arm base frame. Rows 0..3 are linear velocity
+/// (m/s), rows 3..6 are angular velocity (rad/s). Its damped inverse and its
+/// manipulability are [`Posed`] methods too.
+pub type Jacobian = chain_kinematics::Jacobian<ARM_DOF>;
 
 /// Degrees of freedom of the arm. The URDF chain is validated against this at
 /// load (the closed-form arm-angle redundancy resolution is specific to 7 DOF).

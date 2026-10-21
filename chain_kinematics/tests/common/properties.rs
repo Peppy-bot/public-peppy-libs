@@ -1,6 +1,6 @@
 //! The Hegel generators this crate's property tests share beyond
-//! `kinematics_properties`: robots of any serial shape, their chains,
-//! and poses past a chain's reach.
+//! `kinematics_properties`: robots of any serial shape and mass, their chains
+//! with the joints in any order, and poses past a chain's reach.
 
 use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
 use chain_kinematics::{ACCEPT_POSITION_M, Chain, ChainSpec, JointSelection, Limit};
@@ -8,7 +8,7 @@ use hegel::TestCase;
 use hegel::generators as gs;
 use kinematics_properties::{TOLERANCE, angles, rotations, unit_vectors};
 use std::f64::consts::PI;
-use urdf_rs::{Axis, JointLimit, JointType, LinkName, Pose, Robot, Vec3};
+use urdf_rs::{Axis, Inertia, Inertial, JointLimit, JointType, LinkName, Mass, Pose, Robot, Vec3};
 
 /// The link every drawn robot ends in.
 pub const TIP: &str = "tip";
@@ -18,8 +18,14 @@ pub fn joint_name(i: usize) -> String {
     format!("joint_{i}")
 }
 
-/// Where a joint sits on its parent link: any offset within 0.2 m along each
-/// axis, any orientation.
+/// The name of a drawn robot's link `i`: the root is link 0, and joint `i`
+/// moves link `i`.
+pub fn link_name(i: usize) -> String {
+    format!("link_{i}")
+}
+
+/// A frame on a link: any offset within 0.2 m along each axis, any
+/// orientation.
 #[hegel::composite]
 fn placements(tc: &TestCase) -> Pose {
     Pose {
@@ -28,15 +34,37 @@ fn placements(tc: &TestCase) -> Pose {
     }
 }
 
+/// How a link carries its mass: up to 1 kg, centred on any frame of the link
+/// [`placements`] draws, with principal axes along that frame. Each principal
+/// moment is the sum of two of the mass's second moments about the centre,
+/// each up to 0.1 kg m², so the moments are positive and meet the triangle
+/// inequality, as a rigid body's do.
+#[hegel::composite]
+fn inertials(tc: &TestCase) -> Inertial {
+    let [x, y, z]: [f64; 3] = tc.draw(gs::arrays(gs::floats().min_value(1e-4).max_value(0.1)));
+    Inertial {
+        origin: tc.draw(placements()),
+        mass: Mass {
+            value: tc.draw(gs::floats().min_value(1e-3).max_value(1.0)),
+        },
+        inertia: Inertia {
+            ixx: y + z,
+            iyy: x + z,
+            izz: x + y,
+            ixy: 0.0,
+            ixz: 0.0,
+            iyz: 0.0,
+        },
+    }
+}
+
 /// A robot whose links form one serial chain of `joints` actuated joints, then
 /// a fixed [`TIP`]. Each joint is revolute or prismatic, placed anywhere on its
 /// parent, about any axis, with any range: within a turn for a revolute joint,
-/// within 0.2 m for a prismatic one.
+/// within 0.2 m for a prismatic one. Each link carries its own [`inertials`].
 #[hegel::composite]
 pub fn robots(tc: &TestCase, joints: usize) -> Robot {
-    let link = |i: usize| LinkName {
-        link: format!("link_{i}"),
-    };
+    let link = |i: usize| LinkName { link: link_name(i) };
     let actuated: Vec<urdf_rs::Joint> = (1..=joints)
         .map(|i| {
             let (joint_type, span) = if tc.draw(gs::booleans()) {
@@ -91,11 +119,11 @@ pub fn robots(tc: &TestCase, joints: usize) -> Robot {
         name: "drawn".to_string(),
         version: None,
         links: (0..=joints)
-            .map(|i| link(i).link)
+            .map(link_name)
             .chain(std::iter::once(TIP.to_string()))
             .map(|name| urdf_rs::Link {
                 name,
-                inertial: urdf_rs::Inertial::default(),
+                inertial: tc.draw(inertials()),
                 visual: Vec::new(),
                 collision: Vec::new(),
             })
@@ -107,15 +135,51 @@ pub fn robots(tc: &TestCase, joints: usize) -> Robot {
 
 /// The chain from a drawn robot's root to its tip, joints in path order.
 pub fn chain_of<const N: usize>(robot: &Robot) -> Chain<N> {
+    chain_ending_at::<N>(robot, TIP)
+}
+
+/// The chain from a drawn robot's root to `tip_link`, a link at or past the one
+/// its last joint moves, joints in path order.
+pub fn chain_ending_at<const N: usize>(robot: &Robot, tip_link: &str) -> Chain<N> {
+    Chain::<N>::from_urdf(
+        robot,
+        &ChainSpec {
+            base_link: None,
+            tip_link,
+            joints: JointSelection::PathOrder,
+        },
+    )
+    .expect("a drawn robot is a valid chain")
+}
+
+/// An order of `len` items: a permutation of `0..len`, shrinking toward the
+/// identity.
+#[hegel::composite]
+pub fn permutations(tc: &TestCase, len: usize) -> Vec<usize> {
+    (1..len)
+        .rev()
+        .fold((0..len).collect(), |mut order: Vec<usize>, last| {
+            let back: usize = tc.draw(gs::integers().min_value(0).max_value(last));
+            order.swap(last, last - back);
+            order
+        })
+}
+
+/// The chain from a drawn robot's root to its tip, its joints named in `order`:
+/// entry `i` of `q` drives the joint `order[i]` places along the path, counted
+/// from 0 at the root.
+pub fn named_chain_of<const N: usize>(robot: &Robot, order: &[usize]) -> Chain<N> {
+    let names: Vec<String> = order.iter().map(|&joint| joint_name(joint + 1)).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
     Chain::<N>::from_urdf(
         robot,
         &ChainSpec {
             base_link: None,
             tip_link: TIP,
-            joints: JointSelection::PathOrder,
+            joints: JointSelection::Named(&names),
         },
     )
-    .expect("a drawn robot is a valid chain")
+    .expect("every drawn joint is on the path")
 }
 
 /// A property of every chain, whatever its joint count.

@@ -69,8 +69,6 @@ different solver.
 | `Posed::{mass, com_world, inertia_world}` | per-segment rigid-body data |
 | `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics, revolute and prismatic joints alike, with everything each segment carries folded in |
 | `damped_pseudo_inverse` | `Jᵀ(J Jᵀ + λ²I)⁻¹`, defined everywhere including at singularities |
-| `try_pseudo_inverse` | Moore-Penrose, `None` at a singularity and on a chain of fewer than six joints, whose pseudo-inverse exists but is not a right inverse, so no joint rates realize an arbitrary twist; use the damped one for both |
-| `null_space_projector` | `I − J⁺J`, for a secondary objective that must not disturb the end effector |
 | `manipulability` | Yoshikawa index, the product of the singular values, at any joint count |
 | `rate_step` | one damped resolved-rate step under a velocity budget and joint limits |
 | `ServoState` / `rollout` | a guarded Cartesian move, and the same law rolled out offline as its reachability proof |
@@ -104,8 +102,8 @@ construction, seeds unrelated to the answers):
 
 | | refused | worst position | orientations abandoned (>1 deg) |
 |---|---|---|---|
-| SO-101, 5 DOF, 1000 poses | 0 | 9.0e-4 m | 1 (worst 2.1 deg) |
-| OpenArm, 7 DOF, 300 poses | 0 | 8.5e-4 m | 0 |
+| SO-101, 5 DOF, 1000 poses | 0 | 5.7e-4 m | 1 (worst 2.1 deg) |
+| OpenArm, 7 DOF, 300 poses | 0 | 8.3e-4 m | 0 |
 
 ## The servo law
 
@@ -149,13 +147,23 @@ src/
 
 ## Testing
 
-`cargo test` drives the URDF models of two real robots through the same API - a
-five-joint SO-101 and a seven-joint OpenArm - checking that every Jacobian column
-matches a central difference of the pose, that the servo law converges on both,
-that naming the joints fixes the order of `q`, that a wrong joint count is
-refused at load rather than silently ignoring part of `q`, and that the damped
-inverse stays finite on an under-actuated (6x5) Jacobian. No hardware is
-involved; qualifying the law on a physical arm is a separate exercise.
+```sh
+cargo test                                     # every suite, each property at 100 cases
+HEGEL_TEST_CASES=100000 cargo test --release   # every property at 100000 cases
+```
+
+The forward kinematics, the Jacobian, its damped inverse and manipulability,
+the dynamics and the point-to-point IK are checked as [Hegel](https://hegel.dev)
+properties on drawn robots: serial chains of one to seven revolute or prismatic
+joints, each placed anywhere on its parent, about any axis, with any range, and
+each link carrying any mass and inertia. The generators of robots live in
+`tests/common/properties.rs`, and those `srs_model` shares, configurations,
+directions and rotations, in [`kinematics_properties`](../kinematics_properties).
+The URDF models of a five-joint SO-101 and a seven-joint OpenArm carry the
+claims that belong to a robot: the servo law converging on both, a wrong joint
+count refused at load, the speed caps held at the tip, and the qualification
+above. No hardware is involved; qualifying the law on a physical arm is a
+separate exercise.
 
 `tests/refusals.rs` covers the table above: every rule is checked both ways, so a
 refusal that would also reject a valid chain fails the suite.

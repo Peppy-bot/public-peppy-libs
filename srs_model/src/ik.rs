@@ -28,10 +28,10 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use nalgebra::{Isometry3, Matrix3, Rotation3, Unit, Vector3, Vector6};
 
-use crate::jacobian::{Jacobian, manipulability};
+use chain_kinematics::manipulability;
 
 use crate::model::ArmModel;
-use crate::{ARM_DOF, JointVec, Limit, PARALLEL_SIN_EPS};
+use crate::{ARM_DOF, Jacobian, JointVec, Limit, PARALLEL_SIN_EPS};
 
 /// How to resolve the redundant arm angle when the caller doesn't pin it.
 #[derive(Debug, Clone, Copy)]

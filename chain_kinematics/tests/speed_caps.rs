@@ -9,14 +9,14 @@
 //! resolves a six-dimensional twist by least squares, so it is the one that
 //! could overshoot a budget the algebra assumed was met exactly.
 
-use chain_kinematics::nalgebra::{DMatrix, Isometry3, Translation3, UnitQuaternion, Vector3};
+use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
 use chain_kinematics::{
     Chain, EeCaps, NoSmoothing, ServoLimits, ServoState, ServoStep, ServoTolerances,
     rate_step_toward,
 };
 
 mod common;
-use common::{openarm, so101};
+use common::{openarm, singular_values, so101};
 
 const DT: f64 = 0.01;
 
@@ -39,17 +39,9 @@ fn tip<const N: usize>(chain: &Chain<N>, q: &[f64; N]) -> Isometry3<f64> {
 
 /// Whether the Jacobian at `q` still spans the directions the step is resolved
 /// in, measured by its smallest singular value.
-///
-/// Neither published helper answers this for both robots: `manipulability` is
-/// `det(J Jt)`, identically zero on an under-actuated chain, and
-/// `try_pseudo_inverse` refuses one outright. The singular value itself is
-/// meaningful either way, so the test takes it directly.
 fn well_conditioned<const N: usize>(chain: &Chain<N>, q: &[f64; N]) -> bool {
-    let j = chain.at(q).jacobian();
-    let svd = DMatrix::from_iterator(6, N, j.iter().copied()).svd(false, false);
-    svd.singular_values
-        .iter()
-        .copied()
+    singular_values(&chain.at(q).jacobian())
+        .into_iter()
         .fold(f64::INFINITY, f64::min)
         > CONDITIONING_FLOOR
 }

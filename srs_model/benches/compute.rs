@@ -17,7 +17,7 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-use srs_model::{Arm, ArmAnglePolicy, JointVec, damped_pseudo_inverse};
+use srs_model::{Arm, ArmAnglePolicy, JointVec};
 
 const URDF: &str = include_str!("../tests/fixtures/openarm_v10.urdf");
 const BASE: &str = "openarm_left_link0";
@@ -63,10 +63,7 @@ fn benchmarks(c: &mut Criterion) {
 
     // A resolved-rate control tick: Jacobian + damped-least-squares inverse.
     c.bench_function("get_jacobian_dls", |b| {
-        b.iter(|| {
-            let j = arm.at(black_box(&q)).jacobian();
-            black_box(damped_pseudo_inverse(&j, black_box(0.05)))
-        })
+        b.iter(|| black_box(arm.at(black_box(&q)).damped_pseudo_inverse(black_box(0.05))))
     });
 
     // IK, FromSeed with a warm seed (the solution itself).
