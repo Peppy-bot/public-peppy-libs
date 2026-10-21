@@ -34,16 +34,16 @@ impl Arm {
     /// (`base_link`). Returns `Err` if the chain is missing, too short, or not a
     /// clean SRS arm.
     pub fn from_urdf(urdf: &str, base_link: &str) -> Result<Self, SrsError> {
-        let mut fk = ForwardKinematics::from_urdf(urdf, base_link)?;
-        let model = ArmModel::from_fk(&mut fk)?;
+        let fk = ForwardKinematics::from_urdf(urdf, base_link)?;
+        let model = ArmModel::from_fk(&fk)?;
         Ok(Self { fk, model })
     }
 
     /// Like [`from_urdf`](Self::from_urdf) but reads the URDF from a file path,
     /// folding the IO error into the same `Result`.
     pub fn from_urdf_file(path: &str, base_link: &str) -> Result<Self, SrsError> {
-        let mut fk = ForwardKinematics::from_urdf_file(path, base_link)?;
-        let model = ArmModel::from_fk(&mut fk)?;
+        let fk = ForwardKinematics::from_urdf_file(path, base_link)?;
+        let model = ArmModel::from_fk(&fk)?;
         Ok(Self { fk, model })
     }
 
@@ -392,20 +392,20 @@ mod tests {
         Arm::from_urdf_file(FIXTURE, "openarm_left_link0").expect("load fixture")
     }
 
-    fn ee_world(arm: &mut Arm, q: &JointVec) -> Isometry3<f64> {
+    fn ee_world(arm: &Arm, q: &JointVec) -> Isometry3<f64> {
         let base = arm.at(q).ee_pose();
         arm.world_pose(&base)
     }
 
-    fn tip_world(arm: &mut Arm, q: &JointVec) -> Isometry3<f64> {
+    fn tip_world(arm: &Arm, q: &JointVec) -> Isometry3<f64> {
         let base = arm.at(q).tip_pose();
         arm.world_pose(&base)
     }
 
     #[test]
     fn rate_step_moves_the_ee_along_the_commanded_direction() {
-        let mut arm = rate_arm();
-        let before = ee_world(&mut arm, &RATE_Q);
+        let arm = rate_arm();
+        let before = ee_world(&arm, &RATE_Q);
         let dp = Vector3::new(3e-3, 0.0, 0.0);
         let q = arm.rate_step(
             &RATE_Q,
@@ -415,7 +415,7 @@ mod tests {
             RATE_DT,
             RATE_LAMBDA,
         );
-        let after = ee_world(&mut arm, &q);
+        let after = ee_world(&arm, &q);
         let moved = after.translation.vector - before.translation.vector;
         assert!(
             moved.dot(&dp) / dp.norm_squared() > 0.5,
@@ -466,10 +466,14 @@ mod tests {
     // a test that passes cannot be one that ignores the tool.
     const TOOL_LINK: &str = "openarm_left_tcp";
 
-    fn tooled_arm() -> Arm {
-        rate_arm()
-            .with_tool_link(TOOL_LINK)
-            .expect("the fixture carries the tool link")
+    /// The fixture's left arm with the tool mounted, built once per test binary.
+    fn tooled_arm() -> &'static Arm {
+        static TOOLED: std::sync::LazyLock<Arm> = std::sync::LazyLock::new(|| {
+            rate_arm()
+                .with_tool_link(TOOL_LINK)
+                .expect("the fixture carries the tool link")
+        });
+        &TOOLED
     }
 
     #[test]
@@ -533,9 +537,9 @@ mod tests {
         // The sharpest statement that the Jacobian moved with the frame: a rotation
         // task holds the point it is taken at and swings everything else. Left at
         // the tip, this would drag the tool point through a tool-length arc.
-        let mut arm = tooled_arm();
-        let tip_before = tip_world(&mut arm, &RATE_Q);
-        let ee_before = ee_world(&mut arm, &RATE_Q);
+        let arm = tooled_arm();
+        let tip_before = tip_world(arm, &RATE_Q);
+        let ee_before = ee_world(arm, &RATE_Q);
         let dw = Vector3::new(0.0, 0.0, 1e-2);
         let q = arm.rate_step(
             &RATE_Q,
@@ -545,8 +549,8 @@ mod tests {
             RATE_DT,
             RATE_LAMBDA,
         );
-        let tip_after = tip_world(&mut arm, &q);
-        let ee_after = ee_world(&mut arm, &q);
+        let tip_after = tip_world(arm, &q);
+        let ee_after = ee_world(arm, &q);
 
         let turned = ee_after.rotation.angle_to(&ee_before.rotation);
         assert!(

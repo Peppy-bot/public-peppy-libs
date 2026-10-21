@@ -19,7 +19,6 @@ urdf-rs = "0.10"
 # Only to cross-check forward kinematics against an independent implementation
 # (see `ik::tests::poe_fk_matches_an_independent_chain`); no production path uses it.
 k = "0.32"
-rand = "0.10"
 criterion = "0.8"
 hegeltest = { version = "0.50", features = ["static-engine"] }
 kinematics_properties = { path = "../kinematics_properties" }

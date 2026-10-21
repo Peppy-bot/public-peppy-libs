@@ -162,7 +162,7 @@ mod tests {
     use kinematics_properties::{TOLERANCE, configs};
     use nalgebra::{Point3, Vector3};
 
-    fn fk() -> ForwardKinematics {
+    fn fk() -> &'static ForwardKinematics {
         crate::test_support::v1_fk("left")
     }
 

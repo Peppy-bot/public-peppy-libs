@@ -10,6 +10,7 @@
 use kinematics_properties::TOLERANCE;
 use properties::STRAIGHT_ELBOW_BAND;
 use srs_model::{Arm, ArmAnglePolicy, ELBOW, JointVec};
+use std::sync::LazyLock;
 
 pub mod properties;
 
@@ -19,8 +20,18 @@ fn base(side: &str) -> String {
     format!("openarm_{side}_link0")
 }
 
-pub fn arm(side: &str) -> Arm {
-    Arm::from_urdf(FIXTURE_URDF, &base(side)).expect("load fixture arm")
+/// The fixture's arm on `side`, loaded once per test binary.
+pub fn arm(side: &str) -> &'static Arm {
+    fn load(side: &str) -> Arm {
+        Arm::from_urdf(FIXTURE_URDF, &base(side)).expect("load fixture arm")
+    }
+    static LEFT: LazyLock<Arm> = LazyLock::new(|| load("left"));
+    static RIGHT: LazyLock<Arm> = LazyLock::new(|| load("right"));
+    match side {
+        "left" => &LEFT,
+        "right" => &RIGHT,
+        _ => panic!("the fixture's arms are \"left\" and \"right\", not {side:?}"),
+    }
 }
 
 /// Asserts `solution` is inside the arm's limits and reaches the pose FK

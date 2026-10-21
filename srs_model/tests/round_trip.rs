@@ -19,7 +19,7 @@ fn ik_solves_every_bent_pose_fk_reports(tc: hegel::TestCase) {
     let side = tc.draw(sides());
     let arm = common::arm(side);
     let q = tc.draw(configs(arm.limits()));
-    common::round_trip(&arm, &q, &q);
+    common::round_trip(arm, &q, &q);
 }
 
 /// `limits` with the elbow held straight: elbow flex 0.

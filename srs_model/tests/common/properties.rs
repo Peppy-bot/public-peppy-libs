@@ -2,11 +2,6 @@
 //! tests (the crate includes this file as `properties` under `cfg(test)`) and
 //! the integration tests (`common::properties`). Configurations, directions
 //! and rotations come from `kinematics_properties`.
-//!
-//! The file is compiled into the unit tests and into each integration test
-//! crate, so items unused by one of them are expected; the allow keeps clippy's
-//! -D warnings gate meaningful for the rest.
-#![allow(dead_code)]
 
 use hegel::generators as gs;
 

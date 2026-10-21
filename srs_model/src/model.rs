@@ -61,7 +61,7 @@ impl ArmModel {
     ///
     /// The [`Arm`](crate::Arm) facade builds the FK once and calls this so the
     /// URDF is parsed a single time for both FK/dynamics and IK.
-    pub fn from_fk(fk: &mut ForwardKinematics) -> Result<Self, String> {
+    pub fn from_fk(fk: &ForwardKinematics) -> Result<Self, String> {
         let fk = fk.at(&[0.0; ARM_DOF]); // pose at home; read everything off this view
         let home_tip = fk.tip_pose();
         let axes: [Vector3<f64>; ARM_DOF] = std::array::from_fn(|i| fk.axis_base(i));

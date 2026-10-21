@@ -108,6 +108,7 @@ pub use chain_kinematics;
 pub(crate) mod test_support {
     use crate::fk::ForwardKinematics;
     use crate::model::ArmModel;
+    use std::sync::LazyLock;
 
     /// The fixture URDF's path, a literal that `include_str!` also takes.
     macro_rules! fixture_urdf_path {
@@ -133,12 +134,22 @@ pub(crate) mod test_support {
         format!("openarm_{side}_link0")
     }
 
-    pub(crate) fn v1_fk(side: &str) -> ForwardKinematics {
-        ForwardKinematics::from_urdf(FIXTURE_URDF, &base(side)).expect("load fixture fk")
+    /// The fixture's forward kinematics for `side`, parsed once per test binary.
+    pub(crate) fn v1_fk(side: &str) -> &'static ForwardKinematics {
+        fn load(side: &str) -> ForwardKinematics {
+            ForwardKinematics::from_urdf(FIXTURE_URDF, &base(side)).expect("load fixture fk")
+        }
+        static LEFT: LazyLock<ForwardKinematics> = LazyLock::new(|| load("left"));
+        static RIGHT: LazyLock<ForwardKinematics> = LazyLock::new(|| load("right"));
+        match side {
+            "left" => &LEFT,
+            "right" => &RIGHT,
+            _ => panic!("the fixture's arms are \"left\" and \"right\", not {side:?}"),
+        }
     }
 
     pub(crate) fn v1_model(side: &str) -> ArmModel {
-        ArmModel::from_fk(&mut v1_fk(side)).expect("load fixture model")
+        ArmModel::from_fk(v1_fk(side)).expect("load fixture model")
     }
 
     /// The fixture's joint limits, the solver's in-limit test (see `ik::solve`).
