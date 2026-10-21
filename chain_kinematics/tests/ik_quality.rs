@@ -10,6 +10,7 @@ mod common;
 
 use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use chain_kinematics::{Goal, Kinematics};
+use common::properties::chain_of;
 use common::{SplitMix64, openarm, so101};
 
 fn kin5() -> Kinematics<5> {
@@ -215,6 +216,32 @@ fn a_seed_outside_limits_is_clamped_not_refused() {
             .all(|(l, v)| l.contains(v)),
         "the answer must be in limits"
     );
+}
+
+#[test]
+fn continue_to_follows_a_step_while_a_joint_rests_on_a_limit() {
+    // Every joint starts on a limit, and the step's least-squares answer pushes
+    // joint 2, which slides along the same line as joint 1, below its lower
+    // limit of 0: joint 1 alone carries the step.
+    let urdf = r#"<robot name="t">
+  <link name="link_0"/><link name="link_1"/><link name="link_2"/><link name="link_3"/>
+  <link name="link_4"/><link name="tip"/>
+  <joint name="joint_1" type="prismatic"><parent link="link_0"/><child link="link_1"/>
+    <axis xyz="1 0 0"/><limit lower="-0.125" upper="0" effort="1" velocity="1"/></joint>
+  <joint name="joint_2" type="prismatic"><parent link="link_1"/><child link="link_2"/>
+    <axis xyz="1 0 0"/><limit lower="0" upper="0.125" effort="1" velocity="1"/></joint>
+  <joint name="joint_3" type="prismatic"><parent link="link_2"/><child link="link_3"/>
+    <origin rpy="0 0.125 0"/><axis xyz="1 0 0"/>
+    <limit lower="-0.125" upper="0" effort="1" velocity="1"/></joint>
+  <joint name="joint_4" type="prismatic"><parent link="link_3"/><child link="link_4"/>
+    <origin rpy="0 1 0"/><axis xyz="1 0 0"/>
+    <limit lower="-0.125" upper="0" effort="1" velocity="1"/></joint>
+  <joint name="tip_joint" type="fixed"><parent link="link_4"/><child link="tip"/></joint>
+</robot>"#;
+    let robot = urdf_rs::read_from_string(urdf).expect("parse fixture");
+    let kinematics = Kinematics::new(chain_of::<4>(&robot));
+    let goal = Goal::at(kinematics.forward_kinematics(&[-0.03125, 0.0, 0.0, 0.0]));
+    assert!(kinematics.continue_to(&[0.0; 4], &goal).is_some());
 }
 
 #[test]

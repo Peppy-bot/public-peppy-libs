@@ -324,7 +324,9 @@ impl<const N: usize> Kinematics<N> {
             } else {
                 gap * (TRUST_REGION_M / distance)
             };
-            let dq = damped_weighted_step(&posed.jacobian(), dp, dw, orientation_weight);
+            let dq = bounded_step(&posed.jacobian(), &q, &limits, dp, dw, orientation_weight);
+            // The step keeps every joint inside its limits; the clamp absorbs
+            // the rounding of adding it.
             for (value, (step, limit)) in q.iter_mut().zip(dq.iter().zip(limits.iter())) {
                 *value = limit.clamp(*value + step);
             }
@@ -407,27 +409,121 @@ impl<const N: usize> Kinematics<N> {
     }
 }
 
-/// One damped weighted least-squares step: minimise the position error, the
+/// Which bound of its limit a joint's step is held at in [`bounded_step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    Free,
+    AtLower,
+    AtUpper,
+}
+
+/// The descent's step from `q`: the damped weighted least-squares step that
+/// keeps every joint inside `limits`. It minimises the position error, the
 /// orientation error at `orientation_weight`, and the step's own size at
-/// [`SOLVE_DAMPING`] squared. Solved through the N x N normal equations, whose
-/// damping term makes them positive definite everywhere, singularities included.
-fn damped_weighted_step<const N: usize>(
+/// [`SOLVE_DAMPING`] squared, over the box the limits leave each joint. The
+/// damping makes the quadratic strictly convex, and an active set solves it
+/// exactly: a joint stays on a bound while the objective presses it outward,
+/// and leaves the bound once the objective pulls it back in.
+fn bounded_step<const N: usize>(
     jacobian: &Jacobian<N>,
+    q: &[f64; N],
+    limits: &[Limit; N],
     dp: Vector3<f64>,
     dw: Vector3<f64>,
     orientation_weight: f64,
 ) -> SVector<f64, N> {
     let position_rows = jacobian.fixed_rows::<3>(0);
     let rotation_rows = jacobian.fixed_rows::<3>(3);
-    let normal = position_rows.transpose() * position_rows
+    let hessian = position_rows.transpose() * position_rows
         + (rotation_rows.transpose() * rotation_rows) * orientation_weight
         + SMatrix::<f64, N, N>::identity() * (SOLVE_DAMPING * SOLVE_DAMPING);
-    let objective =
+    let pull =
         position_rows.transpose() * dp + (rotation_rows.transpose() * dw) * orientation_weight;
-    normal
-        .cholesky()
-        .expect("the damped normal matrix is positive definite for finite inputs")
-        .solve(&objective)
+    let lower = SVector::<f64, N>::from_fn(|joint, _| limits[joint].lo - q[joint]);
+    let upper = SVector::<f64, N>::from_fn(|joint, _| limits[joint].hi - q[joint]);
+
+    // The minimiser with the `held` joints fixed at their bounds: the normal
+    // equations' rows of the free joints, and an identity row pinning each
+    // held joint at its bound.
+    let minimiser = |held: &[Held; N]| -> SVector<f64, N> {
+        let pinned = SVector::<f64, N>::from_fn(|joint, _| match held[joint] {
+            Held::Free => 0.0,
+            Held::AtLower => lower[joint],
+            Held::AtUpper => upper[joint],
+        });
+        let system = SMatrix::<f64, N, N>::from_fn(|row, column| {
+            if held[row] == Held::Free && held[column] == Held::Free {
+                hessian[(row, column)]
+            } else if row == column {
+                1.0
+            } else {
+                0.0
+            }
+        });
+        let rhs = SVector::<f64, N>::from_fn(|row, _| match held[row] {
+            Held::Free => pull[row] - (hessian.row(row) * pinned)[0],
+            Held::AtLower | Held::AtUpper => pinned[row],
+        });
+        system
+            .cholesky()
+            .expect("the damped normal matrix is positive definite for finite inputs")
+            .solve(&rhs)
+    };
+
+    let mut held = [Held::Free; N];
+    let mut step = SVector::<f64, N>::zeros();
+    // Each round moves to a bound or frees a joint, and the objective never
+    // rises, so the rounds a box of N joints takes stay far under the cap.
+    for _ in 0..8 * N + 8 {
+        let target = minimiser(&held);
+        let direction = target - step;
+        let blocking = (0..N)
+            .filter(|&joint| held[joint] == Held::Free)
+            .filter_map(|joint| {
+                if target[joint] < lower[joint] {
+                    Some((
+                        (lower[joint] - step[joint]) / direction[joint],
+                        joint,
+                        Held::AtLower,
+                    ))
+                } else if target[joint] > upper[joint] {
+                    Some((
+                        (upper[joint] - step[joint]) / direction[joint],
+                        joint,
+                        Held::AtUpper,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((fraction, joint, bound)) = blocking {
+            step += direction * fraction.clamp(0.0, 1.0);
+            step[joint] = if bound == Held::AtLower {
+                lower[joint]
+            } else {
+                upper[joint]
+            };
+            held[joint] = bound;
+            continue;
+        }
+        step = target;
+        // Optimal over the free joints: free the held joint the objective pulls
+        // back inside the hardest, or stop when it pulls none inside.
+        let gradient = hessian * step - pull;
+        let pulled_inside = (0..N)
+            .filter_map(|joint| match held[joint] {
+                Held::AtLower if gradient[joint] < 0.0 => Some((joint, -gradient[joint])),
+                Held::AtUpper if gradient[joint] > 0.0 => Some((joint, gradient[joint])),
+                _ => None,
+            })
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        match pulled_inside {
+            Some((joint, _)) => held[joint] = Held::Free,
+            None => return step,
+        }
+    }
+    step
 }
 
 /// The seed table: configurations drawn uniformly from the joint box under a
@@ -463,5 +559,100 @@ impl SplitMix64 {
     /// Uniform in [0, 1): the top 53 bits, a full mantissa's worth.
     fn unit(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hegel::TestCase;
+    use hegel::generators as gs;
+
+    /// Largest miss the property allows.
+    const TOLERANCE: f64 = 1e-6;
+
+    /// The objective `bounded_step` minimises, its Hessian and its pull, as
+    /// `0.5 xᵀ H x - pullᵀ x`.
+    fn objective<const N: usize>(
+        jacobian: &Jacobian<N>,
+        dp: Vector3<f64>,
+        dw: Vector3<f64>,
+        weight: f64,
+    ) -> (SMatrix<f64, N, N>, SVector<f64, N>) {
+        let (p, r) = (jacobian.fixed_rows::<3>(0), jacobian.fixed_rows::<3>(3));
+        let hessian = p.transpose() * p
+            + (r.transpose() * r) * weight
+            + SMatrix::<f64, N, N>::identity() * (SOLVE_DAMPING * SOLVE_DAMPING);
+        (hessian, p.transpose() * dp + (r.transpose() * dw) * weight)
+    }
+
+    fn check<const N: usize>(tc: &TestCase) {
+        let entries: Vec<f64> = (0..6 * N)
+            .map(|_| tc.draw(gs::floats().min_value(-1.0).max_value(1.0)))
+            .collect();
+        let jacobian = Jacobian::<N>::from_column_slice(&entries);
+        let small = || gs::floats().min_value(-0.05).max_value(0.05);
+        let dp = Vector3::new(tc.draw(small()), tc.draw(small()), tc.draw(small()));
+        let dw = Vector3::new(tc.draw(small()), tc.draw(small()), tc.draw(small()));
+        let weight = tc.draw(gs::sampled_from([0.0, ORIENTATION_WEIGHT, 1.0].as_slice()));
+        let limits: [Limit; N] = std::array::from_fn(|_| {
+            let (a, b): (f64, f64) = (
+                tc.draw(gs::floats().min_value(-1.0).max_value(1.0)),
+                tc.draw(gs::floats().min_value(-1.0).max_value(1.0)),
+            );
+            Limit {
+                lo: a.min(b),
+                hi: a.max(b),
+            }
+        });
+        let q: [f64; N] = std::array::from_fn(|joint| {
+            tc.draw(
+                gs::floats()
+                    .min_value(limits[joint].lo)
+                    .max_value(limits[joint].hi),
+            )
+        });
+
+        let step = bounded_step(&jacobian, &q, &limits, dp, dw, weight);
+        let (hessian, pull) = objective(&jacobian, dp, dw, weight);
+        let value = |x: &SVector<f64, N>| 0.5 * (x.transpose() * hessian * x)[0] - pull.dot(x);
+        let gradient = hessian * step - pull;
+        for joint in 0..N {
+            let (lower, upper) = (limits[joint].lo - q[joint], limits[joint].hi - q[joint]);
+            let x = step[joint];
+            assert!(
+                lower - TOLERANCE <= x && x <= upper + TOLERANCE,
+                "joint {joint} steps to {x} outside [{lower}, {upper}]"
+            );
+            let on_lower = x <= lower + TOLERANCE;
+            let on_upper = x >= upper - TOLERANCE;
+            let stationary = gradient[joint].abs() <= TOLERANCE;
+            let pressed_out = (on_lower && gradient[joint] >= -TOLERANCE)
+                || (on_upper && gradient[joint] <= TOLERANCE);
+            assert!(
+                stationary || pressed_out,
+                "joint {joint} at {x} in [{lower}, {upper}] has gradient {}",
+                gradient[joint]
+            );
+        }
+        let unconstrained = hessian.cholesky().expect("positive definite").solve(&pull);
+        let clamped = SVector::<f64, N>::from_fn(|joint, _| {
+            unconstrained[joint].clamp(limits[joint].lo - q[joint], limits[joint].hi - q[joint])
+        });
+        assert!(
+            value(&step) <= value(&clamped) + TOLERANCE * TOLERANCE,
+            "the bounded step scores {} against the clamped step's {}",
+            value(&step),
+            value(&clamped)
+        );
+    }
+
+    #[hegel::test]
+    fn the_bounded_step_is_the_optimum_inside_the_limits(tc: TestCase) {
+        if tc.draw(gs::booleans()) {
+            check::<2>(&tc);
+        } else {
+            check::<7>(&tc);
+        }
     }
 }
