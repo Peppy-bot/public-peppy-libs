@@ -66,6 +66,10 @@ pub use jacobian::{
 /// load (the closed-form arm-angle redundancy resolution is specific to 7 DOF).
 pub const ARM_DOF: usize = 7;
 
+/// The elbow's index in the joint vector, j4: the joint whose flex sets the
+/// wrist center's distance from the shoulder.
+pub const ELBOW: usize = 3;
+
 /// One joint-space configuration, j1..j7 in radians.
 pub type JointVec = [f64; ARM_DOF];
 

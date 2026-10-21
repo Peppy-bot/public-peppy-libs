@@ -157,7 +157,8 @@ fn find_srs_tip(tree: &Tree, base: usize) -> Result<usize, SrsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::properties::{TOLERANCE, configs, sides};
+    use crate::properties::sides;
+    use chain_kinematics::properties::{TOLERANCE, configs};
     use hegel::generators as gs;
     use nalgebra::{Point3, Vector3};
 

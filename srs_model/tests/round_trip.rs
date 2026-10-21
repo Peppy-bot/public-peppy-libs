@@ -6,8 +6,9 @@
 
 mod common;
 
-use common::properties::{configs, sides, straight_elbow};
-use srs_model::ArmAnglePolicy;
+use chain_kinematics::properties::configs;
+use common::properties::sides;
+use srs_model::{ARM_DOF, ArmAnglePolicy, ELBOW, Limit};
 
 /// The explicit cases hold joint 7 on a limit at a posture where it touches
 /// that limit at a single arm angle, the only one reaching the pose.
@@ -19,6 +20,14 @@ fn ik_solves_every_bent_pose_fk_reports(tc: hegel::TestCase) {
     let arm = common::arm(side);
     let q = tc.draw(configs(arm.limits()));
     common::round_trip(&arm, &q, &q);
+}
+
+/// `limits` with the elbow held straight: elbow flex 0.
+fn straight_elbow(limits: [Limit; ARM_DOF]) -> [Limit; ARM_DOF] {
+    std::array::from_fn(|joint| match joint {
+        ELBOW => Limit { lo: 0.0, hi: 0.0 },
+        _ => limits[joint],
+    })
 }
 
 #[hegel::test]

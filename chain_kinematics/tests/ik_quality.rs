@@ -9,8 +9,9 @@
 mod common;
 
 use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion};
+use chain_kinematics::properties::configs;
 use chain_kinematics::{ACCEPT_POSITION_M, Goal, Kinematics};
-use common::properties::{ChainProperty, chain_of, configs, on_a_drawn_robot, unreachable_poses};
+use common::properties::{ChainProperty, chain_of, on_a_drawn_robot, unreachable_poses};
 use common::{SplitMix64, openarm, so101};
 use hegel::TestCase;
 use hegel::generators as gs;

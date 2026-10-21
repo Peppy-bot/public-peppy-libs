@@ -22,6 +22,7 @@ k = "0.32"
 rand = "0.10"
 criterion = "0.8"
 hegeltest = { version = "0.50", features = ["static-engine"] }
+chain_kinematics = { path = "../chain_kinematics", features = ["hegel"] }
 
 [[bench]]
 name = "compute"

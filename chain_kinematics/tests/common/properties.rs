@@ -1,19 +1,14 @@
-//! The tolerance and the Hegel generators the property tests share: robots of
-//! any serial shape, configurations inside their limits, and directions and
-//! rotations in space.
+//! The Hegel generators this crate's property tests share beyond
+//! `chain_kinematics::properties`: robots of any serial shape, their chains,
+//! and poses past a chain's reach.
 
-use chain_kinematics::nalgebra::{
-    Isometry3, Rotation3, Translation3, Unit, UnitQuaternion, Vector3,
-};
+use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
+use chain_kinematics::properties::{TOLERANCE, angles, rotations, unit_vectors};
 use chain_kinematics::{ACCEPT_POSITION_M, Chain, ChainSpec, JointSelection, Limit};
 use hegel::TestCase;
 use hegel::generators as gs;
 use std::f64::consts::PI;
 use urdf_rs::{Axis, JointLimit, JointType, LinkName, Pose, Robot, Vec3};
-
-/// Largest miss a property allows, in metres or radians. A defect these
-/// properties look for misses by far more.
-pub const TOLERANCE: f64 = 1e-6;
 
 /// The link every drawn robot ends in.
 pub const TIP: &str = "tip";
@@ -21,33 +16,6 @@ pub const TIP: &str = "tip";
 /// The name of a drawn robot's actuated joint `i`, counted from 1 at the root.
 pub fn joint_name(i: usize) -> String {
     format!("joint_{i}")
-}
-
-/// An angle in the principal range, both ends included.
-pub fn angles() -> gs::FloatGenerator<f64> {
-    gs::floats().min_value(-PI).max_value(PI)
-}
-
-/// A unit vector, uniform on the sphere.
-#[hegel::composite]
-pub fn unit_vectors(tc: &TestCase) -> Vector3<f64> {
-    let azimuth = tc.draw(angles());
-    let z: f64 = tc.draw(gs::floats().min_value(-1.0).max_value(1.0));
-    let ring = (1.0 - z * z).sqrt();
-    Vector3::new(ring * azimuth.cos(), ring * azimuth.sin(), z)
-}
-
-/// Any rotation: any angle about any axis.
-#[hegel::composite]
-pub fn rotations(tc: &TestCase) -> Rotation3<f64> {
-    let axis = Unit::new_normalize(tc.draw(unit_vectors()));
-    Rotation3::from_axis_angle(&axis, tc.draw(angles()))
-}
-
-/// A configuration inside `limits`, bounds included.
-#[hegel::composite]
-pub fn configs<const N: usize>(tc: &TestCase, limits: [Limit; N]) -> [f64; N] {
-    limits.map(|limit| tc.draw(gs::floats().min_value(limit.lo).max_value(limit.hi)))
 }
 
 /// Where a joint sits on its parent link: any offset within 0.2 m along each

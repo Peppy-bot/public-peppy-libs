@@ -938,11 +938,11 @@ fn wrap_pi(x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ELBOW;
     use crate::fk::ForwardKinematics;
-    use crate::properties::{
-        ELBOW_FLEX, STRAIGHT_ELBOW_BAND, TOLERANCE, angles, configs, rotations, sides, unit_vectors,
-    };
+    use crate::properties::{STRAIGHT_ELBOW_BAND, sides};
     use crate::test_support::{v1_fk, v1_limits, v1_model};
+    use chain_kinematics::properties::{TOLERANCE, angles, configs, rotations, unit_vectors};
     use hegel::generators as gs;
     use nalgebra::{Isometry3, UnitQuaternion};
     use rand::RngExt;
@@ -1322,7 +1322,7 @@ mod tests {
         let lock = tc.draw(gs::sampled_from(locks));
         let pinned: [Limit; ARM_DOF] = std::array::from_fn(|joint| match joint {
             _ if joint == middle => Limit { lo: lock, hi: lock },
-            ELBOW_FLEX => Limit {
+            ELBOW => Limit {
                 lo: STRAIGHT_ELBOW_BAND,
                 ..widened[joint]
             },
@@ -1351,7 +1351,7 @@ mod tests {
         let m = ArmModel::from_fk(&mut fk).unwrap();
         let unlimited = [Limit { lo: -PI, hi: PI }; ARM_DOF];
         let bent: [Limit; ARM_DOF] = std::array::from_fn(|joint| match joint {
-            ELBOW_FLEX => Limit {
+            ELBOW => Limit {
                 lo: STRAIGHT_ELBOW_BAND,
                 ..fk.limits()[joint]
             },

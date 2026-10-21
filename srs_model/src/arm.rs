@@ -8,16 +8,12 @@ use nalgebra::{Isometry3, Translation3, Vector3};
 use crate::fk::ForwardKinematics;
 use crate::ik::{self, ArmAnglePolicy, Solution};
 use crate::model::ArmModel;
-use crate::{ARM_DOF, JointVec, Limit, Posed, SrsError};
+use crate::{ARM_DOF, ELBOW, JointVec, Limit, Posed, SrsError};
 
 /// Damping `lambda` for [`Arm::rate_step`] when the caller has no reason to pick
 /// another. Re-exported from `chain_kinematics`, which owns the step: an arm and
 /// the generic chain under it cannot be damped differently.
 pub use chain_kinematics::DEFAULT_DLS_LAMBDA;
-
-/// The elbow's index in the joint vector, j4: the joint whose flex sets the
-/// wrist center's distance from the shoulder.
-const ELBOW: usize = 3;
 
 /// How far past an edge of the wrist center's reach [`Arm::solve_ik_within`]
 /// moves a target at least, and how far short of its tolerance its deepest move
@@ -294,7 +290,8 @@ impl Arm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::properties::{ELBOW_FLEX, STRAIGHT_ELBOW_BAND, TOLERANCE, configs};
+    use crate::properties::STRAIGHT_ELBOW_BAND;
+    use chain_kinematics::properties::{TOLERANCE, configs};
 
     const FIXTURE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -505,7 +502,7 @@ mod tests {
         let target = arm.at(&q).ee_pose();
         let Some(solution) = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &seed) else {
             assert!(
-                q[ELBOW_FLEX] < STRAIGHT_ELBOW_BAND,
+                q[ELBOW] < STRAIGHT_ELBOW_BAND,
                 "no IK solution from {seed:?} for the tool pose of {q:?}"
             );
             return;

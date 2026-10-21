@@ -565,11 +565,9 @@ impl SplitMix64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::properties::{TOLERANCE, configs};
     use hegel::TestCase;
     use hegel::generators as gs;
-
-    /// Largest miss the property allows.
-    const TOLERANCE: f64 = 1e-6;
 
     /// The objective `bounded_step` minimises, its Hessian and its pull, as
     /// `0.5 xᵀ H x - pullᵀ x`.
@@ -605,13 +603,7 @@ mod tests {
                 hi: a.max(b),
             }
         });
-        let q: [f64; N] = std::array::from_fn(|joint| {
-            tc.draw(
-                gs::floats()
-                    .min_value(limits[joint].lo)
-                    .max_value(limits[joint].hi),
-            )
-        });
+        let q = tc.draw(configs(limits));
 
         let step = bounded_step(&jacobian, &q, &limits, dp, dw, weight);
         let (hessian, pull) = objective(&jacobian, dp, dw, weight);

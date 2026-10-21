@@ -61,6 +61,7 @@ name = "chain_kinematics"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "chain_kinematics",
  "hegeltest",
  "nalgebra",
  "thiserror 2.0.21",

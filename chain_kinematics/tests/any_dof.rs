@@ -13,9 +13,8 @@ use chain_kinematics::{
 };
 
 mod common;
-use common::properties::{
-    ChainProperty, TIP, TOLERANCE, chain_of, configs, joint_name, on_a_drawn_robot,
-};
+use chain_kinematics::properties::{TOLERANCE, configs};
+use common::properties::{ChainProperty, TIP, chain_of, joint_name, on_a_drawn_robot};
 use common::{SO101, openarm, sample, so101};
 
 #[test]

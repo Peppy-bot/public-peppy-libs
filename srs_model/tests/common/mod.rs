@@ -7,8 +7,9 @@
 //! expected; the allow keeps clippy's -D warnings gate meaningful for the rest.
 #![allow(dead_code)]
 
-use properties::{ELBOW_FLEX, STRAIGHT_ELBOW_BAND, TOLERANCE};
-use srs_model::{Arm, ArmAnglePolicy, JointVec};
+use chain_kinematics::properties::TOLERANCE;
+use properties::STRAIGHT_ELBOW_BAND;
+use srs_model::{Arm, ArmAnglePolicy, ELBOW, JointVec};
 
 pub mod properties;
 
@@ -50,7 +51,7 @@ pub fn round_trip(arm: &Arm, q: &JointVec, seed: &JointVec) -> Option<JointVec> 
     let target = arm.at(q).ee_pose();
     let Some(solution) = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, seed) else {
         assert!(
-            q[ELBOW_FLEX] < STRAIGHT_ELBOW_BAND,
+            q[ELBOW] < STRAIGHT_ELBOW_BAND,
             "no IK solution from {seed:?} for the pose of {q:?}"
         );
         return None;
