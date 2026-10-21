@@ -294,6 +294,7 @@ impl Arm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::properties::{ELBOW_FLEX, STRAIGHT_ELBOW_BAND, TOLERANCE, configs};
 
     const FIXTURE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -494,25 +495,30 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ik_round_trips_the_tool_frame_it_was_given() {
+    #[hegel::test]
+    fn ik_round_trips_the_tool_frame_it_was_given(tc: hegel::TestCase) {
         // The whole point of the seam: a target expressed at the tool is reached at
         // the tool. A composition inverted anywhere lands a tool-length away.
         let arm = tooled_arm();
-        let target = arm.at(&RATE_Q).ee_pose();
-        let seed: JointVec = std::array::from_fn(|i| RATE_Q[i] + 0.05);
-        let solution = arm
-            .solve_ik(&target, ArmAnglePolicy::FromSeed, &seed)
-            .expect("a pose reached by FK is reachable");
+        let q = tc.draw(configs(arm.limits()));
+        let seed = tc.draw(configs(arm.limits()));
+        let target = arm.at(&q).ee_pose();
+        let Some(solution) = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &seed) else {
+            assert!(
+                q[ELBOW_FLEX] < STRAIGHT_ELBOW_BAND,
+                "no IK solution from {seed:?} for the tool pose of {q:?}"
+            );
+            return;
+        };
         let reached = arm.at(&solution.q).ee_pose();
         assert!(
-            (reached.translation.vector - target.translation.vector).norm() < 1e-9,
+            (reached.translation.vector - target.translation.vector).norm() < TOLERANCE,
             "IK reached {:?}, wanted {:?}",
             reached.translation.vector,
             target.translation.vector
         );
         assert!(
-            reached.rotation.angle_to(&target.rotation) < 1e-9,
+            reached.rotation.angle_to(&target.rotation) < TOLERANCE,
             "IK reached a {:.6} rad different orientation",
             reached.rotation.angle_to(&target.rotation)
         );

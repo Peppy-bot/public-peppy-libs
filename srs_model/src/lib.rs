@@ -136,3 +136,9 @@ pub(crate) mod test_support {
         v1_fk(side).limits()
     }
 }
+
+/// The property tests' tolerance and generators, the same file the integration
+/// tests reach as `common::properties`.
+#[cfg(test)]
+#[path = "../tests/common/properties.rs"]
+pub(crate) mod properties;
