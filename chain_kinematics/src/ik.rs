@@ -121,9 +121,9 @@ fn assert_finite_pose(pose: &Isometry3<f64>, what: &str) {
 ///
 /// Parsed at construction: [`Goal::at`] rejects a non-finite pose, and the
 /// `within` builders reject an unusable tolerance, so a [`Kinematics`] method
-/// never sees a bound it cannot honestly test against. Tolerances left unnamed
-/// fall back to the instance's; naming `orientation_within` also turns
-/// orientation into an acceptance test rather than a best effort.
+/// never sees a bound it cannot honestly test against. A position tolerance
+/// left unnamed is [`ACCEPT_POSITION_M`]; an orientation left unnamed is a best
+/// effort, and naming `orientation_within` turns it into an acceptance test.
 #[derive(Debug, Clone, Copy)]
 pub struct Goal {
     target: Isometry3<f64>,
@@ -159,37 +159,19 @@ struct TableEntry<const N: usize> {
 }
 
 /// FK and FK-verified IK over one chain: the point-to-point layer above
-/// [`Chain`], holding the seed table and the instance defaults.
+/// [`Chain`], holding the seed table.
 ///
 /// Plain data over a pure chain, so it is `Send + Sync` and every method takes
 /// `&self`: answers are functions of their arguments.
 pub struct Kinematics<const N: usize> {
     chain: Chain<N>,
     table: Vec<TableEntry<N>>,
-    position_tolerance_m: f64,
 }
 
 impl<const N: usize> Kinematics<N> {
     pub fn new(chain: Chain<N>) -> Self {
         let table = draw_table(&chain, SEED_TABLE_SIZE);
-        Self {
-            chain,
-            table,
-            position_tolerance_m: ACCEPT_POSITION_M,
-        }
-    }
-
-    /// The instance-wide acceptance tolerance; per-goal bounds override it.
-    pub fn with_position_tolerance(mut self, meters: f64) -> Result<Self, SolveError> {
-        self.position_tolerance_m = positive(meters, "position tolerance")?;
-        Ok(self)
-    }
-
-    /// Redraw the table at another size, for a caller trading construction time
-    /// against search breadth.
-    pub fn with_seed_table(mut self, entries: usize) -> Self {
-        self.table = draw_table(&self.chain, entries);
-        self
+        Self { chain, table }
     }
 
     pub fn chain(&self) -> &Chain<N> {
@@ -263,7 +245,7 @@ impl<const N: usize> Kinematics<N> {
         target: &Isometry3<f64>,
         goal: &Goal,
     ) -> Option<[f64; N]> {
-        let tolerance = goal.position_m.unwrap_or(self.position_tolerance_m);
+        let tolerance = goal.position_m.unwrap_or(ACCEPT_POSITION_M);
         let angle_bar = goal.orientation_rad.unwrap_or(ACCEPT_ORIENTATION_RAD);
         let orientation_gates = goal.orientation_rad.is_some();
 
