@@ -41,6 +41,7 @@ mod dynamics;
 mod error;
 mod ik;
 mod jacobian;
+mod line;
 mod payload;
 mod rate;
 mod servo;
@@ -52,11 +53,13 @@ pub use ik::{
     ACCEPT_ORIENTATION_RAD, ACCEPT_POSITION_M, Goal, Kinematics, SEED_TABLE_SIZE, SolveError,
 };
 pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse, manipulability};
+pub use line::{COINCIDENT_ARC_EPS, interpolate};
 pub use payload::{Payload, segments_carrying};
-pub use rate::{DEFAULT_DLS_LAMBDA, rate_step};
+pub use rate::{DEFAULT_DLS_LAMBDA, PoseMiss, pose_miss, rate_step};
 pub use servo::{
-    EeCaps, NoSmoothing, ServoLimits, ServoState, ServoStep, ServoTolerances, Smoother,
-    TRACKING_FLOOR_M, ToleranceError, interpolate, rate_step_toward, rollout,
+    EeCaps, JointSmoothing, LEASH_M, MAX_SERVO_S, NoSmoothing, ServoLimits, ServoPlan, ServoState,
+    ServoStep, ServoTolerances, ServoTrajectory, Smoother, ToleranceError, command_smoothing,
+    ee_progress, joints, plan_servo, rate_step_toward, rollout, timed_with_ee,
 };
 pub use tree::{JointKind, Tree};
 
@@ -90,4 +93,24 @@ impl Limit {
     pub fn midpoint(&self) -> f64 {
         (self.lo + self.hi) / 2.0
     }
+}
+
+/// `q` with every joint brought inside its limit.
+pub fn clamp_into<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> [f64; N] {
+    std::array::from_fn(|i| limits[i].clamp(q[i]))
+}
+
+/// True if every joint of `q` lies inside its limit.
+pub fn all_within<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> bool {
+    limits.iter().zip(q).all(|(limit, v)| limit.contains(*v))
+}
+
+/// How far the joint of `q` closest to a limit sits inside it, negative when
+/// that joint lies outside.
+pub fn limit_margin<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> f64 {
+    limits
+        .iter()
+        .zip(q)
+        .map(|(limit, v)| (v - limit.lo).min(limit.hi - v))
+        .fold(f64::INFINITY, f64::min)
 }

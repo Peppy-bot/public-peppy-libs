@@ -3,7 +3,7 @@
 //! handle. Build it once and everything hangs off it; the underlying FK chain and
 //! SRS model are internal.
 
-use nalgebra::{Isometry3, Translation3, Vector3};
+use nalgebra::{Isometry3, Translation3, Vector3, Vector6};
 
 use crate::fk::ForwardKinematics;
 use crate::ik::{self, ArmAnglePolicy, Solution};
@@ -248,6 +248,11 @@ impl Arm {
         self.model.world_pose(base)
     }
 
+    /// The end effector's pose at `q` in the world frame.
+    pub fn world_ee_pose(&self, q: &JointVec) -> Isometry3<f64> {
+        self.world_pose(&self.at(q).ee_pose())
+    }
+
     /// The fixed `world -> base` mount transform resolved from the URDF. It is
     /// identity when `base_link` is the URDF root (no mount tree above it); since
     /// gravity/Coriolis are evaluated in that frame, a caller can log/verify which
@@ -263,9 +268,10 @@ impl Arm {
     /// this rotates them into the arm base frame, solves
     /// `dq = J⁺(λ) ξ` with the damped pseudo-inverse (bounded through
     /// singularities), scales `dq` so every joint respects its velocity budget
-    /// over `dt_s` while preserving direction, and clamps the result into the
-    /// position limits. The step the operator streaming jog and the backbone's
-    /// guarded servo both run, shared so the two control paths cannot drift.
+    /// over `dt_s` while preserving direction, and keeps the result within the
+    /// position limits, holding a joint the step would carry past its limit on
+    /// it and solving the task again on the others: one damped step of the
+    /// chain, for a streamed jog.
     pub fn rate_step(
         &self,
         q: &JointVec,
@@ -275,11 +281,14 @@ impl Arm {
         dt_s: f64,
         lambda: f64,
     ) -> JointVec {
+        let chain = self.fk.chain();
         chain_kinematics::rate_step(
-            self.fk.chain(),
+            chain,
             q,
-            dp_world,
-            dw_world,
+            &Vector6::new(
+                dp_world.x, dp_world.y, dp_world.z, dw_world.x, dw_world.y, dw_world.z,
+            ),
+            &chain.limits(),
             max_joint_velocity_rad_s,
             dt_s,
             lambda,
