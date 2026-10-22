@@ -25,7 +25,7 @@ Rules written down here because the code depends on them:
   than the radius gets a new id, and a covering scan drops the old one.
 - Released items. A place_item moves the item to the pose it was put at,
   so the next scan keeps its id, and a grab by that id reaches it with no
-  look between. A drop_item forgets the item: nothing measured where it
+  look between, at that pose. A drop_item forgets the item: nothing measured where it
   landed, so the brain no longer accounts for it, its id is refused from
   then on, and the next look that sees the item gives it a new one. A grab
   by the old id is refused rather than sent to where the item was.
@@ -33,6 +33,10 @@ Rules written down here because the code depends on them:
   that look's picture. A look that did not see a known item it keeps
   clears the region: the picture has moved on, and a region of an older
   picture would be reported against the new one.
+- Grasp points. An item's position is a grasp point, where the gripper
+  closes, when a grab_item goal addressed it by pose or a place_item put
+  it down (`Item.position_is_grasp_point`); a look that sees it again
+  makes its position the seen point again.
 - Holding follows results, not jaws. A gripper holds an item after a
   successful grab and stops holding after a successful drop or place.
   Refusals, failures, cancels and aborts leave the flag as it was. A grab
@@ -160,6 +164,7 @@ class State:
         if item is not None:
             item.position = position
             item.orientation = orientation
+            item.position_is_grasp_point = True
         return item_id
 
     def snapshot(self) -> tuple[list[str], list[bool], list[str]]:
@@ -218,8 +223,11 @@ class State:
         return seen
 
     def mint_from_pose(self, position: Vec3, orientation: Optional[Quat], now_ns: int) -> Item:
-        """An id for an item a goal addressed by pose rather than by id."""
-        return self._mint("item", position, orientation, 0.0, now_ns)
+        """An id for an item a goal addressed by pose rather than by id:
+        the pose is a grasp point, where the gripper closes."""
+        item = self._mint("item", position, orientation, 0.0, now_ns)
+        item.position_is_grasp_point = True
+        return item
 
     def _release(self, gripper: Gripper) -> str:
         item_id = gripper.held_item_id or ""
@@ -266,6 +274,7 @@ def _refresh(item: Item, detection: Detection, now_ns: int, coverage: Coverage) 
     label when the look names that label with authority."""
     item.position = detection.position
     item.orientation = detection.orientation
+    item.position_is_grasp_point = False
     item.confidence = detection.confidence
     item.seen_at_ns = now_ns
     item.region = detection.region

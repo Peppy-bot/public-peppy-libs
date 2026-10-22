@@ -2,7 +2,7 @@
 
 The code every brain node shares. A brain serves `item_perception:v1`,
 `item_manipulation:v1` and `brain_model:v1` over a robot that `limb_motion:v1`
-drives and a camera that `rgbd_camera:v1` streams. brain_core holds the contract rules (item ids,
+drives and `limb_state:v1` measures, and a camera that `rgbd_camera:v1` streams. brain_core holds the contract rules (item ids,
 the gripper table, the lanes, the result rules), the robot proxy, the camera
 frames and geometry, and the loop of each exposed member. A node brings its
 generated peppygen modules and its backends, and calls `node.setup`.
@@ -28,7 +28,8 @@ Its entry point builds `Bindings` from its peppygen package and hands them to
 `brain_core.node.setup` with its `ModelSource`, the models the node can run
 for each role. `Bindings.from_generated` finds each module where every
 brain's peppygen puts it, so the node's manifest names its slots
-`limb_motion`, `camera`, `geometry` and `camera_mounts`, as both brains do:
+`limb_motion`, `limb_state`, `camera`, `geometry` and `camera_mounts`, as both
+brains do:
 
 ```python
 import peppygen
@@ -56,12 +57,13 @@ model of each role, `perception_model` and `manipulation_model`.
 
 | Module | What it holds |
 |---|---|
-| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Outcome`, `Pose`), the roles a model serves (`Role`, `parse_role`), `Refusal`, `ExpectedFailure`, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the two ports a backend implements, `Detector` (an awaited `detect`, and `why_unavailable`) and `Manipulator`, and the port a node implements, `ModelSource` |
+| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Grasp`, `Outcome`, `Pose`), the roles a model serves (`Role`, `parse_role`), `Refusal`, `ExpectedFailure`, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the ports a backend implements, `Detector` (an awaited `detect`, and `why_unavailable`), `Manipulator` and the `GraspProposer` a manipulator asks, and the port a node implements, `ModelSource` |
 | `words` | The one rule for whether a description names a label |
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
 | `state` | The grippers, the known items and their ids, and the rules that resolve a goal's names |
 | `sequencer` | One sequence at a time per lane (a lane is a `Role`), lane-less jobs beside them, and the way to stop the ones that run |
-| `robot` | The proxy to the backbone: one limb_motion goal per move, and `stop`, which cancels every move in flight |
+| `robot` | The proxy to the backbone: one limb_motion goal per move, `check_arm_move`, which asks whether a move has a plan and moves nothing, and `stop`, which cancels every move in flight |
+| `limb_state` | The robot's measured limbs: each limb_states message parsed into a `LimbSnapshot` (each arm's joints and grasp pose, each gripper's opening), the latest one kept, and the wait for one captured after another |
 | `models` | The model of each role, and the switch rule: a goal uses only its own role's model, and a switch never changes the model of a goal that runs |
 | `brain` | The parts assembled, and `run_guarded`, where every goal is admitted, completed the way the contract asks and logged |
 | `handlers` | One module per exposed member |
@@ -129,6 +131,7 @@ classDiagram
     class Brain {
         State state
         Robot robot
+        LimbStateStore limb_states
         Perceiver perceiver
         Models models
         Sequencer sequencer
@@ -192,7 +195,7 @@ classDiagram
     class Manipulator {
         <<interface>>
         why_unavailable()
-        start(robot)
+        start(robot, limb_states)
         grab()
         drop()
         place()
@@ -201,7 +204,14 @@ classDiagram
     class Robot {
         move_arm()
         set_gripper()
+        check_arm_move()
         stop()
+    }
+    class LimbStateStore {
+        latest
+        why_unavailable()
+        newer_than(timestamp, timeout_s) async
+        run(node_runner, token, limb_states)
     }
     class Bindings {
         the generated modules
@@ -212,12 +222,14 @@ classDiagram
     Brain --> Models
     Brain --> Perceiver
     Brain --> Robot
+    Brain --> LimbStateStore
     Brain --> Bindings
     Sequencer --> Job
     Models --> ModelSource
     Models --> Detector : perception
     Models --> Manipulator : manipulation
     Manipulator --> Robot
+    Manipulator --> LimbStateStore
 ```
 
 A node implements `ModelSource`, and its models implement `Detector` or

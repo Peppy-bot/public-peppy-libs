@@ -43,11 +43,13 @@ class Active:
 
 
 class Models:
-    def __init__(self, source: ModelSource, sequencer: Sequencer, robot) -> None:
+    def __init__(self, source: ModelSource, sequencer: Sequencer, robot, limb_states) -> None:
         self._source = source
         self._sequencer = sequencer
-        # The robot a manipulator moves, handed to each one before it runs.
+        # The robot a manipulator moves and the store of its measured
+        # limbs, handed to each manipulator before it runs.
         self._robot = robot
+        self._limb_states = limb_states
         self._active: dict[Role, Active] = {}
         self._switching: set[Role] = set()
 
@@ -109,4 +111,4 @@ class Models:
 
     async def _ready(self, role: Role, backend) -> None:
         if role == Role.MANIPULATION:
-            await backend.start(self._robot)
+            await backend.start(self._robot, self._limb_states)

@@ -305,3 +305,18 @@ def test_a_description_names_a_label_by_whole_words_stopwords_aside():
     assert named_by("the", labels) == [] and named_by("  ", labels) == []
     assert normalised("  Red_Coffee   Can ") == "red coffee can"
     assert content_words("the Red coffee can, please") == {"red", "coffee", "can,"}
+
+
+def test_a_pose_grab_or_a_placement_makes_the_position_a_grasp_point_and_a_look_the_seen_point():
+    state = make_state()
+    posed = state.mint_from_pose((0.5, 0.0, 0.7), (0.0, 1.0, 0.0, 0.0), now_ns=1)
+    assert posed.position_is_grasp_point
+    # A look sees the item there: its position is the seen point again,
+    # and the orientation the look's.
+    [seen] = state.remember([Detection("cup", (0.5, 0.0, 0.72), 0.9)], now_ns=2, coverage=NOTHING)
+    assert seen is posed
+    assert not posed.position_is_grasp_point and posed.orientation is None and posed.position == (0.5, 0.0, 0.72)
+    left = state.grippers["left_gripper"]
+    state.set_held(left, posed.item_id)
+    state.clear_held_placed(left, (0.6, 0.1, 0.75), None)
+    assert posed.position_is_grasp_point and posed.position == (0.6, 0.1, 0.75)

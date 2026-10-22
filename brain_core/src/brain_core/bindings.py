@@ -4,8 +4,8 @@ peppygen is generated per node from the node's own manifest, so a shared
 library cannot import it. A node hands `Bindings.from_generated(peppygen)`
 to `node.setup`; each part of the core takes the modules it uses from
 there. Every brain implements the same contracts and names its slots
-alike (limb_motion, camera, geometry, camera_mounts), so every brain's
-peppygen has these modules under the same names.
+alike (limb_motion, limb_state, camera, geometry, camera_mounts), so every
+brain's peppygen has these modules under the same names.
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ GENERATED_MODULES = {
     "clock": "clock",
     "move_arm": "consumed_actions.limb_motion.move_arm",
     "move_gripper": "consumed_actions.limb_motion.move_gripper",
+    "check_arm_move": "consumed_services.limb_motion.check_arm_move",
+    "limb_states": "consumed_topics.limb_state.limb_states",
     "video_stream": "consumed_topics.camera.video_stream",
     "depth_stream": "consumed_topics.camera.depth_stream",
     "depth_stream_info": "consumed_services.camera.depth_stream_info",
@@ -46,9 +48,15 @@ class Bindings:
     # peppygen.QoSProfile.Standard: the QoS of a limb_motion goal's feedback.
     standard_qos: Any
 
-    # The backbone, limb_motion:v1 (peppygen.consumed_actions.limb_motion).
+    # The backbone, limb_motion:v1 (peppygen.consumed_actions.limb_motion
+    # and peppygen.consumed_services.limb_motion).
     move_arm: Any
     move_gripper: Any
+    check_arm_move: Any
+
+    # The robot's measured limbs, limb_state:v1
+    # (peppygen.consumed_topics.limb_state).
+    limb_states: Any
 
     # The camera, rgbd_camera:v1 (peppygen.consumed_topics.camera and
     # peppygen.consumed_services.camera).

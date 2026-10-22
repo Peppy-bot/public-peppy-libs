@@ -14,12 +14,19 @@ from typing import Iterator, Optional, Sequence
 
 import numpy as np
 import pytest
+from hypothesis import settings
 
 from brain_core.brain import Brain
 from brain_core.manipulation.none import NoneManipulator
 from brain_core.perception.camera import Intrinsics
 from brain_core.perception.none import NoneDetector
 from brain_core.ports import Box, CancelToken, Coverage, Deadline, Gripper, Item, Outcome, Pose, Refusal, Role
+
+# Every property test runs the same examples on every host: no deadline,
+# which would judge the host's speed, a seed fixed per test, and no example
+# database carried from one run to the next.
+settings.register_profile("brain_core", deadline=None, derandomize=True, database=None)
+settings.load_profile("brain_core")
 
 PARAMS = {
     "limbs": "left_arm:left_gripper,right_arm:right_gripper",
@@ -120,13 +127,15 @@ class FakeManipulator:
         self.calls: list[tuple] = []
         self.stopped = 0
         self.robot = None
+        self.limb_states = None
         self._began = asyncio.Event()
 
     def why_unavailable(self) -> str:
         return ""
 
-    async def start(self, robot) -> None:
+    async def start(self, robot, limb_states) -> None:
         self.robot = robot
+        self.limb_states = limb_states
 
     async def begun(self) -> None:
         await self._began.wait()

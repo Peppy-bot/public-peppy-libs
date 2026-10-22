@@ -1,6 +1,8 @@
 """The only part of the brain that talks to the backbone. One call per
 limb_motion move, each returning a plain outcome, and the goals in flight
 remembered so a stop can cancel them whatever backend asked for them.
+`check_arm_move` asks whether a move has a plan and moves nothing, so a
+stop has nothing of it to cancel.
 
 The backbone plans and governs every move, so nothing here checks
 collisions or limits: a target the backbone cannot reach comes back as a
@@ -19,6 +21,7 @@ from .ports import Quat, Vec3
 GOAL_TIMEOUT_S = 5.0
 RESULT_TIMEOUT_S = 120.0
 CANCEL_TIMEOUT_S = 3.0
+CHECK_TIMEOUT_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,17 @@ class GripResult:
 
 
 @dataclass(frozen=True)
+class MoveCheck:
+    """check_arm_move's answer: whether a move_arm goal with the same
+    fields has a plan from where the arm is commanded now, the backbone's
+    words when it has none, and the time the move would take."""
+
+    success: bool
+    message: str
+    duration_s: float = 0.0
+
+
+@dataclass(frozen=True)
 class Ended:
     """How one limb_motion goal ended: success and message as the
     contract's result carries them, a refusal, a cancel and a lost result
@@ -48,13 +62,17 @@ class Ended:
 
 
 class Robot:
-    """`move_arm` and `move_gripper` are the node's generated limb_motion
-    modules, and `qos` the QoS of a goal's feedback."""
+    """`move_arm`, `move_gripper` and `check_arm_move` are the node's
+    generated limb_motion modules, and `qos` the QoS of a goal's
+    feedback."""
 
-    def __init__(self, node_runner, move_arm, move_gripper, qos, *, result_timeout_s: float = RESULT_TIMEOUT_S) -> None:
+    def __init__(
+        self, node_runner, move_arm, move_gripper, check_arm_move, qos, *, result_timeout_s: float = RESULT_TIMEOUT_S
+    ) -> None:
         self._node_runner = node_runner
         self._move_arm = move_arm
         self._move_gripper = move_gripper
+        self._check_arm_move = check_arm_move
         self._qos = qos
         self._result_timeout_s = result_timeout_s
         self._live: set = set()
@@ -69,16 +87,11 @@ class Robot:
         plan_position_tolerance_m: float = 0.0,
         plan_orientation_tolerance_rad: float = 0.0,
     ) -> MoveResult:
-        """Plans and runs one grasp-point move of `arm`, world frame, and
+        """Plans and runs one grasp-point move of `arm`, robot frame, and
         waits for it to end. Zero tolerances and duration take the
         backbone's defaults."""
         request = self._move_arm.GoalRequest(
-            arm_name=arm,
-            position=list(position),
-            orientation=list(orientation),
-            duration_s=duration_s,
-            plan_position_tolerance_m=plan_position_tolerance_m,
-            plan_orientation_tolerance_rad=plan_orientation_tolerance_rad,
+            **_arm_move_fields(arm, position, orientation, duration_s, plan_position_tolerance_m, plan_orientation_tolerance_rad)
         )
         ended = await self._run(self._move_arm, request)
         data = ended.data
@@ -96,6 +109,31 @@ class Robot:
         ended = await self._run(self._move_gripper, request)
         data = ended.data
         return GripResult(ended.success, ended.message, float(data.final_opening) if data is not None else None)
+
+    async def check_arm_move(
+        self,
+        arm: str,
+        position: Vec3,
+        orientation: Quat,
+        *,
+        duration_s: float = 0.0,
+        plan_position_tolerance_m: float = 0.0,
+        plan_orientation_tolerance_rad: float = 0.0,
+    ) -> MoveCheck:
+        """Whether `move_arm` with the same arguments has a plan from where
+        the arm is commanded now. A check that gets no answer within
+        `CHECK_TIMEOUT_S` is reported as having none, with the reason."""
+        request = self._check_arm_move.Request(
+            **_arm_move_fields(arm, position, orientation, duration_s, plan_position_tolerance_m, plan_orientation_tolerance_rad)
+        )
+        try:
+            answer = await self._check_arm_move.poll(
+                self._node_runner, self._check_arm_move.bound_producer(self._node_runner), request, CHECK_TIMEOUT_S
+            )
+        except Exception as error:
+            return MoveCheck(False, f"check_arm_move gave no answer: {error!r}")
+        data = answer.data
+        return MoveCheck(bool(data.success), data.message, float(data.duration_s))
 
     @property
     def moves_in_flight(self) -> int:
@@ -135,6 +173,25 @@ class Robot:
             message = data.message if data is not None else ""
             return Ended(False, message or f"{name} was cancelled", data)
         return Ended(False, f"{name} ended as {result.status.name.lower()}")
+
+
+def _arm_move_fields(
+    arm: str,
+    position: Vec3,
+    orientation: Quat,
+    duration_s: float,
+    plan_position_tolerance_m: float,
+    plan_orientation_tolerance_rad: float,
+) -> dict:
+    """The fields a move_arm goal and a check_arm_move request share."""
+    return dict(
+        arm_name=arm,
+        position=list(position),
+        orientation=list(orientation),
+        duration_s=duration_s,
+        plan_position_tolerance_m=plan_position_tolerance_m,
+        plan_orientation_tolerance_rad=plan_orientation_tolerance_rad,
+    )
 
 
 async def _cancel(handle) -> None:

@@ -20,6 +20,7 @@ import logging
 from typing import Awaitable, Callable, Optional, Sequence
 
 from .bindings import Bindings
+from .limb_state import LimbStateStore
 from .limbs import parse_limbs
 from .perception.camera import CameraModel
 from .perception.frames import FrameStore
@@ -53,12 +54,16 @@ class Brain:
         self.node_runner = node_runner
         self.bindings = bindings
         self.state = State(parse_limbs(params.limbs), new_run_token() if run_token is None else run_token)
-        self.robot = Robot(node_runner, bindings.move_arm, bindings.move_gripper, bindings.standard_qos)
+        self.robot = Robot(
+            node_runner, bindings.move_arm, bindings.move_gripper, bindings.check_arm_move, bindings.standard_qos
+        )
+        # The robot's measured limbs, which a manipulator reads.
+        self.limb_states = LimbStateStore()
         # The perceiver alone holds the frames and the camera model: the
         # geometry learners give it each new camera model.
         self.perceiver = Perceiver(FrameStore(), CameraModel())
         self.sequencer = Sequencer(stopper=self._stop_lane)
-        self.models = Models(source, self.sequencer, self.robot)
+        self.models = Models(source, self.sequencer, self.robot, self.limb_states)
         self._now = now or bindings.clock.now_ns
 
     def now(self) -> int:
@@ -78,8 +83,9 @@ class Brain:
 
     def background(self, token) -> list[asyncio.Task]:
         """The loops that run beside the action loops: the camera follower,
-        the one asking the camera where its pixels point, and the one
-        asking the robot where the camera stands."""
+        the one asking the camera where its pixels point, the one asking
+        the robot where the camera stands, and the follower of the robot's
+        measured limbs."""
         b = self.bindings
         return [
             asyncio.create_task(
@@ -91,6 +97,7 @@ class Brain:
             asyncio.create_task(
                 learn_camera_pose(self.node_runner, token, self.perceiver, self.params.camera_name, b.get_camera_poses)
             ),
+            asyncio.create_task(self.limb_states.run(self.node_runner, token, b.limb_states)),
         ]
 
     async def shutdown(self) -> None:
