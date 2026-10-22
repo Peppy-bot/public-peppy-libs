@@ -427,6 +427,13 @@ impl<const N: usize> JointSmoothing<N> {
     pub fn new(filter: ButterworthFilter) -> Self {
         Self([filter; N])
     }
+
+    /// Forget every filter's state, so the next step seeds them on itself.
+    pub fn reset(&mut self) {
+        for filter in &mut self.0 {
+            filter.reset();
+        }
+    }
 }
 
 impl<const N: usize> Smoother<N> for JointSmoothing<N> {
