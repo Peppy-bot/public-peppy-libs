@@ -69,7 +69,7 @@ model of each role, `perception_model` and `manipulation_model`.
 | `handlers` | One module per exposed member |
 | `serve`, `waiting` | The loop of an exposed action or service, and the one way a part waits unless a stop comes first |
 | `perception` | The `Perceiver` (frames in, world detections out), the frame store, the camera model and the geometry learners, `in_daemon_thread` for a detector whose model blocks, and `NoneDetector` |
-| `manipulation` | `NoneManipulator` |
+| `manipulation` | `NoneManipulator`; `ScriptedManipulator`, a grab from above through a fixed sequence of moves; `CentreProposer`, its grasp from the item's position; `grasp`, the geometry: the orientations workspace_core tries, the pre-grasp and lifted points |
 | `bindings`, `node` | The generated modules a node passes in, and the shared entry |
 
 ## Tests
@@ -234,7 +234,8 @@ classDiagram
 
 A node implements `ModelSource`, and its models implement `Detector` or
 `Manipulator`. `NoneDetector` and `NoneManipulator` are the models of a role
-with none.
+with none; `ScriptedManipulator` is a manipulator any node can offer, built
+on a `GraspProposer`.
 
 ### A goal, from its arrival to its result
 
@@ -286,6 +287,42 @@ sequenceDiagram
 A Refusal, an ExpectedFailure or a Cancelled raised in the body goes up to
 `run_guarded`, which completes the goal with the message; `action_time` is the
 elapsed time whatever the outcome.
+
+### A scripted grab
+
+`ScriptedManipulator.grab`, after the handler has resolved the item and the
+gripper. Each step that fails ends the grab with the backbone's own words.
+
+```mermaid
+sequenceDiagram
+    participant H as grab_item handler
+    participant SM as ScriptedManipulator
+    participant P as GraspProposer
+    participant R as Robot
+    participant L as LimbStateStore
+    H->>SM: grab(item, gripper, max_effort, cancel)
+    SM->>P: propose(item)
+    P-->>SM: Grasp: the point, the orientations to try
+    loop each orientation, until one plans
+        SM->>R: check_arm_move: pre-grasp, grasp, lifted points
+    end
+    Note over SM: none plans: "no plan reaches item 'x' with gripper 'g': <last refusal>"
+    SM->>R: set_gripper(g, 1)
+    SM->>R: move_arm(pre-grasp), move_arm(grasp point)
+    SM->>R: set_gripper(g, 0, max_effort)
+    Note over SM: final_opening below hold_opening_min: "gripper 'g' closed on nothing"
+    SM->>R: move_arm(lifted point)
+    SM->>L: newer_than(the latest stamp at the lift's result, snapshot_wait_s)
+    Note over SM: none: "no limb_states snapshot after the lift"<br/>opening below hold_opening_min: "item 'x' slipped while lifting"
+    SM-->>H: Outcome(true): the handler sets the held flag
+```
+
+`CentreProposer` lowers a seen item's position by `grasp_depth_m` and tries
+the eight rolls of a grasp from above; an item whose position is a grasp point
+(a grab by pose, or an item place_item put down) is grasped there unlowered,
+in its own orientation alone when it has one. After every await the sequence
+checks its cancel token, so a cancel, an abort or a shutdown ends it at the
+next step.
 
 ### Cancel, abort and shutdown
 

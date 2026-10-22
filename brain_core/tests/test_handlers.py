@@ -7,17 +7,22 @@ import logging
 
 import pytest
 
-from conftest import CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, Ticks, depth_frame, make_brain, records_of, rgb_frame
+from types import SimpleNamespace
+
+from conftest import CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, depth_frame, make_brain, records_of, rgb_frame
 from fake_peppygen import abort as abort_action
 from fake_peppygen import drop_item as drop_action
 from fake_peppygen import grab_item as grab_action
 from fake_peppygen import identify_item as identify_action
 from fake_peppygen import place_item as place_action
 from fake_peppygen import scan_items as scan_action
+from fake_peppygen import FakeTopic, fake_bindings, limb_states_message
 
 from brain_core.brain import Brain
 from brain_core.handlers import abort, drop_item, get_state, grab_item, identify_item, place_item, scan_items
-from brain_core.ports import Box, Coverage, Role, SearchTimeout
+from brain_core.manipulation.centre_proposer import CentreProposer
+from brain_core.manipulation.scripted import ScriptedManipulator
+from brain_core.ports import Box, Coverage, Detection, Role, SearchTimeout
 
 
 def with_frames(brain: Brain, depth_m: float = 1.0) -> None:
@@ -513,3 +518,58 @@ async def test_a_manipulation_goal_logs_how_it_ended(brain_log):
         "grab_item stopped after 2.00 s: aborted: operator pressed stop",
         "grab_item succeeded after 0.00 s",
     ]
+
+
+WAIT = 10.0
+
+
+async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
+    """The real handler, the scripted manipulator and the robot proxy over
+    the fake limb_motion clients, with the limb follower reading the fake
+    limb_states topic."""
+    topic, token = FakeTopic(), FakeToken()
+    bindings = fake_bindings(limb_states=topic)
+    brain = await make_brain(manipulator=ScriptedManipulator(CentreProposer()), bindings=bindings)
+    loops = brain.background(token)
+    topic.push(limb_states_message(1.0, left_gripper=1.0, right_gripper=1.0))
+    await asyncio.wait_for(brain.limb_states.newer_than(0.0, WAIT), WAIT)
+    [cup] = brain.state.remember([Detection("cup", (0.5, 0.1, 0.72), 0.9)], brain.now(), coverage=Coverage(every_label=True))
+    for _ in range(3):
+        bindings.check_arm_move.enqueue(SimpleNamespace(success=True, message="", duration_s=1.0))
+
+    ctx = grab_goal(item_id=cup.item_id, max_effort=20.0)
+    grab = asyncio.create_task(grab_item.run(brain, ctx))
+
+    def landed(goal):
+        request = goal.request
+        return SimpleNamespace(
+            success=True, message="", final_position=request.position, final_orientation=request.orientation, action_time=1.0
+        )
+
+    opened = await asyncio.wait_for(bindings.move_gripper.next_goal(), WAIT)
+    assert (opened.request.gripper_name, opened.request.opening) == ("left_gripper", 1.0)
+    opened.complete(SimpleNamespace(success=True, message="", final_opening=1.0, action_time=0.5))
+    for z in (0.80, 0.70):
+        move = await asyncio.wait_for(bindings.move_arm.next_goal(), WAIT)
+        assert move.request.arm_name == "left_arm" and move.request.position == pytest.approx([0.5, 0.1, z])
+        assert move.request.orientation == [0.0, 1.0, 0.0, 0.0]
+        move.complete(landed(move))
+    closed = await asyncio.wait_for(bindings.move_gripper.next_goal(), WAIT)
+    assert (closed.request.opening, closed.request.max_effort) == (0.0, 20.0)
+    closed.complete(SimpleNamespace(success=True, message="stopped short", final_opening=0.3, action_time=0.5))
+    lift = await asyncio.wait_for(bindings.move_arm.next_goal(), WAIT)
+    assert lift.request.position == pytest.approx([0.5, 0.1, 0.80])
+    # The backbone answers the lift, then publishes the snapshot after it:
+    # the grab reads the latest snapshot as the answer arrives, and waits
+    # for a later one.
+    lift.complete(landed(lift))
+    topic.push(limb_states_message(2.0, left_gripper=0.3, right_gripper=1.0))
+    await asyncio.wait_for(grab, WAIT)
+
+    assert ctx.completed["success"] is True, ctx.completed["message"]
+    assert (ctx.completed["gripper_name"], ctx.completed["item_id"]) == ("left_gripper", cup.item_id)
+    assert state_of(brain).holding == [True, False]
+    assert state_of(brain).held_item_ids == [cup.item_id, ""]
+    assert [request.arm_name for request in bindings.check_arm_move.polled] == ["left_arm"] * 3
+    token.cancel()
+    await asyncio.wait_for(asyncio.gather(*loops), WAIT)
