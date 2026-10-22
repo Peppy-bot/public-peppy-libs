@@ -549,7 +549,9 @@ async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
     opened = await asyncio.wait_for(bindings.move_gripper.next_goal(), WAIT)
     assert (opened.request.gripper_name, opened.request.opening) == ("left_gripper", 1.0)
     opened.complete(SimpleNamespace(success=True, message="", final_opening=1.0, action_time=0.5))
-    for z in (0.80, 0.70):
+    # The cup was seen at 0.72 m: the grasp point is 2.5 cm under it, the
+    # pre-grasp point 10 cm above that.
+    for z in (0.795, 0.695):
         move = await asyncio.wait_for(bindings.move_arm.next_goal(), WAIT)
         assert move.request.arm_name == "left_arm" and move.request.position == pytest.approx([0.5, 0.1, z])
         assert move.request.orientation == [0.0, 1.0, 0.0, 0.0]
@@ -558,7 +560,7 @@ async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
     assert (closed.request.opening, closed.request.max_effort) == (0.0, 20.0)
     closed.complete(SimpleNamespace(success=True, message="stopped short", final_opening=0.3, action_time=0.5))
     lift = await asyncio.wait_for(bindings.move_arm.next_goal(), WAIT)
-    assert lift.request.position == pytest.approx([0.5, 0.1, 0.80])
+    assert lift.request.position == pytest.approx([0.5, 0.1, 0.795])
     # The backbone answers the lift, then publishes the snapshot after it:
     # the grab reads the latest snapshot as the answer arrives, and waits
     # for a later one.

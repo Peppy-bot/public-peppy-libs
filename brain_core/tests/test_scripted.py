@@ -13,7 +13,7 @@ from hypothesis import event, given, settings
 from hypothesis import strategies as st
 
 from brain_core.limb_state import NO_SNAPSHOT, LimbStateStore
-from brain_core.manipulation.centre_proposer import CentreProposer
+from brain_core.manipulation.centre_proposer import GRASP_DEPTH_M, CentreProposer
 from brain_core.manipulation.grasp import GraspDirection, candidates, lowered
 from brain_core.manipulation.scripted import NOT_STARTED, ScriptedManipulator
 from brain_core.ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose
@@ -22,7 +22,7 @@ from brain_core.robot import GripResult, MoveCheck, MoveResult
 LEFT = Gripper("left_gripper", "left_arm")
 DOWN = candidates(GraspDirection.DOWN)
 SEEN = (0.5, 0.1, 0.72)
-GRASP = lowered(SEEN, 0.02)
+GRASP = lowered(SEEN, GRASP_DEPTH_M)
 # The pre-grasp and the lifted points of a grab from above coincide when
 # the clearance and the lift are equal, as their defaults are.
 PRE = (GRASP[0], GRASP[1], GRASP[2] + 0.10)
