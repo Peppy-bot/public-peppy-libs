@@ -13,3 +13,6 @@ description = "Shared control-loop primitives for the openarm control nodes: a f
 tokio = { version = "1", features = ["time"] }
 tracing = "0.1"
 thiserror = "2"
+
+[dev-dependencies]
+hegeltest = { version = "0.50", features = ["static-engine"] }
