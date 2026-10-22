@@ -15,7 +15,7 @@ from hypothesis import strategies as st
 from brain_core.limb_state import NO_SNAPSHOT, LimbStateStore
 from brain_core.manipulation.centre_proposer import GRASP_DEPTH_M, CentreProposer
 from brain_core.manipulation.grasp import GraspDirection, candidates, lowered
-from brain_core.manipulation.scripted import NOT_STARTED, ScriptedManipulator
+from brain_core.manipulation.scripted import CLEARANCE_M, LIFT_M, NOT_STARTED, ScriptedManipulator
 from brain_core.ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose
 from brain_core.robot import GripResult, MoveCheck, MoveResult
 
@@ -25,8 +25,8 @@ SEEN = (0.5, 0.1, 0.72)
 GRASP = lowered(SEEN, GRASP_DEPTH_M)
 # The pre-grasp and the lifted points of a grab from above coincide when
 # the clearance and the lift are equal, as their defaults are.
-PRE = (GRASP[0], GRASP[1], GRASP[2] + 0.10)
-LIFT = (GRASP[0], GRASP[1], GRASP[2] + 0.10)
+PRE = (GRASP[0], GRASP[1], GRASP[2] + CLEARANCE_M)
+LIFT = (GRASP[0], GRASP[1], GRASP[2] + LIFT_M)
 # A grab's third move is its lift.
 LIFT_MOVE = 3
 
@@ -225,7 +225,7 @@ async def test_a_grab_by_pose_is_not_lowered_and_its_orientation_is_the_only_one
     assert outcome == Outcome(False, "no plan reaches item 'cup_1-t0' with gripper 'left_gripper': goal pose not planned within 0.010 m")
     # The approach of the identity orientation is +Z: the pre-grasp point
     # stands below the grasp point.
-    assert robot.calls == [("check", (0.5, 0.1, 0.6), q)]
+    assert robot.calls == [("check", (0.5, 0.1, 0.7 - CLEARANCE_M), q)]
 
 
 async def test_a_grab_by_pose_without_an_orientation_tries_the_down_rolls_at_the_point_itself():
@@ -234,7 +234,7 @@ async def test_a_grab_by_pose_without_an_orientation_tries_the_down_rolls_at_the
     await manipulator.grab(cup((0.5, 0.1, 0.7), grasp_point=True), LEFT, 0.0, CancelToken())
     assert [call[2] for call in robot.calls] == list(DOWN)
     for call in robot.calls:
-        assert call[1] == pytest.approx((0.5, 0.1, 0.8))
+        assert call[1] == pytest.approx((0.5, 0.1, 0.7 + CLEARANCE_M))
 
 
 async def test_a_grab_with_a_gripper_limb_states_does_not_name_fails_before_moving():
@@ -270,7 +270,7 @@ async def test_a_place_with_an_orientation_checks_that_one_alone_and_reports_whe
     robot.moves.extend([MoveResult(True, ""), MoveResult(True, "", (0.6, 0.0, 0.751), q)])
     outcome = await manipulator.place(LEFT, Pose((0.6, 0.0, 0.75), q), CancelToken())
     assert outcome == Outcome(True, "", (0.6, 0.0, 0.751))
-    above = (0.6, 0.0, 0.75 + 0.10)
+    above = (0.6, 0.0, 0.75 + CLEARANCE_M)
     assert robot.calls == [
         ("check", above, q), ("check", (0.6, 0.0, 0.75), q),
         ("move", above, q), ("move", (0.6, 0.0, 0.75), q),

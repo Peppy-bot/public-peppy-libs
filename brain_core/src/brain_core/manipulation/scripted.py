@@ -45,8 +45,11 @@ from .grasp import lifted, orientations_for, pre_grasp
 
 logger = logging.getLogger(__name__)
 
-CLEARANCE_M = 0.10
-LIFT_M = 0.10
+# The pre-grasp and lifted points stand 7.5 cm from the grasp point: in
+# Waldo, 10 cm above the top of a 12 cm can leaves the OpenArm's grasp
+# point no plan pointing down, and 7.5 cm does.
+CLEARANCE_M = 0.075
+LIFT_M = 0.075
 HOLD_OPENING_MIN = 0.05
 SNAPSHOT_WAIT_S = 1.0
 OPEN = 1.0
