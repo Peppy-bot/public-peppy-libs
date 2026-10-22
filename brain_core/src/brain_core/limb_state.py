@@ -9,8 +9,8 @@ message whose arrays do not fit its names is dropped with a log line, and
 the store keeps the snapshot before it.
 
 A snapshot's stamp is the backbone's capture time, on the backbone's
-clock, which need not be the brain's: openarm_sim runs the backbone on the
-simulation's clock and the brain on the wall clock. So the store compares
+clock, which need not be the brain's: a launch can run one on a
+simulation's clock and the other on the wall clock. So the store compares
 stamps only with each other: `newer_than` waits for a snapshot captured
 after another one.
 
