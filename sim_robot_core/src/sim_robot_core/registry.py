@@ -10,8 +10,8 @@ from another's.
 A robot's limbs reach it once their nodes are up, however long that takes,
 and until the first of them does its stay is its attach goal's. From then on
 it stays while its pairs are the ones its model asks for: the pairs dissolve
-when its nodes stop, and a robot that has not held them past its lease
-leaves the scene.
+when its nodes stop, and a robot that has not held them for its pair grace
+time leaves the scene.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ class Robot:
     stood: bool = False
     # When this robot last held the pairs its model asks for, or when a limb
     # first reached it while they never were; None until a limb reaches it,
-    # so no lease runs while its nodes are still starting.
+    # so no pair grace time runs while its nodes are still starting.
     last_paired_s: float | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -61,13 +61,13 @@ class Robot:
         with self.lock:
             return self.stood
 
-    def lease_ran_out(self, now_s: float, lease_s: float) -> bool:
-        """Whether the robot's pairs have not been its model's for the
-        lease. A robot no limb ever reached has no lease running: its stay
-        is its goal's."""
+    def pair_grace_ran_out(self, now_s: float, pair_grace_s: float) -> bool:
+        """Whether the robot's pairs have not been its model's for the pair
+        grace time. A robot no limb ever reached has no pair grace time
+        running: its stay is its goal's."""
         with self.lock:
             last = self.last_paired_s
-        return last is not None and now_s - last > lease_s
+        return last is not None and now_s - last > pair_grace_s
 
 
 class Registry:
@@ -87,8 +87,8 @@ class Registry:
         the same live copy: the robot stays exactly as it is and the new goal
         hosts it, which is what an initializer that died and came back does.
 
-        No lease runs yet: the robot stays for as long as the goal admitting
-        it does, until a limb first reaches it."""
+        No pair grace time runs yet: the robot stays for as long as the goal
+        admitting it does, until a limb first reaches it."""
         if not name:
             raise ValueError("a robot stands under the name of the copy it runs as")
         with self._lock:
@@ -172,8 +172,8 @@ class Registry:
                 robot.last_paired_s = now_s
 
     def note_limbs_reached(self, name: str, now_s: float) -> None:
-        """Starts the named robot's lease the first time a limb reaches it:
-        from then on its pairs are held to being its model's."""
+        """Starts the named robot's pair grace time the first time a limb
+        reaches it: from then on its pairs are held to being its model's."""
         robot = self.of_name(name)
         if robot is None:
             return
@@ -182,10 +182,11 @@ class Registry:
                 robot.last_paired_s = now_s
 
     def renew(self, now_s: float) -> None:
-        """Gives every robot whose lease runs its lease back. The scene takes
-        no commands while it is being changed, so the robots already in it
-        are held to their leases from the moment it takes them again; a
-        robot no limb reached yet has no lease to give back."""
+        """Starts again the pair grace time of every robot whose pair grace
+        time runs. The scene takes no commands while it is being changed, so
+        the robots already in it get their full pair grace time from the
+        moment it takes them again; a robot no limb reached yet has no pair
+        grace time to start again."""
         for robot in self.robots():
             with robot.lock:
                 if robot.last_paired_s is not None:
