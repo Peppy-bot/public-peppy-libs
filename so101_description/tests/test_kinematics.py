@@ -296,3 +296,16 @@ def test_asking_for_the_jacobian_does_not_disturb_a_streaming_solve():
 
     for undisturbed, interleaved in zip(run(False), run(True), strict=True):
         assert np.allclose(undisturbed, interleaved, atol=1e-12)
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.01, math.nan, math.inf])
+def test_an_unusable_tolerance_is_refused(kinematics, bad):
+    target = kinematics.forward_kinematics((0.1, 0.1, -0.2, 0.0, 0.0))
+    with pytest.raises(ValueError):
+        kinematics.inverse_kinematics(
+            HOME, *target, position_tolerance_m=bad, orientation_tolerance_rad=math.pi
+        )
+    with pytest.raises(ValueError):
+        kinematics.inverse_kinematics(
+            HOME, *target, position_tolerance_m=0.01, orientation_tolerance_rad=bad
+        )

@@ -17,7 +17,9 @@ from typing import Optional
 from .ports import Quat, Vec3
 
 GOAL_TIMEOUT_S = 5.0
-RESULT_TIMEOUT_S = 120.0
+# The longest a move may take, the longest duration and settle timeout the
+# limb_motion contract admits together, and 5 s for its result to arrive.
+RESULT_TIMEOUT_S = 125.0
 CANCEL_TIMEOUT_S = 3.0
 
 

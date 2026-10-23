@@ -161,6 +161,13 @@ APPROACH_MIN_ANGLE_BAR_RAD = 1.0e-8
 APPROACH_QP_MAX_WEIGHT = 1.0
 
 
+def _bar(value: float) -> float:
+    """A caller's acceptance bar: a positive finite distance or angle."""
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(f"tolerance must be finite and positive, got {value}")
+    return value
+
+
 def _set_joints(robot, positions_rad) -> None:
     """Puts the model at these joint radians, in wire order, and updates its
     frames."""
@@ -235,8 +242,8 @@ class Kinematics:
         underactuate the three orientation degrees of freedom, so a tight
         orientation bar refuses almost every reachable pose; a caller that
         takes any orientation passes math.pi or more."""
-        position_bar = position_tolerance_m
-        orientation_bar = orientation_tolerance_rad
+        position_bar = _bar(position_tolerance_m)
+        orientation_bar = _bar(orientation_tolerance_rad)
         target_matrix = matrix_from_pose(position, orientation)
         target_position = tuple(position)
         target_orientation = tuple(orientation)
