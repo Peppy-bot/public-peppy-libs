@@ -15,8 +15,6 @@
 //! - [`timing`]: the clock a motion plays on, the duration a caller may ask
 //!   of it, its control ticks, and the check that what they command moves and
 //!   accelerates within the limits.
-//! - [`move_budget`]: how long a move is allowed to take, and how that moves
-//!   with the speed the operator retunes.
 //! - [`motor_health`]: judging one motor's load, temperature and condition
 //!   against its ratings.
 //! - [`positive_finite`]: a positive finite float, carried as proof it was checked.
@@ -30,7 +28,6 @@ pub mod chase;
 pub mod filters;
 pub mod minimum_jerk;
 pub mod motor_health;
-pub mod move_budget;
 pub mod pacer;
 pub mod path_timing;
 pub mod positive_finite;
