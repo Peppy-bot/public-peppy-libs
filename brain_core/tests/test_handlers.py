@@ -16,7 +16,7 @@ from fake_peppygen import grab_item as grab_action
 from fake_peppygen import identify_item as identify_action
 from fake_peppygen import place_item as place_action
 from fake_peppygen import scan_items as scan_action
-from fake_peppygen import FakeTopic, fake_bindings, limb_states_message
+from fake_peppygen import LEFT_AT_REST, FakeTopic, fake_bindings, limb_states_message
 
 from brain_core.brain import Brain
 from brain_core.handlers import abort, drop_item, get_state, grab_item, identify_item, place_item, scan_items
@@ -527,15 +527,36 @@ async def test_a_manipulation_goal_logs_how_it_ended(brain_log):
 WAIT = 10.0
 
 
+class LimbStream:
+    """The fake backbone's limb_states stream: until `stopped`, a snapshot
+    with a later stamp each turn of the loop, the left grasp point where the
+    last landed move put it, the left gripper at `left_opening` and the
+    right one open."""
+
+    def __init__(self, topic: FakeTopic) -> None:
+        self.topic = topic
+        self.left_arm = LEFT_AT_REST
+        self.left_opening = 1.0
+        self.stamp = 1.0
+        self.stopped = asyncio.Event()
+
+    async def run(self) -> None:
+        while not self.stopped.is_set():
+            self.topic.push(limb_states_message(self.stamp, left_arm=self.left_arm, left_gripper=self.left_opening, right_gripper=1.0))
+            self.stamp += 0.01
+            await asyncio.sleep(0.005)
+
+
 async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
     """The real handler, the scripted manipulator and the robot proxy over
     the fake limb_motion clients, with the limb follower reading the fake
-    limb_states topic."""
+    limb_states topic: the arm is where the last landed move put it."""
     topic, token = FakeTopic(), FakeToken()
     bindings = fake_bindings(limb_states=topic)
     brain = await make_brain(manipulator=ScriptedManipulator(CentreProposer()), bindings=bindings)
     loops = brain.background(token)
-    topic.push(limb_states_message(1.0, left_gripper=1.0, right_gripper=1.0))
+    limbs = LimbStream(topic)
+    streaming = asyncio.create_task(limbs.run())
     await asyncio.wait_for(brain.limb_states.newer_than(0.0, WAIT), WAIT)
     [cup] = brain.state.remember([Detection("cup", (0.5, 0.1, 0.72), 0.9)], brain.now(), coverage=Coverage(every_label=True))
     for _ in range(3):
@@ -545,7 +566,9 @@ async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
     grab = asyncio.create_task(grab_item.run(brain, ctx))
 
     def landed(goal):
+        """The goal's result, the arm put on its target first."""
         request = goal.request
+        limbs.left_arm = (tuple(request.position), tuple(request.orientation))
         return SimpleNamespace(
             success=True, message="", final_position=request.position, final_orientation=request.orientation, action_time=1.0
         )
@@ -562,14 +585,13 @@ async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
         move.complete(landed(move))
     closed = await asyncio.wait_for(bindings.move_gripper.next_goal(), WAIT)
     assert (closed.request.opening, closed.request.max_effort) == (0.0, 20.0)
+    limbs.left_opening = 0.3
     closed.complete(SimpleNamespace(success=True, message="stopped short", final_opening=0.3, action_time=0.5))
     lift = await asyncio.wait_for(bindings.move_arm.next_goal(), WAIT)
     assert lift.request.position == pytest.approx([0.5, 0.1, 0.77])
-    # The backbone answers the lift, then publishes the snapshot after it:
-    # the grab reads the latest snapshot as the answer arrives, and waits
-    # for a later one.
+    # The grab waits until the stream shows the arm at the lifted point,
+    # then judges the hold from the snapshot after that one.
     lift.complete(landed(lift))
-    topic.push(limb_states_message(2.0, left_gripper=0.3, right_gripper=1.0))
     await asyncio.wait_for(grab, WAIT)
 
     assert ctx.completed["success"] is True, ctx.completed["message"]
@@ -580,9 +602,13 @@ async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
     assert [request.arm_name for request in bindings.check_arm_move.polled] == ["left_arm"] * 3
     # The cup slips out of the jaws later: the held flag follows results and
     # stays set, the measured opening shows the jaws closed on nothing.
-    topic.push(limb_states_message(3.0, left_gripper=0.0, right_gripper=1.0))
-    await asyncio.wait_for(brain.limb_states.newer_than(2.0, WAIT), WAIT)
+    limbs.left_opening = 0.0
+    # Snapshots published before the change may still be on their way.
+    while brain.limb_states.latest.opening("left_gripper") != 0.0:
+        await asyncio.wait_for(brain.limb_states.newer_than(brain.limb_states.latest.timestamp, WAIT), WAIT)
     assert state_of(brain).holding == [True, False]
     assert state_of(brain).gripper_openings == [0.0, 1.0]
+    limbs.stopped.set()
+    await asyncio.wait_for(streaming, WAIT)
     token.cancel()
     await asyncio.wait_for(asyncio.gather(*loops), WAIT)

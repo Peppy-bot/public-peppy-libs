@@ -297,6 +297,16 @@ step that fails once the descent was sent first retreats: the gripper opens
 and the arm moves straight back up to the pre-grasp point. A goal that a stop
 ended (`cancelled` on its result) retreats from nothing.
 
+Every arm move, the retreat's and a place's too, waits until it has arrived:
+limb_states shows the grasp point within `arrive_position_m` (5 mm) of the
+target and `arrive_orientation_rad` (0.05 rad) of its orientation, q and -q
+being one. The wait reads the latest snapshot at the move's result, then each
+newer one, for up to `arrive_timeout_s` (2 s) on the brain's monotonic clock;
+past that the move fails with `arm 'a' still <mm> mm / <rad> rad from the
+target 2.0 s after the move's result`. The wait is temporary: limb_motion's
+move_arm answers when its trajectory has been commanded, before the arm is
+there, and the wait goes once move_arm completes only on arrival.
+
 ```mermaid
 sequenceDiagram
     participant H as grab_item handler
@@ -313,10 +323,11 @@ sequenceDiagram
     Note over SM: none plans: "no plan reaches item 'x' with gripper 'g': <last refusal>"
     SM->>R: set_gripper(g, 1)
     SM->>R: move_arm(pre-grasp), move_arm(grasp point)
+    SM->>L: after each move: latest, then newer_than, until the arm has arrived
     SM->>R: set_gripper(g, 0, max_effort)
     Note over SM: final_opening below hold_opening_min: "gripper 'g' closed on nothing"
     SM->>R: move_arm(lifted point)
-    SM->>L: newer_than(the latest stamp at the lift's result, snapshot_wait_s)
+    SM->>L: until the arm has arrived; then newer_than(the latest stamp then, snapshot_wait_s)
     Note over SM: none: "no limb_states snapshot after the lift"<br/>opening below hold_opening_min: "item 'x' slipped while lifting"
     alt a step from the descent on failed, and no stop ended it
         SM->>R: set_gripper(g, 1), move_arm(pre-grasp)
@@ -327,9 +338,16 @@ sequenceDiagram
     end
 ```
 
-Each grab logs one line: the orientation that planned, where the descent's
-result and limb_state at the close put the grasp point against the commanded
-one (`[dx, dy, dz] cm`), the two openings it judged, and the retreat.
+Each grab logs one line: the orientation that planned, with the number and
+the total time of the check_arm_move calls; where the grasp point landed
+against the commanded one (`[dx, dy, dz] cm`) and how long after the
+descent's result; limb_state's grasp point at the close; the two openings it
+judged; and the retreat.
+
+A place carries the item to the pose through its pre-place point, opens,
+and climbs back to the pre-place point. It reports the grasp point limb_states
+measured at the pose. A climb that fails is logged and the place still
+succeeds, since the item is down and the jaws are open.
 
 `CentreProposer` lowers a seen item's position by `grasp_depth_m` and tries
 the eight rolls of a grasp from above; an item whose position is a grasp point

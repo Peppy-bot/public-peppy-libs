@@ -1,14 +1,16 @@
-"""The scripted manipulator against a fake robot and a limb store the test
-fills: the grab sequence and every way it ends, the drop, the place, and
-two properties over any pattern of backbone answers."""
+"""The scripted manipulator against a fake robot, a limb store that runs a
+script and a clock the test moves: the grab sequence and every way it
+ends, the arrival wait, the drop, the place, and two properties over any
+pattern of backbone answers."""
 
 import asyncio
+import math
 from collections import deque
 from typing import Callable, Optional
 
 import pytest
 from conftest import records_of
-from fake_peppygen import limb_states_message
+from fake_peppygen import LimbStatesMessage, limb_states_message
 from hypothesis import event, given, settings
 from hypothesis import strategies as st
 
@@ -29,6 +31,66 @@ PRE = (GRASP[0], GRASP[1], GRASP[2] + CLEARANCE_M)
 LIFT = (GRASP[0], GRASP[1], GRASP[2] + LIFT_M)
 # A grab's third move is its lift.
 LIFT_MOVE = 3
+# The stamp of each snapshot a fake publishes, after the latest one.
+STAMP_STEP = 0.001
+
+
+def offset(point, dx_m=0.0, dy_m=0.0, dz_m=0.0):
+    return (point[0] + dx_m, point[1] + dy_m, point[2] + dz_m)
+
+
+class FakeClock:
+    """The brain's monotonic clock in a test: it stands still until the
+    test moves it on."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class ScriptedStore(LimbStateStore):
+    """A limb store whose stream the test scripts, step by step. Each time
+    a wait for a newer snapshot begins, it runs `on_wait`, then publishes
+    the next entry of `script`, if any: (kind, seconds, left arm pose),
+    the brain's clock moved on by those seconds, then a snapshot one stamp
+    step after the newest one it has held, with the left grasp point at that
+    pose and the latest openings. It keeps the kind of each entry it published, and what
+    each wait found, for a property to read."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        super().__init__()
+        self.clock = clock
+        self.newest = float("-inf")
+        self.script: deque = deque()
+        self.published: list[str] = []
+        self.found: list[tuple[float, object]] = []
+        self.on_wait: Callable[[], None] = lambda: None
+
+    def at(self, left_arm, **openings) -> object:
+        """A snapshot one stamp step after the newest one the store has held,
+        the left grasp point at `left_arm`, a position and an orientation,
+        and the latest openings unless `openings` names others."""
+        return limb_states_message(self.newest + STAMP_STEP, left_arm=left_arm, **{**self.latest.gripper_openings, **openings})
+
+    def add(self, message) -> None:
+        super().add(message)
+        self.newest = max(self.newest, float(message.timestamp))
+
+    async def newer_than(self, timestamp: float, timeout_s: float):
+        self.on_wait()
+        if self.script:
+            kind, seconds, left_arm = self.script.popleft()
+            self.clock.advance(seconds)
+            self.add(self.at(left_arm))
+            self.published.append(kind)
+        found = await super().newer_than(timestamp, timeout_s)
+        self.found.append((timestamp, found))
+        return found
 
 
 class FakeRobot:
@@ -36,20 +98,25 @@ class FakeRobot:
     position, orientation), ("move", position, orientation) or ("grip",
     gripper, opening, max_effort). A check plans, a move lands on its
     target, a grip stops at its target, unless the test queued another
-    answer for that kind. `on_call` runs once each call is recorded,
-    before it answers: a test hooks the lift or a cancel there.
+    answer for that kind. A move that succeeds puts the left grasp point on
+    its target in the store before it answers, unless `arrives` says no
+    for that call: the arm is there at the move's result. `on_call` runs
+    once each call is recorded, before it answers: a test hooks the lift
+    or a cancel there.
 
     Each call yields to the loop once before it is recorded, as a call to
     the backbone does, so what an earlier call scheduled has happened by
     then; it answers with no yield after `on_call`, so what `on_call`
     schedules happens after the caller has read the answer."""
 
-    def __init__(self) -> None:
+    def __init__(self, store: ScriptedStore) -> None:
+        self.store = store
         self.calls: list[tuple] = []
         self.checks: deque = deque()
         self.moves: deque = deque()
         self.grips: deque = deque()
         self.on_call: Callable[[tuple], None] = lambda call: None
+        self.arrives: Callable[[tuple], bool] = lambda call: True
 
     async def check_arm_move(self, arm, position, orientation) -> MoveCheck:
         assert arm == "left_arm"
@@ -60,8 +127,12 @@ class FakeRobot:
     async def move_arm(self, arm, position, orientation) -> MoveResult:
         assert arm == "left_arm"
         await asyncio.sleep(0)
-        self._record(("move", position, orientation))
-        return self.moves.popleft() if self.moves else MoveResult(True, "move complete", position, orientation)
+        call = ("move", position, orientation)
+        self._record(call)
+        moved = self.moves.popleft() if self.moves else MoveResult(True, "move complete", position, orientation)
+        if moved.success and self.arrives(call):
+            self.store.add(self.store.at((position, orientation)))
+        return moved
 
     async def set_gripper(self, gripper, opening, *, max_effort=0.0) -> GripResult:
         await asyncio.sleep(0)
@@ -91,12 +162,15 @@ def snapshot_after_the_lift(robot: FakeRobot, store: LimbStateStore, message) ->
 
 
 async def started(*, opening: Optional[float] = 1.0, wait_s: float = 0.0, **kwargs):
-    """A started scripted manipulator on a fake robot, the store holding a
-    first snapshot with the left gripper open, unless `opening` is none."""
-    robot, store = FakeRobot(), LimbStateStore()
+    """A started scripted manipulator on a fake robot and a scripted store,
+    the store holding a first snapshot with the left grasp point at rest and
+    the left gripper open, unless `opening` is none. The brain's clock
+    stands still unless the test moves it."""
+    store = ScriptedStore(FakeClock())
+    robot = FakeRobot(store)
     if opening is not None:
         store.add(limb_states_message(1.0, left_gripper=opening))
-    manipulator = ScriptedManipulator(CentreProposer(), snapshot_wait_s=wait_s, **kwargs)
+    manipulator = ScriptedManipulator(CentreProposer(), snapshot_wait_s=wait_s, clock=store.clock, **kwargs)
     await manipulator.start(robot, store)
     return manipulator, robot, store
 
@@ -127,29 +201,89 @@ async def test_a_hold_checks_the_three_moves_then_opens_reaches_closes_and_lifts
         ("move", LIFT, q),
     ]
     [line] = [record.getMessage() for record in log.records]
-    # The fake descent lands on the grasp point; the fake limb_states put
-    # the left grasp point at [0.4, 0.2, 0.9].
+    # Each move arrives at its result, on a clock that stands still.
     assert line == (
-        "grab of item 'cup_1-t0' with gripper 'left_gripper': orientation 1 of 8 planned, [0.000, 1.000, 0.000, 0.000]; "
-        "descent result [+0.0, +0.0, +0.0] cm from the grasp point; limb_state at the close [-10.0, +10.0, +20.5] cm from it; "
+        "grab of item 'cup_1-t0' with gripper 'left_gripper': orientation 1 of 8 planned, [0.000, 1.000, 0.000, 0.000] (3 checks, 0 ms); "
+        "landed [+0.0, +0.0, +0.0] cm from the grasp point, 0.0 s after the result; limb_state at the close [+0.0, +0.0, +0.0] cm from it; "
         "closed at 0.300; 0.300 after the lift; held"
     )
 
 
-def landing_log(robot: FakeRobot) -> None:
-    """The descent's result lands 3.2 cm off: 2.7 toward the robot, 1.0
-    left, 1.3 below, as move_arm answered at duration_s 0 in Waldo."""
-    robot.moves.extend([MoveResult(True, ""), MoveResult(True, "", (GRASP[0] - 0.027, GRASP[1] + 0.010, GRASP[2] - 0.013))])
+# Every arm move waits until limb_states shows the grasp point within 5 mm
+# and 0.05 rad of its target, up to 2 s after the move's result.
+
+def the_descent_arrives_through(robot: FakeRobot, store: ScriptedStore, *steps) -> None:
+    """The descent's result comes before the arm is there; then, at each wait
+    for a newer snapshot, one of `steps` (seconds on the brain's clock, a
+    left arm pose) is published."""
+    robot.arrives = lambda call: call[1] != GRASP
+    store.script.extend(("step", seconds, pose) for seconds, pose in steps)
 
 
-async def test_the_log_line_gives_where_the_descent_landed_against_the_grasp_point(caplog):
+async def test_an_arm_that_arrives_after_a_few_snapshots_lands_where_the_last_one_shows_it(caplog):
     manipulator, robot, store = await started()
     holding(robot, store)
-    landing_log(robot)
+    q = DOWN[0]
+    the_descent_arrives_through(
+        robot, store, (0.3, (offset(GRASP, -0.02), q)), (0.3, (offset(GRASP, -0.01), q)), (0.3, (offset(GRASP, -0.001, 0.0, -0.001), q))
+    )
     with records_of(caplog, "brain_core.manipulation.scripted") as log:
         assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == Outcome(True)
-    [line] = [record.getMessage() for record in log.records]
-    assert "descent result [-2.7, +1.0, -1.3] cm from the grasp point" in line
+    assert "landed [-0.1, +0.0, -0.1] cm from the grasp point, 0.9 s after the result" in log.records[-1].getMessage()
+    assert store.published == ["step"] * 3
+    assert robot.kinds()[-2:] == ["grip", "move"]
+
+
+async def test_an_arm_whose_grasp_point_never_comes_within_5_mm_fails_the_move_and_retreats():
+    manipulator, robot, store = await started()
+    holding(robot, store)
+    q = DOWN[0]
+    the_descent_arrives_through(robot, store, (1.0, (offset(GRASP, 0.01), q)), (1.5, (offset(GRASP, 0.01), q)))
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert outcome == Outcome(False, "arm 'left_arm' still 10.0 mm / 0.000 rad from the target 2.0 s after the move's result")
+    assert robot.calls[-3] == ("move", GRASP, q) and robot.calls[-2:] == RETREAT
+
+
+async def test_an_arm_turned_more_than_0_05_rad_from_the_target_has_not_arrived():
+    manipulator, robot, store = await started()
+    holding(robot, store)
+    # 0.1 rad from DOWN[0], (0, 1, 0, 0), about the x axis.
+    turned = (math.sin(0.05), math.cos(0.05), 0.0, 0.0)
+    the_descent_arrives_through(robot, store, (2.5, (GRASP, turned)))
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert outcome == Outcome(False, "arm 'left_arm' still 0.0 mm / 0.100 rad from the target 2.0 s after the move's result")
+    assert robot.calls[-2:] == RETREAT
+
+
+async def test_an_orientation_measured_as_minus_q_is_the_target_q():
+    manipulator, robot, store = await started()
+    holding(robot, store)
+    the_descent_arrives_through(robot, store, (0.0, (GRASP, tuple(-v for v in DOWN[0]))))
+    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == Outcome(True)
+    assert store.published == ["step"]
+
+
+async def test_a_cancel_during_the_arrival_wait_raises_cancelled():
+    manipulator, robot, store = await started()
+    holding(robot, store)
+    cancel = CancelToken()
+    robot.arrives = lambda call: call[1] != GRASP
+    store.on_wait = lambda: cancel.cancel("aborted: operator", by_caller=False)
+    with pytest.raises(Cancelled):
+        await manipulator.grab(cup(), LEFT, 0.0, cancel)
+    assert robot.calls[-1] == ("move", GRASP, DOWN[0])
+
+
+async def test_a_snapshot_that_names_no_such_arm_fails_the_move():
+    manipulator, robot, store = await started()
+    robot.arrives = lambda call: False
+    store.add(LimbStatesMessage(
+        timestamp=2.0, arm_names=["right_arm"], joints_per_arm=[7], joint_positions=[0.0] * 7, positions=[0.4, -0.2, 0.9],
+        orientations=[0.0, 1.0, 0.0, 0.0], gripper_names=["left_gripper"], gripper_openings=[1.0],
+    ))
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert outcome == Outcome(False, "limb_states names no arm 'left_arm'")
+    assert robot.kinds()[-1] == "move" and robot.kinds().count("move") == 1
 
 
 # A step that fails once the descent has begun retreats: the gripper opens
@@ -367,17 +501,34 @@ async def test_a_drop_opens_the_gripper_where_it_is():
     assert await manipulator.drop(LEFT, CancelToken()) == Outcome(False, "the follower stopped reporting")
 
 
-async def test_a_place_with_an_orientation_checks_that_one_alone_and_reports_where_it_opened():
-    manipulator, robot, _ = await started()
-    q = (0.0, 1.0, 0.0, 0.0)
-    robot.moves.extend([MoveResult(True, ""), MoveResult(True, "", (0.6, 0.0, 0.751), q)])
-    outcome = await manipulator.place(LEFT, Pose((0.6, 0.0, 0.75), q), CancelToken())
-    assert outcome == Outcome(True, "", (0.6, 0.0, 0.751))
+async def test_a_place_checks_its_orientation_alone_opens_climbs_back_and_reports_the_measured_point():
+    manipulator, robot, store = await started()
+    q, point = (0.0, 1.0, 0.0, 0.0), (0.6, 0.0, 0.75)
     above = (0.6, 0.0, 0.75 + CLEARANCE_M)
+    # move_arm's result says 1 mm high; limb_states, once the arm is there,
+    # 2 mm high: the place reports what limb_states measured.
+    robot.moves.extend([MoveResult(True, ""), MoveResult(True, "", (0.6, 0.0, 0.751), q)])
+    robot.arrives = lambda call: call[1] != point
+    store.script.append(("step", 0.4, ((0.6, 0.0, 0.752), q)))
+    outcome = await manipulator.place(LEFT, Pose(point, q), CancelToken())
+    assert outcome == Outcome(True, "", (0.6, 0.0, 0.752))
     assert robot.calls == [
-        ("check", above, q), ("check", (0.6, 0.0, 0.75), q),
-        ("move", above, q), ("move", (0.6, 0.0, 0.75), q),
+        ("check", above, q), ("check", point, q),
+        ("move", above, q), ("move", point, q),
         ("grip", "left_gripper", 1.0, 0.0),
+        ("move", above, q),
+    ]
+
+
+async def test_a_place_whose_climb_fails_still_places_and_says_so_in_the_log(caplog):
+    manipulator, robot, _ = await started()
+    q, point = (0.0, 1.0, 0.0, 0.0), (0.6, 0.0, 0.75)
+    robot.moves.extend([MoveResult(True, ""), MoveResult(True, ""), MoveResult(False, "the side is busy")])
+    with records_of(caplog, "brain_core.manipulation.scripted") as log:
+        outcome = await manipulator.place(LEFT, Pose(point, q), CancelToken())
+    assert outcome == Outcome(True, "", point)
+    assert [record.getMessage() for record in log.records] == [
+        "place with gripper 'left_gripper' released the item, but the climb back to the pre-place point failed: the side is busy"
     ]
 
 
@@ -392,9 +543,10 @@ async def test_a_place_without_an_orientation_tries_the_down_rolls():
 
 
 # Properties over any pattern of backbone answers: every check, move and
-# grip answer drawn, a failed move or grip ended by a stop or not, a
-# snapshot published or not after each move, and a cancel at any call or
-# none.
+# grip answer drawn, a failed move or grip ended by a stop or not, how each
+# move that succeeds arrives (limb_states shows it at the result, at the
+# first wait after it, or never within the timeout), a snapshot published or
+# not after each move, and a cancel at any call or none.
 
 HOLD = 0.05
 
@@ -410,18 +562,25 @@ moves = st.builds(MoveResult, mostly(12), st.sampled_from(["", "stopped"]))
 # Openings at the hold opening and around it, and anywhere.
 openings = st.one_of(st.sampled_from([0.0, HOLD - 1e-9, HOLD, 0.3, 1.0]), st.floats(min_value=0.0, max_value=1.0))
 grips = st.builds(GripResult, mostly(12), st.sampled_from(["", "overran"]), st.one_of(st.none(), openings))
-# A snapshot after a move, captured before the latest one, with it, or after.
-snapshots = st.one_of(st.none(), st.tuples(st.sampled_from([0.5, 1.0, 2.0, 3.0]), openings))
+# Never one time in eight, so a whole grab often arrives at every move.
+arrivals = st.sampled_from(["at the result"] * 5 + ["at the first wait"] * 2 + ["never"])
+# A snapshot after a move, the arm where it is: none, captured before the
+# latest one, with it, or after it (half the time, so a lift is often
+# judged), and its left opening.
+snapshots = st.tuples(st.sampled_from([None, -0.5, 0.0, 0.5, 0.5, 0.5]), openings)
 # Whether a failed move or grip ended as cancelled, by a stop.
 stops = mostly(4).map(lambda go_on: not go_on)
 cancels = mostly(25).map(lambda go_on: not go_on)
 
 
-def answering_drawn(robot: FakeRobot, store: LimbStateStore, data, cancel: CancelToken, record: dict) -> None:
-    """Every answer of `robot` drawn from `data`, a snapshot drawn after
-    each move, and a cancel drawn at each call; `record` keeps what a
-    property reads afterwards, `answers` each answer in call order."""
-    record["answers"] = []
+def answering_drawn(robot: FakeRobot, store: ScriptedStore, data, cancel: CancelToken, record: dict) -> None:
+    """Every answer of `robot` drawn from `data`, how each move arrives and a
+    snapshot after it drawn, and a cancel drawn at each call; `record` keeps
+    what a property reads afterwards: `answers`, each answer in call order,
+    and `published_before`, for each move, how many scripted snapshots the
+    store had published before it."""
+    record["answers"], record["published_before"] = [], []
+    robot.arrives = lambda call: False
 
     def on_call(call: tuple) -> None:
         kind = call[0]
@@ -431,12 +590,19 @@ def answering_drawn(robot: FakeRobot, store: LimbStateStore, data, cancel: Cance
             moved = data.draw(moves)
             stopped = not moved.success and data.draw(stops, label="stopped")
             robot.moves.append(MoveResult(moved.success, moved.message, call[1], call[2], cancelled=stopped))
-            record["latest_before_last_move"] = store.latest.timestamp
-            snapshot = data.draw(snapshots)
-            if snapshot is not None:
-                message = limb_states_message(snapshot[0], left_gripper=snapshot[1])
-                asyncio.get_running_loop().call_soon(store.add, message)
-            record["after_last_move"] = snapshot
+            record["published_before"].append(len(store.published))
+            store.script.clear()
+            arrival = data.draw(arrivals) if moved.success else None
+            if arrival == "at the result":
+                store.add(store.at((call[1], call[2])))
+            elif arrival == "at the first wait":
+                store.script.append(("arrived", 0.0, (call[1], call[2])))
+            elif arrival == "never":
+                # 1 cm off, and 3 s on the brain's clock: past the timeout.
+                store.script.append(("never", 3.0, (offset(call[1], 0.01), call[2])))
+            stamp_step, opening = data.draw(snapshots)
+            if stamp_step is not None:
+                asyncio.get_running_loop().call_soon(publish_where_the_arm_is, store, stamp_step, opening)
         else:
             gripped = data.draw(grips)
             if gripped.success and gripped.final_opening is None:
@@ -452,6 +618,14 @@ def answering_drawn(robot: FakeRobot, store: LimbStateStore, data, cancel: Cance
             cancel.cancel("aborted: drawn", by_caller=False)
 
     robot.on_call = on_call
+
+
+def publish_where_the_arm_is(store: ScriptedStore, stamp_step: float, opening: float) -> None:
+    """A snapshot `stamp_step` after the latest one, the left arm where the
+    latest one has it, and the left gripper at `opening`."""
+    latest = store.latest
+    arm = latest.arms["left_arm"]
+    store.add(limb_states_message(latest.timestamp + stamp_step, left_arm=(arm.position, arm.orientation), left_gripper=opening))
 
 
 @settings(max_examples=400)
@@ -472,26 +646,28 @@ def test_a_grab_returns_an_outcome_or_raises_cancelled_holds_only_when_both_open
         if not outcome.success:
             assert outcome.message
             event(f"failed: {outcome.message}")
-            assert_a_failed_grab_retreats_only_once_down_and_unstopped(robot, record["answers"], outcome)
+            assert_a_failed_grab_retreats_only_once_down_and_unstopped(robot, store, record, outcome)
             return
         event("held")
         # A hold: the whole sequence ran, the close stopped at or above the
-        # hold opening, and so did the opening after the lift.
+        # hold opening, and so did the opening in the first snapshot newer
+        # than the one the lift's arrival left, the last one waited for.
         assert robot.kinds()[-5:] == ["grip", "move", "move", "grip", "move"]
         assert robot.calls[-2][2] == 0.0 and record["last_grip"].final_opening >= HOLD
-        stamp, after = record["after_last_move"]
-        assert stamp > record["latest_before_last_move"] and after >= HOLD
+        stamp, after = store.found[-1]
+        assert after is not None and after.timestamp > stamp and after.opening("left_gripper") >= HOLD
 
     asyncio.run(scenario())
 
 
-def assert_a_failed_grab_retreats_only_once_down_and_unstopped(robot: FakeRobot, answers: list, outcome: Outcome) -> None:
+def assert_a_failed_grab_retreats_only_once_down_and_unstopped(robot: FakeRobot, store: ScriptedStore, record: dict, outcome: Outcome) -> None:
     """A failed grab: an answer that a stop ended is the last call. Else,
     one that failed before the descent was sent sends nothing after it; one
     that failed once it was sent ends with the retreat, the gripper opened
     and the arm sent back to the pre-grasp point, and the outcome says why
-    a retreat stopped short."""
-    calls = robot.calls
+    a retreat stopped short: the open failed, the climb failed, or the climb
+    never arrived."""
+    calls, answers = robot.calls, record["answers"]
     if any(answer.cancelled for answer in answers if not isinstance(answer, MoveCheck)):
         event("a stop ended a step")
         assert answers[-1].cancelled
@@ -505,7 +681,8 @@ def assert_a_failed_grab_retreats_only_once_down_and_unstopped(robot: FakeRobot,
     retreat = calls[opened:]
     pre = calls[moves[0]]
     assert retreat in ([calls[opened]], [calls[opened], pre])
-    stopped_short = len(retreat) == 1 or not answers[-1].success
+    climb_never_arrived = len(retreat) == 2 and "never" in store.published[record["published_before"][-1]:]
+    stopped_short = len(retreat) == 1 or not answers[-1].success or climb_never_arrived
     event("the retreat stopped short" if stopped_short else "retreated")
     assert ("the retreat to the pre-grasp point failed" in outcome.message) == stopped_short
 

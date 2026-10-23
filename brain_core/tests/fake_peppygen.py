@@ -273,17 +273,24 @@ class LimbStatesMessage:
     gripper_openings: list[float] = field(default_factory=list)
 
 
-def limb_states_message(timestamp: float, **openings: float) -> LimbStatesMessage:
+# Where each grasp point stands at rest in a snapshot.
+LEFT_AT_REST = ((0.4, 0.2, 0.9), (0.0, 1.0, 0.0, 0.0))
+RIGHT_AT_REST = ((0.4, -0.2, 0.9), (0.0, 1.0, 0.0, 0.0))
+
+
+def limb_states_message(timestamp: float, *, left_arm=LEFT_AT_REST, **openings: float) -> LimbStatesMessage:
     """A snapshot of the two-armed robot of seven joints per arm, every
-    joint at 0 and each grasp point at rest, with the grippers `openings`
+    joint at 0, the left grasp point at `left_arm`, a position and an
+    orientation, and the right one at rest, with the grippers `openings`
     names, by name."""
+    (left_position, left_orientation), (right_position, right_orientation) = left_arm, RIGHT_AT_REST
     return LimbStatesMessage(
         timestamp=timestamp,
         arm_names=["left_arm", "right_arm"],
         joints_per_arm=[7, 7],
         joint_positions=[0.0] * 14,
-        positions=[0.4, 0.2, 0.9, 0.4, -0.2, 0.9],
-        orientations=[0.0, 1.0, 0.0, 0.0] * 2,
+        positions=[*left_position, *right_position],
+        orientations=[*left_orientation, *right_orientation],
         gripper_names=list(openings),
         gripper_openings=list(openings.values()),
     )

@@ -11,16 +11,21 @@ A grab:
    point and to the lifted point (`lift_m` above it), each checked with
    check_arm_move from where the arm is commanded now;
 3. opens the gripper, moves to the pre-grasp point, then to the grasp
-   point;
+   point. Every arm move waits until it has arrived: limb_states shows the
+   grasp point within `arrive_position_m` of the target and
+   `arrive_orientation_rad` of its orientation, by `arrive_timeout_s`
+   after the move's result on the brain's clock, or the move fails;
 4. closes with the goal's `max_effort` and judges the hold from the
    result's `final_opening`: below `hold_opening_min` the jaws met nothing;
-5. lifts, then judges the hold again from the first limb_states snapshot
-   captured after the lift's result, waiting up to `snapshot_wait_s` for
-   it: below `hold_opening_min` the item slipped.
+5. lifts, waits until the arm has arrived, then judges the hold again
+   from the first limb_states snapshot captured after the latest one it
+   then holds, waiting up to `snapshot_wait_s` for it: below
+   `hold_opening_min` the item slipped.
 
 Each step that fails ends the grab with the backbone's own words. A step
-that fails once the descent has begun (the descent itself, the close, the
-two hold judgements, the lift, the wait for a snapshot) first retreats:
+that fails once the descent has begun (the descent itself, its arrival,
+the close, the two hold judgements, the lift, the wait for a snapshot)
+first retreats:
 the gripper opens and the arm moves straight back up to the pre-grasp
 point, so the jaws let go of what they touch and the next look sees the
 item. A retreat that stops short adds why to the failure. A step whose
@@ -28,13 +33,18 @@ goal a stop ended (the brain's stop or the backbone's stop service)
 retreats from nothing: the arm stays where the stop left it. A step that
 fails before the descent leaves the arm where the backbone stopped it.
 
-Each grab leaves one log line: the orientation that planned, where the
-descent's result and limb_state at the close put the grasp point against
-the commanded one, the two openings it judged, and the retreat.
+Each grab leaves one log line: the orientation that planned, with how many
+check_arm_move calls ran and their total time; where the grasp point
+landed against the commanded one and how long after the descent's result;
+limb_state's grasp point at the close; the two openings it judged; and the
+retreat.
 
 A drop opens the gripper where it is. A place carries the held item to the
 pose, through its pre-grasp point, in the pose's orientation alone when it
-has one, else from above at each roll, and opens there.
+has one, else from above at each roll, opens there and climbs back to the
+pre-place point. It reports the grasp point limb_states measured when the
+arm arrived at the pose. A climb that fails is logged, and the place still
+succeeds: the jaws are open and the item is down.
 
 The manipulator keeps nothing between goals: ids and held flags live in
 `State`.
@@ -43,11 +53,13 @@ The manipulator keeps nothing between goals: ids and held flags live in
 from __future__ import annotations
 
 import logging
-from typing import Optional
+import math
+import time
+from dataclasses import dataclass
+from typing import Callable, Optional
 
-from ..limb_state import LimbSnapshot
+from ..limb_state import ArmState, LimbSnapshot
 from ..ports import Cancelled, CancelToken, Grasp, GraspProposer, Gripper, Item, Outcome, Pose, Quat, Vec3
-from ..robot import MoveResult
 from ..waiting import until
 from .grasp import lifted, orientations_for, pre_grasp
 
@@ -60,6 +72,12 @@ CLEARANCE_M = 0.075
 LIFT_M = 0.075
 HOLD_OPENING_MIN = 0.05
 SNAPSHOT_WAIT_S = 1.0
+# When an arm move has arrived. Temporary: limb_motion's move_arm answers
+# when its planned trajectory has been commanded, before the arm is there;
+# delete the arrival wait and these three once move_arm settles.
+ARRIVE_POSITION_M = 0.005
+ARRIVE_ORIENTATION_RAD = 0.05
+ARRIVE_TIMEOUT_S = 2.0
 OPEN = 1.0
 CLOSED = 0.0
 NOT_STARTED = "the scripted manipulator has not been started"
@@ -76,6 +94,26 @@ class _Failed(Exception):
         self.stopped = stopped
 
 
+@dataclass(frozen=True)
+class Arrival:
+    """Where limb_states measured the grasp point once an arm move had
+    arrived, and how long after the move's result."""
+
+    position: Vec3
+    after_s: float
+
+
+@dataclass
+class _Checks:
+    """The check_arm_move calls of a reach: how many, and their total time."""
+
+    count: int = 0
+    seconds: float = 0.0
+
+    def __str__(self) -> str:
+        return f"{self.count} check{'' if self.count == 1 else 's'}, {1000 * self.seconds:.0f} ms"
+
+
 class ScriptedManipulator:
     name = "scripted"
 
@@ -87,12 +125,22 @@ class ScriptedManipulator:
         lift_m: float = LIFT_M,
         hold_opening_min: float = HOLD_OPENING_MIN,
         snapshot_wait_s: float = SNAPSHOT_WAIT_S,
+        arrive_position_m: float = ARRIVE_POSITION_M,
+        arrive_orientation_rad: float = ARRIVE_ORIENTATION_RAD,
+        arrive_timeout_s: float = ARRIVE_TIMEOUT_S,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.proposer = proposer
         self.clearance_m = clearance_m
         self.lift_m = lift_m
         self.hold_opening_min = hold_opening_min
         self.snapshot_wait_s = snapshot_wait_s
+        self.arrive_position_m = arrive_position_m
+        self.arrive_orientation_rad = arrive_orientation_rad
+        self.arrive_timeout_s = arrive_timeout_s
+        # The brain's monotonic clock: the arrival timeout and the times in
+        # the log line. Never compared with a backbone stamp.
+        self._clock = clock
         self._robot = None
         self._limb_states = None
 
@@ -167,8 +215,8 @@ class ScriptedManipulator:
     ) -> Outcome:
         """The grab from its descent on: down to `point`, close, judge, lift
         to `lift`, judge again."""
-        descended = await self._move(gripper.arm, point, orientation, cancel)
-        notes.append(f"descent result {_offset_cm(descended.final_position, point)} from the grasp point")
+        landed = await self._move(gripper.arm, point, orientation, cancel)
+        notes.append(f"landed {_offset_cm(landed.position, point)} from the grasp point, {landed.after_s:.1f} s after the result")
         closed = await self._grip(gripper.name, CLOSED, max_effort, cancel)
         notes.append(f"limb_state at the close {_offset_cm(self._arm_position(gripper.arm), point)} from it")
         notes.append(f"closed at {closed:.3f}")
@@ -211,7 +259,16 @@ class ScriptedManipulator:
         await self._move(gripper.arm, pre, orientation, cancel)
         placed = await self._move(gripper.arm, point, orientation, cancel)
         await self._grip(gripper.name, OPEN, 0.0, cancel)
-        return Outcome(True, "", placed.final_position)
+        try:
+            await self._move(gripper.arm, pre, orientation, cancel)
+        except _Failed as failure:
+            # The jaws are open and the item is down: the place went
+            # through, and the arm stays where the climb stopped.
+            logger.warning(
+                "place with gripper '%s' released the item, but the climb back to the pre-place point failed: %s",
+                gripper.name, failure.message,
+            )
+        return Outcome(True, "", placed.position)
 
     def _require_started(self) -> None:
         reason = self.why_unavailable()
@@ -231,36 +288,71 @@ class ScriptedManipulator:
         points of those moves in order: the pre-grasp point, the grasp
         point, and the lifted point when `with_lift`."""
         last_refusal = ""
+        checks = _Checks()
         for index, orientation in enumerate(grasp.orientations):
             points = (pre_grasp(grasp.point, orientation, self.clearance_m), grasp.point)
             if with_lift:
                 points += (lifted(grasp.point, self.lift_m),)
-            refusal = await self._first_refusal(gripper.arm, points, orientation, cancel)
+            refusal = await self._first_refusal(gripper.arm, points, orientation, cancel, checks)
             if not refusal:
                 notes.append(
                     f"orientation {index + 1} of {len(grasp.orientations)} planned, "
-                    f"[{', '.join(f'{value:.3f}' for value in orientation)}]"
+                    f"[{', '.join(f'{value:.3f}' for value in orientation)}] ({checks})"
                 )
                 return orientation, points
             last_refusal = refusal
         raise _Failed(f"no plan reaches {target} with gripper '{gripper.name}': {last_refusal}")
 
-    async def _first_refusal(self, arm: str, points: tuple[Vec3, ...], orientation: Quat, cancel: CancelToken) -> str:
+    async def _first_refusal(
+        self, arm: str, points: tuple[Vec3, ...], orientation: Quat, cancel: CancelToken, checks: _Checks
+    ) -> str:
         """The backbone's words for the first of `points` it has no plan
-        for, or "" when it has a plan for each."""
+        for, or "" when it has a plan for each. Each check counts in
+        `checks`."""
         for point in points:
+            started = self._clock()
             check = await until(cancel.wait(), self._robot.check_arm_move(arm, point, orientation))
+            checks.count += 1
+            checks.seconds += self._clock() - started
             cancel.check()
             if not check.success:
                 return check.message or "check_arm_move found no plan"
         return ""
 
-    async def _move(self, arm: str, point: Vec3, orientation: Quat, cancel: CancelToken) -> MoveResult:
+    async def _move(self, arm: str, point: Vec3, orientation: Quat, cancel: CancelToken) -> Arrival:
+        """Moves the grasp point of `arm` to `point` in `orientation`, and
+        waits until it has arrived there."""
         moved = await self._robot.move_arm(arm, point, orientation)
         cancel.check()
         if not moved.success:
             raise _Failed(moved.message or "move_arm failed", stopped=moved.cancelled)
-        return moved
+        return await self._arrival(arm, point, orientation, cancel)
+
+    async def _arrival(self, arm: str, point: Vec3, orientation: Quat, cancel: CancelToken) -> Arrival:
+        """Waits until limb_states shows the grasp point of `arm` within
+        `arrive_position_m` of `point` and `arrive_orientation_rad` of
+        `orientation`, from the latest snapshot on, for up to
+        `arrive_timeout_s` after the move's result. Temporary: delete it once
+        limb_motion's move_arm completes only when the arm is there."""
+        result_at = self._clock()
+        snapshot = self._limb_states.latest
+        while True:
+            state = _arm_state(snapshot, arm)
+            miss_m = math.dist(state.position, point)
+            miss_rad = _angle_rad(state.orientation, orientation)
+            if miss_m <= self.arrive_position_m and miss_rad <= self.arrive_orientation_rad:
+                return Arrival(state.position, self._clock() - result_at)
+            remaining_s = self.arrive_timeout_s - (self._clock() - result_at)
+            newer = None
+            if remaining_s > 0:
+                newer = await until(cancel.wait(), self._limb_states.newer_than(snapshot.timestamp, remaining_s))
+                cancel.check()
+            if newer is None:
+                raise _Failed(
+                    f"arm '{arm}' still {1000 * miss_m:.1f} mm / {miss_rad:.3f} rad from the target "
+                    f"{self.arrive_timeout_s:.1f} s after the move's result"
+                )
+            snapshot = newer
 
     async def _grip(self, gripper: str, opening: float, max_effort: float, cancel: CancelToken) -> float:
         """Drives `gripper` to `opening` and returns its final opening."""
@@ -288,6 +380,20 @@ def _offset_cm(position: Optional[Vec3], commanded: Vec3) -> str:
     if position is None:
         return "unknown"
     return "[" + ", ".join(f"{100 * (p - c):+.1f}" for p, c in zip(position, commanded)) + "] cm"
+
+
+def _arm_state(snapshot: Optional[LimbSnapshot], arm: str) -> ArmState:
+    state = snapshot.arms.get(arm) if snapshot is not None else None
+    if state is None:
+        raise _Failed(f"limb_states names no arm '{arm}'")
+    return state
+
+
+def _angle_rad(a: Quat, b: Quat) -> float:
+    """The angle between two unit quaternions' rotations, q and -q being
+    one rotation."""
+    dot = abs(sum(p * q for p, q in zip(a, b)))
+    return 2 * math.acos(min(1.0, dot))
 
 
 def _opening_of(snapshot: Optional[LimbSnapshot], gripper: str) -> float:
