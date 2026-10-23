@@ -19,6 +19,8 @@ BARS = {
     "settle_orientation_tolerance_rad": 0.15,
     "settle_timeout_s": 2.0,
 }
+# The fields a check names besides the pose: the moves' plan bars.
+PLAN = {"duration_s": 0.0, **{key: BARS[key] for key in ("plan_position_tolerance_m", "plan_orientation_tolerance_rad")}}
 
 
 def backbone(**kwargs):
@@ -166,12 +168,12 @@ def check_answer(success: bool, message: str, duration_s: float):
 async def test_a_check_asks_with_the_move_arm_fields_and_reads_the_plan():
     robot, _, _, check = backbone_with_check()
     check.enqueue(check_answer(True, "", 1.25))
-    planned = await robot.check_arm_move("left_arm", POSITION, ORIENTATION, plan_position_tolerance_m=0.01)
+    planned = await robot.check_arm_move("left_arm", POSITION, ORIENTATION, duration_s=1.5, plan_position_tolerance_m=0.01, plan_orientation_tolerance_rad=0.02)
     assert planned == MoveCheck(True, "", 1.25)
     [request] = check.polled
     assert request == CheckArmMoveRequest(
-        arm_name="left_arm", position=[0.5, 0.1, 0.7], orientation=[0.0, 0.0, 0.0, 1.0], duration_s=0.0,
-        plan_position_tolerance_m=0.01, plan_orientation_tolerance_rad=0.0,
+        arm_name="left_arm", position=[0.5, 0.1, 0.7], orientation=[0.0, 0.0, 0.0, 1.0], duration_s=1.5,
+        plan_position_tolerance_m=0.01, plan_orientation_tolerance_rad=0.02,
     )
     # A check moves nothing: no goal is in flight for a stop to cancel.
     assert robot.moves_in_flight == 0
@@ -180,12 +182,12 @@ async def test_a_check_asks_with_the_move_arm_fields_and_reads_the_plan():
 async def test_a_check_the_backbone_refuses_carries_its_words():
     robot, _, _, check = backbone_with_check()
     check.enqueue(check_answer(False, "goal pose not planned within 0.010 m", 0.0))
-    refused = await robot.check_arm_move("left_arm", POSITION, ORIENTATION)
+    refused = await robot.check_arm_move("left_arm", POSITION, ORIENTATION, **PLAN)
     assert refused == MoveCheck(False, "goal pose not planned within 0.010 m", 0.0)
 
 
 async def test_a_check_with_no_answer_is_reported_as_having_none():
     robot, _, _, check = backbone_with_check()
     check.enqueue(TimeoutError("no reply"))
-    lost = await robot.check_arm_move("left_arm", POSITION, ORIENTATION)
+    lost = await robot.check_arm_move("left_arm", POSITION, ORIENTATION, **PLAN)
     assert lost == MoveCheck(False, "check_arm_move gave no answer: TimeoutError('no reply')", 0.0)

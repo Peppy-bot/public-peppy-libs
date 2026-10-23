@@ -156,13 +156,15 @@ class Robot:
         position: Vec3,
         orientation: Quat,
         *,
-        duration_s: float = 0.0,
-        plan_position_tolerance_m: float = 0.0,
-        plan_orientation_tolerance_rad: float = 0.0,
+        duration_s: float,
+        plan_position_tolerance_m: float,
+        plan_orientation_tolerance_rad: float,
     ) -> MoveCheck:
-        """Whether `move_arm` with the same arguments has a plan from where
-        the arm is commanded now. A check that gets no answer within
-        `CHECK_TIMEOUT_S` is reported as having none, with the reason."""
+        """Whether `move_arm` with the same pose, duration and plan
+        tolerances has a plan from where the arm is commanded now; the caller
+        names each of them, as for the move. A check that gets no answer
+        within `CHECK_TIMEOUT_S` is reported as having none, with the
+        reason."""
         request = self._check_arm_move.Request(
             **_arm_move_fields(arm, position, orientation, duration_s, plan_position_tolerance_m, plan_orientation_tolerance_rad)
         )
