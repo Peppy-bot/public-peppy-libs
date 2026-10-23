@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use chain_kinematics::{ee_progress, interpolate, limit_margin, timed_with_ee};
+use chain_kinematics::{ee_progress, interpolate, joints, limit_margin, timed_with_ee};
 use control_core::path_timing::{TimedPath, TimedTrajectory};
 use control_core::timing::{MotionClock, duration_at_least, tick_checked_duration, tick_fractions};
 use nalgebra::Isometry3;
@@ -335,6 +335,12 @@ impl LineTrajectory {
     /// The blend of the line the end effector has reached at `now`.
     pub fn blend(&self, now: Instant) -> f64 {
         blend_of(ee_progress(&self.timed.sample(now)), self.ee_s)
+    }
+
+    /// The configuration of the planned walk at `now`: where the runtime's
+    /// cursor, retracing the walk the plan validated, has the arm then.
+    pub fn joints_at(&self, now: Instant) -> JointVec {
+        joints(&self.timed.sample(now))
     }
 }
 

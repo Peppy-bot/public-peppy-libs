@@ -5,7 +5,8 @@
 use std::time::Duration;
 
 use chain_kinematics::{
-    EeCaps, JointSmoothing, ServoLimits, ServoPlan, ServoTolerances, ToleranceError, plan_servo,
+    EeCaps, JointSmoothing, ServoLimits, ServoPlan, ServoTolerances, ToleranceError, joints,
+    plan_servo,
 };
 use control_core::filters::ButterworthFilter;
 use nalgebra::Isometry3;
@@ -91,6 +92,20 @@ impl CartesianPlan {
             Self::Servo(servo) => servo.duration,
         }
     }
+
+    /// The `count` joint configurations the path passes through at equal
+    /// fractions of its time, from its start to its goal, both included, for a
+    /// check that walks the path before it plays. One sample is the start.
+    pub fn joint_samples(&self, count: usize) -> Vec<JointVec> {
+        let path = match self {
+            Self::Line(line) => &line.path,
+            Self::Servo(servo) => &servo.path,
+        };
+        let steps = count.saturating_sub(1).max(1) as f64;
+        (0..count)
+            .map(|i| joints::<ARM_DOF>(&path.at_fraction(i as f64 / steps)))
+            .collect()
+    }
 }
 
 /// Plan a Cartesian move from the end effector's pose at `seed` to `end`,
@@ -122,4 +137,41 @@ pub fn plan_cartesian(
     )
     .map(CartesianPlan::Servo)
     .ok_or(PlanRejection::Unreachable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use control_core::path_timing::TimedPath;
+    use hegel::TestCase;
+    use hegel::generators as gs;
+
+    // The samples walk a plan's path in time from its start to its goal: as
+    // many as asked for, the first on the start and the last on the goal, at
+    // the path's position at each equal fraction of its time between them.
+    #[hegel::test]
+    fn joint_samples_walk_the_path_from_its_start_to_its_goal(tc: TestCase) {
+        let [start, goal]: [JointVec; 2] = tc.draw(gs::arrays(gs::arrays(
+            gs::floats().min_value(-3.0).max_value(3.0),
+        )));
+        let count: usize = tc.draw(gs::integers().min_value(2).max_value(200));
+        let waypoint = |q: &JointVec| [q.as_slice(), &[0.0]].concat();
+        let path = TimedPath::new(
+            &[waypoint(&start), waypoint(&goal)],
+            &[1.0; ARM_DOF + 1],
+            &[1.0; ARM_DOF + 1],
+        );
+        let plan = CartesianPlan::Servo(ServoPlan {
+            duration: Duration::from_secs(1),
+            path: path.clone(),
+        });
+        let samples = plan.joint_samples(count);
+        assert_eq!(samples.len(), count);
+        assert_eq!(samples[0], start);
+        assert_eq!(samples[count - 1], goal);
+        for (i, sample) in samples.iter().enumerate() {
+            let fraction = i as f64 / (count - 1) as f64;
+            assert_eq!(*sample, joints::<ARM_DOF>(&path.at_fraction(fraction)));
+        }
+    }
 }

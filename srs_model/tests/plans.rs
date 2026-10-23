@@ -30,6 +30,10 @@ const PERIOD: Duration = Duration::from_millis(10);
 // within its velocity limit and within its acceleration limit, as the plan
 // checked. A refusal is the law failing to
 // converge: the request and the limits drawn here are always sane budgets.
+/// How far a line's runtime cursor may stand off the plan's walk, per joint:
+/// measured at 0.21 mrad at most over the drawn plans.
+const WALK_GAP_RAD: f64 = 1e-3;
+
 #[hegel::test]
 fn an_accepted_plan_plays_within_the_limits_it_was_sized_against(tc: TestCase) {
     let arm = arm(tc.draw(sides()));
@@ -101,12 +105,25 @@ fn an_accepted_plan_plays_within_the_limits_it_was_sized_against(tc: TestCase) {
                 Duration::from_secs_f64(duration_s),
                 t0,
             );
-            let ticks = tick_fractions(duration_s, period_s)
+            let ticks: Vec<JointVec> = tick_fractions(duration_s, period_s)
                 .map(|f| {
-                    let blend = traj.blend(t0 + Duration::from_secs_f64(f * duration_s));
-                    cursor
-                        .advance(arm, |s| traj.pose_at_blend(s), blend)
-                        .expect("the plan validated every tick of its line")
+                    let at = t0 + Duration::from_secs_f64(f * duration_s);
+                    let q = cursor
+                        .advance(arm, |s| traj.pose_at_blend(s), traj.blend(at))
+                        .expect("the plan validated every tick of its line");
+                    // The planned walk says where the runtime's cursor has the
+                    // arm at each tick: a check that walks the plan ahead of
+                    // time reads the arm's real path off it.
+                    let gap = q
+                        .iter()
+                        .zip(traj.joints_at(at))
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(0.0, f64::max);
+                    assert!(
+                        gap <= WALK_GAP_RAD,
+                        "the cursor stands {gap} rad off the walk"
+                    );
+                    q
                 })
                 .collect();
             (ticks, 1.0 + 1e-6)
