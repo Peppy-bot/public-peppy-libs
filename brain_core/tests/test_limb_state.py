@@ -64,6 +64,15 @@ def test_a_message_whose_arrays_do_not_fit_its_names_is_refused_naming_the_array
         LimbSnapshot.parse(message)
 
 
+def test_the_openings_of_named_grippers_come_in_their_order_or_not_at_all():
+    store = LimbStateStore()
+    assert store.openings(["left_gripper", "right_gripper"]) == []
+    store.add(two_arms())
+    assert store.openings(["right_gripper", "left_gripper"]) == [0.75, 0.25]
+    # A gripper the snapshot does not name leaves no partial answer.
+    assert store.openings(["left_gripper", "third_gripper"]) == []
+
+
 def test_the_store_has_no_snapshot_until_one_arrives_then_keeps_the_latest():
     store = LimbStateStore()
     assert store.why_unavailable() == NO_SNAPSHOT and store.latest is None

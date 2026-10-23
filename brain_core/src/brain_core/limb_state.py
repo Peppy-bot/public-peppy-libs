@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence
 
 from .ports import Quat, Vec3
 from .waiting import unless_cancelled
@@ -107,6 +107,17 @@ class LimbStateStore:
         if self.latest is None:
             return NO_SNAPSHOT
         return ""
+
+    def openings(self, grippers: Sequence[str]) -> list[float]:
+        """The opening of each of `grippers`, in their order, from the
+        latest snapshot; empty when there is none, or when it does not name
+        every one of them."""
+        if self.latest is None:
+            return []
+        openings = [self.latest.opening(gripper) for gripper in grippers]
+        if any(opening is None for opening in openings):
+            return []
+        return openings
 
     def add(self, message) -> None:
         """Keeps the snapshot `message` carries as the latest, or drops a

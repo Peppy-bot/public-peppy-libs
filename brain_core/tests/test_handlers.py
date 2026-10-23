@@ -85,6 +85,10 @@ async def test_get_state_starts_idle_with_the_configured_grippers():
     assert response.gripper_names == ["left_gripper", "right_gripper"]
     assert response.holding == [False, False]
     assert response.held_item_ids == ["", ""]
+    # No limb_states snapshot yet: no measured opening.
+    assert response.gripper_openings == []
+    brain.limb_states.add(limb_states_message(1.0, left_gripper=1.0, right_gripper=0.0))
+    assert state_of(brain).gripper_openings == [1.0, 0.0]
 
 
 async def test_scan_and_grab_are_refused_without_backends_but_the_rules_still_speak_first():
@@ -572,6 +576,13 @@ async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
     assert (ctx.completed["gripper_name"], ctx.completed["item_id"]) == ("left_gripper", cup.item_id)
     assert state_of(brain).holding == [True, False]
     assert state_of(brain).held_item_ids == [cup.item_id, ""]
+    assert state_of(brain).gripper_openings == [0.3, 1.0]
     assert [request.arm_name for request in bindings.check_arm_move.polled] == ["left_arm"] * 3
+    # The cup slips out of the jaws later: the held flag follows results and
+    # stays set, the measured opening shows the jaws closed on nothing.
+    topic.push(limb_states_message(3.0, left_gripper=0.0, right_gripper=1.0))
+    await asyncio.wait_for(brain.limb_states.newer_than(2.0, WAIT), WAIT)
+    assert state_of(brain).holding == [True, False]
+    assert state_of(brain).gripper_openings == [0.0, 1.0]
     token.cancel()
     await asyncio.wait_for(asyncio.gather(*loops), WAIT)

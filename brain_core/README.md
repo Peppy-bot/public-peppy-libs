@@ -63,7 +63,7 @@ model of each role, `perception_model` and `manipulation_model`.
 | `state` | The grippers, the known items and their ids, and the rules that resolve a goal's names |
 | `sequencer` | One sequence at a time per lane (a lane is a `Role`), lane-less jobs beside them, and the way to stop the ones that run |
 | `robot` | The proxy to the backbone: one limb_motion goal per move, `check_arm_move`, which asks whether a move has a plan and moves nothing, and `stop`, which cancels every move in flight |
-| `limb_state` | The robot's measured limbs: each limb_states message parsed into a `LimbSnapshot` (each arm's joints and grasp pose, each gripper's opening), the latest one kept, and the wait for one captured after another |
+| `limb_state` | The robot's measured limbs: each limb_states message parsed into a `LimbSnapshot` (each arm's joints and grasp pose, each gripper's opening), the latest one kept, the wait for one captured after another, and the openings get_state reports |
 | `models` | The model of each role, and the switch rule: a goal uses only its own role's model, and a switch never changes the model of a goal that runs |
 | `brain` | The parts assembled, and `run_guarded`, where every goal is admitted, completed the way the contract asks and logged |
 | `handlers` | One module per exposed member |
@@ -211,6 +211,7 @@ classDiagram
         latest
         why_unavailable()
         newer_than(timestamp, timeout_s) async
+        openings(grippers)
         run(node_runner, token, limb_states)
     }
     class Bindings {

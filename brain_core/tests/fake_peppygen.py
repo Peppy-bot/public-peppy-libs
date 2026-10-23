@@ -92,6 +92,7 @@ class get_state:
         gripper_names: list[str]
         holding: list[bool]
         held_item_ids: list[str]
+        gripper_openings: list[float]
 
     @staticmethod
     async def handle_next_request(node_runner, handler):
