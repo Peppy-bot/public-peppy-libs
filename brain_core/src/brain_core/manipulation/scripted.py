@@ -18,11 +18,18 @@ A grab:
    captured after the lift's result, waiting up to `snapshot_wait_s` for
    it: below `hold_opening_min` the item slipped.
 
-Each step that fails ends the grab with the backbone's own words, and the
-arm stays where the backbone stopped it. A grab that closed on nothing
-leaves the gripper closed at the grasp point: the next grab opens first
-and climbs to its pre-grasp point. Each grab leaves one log line: the
-orientation that planned and the two openings it judged.
+Each step that fails ends the grab with the backbone's own words. A step
+that fails once the descent has begun (the descent itself, the close, the
+two hold judgements, the lift, the wait for a snapshot) first retreats:
+the gripper opens and the arm moves straight back up to the pre-grasp
+point, so the jaws let go of what they touch and the next look sees the
+item. A retreat that stops short adds why to the failure. A step whose
+goal a stop ended (the brain's stop or the backbone's stop service)
+retreats from nothing: the arm stays where the stop left it. A step that
+fails before the descent leaves the arm where the backbone stopped it.
+
+Each grab leaves one log line: the orientation that planned, the two
+openings it judged, and the retreat.
 
 A drop opens the gripper where it is. A place carries the held item to the
 pose, through its pre-grasp point, in the pose's orientation alone when it
@@ -59,11 +66,13 @@ NOT_STARTED = "the scripted manipulator has not been started"
 
 class _Failed(Exception):
     """A step of a sequence that did not go through: `message` ends the
-    sequence's outcome."""
+    sequence's outcome. `stopped` when the step's goal ended as cancelled,
+    by a stop, so nothing more moves."""
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, *, stopped: bool = False) -> None:
         super().__init__(message)
         self.message = message
+        self.stopped = stopped
 
 
 class ScriptedManipulator:
@@ -139,6 +148,24 @@ class ScriptedManipulator:
         )
         await self._grip(gripper.name, OPEN, 0.0, cancel)
         await self._move(gripper.arm, pre, orientation, cancel)
+        try:
+            return await self._descend_close_lift(item, gripper, max_effort, orientation, point, lift, cancel, notes)
+        except _Failed as failure:
+            if failure.stopped:
+                raise
+            short = await self._retreat(gripper, pre, orientation, cancel)
+            if short:
+                notes.append(f"the retreat stopped short: {short}")
+                raise _Failed(f"{failure.message}; the retreat to the pre-grasp point failed: {short}") from None
+            notes.append("retreated to the pre-grasp point")
+            raise
+
+    async def _descend_close_lift(
+        self, item: Item, gripper: Gripper, max_effort: float, orientation: Quat, point: Vec3, lift: Vec3,
+        cancel: CancelToken, notes: list[str],
+    ) -> Outcome:
+        """The grab from its descent on: down to `point`, close, judge, lift
+        to `lift`, judge again."""
         await self._move(gripper.arm, point, orientation, cancel)
         closed = await self._grip(gripper.name, CLOSED, max_effort, cancel)
         notes.append(f"closed at {closed:.3f}")
@@ -152,6 +179,17 @@ class ScriptedManipulator:
             raise _Failed(f"item '{item.item_id}' slipped while lifting")
         notes.append("held")
         return Outcome(True)
+
+    async def _retreat(self, gripper: Gripper, pre: Vec3, orientation: Quat, cancel: CancelToken) -> str:
+        """Opens `gripper` and moves its arm straight up to `pre`, after a
+        grab that failed past its descent. Returns "" once there, or why the
+        retreat stopped short; a cancel raises Cancelled."""
+        try:
+            await self._grip(gripper.name, OPEN, 0.0, cancel)
+            await self._move(gripper.arm, pre, orientation, cancel)
+        except _Failed as failure:
+            return failure.message
+        return ""
 
     async def _place(self, gripper: Gripper, pose: Pose, cancel: CancelToken) -> Outcome:
         self._require_started()
@@ -212,7 +250,7 @@ class ScriptedManipulator:
         moved = await self._robot.move_arm(arm, point, orientation)
         cancel.check()
         if not moved.success:
-            raise _Failed(moved.message or "move_arm failed")
+            raise _Failed(moved.message or "move_arm failed", stopped=moved.cancelled)
         return moved
 
     async def _grip(self, gripper: str, opening: float, max_effort: float, cancel: CancelToken) -> float:
@@ -220,7 +258,7 @@ class ScriptedManipulator:
         gripped = await self._robot.set_gripper(gripper, opening, max_effort=max_effort)
         cancel.check()
         if not gripped.success:
-            raise _Failed(gripped.message or "move_gripper failed")
+            raise _Failed(gripped.message or "move_gripper failed", stopped=gripped.cancelled)
         if gripped.final_opening is None:
             raise _Failed(f"move_gripper gave no final opening for gripper '{gripper}'")
         return gripped.final_opening

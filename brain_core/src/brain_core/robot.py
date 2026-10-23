@@ -26,17 +26,24 @@ CHECK_TIMEOUT_S = 5.0
 
 @dataclass(frozen=True)
 class MoveResult:
+    """How a move_arm goal ended. `cancelled` is true when it ended as
+    cancelled: by the brain's stop, or by the backbone's stop service."""
+
     success: bool
     message: str
     final_position: Optional[Vec3] = None
     final_orientation: Optional[Quat] = None
+    cancelled: bool = False
 
 
 @dataclass(frozen=True)
 class GripResult:
+    """How a move_gripper goal ended; `cancelled` as for `MoveResult`."""
+
     success: bool
     message: str
     final_opening: Optional[float] = None
+    cancelled: bool = False
 
 
 @dataclass(frozen=True)
@@ -59,6 +66,7 @@ class Ended:
     success: bool
     message: str
     data: object = None
+    cancelled: bool = False
 
 
 class Robot:
@@ -100,6 +108,7 @@ class Robot:
             ended.message,
             _vec3(data.final_position) if data is not None else None,
             _quat(data.final_orientation) if data is not None else None,
+            cancelled=ended.cancelled,
         )
 
     async def set_gripper(self, gripper: str, opening: float, *, max_effort: float = 0.0) -> GripResult:
@@ -108,7 +117,9 @@ class Robot:
         request = self._move_gripper.GoalRequest(gripper_name=gripper, opening=opening, max_effort=max_effort)
         ended = await self._run(self._move_gripper, request)
         data = ended.data
-        return GripResult(ended.success, ended.message, float(data.final_opening) if data is not None else None)
+        return GripResult(
+            ended.success, ended.message, float(data.final_opening) if data is not None else None, cancelled=ended.cancelled
+        )
 
     async def check_arm_move(
         self,
@@ -171,7 +182,7 @@ class Robot:
             return Ended(data.success, data.message, data)
         if result.status == module.ResultStatus.CANCELLED:
             message = data.message if data is not None else ""
-            return Ended(False, message or f"{name} was cancelled", data)
+            return Ended(False, message or f"{name} was cancelled", data, cancelled=True)
         return Ended(False, f"{name} ended as {result.status.name.lower()}")
 
 

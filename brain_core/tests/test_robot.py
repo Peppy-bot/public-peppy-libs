@@ -92,6 +92,7 @@ async def test_a_stop_cancels_the_move_in_flight_and_reports_it_cancelled():
     await asyncio.wait_for(stop, WAIT)
     result = await asyncio.wait_for(move, WAIT)
     assert (result.success, result.message, result.final_position) == (False, "stopped on request", (0.51, 0.1, 0.69))
+    assert result.cancelled
     # Nothing is left in flight: a second stop has nothing to cancel.
     assert robot.moves_in_flight == 0
     await asyncio.wait_for(robot.stop(), WAIT)
@@ -108,8 +109,22 @@ async def test_a_move_the_backbone_stops_reports_the_stops_message_without_a_can
     goal.complete_cancelled(arm_result(False, "stopped: the operator asked"))
     result = await asyncio.wait_for(move, WAIT)
     assert (result.success, result.message) == (False, "stopped: the operator asked")
+    assert result.cancelled
     assert not goal.cancel_asked.is_set()
     assert robot.moves_in_flight == 0
+
+
+async def test_a_grip_the_backbone_stops_is_reported_cancelled_and_one_that_fails_is_not():
+    robot, _, move_gripper = backbone()
+    grip = asyncio.create_task(robot.set_gripper("left_gripper", 0.0))
+    goal = await asyncio.wait_for(move_gripper.next_goal(), WAIT)
+    goal.complete_cancelled(SimpleNamespace(success=False, message="", final_opening=0.4, action_time=0.2))
+    assert await asyncio.wait_for(grip, WAIT) == GripResult(False, "move_gripper was cancelled", 0.4, cancelled=True)
+
+    grip = asyncio.create_task(robot.set_gripper("left_gripper", 0.0))
+    goal = await asyncio.wait_for(move_gripper.next_goal(), WAIT)
+    goal.complete(SimpleNamespace(success=False, message="overran", final_opening=0.4, action_time=0.2))
+    assert await asyncio.wait_for(grip, WAIT) == GripResult(False, "overran", 0.4)
 
 
 async def test_a_move_without_a_result_in_time_is_cancelled_and_reported():

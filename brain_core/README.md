@@ -292,7 +292,10 @@ elapsed time whatever the outcome.
 ### A scripted grab
 
 `ScriptedManipulator.grab`, after the handler has resolved the item and the
-gripper. Each step that fails ends the grab with the backbone's own words.
+gripper. Each step that fails ends the grab with the backbone's own words. A
+step that fails once the descent was sent first retreats: the gripper opens
+and the arm moves straight back up to the pre-grasp point. A goal that a stop
+ended (`cancelled` on its result) retreats from nothing.
 
 ```mermaid
 sequenceDiagram
@@ -315,7 +318,13 @@ sequenceDiagram
     SM->>R: move_arm(lifted point)
     SM->>L: newer_than(the latest stamp at the lift's result, snapshot_wait_s)
     Note over SM: none: "no limb_states snapshot after the lift"<br/>opening below hold_opening_min: "item 'x' slipped while lifting"
-    SM-->>H: Outcome(true): the handler sets the held flag
+    alt a step from the descent on failed, and no stop ended it
+        SM->>R: set_gripper(g, 1), move_arm(pre-grasp)
+        Note over SM: either fails: "<failure>; the retreat to the pre-grasp point failed: <why>"
+        SM-->>H: Outcome(false, the failure)
+    else every step went through
+        SM-->>H: Outcome(true): the handler sets the held flag
+    end
 ```
 
 `CentreProposer` lowers a seen item's position by `grasp_depth_m` and tries
