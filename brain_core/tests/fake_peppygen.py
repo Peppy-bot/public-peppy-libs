@@ -136,6 +136,9 @@ class MoveArmRequest:
     duration_s: float
     plan_position_tolerance_m: float
     plan_orientation_tolerance_rad: float
+    settle_position_tolerance_m: float
+    settle_orientation_tolerance_rad: float
+    settle_timeout_s: float
 
 
 @dataclass
@@ -143,6 +146,7 @@ class MoveGripperRequest:
     gripper_name: str
     opening: float
     max_effort: float
+    settle_timeout_s: float
 
 
 class FiredGoal:
