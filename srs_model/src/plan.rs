@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use chain_kinematics::{
     CORRIDOR_M, EeCaps, JointSmoothing, ServoLimits, ServoPlan, ServoTolerances, ToleranceError,
-    plan_servo,
+    joints, plan_servo,
 };
 use control_core::filters::ButterworthFilter;
 use nalgebra::Isometry3;
@@ -102,6 +102,20 @@ impl CartesianPlan {
             Self::Servo(servo) => servo.duration,
         }
     }
+
+    /// `count` joint configurations spaced evenly along the path from its
+    /// start to its goal, both included, for a check that walks the path
+    /// before it plays. One sample is the start.
+    pub fn joint_samples(&self, count: usize) -> Vec<JointVec> {
+        let path = match self {
+            Self::Line(line) => &line.path,
+            Self::Servo(servo) => &servo.path,
+        };
+        let steps = count.saturating_sub(1).max(1) as f64;
+        (0..count)
+            .map(|i| joints::<ARM_DOF>(&path.at_fraction(i as f64 / steps)))
+            .collect()
+    }
 }
 
 /// Plan a Cartesian move from the end effector's pose at `seed` to `end`,
@@ -158,6 +172,33 @@ mod tests {
             path: TimedPath::new(&[vec![0.0, 0.0], vec![0.5, 1.0]], &[1.0, 1.0], &[1.0, 1.0]),
             excursion_m,
         }
+    }
+
+    #[test]
+    fn joint_samples_walk_the_path_from_its_start_to_its_goal() {
+        let path = TimedPath::new(
+            &[vec![0.0; ARM_DOF + 1], {
+                let mut end = vec![1.0; ARM_DOF];
+                end.push(1.0);
+                end
+            }],
+            &[1.0; ARM_DOF + 1],
+            &[1.0; ARM_DOF + 1],
+        );
+        let plan = CartesianPlan::Servo(ServoPlan {
+            duration: Duration::from_secs(1),
+            path,
+            excursion_m: 0.0,
+        });
+        let samples = plan.joint_samples(5);
+        assert_eq!(samples.len(), 5);
+        assert_eq!(samples[0], [0.0; ARM_DOF]);
+        assert_eq!(samples[4], [1.0; ARM_DOF]);
+        assert!(
+            samples.windows(2).all(|w| w[0][0] < w[1][0]),
+            "monotone along the path"
+        );
+        assert_eq!(plan.joint_samples(1), vec![[0.0; ARM_DOF]]);
     }
 
     #[test]
