@@ -1,14 +1,14 @@
 //! Hegel generators for property tests over chains: configurations inside a
-//! chain's limits, directions and rotations in space, and the tolerance the
-//! properties share.
+//! chain's limits, points, directions, rotations and poses in space, and the
+//! tolerance the properties share.
 
 use chain_kinematics::Limit;
-use chain_kinematics::nalgebra::{Rotation3, Unit, Vector3};
+use chain_kinematics::nalgebra::{Isometry3, Rotation3, Translation3, Unit, UnitQuaternion, Vector3};
 use hegel::TestCase;
 use hegel::generators as gs;
 use std::f64::consts::PI;
 
-/// Largest miss a property allows, in metres or radians. A defect these
+/// Largest miss a property allows, in meters or radians. A defect these
 /// properties look for misses by far more.
 pub const TOLERANCE: f64 = 1e-6;
 
@@ -37,4 +37,19 @@ pub fn rotations(tc: &TestCase) -> Rotation3<f64> {
 #[hegel::composite]
 pub fn configs<const N: usize>(tc: &TestCase, limits: [Limit; N]) -> [f64; N] {
     limits.map(|limit| tc.draw(gs::floats().min_value(limit.lo).max_value(limit.hi)))
+}
+
+/// A point within a meter of the origin on each axis, an arm's workspace scale.
+#[hegel::composite]
+pub fn points(tc: &TestCase) -> Vector3<f64> {
+    Vector3::from(tc.draw(gs::arrays(gs::floats().min_value(-1.0).max_value(1.0))))
+}
+
+/// A pose: a point with any rotation.
+#[hegel::composite]
+pub fn poses(tc: &TestCase) -> Isometry3<f64> {
+    Isometry3::from_parts(
+        Translation3::from(tc.draw(points())),
+        UnitQuaternion::from_rotation_matrix(&tc.draw(rotations())),
+    )
 }

@@ -33,7 +33,7 @@
 use nalgebra::{Isometry3, SMatrix, SVector, Vector3};
 
 use crate::rate::pose_error;
-use crate::{Chain, Jacobian, Limit};
+use crate::{Chain, Jacobian, Limit, all_within, clamp_into};
 
 /// A solution is accepted when forward kinematics puts the end effector this
 /// close to the requested position: pick_ik's `position_threshold` and MoveIt's
@@ -188,7 +188,7 @@ impl<const N: usize> Kinematics<N> {
             joints.iter().all(|v| v.is_finite()),
             "joint positions must be finite"
         );
-        self.chain.world_pose(&self.chain.at(joints).ee_pose())
+        self.chain.world_ee_pose(joints)
     }
 
     /// Joints reaching the goal inside its tolerances, or `None` when no
@@ -309,9 +309,7 @@ impl<const N: usize> Kinematics<N> {
             let dq = bounded_step(&posed.jacobian(), &q, &limits, dp, dw, orientation_weight);
             // The step keeps every joint inside its limits; the clamp absorbs
             // the rounding of adding it.
-            for (value, (step, limit)) in q.iter_mut().zip(dq.iter().zip(limits.iter())) {
-                *value = limit.clamp(*value + step);
-            }
+            q = clamp_into(&limits, &std::array::from_fn(|i| q[i] + dq[i]));
             let stepped = (self.chain.at(&q).ee_pose().translation.vector - goal).norm();
             stalls = if stepped <= STALL_RATIO * best_error {
                 0
@@ -337,12 +335,7 @@ impl<const N: usize> Kinematics<N> {
         target: &Isometry3<f64>,
         tolerance_m: f64,
     ) -> Option<Isometry3<f64>> {
-        let limits = self.chain.limits();
-        if !joints
-            .iter()
-            .zip(limits.iter())
-            .all(|(v, l)| l.contains(*v))
-        {
+        if !all_within(&self.chain.limits(), joints) {
             return None;
         }
         let reached = self.chain.at(joints).ee_pose();
@@ -386,8 +379,7 @@ impl<const N: usize> Kinematics<N> {
             seed.iter().all(|v| v.is_finite()),
             "seed joints must be finite"
         );
-        let limits = self.chain.limits();
-        std::array::from_fn(|i| limits[i].clamp(seed[i]))
+        clamp_into(&self.chain.limits(), seed)
     }
 }
 

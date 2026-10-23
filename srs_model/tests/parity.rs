@@ -176,17 +176,14 @@ fn record(side: &str) -> Parity {
         );
     }
 
-    // Inverse kinematics across all three redundancy policies, seeded from a
+    // Inverse kinematics under every redundancy policy, seeded from a
     // different configuration so the feasible-interval search runs.
     for (k, q) in configs.iter().enumerate().take(32) {
         let target = arm.at(q).ee_pose();
         let seed = configs[(k + 7) % configs.len()];
         for (name, policy) in [
             ("from_seed", ArmAnglePolicy::FromSeed),
-            (
-                "max_manip",
-                ArmAnglePolicy::MaxManipulability { max_step_rad: 0.25 },
-            ),
+            ("swiveled", ArmAnglePolicy::Swiveled { by_rad: 0.25 }),
             (
                 "fixed",
                 ArmAnglePolicy::Fixed(arm.arm_angle(q).unwrap_or(0.0)),

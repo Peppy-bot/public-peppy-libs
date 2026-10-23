@@ -26,12 +26,10 @@
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use nalgebra::{Isometry3, Matrix3, Rotation3, Unit, Vector3, Vector6};
-
-use chain_kinematics::manipulability;
+use nalgebra::{Isometry3, Matrix3, Rotation3, Unit, Vector3};
 
 use crate::model::ArmModel;
-use crate::{ARM_DOF, ELBOW, Jacobian, JointVec, Limit, PARALLEL_SIN_EPS, SHOULDER, WRIST};
+use crate::{ARM_DOF, ELBOW, JointVec, Limit, PARALLEL_SIN_EPS, SHOULDER, WRIST};
 
 /// How to resolve the redundant arm angle when the caller doesn't pin it.
 #[derive(Debug, Clone, Copy)]
@@ -40,13 +38,11 @@ pub enum ArmAnglePolicy {
     FromSeed,
     /// Use this exact arm angle (radians). Infeasible if it violates a limit.
     Fixed(f64),
-    /// Start from the seed's arm angle (like `FromSeed`) and step at most
-    /// `max_step_rad` toward higher manipulability, so a solve chain steers the
-    /// elbow away from singular postures instead of freezing it. The bounded step
-    /// keeps consecutive solutions continuous; a chain of solves follows the local
-    /// manipulability ridge as the target moves. `max_step_rad = 0` reduces to
-    /// `FromSeed`. Solvable exactly when `FromSeed` is.
-    MaxManipulability { max_step_rad: f64 },
+    /// The seed's arm angle on the target's circle, swiveled by `by_rad`:
+    /// where `FromSeed` keeps the elbow, moved on by that angle. Infeasible
+    /// when no in-limit solution sits there, or the seed's elbow lies on the
+    /// circle's axis.
+    Swiveled { by_rad: f64 },
 }
 
 /// One inverse-kinematics solution.
@@ -379,7 +375,9 @@ fn circle_frame(model: &ArmModel, p_w: Vector3<f64>) -> Circle {
 /// infeasible for this target, or when the seed is at the exact straight-arm
 /// singularity and so carries no arm angle (a merely near-straight seed, e.g. the
 /// home pose at q4 ≈ 0.05, still does and is tracked continuously). In `Fixed`
-/// mode the given arm angle is used verbatim and infeasibility yields `None`.
+/// mode the given arm angle is used verbatim and infeasibility yields `None`;
+/// `Swiveled` takes the seed's arm angle on this target's circle moved on by
+/// its angle, exactly, and yields `None` the same way.
 pub(crate) fn solve(
     model: &ArmModel,
     limits: &[Limit; ARM_DOF],
@@ -395,12 +393,9 @@ pub(crate) fn solve(
         ArmAnglePolicy::FromSeed => ctx
             .seeded_solution(seed)
             .map(|(psi, q)| Solution { q, arm_angle: psi }),
-        ArmAnglePolicy::MaxManipulability { max_step_rad } => {
-            // Anchor at the FromSeed angle (continuity, guaranteed feasible), then
-            // step within the bounded window toward higher manipulability.
-            let (psi0, _) = ctx.seeded_solution(seed)?;
-            let (psi, q) = ctx.max_manipulability_step(psi0, max_step_rad, seed)?;
-            Some(Solution {
+        ArmAnglePolicy::Swiveled { by_rad } => {
+            let psi = ctx.preferred_psi(seed)? + by_rad;
+            ctx.solve_at_psi(psi, seed).map(|q| Solution {
                 q,
                 arm_angle: wrap_pi(psi),
             })
@@ -464,84 +459,6 @@ impl<'a> PsiSolve<'a> {
             circle: circle_frame(model, p_w),
         })
     }
-}
-
-impl PsiSolve<'_> {
-    /// The arm angle within `max_step_rad` of `psi0` with the highest
-    /// manipulability, and its joint solution. Evaluates the window's endpoints
-    /// and center, refines once with a parabolic fit through them, and keeps the
-    /// best solvable candidate; `psi0` itself is always a candidate, so this
-    /// returns `None` only if `psi0` has no in-limit branch (which the caller's
-    /// feasibility selection rules out).
-    fn max_manipulability_step(
-        &self,
-        psi0: f64,
-        max_step_rad: f64,
-        seed: &JointVec,
-    ) -> Option<(f64, JointVec)> {
-        // A non-finite or negative step degenerates to FromSeed rather than
-        // poisoning the candidate angles.
-        let h = if max_step_rad.is_finite() {
-            max_step_rad.max(0.0)
-        } else {
-            0.0
-        };
-        let eval = |psi: f64| {
-            self.solve_at_psi(psi, seed)
-                .map(|q| (psi, manipulability(&jacobian_poe(self.model, &q)), q))
-        };
-        let center = eval(psi0)?;
-        let below = eval(psi0 - h);
-        let above = eval(psi0 + h);
-        // With all three samples, a concave parabola through them estimates the
-        // peak; clamped into the window so the step bound holds regardless of fit
-        // quality.
-        let vertex = match (&below, &above) {
-            (Some((_, w_lo, _)), Some((_, w_hi, _))) => {
-                let curvature = w_lo - 2.0 * center.1 + w_hi;
-                if curvature < 0.0 {
-                    let offset = 0.5 * h * (w_lo - w_hi) / curvature;
-                    eval(psi0 + offset.clamp(-h, h))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-        // Strict improvement over the center keeps the chain anchored on plateaus
-        // (no drift when manipulability is locally flat).
-        let best = [below, above, vertex]
-            .into_iter()
-            .flatten()
-            .fold(center, |acc, c| if c.1 > acc.1 { c } else { acc });
-        Some((best.0, best.2))
-    }
-}
-
-/// Geometric Jacobian of configuration `q` from the PoE screw data: column `i` is
-/// `[z x (p_ee - p); z]` with joint `i`'s axis `z` and axis point `p` carried
-/// through joints `1..i-1`, matching [`Posed::jacobian`]'s layout (rows 0..3
-/// linear, 3..6 angular, arm base frame, EE origin reference; the two agree, see
-/// tests). Lets the solver score manipulability without the FK chain's `&mut`.
-///
-/// [`Posed::jacobian`]: crate::fk::Posed::jacobian
-fn jacobian_poe(model: &ArmModel, q: &JointVec) -> Jacobian {
-    let p_ee = fk_poe_position(model, q);
-    // Accumulate the affine map of joints 1..i-1 (p -> r_acc p + t_acc); joint i's
-    // current axis and axis point are its home screw carried through it.
-    let mut r_acc = Rotation3::identity();
-    let mut t_acc = Vector3::zeros();
-    let mut cols = [Vector6::zeros(); ARM_DOF];
-    for i in 0..ARM_DOF {
-        let z = r_acc * model.axes[i];
-        let p = r_acc * model.points[i] + t_acc;
-        let linear = z.cross(&(p_ee - p));
-        cols[i] = Vector6::new(linear.x, linear.y, linear.z, z.x, z.y, z.z);
-        let r_i = exp_so3(model.axes[i], q[i]);
-        t_acc += r_acc * (model.points[i] - r_i * model.points[i]);
-        r_acc *= r_i;
-    }
-    Jacobian::from_columns(&cols)
 }
 
 impl PsiSolve<'_> {
@@ -927,7 +844,7 @@ fn seed_distance(q: &JointVec, seed: &JointVec) -> f64 {
 
 /// Wrap `x` toward `[lo, hi]` by multiples of `2π` (joint angles are modular);
 /// returns the representative nearest the interval midpoint. For any window
-/// narrower than `2π` (all OpenArm joints) this is the unique in-limit alias
+/// narrower than `2π`, as a revolute arm joint's is, this is the unique in-limit alias
 /// when one exists.
 fn wrap_into(x: f64, lo: f64, hi: f64) -> f64 {
     let mid = 0.5 * (lo + hi);
@@ -1148,9 +1065,15 @@ mod tests {
         let inside = intervals
             .iter()
             .any(|&(start, end)| start + (psi - start).rem_euclid(TAU) <= end);
+        // An interval's end is a joint reaching its limit; an arm angle within
+        // rounding of one solves or not by rounding too.
+        let well_inside = intervals.iter().any(|&(start, end)| {
+            let turned = start + (psi - start).rem_euclid(TAU);
+            start + TOLERANCE <= turned && turned <= end - TOLERANCE
+        });
         match solve(&m, &lim, &target, ArmAnglePolicy::Fixed(psi), &seed) {
             None => assert!(
-                !inside,
+                !well_inside,
                 "the arm angle {psi} lies in {intervals:?} and does not solve"
             ),
             Some(solution) => {
@@ -1583,99 +1506,64 @@ mod tests {
         assert!(solve(&m, &lim, &target, policy, &seed).is_none());
     }
 
-    /// The PoE Jacobian that scores manipulability equals the chain's geometric
-    /// Jacobian entrywise, on either arm.
+    /// A swiveled solve of any pose from any seed is the `FromSeed` solve's
+    /// elbow moved on by its angle: it hits the pose, its arm angle is that
+    /// angle from the seed's azimuth on the target's circle, and a swivel of
+    /// zero solves to exactly the `FromSeed` solution whenever the seed's own
+    /// azimuth is feasible there.
     #[hegel::test]
-    fn poe_jacobian_matches_chain_jacobian(tc: hegel::TestCase) {
-        let side = tc.draw(sides());
-        let fk = v1_fk(side);
-        let m = ArmModel::from_fk(fk).unwrap();
-        let q = tc.draw(configs(fk.limits()));
-        let err = (jacobian_poe(&m, &q) - fk.at(&q).jacobian()).abs().max();
-        assert!(err < TOLERANCE, "the Jacobians at {q:?} disagree by {err}");
-    }
-
-    /// A manipulability step solves exactly when `FromSeed` does, from the
-    /// `FromSeed` anchor: it hits the pose, moves the arm angle at most the step,
-    /// never scores below the anchor, and a step of zero returns the anchor.
-    #[hegel::test]
-    fn max_manipulability_tracks_the_target_and_never_scores_below_from_seed(tc: hegel::TestCase) {
+    fn a_swiveled_solve_moves_the_elbow_on_from_the_seeds_azimuth(tc: hegel::TestCase) {
         let side = tc.draw(sides());
         let fk = v1_fk(side);
         let lim = fk.limits();
         let m = ArmModel::from_fk(fk).unwrap();
         let q = tc.draw(configs(lim));
         let seed = tc.draw(configs(lim));
-        let step: f64 = tc.draw(gs::floats().min_value(0.0).max_value(PI));
+        let by_rad: f64 = tc.draw(angles());
         let target = pose(fk, &q);
-        let policy = ArmAnglePolicy::MaxManipulability { max_step_rad: step };
-        let Some(anchor) = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &seed) else {
+        let Some(ctx) = PsiSolve::new(&m, &lim, &target) else {
+            return;
+        };
+        let Some(azimuth) = ctx.preferred_psi(&seed) else {
             assert!(
-                solve(&m, &lim, &target, policy, &seed).is_none(),
-                "a step solved the pose of {q:?}, which FromSeed refuses"
+                solve(
+                    &m,
+                    &lim,
+                    &target,
+                    ArmAnglePolicy::Swiveled { by_rad },
+                    &seed
+                )
+                .is_none()
             );
             return;
         };
-        let sol =
-            solve(&m, &lim, &target, policy, &seed).expect("solvable exactly when FromSeed is");
-        let got = pose(fk, &sol.q);
-        assert!((got.translation.vector - target.translation.vector).norm() < TOLERANCE);
-        assert!(got.rotation.angle_to(&target.rotation) < TOLERANCE);
-        assert!(
-            wrap_pi(sol.arm_angle - anchor.arm_angle).abs() <= step + TOLERANCE,
-            "the arm angle stepped {} past the {step} bound",
-            wrap_pi(sol.arm_angle - anchor.arm_angle).abs()
-        );
-        let w_anchor = manipulability(&jacobian_poe(&m, &anchor.q));
-        let w_opt = manipulability(&jacobian_poe(&m, &sol.q));
-        assert!(
-            w_opt >= w_anchor - TOLERANCE,
-            "manipulability regressed: {w_opt} < {w_anchor}"
-        );
-        if step == 0.0 {
+        if let Some(swiveled) = solve(
+            &m,
+            &lim,
+            &target,
+            ArmAnglePolicy::Swiveled { by_rad },
+            &seed,
+        ) {
+            let got = pose(fk, &swiveled.q);
+            assert!((got.translation.vector - target.translation.vector).norm() < TOLERANCE);
+            assert!(got.rotation.angle_to(&target.rotation) < TOLERANCE);
             assert!(
-                (0..ARM_DOF).all(|joint| (sol.q[joint] - anchor.q[joint]).abs() < TOLERANCE),
-                "a zero step moved {:?} to {:?}",
-                anchor.q,
-                sol.q
+                wrap_pi(swiveled.arm_angle - azimuth - by_rad).abs() < TOLERANCE,
+                "swiveled to {} from the seed's {azimuth}, asked {by_rad}",
+                swiveled.arm_angle
             );
         }
-    }
-
-    #[test]
-    fn max_manipulability_chain_converges_and_climbs() {
-        // Chaining solves at a fixed target (seeding each with the previous
-        // solution, as the planner and the servo loop do) must climb toward a
-        // manipulability ridge and settle there, not oscillate.
-        let fk = v1_fk("left");
-        let lim = fk.limits();
-        let m = ArmModel::from_fk(fk).unwrap();
-        let q0 = [0.2, -0.3, 0.3, 1.0, -0.4, 0.5, 0.3];
-        let target = pose(fk, &q0);
-        let mut seed = q0;
-        let mut w_prev = manipulability(&jacobian_poe(&m, &q0));
-        let mut psi_prev = arm_angle_of(&m, &q0).unwrap();
-        let mut last_delta = f64::INFINITY;
-        for _ in 0..60 {
-            let sol = solve(
-                &m,
-                &lim,
-                &target,
-                ArmAnglePolicy::MaxManipulability { max_step_rad: 0.05 },
-                &seed,
-            )
-            .expect("fixed reachable target stays solvable");
-            let w = manipulability(&jacobian_poe(&m, &sol.q));
-            assert!(w >= w_prev - 1e-12, "climb must be monotone");
-            last_delta = wrap_pi(sol.arm_angle - psi_prev).abs();
-            psi_prev = sol.arm_angle;
-            w_prev = w;
-            seed = sol.q;
-        }
-        assert!(
-            last_delta < 1e-3,
-            "psi still moving {last_delta} rad after 60 chained solves"
+        let held = solve(
+            &m,
+            &lim,
+            &target,
+            ArmAnglePolicy::Swiveled { by_rad: 0.0 },
+            &seed,
         );
+        let from_seed = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &seed);
+        if let (Some(held), Some(from_seed)) = (held, from_seed) {
+            assert_eq!(held.q, from_seed.q, "a zero swivel differs from FromSeed");
+        }
     }
 
     /// `FromSeed` keeps the elbow's azimuth about the shoulder-wrist axis where

@@ -313,7 +313,7 @@ impl MotorHealthFilter {
     }
 
     /// Folds in one tick's sample and reports. `dt_s` is the measured
-    /// interval since the previous sample, clamped to [`MAX_STEP_S`].
+    /// interval since the previous sample, clamped to `MAX_STEP_S`.
     ///
     /// The frame decode only produces finite torque and temperatures;
     /// asserted here anyway because a NaN would silently poison the EWMA or

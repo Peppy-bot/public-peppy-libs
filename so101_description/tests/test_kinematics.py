@@ -42,7 +42,7 @@ def test_fk_varies_with_each_positioning_joint(kinematics):
 def test_ik_reaches_a_known_fk_pose(kinematics):
     target_joints = (0.3, -0.4, 0.6, 0.2, 0.0)
     position, orientation = kinematics.forward_kinematics(target_joints)
-    solution = kinematics.inverse_kinematics(HOME, position, orientation)
+    solution = kinematics.inverse_kinematics(HOME, position, orientation, position_tolerance_m=0.01, orientation_tolerance_rad=math.pi)
     assert solution is not None
     reached, _ = kinematics.forward_kinematics(solution)
     assert math.dist(reached, position) <= 0.01
@@ -50,7 +50,9 @@ def test_ik_reaches_a_known_fk_pose(kinematics):
 
 def test_unreachable_pose_is_refused(kinematics):
     # Twice the arm's full extension.
-    solution = kinematics.inverse_kinematics(HOME, (0.0, 0.0, 1.0), (0.0, 0.0, 0.0, 1.0))
+    solution = kinematics.inverse_kinematics(
+        HOME, (0.0, 0.0, 1.0), (0.0, 0.0, 0.0, 1.0), position_tolerance_m=0.01, orientation_tolerance_rad=math.pi
+    )
     assert solution is None
 
 
@@ -86,7 +88,7 @@ def test_ik_accepts_the_best_orientation_for_an_underactuated_pose(kinematics):
     position, reachable_orientation = kinematics.forward_kinematics(target_joints)
     impossible_orientation = (0.0, 0.0, 0.0, 1.0)
     assert reachable_orientation != pytest.approx(impossible_orientation)
-    solution = kinematics.inverse_kinematics(HOME, position, impossible_orientation)
+    solution = kinematics.inverse_kinematics(HOME, position, impossible_orientation, position_tolerance_m=0.01, orientation_tolerance_rad=math.pi)
     assert solution is not None
     reached, _ = kinematics.forward_kinematics(solution)
     assert math.dist(reached, position) <= 0.01
@@ -115,7 +117,7 @@ def test_an_impossible_orientation_does_not_cost_the_position(kinematics):
     seed = (0.0, 0.3, 0.4, 0.2, 0.0)
     position, orientation = kinematics.forward_kinematics(seed)
     solution = kinematics.inverse_kinematics(
-        seed, position, rotated(orientation, (1, 0, 0), 20)
+        seed, position, rotated(orientation, (1, 0, 0), 20), position_tolerance_m=0.01, orientation_tolerance_rad=math.pi
     )
     assert solution is not None
     reached, _ = kinematics.forward_kinematics(solution)
@@ -130,7 +132,7 @@ def test_an_impossible_orientation_does_not_refuse_a_reachable_position(kinemati
     seed = (0.0, 0.3, 0.4, 0.2, 0.0)
     position, orientation = kinematics.forward_kinematics(seed)
     assert kinematics.inverse_kinematics(
-        seed, position, rotated(orientation, (1, 0, 0), 90)
+        seed, position, rotated(orientation, (1, 0, 0), 90), position_tolerance_m=0.01, orientation_tolerance_rad=math.pi
     ) is not None
 
 
@@ -140,7 +142,7 @@ def test_a_reachable_orientation_is_still_honoured(kinematics):
     seed = (0.0, 0.3, 0.4, 0.2, 0.0)
     position, orientation = kinematics.forward_kinematics(seed)
     target = rotated(orientation, (0, 0, 1), 20)
-    solution = kinematics.inverse_kinematics(seed, position, target)
+    solution = kinematics.inverse_kinematics(seed, position, target, position_tolerance_m=0.01, orientation_tolerance_rad=math.pi)
     assert solution is not None
     _, reached = kinematics.forward_kinematics(solution)
     assert math.degrees(relative_rotation_rad(reached, target)) < 1.0
@@ -157,7 +159,7 @@ def test_the_deployed_arm_still_reaches_an_orientation_it_can_hold():
     seed = (0.0, 0.3, 0.4, 0.2, 0.0)
     position, orientation = kinematics.forward_kinematics(seed)
     target = rotated(orientation, (0, 0, 1), 20)
-    solution = kinematics.inverse_kinematics(seed, position, target)
+    solution = kinematics.inverse_kinematics(seed, position, target, position_tolerance_m=0.01, orientation_tolerance_rad=math.pi)
     assert solution is not None
     reached_position, reached_orientation = kinematics.forward_kinematics(solution)
     assert math.degrees(relative_rotation_rad(reached_orientation, target)) < 1.0
@@ -166,12 +168,12 @@ def test_the_deployed_arm_still_reaches_an_orientation_it_can_hold():
 
 def test_a_caller_can_tighten_the_position_bar(kinematics):
     # A bar far below what one linearised step converges to inside the
-    # iteration budget must refuse rather than round up to the default.
+    # iteration budget refuses.
     target = kinematics.forward_kinematics((0.4, 0.3, -0.5, 0.2, 0.1))
-    assert kinematics.inverse_kinematics(HOME, *target) is not None
+    assert kinematics.inverse_kinematics(HOME, *target, position_tolerance_m=0.01, orientation_tolerance_rad=math.pi) is not None
     assert (
         kinematics.inverse_kinematics(
-            HOME, *target, position_tolerance_m=1e-12
+            HOME, *target, position_tolerance_m=1e-12, orientation_tolerance_rad=math.pi
         )
         is None
     )
@@ -196,7 +198,7 @@ def test_an_orientation_bar_refuses_what_the_wrist_cannot_reach(kinematics):
         )
         norm = math.sqrt(sum(c * c for c in turned))
         turned = tuple(c / norm for c in turned)
-        solution = kinematics.inverse_kinematics(HOME, position, turned)
+        solution = kinematics.inverse_kinematics(HOME, position, turned, position_tolerance_m=0.01, orientation_tolerance_rad=math.pi)
         if solution is None:
             continue
         missed = relative_rotation_rad(
@@ -209,7 +211,7 @@ def test_an_orientation_bar_refuses_what_the_wrist_cannot_reach(kinematics):
     position, turned, missed = reachable_but_turned
     assert (
         kinematics.inverse_kinematics(
-            HOME, position, turned, orientation_tolerance_rad=missed / 2
+            HOME, position, turned, position_tolerance_m=0.01, orientation_tolerance_rad=missed / 2
         )
         is None
     )
@@ -219,21 +221,10 @@ def test_a_generous_orientation_bar_still_accepts(kinematics):
     target = kinematics.forward_kinematics((0.3, 0.2, -0.4, 0.1, 0.2))
     assert (
         kinematics.inverse_kinematics(
-            HOME, *target, orientation_tolerance_rad=math.pi
+            HOME, *target, position_tolerance_m=0.01, orientation_tolerance_rad=math.pi
         )
         is not None
     )
-
-
-@pytest.mark.parametrize("bad", [0.0, -0.01, math.nan, math.inf])
-def test_an_unusable_tolerance_is_refused_rather_than_defaulted(kinematics, bad):
-    target = kinematics.forward_kinematics((0.1, 0.1, -0.2, 0.0, 0.0))
-    with pytest.raises(ValueError):
-        kinematics.inverse_kinematics(HOME, *target, position_tolerance_m=bad)
-    with pytest.raises(ValueError):
-        kinematics.inverse_kinematics(
-            HOME, *target, orientation_tolerance_rad=bad
-        )
 
 
 def test_the_jacobian_predicts_end_effector_motion(kinematics):
@@ -305,3 +296,16 @@ def test_asking_for_the_jacobian_does_not_disturb_a_streaming_solve():
 
     for undisturbed, interleaved in zip(run(False), run(True), strict=True):
         assert np.allclose(undisturbed, interleaved, atol=1e-12)
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.01, math.nan, math.inf])
+def test_an_unusable_tolerance_is_refused(kinematics, bad):
+    target = kinematics.forward_kinematics((0.1, 0.1, -0.2, 0.0, 0.0))
+    with pytest.raises(ValueError):
+        kinematics.inverse_kinematics(
+            HOME, *target, position_tolerance_m=bad, orientation_tolerance_rad=math.pi
+        )
+    with pytest.raises(ValueError):
+        kinematics.inverse_kinematics(
+            HOME, *target, position_tolerance_m=0.01, orientation_tolerance_rad=bad
+        )

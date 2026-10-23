@@ -1,10 +1,12 @@
 # srs_model
 
-Kinematics and dynamics for a **7-DOF SRS arm** (spherical shoulder, revolute
-elbow, spherical wrist): forward kinematics, closed-form arm-angle inverse
-kinematics, and gravity/Coriolis validation on the real arm. Robot-agnostic - every dimension
-comes from the URDF the caller supplies, and a chain that is not SRS is refused
-at load. Pure Rust; no hardware, messaging, or async dependencies.
+Kinematics, dynamics and Cartesian planning for a **7-DOF SRS arm** (spherical
+shoulder, revolute elbow, spherical wrist): forward kinematics, closed-form
+arm-angle inverse kinematics, gravity/Coriolis validation on the real arm, and
+the plan of a Cartesian move, a straight line with the elbow held or swiveled or
+the guarded servo (`plan_cartesian`). Robot-agnostic: every dimension comes from
+the URDF the caller supplies, and a chain that is not SRS is refused at load.
+Pure Rust; no hardware, messaging, or async dependencies.
 
 The topology-agnostic half of this lives in
 [`chain_kinematics`](../chain_kinematics): the chain, the Jacobian, the damped
@@ -42,14 +44,15 @@ let solution = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &q)?;
 | `Arm::arm_angle` | the arm angle a configuration is already at |
 | `Arm::rate_step` | one damped resolved-rate step (`chain_kinematics`'s, at seven joints) |
 | `Arm::chain` | the arm as a plain serial chain, for the generic laws |
+| `plan_cartesian` | the Cartesian plan of a move: a straight line with the elbow held or swiveled (`plan_line`, walked at run time with a `LineCursor`), or `chain_kinematics`'s guarded servo when no line tracks, within a `PlanLimits` |
 
 ## The redundancy
 
 Seven joints reaching a six-dimensional pose leaves a one-parameter family of
 solutions: the elbow sweeps a circle about the shoulder-wrist axis, and its
 position on that circle is the **arm angle**. `solve_ik` resolves it by policy -
-hold the seed's, take a fixed one, or maximise manipulability - and reports it
-back on the [`Solution`], because on this robot the arm angle is not an
+hold the seed's, swivel it on by an angle, or take a fixed one - and reports it back on the
+[`Solution`], because on this robot the arm angle is not an
 implementation detail: it is a planning tier, a jog mode, and a wire field.
 
 The feasible arm angles are computed **analytically**, as the exact intervals of
@@ -77,6 +80,20 @@ wrist axes likewise, the elbow axis perpendicular to and intersecting the
 shoulder-wrist line, and the tip clear of the wrist centre. A chain that fails
 any of them is an `Err`, not an approximation, because the closed form would
 otherwise return a pose the arm cannot hold.
+
+## Layout
+
+```
+src/
+  lib.rs      Arm, ArmAnglePolicy, Solution, the plan types and the re-exports
+  model.rs    the SRS model read off the URDF: link lengths, offsets, the frames
+  arm.rs      the arm and its posed view: forward kinematics, dynamics, limits, the IK entry
+  fk.rs       forward kinematics over the model
+  ik.rs       closed-form arm-angle inverse kinematics and its feasible intervals
+  line.rs     the line tier: the walk with the elbow held or swiveled, its timing and tick check, the cursor and the trajectory
+  plan.rs     the Cartesian plan: the limits, the tiers in order, the refusals
+  error.rs    what can go wrong building an arm
+```
 
 ## Testing
 

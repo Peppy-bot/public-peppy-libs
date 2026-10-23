@@ -1,4 +1,5 @@
-"""The robots in the scene: who may join, and when a robot's lease runs out."""
+"""The robots in the scene: who may join, and when a robot's pair grace time
+runs out."""
 
 from __future__ import annotations
 
@@ -93,13 +94,13 @@ class TestJoining:
         assert robots.of_caller(caller("nobody")) is None
 
 
-class TestLeases:
-    """The lease stamp each robot holds, which its stay reads to see whether
+class TestPairGrace:
+    """The pair grace stamp each robot holds, which its stay reads to see whether
     the robot still holds the pairs its model asks for. It is set the first
     time a limb reaches the robot: until then the robot's stay is its
     goal's."""
 
-    def test_a_robot_holding_its_pairs_marks_its_lease(self):
+    def test_a_robot_holding_its_pairs_marks_its_pair_grace_stamp(self):
         robots, _ = standing()
         robots.note_paired({"alpha"}, now_s=10.0)
         assert robots.of_name("alpha").last_paired_s == 10.0
@@ -109,33 +110,33 @@ class TestLeases:
         robots.note_paired({"nobody"}, now_s=10.0)
         assert robots.of_name("alpha").last_paired_s is None
 
-    def test_a_robot_no_limb_reached_has_no_lease_to_run_out(self):
+    def test_a_robot_no_limb_reached_has_no_pair_grace_time_to_run_out(self):
         robots, _ = standing()
         robot = robots.of_name("alpha")
-        assert not robot.lease_ran_out(now_s=1_000_000.0, lease_s=2.0)
+        assert not robot.pair_grace_ran_out(now_s=1_000_000.0, pair_grace_s=2.0)
 
-    def test_a_limb_reaching_a_robot_starts_its_lease_once(self):
+    def test_a_limb_reaching_a_robot_starts_its_pair_grace_time_once(self):
         robots, _ = standing()
         robots.note_limbs_reached("alpha", now_s=10.0)
         robots.note_limbs_reached("alpha", now_s=11.0)
         robot = robots.of_name("alpha")
         assert robot.last_paired_s == 10.0
-        assert not robot.lease_ran_out(now_s=12.0, lease_s=2.0)
-        assert robot.lease_ran_out(now_s=12.5, lease_s=2.0)
+        assert not robot.pair_grace_ran_out(now_s=12.0, pair_grace_s=2.0)
+        assert robot.pair_grace_ran_out(now_s=12.5, pair_grace_s=2.0)
 
     def test_a_limb_reaching_a_robot_the_scene_does_not_hold_starts_nothing(self):
         robots, _ = standing()
         robots.note_limbs_reached("nobody", now_s=10.0)
         assert robots.of_name("alpha").last_paired_s is None
 
-    def test_a_lease_runs_out_once_the_pairs_have_been_gone_for_the_lease(self):
+    def test_the_pair_grace_time_runs_out_once_the_pairs_have_been_gone_for_it(self):
         robots, _ = standing()
         robots.note_paired({"alpha"}, now_s=10.0)
         robot = robots.of_name("alpha")
-        assert not robot.lease_ran_out(now_s=12.0, lease_s=2.0)
-        assert robot.lease_ran_out(now_s=12.5, lease_s=2.0)
+        assert not robot.pair_grace_ran_out(now_s=12.0, pair_grace_s=2.0)
+        assert robot.pair_grace_ran_out(now_s=12.5, pair_grace_s=2.0)
 
-    def test_a_scene_that_changed_gives_every_running_lease_back(self):
+    def test_a_scene_that_changed_starts_every_running_pair_grace_time_again(self):
         robots, _ = standing()
         robots.admit("bravo", V2, caller("bravo_init_inst"))
         robots.note_paired({"alpha"}, now_s=10.0)

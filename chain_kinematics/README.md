@@ -70,8 +70,14 @@ different solver.
 | `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics, revolute and prismatic joints alike, with everything each segment carries folded in |
 | `damped_pseudo_inverse` | `Jᵀ(J Jᵀ + λ²I)⁻¹`, defined everywhere including at singularities |
 | `manipulability` | Yoshikawa index, the product of the singular values, at any joint count |
-| `rate_step` | one damped resolved-rate step under a velocity budget and joint limits |
-| `ServoState` / `rollout` | a guarded Cartesian move, and the same law rolled out offline as its reachability proof |
+| `rate_step` | one damped resolved-rate step under a velocity budget and joint limits, holding a joint it would carry past a limit and solving the task again on the rest |
+| `rate_step_toward` | the step toward a pose, capped at the end-effector speed caps and braking into joint limits within the acceleration budget |
+| `ServoState` / `rollout` | a guarded Cartesian move, and the same law rolled out offline as its reachability proof and the configurations it commands |
+| `timed_with_ee` / `ServoTrajectory` | a move's configurations timed from rest to rest within the joints' velocity and acceleration limits and the end effector's caps, and the trajectory that plays the path over a duration |
+| `plan_servo` | the servo plan: the rollout timed with the end effector, played over the longer of a request and the path's own time |
+| `JointSmoothing` / `command_smoothing` | one Butterworth per joint at MoveIt Servo's default cutoff for the control period |
+| `interpolate` | the straight line between two poses |
+| `clamp_into` / `all_within` / `limit_margin` / `pose_miss` | joint-limit and pose-distance helpers |
 
 ## Point-to-point: `inverse_kinematics`, `continue_to`, `track`
 
@@ -116,31 +122,41 @@ away.
 
 `rollout` runs the identical law offline before a move is accepted, which is the
 reachability check: a goal that does not converge within the caller's budget is
-refused rather than started. That only works because the law is deterministic,
-so the motion that was validated is the motion that runs.
+refused, and one that does comes back as the configurations
+the law commanded, one per control period. `timed_with_ee` times them from
+rest to rest within the joint velocity and acceleration limits and the
+end-effector caps, for the caller to play over a duration of its own
+(`ServoTrajectory`). The law is deterministic, so the path that was validated is
+the path that runs.
+
+A joint the step would carry past its limit is held on it and the task solved
+again on the joints left free, and a joint heading for a limit moves no faster
+than it can brake from to rest there at its acceleration limit, so the law
+arrives at a wall without a jolt and the other joints take up the motion.
 
 The step always returns a configuration. An unreachable target moves toward the
-closest pose the step can find and saturates there rather than refusing, because
-a teleoperator pushing past the edge should feel a wall, not a disconnect.
+closest pose the step can find and saturates there: a teleoperator pushing past
+the edge feels a wall.
 
-Tolerances and the output smoother are the caller's: `Smoother` is a trait, so
-this crate needs no filter library and the servo's output is smoothed exactly as
-the rest of that controller's commands are. Arrival slack is parsed rather than
-taken as given (`ServoTolerances::new`): a step stops correcting position inside
-`TRACKING_FLOOR_M`, so a tolerance tighter than that is one the law would never
-meet, and it is refused where the number is given instead of timing the move out.
+Tolerances are the caller's, and so is the output smoother: `Smoother` is a
+trait, and `JointSmoothing` (one `control_core` Butterworth per joint at MoveIt
+Servo's default cutoff, `command_smoothing`) is the one a planner passes to
+`plan_servo`. An arrival slack is parsed (`ServoTolerances::new`): a finite
+positive distance and angle.
 
 ## Layout
 
 ```text
 src/
-  lib.rs        Chain, ChainSpec, JointSelection, Posed, Limit
+  lib.rs        Chain, ChainSpec, JointSelection, Posed, Limit, and the joint-limit and pose-distance helpers
   tree.rs       the URDF arena: links, joints, adjacency, and the walks over it
   jacobian.rs   the Jacobian's inverses, generic over N
-  rate.rs       one damped resolved-rate step
+  chain.rs      the serial chain and its posed view: forward kinematics, the Jacobian, limits
+  rate.rs       one damped resolved-rate step, holding the joints it would carry past their limits, and the distance between poses
+  line.rs       the straight line between two poses
   ik.rs         point-to-point IK: searched, verified, willing to refuse
   dynamics.rs   gravity and Coriolis feedforward over the posed chain
-  servo.rs      the leashed-reference Cartesian move and its offline rollout
+  servo.rs      the leashed-reference Cartesian move, its offline rollout, the timing of a move's configurations with the end effector, and the servo plan
   error.rs      what can go wrong building a chain
   payload.rs    what each segment carries beyond its own link, lumped in
 ```

@@ -19,7 +19,9 @@ from typing import Optional
 from .ports import Quat, Vec3
 
 GOAL_TIMEOUT_S = 5.0
-RESULT_TIMEOUT_S = 120.0
+# The longest a move may take, the longest duration and settle timeout the
+# limb_motion contract admits together, and 5 s for its result to arrive.
+RESULT_TIMEOUT_S = 125.0
 CANCEL_TIMEOUT_S = 3.0
 CHECK_TIMEOUT_S = 5.0
 
@@ -91,15 +93,26 @@ class Robot:
         position: Vec3,
         orientation: Quat,
         *,
-        duration_s: float = 0.0,
-        plan_position_tolerance_m: float = 0.0,
-        plan_orientation_tolerance_rad: float = 0.0,
+        duration_s: float,
+        plan_position_tolerance_m: float,
+        plan_orientation_tolerance_rad: float,
+        settle_position_tolerance_m: float,
+        settle_orientation_tolerance_rad: float,
+        settle_timeout_s: float,
     ) -> MoveResult:
         """Plans and runs one grasp-point move of `arm`, robot frame, and
-        waits for it to end. Zero tolerances and duration take the
-        backbone's defaults."""
+        waits for it to settle within the settle tolerances or to fail its
+        settle timeout. The caller names every tolerance and time, as the
+        limb_motion contract has them: the plan may sit within the plan
+        tolerances of the pose, the move succeeds once the measured grasp
+        point stands within the settle tolerances at or after the planned
+        end and fails `settle_timeout_s` after it otherwise. A duration of 0
+        is the fastest the joint limits allow."""
         request = self._move_arm.GoalRequest(
-            **_arm_move_fields(arm, position, orientation, duration_s, plan_position_tolerance_m, plan_orientation_tolerance_rad)
+            **_arm_move_fields(arm, position, orientation, duration_s, plan_position_tolerance_m, plan_orientation_tolerance_rad),
+            settle_position_tolerance_m=settle_position_tolerance_m,
+            settle_orientation_tolerance_rad=settle_orientation_tolerance_rad,
+            settle_timeout_s=settle_timeout_s,
         )
         ended = await self._run(self._move_arm, request)
         data = ended.data
@@ -111,10 +124,26 @@ class Robot:
             cancelled=ended.cancelled,
         )
 
-    async def set_gripper(self, gripper: str, opening: float, *, max_effort: float = 0.0) -> GripResult:
+    async def set_gripper(
+        self,
+        gripper: str,
+        opening: float,
+        *,
+        max_effort: float,
+        settle_timeout_s: float,
+    ) -> GripResult:
         """Drives one gripper to an opening fraction, 0 closed to 1 open,
-        and waits for it to end."""
-        request = self._move_gripper.GoalRequest(gripper_name=gripper, opening=opening, max_effort=max_effort)
+        and waits for the jaws to stand still, at most `settle_timeout_s`
+        after the commanded travel. The result's final_opening says where
+        they stand then: on the opening, where an item stopped them, or
+        wherever they were at the timeout. A `max_effort` of 0 leaves the
+        gripper's own effort ceiling in charge."""
+        request = self._move_gripper.GoalRequest(
+            gripper_name=gripper,
+            opening=opening,
+            max_effort=max_effort,
+            settle_timeout_s=settle_timeout_s,
+        )
         ended = await self._run(self._move_gripper, request)
         data = ended.data
         return GripResult(
