@@ -42,8 +42,6 @@ from so101_description.transforms import (
 )
 from so101_description.units import JOINT_NAMES
 
-# Positional acceptance for a verified point-to-point solution.
-IK_POSITION_TOLERANCE_M = 0.01
 # A solve runs one QP step, sized for streaming small deltas; a
 # point-to-point solve iterates it until FK verifies the position.
 IK_MAX_ITERATIONS = 100
@@ -163,17 +161,6 @@ APPROACH_MIN_ANGLE_BAR_RAD = 1.0e-8
 APPROACH_QP_MAX_WEIGHT = 1.0
 
 
-def _bar(value: float | None, default: float) -> float:
-    """A caller's acceptance bar, or the default when unstated. A bar that is
-    not a usable positive distance is a caller error, not a reason to fall
-    back to the default."""
-    if value is None:
-        return default
-    if not math.isfinite(value) or value <= 0.0:
-        raise ValueError(f"tolerance must be finite and positive, got {value}")
-    return value
-
-
 def _set_joints(robot, positions_rad) -> None:
     """Puts the model at these joint radians, in wire order, and updates its
     frames."""
@@ -239,20 +226,17 @@ class Kinematics:
         position,
         orientation,
         *,
-        position_tolerance_m: float | None = None,
-        orientation_tolerance_rad: float | None = None,
+        position_tolerance_m: float,
+        orientation_tolerance_rad: float,
     ) -> tuple[float, ...] | None:
         """Joint radians reaching the pose, or None when no verified solution
-        meets the caller's bars.
-
-        `position_tolerance_m` defaults to IK_POSITION_TOLERANCE_M.
-        `orientation_tolerance_rad` defaults to no gate at all: five joints
-        underactuate the three orientation degrees of freedom, so the solver's
-        best orientation is taken rather than gated behind a bar almost no
-        reachable pose could meet. A caller that does care states one and gets
-        a refusal instead of a quiet approximation."""
-        position_bar = _bar(position_tolerance_m, IK_POSITION_TOLERANCE_M)
-        orientation_bar = _bar(orientation_tolerance_rad, math.inf)
+        meets the caller's bars: the distance and the angle between the pose
+        forward kinematics gives for the solution and the target. Five joints
+        underactuate the three orientation degrees of freedom, so a tight
+        orientation bar refuses almost every reachable pose; a caller that
+        takes any orientation passes math.pi or more."""
+        position_bar = position_tolerance_m
+        orientation_bar = orientation_tolerance_rad
         target_matrix = matrix_from_pose(position, orientation)
         target_position = tuple(position)
         target_orientation = tuple(orientation)
