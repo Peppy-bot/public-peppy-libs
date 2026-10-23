@@ -5,7 +5,8 @@
 use std::time::Duration;
 
 use chain_kinematics::{
-    EeCaps, JointSmoothing, ServoLimits, ServoPlan, ServoTolerances, ToleranceError, plan_servo,
+    CORRIDOR_M, EeCaps, JointSmoothing, ServoLimits, ServoPlan, ServoTolerances, ToleranceError,
+    plan_servo,
 };
 use control_core::filters::ButterworthFilter;
 use nalgebra::Isometry3;
@@ -52,6 +53,9 @@ pub enum PlanRejection {
     /// No line was usable, and the guarded servo that would take over cannot
     /// arrive within the slack asked for.
     ServoCannotArrive(ToleranceError),
+    /// No line was usable, and the guarded servo's path stands farther off the
+    /// straight line than [`CORRIDOR_M`] allows, at its widest by this much.
+    ServoLeavesCorridor { excursion_m: f64 },
 }
 
 impl std::fmt::Display for PlanRejection {
@@ -65,6 +69,13 @@ impl std::fmt::Display for PlanRejection {
                 f,
                 "no line plan fits the limits, and the guarded servo that would take \
                  over cannot arrive that tightly ({refusal})"
+            ),
+            Self::ServoLeavesCorridor { excursion_m } => write!(
+                f,
+                "no line plan fits the limits, and the guarded servo's path would stand \
+                 {:.0} mm off the line, past the {:.0} mm corridor",
+                excursion_m * 1000.0,
+                CORRIDOR_M * 1000.0
             ),
         }
     }
@@ -112,7 +123,7 @@ pub fn plan_cartesian(
         return Ok(CartesianPlan::Line(line));
     }
     let tolerance = tolerance.map_err(PlanRejection::ServoCannotArrive)?;
-    plan_servo(
+    let servo = plan_servo(
         arm.chain(),
         end,
         seed,
@@ -120,6 +131,49 @@ pub fn plan_cartesian(
         JointSmoothing::new(limits.smoothing),
         requested,
     )
-    .map(CartesianPlan::Servo)
-    .ok_or(PlanRejection::Unreachable)
+    .ok_or(PlanRejection::Unreachable)?;
+    within_corridor(servo).map(CartesianPlan::Servo)
+}
+
+/// Admit a servo plan whose path stays within [`CORRIDOR_M`] of its line.
+fn within_corridor(servo: ServoPlan) -> Result<ServoPlan, PlanRejection> {
+    if servo.excursion_m > CORRIDOR_M {
+        return Err(PlanRejection::ServoLeavesCorridor {
+            excursion_m: servo.excursion_m,
+        });
+    }
+    Ok(servo)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use control_core::path_timing::TimedPath;
+
+    /// A servo plan of a nominal two-dimensional path, standing `excursion_m`
+    /// off its line at the widest.
+    fn servo_standing_off_by(excursion_m: f64) -> ServoPlan {
+        ServoPlan {
+            duration: Duration::from_secs(1),
+            path: TimedPath::new(&[vec![0.0, 0.0], vec![0.5, 1.0]], &[1.0, 1.0], &[1.0, 1.0]),
+            excursion_m,
+        }
+    }
+
+    #[test]
+    fn a_servo_plan_inside_the_corridor_is_admitted_and_one_past_it_refused_by_its_excursion() {
+        let inside = servo_standing_off_by(CORRIDOR_M);
+        assert_eq!(within_corridor(inside.clone()), Ok(inside));
+        let excursion_m = CORRIDOR_M + 0.011;
+        let refused = within_corridor(servo_standing_off_by(excursion_m));
+        assert_eq!(
+            refused,
+            Err(PlanRejection::ServoLeavesCorridor { excursion_m })
+        );
+        assert_eq!(
+            refused.unwrap_err().to_string(),
+            "no line plan fits the limits, and the guarded servo's path would stand 61 mm off \
+             the line, past the 50 mm corridor"
+        );
+    }
 }

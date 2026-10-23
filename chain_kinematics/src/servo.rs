@@ -447,6 +447,11 @@ impl<const N: usize> Smoother<N> for JointSmoothing<N> {
 /// edge. Bespoke to the leashed-reference law; MoveIt Servo has no reference
 /// to leash.
 pub const LEASH_M: f64 = 0.05;
+/// The widest a planned servo path may stand off the straight line from its
+/// start to its goal, measured at the end effector over the whole rollout. A
+/// plan past it is refused at admission, so a servo move strays no farther
+/// from its line than a streamed hand does from its leashed reference.
+pub const CORRIDOR_M: f64 = LEASH_M;
 
 /// The longest the law may take to converge at full speed. The plan-time
 /// rollout runs at most this long; a goal that has not converged by then is
@@ -454,11 +459,14 @@ pub const LEASH_M: f64 = 0.05;
 pub const MAX_SERVO_S: f64 = 30.0;
 
 /// A servo move the law reaches: its path, timed with the end effector (see
-/// [`timed_with_ee`]), and the duration it plays over.
+/// [`timed_with_ee`]), the duration it plays over, and how far off the
+/// straight line from start to goal the end effector stands at the path's
+/// widest point.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServoPlan {
     pub duration: Duration,
     pub path: TimedPath,
+    pub excursion_m: f64,
 }
 
 /// The servo plan for a move from the end effector's pose at `seed` to `end`,
@@ -474,8 +482,15 @@ pub fn plan_servo<const N: usize, S: Smoother<N>>(
     smoother: S,
     requested: Duration,
 ) -> Option<ServoPlan> {
-    let state = ServoState::new(chain.world_ee_pose(&seed), *end, LEASH_M, smoother);
+    let start = chain.world_ee_pose(&seed);
+    let state = ServoState::new(start, *end, LEASH_M, smoother);
     let configs = rollout(chain, state, seed, limits, MAX_SERVO_S)?;
+    let excursion_m = excursion_from_line(
+        chain,
+        &configs,
+        start.translation.vector,
+        end.translation.vector,
+    );
     let path = timed_with_ee(
         chain,
         &configs,
@@ -484,5 +499,34 @@ pub fn plan_servo<const N: usize, S: Smoother<N>>(
         &limits.ee,
     );
     let duration = duration_at_least(path.duration_s(), requested);
-    Some(ServoPlan { duration, path })
+    Some(ServoPlan {
+        duration,
+        path,
+        excursion_m,
+    })
+}
+
+/// The widest any of `configs` puts the end effector off the segment from
+/// `start` to `end` (m): the point-to-segment distance, so a path that
+/// overshoots either end counts that overshoot too.
+pub fn excursion_from_line<const N: usize>(
+    chain: &Chain<N>,
+    configs: &[[f64; N]],
+    start: Vector3<f64>,
+    end: Vector3<f64>,
+) -> f64 {
+    let line = end - start;
+    let length_sq = line.norm_squared();
+    configs
+        .iter()
+        .map(|q| {
+            let p = chain.world_ee_pose(q).translation.vector;
+            let along = if length_sq > 0.0 {
+                ((p - start).dot(&line) / length_sq).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (p - (start + line * along)).norm()
+        })
+        .fold(0.0, f64::max)
 }

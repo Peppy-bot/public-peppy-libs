@@ -10,8 +10,8 @@ use chain_kinematics::nalgebra::{
 };
 use chain_kinematics::{
     Chain, ChainSpec, DEFAULT_DLS_LAMBDA, EeCaps, JointSelection, NoSmoothing, ServoLimits,
-    ServoState, ServoStep, ServoTolerances, all_within, damped_pseudo_inverse, rate_step,
-    rate_step_toward,
+    ServoState, ServoStep, ServoTolerances, all_within, damped_pseudo_inverse, excursion_from_line,
+    rate_step, rate_step_toward,
 };
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -475,4 +475,34 @@ fn a_tiny_position_error_is_corrected_and_the_law_arrives_within_a_tight_slack()
         converged,
         "a move of a micron must arrive within a tenth of it"
     );
+}
+
+/// The excursion of a path is the widest its end effector stands off the
+/// segment between the path's first and last end-effector positions: zero for
+/// the endpoints themselves, and for a configuration between them the
+/// point-to-segment distance, which the cross product gives independently.
+#[test]
+fn excursion_is_the_widest_point_to_segment_distance_of_the_path() {
+    let arm = openarm();
+    let a = [0.0, -0.6, 0.0, 1.0, 0.0, 0.0, 0.0];
+    let b = [0.3, -0.9, 0.2, 1.4, 0.1, -0.2, 0.0];
+    let between = [0.2, -0.7, 0.3, 1.1, 0.4, 0.3, 0.1];
+    let tip = |q: &[f64; 7]| arm.world_ee_pose(q).translation.vector;
+    let (start, end) = (tip(&a), tip(&b));
+    assert!(excursion_from_line(&arm, &[a, b], start, end) < 1e-12);
+    let line = end - start;
+    let offset = tip(&between) - start;
+    let along = offset.dot(&line) / line.norm_squared();
+    assert!(
+        (0.0..=1.0).contains(&along),
+        "the test's middle configuration projects inside the segment"
+    );
+    let expected = offset.cross(&line).norm() / line.norm();
+    let measured = excursion_from_line(&arm, &[a, between, b], start, end);
+    assert!(
+        (measured - expected).abs() < 1e-12,
+        "{measured} vs {expected}"
+    );
+    // A path with no line (start at its goal) measures its distance from that point.
+    assert!((excursion_from_line(&arm, &[a, between], start, start) - offset.norm()).abs() < 1e-12);
 }

@@ -57,9 +57,10 @@ pub use line::{COINCIDENT_ARC_EPS, interpolate};
 pub use payload::{Payload, segments_carrying};
 pub use rate::{DEFAULT_DLS_LAMBDA, PoseMiss, pose_miss, rate_step};
 pub use servo::{
-    EeCaps, JointSmoothing, LEASH_M, MAX_SERVO_S, NoSmoothing, ServoLimits, ServoPlan, ServoState,
-    ServoStep, ServoTolerances, ServoTrajectory, Smoother, ToleranceError, command_smoothing,
-    ee_progress, joints, plan_servo, rate_step_toward, rollout, timed_with_ee,
+    CORRIDOR_M, EeCaps, JointSmoothing, LEASH_M, MAX_SERVO_S, NoSmoothing, ServoLimits, ServoPlan,
+    ServoState, ServoStep, ServoTolerances, ServoTrajectory, Smoother, ToleranceError,
+    command_smoothing, ee_progress, excursion_from_line, joints, plan_servo, rate_step_toward,
+    rollout, timed_with_ee,
 };
 pub use tree::{JointKind, Tree};
 
