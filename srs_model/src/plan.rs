@@ -5,8 +5,7 @@
 use std::time::Duration;
 
 use chain_kinematics::{
-    EeCaps, JointSmoothing, ServoLimits, ServoPlan, ServoTolerances, ToleranceError, joints,
-    plan_servo,
+    EeCaps, JointSmoothing, ServoLimits, ServoPlan, ServoTolerances, ToleranceError, plan_servo,
 };
 use control_core::filters::ButterworthFilter;
 use nalgebra::Isometry3;
@@ -92,21 +91,6 @@ impl CartesianPlan {
             Self::Servo(servo) => servo.duration,
         }
     }
-
-    /// The joint configurations the path passes through every `step` of its
-    /// length, from its start to its goal, each with the fraction of the
-    /// plan's duration it is reached at, for a check that walks the path
-    /// before it plays (see [`TimedPath::probes_every`]).
-    pub fn probes_every(&self, step: f64) -> Vec<(f64, JointVec)> {
-        let path = match self {
-            Self::Line(line) => &line.path,
-            Self::Servo(servo) => &servo.path,
-        };
-        path.probes_every(step)
-            .into_iter()
-            .map(|(fraction, q)| (fraction, joints::<ARM_DOF>(&q)))
-            .collect()
-    }
 }
 
 /// Plan a Cartesian move from the end effector's pose at `seed` to `end`,
@@ -138,53 +122,4 @@ pub fn plan_cartesian(
     )
     .map(CartesianPlan::Servo)
     .ok_or(PlanRejection::Unreachable)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use control_core::path_timing::TimedPath;
-    use hegel::TestCase;
-    use hegel::generators as gs;
-
-    // A plan's probes are its path's, with the end effector's progress
-    // dropped: the first on the start, the last on the goal, no joint
-    // changing by more than the step between neighbours, and each where
-    // the path stands at the fraction it names.
-    #[hegel::test]
-    fn probes_walk_a_plan_from_its_start_to_its_goal(tc: TestCase) {
-        let [start, goal]: [JointVec; 2] = tc.draw(gs::arrays(gs::arrays(
-            gs::floats().min_value(-3.0).max_value(3.0),
-        )));
-        let step: f64 = tc.draw(gs::floats().min_value(0.01).max_value(1.0));
-        let waypoint = |q: &JointVec| [q.as_slice(), &[0.0]].concat();
-        let path = TimedPath::new(
-            &[waypoint(&start), waypoint(&goal)],
-            &[1.0; ARM_DOF + 1],
-            &[1.0; ARM_DOF + 1],
-        );
-        let plan = CartesianPlan::Servo(ServoPlan {
-            duration: Duration::from_secs(1),
-            path: path.clone(),
-        });
-        let probes = plan.probes_every(step);
-        assert_eq!(probes[0], (0.0, start));
-        assert_eq!(probes[probes.len() - 1].1, goal);
-        for pair in probes.windows(2) {
-            let ((f0, q0), (f1, q1)) = (pair[0], pair[1]);
-            assert!(f1 >= f0);
-            for j in 0..ARM_DOF {
-                assert!((q1[j] - q0[j]).abs() <= step * (1.0 + 1e-6));
-            }
-        }
-        for (fraction, q) in &probes {
-            let at = joints::<ARM_DOF>(&path.at_fraction(*fraction));
-            for j in 0..ARM_DOF {
-                assert!(
-                    (q[j] - at[j]).abs() <= 1e-6,
-                    "{q:?} probed where the path stands at {at:?}"
-                );
-            }
-        }
-    }
 }
