@@ -13,6 +13,11 @@
 //!   ([`ArmAnglePolicy`], [`Solution`]); [`Arm::arm_angle`] reports a config's arm angle.
 //! - [`Arm::limits`] are the URDF joint limits; [`Arm::base_pose`] /
 //!   [`Arm::world_pose`] convert between world and arm base frames.
+//! - [`plan_cartesian`] plans a move of the end effector to a pose: a straight
+//!   line walked by the IK with the elbow held or swiveled (a [`LinePlan`], run
+//!   with a [`LineCursor`] and a [`LineTrajectory`]), or the guarded servo of
+//!   `chain_kinematics` when no line tracks, within the limits a
+//!   [`PlanLimits`] carries.
 //!
 //! Frames: FK and IK work in the **arm base frame** (the arm's own mounting link).
 //! Gravity / Coriolis compute in the **world frame**, because gravity is a world
@@ -39,7 +44,9 @@ mod arm;
 mod error;
 mod fk;
 mod ik;
+mod line;
 mod model;
+mod plan;
 
 /// The library entry point: build an [`Arm`] from a URDF, then read FK, gravity,
 /// Coriolis, and IK off it. [`Posed`] is the read-only view returned by
@@ -47,6 +54,8 @@ mod model;
 pub use arm::{Arm, DEFAULT_DLS_LAMBDA, SHELL_MARGIN};
 pub use error::SrsError;
 pub use ik::{ArmAnglePolicy, Solution};
+pub use line::{Elbow, LineCursor, LinePlan, LineTrajectory, Swivel};
+pub use plan::{CartesianPlan, PlanLimits, PlanRejection, plan_cartesian};
 
 /// The arm posed at one configuration: the chain's own read-only view, at
 /// seven joints. Every pose-dependent quantity, the feedforward dynamics

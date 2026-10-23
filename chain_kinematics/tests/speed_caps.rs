@@ -16,14 +16,16 @@ use chain_kinematics::{
 };
 
 mod common;
-use common::{openarm, singular_values, so101};
+use common::{openarm, so101};
 
 const DT: f64 = 0.01;
 
-/// Generous per-joint budget, so the end-effector cap is the only thing binding.
+/// A generous per-joint velocity budget and no acceleration budget, so the
+/// end-effector cap is the only thing binding.
 fn limits<const N: usize>(linear_m_s: f64, angular_rad_s: f64) -> ServoLimits<N> {
     ServoLimits {
         max_joint_velocity: [8.0; N],
+        max_joint_acceleration: [f64::INFINITY; N],
         ee: EeCaps {
             linear_m_s,
             angular_rad_s,
@@ -34,29 +36,14 @@ fn limits<const N: usize>(linear_m_s: f64, angular_rad_s: f64) -> ServoLimits<N>
 }
 
 fn tip<const N: usize>(chain: &Chain<N>, q: &[f64; N]) -> Isometry3<f64> {
-    chain.world_pose(&chain.at(q).ee_pose())
-}
-
-/// Whether the Jacobian at `q` still spans the directions the step is resolved
-/// in, measured by its smallest singular value.
-fn well_conditioned<const N: usize>(chain: &Chain<N>, q: &[f64; N]) -> bool {
-    singular_values(&chain.at(q).jacobian())
-        .into_iter()
-        .fold(f64::INFINITY, f64::min)
-        > CONDITIONING_FLOOR
+    chain.world_ee_pose(q)
 }
 
 /// Peak tip speed (m/s) and slew (rad/s) over a run of steps toward `target`,
 /// measured from forward kinematics on each configuration the law returns.
-///
-/// Reported twice: over every tick, and over only the ticks whose Jacobian still
-/// spans the step. The two differ exactly at a singularity, which is the whole
-/// point of measuring them apart.
 struct Peaks {
     speed: f64,
     slew: f64,
-    speed_well_conditioned: f64,
-    conditioned_ticks: usize,
 }
 
 fn peak_toward<const N: usize>(
@@ -70,23 +57,17 @@ fn peak_toward<const N: usize>(
     let mut p = Peaks {
         speed: 0.0,
         slew: 0.0,
-        speed_well_conditioned: 0.0,
-        conditioned_ticks: 0,
     };
     for _ in 0..ticks {
         let here = tip(chain, &q);
-        let conditioned = well_conditioned(chain, &q);
         let next = rate_step_toward(chain, &q, &here, target, limits);
         let moved = tip(chain, &next);
-        let speed = (moved.translation.vector - here.translation.vector).norm() / limits.dt_s;
-        p.speed = p.speed.max(speed);
+        p.speed = p
+            .speed
+            .max((moved.translation.vector - here.translation.vector).norm() / limits.dt_s);
         p.slew = p
             .slew
             .max(here.rotation.angle_to(&moved.rotation) / limits.dt_s);
-        if conditioned && well_conditioned(chain, &next) {
-            p.speed_well_conditioned = p.speed_well_conditioned.max(speed);
-            p.conditioned_ticks += 1;
-        }
         q = next;
     }
     p
@@ -106,9 +87,6 @@ fn unreachable(from: &Isometry3<f64>) -> Isometry3<f64> {
 // algebra sized.
 const OVERSHOOT_MARGIN: f64 = 1.05;
 
-/// Smallest singular value below which the Jacobian no longer spans the step.
-const CONDITIONING_FLOOR: f64 = 1e-3;
-
 #[test]
 fn the_linear_cap_bounds_tip_speed_on_both_robots() {
     fn run<const N: usize>(chain: &Chain<N>, seed: [f64; N], label: &str) {
@@ -117,22 +95,16 @@ fn the_linear_cap_bounds_tip_speed_on_both_robots() {
             let target = unreachable(&tip(chain, &seed));
             let peaks = peak_toward(chain, seed, &target, &l, 300);
             assert!(
-                peaks.conditioned_ticks > 20,
-                "{label}: only {} well-conditioned ticks, so the bound was never exercised",
-                peaks.conditioned_ticks
+                peaks.speed <= cap * OVERSHOOT_MARGIN,
+                "{label}: tip reached {:.4} m/s under a {cap} m/s cap",
+                peaks.speed
             );
+            // A cap that is never approached passes the bound vacuously.
             assert!(
-                peaks.speed_well_conditioned <= cap * OVERSHOOT_MARGIN,
-                "{label}: tip reached {:.4} m/s under a {cap} m/s cap while the Jacobian \
-                 still spanned the step",
-                peaks.speed_well_conditioned
-            );
-            // A cap that is never approached would pass the bound vacuously.
-            assert!(
-                peaks.speed_well_conditioned > cap * 0.5,
+                peaks.speed > cap * 0.5,
                 "{label}: tip only reached {:.4} m/s under a {cap} m/s cap, \
                  so this case never pressed against the bound",
-                peaks.speed_well_conditioned
+                peaks.speed
             );
         }
     }
@@ -146,10 +118,8 @@ fn quartering_the_cap_quarters_the_speed() {
     // always crawled would honour every cap and serve no one.
     fn run<const N: usize>(chain: &Chain<N>, seed: [f64; N], label: &str) {
         let target = unreachable(&tip(chain, &seed));
-        let fast =
-            peak_toward(chain, seed, &target, &limits::<N>(0.48, 10.0), 300).speed_well_conditioned;
-        let slow =
-            peak_toward(chain, seed, &target, &limits::<N>(0.12, 10.0), 300).speed_well_conditioned;
+        let fast = peak_toward(chain, seed, &target, &limits::<N>(0.48, 10.0), 300).speed;
+        let slow = peak_toward(chain, seed, &target, &limits::<N>(0.12, 10.0), 300).speed;
         let ratio = fast / slow;
         assert!(
             (3.0..=5.0).contains(&ratio),
@@ -284,43 +254,5 @@ fn a_servo_move_respects_the_cap_end_to_end() {
     assert!(
         fastest <= cap * OVERSHOOT_MARGIN,
         "a servo move peaked at {fastest:.4} m/s under a {cap} m/s cap"
-    );
-}
-
-/// The budget is applied to a first-order model of the motion, so a tick that
-/// crosses a singularity can outrun it. Pinned rather than fixed: the same
-/// expression governs on `main`, and the OpenArm keeps its elbow off this
-/// configuration with a lower limit of 0.05 rad, which the raw fixture URDF
-/// (lower limit 0.0) deliberately does not carry.
-///
-/// The number matters. A step is sized from the Jacobian at the start of the
-/// tick, and at a singularity that Jacobian under-predicts the arc the tip then
-/// travels, so the cap holds approximately rather than exactly. This test says
-/// how approximately, so that a change making it materially worse fails here,
-/// and a change making it exact has somewhere to land.
-#[test]
-fn a_tick_through_a_singularity_can_outrun_the_cap() {
-    let chain = openarm();
-    let seed = [0.3, -0.4, 0.2, 0.8, -0.5, 0.3, 0.6];
-    let cap = 1.0;
-    let target = unreachable(&tip(&chain, &seed));
-    let peaks = peak_toward(&chain, seed, &target, &limits::<7>(cap, 10.0), 300);
-
-    assert!(
-        peaks.speed > cap * OVERSHOOT_MARGIN,
-        "the singular overshoot has gone away ({:.4} m/s under a {cap} m/s cap); if that \
-         was deliberate, this test should be replaced by an exact-cap assertion",
-        peaks.speed
-    );
-    assert!(
-        peaks.speed <= cap * 1.30,
-        "overshoot at the singularity grew to {:.4} m/s under a {cap} m/s cap, past the \
-         1.30x this law has been measured at",
-        peaks.speed
-    );
-    // It is only the singularity: away from it the same run holds the budget.
-    assert!(
-        peaks.speed_well_conditioned <= cap * OVERSHOOT_MARGIN,
-        "the overshoot is not confined to the singular ticks"
     );
 }

@@ -244,6 +244,11 @@ impl<const N: usize> Chain<N> {
         self.base_from_world.inverse() * base
     }
 
+    /// The end-effector pose at `q`, world frame.
+    pub fn world_ee_pose(&self, q: &[f64; N]) -> Isometry3<f64> {
+        self.world_pose(&self.at(q).ee_pose())
+    }
+
     /// The underlying URDF tree, for a caller that needs geometry this type does
     /// not surface (collision meshes, links off the chain).
     pub fn tree(&self) -> &Tree {
@@ -432,7 +437,7 @@ impl<const N: usize> Posed<'_, N> {
     }
 
     fn to_base(&self, world: Isometry3<f64>) -> Isometry3<f64> {
-        self.chain.base_from_world * world
+        self.chain.base_pose(&world)
     }
 }
 
