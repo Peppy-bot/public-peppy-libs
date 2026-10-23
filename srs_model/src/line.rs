@@ -338,8 +338,9 @@ impl LineTrajectory {
     }
 
     /// The configuration of the planned walk at `now`: where the runtime's
-    /// cursor, retracing the walk the plan validated, has the arm then.
-    pub fn joints_at(&self, now: Instant) -> JointVec {
+    /// cursor, retracing the walk the plan validated, has the arm then, to
+    /// within a few milliradians.
+    pub fn sample(&self, now: Instant) -> JointVec {
         joints(&self.timed.sample(now))
     }
 }

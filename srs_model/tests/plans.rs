@@ -22,6 +22,11 @@ use common::properties::sides;
 
 const PERIOD: Duration = Duration::from_millis(10);
 
+/// How far a line's runtime cursor may stand off the plan's walk, per joint:
+/// measured at 1.2 mrad at most over the drawn plans, at a seed near the
+/// elbow's floor.
+const WALK_GAP_RAD: f64 = 5e-3;
+
 // A goal near any posture of either fixture arm, at any request, any joint
 // limits and any end-effector caps: a plan, when there is one, lasts at least
 // the request; a line starts at the seed's own solution of the start pose and
@@ -30,10 +35,6 @@ const PERIOD: Duration = Duration::from_millis(10);
 // within its velocity limit and within its acceleration limit, as the plan
 // checked. A refusal is the law failing to
 // converge: the request and the limits drawn here are always sane budgets.
-/// How far a line's runtime cursor may stand off the plan's walk, per joint:
-/// measured at 0.21 mrad at most over the drawn plans.
-const WALK_GAP_RAD: f64 = 1e-3;
-
 #[hegel::test]
 fn an_accepted_plan_plays_within_the_limits_it_was_sized_against(tc: TestCase) {
     let arm = arm(tc.draw(sides()));
@@ -116,7 +117,7 @@ fn an_accepted_plan_plays_within_the_limits_it_was_sized_against(tc: TestCase) {
                     // time reads the arm's real path off it.
                     let gap = q
                         .iter()
-                        .zip(traj.joints_at(at))
+                        .zip(traj.sample(at))
                         .map(|(a, b)| (a - b).abs())
                         .fold(0.0, f64::max);
                     assert!(

@@ -476,6 +476,62 @@ impl TimedPath {
         self.at_position(cell.from + distance)
     }
 
+    /// The path's length in its own measure, the norm of its components.
+    fn length(&self) -> f64 {
+        self.pieces
+            .last()
+            .map_or(0.0, |placed| placed.from + placed.piece.length())
+    }
+
+    /// The time (s) the path reaches position `s`: the cell holding `s`,
+    /// entered at its time and speed, run at its constant acceleration for
+    /// the distance to `s`.
+    fn time_at_position(&self, s: f64) -> f64 {
+        let k = self
+            .cells
+            .partition_point(|cell| cell.from <= s)
+            .clamp(1, self.cells.len())
+            - 1;
+        let cell = &self.cells[k];
+        let distance = (s - cell.from).clamp(0.0, cell.length);
+        if distance == 0.0 {
+            return cell.time;
+        }
+        if cell.speed_in == cell.speed_out {
+            return cell.time + distance / cell.speed_in;
+        }
+        let acceleration =
+            (cell.speed_out * cell.speed_out - cell.speed_in * cell.speed_in) / (2.0 * cell.length);
+        let speed_at = (cell.speed_in * cell.speed_in + 2.0 * acceleration * distance)
+            .max(0.0)
+            .sqrt();
+        cell.time + (speed_at - cell.speed_in) / acceleration
+    }
+
+    /// The path's configurations every `step` of its length from its start,
+    /// and at its end, each with the fraction of the path's duration it is
+    /// reached at: the probes a check that walks the path before it plays
+    /// reads. No component changes by more than `step` between neighbours,
+    /// since a component's change is at most the path's.
+    pub fn probes_every(&self, step: f64) -> Vec<(f64, Vec<f64>)> {
+        assert!(step > 0.0, "a probe step is a positive length");
+        if self.pieces.is_empty() {
+            return vec![(0.0, self.end.clone())];
+        }
+        let length = self.length();
+        (0..)
+            .map(|k| k as f64 * step)
+            .take_while(|&s| s < length)
+            .map(|s| {
+                (
+                    self.time_at_position(s) / self.duration,
+                    self.at_position(s),
+                )
+            })
+            .chain(std::iter::once((1.0, self.end.clone())))
+            .collect()
+    }
+
     /// The configuration at path position `s`.
     fn at_position(&self, s: f64) -> Vec<f64> {
         let p = self
@@ -516,6 +572,22 @@ impl TimedTrajectory {
     pub fn sample(&self, now: Instant) -> Vec<f64> {
         self.path.at_fraction(self.clock.fraction(now))
     }
+
+    /// The path's probes every `step` of its length (see
+    /// [`TimedPath::probes_every`]), each with the instant this trajectory
+    /// plays it.
+    pub fn probes_every(&self, step: f64) -> Vec<(Instant, Vec<f64>)> {
+        self.path
+            .probes_every(step)
+            .into_iter()
+            .map(|(fraction, q)| {
+                (
+                    self.clock.motion_start() + self.clock.duration().mul_f64(fraction),
+                    q,
+                )
+            })
+            .collect()
+    }
 }
 
 /// A straight joint-space move from `start` to `end`: the trapezoid under the
@@ -555,11 +627,25 @@ impl<const N: usize> JointTrajectory<N> {
     /// The configuration at `now`: `start` before the move, `end` exactly once
     /// it is complete, and the path between them in between.
     pub fn sample(&self, now: Instant) -> [f64; N] {
-        self.timed
-            .sample(now)
-            .try_into()
-            .expect("a joint path has a configuration's components")
+        joints(self.timed.sample(now))
     }
+
+    /// The move's probes every `step` of its joint-space length, each with
+    /// the instant the move plays it (see [`TimedPath::probes_every`]).
+    pub fn probes_every(&self, step: f64) -> Vec<(Instant, [f64; N])> {
+        self.timed
+            .probes_every(step)
+            .into_iter()
+            .map(|(at, q)| (at, joints(q)))
+            .collect()
+    }
+}
+
+/// A joint path's sample as the configuration it is.
+fn joints<const N: usize>(sample: Vec<f64>) -> [f64; N] {
+    sample
+        .try_into()
+        .expect("a joint path has a configuration's components")
 }
 
 #[cfg(test)]
@@ -610,6 +696,47 @@ mod tests {
 
     /// Rounding slack on a limit.
     const SLACK: f64 = 1.0 + 1e-6;
+
+    // Probed every `step` of its length, a path gives its start first, at
+    // the start of its time, and its end last, at the end of its time, with
+    // the probes in time order, no component changing by more than `step`
+    // between neighbours, and each probe where the path stands at the time
+    // it names.
+    #[hegel::test]
+    fn probes_walk_the_path_at_the_step_from_its_start_to_its_end(tc: TestCase) {
+        let waypoints = waypoints(&tc);
+        let (max_velocity, max_acceleration) = limits(&tc);
+        let step: f64 = tc.draw(gs::floats().min_value(0.01).max_value(1.0));
+        let path = TimedPath::new(&waypoints, &max_velocity, &max_acceleration);
+        let probes = path.probes_every(step);
+        assert_eq!(probes[0], (0.0, waypoints[0].clone()));
+        let (last_fraction, last) = &probes[probes.len() - 1];
+        assert_eq!(last, &waypoints[waypoints.len() - 1]);
+        if waypoints.len() == 1 {
+            assert_eq!(probes.len(), 1, "a path of no length is one probe");
+            return;
+        }
+        assert!((last_fraction - 1.0).abs() <= 1e-9, "{last_fraction}");
+        for pair in probes.windows(2) {
+            let ((f0, q0), (f1, q1)) = (&pair[0], &pair[1]);
+            assert!(f1 >= f0, "{f0} then {f1}");
+            for (a, b) in q0.iter().zip(q1) {
+                assert!(
+                    (b - a).abs() <= step * SLACK,
+                    "{a} to {b} over a step of {step}"
+                );
+            }
+        }
+        for (fraction, q) in &probes {
+            let at = path.at_fraction(*fraction);
+            for (a, b) in at.iter().zip(q) {
+                assert!(
+                    (a - b).abs() <= 1e-6,
+                    "{q:?} probed where the path stands at {at:?}"
+                );
+            }
+        }
+    }
 
     // A timed path through any waypoints, under any limits, starts at rest on
     // the first and ends at rest on the last; sampled a thousand times through
