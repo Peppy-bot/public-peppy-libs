@@ -327,6 +327,10 @@ sequenceDiagram
     end
 ```
 
+Each grab logs one line: the orientation that planned, where the descent's
+result and limb_state at the close put the grasp point against the commanded
+one (`[dx, dy, dz] cm`), the two openings it judged, and the retreat.
+
 `CentreProposer` lowers a seen item's position by `grasp_depth_m` and tries
 the eight rolls of a grasp from above; an item whose position is a grasp point
 (a grab by pose, or an item place_item put down) is grasped there unlowered,

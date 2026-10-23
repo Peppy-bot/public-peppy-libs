@@ -127,10 +127,29 @@ async def test_a_hold_checks_the_three_moves_then_opens_reaches_closes_and_lifts
         ("move", LIFT, q),
     ]
     [line] = [record.getMessage() for record in log.records]
+    # The fake descent lands on the grasp point; the fake limb_states put
+    # the left grasp point at [0.4, 0.2, 0.9].
     assert line == (
         "grab of item 'cup_1-t0' with gripper 'left_gripper': orientation 1 of 8 planned, [0.000, 1.000, 0.000, 0.000]; "
+        "descent result [+0.0, +0.0, +0.0] cm from the grasp point; limb_state at the close [-10.0, +10.0, +20.5] cm from it; "
         "closed at 0.300; 0.300 after the lift; held"
     )
+
+
+def landing_log(robot: FakeRobot) -> None:
+    """The descent's result lands 3.2 cm off: 2.7 toward the robot, 1.0
+    left, 1.3 below, as move_arm answered at duration_s 0 in Waldo."""
+    robot.moves.extend([MoveResult(True, ""), MoveResult(True, "", (GRASP[0] - 0.027, GRASP[1] + 0.010, GRASP[2] - 0.013))])
+
+
+async def test_the_log_line_gives_where_the_descent_landed_against_the_grasp_point(caplog):
+    manipulator, robot, store = await started()
+    holding(robot, store)
+    landing_log(robot)
+    with records_of(caplog, "brain_core.manipulation.scripted") as log:
+        assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == Outcome(True)
+    [line] = [record.getMessage() for record in log.records]
+    assert "descent result [-2.7, +1.0, -1.3] cm from the grasp point" in line
 
 
 # A step that fails once the descent has begun retreats: the gripper opens

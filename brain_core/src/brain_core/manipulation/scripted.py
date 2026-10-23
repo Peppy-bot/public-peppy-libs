@@ -28,8 +28,9 @@ goal a stop ended (the brain's stop or the backbone's stop service)
 retreats from nothing: the arm stays where the stop left it. A step that
 fails before the descent leaves the arm where the backbone stopped it.
 
-Each grab leaves one log line: the orientation that planned, the two
-openings it judged, and the retreat.
+Each grab leaves one log line: the orientation that planned, where the
+descent's result and limb_state at the close put the grasp point against
+the commanded one, the two openings it judged, and the retreat.
 
 A drop opens the gripper where it is. A place carries the held item to the
 pose, through its pre-grasp point, in the pose's orientation alone when it
@@ -166,8 +167,10 @@ class ScriptedManipulator:
     ) -> Outcome:
         """The grab from its descent on: down to `point`, close, judge, lift
         to `lift`, judge again."""
-        await self._move(gripper.arm, point, orientation, cancel)
+        descended = await self._move(gripper.arm, point, orientation, cancel)
+        notes.append(f"descent result {_offset_cm(descended.final_position, point)} from the grasp point")
         closed = await self._grip(gripper.name, CLOSED, max_effort, cancel)
+        notes.append(f"limb_state at the close {_offset_cm(self._arm_position(gripper.arm), point)} from it")
         notes.append(f"closed at {closed:.3f}")
         if closed < self.hold_opening_min:
             raise _Failed(f"gripper '{gripper.name}' closed on nothing")
@@ -190,6 +193,12 @@ class ScriptedManipulator:
         except _Failed as failure:
             return failure.message
         return ""
+
+    def _arm_position(self, arm: str) -> Optional[Vec3]:
+        """The grasp point of `arm` in the latest limb_states snapshot."""
+        snapshot = self._limb_states.latest
+        state = snapshot.arms.get(arm) if snapshot is not None else None
+        return state.position if state is not None else None
 
     async def _place(self, gripper: Gripper, pose: Pose, cancel: CancelToken) -> Outcome:
         self._require_started()
@@ -272,6 +281,13 @@ class ScriptedManipulator:
         if after is None:
             raise _Failed("no limb_states snapshot after the lift")
         return after
+
+
+def _offset_cm(position: Optional[Vec3], commanded: Vec3) -> str:
+    """`position` minus `commanded` per axis, in centimetres, for the log."""
+    if position is None:
+        return "unknown"
+    return "[" + ", ".join(f"{100 * (p - c):+.1f}" for p, c in zip(position, commanded)) + "] cm"
 
 
 def _opening_of(snapshot: Optional[LimbSnapshot], gripper: str) -> float:
