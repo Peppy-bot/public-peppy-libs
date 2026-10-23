@@ -52,15 +52,18 @@ pub use error::ChainError;
 pub use ik::{
     ACCEPT_ORIENTATION_RAD, ACCEPT_POSITION_M, Goal, Kinematics, SEED_TABLE_SIZE, SolveError,
 };
-pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse, manipulability};
+pub use jacobian::{
+    Jacobian, JacobianPinv, condition_number, damped_pseudo_inverse, manipulability,
+    position_condition_number,
+};
 pub use line::{COINCIDENT_ARC_EPS, interpolate};
 pub use payload::{Payload, segments_carrying};
 pub use rate::{DEFAULT_DLS_LAMBDA, PoseMiss, pose_miss, rate_step};
 pub use servo::{
     CORRIDOR_M, EeCaps, JointSmoothing, LEASH_M, MAX_SERVO_S, NoSmoothing, ServoLimits, ServoPlan,
-    ServoState, ServoStep, ServoTolerances, ServoTrajectory, Smoother, ToleranceError,
-    command_smoothing, ee_progress, excursion_from_line, joints, plan_servo, rate_step_toward,
-    rollout, timed_with_ee,
+    ServoState, ServoStep, ServoTolerances, ServoTrajectory, SingularityBand, Smoother,
+    ToleranceError, command_smoothing, ee_progress, excursion_from_line, joints, plan_servo,
+    rate_step_toward, rollout, singularity_scale, timed_with_ee,
 };
 pub use tree::{JointKind, Tree};
 

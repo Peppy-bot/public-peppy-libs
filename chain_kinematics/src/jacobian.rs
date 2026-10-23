@@ -82,6 +82,39 @@ pub fn manipulability<const N: usize>(j: &Jacobian<N>) -> f64 {
     gram.max(0.0).sqrt()
 }
 
+/// The condition number of the Jacobian: its largest singular value over its
+/// smallest, 1 at the best-conditioned posture and unbounded at a singularity,
+/// where a direction of the twist costs unbounded joint rate. Goes through a
+/// dynamically-sized matrix, which nalgebra needs for the singular values of a
+/// `6xN` matrix at any `N`, and so allocates.
+pub fn condition_number<const N: usize>(j: &Jacobian<N>) -> f64 {
+    ratio_of_extreme_singular_values(&DMatrix::from_iterator(6, N, j.iter().copied()))
+}
+
+/// The condition number of the Jacobian's position rows alone (`3xN`, every
+/// entry in metres per radian): 1 at the best-conditioned posture and
+/// unbounded where the end effector loses a direction of travel, such as a
+/// straightened elbow. Free of the orientation rows' different units, so one
+/// value reads the same on every chain.
+pub fn position_condition_number<const N: usize>(j: &Jacobian<N>) -> f64 {
+    let position = DMatrix::from_iterator(3, N, j.fixed_rows::<3>(0).iter().copied());
+    ratio_of_extreme_singular_values(&position)
+}
+
+fn ratio_of_extreme_singular_values(m: &DMatrix<f64>) -> f64 {
+    let singular = m.singular_values();
+    let (largest, smallest) = singular
+        .iter()
+        .fold((0.0_f64, f64::INFINITY), |(hi, lo), &s| {
+            (hi.max(s), lo.min(s))
+        });
+    if smallest > 0.0 {
+        largest / smallest
+    } else {
+        f64::INFINITY
+    }
+}
+
 use crate::Posed;
 
 impl<const N: usize> Posed<'_, N> {
@@ -94,5 +127,15 @@ impl<const N: usize> Posed<'_, N> {
     /// Yoshikawa manipulability of this posture.
     pub fn manipulability(&self) -> f64 {
         manipulability(&self.jacobian())
+    }
+
+    /// The condition number of this posture's Jacobian.
+    pub fn condition_number(&self) -> f64 {
+        condition_number(&self.jacobian())
+    }
+
+    /// The condition number of this posture's position Jacobian.
+    pub fn position_condition_number(&self) -> f64 {
+        position_condition_number(&self.jacobian())
     }
 }

@@ -5,8 +5,8 @@
 use std::time::Duration;
 
 use chain_kinematics::{
-    CORRIDOR_M, EeCaps, JointSmoothing, ServoLimits, ServoPlan, ServoTolerances, ToleranceError,
-    joints, plan_servo,
+    CORRIDOR_M, EeCaps, JointSmoothing, ServoLimits, ServoPlan, ServoTolerances, SingularityBand,
+    ToleranceError, joints, plan_servo,
 };
 use control_core::filters::ButterworthFilter;
 use nalgebra::Isometry3;
@@ -37,10 +37,20 @@ impl PlanLimits {
             max_joint_acceleration: self.max_joint_acceleration_rad_s2,
             ee: self.ee,
             tolerances: tolerance,
+            singularity: SINGULARITY_BAND,
             dt_s: self.control_period.as_secs_f64(),
         }
     }
 }
+
+/// Where a streamed step slows into a singularity on an SRS arm, on the
+/// position Jacobian's condition number: MoveIt Servo's thresholds, which on
+/// the OpenArm are an elbow 16 degrees from straight (17) and 9.5 degrees
+/// from straight (30); the ready posture reads 4.9.
+pub const SINGULARITY_BAND: SingularityBand = SingularityBand {
+    scale_from: 17.0,
+    stop_at: 30.0,
+};
 
 /// Why no plan reached the goal pose: named where the decision is taken, so
 /// the operator is told which limit refused the move.

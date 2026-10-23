@@ -10,8 +10,8 @@ use chain_kinematics::nalgebra::{
 };
 use chain_kinematics::{
     Chain, ChainSpec, DEFAULT_DLS_LAMBDA, EeCaps, JointSelection, NoSmoothing, ServoLimits,
-    ServoState, ServoStep, ServoTolerances, all_within, damped_pseudo_inverse, excursion_from_line,
-    rate_step, rate_step_toward,
+    ServoState, ServoStep, ServoTolerances, SingularityBand, all_within, damped_pseudo_inverse,
+    excursion_from_line, rate_step, rate_step_toward, singularity_scale,
 };
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -51,6 +51,10 @@ fn servo_limits<const N: usize>(position_m: f64) -> ServoLimits<N> {
             angular_rad_s: 1.0,
         },
         tolerances: ServoTolerances::new(position_m, 1e-2).expect("a reachable tolerance"),
+        singularity: SingularityBand {
+            scale_from: 17.0,
+            stop_at: 30.0,
+        },
         dt_s: 0.01,
     }
 }
@@ -505,4 +509,47 @@ fn excursion_is_the_widest_point_to_segment_distance_of_the_path() {
     );
     // A path with no line (start at its goal) measures its distance from that point.
     assert!((excursion_from_line(&arm, &[a, between], start, start) - offset.norm()).abs() < 1e-12);
+}
+
+/// Toward a singularity the streamed step shrinks and stops: from the arm
+/// stretched straight out, a target further out produces no motion, while a
+/// target back inward produces the unscaled step; from the ready posture,
+/// well conditioned, every step is unscaled.
+#[test]
+fn a_streamed_step_toward_a_singularity_is_scaled_down_and_stops_at_it() {
+    let arm = openarm();
+    let limits = servo_limits::<7>(0.002);
+    let band = limits.singularity;
+    let stretched = [-0.9612, -0.1314, 1.285, 0.05, -0.681, 0.1256, -0.175];
+    let ee = arm.world_ee_pose(&stretched);
+    assert!(
+        arm.at(&stretched).position_condition_number() > band.stop_at,
+        "the stretched arm is past the stop: {}",
+        arm.at(&stretched).position_condition_number()
+    );
+    let outward = {
+        let mut target = ee;
+        target.translation.vector += ee.translation.vector.normalize() * 0.05;
+        target
+    };
+    let step = rate_step_toward(&arm, &stretched, &ee, &outward, &limits);
+    assert_eq!(step, stretched, "no step toward the singularity");
+    let inward = {
+        let mut target = ee;
+        target.translation.vector -= ee.translation.vector.normalize() * 0.05;
+        target
+    };
+    let step = rate_step_toward(&arm, &stretched, &ee, &inward, &limits);
+    assert_ne!(step, stretched, "a step away from the singularity");
+    assert!((singularity_scale(&arm, &stretched, &step, &band) - 1.0).abs() < 1e-12);
+
+    let ready = [-0.15, -0.4, 0.48, 0.95, 0.0, 0.0, 0.0];
+    assert!(arm.at(&ready).position_condition_number() < band.scale_from);
+    let ee = arm.world_ee_pose(&ready);
+    for axis in [Vector3::x(), Vector3::y(), Vector3::z()] {
+        let mut target = ee;
+        target.translation.vector += axis * 0.05;
+        let step = rate_step_toward(&arm, &ready, &ee, &target, &limits);
+        assert!((singularity_scale(&arm, &ready, &step, &band) - 1.0).abs() < 1e-12);
+    }
 }

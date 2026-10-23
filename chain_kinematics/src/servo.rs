@@ -109,7 +109,20 @@ pub struct ServoLimits<const N: usize> {
     pub max_joint_acceleration: [f64; N],
     pub ee: EeCaps,
     pub tolerances: ServoTolerances,
+    pub singularity: SingularityBand,
     pub dt_s: f64,
+}
+
+/// Where a streamed step slows on its way into a singularity, on the
+/// condition number of the position Jacobian (see
+/// [`crate::position_condition_number`]): a step that raises it past
+/// `scale_from` is scaled down, linearly to nothing at `stop_at`. MoveIt
+/// Servo's rule, with its thresholds on this one measure; the arm's model
+/// chooses them for its geometry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SingularityBand {
+    pub scale_from: f64,
+    pub stop_at: f64,
 }
 
 /// Per-joint output smoothing, bounding the jerk of the commanded step: a
@@ -142,6 +155,11 @@ impl<const N: usize> Smoother<N> for NoSmoothing {
 /// that limit decelerating within its acceleration budget, so it arrives there
 /// braking, never stopped by the limit itself.
 ///
+/// A step that leads toward a singularity is scaled by [`singularity_scale`]
+/// within `limits.singularity`, so the chain slows into a singularity and
+/// stops short of it, as MoveIt Servo does; a step that leads away from one
+/// is not scaled.
+///
 /// It always returns a configuration. An unreachable target moves toward the
 /// closest pose this step can find and saturates there: a teleoperator pushing
 /// past the edge feels a wall.
@@ -164,7 +182,7 @@ pub fn rate_step_toward<const N: usize>(
     } else {
         Vector3::zeros()
     };
-    rate_step(
+    let next = rate_step(
         chain,
         q,
         &Vector6::new(dp.x, dp.y, dp.z, dw.x, dw.y, dw.z),
@@ -172,7 +190,28 @@ pub fn rate_step_toward<const N: usize>(
         &limits.max_joint_velocity,
         dt_s,
         DEFAULT_DLS_LAMBDA,
-    )
+    );
+    let scale = singularity_scale(chain, q, &next, &limits.singularity);
+    std::array::from_fn(|i| q[i] + (next[i] - q[i]) * scale)
+}
+
+/// The fraction of the step from `q` to `next` the chain's conditioning
+/// allows within `band`: 1 while the position condition number after the
+/// step is under `band.scale_from` or lower than before it (the step leads
+/// away from the singularity), 0 once it would reach `band.stop_at`, and
+/// linear between.
+pub fn singularity_scale<const N: usize>(
+    chain: &Chain<N>,
+    q: &[f64; N],
+    next: &[f64; N],
+    band: &SingularityBand,
+) -> f64 {
+    let before = chain.at(q).position_condition_number();
+    let after = chain.at(next).position_condition_number();
+    if after <= before || after <= band.scale_from {
+        return 1.0;
+    }
+    ((band.stop_at - after) / (band.stop_at - band.scale_from)).clamp(0.0, 1.0)
 }
 
 /// The positions each joint of `q` may reach within `dt_s` and still stop on

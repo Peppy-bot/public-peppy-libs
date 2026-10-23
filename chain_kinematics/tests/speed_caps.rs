@@ -12,7 +12,7 @@
 use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
 use chain_kinematics::{
     Chain, EeCaps, NoSmoothing, ServoLimits, ServoState, ServoStep, ServoTolerances,
-    rate_step_toward,
+    SingularityBand, rate_step_toward,
 };
 
 mod common;
@@ -31,6 +31,10 @@ fn limits<const N: usize>(linear_m_s: f64, angular_rad_s: f64) -> ServoLimits<N>
             angular_rad_s,
         },
         tolerances: ServoTolerances::new(1e-3, 1e-2).expect("a reachable tolerance"),
+        singularity: SingularityBand {
+            scale_from: 17.0,
+            stop_at: 30.0,
+        },
         dt_s: DT,
     }
 }
