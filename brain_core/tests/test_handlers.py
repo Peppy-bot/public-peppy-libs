@@ -1,6 +1,6 @@
 """Every handler against the brain's core with fake backends: the
-contract rules from goal to result, and the line each goal leaves in the
-log, with no router and no robot."""
+contract rules from the decision of a goal to its end, and the line each
+goal leaves in the log, with no router and no robot."""
 
 import asyncio
 import logging
@@ -9,7 +9,10 @@ import pytest
 
 from types import SimpleNamespace
 
-from conftest import CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, depth_frame, make_brain, records_of, rgb_frame
+from conftest import (
+    CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, depth_frame, failed_with, make_brain, records_of,
+    rgb_frame,
+)
 from fake_peppygen import abort as abort_action
 from fake_peppygen import drop_item as drop_action
 from fake_peppygen import grab_item as grab_action
@@ -22,7 +25,7 @@ from brain_core.brain import Brain
 from brain_core.handlers import abort, drop_item, get_state, grab_item, identify_item, place_item, scan_items
 from brain_core.manipulation.centre_proposer import CentreProposer
 from brain_core.manipulation.scripted import ScriptedManipulator
-from brain_core.ports import Box, Coverage, Detection, Role, SearchTimeout
+from brain_core.ports import Box, Coverage, Detection, FailureKind, Refusal, Role, SearchTimeout
 
 
 def with_frames(brain: Brain, depth_m: float = 1.0) -> None:
@@ -93,11 +96,13 @@ async def test_get_state_starts_idle_with_the_configured_grippers():
 
 async def test_scan_and_grab_are_refused_without_backends_but_the_rules_still_speak_first():
     brain = await make_brain()
+    with pytest.raises(Refusal, match="^no perception source: perception_model is 'none'$") as raised:
+        scan_items.decide(brain, scan_goal().request().data)
+    assert raised.value.kind is FailureKind.PRECONDITION_FAILED
+    # A scan the decision let through fails with the same kind.
     ctx = scan_goal()
     await scan_items.run(brain, ctx)
-    assert ctx.completed["success"] is False
-    assert ctx.completed["message"].startswith("no perception source")
-    assert ctx.completed["item_ids"] == [] and ctx.completed["action_time"] == 0.0
+    assert failed_with(ctx, FailureKind.PRECONDITION_FAILED, "no perception source: perception_model is 'none'")
 
     ctx = grab_goal(gripper_name="claw")
     await grab_item.run(brain, ctx)
@@ -127,7 +132,6 @@ async def test_scan_then_identify_then_grab_by_id_then_place():
 
     ctx = scan_goal()
     await scan_items.run(brain, ctx)
-    assert ctx.completed["success"] is True
     assert ctx.completed["item_ids"] == ["cup_1-t0", "banana_1-t0"]
     assert ctx.completed["labels"] == ["cup", "banana"]
     assert len(ctx.completed["positions"]) == 6
@@ -140,7 +144,6 @@ async def test_scan_then_identify_then_grab_by_id_then_place():
 
     ctx = identify_goal("cup")
     await identify_item.run(brain, ctx)
-    assert ctx.completed["success"] is True
     assert ctx.completed["item_id"] == "cup_1-t0"
     assert detector.phrases[-1] == ["cup"]
     assert ctx.completed["orientation"] is None
@@ -259,7 +262,6 @@ async def test_a_search_under_other_words_returns_the_scans_id():
     detector.boxes = [Box("yellow bottle", 0.96, 7, 5, 9, 7)]
     ctx = identify_goal("yellow bottle")
     await identify_item.run(brain, ctx)
-    assert ctx.completed["success"] is True
     assert ctx.completed["item_id"] == "mustard_bottle_1-t0"
     assert ctx.completed["label"] == "mustard bottle"
     assert ctx.completed["confidence"] == 0.96
@@ -274,11 +276,10 @@ async def test_a_description_names_whole_words_only():
     for description in ("the coffee can please", "can", "the mug"):
         ctx = identify_goal(description)
         await identify_item.run(brain, ctx)
-        assert ctx.completed["success"] is False
-        assert ctx.completed["message"] == f"no item matches '{description}'"
+        assert failed_with(ctx, FailureKind.NOT_FOUND, f"no item matches '{description}'")
     ctx = identify_goal("the candle please")
     await identify_item.run(brain, ctx)
-    assert ctx.completed["success"] is True and ctx.completed["label"] == "candle"
+    assert ctx.completed["label"] == "candle"
 
 
 async def test_a_scan_keeps_an_item_only_a_description_finds():
@@ -322,17 +323,22 @@ async def test_a_placed_item_keeps_its_id_in_the_next_scan():
     assert scan.completed["item_ids"] == ["cup_1-t0"]
 
 
-async def test_identify_reports_nothing_found_as_a_failed_result():
+async def test_identify_that_finds_nothing_fails_with_not_found():
     brain = await make_brain(detector=FakeDetector([Box("bowl", 0.9, 7, 5, 9, 7)]))
     with_frames(brain)
     ctx = identify_goal("cup")
     await identify_item.run(brain, ctx)
-    assert ctx.completed["success"] is False
-    assert ctx.completed["message"] == "no item matches 'cup'"
-    assert ctx.completed["item_id"] == ""
+    assert failed_with(ctx, FailureKind.NOT_FOUND, "no item matches 'cup'")
+    # No item at all, for an empty description, is not found either.
+    brain.perceiver.frames.add_color(rgb_frame(16, 12, frame_id=2))
+    brain.perceiver.frames.add_depth(depth_frame(1.0, 16, 12, frame_id=2))
+    brain.models.current(Role.PERCEPTION).boxes = []
+    ctx = identify_goal("")
+    await identify_item.run(brain, ctx)
+    assert failed_with(ctx, FailureKind.NOT_FOUND, "no item in view")
 
 
-async def test_a_search_that_stops_at_its_deadline_is_a_failed_result_and_frees_the_lane():
+async def test_a_search_that_stops_at_its_deadline_fails_with_timeout_and_frees_the_lane():
     class TimingOut(FakeDetector):
         async def detect(self, image, phrases, deadline):
             raise SearchTimeout(deadline.budget_s)
@@ -341,10 +347,61 @@ async def test_a_search_that_stops_at_its_deadline_is_a_failed_result_and_frees_
     with_frames(brain)
     ctx = scan_goal(timeout_s=0.5)
     await scan_items.run(brain, ctx)
-    assert ctx.completed["success"] is False
-    assert ctx.completed["message"] == "the search did not finish within 0.5 s"
-    assert ctx.completed["item_ids"] == []
+    assert failed_with(ctx, FailureKind.TIMEOUT, "the search did not finish within 0.5 s")
     assert brain.sequencer.running("perception") is None
+
+
+async def test_a_search_is_refused_at_once_while_another_runs_or_without_a_source():
+    detector = FakeDetector([Box("cup", 0.9, 7, 5, 9, 7)])
+    brain = await make_brain(detector=detector)
+    for decide, goal in ((scan_items.decide, scan_goal()), (identify_item.decide, identify_goal("cup"))):
+        with pytest.raises(Refusal, match="^no perception source: no camera frame received$") as raised:
+            decide(brain, goal.request().data)
+        assert raised.value.kind is FailureKind.RESOURCE_UNAVAILABLE
+    with_frames(brain)
+    scan_items.decide(brain, scan_goal().request().data)
+    identify_item.decide(brain, identify_goal("cup").request().data)
+    running = brain.sequencer.start(Role.PERCEPTION, "scan_items", 0)
+    for decide, goal in ((scan_items.decide, scan_goal()), (identify_item.decide, identify_goal("cup"))):
+        with pytest.raises(Refusal, match="^scan_items is running$") as raised:
+            decide(brain, goal.request().data)
+        assert raised.value.kind is FailureKind.PRECONDITION_FAILED
+    brain.sequencer.finish(running)
+    # A search beside a manipulation is let through.
+    brain.sequencer.start(Role.MANIPULATION, "grab_item", 0)
+    scan_items.decide(brain, scan_goal().request().data)
+    assert detector.phrases == []
+
+
+async def test_a_callers_cancel_ends_a_search_cancelled_with_empty_fields():
+    class Gated(FakeDetector):
+        """Answers once the test opens its gate; `searching` resolves once
+        a search has begun."""
+
+        def __init__(self, boxes) -> None:
+            super().__init__(boxes)
+            self.gate = asyncio.Event()
+            self.searching = asyncio.Event()
+
+        async def detect(self, image, phrases, deadline):
+            self.searching.set()
+            await self.gate.wait()
+            return await super().detect(image, phrases, deadline)
+
+    detector = Gated([Box("cup", 0.9, 7, 5, 9, 7)])
+    brain = await make_brain(detector=detector)
+    with_frames(brain)
+    ctx = identify_goal("cup")
+    running = asyncio.create_task(identify_item.run(brain, ctx))
+    await detector.searching.wait()
+    ctx.cancel("sender_gone")
+    # The search is awaited until the detector returns; what it found is
+    # not reported.
+    detector.gate.set()
+    await asyncio.wait_for(running, 1.0)
+    assert ctx.cancelled_reason == "its sender is gone"
+    assert ctx.cancelled == dict(identify_item.ZERO, action_time=0.0)
+    assert brain.state.items == {} and brain.sequencer.running(Role.PERCEPTION) is None
 
 
 async def test_one_manipulation_at_a_time_and_abort_stops_it_without_touching_holding():
@@ -367,6 +424,9 @@ async def test_one_manipulation_at_a_time_and_abort_stops_it_without_touching_ho
     await running
     assert stop.completed["success"] is True
     assert stop.completed["aborted_action"] == "grab_item"
+    # item_manipulation keeps its abort: the running goal completes with
+    # success false, not cancelled.
+    assert first.cancelled is None
     assert first.completed["success"] is False
     assert first.completed["message"] == "aborted: operator pressed stop"
     assert manipulator.stopped == 1
@@ -389,8 +449,9 @@ async def test_a_callers_cancel_completes_the_goal_as_cancelled():
     ctx.cancel()
     await asyncio.wait_for(running, 1.0)
     assert ctx.completed is None
+    assert ctx.cancelled_reason == "cancelled by its caller"
     assert ctx.cancelled["success"] is False
-    assert ctx.cancelled["message"] == "cancelled by the caller"
+    assert ctx.cancelled["message"] == "cancelled by its caller"
     assert manipulator.stopped == 1
     assert state_of(brain).current_action == ""
 
@@ -405,7 +466,7 @@ async def test_a_search_may_run_beside_a_manipulation():
     await manipulator.begun()
     scan = scan_goal()
     await scan_items.run(brain, scan)
-    assert scan.completed["success"] is True
+    assert scan.completed["labels"] == ["cup"]
     assert state_of(brain).current_action == "grab_item"
     await abort.run(brain, abort_goal())
     await running
@@ -435,11 +496,17 @@ async def test_a_goal_that_arrives_once_the_shutdown_began_is_refused():
     await manipulator.begun()
     await asyncio.wait_for(brain.shutdown(), 1.0)
     await running
-    # The lanes are free again, and still every goal is refused.
-    for run, ctx in ((grab_item.run, grab_goal(gripper_name="right_gripper", position=[0.5, -0.1, 0.7])), (scan_items.run, scan_goal())):
-        await run(brain, ctx)
-        assert ctx.completed["success"] is False
-        assert ctx.completed["message"] == "the node is shutting down"
+    # The lanes are free again, and still every goal is refused: a grab in
+    # its result, a scan at its decision, or failed once it runs.
+    grab = grab_goal(gripper_name="right_gripper", position=[0.5, -0.1, 0.7])
+    await grab_item.run(brain, grab)
+    assert (grab.completed["success"], grab.completed["message"]) == (False, "the node is shutting down")
+    with pytest.raises(Refusal, match="^the node is shutting down$") as raised:
+        scan_items.decide(brain, scan_goal().request().data)
+    assert raised.value.kind is FailureKind.PRECONDITION_FAILED
+    scan = scan_goal()
+    await scan_items.run(brain, scan)
+    assert failed_with(scan, FailureKind.PRECONDITION_FAILED, "the node is shutting down")
     assert len(manipulator.calls) == 1
 
 
@@ -463,10 +530,12 @@ async def test_a_search_logs_the_frame_it_looked_at_each_box_and_the_item_it_ret
     boxes = "2 boxes: cup 0.90, cup 0.85 (duplicate)"
     assert lines(brain_log) == [
         f"identify_item 'cup' succeeded after 0.84 s; frame 1 taken 0.25 s before the search, {boxes}; item cup_1-t0",
-        f"identify_item 'bowl' refused after 0.84 s: no item matches 'bowl'; frame 1 taken 1.09 s before the search, {boxes}",
+        f"identify_item 'bowl' failed after 0.84 s: no item matches 'bowl'; frame 1 taken 1.09 s before the search, {boxes}",
         f"scan_items succeeded after 0.84 s; frame 1 taken 1.93 s before the search, {boxes}",
     ]
-    assert {record.levelno for record in brain_log.records} == {logging.INFO}
+    # A search that found nothing failed, without a traceback.
+    assert [record.levelno for record in brain_log.records] == [logging.INFO, logging.WARNING, logging.INFO]
+    assert all(record.exc_info is None for record in brain_log.records)
 
 
 async def test_a_search_that_found_nothing_logs_whether_the_detector_boxed_anything(brain_log):
@@ -477,8 +546,8 @@ async def test_a_search_that_found_nothing_logs_whether_the_detector_boxed_anyth
     with_frames(no_box)
     await identify_item.run(no_box, identify_goal(""))
     assert lines(brain_log) == [
-        "identify_item 'cup' refused after 0.00 s: no item matches 'cup'; frame 1 taken 0.00 s before the search, 1 box: cup 0.90 (no depth)",
-        "identify_item '' refused after 0.00 s: no item in view; frame 1 taken 0.00 s before the search, no box",
+        "identify_item 'cup' failed after 0.00 s: no item matches 'cup'; frame 1 taken 0.00 s before the search, 1 box: cup 0.90 (no depth)",
+        "identify_item '' failed after 0.00 s: no item in view; frame 1 taken 0.00 s before the search, no box",
     ]
 
 
@@ -497,7 +566,7 @@ async def test_a_search_that_failed_logs_its_traceback(brain_log):
     with_frames(brain)
     ctx = scan_goal()
     await scan_items.run(brain, ctx)
-    assert ctx.completed["message"] == "scan_items failed: RuntimeError('the GPU is gone')"
+    assert failed_with(ctx, FailureKind.ATTEMPT_FAILED, "scan_items failed: RuntimeError('the GPU is gone')")
     [record] = brain_log.records
     assert record.levelno == logging.ERROR
     assert record.getMessage() == "scan_items failed after 0.00 s: RuntimeError('the GPU is gone')"
@@ -560,7 +629,7 @@ async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
     await asyncio.wait_for(brain.limb_states.newer_than(0.0, WAIT), WAIT)
     [cup] = brain.state.remember([Detection("cup", (0.5, 0.1, 0.72), 0.9)], brain.now(), coverage=Coverage(every_label=True))
     for _ in range(3):
-        bindings.check_arm_move.enqueue(SimpleNamespace(success=True, message="", duration_s=1.0))
+        bindings.check_arm_move.enqueue(SimpleNamespace(reachable=True, reason="", duration_s=1.0))
 
     ctx = grab_goal(item_id=cup.item_id, max_effort=20.0)
     grab = asyncio.create_task(grab_item.run(brain, ctx))
@@ -569,13 +638,11 @@ async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
         """The goal's result, the arm put on its target first."""
         request = goal.request
         limbs.left_arm = (tuple(request.position), tuple(request.orientation))
-        return SimpleNamespace(
-            success=True, message="", final_position=request.position, final_orientation=request.orientation, action_time=1.0
-        )
+        return SimpleNamespace(final_position=request.position, final_orientation=request.orientation, action_time=1.0)
 
     opened = await asyncio.wait_for(bindings.move_gripper.next_goal(), WAIT)
     assert (opened.request.gripper_name, opened.request.opening) == ("left_gripper", 1.0)
-    opened.complete(SimpleNamespace(success=True, message="", final_opening=1.0, action_time=0.5))
+    opened.complete(SimpleNamespace(settled=True, final_opening=1.0, action_time=0.5))
     # The cup was seen at 0.72 m: the grasp point is 2.5 cm under it, the
     # pre-grasp point 7.5 cm above that.
     for z in (0.77, 0.695):
@@ -586,7 +653,7 @@ async def test_a_scripted_grab_through_the_backbone_sets_the_held_flag():
     closed = await asyncio.wait_for(bindings.move_gripper.next_goal(), WAIT)
     assert (closed.request.opening, closed.request.max_effort) == (0.0, 20.0)
     limbs.left_opening = 0.3
-    closed.complete(SimpleNamespace(success=True, message="stopped short", final_opening=0.3, action_time=0.5))
+    closed.complete(SimpleNamespace(settled=True, final_opening=0.3, action_time=0.5))
     lift = await asyncio.wait_for(bindings.move_arm.next_goal(), WAIT)
     assert lift.request.position == pytest.approx([0.5, 0.1, 0.77])
     # The grab waits until the stream shows the arm at the lifted point,

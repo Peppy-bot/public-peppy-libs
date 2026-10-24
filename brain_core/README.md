@@ -3,9 +3,15 @@
 The code every brain node shares. A brain serves `item_perception:v1`,
 `item_manipulation:v1` and `brain_model:v1` over a robot that `limb_motion:v1`
 drives and `limb_state:v1` measures, and a camera that `rgbd_camera:v1` streams. brain_core holds the contract rules (item ids,
-the gripper table, the lanes, the result rules), the robot proxy, the camera
-frames and geometry, and the loop of each exposed member. A node brings its
-generated peppygen modules and its backends, and calls `node.setup`.
+the gripper table, the lanes, the failure kinds and the result rules), the
+robot proxy, the camera frames and geometry, and the loop of each exposed
+member. A node brings its generated peppygen modules and its backends, and
+calls `node.setup`.
+
+item_perception and brain_model report a refusal or a failure by the status
+of the goal: a refused goal and a failed goal carry a failure kind and a
+message, and a failed goal gives no result. item_manipulation reports both in
+its result, with `success` false and a message.
 
 Pure Python on numpy and Pillow. brain_core never imports peppygen: peppygen is
 generated per node, so the node passes its modules in through `Bindings`.
@@ -57,15 +63,15 @@ model of each role, `perception_model` and `manipulation_model`.
 
 | Module | What it holds |
 |---|---|
-| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Grasp`, `Outcome`, `Pose`), the roles a model serves (`Role`, `parse_role`), `Refusal`, `ExpectedFailure`, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the ports a backend implements, `Detector` (an awaited `detect`, and `why_unavailable`), `Manipulator` and the `GraspProposer` a manipulator asks, and the port a node implements, `ModelSource` |
+| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Grasp`, `Outcome`, `Pose`), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the ports a backend implements, `Detector` (an awaited `detect`, and `why_unavailable`), `Manipulator` and the `GraspProposer` a manipulator asks, and the port a node implements, `ModelSource` |
 | `words` | The one rule for whether a description names a label |
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
 | `state` | The grippers, the known items and their ids, and the rules that resolve a goal's names |
 | `sequencer` | One sequence at a time per lane (a lane is a `Role`), lane-less jobs beside them, and the way to stop the ones that run |
-| `robot` | The proxy to the backbone: one limb_motion goal per move, `check_arm_move`, which asks whether a move has a plan and moves nothing, and `stop`, which cancels every move in flight |
+| `robot` | The proxy to the backbone: one limb_motion goal per move, how each one ended (completed, cancelled with its reason, refused or failed with its kind, or lost), `check_arm_move`, which asks whether a move has a plan and moves nothing, and `stop`, which cancels every move in flight |
 | `limb_state` | The robot's measured limbs: each limb_states message parsed into a `LimbSnapshot` (each arm's joints and grasp pose, each gripper's opening), the latest one kept, the wait for one captured after another, and the openings get_state reports |
 | `models` | The model of each role, and the switch rule: a goal uses only its own role's model, and a switch never changes the model of a goal that runs |
-| `brain` | The parts assembled, and `run_guarded`, where every goal is admitted, completed the way the contract asks and logged |
+| `brain` | The parts assembled, `decider`, where a goal is refused before it is accepted, and `run_guarded`, where every goal is admitted, ended the way its contract asks and logged |
 | `handlers` | One module per exposed member |
 | `serve`, `waiting` | The loop of an exposed action or service, and the one way a part waits unless a stop comes first |
 | `perception` | The `Perceiver` (frames in, world detections out), the frame store, the camera model and the geometry learners, `in_daemon_thread` for a detector whose model blocks, and `NoneDetector` |
@@ -138,7 +144,8 @@ classDiagram
         start()
         background(token)
         shutdown()
-        run_guarded(ctx, lane, action, body, zero, asked)
+        check_search()
+        run_guarded(ctx, lane, action, body, zero, ends, asked)
         look(job, detector, phrases, timeout_s) Look
         manipulator_or_refuse(manipulator)
     }
@@ -152,9 +159,10 @@ classDiagram
         clear_held_placed(gripper, position, orientation)
     }
     class Sequencer {
+        check(lane_or_none)
         start(lane_or_none, action, now_ns) Job
         finish(job)
-        cancel(job, reason, by_caller)
+        cancel(job, reason, signalled)
         stop(lane, reason)
         stop_laneless(reason)
         close()
@@ -171,6 +179,7 @@ classDiagram
         names(role)
         current(role)
         current_name(role)
+        check_switch(role, name)
         switch(role, name, job)
     }
     class ModelSource {
@@ -240,8 +249,10 @@ on a `GraspProposer`.
 
 ### A goal, from its arrival to its result
 
-`identify_item`; `scan_items` runs the same way, and the manipulation goals
-run in the manipulation lane on the manipulation model.
+`identify_item`; `scan_items` runs the same way, and `switch_model` is
+decided by its role and model (`Models.check_switch`). The manipulation
+goals accept every goal at once, run in the manipulation lane on the
+manipulation model, and report a refusal or a failure in their result.
 
 ```mermaid
 sequenceDiagram
@@ -256,38 +267,52 @@ sequenceDiagram
     participant D as Detector
     participant St as State
     C->>S: identify_item goal
-    S->>S: accept it
-    S-)T: create_task(run(ctx))
-    S->>S: wait for the next goal
-    T->>B: run_guarded(ctx, PERCEPTION, "identify_item", body, ZERO)
-    B->>Q: start(PERCEPTION, "identify_item")
-    alt the lane runs a goal, or the node is shutting down
-        Q-->>B: Refusal: "scan_items is running"
-        B-->>C: complete(success=false, message, action_time)
-    else admitted
-        Q-->>B: Job
-        B-)B: cancel watcher on ctx.cancel_signal()
-        B->>T: body(job)
-        T->>M: current(PERCEPTION), once, at the start of the body
-        M-->>T: the perception model
-        T->>B: look(job, detector, phrases, timeout_s)
-        B->>D: why_unavailable(): a reason refuses the search
-        B->>P: scan(detector, phrases, job.cancel, timeout_s)
-        P->>P: why_unavailable(): the frames and the camera model
-        P->>D: await detect(image, phrases, deadline)
-        D-->>P: boxes, or SearchTimeout, or an ExpectedFailure
-        P-->>B: Look, the boxes placed in the robot frame
-        B-->>T: Look
-        T->>St: best_match, then remember
-        T-->>B: result fields
-        B-->>C: complete(success=true, fields, action_time)
-        B->>Q: finish(job)
+    S->>B: decider: check_search()
+    alt the node shuts down, or the lane runs a search
+        B-->>C: refused, precondition_failed: "scan_items is running"
+    else no perception source
+        B-->>C: refused, resource_unavailable ("no perception source: ...")<br/>or precondition_failed for the model "none"
+    else accepted
+        S-)T: create_task(run(ctx))
+        S->>S: wait for the next goal
+        T->>B: run_guarded(ctx, PERCEPTION, "identify_item", body, ZERO, STATUS_ENDS)
+        B->>Q: start(PERCEPTION, "identify_item")
+        alt another goal won the lane after the decision
+            Q-->>B: Refusal, precondition_failed
+            B-->>C: fail(precondition_failed, "scan_items is running")
+        else admitted
+            Q-->>B: Job
+            B-)B: cancel watcher on ctx.cancel_signal()
+            B->>T: body(job)
+            T->>M: current(PERCEPTION), once, at the start of the body
+            M-->>T: the perception model
+            T->>B: look(job, detector, phrases, timeout_s)
+            B->>D: why_unavailable(): checked again
+            B->>P: scan(detector, phrases, job.cancel, timeout_s)
+            P->>P: the frames and the camera model, checked again
+            P->>D: await detect(image, phrases, deadline)
+            D-->>P: boxes, or SearchTimeout, or an ExpectedFailure
+            P-->>B: Look, the boxes placed in the robot frame
+            B-->>T: Look
+            T->>St: best_match, then remember
+            alt no item matches
+                T-->>B: ExpectedFailure, not_found
+                B-->>C: fail(not_found, "no item matches 'cup'")
+            else found
+                T-->>B: result fields
+                B-->>C: complete(fields, action_time)
+            end
+            B->>Q: finish(job)
+        end
     end
 ```
 
-A Refusal, an ExpectedFailure or a Cancelled raised in the body goes up to
-`run_guarded`, which completes the goal with the message; `action_time` is the
-elapsed time whatever the outcome.
+A Refusal or an ExpectedFailure raised in the body goes up to
+`run_guarded`, which ends the goal through the `Ends` of its contract:
+`STATUS_ENDS` fails the goal with the kind and the message and gives no
+result, `RESULT_ENDS` completes it with success false and the message. A
+search past its bound fails with `timeout`, and any other exception with
+`attempt_failed`. `action_time` is the elapsed time whatever the outcome.
 
 ### A scripted grab
 
@@ -295,14 +320,14 @@ elapsed time whatever the outcome.
 gripper. Each step that fails ends the grab with the backbone's own words. A
 step that fails once the descent was sent first retreats: the gripper opens
 and the arm moves straight back up to the pre-grasp point. A goal that a stop
-ended (`cancelled` on its result) retreats from nothing.
+ended, a goal that ends cancelled, retreats from nothing.
 
 Every move names its bars, as the limb_motion contract has the caller do. An
 arm move, the retreat's and a place's too, plans within 1 mm and 0.01 rad of
 its pose and settles within `settle_position_m` (2 cm) and
 `settle_orientation_rad` (0.15 rad), the settle the robots' endpoint gives for
-the OpenArm v2, or fails `settle_timeout_s` (2 s) after
-its planned end with the backbone's words, such as `still 8.0 mm / 0.02 rad
+the OpenArm v2, or fails with `timeout` `settle_timeout_s` (2 s) after
+its planned end, with the backbone's words, such as `still 8.0 mm / 0.02 rad
 from the target, 2.0 s after the planned end`. A check asks with the same
 plan bars. A gripper move waits up to `grip_settle_timeout_s` (2 s) for the
 jaws to stand still.
@@ -354,9 +379,10 @@ judged; and the retreat.
 
 A place carries the item to the pose through its pre-place point, opens,
 and climbs back to the pre-place point. An arm that stops short on its way
-down, at least 1 cm below the pre-place point and on the line down, has set the
-item on what is under it: the place opens there, logs how far short it stopped,
-and reports that point. A stop of the descent, or an arm stopped higher or off
+down does not settle, so its move fails with `timeout`. When the latest
+limb_states snapshot puts its grasp point at least 1 cm below the pre-place
+point and on the line down, the arm has set the item on what is under it: the
+place opens there, logs how far short it stopped, and reports that point. A stop of the descent, or an arm stopped higher or off
 the line down, fails the place with the jaws closed. A climb that fails is
 logged and the place still succeeds, since the item is down and the jaws are
 open.
@@ -382,28 +408,28 @@ sequenceDiagram
     participant R as Robot
     participant H as body and run_guarded
     participant S as Brain.shutdown
-    Note over C,H: A cancel by the goal's own caller
+    Note over C,H: The goal's own cancel signal: its caller cancels it, or its sender is gone
     C->>W: cancel on the goal handle
-    W->>Q: cancel(job, "cancelled by the caller", by_caller=true)
-    Q->>J: cancel(reason, by_caller=true)
+    W->>Q: cancel(job, "cancelled by its caller" or "its sender is gone", signalled=true)
+    Q->>J: cancel(reason, signalled=true)
     Q->>L: the lane's stop
     L->>Mn: stop(), manipulation lane only
     L->>R: stop(): cancel every limb_motion goal in flight
-    H->>J: check() raises Cancelled(by_caller=true)
-    H-->>C: complete_cancelled(success=false, reason)
-    Note over C,H: abort, from any caller
+    H->>J: check() raises Cancelled(signalled=true)
+    H-->>C: complete_cancelled(reason, the zero fields)
+    Note over C,H: abort, from any caller, item_manipulation
     C->>A: abort(reason)
     A->>Q: stop(MANIPULATION, "aborted: reason")
-    Q->>J: cancel(reason, by_caller=false)
+    Q->>J: cancel(reason, signalled=false)
     Q->>L: the lane's stop
-    H->>J: check() raises Cancelled(by_caller=false)
+    H->>J: check() raises Cancelled(signalled=false)
     H-->>C: the running goal completes success=false "aborted: reason"
     Q-->>A: returns once the job is done, with its action
     A-->>C: success=true, aborted_action
     Note over C,S: The node's shutdown hook
     S->>Q: close(): every new goal is refused "the node is shutting down"
     S->>Q: stop(MANIPULATION, "aborted: the node is shutting down")
-    S->>Q: stop(PERCEPTION, "aborted: the node is shutting down")
-    S->>Q: stop_laneless(...): a switch_model stops, its role keeps its model
+    S->>Q: stop(PERCEPTION, "the node is shutting down"): a search ends cancelled
+    S->>Q: stop_laneless(...): a switch_model ends cancelled, its role keeps its model
     S->>R: stop()
 ```

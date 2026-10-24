@@ -13,6 +13,10 @@ alignments, is refused with the reason, never deprojected.
 The camera slot is optional. When the launcher left it vacant the loops
 return at once and the store stays empty, which every search reports as
 "no perception source".
+
+What the store lacks is a source that is not there, so its refusals are
+`resource_unavailable`. A frame that does not decode fails the search
+that read it with `attempt_failed`.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from ..ports import Box, Refusal
+from ..ports import Box, ExpectedFailure, FailureKind, Refusal
 from ..waiting import unless_cancelled
 
 logger = logging.getLogger(__name__)
@@ -60,9 +64,9 @@ class Frame:
         aligned to each other."""
         mode = color.header.align_mode
         if depth.header.align_mode != mode:
-            raise Refusal(f"the colour and depth frames name different alignments ('{mode}' and '{depth.header.align_mode}')")
+            raise _no_source(f"the colour and depth frames name different alignments ('{mode}' and '{depth.header.align_mode}')")
         if mode not in ALIGNED_MODES:
-            raise Refusal(f"the camera's depth is not aligned to its colour (align_mode '{mode}'); the brain reads depth at colour pixels")
+            raise _no_source(f"the camera's depth is not aligned to its colour (align_mode '{mode}'); the brain reads depth at colour pixels")
         return cls(color, depth, depth_unit)
 
 
@@ -85,17 +89,17 @@ class FrameStore:
         a Refusal naming what is missing: a stream, the depth unit, a pair
         of one capture, or the alignment."""
         if not self.colors:
-            raise Refusal("no camera frame received")
+            raise _no_source("no camera frame received")
         if not self.depths:
-            raise Refusal("no depth frame received")
+            raise _no_source("no depth frame received")
         if self.depth_unit is None:
-            raise Refusal("the camera has not answered depth_stream_info yet")
+            raise _no_source("the camera has not answered depth_stream_info yet")
         depths = {message.header.frame_id: message for message in self.depths}
         for color in reversed(self.colors):
             depth = depths.get(color.header.frame_id)
             if depth is not None:
                 return Frame.paired(color, depth, self.depth_unit)
-        raise Refusal(
+        raise _no_source(
             f"no colour and depth frame of one capture received (latest colour frame_id {self.colors[-1].header.frame_id}, "
             f"depth {self.depths[-1].header.frame_id})"
         )
@@ -149,6 +153,14 @@ class FrameStore:
             self.add_depth(message)
 
 
+def _no_source(reason: str) -> Refusal:
+    return Refusal(FailureKind.RESOURCE_UNAVAILABLE, reason)
+
+
+def _undecodable(reason: str) -> ExpectedFailure:
+    return ExpectedFailure(FailureKind.ATTEMPT_FAILED, reason)
+
+
 def decode_color(message: ColorMessage) -> np.ndarray:
     """The colour frame as an H x W x 3 uint8 RGB array."""
     encoding = message.encoding.lower()
@@ -156,7 +168,7 @@ def decode_color(message: ColorMessage) -> np.ndarray:
     if encoding in ("rgb8", "bgr8"):
         expected = width * height * 3
         if len(message.frame) != expected:
-            raise Refusal(f"colour frame holds {len(message.frame)} bytes, expected {expected} for {width}x{height} {encoding}")
+            raise _undecodable(f"colour frame holds {len(message.frame)} bytes, expected {expected} for {width}x{height} {encoding}")
         image = np.frombuffer(message.frame, dtype=np.uint8).reshape(height, width, 3)
         return image[:, :, ::-1] if encoding == "bgr8" else image
     if encoding in ("mjpeg", "jpeg", "jpg"):
@@ -164,7 +176,7 @@ def decode_color(message: ColorMessage) -> np.ndarray:
 
         with Image.open(io.BytesIO(message.frame)) as decoded:
             return np.asarray(decoded.convert("RGB"))
-    raise Refusal(f"unsupported colour encoding '{message.encoding}'")
+    raise _undecodable(f"unsupported colour encoding '{message.encoding}'")
 
 
 def decode_depth(message: DepthMessage, depth_unit: float) -> np.ndarray:
@@ -173,10 +185,10 @@ def decode_depth(message: DepthMessage, depth_unit: float) -> np.ndarray:
     encoding = message.encoding.lower()
     width, height = message.width, message.height
     if encoding != "z16":
-        raise Refusal(f"unsupported depth encoding '{message.encoding}'")
+        raise _undecodable(f"unsupported depth encoding '{message.encoding}'")
     expected = width * height * 2
     if len(message.frame) != expected:
-        raise Refusal(f"depth frame holds {len(message.frame)} bytes, expected {expected} for {width}x{height} z16")
+        raise _undecodable(f"depth frame holds {len(message.frame)} bytes, expected {expected} for {width}x{height} z16")
     raw = np.frombuffer(message.frame, dtype="<u2").reshape(height, width)
     return raw.astype(np.float32) * float(depth_unit)
 

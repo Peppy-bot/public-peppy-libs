@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from ..ports import Pose, Refusal, Role
+from ..brain import RESULT_ENDS
+from ..ports import ExpectedFailure, FailureKind, Pose, Role
 
 ZERO = dict(gripper_name="", item_id="", final_position=[0.0, 0.0, 0.0])
 
@@ -20,9 +21,9 @@ async def run(brain, ctx) -> None:
         outcome = await manipulator.place(gripper, pose, job.cancel)
         job.cancel.check()
         if not outcome.success:
-            raise Refusal(outcome.message or "the placement failed")
+            raise ExpectedFailure(FailureKind.ATTEMPT_FAILED, outcome.message or "the placement failed")
         final = outcome.final_position if outcome.final_position is not None else pose.position
         item_id = state.clear_held_placed(gripper, final, pose.orientation)
         return dict(gripper_name=gripper.name, item_id=item_id, final_position=list(final))
 
-    await brain.run_guarded(ctx, Role.MANIPULATION, "place_item", body, ZERO)
+    await brain.run_guarded(ctx, Role.MANIPULATION, "place_item", body, ZERO, ends=RESULT_ENDS)

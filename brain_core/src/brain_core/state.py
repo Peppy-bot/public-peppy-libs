@@ -48,6 +48,10 @@ Rules written down here because the code depends on them:
 - A free gripper by side. A grab that names no gripper takes a free one on
   the item's side when the gripper names say a side ("left" or "right");
   any other name takes the first free gripper, in the `limbs` order.
+- Refusals. Each names its kind: `rejected` for a name the brain does not
+  know, or a goal that must name its gripper; `precondition_failed` for a
+  gripper or an item whose state does not allow the goal now.
+  item_manipulation reports a refusal in its result, by its message alone.
 """
 
 from __future__ import annotations
@@ -57,7 +61,7 @@ import secrets
 from typing import Optional, Sequence
 
 from .limbs import Limb
-from .ports import Coverage, Detection, Gripper, Item, Quat, Refusal, Vec3
+from .ports import Coverage, Detection, FailureKind, Gripper, Item, Quat, Refusal, Vec3
 from .words import named_by
 
 MATCH_RADIUS_M = 0.05
@@ -115,13 +119,13 @@ class State:
         if name:
             gripper = self.grippers.get(name)
             if gripper is None:
-                raise Refusal(f"unknown gripper '{name}'")
+                raise Refusal(FailureKind.REJECTED, f"unknown gripper '{name}'")
             if gripper.holding:
-                raise Refusal(f"gripper '{name}' already holds item '{gripper.held_item_id}'")
+                raise Refusal(FailureKind.PRECONDITION_FAILED, f"gripper '{name}' already holds item '{gripper.held_item_id}'")
             return gripper
         free = [gripper for gripper in self.grippers.values() if not gripper.holding]
         if not free:
-            raise Refusal("no gripper is free")
+            raise Refusal(FailureKind.PRECONDITION_FAILED, "no gripper is free")
         if near is None or len(free) == 1:
             return free[0]
         return min(free, key=lambda gripper: _side_cost(gripper.name, near))
@@ -133,16 +137,16 @@ class State:
         if name:
             gripper = self.grippers.get(name)
             if gripper is None:
-                raise Refusal(f"unknown gripper '{name}'")
+                raise Refusal(FailureKind.REJECTED, f"unknown gripper '{name}'")
             if not gripper.holding:
-                raise Refusal(f"gripper '{name}' holds nothing")
+                raise Refusal(FailureKind.PRECONDITION_FAILED, f"gripper '{name}' holds nothing")
             return gripper
         holders = [gripper for gripper in self.grippers.values() if gripper.holding]
         if len(holders) == 1:
             return holders[0]
         if not holders:
-            raise Refusal("no gripper holds an item")
-        raise Refusal("more than one gripper holds an item; name the gripper")
+            raise Refusal(FailureKind.PRECONDITION_FAILED, "no gripper holds an item")
+        raise Refusal(FailureKind.REJECTED, "more than one gripper holds an item; name the gripper")
 
     def set_held(self, gripper: Gripper, item_id: str) -> None:
         gripper.held_item_id = item_id
@@ -181,7 +185,7 @@ class State:
     def item(self, item_id: str) -> Item:
         item = self.items.get(item_id)
         if item is None:
-            raise Refusal(f"unknown item '{item_id}': scan or identify it again")
+            raise Refusal(FailureKind.REJECTED, f"unknown item '{item_id}': scan or identify it again")
         return item
 
     def item_to_grab(self, item_id: str) -> Item:
@@ -190,7 +194,7 @@ class State:
         item = self.item(item_id)
         holder = self.holder_of(item_id)
         if holder is not None:
-            raise Refusal(f"item '{item_id}' is held by gripper '{holder.name}'")
+            raise Refusal(FailureKind.PRECONDITION_FAILED, f"item '{item_id}' is held by gripper '{holder.name}'")
         return item
 
     def holder_of(self, item_id: str) -> Optional[Gripper]:

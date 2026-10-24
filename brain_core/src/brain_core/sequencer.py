@@ -12,13 +12,17 @@ which checks the lane of its role itself (`Models.switch`). It gets what a
 lane's job gets: the refusal once the sequencer is closed, a token a
 cancel sets, and the stop of a shutdown.
 
-A stop is the same whether the caller cancelled its own goal or anyone
-sent abort: the job's token is set, the lane's stopper halts the backend
-and the move in flight, and the job finishes on its own.
+A stop is the same whether the goal's own cancel signal came, from its
+caller or because its sender is gone, or anyone sent abort: the job's
+token is set, the lane's stopper halts the backend and the move in flight,
+and the job finishes on its own.
 
 `close` is the first thing a shutdown does: from then on every sequence
 is refused with "the node is shutting down", so a goal that arrives while
 the lanes stop never finds a free lane.
+
+Each refusal here is `precondition_failed`: the goal is valid, and the
+state of the brain does not allow it now.
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
-from .ports import CancelToken, Refusal, Role
+from .ports import CancelToken, FailureKind, Refusal, Role
 
 Stopper = Callable[[Role], Awaitable[None]]
 
@@ -60,21 +64,27 @@ class Sequencer:
     def running(self, lane: Role) -> Optional[Job]:
         return self._running.get(lane)
 
+    def check(self, lane: Optional[Role]) -> None:
+        """Raises the Refusal `start` would raise for `lane`, and admits
+        nothing: a decision checks with it before the goal is accepted."""
+        if self._closed:
+            raise Refusal(FailureKind.PRECONDITION_FAILED, SHUTTING_DOWN)
+        if lane is None:
+            return
+        running = self._running.get(lane)
+        if running is not None:
+            raise Refusal(FailureKind.PRECONDITION_FAILED, f"{running.action} is running")
+
     def start(self, lane: Optional[Role], action: str, now_ns: int) -> Job:
         """Admits a sequence into its lane, or refuses it naming the one
         that runs, as the contracts ask; a lane-less one when `lane` is
         none. Once closed, refuses every one."""
-        if self._closed:
-            raise Refusal(SHUTTING_DOWN)
-        if lane is None:
-            job = Job(lane=None, action=action, started_ns=now_ns)
-            self._laneless.add(job)
-            return job
-        running = self._running.get(lane)
-        if running is not None:
-            raise Refusal(f"{running.action} is running")
+        self.check(lane)
         job = Job(lane=lane, action=action, started_ns=now_ns)
-        self._running[lane] = job
+        if lane is None:
+            self._laneless.add(job)
+        else:
+            self._running[lane] = job
         return job
 
     def close(self) -> None:
@@ -89,11 +99,12 @@ class Sequencer:
             del self._running[job.lane]
         job.done.set()
 
-    async def cancel(self, job: Job, reason: str, *, by_caller: bool) -> None:
-        """Stops one job: sets its token and halts its lane's backend."""
+    async def cancel(self, job: Job, reason: str, *, signalled: bool) -> None:
+        """Stops one job: sets its token and halts its lane's backend.
+        `signalled` says that the goal's own cancel signal stops it."""
         if job.done.is_set():
             return
-        job.cancel.cancel(reason, by_caller=by_caller)
+        job.cancel.cancel(reason, signalled=signalled)
         if job.lane is not None and self._stopper is not None:
             await self._stopper(job.lane)
 
@@ -104,7 +115,7 @@ class Sequencer:
         job = self._running.get(lane)
         if job is None:
             return None
-        await self.cancel(job, reason, by_caller=False)
+        await self.cancel(job, reason, signalled=False)
         await job.done.wait()
         return job.action
 
@@ -112,6 +123,6 @@ class Sequencer:
         """Stops every lane-less job and waits until each has finished."""
         jobs = list(self._laneless)
         for job in jobs:
-            await self.cancel(job, reason, by_caller=False)
+            await self.cancel(job, reason, signalled=False)
         for job in jobs:
             await job.done.wait()

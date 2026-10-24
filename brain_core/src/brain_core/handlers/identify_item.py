@@ -1,16 +1,22 @@
 """identify_item: the one item best matching a description, with an id
 the manipulation actions accept and its region in the picture the search
-looked at."""
+looked at. A search that finds no such item fails with `not_found`."""
 
 from __future__ import annotations
 
-from ..ports import Coverage, Refusal, Role
+from ..brain import STATUS_ENDS
+from ..ports import Coverage, ExpectedFailure, FailureKind, Role
 from ..state import best_match
 
 ZERO = dict(
     item_id="", label="", position=[0.0, 0.0, 0.0], orientation=None, confidence=0.0, region=None, camera="",
     image_width=0, image_height=0, frame_timestamp=0.0,
 )
+
+
+def decide(brain, goal) -> None:
+    """Refuses a search that cannot start now (`Brain.check_search`)."""
+    brain.check_search()
 
 
 async def run(brain, ctx) -> None:
@@ -24,8 +30,8 @@ async def run(brain, ctx) -> None:
         best = best_match(look.detections, description)
         if best is None:
             if description:
-                raise Refusal(f"no item matches '{description}'")
-            raise Refusal("no item in view")
+                raise ExpectedFailure(FailureKind.NOT_FOUND, f"no item matches '{description}'")
+            raise ExpectedFailure(FailureKind.NOT_FOUND, "no item in view")
         # A search covers nothing: it refreshes what it found, renames
         # nothing and drops nothing, so the other items keep their ids.
         item = brain.state.remember([best], brain.now(), coverage=Coverage())[0]
@@ -43,4 +49,4 @@ async def run(brain, ctx) -> None:
             frame_timestamp=look.frame_timestamp,
         )
 
-    await brain.run_guarded(ctx, Role.PERCEPTION, "identify_item", body, ZERO, asked=f"'{description}'")
+    await brain.run_guarded(ctx, Role.PERCEPTION, "identify_item", body, ZERO, ends=STATUS_ENDS, asked=f"'{description}'")

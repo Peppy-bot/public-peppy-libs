@@ -11,10 +11,10 @@ from brain_core.bindings import GENERATED_MODULES, Bindings
 
 def write_package(root, name: str, leave_out: str = "") -> None:
     """A generated package of the brain's shape under `root`: a module at
-    each place GENERATED_MODULES names, but `leave_out`, and a QoSProfile."""
+    each place GENERATED_MODULES names, but `leave_out`."""
     package = root / name
     package.mkdir()
-    (package / "__init__.py").write_text("class QoSProfile:\n    Standard = 'standard qos'\n")
+    (package / "__init__.py").touch()
     for path in GENERATED_MODULES.values():
         if path == leave_out:
             continue
@@ -35,13 +35,12 @@ def importable(tmp_path, monkeypatch):
         del sys.modules[module]
 
 
-def test_every_field_but_the_qos_comes_from_the_generated_package(importable):
+def test_every_field_comes_from_the_generated_package(importable):
     import importlib
 
     write_package(importable, "fakegen")
     bindings = Bindings.from_generated(importlib.import_module("fakegen"))
-    assert set(GENERATED_MODULES) == {field.name for field in fields(Bindings)} - {"standard_qos"}
-    assert bindings.standard_qos == "standard qos"
+    assert set(GENERATED_MODULES) == {field.name for field in fields(Bindings)}
     for field, path in GENERATED_MODULES.items():
         module = getattr(bindings, field)
         assert module.__name__ == f"fakegen.{path}" and module.WHERE == path
