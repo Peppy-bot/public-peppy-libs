@@ -1,0 +1,248 @@
+name: Tests
+
+# CI for the libraries of this repository: the job `rust` runs the suite of
+# each Rust crate, and the job `python` runs the suite of each Python lib. Each
+# job finds its libraries in the filesystem. The workflow runs on each pull
+# request into main and on each push to main. The job `changes` reads the
+# paths that the pull request or the push changes, and each suite runs only
+# when one of its paths changed; a skipped job counts as a pass.
+#
+# Each job runs on a RunsOn spot instance in attempts 1 and 2 of its run, and
+# on an on-demand instance from attempt 3. When AWS interrupts a spot
+# instance, RunsOn runs the failed jobs again in the next attempt, but only
+# after attempt 1 or 2, and a re-run by hand is also an attempt. So each
+# runs-on label adds spot=false from attempt 3, and AWS cannot interrupt a job
+# that RunsOn does not run again. The runner `peppy-ci-ubuntu-24.04-x86_64`
+# and the image `peppy-ubuntu24` come from the org config of RunsOn in
+# Peppy-bot/.github-private.
+#
+# The last job, `test`, is the status check of this workflow that the
+# rulesets require on main. It is green only when every other job of this
+# workflow succeeded or was skipped. The merge-set bot of peppy, which merges a
+# pull request of this repository together with the pull requests of the
+# other repositories that share its branch name, knows this workflow by its
+# name, Tests: the webhook of its App hands it the start and the end of each
+# run.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# One run per pull request: a new commit of a pull request cancels the run
+# still working on the commit it replaces. Each push to main runs in a
+# concurrency group of its own, because the job `changes` of a push reads the
+# paths of that push alone.
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  # Finds the libraries that the pull request or the push changes. The
+  # smallest RunsOn runner: it reads the changed paths and builds nothing.
+  changes:
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust_crates: ${{ steps.filter.outputs.rust_crates }}
+      python_libs: ${{ steps.filter.outputs.python_libs }}
+
+    steps:
+      # On a push, paths-filter compares main with the commit that main had
+      # before the push, with git, in this checkout. On a pull request it reads
+      # the changed files from the API.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'push'
+        with:
+          persist-credentials: false
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            rust_crates:
+              - '*/Cargo.toml'
+              - '*/Cargo.lock'
+              - '*/src/**'
+              - '*/tests/**'
+              - '*/assets/**'
+              - '*/.cargo/**'
+              - '.github/actions/rust-toolchain/**'
+              - '.github/workflows/tests.yml'
+            python_libs:
+              - '*/pyproject.toml'
+              - '*/uv.lock'
+              - '*/src/**'
+              - '*/tests/**'
+              - '*/*.pyi'
+              - '*/Cargo.toml'
+              - '*/Cargo.lock'
+              - '*/.cargo/**'
+              - '.github/actions/rust-toolchain/**'
+              - '.github/workflows/tests.yml'
+
+  # Every top-level directory holding a Cargo.toml is a Rust crate. Each crate
+  # is its own workspace root with its own lockfile, so the job runs `cargo
+  # test` in each one. The crates share a target directory, so a dependency
+  # two of them have in common is compiled once, and the sticky disk of the
+  # job carries it between runs. RunsOn restores that disk from the newest
+  # snapshot of the same branch, or of main for the first run of a branch, and
+  # snapshots it after the job; the run of a pull request reads the snapshot
+  # of main but never writes it, and the push to main is what keeps it current.
+  #
+  # openarm_can's bus tests read OPENARM_CAN_TEST_IFACE for a CAN interface to
+  # drive and skip themselves when it names none, which is what they do here:
+  # the interface would be a virtual CAN link, and the runner kernel carries no
+  # vcan module to create one with. What this job holds that crate to is
+  # therefore that it compiles and its host-only tests pass; the bus tests are
+  # run against a vcan link on a development machine, as their module
+  # documentation describes.
+  rust:
+    name: Rust crates
+    needs: changes
+    if: needs.changes.outputs.rust_crates == 'true'
+    # 8 vCPU with 16 or 32 GB on the AMD families c8a, c7a, m8a and m7a,
+    # where one vCPU is a full core: a run keeps 3 cores busy on average and
+    # 5 at its peak, and uses near 2 GB. The root disk is 50 GB
+    # (a run writes under 10 GB there), and the sticky disk holds the shared
+    # target directory and the cargo registry.
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=8/ram=16+32/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=rust-crates:60gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # After the checkout, so the workspace-relative target directory
+      # resolves under it.
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+        with:
+          sticky_cache: |
+            cargo
+            custom,path=target
+
+      # Writes what the sticky disk holds and what grew in it to the job
+      # summary at the end of the job. Its post step runs before the one of
+      # runs-on/action above, which unmounts the disk.
+      - uses: Peppy-bot/peppy/.github/actions/sticky-disk-report@dev
+
+      - uses: ./.github/actions/rust-toolchain
+
+      # Every crate runs even after one fails, so a red run names every
+      # failing crate. `--all-features` because a feature of a library crate
+      # is an interface a consumer compiles (the openarm nodes take
+      # openarm_description's `meshes`), and one no suite builds is one
+      # nothing holds to compiling.
+      - name: Run every Rust crate's suite
+        run: |
+          set -euo pipefail
+          failed=()
+          for manifest in */Cargo.toml; do
+            crate=$(dirname "$manifest")
+            echo "::group::cargo test: $crate"
+            if (cd "$crate" && cargo test --locked --all-features); then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::cargo test failed in $crate"
+              failed+=("$crate")
+            fi
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "failing crates: ${failed[*]}" >&2
+            exit 1
+          fi
+
+      # The locked builds above leave the committed lockfiles as they are, so
+      # the tested dependency graph is the shipped one.
+      - name: Prove CI did not rewrite the shipping lockfiles
+        if: ${{ !cancelled() }}
+        run: git diff --exit-code -- '*/Cargo.lock'
+
+  # Every top-level directory holding a pyproject.toml and a tests/ tree is a
+  # Python lib. Each lib runs its suite from its own uv environment, resolved
+  # --frozen against its committed uv.lock. The suites are self-contained unit
+  # tests: no peppy daemon, no container runtime, no hardware. A lib with a
+  # Rust extension module builds it when uv installs it, from its committed
+  # Cargo.lock and its Rust siblings here, so the job has the Rust toolchain
+  # too.
+  python:
+    name: Python libs
+    needs: changes
+    if: needs.changes.outputs.python_libs == 'true'
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=4/ram=8+16/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      # For the libs that build a Rust extension module when uv installs them.
+      - uses: ./.github/actions/rust-toolchain
+
+      # uv is pinned: it resolves and installs everything the suites run
+      # against, so its version is part of what a green run attests.
+      - name: Install uv
+        run: |
+          set -euo pipefail
+          curl -fsSL --connect-timeout 10 --max-time 120 \
+            https://astral.sh/uv/0.12.1/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Every lib runs even after one fails, so a red run names every failing
+      # lib. The trailing diff proves the frozen installs consumed the
+      # committed manifests and lockfiles.
+      - name: Run every Python lib's suite
+        run: |
+          set -euo pipefail
+          failed=()
+          for manifest in */pyproject.toml; do
+            lib=$(dirname "$manifest")
+            [ -d "$lib/tests" ] || continue
+            echo "::group::pytest: $lib"
+            if (cd "$lib" && uv sync --frozen --quiet && uv run --frozen pytest); then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::pytest failed in $lib"
+              failed+=("$lib")
+            fi
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "failing libs: ${failed[*]}" >&2
+            exit 1
+          fi
+
+      - name: Prove CI tested the committed manifests and lockfiles
+        run: git diff --exit-code -- '*pyproject.toml' '*uv.lock'
+
+  test:
+    needs: [changes, rust, python]
+    # Runs whatever happened above, so a failed or cancelled job turns this
+    # check red.
+    if: always()
+    # The smallest RunsOn runner: the job reads the results of the others.
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=2/ram=4+8/family=c8a+c7a+m8a+m7a${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    timeout-minutes: 5
+    permissions: {}
+
+    steps:
+      - name: Report every job's result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: echo "$RESULTS"
+
+      - name: Fail when any job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
