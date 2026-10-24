@@ -26,9 +26,9 @@ Region = tuple[float, float, float, float]
 
 class FailureKind(StrEnum):
     """Why a goal is refused or fails, as the brain says it: the kinds of
-    peppy, and `not_found`, the kind item_perception declares. The
-    generated module of each member checks that the member declares the
-    kind it is given."""
+    peppy, and `not_found`, the kind of item_perception that identify_item
+    lists. The generated module of each member checks that the member
+    gives the kind it is given."""
 
     # The attempt gave no result.
     ATTEMPT_FAILED = "attempt_failed"

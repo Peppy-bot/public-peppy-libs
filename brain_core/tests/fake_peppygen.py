@@ -97,10 +97,9 @@ class FakeAction:
 
 IMAGE_FIELDS = ("camera", "image_width", "image_height", "frame_timestamp", "action_time")
 
-# item_perception:v1: no success field, and the kind `not_found`.
-scan_items = FakeAction(
-    "scan_items", ("item_ids", "labels", "positions", "confidences", "regions", *IMAGE_FIELDS), "not_found"
-)
+# item_perception:v1: no success field, and the kind `not_found`, which
+# identify_item lists.
+scan_items = FakeAction("scan_items", ("item_ids", "labels", "positions", "confidences", "regions", *IMAGE_FIELDS))
 identify_item = FakeAction(
     "identify_item", ("item_id", "label", "position", "orientation", "confidence", "region", *IMAGE_FIELDS), "not_found"
 )
@@ -186,8 +185,12 @@ class MoveGripperRequest:
     settle_timeout_s: float
 
 
-# limb_motion:v1 declares these kinds beside the kinds of peppy.
-LIMB_MOTION_KINDS = ("unreachable", "leader_streaming")
+# The kinds of limb_motion:v1 that each of its moves lists beside the kinds
+# of peppy.
+LIMB_MOTION_KINDS = {
+    "move_arm": ("unreachable", "leader_streaming"),
+    "move_gripper": ("leader_streaming",),
+}
 
 
 class FiredGoal:
@@ -242,7 +245,7 @@ class FakeLimbAction:
         self.TARGET_ACTION_NAME = name
         self.GoalRequest = request_type
         self.ResultStatus = ResultStatus
-        self.FailureKind, self.Failure = failure_types(name, *LIMB_MOTION_KINDS)
+        self.FailureKind, self.Failure = failure_types(name, *LIMB_MOTION_KINDS[name])
         self.ActionHandle = SimpleNamespace(fire_goal=self._fire_goal)
         self._fired: asyncio.Queue = asyncio.Queue()
         self._refusal = None
