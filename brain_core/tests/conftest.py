@@ -156,13 +156,18 @@ class FakeManipulator:
         self.stopped += 1
 
 
+# The reason peppy's goal context gives for each cause of a cancel signal.
+PEPPY_CANCEL_REASONS = {"caller": "cancelled by its caller", "sender_gone": "its sender is gone"}
+
+
 class FakeCtx:
     """Stands in for the generated GoalContext of `action`, a fake
     generated module: holds the goal, records how it ended, once, after
     checking that a result's fields are the ones the action's result
     carries and that a failure's kind is one the action declares, and lets
     a test send the goal its cancel signal, with the cause a caller's
-    cancel or a sender that is gone gives."""
+    cancel or a sender that is gone gives and the reason peppy gives for
+    that cause."""
 
     def __init__(self, action, **data) -> None:
         self.action = action
@@ -171,7 +176,7 @@ class FakeCtx:
         self._cause: Optional[str] = None
         self.completed: Optional[dict] = None
         self.cancelled: Optional[dict] = None
-        self.cancel_reason: Optional[str] = None
+        self.cancelled_reason: Optional[str] = None
         self.failed = None
 
     def request(self):
@@ -189,6 +194,9 @@ class FakeCtx:
     def cancel_cause(self) -> Optional[str]:
         return self._cause
 
+    def cancel_reason(self) -> Optional[str]:
+        return PEPPY_CANCEL_REASONS.get(self._cause)
+
     def cancel(self, cause: str = "caller") -> None:
         self._cause = cause
         self._cancel.set()
@@ -204,7 +212,7 @@ class FakeCtx:
     async def complete_cancelled(self, reason: str, **fields) -> None:
         self._check_end(fields)
         self.cancelled = fields
-        self.cancel_reason = reason
+        self.cancelled_reason = reason
 
     async def fail(self, kind, message: str) -> None:
         assert not self.ended, "ended twice"

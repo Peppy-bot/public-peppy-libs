@@ -14,7 +14,7 @@ from conftest import (
     records_of, rgb_frame,
 )
 from fake_peppygen import answering, fake_bindings
-from brain_core.brain import RESULT_ENDS, STATUS_ENDS, cancel_reason, decider
+from brain_core.brain import RESULT_ENDS, STATUS_ENDS, decider
 from brain_core.handlers import abort
 from brain_core.perception.frames import FrameStore
 from brain_core.ports import ExpectedFailure, FailureKind, Refusal, Role
@@ -207,7 +207,7 @@ async def test_a_goals_own_cancel_ends_it_cancelled_with_the_reason_of_its_cause
     await manipulator.begun()
     in_result.cancel(cause)
     await asyncio.wait_for(running, 1.0)
-    assert in_result.cancel_reason == reason
+    assert in_result.cancelled_reason == reason
     assert in_result.cancelled == dict(success=False, message=reason, action_time=0.0, **GRAB_ZERO)
     assert manipulator.stopped == 1
 
@@ -215,13 +215,7 @@ async def test_a_goals_own_cancel_ends_it_cancelled_with_the_reason_of_its_cause
     running = asyncio.create_task(brain.run_guarded(by_status, None, "switch_model", wait_for_a_stop, SWITCH_ZERO, ends=STATUS_ENDS))
     by_status.cancel(cause)
     await asyncio.wait_for(running, 1.0)
-    assert (by_status.cancel_reason, by_status.cancelled) == (reason, dict(action_time=0.0, **SWITCH_ZERO))
-
-
-def test_a_cause_the_brain_does_not_name_reads_as_cancelled():
-    assert cancel_reason("caller") == "cancelled by its caller"
-    assert cancel_reason("sender_gone") == "its sender is gone"
-    assert cancel_reason(None) == "cancelled"
+    assert (by_status.cancelled_reason, by_status.cancelled) == (reason, dict(action_time=0.0, **SWITCH_ZERO))
 
 
 class CountingFrames(FrameStore):
@@ -347,7 +341,7 @@ async def test_a_shutdown_ends_a_lane_less_job_cancelled_and_refuses_every_goal_
     await asyncio.wait_for(brain.shutdown(), 1.0)
     await asyncio.wait_for(running, 1.0)
     # A switch ends cancelled, the shutdown its reason.
-    assert (ctx.cancel_reason, ctx.cancelled) == ("the node is shutting down", dict(action_time=0.0, **SWITCH_ZERO))
+    assert (ctx.cancelled_reason, ctx.cancelled) == ("the node is shutting down", dict(action_time=0.0, **SWITCH_ZERO))
     # Once the shutdown began, a lane-less goal is refused too.
     late = switch_ctx()
     await brain.run_guarded(late, None, "switch_model", wait_for_a_stop, SWITCH_ZERO, ends=STATUS_ENDS)
@@ -378,6 +372,6 @@ async def test_a_shutdown_ends_a_search_cancelled_and_a_manipulation_aborted():
     await manipulator.begun()
     await asyncio.wait_for(brain.shutdown(), 1.0)
     await asyncio.wait_for(asyncio.gather(searching, moving), 1.0)
-    assert (scan.cancel_reason, scan.cancelled) == ("the node is shutting down", dict(action_time=0.0, **scan_zero))
+    assert (scan.cancelled_reason, scan.cancelled) == ("the node is shutting down", dict(action_time=0.0, **scan_zero))
     assert grabbing.cancelled is None
     assert grabbing.completed == dict(success=False, message="aborted: the node is shutting down", action_time=0.0, **GRAB_ZERO)

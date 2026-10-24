@@ -238,7 +238,7 @@ async def test_a_cancel_during_prepare_completes_as_cancelled_and_the_role_keeps
     ctx.cancel()
     await asyncio.wait_for(running, 1.0)
     assert ctx.completed is None
-    assert (ctx.cancel_reason, ctx.cancelled) == ("cancelled by its caller", dict(action_time=0.0, **SWITCH_ZERO))
+    assert (ctx.cancelled_reason, ctx.cancelled) == ("cancelled by its caller", dict(action_time=0.0, **SWITCH_ZERO))
     assert brain.models.current_name(Role.PERCEPTION) == "old"
 
 
@@ -252,7 +252,7 @@ async def test_a_shutdown_during_prepare_ends_the_switch_cancelled_and_the_role_
     await asyncio.wait_for(brain.shutdown(), 1.0)
     await asyncio.wait_for(running, 1.0)
     assert ctx.completed is None
-    assert (ctx.cancel_reason, ctx.cancelled) == ("the node is shutting down", dict(action_time=0.0, **SWITCH_ZERO))
+    assert (ctx.cancelled_reason, ctx.cancelled) == ("the node is shutting down", dict(action_time=0.0, **SWITCH_ZERO))
     assert brain.models.current_name(Role.PERCEPTION) == "old"
 
 

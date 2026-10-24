@@ -47,17 +47,6 @@ Check = Callable[["Brain", object], None]
 
 ABORTED_BY_SHUTDOWN = "aborted: the node is shutting down"
 
-# The reason of a goal's own cancel for each cause its goal context gives,
-# in peppy's words.
-CANCEL_REASONS = {"caller": "cancelled by its caller", "sender_gone": "its sender is gone"}
-
-
-def cancel_reason(cause: Optional[str]) -> str:
-    """The reason of a goal's own cancel, from the cause its goal context
-    gives; "cancelled" for a cause it does not name."""
-    return CANCEL_REASONS.get(cause, "cancelled")
-
-
 class Ends(Protocol):
     """How the contract of a member ends a goal. `fields` and `zero` carry
     `action_time`."""
@@ -320,4 +309,4 @@ class Brain:
 
     async def _watch_cancel(self, ctx, job: Job) -> None:
         await ctx.cancel_signal()
-        await self.sequencer.cancel(job, cancel_reason(ctx.cancel_cause()), signalled=True)
+        await self.sequencer.cancel(job, ctx.cancel_reason(), signalled=True)

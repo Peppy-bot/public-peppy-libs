@@ -387,7 +387,7 @@ async def test_a_callers_cancel_ends_a_search_cancelled_with_empty_fields():
     # not reported.
     detector.gate.set()
     await asyncio.wait_for(running, 1.0)
-    assert ctx.cancel_reason == "its sender is gone"
+    assert ctx.cancelled_reason == "its sender is gone"
     assert ctx.cancelled == dict(identify_item.ZERO, action_time=0.0)
     assert brain.state.items == {} and brain.sequencer.running(Role.PERCEPTION) is None
 
@@ -437,7 +437,7 @@ async def test_a_callers_cancel_completes_the_goal_as_cancelled():
     ctx.cancel()
     await asyncio.wait_for(running, 1.0)
     assert ctx.completed is None
-    assert ctx.cancel_reason == "cancelled by its caller"
+    assert ctx.cancelled_reason == "cancelled by its caller"
     assert ctx.cancelled["success"] is False
     assert ctx.cancelled["message"] == "cancelled by its caller"
     assert manipulator.stopped == 1
