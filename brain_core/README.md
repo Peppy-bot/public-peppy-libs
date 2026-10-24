@@ -327,7 +327,7 @@ sequenceDiagram
     Note over SM: final_opening below hold_opening_min: "gripper 'g' closed on nothing"
     SM->>R: move_arm(lifted point)
     SM->>L: newer_than(the latest stamp at the lift's result, snapshot_wait_s)
-    Note over SM: none: "no limb_states snapshot after the lift"<br/>opening below hold_opening_min: "item 'x' slipped while lifting"
+    Note over SM: none: "no limb_states snapshot after the lift"<br/>opening below hold_opening_min, or more than hold_drop_max below the close's: "item 'x' slipped while lifting"
     alt a step from the descent on failed, and no stop ended it
         SM->>R: set_gripper(g, 1), move_arm(pre-grasp)
         Note over SM: either fails: "<failure>; the retreat to the pre-grasp point failed: <why>"

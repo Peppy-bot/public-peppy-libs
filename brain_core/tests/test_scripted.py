@@ -268,6 +268,28 @@ async def test_a_slip_retreats():
     assert robot.calls[-3] == ("move", LIFT, DOWN[0]) and robot.calls[-2:] == RETREAT
 
 
+async def test_jaws_that_close_further_during_the_lift_lost_the_item_above_the_hold_opening():
+    manipulator, robot, store = await started()
+    # The apple of the bowl run of 2026-10-24: the close stopped at 0.378 and
+    # the jaws stood at 0.062 after the lift, above the 0.05 of an empty close.
+    holding(robot, store, closed=0.378, after=0.062)
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert outcome == Outcome(False, "item 'cup_1-t0' slipped while lifting")
+    assert robot.calls[-2:] == RETREAT
+
+
+async def test_jaws_that_squeeze_a_little_further_during_the_lift_still_hold():
+    manipulator, robot, store = await started()
+    # The lemon of the same runs fell from 0.331 to 0.327 and stayed held.
+    holding(robot, store, closed=0.331, after=0.327)
+    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == Outcome(True)
+
+
+async def test_the_most_the_opening_may_fall_during_the_lift_is_a_setting():
+    manipulator, robot, store = await started(hold_drop_max=0.01)
+    holding(robot, store, closed=0.425, after=0.412)
+    assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == Outcome(False, "item 'cup_1-t0' slipped while lifting")
+
 
 async def test_no_snapshot_after_the_lift_fails_the_grab_and_retreats():
     manipulator, robot, store = await started()
@@ -523,6 +545,7 @@ async def test_a_place_without_an_orientation_tries_the_down_rolls():
 # none.
 
 HOLD = 0.05
+DROP = 0.05
 
 
 def mostly(one_in: int):
@@ -584,7 +607,7 @@ def answering_drawn(robot: FakeRobot, store: LimbStateStore, data, cancel: Cance
 @given(st.data())
 def test_a_grab_returns_an_outcome_or_raises_cancelled_holds_only_when_both_openings_pass_and_retreats(data):
     async def scenario():
-        manipulator, robot, store = await started(hold_opening_min=HOLD)
+        manipulator, robot, store = await started(hold_opening_min=HOLD, hold_drop_max=DROP)
         cancel, record = CancelToken(), {}
         answering_drawn(robot, store, data, cancel, record)
         try:
@@ -602,11 +625,13 @@ def test_a_grab_returns_an_outcome_or_raises_cancelled_holds_only_when_both_open
             return
         event("held")
         # A hold: the whole sequence ran, the close stopped at or above the
-        # hold opening, and so did the opening after the lift.
+        # hold opening, and so did the opening after the lift, no more than
+        # the drop below the close's.
         assert robot.kinds()[-5:] == ["grip", "move", "move", "grip", "move"]
-        assert robot.calls[-2][2] == 0.0 and record["last_grip"].final_opening >= HOLD
+        closed = record["last_grip"].final_opening
+        assert robot.calls[-2][2] == 0.0 and closed >= HOLD
         stamp, after = record["after_last_move"]
-        assert stamp > record["latest_before_last_move"] and after >= HOLD
+        assert stamp > record["latest_before_last_move"] and after >= HOLD and closed - after <= DROP
 
     asyncio.run(scenario())
 

@@ -18,7 +18,9 @@ A grab:
    result's `final_opening`: below `hold_opening_min` the jaws met nothing;
 5. lifts, then judges the hold again from the first limb_states snapshot
    captured after the lift's result, waiting up to `snapshot_wait_s` for
-   it: below `hold_opening_min` the item slipped.
+   it: below `hold_opening_min`, or more than `hold_drop_max` below the
+   opening at the close, the item slipped, since jaws that lose the item
+   close further.
 
 Every move names its bars, as the limb_motion contract has the caller do:
 an arm move plans within 1 mm and 0.01 rad of its pose and completes once
@@ -79,6 +81,11 @@ logger = logging.getLogger(__name__)
 CLEARANCE_M = 0.075
 LIFT_M = 0.075
 HOLD_OPENING_MIN = 0.05
+# How far the opening may fall from the close to after the lift while the
+# jaws still hold the item. In Waldo a held fruit's fell 0.003 to 0.013 (the
+# bowl runs of 2026-10-24), and an apple that slipped out let it fall 0.316,
+# from 0.378 to 0.062.
+HOLD_DROP_MAX = 0.05
 SNAPSHOT_WAIT_S = 1.0
 # The bars every arm move names. The plan may sit 1 mm and 0.01 rad from
 # the commanded pose, the backbone's servo tolerances; the move completes
@@ -140,6 +147,7 @@ class ScriptedManipulator:
         clearance_m: float = CLEARANCE_M,
         lift_m: float = LIFT_M,
         hold_opening_min: float = HOLD_OPENING_MIN,
+        hold_drop_max: float = HOLD_DROP_MAX,
         snapshot_wait_s: float = SNAPSHOT_WAIT_S,
         settle_position_m: float = SETTLE_POSITION_M,
         settle_orientation_rad: float = SETTLE_ORIENTATION_RAD,
@@ -153,6 +161,7 @@ class ScriptedManipulator:
         self.clearance_m = clearance_m
         self.lift_m = lift_m
         self.hold_opening_min = hold_opening_min
+        self.hold_drop_max = hold_drop_max
         self.snapshot_wait_s = snapshot_wait_s
         self.settle_position_m = settle_position_m
         self.settle_orientation_rad = settle_orientation_rad
@@ -250,10 +259,15 @@ class ScriptedManipulator:
         after = await self._snapshot_after(self._limb_states.latest, cancel)
         opening = _opening_of(after, gripper.name)
         notes.append(f"{opening:.3f} after the lift")
-        if opening < self.hold_opening_min:
+        if self._slipped(closed, opening):
             raise _Failed(f"item '{item.item_id}' slipped while lifting")
         notes.append("held")
         return Outcome(True)
+
+    def _slipped(self, closed: float, after_lift: float) -> bool:
+        """Whether the item left the jaws during the lift: they stand near
+        closed, or closed further than the item let them at the close."""
+        return after_lift < self.hold_opening_min or closed - after_lift > self.hold_drop_max
 
     def _approach_opening(self, item: Item) -> float:
         """How wide the jaws open before the descent: the item's width and
