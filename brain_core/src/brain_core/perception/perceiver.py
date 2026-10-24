@@ -7,9 +7,11 @@ A scan asks the detector for its whole vocabulary. An identify search
 asks for the description's phrase and lets the core pick the best match
 afterwards (`state.best_match`), so no detector implements selection.
 
-The Perceiver checks what it holds, the frames and the camera model.
-Whether a detector can search is the detector's own answer
+The Perceiver checks what it holds, the frames and the camera model, and
+refuses a search without them with `resource_unavailable`. Whether a
+detector can search is the detector's own answer
 (`Detector.why_unavailable`), which the brain asks first (`Brain.look`).
+A search past its deadline fails with `timeout`.
 
 A search awaits the detector's `detect`. A detector whose model blocks
 runs its compute through `in_daemon_thread`, a daemon thread of its own
@@ -29,7 +31,7 @@ import threading
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
-from ..ports import Box, CancelToken, Deadline, Detection, Detector, Refusal, SearchTimeout, iou
+from ..ports import Box, CancelToken, Deadline, Detection, Detector, ExpectedFailure, FailureKind, Refusal, SearchTimeout, iou
 from .camera import CameraModel
 from .frames import FrameStore, decode_color, decode_depth, depth_at
 
@@ -131,13 +133,18 @@ class Perceiver:
             return f"no perception source: {self.pose_reason}"
         return ""
 
+    def refuse_unless_ready(self) -> None:
+        """Raises the Refusal, `resource_unavailable`, of a search the
+        frames or the camera model cannot serve yet."""
+        reason = self.why_unavailable()
+        if reason:
+            raise Refusal(FailureKind.RESOURCE_UNAVAILABLE, reason)
+
     async def scan(self, detector: Detector, phrases: Sequence[str], cancel: CancelToken, timeout_s: float) -> Look:
         """Looks once at the latest frame through `detector` for `phrases`,
         or for everything the detector knows when `phrases` is empty, within
         `timeout_s`, the default budget when that is zero."""
-        reason = self.why_unavailable()
-        if reason:
-            raise Refusal(reason)
+        self.refuse_unless_ready()
         frame = self.frames.latest()
         image = decode_color(frame.color)
         depth_m = decode_depth(frame.depth, frame.depth_unit)
@@ -145,7 +152,7 @@ class Perceiver:
         try:
             boxes = await detector.detect(image, list(phrases), deadline)
         except SearchTimeout as timeout:
-            raise Refusal(str(timeout)) from None
+            raise ExpectedFailure(FailureKind.TIMEOUT, str(timeout)) from None
         cancel.check()
         kept, duplicates = merge_duplicates(boxes)
         detections: list[Detection] = []

@@ -1,8 +1,9 @@
 """The detector that is not there: `perception_model: "none"`.
 
-It is never ready, so both searches are refused with "no perception
-source: perception_model is 'none'", what the contract asks of a brain
-that cannot see. Every other member keeps working.
+It is never ready, so both searches are refused with
+`precondition_failed`, "no perception source: perception_model is
+'none'", what brain_model asks of a role whose model is "none". Every
+other member keeps working.
 """
 
 from __future__ import annotations

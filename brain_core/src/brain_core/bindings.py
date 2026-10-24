@@ -43,8 +43,6 @@ GENERATED_MODULES = {
 class Bindings:
     # peppygen.clock: the node's clock, which the brain stamps goals with.
     clock: Any
-    # peppygen.QoSProfile.Standard: the QoS of a limb_motion goal's feedback.
-    standard_qos: Any
 
     # The backbone, limb_motion:v1 (peppygen.consumed_actions.limb_motion).
     move_arm: Any
@@ -86,8 +84,7 @@ class Bindings:
     @classmethod
     def from_generated(cls, package: ModuleType) -> "Bindings":
         """The bindings of a brain's generated package, its `peppygen`: each
-        module imported from where `GENERATED_MODULES` says it sits, and the
-        standard QoS of the package's `QoSProfile`. A module the package
-        lacks raises ModuleNotFoundError naming it."""
+        module imported from where `GENERATED_MODULES` says it sits. A
+        module the package lacks raises ModuleNotFoundError naming it."""
         modules = {field: importlib.import_module(f"{package.__name__}.{path}") for field, path in GENERATED_MODULES.items()}
-        return cls(standard_qos=package.QoSProfile.Standard, **modules)
+        return cls(**modules)

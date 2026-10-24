@@ -8,24 +8,29 @@ robot frame.
 
 The slot is optional, like the camera's. Vacant, the intrinsics never come
 and every search is refused naming the slot. Bound, both services are asked
-again every `INTRINSICS_RETRY_S` until each has answered with success and
-the answers are usable, and until then a search is refused with the last
-reason they were not. The contract gives one answer, success false with a
-message, both to a camera that has not heard from its simulation yet and
-to a device that knows nothing of its lens, so the brain keeps asking in
-both cases: the first answers within seconds, the second refuses for the
-node's whole life and the log says so once. A depth model other than "z"
-is a reason too: the brain reads a sample as the distance along the
-optical axis, which is what the camera model deprojects. The intrinsics
-are those of the colour stream, which the detections' pixels are in; the
-depth is read at the same pixels, so the frame store refuses a pair of
-frames that are not aligned.
+again every `INTRINSICS_RETRY_S` until each has given its response and the
+answers are usable, and until then a search is refused with the last
+reason they were not. A camera that does not know what is asked gives an
+error reply: `precondition_failed` before it has heard from its
+simulation, `rejected` for a device without a calibration. The brain keeps
+asking whatever the kind, so a camera node that starts again with what it
+lacked is heard: the first answers within seconds, the second gives its
+error reply for the node's whole life and the log says so once. A depth
+model other than "z" is a reason too: the brain reads a sample as the
+distance along the optical axis, which is what the camera model
+deprojects. The intrinsics are those of the colour stream, which the
+detections' pixels are in; the depth is read at the same pixels, so the
+frame store refuses a pair of frames that are not aligned.
 
-The pose is asked the same way: until the robot answers with success and
+The pose is asked the same way: until the robot gives its response and
 names the camera, every search is refused with the reason, and the log
-says it once. The pose is read once: the brain looks through a camera
-fixed to the robot's base, and reports the values the robot's design
-gives, exact in a simulation and nominal on hardware.
+says it once. A robot that has not measured its joints yet gives an error
+reply. The pose is read once: the brain looks through a camera fixed to
+the robot's base, and reports the values the robot's design gives, exact
+in a simulation and nominal on hardware.
+
+Each reason is a source that is not there, so its Refusal is
+`resource_unavailable`, the kind a search refused for it gives.
 """
 
 from __future__ import annotations
@@ -33,7 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from ..ports import Refusal
+from ..ports import FailureKind, Refusal
 from ..waiting import unless_cancelled
 from .camera import CameraModel, Intrinsics
 
@@ -49,8 +54,8 @@ Z_DEPTH = "z"
 
 
 def intrinsics_from(data) -> Intrinsics:
-    """The camera model of a successful get_color_intrinsics answer; a
-    ValueError names what is unusable."""
+    """The camera model of a get_color_intrinsics response; a ValueError
+    names what is unusable."""
     return Intrinsics(
         int(data.width), int(data.height), float(data.fx), float(data.fy), float(data.cx), float(data.cy),
         str(data.distortion_model), tuple(float(c) for c in (data.distortion or ())),
@@ -59,26 +64,41 @@ def intrinsics_from(data) -> Intrinsics:
 
 async def camera_intrinsics(node_runner, producer, get_color_intrinsics, get_depth_intrinsics) -> Intrinsics:
     """One round of both questions, through the node's generated geometry
-    modules: the colour intrinsics when the camera answers both with
-    success, measures depth along the optical axis and reports a usable
-    pinhole; a Refusal naming the reason otherwise."""
-    try:
-        color = (await get_color_intrinsics.poll(node_runner, producer, INTRINSICS_TIMEOUT_S)).data
-        depth = (await get_depth_intrinsics.poll(node_runner, producer, INTRINSICS_TIMEOUT_S)).data
-    except Exception as error:
-        raise Refusal(f"the camera's geometry is not answered yet ({error!r})") from error
-    if not color.success:
-        raise Refusal(f"the camera does not know its colour intrinsics: {color.message}")
-    if not depth.success:
-        raise Refusal(f"the camera does not know its depth intrinsics: {depth.message}")
+    modules: the colour intrinsics when the camera gives both responses,
+    measures depth along the optical axis and reports a usable pinhole; a
+    Refusal naming the reason otherwise."""
+    color = await _answer(
+        get_color_intrinsics, node_runner, producer,
+        "the camera does not know its colour intrinsics", "the camera's geometry is not answered yet",
+    )
+    depth = await _answer(
+        get_depth_intrinsics, node_runner, producer,
+        "the camera does not know its depth intrinsics", "the camera's geometry is not answered yet",
+    )
     if depth.depth_model != Z_DEPTH:
-        raise Refusal(
+        raise _not_there(
             f"the camera's depth samples are '{depth.depth_model}' distances; the brain reads distances along the optical axis ('{Z_DEPTH}')"
         )
     try:
         return intrinsics_from(color)
     except ValueError as error:
-        raise Refusal(f"the camera's intrinsics are unusable: {error}") from error
+        raise _not_there(f"the camera's intrinsics are unusable: {error}") from error
+
+
+async def _answer(service, node_runner, producer, unknown: str, unanswered: str):
+    """The response data of one poll of `service`, a generated consumed
+    service module; a Refusal that starts with `unknown` for its error
+    reply, or with `unanswered` for no answer at all."""
+    try:
+        return (await service.poll(node_runner, producer, INTRINSICS_TIMEOUT_S)).data
+    except service.Failure as failure:
+        raise _not_there(f"{unknown}: {failure.message}") from failure
+    except Exception as error:
+        raise _not_there(f"{unanswered} ({error!r})") from error
+
+
+def _not_there(reason: str) -> Refusal:
+    return Refusal(FailureKind.RESOURCE_UNAVAILABLE, reason)
 
 
 async def _learn(token, perceiver, reason_attribute: str, ask, learned) -> None:
@@ -127,15 +147,13 @@ async def learn_intrinsics(node_runner, token, perceiver, get_color_intrinsics, 
 
 
 def camera_pose_from(data, camera_name: str):
-    """The pose of `camera_name` in a get_camera_poses answer, as (position,
-    orientation); a Refusal when the answer is no success or names no such
+    """The pose of `camera_name` in a get_camera_poses response, as
+    (position, orientation); a Refusal when the response names no such
     camera."""
-    if not data.success:
-        raise Refusal(f"the robot does not know where its cameras stand: {data.message}")
     names = list(data.camera_names)
     if camera_name not in names:
         carried = ", ".join(names) if names else "none"
-        raise Refusal(f"the robot carries no camera named '{camera_name}' (it carries: {carried})")
+        raise _not_there(f"the robot carries no camera named '{camera_name}' (it carries: {carried})")
     index = names.index(camera_name)
     position = tuple(float(v) for v in data.positions[index * 3 : index * 3 + 3])
     orientation = tuple(float(v) for v in data.orientations[index * 4 : index * 4 + 4])
@@ -146,10 +164,10 @@ async def camera_pose(node_runner, producer, camera_name: str, get_camera_poses)
     """One question to the robot, through the node's generated
     camera_mounts module: where `camera_name` stands, or a Refusal naming
     why the answer is not usable."""
-    try:
-        answer = (await get_camera_poses.poll(node_runner, producer, INTRINSICS_TIMEOUT_S)).data
-    except Exception as error:
-        raise Refusal(f"the robot's camera mounts are not answered yet ({error!r})") from error
+    answer = await _answer(
+        get_camera_poses, node_runner, producer,
+        "the robot does not know where its cameras stand", "the robot's camera mounts are not answered yet",
+    )
     return camera_pose_from(answer, camera_name)
 
 
@@ -167,7 +185,7 @@ async def learn_camera_pose(node_runner, token, perceiver, camera_name: str, get
         try:
             return perceiver.camera.with_pose(position, orientation)
         except ValueError as error:
-            raise Refusal(str(error)) from error
+            raise _not_there(str(error)) from error
 
     def learned(camera: CameraModel) -> None:
         logger.info(

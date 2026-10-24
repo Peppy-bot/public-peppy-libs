@@ -3,6 +3,7 @@ picture the scan looked at, in one result."""
 
 from __future__ import annotations
 
+from ..brain import STATUS_ENDS
 from ..ports import Role
 
 ZERO = dict(
@@ -12,6 +13,11 @@ ZERO = dict(
 
 # The region of an item the scan reports without having seen it.
 NO_REGION = (0.0, 0.0, 0.0, 0.0)
+
+
+def decide(brain, goal) -> None:
+    """Refuses a scan that cannot start now (`Brain.check_search`)."""
+    brain.check_search()
 
 
 async def run(brain, ctx) -> None:
@@ -35,4 +41,4 @@ async def run(brain, ctx) -> None:
             frame_timestamp=look.frame_timestamp,
         )
 
-    await brain.run_guarded(ctx, Role.PERCEPTION, "scan_items", body, ZERO)
+    await brain.run_guarded(ctx, Role.PERCEPTION, "scan_items", body, ZERO, ends=STATUS_ENDS)

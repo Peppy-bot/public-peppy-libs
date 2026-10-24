@@ -11,15 +11,24 @@ goal of the role is the first to use it.
 
 A switch, `Models.switch`, runs as a lane-less job and goes:
 
-1. the source's entry for the name, or its refusal (`ModelSource.offered`);
-2. refused while another switch for the role runs;
-3. refused while the role's lane runs a goal, naming it, before any work;
+1. the source's entry for the name, or its refusal, `rejected`
+   (`ModelSource.offered`);
+2. refused with `precondition_failed` while another switch for the role
+   runs;
+3. refused with `precondition_failed` while the role's lane runs a goal,
+   naming it, before any work;
 4. the role marked as switching, and the backend prepared
    (`ModelSource.prepare`, awaited: a hosted model is reached once), cut
    short by the switch's own cancel;
 5. a cancel of the switch, by its caller or by a shutdown, leaves the
    role's model as it was;
 6. the lane checked again, then the backend set, with no await between.
+
+Steps 1 to 3 are `check_switch`, which the decision of a switch_model goal
+asks before it accepts the goal, and the switch asks again when it starts.
+A switch that another goal overtook between its decision and its start
+fails with the kind its refusal would have given. So does a switch whose
+lane became busy during its prepare, at step 6.
 
 The switching mark is released whatever the outcome.
 """
@@ -29,7 +38,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
-from .ports import ModelSource, Refusal, Role
+from .ports import FailureKind, ModelSource, Refusal, Role
 from .sequencer import Job, Sequencer
 from .waiting import until
 
@@ -82,14 +91,22 @@ class Models:
     def current_name(self, role: Role) -> str:
         return self._active[role].name
 
+    def check_switch(self, role: Role, name: str) -> object:
+        """The source's entry of `name` for `role` when a switch to it may
+        start now, or its Refusal: `rejected` from the source for a name
+        the role does not offer, `precondition_failed` while another switch
+        for the role runs or the role's lane runs a goal."""
+        entry = self._source.offered(role, name)
+        if role in self._switching:
+            raise Refusal(FailureKind.PRECONDITION_FAILED, f"switch_model is running for {role}")
+        self._refuse_while_busy(role)
+        return entry
+
     async def switch(self, role: Role, name: str, job: Job) -> str:
         """Makes `name` the model of `role` for the switch `job` runs, and
         returns the name; a Refusal, an ExpectedFailure or a Cancelled
         leaves the role's model as it was."""
-        entry = self._source.offered(role, name)
-        if role in self._switching:
-            raise Refusal(f"switch_model is running for {role}")
-        self._refuse_while_busy(role)
+        entry = self.check_switch(role, name)
         self._switching.add(role)
         try:
             backend = await until(job.cancel.wait(), self._source.prepare(entry))
@@ -105,7 +122,7 @@ class Models:
     def _refuse_while_busy(self, role: Role) -> None:
         running = self._sequencer.running(role)
         if running is not None:
-            raise Refusal(f"{running.action} is running")
+            raise Refusal(FailureKind.PRECONDITION_FAILED, f"{running.action} is running")
 
     async def _ready(self, role: Role, backend) -> None:
         if role == Role.MANIPULATION:

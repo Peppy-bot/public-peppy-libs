@@ -1,6 +1,7 @@
 """The seams of the brain: the plain data that crosses them, the roles a
-model serves, the two interfaces a backend implements, the cancel token
-every long call takes, and the deadline every search carries.
+model serves, the failure kinds a goal ends with, the two interfaces a
+backend implements, the cancel token every long call takes, and the
+deadline every search carries.
 
 The core owns every contract rule. A backend only answers one question:
 "what do you see in this image" (a `Detector`) or "do this with the arm"
@@ -23,41 +24,71 @@ Quat = tuple[float, float, float, float]
 Region = tuple[float, float, float, float]
 
 
-class Refusal(Exception):
-    """A goal the contracts say to refuse in the result, or a sequence that
-    failed: `message` becomes the result's message and success is false."""
+class FailureKind(StrEnum):
+    """Why a goal is refused or fails, as the brain says it: the kinds of
+    peppy, and `not_found`, the kind item_perception declares. The
+    generated module of each member checks that the member declares the
+    kind it is given."""
 
-    def __init__(self, message: str) -> None:
+    # The attempt gave no result.
+    ATTEMPT_FAILED = "attempt_failed"
+    # The bound of the provider passed.
+    TIMEOUT = "timeout"
+    # A precondition failed: a lane runs a goal, the node is shutting down,
+    # a role's model is "none".
+    PRECONDITION_FAILED = "precondition_failed"
+    # A robot, limb, source or host is gone or not there.
+    RESOURCE_UNAVAILABLE = "resource_unavailable"
+    # The provider refused the goal, and no other kind says why: an unknown
+    # name, a value the brain does not take.
+    REJECTED = "rejected"
+    # identify_item found no item that matches the description.
+    NOT_FOUND = "not_found"
+
+
+class GoalFailure(Exception):
+    """Why a goal ends with no result: a failure kind, and a message for a
+    person."""
+
+    def __init__(self, kind: FailureKind, message: str) -> None:
         super().__init__(message)
+        self.kind = kind
         self.message = message
 
 
-class ExpectedFailure(Exception):
-    """A goal that failed the way the brain expects some goals to fail,
-    such as an error a model's provider returned: the goal completes as
-    failed with `message`, and its log line carries no traceback. Any other
-    exception is a fault, and its log line carries the traceback."""
+class Refusal(GoalFailure):
+    """A goal that a rule of the contracts tells the brain not to carry out:
+    an unknown name, a lane that runs a goal, no source. Raised while a
+    goal is decided, it refuses the goal; raised once the goal runs, it
+    ends the goal the way its contract reports a failure."""
 
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
-        self.message = message
+
+class ExpectedFailure(GoalFailure):
+    """A goal that was tried and gave no result, the way the brain expects
+    some goals to fail: an error a model's provider returned, a search past
+    its bound, a search that found nothing. It ends the goal the way its
+    contract reports a failure, and its log line carries no traceback. Any
+    other exception is a fault: the goal fails with `attempt_failed`, and
+    its log line carries the traceback."""
 
 
 class Cancelled(Exception):
-    """A sequence stopped on request: by its own caller (a cancel on the
-    goal handle) or by anyone (an abort). `by_caller` picks the completion
-    the contract wants: cancelled for the first, a failed result for the
-    second."""
+    """A sequence stopped on request. `signalled` is true when the goal's
+    own cancel signal stopped it, a cancel of its caller or a sender that
+    is gone, and false when the brain stopped it for another goal or for
+    itself, an abort or a shutdown. A contract that reports in its result
+    tells the two apart: item_manipulation completes the first as
+    cancelled and the second with a failed result."""
 
-    def __init__(self, reason: str, by_caller: bool) -> None:
+    def __init__(self, reason: str, signalled: bool) -> None:
         super().__init__(reason)
         self.reason = reason
-        self.by_caller = by_caller
+        self.signalled = signalled
 
 
 class SearchTimeout(Exception):
     """A detector stopped at its deadline: the search has no answer, and
-    the core refuses it naming the budget."""
+    the core fails it with `timeout`, naming the budget."""
 
     def __init__(self, budget_s: float) -> None:
         super().__init__(f"the search did not finish within {budget_s:g} s")
@@ -76,11 +107,11 @@ class Role(StrEnum):
 
 def parse_role(text: str, roles: Sequence[Role]) -> Role:
     """The role `text` names among `roles`, the roles a brain has, or the
-    refusal that the brain runs no model for it."""
+    refusal, `rejected`, that the brain runs no model for it."""
     for role in roles:
         if text == role.value:
             return role
-    raise Refusal(f"this brain runs no model for the role '{text}'")
+    raise Refusal(FailureKind.REJECTED, f"this brain runs no model for the role '{text}'")
 
 
 @dataclass(frozen=True)
@@ -112,21 +143,21 @@ class CancelToken:
     def __init__(self) -> None:
         self._event = asyncio.Event()
         self.reason = ""
-        self.by_caller = False
+        self.signalled = False
 
     @property
     def cancelled(self) -> bool:
         return self._event.is_set()
 
-    def cancel(self, reason: str, *, by_caller: bool) -> None:
+    def cancel(self, reason: str, *, signalled: bool) -> None:
         if not self._event.is_set():
             self.reason = reason
-            self.by_caller = by_caller
+            self.signalled = signalled
             self._event.set()
 
     def check(self) -> None:
         if self.cancelled:
-            raise Cancelled(self.reason, self.by_caller)
+            raise Cancelled(self.reason, self.signalled)
 
     async def wait(self) -> None:
         await self._event.wait()
@@ -322,8 +353,9 @@ class ModelSource(Protocol):
         ...
 
     def offered(self, role: Role, name: str) -> object:
-        """The entry of the model `name` for `role`, or a Refusal in the
-        brain's own words when the role does not offer it."""
+        """The entry of the model `name` for `role`, or a Refusal with
+        `rejected`, in the brain's own words, when the role does not offer
+        it."""
         ...
 
     def start(self, entry: object) -> object:
@@ -334,5 +366,7 @@ class ModelSource(Protocol):
     async def prepare(self, entry: object) -> object:
         """The backend of `entry` for a switch, checked before the switch
         hands it over: a hosted model is reached once. A Refusal or an
-        ExpectedFailure says why it cannot serve."""
+        ExpectedFailure says why it cannot serve: `resource_unavailable`
+        when the brain cannot reach the model, `attempt_failed` when the
+        model cannot serve the role."""
         ...

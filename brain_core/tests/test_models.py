@@ -7,11 +7,11 @@ import asyncio
 
 import fake_peppygen
 import pytest
-from conftest import CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeSource, depth_frame, make_brain, rgb_frame
+from conftest import CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeSource, depth_frame, failed_with, make_brain, rgb_frame
 
 from brain_core.handlers import abort, grab_item, place_item, scan_items, switch_model
 from brain_core.manipulation.none import NoneManipulator
-from brain_core.ports import Box, ExpectedFailure, Refusal, Role
+from brain_core.ports import Box, ExpectedFailure, FailureKind, Refusal, Role
 
 SWITCH_ZERO = dict(role="", model="")
 
@@ -111,9 +111,7 @@ async def test_a_starting_model_the_role_does_not_offer_stops_the_node_naming_it
 async def test_a_name_the_role_does_not_offer_is_refused_in_the_sources_words():
     brain = await brain_with(two_detectors(FakeDetector(), FakeDetector()))
     ctx = await switched(brain, Role.PERCEPTION, "sam9")
-    assert ctx.completed == dict(
-        success=False, message="'sam9' is not a perception model here; see list_models", action_time=0.0, **SWITCH_ZERO
-    )
+    assert failed_with(ctx, FailureKind.REJECTED, "'sam9' is not a perception model here; see list_models")
     assert brain.models.current_name(Role.PERCEPTION) == "old"
 
 
@@ -124,8 +122,11 @@ async def test_a_perception_switch_is_refused_during_a_scan_and_the_running_scan
     scan = scan_goal()
     running = asyncio.create_task(scan_items.run(brain, scan))
     await old.searching.wait()
+    with pytest.raises(Refusal, match="^scan_items is running$") as raised:
+        brain.models.check_switch(Role.PERCEPTION, "new")
+    assert raised.value.kind is FailureKind.PRECONDITION_FAILED
     ctx = await switched(brain, Role.PERCEPTION, "new")
-    assert (ctx.completed["success"], ctx.completed["message"]) == (False, "scan_items is running")
+    assert failed_with(ctx, FailureKind.PRECONDITION_FAILED, "scan_items is running")
     # Refused before any work: nothing was prepared.
     assert source.prepared == []
     old.gate.set()
@@ -138,7 +139,7 @@ async def test_a_scan_that_starts_after_a_switch_uses_the_new_model():
     old, new = FakeDetector([Box("cup", 0.9, 7, 5, 9, 7)]), FakeDetector([Box("bowl", 0.9, 7, 5, 9, 7)])
     brain = await brain_with(two_detectors(old, new))
     ctx = await switched(brain, Role.PERCEPTION, "new")
-    assert ctx.completed == dict(success=True, message="", role="perception", model="new", action_time=0.0)
+    assert ctx.completed == dict(role="perception", model="new", action_time=0.0)
     assert brain.models.current(Role.PERCEPTION) is new
     scan = scan_goal()
     await scan_items.run(brain, scan)
@@ -168,10 +169,10 @@ async def test_a_perception_switch_succeeds_during_a_grab():
     running = asyncio.create_task(grab_item.run(brain, grab))
     await manipulator.begun()
     ctx = await switched(brain, Role.PERCEPTION, "new")
-    assert ctx.completed["success"] is True and brain.models.current_name(Role.PERCEPTION) == "new"
+    assert ctx.completed is not None and brain.models.current_name(Role.PERCEPTION) == "new"
     # A manipulation switch, though, waits for the grab to end.
     refused = await switched(brain, Role.MANIPULATION, "fake")
-    assert refused.completed["message"] == "grab_item is running"
+    assert failed_with(refused, FailureKind.PRECONDITION_FAILED, "grab_item is running")
     await abort.run(brain, FakeCtx(fake_peppygen.abort, reason="done"))
     await asyncio.wait_for(running, 1.0)
 
@@ -182,7 +183,7 @@ async def test_a_manipulation_switch_hands_the_new_manipulator_the_robot():
     brain = await make_brain(source=source, perception_model="none", manipulation_model="first")
     assert second.robot is None
     ctx = await switched(brain, Role.MANIPULATION, "second")
-    assert ctx.completed["success"] is True
+    assert ctx.completed is not None
     assert second.robot is brain.robot and brain.models.current(Role.MANIPULATION) is second
 
 
@@ -193,11 +194,14 @@ async def test_a_second_switch_for_a_role_is_refused_while_the_first_runs():
     first, run = switch(brain, Role.PERCEPTION, "new")
     running = asyncio.create_task(run)
     await source.preparing.wait()
+    with pytest.raises(Refusal, match="^switch_model is running for perception$") as raised:
+        brain.models.check_switch(Role.PERCEPTION, "old")
+    assert raised.value.kind is FailureKind.PRECONDITION_FAILED
     second = await switched(brain, Role.PERCEPTION, "old")
-    assert (second.completed["success"], second.completed["message"]) == (False, "switch_model is running for perception")
+    assert failed_with(second, FailureKind.PRECONDITION_FAILED, "switch_model is running for perception")
     source.gate.set()
     await asyncio.wait_for(running, 1.0)
-    assert first.completed["success"] is True and brain.models.current_name(Role.PERCEPTION) == "new"
+    assert first.completed is not None and brain.models.current_name(Role.PERCEPTION) == "new"
 
 
 async def test_a_lane_that_becomes_busy_during_prepare_refuses_the_switch_at_the_set():
@@ -214,7 +218,9 @@ async def test_a_lane_that_becomes_busy_during_prepare_refuses_the_switch_at_the
     await old.searching.wait()
     source.gate.set()
     await asyncio.wait_for(switching, 1.0)
-    assert (ctx.completed["success"], ctx.completed["message"]) == (False, "scan_items is running")
+    # The check after the prepare fails the switch with the kind a refusal
+    # would have given.
+    assert failed_with(ctx, FailureKind.PRECONDITION_FAILED, "scan_items is running")
     assert brain.models.current(Role.PERCEPTION) is old
     old.gate.set()
     await asyncio.wait_for(scanning, 1.0)
@@ -232,11 +238,11 @@ async def test_a_cancel_during_prepare_completes_as_cancelled_and_the_role_keeps
     ctx.cancel()
     await asyncio.wait_for(running, 1.0)
     assert ctx.completed is None
-    assert ctx.cancelled == dict(success=False, message="cancelled by the caller", action_time=0.0, **SWITCH_ZERO)
+    assert (ctx.cancel_reason, ctx.cancelled) == ("cancelled by its caller", dict(action_time=0.0, **SWITCH_ZERO))
     assert brain.models.current_name(Role.PERCEPTION) == "old"
 
 
-async def test_a_shutdown_during_prepare_completes_as_aborted_and_the_role_keeps_its_model():
+async def test_a_shutdown_during_prepare_ends_the_switch_cancelled_and_the_role_keeps_its_model():
     source = two_detectors(FakeDetector(), FakeDetector())
     source.gate = asyncio.Event()
     brain = await brain_with(source)
@@ -245,26 +251,34 @@ async def test_a_shutdown_during_prepare_completes_as_aborted_and_the_role_keeps
     await source.preparing.wait()
     await asyncio.wait_for(brain.shutdown(), 1.0)
     await asyncio.wait_for(running, 1.0)
-    assert ctx.cancelled is None
-    assert ctx.completed == dict(success=False, message="aborted: the node is shutting down", action_time=0.0, **SWITCH_ZERO)
+    assert ctx.completed is None
+    assert (ctx.cancel_reason, ctx.cancelled) == ("the node is shutting down", dict(action_time=0.0, **SWITCH_ZERO))
     assert brain.models.current_name(Role.PERCEPTION) == "old"
 
 
-@pytest.mark.parametrize("failure, message", [
-    (Refusal("no key for 'new': set GEMINI_API_KEY"), "no key for 'new': set GEMINI_API_KEY"),
-    (ExpectedFailure("new failed: RateLimitError: slow down"), "new failed: RateLimitError: slow down"),
-    (RuntimeError("the probe broke"), "switch_model failed: RuntimeError('the probe broke')"),
+@pytest.mark.parametrize("failure, kind, message", [
+    (
+        Refusal(FailureKind.RESOURCE_UNAVAILABLE, "no key for 'new': set GEMINI_API_KEY"),
+        FailureKind.RESOURCE_UNAVAILABLE,
+        "no key for 'new': set GEMINI_API_KEY",
+    ),
+    (
+        ExpectedFailure(FailureKind.ATTEMPT_FAILED, "new failed: RateLimitError: slow down"),
+        FailureKind.ATTEMPT_FAILED,
+        "new failed: RateLimitError: slow down",
+    ),
+    (RuntimeError("the probe broke"), FailureKind.ATTEMPT_FAILED, "switch_model failed: RuntimeError('the probe broke')"),
 ])
-async def test_the_switching_mark_is_released_after_a_switch_that_fails(failure, message):
+async def test_a_switch_whose_prepare_fails_fails_with_its_kind_and_releases_the_switching_mark(failure, kind, message):
     source = two_detectors(FakeDetector(), FakeDetector())
     source.failure = failure
     brain = await brain_with(source)
     ctx = await switched(brain, Role.PERCEPTION, "new")
-    assert (ctx.completed["success"], ctx.completed["message"]) == (False, message)
+    assert failed_with(ctx, kind, message)
     assert brain.models.current_name(Role.PERCEPTION) == "old"
     source.failure = None
     again = await switched(brain, Role.PERCEPTION, "new")
-    assert again.completed["success"] is True
+    assert again.completed == dict(role="perception", model="new", action_time=0.0)
 
 
 async def test_the_switching_mark_is_released_after_a_cancelled_switch():
@@ -278,4 +292,4 @@ async def test_the_switching_mark_is_released_after_a_cancelled_switch():
     await asyncio.wait_for(running, 1.0)
     source.gate.set()
     again = await switched(brain, Role.PERCEPTION, "new")
-    assert again.completed["success"] is True and brain.models.current_name(Role.PERCEPTION) == "new"
+    assert again.completed is not None and brain.models.current_name(Role.PERCEPTION) == "new"

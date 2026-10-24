@@ -6,7 +6,6 @@ robot and no model."""
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -19,7 +18,7 @@ from brain_core.brain import Brain
 from brain_core.manipulation.none import NoneManipulator
 from brain_core.perception.camera import Intrinsics
 from brain_core.perception.none import NoneDetector
-from brain_core.ports import Box, CancelToken, Coverage, Deadline, Gripper, Item, Outcome, Pose, Refusal, Role
+from brain_core.ports import Box, CancelToken, Coverage, Deadline, FailureKind, Gripper, Item, Outcome, Pose, Refusal, Role
 
 PARAMS = {
     "limbs": "left_arm:left_gripper,right_arm:right_gripper",
@@ -158,17 +157,22 @@ class FakeManipulator:
 
 
 class FakeCtx:
-    """Stands in for the generated GoalContext of `action`: holds the goal,
-    records the completion after checking that its fields are the ones the
-    action's result carries, and lets a test cancel the goal the way a
-    caller would."""
+    """Stands in for the generated GoalContext of `action`, a fake
+    generated module: holds the goal, records how it ended, once, after
+    checking that a result's fields are the ones the action's result
+    carries and that a failure's kind is one the action declares, and lets
+    a test send the goal its cancel signal, with the cause a caller's
+    cancel or a sender that is gone gives."""
 
     def __init__(self, action, **data) -> None:
         self.action = action
         self._request = SimpleNamespace(data=SimpleNamespace(**data))
         self._cancel = asyncio.Event()
+        self._cause: Optional[str] = None
         self.completed: Optional[dict] = None
         self.cancelled: Optional[dict] = None
+        self.cancel_reason: Optional[str] = None
+        self.failed = None
 
     def request(self):
         return self._request
@@ -182,33 +186,47 @@ class FakeCtx:
     def is_cancelled(self) -> bool:
         return self._cancel.is_set()
 
-    def cancel(self) -> None:
+    def cancel_cause(self) -> Optional[str]:
+        return self._cause
+
+    def cancel(self, cause: str = "caller") -> None:
+        self._cause = cause
         self._cancel.set()
 
+    @property
+    def ended(self) -> bool:
+        return self.completed is not None or self.cancelled is not None or self.failed is not None
+
     async def complete(self, **fields) -> None:
-        self._record(fields)
+        self._check_end(fields)
         self.completed = fields
 
-    async def complete_cancelled(self, **fields) -> None:
-        self._record(fields)
+    async def complete_cancelled(self, reason: str, **fields) -> None:
+        self._check_end(fields)
         self.cancelled = fields
+        self.cancel_reason = reason
 
-    def _record(self, fields: dict) -> None:
-        assert self.completed is None and self.cancelled is None, "completed twice"
-        expected = set(inspect.signature(self.action.GoalContext.complete).parameters) - {"self"}
-        assert set(fields) == expected, f"{self.action.__name__} completed with {sorted(fields)}, its result carries {sorted(expected)}"
+    async def fail(self, kind, message: str) -> None:
+        assert not self.ended, "ended twice"
+        self.failed = self.action.Failure(kind, message)
+
+    def _check_end(self, fields: dict) -> None:
+        assert not self.ended, "ended twice"
+        expected = self.action.RESULT_FIELDS
+        assert set(fields) == expected, f"{self.action.ACTION_NAME} ended with {sorted(fields)}, its result carries {sorted(expected)}"
 
 
-def camera_poses(success: bool = True, message: str = "", names=("chest",)):
-    """The robot's get_camera_poses answer: every camera of `names` at the
-    origin, its optical frame the robot frame's, or the answer of a robot
-    that has not measured its joints yet."""
-    if not success:
-        return SimpleNamespace(
-            success=False, message=message, timestamp=0.0, camera_names=[], positions=[], orientations=[], carried_by=[]
-        )
+def failed_with(ctx: FakeCtx, kind: FailureKind, message: str) -> bool:
+    """Whether the goal of `ctx` failed with `kind` and `message`, and no
+    result."""
+    return ctx.completed is None and ctx.cancelled is None and ctx.failed == ctx.action.Failure(kind.value, message)
+
+
+def camera_poses(names=("chest",)):
+    """The robot's get_camera_poses response: every camera of `names` at
+    the origin, its optical frame the robot frame's."""
     return SimpleNamespace(
-        success=True, message="", timestamp=7.0, camera_names=list(names),
+        timestamp=7.0, camera_names=list(names),
         positions=[0.0, 0.0, 0.0] * len(names), orientations=[0.0, 0.0, 0.0, 1.0] * len(names),
         carried_by=[""] * len(names),
     )
@@ -285,7 +303,7 @@ class FakeSource:
     def offered(self, role, name):
         self.asked.append((role, name))
         if name not in self.offers[role]:
-            raise Refusal(f"'{name}' is not a {role} model here; see list_models")
+            raise Refusal(FailureKind.REJECTED, f"'{name}' is not a {role} model here; see list_models")
         return (role, name)
 
     def start(self, entry):

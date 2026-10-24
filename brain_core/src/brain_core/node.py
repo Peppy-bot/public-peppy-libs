@@ -11,7 +11,7 @@ import sys
 from functools import partial
 
 from .bindings import Bindings
-from .brain import Brain
+from .brain import Brain, decider
 from .handlers import abort as abort_handler
 from .handlers import drop_item as drop_item_handler
 from .handlers import get_model as get_model_handler
@@ -46,20 +46,23 @@ async def setup(
         brain.state.gripper_names(), brain.models.current_name(Role.PERCEPTION), brain.models.current_name(Role.MANIPULATION),
     )
     # Per-goal tasks live here so a goal in flight is never collected
-    # before it completes.
+    # before it ends.
     goal_tasks: set[asyncio.Task] = set()
+    # Each action with the check that decides its goals before they are
+    # accepted: item_perception and brain_model refuse a goal with a failure
+    # kind; item_manipulation accepts every goal and reports in its result.
     actions = [
-        (bindings.scan_items, scan_items_handler.run),
-        (bindings.identify_item, identify_item_handler.run),
-        (bindings.grab_item, grab_item_handler.run),
-        (bindings.drop_item, drop_item_handler.run),
-        (bindings.place_item, place_item_handler.run),
-        (bindings.abort, abort_handler.run),
-        (bindings.switch_model, switch_model_handler.run),
+        (bindings.scan_items, scan_items_handler.decide, scan_items_handler.run),
+        (bindings.identify_item, identify_item_handler.decide, identify_item_handler.run),
+        (bindings.grab_item, None, grab_item_handler.run),
+        (bindings.drop_item, None, drop_item_handler.run),
+        (bindings.place_item, None, place_item_handler.run),
+        (bindings.abort, None, abort_handler.run),
+        (bindings.switch_model, switch_model_handler.decide, switch_model_handler.run),
     ]
     loops = [
-        asyncio.create_task(serve_action(module, node_runner, token, goal_tasks, partial(run, brain)))
-        for module, run in actions
+        asyncio.create_task(serve_action(module, node_runner, token, goal_tasks, decider(module, brain, check), partial(run, brain)))
+        for module, check, run in actions
     ]
     services = [
         (bindings.get_state, get_state_handler.handle),
