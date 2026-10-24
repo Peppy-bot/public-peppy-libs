@@ -95,8 +95,9 @@ async def test_the_parameters_name_each_roles_model_at_the_start():
     assert source.started == [(Role.PERCEPTION, "old"), (Role.MANIPULATION, "fake")]
     assert [brain.models.current_name(role) for role in brain.models.roles()] == ["old", "fake"]
     assert brain.models.current(Role.MANIPULATION) is manipulator
-    # The manipulator is handed the robot before it runs.
-    assert manipulator.robot is brain.robot
+    # The manipulator is handed the robot and its measured limbs before it
+    # runs.
+    assert manipulator.robot is brain.robot and manipulator.limb_states is brain.limb_states
     assert source.prepared == []
 
 
@@ -177,14 +178,15 @@ async def test_a_perception_switch_succeeds_during_a_grab():
     await asyncio.wait_for(running, 1.0)
 
 
-async def test_a_manipulation_switch_hands_the_new_manipulator_the_robot():
+async def test_a_manipulation_switch_hands_the_new_manipulator_the_robot_and_the_limbs():
     first, second = FakeManipulator(), FakeManipulator()
     source = FakeSource({Role.PERCEPTION: {"none": FakeDetector()}, Role.MANIPULATION: {"first": first, "second": second}})
     brain = await make_brain(source=source, perception_model="none", manipulation_model="first")
-    assert second.robot is None
+    assert second.robot is None and second.limb_states is None
     ctx = await switched(brain, Role.MANIPULATION, "second")
     assert ctx.completed is not None
-    assert second.robot is brain.robot and brain.models.current(Role.MANIPULATION) is second
+    assert second.robot is brain.robot and second.limb_states is brain.limb_states
+    assert brain.models.current(Role.MANIPULATION) is second
 
 
 async def test_a_second_switch_for_a_role_is_refused_while_the_first_runs():

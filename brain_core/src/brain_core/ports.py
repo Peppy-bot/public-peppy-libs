@@ -1,12 +1,14 @@
 """The seams of the brain: the plain data that crosses them, the roles a
-model serves, the failure kinds a goal ends with, the two interfaces a
-backend implements, the cancel token every long call takes, and the
-deadline every search carries.
+model serves, the failure kinds a goal ends with, the interfaces a backend
+implements, the cancel token every long call takes, and the deadline every
+search carries.
 
 The core owns every contract rule. A backend only answers one question:
-"what do you see in this image" (a `Detector`) or "do this with the arm"
-(a `Manipulator`). Neither one mints item ids, touches the gripper table,
-or completes a goal, so swapping a backend cannot break a contract rule.
+"what do you see in this image" (a `Detector`), "do this with the arm"
+(a `Manipulator`) or "where and how do I grasp this item" (the
+`GraspProposer` a manipulator asks). None of them mints item ids, touches
+the gripper table, or completes a goal, so swapping a backend cannot break
+a contract rule.
 """
 
 from __future__ import annotations
@@ -207,8 +209,9 @@ def iou(a: Sequence[float], b: Sequence[float]) -> float:
 @dataclass(frozen=True)
 class Detection:
     """A box turned into the world: the label, where the item is, how sure
-    the detector was, and the box itself, where the item is in the picture
-    the look used. Orientation is set only by a backend that resolves it;
+    the detector was, the box itself, where the item is in the picture the
+    look used, and the item's width across that picture at the depth of its
+    seen point (m). Orientation is set only by a backend that resolves it;
     the contracts make it optional for that reason."""
 
     label: str
@@ -216,6 +219,7 @@ class Detection:
     confidence: float = 0.0
     orientation: Optional[Quat] = None
     region: Optional[Region] = None
+    width_m: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -239,7 +243,16 @@ class Item:
     """A known item: the id the brain minted for it and what was last seen.
     `region` is where the look that last saw it found it in the picture;
     none for an item the last look did not see, or one addressed by
-    pose."""
+    pose. `width_m` is its width across the picture of the last look that
+    saw it, at the depth of its seen point; none for an item no look saw.
+
+    `position_is_grasp_point` says what `position` and `orientation` are.
+    False for an item a look saw: the position is the point the camera saw
+    on its surface, and the orientation the item's own, when the detector
+    resolves one. True for an item a grab_item goal addressed by pose, or
+    one place_item put down: the position is a grasp point, where the
+    gripper closes, and the orientation the gripper's there, or none when
+    the goal left the choice to the brain."""
 
     item_id: str
     label: str
@@ -248,6 +261,8 @@ class Item:
     confidence: float
     seen_at_ns: int
     region: Optional[Region] = None
+    position_is_grasp_point: bool = False
+    width_m: Optional[float] = None
 
 
 @dataclass
@@ -262,6 +277,22 @@ class Gripper:
     @property
     def holding(self) -> bool:
         return self.held_item_id is not None
+
+
+@dataclass(frozen=True)
+class Grasp:
+    """Where and how a gripper closes on an item: the grasp point, robot
+    frame, and the orientations of the gripper to try there, in order; a
+    manipulator takes the first one the backbone has a plan for. Each is a
+    unit quaternion [x, y, z, w] of limb_motion's grasp frame: +Z along the
+    approach, out of the gripper, +Y the axis the jaws close on."""
+
+    point: Vec3
+    orientations: tuple[Quat, ...]
+
+    def __post_init__(self) -> None:
+        if not self.orientations:
+            raise ValueError("a grasp needs at least one orientation to try")
 
 
 @dataclass(frozen=True)
@@ -310,6 +341,13 @@ class Detector(Protocol):
         ...
 
 
+class GraspProposer(Protocol):
+    """Where and how a manipulator grasps an item: the piece of a grab a
+    model can fill. A ValueError names why it has no grasp for the item."""
+
+    def propose(self, item: Item) -> Grasp: ...
+
+
 class Manipulator(Protocol):
     """The swappable piece of manipulation. Every move it makes goes
     through the `Robot` it is started with, so a stop can cancel the move
@@ -322,7 +360,10 @@ class Manipulator(Protocol):
         when the manipulator can move."""
         ...
 
-    async def start(self, robot) -> None: ...
+    async def start(self, robot, limb_states) -> None:
+        """Hands the manipulator the brain's `Robot` and its
+        `LimbStateStore`, the robot's measured limbs, before it runs."""
+        ...
 
     async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken) -> Outcome: ...
 

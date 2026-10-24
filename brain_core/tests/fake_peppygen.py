@@ -8,15 +8,17 @@ its `FailureKind` and `Failure`, which refuse an undeclared kind as the
 generated ones do, and its `GoalDecision`. `ActionHandle.expose` gives an
 action that never receives a goal, and `handle_next_request` a service
 that never receives a request, for a node that boots and stops. The
-limb_motion clients are scripted by the test (`FakeLimbAction`), and a
-consumed service answers what the test's `poll` gives
-(`consumed_service`).
+limb_motion clients are scripted by the test (`FakeLimbAction` for a
+move, `FakeService` for check_arm_move), and so is the limb_states topic
+(`FakeTopic`). Any other consumed service answers what the test's `poll`
+gives (`consumed_service`).
 """
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 from types import SimpleNamespace
 from typing import Callable, Optional
@@ -124,6 +126,7 @@ class get_state:
         gripper_names: list[str]
         holding: list[bool]
         held_item_ids: list[str]
+        gripper_openings: list[float]
 
     @staticmethod
     async def handle_next_request(node_runner, handler):
@@ -185,11 +188,12 @@ class MoveGripperRequest:
     settle_timeout_s: float
 
 
-# The kinds of limb_motion:v1 that each of its moves lists beside the kinds
-# of peppy.
+# The kinds of limb_motion:v1 that each of its members lists beside the
+# kinds of peppy.
 LIMB_MOTION_KINDS = {
     "move_arm": ("unreachable", "leader_streaming"),
     "move_gripper": ("leader_streaming",),
+    "check_arm_move": ("leader_streaming",),
 }
 
 
@@ -308,6 +312,105 @@ def error_reply(kind: str, message: str) -> Callable:
     return lambda failure: failure(kind, message)
 
 
+@dataclass
+class CheckArmMoveRequest:
+    arm_name: str
+    position: list[float]
+    orientation: list[float]
+    duration_s: float
+    plan_position_tolerance_m: float
+    plan_orientation_tolerance_rad: float
+
+
+class FakeService:
+    """A generated limb_motion consumed service bound to the backbone, with
+    its `FailureKind` and `Failure`: each poll records its request and
+    takes the next answer the test enqueued, raising it when it is an
+    exception, such as an error reply of its `Failure`."""
+
+    def __init__(self, name: str, request_type) -> None:
+        self.SERVICE_NAME = name
+        self.Request = request_type
+        self.FailureKind, self.Failure = failure_types(name, *LIMB_MOTION_KINDS[name])
+        self.polled: list = []
+        self._answers: deque = deque()
+
+    def bound_producer(self, node_runner) -> str:
+        return "backbone"
+
+    def enqueue(self, answer) -> None:
+        self._answers.append(answer)
+
+    async def poll(self, node_runner, producer, request, timeout):
+        self.polled.append(request)
+        if not self._answers:
+            raise AssertionError(f"{self.SERVICE_NAME} was polled with no answer enqueued")
+        answer = self._answers.popleft()
+        if isinstance(answer, Exception):
+            raise answer
+        return SimpleNamespace(data=answer)
+
+
+@dataclass
+class LimbStatesMessage:
+    """A limb_states message, as the generated module gives it."""
+
+    timestamp: float
+    arm_names: list[str] = field(default_factory=list)
+    joints_per_arm: list[int] = field(default_factory=list)
+    joint_positions: list[float] = field(default_factory=list)
+    positions: list[float] = field(default_factory=list)
+    orientations: list[float] = field(default_factory=list)
+    gripper_names: list[str] = field(default_factory=list)
+    gripper_openings: list[float] = field(default_factory=list)
+
+
+# Where each grasp point stands at rest in a snapshot.
+LEFT_AT_REST = ((0.4, 0.2, 0.9), (0.0, 1.0, 0.0, 0.0))
+RIGHT_AT_REST = ((0.4, -0.2, 0.9), (0.0, 1.0, 0.0, 0.0))
+
+
+def limb_states_message(timestamp: float, *, left_arm=LEFT_AT_REST, **openings: float) -> LimbStatesMessage:
+    """A snapshot of the two-armed robot of seven joints per arm, every
+    joint at 0, the left grasp point at `left_arm`, a position and an
+    orientation, and the right one at rest, with the grippers `openings`
+    names, by name."""
+    (left_position, left_orientation), (right_position, right_orientation) = left_arm, RIGHT_AT_REST
+    return LimbStatesMessage(
+        timestamp=timestamp,
+        arm_names=["left_arm", "right_arm"],
+        joints_per_arm=[7, 7],
+        joint_positions=[0.0] * 14,
+        positions=[*left_position, *right_position],
+        orientations=[*left_orientation, *right_orientation],
+        gripper_names=list(openings),
+        gripper_openings=list(openings.values()),
+    )
+
+
+class FakeTopic:
+    """A generated consumed topic bound to the backbone: a subscription
+    gives the messages the test pushes, in order."""
+
+    def __init__(self) -> None:
+        self._messages: asyncio.Queue = asyncio.Queue()
+        self.subscribed = asyncio.Event()
+
+    def bound_producer(self, node_runner) -> str:
+        return "backbone"
+
+    def push(self, message) -> None:
+        self._messages.put_nowait(message)
+
+    async def subscribe(self, node_runner):
+        self.subscribed.set()
+        return self._follow()
+
+    async def _follow(self):
+        while True:
+            yield "backbone", await self._messages.get()
+
+
 class VacantSlot:
     """A consumed module whose slot the launcher left vacant."""
 
@@ -332,12 +435,15 @@ class FakeClock:
 
 
 def fake_bindings(**overrides) -> Bindings:
-    """Bindings to the fakes above: the camera, geometry and mounts slots
-    vacant, limb_motion scripted. `overrides` replace any of them."""
+    """Bindings to the fakes above: the camera, geometry, mounts and
+    limb_state slots vacant, limb_motion scripted. `overrides` replace any
+    of them."""
     modules = dict(
         clock=FakeClock(),
         move_arm=FakeLimbAction("move_arm", MoveArmRequest),
         move_gripper=FakeLimbAction("move_gripper", MoveGripperRequest),
+        check_arm_move=FakeService("check_arm_move", CheckArmMoveRequest),
+        limb_states=VacantSlot,
         video_stream=VacantSlot,
         depth_stream=VacantSlot,
         depth_stream_info=VacantSlot,

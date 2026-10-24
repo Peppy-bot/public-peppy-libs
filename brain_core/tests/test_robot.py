@@ -5,9 +5,9 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from fake_peppygen import FakeLimbAction, MoveArmRequest, MoveGripperRequest, ResultStatus
+from fake_peppygen import CheckArmMoveRequest, FakeLimbAction, FakeService, MoveArmRequest, MoveGripperRequest, ResultStatus
 
-from brain_core.robot import GripResult, MoveEnd, MoveResult, Robot
+from brain_core.robot import GripResult, MoveCheck, MoveEnd, MoveResult, Robot
 
 WAIT = 10.0
 POSITION = (0.5, 0.1, 0.7)
@@ -20,14 +20,24 @@ BARS = {
     "settle_orientation_tolerance_rad": 0.15,
     "settle_timeout_s": 2.0,
 }
+# The fields a check names besides the pose: the moves' plan bars.
+PLAN = {"duration_s": 0.0, **{key: BARS[key] for key in ("plan_position_tolerance_m", "plan_orientation_tolerance_rad")}}
 
 
 def backbone(**kwargs):
     """A Robot on scripted move_arm and move_gripper clients, and the two
     clients."""
+    robot, move_arm, move_gripper, _ = backbone_with_check(**kwargs)
+    return robot, move_arm, move_gripper
+
+
+def backbone_with_check(**kwargs):
+    """A Robot on scripted limb_motion clients, and the three clients."""
     move_arm = FakeLimbAction("move_arm", MoveArmRequest)
     move_gripper = FakeLimbAction("move_gripper", MoveGripperRequest)
-    return Robot("runner", move_arm, move_gripper, **kwargs), move_arm, move_gripper
+    check_arm_move = FakeService("check_arm_move", CheckArmMoveRequest)
+    robot = Robot("runner", move_arm, move_gripper, check_arm_move, **kwargs)
+    return robot, move_arm, move_gripper, check_arm_move
 
 
 async def in_flight(robot: Robot) -> None:
@@ -80,6 +90,7 @@ async def test_a_move_the_backbone_refuses_or_fails_says_why_with_its_kind():
     failed = await asyncio.wait_for(move, WAIT)
     # A failed goal gives no result: nothing says where the arm stands.
     assert failed == MoveResult(MoveEnd.FAILED, "no plan reaches the target", "unreachable")
+    assert not failed.completed and not failed.cancelled
     assert robot.moves_in_flight == 0
 
 
@@ -102,6 +113,7 @@ async def test_a_stop_cancels_the_move_in_flight_and_reports_it_cancelled_with_i
     await asyncio.wait_for(stop, WAIT)
     result = await asyncio.wait_for(move, WAIT)
     assert (result.end, result.message, result.final_position) == (MoveEnd.CANCELLED, "cancelled by its caller", (0.51, 0.1, 0.69))
+    assert result.cancelled
     # Nothing is left in flight: a second stop has nothing to cancel.
     assert robot.moves_in_flight == 0
     await asyncio.wait_for(robot.stop(), WAIT)
@@ -118,7 +130,7 @@ async def test_a_move_the_backbones_stop_ends_reports_the_stops_reason_without_a
     goal.complete_cancelled("stopped: the operator asked", arm_result())
     result = await asyncio.wait_for(move, WAIT)
     assert (result.end, result.message) == (MoveEnd.CANCELLED, "stopped: the operator asked")
-    assert not result.completed and not goal.cancel_asked.is_set()
+    assert result.cancelled and not result.completed and not goal.cancel_asked.is_set()
     assert robot.moves_in_flight == 0
 
     grip = asyncio.create_task(robot.set_gripper("left_gripper", 1.0, max_effort=0.0, settle_timeout_s=1.0))
@@ -149,3 +161,42 @@ async def test_a_goal_that_ends_abandoned_or_expired_is_lost_and_names_how_it_en
     goal = await asyncio.wait_for(move_arm.next_goal(), WAIT)
     goal.end(status)
     assert await asyncio.wait_for(move, WAIT) == MoveResult(MoveEnd.LOST, f"move_arm ended as {status.name.lower()}")
+
+
+def check_answer(reachable: bool, reason: str, duration_s: float):
+    return SimpleNamespace(reachable=reachable, reason=reason, duration_s=duration_s)
+
+
+async def test_a_check_asks_with_the_move_arm_fields_and_reads_the_plan():
+    robot, _, _, check = backbone_with_check()
+    check.enqueue(check_answer(True, "", 1.25))
+    planned = await robot.check_arm_move("left_arm", POSITION, ORIENTATION, duration_s=1.5, plan_position_tolerance_m=0.01, plan_orientation_tolerance_rad=0.02)
+    assert planned == MoveCheck(True, "", 1.25)
+    [request] = check.polled
+    assert request == CheckArmMoveRequest(
+        arm_name="left_arm", position=[0.5, 0.1, 0.7], orientation=[0.0, 0.0, 0.0, 1.0], duration_s=1.5,
+        plan_position_tolerance_m=0.01, plan_orientation_tolerance_rad=0.02,
+    )
+    # A check moves nothing: no goal is in flight for a stop to cancel.
+    assert robot.moves_in_flight == 0
+
+
+async def test_a_check_with_no_plan_carries_the_backbones_reason():
+    robot, _, _, check = backbone_with_check()
+    check.enqueue(check_answer(False, "goal pose not planned within 0.010 m", 0.0))
+    unreachable = await robot.check_arm_move("left_arm", POSITION, ORIENTATION, **PLAN)
+    assert unreachable == MoveCheck(False, "goal pose not planned within 0.010 m", 0.0)
+
+
+async def test_a_check_that_fails_is_not_reachable_and_names_its_kind():
+    robot, _, _, check = backbone_with_check()
+    check.enqueue(check.Failure("leader_streaming", "a leader streams left_arm"))
+    failed = await robot.check_arm_move("left_arm", POSITION, ORIENTATION, **PLAN)
+    assert failed == MoveCheck(False, "check_arm_move failed with leader_streaming: a leader streams left_arm")
+
+
+async def test_a_check_with_no_answer_is_reported_as_having_none():
+    robot, _, _, check = backbone_with_check()
+    check.enqueue(TimeoutError("no reply"))
+    lost = await robot.check_arm_move("left_arm", POSITION, ORIENTATION, **PLAN)
+    assert lost == MoveCheck(False, "check_arm_move gave no answer: TimeoutError('no reply')", 0.0)

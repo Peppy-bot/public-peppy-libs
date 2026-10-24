@@ -40,9 +40,10 @@ async def test_a_brain_node_boots_and_stops_on_its_token(caplog):
         "grippers ['left_gripper', 'right_gripper'], perception 'fake', manipulation 'fake'"
     ]
     [shutdown] = runner.shutdown_hooks
-    # Seven actions, three services, and the camera follower and the two
-    # geometry learners, which return at once on vacant slots.
-    assert len(loops) == 13
+    # Seven actions, three services, and the camera follower, the two
+    # geometry learners and the limb follower, which return at once on
+    # vacant slots.
+    assert len(loops) == 14
     runner.token.cancel()
     await asyncio.wait_for(asyncio.gather(*loops), 1.0)
     await asyncio.wait_for(shutdown(), 1.0)

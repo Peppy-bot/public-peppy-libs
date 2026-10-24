@@ -1,7 +1,11 @@
-"""get_state: what the brain does now and what it holds, from memory.
+"""get_state: what the brain does now and what it holds, from memory, and
+each gripper's opening as the robot last measured it.
 
 `current_action` is the manipulation lane only, as the item_manipulation
-contract defines it; a running search does not appear here.
+contract defines it; a running search does not appear here. `holding`
+follows results (`State`), `gripper_openings` the jaws (`LimbStateStore`):
+an item that slipped out after a grab reads holding true and an opening
+near 0.
 """
 
 from __future__ import annotations
@@ -19,4 +23,5 @@ def handle(brain, _request):
         gripper_names=names,
         holding=holding,
         held_item_ids=held,
+        gripper_openings=brain.limb_states.openings(names),
     )

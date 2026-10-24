@@ -1,7 +1,7 @@
 """The entry every brain node shares. Wiring only: build the brain with the
 node's generated modules and its model source, and start one loop per
-exposed member plus the camera follower. The rules live in the core, the
-moves and the models behind the ports."""
+exposed member plus the followers of the camera and of the limbs. The
+rules live in the core, the moves and the models behind the ports."""
 
 from __future__ import annotations
 

@@ -13,7 +13,7 @@ from conftest import (
     CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, camera_poses, depth_frame, failed_with, make_brain,
     records_of, rgb_frame,
 )
-from fake_peppygen import answering, fake_bindings
+from fake_peppygen import FakeTopic, answering, fake_bindings, limb_states_message
 from brain_core.brain import RESULT_ENDS, STATUS_ENDS, decider
 from brain_core.handlers import abort
 from brain_core.perception.frames import FrameStore
@@ -38,6 +38,18 @@ async def test_the_geometry_learners_give_the_perceiver_its_camera_and_the_brain
     assert (camera.intrinsics.fx, camera.intrinsics.cx) == (6.0, 8.0)
     assert camera.pose.position == (0.0, 0.0, 0.0)
     assert not hasattr(brain, "camera") and not hasattr(brain, "frames")
+
+
+async def test_the_limb_follower_runs_in_the_background_and_fills_the_brains_store():
+    topic = FakeTopic()
+    brain = await make_brain(bindings=fake_bindings(limb_states=topic))
+    token = FakeToken()
+    loops = brain.background(token)
+    topic.push(limb_states_message(3.0, left_gripper=0.5))
+    snapshot = await asyncio.wait_for(brain.limb_states.newer_than(0.0, 1.0), 1.0)
+    assert snapshot.opening("left_gripper") == 0.5
+    token.cancel()
+    await asyncio.wait_for(asyncio.gather(*loops), 1.0)
 
 
 GRAB_ZERO = dict(gripper_name="", item_id="")
