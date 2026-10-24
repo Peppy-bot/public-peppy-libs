@@ -178,8 +178,9 @@ def iou(a: Sequence[float], b: Sequence[float]) -> float:
 @dataclass(frozen=True)
 class Detection:
     """A box turned into the world: the label, where the item is, how sure
-    the detector was, and the box itself, where the item is in the picture
-    the look used. Orientation is set only by a backend that resolves it;
+    the detector was, the box itself, where the item is in the picture the
+    look used, and the item's width across that picture at the depth of its
+    seen point (m). Orientation is set only by a backend that resolves it;
     the contracts make it optional for that reason."""
 
     label: str
@@ -187,6 +188,7 @@ class Detection:
     confidence: float = 0.0
     orientation: Optional[Quat] = None
     region: Optional[Region] = None
+    width_m: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -210,7 +212,8 @@ class Item:
     """A known item: the id the brain minted for it and what was last seen.
     `region` is where the look that last saw it found it in the picture;
     none for an item the last look did not see, or one addressed by
-    pose.
+    pose. `width_m` is its width across the picture of the last look that
+    saw it, at the depth of its seen point; none for an item no look saw.
 
     `position_is_grasp_point` says what `position` and `orientation` are.
     False for an item a look saw: the position is the point the camera saw
@@ -228,6 +231,7 @@ class Item:
     seen_at_ns: int
     region: Optional[Region] = None
     position_is_grasp_point: bool = False
+    width_m: Optional[float] = None
 
 
 @dataclass

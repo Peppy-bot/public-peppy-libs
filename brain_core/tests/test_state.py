@@ -36,6 +36,20 @@ def test_a_region_follows_the_look_that_last_saw_the_item():
     assert state.mint_from_pose((0.2, 0.2, 0.7), None, now_ns=4).region is None
 
 
+def test_a_width_follows_the_look_that_last_saw_the_item_and_stays_when_one_does_not():
+    state = State(ONE_ARM, "t0")
+    [cup] = state.remember([Detection("cup", (0.5, 0.1, 0.7), 0.9, width_m=0.08)], now_ns=1, coverage=EVERY)
+    assert cup.width_m == 0.08
+    state.remember([Detection("cup", (0.51, 0.1, 0.7), 0.8, width_m=0.07)], now_ns=2, coverage=NOTHING)
+    assert cup.width_m == 0.07
+    # A look that keeps the item without seeing it leaves its width: the
+    # item has not changed.
+    state.remember([Detection("bowl", (0.9, 0.0, 0.7), 0.9, width_m=0.2)], now_ns=3, coverage=NOTHING)
+    assert cup.width_m == 0.07
+    # An item addressed by pose has no width.
+    assert state.mint_from_pose((0.2, 0.2, 0.7), None, now_ns=4).width_m is None
+
+
 def test_each_gripper_carries_the_arm_its_limb_names_in_the_limbs_order():
     state = make_state()
     assert state.gripper_names() == ["left_gripper", "right_gripper"]

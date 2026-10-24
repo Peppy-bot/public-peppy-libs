@@ -299,8 +299,9 @@ ended (`cancelled` on its result) retreats from nothing.
 
 Every move names its bars, as the limb_motion contract has the caller do. An
 arm move, the retreat's and a place's too, plans within 1 mm and 0.01 rad of
-its pose and settles within `settle_position_m` (5 mm) and
-`settle_orientation_rad` (0.05 rad), or fails `settle_timeout_s` (2 s) after
+its pose and settles within `settle_position_m` (2 cm) and
+`settle_orientation_rad` (0.15 rad), the settle the robots' endpoint gives for
+the OpenArm v2, or fails `settle_timeout_s` (2 s) after
 its planned end with the backbone's words, such as `still 8.0 mm / 0.02 rad
 from the target, 2.0 s after the planned end`. A check asks with the same
 plan bars. A gripper move waits up to `grip_settle_timeout_s` (2 s) for the
@@ -320,7 +321,7 @@ sequenceDiagram
         SM->>R: check_arm_move: pre-grasp, grasp, lifted points
     end
     Note over SM: none plans: "no plan reaches item 'x' with gripper 'g': <last refusal>"
-    SM->>R: set_gripper(g, 1)
+    SM->>R: set_gripper(g, the item's width and 1.5 cm each side, else 1)
     SM->>R: move_arm(pre-grasp), move_arm(grasp point): each settles, or fails
     SM->>R: set_gripper(g, 0, max_effort)
     Note over SM: final_opening below hold_opening_min: "gripper 'g' closed on nothing"
@@ -336,16 +337,29 @@ sequenceDiagram
     end
 ```
 
+Before the descent the jaws open only as wide as the item and 1.5 cm on each
+side (`approach_margin_m`), as a fraction of their 14.8 cm span
+(`jaw_travel_m`, the OpenArm v2's in Waldo), so the fingers come down beside
+the item and not on what stands next to it. The width is the one the look that
+last saw the item measured: the box's left and right edges at the depth of its
+seen point. An item of no known width, one addressed by pose or put down by
+place_item, gets the jaws fully open.
+
 Each grab logs one line: the orientation that planned, with the number and
-the total time of the check_arm_move calls; where the descent's result put the
+the total time of the check_arm_move calls; how wide the jaws opened for the
+item's width; where the descent's result put the
 grasp point against the commanded one (`[dx, dy, dz] cm`), measured once the
 arm settled; limb_state's grasp point at the close; the two openings it
 judged; and the retreat.
 
 A place carries the item to the pose through its pre-place point, opens,
-and climbs back to the pre-place point. It reports where the move's result put
-the grasp point at the pose, once it settled. A climb that fails is logged and
-the place still succeeds, since the item is down and the jaws are open.
+and climbs back to the pre-place point. An arm that stops short on its way
+down, at least 1 cm below the pre-place point and on the line down, has set the
+item on what is under it: the place opens there, logs how far short it stopped,
+and reports that point. A stop of the descent, or an arm stopped higher or off
+the line down, fails the place with the jaws closed. A climb that fails is
+logged and the place still succeeds, since the item is down and the jaws are
+open.
 
 `CentreProposer` lowers a seen item's position by `grasp_depth_m` and tries
 the eight rolls of a grasp from above; an item whose position is a grasp point

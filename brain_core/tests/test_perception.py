@@ -351,6 +351,8 @@ async def test_a_scan_turns_boxes_into_world_detections():
     assert close(detections[0].position, (0.0, 0.0, 2.0))
     # The look reports the box in the picture it used, and the picture.
     assert detections[0].region == (6, 4, 10, 8)
+    # Its width: the box is 4 px wide, 2 m deep, through a 6 px focal length.
+    assert detections[0].width_m == pytest.approx(4 * 2.0 / 6.0)
     assert (look.image_width, look.image_height, look.frame_timestamp, look.frame_id) == (16, 12, 1.0, 7)
     # The detector's other boxes stay in the look for the log.
     assert look.duplicates == [duplicate]

@@ -209,6 +209,7 @@ class State:
             if item is None:
                 item = self._mint(detection.label, detection.position, detection.orientation, detection.confidence, now_ns)
                 item.region = detection.region
+                item.width_m = detection.width_m
             else:
                 _refresh(item, detection, now_ns, coverage)
             claimed.add(item.item_id)
@@ -278,6 +279,7 @@ def _refresh(item: Item, detection: Detection, now_ns: int, coverage: Coverage) 
     item.confidence = detection.confidence
     item.seen_at_ns = now_ns
     item.region = detection.region
+    item.width_m = detection.width_m
     if coverage.covers(detection.label):
         item.label = detection.label
 

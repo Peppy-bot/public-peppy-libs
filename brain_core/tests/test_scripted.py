@@ -134,8 +134,8 @@ async def started(*, opening: Optional[float] = 1.0, wait_s: float = 0.0, **kwar
     return manipulator, robot, store
 
 
-def cup(position=SEEN, orientation=None, *, grasp_point=False) -> Item:
-    return Item("cup_1-t0", "cup", position, orientation, 0.9, 1, position_is_grasp_point=grasp_point)
+def cup(position=SEEN, orientation=None, *, grasp_point=False, width_m=None) -> Item:
+    return Item("cup_1-t0", "cup", position, orientation, 0.9, 1, position_is_grasp_point=grasp_point, width_m=width_m)
 
 
 def holding(robot: FakeRobot, store: LimbStateStore, closed: float = 0.3, after: float = 0.3) -> None:
@@ -175,18 +175,36 @@ async def test_every_check_arm_move_and_gripper_move_names_its_bars():
     assert await manipulator.grab(cup(), LEFT, 12.0, CancelToken()) == Outcome(True)
     bars = {"check": CHECK_BARS, "move": MOVE_BARS, "grip": GRIP_BARS}
     assert robot.bars == [(kind, bars[kind]) for kind in robot.kinds()]
-    # Plan 1 mm and 0.01 rad; settle within 5 mm and 0.05 rad, 2 s after the
+    # Plan 1 mm and 0.01 rad; settle within 2 cm and 0.15 rad, 2 s after the
     # planned end at most; the jaws get 2 s to stand still.
     assert MOVE_BARS == dict(
         duration_s=0.0, plan_position_tolerance_m=0.001, plan_orientation_tolerance_rad=0.01,
-        settle_position_tolerance_m=0.005, settle_orientation_tolerance_rad=0.05, settle_timeout_s=2.0,
+        settle_position_tolerance_m=0.02, settle_orientation_tolerance_rad=0.15, settle_timeout_s=2.0,
     )
     assert GRIP_BARS == dict(settle_timeout_s=2.0)
 
 
+async def test_a_grab_opens_the_jaws_to_the_items_width_and_a_margin_each_side(caplog):
+    manipulator, robot, store = await started()
+    holding(robot, store)
+    with records_of(caplog, "brain_core.manipulation.scripted") as log:
+        assert await manipulator.grab(cup(width_m=0.06), LEFT, 0.0, CancelToken()) == Outcome(True)
+    # 6 cm and 1.5 cm on each side, of the jaws' 14.8 cm span.
+    [opened] = [call for call in robot.calls if call[0] == "grip"][:1]
+    assert opened == ("grip", "left_gripper", pytest.approx(0.09 / 0.148), 0.0)
+    assert "opened to 0.61 for its 6.0 cm width" in log.records[-1].getMessage()
+
+
+async def test_an_item_wider_than_the_jaws_less_their_margins_gets_them_fully_open():
+    manipulator, robot, store = await started()
+    holding(robot, store)
+    assert await manipulator.grab(cup(width_m=0.14), LEFT, 0.0, CancelToken()) == Outcome(True)
+    assert [call for call in robot.calls if call[0] == "grip"][0] == ("grip", "left_gripper", 1.0, 0.0)
+
+
 def landing_log(robot: FakeRobot) -> None:
     """The descent settles 4 mm off: 3 mm toward the robot, 2 mm left,
-    1 mm below, within the 5 mm it names."""
+    1 mm below, within the 2 cm it names."""
     robot.moves.extend([MoveResult(True, ""), MoveResult(True, "", (GRASP[0] - 0.003, GRASP[1] + 0.002, GRASP[2] - 0.001))])
 
 
@@ -248,6 +266,7 @@ async def test_a_slip_retreats():
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, "item 'cup_1-t0' slipped while lifting")
     assert robot.calls[-3] == ("move", LIFT, DOWN[0]) and robot.calls[-2:] == RETREAT
+
 
 
 async def test_no_snapshot_after_the_lift_fails_the_grab_and_retreats():
@@ -429,6 +448,51 @@ async def test_a_place_checks_its_orientation_alone_opens_climbs_back_and_report
         ("grip", "left_gripper", 1.0, 0.0),
         ("move", above, q),
     ]
+
+
+# A place lowers the item from the pre-place point (0.825 m) to the place
+# point (0.75 m); an arm that stops short on the way down has set it down.
+
+PLACE_Q = (0.0, 1.0, 0.0, 0.0)
+PLACE_POINT = (0.6, 0.0, 0.75)
+PLACE_ABOVE = (0.6, 0.0, 0.75 + CLEARANCE_M)
+SHORT = "still 32.1 mm / 0.05 rad from the target, 2.0 s after the planned end"
+
+
+async def place_stopping_at(stopped_at, *, cancelled=False):
+    """A place whose descent stops short at `stopped_at`, and the robot."""
+    manipulator, robot, _ = await started()
+    robot.moves.extend([MoveResult(True, ""), MoveResult(False, SHORT, stopped_at, PLACE_Q, cancelled=cancelled)])
+    outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
+    return outcome, robot
+
+
+async def test_a_place_that_stops_short_on_the_way_down_releases_there_and_climbs_back(caplog):
+    with records_of(caplog, "brain_core.manipulation.scripted") as log:
+        outcome, robot = await place_stopping_at((0.6, 0.0, 0.7821))
+    assert outcome == Outcome(True, "", (0.6, 0.0, 0.7821))
+    assert robot.calls[-3:] == [("move", PLACE_POINT, PLACE_Q), ("grip", "left_gripper", 1.0, 0.0), ("move", PLACE_ABOVE, PLACE_Q)]
+    assert [record.getMessage() for record in log.records] == [
+        f"place with gripper 'left_gripper' stopped 3.2 cm short of the place point on the way down ({SHORT}): it releases there"
+    ]
+
+
+async def test_a_place_that_stops_higher_than_1_cm_below_the_pre_place_point_fails_with_no_release():
+    outcome, robot = await place_stopping_at((0.6, 0.0, 0.817))
+    assert outcome == Outcome(False, SHORT)
+    assert robot.kinds()[-1] == "move" and "grip" not in robot.kinds()
+
+
+async def test_a_place_that_stops_off_the_line_down_fails_with_no_release():
+    outcome, robot = await place_stopping_at((0.6, 0.03, 0.78))
+    assert outcome == Outcome(False, SHORT)
+    assert "grip" not in robot.kinds()
+
+
+async def test_a_place_whose_descent_a_stop_ended_fails_with_no_release():
+    outcome, robot = await place_stopping_at((0.6, 0.0, 0.78), cancelled=True)
+    assert outcome == Outcome(False, SHORT)
+    assert "grip" not in robot.kinds()
 
 
 async def test_a_place_whose_climb_fails_still_places_and_says_so_in_the_log(caplog):
