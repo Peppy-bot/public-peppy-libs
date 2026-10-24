@@ -25,6 +25,7 @@ models while the first still runs.
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
@@ -33,7 +34,10 @@ from ..ports import Box, CancelToken, Deadline, Detection, Detector, Refusal, Se
 from .camera import CameraModel
 from .frames import FrameStore, decode_color, decode_depth, depth_at
 
-DEFAULT_TIMEOUT_S = 10.0
+# The budget of a search whose goal names a timeout_s of 0. A hosted model
+# with reasoning answers a scan in 3 to 10 s and at times later, and a
+# failure that may be asked again needs room for the second call.
+DEFAULT_TIMEOUT_S = 30.0
 DUPLICATE_IOU = 0.5
 
 
@@ -156,9 +160,12 @@ class Perceiver:
                 unplaced.append(box)
                 continue
             u, v = box.centre
-            position = self.camera.deproject(u, v, depth, frame.color.width, frame.color.height)
+            width, height = frame.color.width, frame.color.height
+            position = self.camera.deproject(u, v, depth, width, height)
+            # The box's left and right edges at the depth of its centre.
+            width_m = math.dist(self.camera.deproject(box.x0, v, depth, width, height), self.camera.deproject(box.x1, v, depth, width, height))
             detections.append(
-                Detection(label=box.label, position=position, confidence=box.confidence, region=box.xyxy)
+                Detection(label=box.label, position=position, confidence=box.confidence, region=box.xyxy, width_m=width_m)
             )
         return Look(
             detections=detections,

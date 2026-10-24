@@ -36,6 +36,20 @@ def test_a_region_follows_the_look_that_last_saw_the_item():
     assert state.mint_from_pose((0.2, 0.2, 0.7), None, now_ns=4).region is None
 
 
+def test_a_width_follows_the_look_that_last_saw_the_item_and_stays_when_one_does_not():
+    state = State(ONE_ARM, "t0")
+    [cup] = state.remember([Detection("cup", (0.5, 0.1, 0.7), 0.9, width_m=0.08)], now_ns=1, coverage=EVERY)
+    assert cup.width_m == 0.08
+    state.remember([Detection("cup", (0.51, 0.1, 0.7), 0.8, width_m=0.07)], now_ns=2, coverage=NOTHING)
+    assert cup.width_m == 0.07
+    # A look that keeps the item without seeing it leaves its width: the
+    # item has not changed.
+    state.remember([Detection("bowl", (0.9, 0.0, 0.7), 0.9, width_m=0.2)], now_ns=3, coverage=NOTHING)
+    assert cup.width_m == 0.07
+    # An item addressed by pose has no width.
+    assert state.mint_from_pose((0.2, 0.2, 0.7), None, now_ns=4).width_m is None
+
+
 def test_each_gripper_carries_the_arm_its_limb_names_in_the_limbs_order():
     state = make_state()
     assert state.gripper_names() == ["left_gripper", "right_gripper"]
@@ -305,3 +319,18 @@ def test_a_description_names_a_label_by_whole_words_stopwords_aside():
     assert named_by("the", labels) == [] and named_by("  ", labels) == []
     assert normalised("  Red_Coffee   Can ") == "red coffee can"
     assert content_words("the Red coffee can, please") == {"red", "coffee", "can,"}
+
+
+def test_a_pose_grab_or_a_placement_makes_the_position_a_grasp_point_and_a_look_the_seen_point():
+    state = make_state()
+    posed = state.mint_from_pose((0.5, 0.0, 0.7), (0.0, 1.0, 0.0, 0.0), now_ns=1)
+    assert posed.position_is_grasp_point
+    # A look sees the item there: its position is the seen point again,
+    # and the orientation the look's.
+    [seen] = state.remember([Detection("cup", (0.5, 0.0, 0.72), 0.9)], now_ns=2, coverage=NOTHING)
+    assert seen is posed
+    assert not posed.position_is_grasp_point and posed.orientation is None and posed.position == (0.5, 0.0, 0.72)
+    left = state.grippers["left_gripper"]
+    state.set_held(left, posed.item_id)
+    state.clear_held_placed(left, (0.6, 0.1, 0.75), None)
+    assert posed.position_is_grasp_point and posed.position == (0.6, 0.1, 0.75)
