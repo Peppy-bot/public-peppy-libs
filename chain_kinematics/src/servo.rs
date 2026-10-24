@@ -398,6 +398,17 @@ impl<const N: usize> ServoTrajectory<N> {
     pub fn sample(&self, now: Instant) -> [f64; N] {
         joints(&self.timed.sample(now))
     }
+
+    /// The configurations the trajectory plays every `step` of its path's
+    /// length, from its start to its end, each with the instant it plays
+    /// them (see [`TimedPath::probes_every`]).
+    pub fn probes_every(&self, step: f64) -> Vec<(Instant, [f64; N])> {
+        self.timed
+            .probes_every(step)
+            .into_iter()
+            .map(|(at, sample)| (at, joints(&sample)))
+            .collect()
+    }
 }
 
 /// MoveIt Servo's default first-order low-pass coefficient

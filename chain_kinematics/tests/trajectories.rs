@@ -231,6 +231,56 @@ fn a_servo_trajectory_plays_its_path_from_rest_to_rest_within_the_limits(tc: Tes
     on_a_drawn_robot::<PlaysFromRestToRestWithinTheLimits>(&tc);
 }
 
+// A drawn servo trajectory's probes start on its first configuration at its
+// start and end on its last at its end; each stands where the trajectory plays
+// it at its instant, and no joint changes by more than the step between
+// neighbours.
+struct ProbesWalkTheTrajectory;
+
+impl ChainProperty for ProbesWalkTheTrajectory {
+    fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+        let chain = chain_of::<N>(robot);
+        let drawn = DrawnPath::draw(tc, &chain);
+        let step: f64 = tc.draw(gs::floats().min_value(0.01).max_value(1.0));
+        let path = drawn.timed(&chain);
+        let traj = ServoTrajectory::<N>::new(
+            path.clone(),
+            Duration::from_secs_f64(path.duration_s()),
+            Instant::now(),
+        );
+        let probes = traj.probes_every(step);
+        let (first, last) = (drawn.configs[0], drawn.configs[drawn.configs.len() - 1]);
+        let start = traj.clock().motion_start();
+        assert_eq!(probes[0].0, start);
+        assert_eq!(probes[0].1, first);
+        assert_eq!(probes[probes.len() - 1].1, last);
+        for pair in probes.windows(2) {
+            let ((t0, q0), (t1, q1)) = (pair[0], pair[1]);
+            assert!(t1 >= t0, "a probe before the one ahead of it");
+            for (a, b) in q0.iter().zip(&q1) {
+                assert!(
+                    (b - a).abs() <= step * (1.0 + 1e-6),
+                    "{a} to {b} over a step of {step}"
+                );
+            }
+        }
+        for (at, q) in &probes {
+            let played = traj.sample(*at);
+            for (a, b) in played.iter().zip(q) {
+                assert!(
+                    (a - b).abs() <= 1e-6,
+                    "{q:?} probed where the trajectory plays {played:?}"
+                );
+            }
+        }
+    }
+}
+
+#[hegel::test]
+fn a_servo_trajectory_is_probed_from_its_start_to_its_end(tc: TestCase) {
+    on_a_drawn_robot::<ProbesWalkTheTrajectory>(&tc);
+}
+
 /// Seven joint limits and a configuration, each anywhere within 10 rad of
 /// zero, so the configuration lands inside, on and outside its limits.
 fn limits_and_configuration(tc: &TestCase) -> ([Limit; 7], [f64; 7]) {

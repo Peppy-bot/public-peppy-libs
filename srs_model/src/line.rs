@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use chain_kinematics::{ee_progress, interpolate, limit_margin, timed_with_ee};
+use chain_kinematics::{ee_progress, interpolate, joints, limit_margin, timed_with_ee};
 use control_core::path_timing::{TimedPath, TimedTrajectory};
 use control_core::timing::{MotionClock, duration_at_least, tick_checked_duration, tick_fractions};
 use nalgebra::Isometry3;
@@ -336,6 +336,24 @@ impl LineTrajectory {
     pub fn blend(&self, now: Instant) -> f64 {
         blend_of(ee_progress(&self.timed.sample(now)), self.ee_s)
     }
+
+    /// The configuration of the planned walk at `now`: where the runtime's
+    /// cursor, retracing the walk the plan validated, has the arm then, to
+    /// within a few milliradians.
+    pub fn sample(&self, now: Instant) -> JointVec {
+        joints(&self.timed.sample(now))
+    }
+
+    /// The configurations of the planned walk every `step` of its path's
+    /// length, from its start to its end, each with the instant the
+    /// trajectory plays them (see [`TimedPath::probes_every`]).
+    pub fn probes_every(&self, step: f64) -> Vec<(Instant, JointVec)> {
+        self.timed
+            .probes_every(step)
+            .into_iter()
+            .map(|(at, sample)| (at, joints(&sample)))
+            .collect()
+    }
 }
 
 /// The line plan for a move from the end effector's pose at `seed` to `end`,
@@ -445,6 +463,51 @@ mod tests {
     use hegel::generators as gs;
 
     const EPS: f64 = 1e-9;
+
+    // A line trajectory's probes are its walk's, with the end effector's
+    // progress dropped: the first on the start at the trajectory's start, the
+    // last on the goal, each where the trajectory plays it at its instant,
+    // and no joint changing by more than the step between neighbours.
+    #[hegel::test]
+    fn a_line_trajectory_is_probed_from_its_start_to_its_end(tc: TestCase) {
+        let [start, goal]: [JointVec; 2] = tc.draw(gs::arrays(gs::arrays(
+            gs::floats().min_value(-3.0).max_value(3.0),
+        )));
+        let step: f64 = tc.draw(gs::floats().min_value(0.01).max_value(1.0));
+        let walk_point = |q: &JointVec, progress: f64| [q.as_slice(), &[progress]].concat();
+        let path = TimedPath::new(
+            &[walk_point(&start, 0.0), walk_point(&goal, 1.0)],
+            &[1.0; ARM_DOF + 1],
+            &[1.0; ARM_DOF + 1],
+        );
+        let now = Instant::now();
+        let traj = LineTrajectory::new(
+            Isometry3::identity(),
+            Isometry3::identity(),
+            path.clone(),
+            Duration::from_secs_f64(path.duration_s()),
+            now,
+        );
+        let probes = traj.probes_every(step);
+        assert_eq!(probes[0], (now, start));
+        assert_eq!(probes[probes.len() - 1].1, goal);
+        for pair in probes.windows(2) {
+            let ((t0, q0), (t1, q1)) = (pair[0], pair[1]);
+            assert!(t1 >= t0, "a probe before the one ahead of it");
+            for j in 0..ARM_DOF {
+                assert!((q1[j] - q0[j]).abs() <= step * (1.0 + 1e-6));
+            }
+        }
+        for (at, q) in &probes {
+            let played = traj.sample(*at);
+            for j in 0..ARM_DOF {
+                assert!(
+                    (played[j] - q[j]).abs() <= 1e-6,
+                    "{q:?} probed where the trajectory plays {played:?}"
+                );
+            }
+        }
+    }
 
     // A tick's IK samples walk from `prev` (exclusive) to `next` (inclusive)
     // in equal steps no wider than one plan cell, the last on `next` itself,
