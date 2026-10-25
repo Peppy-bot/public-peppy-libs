@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from sim_robot_core.models import shipped_entry
-from sim_robot_core.registry import Caller, Registry
+from sim_robot_core.registry import Caller, Registry, StillJoining
 
 V1 = shipped_entry("openarm_v1")
 V2 = shipped_entry("openarm_v2")
@@ -52,12 +52,30 @@ class TestJoining:
             robots.admit("alpha", V1, held)
         assert robots.of_name("alpha").model == "openarm_v2"
 
-    def test_a_robot_still_joining_is_not_taken_over(self):
+    def test_a_robot_still_joining_is_not_taken_over_until_it_stands(self):
         robots = Registry()
         held = caller()
         robots.admit("alpha", V2, held)
-        with pytest.raises(ValueError, match="already joining"):
+        with pytest.raises(StillJoining, match="already joining 'alpha'; it stands in a moment"):
             robots.admit("alpha", V2, held)
+        robots.stand("alpha")
+        assert robots.admit("alpha", V2, held) is True, "the same attach takes it over now"
+
+    def test_a_refusal_that_stays_is_no_robot_still_joining(self):
+        """Only the caller's own robot that still joins is a refusal that
+        time ends: each other one holds until the scene changes."""
+        robots, held = standing()
+        robots.admit("bravo", V2, caller("bravo_init_inst"))
+        for name, entry, attaching in [
+            ("alpha", V2, caller("charlie_init_inst")),
+            ("bravo", V2, held),
+            ("alpha", V1, held),
+            ("charlie", V2, held),
+            ("", V2, caller("delta_init_inst")),
+        ]:
+            with pytest.raises(ValueError) as refused:
+                robots.admit(name, entry, attaching)
+            assert not isinstance(refused.value, StillJoining), refused.value
 
     def test_a_caller_stands_one_robot(self):
         robots, held = standing()
