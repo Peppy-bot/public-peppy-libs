@@ -30,7 +30,7 @@ from brain_core.manipulation.scripted import (
     ScriptedManipulator,
 )
 from brain_core.ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose
-from brain_core.robot import GripResult, MoveCheck, MoveResult
+from brain_core.robot import GripResult, MoveCheck, MoveEnd, MoveResult
 
 LEFT = Gripper("left_gripper", "left_arm")
 DOWN = candidates(GraspDirection.DOWN)
@@ -49,6 +49,34 @@ MOVE_BARS = dict(
     settle_timeout_s=SETTLE_TIMEOUT_S,
 )
 GRIP_BARS = dict(settle_timeout_s=GRIP_SETTLE_TIMEOUT_S)
+
+
+def arrived(position=None, orientation=None) -> MoveResult:
+    """An arm move that completed, its grasp point at `position`."""
+    return MoveResult(MoveEnd.COMPLETED, final_position=position, final_orientation=orientation)
+
+
+def move_failed(message: str, kind: str = "attempt_failed") -> MoveResult:
+    """An arm move that started and failed: no result, so no position."""
+    return MoveResult(MoveEnd.FAILED, message, kind)
+
+
+def move_refused(message: str, kind: str = "precondition_failed") -> MoveResult:
+    return MoveResult(MoveEnd.REFUSED, message, kind)
+
+
+def move_stopped(reason: str) -> MoveResult:
+    """An arm move that a stop ended: cancelled, with the stop's reason."""
+    return MoveResult(MoveEnd.CANCELLED, reason)
+
+
+def gripped(opening: float) -> GripResult:
+    """A gripper move that completed, the jaws standing at `opening`."""
+    return GripResult(MoveEnd.COMPLETED, settled=True, final_opening=opening)
+
+
+def grip_failed(message: str, kind: str = "attempt_failed") -> GripResult:
+    return GripResult(MoveEnd.FAILED, message, kind)
 
 
 class FakeClock:
@@ -92,13 +120,13 @@ class FakeRobot:
         await asyncio.sleep(0)
         self.bars.append(("move", bars))
         self._record(("move", position, orientation))
-        return self.moves.popleft() if self.moves else MoveResult(True, "move complete", position, orientation)
+        return self.moves.popleft() if self.moves else arrived(position, orientation)
 
     async def set_gripper(self, gripper, opening, *, max_effort, **bars) -> GripResult:
         await asyncio.sleep(0)
         self.bars.append(("grip", bars))
         self._record(("grip", gripper, opening, max_effort))
-        return self.grips.popleft() if self.grips else GripResult(True, "move complete", opening)
+        return self.grips.popleft() if self.grips else gripped(opening)
 
     def _record(self, call: tuple) -> None:
         self.calls.append(call)
@@ -141,7 +169,7 @@ def cup(position=SEEN, orientation=None, *, grasp_point=False, width_m=None) -> 
 def holding(robot: FakeRobot, store: LimbStateStore, closed: float = 0.3, after: float = 0.3) -> None:
     """The close stops at `closed`, and the snapshot after the lift reads
     `after`."""
-    robot.grips.extend([GripResult(True, "move complete", 1.0), GripResult(True, "stopped short", closed)])
+    robot.grips.extend([gripped(1.0), gripped(closed)])
     snapshot_after_the_lift(robot, store, limb_states_message(2.0, left_gripper=after))
 
 
@@ -205,7 +233,7 @@ async def test_an_item_wider_than_the_jaws_less_their_margins_gets_them_fully_op
 def landing_log(robot: FakeRobot) -> None:
     """The descent settles 4 mm off: 3 mm toward the robot, 2 mm left,
     1 mm below, within the 2 cm it names."""
-    robot.moves.extend([MoveResult(True, ""), MoveResult(True, "", (GRASP[0] - 0.003, GRASP[1] + 0.002, GRASP[2] - 0.001))])
+    robot.moves.extend([arrived(), arrived((GRASP[0] - 0.003, GRASP[1] + 0.002, GRASP[2] - 0.001))])
 
 
 async def test_the_log_line_gives_where_the_descent_settled_against_the_grasp_point(caplog):
@@ -227,7 +255,7 @@ RETREAT = [("grip", "left_gripper", 1.0, 0.0), ("move", PRE, DOWN[0])]
 async def test_a_descent_that_does_not_settle_retreats():
     manipulator, robot, store = await started()
     unsettled = "still 8.0 mm / 0.02 rad from the target, 2.0 s after the planned end"
-    robot.moves.extend([MoveResult(True, ""), MoveResult(False, unsettled)])
+    robot.moves.extend([arrived(), move_failed(unsettled, "timeout")])
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, unsettled)
     assert robot.calls[-3] == ("move", GRASP, DOWN[0]) and robot.calls[-2:] == RETREAT
@@ -235,9 +263,9 @@ async def test_a_descent_that_does_not_settle_retreats():
 
 async def test_a_failed_close_retreats():
     manipulator, robot, store = await started()
-    robot.grips.extend([GripResult(True, "", 1.0), GripResult(False, "the gripper still moved 3.0 s after the commanded move ended")])
+    robot.grips.extend([gripped(1.0), grip_failed("the follower stopped reporting")])
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
-    assert outcome == Outcome(False, "the gripper still moved 3.0 s after the commanded move ended")
+    assert outcome == Outcome(False, "the follower stopped reporting")
     assert robot.calls[-3] == ("grip", "left_gripper", 0.0, 0.0) and robot.calls[-2:] == RETREAT
 
 
@@ -254,7 +282,7 @@ async def test_a_close_on_nothing_retreats_with_no_lift():
 async def test_a_failed_lift_retreats():
     manipulator, robot, store = await started()
     holding(robot, store)
-    robot.moves.extend([MoveResult(True, ""), MoveResult(True, ""), MoveResult(False, "the follower stopped reporting")])
+    robot.moves.extend([arrived(), arrived(), move_failed("the follower stopped reporting")])
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, "the follower stopped reporting")
     assert robot.calls[-3] == ("move", LIFT, DOWN[0]) and robot.calls[-2:] == RETREAT
@@ -303,7 +331,7 @@ async def test_no_snapshot_after_the_lift_fails_the_grab_and_retreats():
 
 async def test_a_retreat_that_cannot_open_adds_why_and_moves_no_further(caplog):
     manipulator, robot, store = await started()
-    robot.grips.extend([GripResult(True, "", 1.0), GripResult(True, "", 0.01), GripResult(False, "the follower stopped reporting")])
+    robot.grips.extend([gripped(1.0), gripped(0.01), grip_failed("the follower stopped reporting")])
     with records_of(caplog, "brain_core.manipulation.scripted") as log:
         outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(
@@ -316,7 +344,7 @@ async def test_a_retreat_that_cannot_open_adds_why_and_moves_no_further(caplog):
 async def test_a_retreat_whose_climb_fails_adds_why():
     manipulator, robot, store = await started()
     holding(robot, store, closed=0.01)
-    robot.moves.extend([MoveResult(True, ""), MoveResult(True, ""), MoveResult(False, "the side is busy")])
+    robot.moves.extend([arrived(), arrived(), move_refused("the side is busy")])
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, "gripper 'left_gripper' closed on nothing; the retreat to the pre-grasp point failed: the side is busy")
     assert robot.calls[-2:] == RETREAT
@@ -326,7 +354,7 @@ async def test_a_step_a_stop_ended_retreats_from_nothing():
     """The stop service ends a goal as cancelled whoever called it: the arm
     stays where the stop left it."""
     manipulator, robot, store = await started()
-    robot.moves.extend([MoveResult(True, ""), MoveResult(False, "stopped: the operator asked", cancelled=True)])
+    robot.moves.extend([arrived(), move_stopped("stopped: the operator asked")])
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, "stopped: the operator asked")
     assert robot.calls[-1] == ("move", GRASP, DOWN[0])
@@ -336,7 +364,7 @@ async def test_a_cancel_during_the_retreat_raises_cancelled():
     manipulator, robot, store = await started()
     holding(robot, store, closed=0.01)
     cancel = CancelToken()
-    robot.on_call = lambda call: cancel.cancel("aborted: operator", by_caller=False) if call == RETREAT[0] else None
+    robot.on_call = lambda call: cancel.cancel("aborted: operator", signalled=False) if call == RETREAT[0] else None
     with pytest.raises(Cancelled):
         await manipulator.grab(cup(), LEFT, 0.0, cancel)
     assert robot.calls[-1] == RETREAT[0]
@@ -344,7 +372,7 @@ async def test_a_cancel_during_the_retreat_raises_cancelled():
 
 async def test_a_step_that_fails_before_the_descent_retreats_from_nothing():
     manipulator, robot, store = await started()
-    robot.grips.append(GripResult(False, "a leader streams the gripper"))
+    robot.grips.append(GripResult(MoveEnd.REFUSED, "a leader streams the gripper", "leader_streaming"))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, "a leader streams the gripper")
     assert robot.kinds() == ["check", "check", "check", "grip"]
@@ -352,7 +380,7 @@ async def test_a_step_that_fails_before_the_descent_retreats_from_nothing():
 
 async def test_a_snapshot_after_the_lift_is_waited_for():
     manipulator, robot, store = await started(wait_s=10.0)
-    robot.grips.extend([GripResult(True, "", 1.0), GripResult(True, "", 0.3)])
+    robot.grips.extend([gripped(1.0), gripped(0.3)])
     lifted = asyncio.Event()
     robot.on_call = lambda call: lifted.set() if robot.is_lift(call) else None
     grab = asyncio.create_task(manipulator.grab(cup(), LEFT, 0.0, CancelToken()))
@@ -383,7 +411,7 @@ async def test_no_orientation_that_plans_fails_with_the_backbones_last_words():
 
 async def test_a_refused_pre_grasp_move_ends_the_grab_with_its_message():
     manipulator, robot, store = await started()
-    robot.moves.append(MoveResult(False, "the side is busy"))
+    robot.moves.append(move_refused("the side is busy"))
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(False, "the side is busy")
     assert robot.kinds() == ["check", "check", "check", "grip", "move"]
@@ -392,11 +420,11 @@ async def test_a_refused_pre_grasp_move_ends_the_grab_with_its_message():
 async def test_a_cancel_between_two_moves_raises_cancelled_out_of_the_grab(caplog):
     manipulator, robot, store = await started()
     cancel = CancelToken()
-    robot.on_call = lambda call: cancel.cancel("aborted: operator", by_caller=False) if call == ("move", PRE, DOWN[0]) else None
+    robot.on_call = lambda call: cancel.cancel("aborted: operator", signalled=False) if call == ("move", PRE, DOWN[0]) else None
     with records_of(caplog, "brain_core.manipulation.scripted") as log:
         with pytest.raises(Cancelled) as stopped:
             await manipulator.grab(cup(), LEFT, 0.0, cancel)
-    assert (stopped.value.reason, stopped.value.by_caller) == ("aborted: operator", False)
+    assert (stopped.value.reason, stopped.value.signalled) == ("aborted: operator", False)
     assert robot.kinds()[-1] == "move" and len([k for k in robot.kinds() if k == "move"]) == 1
     assert log.records[-1].getMessage().endswith("; stopped: aborted: operator")
 
@@ -404,7 +432,7 @@ async def test_a_cancel_between_two_moves_raises_cancelled_out_of_the_grab(caplo
 async def test_a_cancel_during_a_check_raises_cancelled_before_any_move():
     manipulator, robot, _ = await started()
     cancel = CancelToken()
-    robot.on_call = lambda call: cancel.cancel("cancelled by the caller", by_caller=True)
+    robot.on_call = lambda call: cancel.cancel("cancelled by the caller", signalled=True)
     with pytest.raises(Cancelled):
         await manipulator.grab(cup(), LEFT, 0.0, cancel)
     assert robot.kinds() == ["check"]
@@ -453,7 +481,7 @@ async def test_a_drop_opens_the_gripper_where_it_is():
     manipulator, robot, _ = await started()
     assert await manipulator.drop(LEFT, CancelToken()) == Outcome(True)
     assert robot.calls == [("grip", "left_gripper", 1.0, 0.0)]
-    robot.grips.append(GripResult(False, "the follower stopped reporting"))
+    robot.grips.append(grip_failed("the follower stopped reporting"))
     assert await manipulator.drop(LEFT, CancelToken()) == Outcome(False, "the follower stopped reporting")
 
 
@@ -461,7 +489,7 @@ async def test_a_place_checks_its_orientation_alone_opens_climbs_back_and_report
     manipulator, robot, _ = await started()
     q, point = (0.0, 1.0, 0.0, 0.0), (0.6, 0.0, 0.75)
     above = (0.6, 0.0, 0.75 + CLEARANCE_M)
-    robot.moves.extend([MoveResult(True, ""), MoveResult(True, "", (0.6, 0.0, 0.752), q)])
+    robot.moves.extend([arrived(), arrived((0.6, 0.0, 0.752), q)])
     outcome = await manipulator.place(LEFT, Pose(point, q), CancelToken())
     assert outcome == Outcome(True, "", (0.6, 0.0, 0.752))
     assert robot.calls == [
@@ -474,6 +502,7 @@ async def test_a_place_checks_its_orientation_alone_opens_climbs_back_and_report
 
 # A place lowers the item from the pre-place point (0.825 m) to the place
 # point (0.75 m); an arm that stops short on the way down has set it down.
+# Its descent fails with `timeout`, and limb_states says where it stands.
 
 PLACE_Q = (0.0, 1.0, 0.0, 0.0)
 PLACE_POINT = (0.6, 0.0, 0.75)
@@ -481,10 +510,18 @@ PLACE_ABOVE = (0.6, 0.0, 0.75 + CLEARANCE_M)
 SHORT = "still 32.1 mm / 0.05 rad from the target, 2.0 s after the planned end"
 
 
-async def place_stopping_at(stopped_at, *, cancelled=False):
-    """A place whose descent stops short at `stopped_at`, and the robot."""
-    manipulator, robot, _ = await started()
-    robot.moves.extend([MoveResult(True, ""), MoveResult(False, SHORT, stopped_at, PLACE_Q, cancelled=cancelled)])
+async def place_stopping_at(stopped_at, descent: MoveResult = move_failed(SHORT, "timeout")):
+    """A place whose descent ends as `descent` says, with the arm stopped
+    at `stopped_at` in the snapshot the backbone publishes during the
+    descent, and the robot."""
+    manipulator, robot, store = await started()
+
+    def on_call(call: tuple) -> None:
+        if call == ("move", PLACE_POINT, PLACE_Q):
+            store.add(limb_states_message(2.0, left_arm=(stopped_at, PLACE_Q), left_gripper=0.3))
+
+    robot.on_call = on_call
+    robot.moves.extend([arrived(), descent])
     outcome = await manipulator.place(LEFT, Pose(PLACE_POINT, PLACE_Q), CancelToken())
     return outcome, robot
 
@@ -512,15 +549,23 @@ async def test_a_place_that_stops_off_the_line_down_fails_with_no_release():
 
 
 async def test_a_place_whose_descent_a_stop_ended_fails_with_no_release():
-    outcome, robot = await place_stopping_at((0.6, 0.0, 0.78), cancelled=True)
-    assert outcome == Outcome(False, SHORT)
+    outcome, robot = await place_stopping_at((0.6, 0.0, 0.78), move_stopped("stopped: the operator asked"))
+    assert outcome == Outcome(False, "stopped: the operator asked")
+    assert "grip" not in robot.kinds()
+
+
+async def test_a_place_whose_descent_fails_with_another_kind_than_timeout_fails_with_no_release():
+    """Only a move that did not settle stopped short of its target: another
+    failure says nothing of where the item is."""
+    outcome, robot = await place_stopping_at((0.6, 0.0, 0.78), move_failed("the follower stopped reporting"))
+    assert outcome == Outcome(False, "the follower stopped reporting")
     assert "grip" not in robot.kinds()
 
 
 async def test_a_place_whose_climb_fails_still_places_and_says_so_in_the_log(caplog):
     manipulator, robot, _ = await started()
     q, point = (0.0, 1.0, 0.0, 0.0), (0.6, 0.0, 0.75)
-    robot.moves.extend([MoveResult(True, ""), MoveResult(True, ""), MoveResult(False, "the side is busy")])
+    robot.moves.extend([arrived(), arrived(), move_refused("the side is busy")])
     with records_of(caplog, "brain_core.manipulation.scripted") as log:
         outcome = await manipulator.place(LEFT, Pose(point, q), CancelToken())
     assert outcome == Outcome(True, "", None)
@@ -540,9 +585,9 @@ async def test_a_place_without_an_orientation_tries_the_down_rolls():
 
 
 # Properties over any pattern of backbone answers: every check, move and
-# grip answer drawn, a failed move or grip ended by a stop or not, a
-# snapshot published or not after each move, and a cancel at any call or
-# none.
+# grip answer drawn, a move or grip that does not complete ended by a stop
+# or failed with a kind, a snapshot published or not after each move, and a
+# cancel at any call or none.
 
 HOLD = 0.05
 DROP = 0.05
@@ -555,10 +600,10 @@ def mostly(one_in: int):
 
 
 checks = st.builds(MoveCheck, mostly(8), st.sampled_from(["", "no plan"]), st.just(1.0))
-moves = st.builds(MoveResult, mostly(12), st.sampled_from(["", "stopped"]))
+# How a failed move or grip fails: the kinds the backbone gives.
+move_kinds = st.sampled_from(["timeout", "attempt_failed", "unreachable", "leader_streaming"])
 # Openings at the hold opening and around it, and anywhere.
 openings = st.one_of(st.sampled_from([0.0, HOLD - 1e-9, HOLD, 0.3, 1.0]), st.floats(min_value=0.0, max_value=1.0))
-grips = st.builds(GripResult, mostly(12), st.sampled_from(["", "overran"]), st.one_of(st.none(), openings))
 # A snapshot after a move, captured before the latest one, with it, or after.
 snapshots = st.one_of(st.none(), st.tuples(st.sampled_from([0.5, 1.0, 2.0, 3.0]), openings))
 # Whether a failed move or grip ended as cancelled, by a stop.
@@ -577,9 +622,12 @@ def answering_drawn(robot: FakeRobot, store: LimbStateStore, data, cancel: Cance
         if kind == "check":
             robot.checks.append(data.draw(checks))
         elif kind == "move":
-            moved = data.draw(moves)
-            stopped = not moved.success and data.draw(stops, label="stopped")
-            robot.moves.append(MoveResult(moved.success, moved.message, call[1], call[2], cancelled=stopped))
+            if data.draw(mostly(12), label="completed"):
+                robot.moves.append(arrived(call[1], call[2]))
+            elif data.draw(stops, label="stopped"):
+                robot.moves.append(MoveResult(MoveEnd.CANCELLED, "stopped", "", call[1], call[2]))
+            else:
+                robot.moves.append(move_failed("failed", data.draw(move_kinds)))
             record["latest_before_last_move"] = store.latest.timestamp
             snapshot = data.draw(snapshots)
             if snapshot is not None:
@@ -587,18 +635,19 @@ def answering_drawn(robot: FakeRobot, store: LimbStateStore, data, cancel: Cance
                 asyncio.get_running_loop().call_soon(store.add, message)
             record["after_last_move"] = snapshot
         else:
-            gripped = data.draw(grips)
-            if gripped.success and gripped.final_opening is None:
-                # A successful move_gripper result always carries its opening.
-                gripped = GripResult(True, gripped.message, 0.5)
-            if not gripped.success and data.draw(stops, label="stopped"):
-                gripped = GripResult(False, gripped.message, gripped.final_opening, cancelled=True)
-            robot.grips.append(gripped)
-            record["last_grip"] = gripped
+            if data.draw(mostly(12), label="completed"):
+                # A completed move_gripper result always carries its opening.
+                grip = gripped(data.draw(openings))
+            elif data.draw(stops, label="stopped"):
+                grip = GripResult(MoveEnd.CANCELLED, "stopped", "", False, data.draw(openings))
+            else:
+                grip = grip_failed("failed", data.draw(move_kinds))
+            robot.grips.append(grip)
+            record["last_grip"] = grip
         queued = {"check": robot.checks, "move": robot.moves, "grip": robot.grips}[kind]
         record["answers"].append(queued[-1])
         if not cancel.cancelled and data.draw(cancels, label="cancel here"):
-            cancel.cancel("aborted: drawn", by_caller=False)
+            cancel.cancel("aborted: drawn", signalled=False)
 
     robot.on_call = on_call
 
@@ -656,7 +705,7 @@ def assert_a_failed_grab_retreats_only_once_down_and_unstopped(robot: FakeRobot,
     retreat = calls[opened:]
     pre = calls[moves[0]]
     assert retreat in ([calls[opened]], [calls[opened], pre])
-    stopped_short = len(retreat) == 1 or not answers[-1].success
+    stopped_short = len(retreat) == 1 or not answers[-1].completed
     event("the retreat stopped short" if stopped_short else "retreated")
     assert ("the retreat to the pre-grasp point failed" in outcome.message) == stopped_short
 

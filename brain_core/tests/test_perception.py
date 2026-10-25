@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import CAMERA_16X12, NEVER, FakeDetector, FakeToken, camera_poses, depth_frame, rgb_frame
-from fake_peppygen import VacantSlot
+from fake_peppygen import VacantSlot, consumed_service
 from brain_core.perception.camera import (
     INVERSE_PLUMB_BOB,
     NONE,
@@ -27,7 +27,7 @@ from brain_core.perception import frames as frames_module
 from brain_core.perception import geometry
 from brain_core.perception.frames import FRAME_BUFFER, FrameStore, decode_color, decode_depth, depth_at
 from brain_core.perception.perceiver import DEFAULT_TIMEOUT_S, Look, Perceiver, in_daemon_thread, merge_duplicates
-from brain_core.ports import Box, CancelToken, Coverage, Detection, Refusal
+from brain_core.ports import Box, CancelToken, Coverage, Detection, ExpectedFailure, FailureKind, Refusal, SearchTimeout
 
 # At the robot frame's origin, looking along its +Z: the identity pose.
 AT_ORIGIN = CameraModel().with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
@@ -219,10 +219,20 @@ def test_frames_decode_and_depth_reads_the_median_under_a_box():
     assert abs(depth_at(depth, box, 16, 12) - 0.75) < 1e-6
     depth[:, :] = 0.0
     assert depth_at(depth, box, 16, 12) is None
-    with pytest.raises(Refusal, match="unsupported colour encoding"):
-        message = rgb_frame(4, 4)
-        message.encoding = "yuyv"
+    # A frame that does not decode fails the search that read it.
+    message = rgb_frame(4, 4)
+    message.encoding = "yuyv"
+    with pytest.raises(ExpectedFailure, match="unsupported colour encoding") as raised:
         decode_color(message)
+    assert raised.value.kind is FailureKind.ATTEMPT_FAILED
+    with pytest.raises(ExpectedFailure, match="depth frame holds 3 bytes") as raised:
+        decode_depth(replace_frame(depth_frame(1.0, 2, 2), b"abc"), 0.001)
+    assert raised.value.kind is FailureKind.ATTEMPT_FAILED
+
+
+def replace_frame(message, frame: bytes):
+    message.frame = frame
+    return message
 
 
 def store_with(colors=(), depths=(), depth_unit=0.001) -> FrameStore:
@@ -253,8 +263,9 @@ def test_the_frame_store_says_what_is_missing():
     assert store_with([rgb_frame()], [depth_frame(1.0)], depth_unit=None).why_unavailable() == "the camera has not answered depth_stream_info yet"
     disjoint = store_with([rgb_frame(frame_id=1), rgb_frame(frame_id=2)], [depth_frame(1.0, frame_id=3)])
     assert disjoint.why_unavailable() == "no colour and depth frame of one capture received (latest colour frame_id 2, depth 3)"
-    with pytest.raises(Refusal, match="no colour and depth frame of one capture"):
+    with pytest.raises(Refusal, match="no colour and depth frame of one capture") as raised:
         disjoint.latest()
+    assert raised.value.kind is FailureKind.RESOURCE_UNAVAILABLE
 
 
 def test_frames_that_are_not_aligned_to_each_other_are_refused():
@@ -365,6 +376,17 @@ async def test_a_scan_turns_boxes_into_world_detections():
     assert detector.phrases[-1] == []
 
 
+async def test_a_detector_past_its_deadline_fails_the_scan_with_timeout():
+    class TimingOut(FakeDetector):
+        async def detect(self, image, phrases, deadline):
+            raise SearchTimeout(deadline.budget_s)
+
+    perceiver = Perceiver(store_with([rgb_frame(16, 12)], [depth_frame(1.0, 16, 12)]), IDENTITY)
+    with pytest.raises(ExpectedFailure, match="^the search did not finish within 2.5 s$") as raised:
+        await perceiver.scan(TimingOut(), [], CancelToken(), timeout_s=2.5)
+    assert raised.value.kind is FailureKind.TIMEOUT
+
+
 def test_a_look_names_its_frame_its_age_and_every_box_for_the_log():
     look = Look(
         detections=[Detection("cup", (0.0, 0.0, 2.0), 0.9)],
@@ -412,8 +434,9 @@ async def test_the_none_detector_is_never_ready_and_finds_nothing():
 async def test_a_scan_is_refused_without_frames_or_with_frames_that_are_not_aligned():
     perceiver = Perceiver(FrameStore(), IDENTITY)
     detector = FakeDetector()
-    with pytest.raises(Refusal, match="^no perception source: no camera frame received$"):
+    with pytest.raises(Refusal, match="^no perception source: no camera frame received$") as raised:
         await perceiver.scan(detector, [], CancelToken(), 0.0)
+    assert raised.value.kind is FailureKind.RESOURCE_UNAVAILABLE
     assert perceiver.why_unavailable() == "no perception source: no camera frame received"
     perceiver.frames.add_color(rgb_frame(align_mode="none"))
     perceiver.frames.add_depth(depth_frame(1.0, align_mode="none"))
@@ -444,45 +467,57 @@ async def test_a_scan_waits_for_the_cameras_intrinsics_and_names_the_slot():
         intrinsics_from(SimpleNamespace(width=16, height=12, fx=6.0, fy=6.0, cx=8.0, cy=6.0, distortion_model="fisheye", distortion=[]))
 
 
-def colour_answer(success: bool = True, message: str = "", fx: float = 6.0):
-    return SimpleNamespace(success=success, message=message, width=16, height=12, fx=fx, fy=6.0, cx=8.0, cy=6.0, distortion_model="none", distortion=[])
+def colour_answer(fx: float = 6.0):
+    return SimpleNamespace(width=16, height=12, fx=fx, fy=6.0, cx=8.0, cy=6.0, distortion_model="none", distortion=[])
 
 
-def depth_answer(success: bool = True, message: str = "", depth_model: str = "z"):
-    return SimpleNamespace(success=success, message=message, depth_model=depth_model)
+def depth_answer(depth_model: str = "z"):
+    return SimpleNamespace(depth_model=depth_model)
+
+
+def scripted_service(name: str, answers: list, before_each=None):
+    """A consumed service bound to "camera" that answers each poll with the
+    next of `answers`: a response's data, an exception to raise, or a pair
+    (kind, message), its error reply. `before_each` runs before each
+    answer."""
+    service = consumed_service(name, None, producer="camera")
+
+    async def poll(node_runner, producer, timeout):
+        if before_each is not None:
+            before_each()
+        answer = answers.pop(0)
+        if isinstance(answer, tuple):
+            raise service.Failure(*answer)
+        if isinstance(answer, Exception):
+            raise answer
+        return SimpleNamespace(data=answer)
+
+    service.poll = poll
+    return service
 
 
 async def test_the_camera_is_asked_again_until_it_knows_its_geometry(monkeypatch):
     # The reasons a search is refused with, one per round, until the
     # camera answers both questions with something usable: not answered,
-    # colour not known yet (what a sim relay says before its simulation
-    # speaks), depth not known, a depth model the brain does not read, an
-    # unusable pinhole, then the answer.
+    # colour not known yet (the error reply a sim relay gives before its
+    # simulation speaks), depth not known, a depth model the brain does not
+    # read, an unusable pinhole, then the answer. An error reply about the
+    # colour stream leaves the depth stream unasked in that round.
     perceiver = Perceiver(FrameStore(), AT_ORIGIN)
     colour = [
         TimeoutError("no answer"),
-        colour_answer(False, "no camera geometry received from the simulation yet"),
+        ("precondition_failed", "no camera geometry received from the simulation yet"),
         colour_answer(),
         colour_answer(),
         colour_answer(fx=0.0),
         colour_answer(),
     ]
-    depth = [depth_answer(), depth_answer(False, "no depth stream"), depth_answer(depth_model="range"), depth_answer(), depth_answer()]
+    depth = [("rejected", "no depth stream"), depth_answer(depth_model="range"), depth_answer(), depth_answer()]
     reasons: list[str] = []
 
-    async def poll_colour(node_runner, producer, timeout):
-        reasons.append(perceiver.intrinsics_reason)
-        answer = colour.pop(0)
-        if isinstance(answer, Exception):
-            raise answer
-        return SimpleNamespace(data=answer)
-
-    async def poll_depth(node_runner, producer, timeout):
-        return SimpleNamespace(data=depth.pop(0))
-
     monkeypatch.setattr(geometry, "INTRINSICS_RETRY_S", 0.0)
-    get_color_intrinsics = SimpleNamespace(bound_producer=lambda node_runner: "camera", poll=poll_colour)
-    get_depth_intrinsics = SimpleNamespace(poll=poll_depth)
+    get_color_intrinsics = scripted_service("get_color_intrinsics", colour, lambda: reasons.append(perceiver.intrinsics_reason))
+    get_depth_intrinsics = scripted_service("get_depth_intrinsics", depth)
     await asyncio.wait_for(geometry.learn_intrinsics(None, FakeToken(), perceiver, get_color_intrinsics, get_depth_intrinsics), 5.0)
     assert reasons == [
         "the camera's intrinsics have not been received yet",
@@ -501,19 +536,17 @@ async def test_a_camera_that_never_knows_its_geometry_is_asked_until_the_node_st
     token = FakeToken()
     asked = 0
 
-    async def poll_colour(node_runner, producer, timeout):
+    def count() -> None:
         nonlocal asked
         asked += 1
         if asked == 3:
             token.cancel()
-        return SimpleNamespace(data=colour_answer(False, "this camera has no calibration"))
-
-    async def poll_depth(node_runner, producer, timeout):
-        return SimpleNamespace(data=depth_answer())
 
     monkeypatch.setattr(geometry, "INTRINSICS_RETRY_S", 0.0)
-    get_color_intrinsics = SimpleNamespace(bound_producer=lambda node_runner: "camera", poll=poll_colour)
-    get_depth_intrinsics = SimpleNamespace(poll=poll_depth)
+    # A device without a calibration gives `rejected` every time; the
+    # brain asks again all the same.
+    get_color_intrinsics = scripted_service("get_color_intrinsics", [("rejected", "this camera has no calibration")] * 3, count)
+    get_depth_intrinsics = scripted_service("get_depth_intrinsics", [])
     await asyncio.wait_for(geometry.learn_intrinsics(None, token, perceiver, get_color_intrinsics, get_depth_intrinsics), 5.0)
     assert asked == 3
     assert not perceiver.camera.ready
@@ -526,19 +559,18 @@ async def test_a_vacant_geometry_slot_is_the_reason_at_once():
     assert perceiver.intrinsics_reason == geometry.VACANT
 
 
-def poses_answer(success: bool = True, message: str = "", names=("wrist_left", "chest"), chest_position=(0.1, 0.2, 0.3)):
-    """The robot's answer as conftest's camera_poses gives it, the last
+def poses_answer(names=("wrist_left", "chest"), chest_position=(0.1, 0.2, 0.3)):
+    """The robot's response as conftest's camera_poses gives it, the last
     camera named, the chest, standing at `chest_position`."""
-    answer = camera_poses(success, message, names)
-    if success:
-        answer.positions[-3:] = list(chest_position)
+    answer = camera_poses(names)
+    answer.positions[-3:] = list(chest_position)
     return answer
 
 
 async def test_the_robot_is_asked_again_until_it_places_the_camera(monkeypatch):
     # The reasons a search is refused with, one per round, until the robot
-    # answers with success and names the camera: not answered, not measured
-    # yet, a robot without that camera, then the answer.
+    # gives its response and names the camera: not answered, not measured
+    # yet (its error reply), a robot without that camera, then the answer.
     frames = store_with([rgb_frame(16, 12)], [depth_frame(1.0, 16, 12)])
     perceiver = Perceiver(frames, CameraModel().with_intrinsics(CAMERA_16X12))
     assert perceiver.why_unavailable() != ""
@@ -546,21 +578,14 @@ async def test_the_robot_is_asked_again_until_it_places_the_camera(monkeypatch):
         await perceiver.scan(FakeDetector(), [], CancelToken(), 1.0)
     answers = [
         TimeoutError("no answer"),
-        poses_answer(False, "the robot has not measured its joints yet"),
+        ("precondition_failed", "the robot has not measured its joints yet"),
         poses_answer(names=("wrist_left", "wrist_right")),
         poses_answer(),
     ]
     reasons: list[str] = []
 
-    async def poll(node_runner, producer, timeout):
-        reasons.append(perceiver.pose_reason)
-        answer = answers.pop(0)
-        if isinstance(answer, Exception):
-            raise answer
-        return SimpleNamespace(data=answer)
-
     monkeypatch.setattr(geometry, "INTRINSICS_RETRY_S", 0.0)
-    get_camera_poses = SimpleNamespace(bound_producer=lambda node_runner: "robot", poll=poll)
+    get_camera_poses = scripted_service("get_camera_poses", answers, lambda: reasons.append(perceiver.pose_reason))
     await asyncio.wait_for(geometry.learn_camera_pose(None, FakeToken(), perceiver, "chest", get_camera_poses), 5.0)
     assert reasons == [
         "the camera's pose has not been received from the robot yet",

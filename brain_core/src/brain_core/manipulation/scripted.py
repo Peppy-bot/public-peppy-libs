@@ -48,9 +48,11 @@ the close; the two openings it judged; and the retreat.
 A drop opens the gripper where it is. A place carries the held item to the
 pose, through its pre-grasp point, in the pose's orientation alone when it
 has one, else from above at each roll, opens there and climbs back to the
-pre-place point. An arm that stops short on its way down to the pose, at
-least `MIN_DESCENT_M` below the pre-place point and on the line down, has
-set the item on what is under it: the place opens there and logs it. It
+pre-place point. An arm that stops short on its way down to the pose does
+not settle, so its move fails with `timeout`; when limb_states puts its
+grasp point at least `MIN_DESCENT_M` below the pre-place point and on the
+line down, the arm has set the item on what is under it: the place opens
+there and logs it. It
 reports where the grasp point stood when the jaws opened. A climb that
 fails is logged, and the place still succeeds: the jaws are open and the
 item is down.
@@ -102,6 +104,9 @@ SETTLE_TIMEOUT_S = 2.0
 # down must stand for a place to open there: higher, it has not set the
 # item down.
 MIN_DESCENT_M = 0.01
+# The limb_motion failure kind of an arm move whose grasp point did not
+# settle by its settle timeout.
+SETTLE_TIMED_OUT = "timeout"
 # How long a gripper move waits for the jaws to stand still.
 GRIP_SETTLE_TIMEOUT_S = 2.0
 # The span of the jaws fully open: the OpenArm v2's in Waldo, where an
@@ -367,8 +372,8 @@ class ScriptedManipulator:
             checks.count += 1
             checks.seconds += self._clock() - started
             cancel.check()
-            if not check.success:
-                return check.message or "check_arm_move found no plan"
+            if not check.reachable:
+                return check.reason or "check_arm_move found no plan"
         return ""
 
     async def _move(self, arm: str, point: Vec3, orientation: Quat, cancel: CancelToken) -> MoveResult:
@@ -376,7 +381,7 @@ class ScriptedManipulator:
         result comes once the arm has settled there."""
         moved = await self._move_arm(arm, point, orientation)
         cancel.check()
-        if not moved.success:
+        if not moved.completed:
             raise _Failed(moved.message or "move_arm failed", stopped=moved.cancelled)
         return moved
 
@@ -385,15 +390,18 @@ class ScriptedManipulator:
     ) -> Optional[Vec3]:
         """Lowers the held item from `pre` to `point` and returns where the
         grasp point stands for the release: at `point`, or where the arm
-        stopped short on the way down, the item set on what is under it. A
-        move a stop ended, or one that stopped higher or off the line down,
-        fails."""
+        stopped short on the way down, the item set on what is under it. An
+        arm that stops short does not settle, so its move fails with
+        `timeout`; where it stopped is the grasp point of the latest
+        limb_states snapshot, since a failed move gives no result. A move a
+        stop ended, one that failed for another reason, or one that stopped
+        higher or off the line down, fails."""
         moved = await self._move_arm(gripper.arm, point, orientation)
         cancel.check()
-        if moved.success:
+        if moved.completed:
             return moved.final_position
-        at = moved.final_position
-        if moved.cancelled or not _short_on_the_way_down(pre, point, at, self.settle_position_m):
+        at = self._arm_position(gripper.arm) if moved.failure_kind == SETTLE_TIMED_OUT else None
+        if not _short_on_the_way_down(pre, point, at, self.settle_position_m):
             raise _Failed(moved.message or "move_arm failed", stopped=moved.cancelled)
         logger.info(
             "place with gripper '%s' stopped %.1f cm short of the place point on the way down (%s): it releases there",
@@ -414,7 +422,7 @@ class ScriptedManipulator:
         """Drives `gripper` to `opening` and returns its final opening."""
         gripped = await self._robot.set_gripper(gripper, opening, max_effort=max_effort, settle_timeout_s=self.grip_settle_timeout_s)
         cancel.check()
-        if not gripped.success:
+        if not gripped.completed:
             raise _Failed(gripped.message or "move_gripper failed", stopped=gripped.cancelled)
         if gripped.final_opening is None:
             raise _Failed(f"move_gripper gave no final opening for gripper '{gripper}'")

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from ..ports import Refusal, Role
+from ..brain import RESULT_ENDS
+from ..ports import ExpectedFailure, FailureKind, Role
 
 ZERO = dict(gripper_name="", item_id="")
 
@@ -25,8 +26,8 @@ async def run(brain, ctx) -> None:
         outcome = await manipulator.grab(item, gripper, goal.max_effort, job.cancel)
         job.cancel.check()
         if not outcome.success:
-            raise Refusal(outcome.message or "the grasp failed")
+            raise ExpectedFailure(FailureKind.ATTEMPT_FAILED, outcome.message or "the grasp failed")
         state.set_held(gripper, item.item_id)
         return dict(gripper_name=gripper.name, item_id=item.item_id)
 
-    await brain.run_guarded(ctx, Role.MANIPULATION, "grab_item", body, ZERO)
+    await brain.run_guarded(ctx, Role.MANIPULATION, "grab_item", body, ZERO, ends=RESULT_ENDS)

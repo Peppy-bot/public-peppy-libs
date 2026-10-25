@@ -1,19 +1,21 @@
 """The only part of the brain that talks to the backbone. One call per
-limb_motion move, each returning a plain outcome, and the goals in flight
-remembered so a stop can cancel them whatever backend asked for them.
-`check_arm_move` asks whether a move has a plan and moves nothing, so a
-stop has nothing of it to cancel.
+limb_motion move, each returning how the move ended, and the goals in
+flight remembered so a stop can cancel them whatever backend asked for
+them. `check_arm_move` asks whether a move has a plan and moves nothing,
+so a stop has nothing of it to cancel.
 
 The backbone plans and governs every move, so nothing here checks
 collisions or limits: a target the backbone cannot reach comes back as a
-refused goal, which the caller reports in its own result. A move that
-gives no result within `result_timeout_s` is cancelled and reported as
-having given none, so the arm does not keep going unwatched.
+failed or refused goal with its failure kind, `unreachable`, which the
+caller reports in its own result. A move that gives no result within
+`result_timeout_s` is cancelled and reported as lost, so the arm does not
+keep going unwatched.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Optional
 
 from .ports import Quat, Vec3
@@ -26,64 +28,90 @@ CANCEL_TIMEOUT_S = 3.0
 CHECK_TIMEOUT_S = 5.0
 
 
-@dataclass(frozen=True)
-class MoveResult:
-    """How a move_arm goal ended. `cancelled` is true when it ended as
-    cancelled: by the brain's stop, or by the backbone's stop service."""
+class MoveEnd(StrEnum):
+    """How one limb_motion goal ended, as the robot proxy reads it."""
 
-    success: bool
-    message: str
+    # The move ran to its end: the result says where the limb stands.
+    COMPLETED = "completed"
+    # A cancel ended it, the brain's own or one of the stop service of the
+    # backbone: the message is the reason of the cancel, and the result
+    # says where the limb stopped.
+    CANCELLED = "cancelled"
+    # The backbone refused the goal: the failure kind and the message say
+    # why.
+    REFUSED = "refused"
+    # The move started and gave no result: the failure kind and the
+    # message say why.
+    FAILED = "failed"
+    # The goal could not be sent, gave no result in time, or ended
+    # abandoned or expired: the message says which.
+    LOST = "lost"
+
+
+@dataclass(frozen=True)
+class Moved:
+    """How one limb_motion goal ended. `failure_kind` is the limb_motion
+    kind of a refused or failed move, such as "unreachable" or
+    "leader_streaming", and empty otherwise; `message` says why a move did
+    not complete, and is empty for one that did."""
+
+    end: MoveEnd
+    message: str = ""
+    failure_kind: str = ""
+
+    @property
+    def completed(self) -> bool:
+        return self.end is MoveEnd.COMPLETED
+
+    @property
+    def cancelled(self) -> bool:
+        """A cancel ended the move: the brain's stop, or the backbone's stop
+        service."""
+        return self.end is MoveEnd.CANCELLED
+
+
+@dataclass(frozen=True)
+class MoveResult(Moved):
+    """An arm move's end, and where the grasp point stood when it ended:
+    for a completed or a cancelled move."""
+
     final_position: Optional[Vec3] = None
     final_orientation: Optional[Quat] = None
-    cancelled: bool = False
 
 
 @dataclass(frozen=True)
-class GripResult:
-    """How a move_gripper goal ended; `cancelled` as for `MoveResult`."""
+class GripResult(Moved):
+    """A gripper move's end, and how the jaws stood when it ended: for a
+    completed or a cancelled move. `settled` is true when the jaws stood
+    still before the settle timeout, false when the move completed at it."""
 
-    success: bool
-    message: str
+    settled: Optional[bool] = None
     final_opening: Optional[float] = None
-    cancelled: bool = False
 
 
 @dataclass(frozen=True)
 class MoveCheck:
     """check_arm_move's answer: whether a move_arm goal with the same
-    fields has a plan from where the arm is commanded now, the backbone's
-    words when it has none, and the time the move would take."""
+    fields has a plan from where the arm is commanded now, why it has none,
+    and the time the move would take. A check that failed or got no answer
+    is not reachable, and `reason` says why."""
 
-    success: bool
-    message: str
+    reachable: bool
+    reason: str = ""
     duration_s: float = 0.0
-
-
-@dataclass(frozen=True)
-class Ended:
-    """How one limb_motion goal ended: success and message as the
-    contract's result carries them, a refusal, a cancel and a lost result
-    included, and the result's data when the backbone sent any."""
-
-    success: bool
-    message: str
-    data: object = None
-    cancelled: bool = False
 
 
 class Robot:
     """`move_arm`, `move_gripper` and `check_arm_move` are the node's
-    generated limb_motion modules, and `qos` the QoS of a goal's
-    feedback."""
+    generated limb_motion modules."""
 
     def __init__(
-        self, node_runner, move_arm, move_gripper, check_arm_move, qos, *, result_timeout_s: float = RESULT_TIMEOUT_S
+        self, node_runner, move_arm, move_gripper, check_arm_move, *, result_timeout_s: float = RESULT_TIMEOUT_S
     ) -> None:
         self._node_runner = node_runner
         self._move_arm = move_arm
         self._move_gripper = move_gripper
         self._check_arm_move = check_arm_move
-        self._qos = qos
         self._result_timeout_s = result_timeout_s
         self._live: set = set()
 
@@ -104,24 +132,21 @@ class Robot:
         waits for it to settle within the settle tolerances or to fail its
         settle timeout. The caller names every tolerance and time, as the
         limb_motion contract has them: the plan may sit within the plan
-        tolerances of the pose, the move succeeds once the measured grasp
+        tolerances of the pose, the move completes once the measured grasp
         point stands within the settle tolerances at or after the planned
-        end and fails `settle_timeout_s` after it otherwise. A duration of 0
-        is the fastest the joint limits allow."""
+        end, and fails with `timeout` `settle_timeout_s` after it otherwise.
+        A duration of 0 is the fastest the joint limits allow."""
         request = self._move_arm.GoalRequest(
             **_arm_move_fields(arm, position, orientation, duration_s, plan_position_tolerance_m, plan_orientation_tolerance_rad),
             settle_position_tolerance_m=settle_position_tolerance_m,
             settle_orientation_tolerance_rad=settle_orientation_tolerance_rad,
             settle_timeout_s=settle_timeout_s,
         )
-        ended = await self._run(self._move_arm, request)
-        data = ended.data
+        moved, data = await self._run(self._move_arm, request)
+        if data is None:
+            return MoveResult(moved.end, moved.message, moved.failure_kind)
         return MoveResult(
-            ended.success,
-            ended.message,
-            _vec3(data.final_position) if data is not None else None,
-            _quat(data.final_orientation) if data is not None else None,
-            cancelled=ended.cancelled,
+            moved.end, moved.message, moved.failure_kind, _vec3(data.final_position), _quat(data.final_orientation)
         )
 
     async def set_gripper(
@@ -136,19 +161,19 @@ class Robot:
         and waits for the jaws to stand still, at most `settle_timeout_s`
         after the commanded travel. The result's final_opening says where
         they stand then: on the opening, where an item stopped them, or
-        wherever they were at the timeout. A `max_effort` of 0 leaves the
-        gripper's own effort ceiling in charge."""
+        wherever they were at the timeout, which `settled` false tells. A
+        `max_effort` of 0 leaves the gripper's own effort ceiling in
+        charge."""
         request = self._move_gripper.GoalRequest(
             gripper_name=gripper,
             opening=opening,
             max_effort=max_effort,
             settle_timeout_s=settle_timeout_s,
         )
-        ended = await self._run(self._move_gripper, request)
-        data = ended.data
-        return GripResult(
-            ended.success, ended.message, float(data.final_opening) if data is not None else None, cancelled=ended.cancelled
-        )
+        moved, data = await self._run(self._move_gripper, request)
+        if data is None:
+            return GripResult(moved.end, moved.message, moved.failure_kind)
+        return GripResult(moved.end, moved.message, moved.failure_kind, bool(data.settled), float(data.final_opening))
 
     async def check_arm_move(
         self,
@@ -162,9 +187,9 @@ class Robot:
     ) -> MoveCheck:
         """Whether `move_arm` with the same pose, duration and plan
         tolerances has a plan from where the arm is commanded now; the caller
-        names each of them, as for the move. A check that gets no answer
-        within `CHECK_TIMEOUT_S` is reported as having none, with the
-        reason."""
+        names each of them, as for the move. A check that fails, or that
+        gets no answer within `CHECK_TIMEOUT_S`, is reported as not
+        reachable, with the reason."""
         request = self._check_arm_move.Request(
             **_arm_move_fields(arm, position, orientation, duration_s, plan_position_tolerance_m, plan_orientation_tolerance_rad)
         )
@@ -172,10 +197,12 @@ class Robot:
             answer = await self._check_arm_move.poll(
                 self._node_runner, self._check_arm_move.bound_producer(self._node_runner), request, CHECK_TIMEOUT_S
             )
+        except self._check_arm_move.Failure as failure:
+            return MoveCheck(False, f"check_arm_move failed with {failure.kind.value}: {failure.message}")
         except Exception as error:
             return MoveCheck(False, f"check_arm_move gave no answer: {error!r}")
         data = answer.data
-        return MoveCheck(bool(data.success), data.message, float(data.duration_s))
+        return MoveCheck(bool(data.reachable), data.reason, float(data.duration_s))
 
     @property
     def moves_in_flight(self) -> int:
@@ -188,33 +215,36 @@ class Robot:
         for handle in list(self._live):
             await _cancel(handle)
 
-    async def _run(self, module, request) -> Ended:
+    async def _run(self, module, request) -> tuple[Moved, object]:
         """Fires one goal of `module` at the bound producer, keeps its
-        handle while it runs, and reads how it ended."""
+        handle while it runs, and reads how it ended: the end, and the
+        result's data of a completed or a cancelled move, none otherwise."""
         name = module.TARGET_ACTION_NAME
         try:
             handle = await module.ActionHandle.fire_goal(
-                self._node_runner, module.bound_producer(self._node_runner), request, GOAL_TIMEOUT_S, self._qos
+                self._node_runner, module.bound_producer(self._node_runner), request, GOAL_TIMEOUT_S
             )
         except Exception as error:
-            return Ended(False, f"{name} could not be sent: {error!r}")
+            return Moved(MoveEnd.LOST, f"{name} could not be sent: {error!r}"), None
         if not handle.accepted:
-            return Ended(False, handle.reason or f"{name} was refused by the backbone")
+            refusal = handle.refusal
+            return Moved(MoveEnd.REFUSED, refusal.message, refusal.kind.value), None
         self._live.add(handle)
         try:
             result = await handle.get_result(self._result_timeout_s)
         except Exception as error:
             await _cancel(handle)
-            return Ended(False, f"{name} gave no result: {error!r}")
+            return Moved(MoveEnd.LOST, f"{name} gave no result: {error!r}"), None
         finally:
             self._live.discard(handle)
-        data = result.data
-        if result.status == module.ResultStatus.COMPLETED and data is not None:
-            return Ended(data.success, data.message, data)
+        if result.status == module.ResultStatus.COMPLETED:
+            return Moved(MoveEnd.COMPLETED), result.data
         if result.status == module.ResultStatus.CANCELLED:
-            message = data.message if data is not None else ""
-            return Ended(False, message or f"{name} was cancelled", data, cancelled=True)
-        return Ended(False, f"{name} ended as {result.status.name.lower()}")
+            return Moved(MoveEnd.CANCELLED, result.cancel_reason or f"{name} was cancelled"), result.data
+        if result.status == module.ResultStatus.FAILED:
+            failure = result.failure
+            return Moved(MoveEnd.FAILED, failure.message, failure.kind.value), None
+        return Moved(MoveEnd.LOST, f"{name} ended as {result.status.name.lower()}"), None
 
 
 def _arm_move_fields(

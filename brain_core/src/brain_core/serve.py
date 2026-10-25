@@ -1,10 +1,10 @@
 """The loops every exposed member runs, written once.
 
-An action loop waits for a goal, admits it, hands it to its own task and
-goes back to waiting, until the node's cancellation token fires. The
-per-goal tasks are kept in a set the caller owns: asyncio holds tasks
-weakly, and a task collected mid-await drops its goal context without
-completing it, which the caller sees as abandoned.
+An action loop waits for a goal, decides it, hands an accepted one to its
+own task and goes back to waiting, until the node's cancellation token
+fires. The per-goal tasks are kept in a set the caller owns: asyncio holds
+tasks weakly, and a task collected mid-await drops its goal context
+without ending it, which the caller sees as abandoned.
 
 A service loop answers one request at a time the same way.
 """
@@ -20,16 +20,15 @@ from .waiting import unless_cancelled
 logger = logging.getLogger(__name__)
 
 
-async def serve_action(action_module, node_runner, token, tasks: set, run: Callable[[object], Awaitable[None]]) -> None:
-    """Serves one exposed action. Every goal is accepted at admission: the
-    contracts report refusals in the result, so `run` decides."""
+async def serve_action(
+    action_module, node_runner, token, tasks: set, decide: Callable[[object], object], run: Callable[[object], Awaitable[None]]
+) -> None:
+    """Serves one exposed action: `decide` gives the generated decision of
+    each goal at once, as `brain.decider` makes it, and `run` carries out
+    each accepted goal in a task of its own."""
     action = await action_module.ActionHandle.expose(node_runner)
-
-    def accept(_request):
-        return action_module.GoalDecision.accept()
-
     while not token.is_cancelled():
-        ctx = await unless_cancelled(token, action.handle_goal_next_request(accept))
+        ctx = await unless_cancelled(token, action.handle_goal_next_request(decide))
         if ctx is None:
             return
         task = asyncio.create_task(run(ctx))
@@ -39,8 +38,8 @@ async def serve_action(action_module, node_runner, token, tasks: set, run: Calla
 
 
 def report_failure(task: asyncio.Task) -> None:
-    """A handler that raises leaves its goal uncompleted, which the caller
-    sees as abandoned; the reason must at least reach the log."""
+    """A handler that raises leaves its goal without an end, which the
+    caller sees as abandoned; the reason must at least reach the log."""
     if task.cancelled():
         return
     error = task.exception()
