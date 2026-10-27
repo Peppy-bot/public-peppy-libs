@@ -1,5 +1,7 @@
-"""The lerobot device boundary: calibrated connect, the flat read, and the
-channel-name convention on either side of it."""
+"""The lerobot device boundary: calibrated connect, the flat read and its
+stamped sample, and the channel-name convention on either side of it."""
+
+import time
 
 import pytest
 
@@ -33,6 +35,22 @@ def test_read_positions_validated_rejects_missing_motor():
     del hardware.positions["gripper"]
     with pytest.raises(KeyError):
         device.read_positions_validated(hardware)
+
+
+def test_read_position_sample_stamps_the_split_read_when_it_returns():
+    before = time.monotonic()
+    sample = device.read_position_sample(FakeHardware())
+    after = time.monotonic()
+    assert sample.positions_deg == tuple(float(i) for i in range(NUM_JOINTS))
+    assert sample.gripper_percent == float(NUM_JOINTS)
+    assert before <= sample.captured_monotonic <= after
+
+
+def test_read_position_sample_raises_as_the_validated_read_does():
+    hardware = FakeHardware()
+    hardware.positions["elbow_flex"] = float("nan")
+    with pytest.raises(ValueError, match="non-finite"):
+        device.read_position_sample(hardware)
 
 
 class FakeRobot:
