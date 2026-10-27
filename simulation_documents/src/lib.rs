@@ -3,7 +3,7 @@
 //! A world (`world/v1`, [`World`]) says where simulated robots work: the
 //! catalogue release and the scene, the robots with their joins and stands,
 //! the scene objects moved or removed, the spawned objects, the lighting, the
-//! materials and the named locations. A simulation keeps a [`SetupRecord`] of
+//! materials, the daylight and the named locations. A simulation keeps a [`SetupRecord`] of
 //! its setup calls, and the world document of a live simulation is that record
 //! with the robots of the stack ([`World::from_setup`]). A [`Judge`] checks
 //! ground truth in a live world and gives a verdict.
@@ -14,6 +14,7 @@
 //! of the simulation side, which carry no root key.
 
 mod compose;
+mod daylight;
 mod error;
 mod extends;
 mod geometry;
@@ -24,6 +25,7 @@ mod text;
 mod world;
 
 pub use compose::{StackRobot, StartSetup};
+pub use daylight::{Date, Daylight, TimeOfDay, Weather};
 pub use documents_core::{Digest, Manifest, Revision};
 pub use error::Error;
 pub use geometry::{Offset, Placement, Point, Pose};

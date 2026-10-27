@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::daylight::Daylight;
 use crate::geometry::{Offset, Placement, Point, Pose};
 use crate::names::{
     RESERVED_PEPPY_NAME, RESERVED_REASON, first_named_twice, is_peppy_name, peppy_name_grammar,
@@ -27,6 +28,7 @@ pub struct World {
     pub objects: BTreeMap<Name, Object>,
     pub lighting: BTreeMap<String, Light>,
     pub materials: BTreeMap<String, Material>,
+    pub daylight: Option<Daylight>,
     pub locations: BTreeMap<Name, Location>,
 }
 
@@ -835,6 +837,8 @@ pub(crate) struct WorldFields {
     pub lighting: BTreeMap<String, Entry<Light>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub materials: BTreeMap<String, Entry<Material>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daylight: Option<Entry<Daylight>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub locations: BTreeMap<Name, Entry<Location>>,
 }
@@ -902,6 +906,7 @@ impl WorldDocument {
             objects: maps.objects,
             lighting: maps.lighting,
             materials: maps.materials,
+            daylight: maps.daylight,
             locations: maps.locations,
         })
     }
@@ -923,6 +928,7 @@ pub(crate) struct ConcreteMaps {
     objects: BTreeMap<Name, Object>,
     lighting: BTreeMap<String, Light>,
     materials: BTreeMap<String, Material>,
+    daylight: Option<Daylight>,
     locations: BTreeMap<Name, Location>,
 }
 
@@ -952,6 +958,7 @@ impl WorldFields {
             objects: concrete_entries("objects", &self.objects)?,
             lighting: concrete_entries("lighting", &self.lighting)?,
             materials: concrete_entries("materials", &self.materials)?,
+            daylight: concrete_daylight(&self.daylight)?,
             locations: concrete_entries("locations", &self.locations)?,
         })
     }
@@ -973,6 +980,27 @@ fn concrete_entries<K: Ord + Clone + std::fmt::Display, T: Clone>(
             Entry::Kept => Err(kept_outside_scene_objects(field, key)),
         })
         .collect()
+}
+
+/// The daylight of a document whose entry drops nothing.
+fn concrete_daylight(entry: &Option<Entry<Daylight>>) -> Result<Option<Daylight>, Error> {
+    match entry {
+        None => Ok(None),
+        Some(Entry::Value(daylight)) => Ok(Some(daylight.clone())),
+        Some(Entry::Removed) => Err(Error::field(
+            "daylight",
+            "`removed` drops the daylight of a base; this world extends no base",
+        )),
+        Some(Entry::Kept) => Err(kept_daylight()),
+    }
+}
+
+/// The refusal of `{ kept: true }` as the daylight.
+pub(crate) fn kept_daylight() -> Error {
+    Error::field(
+        "daylight",
+        "`kept` drops a `scene_objects` entry of a base; write `removed: true` to drop the daylight of a base, or the daylight's settings",
+    )
 }
 
 /// The refusal of `{ kept: true }` at `key` of `field`, a map other than
@@ -1082,6 +1110,7 @@ impl World {
             objects: value_entries(&self.objects),
             lighting: value_entries(&self.lighting),
             materials: value_entries(&self.materials),
+            daylight: self.daylight.clone().map(Entry::Value),
             locations: value_entries(&self.locations),
         }
     }
@@ -1212,6 +1241,39 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_world_with_a_daylight_writes_it_after_the_materials_and_parses_back_to_it() {
+        let text = example_text().replace(
+            "\n  objects: {",
+            "\n  daylight: { time: \"22:00\", weather: { cloud_cover: 1, rain_mm_h: 4 } }, objects: {",
+        );
+        let world = World::parse(&text).unwrap();
+        let daylight = world.daylight.clone().unwrap();
+        assert_eq!(
+            (
+                daylight.date,
+                daylight.time.map(|time| time.to_string()),
+                daylight.rate
+            ),
+            (None, Some("22:00:00".to_owned()), None)
+        );
+        let written = world.to_json5().unwrap();
+        assert!(
+            written.find("objects:") < written.find("daylight:"),
+            "{written}"
+        );
+        assert_eq!(World::parse(&written).unwrap(), world);
+        assert_eq!(
+            World::parse(&text.replace("\"22:00\"", "\"22:00:00\""))
+                .unwrap()
+                .document()
+                .unwrap()
+                .digest(),
+            world.document().unwrap().digest(),
+            "one hour, one text"
+        );
+    }
+
+    #[test]
     fn a_world_with_a_number_no_document_holds_is_refused_at_its_path() {
         let mut world = example();
         world.objects.get_mut(&name("crate")).unwrap().pose = Pose::Yawed {
@@ -1333,6 +1395,8 @@ pub(crate) mod tests {
             ("cone", refusals_of::<Cone>()),
             ("material", refusals_of::<Material>()),
             ("finish", refusals_of::<Finish>()),
+            ("daylight", refusals_of::<crate::Daylight>()),
+            ("weather", refusals_of::<crate::Weather>()),
             ("location", refusals_of::<Location>()),
             ("pose", refusals_of::<Pose>()),
             ("offset", refusals_of::<Offset>()),
@@ -1496,7 +1560,7 @@ pub(crate) mod tests {
             ),
             (
                 example_text().replace("catalogue:", "workflow: 1, catalogue:"),
-                "workflow: unknown field `workflow`, expected one of `manifest`, `catalogue`, `extends`, `scene`, `robots`, `scene_objects`, `objects`, `lighting`, `materials`, `locations`",
+                "workflow: unknown field `workflow`, expected one of `manifest`, `catalogue`, `extends`, `scene`, `robots`, `scene_objects`, `objects`, `lighting`, `materials`, `daylight`, `locations`",
             ),
             (
                 example_text().replace("scale: 1", "scale: 0"),
@@ -1670,6 +1734,29 @@ pub(crate) mod tests {
                     "\n  materials: { alpha_arm_metal: {} }, objects: {",
                 ),
                 "materials.alpha_arm_metal: a material entry names at least one setting: color or finish",
+            ),
+            (
+                example_text().replace("\n  objects: {", "\n  daylight: {}, objects: {"),
+                "daylight: a daylight entry names at least one setting: date, time, rate or weather",
+            ),
+            (
+                example_text().replace(
+                    "\n  objects: {",
+                    "\n  daylight: { time: \"25:00\" }, objects: {",
+                ),
+                "daylight: time: the time `25:00` is not written HH:MM or HH:MM:SS, from 00:00 to 23:59:59",
+            ),
+            (
+                example_text().replace(
+                    "\n  objects: {",
+                    "\n  daylight: { removed: true }, objects: {",
+                ),
+                "daylight: `removed` drops the daylight of a base; this world extends no base",
+            ),
+            (
+                example_text()
+                    .replace("\n  objects: {", "\n  daylight: { kept: true }, objects: {"),
+                "daylight: `kept` drops a `scene_objects` entry of a base; write `removed: true` to drop the daylight of a base, or the daylight's settings",
             ),
             (
                 example_text().replace(

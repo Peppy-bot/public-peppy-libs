@@ -1,6 +1,7 @@
 //! Properties on drawn worlds, records and judges: a world survives its text,
 //! the record of a world with its robots is that world, a document that
-//! extends a base merges each key as its entry says, a robot name that
+//! extends a base merges each key as its entry says and its daylight as a
+//! whole, a robot name that
 //! another begins is refused by the pair, and judges survive their text.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,11 +13,11 @@ use hegel::generators::{self as gs, Generator, PrintableGenerator};
 use serde::Serialize;
 use serde_json::{Value, json};
 use simulation_documents::{
-    Band, Bounds, Catalogue, Check, Cone, ContentsOn, Control, Count, Digest, Error, Feature,
-    Finish, Holding, Join, Judge, Landmark, LandmarkOn, Light, Location, Manifest, Material, Name,
-    NearPoint, Object, Offset, Physics, Place, Placement, Point, Pose, Reachable, Revision, Robot,
-    RobotName, Scene, SceneObject, SetupRecord, StackRobot, Stand, Target, WithinM, World,
-    WorldDocument,
+    Band, Bounds, Catalogue, Check, Cone, ContentsOn, Control, Count, Date, Daylight, Digest,
+    Error, Feature, Finish, Holding, Join, Judge, Landmark, LandmarkOn, Light, Location, Manifest,
+    Material, Name, NearPoint, Object, Offset, Physics, Place, Placement, Point, Pose, Reachable,
+    Revision, Robot, RobotName, Scene, SceneObject, SetupRecord, StackRobot, Stand, Target,
+    TimeOfDay, Weather, WithinM, World, WorldDocument,
 };
 
 /// Names of objects, scene objects, locations, poses and regions: over the
@@ -209,6 +210,51 @@ fn materials(tc: &TestCase) -> Material {
     material
 }
 
+/// A day of the calendar: a drawn day the month has not is the month's
+/// 28th.
+#[hegel::composite]
+fn dates(tc: &TestCase) -> Date {
+    let year = tc.draw(gs::integers::<i32>().min_value(1).max_value(9999));
+    let month = tc.draw(gs::integers::<u32>().min_value(1).max_value(12));
+    let day = tc.draw(gs::integers::<u32>().min_value(1).max_value(31));
+    Date::new(year, month, day).unwrap_or_else(|_| Date::new(year, month, 28).unwrap())
+}
+
+fn times() -> impl PrintableGenerator<TimeOfDay> {
+    gs::integers::<u32>()
+        .min_value(0)
+        .max_value(86_399)
+        .map(|seconds| TimeOfDay::from_seconds(seconds).unwrap())
+}
+
+/// A daylight with at least one setting.
+#[hegel::composite]
+fn daylights(tc: &TestCase) -> Daylight {
+    let rates = || gs::floats::<f64>().min_value(0.0).max_value(3600.0);
+    let daylight = Daylight {
+        date: tc.draw(gs::optional(dates())),
+        time: tc.draw(gs::optional(times())),
+        rate: tc.draw(gs::optional(rates())),
+        weather: tc.draw(gs::optional(
+            gs::tuples2(
+                gs::floats::<f64>().min_value(0.0).max_value(1.0),
+                gs::floats::<f64>().min_value(0.0).max_value(50.0),
+            )
+            .map(|(cloud_cover, rain_mm_h)| Weather {
+                cloud_cover,
+                rain_mm_h,
+            }),
+        )),
+    };
+    if daylight == Daylight::EMPTY {
+        return Daylight {
+            rate: Some(tc.draw(rates())),
+            ..Daylight::EMPTY
+        };
+    }
+    daylight
+}
+
 #[hegel::composite]
 fn locations(tc: &TestCase) -> Location {
     match tc.draw(gs::integers::<u8>().min_value(0).max_value(3)) {
@@ -327,6 +373,7 @@ fn worlds(tc: &TestCase) -> World {
         objects,
         lighting: tc.draw(gs::btree_maps(labels(), lights()).max_size(2)),
         materials: tc.draw(gs::btree_maps(labels(), materials()).max_size(2)),
+        daylight: tc.draw(gs::optional(daylights())),
         locations: tc.draw(gs::btree_maps(names(), locations()).max_size(3)),
     }
 }
@@ -519,6 +566,14 @@ fn a_document_that_extends_a_base_merges_each_key_as_its_entry_says(tc: TestCase
     };
     let light = tc.draw(lights());
     let material = tc.draw(materials());
+    let daylight = tc.draw(daylights());
+    let daylight_edit = tc
+        .draw(gs::sampled_from(&[
+            None,
+            Some(Edit::Replace),
+            Some(Edit::Remove),
+        ]))
+        .filter(|edit| *edit != Edit::Remove || base.daylight.is_some());
     let location = tc.draw(locations());
     let new_object = tc
         .draw(gs::optional(names()))
@@ -527,7 +582,7 @@ fn a_document_that_extends_a_base_merges_each_key_as_its_entry_says(tc: TestCase
     if let Some(name) = &new_object {
         objects.insert(name.to_string(), serde_json::to_value(&object).unwrap());
     }
-    let extending = json!({
+    let mut extending = json!({
         "simulation_schema": "world/v1",
         "manifest": { "name": "world_extending", "revision": 1 },
         "extends": { "name": base.manifest.name, "revision": base.manifest.revision.get() },
@@ -538,6 +593,12 @@ fn a_document_that_extends_a_base_merges_each_key_as_its_entry_says(tc: TestCase
         "materials": edited(&material_edits, &material),
         "locations": edited(&location_edits, &location),
     });
+    match daylight_edit {
+        None => {}
+        Some(Edit::Replace) => extending["daylight"] = serde_json::to_value(&daylight).unwrap(),
+        Some(Edit::Remove) => extending["daylight"] = json!({ "removed": true }),
+        Some(Edit::Keep) => unreachable!("the daylight takes no `kept`"),
+    }
     let resolved = WorldDocument::parse(&extending.to_string())
         .unwrap()
         .resolve(&[WorldDocument::parse(&base.to_json5().unwrap()).unwrap()])
@@ -589,6 +650,12 @@ fn a_document_that_extends_a_base_merges_each_key_as_its_entry_says(tc: TestCase
         &location,
         None,
     );
+    let expected_daylight = match daylight_edit {
+        None => base.daylight.as_ref(),
+        Some(Edit::Replace) => Some(&daylight),
+        Some(Edit::Remove | Edit::Keep) => None,
+    };
+    assert_eq!(resolved.daylight.as_ref(), expected_daylight);
 }
 
 fn within() -> impl PrintableGenerator<WithinM> {

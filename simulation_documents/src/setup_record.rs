@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::daylight::Daylight;
 use crate::world::{Light, Location, Material, Object, Scene, SceneObject, Stand};
 use crate::{Error, Name, RobotName, World, text};
 
@@ -12,7 +13,7 @@ use crate::{Error, Name, RobotName, World, text};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(
     deny_unknown_fields,
-    expecting = "a setup record, { scene, scene_objects, objects, lighting, materials, locations, stands }"
+    expecting = "a setup record, { scene, scene_objects, objects, lighting, materials, daylight, locations, stands }"
 )]
 pub struct SetupRecord {
     pub scene: Scene,
@@ -24,6 +25,8 @@ pub struct SetupRecord {
     pub lighting: BTreeMap<String, Light>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub materials: BTreeMap<String, Material>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daylight: Option<Daylight>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub locations: BTreeMap<Name, Location>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -39,6 +42,7 @@ impl SetupRecord {
             objects: BTreeMap::new(),
             lighting: BTreeMap::new(),
             materials: BTreeMap::new(),
+            daylight: None,
             locations: BTreeMap::new(),
             stands: BTreeMap::new(),
         }
@@ -52,6 +56,7 @@ impl SetupRecord {
             objects: world.objects.clone(),
             lighting: world.lighting.clone(),
             materials: world.materials.clone(),
+            daylight: world.daylight.clone(),
             locations: world.locations.clone(),
             stands: world
                 .robots
@@ -90,6 +95,7 @@ mod tests {
                 && record.objects.is_empty()
                 && record.lighting.is_empty()
                 && record.materials.is_empty()
+                && record.daylight.is_none()
                 && record.locations.is_empty()
                 && record.stands.is_empty()
         );

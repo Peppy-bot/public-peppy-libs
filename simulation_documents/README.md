@@ -19,15 +19,20 @@ let verdicts = Verdicts::parse(&verdicts_text)?;
 
 A `World` (`world/v1`) names its catalogue release and its scene, the robots
 with the join each takes on the stack and where each stands, the scene objects
-it moves or removes, the objects it spawns, the lighting, the materials and
-the named locations. `World::parse` reads a concrete world, one that extends
-no base. `WorldDocument::parse` reads any world document, and `resolve` folds
-in its bases: a base gives each field the document leaves out and an entry
-replaces the base's entry of its key. `{ removed: true }` drops the base's
-entry, except in `scene_objects`, where it marks the scene object removed and
-`{ kept: true }` drops the base's entry. A `{ removed: true }` outside
-`scene_objects`, or a `{ kept: true }`, whose key the bases leave no entry
-under, after their own marks, is refused. A refusal that comes of a base names
+it moves or removes, the objects it spawns, the lighting, the materials, the
+daylight and the named locations. The daylight sets the settings of the
+scene's site in place of the scene's own: the local date
+(`YYYY-MM-DD`), the hour (`HH:MM` or `HH:MM:SS`, written `HH:MM:SS`), the
+clock rate and the weather (`{ cloud_cover, rain_mm_h }`). `World::parse`
+reads a concrete world, one that extends no base. `WorldDocument::parse`
+reads any world document, and `resolve` folds in its bases: a base gives each
+field the document leaves out, an entry replaces the base's entry of its key,
+and a daylight replaces the base's daylight whole. `{ removed: true }` drops
+the base's entry or daylight, except in `scene_objects`, where it marks the
+scene object removed and `{ kept: true }` drops the base's entry. A
+`{ removed: true }` outside `scene_objects`, or a `{ kept: true }`, whose key
+the bases leave no entry under, after their own marks, is refused, as is a
+`{ removed: true }` daylight over bases that leave none. A refusal that comes of a base names
 each base on the way to it, and a chain of more than 128 bases is refused.
 `same_setup_as` compares two worlds whatever their manifests say.
 
