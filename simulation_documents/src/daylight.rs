@@ -145,7 +145,7 @@ impl Date {
     /// Reads `YYYY-MM-DD`: four digits, a hyphen, two digits, a hyphen and
     /// two digits, a day that [`Date::new`] takes.
     pub fn parse(text: &str) -> Result<Date, Error> {
-        let malformed = || Error::rule(format!("the date `{text}` is not written YYYY-MM-DD"));
+        let malformed = || Error::rule(format!("the date `{text}` must be written YYYY-MM-DD"));
         let parts: Vec<&str> = text.split('-').collect();
         let [year, month, day] = parts.as_slice() else {
             return Err(malformed());
@@ -223,7 +223,7 @@ impl TimeOfDay {
     pub fn parse(text: &str) -> Result<TimeOfDay, Error> {
         let malformed = || {
             Error::rule(format!(
-                "the time `{text}` is not written HH:MM or HH:MM:SS, from 00:00 to 23:59:59"
+                "the time `{text}` must be written HH:MM or HH:MM:SS, from 00:00 to 23:59:59"
             ))
         };
         let parts: Vec<&str> = text.split(':').collect();
@@ -330,16 +330,16 @@ mod tests {
         for (text, refusal) in [
             (
                 "2026-11-5",
-                "the date `2026-11-5` is not written YYYY-MM-DD",
+                "the date `2026-11-5` must be written YYYY-MM-DD",
             ),
-            ("26-11-05", "the date `26-11-05` is not written YYYY-MM-DD"),
+            ("26-11-05", "the date `26-11-05` must be written YYYY-MM-DD"),
             (
                 "2026/11/05",
-                "the date `2026/11/05` is not written YYYY-MM-DD",
+                "the date `2026/11/05` must be written YYYY-MM-DD",
             ),
             (
                 "+026-11-05",
-                "the date `+026-11-05` is not written YYYY-MM-DD",
+                "the date `+026-11-05` must be written YYYY-MM-DD",
             ),
             (
                 "2026-02-29",
@@ -385,7 +385,7 @@ mod tests {
             assert_eq!(
                 TimeOfDay::parse(text).unwrap_err().to_string(),
                 format!(
-                    "the time `{text}` is not written HH:MM or HH:MM:SS, from 00:00 to 23:59:59"
+                    "the time `{text}` must be written HH:MM or HH:MM:SS, from 00:00 to 23:59:59"
                 )
             );
         }

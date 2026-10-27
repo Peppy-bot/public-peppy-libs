@@ -1744,7 +1744,7 @@ pub(crate) mod tests {
                     "\n  objects: {",
                     "\n  daylight: { time: \"25:00\" }, objects: {",
                 ),
-                "daylight: time: the time `25:00` is not written HH:MM or HH:MM:SS, from 00:00 to 23:59:59",
+                "daylight: time: the time `25:00` must be written HH:MM or HH:MM:SS, from 00:00 to 23:59:59",
             ),
             (
                 example_text().replace(
