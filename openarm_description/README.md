@@ -1,24 +1,31 @@
 # openarm_description
 
-The single source of truth for the OpenArm V1.0 robot description. The URDF (and,
-behind the `meshes` feature, the collision meshes) are embedded in the crate, so the
-arm and backbone nodes share one description instead of each vendoring a copy.
+The OpenArm robot descriptions, v1.0 and v2.0, selected by `HardwareVersion`: the
+URDFs (and, behind the `meshes` feature, the collision meshes) are embedded in the
+crate, and the arm and backbone nodes share them.
 
 Pure data: no kinematics or solver dependency. A consumer that wants a kinematic model
-builds it from `urdf()` and applies the control margins itself, so the description
-stays reusable by any consumer (a viz tool, a sim bridge) without pulling a solver in.
+builds it from `HardwareVersion::urdf()` and applies the control margins itself, so the
+description stays reusable by any consumer (a viz tool, a sim bridge) without pulling
+a solver in.
 
-- `urdf()` returns the bundled URDF string.
-- `write_meshes_to(dir)` (feature `meshes`) materializes the collision meshes for the
-  file-based `bimanual_collision_model` builder.
-- `ELBOW_SINGULARITY_FLOOR_RAD` / `ELBOW_JOINT_INDEX` describe the elbow control margin
-  (see below).
+- `HardwareVersion::urdf()` returns the bundled URDF string.
+- `HardwareVersion::write_meshes_to(dir)` (feature `meshes`) materializes the collision
+  meshes for the file-based `bimanual_collision_model` builder.
+- `HardwareVersion::elbow_singularity_floor_rad()` / `elbow_joint_index()` describe the
+  elbow control margin (see below), and `joint_limits(side)` gives one side's joint
+  limits with that margin applied.
+- `HardwareVersion::base_link(side)` / `tcp_link(side)` name one side's chain base link
+  and tool-center-point frame.
 - `HardwareVersion::camera_mounts()` lists the cameras the generation's design carries:
   each one's name, the URDF link it is fixed to, its pose in that link's frame (a
   camera looking along its own `-z` with `+y` as image-up) and the depths it measures,
   for a camera that gives depth (the v2 chest camera alone). The numbers are the ones
   `sim_robot_core`'s model of the generation renders its cameras by, pinned to it by a
   test; v1 carries none.
+- `Side` names an arm (`left`, `right`) with its wire `arm_name` and `gripper_name`, and
+  `ArmPair` holds one value per arm, read and written by `Side`. With the `serde`
+  feature a `Side` serializes as its lowercase name.
 
 It is a flat runtime URDF (xacro pre-expanded, no xacro at load) that includes the
 `world -> openarm_body -> {left,right}_link0` mount tree, so gravity resolves in the
@@ -31,16 +38,12 @@ in production, not just in tests.
 The bundled URDF keeps the **mechanical** joint limits as vendored, including the
 elbow (j4) lower bound of `0.0`. The control margin that holds the elbow off the
 straight-arm singularity (where a closed-form arm-angle IK's redundancy reference is
-undefined) is **not** baked into the URDF; it is exported as the constant
-`ELBOW_SINGULARITY_FLOOR_RAD` (0.05 rad) for the kinematics consumer to apply to its
-built model, e.g.
+undefined) is **not** baked into the URDF; `elbow_singularity_floor_rad()` (0.05 rad)
+gives it for the kinematics consumer to apply to its built model, e.g.
 
 ```rust
-srs_model::Arm::from_urdf(openarm_description::urdf(), base_link)?
-    .with_lower_floor(
-        openarm_description::ELBOW_JOINT_INDEX,
-        openarm_description::ELBOW_SINGULARITY_FLOOR_RAD,
-    )
+srs_model::Arm::from_urdf(v.urdf(), v.base_link(side))?
+    .with_lower_floor(v.elbow_joint_index(), v.elbow_singularity_floor_rad())
 ```
 
 Keeping the margin out of the data separates the mechanical limit from the control
