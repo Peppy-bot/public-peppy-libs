@@ -1,0 +1,19 @@
+[package]
+name = "documents_core"
+version = "0.1.0"
+edition = "2024"
+description = "What the documents of every side of peppy share: the root key that names a document's side and kind, the manifest that gives a document its name and revision, and the digest of its canonical JSON (RFC 8785). Parses JSON5 text nested at most 128 levels deep into a value tree that refuses a key twice in one object, NaN, an infinity and a number beyond 2^53, and reads a typed document out of that tree after the root key check. Pure Rust, no hardware or messaging deps."
+
+[workspace]
+
+[dependencies]
+json5 = "1.3"
+serde = { version = "1", features = ["derive"] }
+serde_jcs = "0.2"
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_path_to_error = "0.1"
+sha2 = "0.11"
+thiserror = "2"
+
+[dev-dependencies]
+hegeltest = { version = "0.50", features = ["static-engine"] }
