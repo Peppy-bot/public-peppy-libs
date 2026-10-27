@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use bus::{MotorBus, MotorSlot};
 use protocol::TorquePu;
-pub use protocol::{EffectiveRatings, FaultKind, MotorParam, MotorStatus, MotorType};
+pub use protocol::{DriveState, EffectiveRatings, FaultKind, MotorParam, MotorStatus, MotorType};
 
 /// Enable attempts before bring-up refuses readiness, for
 /// [`ArmCan::enable_and_confirm`] and its gripper counterpart. A one-shot
