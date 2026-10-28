@@ -67,6 +67,7 @@ impl World {
             objects: record.objects.clone(),
             lighting: record.lighting.clone(),
             materials: record.materials.clone(),
+            daylight: record.daylight.clone(),
             locations: record.locations.clone(),
         };
         check_namespaces(&world)?;
