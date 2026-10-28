@@ -2,10 +2,11 @@
 name = "kinematics_properties"
 version = "0.1.0"
 edition = "2024"
-description = "The Hegel generators that the property tests of chain_kinematics and srs_model share: angles, unit vectors, rotations, configurations inside a chain's limits, and the tolerance the properties compare at. A dev-dependency of those crates."
+description = "The Hegel generators that the property tests of chain_kinematics and srs_model share: robots of any serial shape, angles, unit vectors, rotations, configurations inside a chain's limits, and the tolerance the properties compare at. A dev-dependency of those crates."
 
 [workspace]
 
 [dependencies]
 chain_kinematics = { path = "../chain_kinematics" }
 hegeltest = { version = "0.50", features = ["static-engine"] }
+urdf-rs = "0.10"

@@ -10,11 +10,11 @@ mod common;
 
 use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use chain_kinematics::{ACCEPT_POSITION_M, Goal, Kinematics};
-use common::properties::{ChainProperty, chain_of, on_a_drawn_robot, unreachable_poses};
+use common::properties::{chain_of, unreachable_poses};
 use common::{SplitMix64, openarm, so101};
 use hegel::TestCase;
 use hegel::generators as gs;
-use kinematics_properties::configs;
+use kinematics_properties::{ChainProperty, configs, on_a_drawn_robot};
 use urdf_rs::Robot;
 
 fn kin5() -> Kinematics<5> {

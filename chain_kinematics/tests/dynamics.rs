@@ -5,10 +5,10 @@ mod common;
 
 use chain_kinematics::nalgebra::{Point3, Vector3};
 use chain_kinematics::{Chain, ChainSpec, JointKind, JointSelection};
-use common::properties::{ChainProperty, chain_of, named_chain_of, on_a_drawn_robot, permutations};
+use common::properties::{chain_of, named_chain_of, permutations};
 use hegel::TestCase;
 use hegel::generators as gs;
-use kinematics_properties::{TOLERANCE, configs};
+use kinematics_properties::{ChainProperty, TOLERANCE, configs, on_a_drawn_robot};
 use urdf_rs::Robot;
 
 const PLANAR: &str = r#"<?xml version="1.0"?><robot name="polar">

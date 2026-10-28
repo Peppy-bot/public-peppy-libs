@@ -429,6 +429,7 @@ version = "0.1.0"
 dependencies = [
  "chain_kinematics",
  "hegeltest",
+ "urdf-rs 0.10.0",
 ]
 
 [[package]]

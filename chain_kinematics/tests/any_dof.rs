@@ -15,14 +15,14 @@ use chain_kinematics::{
 };
 use hegel::TestCase;
 use hegel::generators as gs;
-use kinematics_properties::{TOLERANCE, angles, configs, poses, unit_vectors};
+use kinematics_properties::{
+    ChainProperty, TIP, TOLERANCE, angles, configs, link_name, on_a_drawn_robot, poses,
+    unit_vectors,
+};
 use urdf_rs::Robot;
 
 mod common;
-use common::properties::{
-    ChainProperty, TIP, chain_ending_at, chain_of, link_name, named_chain_of, on_a_drawn_robot,
-    permutations,
-};
+use common::properties::{chain_ending_at, chain_of, named_chain_of, permutations};
 use common::{SO101, openarm, so101};
 
 #[test]
