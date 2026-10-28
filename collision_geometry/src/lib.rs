@@ -14,6 +14,15 @@
 //!   (meshes, boxes, cylinders and spheres) and build the exact convex hull of a point
 //!   cloud.
 //!
+//! Evidence for the chain geometry and the robot filter: at every configuration of the
+//! chain collision scenarios of the ROS reference harness (`ros_reference`), the
+//! OpenArm v2 arms dressed in their meshes and an arm dressed in primitives and a
+//! turned wedge, the chain
+//! carries the links that MoveIt's chain carries, each at MoveIt's frame within 1e-12,
+//! and, for each padding, the filter answers as MoveIt's robot filter on every probe
+//! point outside the band of each body: a mesh's fit error plus the padding, and 1 µm
+//! about the surface of a grown primitive (`tests/ros_reference_chain_collision.rs`).
+//!
 //! Rust, with the C library Qhull built from source for the exact convex hulls; no
 //! hardware or messaging deps. The one unsafe code, a module of [`hull`], points Qhull's
 //! messages at a stream in memory.

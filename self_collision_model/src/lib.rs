@@ -23,6 +23,13 @@
 //! The model is a pure distance oracle: it reports clearances and their gradient,
 //! and the caller decides how to throttle on them.
 //!
+//! Evidence that the pieces of each body hold its link's collision meshes: at every
+//! configuration of the self distance scenarios of the ROS reference harness
+//! (`ros_reference`), OpenArm v2 with both grippers posed, the distance of each checked
+//! pair is no larger than the distance that MoveIt's FCL measures between the meshes
+//! where they lie apart, and no larger than zero where they touch
+//! (`tests/ros_reference_self_distance.rs`).
+//!
 //! No hardware or messaging deps. The geometry is `collision_geometry`'s, which
 //! builds its exact convex hulls with the C library Qhull.
 #![forbid(unsafe_code)]

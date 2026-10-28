@@ -180,6 +180,7 @@ tests/
   fixtures/thin_plate.rs             a cloud whose first hull fails on rounding
   fit_prints_nothing.rs              a fit prints nothing to stdout or stderr
   hull_without_a_free_descriptor.rs  a hull with no file descriptor free
+  ros_reference_chain_collision.rs   link frames and the robot filter against MoveIt
 ```
 
 ## Testing
@@ -204,3 +205,22 @@ degrees grows along the axes of its element's frame. `tests/fit_prints_nothing.r
 an OpenArm arm in a child process of its own and reads that it prints nothing, and
 `tests/hull_without_a_free_descriptor.rs` builds a hull with no file descriptor free.
 `HEGEL_TEST_CASES` sets the cases each property runs, 100 by default.
+
+`tests/ros_reference_chain_collision.rs` is the evidence for the chain geometry and
+the robot filter against MoveIt: at every configuration of the chain collision
+scenarios of the [ROS reference harness](../ros_reference), the OpenArm v2 arms dressed
+in their meshes and an arm dressed in boxes, cylinders and spheres and a turned wedge,
+with probes 10 µm either side of the surface of each grown primitive, the chain
+carries the links that MoveIt's chain carries, each at MoveIt's frame within 1e-12,
+and, for each padding, the filter answers as MoveIt's robot filter on every probe
+point outside the band of each body: a mesh's fit error plus the padding, and 1 µm
+about the surface of a grown primitive, which MoveIt grows about the element's origin.
+Inside the bands of each padding, the upper end of the 99% Wilson score interval of
+the share of the probes on which the two agree reaches 90%: on OpenArm v2 the two
+agree on 3 of 3, 80 of 88 and 31 of 33, where the test asks for 2, 72 and 26, and the
+bands of the primitive arm hold 0, 1 and 0 probes. At these counts the check fails a
+filter that grows a mesh with no offset, which agrees on 37 of 88, and passes one that
+grows a mesh with no scale, which agrees on 28 of 33: three properties of
+`tests/chain_geometry.rs` fail that filter, and the probes about each grown primitive
+fail one that grows every element with no scale. The test reads the harness's committed
+reference outputs, so it runs with no ROS on the machine.

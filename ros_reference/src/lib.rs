@@ -20,7 +20,9 @@
 //! its reference output, and pairs them for the parity test. The README says how to add a
 //! scenario and a kind.
 
+pub mod chain_collision;
 pub mod forward_kinematics;
+pub mod self_distance;
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -45,7 +47,9 @@ const INPUT_DIGEST_FILE: &str = "INPUTS.SHA256SUMS";
 #[derive(PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
+    ChainCollision,
     ForwardKinematics,
+    SelfDistance,
 }
 
 /// The directory of the harness, which holds `scenarios/` and `reference/`.
@@ -139,6 +143,37 @@ fn read_input(path: &Path) -> Vec<u8> {
     Digests::read(&reference_directory().join(INPUT_DIGEST_FILE))
         .check(repository_path(path), &bytes);
     bytes
+}
+
+/// The text of the URDF at `path`, relative to the repository root, that the scenario
+/// `name` names, after checking it against the digest of the file that the references
+/// read.
+fn read_urdf(name: &str, path: &str) -> String {
+    let path = repository_root().join(path);
+    String::from_utf8(read_input(&path))
+        .unwrap_or_else(|e| panic!("{name}: the URDF {} is not UTF-8: {e}", path.display()))
+}
+
+/// The mesh directory at `path`, relative to the repository root, that the scenario
+/// `name` names, after reading with [`read_input`] each mesh of it that the references
+/// read, as `INPUTS.SHA256SUMS` lists them. A URDF names its collision meshes by their
+/// file names in that directory.
+fn read_mesh_directory(name: &str, path: &str) -> PathBuf {
+    let directory = repository_root().join(path);
+    let meshes: Vec<PathBuf> = Digests::read(&reference_directory().join(INPUT_DIGEST_FILE))
+        .by_file
+        .into_keys()
+        .map(|file| repository_root().join(file))
+        .filter(|file| file.parent() == Some(directory.as_path()))
+        .collect();
+    assert!(
+        !meshes.is_empty(),
+        "{name}: the references read no mesh of {path}"
+    );
+    for mesh in &meshes {
+        read_input(mesh);
+    }
+    directory
 }
 
 fn read_scenario<T: DeserializeOwned>(name: &str) -> T {
@@ -235,6 +270,16 @@ impl TryFrom<String> for Bits {
         let pattern = u64::from_str_radix(digits, 16).map_err(|e| format!("{text:?}: {e}"))?;
         Ok(Bits(f64::from_bits(pattern)))
     }
+}
+
+/// The transform of `link` in the frame of the URDF root.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkPose {
+    pub link: String,
+    pub translation: [Bits; 3],
+    /// The rotation matrix, row by row.
+    pub rotation: [Bits; 9],
 }
 
 #[cfg(test)]
@@ -380,6 +425,12 @@ mod tests {
     #[should_panic(expected = "holds no digest of README.md")]
     fn a_file_that_no_reference_read_is_refused_as_an_input() {
         read_input(&repository_root().join("README.md"));
+    }
+
+    #[test]
+    #[should_panic(expected = "the references read no mesh of ros_reference/tools")]
+    fn a_mesh_directory_that_no_reference_read_is_refused() {
+        read_mesh_directory("scenario", "ros_reference/tools");
     }
 
     #[test]

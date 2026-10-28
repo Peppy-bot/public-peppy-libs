@@ -275,14 +275,15 @@ src/
 examples/
   visualize.rs       the HTML scene
 tests/
-  dual_arm.rs                  two-arm scenarios: converge, fold, separate, with budgets
-  distance_oracle.rs           the distance query against support-function bounds
-  merge_base_distances.rs      the distances of the model at the merge base, held to 1 mm
+  dual_arm.rs                     two-arm scenarios: converge, fold, separate, with budgets
+  distance_oracle.rs              the distance query against support-function bounds
+  merge_base_distances.rs         the distances of the model at the merge base, held to 1 mm
+  ros_reference_self_distance.rs  each checked distance against MoveIt's FCL
   fixtures/
-    openarm_v10.urdf           the OpenArm v1.0 URDF of the tests, srs_model-style
-    openarm.rs                 the generation and the meshes of openarm_description
-    merge_base/                the distances of the model at the merge base, and the
-                               program, the script and the lock that recorded them
+    openarm_v10.urdf              the OpenArm v1.0 URDF of the tests, srs_model-style
+    openarm.rs                    the generation and the meshes of openarm_description
+    merge_base/                   the distances of the model at the merge base, and the
+                                  program, the script and the lock that recorded them
 ```
 
 The tests read the collision meshes, the URDFs and the torso regions of
@@ -295,9 +296,10 @@ the world frame, so it models robots whose mount does not move.
 force over every checked pair, the distance gradient against finite differences,
 the fixture integration scenarios (arms converging monotonically into collision,
 folding inward, separating sweeps holding the floor, and non-finite rejection), the
-distance query against independent support-function bounds, and the distances of
-the model at its merge base. `cargo test --release` additionally asserts the
-per-query time budget. The fit and the distance are tested in `collision_geometry`.
+distance query against independent support-function bounds, the distances of the
+model at its merge base, and each checked distance against MoveIt's FCL. `cargo test
+--release` additionally asserts the per-query time budget. The fit and the distance
+are tested in `collision_geometry`.
 
 `tests/merge_base_distances.rs` builds the model of each OpenArm generation as the
 backbone builds it and holds it to `tests/fixtures/merge_base/distances.json`,
@@ -308,3 +310,11 @@ each of 152 configurations per generation (home with the grippers open and close
 backbone, 5 mm and 20 mm), the distance of every checked pair and the nearest
 distance lie within 1 mm of the recorded ones, and every verdict at a threshold is
 the same wherever the recorded distance lies farther than 1 mm from it.
+
+`tests/ros_reference_self_distance.rs` is the evidence that the pieces of each body
+hold its link's collision meshes: at every configuration of the self distance
+scenarios of the [ROS reference harness](../ros_reference), OpenArm v2 with both
+grippers posed, the distance of each checked pair, the fingers' pairs included, is no
+larger than the distance that MoveIt's FCL measures between the meshes where they lie
+apart, and no larger than zero where they touch. It reads the harness's committed
+reference outputs, so it runs with no ROS on the machine.

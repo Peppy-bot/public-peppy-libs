@@ -20,6 +20,10 @@ class Inputs {
   // input.
   std::string read(const std::string& path);
 
+  // Reads the file at `path`, relative to the repository root, through `read`, and gives
+  // its file:// URI, by which a ROS library, MoveIt loading a mesh among them, reads it.
+  std::string file_uri(const std::string& path);
+
   // Appends the path of each input, one a line, to the file at `list`.
   void append_to(const std::filesystem::path& list) const;
 

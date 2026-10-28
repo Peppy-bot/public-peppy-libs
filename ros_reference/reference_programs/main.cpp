@@ -12,15 +12,19 @@
 
 #include <nlohmann/json.hpp>
 
+#include "chain_collision.hpp"
 #include "forward_kinematics.hpp"
 #include "scenario.hpp"
+#include "self_distance.hpp"
 
 namespace {
 
 using Reference = nlohmann::json (*)(const nlohmann::json&, ros_reference::Inputs&);
 
 const std::map<std::string, Reference> references = {
+    {"chain_collision", ros_reference::chain_collision},
     {"forward_kinematics", ros_reference::forward_kinematics},
+    {"self_distance", ros_reference::self_distance},
 };
 
 }  // namespace

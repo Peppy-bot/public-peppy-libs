@@ -1,6 +1,7 @@
 """What the scripts that write the scenarios of the ROS reference harness share: the
-paths, the generator of each scenario's draws, the joint limits of a URDF, the
-configurations of a chain, and the writing of a scenario.
+paths, the generator of each scenario's draws, the --drawn option, a parsed URDF, the
+joints of an arm of OpenArm v2, the joint limits of a URDF, the configurations of a
+chain, and the writing of a scenario.
 
 Each scenario draws from a generator seeded with its own name, so every run writes the
 same scenarios, and a change to one scenario leaves the draws of the others as they are.
@@ -12,8 +13,10 @@ spaces. The write_json of the reference program lays out the reference outputs b
 same rule.
 """
 
+import argparse
 import json
 import random
+import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
 SEED = 20261028
@@ -23,6 +26,29 @@ SCENARIOS = REPOSITORY / "ros_reference" / "scenarios"
 
 def generator(name):
     return random.Random(f"{SEED}:{name}")
+
+
+def options(doc, drawn):
+    """The options of a script whose docstring is `doc`: --drawn, the configurations
+    drawn inside the limits of each chain, `drawn` by default. A larger count draws a
+    large set for a local run, which the README describes."""
+    parser = argparse.ArgumentParser(description=doc.splitlines()[0])
+    parser.add_argument(
+        "--drawn",
+        type=int,
+        default=drawn,
+        help="configurations drawn inside the limits of each chain",
+    )
+    return parser
+
+
+def robot(urdf):
+    """The parsed URDF at `urdf`, relative to the repository root."""
+    return ElementTree.parse(REPOSITORY / urdf).getroot()
+
+
+def openarm_joints(side):
+    return [f"openarm_{side}_joint{i}" for i in range(1, 8)]
 
 
 def joint_limits(robot, joint):

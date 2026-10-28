@@ -19,6 +19,7 @@ kinematics_properties = { path = "../kinematics_properties" }
 libc = "0.2"
 openarm_description = { path = "../openarm_description" }
 rand = "0.10"
+ros_reference = { path = "../ros_reference" }
 
 [[test]]
 name = "fit_prints_nothing"
