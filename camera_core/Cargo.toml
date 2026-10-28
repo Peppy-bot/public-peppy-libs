@@ -1,0 +1,10 @@
+[package]
+name = "camera_core"
+version = "0.1.0"
+edition = "2024"
+description = "What the camera nodes share: the failure of a control write by its kind, the errno mapping and its error reply in a generated service, the value a control answers when it has none, the auto/manual mode, the color encodings and the depth one, the V4L2 control ids, the checks a camera geometry passes, the `z` depth model and the refusal a color camera gives for its depth members, and the pieces of a simulated camera's relay that name no generated type."
+
+[workspace]
+
+[dependencies]
+libc = "0.2"

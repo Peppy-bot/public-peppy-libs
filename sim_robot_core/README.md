@@ -4,7 +4,7 @@ What a simulation engine node knows about the robots it stands, whatever its phy
 
 | Module | What it holds |
 |---|---|
-| `registry` | The robots in the scene, by the name each stands under: who may join, who holds which robot, and the pair grace time of each robot: how long it stays without the pairs its model asks for, running from the first time a limb reaches it. |
+| `registry` | The robots in the scene, by the name each stands under: who may join, who holds which robot, and the pair grace time of each robot: how long it stays without the pairs its model asks for, running from the first time a limb reaches it. A refused join raises `ValueError`, and `StillJoining` when the caller attaches its own robot again while the robot still joins: that one refusal ends once the robot stands, so an engine tells it apart. |
 | `pairs` | The four pairing slots an engine declares (`arms`, `grippers`, `rgb_cameras`, `rgbd_cameras`) and what each pair names: its robot, and its limb or its camera. |
 | `models` | One entry per robot model, with its checks, and the table that pairs those entries with an engine's own. |
 | `cameras` | The camera configuration of a model's entry, the z16 depth wire format, and per-camera frame pacing. |

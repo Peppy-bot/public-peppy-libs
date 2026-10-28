@@ -36,6 +36,13 @@ class Caller:
         return f"{self.instance_id}@{self.core_node}"
 
 
+class StillJoining(ValueError):
+    """The refusal of a caller re-attaching its own robot while the robot
+    still joins: the same attach takes the robot over once it stands, so the
+    caller can send it again. Every other refusal of `Registry.admit` is a
+    plain ValueError, and stays until the scene changes."""
+
+
 @dataclass
 class Robot:
     """One robot in the scene. It is stood once the engine has put it on the
@@ -79,9 +86,10 @@ class Registry:
 
     def admit(self, name: str, entry: ModelEntry, caller: Caller) -> bool:
         """Admits this caller's robot under `name`, and says whether it was
-        already standing. Raises when a robot of another caller stands under
-        the name, when this caller stands another robot, or when this caller
-        re-attaches its robot as another model.
+        already standing. Raises ValueError when a robot of another caller
+        stands under the name, when this caller stands another robot, or when
+        this caller re-attaches its robot as another model, and StillJoining
+        when this caller re-attaches its robot while the robot still joins.
 
         A caller re-attaching the robot it already stands is re-registering
         the same live copy: the robot stays exactly as it is and the new goal
@@ -104,7 +112,7 @@ class Registry:
                         "model, or remove the copy first"
                     )
                 if not held.standing():
-                    raise ValueError(
+                    raise StillJoining(
                         f"{caller} is already joining '{name}'; it stands in a moment"
                     )
                 return True
