@@ -69,6 +69,8 @@ jobs:
               - '*/tests/**'
               - '*/assets/**'
               - '*/.cargo/**'
+              - 'ros_reference/scenarios/**'
+              - 'ros_reference/reference/**'
               - '.github/actions/rust-toolchain/**'
               - '.github/workflows/tests.yml'
             python_libs:

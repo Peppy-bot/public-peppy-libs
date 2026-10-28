@@ -8,13 +8,14 @@ wrote.
 
 A parity test reads a **scenario**, an input that the test and the reference both read,
 and the **reference output** that the reference wrote for it. The reference outputs are
-committed with the SHA-256 digests of them and of their inputs, so a parity test reads
-them with no ROS on the machine. A change of the digests is a change of the reference,
-which `run.sh --check` proves.
+committed with the digests of them and of their inputs, so the parity tests run in the
+routine `cargo test` of each crate, with no ROS on the machine, and fail on an output, a
+scenario or a URDF that differs from its digest. A change of the digests is a change of
+the reference, which `run.sh --check` proves.
 
-| Kind of scenario | Reference |
-|---|---|
-| `forward_kinematics` | MoveIt's robot state: the global transform of each link of a chain |
+| Kind of scenario | Reference | Parity test |
+|---|---|---|
+| `forward_kinematics` | MoveIt's robot state: the global transform of each link of a chain | `chain_kinematics/tests/ros_reference_forward_kinematics.rs` |
 
 ## Layout
 
@@ -24,6 +25,7 @@ which `run.sh --check` proves.
 | `reference/` | The reference output of each scenario, under the scenario's file name; `SHA256SUMS`, the SHA-256 digest of each output; and `INPUTS.SHA256SUMS`, the SHA-256 digest of each file of the repository that the references read (each scenario and the files it names), by its path from the repository root, as the reference program lists them. Every number of an output is an IEEE-754 bit pattern, `0x` and 16 hexadecimal digits, so a test reads the reference's own bits. |
 | `packages-amd64.txt`, `packages-arm64.txt` | The version of every package of the reference image, on each architecture. |
 | `reference_programs/` | The reference program `ros_reference`: one function per kind of scenario. |
+| `src/` | The Rust crate `ros_reference`: one module per kind of scenario, which lists the scenarios of the kind and reads each with its reference output, checked with the scenario and its URDF against their digests, for the parity test. |
 | `tools/` | The scripts that write the scenarios. |
 | `Dockerfile`, `CMakeLists.txt`, `ros-snapshots.asc` | The reference image and the build of the reference program in it. |
 | `run.sh` | Runs the reference of every scenario in the reference image. |
@@ -42,7 +44,8 @@ the images of earlier builds. On a host without the base image, the build fetche
 434 MB on amd64 (the base image, 341 MB; the apt indexes, 54.5 MB; and 37.9 MB of
 packages) and about 418 MB on arm64 (326 MB, 55.0 MB and 37.2 MB), and the image takes
 about 1.9 GB of disk on each.
-The reference outputs and their checks run on the developer's machine.
+The reference outputs and their checks run on the developer's machine; the Tests
+workflow runs the parity tests on the committed outputs.
 
 The host runs bash and a container engine as the `docker` command: Docker, rootful or
 rootless, with buildx (its default builder or one of the docker-container driver) or with
@@ -50,7 +53,7 @@ its legacy builder; or Podman, rootful or rootless, which names itself in
 `docker --version`, as the podman-docker package installs it. The container writes its
 outputs as the user who runs the script. Both mounts carry `:z`, so on a host with SELinux
 the host relabels the whole checkout for containers to share, and the checkout must be
-one that the user lets containers read.
+one that the user lets containers read. On arm64, the host runs cargo too.
 
 On an amd64 host, `run.sh` writes `reference/`, with its `SHA256SUMS` and
 `INPUTS.SHA256SUMS`, and `packages-amd64.txt`, and `run.sh --check` fails when a file
@@ -66,8 +69,11 @@ host. glibc 2.43 also masks CMOV, CX8, SSE2, HTT, IBT, SHSTK, RTM, ERMS, XSAVE, 
 and OSXSAVE by name; no math selector reads them, and the mask leaves them.
 
 On an arm64 host, `run.sh` writes `packages-arm64.txt`, and `run.sh --check` fails when it
-differs from what the image gives. The committed reference outputs are those of the
-amd64 image.
+differs from what the image gives. After the write or the check, both run each parity
+test, `tests/ros_reference_*.rs` of each crate, on the outputs of the arm64 image, which
+the environment variable `ROS_REFERENCE_OUTPUTS` names to the test, and fail when a test
+does. The committed reference outputs are those of the amd64 image, and tests compare bits
+on amd64 alone.
 
 ## Rules
 
@@ -81,6 +87,10 @@ amd64 image.
 3. A reference that is statistical by nature (a sampling planner, a particle filter) runs
    over the seeds that its scenario lists, and its committed output holds the statistic,
    with its interval. Like every output, it changes only when the image changes.
+4. A parity test states what the library guarantees, and the bound within which its
+   outputs agree with the reference, or the statistic it compares, and why. A test that
+   compares the exact bits of an output runs under `#[cfg(target_arch = "x86_64")]`,
+   since the committed outputs hold amd64 bits.
 
 ## Pins
 
@@ -133,16 +143,32 @@ arm64 host.
    of the kind, each drawn from a generator seeded by its own name, so the others come
    out unchanged.
 2. Run `ros_reference/run.sh` on an amd64 host, which writes its reference output and the
-   digests, and `ros_reference/run.sh --check` on an arm64 host.
+   digests, and `ros_reference/run.sh --check` on an arm64 host, which runs the parity
+   tests on the outputs of the arm64 image.
+3. The parity test of its kind lists the scenarios of the kind from `scenarios/`, so it
+   runs on the new one. The forward kinematics parity test poses chains of 1 to 7 joints.
+
+A routine test of `ros_reference` fails when a scenario has no reference output, a
+reference output has no scenario or no digest, or a scenario or a URDF differs from its
+digest.
 
 ## Adding a kind of scenario
 
-1. In `reference_programs/`, add the function that runs the reference on a scenario of
+1. In `src/`, add the kind to `Kind` in `lib.rs`, and a module with a `kind` tag type of
+   its own, which its scenario and its reference output hold, so each refuses another
+   kind. The module lists the scenarios of the kind with `scenario_names`, reads each with
+   `read_scenario` and its reference output with `read_reference`, and every other file
+   of the repository that the reference reads with `read_input`, each checked against its
+   digest, and pairs them for the parity test.
+2. In `reference_programs/`, add the function that runs the reference on a scenario of
    the kind, reading every file of the repository through `Inputs::read`, which lists it
    for `INPUTS.SHA256SUMS`. Add the function to `references` in `main.cpp` and to
    `CMakeLists.txt`, and install the ROS packages it needs in the Dockerfile.
-2. In `tools/`, add a script that writes the scenarios, its random draws seeded by the
+3. In `tools/`, add a script that writes the scenarios, its random draws seeded by the
    scenario's name.
-3. Run `run.sh` on an amd64 host, which writes their reference outputs and
-   `packages-amd64.txt`, and on an arm64 host, which writes `packages-arm64.txt`. Add the
-   kind to the table at the top of this file.
+4. Run `run.sh` on an amd64 host, which writes their reference outputs and
+   `packages-amd64.txt`, and on an arm64 host, which writes `packages-arm64.txt`.
+5. In the crate under test, add `ros_reference` as a dev-dependency and a parity test,
+   `tests/ros_reference_<kind>.rs`, that loads every scenario of the kind with its
+   reference output and compares, by the rules above. Add the kind to the table at the top
+   of this file.
