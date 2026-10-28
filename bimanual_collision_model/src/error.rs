@@ -3,7 +3,7 @@
 /// A failure from building or querying a
 /// [`BimanualCollisionModel`](crate::BimanualCollisionModel). The query variants
 /// are distinct so a caller can react to each (a velocity-barrier caller treats
-/// [`WitnessesCoincide`](Self::WitnessesCoincide) as deep penetration and holds or
+/// [`WitnessesCoincide`](Self::WitnessesCoincide) as a touch and holds or
 /// escapes, while a bad-input variant is a genuine fault to surface).
 #[derive(Debug, thiserror::Error)]
 pub enum CollisionError {

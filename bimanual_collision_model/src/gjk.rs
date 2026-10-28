@@ -351,8 +351,8 @@ pub fn distance(a: &impl Support, b: &impl Support) -> GjkDistance {
 }
 
 /// A face of the EPA polytope: vertex indices into the growing point list, its
-/// outward unit normal (away from the enclosed origin), and the origin's
-/// distance to its plane.
+/// outward unit normal, and the origin's distance to its plane, negative when
+/// the origin stands outside it.
 #[derive(Clone, Copy)]
 struct EpaFace {
     v: [usize; 3],
@@ -368,44 +368,17 @@ struct EpaFace {
 /// the horizon-stitching of the convex hull: a new support point deletes the
 /// faces it can see and is joined to the horizon they leave behind.
 fn epa(a: &impl Support, b: &impl Support, kept: &[SupportPoint], ra: f64, rb: f64) -> GjkDistance {
-    // A closed polytope strictly enclosing the origin. GJK stops on a
-    // tetrahedron for a clear overlap, or on a triangle with the origin in its
-    // plane for a shallow one; lift that triangle to a bipyramid with a support
-    // point on each side. Anything lower is a true touch, depth zero.
-    let (mut points, mut faces): (Vec<SupportPoint>, Vec<EpaFace>) = match kept.len() {
-        4 => (
-            kept.to_vec(),
-            [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]
-                .into_iter()
-                .filter_map(|v| epa_face(v, kept))
-                .collect(),
-        ),
-        3 => {
-            let n = (kept[1].v - kept[0].v).cross(&(kept[2].v - kept[0].v));
-            if n.norm_squared() <= ORIGIN_EPS2 {
-                return touch(kept, ra, rb);
-            }
-            let n = n.normalize();
-            let (wp, wm) = (support(a, b, &n), support(a, b, &(-n)));
-            if wp.v.dot(&n) <= EPA_TOL || wm.v.dot(&n) >= -EPA_TOL {
-                return touch(kept, ra, rb);
-            }
-            let points = vec![kept[0], kept[1], kept[2], wp, wm];
-            let faces = [
-                [0, 1, 3],
-                [1, 2, 3],
-                [2, 0, 3],
-                [0, 1, 4],
-                [1, 2, 4],
-                [2, 0, 4],
-            ]
-            .into_iter()
-            .filter_map(|v| epa_face(v, &points))
-            .collect();
-            (points, faces)
-        }
-        _ => return touch(kept, ra, rb),
+    let Some(start) = start_tetrahedron(a, b, kept) else {
+        return touch(kept, ra, rb);
     };
+    // The origin can stand on the start's boundary, so each face points away
+    // from a point inside the polytope, which every expansion keeps inside.
+    let inside = start.iter().fold(Vector3::zeros(), |acc, p| acc + p.v) / 4.0;
+    let mut points = start.to_vec();
+    let mut faces: Vec<EpaFace> = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]
+        .into_iter()
+        .filter_map(|v| epa_face(v, &points, &inside))
+        .collect();
 
     // Expand toward the boundary, keeping the closest face seen as `best` so a
     // degenerate step (empty horizon, polytope opening up) returns a sound
@@ -450,7 +423,7 @@ fn epa(a: &impl Support, b: &impl Support, kept: &[SupportPoint], ra: f64, rb: f
         let wi = points.len();
         points.push(w);
         for (i, j) in horizon {
-            if let Some(f) = epa_face([i, j, wi], &points) {
+            if let Some(f) = epa_face([i, j, wi], &points, &inside) {
                 faces.push(f);
             }
         }
@@ -474,26 +447,66 @@ fn touch(kept: &[SupportPoint], ra: f64, rb: f64) -> GjkDistance {
     }
 }
 
-/// A polytope face from three difference vertices, oriented so its normal
-/// points away from the enclosed origin (nonnegative plane offset). `None` if
-/// the three points are collinear.
-fn epa_face(v: [usize; 3], points: &[SupportPoint]) -> Option<EpaFace> {
+/// The tetrahedron EPA grows from: the GJK carrier `kept`, which holds the
+/// origin, with a support point added along a direction square to the
+/// carrier's span for each dimension it lacks. `None` when the carrier is one
+/// support point, which stands at the origin, or when an added support stands
+/// within `EPA_TOL` of the origin along its direction: either way the origin
+/// lies within `EPA_TOL` of the boundary, a touch.
+fn start_tetrahedron(
+    a: &impl Support,
+    b: &impl Support,
+    kept: &[SupportPoint],
+) -> Option<[SupportPoint; 4]> {
+    match *kept {
+        [p, q, r, s] => Some([p, q, r, s]),
+        [p, q, r] => {
+            let w = support_beyond(a, b, &(q.v - p.v).cross(&(r.v - p.v)))?;
+            Some([p, q, r, w])
+        }
+        [p, q] => {
+            let w = support_beyond(a, b, &square_to(&(q.v - p.v)))?;
+            start_tetrahedron(a, b, &[p, q, w])
+        }
+        _ => None,
+    }
+}
+
+/// The support point along `dir` when it stands more than `EPA_TOL` from the
+/// origin along it.
+fn support_beyond(a: &impl Support, b: &impl Support, dir: &Vector3<f64>) -> Option<SupportPoint> {
+    let dir = dir.try_normalize(0.0);
+    debug_assert!(
+        dir.is_some(),
+        "a carrier GJK keeps has a direction square to it"
+    );
+    let dir = dir?;
+    let w = support(a, b, &dir);
+    (w.v.dot(&dir) > EPA_TOL).then_some(w)
+}
+
+/// A direction square to `u`: its cross product with the axis it leans on
+/// least.
+fn square_to(u: &Vector3<f64>) -> Vector3<f64> {
+    u.cross(&Vector3::ith(u.iamin(), 1.0))
+}
+
+/// A polytope face from three difference vertices, its normal pointing away
+/// from `inside`, a point inside the polytope. `None` if the three points are
+/// collinear.
+fn epa_face(v: [usize; 3], points: &[SupportPoint], inside: &Vector3<f64>) -> Option<EpaFace> {
     let (pa, pb, pc) = (points[v[0]].v, points[v[1]].v, points[v[2]].v);
     let n = (pb - pa).cross(&(pc - pa));
     if n.norm_squared() <= ORIGIN_EPS2 {
         return None;
     }
-    let normal = n.normalize();
-    let dist = normal.dot(&pa);
-    if dist < 0.0 {
-        Some(EpaFace {
-            v,
-            normal: -normal,
-            dist: -dist,
-        })
-    } else {
-        Some(EpaFace { v, normal, dist })
-    }
+    let n = n.normalize();
+    let normal = if n.dot(&(pa - inside)) < 0.0 { -n } else { n };
+    Some(EpaFace {
+        v,
+        normal,
+        dist: normal.dot(&pa),
+    })
 }
 
 /// Undirected edges bordering exactly one visible face: the horizon the new
@@ -878,28 +891,211 @@ mod tests {
     }
 
     #[test]
+    fn epa_measures_concentric_boxes() {
+        // GJK reaches the origin of a difference symmetric about it on a
+        // segment; the depth is the full overlap all the same.
+        let origin = pt(0.0, 0.0, 0.0);
+        for (outer, inner) in [(0.5, 0.3), (0.5, 0.5)] {
+            let r = distance(&box_hull(origin, outer, 0.0), &box_hull(origin, inner, 0.0));
+            assert!(
+                (r.distance + outer + inner).abs() <= EPA_TOL,
+                "boxes {outer} and {inner} overlap by {}, got {}",
+                outer + inner,
+                r.distance
+            );
+            assert!(r.normal.is_some(), "an overlap has a direction to leave by");
+        }
+    }
+
+    #[test]
+    fn epa_measures_from_every_carrier_gjk_hands_it() {
+        // Two coincident unit cubes differ by [-1, 1]^3, whose depth is 1 from
+        // a segment, a triangle or a tetrahedron through the origin alike.
+        let origin = pt(0.0, 0.0, 0.0);
+        let (a, b) = (box_hull(origin, 0.5, 0.0), box_hull(origin, 0.5, 0.0));
+        let at = |x: f64, y: f64, z: f64| support(&a, &b, &Vector3::new(x, y, z));
+        let carriers = [
+            vec![at(1.0, 1.0, 1.0), at(-1.0, -1.0, -1.0)],
+            vec![at(1.0, 1.0, 1.0), at(1.0, 1.0, -1.0), at(-1.0, -1.0, 1.0)],
+            vec![
+                at(1.0, 1.0, 1.0),
+                at(1.0, -1.0, -1.0),
+                at(-1.0, 1.0, -1.0),
+                at(-1.0, -1.0, 1.0),
+            ],
+        ];
+        for kept in carriers {
+            let r = epa(&a, &b, &kept, 0.0, 0.0);
+            assert!(
+                (r.distance + 1.0).abs() <= EPA_TOL,
+                "from {} points: {}",
+                kept.len(),
+                r.distance
+            );
+            assert!(
+                r.normal.is_some(),
+                "from {} points: no direction",
+                kept.len()
+            );
+        }
+    }
+
+    #[test]
+    fn epa_reads_a_face_contact_as_a_touch() {
+        // Unit cubes face to face differ by [-2, 0] x [-1, 1]^2: a segment of
+        // its x = 0 face carries the origin, which stands on the boundary.
+        let (a, b) = (
+            box_hull(pt(0.0, 0.0, 0.0), 0.5, 0.0),
+            box_hull(pt(1.0, 0.0, 0.0), 0.5, 0.0),
+        );
+        let at = |x: f64, y: f64, z: f64| support(&a, &b, &Vector3::new(x, y, z));
+        let r = epa(&a, &b, &[at(1.0, 1.0, 1.0), at(1.0, -1.0, -1.0)], 0.0, 0.0);
+        assert!(r.distance.abs() <= EPA_TOL, "{}", r.distance);
+    }
+
+    /// `count` offsets drawn within half a unit on each axis.
+    fn offsets(rng: &mut rand::rngs::StdRng, count: usize) -> Vec<Vector3<f64>> {
+        (0..count)
+            .map(|_| {
+                Vector3::new(
+                    rng.random_range(-0.5..0.5),
+                    rng.random_range(-0.5..0.5),
+                    rng.random_range(-0.5..0.5),
+                )
+            })
+            .collect()
+    }
+
+    /// The unrounded hull of `points`.
+    fn hull_of(points: &[Point3<f64>]) -> Hull {
+        Hull::new(&crate::hull::exact_hull(points).expect("hull"), 0.0).expect("hull")
+    }
+
+    /// An irregular hull of `count` vertices drawn within half a unit of `c`
+    /// on each axis.
+    fn blob(rng: &mut rand::rngs::StdRng, c: Point3<f64>, count: usize) -> Hull {
+        let points: Vec<_> = offsets(rng, count).into_iter().map(|o| c + o).collect();
+        hull_of(&points)
+    }
+
+    /// The penetration depth of two polytopes, negative when they stand apart:
+    /// the least support of their Minkowski difference over every direction a
+    /// facet of it can face, the face normals of each hull and the cross
+    /// products of an edge of each.
+    fn least_support_depth(a: &Hull, b: &Hull) -> f64 {
+        let normals = |h: &Hull| -> Vec<Vector3<f64>> {
+            let v = h.vertices();
+            h.faces()
+                .iter()
+                .map(|&[i, j, k]| (v[j] - v[i]).cross(&(v[k] - v[i])))
+                .collect()
+        };
+        let edges = |h: &Hull| -> Vec<Vector3<f64>> {
+            let v = h.vertices();
+            h.faces()
+                .iter()
+                .flat_map(|&[i, j, k]| [v[j] - v[i], v[k] - v[j], v[i] - v[k]])
+                .collect()
+        };
+        let (edges_a, edges_b) = (edges(a), edges(b));
+        let crossed = edges_a
+            .iter()
+            .flat_map(|ea| edges_b.iter().map(move |eb| ea.cross(eb)));
+        let reach = |h: &Hull, d: &Vector3<f64>| {
+            h.vertices()
+                .iter()
+                .map(|p| p.coords.dot(d))
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        normals(a)
+            .into_iter()
+            .chain(normals(b))
+            .chain(crossed)
+            .filter_map(|d| d.try_normalize(0.0))
+            .flat_map(|d| [d, -d])
+            .map(|d| reach(a, &d) + reach(b, &-d))
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    #[test]
+    fn epa_depth_is_the_least_support_of_the_difference() {
+        // Overlapping polytopes drawn three ways: two irregular blobs, one blob
+        // twice over, and two blobs symmetric about one centre, whose
+        // differences stand symmetric about the origin. EPA converges on a
+        // depth at most EPA_TOL short of the least support, in a direction.
+        const ROUNDING_M: f64 = 1e-12;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(6);
+        let mut measured = [0; 3];
+        for draw in 0..3000 {
+            let class = draw % 3;
+            let centre = pt(
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+            );
+            let (a, b) = match class {
+                0 => {
+                    let shift = offsets(&mut rng, 1)[0] * 0.8;
+                    (
+                        blob(&mut rng, centre, 12),
+                        blob(&mut rng, centre + shift, 12),
+                    )
+                }
+                1 => {
+                    let points: Vec<_> = offsets(&mut rng, 12)
+                        .into_iter()
+                        .map(|o| centre + o)
+                        .collect();
+                    (hull_of(&points), hull_of(&points))
+                }
+                _ => {
+                    let mut symmetric = || -> Hull {
+                        let points: Vec<_> = offsets(&mut rng, 6)
+                            .into_iter()
+                            .flat_map(|o| [centre + o, centre - o])
+                            .collect();
+                        hull_of(&points)
+                    };
+                    (symmetric(), symmetric())
+                }
+            };
+            let depth = least_support_depth(&a, &b);
+            if depth <= 0.0 {
+                continue;
+            }
+            measured[class] += 1;
+            let r = distance(&a, &b);
+            assert!(
+                r.iterations < EPA_MAX_ITERS,
+                "draw {draw}: EPA ran to its cap"
+            );
+            assert!(
+                -r.distance <= depth + ROUNDING_M && -r.distance >= depth - EPA_TOL - ROUNDING_M,
+                "draw {draw}: depth {depth}, EPA {}",
+                -r.distance
+            );
+            assert!(
+                depth <= EPA_TOL || r.normal.is_some(),
+                "draw {draw}: depth {depth} without a direction"
+            );
+        }
+        assert!(
+            measured.iter().all(|&n| n > 500),
+            "overlaps measured per draw class: {measured:?}"
+        );
+    }
+
+    #[test]
     fn distance_is_continuous_through_contact() {
         // Mesh hulls are never perfectly symmetric; an irregular blob swept
         // apart has a signed distance that rises smoothly through zero (EPA
         // below, GJK above), with no jump at contact.
-        let blob = |c: Point3<f64>| {
-            let mut rng = rand::rngs::StdRng::seed_from_u64(4);
-            let verts: Vec<_> = (0..40)
-                .map(|_| {
-                    Point3::new(
-                        c.x + rng.random_range(-0.5..0.5),
-                        c.y + rng.random_range(-0.5..0.5),
-                        c.z + rng.random_range(-0.5..0.5),
-                    )
-                })
-                .collect();
-            Hull::new(&crate::hull::exact_hull(&verts).expect("hull"), 0.0).expect("blob")
-        };
-        let a = blob(pt(0.0, 0.0, 0.0));
+        let blob_at = |c: Point3<f64>| blob(&mut rand::rngs::StdRng::seed_from_u64(4), c, 40);
+        let a = blob_at(pt(0.0, 0.0, 0.0));
         let (mut prev, mut crossed) = (None, false);
         for k in 0..=40 {
             let x = 0.2 + k as f64 * 0.03; // deep overlap through to separation
-            let d = distance(&a, &blob(pt(x, 0.0, 0.0))).distance;
+            let d = distance(&a, &blob_at(pt(x, 0.0, 0.0))).distance;
             if let Some(p) = prev {
                 assert!(
                     d >= p - 1e-6,

@@ -143,9 +143,10 @@ URDF collision entries
   each region, each slice gets the same fit, and the union is verified to
   contain the mesh. Adjacent regions should overlap by a few millimetres.
 - GJK answers distance from a support function alone (`gjk.rs`), an exact scan
-  over a piece's vertices. On overlap, EPA expands the enclosing simplex toward
-  the nearest face of the Minkowski difference to recover the penetration depth
-  and direction, stitching each new point to the horizon of the faces it sees.
+  over a piece's vertices. On overlap, EPA grows the simplex GJK ends on to a
+  tetrahedron of support points, then expands it toward the nearest face of the
+  Minkowski difference to recover the penetration depth and direction,
+  stitching each new point to the horizon of the faces it sees.
 - A gripper finger, a collision-bearing link on a movable joint off a chain
   link, is fit as its own body and placed at the live opening that
   `set_gripper_openings` sets. The meshes orient the two travel extremes: the
@@ -332,7 +333,9 @@ whose mount does not move.
 
 `cargo test` covers the hull, the fit and GJK analytically (containment of every
 input point, containment after the fit, box and sphere distances, EPA depth and
-direction, signed continuity through contact, and isometry invariance), the
+direction, EPA depth against the least support of the Minkowski difference from
+every simplex GJK hands it, signed continuity through contact, and isometry
+invariance), the
 clipping (every clipped point lies in its region, and both neighbours keep a
 triangle on their shared plane), and the fixture integration scenarios (arms
 converging monotonically into collision, folding inward, separating sweeps
