@@ -74,7 +74,7 @@ pub fn link_name(i: usize) -> String {
 /// A frame on a link: any offset within 0.2 m along each axis, any
 /// orientation.
 #[hegel::composite]
-fn placements(tc: &TestCase) -> Pose {
+pub fn placements(tc: &TestCase) -> Pose {
     Pose {
         xyz: Vec3(tc.draw(gs::arrays(gs::floats().min_value(-0.2).max_value(0.2)))),
         rpy: Vec3(tc.draw(gs::arrays(angles()))),
