@@ -1,0 +1,148 @@
+# ROS reference harness
+
+A parity test of this repository checks a library that follows ROS code: it states what
+the library guarantees, and the agreement of the library's outputs with those of the ROS
+code, within a stated bound, is the evidence. The ROS code runs with ROS 2, in a reference
+image: developers run it through `run.sh`, and the parity tests read the outputs that it
+wrote.
+
+A parity test reads a **scenario**, an input that the test and the reference both read,
+and the **reference output** that the reference wrote for it. The reference outputs are
+committed with the SHA-256 digests of them and of their inputs, so a parity test reads
+them with no ROS on the machine. A change of the digests is a change of the reference,
+which `run.sh --check` proves.
+
+| Kind of scenario | Reference |
+|---|---|
+| `forward_kinematics` | MoveIt's robot state: the global transform of each link of a chain |
+
+## Layout
+
+| Path | What it holds |
+|---|---|
+| `scenarios/` | One JSON file per scenario. Its `kind` names the reference that runs on it. |
+| `reference/` | The reference output of each scenario, under the scenario's file name; `SHA256SUMS`, the SHA-256 digest of each output; and `INPUTS.SHA256SUMS`, the SHA-256 digest of each file of the repository that the references read (each scenario and the files it names), by its path from the repository root, as the reference program lists them. Every number of an output is an IEEE-754 bit pattern, `0x` and 16 hexadecimal digits, so a test reads the reference's own bits. |
+| `packages-amd64.txt`, `packages-arm64.txt` | The version of every package of the reference image, on each architecture. |
+| `reference_programs/` | The reference program `ros_reference`: one function per kind of scenario. |
+| `tools/` | The scripts that write the scenarios. |
+| `Dockerfile`, `CMakeLists.txt`, `ros-snapshots.asc` | The reference image and the build of the reference program in it. |
+| `run.sh` | Runs the reference of every scenario in the reference image. |
+
+## Running the references
+
+```sh
+ros_reference/run.sh          # writes what the reference image gives
+ros_reference/run.sh --check  # fails when that differs from the committed files
+```
+
+The script builds the reference image for the architecture of the host, and runs the
+reference program on each scenario in it. It runs the image by the id that its build
+gives, so each checkout runs the image of its own files, and `docker image prune` removes
+the images of earlier builds. On a host without the base image, the build fetches about
+434 MB on amd64 (the base image, 341 MB; the apt indexes, 54.5 MB; and 37.9 MB of
+packages) and about 418 MB on arm64 (326 MB, 55.0 MB and 37.2 MB), and the image takes
+about 1.9 GB of disk on each.
+The reference outputs and their checks run on the developer's machine.
+
+The host runs bash and a container engine as the `docker` command: Docker, rootful or
+rootless, with buildx (its default builder or one of the docker-container driver) or with
+its legacy builder; or Podman, rootful or rootless, which names itself in
+`docker --version`, as the podman-docker package installs it. The container writes its
+outputs as the user who runs the script. Both mounts carry `:z`, so on a host with SELinux
+the host relabels the whole checkout for containers to share, and the checkout must be
+one that the user lets containers read.
+
+On an amd64 host, `run.sh` writes `reference/`, with its `SHA256SUMS` and
+`INPUTS.SHA256SUMS`, and `packages-amd64.txt`, and `run.sh --check` fails when a file
+differs from what the image gives, and prints each differing line. The reference outputs
+reproduce bit for bit on every amd64 host. Of the libraries that the reference program
+loads, libc and libm alone hold IFUNCs, the functions that glibc resolves by CPU feature,
+and the selectors of glibc 2.43's math functions read FMA, FMA4, AVX, AVX2 and SSE4_1
+(libm) and SSE4_1, FMA, AVX2, AVX512F and AVX512DQ (libmvec). `run.sh` runs the reference
+program with `GLIBC_TUNABLES=glibc.cpu.hwcaps=` set to mask all of them, with SSSE3,
+SSE4_2, POPCNT, BMI1, BMI2, LZCNT, MOVBE and AVX512BW, CD, VL, ER and PF, so glibc runs
+the SSE2 variants of the math functions, of baseline instructions alone, on every amd64
+host. glibc 2.43 also masks CMOV, CX8, SSE2, HTT, IBT, SHSTK, RTM, ERMS, XSAVE, XSAVEC
+and OSXSAVE by name; no math selector reads them, and the mask leaves them.
+
+On an arm64 host, `run.sh` writes `packages-arm64.txt`, and `run.sh --check` fails when it
+differs from what the image gives. The committed reference outputs are those of the
+amd64 image.
+
+## Rules
+
+1. A reference runs in the reference program's process. A reference with a plain C++ API
+   is called directly. A reference that reads its parameters from a ROS node creates that
+   node in the reference program's process, sets the scenario's parameters on it, and
+   calls the reference on the program's own thread.
+2. A reference gives the same output on every run: the container has no network and one
+   OpenMP thread, every random generator of a reference is seeded from its scenario, and
+   a search ends on an iteration bound that the scenario gives.
+3. A reference that is statistical by nature (a sampling planner, a particle filter) runs
+   over the seeds that its scenario lists, and its committed output holds the statistic,
+   with its interval. Like every output, it changes only when the image changes.
+
+## Pins
+
+Every input of the image is pinned, so a rebuild gives the same packages:
+
+- the base image `docker.io/library/ros:lyrical-ros-base`, by the digest of its index of
+  amd64 and arm64;
+- the ROS packages, by a dated snapshot of the ROS repository (`ROS_SNAPSHOT`), signed by
+  the key in `ros-snapshots.asc`, which is valid until 2027-06-01;
+- the Ubuntu packages, by a dated snapshot of the primary Ubuntu archive
+  (`UBUNTU_SNAPSHOT`), which holds amd64 and arm64. The Dockerfile names the primary
+  archive in place of the ports archive that the arm64 base image names.
+
+The Ubuntu snapshot is 2026-10-27T00:00:00Z, and the base image was built at
+2026-10-27T00:32:46Z for amd64 and at 2026-10-27T00:32:38Z for arm64. On both
+architectures, the two snapshots hold the version of every package of the base image, and
+apt keeps those versions.
+
+`packages-amd64.txt` and `packages-arm64.txt` record the version of each package that
+results. To move a pin, change the Dockerfile, run `run.sh` on an amd64 host and on an
+arm64 host, and review the diff of the package lists and of `reference/` in the same pull
+request: a reference output that changes is a change of the reference.
+
+### Renewing the ROS snapshot key
+
+`ros-snapshots.asc` is valid until 2027-06-01. To renew it, fetch the key from the
+Ubuntu key server and print it:
+
+```sh
+(
+  export GNUPGHOME=$(mktemp -d)
+  gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys 4B63CF8FDE49746E98FA01DDAD19BAB3CBF125EA
+  gpg --armor --export 4B63CF8FDE49746E98FA01DDAD19BAB3CBF125EA > ros_reference/ros-snapshots.asc
+  gpg --show-keys ros_reference/ros-snapshots.asc
+  rm -rf "$GNUPGHOME"
+)
+```
+
+The fingerprint that the last command prints must be
+`4B63 CF8F DE49 746E 98FA 01DD AD19 BAB3 CBF1 25EA`, the key that
+<https://wiki.ros.org/SnapshotRepository> names. Write the expiry date that it prints in
+this file and in the Dockerfile, and run `run.sh --check` on an amd64 host and on an
+arm64 host.
+
+## Adding a scenario
+
+1. Write the scenario under `scenarios/`. For forward kinematics, add the robot to
+   `ROBOTS` in `tools/draw_forward_kinematics.py` and run
+   `python3 ros_reference/tools/draw_forward_kinematics.py`, which writes every scenario
+   of the kind, each drawn from a generator seeded by its own name, so the others come
+   out unchanged.
+2. Run `ros_reference/run.sh` on an amd64 host, which writes its reference output and the
+   digests, and `ros_reference/run.sh --check` on an arm64 host.
+
+## Adding a kind of scenario
+
+1. In `reference_programs/`, add the function that runs the reference on a scenario of
+   the kind, reading every file of the repository through `Inputs::read`, which lists it
+   for `INPUTS.SHA256SUMS`. Add the function to `references` in `main.cpp` and to
+   `CMakeLists.txt`, and install the ROS packages it needs in the Dockerfile.
+2. In `tools/`, add a script that writes the scenarios, its random draws seeded by the
+   scenario's name.
+3. Run `run.sh` on an amd64 host, which writes their reference outputs and
+   `packages-amd64.txt`, and on an arm64 host, which writes `packages-arm64.txt`. Add the
+   kind to the table at the top of this file.

@@ -1,0 +1,6158 @@
+{
+  "chains": [
+    {
+      "configurations": [
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfefffffffff8420",
+              "0xbec6428a6aa3f6a4",
+              "0xbd9ef80551b77cba",
+              "0xbec6428a6aa44cd0",
+              "0x3fefffffffff083f",
+              "0x3ec6428a6aa3f6a4",
+              "0xbc881c5328aa0000",
+              "0x3ec6428a6aa44cd0",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3eced021fd7ede81",
+              "0xbfeffffffffc5275",
+              "0xbeda8958238c6d20",
+              "0x3ec6428fc66e7907",
+              "0xbeda895575ab7644",
+              "0x3feffffffffcc3f0",
+              "0xbfeffffffffe96c4",
+              "0xbeced02b384231fe",
+              "0x3ec64282ffc3a7b3"
+            ],
+            "translation": [
+              "0x3fb1b95af991d59a",
+              "0xbf92b76f3c395966",
+              "0x3fbdd97e92663263"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfeffffffffd3fd3",
+              "0x3d9ef7f3db937468",
+              "0xbeda8958239c2d20",
+              "0xbeda895823a0aa4c",
+              "0xbec64282ffccd5e3",
+              "0x3feffffffffcc3f0",
+              "0xbda56f0aa531e97a",
+              "0x3fefffffffff8422",
+              "0x3ec64282ffd0c164"
+            ],
+            "translation": [
+              "0x3fb8e45615eb947e",
+              "0xbf92b77764b5059d",
+              "0x3fcd5571c0523ab6"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3eced021fd7ede8c",
+              "0xbfeffffffffc5278",
+              "0xbeda89582353ad1a",
+              "0x3ec6428fc65c52c1",
+              "0xbeda89557572b642",
+              "0x3feffffffffcc3f0",
+              "0xbfeffffffffe96c7",
+              "0xbeced02b384231ed",
+              "0x3ec64282ffb18186"
+            ],
+            "translation": [
+              "0x3fcdb6924311d12c",
+              "0xbf92b73f0b02c90d",
+              "0x3fcdffd6834b28e4"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbed936b926b838db",
+              "0xbee599f7dbd258b2",
+              "0xbfeffffffff639cb",
+              "0xbfa8ea58de8aadba",
+              "0x3feff64b6a704881",
+              "0xbee4f65d1eb70e4c",
+              "0x3feff64b6a74abce",
+              "0x3fa8ea58ddfeef00",
+              "0xbedb4948f1d64ae8"
+            ],
+            "translation": [
+              "0x3fd2c458a00518f0",
+              "0xbf272b54cff4a000",
+              "0x3fcdffd8cc675d77"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3ee22bff2e034bae",
+              "0xbee599f7dbd258b2",
+              "0x3feffffffff38ca9",
+              "0x3fa8ea58dec4a122",
+              "0x3feff64b6a704881",
+              "0x3ee4b1096ddef604",
+              "0xbfeff64b6a71d0b0",
+              "0x3fa8ea58ddfeef00",
+              "0x3ee33396fe442e4c"
+            ],
+            "translation": [
+              "0x3fd90c10fae0a4c6",
+              "0xbee351b050539010",
+              "0x3fccfcf59f822758"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fd5e3aa55377bd2",
+              "0xbfee11f5ead843f6",
+              "0xbd9ef80551b77cba",
+              "0xbfee11f5ead7cf8e",
+              "0xbfd5e3aa55372716",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec4eae181449f1c",
+              "0xbeae7404245a2888",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfd58e95a0d83b12",
+              "0xbfae68cdd19cd246",
+              "0xbfee11f3485d37c7",
+              "0x3fed9cfdd153ffdd",
+              "0x3fc4e328ee079757",
+              "0xbfd5e3b8cf6df3ff",
+              "0x3fc63a539dcace18",
+              "0xbfef838907d9cbe9",
+              "0xbeae7435f41c294d"
+            ],
+            "translation": [
+              "0x3fa75aac66a54516",
+              "0x3fa1d38d066c8a30",
+              "0x3fbdd980ef8729d8"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfd4f3b4bccea7fc",
+              "0xbfb959d0f5aac71d",
+              "0xbfee11f3485d37c5",
+              "0x3fecc83aa8f5def0",
+              "0x3fd169a3d47d28f8",
+              "0xbfd5e3b8cf6df401",
+              "0x3fd287b92d5c452a",
+              "0xbfeea11e48ecbdf5",
+              "0xbeae7435f4a158be"
+            ],
+            "translation": [
+              "0x3fb5cf3b715c39da",
+              "0xbfb2eccd9e4e19f2",
+              "0x3fbfe782ec6cc607"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fd451e3303c3683",
+              "0x3fc047866817f34a",
+              "0xbfee11f3485d37b7",
+              "0xbfebe9ef0e65c06d",
+              "0xbfd65d0e90928fb2",
+              "0xbfd5e3b8cf6df445",
+              "0xbfd7cc7b8322b9ee",
+              "0x3fedb48e7183ed21",
+              "0xbeae7435f4d1a1ed"
+            ],
+            "translation": [
+              "0x3fc07dded64bfa78",
+              "0xbfc8cff0473e495a",
+              "0x3fb4a19b9777e4fe"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fe3d4eba69e37aa",
+              "0x3fe8c824a0a04e5b",
+              "0x3fc047aadee0661d",
+              "0xbfe67cb0dcb46c88",
+              "0x3fe3d4eed574db7a",
+              "0xbfd65d13aa0c3fca",
+              "0xbfd65d1ef4641707",
+              "0x3fc0476cd4a119ec",
+              "0x3fedb48c3c11e90d"
+            ],
+            "translation": [
+              "0x3fbaa3ce5fd6fe9c",
+              "0xbfc6df30fd7ebe8b",
+              "0x3f9871ff839b2ba0"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfe3d4ec5bcfe634",
+              "0x3fe8c824a0a04e5b",
+              "0xbfc0479d13413634",
+              "0x3fe67cb2ce83dca7",
+              "0x3fe3d4eed574db7a",
+              "0x3fd65d0bd7cde4a1",
+              "0x3fd65d149f711c63",
+              "0x3fc0476cd4a119ec",
+              "0xbfedb48e2de2388e"
+            ],
+            "translation": [
+              "0x3fb625f31fb34a6b",
+              "0xbfc1ca22bb8e08bf",
+              "0xbfb0821ee517406b"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fd5e3956a55fa8e",
+              "0x3fee11f9b958c880",
+              "0xbd9ef80551b77cba",
+              "0x3fee11f9b9585418",
+              "0xbfd5e3956a55a5d0",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec4eae18145a6fe",
+              "0xbeae7404244ed47c",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fd58e6657fa482a",
+              "0xbfae68358206a5b3",
+              "0x3fee11fc5bcf920e",
+              "0x3fed9d0945114a79",
+              "0xbfc4e2f6343cd29d",
+              "0xbfd5e386f01bbefd",
+              "0x3fc63a16ed326030",
+              "0x3fef838bb4be7628",
+              "0xbeae740dab8b0fee"
+            ],
+            "translation": [
+              "0x3f8710ed6c7464e4",
+              "0xbf96d9b1d3cc4222",
+              "0x3fbdd97e64644018"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfd4f38500559078",
+              "0x3fb95997337134ae",
+              "0x3fee11fc5bcf920b",
+              "0xbfecc84358e3efc7",
+              "0x3fd169a915e93492",
+              "0xbfd5e386f01bbf05",
+              "0xbfd287b92d5e064a",
+              "0xbfeea11e48ec7a08",
+              "0xbeae740dab181377"
+            ],
+            "translation": [
+              "0xbf9996ebb8cf099c",
+              "0xbfbf362bf93c1dfc",
+              "0x3fb1c94bf56eb0da"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfd451b8cfa33327",
+              "0x3fc0474dc02608b9",
+              "0x3fee11fc5bcf9215",
+              "0xbfebe9fcdd675c00",
+              "0x3fd65cfa6f9c9604",
+              "0xbfd5e386f01bbec7",
+              "0xbfd7cc5ee8a35da4",
+              "0xbfedb4942c206a14",
+              "0xbeae740da9f88090"
+            ],
+            "translation": [
+              "0x3f9428aeea5d7562",
+              "0x3f4b30440fe62280",
+              "0x3fba82d1be62da62"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3f979a652f2953b0",
+              "0xbfefbb4ae5949400",
+              "0x3fc0472949631630",
+              "0xbfedf94b7bf4adb5",
+              "0x3f9797b233dae620",
+              "0x3fd65cf5560fb78f",
+              "0xbfd65cf27cedad80",
+              "0xbfc04738f029ec66",
+              "0xbfedb496618d08ea"
+            ],
+            "translation": [
+              "0x3f9d9e60e9f71c8c",
+              "0xbf9b5a030b6446f6",
+              "0x3fc483f7da5c7c9c"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbf979a7bd4b419cb",
+              "0xbfefbb4ae5949400",
+              "0xbfc04728c6090660",
+              "0x3fedf9498a27159a",
+              "0x3f9797b233dae620",
+              "0xbfd65cffc2eb3cee",
+              "0x3fd65cfcd1e3826f",
+              "0xbfc04738f029ec66",
+              "0x3fedb4946fbfb140"
+            ],
+            "translation": [
+              "0x3f90e00aa4e67486",
+              "0xbfab71f65f0c7154",
+              "0x3fd0441a39276f96"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fc7c0740c85fd8b",
+              "0x3fef71ba587af4b8",
+              "0xbd9ef80551b77cba",
+              "0x3fef71ba587a7afe",
+              "0xbfc7c0740c85a198",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec5df91f8845849",
+              "0xbea085c2ac3c450f",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbf9fe931a854df16",
+              "0x3fc769f96ead0f72",
+              "0x3fef71bbc668c8fe",
+              "0xbfc51f7f5604049e",
+              "0x3feeff678f74f206",
+              "0xbfc7c055c55dcf16",
+              "0xbfef8ba67b839ff2",
+              "0xbfc57f11cb1d308a",
+              "0xbea085cb47dbdb83"
+            ],
+            "translation": [
+              "0x3f8f3305d7e69776",
+              "0xbf9b1d82c50cf90c",
+              "0x3fbdd97e34ec58c1"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fa3fc8ec2b63493",
+              "0xbfc73843a105af53",
+              "0x3fef71bbc668c900",
+              "0x3fca75b504cccf3c",
+              "0xbfeebd9826d34388",
+              "0xbfc7c055c55dcef5",
+              "0x3fef48ad505371e7",
+              "0x3fcaed6cc0326233",
+              "0xbea085cb47bd5c3c"
+            ],
+            "translation": [
+              "0x3f8be4ef45420aef",
+              "0xbfa1eeedbfd22824",
+              "0x3fcdbb22e2a3bfa4"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fc412f55a480958",
+              "0x3fb963b79618098e",
+              "0x3fef71bbc668c900",
+              "0x3fea9375c2f7422d",
+              "0x3fe0ce75248c6161",
+              "0xbfc7c055c55dcef5",
+              "0xbfe11a7f5a39076f",
+              "0x3feb0bb33daa6748",
+              "0xbea085cb4a0ead6c"
+            ],
+            "translation": [
+              "0x3f7e5af4685748ec",
+              "0xbfb16262ba524a15",
+              "0x3fb9fafffba64994"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fe95b55603fb388",
+              "0xbfe342a8aa42de7f",
+              "0x3fb963828deb41d2",
+              "0x3fde36665ab4be9a",
+              "0x3fe6a8322da4a792",
+              "0x3fe0ce7b80e46982",
+              "0xbfd8b9ae91172aaf",
+              "0xbfd7a382950b74aa",
+              "0x3feb0bb010ed5b42"
+            ],
+            "translation": [
+              "0x3f93989d0b3d4731",
+              "0xbfba7588f9452854",
+              "0x3fa98563b13866d0"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfe95b55ed88f7e4",
+              "0xbfe342a8aa42de7f",
+              "0xbfb9635f46e15e44",
+              "0xbfde366c3328068c",
+              "0x3fe6a8322da4a792",
+              "0xbfe0ce78e05d005b",
+              "0x3fd8b9a528f3b951",
+              "0xbfd7a382950b74aa",
+              "0xbfeb0bb2374f306e"
+            ],
+            "translation": [
+              "0x3f6ad7327babbea0",
+              "0xbfc452cc1aab43b0",
+              "0xbf9eacf0f7abe2aa"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfe9cd29def7a9b0",
+              "0x3fe2edafc343541b",
+              "0xbd9ef80551b77cba",
+              "0x3fe2edafc3430ad4",
+              "0x3fe9cd29def745ce",
+              "0x3ec6428a6aa3f6a4",
+              "0x3eba55901fcb0708",
+              "0x3ec1f2b1403543ca",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fe8c91c89a06c5d",
+              "0xbfccacd2f6f70c86",
+              "0x3fe2eda98d37f1a9",
+              "0xbfe22edd71d48050",
+              "0x3fc5096cb3e27292",
+              "0x3fe9cd2e6d738f1c",
+              "0xbfd1c835fde95485",
+              "0xbfeebd72a010f1c8",
+              "0x3ec1f2ad00c50c88"
+            ],
+            "translation": [
+              "0x3faae5caa6eda155",
+              "0xbfa0c08bb23894d8",
+              "0x3fbdd97dedd01ba6"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fd263e21267296f",
+              "0xbfe81b7f54908382",
+              "0x3fe2eda98d37f1a5",
+              "0xbfcafb781cc51313",
+              "0x3fe1af8349e09ced",
+              "0x3fe9cd2e6d738f1f",
+              "0xbfede6220ea58a21",
+              "0xbfd6cedfa996d8ac",
+              "0x3ec1f2ad00aa6dde"
+            ],
+            "translation": [
+              "0xbf9d10afc1813416",
+              "0x3f9b4883b46c8478",
+              "0x3fc65f024518db5b"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fde05b74726c566",
+              "0xbfe4fc3b13a503e1",
+              "0x3fe2eda98d37f1a0",
+              "0xbfd60652dc97d5ef",
+              "0x3fdeca53b6aa8376",
+              "0x3fe9cd2e6d738f22",
+              "0xbfea06dacfc0bf44",
+              "0xbfe29e0cc07e4e10",
+              "0x3ec1f2ad013d0baa"
+            ],
+            "translation": [
+              "0xbfb2314796cf55e6",
+              "0x3fadac377847902d",
+              "0x3fd3223a35cc2c16"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fd1a54a1756f1f2",
+              "0x3fe67d4ba0c8b3f8",
+              "0xbfe4fc3cd76ea059",
+              "0x3febd7601d2ec735",
+              "0x3fbb8b34f0d8db24",
+              "0x3fdeca4337c06800",
+              "0x3fda27a47f20864d",
+              "0xbfe680b091001b7b",
+              "0xbfe29e119540050f"
+            ],
+            "translation": [
+              "0xbf94c6b9b1e27e66",
+              "0x3fa618321d4e9dd0",
+              "0x3fd568a3a97cd6ee"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfd1a542cad041fc",
+              "0x3fe67d4ba0c8b3f8",
+              "0x3fe4fc3e6038d4ac",
+              "0xbfebd762ca90ed69",
+              "0x3fbb8b34f0d8db24",
+              "0xbfdeca3988c494dd",
+              "0xbfda279e056ecfc3",
+              "0xbfe680b091001b7b",
+              "0x3fe29e13db743c96"
+            ],
+            "translation": [
+              "0x3fa55dabe471de26",
+              "0xbf866e082d615a30",
+              "0x3fd8dd9ee23f439a"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfe72c45b649be03",
+              "0xbfe6118399fa31ce",
+              "0xbd9ef80551b77cba",
+              "0xbfe6118399f9dc60",
+              "0x3fe72c45b649644d",
+              "0x3ec6428a6aa3f6a4",
+              "0xbebeb3d6817156bf",
+              "0x3ec01ea224af88cd",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfe076d404485e9a",
+              "0xbfe04e8bb3d3d53f",
+              "0xbfe611892e08b0d4",
+              "0xbfdf5be3e7db9180",
+              "0xbfdf0f39eeea225b",
+              "0x3fe72c40664ae367",
+              "0xbfe684bfc30291cb",
+              "0x3fe6bc5ae0627643",
+              "0x3ec01e9707c54559"
+            ],
+            "translation": [
+              "0x3fb2cde2ea3c0df0",
+              "0x3f7fa7c0bd474719",
+              "0x3fbdd97fbacb43fc"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfe5e04e3eceeff0",
+              "0x3fce924cace4290f",
+              "0xbfe611892e08b0d6",
+              "0xbfe4d56ab2fa8483",
+              "0x3fcd1d3c7f52134a",
+              "0x3fe72c40664ae365",
+              "0x3fd51bbddd5ef910",
+              "0x3fee359cbaaa527a",
+              "0x3ec01e9707e4dec8"
+            ],
+            "translation": [
+              "0x3fc2a4585bcbb07d",
+              "0x3fb393d200e38438",
+              "0x3fc6849ef4e83422"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfe1d2b115739f1f",
+              "0xbfdd9e77a3577926",
+              "0xbfe611892e08b0bf",
+              "0xbfe0f93b57735506",
+              "0xbfdc3523dbf462bb",
+              "0x3fe72c40664ae37b",
+              "0xbfe4736ca5efce32",
+              "0x3fe89cbad05abe1d",
+              "0x3ec01e9707978baf"
+            ],
+            "translation": [
+              "0x3fce9af7827a2f18",
+              "0x3fc52e9425446c6e",
+              "0x3fc1738cf170ff0a"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfe9606963fbab33",
+              "0xbfd95aa423ec6acb",
+              "0xbfdd9e73a46a065b",
+              "0x3fe2fead71e3fa68",
+              "0xbfe58c0be956a447",
+              "0xbfdc35354dcb457c",
+              "0xbfc189c04d7fbf5f",
+              "0xbfe3f9b4bbecfb58",
+              "0x3fe89cb7048ca072"
+            ],
+            "translation": [
+              "0x3fd050424c1637ce",
+              "0x3fca4e7f3cf40c71",
+              "0x3fb6df4e83e18136"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fe9606bf74c16a9",
+              "0xbfd95aa423ec6acb",
+              "0x3fdd9e6ad0e30a79",
+              "0xbfe2feaafdfc2404",
+              "0xbfe58c0be956a447",
+              "0x3fdc353be9162f1a",
+              "0x3fc189af2e93f906",
+              "0xbfe3f9b4bbecfb58",
+              "0xbfe89cb7c7bf0411"
+            ],
+            "translation": [
+              "0x3fd3a05d428f0799",
+              "0x3fcf42d889b44a04",
+              "0x3f8ee7e300c11922"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfee28a07f1db7ea",
+              "0xbfd56583000a4d67",
+              "0xbd9ef80551b77cba",
+              "0xbfd565830009fa93",
+              "0x3fee28a07f1d4329",
+              "0x3ec6428a6aa3f6a4",
+              "0xbeadc4815ea8d1f1",
+              "0x3ec4faa5e16fec53",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3feb7df2b096d3d7",
+              "0xbfd8cc4b8f6fa138",
+              "0xbfd56591852acb45",
+              "0x3fd3814051d20eba",
+              "0xbfc197dd35e9b251",
+              "0x3fee289debd164eb",
+              "0xbfda4fe0b5b8602f",
+              "0xbfed2ba758545e23",
+              "0x3ec4fa9cabf1b417"
+            ],
+            "translation": [
+              "0x3fb2d72f4ad0db56",
+              "0xbf7cee40610d089d",
+              "0x3fbdd97f1236d2d4"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fe6b83425240bc9",
+              "0xbfe3d55f0f7312bb",
+              "0xbfd56591852acb51",
+              "0x3fd01e77ad16f8f7",
+              "0xbfcc2472ff36e3f4",
+              "0x3fee289debd164e9",
+              "0xbfe50b5d85e9476a",
+              "0xbfe81b51434a6efc",
+              "0x3ec4fa9cabda5fed"
+            ],
+            "translation": [
+              "0xbf891f348f73b560",
+              "0xbfa336122d0b188f",
+              "0x3fc81da413672d7e"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fd6c78350330f48",
+              "0x3febecddc50a57d1",
+              "0xbfd56591852acb7b",
+              "0x3fc0293849f71d65",
+              "0x3fd3cff17c9c3fae",
+              "0x3fee289debd164e2",
+              "0x3feda15807047b36",
+              "0xbfd82b8b0c1d822a",
+              "0x3ec4fa9cac514608"
+            ],
+            "translation": [
+              "0xbfbc7bf761c5fa8c",
+              "0xbfb2989a87442dc3",
+              "0x3fd17c266167f966"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbf7f0749e98cb1a0",
+              "0x3fdf3f9d90adc450",
+              "0x3febece274c681e8",
+              "0x3fe90515b6c57152",
+              "0xbfe15123cdec7e95",
+              "0x3fd3cfe47bdc28c6",
+              "0x3fe3f2d935e3f5fe",
+              "0x3fe5e8b6ca2658be",
+              "0xbfd82b800c2526db"
+            ],
+            "translation": [
+              "0xbfc5d7743dac0862",
+              "0xbfb3123dc25889da",
+              "0x3fd2f635a5354182"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3f7f04dc4bea7a44",
+              "0x3fdf3f9d90adc450",
+              "0xbfebece27f90d9d6",
+              "0xbfe905176fc90256",
+              "0xbfe15123cdec7e95",
+              "0xbfd3cfdbc8190a34",
+              "0xbfe3f2d71bde5f32",
+              "0x3fe5e8b6ca2658be",
+              "0x3fd82b86fc5d08b3"
+            ],
+            "translation": [
+              "0xbfd0677e8ca7de89",
+              "0xbfbc6612cbd060c4",
+              "0x3fd5023ce6b3971b"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfef012cba039c55",
+              "0x3fcfad5fb82d7602",
+              "0xbd9ef80551b77cba",
+              "0x3fcfad5fb82cfb60",
+              "0x3fef012cba03244f",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ea6091f69fc9db2",
+              "0x3ec5914653455106",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfd692750030a78f",
+              "0xbfece0a5737c1bd2",
+              "0x3fcfad41dd664af8",
+              "0x3fb70fe4cefcd344",
+              "0x3fcd80e26a384d27",
+              "0x3fef012ea20ba0ae",
+              "0xbfedcdfaefc38291",
+              "0x3fd74bfb0182bb70",
+              "0x3ec591403be2de2b"
+            ],
+            "translation": [
+              "0x3fb052eff1e09afb",
+              "0xbf99d68f0fa6dda2",
+              "0x3fbdd97e4322ef2a"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfe8dd91c2d9c74c",
+              "0xbfe285234344e37a",
+              "0x3fcfad41dd664ae0",
+              "0x3fc9679fdd3684d2",
+              "0x3fc2ebdaa5dca624",
+              "0x3fef012ea20ba0b0",
+              "0xbfe31d582cfc034d",
+              "0x3fe9a9ef53ca7856",
+              "0x3ec591403bfa8933"
+            ],
+            "translation": [
+              "0x3fc07a6826ea0702",
+              "0xbfa56a67b5e4723c",
+              "0x3fcb0a64252e4618"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfe8411991a4d9b7",
+              "0xbfe350489389f843",
+              "0x3fcfad41dd664b63",
+              "0x3fc8c7c3d6a3cfe2",
+              "0x3fc3bb67db1cf9fb",
+              "0x3fef012ea20ba0a8",
+              "0xbfe3ef031c96dc31",
+              "0x3fe908713189deb0",
+              "0x3ec591403c381659"
+            ],
+            "translation": [
+              "0x3fcd82a704b93e68",
+              "0xbfb15d811da8e0a4",
+              "0x3fd2f1bf4ba16f1f"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fe93655d9ff93c0",
+              "0x3fbf50e94beb05ee",
+              "0xbfe3504efb845e22",
+              "0xbfa20861f1e6b934",
+              "0x3fef98efa10ee8e2",
+              "0x3fc3bb4ea2e88931",
+              "0x3fe3ac955e3e4bc7",
+              "0xbfb9a68f18860860",
+              "0x3fe9086d7e4f7385"
+            ],
+            "translation": [
+              "0x3fd166e80bcf231c",
+              "0xbfae92f6dd4876f6",
+              "0x3fcfc545d35695c0"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfe936527e275386",
+              "0x3fbf50e94beb05ee",
+              "0x3fe350535df61cb0",
+              "0x3fa208543818b7b1",
+              "0x3fef98efa10ee8e2",
+              "0xbfc3bb4f6b9c66d8",
+              "0xbfe3ac99b8b43bba",
+              "0xbfb9a68f18860860",
+              "0xbfe9086a126b22f0"
+            ],
+            "translation": [
+              "0x3fd4cad5c5b71586",
+              "0xbfb324b4a617308a",
+              "0x3fc55376a63c700d"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fc5528838ae4906",
+              "0xbfef8d8a0dc14a55",
+              "0xbd9ef80551b77cba",
+              "0xbfef8d8a0dc0d02f",
+              "0xbfc5528838adf67b",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec5f2ebf6d0398e",
+              "0xbe9daa09ac8e0aa8",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfc552a6987d4842",
+              "0xbef3063336db8f4f",
+              "0xbfef8d88c53f49fc",
+              "0x3fef8d88c1f35b92",
+              "0x3f1cd8d892b4b435",
+              "0xbfc552a69a9c1b98",
+              "0x3f1d3c7bdc82b3fa",
+              "0xbfeffffffca93a36",
+              "0xbe9daa6f4891891d"
+            ],
+            "translation": [
+              "0x3faa84b6fa9021bc",
+              "0x3fa0e7df1b97a9a9",
+              "0x3fbdd980db08e926"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfab38d05708200e",
+              "0x3fc435293d0357af",
+              "0xbfef8d88c53f49fb",
+              "0x3fd42427487c44a7",
+              "0xbfede711a484de75",
+              "0xbfc552a69a9c1ba5",
+              "0xbfee538c536c32f1",
+              "0xbfd46d383166fc55",
+              "0xbe9daa6f498d8c09"
+            ],
+            "translation": [
+              "0x3fb20f59ef2e2b84",
+              "0xbfb3f6920466b7ce",
+              "0x3fc281d8226161aa"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfc2f30d9d3a57e6",
+              "0xbfb38da84cef1db4",
+              "0xbfef8d88c53f49fa",
+              "0x3fec0a6bcac2424e",
+              "0x3fdcef3f7d7ef412",
+              "0xbfc552a69a9c1bb5",
+              "0x3fdd5836d06d25c1",
+              "0xbfec7025572ab1f6",
+              "0xbe9daa6f44f26cca"
+            ],
+            "translation": [
+              "0x3fb41b32dc4a3bfe",
+              "0xbfc009a40d0b76f2",
+              "0x3fd15455e26c52c4"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fee4ea765c88708",
+              "0x3fd3f31f8e9c52dd",
+              "0xbfb38d72a4671aac",
+              "0x3fd3f03ca77a9af6",
+              "0xbfeabeca4e94b6bb",
+              "0x3fdcef4c76a52a53",
+              "0x3fb3bc559c8d713d",
+              "0xbfdced4f161af9b3",
+              "0xbfec70229df43b09"
+            ],
+            "translation": [
+              "0x3fb0bb6ad9860df2",
+              "0xbfc3f59bad1aefca",
+              "0x3fd4cdf81c235b71"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfee4ea6f8f8d8b1",
+              "0x3fd3f31f8e9c52dd",
+              "0x3fb38d9cce979dd7",
+              "0xbfd3f041afa61fb2",
+              "0xbfeabeca4e94b6bb",
+              "0xbfdcef48fefcdea4",
+              "0xbfb3bc2e0c18f826",
+              "0xbfdced4f161af9b3",
+              "0x3fec70230bc7f244"
+            ],
+            "translation": [
+              "0x3fb0b7c9414b17d3",
+              "0xbfc9edffcf8cd559",
+              "0x3fda5a5e180af7f8"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfac626abf84473b",
+              "0x3feff366d0604bf6",
+              "0xbd9ef80551b77cba",
+              "0x3feff366d05fd046",
+              "0x3fac626abf83d95d",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec639c71e65df2b",
+              "0x3e83be714f319dd6",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbf9e407b60f9ff00",
+              "0xbfa80545c113043c",
+              "0x3feff366630bc97c",
+              "0x3fe1067edc5d5bee",
+              "0x3feb096c5b5520d4",
+              "0x3fac62e5cf943ba0",
+              "0xbfeb1415e2b8a28c",
+              "0x3fe10d35a792c44a",
+              "0x3e83be503c23262f"
+            ],
+            "translation": [
+              "0x3f96ce2e334285f4",
+              "0xbfa00f30bdb1b083",
+              "0x3fbdd97dfd3c41fd"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbf9a6d81bdec5bbd",
+              "0xbfa91f8bba992e54",
+              "0x3feff366630bc97c",
+              "0x3fddbf16885101aa",
+              "0x3fec47249f21cc6c",
+              "0x3fac62e5cf943bef",
+              "0xbfec524b71d84f96",
+              "0x3fddcad1930231b0",
+              "0x3e83be503de114f7"
+            ],
+            "translation": [
+              "0x3f9b8e56081d9f1f",
+              "0xbfbd6b14acd054fc",
+              "0x3fc93538d88058df"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3faac8a434bac4de",
+              "0x3f92ce4218719a3f",
+              "0x3feff366630bc97d",
+              "0xbfee25a297160b39",
+              "0xbfd52abdffaad8c9",
+              "0x3fac62e5cf943a73",
+              "0x3fd53316f4ca76ab",
+              "0xbfee318618cd0f99",
+              "0x3e83be5044fda46d"
+            ],
+            "translation": [
+              "0x3f9edc1d66fd452b",
+              "0xbfc62584570135b1",
+              "0x3fd46666661936e7"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fe9f09ac6fae44d",
+              "0xbfe2baa4d15ede47",
+              "0x3f92cd56346971e5",
+              "0xbfe18525087d1e56",
+              "0xbfe898f209f863ff",
+              "0xbfd52aca0b28c803",
+              "0x3fca958a8bd2f33b",
+              "0x3fd083e015cdf531",
+              "0xbfee3184211be785"
+            ],
+            "translation": [
+              "0x3fa81bbc6eb07267",
+              "0xbfc36e76c52708cb",
+              "0x3fd816f2a640ed8c"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfe9f09ae1230817",
+              "0xbfe2baa4d15ede47",
+              "0xbf92ccc5d9924878",
+              "0x3fe18526dfaab173",
+              "0xbfe898f209f863ff",
+              "0x3fd52ac3f32c88ad",
+              "0xbfca95758afefae2",
+              "0x3fd083e015cdf531",
+              "0x3fee318548fcdd59"
+            ],
+            "translation": [
+              "0x3fa3f8efc0a23c77",
+              "0xbfbd678d4efc6605",
+              "0x3fdde81931c113d9"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fc0634abf1a2a8a",
+              "0x3fefbc95049c99a7",
+              "0xbd9ef80551b77cba",
+              "0x3fefbc95049c1ecb",
+              "0xbfc0634abf19eb19",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec613a42eaa48d8",
+              "0xbe96ccccd77d33c3",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3f85791e67bbdf87",
+              "0x3fc0551491d99bfb",
+              "0x3fefbc9601169c0b",
+              "0x3fb4cb2c9168b300",
+              "0x3fefa14ada2d2209",
+              "0xbfc0632c2fde67e8",
+              "0xbfefe47ae11f70df",
+              "0x3fb4f757284e671b",
+              "0xbe96ccddaa751f2a"
+            ],
+            "translation": [
+              "0x3f9138306c07d98a",
+              "0xbf9c79fad8f8e4b2",
+              "0x3fbdd97e25c5e314"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fbcd5755fbfeca7",
+              "0xbfaf29f5e0dae788",
+              "0x3fefbc9601169c0c",
+              "0x3febeba5113c6e13",
+              "0xbfde2d4d2f2dc49f",
+              "0xbfc0632c2fde67ca",
+              "0x3fde6d66ded5787b",
+              "0x3fec26f3eb1dc1b8",
+              "0xbe96ccdda9f8080e"
+            ],
+            "translation": [
+              "0x3f88b471926151b6",
+              "0xbfb08b84a6e79922",
+              "0x3fccfde7d9e99fa2"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fbf1349ac99dc87",
+              "0x3fa4d566678d7242",
+              "0x3fefbc9601169c08",
+              "0x3fee1750cd2fbbb1",
+              "0x3fd42c6d2dc89bcb",
+              "0xbfc0632c2fde683a",
+              "0xbfd4574778202d68",
+              "0x3fee573beb265990",
+              "0xbe96ccddacfb7681"
+            ],
+            "translation": [
+              "0xbf6c3e4592c1a6d8",
+              "0xbfc7a6f8aa8e3a22",
+              "0x3fc55e3acbbead4b"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3feff75cd49c8bc5",
+              "0x3f95c647febf33d8",
+              "0x3fa4d4f7d8fea7e6",
+              "0xbfa0e90b9c120d1c",
+              "0x3fee59aa58837ed5",
+              "0x3fd42c7a51e63254",
+              "0xbfa0537b5a4d8357",
+              "0xbfd43d0cb9b81554",
+              "0x3fee573a07dbd39b"
+            ],
+            "translation": [
+              "0x3f889c782eae5347",
+              "0xbfca69ff34584219",
+              "0x3fbbe7d5be27e3e0"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfeff75d0e92ff07",
+              "0x3f95c647febf33d8",
+              "0xbfa4d49ee6dd3b9a",
+              "0x3fa0e8ef8b039c63",
+              "0x3fee59aa58837ed5",
+              "0xbfd42c7ab000f281",
+              "0x3fa05326ee111aab",
+              "0xbfd43d0cb9b81554",
+              "0xbfee573a3548bc93"
+            ],
+            "translation": [
+              "0x3f20d274f7dd5fc0",
+              "0xbfce5dc78d1a1402",
+              "0x3f90adc4ce244d7d"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfeeb19e5f5b5bf1",
+              "0x3fd2193993c164e9",
+              "0xbd9ef80551b77cba",
+              "0x3fd2193993c11ed9",
+              "0x3feeb19e5f5ae51f",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ea92e02a511a7c5",
+              "0x3ec559eee439511d",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfe4b2d0e9d777ca",
+              "0xbfe6aa245f73e126",
+              "0x3fd2192accab36d7",
+              "0x3fc868d8b490cfcb",
+              "0x3fcaba49129110f2",
+              "0x3feeb1a08d05ecc7",
+              "0xbfe7a10ab5a3aea4",
+              "0x3fe5944e56a6fd46",
+              "0x3ec559e8fd476828"
+            ],
+            "translation": [
+              "0x3fb0154aca871ee1",
+              "0xbf9ac16bb7b6c734",
+              "0x3fbdd97e38ecefdf"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfe860cd1f462c8b",
+              "0x3fe2a66145cc6edb",
+              "0x3fd2192accab36d0",
+              "0x3fccbf97c079a963",
+              "0xbfc5fe65187bdd44",
+              "0x3feeb1a08d05ecc8",
+              "0x3fe3718dae7ac62b",
+              "0x3fe96a5e3b1c9409",
+              "0x3ec559e8fd66528e"
+            ],
+            "translation": [
+              "0x3fc3e66fd7f02828",
+              "0xbfab5cc6e6d30443",
+              "0x3fc725c96c8354b6"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfedb4ffdf94e8b5",
+              "0xbfcee1bb486072f2",
+              "0x3fd2192accab36fe",
+              "0x3fd1843808fa7b2a",
+              "0x3fb2355cf69bbe7d",
+              "0x3feeb1a08d05ecc1",
+              "0xbfd0191056fcbebb",
+              "0x3feef89fa46c33e6",
+              "0x3ec559e8fcf56638"
+            ],
+            "translation": [
+              "0x3fd0b8a3e28c0ff2",
+              "0xbfb5aa900e5ae0de",
+              "0x3fba5e767e025430"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfbba4d481f18388",
+              "0xbfeedca0f4fc7e4e",
+              "0xbfcee1da0aeead7b",
+              "0x3fefa71df367938a",
+              "0xbfc07422b36f93a4",
+              "0x3fb2352eed9c42ce",
+              "0xbfb97fe5d334bc02",
+              "0xbfcd90683ae09fa8",
+              "0x3feef89e25efe8c3"
+            ],
+            "translation": [
+              "0x3fd1fe05461ece2d",
+              "0xbfb255966ca347ca",
+              "0x3fa675e8c984effc"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fbba4df3fafbf96",
+              "0xbfeedca0f4fc7e4e",
+              "0x3fcee1d7a394819c",
+              "0xbfefa71e58ba7eb3",
+              "0xbfc07422b36f93a4",
+              "0xbfb23502e42f9dbd",
+              "0x3fb97fbabc8d6a04",
+              "0xbfcd90683ae09fa8",
+              "0xbfeef89eb3d7119d"
+            ],
+            "translation": [
+              "0x3fd3935592575194",
+              "0xbfb61d41c2c691b5",
+              "0xbfa9bc94b7bb82ba"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfcdd8e9ee2b8eeb",
+              "0x3fef1e2bf3656ac1",
+              "0xbd9ef80551b77cba",
+              "0x3fef1e2bf364f24a",
+              "0x3fcdd8e9ee2b1b60",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec5a573f2e23227",
+              "0x3ea4c32242655a90",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fc62e9f52aedeab",
+              "0xbfc3f897a33e3f1e",
+              "0x3fef1e2a278c7aec",
+              "0xbfe7203d368e3e4a",
+              "0x3fe4d2279579eabb",
+              "0x3fcdd907e4dc611f",
+              "0xbfe569428d50cedc",
+              "0xbfe7c8131d650954",
+              "0x3ea4c3196ece825d"
+            ],
+            "translation": [
+              "0x3f9cd354cc8e40c2",
+              "0xbfa1514ce35346e4",
+              "0x3fbdd97de13a11af"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfcd3584c94764a7",
+              "0x3fa8911f5db5772e",
+              "0x3fef1e2a278c7aea",
+              "0x3fee73b0c0c3d635",
+              "0xbfc99cd0fb4cb2b6",
+              "0x3fcdd907e4dc613d",
+              "0x3fca56b15e68dd7e",
+              "0x3fef50b17564ad0b",
+              "0x3ea4c3196e93ee7c"
+            ],
+            "translation": [
+              "0x3f8aa5393b573779",
+              "0x3f9e03b3f22a73f8",
+              "0x3fcb3ab6430a6454"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fbb65d4d6e906b0",
+              "0xbfca84bb9fd89659",
+              "0x3fef1e2a278c7af2",
+              "0xbfdc903d161e6018",
+              "0x3feba59c4ced9a66",
+              "0x3fcdd907e4dc60b9",
+              "0xbfec6e416354c0aa",
+              "0xbfdd5f89aa545b1e",
+              "0x3ea4c3196da242f0"
+            ],
+            "translation": [
+              "0x3fa68ce0dfdffc38",
+              "0xbfb9a05fd130574e",
+              "0x3fc853deb2ade78a"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfef3815c378a3be",
+              "0x3fb29e02611a9158",
+              "0xbfca84d7027dd847",
+              "0xbfc2e40e57709404",
+              "0x3fdecfebbcf8f20a",
+              "0x3feba597daf84aa9",
+              "0x3fc4cf40aa438539",
+              "0x3febf35b286b8359",
+              "0xbfdd5f94384c9112"
+            ],
+            "translation": [
+              "0x3fb30585e42e01ee",
+              "0xbfc307a70a6d7be1",
+              "0x3fcbeac1fed3ddf2"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fef3816ea9fb30b",
+              "0x3fb29e02611a9158",
+              "0x3fca84c14b03c471",
+              "0x3fc2e3fb1c1ac4e3",
+              "0x3fdecfebbcf8f20a",
+              "0xbfeba598ad38fea5",
+              "0xbfc4cf3672de296d",
+              "0x3febf35b286b8359",
+              "0x3fdd5f9607845d0f"
+            ],
+            "translation": [
+              "0x3fba31ecf63e8bf4",
+              "0xbfcdbee9770a3366",
+              "0x3fd0bf176db0c2b4"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfa429c5910ac272",
+              "0x3feff9a527b854fa",
+              "0xbd9ef80551b77cba",
+              "0x3feff9a527b7d931",
+              "0x3fa429c5910a7466",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec63e1ee61e8ba8",
+              "0x3e7c0cce9d94e095",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fa3fdba42f64cc8",
+              "0xbf7524646fa401c2",
+              "0x3feff9a4da0e2570",
+              "0xbfefb309e44c32f5",
+              "0x3fc0c33a5579ea7e",
+              "0x3fa42a40b9274d9b",
+              "0xbfc0c68f5021ef7b",
+              "0xbfefb95701941ce2",
+              "0x3e7c0c8c98ec9db4"
+            ],
+            "translation": [
+              "0x3f964a91d3b11ba8",
+              "0xbf9fd7848baa7481",
+              "0x3fbdd97e0050f6ec"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbf9a1b2be044b2b7",
+              "0xbf9ebd9a22b4e2d0",
+              "0x3feff9a4da0e2570",
+              "0x3fe4b2ad9b54d81a",
+              "0x3fe85f4b000eb3ed",
+              "0x3fa42a40b9274ddf",
+              "0xbfe8642341c98e88",
+              "0x3fe4b6cae01091cd",
+              "0x3e7c0c8c953c40f9"
+            ],
+            "translation": [
+              "0x3f91f0404e468a38",
+              "0x3fb3a5e4186fef47",
+              "0x3fc45dc656aa3698"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3f9ad75130b0a5f3",
+              "0x3f9e19de78fb0e91",
+              "0x3feff9a4da0e2571",
+              "0xbfe547d8bbab59c2",
+              "0xbfe7dd7aa29eded7",
+              "0x3fa42a40b9274c09",
+              "0x3fe7e239166fef61",
+              "0xbfe54c13a74d6224",
+              "0x3e7c0c8ca085ac84"
+            ],
+            "translation": [
+              "0x3f954ce39b048642",
+              "0xbf7ace34bd099290",
+              "0x3fd0fab46c6abcc4"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fe0869b3522de18",
+              "0x3feb62e8fa3fc364",
+              "0x3f9e18ed6ee6f65a",
+              "0x3fe29ada7b59522b",
+              "0xbfd4d078df158fc3",
+              "0xbfe7dd7ee36b581a",
+              "0xbfe41e58848542a5",
+              "0x3fd9be401b48bc12",
+              "0xbfe54c0f38612af4"
+            ],
+            "translation": [
+              "0x3fa2fd97bd4331de",
+              "0x3fa45849a936f5f7",
+              "0x3fd394f2d6e94666"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfe0869b5f020fcb",
+              "0x3feb62e8fa3fc364",
+              "0xbf9e189177a8002b",
+              "0xbfe29ad654df36f3",
+              "0xbfd4d078df158fc3",
+              "0x3fe7dd821fb48007",
+              "0x3fe41e5c38a9d20d",
+              "0x3fd9be401b48bc12",
+              "0x3fe54c0bb8b43a9d"
+            ],
+            "translation": [
+              "0x3f9ea8b03da859f7",
+              "0x3fbbbfda18320ba8",
+              "0x3fd812e121b74100"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fb64c0751a1806e",
+              "0xbfefe0de5df35006",
+              "0xbd9ef80551b77cb9",
+              "0xbfefe0de5df2d49d",
+              "0xbfb64c0751a12a1e",
+              "0x3ec6428a6aa3f6a3",
+              "0xbec62ce2e58498e3",
+              "0xbe8f0506df0119ab",
+              "0xbfefffffffff841f"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fa0ded468716963",
+              "0x3fb4a40e8661fc01",
+              "0xbfefe0ddb22fe824",
+              "0xbfd81e67ad13fb34",
+              "0xbfed8265a47076ca",
+              "0xbfb64c44b5f82ee6",
+              "0xbfed9f379f6f06a2",
+              "0x3fd835f5fb970953",
+              "0xbe8f05d2f64b0e47"
+            ],
+            "translation": [
+              "0x3fabd9c8f797f89a",
+              "0x3fa051fb7fe24ea2",
+              "0x3fbdd980ce005ee2"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3f8569b30b64d12a",
+              "0xbfb622fe433982e8",
+              "0xbfefe0ddb22fe823",
+              "0xbfbe9d1f67dcc188",
+              "0x3fefa5daa19031bf",
+              "0xbfb64c44b5f82f16",
+              "0x3fefc4c34e5fd328",
+              "0x3fbebb05307b60ac",
+              "0xbe8f05d2f4ca5d84"
+            ],
+            "translation": [
+              "0x3fa8cbb50a5a475d",
+              "0x3fb9a163211642d5",
+              "0x3fcae83ca16db412"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3f9229f9b36b99c8",
+              "0xbfb5d4a4bc93ad33",
+              "0xbfefe0ddb22fe823",
+              "0xbfc9f7f481b3941d",
+              "0x3fef35d6c8702dbb",
+              "0xbfb64c44b5f82f31",
+              "0x3fef54520fe8e835",
+              "0x3fca11510fb024f0",
+              "0xbe8f05d2fe059c89"
+            ],
+            "translation": [
+              "0x3fa7d7e67015d37c",
+              "0x3fbf13a6f69cd476",
+              "0x3fb3b08123437b72"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fe8328e9668a46e",
+              "0x3fe4c2eb0fbeaf28",
+              "0xbfb5d46693125f89",
+              "0xbfb1db1014187751",
+              "0x3fcad0465e272bc0",
+              "0x3fef35d63f7f9b52",
+              "0x3fe4d216cce1ff53",
+              "0xbfe768f6c3abed3d",
+              "0x3fca11685298dc84"
+            ],
+            "translation": [
+              "0x3fa147721231f5c2",
+              "0x3faed5cc69587667",
+              "0x3fb081065e470004"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfe8328e1cecee97",
+              "0x3fe4c2eb0fbeaf28",
+              "0x3fb5d4883d37fb5a",
+              "0x3fb1dae4a84586c0",
+              "0x3fcad0465e272bc0",
+              "0xbfef35d6a2dd035b",
+              "0xbfe4d217ef0474d8",
+              "0xbfe768f6c3abed3d",
+              "0xbfca1159d6dd6c54"
+            ],
+            "translation": [
+              "0x3fa26ea7c3220244",
+              "0xbfa1e85185cf0929",
+              "0x3fa439dd736c8f6b"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfe1f4f2628f7733",
+              "0x3fea7ca14b66e55e",
+              "0xbd9ef80551b77cba",
+              "0x3fea7ca14b667ed5",
+              "0x3fe1f4f2628f31af",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec26cc4ae58763c",
+              "0x3eb8fb749f2ccfd3",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfafe4fd025c3938",
+              "0xbfe1d88f17a2cbaa",
+              "0x3fea7c9cf8c9f832",
+              "0x3fb785ec32f27a64",
+              "0x3fea52b390f5197f",
+              "0x3fe1f4f8c2d6d5e9",
+              "0xbfefcd5d800bb021",
+              "0x3fbc6b5272135cd5",
+              "0x3eb8fb6ea854adcf"
+            ],
+            "translation": [
+              "0x3fa4df281271211b",
+              "0xbfa2226288024124",
+              "0x3fbdd97dcf0bc3e6"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfdf3915ccc36c30",
+              "0xbfd1bf097d285d3b",
+              "0x3fea7c9cf8c9f82e",
+              "0x3fe706fb0165d044",
+              "0x3fda2d05544d3e13",
+              "0x3fe1f4f8c2d6d5ef",
+              "0xbfdf9fdad79024cd",
+              "0x3febd204bc9a1edb",
+              "0x3eb8fb6ea875b634"
+            ],
+            "translation": [
+              "0x3fb03a8078840970",
+              "0xbfb19c8ca54e1662",
+              "0x3fccd8c8ff8fd4a0"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfc0527012ce0185",
+              "0xbfe17cb5faef9e70",
+              "0x3fea7c9cf8c9f842",
+              "0x3fc8135a5f80581a",
+              "0x3fe9cb38aba6045d",
+              "0x3fe1f4f8c2d6d5d2",
+              "0xbfef29af98328d8c",
+              "0x3fcd163988239c62",
+              "0x3eb8fb6ea8ceaca1"
+            ],
+            "translation": [
+              "0x3fc05a89a74bb9ac",
+              "0xbfc4f583fb633877",
+              "0x3fd2fa97a6a7cabc"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fe23d1937cca0ee",
+              "0xbfe3a2a5fb2c7d72",
+              "0xbfe17cbd1b2d4ce9",
+              "0x3fe1d108bea44895",
+              "0xbfc9b0e2b9cd1b37",
+              "0x3fe9cb3578593202",
+              "0xbfe35649b55c1fd4",
+              "0xbfe8700db642d28b",
+              "0x3fcd162264dd908f"
+            ],
+            "translation": [
+              "0x3fc68b8feec0887c",
+              "0xbfc9f685a8a3deae",
+              "0x3fd2171c5463aa61"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfe23d162d449f18",
+              "0xbfe3a2a5fb2c7d72",
+              "0x3fe17cc0472898e0",
+              "0xbfe1d10d3af9e071",
+              "0xbfc9b0e2b9cd1b37",
+              "0xbfe9cb325f2840ac",
+              "0x3fe3564871a0a32e",
+              "0xbfe8700db642d28b",
+              "0xbfcd162fd865693a"
+            ],
+            "translation": [
+              "0x3fccd9913b2b3115",
+              "0xbfd25285012d0f95",
+              "0x3fd0fab82ebd9273"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfed692213cf85a6",
+              "0xbfd938520b12ac18",
+              "0xbd9ef80551b77cba",
+              "0xbfd938520b124a76",
+              "0x3fed692213cf13cb",
+              "0x3ec6428a6aa3f6a4",
+              "0xbeb18b228a205e10",
+              "0x3ec4757101d1c9e2",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fe84948cff4113e",
+              "0xbfe0968869506a77",
+              "0xbfd938603400ff27",
+              "0x3fd4d3792cf8504a",
+              "0xbfcc72e7f778305b",
+              "0x3fed691f0ab31ed3",
+              "0xbfe20c662131ca51",
+              "0xbfea6cabd95a0acb",
+              "0x3ec475677a5f81a9"
+            ],
+            "translation": [
+              "0x3fb2f02d321c3f98",
+              "0xbf73bdeb9797f3c1",
+              "0x3fbdd97f2bc828f5"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfbf45ab475b9790",
+              "0xbfed26526c6b173f",
+              "0xbfd938603400ff34",
+              "0xbfaad0ae3a35d9ec",
+              "0xbfd8ff198d3fa9bc",
+              "0x3fed691f0ab31ed0",
+              "0xbfefb75219d302d7",
+              "0x3fc10337d1cfc43a",
+              "0x3ec475677a4ce23d"
+            ],
+            "translation": [
+              "0x3f690b978466f060",
+              "0xbfa2095dbe2c9e69",
+              "0x3fca02dd639f426e"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fecd760c6fc9e17",
+              "0x3fc708f9f63c654e",
+              "0xbfd938603400ff1d",
+              "0x3fd8bb63b51270d0",
+              "0x3fb3c0f2dc77e21e",
+              "0x3fed691f0ab31ed5",
+              "0x3fc9103105c92504",
+              "0xbfef616c6fc04774",
+              "0x3ec475677ad871af"
+            ],
+            "translation": [
+              "0x3f8e4f27bf46b6b6",
+              "0xbf9eeb0bf1546888",
+              "0x3fd59b59440655ff"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fdceb7edde58d61",
+              "0x3febf5af02eb6c04",
+              "0x3fc7091b80fee5ba",
+              "0x3fec20f14bc61dea",
+              "0xbfde1ca0ffd469ab",
+              "0x3fb3c0cca6d8b879",
+              "0x3fc377bd3d41d6d1",
+              "0x3fbf92551e834a55",
+              "0xbfef616b4601f5ca"
+            ],
+            "translation": [
+              "0xbf6b450c05530258",
+              "0xbf92b6190e60cbdd",
+              "0x3fd97108a5bd0a7a"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfdceb80deaa481c",
+              "0x3febf5af02eb6c04",
+              "0xbfc7091171f98978",
+              "0xbfec20f1b9b2af57",
+              "0xbfde1ca0ffd469ab",
+              "0xbfb3c0a5849168dd",
+              "0xbfc377a769072160",
+              "0x3fbf92551e834a55",
+              "0x3fef616c1eae50ab"
+            ],
+            "translation": [
+              "0xbf9957bc282f6abb",
+              "0xbfa0bc37c9fe944d",
+              "0x3fdf85811b5e8a4c"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fc817385ea91ca5",
+              "0x3fef6d99f2847918",
+              "0xbd9ef80551b77cba",
+              "0x3fef6d99f283ff6d",
+              "0xbfc817385ea8bf62",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec5dcb31b1f5a57",
+              "0xbea0c21e0eee6e4f",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfc7ccabdfd9a062",
+              "0xbf9dd9ffaba50409",
+              "0x3fef6d9b65ab1479",
+              "0xbfef0c8216cb627a",
+              "0xbfc378cb1e50479d",
+              "0xbfc8171a1b7a216c",
+              "0x3fc3d37f2e8c4284",
+              "0xbfef9d225f50b871",
+              "0xbea0c226ad519e96"
+            ],
+            "translation": [
+              "0x3f8f0da5cebcd03c",
+              "0xbf9b0ccf3193102b",
+              "0x3fbdd97e35a63be6"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfbd43999ec1d238",
+              "0x3fc323325f093ca4",
+              "0x3fef6d9b65ab1479",
+              "0xbfe316c1c8b8cca9",
+              "0x3fe8f7828803bfbc",
+              "0xbfc8171a1b7a2164",
+              "0xbfe96bce319e0e50",
+              "0xbfe36fac8ed3898e",
+              "0xbea0c226add63720"
+            ],
+            "translation": [
+              "0x3fa2e5ced769498c",
+              "0x3fb64a0dfa7e01ba",
+              "0x3fc03bd4308b544b"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfb2177ce7025a7f",
+              "0xbfc653cf33342cb6",
+              "0x3fef6d9b65ab147c",
+              "0xbfd79a48a3adb6c9",
+              "0xbfed20d793d8f74a",
+              "0xbfc8171a1b7a2126",
+              "0x3feda885c6d2e4b0",
+              "0xbfd80839596530e3",
+              "0xbea0c226abbd891d"
+            ],
+            "translation": [
+              "0x3fab30f1e9716ee9",
+              "0x3fc5f6dd616d8d17",
+              "0x3fcd8bf25886b656"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfb3e6129d784063",
+              "0x3fef693b53cad2a8",
+              "0xbfc653ef1b0df0a6",
+              "0x3fd925087aabd203",
+              "0xbfc0b914712e2cc2",
+              "0xbfed20d851eae5a9",
+              "0xbfed524d06f19755",
+              "0xbfc1d42b9cb72fb0",
+              "0xbfd8082e56bf9215"
+            ],
+            "translation": [
+              "0x3fb4dff2c2e3ffc8",
+              "0x3fcca5b1432b8de4",
+              "0x3fd03ddfc3210c58"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fb3e61a6188fd6c",
+              "0x3fef693b53cad2a8",
+              "0x3fc653ed601bed92",
+              "0xbfd924fe59183614",
+              "0xbfc0b914712e2cc2",
+              "0x3fed20da81a25411",
+              "0x3fed524f1de43ba6",
+              "0xbfc1d42b9cb72fb0",
+              "0x3fd8082423f870e9"
+            ],
+            "translation": [
+              "0x3fb95bf072f233ba",
+              "0x3fd3d7e6f4ec7325",
+              "0x3fd310ab3e874ac6"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfc47298d612dfed",
+              "0x3fef96cc46a2c1d9",
+              "0xbd9ef80551b77cba",
+              "0x3fef96cc46a2478f",
+              "0x3fc47298d61290c5",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec5f95cb7c73c51",
+              "0x3e9c727d2f4685c1",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfaac18bd662d499",
+              "0xbfc352b6dad6a6e9",
+              "0x3fef96cb0b9ad1d1",
+              "0x3fd4aac39f08ede0",
+              "0x3fedd9deb83762ab",
+              "0x3fc472b740eb0b1b",
+              "0xbfee3d49e92c09e1",
+              "0x3fd4ef982adc1069",
+              "0x3e9c726c29b14018"
+            ],
+            "translation": [
+              "0x3f9a4393cda0dc65",
+              "0xbfa0dc0aef145e4b",
+              "0x3fbdd97deb6c3c09"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fad10e4d7be2fc7",
+              "0x3fc31d09aa52b91f",
+              "0x3fef96cb0b9ad1cf",
+              "0xbfd673883c9e5d16",
+              "0xbfed86f2a3159c3c",
+              "0x3fc472b740eb0b33",
+              "0x3fede949a93d6122",
+              "0xbfd6be4e0baf8284",
+              "0x3e9c726c2a66b91c"
+            ],
+            "translation": [
+              "0x3fa24edfc4d950f5",
+              "0xbfb86c2021b50fa0",
+              "0x3fcb5e5b2b7d6888"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfc2e6ca022fee02",
+              "0x3faf345c8a58cee0",
+              "0x3fef96cb0b9ad1cc",
+              "0x3fed33244c3db725",
+              "0xbfd81a68067a70eb",
+              "0x3fc472b740eb0b83",
+              "0x3fd86aae36bdb15c",
+              "0x3fed946435f95ebf",
+              "0x3e9c726c2683471a"
+            ],
+            "translation": [
+              "0x3f9d91bed1a91c41",
+              "0xbfab126b34049918",
+              "0x3fb5fbdd07846344"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfee945911303b13",
+              "0x3fd272f64d550cbe",
+              "0x3faf33d4fb2bc5af",
+              "0xbfd286b35947eea2",
+              "0xbfec28d3aac59ca0",
+              "0xbfd81a5fa4bb7da4",
+              "0xbfac208b8f43c418",
+              "0xbfd8297eb6b822f4",
+              "0x3fed94667a1791cd"
+            ],
+            "translation": [
+              "0x3fa606b8170a5a18",
+              "0xbf9b9ea9532ebf00",
+              "0x3f9e19ea7426df14"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fee9458ba5db385",
+              "0x3fd272f64d550cbe",
+              "0xbfaf342a11793199",
+              "0x3fd286b78a57c110",
+              "0xbfec28d3aac59ca0",
+              "0x3fd81a5c6bf2cfdb",
+              "0x3fac203941216fd0",
+              "0xbfd8297eb6b822f4",
+              "0xbfed9466c85a923e"
+            ],
+            "translation": [
+              "0x3fa6cc27da958307",
+              "0x3f8985b655ab2528",
+              "0xbfaf2052d351d8e2"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfd49f3f98246a53",
+              "0xbfee4b142fd2369e",
+              "0xbd9ef80551b77cba",
+              "0xbfee4b142fd1c159",
+              "0x3fd49f3f98241a7e",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec5129a83ec0c91",
+              "0x3eacb0c967136b5e",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfd452b6979dfec7",
+              "0xbfabfabc375426ee",
+              "0xbfee4b16ab3f3a31",
+              "0xbfeddabd3135d9e1",
+              "0xbfc48d15c7bdf606",
+              "0x3fd49f31026c1dc1",
+              "0xbfc5b57a6fc27a12",
+              "0x3fef89523e4125b6",
+              "0x3eacb097710fdfd7"
+            ],
+            "translation": [
+              "0x3fb0e104242a77d1",
+              "0x3f9770036cac0c84",
+              "0x3fbdd9806792a161"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fa701ea8b4ac4fd",
+              "0x3fd46b99e42e90d5",
+              "0xbfee4b16ab3f3a30",
+              "0x3fc0e60870ce3e62",
+              "0x3fedff4e4c39b9ff",
+              "0x3fd49f31026c1dc5",
+              "0x3fefaff28d6ab96c",
+              "0xbfc1d9c3f14226fb",
+              "0x3eacb0977194efaf"
+            ],
+            "translation": [
+              "0x3fba6bf8e19cd2c2",
+              "0x3fc0f2af41029633",
+              "0x3fbbac49cc610cfb"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfd13ca9181a6bfe",
+              "0x3fc6a3f5e043897a",
+              "0xbfee4b16ab3f3a34",
+              "0xbfe9522c79c02c20",
+              "0x3fe0a1173f0460bc",
+              "0x3fd49f31026c1dad",
+              "0x3fe190ee8221f03a",
+              "0x3feabf5e99bd8bb6",
+              "0x3eacb0976f68090d"
+            ],
+            "translation": [
+              "0x3fb94b6e737746cf",
+              "0x3fbe95aa232c1720",
+              "0xbf9ad69a9e856b7c"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfc833623e957b1a",
+              "0xbfeee8aad327e606",
+              "0x3fc6a40c9cb43926",
+              "0x3feb3e7a04d3fcb8",
+              "0xbfb24cff6674b7a4",
+              "0x3fe0a110112062b9",
+              "0xbfdf50a2fd37879f",
+              "0x3fcfda1e9dbcc81c",
+              "0x3feabf61dc73c14d"
+            ],
+            "translation": [
+              "0x3fb2243a6f3d1cf0",
+              "0x3fb7f3031748b730",
+              "0xbfb3c8a4eae202aa"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fc8335e4e9de041",
+              "0xbfeee8aad327e606",
+              "0xbfc6a410d21d6e7a",
+              "0xbfeb3e7ce9275dfb",
+              "0xbfb24cff6674b7a4",
+              "0xbfe0a10b54397c8d",
+              "0x3fdf5099af9e3476",
+              "0x3fcfda1e9dbcc81c",
+              "0xbfeabf649585140d"
+            ],
+            "translation": [
+              "0x3fac44d7227ffdd7",
+              "0x3fa25abdf9727614",
+              "0xbfc3e719e20eedbd"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfeff0e7099cc7cf",
+              "0xbfaf11f1278ffd73",
+              "0xbd9ef80551b77cba",
+              "0xbfaf11f1278f852e",
+              "0x3feff0e7099c4c29",
+              "0x3ec6428a6aa3f6a4",
+              "0xbe859cb35ead6603",
+              "0x3ec6380a1898e15f",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fd0f3fc988c5e6d",
+              "0xbfeecbb4f2987422",
+              "0xbfaf126c2e001c67",
+              "0x3f907e9312b667d1",
+              "0xbfadf51d1acb3848",
+              "0x3feff0e691efb15f",
+              "0xbfeeda43b00e163e",
+              "0xbfd0fc00dea7ef19",
+              "0x3ec638025a7a4b6d"
+            ],
+            "translation": [
+              "0x3fb1fe5ef059adec",
+              "0xbf90cb09d0501b7d",
+              "0x3fbdd97ea7ce8a20"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fcf377d516dd24e",
+              "0xbfeef912e0d46381",
+              "0xbfaf126c2e001cee",
+              "0x3f8e5f67bb01796f",
+              "0xbfae2140ea92e648",
+              "0x3feff0e691efb15e",
+              "0xbfef07b7124f9406",
+              "0xbfcf464068cc41e5",
+              "0x3ec638025a7e90dd"
+            ],
+            "translation": [
+              "0x3fb1421caa2c7c47",
+              "0xbf90f8e736d08a53",
+              "0x3fcdc4aa82f2d6d6"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fef8b1ea3261ae6",
+              "0xbfc4188b9bed5277",
+              "0xbfaf126c2e001d02",
+              "0x3faeaf772f4a59dd",
+              "0xbf838b32b1b558da",
+              "0x3feff0e691efb15e",
+              "0xbfc4220a3bab1acf",
+              "0xbfef9a0801808e6a",
+              "0x3ec638025b12ce7c"
+            ],
+            "translation": [
+              "0x3f9e30a27003656e",
+              "0xbf935592750296fb",
+              "0x3fd72cbb2a716129"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfeb90a8f3029881",
+              "0x3fdeea1f3032ef4a",
+              "0xbfc41872522e161f",
+              "0x3fdf62cec156be5c",
+              "0x3febe2da3c3f59d7",
+              "0xbf838d076db2763e",
+              "0x3fc0ebfc1ec1dc5a",
+              "0xbfb5d0a7785da607",
+              "0xbfef9a08f0ac9e4e"
+            ],
+            "translation": [
+              "0x3fa371ab49d39bad",
+              "0xbf2e54eeaaa6f300",
+              "0x3fdb09556ee5837d"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3feb90a9d2abacd7",
+              "0x3fdeea1f3032ef4a",
+              "0x3fc4185f25680918",
+              "0xbfdf62cea6230bc5",
+              "0x3febe2da3c3f59d7",
+              "0x3f838db6173fbb03",
+              "0xbfc0ebe62325115a",
+              "0xbfb5d0a7785da607",
+              "0x3fef9a09ad02f7ed"
+            ],
+            "translation": [
+              "0x3faec310d0f87080",
+              "0xbf6b8435c4450936",
+              "0x3fe0961e17cea604"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfc516102b2c3f41",
+              "0x3fef901422fcb1a3",
+              "0xbd9ef80551b77cba",
+              "0x3fef901422fc3774",
+              "0x3fc516102b2beda0",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec5f4b02b5ca349",
+              "0x3e9d55e91d2fe6d1",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fc3483ec32f14e8",
+              "0xbfb111d435acfbcb",
+              "0x3fef9012de1e4f3f",
+              "0xbfecdca1b124c681",
+              "0x3fd98cdc48b27da0",
+              "0x3fc5162e8f8c0cf3",
+              "0xbfd9e776dbfe7f06",
+              "0xbfed42faee431a2a",
+              "0x3e9d55d80e9a4518"
+            ],
+            "translation": [
+              "0x3f9a6f42e5f1839a",
+              "0xbfa0e4b9c9f40598",
+              "0x3fbdd97deaaaf31f"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfc2eabc89c9cf30",
+              "0x3fb2a204efe6bf61",
+              "0x3fef9012de1e4f3e",
+              "0x3fec50aa6b387359",
+              "0xbfdbe3dec5650967",
+              "0x3fc5162e8f8c0d0b",
+              "0x3fdc46c5874bcb77",
+              "0x3fecb51352d0d977",
+              "0x3e9d55d80dde411b"
+            ],
+            "translation": [
+              "0x3f85f6982cbf963d",
+              "0x3fad5def0581737e",
+              "0x3fc808be5b8c4f06"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fa21b620339e937",
+              "0xbfc498540217ce72",
+              "0x3fef9012de1e4f43",
+              "0xbfcb1a3879965454",
+              "0x3feed3b2e27e3536",
+              "0x3fc5162e8f8c0c98",
+              "0xbfef4103fa9bc184",
+              "0xbfcb7a5506ad89a8",
+              "0x3e9d55d80afd7886"
+            ],
+            "translation": [
+              "0x3f9fc8cb7996a790",
+              "0xbfb0744d6f8926e0",
+              "0x3fc1009572785d03"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fe9e58ae32694e1",
+              "0xbfe2143daa1b4d43",
+              "0xbfc4987186242a24",
+              "0x3f71794392403820",
+              "0xbfd12af254ceb1bd",
+              "0x3feed3b05c086264",
+              "0xbfe2cc26f4dbb1b9",
+              "0xbfe8f821fdd1761a",
+              "0xbfcb7a6c3b41378a"
+            ],
+            "translation": [
+              "0x3fae10f19a1934d9",
+              "0xbfbec259c4abe8fc",
+              "0x3fc2ae61b91773ba"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfe9e589fdec17da",
+              "0xbfe2143daa1b4d43",
+              "0x3fc4988389ccc93d",
+              "0xbf717bf1c6a64970",
+              "0xbfd12af254ceb1bd",
+              "0xbfeed3b055f410fc",
+              "0x3fe2cc2826b0452d",
+              "0xbfe8f821fdd1761a",
+              "0x3fcb7a5f27cfa56e"
+            ],
+            "translation": [
+              "0x3fb1784da25b65c6",
+              "0xbfcb79ed124d1c58",
+              "0x3fc5fe4ada1c678f"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfbd523436558431",
+              "0xbfefca16f3152bb3",
+              "0xbd9ef80551b77cba",
+              "0xbfefca16f314b0a2",
+              "0x3fbd5234365512ae",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec61d09a665e4d2",
+              "0x3e94659b091b8dc1",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfb77419f1254ea2",
+              "0xbfb198790725f23b",
+              "0xbfefca17d4f28fa2",
+              "0xbfe96dbc04c49d84",
+              "0xbfe313d7a7ae9280",
+              "0x3fbd51f6fddacdbb",
+              "0xbfe334315ebcdf8f",
+              "0x3fe998daf13e9a82",
+              "0x3e9465351bfb0d2c"
+            ],
+            "translation": [
+              "0x3faef68712d71126",
+              "0x3f9cc7b2987352de",
+              "0x3fbdd980a308f268"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfbc9947fee9f5de",
+              "0x3f99db2ecee7b6ce",
+              "0xbfefca17d4f28fa2",
+              "0xbfef01dc609e0032",
+              "0x3fcc088b5c9ffe38",
+              "0x3fbd51f6fddacdaa",
+              "0x3fcc38154555419c",
+              "0x3fef3670fc52a0f0",
+              "0x3e9465351d0385f7"
+            ],
+            "translation": [
+              "0x3fb29d454f3e7a8a",
+              "0x3fc12f27e1442545",
+              "0x3fc4b47ea9809136"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfbcffc7729e055e",
+              "0xbf914ed28c8a4495",
+              "0xbfefca17d4f28f9e",
+              "0xbfef70fb9571ac8f",
+              "0xbfc2c40ee06c7ad2",
+              "0x3fbd51f6fddaceb5",
+              "0xbfc2e3e110cbdb37",
+              "0x3fefa64ca76972ee",
+              "0x3e9465351b0ff15b"
+            ],
+            "translation": [
+              "0x3fb681843a6cfbfc",
+              "0x3fd107df2bdce311",
+              "0x3fc18c2aca07f662"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfefaf6891295740",
+              "0x3fc1c77cb4cdac21",
+              "0xbf914df37cde99fc",
+              "0xbfc146862011a02d",
+              "0xbfef5bb2d90f2dad",
+              "0xbfc2c429befce9ee",
+              "0xbfa2e7c0556ad81d",
+              "0xbfc24a2a24c46e1c",
+              "0x3fefa64bc6ff4a35"
+            ],
+            "translation": [
+              "0x3fb22acd2bce0c10",
+              "0x3fd1bc99a89dd17e",
+              "0x3fb39fee41b0da24"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fefaf68a93c02a4",
+              "0x3fc1c77cb4cdac21",
+              "0x3f914d4329088aeb",
+              "0x3fc146896389fac6",
+              "0xbfef5bb2d90f2dad",
+              "0x3fc2c426bde28830",
+              "0x3fa2e76844daa006",
+              "0xbfc24a2a24c46e1c",
+              "0xbfefa64bfb995fa7"
+            ],
+            "translation": [
+              "0x3fb49621be625207",
+              "0x3fd2bd47feecad48",
+              "0xbf948d787cdbf4ed"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfedc7fcf2f5673f",
+              "0xbfd76a8dd9a7a21c",
+              "0xbd9ef80551b77cba",
+              "0xbfd76a8dd9a74776",
+              "0x3fedc7fcf2f4f3f5",
+              "0x3ec6428a6aa3f6a4",
+              "0xbeb049eb5f2cd518",
+              "0x3ec4b76c9d05e1bf",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfd11abfc60bc494",
+              "0xbfec86da6df432d1",
+              "0xbfd76a9c30411a99",
+              "0xbfbae5b6820dc181",
+              "0xbfd66e20cbd6ab4a",
+              "0x3fedc7fa216d6dbb",
+              "0xbfeea6f403ce3bf4",
+              "0x3fd260f8c338c8c9",
+              "0x3ec4b7633c3d3afa"
+            ],
+            "translation": [
+              "0x3fb2e57bffdb0954",
+              "0xbf781e3a60fda9df",
+              "0x3fbdd97f1f9aea5c"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfe7eff8e7cd56a9",
+              "0x3fe1b7beb39bd528",
+              "0xbfd76a9c30411aa5",
+              "0xbfd2d259ffeaa813",
+              "0x3fcbdcb237691990",
+              "0x3fedc7fa216d6db9",
+              "0x3fe309ac5f388cae",
+              "0x3fe9b88a57b7bf81",
+              "0x3ec4b7633c52d32a"
+            ],
+            "translation": [
+              "0x3fc07e7e4a8faf7e",
+              "0x3f90216a4a5f011d",
+              "0x3fcbb298903596ef"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fd94350091e7de9",
+              "0xbfeaf83cc223bc49",
+              "0xbfd76a9c30411a77",
+              "0x3fc3dd38e7693d2a",
+              "0xbfd534ac03ec20f1",
+              "0x3fedc7fa216d6dc2",
+              "0xbfecfaa200a6722d",
+              "0xbfdb252c4410635c",
+              "0x3ec4b7633be37133"
+            ],
+            "translation": [
+              "0x3fcdc77d9c46073e",
+              "0x3facf5085df426ee",
+              "0x3fc1f5b863288442"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfd4472a68bf38a2",
+              "0x3fdbd86bf293748c",
+              "0xbfeaf837993a1cb0",
+              "0x3fee28a3c5b41b1a",
+              "0x3fa6c76cad9ff94c",
+              "0xbfd534b87e357c3a",
+              "0xbfbb4e716c2017dc",
+              "0xbfecc6fb84d683d1",
+              "0xbfdb25370627a450"
+            ],
+            "translation": [
+              "0x3fd1c2f0d13959f9",
+              "0x3fb7f93c5316102c",
+              "0x3fc546e920de5d06"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fd44733ca1c544d",
+              "0x3fdbd86bf293748c",
+              "0x3feaf835d5d6bf8a",
+              "0xbfee28a1eda8bcb1",
+              "0x3fa6c76cad9ff94c",
+              "0x3fd534c2fb8898df",
+              "0x3fbb4e844e27aed3",
+              "0xbfecc6fb84d683d1",
+              "0x3fdb2535d63bdd22"
+            ],
+            "translation": [
+              "0x3fd73561bdf7dd4f",
+              "0x3fbe637aef54d4c6",
+              "0x3fcabcc46bcdde3f"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfb320839aa33f00",
+              "0xbfefe91a543fd03f",
+              "0xbd9ef80551b77cba",
+              "0xbfefe91a543f54b6",
+              "0x3fb320839aa2f4f3",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec6329c9dc7ec7a",
+              "0x3e8a9c7e4f21e99d",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fab039535d96eff",
+              "0xbfab15290641855f",
+              "0xbfefe91ae7960e5b",
+              "0x3fe6891bd1bdd62c",
+              "0xbfe697bdc4c49b3f",
+              "0x3fb32046266f301b",
+              "0xbfe6a7f374f1cd63",
+              "0xbfe69946f7080cb2",
+              "0x3e8a9bb221c8debb"
+            ],
+            "translation": [
+              "0x3fae60eeabfbdd4e",
+              "0x3f9da4a9fee34c2f",
+              "0x3fbdd980aca44db3"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfa3223e150ce61e",
+              "0xbfb08fbab256c3da",
+              "0xbfefe91ae7960e5c",
+              "0xbfdfec5a0b58d4e8",
+              "0xbfeba1b70ea30d51",
+              "0x3fb32046266f2fdc",
+              "0xbfebb58a39f9c1cf",
+              "0x3fe001a0c2f1c893",
+              "0x3e8a9bb220f957c5"
+            ],
+            "translation": [
+              "0x3fac1892d9e0d8de",
+              "0xbf9f4ad159cf78a1",
+              "0x3fcba84de6bd061e"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3faaf4f2be725b49",
+              "0x3fab23ba1efc9d4a",
+              "0xbfefe91ae7960e5a",
+              "0x3fe67cde9130c12a",
+              "0x3fe6a3ec7e78430b",
+              "0x3fb32046266f30a3",
+              "0x3fe6b42ae0fd8acb",
+              "0xbfe68d00f9c421f0",
+              "0x3e8a9bb227d829a7"
+            ],
+            "translation": [
+              "0x3fae8140dca7c080",
+              "0x3fa081a8f67e6e64",
+              "0x3fd5789ac46c8d40"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fefee5610f42b06",
+              "0xbfa3d070811cfdbd",
+              "0x3fab2439e311724d",
+              "0xbfb09bece6b73e4c",
+              "0xbfe684d963173931",
+              "0x3fe6a3f017e4ecc1",
+              "0x3f84531772b01352",
+              "0xbfe6b39d801d0354",
+              "0xbfe68cfcc2e928d6"
+            ],
+            "translation": [
+              "0x3fa39af972e1c026",
+              "0xbf83bcc28a4bd508",
+              "0x3fd83a10d0ae0f24"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfefee565c790f13",
+              "0xbfa3d070811cfdbd",
+              "0xbfab23e10a0d9b9e",
+              "0x3fb09bcd6724c1e5",
+              "0xbfe684d963173931",
+              "0xbfe6a3f074527794",
+              "0xbf84521c758e1cf2",
+              "0xbfe6b39d801d0354",
+              "0x3fe68cfcd10c34f3"
+            ],
+            "translation": [
+              "0x3f99d21113ffe050",
+              "0xbfb411de28ac1b4d",
+              "0x3fdca84afcc106c4"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfb2937e9440592a",
+              "0x3fefea678a100b30",
+              "0xbd9ef80551b77cba",
+              "0x3fefea678a0f8fa2",
+              "0x3fb2937e94401142",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec63384f99b4e7d",
+              "0x3e89d7d163b14244",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfb02958b735f40f",
+              "0xbfa252262a165f56",
+              "0x3fefea66faf64392",
+              "0x3febc4040f9c715b",
+              "0x3fdf79b01c2048f8",
+              "0x3fb293bc0af4722d",
+              "0xbfdf8efce7c6c540",
+              "0x3febd6ce229bdb02",
+              "0x3e89d7b03887be0c"
+            ],
+            "translation": [
+              "0x3f975be8c153f16f",
+              "0xbfa033d712639ed0",
+              "0x3fbdd97dfa0c6ef1"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfb084bc6e1c5874",
+              "0x3fa0ffeb93dfa186",
+              "0x3fefea66faf64392",
+              "0x3fec6100db2f9bd0",
+              "0xbfdd34af03cbc2e4",
+              "0x3fb293bc0af47235",
+              "0x3fdd4872889e38a8",
+              "0x3fec7435319ff3e1",
+              "0x3e89d7b03aa590c0"
+            ],
+            "translation": [
+              "0x3f9fa9859e93e6ad",
+              "0xbfc250c9b64e1976",
+              "0x3fc2e9727bdefce7"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfb237d3f308a11a",
+              "0xbf8d1386c793d576",
+              "0x3fefea66faf64394",
+              "0x3fef4c828e3275a4",
+              "0x3fc8f9f1808b7288",
+              "0x3fb293bc0af47150",
+              "0xbfc90ad87bd5e94a",
+              "0x3fef61b0b8b9bed8",
+              "0x3e89d7b034c3785f"
+            ],
+            "translation": [
+              "0x3fa4604dcf8ec47c",
+              "0xbfd0f75ee15e2b8c",
+              "0x3fb734d59d735980"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfea255d6471530b",
+              "0xbfe271ac52da83bf",
+              "0xbf8d158cf5a7da84",
+              "0x3fe204ce943872ab",
+              "0xbfe9b26c5f39f546",
+              "0x3fc8fa0681e9eebb",
+              "0xbfbfb61a31226288",
+              "0x3fc362476a490196",
+              "0x3fef61af8f399b3f"
+            ],
+            "translation": [
+              "0x3fae1026fde8a846",
+              "0xbfd1a52f96f92ba6",
+              "0x3f9f77de09d4807c"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fea255d78ac38fd",
+              "0xbfe271ac52da83bf",
+              "0x3f8d1469f4c18ad1",
+              "0xbfe204cfaa356fed",
+              "0xbfe9b26c5f39f546",
+              "0xbfc8f9f9f923ad4b",
+              "0x3fbfb5ee884e12f4",
+              "0x3fc362476a490196",
+              "0xbfef61b03fb237da"
+            ],
+            "translation": [
+              "0x3fb112a99ca11742",
+              "0xbfd324e9badeb0f6",
+              "0xbfb086a9994a9ada"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfc3247b87c93eb0",
+              "0x3fefa3df8037b475",
+              "0xbd9ef80551b77cba",
+              "0x3fefa3df803739f8",
+              "0x3fc3247b87c8f496",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec60275157818b0",
+              "0x3e9aa1a753a755e3",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fb686b81307a2c4",
+              "0xbfbef52efad19609",
+              "0x3fefa3de594b503f",
+              "0xbfe29db098908bd2",
+              "0x3fe995825c159f4f",
+              "0x3fc32499ff388b05",
+              "0xbfe9e001837e2660",
+              "0xbfe2d3e5b35208b7",
+              "0x3e9aa1965f961fa5"
+            ],
+            "translation": [
+              "0x3f99eaace4c4aa53",
+              "0xbfa0c9f989e429cc",
+              "0x3fbdd97decfe6da8"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfb768c69d5cbf08",
+              "0xbfbe4ba844126b47",
+              "0x3fefa3de594b503e",
+              "0x3fe3588a9fdf51e4",
+              "0x3fe909624d83d669",
+              "0x3fc32499ff388b26",
+              "0xbfe95249955232e7",
+              "0x3fe390df9ce07fc0",
+              "0x3e9aa1965f569967"
+            ],
+            "translation": [
+              "0x3f933da85d0d8258",
+              "0x3f851db28ededab0",
+              "0x3fccaf3b58e31186"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3f5d545cc5c77080",
+              "0xbfc324401ecfd414",
+              "0x3fefa3de594b5042",
+              "0xbf883ba347f79a20",
+              "0x3fefa349dd51b74f",
+              "0x3fc32499ff388ab6",
+              "0xbfefff69d34641fc",
+              "0xbf88823b6fe2c0e0",
+              "0x3e9aa1966253a56e"
+            ],
+            "translation": [
+              "0x3f9f3e0ab6144436",
+              "0xbfb13270b2caa5e2",
+              "0x3fd560a11cdd3f0b"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfd5b92e746cfea3",
+              "0xbfedb7a6394f6fd2",
+              "0xbfc3245e821d5162",
+              "0xbfb00d66ea87a8fc",
+              "0xbfc1720eac877d53",
+              "0x3fefa348a4be52be",
+              "0xbfee0884bd3ba4e0",
+              "0x3fd613e0cf642765",
+              "0xbf8883b78f0b7c46"
+            ],
+            "translation": [
+              "0x3fad765d338552a9",
+              "0xbfbff7f87ef30d82",
+              "0x3fd56c9bfcd11156"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fd5b9301e8683ab",
+              "0xbfedb7a6394f6fd2",
+              "0x3fc32456f3df1bdc",
+              "0x3fb00d3ae670497a",
+              "0xbfc1720eac877d53",
+              "0xbfefa348fe1296eb",
+              "0x3fee0884ce48b884",
+              "0x3fd613e0cf642765",
+              "0x3f8882694a1f523e"
+            ],
+            "translation": [
+              "0x3fb339e9546d875c",
+              "0xbfcc55d360c11f4a",
+              "0x3fd5f8197873a675"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfd5d801f2c0e83c",
+              "0xbfee14146463adc7",
+              "0xbd9ef80551b77cba",
+              "0xbfee141464633957",
+              "0x3fd5d801f2c093ac",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec4ec5837ab2f63",
+              "0x3eae63e93c742d12",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fc36aeed681a8f0",
+              "0xbfd3913a90721e9f",
+              "0xbfee14170575c5bc",
+              "0x3fdabcfd6c599538",
+              "0xbfeaf1acaa0487dd",
+              "0x3fd5d7f377835519",
+              "0xbfecaa5311a72883",
+              "0xbfdc7244abde1eac",
+              "0x3eae63b76b4798a1"
+            ],
+            "translation": [
+              "0x3fb0ff012c1e25fd",
+              "0x3f96df0bf8ca27a3",
+              "0x3fbdd98061452767"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fc1b297f0dbd2da",
+              "0xbfd3f8914b96e25a",
+              "0xbfee14170575c5bf",
+              "0x3fd85ea53aa41daa",
+              "0xbfeb7ff8ebf7bcc6",
+              "0x3fd5d7f377835509",
+              "0xbfed41b67874fcf4",
+              "0xbfd9ed3028bb05d7",
+              "0x3eae63b76b3e889f"
+            ],
+            "translation": [
+              "0x3fada1c3c3f955f6",
+              "0xbf5254901a6e5ea0",
+              "0x3fcd6cdbc79adb6c"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fd3fe4de3fa61a8",
+              "0xbfc1989c2d560cc8",
+              "0xbfee14170575c5c2",
+              "0x3feb87e3aa8cd4c2",
+              "0xbfd83ac96b4f382e",
+              "0x3fd5d7f3778354fb",
+              "0xbfd9c70c6ecb293b",
+              "0xbfed4a22223ba1f2",
+              "0x3eae63b76d8372de"
+            ],
+            "translation": [
+              "0x3fa3405fa697e2a2",
+              "0xbfad291d4b8d4bd5",
+              "0x3fd678a3f053a5f2"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfee7687087574d2",
+              "0x3fd182b836acff9b",
+              "0xbfc19877d384c0c7",
+              "0x3fd39168bdace304",
+              "0x3febf49648defe2c",
+              "0xbfd83ac47364b885",
+              "0x3f90e77dc1b12f28",
+              "0xbfd9c1760603e988",
+              "0xbfed4a2486af7eec"
+            ],
+            "translation": [
+              "0x3f9daeb565eb3973",
+              "0xbf9c4ef49a20c3c7",
+              "0x3fda0ce99cbdf555"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fee7687cc4b8e30",
+              "0x3fd182b836acff9b",
+              "0x3fc19862a2af6bac",
+              "0xbfd3916486fa5298",
+              "0x3febf49648defe2c",
+              "0x3fd83ac7da8e7e68",
+              "0xbf90e6dac2ab2378",
+              "0xbfd9c1760603e988",
+              "0x3fed4a249e33a798"
+            ],
+            "translation": [
+              "0x3fa991501bd05e26",
+              "0x3f7c41f1cb770f44",
+              "0x3fdfcbc2b1039a9f"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fcc9af0606d657e",
+              "0xbfef30d0b318252f",
+              "0xbd9ef80551b77cba",
+              "0xbfef30d0b317ac70",
+              "0xbfcc9af0606cf6c2",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec5b26bf17f3b2a",
+              "0xbea3e5f175d0f0e4",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fb41751cef26e6f",
+              "0x3fcac8a7b5cb924c",
+              "0xbfef30cefa621903",
+              "0xbfd5e80ed2c0caef",
+              "0xbfed3444b30e24c8",
+              "0xbfcc9b0e6911fe59",
+              "0xbfedf6438530c196",
+              "0x3fd679943d069040",
+              "0xbea3e62405b6f91c"
+            ],
+            "translation": [
+              "0x3fa986e4668efbe4",
+              "0x3fa14314ac1ea28d",
+              "0x3fbdd980e2f73c88"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fc194f8e9eac33b",
+              "0xbfc69089f5192dcb",
+              "0xbfef30cefa621902",
+              "0xbfe32bb8f16c6d11",
+              "0x3fe89a869bb5be7e",
+              "0xbfcc9b0e6911fe71",
+              "0x3fe93df643c71c44",
+              "0x3fe3ab1173963914",
+              "0xbea3e6240559a940"
+            ],
+            "translation": [
+              "0x3fa200fad774a623",
+              "0x3fb9096bb993039a",
+              "0x3fcb285152941f7e"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3faa2af2f8d0ced2",
+              "0x3fcbd8fbd347d9e0",
+              "0xbfef30cefa621906",
+              "0xbfcc883807e65068",
+              "0xbfee5d3411f0ca7e",
+              "0xbfcc9b0e6911fe32",
+              "0xbfef26e76380ddef",
+              "0x3fcd45c12e90750c",
+              "0xbea3e6240770005b"
+            ],
+            "translation": [
+              "0x3f901834d3b086cb",
+              "0x3fc75fed404d1e69",
+              "0x3fbbe45845606bf8"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfe7de96548a29fd",
+              "0x3fe424d9051da785",
+              "0x3fcbd91b09ac43dd",
+              "0xbfd4041cf414245b",
+              "0xbfa5d601ab9dd9e0",
+              "0xbfee5d33acb1a511",
+              "0xbfe2d13436953d25",
+              "0xbfe8d39b073169b7",
+              "0x3fcd45aa0d5f6632"
+            ],
+            "translation": [
+              "0xbf8f2a7be267357e",
+              "0x3fce47267d9cea80",
+              "0x3fb8509b776bdb7b"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fe7de951e97205e",
+              "0x3fe424d9051da785",
+              "0xbfcbd92ba45587b2",
+              "0x3fd4042783af6316",
+              "0xbfa5d601ab9dd9e0",
+              "0x3fee5d31ef22d087",
+              "0x3fe2d132f0c8c0ef",
+              "0xbfe8d39b073169b7",
+              "0xbfcd45b72453baff"
+            ],
+            "translation": [
+              "0xbf9f8cf6e53c5124",
+              "0x3fd541bc7b677c34",
+              "0x3fb3cd7a3223b6cf"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfba4978004c03e6",
+              "0x3fefd4b29c48efb0",
+              "0xbd9ef80551b77cba",
+              "0x3fefd4b29c487476",
+              "0x3fba4978004b9e25",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec6246b90ecdea0",
+              "0x3e92490cee0749d3",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfb77943a969030b",
+              "0xbfa7aaf2e3df11ac",
+              "0x3fefd4b1d1c91a62",
+              "0x3fec6c5a19a4237f",
+              "0x3fdca876c9779a29",
+              "0x3fba49b54d322498",
+              "0xbfdccf740b810f19",
+              "0x3fec930571d3a86e",
+              "0x3e9248fc3b5e4d9b"
+            ],
+            "translation": [
+              "0x3f9858a25bc6e146",
+              "0xbfa071712a5adecc",
+              "0x3fbdd97df4b12bef"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfb090b347cc6dca",
+              "0x3fb46975ca2b59c4",
+              "0x3fefd4b1d1c91a62",
+              "0x3fe40eda356bc246",
+              "0xbfe8b7488b08e638",
+              "0x3fba49b54d32249d",
+              "0x3fe8d8e8aed6421f",
+              "0x3fe42a24257f4cf0",
+              "0x3e9248fc3c6e8114"
+            ],
+            "translation": [
+              "0x3fa21ee4b858b394",
+              "0xbfc2839927461d86",
+              "0x3fc235f9226cc783"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfabf10346091b28",
+              "0xbfb644aa16173d18",
+              "0x3fefd4b1d1c91a64",
+              "0x3fe0eaa5501481fb",
+              "0x3feaf6a942224160",
+              "0x3fba49b54d322417",
+              "0xbfeb1b5842843ae4",
+              "0x3fe101a90b1da30f",
+              "0x3e9248fc384c414e"
+            ],
+            "translation": [
+              "0x3fa6cd611125f704",
+              "0xbfcdd9f8db0fe8d6",
+              "0x3fa4e3ff3fb02ce0"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfeb26ebe98174dd",
+              "0x3fe0b42ea987e873",
+              "0xbfb644e9e8437db3",
+              "0xbfd5e68ee723141e",
+              "0xbfda9cd22a6dae74",
+              "0x3feaf6ab9bb7de4b",
+              "0x3fd9d5ad40d672ce",
+              "0x3fe7d4c743ae0c5b",
+              "0x3fe101a40308cd62"
+            ],
+            "translation": [
+              "0x3fb15eee605d6684",
+              "0xbfd21a0a104a5f18",
+              "0x3f810f7000a0e544"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3feb26ec656e85ed",
+              "0x3fe0b42ea987e873",
+              "0x3fb644c421d3549d",
+              "0x3fd5e685864f1006",
+              "0xbfda9cd22a6dae74",
+              "0xbfeaf6ad83390607",
+              "0xbfd9d5b32b14e8da",
+              "0x3fe7d4c743ae0c5b",
+              "0xbfe101a1c3f4995d"
+            ],
+            "translation": [
+              "0x3fb53e2ef5b22d0c",
+              "0xbfd736f19458e0a9",
+              "0xbfa826cca27c4be4"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfe1c9e038bd2eb1",
+              "0x3fea99a19da226ec",
+              "0xbd9ef80551b77cba",
+              "0x3fea99a19da1bff3",
+              "0x3fe1c9e038bce9d4",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec280f12fc6fa6a",
+              "0x3eb8bf887f1f292f",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfa761ae864a1586",
+              "0xbfe1ba82271f435c",
+              "0x3fea999d556384f7",
+              "0x3fb17b7a4e383ba7",
+              "0x3fea82988b4f059b",
+              "0x3fe1c9e69fffcbad",
+              "0xbfefe44f1d7e485e",
+              "0x3fb507f51a12dae1",
+              "0x3eb8bf8291fd8226"
+            ],
+            "translation": [
+              "0x3fa4c1b9e2180e54",
+              "0xbfa223e514fadccc",
+              "0x3fbdd97dceea27c1"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfb35e8bebe063c6",
+              "0xbfe19f85d9c5b8e9",
+              "0x3fea999d556384f3",
+              "0x3fbcf6de4d99863b",
+              "0x3fea5a3e01c9313c",
+              "0x3fe1c9e69fffcbb3",
+              "0xbfefb3c38a1e5df5",
+              "0x3fc16c079581ae1e",
+              "0x3eb8bf82921ccbe0"
+            ],
+            "translation": [
+              "0x3faf54c93baabb14",
+              "0xbfb0f9f30e07d141",
+              "0x3fccfd986b938dd3"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fe0f02b6c799fcb",
+              "0x3fc5bd19a14b06ba",
+              "0x3fea999d556384fa",
+              "0xbfe9540a2ab8203b",
+              "0xbfd040ceb87a4814",
+              "0x3fe1c9e69fffcba8",
+              "0x3fd38d7cc4dd94ce",
+              "0xbfee785450848e4f",
+              "0x3eb8bf829333975c"
+            ],
+            "translation": [
+              "0x3fb18b9f2222e2b3",
+              "0xbfb3c9924dd3778e",
+              "0x3fd71806dfd831f8"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfdd968c1732b073",
+              "0xbfebd980be88e4ff",
+              "0x3fc5bd0c9f87ccd6",
+              "0xbfebf67136fd1426",
+              "0x3fda895537f261fb",
+              "0xbfd040e0ad805a71",
+              "0x3fc346fb12a264c6",
+              "0xbfd10317e14eb87d",
+              "0xbfee78527ff507d0"
+            ],
+            "translation": [
+              "0x3fb2bd993c04f411",
+              "0xbfaa7a87d54b45f7",
+              "0x3fdad13a3fe698e1"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fdd968a334ca9fb",
+              "0xbfebd980be88e4ff",
+              "0xbfc5bd16ea0adf0c",
+              "0x3febf672a0c97a7b",
+              "0x3fda895537f261fb",
+              "0x3fd040d6f3b691e2",
+              "0xbfc346e5e08d6b97",
+              "0xbfd10317e14eb87d",
+              "0x3fee78535682b82c"
+            ],
+            "translation": [
+              "0x3faeea746b1ec2ce",
+              "0xbf947660ab0b9fb6",
+              "0x3fe05cc47a7394ad"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3f6f812b6f3fd981",
+              "0x3feffff07dd576f7",
+              "0xbd9ef80551b77cba",
+              "0x3feffff07dd4fb16",
+              "0xbf6f812b6f3f5f61",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec6427f9d1782cd",
+              "0xbe45ee2f8ae3e51f",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbf4a93be717c803f",
+              "0x3f6ec3e2d9e33ebf",
+              "0x3feffff0856a0b01",
+              "0xbfcb053549132abd",
+              "0x3fef4755583fab50",
+              "0xbf6f797769831210",
+              "0xbfef4764798863b6",
+              "0xbfcb05425b22094c",
+              "0xbe45f03ea25581da"
+            ],
+            "translation": [
+              "0x3f94ee69f3ad2094",
+              "0xbf9f0e85b674aeb3",
+              "0x3fbdd97e090e0be7"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3f675ed4bac11f26",
+              "0xbf6515151cb82f82",
+              "0x3feffff0856a0b01",
+              "0x3fe7c2aa549ff876",
+              "0xbfe56f2c022ea7d7",
+              "0xbf6f7977698309ac",
+              "0x3fe56f36606894dd",
+              "0x3fe7c2b5d2ee7e1a",
+              "0xbe45f03e9c2da792"
+            ],
+            "translation": [
+              "0x3f94eac85666c0b7",
+              "0xbfa15fddb3eec998",
+              "0x3fcdc3ff83e2afb6"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3f60d537f9f4ce4b",
+              "0x3f6a985548fd4292",
+              "0x3feffff0856a0b01",
+              "0x3fe11d279a24080e",
+              "0x3feb09f28dec2d49",
+              "0xbf6f797769831f5b",
+              "0xbfeb09ffa233b810",
+              "0x3fe11d2fe15d6444",
+              "0xbe45f03f1481a989"
+            ],
+            "translation": [
+              "0x3f9482639406f44e",
+              "0xbfc19c4e4ff0aef4",
+              "0x3fc2b19e60be5ebc"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fe633258c624679",
+              "0x3fe70c000c268eac",
+              "0x3f6a90a6b9286224",
+              "0xbfd8c5f98db84b00",
+              "0x3fd79e8b2daf05a6",
+              "0x3feb09f5c2b69918",
+              "0x3fe36f7e9f954ef9",
+              "0xbfe2cc58fb0adf93",
+              "0x3fe11d2adc80f622"
+            ],
+            "translation": [
+              "0x3fa36b94b2fc02ae",
+              "0xbfc83a4f01ed6fa5",
+              "0x3fbd05b68d4ff7bc"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfe6332591009c81",
+              "0x3fe70c000c268eac",
+              "0xbf6a8cca6452dab2",
+              "0x3fd8c5f0262eb033",
+              "0x3fd79e8b2daf05a6",
+              "0xbfeb09f7ea2a11fb",
+              "0xbfe36f81997ded70",
+              "0xbfe2cc58fb0adf93",
+              "0xbfe11d277b3c6ec4"
+            ],
+            "translation": [
+              "0x3fa05eeeaec674e7",
+              "0xbfd13ad6e725c0de",
+              "0x3facc8b7a491c2f8"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfeb784e15a94d38",
+              "0x3fe069d9cdef6514",
+              "0xbd9ef80551b77cba",
+              "0x3fe069d9cdef258a",
+              "0x3feb784e15a8e2e1",
+              "0x3ec6428a6aa3f6a4",
+              "0x3eb6d5d4c163359a",
+              "0x3ec31bd2a5feaa6f",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfb64658dbf42827",
+              "0xbfeb541a5b204291",
+              "0x3fe069d33110ff47",
+              "0x3faa9eac35f8e522",
+              "0x3fe0542ec7f765eb",
+              "0x3feb785209280030",
+              "0xbfefd5cf10a82c98",
+              "0x3fb9f2cb19013f7b",
+              "0x3ec31bcdfabe28cb"
+            ],
+            "translation": [
+              "0x3fac71d58c5423f6",
+              "0xbfa0044eb8cad268",
+              "0x3fbdd97dfe2e4098"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfcbe3de840fffe1",
+              "0x3fea92041d765ad1",
+              "0x3fe069d33110ff41",
+              "0x3fc0aa005edf986c",
+              "0xbfdfc072444dad06",
+              "0x3feb785209280034",
+              "0x3feef3b8396b25ea",
+              "0x3fd03e9ede744be7",
+              "0x3ec31bcdface629e"
+            ],
+            "translation": [
+              "0x3fb6d9f515a408a7",
+              "0xbfaa5428366267a9",
+              "0x3fcce57161f5d1b2"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfeb2426d8c85cb5",
+              "0x3fc0f310da28798e",
+              "0x3fe069d33110ff42",
+              "0x3fe03787d8b31585",
+              "0xbfb4415f44db3503",
+              "0x3feb785209280033",
+              "0x3fc3bea7138a4410",
+              "0x3fef9df3161b99c0",
+              "0x3ec31bcdfa3a33ae"
+            ],
+            "translation": [
+              "0x3fbf7b42086c5a3a",
+              "0xbfb2521e0ee35e3d",
+              "0x3fb8ba1b5d1da60a"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfdb59d5ddfefae2",
+              "0xbfec9e60762fc266",
+              "0x3fc0f2ecea1fc5af",
+              "0x3feca28a1eb2d192",
+              "0xbfdc1dc098f56602",
+              "0xbfb4417c06eefb44",
+              "0x3fc080ef2fec3b8b",
+              "0x3fb5ad3d74a056c7",
+              "0x3fef9df400a87dbc"
+            ],
+            "translation": [
+              "0x3fbfc972c732e0f6",
+              "0xbfaa3605b8c084b8",
+              "0x3fa28b92f80a42e0"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fdb59d464b669cb",
+              "0xbfec9e60762fc266",
+              "0xbfc0f2f66d70d438",
+              "0xbfeca289adf94325",
+              "0xbfdc1dc098f56602",
+              "0x3fb441a3dd82c992",
+              "0xbfc081052e4245e7",
+              "0x3fb5ad3d74a056c7",
+              "0xbfef9df348f8a743"
+            ],
+            "translation": [
+              "0x3fbd5ff4a8a70fd6",
+              "0xbfa9ce5dd1a001e2",
+              "0xbfafa02bff97a00f"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfe428b9498b2c12",
+              "0xbfe8da0f175817d6",
+              "0xbd9ef80551b77cba",
+              "0xbfe8da0f1757b7a1",
+              "0x3fe428b9498ade08",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec149952e11ddad",
+              "0x3ebc0bdb2a4c453f",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfdea72274250961",
+              "0xbfda30c24fdd33c5",
+              "0xbfe8da13f1aaf052",
+              "0xbfe2e4ef22b62348",
+              "0xbfe024cee5d4847c",
+              "0x3fe428b34e050cab",
+              "0xbfe4c98490576630",
+              "0x3fe8542fd86acb06",
+              "0x3ebc0bc401d428b2"
+            ],
+            "translation": [
+              "0x3fb27a70d4947629",
+              "0x3f88c4b56e12958c",
+              "0x3fbdd97fec8c9576"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfe307942f2e0d74",
+              "0xbfca9c65ff6bb2c1",
+              "0xbfe8da13f1aaf054",
+              "0xbfe775a4bf8f0246",
+              "0xbfd0672e688961bc",
+              "0x3fe428b34e050ca9",
+              "0xbfd51ef82122bb77",
+              "0x3fee350c588b876c",
+              "0x3ebc0bc402151393"
+            ],
+            "translation": [
+              "0x3fc19b6408b77356",
+              "0x3fb7ba497a0cb236",
+              "0x3fc58f5daffcc27f"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfe36982136b3474",
+              "0xbfc5bec8bef9fe19",
+              "0xbfe8da13f1aaf03d",
+              "0xbfe7ee5f155763a3",
+              "0xbfcacec76fcbc94d",
+              "0x3fe428b34e050cc6",
+              "0xbfd14256611fdd64",
+              "0x3feed0801645958e",
+              "0x3ebc0bc40239c893"
+            ],
+            "translation": [
+              "0x3fcbbcab94406164",
+              "0x3fc85a1e063896dc",
+              "0x3fcbe30380323fac"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fef3a9fb8c349fc",
+              "0xbfc186881c91bd18",
+              "0xbfc5bebf41e15bde",
+              "0x3fb99a29166ed238",
+              "0x3fef204ec527691f",
+              "0xbfcaceec97e24f1e",
+              "0x3fc8d2661bb1aed0",
+              "0x3fc7fcd924f6717e",
+              "0x3feed07e7c32ba0a"
+            ],
+            "translation": [
+              "0x3fcb442fb18bee8c",
+              "0x3fcb73115ad0cc59",
+              "0x3fc45b10afd9fe02"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfef3a9ec6bd21ab",
+              "0xbfc186881c91bd18",
+              "0x3fc5bed4fb1ed508",
+              "0xbfb99a1fc36dbc10",
+              "0x3fef204ec527691f",
+              "0x3fcaceeed1c905a1",
+              "0xbfc8d27b8b1b92cf",
+              "0x3fc7fcd924f6717e",
+              "0xbfeed07d67ee0a86"
+            ],
+            "translation": [
+              "0x3fcc6ac903bd3d13",
+              "0x3fcdf3aae4319424",
+              "0x3fb01e6ec275cc82"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fc6834523990d33",
+              "0xbfef804c64bae164",
+              "0xbd9ef80551b77cba",
+              "0xbfef804c64ba6772",
+              "0xbfc683452398b60e",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec5e9b613608364",
+              "0xbe9f5200d3f6cff2",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfb6e8144755f5d5",
+              "0x3fc361d55ec63772",
+              "0xbfef804b09e1ec60",
+              "0x3fe0069c1f362cf3",
+              "0xbfeb1eb9552abfee",
+              "0xbfc6836378c6e36c",
+              "0xbfeb8cab7f600c67",
+              "0xbfe047941cee526c",
+              "0xbe9f52665e3d6555"
+            ],
+            "translation": [
+              "0x3faa5bc991b0b2a6",
+              "0x3fa0f7b609d7b236",
+              "0x3fbdd980dc698037"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fb8e9b42d604694",
+              "0xbfc2c0d1e196a35d",
+              "0xbfef804b09e1ec5f",
+              "0xbfe16df2b9429657",
+              "0x3fea3d6da1eb0ab4",
+              "0xbfc6836378c6e38d",
+              "0x3feaa7ce72909ae1",
+              "0x3fe1b49b7dbf2d17",
+              "0xbe9f52665e635ea5"
+            ],
+            "translation": [
+              "0x3fad584d02cca5a9",
+              "0x3f40308f9960d780",
+              "0x3fcd27325a38e630"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfa16fcb78d9081f",
+              "0x3fc61651469a1098",
+              "0xbfef804b09e1ec61",
+              "0x3fc865f3685a24ba",
+              "0xbfeee7ac7333257f",
+              "0xbfc6836378c6e358",
+              "0xbfef64f6b848966e",
+              "0xbfc8c8dc0d2fb6ae",
+              "0xbe9f526662b3f452"
+            ],
+            "translation": [
+              "0x3fa63bbd41882a70",
+              "0x3fb40728a90dd0eb",
+              "0x3fbe46b2ac383714"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fe29785470370dc",
+              "0x3fe973f1eca4460d",
+              "0x3fc6166ec36f61b0",
+              "0x3fd08bebbdeb26e6",
+              "0x3f952b66e1c136ac",
+              "0xbfeee7a9f6e955ee",
+              "0xbfe8b23054a9b163",
+              "0x3fe3621eedadb627",
+              "0xbfc8c8f35c7286f0"
+            ],
+            "translation": [
+              "0x3f8ed99e84190644",
+              "0x3fc128e007b63558",
+              "0x3fc0a7050563648e"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfe297863cd8c836",
+              "0x3fe973f1eca4460d",
+              "0xbfc61661d49a7d16",
+              "0xbfd08be0fe26bbac",
+              "0x3f952b66e1c136ac",
+              "0x3feee7ab673c25b6",
+              "0x3fe8b23168846174",
+              "0x3fe3621eedadb627",
+              "0x3fc8c8e22e96965d"
+            ],
+            "translation": [
+              "0xbf7b2add105fe924",
+              "0x3fcd07342f791bfa",
+              "0x3fc3d915bd1937be"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfd9d9f391e24538",
+              "0xbfed45f7973eaaaa",
+              "0xbd9ef80551b77cba",
+              "0xbfed45f7973e3957",
+              "0x3fd9d9f391e1e124",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec45cf795a168b6",
+              "0x3eb1fb9fe1d8123d",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fd9d86e7a71cff6",
+              "0xbf81677cf812f06a",
+              "0xbfed45fab3cd454a",
+              "0x3fed44522dd9b90d",
+              "0xbf93b49d36ceb981",
+              "0x3fd9d9e579e05c8a",
+              "0xbf958a9d5c76a62e",
+              "0xbfeffe2fe9fb789f",
+              "0x3eb1fb873e494e2c"
+            ],
+            "translation": [
+              "0x3fb15d9e283cf9a1",
+              "0x3f94ea838c20001e",
+              "0x3fbdd9804b823af8"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fd9cda0c08e99b9",
+              "0x3f992c7d31f4f584",
+              "0xbfed45fab3cd454b",
+              "0x3fed3815de329882",
+              "0x3fac81f69b40b5a8",
+              "0x3fd9d9e579e05c84",
+              "0x3faf29aa118691b3",
+              "0xbfeff0cfed7278dc",
+              "0x3eb1fb873e0adedc"
+            ],
+            "translation": [
+              "0x3f9727dc5fc4a01c",
+              "0xbfb4fd580666007c",
+              "0x3fc2cfa628d3464d"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fac3e075df06720",
+              "0x3fd99be590cf7ff1",
+              "0xbfed45fab3cd455a",
+              "0x3fbffaf95a8b38e9",
+              "0x3fecffc66a1c5db9",
+              "0x3fd9d9e579e05c41",
+              "0x3fefb3418ff06083",
+              "0xbfc17ac9756d0566",
+              "0x3eb1fb873e379a53"
+            ],
+            "translation": [
+              "0xbfa0341b8a71776d",
+              "0xbfca39704c5abc96",
+              "0x3fc118864e990556"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fe19f528ec7f651",
+              "0xbfe770f99026c98f",
+              "0x3fd99bf44c4b84b7",
+              "0xbfd6d6e8048ee292",
+              "0x3fcd05a7ee20fba9",
+              "0x3fecffc40c74061f",
+              "0xbfe82571c4e7470f",
+              "0xbfe48a0ef2a6d8b6",
+              "0xbfc17ab1ec081b9a"
+            ],
+            "translation": [
+              "0xbfb2997172c6d071",
+              "0xbfd0301ee77dd954",
+              "0x3fc229ef4c1b3c51"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfe19f54c8d6be60",
+              "0xbfe770f99026c98f",
+              "0xbfd99bee2b345675",
+              "0x3fd6d6ddee7cabe2",
+              "0x3fcd05a7ee20fba9",
+              "0xbfecffc608db476f",
+              "0x3fe8257287721960",
+              "0xbfe48a0ef2a6d8b6",
+              "0x3fc17aa12013f3f8"
+            ],
+            "translation": [
+              "0xbfbdb95cbad15481",
+              "0xbfd5b3b0ab8418b9",
+              "0x3fc4a8f2375ad275"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfe08476941c6fb4",
+              "0xbfeb6855df4e68ad",
+              "0xbd9ef80551b77cba",
+              "0xbfeb6855df4dfe93",
+              "0x3fe08476941c2fc3",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec310b6c86447c3",
+              "0x3eb6fadafaef0c4f",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fdaeed78a898c38",
+              "0xbfd320ed1e1ee895",
+              "0xbfeb6859d9358b86",
+              "0x3fe6586753ae5d2a",
+              "0xbfdfbd8e3a503eb7",
+              "0x3fe0846ffb15edff",
+              "0xbfe287893fc87463",
+              "0xbfea16e6db0f396e",
+              "0x3eb6fac2f7571a8a"
+            ],
+            "translation": [
+              "0x3fb1f7640c79445e",
+              "0x3f91001658cb771e",
+              "0x3fbdd9801fed3e09"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfe0819c80a639c0",
+              "0x3f93523d3cdabee0",
+              "0xbfeb6859d9358b8a",
+              "0xbfeb63a991048ab2",
+              "0x3fa0075c6dc810e0",
+              "0x3fe0846ffb15edf9",
+              "0x3fa2b705a63ef630",
+              "0x3feffa86898d05aa",
+              "0x3eb6fac2f732e960"
+            ],
+            "translation": [
+              "0x3f9fecf2cef5af9e",
+              "0xbfa8a2f71c2cb73d",
+              "0x3fca30b4e9b94df0"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfd685af21c553c7",
+              "0xbfd82abab1091538",
+              "0xbfeb6859d9358b77",
+              "0xbfe2af8e2a703443",
+              "0xbfe40ce9509c23cd",
+              "0x3fe0846ffb15ee18",
+              "0xbfe768f83486cbfa",
+              "0x3fe5d115e2d07c10",
+              "0x3eb6fac2f6e9daab"
+            ],
+            "translation": [
+              "0x3fb9d1f26d9509f4",
+              "0x3fb1482c10bfce62",
+              "0x3fca3968c18b6ec7"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fdc9d9ec06e75a4",
+              "0x3fe9f294e466f147",
+              "0xbfd82ab1b13422c2",
+              "0xbfe8949354373bc4",
+              "0x3fc0ddecdaa65548",
+              "0xbfe40cf0c138b21c",
+              "0xbfdd54f9d84d3d89",
+              "0x3fe23f27ce98f478",
+              "0x3fe5d1118a654b8f"
+            ],
+            "translation": [
+              "0x3fbbc204185293d2",
+              "0x3fbd796abd957260",
+              "0x3fc4e46a45644de6"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfdc9d9a8c8756a0",
+              "0x3fe9f294e466f147",
+              "0x3fd82ab6ab2b45ea",
+              "0x3fe89496d0dc989e",
+              "0x3fc0ddecdaa65548",
+              "0x3fe40cec7ae7e164",
+              "0x3fdd54f241bffb2b",
+              "0x3fe23f27ce98f478",
+              "0xbfe5d11417523422"
+            ],
+            "translation": [
+              "0x3fc225a2d56e2b02",
+              "0x3fc7615726c9c340",
+              "0x3fb98d93ac2f82fc"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fb441ddf9ba4f19",
+              "0xbfefe64ff67c7686",
+              "0xbd9ef80551b77cba",
+              "0xbfefe64ff67bfb09",
+              "0xbfb441ddf9ba00af",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec630ac48542cd2",
+              "0xbe8c2e926bd26c96",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfb231e1003faf74",
+              "0x3fa1d0a519fd9f98",
+              "0xbfefe64f5a6f6844",
+              "0x3feca68b5e61c5ad",
+              "0xbfdc0d62dd4dc6f4",
+              "0xbfb4421b688ce43a",
+              "0xbfdc23fa606969d7",
+              "0xbfecbd9e259c4fc6",
+              "0xbe8c2f5e91b22ebd"
+            ],
+            "translation": [
+              "0x3fabfb1fa4759fa8",
+              "0x3fa0418ad144c9c5",
+              "0x3fbdd980cc92696f"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fb43555b4f2f862",
+              "0xbf76bbfd6f15af4c",
+              "0xbfefe64f5a6f6843",
+              "0xbfefd2331a9a93e2",
+              "0x3fb1e60dc37ef888",
+              "0xbfb4421b688ce46d",
+              "0x3fb1f47826098234",
+              "0x3fefebd38d74a747",
+              "0xbe8c2f5e931aaf35"
+            ],
+            "translation": [
+              "0x3faf9419b40354e5",
+              "0xbfad1038cc0eafc9",
+              "0x3fc87ab55760ab42"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3f9778daf8d67f5d",
+              "0x3fb363c657ef5451",
+              "0xbfefe64f5a6f6846",
+              "0xbfd27ae25a372bf0",
+              "0xbfee88387015a9c0",
+              "0xbfb4421b688ce351",
+              "0xbfeea0cf223da756",
+              "0x3fd289c4625a4145",
+              "0xbe8c2f5e95b02969"
+            ],
+            "translation": [
+              "0x3faa1c8d3b11cd6f",
+              "0x3fb3e71829771322",
+              "0x3fc7eea686f5ef84"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfe1b9ba9fc28e6c",
+              "0xbfea881e024d90d8",
+              "0x3fb36404caf67f62",
+              "0x3fc9c393101e1410",
+              "0xbfcc5eaa42ec1638",
+              "0xbfee88398b48159d",
+              "0x3fe9da1560ff91ad",
+              "0xbfe06caefc208066",
+              "0x3fd289b9038925c0"
+            ],
+            "translation": [
+              "0x3f9d0207b2d24336",
+              "0x3fc13ae5af171bd9",
+              "0x3fc5aab7b69183be"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fe1b9ba33d99e23",
+              "0xbfea881e024d90d8",
+              "0xbfb3641d740e49df",
+              "0xbfc9c37dd2f918ab",
+              "0xbfcc5eaa42ec1638",
+              "0x3fee883aaa081e27",
+              "0xbfe9da16fda69b91",
+              "0xbfe06caefc208066",
+              "0xbfd289b005b0b547"
+            ],
+            "translation": [
+              "0x3f9a1026ac7d4aa7",
+              "0x3fcd0451cf233a00",
+              "0x3fc139e243e24fe8"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfe4b1962125a298",
+              "0x3fe8688e207a6122",
+              "0xbd9ef80551b77cba",
+              "0x3fe8688e207a02a5",
+              "0x3fe4b1962125527c",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec0faa5708f8226",
+              "0x3ebcca3816ab04d2",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fe071277f24df41",
+              "0xbfd921904fb18f6a",
+              "0x3fe868892533c961",
+              "0xbfe364b048383fa9",
+              "0x3fdda46df7543077",
+              "0x3fe4b19c015727d2",
+              "0xbfe36e4f230251f4",
+              "0xbfe96cd94af296b7",
+              "0x3ebcca316da0611c"
+            ],
+            "translation": [
+              "0x3fa6cf8a8c975f8a",
+              "0xbfa1ec7d283f22e4",
+              "0x3fbdd97dd3bb74e6"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fd746d34674982a",
+              "0xbfe11c6259c91217",
+              "0x3fe868892533c95c",
+              "0xbfdb7467944d9d3e",
+              "0x3fe42eae0bde0db6",
+              "0x3fe4b19c015727d8",
+              "0xbfea75a6a1122022",
+              "0xbfe1ff3978846960",
+              "0x3ebcca316d7e3bb1"
+            ],
+            "translation": [
+              "0xbf62c8850d706fc0",
+              "0x3f94bb67d7e70ffa",
+              "0x3fca859198aa2f00"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fe4782ba791c562",
+              "0x3fb84ff85346acce",
+              "0x3fe868892533c953",
+              "0xbfe824ca2a74d433",
+              "0xbfbcad01cbb77bb0",
+              "0x3fe4b19c015727e3",
+              "0x3fc2cc2d4a8ef5e6",
+              "0xbfefa72e6f57090c",
+              "0x3ebcca316e912c4f"
+            ],
+            "translation": [
+              "0xbfabb7bea4f5c3a0",
+              "0x3fb4d64ffa9d8610",
+              "0x3fd43666766efab8"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fd24f2d18de6f7c",
+              "0x3fee82f75a4f6d26",
+              "0x3fb84fe7c5694ee9",
+              "0x3fee8dc0d454bed0",
+              "0xbfd19ed8d6287dbf",
+              "0xbfbcad4d740e2991",
+              "0xbfb4a6451e690fd7",
+              "0x3fbf6ad3c84f4f93",
+              "0xbfefa72d9007780e"
+            ],
+            "translation": [
+              "0xbfa79ebce6b7bfb2",
+              "0x3fb995f118f234b0",
+              "0x3fd8149c096f2699"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfd24f2e2775fd92",
+              "0x3fee82f75a4f6d26",
+              "0xbfb84fdb08e77039",
+              "0xbfee8dc034be12b5",
+              "0xbfd19ed8d6287dbf",
+              "0x3fbcad77f607ec32",
+              "0x3fb4a67127ead6c5",
+              "0x3fbf6ad3c84f4f93",
+              "0x3fefa72d1d1cff5b"
+            ],
+            "translation": [
+              "0xbfada7b2d105593a",
+              "0x3fba7becf13d8c2e",
+              "0x3fde54e61e354286"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fd1fd787e4823f3",
+              "0x3feeb5b25696cfdb",
+              "0xbd9ef80551b77cba",
+              "0x3feeb5b2569658f8",
+              "0xbfd1fd787e47de4d",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec55cc51ab18eb7",
+              "0xbea90765bcf12f0f",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfc63efdd0590468",
+              "0x3fcc4739b67aedc0",
+              "0x3feeb5b480eaa5e5",
+              "0xbfe2fcd27660df3a",
+              "0x3fe822e69bd3f27f",
+              "0xbfd1fd69b53b11d7",
+              "0xbfe9267ea668eccb",
+              "0xbfe3c90abb495b5f",
+              "0xbea9076ed68364c4"
+            ],
+            "translation": [
+              "0x3f8a1c593d68e85a",
+              "0xbf989cd9f0cfaee6",
+              "0x3fbdd97e50c6e1c3"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfc14ea798d2a4cd",
+              "0x3fcf8b2f5868de40",
+              "0x3feeb5b480eaa5e7",
+              "0xbfdd8b5836afb62f",
+              "0x3feaec69d08e567c",
+              "0xbfd1fd69b53b11c7",
+              "0xbfec0dfc0167d054",
+              "0xbfdec91b89a70080",
+              "0xbea9076ed6a81cee"
+            ],
+            "translation": [
+              "0x3f9ac144f1560996",
+              "0x3f9628b38f7aa9a8",
+              "0x3fcc772824be0696"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfc8d7d45efdc5a6",
+              "0x3fca06b923ecc207",
+              "0x3feeb5b480eaa5ea",
+              "0xbfe534482e2af4f0",
+              "0x3fe636d753f3af41",
+              "0xbfd1fd69b53b11b3",
+              "0xbfe725c30e2ab43d",
+              "0xbfe61857a85d33c4",
+              "0xbea9076ed46f7ec7"
+            ],
+            "translation": [
+              "0x3fa75f61382ed67c",
+              "0x3fb69a149aa4ae51",
+              "0x3fd5a44bc905fb09"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfe51e2d1ebba58f",
+              "0xbfe7252db5c925f2",
+              "0x3fca0696fe467806",
+              "0xbfdb1f43b10e92d5",
+              "0x3fe29e303246c595",
+              "0x3fe636d58e052b89",
+              "0xbfe3da4fcb2365a9",
+              "0x3fd7ce1e8a0d7a8f",
+              "0xbfe6185bf44bb005"
+            ],
+            "translation": [
+              "0x3fa9e7c28fd26d06",
+              "0x3fa4e1d75f176533",
+              "0x3fd857803836d80d"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fe51e2bfd10f439",
+              "0xbfe7252db5c925f2",
+              "0xbfca06a5aeeeadf9",
+              "0x3fdb1f3bf71c298a",
+              "0x3fe29e303246c595",
+              "0xbfe636d7e9c1605d",
+              "0x3fe3da53a2cf5ae2",
+              "0x3fd7ce1e8a0d7a8f",
+              "0x3fe6185880739a86"
+            ],
+            "translation": [
+              "0x3fa270a6122c94ed",
+              "0xbf98b10d63c11af2",
+              "0x3fdcfc8f4d153602"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfc91fd2df0936b1",
+              "0xbfef60a46b5e90f6",
+              "0xbd9ef80551b77cba",
+              "0xbfef60a46b5e177e",
+              "0x3fc91fd2df08d56d",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec5d3af53bfe87a",
+              "0x3ea17a2e78200bc6",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fb9976007c20295",
+              "0xbfc59f0b322f5de7",
+              "0xbfef60a5ee71cc92",
+              "0x3fdff62475b1dda6",
+              "0xbfeb00c8866be9c2",
+              "0x3fc91fb4a854a9c6",
+              "0xbfeb89eb6f322aa4",
+              "0xbfe04c3aae866b65",
+              "0x3ea179fbc83164dc"
+            ],
+            "translation": [
+              "0x3fb00eb500b2d9c6",
+              "0x3f9ad96e97b093b6",
+              "0x3fbdd9808d8bc587"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfbf503faf97e805",
+              "0x3fc3a616516047d3",
+              "0xbfef60a5ee71cc94",
+              "0xbfe38dd1f9703134",
+              "0x3fe88a2229705adc",
+              "0x3fc91fb4a854a9a5",
+              "0x3fe906c251e8aa09",
+              "0x3fe3f12006bffb3f",
+              "0x3ea179fbc81e5163"
+            ],
+            "translation": [
+              "0x3facc65cc574a963",
+              "0xbf7a16f02546ce70",
+              "0x3fcd267a843a539b"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfc769104f3c0b0e",
+              "0xbfb23d0ed50ca178",
+              "0xbfef60a5ee71cc91",
+              "0xbfed3cd069169196",
+              "0xbfd6c74b00b1f012",
+              "0x3fc91fb4a854a9e6",
+              "0xbfd73af90247b920",
+              "0x3fedd14c5d755534",
+              "0x3ea179fbc60ad12e"
+            ],
+            "translation": [
+              "0x3fb2d0e2d4d60b8a",
+              "0x3fb47e2f2df86113",
+              "0x3fc00f93f74cc148"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfe8621e21a0640f",
+              "0xbfe498f8d37185b5",
+              "0xbfb23cdb2ad13192",
+              "0x3fe3e97dba082ca2",
+              "0xbfe64fae3edb7190",
+              "0xbfd6c758e0927725",
+              "0x3fc6f757075682eb",
+              "0xbfd431a7d4af4aa6",
+              "0x3fedd14a3583cd31"
+            ],
+            "translation": [
+              "0x3faec6137aa8e37a",
+              "0x3fbaf82e1775933e",
+              "0x3fb18c0019bd543c"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fe8621e871e1e51",
+              "0xbfe498f8d37185b5",
+              "0x3fb23cb93e7fcfa8",
+              "0xbfe3e97bbefa8663",
+              "0xbfe64fae3edb7190",
+              "0x3fd6c75fcd893137",
+              "0xbfc6f76bc539d1cb",
+              "0xbfd431a7d4af4aa6",
+              "0xbfedd14935e684c8"
+            ],
+            "translation": [
+              "0x3fb2c0e23e52a387",
+              "0x3fc1586c2abe5185",
+              "0xbf98d2a5bc44773c"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fc9b47314f383b6",
+              "0xbfef591d6a6db6ef",
+              "0xbd9ef80551b77cba",
+              "0xbfef591d6a6d3d94",
+              "0xbfc9b47314f32034",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec5ce7465a0d12e",
+              "0xbea1e173505aa6c9",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfc230f586c74d40",
+              "0x3fc2295d94b04a61",
+              "0xbfef591bde66dad2",
+              "0x3fe62f40a99213cd",
+              "0xbfe625f61e713f75",
+              "0xbfc9b49144664b85",
+              "0xbfe69be00fc5979b",
+              "0xbfe6a55bbedc9880",
+              "0xbea1e1a5fb3f02f6"
+            ],
+            "translation": [
+              "0x3fa9ecf642ec07e5",
+              "0x3fa12065cfd9113e",
+              "0x3fbdd980dff33039"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfa7c35ee3e7a652",
+              "0x3fc90269fe919a5f",
+              "0xbfef591bde66dad0",
+              "0x3fccfada99cd0214",
+              "0xbfee7fd7c5da52ea",
+              "0xbfc9b49144664ba4",
+              "0xbfef22374658b887",
+              "0xbfcd9522418a40e6",
+              "0xbea1e1a5fb73280c"
+            ],
+            "translation": [
+              "0x3fb00a959336a898",
+              "0xbf99d0f3346fc2ba",
+              "0x3fcba43866474cb2"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfc749a588207247",
+              "0xbfb5c44d5696e333",
+              "0xbfef591bde66dad0",
+              "0x3fec6650cde880e0",
+              "0x3fda8b8d62a4330a",
+              "0xbfc9b49144664ba7",
+              "0x3fdb18df2df14e4e",
+              "0xbfecfd82a8ba7348",
+              "0xbea1e1a5f921f833"
+            ],
+            "translation": [
+              "0x3fb1e77e23e05c5c",
+              "0xbfaf154d1538f976",
+              "0x3fd624c8c562999a"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfe0e425eea432ca",
+              "0x3feb0ad2a95e2806",
+              "0xbfb5c419af320a2a",
+              "0x3fe813c2f85e02c1",
+              "0x3fe05fe0d4d1363a",
+              "0x3fda8b9b04c8ad6b",
+              "0x3fd9379629771f61",
+              "0x3fc3d5dd2c57e307",
+              "0xbfecfd8024e9a4d4"
+            ],
+            "translation": [
+              "0x3fad63d9691ebe2c",
+              "0xbfb6f5b337fc56fd",
+              "0x3fd9afb15306a9c2"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fe0e42667c49384",
+              "0x3feb0ad2a95e2806",
+              "0x3fb5c4022f3e50f2",
+              "0xbfe813c54743503e",
+              "0x3fe05fe0d4d1363a",
+              "0xbfda8b92a4f4cd7e",
+              "0xbfd9378c142e9202",
+              "0x3fc3d5dd2c57e307",
+              "0x3fecfd82563e135a"
+            ],
+            "translation": [
+              "0x3fb1d9e80a5c4749",
+              "0xbfc176f3d42d660b",
+              "0x3fdf2ca5151fc7ff"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfef28358a8c8644",
+              "0x3fcd2f7e88e00578",
+              "0xbd9ef80551b77cba",
+              "0x3fcd2f7e88df947c",
+              "0x3fef28358a8c0da7",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ea44d6644c05d70",
+              "0x3ec5ac6da0f43d7c",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfef224699a21d49",
+              "0x3fa33c685865a4cc",
+              "0x3fcd2f608882c1ee",
+              "0x3fcd29cf39f34552",
+              "0xbf82061df9e8bc61",
+              "0x3fef28374c310478",
+              "0x3fa3c1b57e0d3685",
+              "0x3feff9e61d0b0969",
+              "0x3ec5ac676edd8ca2"
+            ],
+            "translation": [
+              "0x3fb073bf8f593af6",
+              "0xbf995242ec9a8158",
+              "0x3fbdd97e48e36543"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfee93046cc946a4",
+              "0x3fc7fe14a8348f74",
+              "0x3fcd2f608882c1fc",
+              "0x3fcca39ad83e8b44",
+              "0xbfa679abcacd9d05",
+              "0x3fef28374c310477",
+              "0x3fc8a443b5a8e79d",
+              "0x3fef66c394acc598",
+              "0x3ec5ac676efc8535"
+            ],
+            "translation": [
+              "0x3fc61c42522c34f0",
+              "0xbfa9aa895d8903bc",
+              "0x3fb5932dc5f632bc"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfeee371c0e413bf",
+              "0x3fc0549d161d1581",
+              "0x3fcd2f608882c281",
+              "0x3fcceef2617165d2",
+              "0xbf9e98b59b95fe63",
+              "0x3fef28374c31046f",
+              "0x3fc0c5bbb37ae2a2",
+              "0x3fefb95dffce3ef8",
+              "0x3ec5ac676ec1f0e5"
+            ],
+            "translation": [
+              "0x3fd35dd40556945a",
+              "0xbfb49e4b79de35eb",
+              "0x3fb03b9f22c379ce"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fdb9ab965ee5210",
+              "0xbfec948d496ce411",
+              "0x3fc0547f2292f0c2",
+              "0x3fecdb2d2a5904db",
+              "0x3fdb990081fcd9e4",
+              "0xbf9e997a5ebe94cf",
+              "0xbf9d01261a2566e6",
+              "0x3fc0601fc31e1598",
+              "0x3fefb95ec70b8598"
+            ],
+            "translation": [
+              "0x3fd321b9f6dba95b",
+              "0xbfaf476362f73ff8",
+              "0x3f673cd026dfa970"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfdb9abad16f714e",
+              "0xbfec948d496ce411",
+              "0xbfc0547588afb3b1",
+              "0xbfecdb2cffc64b14",
+              "0x3fdb990081fcd9e4",
+              "0x3f9e9a1af43d7b67",
+              "0x3f9d00758edf4afe",
+              "0x3fc0601fc31e1598",
+              "0xbfefb95eef653ed5"
+            ],
+            "translation": [
+              "0x3fd21ffaff390255",
+              "0xbfb0bc8edce98746",
+              "0xbfb820b1fc8123f7"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fd0dbf1146fc208",
+              "0xbfeedea8cf2e5ad2",
+              "0xbd9ef80551b77cba",
+              "0xbfeedea8cf2de351",
+              "0xbfd0dbf1146f80c5",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec57945d6c0bc9b",
+              "0xbea77479a7eaa9b2",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fd0d0fb145b7303",
+              "0x3f934363b5e2dfaa",
+              "0xbfeedea6c7b20344",
+              "0xbfeeca7958b6ad30",
+              "0xbfb1a2e47984d13f",
+              "0xbfd0dbfff1340c86",
+              "0xbfb2483051f95159",
+              "0x3fefeb1577a36296",
+              "0xbea774ac00c9232a"
+            ],
+            "translation": [
+              "0x3fa8cfb3e36aacc4",
+              "0x3fa17ad1d8a457b6",
+              "0x3fbdd980e7cffe09"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fab95eb440fa805",
+              "0xbfd080c363249ed0",
+              "0xbfeedea6c7b20345",
+              "0xbfc94151549ce606",
+              "0x3fee37977cbe7f1c",
+              "0xbfd0dbfff1340c81",
+              "0x3fef52d2e726400b",
+              "0x3fca2e088cd5f9ae",
+              "0xbea774ac0047b78c"
+            ],
+            "translation": [
+              "0x3f92cb8a1c0cffc1",
+              "0x3fc27b3bdb9e9a82",
+              "0x3fb8c20793ed5470"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fc7f4ad5f98d2e4",
+              "0x3fc7baad013b187e",
+              "0xbfeedea6c7b20345",
+              "0xbfe5ee7d8cb35d6a",
+              "0xbfe5b96ba45d3dc8",
+              "0xbfd0dbfff1340c81",
+              "0xbfe6850bb9ada7b2",
+              "0x3fe6bc0fa285e8a4",
+              "0xbea774ac029905bf"
+            ],
+            "translation": [
+              "0x3f83f57785a4a57a",
+              "0x3fc6844e344dbf5b",
+              "0xbfa18c5e2d4cf244"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fedfb3c27c4df17",
+              "0xbfd2f72c321abd0a",
+              "0x3fc7bacf2416a5d2",
+              "0x3fd5c4e2c4f87ac3",
+              "0x3fe4d29534d0ac77",
+              "0xbfe5b96dafa53d57",
+              "0x3fb49e97d3da113c",
+              "0x3fe65f2dbbef2fa5",
+              "0x3fe6bc0b746a561e"
+            ],
+            "translation": [
+              "0xbf937fc8a90bfc0a",
+              "0x3fcb37470781866c",
+              "0xbfb3e307d6cd45f8"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfedfb3d2fe0d093",
+              "0xbfd2f72c321abd0a",
+              "0xbfc7baba4905132f",
+              "0xbfd5c4db36a43cf9",
+              "0x3fe4d29534d0ac77",
+              "0x3fe5b96f9438edd6",
+              "0xbfb49eb774f5de26",
+              "0x3fe65f2dbbef2fa5",
+              "0xbfe6bc0b01aab8c0"
+            ],
+            "translation": [
+              "0xbfa6d1fd8b0b301e",
+              "0x3fd1b0be9a01db95",
+              "0xbfc2f7c93b39a88e"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfebe742fdaf7898",
+              "0xbfdf54a47ac75b07",
+              "0xbd9ef80551b77cba",
+              "0xbfdf54a47ac6e1be",
+              "0x3febe742fdaf0c93",
+              "0x3ec6428a6aa3f6a4",
+              "0xbeb5cb506ccf969b",
+              "0x3ec36905a004bffe",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3feb48b759febc36",
+              "0xbfc76245d7c7150c",
+              "0xbfdf54b1e9edf516",
+              "0x3fdea2b3376632cb",
+              "0xbfba416ec5b9cae0",
+              "0x3febe73f38498f5c",
+              "0xbfcad11ecbe4b471",
+              "0xbfef4a3248a793f1",
+              "0x3ec368fb959858c4"
+            ],
+            "translation": [
+              "0x3fb304b45cf15916",
+              "0xbf514ebf31013980",
+              "0x3fbdd97f56ac83e8"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfe3350859ab39b7",
+              "0xbfe43d946156ffa6",
+              "0xbfdf54b1e9edf51e",
+              "0xbfd590fd63512187",
+              "0xbfd6ba181a55f9bb",
+              "0x3febe73f38498f5a",
+              "0xbfe736554326ed74",
+              "0x3fe606ee5060669c",
+              "0x3ec368fb957c4a5d"
+            ],
+            "translation": [
+              "0xbf90f8e1800c3e40",
+              "0xbfaaa8e1f091b91f",
+              "0x3fc572b282357ce2"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fc969c43524bcaa",
+              "0xbfeb2b9eff9eb928",
+              "0xbfdf54b1e9edf4e9",
+              "0x3fbc891406ab4472",
+              "0xbfde820312450b9a",
+              "0x3febe73f38498f69",
+              "0xbfef28d3311956dc",
+              "0xbfcd24f7ba9a8a92",
+              "0x3ec368fb95cff5ea"
+            ],
+            "translation": [
+              "0x3faf496016e8ec6c",
+              "0xbf8152a70509d064",
+              "0x3fd1373c284831da"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfe054c9eb37e348",
+              "0xbfc17731ad14d35d",
+              "0xbfeb2b9a0d75b85f",
+              "0x3fe41f63cbc3bec0",
+              "0x3fe3a82cef29cd40",
+              "0xbfde820f2a589c17",
+              "0x3fe2c585ea2b5efe",
+              "0xbfe8ded600a393f7",
+              "0xbfcd250edd3beba5"
+            ],
+            "translation": [
+              "0x3fbaa7e59e466c8e",
+              "0x3fa2a98e1981e931",
+              "0x3fd21b2b11b298fd"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fe054cea4d5fb74",
+              "0xbfc17731ad14d35d",
+              "0x3feb2b97366539a1",
+              "0xbfe41f6124a81c7c",
+              "0x3fe3a82cef29cd40",
+              "0x3fde82162a0e582a",
+              "0xbfe2c584a5c9cad8",
+              "0xbfe8ded600a393f7",
+              "0x3fcd251bec102264"
+            ],
+            "translation": [
+              "0x3fc8832d5829b65d",
+              "0x3fb3fff3b29d73c8",
+              "0x3fd34015e7e1d5f4"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fd22ba35146b6e5",
+              "0xbfeeaee6028cdd7c",
+              "0xbd9ef80551b77cba",
+              "0xbfeeaee6028c66b4",
+              "0xbfd22ba35146708e",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec5580cae027c4a",
+              "0xbea94782ea085181",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfc6204c4832d806",
+              "0x3fccd44ca2d8d7ae",
+              "0xbfeeaee3d2a8b1b7",
+              "0x3fe2ae6805531520",
+              "0xbfe85733dc078a7a",
+              "0xbfd22bb2170c4d4f",
+              "0xbfe962a12da04957",
+              "0xbfe37ba7091e7854",
+              "0xbea947b522e90c67"
+            ],
+            "translation": [
+              "0x3fa870189856411b",
+              "0x3fa194acfba0e4f4",
+              "0x3fbdd980ea0f8cf7"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fa89f1ed991c77a",
+              "0x3fd1e87c226baf30",
+              "0xbfeeaee3d2a8b1b5",
+              "0xbfc4c9a9eca76ad8",
+              "0xbfee3d66a74332ad",
+              "0xbfd22bb2170c4d5f",
+              "0xbfef89a3deafdef6",
+              "0x3fc5ae0fdf8fe404",
+              "0xbea947b5230c315f"
+            ],
+            "translation": [
+              "0x3faf2c05cbad2bdc",
+              "0xbf84a5bb9eb9ece8",
+              "0x3fcc89926190867a"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfc244e5c830e85e",
+              "0x3fcf6a5ec877d984",
+              "0xbfeeaee3d2a8b1b9",
+              "0x3fded97bd27a6fb5",
+              "0xbfea8631a60b8fe7",
+              "0xbfd22bb2170c4d44",
+              "0xbfeba99c72fc7319",
+              "0xbfe016359474a5c4",
+              "0xbea947b520e5be5d"
+            ],
+            "translation": [
+              "0x3fac98723dbc5f5c",
+              "0x3f7c506a767d1608",
+              "0x3fd6d57bf241ddae"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfe24bd37cd35146",
+              "0xbfe90d1d989f938f",
+              "0x3fcf6a78e6ebbe6b",
+              "0xbfe15c8fde58978a",
+              "0x3fc17508ce1d0d26",
+              "0xbfea862c99d868a8",
+              "0x3fe3b17a7fce7aa8",
+              "0xbfe36d2ec0563c30",
+              "0xbfe0163ab6efbc66"
+            ],
+            "translation": [
+              "0x3f98103acc867050",
+              "0x3faad6947dfa8a40",
+              "0x3fd8ccbaa778b648"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fe24bd21f2aa0b2",
+              "0xbfe90d1d989f938f",
+              "0xbfcf6a85a11832ca",
+              "0x3fe15c947b31dc87",
+              "0x3fc17508ce1d0d26",
+              "0x3fea862994e8c753",
+              "0xbfe3b177b39f3b56",
+              "0xbfe36d2ec0563c30",
+              "0x3fe0163e23ad5b02"
+            ],
+            "translation": [
+              "0x3f70ce4625b1c710",
+              "0x3fc1aa53b2e2fa28",
+              "0x3fdba7772e125805"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfe3afd04db7e0a4",
+              "0x3fe93a42f3bd72ec",
+              "0xbd9ef80551b77cba",
+              "0x3fe93a42f3bd1143",
+              "0x3fe3afd04db7946f",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec18c85b2a9157e",
+              "0x3ebb6397db2eed0f",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfe0323bfe10cd00",
+              "0xbfd6622a9bc1f3b1",
+              "0x3fe93a3e3684605c",
+              "0x3fe4c12863ca4c42",
+              "0x3fdcaed2567a30e3",
+              "0x3fe3afd66064d69f",
+              "0xbfe2310886e52ab0",
+              "0x3fea5380d86f5145",
+              "0x3ebb6391785fe1dc"
+            ],
+            "translation": [
+              "0x3fa614d61835041b",
+              "0xbfa2071a633a673b",
+              "0x3fbdd97dd16b09ba"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfd06b8b432997b7",
+              "0x3fe1e4aae73922db",
+              "0x3fe93a3e3684605b",
+              "0x3fd50a8b71c346e0",
+              "0xbfe6eddaa50f6063",
+              "0x3fe3afd66064d6a0",
+              "0x3fed15a6602ec4e9",
+              "0x3fdab09dc8077290",
+              "0x3ebb639178a29b53"
+            ],
+            "translation": [
+              "0x3fbc22212d415e32",
+              "0xbfbeeac3d21d76bc",
+              "0x3fc42ae3ec70e2c2"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfbd21229b99f43a",
+              "0xbfe358e2a1a0513a",
+              "0x3fe93a3e36846060",
+              "0x3fc2aa0439582df8",
+              "0x3fe8cad0aeeeb27c",
+              "0x3fe3afd66064d69a",
+              "0xbfef72a91a26fbb2",
+              "0x3fc7acaa31279eb0",
+              "0x3ebb63917780f6ad"
+            ],
+            "translation": [
+              "0x3fc2de7577706c10",
+              "0xbfc59cc3e366cf36",
+              "0x3fa3011b7df0b954"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfe709e8e328bc74",
+              "0x3fd5cee64188904d",
+              "0xbfe358e95f7ab6d0",
+              "0xbfe430337f338856",
+              "0x3fa55994b872dcc4",
+              "0x3fe8caccd0dcd4df",
+              "0x3fd282729f46181a",
+              "0x3fee0e270a5c6e9f",
+              "0x3fc7ac92d7b2ecbe"
+            ],
+            "translation": [
+              "0x3fc96c8553d5b80b",
+              "0xbfca3f0ae705c6a2",
+              "0x3f9a6fc5024eae32"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fe709ec407f43fd",
+              "0x3fd5cee64188904d",
+              "0x3fe358e55dcc5eea",
+              "0x3fe4302f2f74a561",
+              "0x3fa55994b872dcc4",
+              "0xbfe8cad053a3fe1a",
+              "0xbfd28274ae41b9bc",
+              "0x3fee0e270a5c6e9f",
+              "0xbfc7ac8c679c9c06"
+            ],
+            "translation": [
+              "0x3fd0de4326b2118b",
+              "0xbfd1ab9a4b562044",
+              "0x3f7535d5f1c93bb5"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfe9bd6b6242708e",
+              "0x3fe3031318645bef",
+              "0xbd9ef80551b77cba",
+              "0x3fe3031318641254",
+              "0x3fe9bd6b62420ce9",
+              "0x3ec6428a6aa3f6a4",
+              "0x3eba7351a3cfbe96",
+              "0x3ec1e7bd8ae728a0",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfe79fb11f6a9f35",
+              "0xbfd47103702c389a",
+              "0x3fe3030ce623384c",
+              "0x3fe172eb13223c1e",
+              "0x3fce3246114672d1",
+              "0x3fe9bd6ff5e4665d",
+              "0xbfd969aaef744de8",
+              "0x3fed5e81981df4a3",
+              "0x3ec1e7b94f0bd0ca"
+            ],
+            "translation": [
+              "0x3faad7e10acc56ba",
+              "0xbfa0c65822013860",
+              "0x3fbdd97ded4f0869"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fe5c55f403fcf28",
+              "0x3fdb76d9427b98f4",
+              "0x3fe3030ce623384c",
+              "0xbfe01494fd8a4a6a",
+              "0xbfd4490bd268f70a",
+              "0x3fe9bd6ff5e4665d",
+              "0x3fe1125ee8df510e",
+              "0xbfeb10d53091a0ab",
+              "0x3ec1e7b94f2ded7d"
+            ],
+            "translation": [
+              "0x3fc27e2c5848d8ff",
+              "0xbfb9cacb9d67afb8",
+              "0x3fc15b5bf9fdf3b1"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fd57226cce795e4",
+              "0x3fe7666de82c2d4b",
+              "0x3fe3030ce6233830",
+              "0xbfcfae48c011baad",
+              "0xbfe1489b0b9e5da8",
+              "0x3fe9bd6ff5e46672",
+              "0x3fed174e8a9866cf",
+              "0xbfdaa963b5087394",
+              "0x3ec1e7b94efb008c"
+            ],
+            "translation": [
+              "0x3fac1f9c22f4d290",
+              "0xbfa1b864112aafb2",
+              "0x3fae53f335cb6cfa"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbf9b10eaa6976350",
+              "0x3fe5cf9fbc8d63c7",
+              "0x3fe7666b5376f2a1",
+              "0x3fe2cf91b220ace8",
+              "0x3fe345bc9a68567a",
+              "0xbfe148a2b459893d",
+              "0xbfe9df9d653342b0",
+              "0x3fda98e419b31af9",
+              "0xbfdaa958e84e439c"
+            ],
+            "translation": [
+              "0x3f9581ba5d541c70",
+              "0x3f8a859e5c089860",
+              "0x3fb5ae1a4d39e77a"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3f9b10686e050749",
+              "0x3fe5cf9fbc8d63c7",
+              "0xbfe7666b791e6a9f",
+              "0xbfe2cf8eb0a8487c",
+              "0x3fe345bc9a68567a",
+              "0x3fe148a5f9cdaf88",
+              "0x3fe9df9fb6ae95cf",
+              "0x3fda98e419b31af9",
+              "0x3fdaa94fe8893204"
+            ],
+            "translation": [
+              "0xbfa9f471076319e8",
+              "0x3faf5258953fc021",
+              "0x3fc0e0e4fa366a20"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfec9b193aa86e24",
+              "0xbfdcaf523afda9a5",
+              "0xbd9ef80551b77cba",
+              "0xbfdcaf523afd3a9a",
+              "0x3fec9b193aa7ff66",
+              "0x3ec6428a6aa3f6a4",
+              "0xbeb3f4274a0acdc8",
+              "0x3ec3e61eb4b8f3bc",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fea86bf98b483cd",
+              "0xbfd56a15741ce268",
+              "0xbfdcaf6000b9a692",
+              "0x3fda999467b770e7",
+              "0xbfc5793139bc12bf",
+              "0x3fec9b15c6c8d773",
+              "0xbfd7f489c11ab5d1",
+              "0xbfedac80c5cb680e",
+              "0x3ec3e614e3027210"
+            ],
+            "translation": [
+              "0x3fb2feeb819d52b7",
+              "0xbf663c5fd610e410",
+              "0x3fbdd97f43c727a0"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfa46f8f41ae06d8",
+              "0xbfec93c8265c9576",
+              "0xbfdcaf6000b9a69d",
+              "0xbf947d5c12dc0040",
+              "0xbfdca80db1668856",
+              "0x3fec9b15c6c8d770",
+              "0xbfeff7d4a546bc1d",
+              "0x3fa6dc2685aba448",
+              "0x3ec3e614e2ea2390"
+            ],
+            "translation": [
+              "0xbf83f48129dd6ca8",
+              "0xbfa6f085e0e3fb30",
+              "0x3fc7a43c8d42c614"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fd1230e0d9e0e1d",
+              "0x3feb4ad87cce394c",
+              "0xbfdcaf6000b9a68c",
+              "0x3fc12f2087defefb",
+              "0x3fdb5e378e05d178",
+              "0x3fec9b15c6c8d774",
+              "0x3fee87de06504013",
+              "0xbfd32b943115cd5a",
+              "0x3ec3e614e3799968"
+            ],
+            "translation": [
+              "0xbf82703f474ffee3",
+              "0xbfa6bfe73d453582",
+              "0x3fd475eb6f98cb3c"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fdf750756a4938f",
+              "0xbfc6888c451824f2",
+              "0x3feb4add86ca3f41",
+              "0xbfeb3c3ae142bbd8",
+              "0xbfd37e1924812a41",
+              "0x3fdb5e2b64bec8a9",
+              "0x3fc79d3c81721bda",
+              "0xbfedf45da8a554fc",
+              "0xbfd32b88db893f64"
+            ],
+            "translation": [
+              "0xbfb1b8dc84ffac53",
+              "0xbfabd7c6d70ca912",
+              "0x3fd5a1c60070ff25"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfdf7510d4c07b79",
+              "0xbfc6888c451824f2",
+              "0xbfeb4adaca8e0613",
+              "0x3feb3c38800d8468",
+              "0xbfd37e1924812a41",
+              "0xbfdb5e34ddc3a01f",
+              "0xbfc79d35d68c5a06",
+              "0xbfedf45da8a554fc",
+              "0x3fd32b8ae92f7680"
+            ],
+            "translation": [
+              "0xbfc410d270bcdfc0",
+              "0xbfb6ece0e0fb527e",
+              "0x3fd76ecdbaff514d"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3f81cd78500daf1d",
+              "0x3fefffb0c3e4c4c0",
+              "0xbd9ef80551b77cba",
+              "0x3fefffb0c3e448e0",
+              "0xbf81cd78500d6a27",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec6425343f13c69",
+              "0xbe58c67e7cbc9c53",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbf4f9aa097660343",
+              "0x3f81af64984b4466",
+              "0x3fefffb0d50844cf",
+              "0xbfbc6a07f68fcc54",
+              "0x3fefcd127445b1a9",
+              "0xbf81cb8b5273da8c",
+              "0xbfefcd6121fe313e",
+              "0xbfbc6a4e4403a2ad",
+              "0xbe58c7860dcb85bc"
+            ],
+            "translation": [
+              "0x3f94c7ef413d5840",
+              "0xbf9ef70e7cf2f02f",
+              "0x3fbdd97e0a133861"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3f810a9a6520e894",
+              "0x3f647efbd1353b5e",
+              "0x3fefffb0d50844cf",
+              "0x3feea4c109c85ad0",
+              "0x3fd26d785bf96ccc",
+              "0xbf81cb8b5273d880",
+              "0xbfd26da5f39e7b01",
+              "0x3feea50cda5e0480",
+              "0xbe58c78609089030"
+            ],
+            "translation": [
+              "0x3f94a5032c810d1a",
+              "0xbfa7550da064ca25",
+              "0x3fcda47c9d7f91d3"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbf76d87c189f5978",
+              "0x3f7b4a36497fd337",
+              "0x3fefffb0d50844cf",
+              "0xbfe48a4c84ff8551",
+              "0x3fe8893fc39b5096",
+              "0xbf81cb8b5273e1be",
+              "0xbfe8897c77e74fe9",
+              "0xbfe48a7f5693d12e",
+              "0xbe58c786031edf73"
+            ],
+            "translation": [
+              "0x3f93822a54e27344",
+              "0xbfc62d3b1ca6a83e",
+              "0x3fd1a03e1ef74b2a"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfe31af9ed4f30c3",
+              "0xbfe9ab78bcce15c3",
+              "0x3f7b46593bb515ba",
+              "0xbfe0617f85139042",
+              "0x3fd8ca8145425572",
+              "0x3fe8893c04ac9585",
+              "0xbfe3c3d22cf3d5ff",
+              "0x3fdd147c7080f130",
+              "0xbfe48a83e48a4191"
+            ],
+            "translation": [
+              "0x3fa2d00a042366e4",
+              "0xbfcc31858a34e0e2",
+              "0x3fd422d4bedb744b"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fe31af9e3d25c98",
+              "0xbfe9ab78bcce15c3",
+              "0xbf7b48028478004a",
+              "0x3fe0617b40bbb4b3",
+              "0x3fd8ca8145425572",
+              "0xbfe8893eddf21ded",
+              "0x3fe3c3d5bf6fd739",
+              "0x3fdd147c7080f130",
+              "0x3fe48a80749b7a5e"
+            ],
+            "translation": [
+              "0x3fa4fb8c2e1d846e",
+              "0xbfd2a89c3a5fc460",
+              "0x3fd87929485b4a1c"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfef33ecd93fa5d0",
+              "0xbfcc647814ad03bb",
+              "0xbd9ef80551b77cba",
+              "0xbfcc647814ac95d2",
+              "0x3fef33ecd93f2d05",
+              "0x3ec6428a6aa3f6a4",
+              "0xbea3c00d7c82e56c",
+              "0x3ec5b495c1971f26",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fdee8659451073f",
+              "0xbfeb1b679506d3c6",
+              "0xbfcc64962050ab53",
+              "0x3fbc200446f39d17",
+              "0xbfc8aa7365d3efff",
+              "0x3fef33eb23d05218",
+              "0xbfebccb20aa512de",
+              "0xbfdfb28ea2b31bf4",
+              "0x3ec5b48d266e387e"
+            ],
+            "translation": [
+              "0x3fb2916cfe1671d0",
+              "0xbf86b0e60643c976",
+              "0x3fbdd97ee4703ef4"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfe3bbf8c9452297",
+              "0xbfe82b70d468ce0a",
+              "0xbfcc64962050ab74",
+              "0xbfc1f4f634bb1c81",
+              "0xbfc5fe4d1a8a851e",
+              "0x3fef33eb23d05216",
+              "0xbfe8c9867910374e",
+              "0x3fe43d0a2cdba38e",
+              "0x3ec5b48d266a001e"
+            ],
+            "translation": [
+              "0x3fa5721de1150410",
+              "0xbf927c092b471b65",
+              "0x3fcd37ab2e634c14"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0x3fef04b45701cac8",
+              "0x3fbb19b03a2224d4",
+              "0xbfcc64962050ab03",
+              "0x3fcc399d5b2ef696",
+              "0x3f98a99fa88ed858",
+              "0x3fef33eb23d0521c",
+              "0x3fbbcaf9e3cf6900",
+              "0xbfefcf944359604d",
+              "0x3ec5b48d26c68dca"
+            ],
+            "translation": [
+              "0x3fbf03bfb22b7c2c",
+              "0xbef4dc6645195000",
+              "0x3fd581bd685954f8"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0xbfd5f8b196ce9766",
+              "0x3feddd181616b501",
+              "0x3fbb19ebf112a72d",
+              "0x3fee0d4b3d045a4a",
+              "0x3fd5ef6600bc042e",
+              "0x3f98a8d97e141550",
+              "0xbf8c483fbe9cf14f",
+              "0x3fbb915df79881f8",
+              "0xbfefcf939e43813a"
+            ],
+            "translation": [
+              "0x3fbc54bbb4838256",
+              "0x3f908b9ff08b4da3",
+              "0x3fd964e2d1c3d76d"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0x3fd5f8b0692b73f0",
+              "0x3feddd181616b501",
+              "0xbfbb19fb39bc4df0",
+              "0xbfee0d4b5f529ed8",
+              "0x3fd5ef6600bc042e",
+              "0xbf98a832410aa0fd",
+              "0x3f8c49a1cc4feb19",
+              "0x3fbb915df79881f8",
+              "0x3fefcf938a968ae9"
+            ],
+            "translation": [
+              "0x3fba505538176d78",
+              "0x3f79cecbf3038d1c",
+              "0x3fdfa4812e55c449"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0x3fd25c5aeb67a089",
+              "0xbfeea7a5137c3b77",
+              "0xbd9ef80551b77cba",
+              "0xbfeea7a5137bc4cb",
+              "0xbfd25c5aeb675975",
+              "0x3ec6428a6aa3f6a4",
+              "0xbec55300f74c22d6",
+              "0xbea98b49fc482bc4",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0xbfb9a63ac2b66d89",
+              "0x3fd13472e9970048",
+              "0xbfeea7a2ddbaef77",
+              "0x3fd569688656e88e",
+              "0xbfecb97f84e62230",
+              "0xbfd25c69adaf2d69",
+              "0xbfedfc2de0039b05",
+              "0xbfd659ef86d09075",
+              "0xbea98b7c304d174c"
+            ],
+            "translation": [
+              "0x3fa8622087d65ba6",
+              "0x3fa198456bf19288",
+              "0x3fbdd980ea5f9613"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0x3fc5652f0a439192",
+              "0xbfcdd86ae4b13ffa",
+              "0xbfeea7a2ddbaef75",
+              "0xbfe1dc4515118fab",
+              "0x3fe8ea113967ab4c",
+              "0xbfd25c69adaf2d79",
+              "0x3fea01f219d0349e",
+              "0x3fe2a4e7b3ca788b",
+              "0xbea98b7c3047fe25"
+            ],
+            "translation": [
+              "0x3faa4dd9f811f65b",
+              "0x3f965c9a412681a6",
+              "0x3fcdad9c3315c64e"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbfa7ffc36e1daa16",
+              "0x3fd21d4065dcc54b",
+              "0xbfeea7a2ddbaef79",
+              "0x3fc408c95100e65a",
+              "0xbfee3e2e523f1746",
+              "0xbfd25c69adaf2d5d",
+              "0xbfef91eae460648b",
+              "0xbfc4e9d61e0589fa",
+              "0xbea98b7c32683567"
+            ],
+            "translation": [
+              "0x3f9c46e282df1982",
+              "0x3fb9e6df326c909c",
+              "0x3fc0084252e13dd4"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3fd09c71e5d60f9a",
+              "0xbfed8bdaa30eb9f5",
+              "0x3fd21d4e951c8d22",
+              "0xbfb6a980560d2ff5",
+              "0xbfd422559d38ce3a",
+              "0xbfee3e2b2f26e6ff",
+              "0x3feec5f3fdd31786",
+              "0x3fcc30da40d41ac6",
+              "0xbfc4e9ed8ea8808f"
+            ],
+            "translation": [
+              "0xbf7cbf5f6e6c4398",
+              "0x3fc3ad785298ce8e",
+              "0x3fc14f60c688c16b"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfd09c750c4a0422",
+              "0xbfed8bdaa30eb9f5",
+              "0xbfd21d4bb1961246",
+              "0x3fb6a9aa694e4cfa",
+              "0xbfd422559d38ce3a",
+              "0x3fee3e2ab1093319",
+              "0xbfeec5f3150d9c3d",
+              "0x3fcc30da40d41ac6",
+              "0x3fc4ea02f6bd5190"
+            ],
+            "translation": [
+              "0xbfa2c2a75c3fd859",
+              "0x3fcfa582902ffdde",
+              "0x3fc2623a43a8e170"
+            ]
+          }
+        ],
+        [
+          {
+            "link": "shoulder_link",
+            "rotation": [
+              "0xbfdbffdb7885a65e",
+              "0x3fecc66e9312d8d4",
+              "0xbd9ef80551b77cba",
+              "0x3fecc66e9312696f",
+              "0x3fdbffdb788539fa",
+              "0x3ec6428a6aa3f6a4",
+              "0x3ec40443725bf9dc",
+              "0x3eb37a18bdf25908",
+              "0xbfefffffffff8420"
+            ],
+            "translation": [
+              "0x3fa3e2386edc56ae",
+              "0xbe4346ebea74de96",
+              "0x3faff2e48e8a71de"
+            ]
+          },
+          {
+            "link": "upper_arm_link",
+            "rotation": [
+              "0x3fcf6acfc78f023c",
+              "0xbfd72d91d8165319",
+              "0x3fecc66b345244db",
+              "0xbfe024c195b89d76",
+              "0x3fe7d1e7d01977cf",
+              "0x3fdbffe9531e2c72",
+              "0xbfea7d5139610cbb",
+              "0xbfe1f3eed78ac6db",
+              "0x3eb37a138b4b18c9"
+            ],
+            "translation": [
+              "0x3fa2471f6ca6d6ef",
+              "0xbfa2170f3d32db2c",
+              "0x3fbdd97dd007e7f7"
+            ]
+          },
+          {
+            "link": "lower_arm_link",
+            "rotation": [
+              "0xbfdbf2a894d0a80a",
+              "0xbf9b3ada9a3fd0d8",
+              "0x3fecc66b345244d7",
+              "0x3fecb8ccd74aa052",
+              "0x3fabfb8e8af1e088",
+              "0x3fdbffe9531e2c81",
+              "0xbfaf1e79f94df8f8",
+              "0x3feff0dad5d1c809",
+              "0x3eb37a138b3d70f5"
+            ],
+            "translation": [
+              "0x3f92a573459e24ac",
+              "0x3f442acad6a3a200",
+              "0x3fccdcfb55113fac"
+            ]
+          },
+          {
+            "link": "wrist_link",
+            "rotation": [
+              "0xbf9178061da22ebf",
+              "0xbfdbfa75c1e45b69",
+              "0x3fecc66b345244e7",
+              "0x3fa1f4381b14d5e3",
+              "0x3fecc0d0c57a6a36",
+              "0x3fdbffe9531e2c3f",
+              "0xbfeff9c4d9e221d5",
+              "0x3fa3f7429712bd6a",
+              "0x3eb37a138b10af12"
+            ],
+            "translation": [
+              "0x3fb3b4f446513bfa",
+              "0xbfbec42eafcbb117",
+              "0x3fce93bad1edd439"
+            ]
+          },
+          {
+            "link": "gripper_link",
+            "rotation": [
+              "0x3feb96af16278421",
+              "0xbfd0642ad3debaa7",
+              "0xbfdbfa83cc292d50",
+              "0x3fdb95c9b132dfdf",
+              "0xbfb5333653f2bf48",
+              "0x3fecc0cd9d0faf14",
+              "0xbfd10b8d74858e2e",
+              "0xbfeed1a8133cce5e",
+              "0x3fa3f6e3a004a295"
+            ],
+            "translation": [
+              "0x3fbeb61dea562fa6",
+              "0xbfc565989a32225c",
+              "0x3fce45a7ecbb8985"
+            ]
+          },
+          {
+            "link": "gripper_frame_link",
+            "rotation": [
+              "0xbfeb96aca75a0f1c",
+              "0xbfd0642ad3debaa7",
+              "0x3fdbfa8d64a4000f",
+              "0xbfdb95d3b15e26c2",
+              "0xbfb5333653f2bf48",
+              "0xbfecc0cb3704624f",
+              "0x3fd10b8d056b4bbc",
+              "0xbfeed1a8133cce5e",
+              "0xbfa3f6fb56c9f244"
+            ],
+            "translation": [
+              "0x3fc3fb62d5ef4444",
+              "0xbfd08ee218550260",
+              "0x3fce141aa78fc6c8"
+            ]
+          }
+        ]
+      ],
+      "name": "arm"
+    }
+  ],
+  "kind": "forward_kinematics"
+}
