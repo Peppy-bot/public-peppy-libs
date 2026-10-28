@@ -128,9 +128,9 @@ pub struct Robot {
     pub stand: Option<Stand>,
 }
 
-/// The join of a robot: an option of the `stack_copies` scope, its features,
-/// each named once, and the core node it runs on when that is another machine
-/// than the daemon.
+/// The join of a robot: an option of the `robot_membership` scope, its
+/// features, each named once, and the core node it runs on when that is
+/// another machine than the daemon.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(try_from = "JoinFields", into = "JoinFields")]
 pub struct Join {
