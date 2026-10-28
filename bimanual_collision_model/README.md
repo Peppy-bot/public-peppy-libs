@@ -2,8 +2,9 @@
 
 Runtime self-collision detection for a bimanual robot. Given a pair of joint
 configurations, it reports the minimum distance between the two arms, between an
-arm and the torso, or between an arm and itself, and it provides a proximity law
-for scaling commanded motion as the arms approach contact.
+arm and the torso, or between an arm and itself, with the gradient of that
+distance with respect to the joints. The caller holds the proximity band and the
+law that gates commanded motion on the reported distance.
 
 The library is pure Rust with no hardware or messaging dependencies. The model
 is built once from a URDF and its collision meshes (the hull fitting takes about
@@ -15,27 +16,21 @@ contract) is supported.
 
 ## The proximity band
 
-Two distances define how the model treats clearance, and the caller chooses both
-because the geometry alone cannot:
+The model reports distances. The caller holds the band its governor gates on,
+because the geometry alone cannot choose it. The band is two distances:
 
 - `d_stop` is the hard floor. At or below it, commanded motion that would
   approach is fully stopped.
 - `d_safe` is the full-speed threshold. At or above it, motion runs unthrottled.
-  Between `d_safe` and `d_stop`, approaching motion is scaled linearly down to a
-  stop.
 
 These two numbers carry the safety buffer that the geometry does not know about:
 the worst-case closing speed, the watchdog latency, and the tracking drift of
-the controller. The hulls add only a sub-centimetre conservative inflation, so
-the band, not the geometry, is where the real margin lives. They are bundled in
-a `GovernorBand`, which proves `0 <= d_stop < d_safe` once at construction:
-
-```rust
-use bimanual_collision_model::GovernorBand;
-
-// Stop at 10 mm, full speed at or above 30 mm, linear ramp between.
-let band = GovernorBand::new(0.01, 0.03)?;
-```
+the controller. A fitted piece sits at most 1 mm outside its mesh's convex hull,
+so the band, not the geometry, is where the real margin lives. On OpenArm the
+`Governor` of `openarm_backbone`'s `governor` module holds the band. It takes
+`d_stop` and `d_safe` at `Governor::build`, which refuses a band that is not a
+finite `0 < d_stop < d_safe`, and at `Governor::set_band`, which warns of such
+a band and keeps the band it holds.
 
 On the OpenArm fixture, the closest pair at the rest pose is each arm's base
 link against its own forearm (`link0` vs `link3`), about 24 mm apart. That pair
@@ -49,81 +44,79 @@ controller.
 ## Quick start
 
 ```rust
-use bimanual_collision_model::nalgebra::Point3;
-use bimanual_collision_model::{BimanualCollisionModel, ConvexPiece, GovernorBand, PairSpec};
+use bimanual_collision_model::{BimanualCollisionModel, ClipRegion, PairSpec, Point3};
 
-// The proximity law the caller gates with. The model does not hold it: the
-// model reports distance, the caller decides what to do with it.
-let band = GovernorBand::new(0.01, 0.03)?;
+// The caller's hard floor, 10 mm. The model does not hold it: the model reports
+// distance, the caller decides what to do with it.
+let d_stop = 0.01;
 
-// Tight boxes for a concave body, each verified at build to contain its mesh.
-// Axis-aligned here; `ConvexPiece::from_points` takes any convex point cloud.
-let torso_boxes = vec![
-    ConvexPiece::aabb(Point3::new(-0.157, -0.097, -0.002), Point3::new(0.097, 0.097, 0.022)),
-    // ... flare, column, head (see examples/visualize.rs for the full set)
+// Clip regions for a concave body: each region's slice of the mesh gets its own
+// rounded hull, and the build checks that the pieces jointly cover the mesh.
+let inf = f64::INFINITY;
+let torso_regions = vec![
+    ClipRegion::new(Point3::new(-inf, -inf, -inf), Point3::new(inf, inf, 0.012))?,
+    // ... flare, gusset, column, head (see tests/fixtures/openarm.rs for the full set)
 ];
 
 let mut model = BimanualCollisionModel::builder_from_file(&urdf_path, &meshes_dir, &left_base, &right_base)?
     // Pairs the caller knows can never collide, dropped from checking (see below).
     .exclude(&[PairSpec::new("openarm_left_link0", "openarm_left_link3")])
     // A tight proxy for a concave body, replacing its single auto-fit hull.
-    .hulls("openarm_body_link0", torso_boxes)
+    .regions("openarm_body_link0", torso_regions)
     .build()?;
 
 // Watchdog: evaluate the live joint states of both arms.
 let p = model.min_distance(&q_left, &q_right)?;
-if p.distance <= band.d_stop() {
+if p.distance <= d_stop {
     // Hold. p.link_a and p.link_b name the offending pair; p.on_a and p.on_b are
     // the closest points in the world frame.
 }
 
-// Command vetting: scale a step by where it would land.
-let d_now = model.min_distance(&q_left, &q_right)?.distance;
+// Command vetting: the clearance a step would land at, and the gradient of the
+// clearance with respect to each arm's joints for a velocity-barrier caller.
 let d_next = model.min_distance(&q_left_next, &q_right)?.distance;
-let allowed_fraction = band.scale(d_now, d_next);
+let g = model.distance_gradient(&q_left, &q_right)?;
+// g.grad_left[j] is d(distance)/d(q_left[j]); separating motion has a positive gradient.
 ```
 
 ## Convex hulls, GJK, and the conservative fit
 
-Each collision mesh is wrapped at construction in a convex hull. Every body
-auto-fits to a single hull; for a concave body whose one hull would bulge too
-far (the torso), the caller supplies a few tight convex pieces instead, verified
-at build to contain the mesh. At runtime the only geometry is Gilbert-Johnson-Keerthi
-distance between hulls, with the Expanding Polytope Algorithm recovering the
-penetration depth and direction where two hulls overlap. The signed distance is
-therefore continuous through contact: it falls smoothly through zero rather than
-clamping at it, which is what lets the governor distinguish separating motion
-from approaching motion even from inside an overlap.
+Each collision mesh is wrapped at construction in a convex polytope. Every body
+auto-fits to a single polytope; for a concave body whose one polytope would
+bulge too far (the torso), the caller names clip regions (`Builder::regions`),
+each region's slice of the mesh gets its own fit, and the build checks that the
+pieces jointly contain the mesh. At runtime the only geometry is
+Gilbert-Johnson-Keerthi distance between pieces, with the Expanding Polytope
+Algorithm recovering the penetration depth and direction where two pieces
+overlap. The signed distance is therefore continuous through contact: it falls
+smoothly through zero rather than clamping at it, which is what lets a caller's
+governor distinguish separating motion from approaching motion even from inside
+an overlap.
 
 The proxy is strictly conservative, so the reported distance is a true lower
-bound on the real mesh distance and the model alarms early, never late. Three
-properties combine to guarantee it:
+bound on the real mesh distance and the model alarms early, never late:
 
-- A convex hull contains its mesh by definition, since every mesh point is a
-  convex combination of the hull's own vertices.
-- A collision mesh has tens of thousands of vertices, but the hull needs only a
-  few hundred, and the runtime support query gets cheaper the fewer there are.
-  So before hulling, the cloud is simplified by *welding*: space is divided into
-  a grid of cubic cells of side `cell`, and all the points falling in one cell
-  are merged to a single representative. This drops the count to a few thousand,
-  so the hull builds fast and stays small. Welding moves points (up to a cell
-  away from where they were), which could let the hull cut inside the mesh, so
-  the hull is then inflated by a `radius` that re-contains every original point.
-  That radius is the worst weld displacement plus the worst residual protrusion,
-  the latter covering the fact that the incremental hull builder uses
-  floating-point predicates and can leave a vertex a hair outside its own faces
-  (a defect a repair pass removes and the radius then covers besides). By the
-  triangle inequality, and because distance to a convex set is 1-Lipschitz, the
-  inflated hull provably contains the mesh.
-- Decomposition assigns each whole triangle to exactly one piece, so every
-  triangle lands inside its piece's hull and the union of the pieces contains
-  the mesh with no face escaping between them.
+- Every plane of a fit is a supporting plane of the mesh cloud: its offset is
+  the cloud's own support value along its normal, so its halfspace holds the
+  whole mesh, and so does the intersection of any number of them. Containment
+  holds by construction, and the pieces carry no inflation radius.
+- The fit (`simplify.rs`) refines outward from the cloud's axis-aligned
+  bounding box by Kamenev's estimate refinement: it takes the polytope vertex
+  furthest outside the mesh's convex hull and cuts it off with the supporting
+  plane that touches the hull at that vertex's nearest point, until every vertex
+  lies within 1 mm (`MAX_DEVIATION_M`) of the hull. The reported distance is the
+  surface clearance less at most that 1 mm. Faces land where the surface
+  curves: a flat needs one plane however large it is.
+- The exact convex hull (`hull.rs`, quickhull) is the reference the fit's
+  deviation is measured against.
+- For a body fitted in clip regions, the build checks that every mesh vertex
+  lies inside a piece and that every face, subdivided down to 1 mm, lies inside
+  a single piece, so no face escapes between the pieces.
 
-A stress test confirms it: every fixture mesh point lies inside its body's hull
-union, with zero escapes. The crate uses no parry or other heavy collision
-framework, because the dependency graph pins nalgebra to 0.30 (through `k`),
-which the maintained parry releases have moved past. The hull, GJK, and EPA are
-roughly 700 lines of pure nalgebra here.
+The crate uses no parry or other heavy collision framework, because the
+dependency graph pins nalgebra to 0.30 (through `k`), which the maintained parry
+releases have moved past. The hull, the fit, GJK, and EPA are pure nalgebra
+here.
 
 A bounding-sphere broadphase keeps the per-tick cost down. Each body has a local
 bounding sphere; at query time the model places the centres, sorts the candidate
@@ -135,34 +128,30 @@ runs, and a release-mode test asserts a full query stays under 1 ms.
 
 ```text
 URDF collision entries
-  mesh + origin + scale       per-body vertex clouds      (urdf_collision, stl)
-  weld + convex hull          rounded hull (hull + radius) (hull::simplified_hull)
-  greedy best-plane split     one to a few hull pieces     (hull::decompose)
-  attached children           baked into the parent body   (assemble)
-  fixed bodies                root-frame hulls
+  mesh + origin + scale       per-body vertex clouds          (urdf_collision, stl)
+  supporting-plane fit        one polytope per body           (simplify::circumscribe)
+  clip regions (supplied)     one fit per region's mesh slice (clip, assemble)
+  fixed children              baked into the parent body      (assemble)
+  gripper fingers             own bodies, placed per query    (assemble, urdf_collision)
+  fixed bodies                root-frame pieces
 ```
 
-- The hull is an incremental convex hull of the welded vertex cloud (`hull.rs`),
-  with a repair pass that re-inserts any point the floating-point predicates left
-  protruding, so the result is genuinely convex. The convexity matters because
-  the support function is a warm-started hill-climb over the hull's edge graph,
-  which is only correct on a convex polytope.
-- `decompose` greedily splits a body by the plane, swept along the body's
-  principal axes, that most reduces the total enclosed volume. It stops once no
-  split saves at least an absolute volume threshold. An absolute threshold (not a
-  fraction of the body) leaves a small body whole while a large concave one, such
-  as the torso, keeps splitting, because the same shape saves far less absolute
-  volume when it is small.
-- GJK answers distance from a support function alone (`gjk.rs`). On overlap, EPA
-  expands the enclosing simplex toward the nearest face of the Minkowski
-  difference to recover the penetration depth and direction, reusing the hull's
-  horizon-stitching.
-- A movable child off a chain link, such as a gripper finger, is baked into the
-  parent body's vertex cloud over both travel extremes. Travel is a line in joint
-  space, so the two extremes bound every intermediate opening, and the runtime
-  needs no gripper state.
+- The fit circumscribes the vertex cloud with supporting planes (see above). A
+  body without supplied regions is one polytope.
+- A clip region (`ClipRegion`) is an axis-aligned box in the body's fit frame,
+  with infinite bounds for open sides. The body's mesh surface is clipped to
+  each region, each slice gets the same fit, and the union is verified to
+  contain the mesh. Adjacent regions should overlap by a few millimetres.
+- GJK answers distance from a support function alone (`gjk.rs`), an exact scan
+  over a piece's vertices. On overlap, EPA expands the enclosing simplex toward
+  the nearest face of the Minkowski difference to recover the penetration depth
+  and direction, stitching each new point to the horizon of the faces it sees.
+- A gripper finger, a collision-bearing link on a movable joint off a chain
+  link, is fit as its own body and placed at the live opening that
+  `set_gripper_openings` sets. The meshes orient the two travel extremes: the
+  extreme with the larger between-finger separation is open.
 - Every collision-bearing link is accounted for. The moving-link names come from
-  walking each chain, attached children fold into their parents, and every
+  walking each chain, fixed children fold into their parents, and every
   remaining collision link must be world-fixed or construction fails loudly.
 
 ## Checked pairs
@@ -177,8 +166,8 @@ Cross-arm pairs are always checked.
 
 Some pairs the structural rules keep can still never collide over the robot's
 actual range (a base link and the upper arm a few joints down, for instance):
-checking them only ever throttles spuriously. The `exclude` argument to `new`
-drops such pairs. The model trusts the assertion rather than re-deriving it, so
+checking them only ever throttles spuriously. `Builder::exclude` drops such
+pairs. The model trusts the assertion rather than re-deriving it, so
 getting the list right is the caller's responsibility, and excluding a pair that
 can in fact collide silently removes that protection. Only the names are checked
 (they must be real bodies). The dropped pairs are reported by `excluded_pairs`
@@ -186,30 +175,33 @@ for the consumer to log. The list is a small, deliberate, reviewed set, computed
 from a one-off reachability analysis outside this build.
 
 There is no per-pair rebasing: because the hulls are tight, `min_distance`
-reports the raw signed distance, and the band thresholds apply directly.
+reports the raw signed distance, and the caller's band thresholds apply directly.
 
-## The governor law
+## What a governor builds on
 
-`band.scale(d_now, d_next)` (on the caller's `GovernorBand`) returns the fraction of a commanded step to
-allow, in the range 0 to 1, and it is direction-aware:
+The model gives a governor three reads, and the governor owns the law:
 
-- Separating motion, where `d_next > d_now`, always passes at full scale, even
-  inside the stop band and even from inside an overlap. This makes a tangled
-  state recoverable by an ordinary separating move.
-- Approaching motion is scaled by where it would land: 1 at or above `d_safe`,
-  0 at or below `d_stop`, and linear in between. A non-finite distance fails safe
-  to 0.
+- `min_distance` is the signed distance over the checked pairs, with the pair
+  and its witness points. Non-finite joint values are rejected, so a caller
+  fails safe.
+- `distance_gradient` is the gradient of that distance with respect to each
+  arm's joints and each gripper's opening, computed analytically from the
+  nearest pair's witness points at the cost of one distance query.
+- `clearance_step_bound` bounds how much the minimum distance can change along a
+  straight joint-space step, so a step whose start clearance exceeds a floor by
+  more than the bound cannot cross that floor.
 
-This is the model's safety contract: it stops the arms colliding, but it never
-stops them moving apart. EPA is what makes the contract hold inside an overlap,
+On OpenArm the law is the backbone's `Governor`, a closing-velocity barrier. Each
+tick it limits only the component of the commanded step that closes the nearest
+gap, by the gradient, and leaves tangential and separating motion at full speed.
+The approach speed it permits ramps linearly from full at `d_safe` to zero at
+`d_stop`, and an exact floor scan along the step, by `min_distance`, is its
+backstop.
+
+The signed distance is what keeps separating motion free inside an overlap,
 where a hull is still a hair larger than the real part. Plain GJK reports zero on
 overlap and cannot tell separating from approaching, but EPA's signed depth can,
-so a separating step out of a torso overlap still passes at full speed.
-
-The law sees only the endpoint distances of a step, so steps must stay small
-against the band, which holds for per-tick control steps. It is intentionally
-discontinuous at `d_next == d_now` inside the band, where barely-separating
-motion passes at 1 while hovering motion is scaled.
+so a separating step out of a torso overlap still reads as separating.
 
 ## What the caller supplies
 
@@ -218,10 +210,10 @@ motion passes at 1 while hovering motion is scaled.
 | URDF path | the robot description itself |
 | collision mesh directory | `package://` URIs are not filesystem paths |
 | left and right base links | which chain is "left" is robot identity, not geometry |
-| `GovernorBand` (`d_stop`, `d_safe`) | the two tuned numbers for how close is too close; they encode worst closing speed, watchdog latency, and tracking drift, none of which the geometry knows |
 | excluded pairs (optional) | pairs the caller asserts can never collide, dropped from checking; trusted, not re-derived |
 
-Everything else is derived at construction: the hulls decomposed from the meshes,
+The proximity band is the governor's, outside the model (see "The proximity
+band"). Everything else is derived at construction: the hulls decomposed from the meshes,
 the body set, and the checked pairs from the structural rules. Construction fails
 loudly on anything it cannot account for (an unreadable mesh, an unmodeled
 collision link, an excluded pair naming a body that does not exist), so nothing
@@ -236,11 +228,12 @@ OpenArm that is the backbone. It vendors the description (URDF and collision
 meshes) and exposes the paths and base links as parameters.
 
 ```rust
-use bimanual_collision_model::{BimanualCollisionModel, GovernorBand, PairSpec};
+use bimanual_collision_model::{BimanualCollisionModel, PairSpec};
 use srs_model::JointVec;
 
 // Bringup, once (about 0.7 s in release: hull decomposition and pair derivation).
-let band = GovernorBand::new(0.01, 0.03)?;
+// The governor's hard floor; the governor holds the band.
+let d_stop = 0.01;
 
 // On OpenArm, each arm's base shoulder support and its upper arm (link3) come
 // within ~12 mm at folded-shoulder poses but cannot touch over the whole joint
@@ -251,13 +244,14 @@ let exclude = [
     PairSpec::new("openarm_left_link0", "openarm_left_link3"),
     PairSpec::new("openarm_right_link0", "openarm_right_link3"),
 ];
-let mut model = BimanualCollisionModel::from_urdf_file(
+let mut model = BimanualCollisionModel::builder_from_file(
     &params.urdf_path,            // the same description the arm nodes load
     &params.collision_meshes_dir,
     &params.left_base_link,       // for example "openarm_left_link0"
     &params.right_base_link,
-    &exclude,
-)?;
+)?
+.exclude(&exclude)
+.build()?;
 for (a, b) in model.excluded_pairs() {
     // info!("collision: not checking {a} vs {b}");  visible at startup
 }
@@ -273,29 +267,22 @@ q[msg.arm_id as usize] = msg.positions;
 // Watchdog on the measured state, the backstop. min_distance borrows the model,
 // so copy out what must outlive the call.
 let here = model.min_distance(&q[0], &q[1])?;
-let d_now = here.distance;
-if d_now <= band.d_stop() {
+if here.distance <= d_stop {
     // Hold both arms; here.link_a / here.link_b name the pair, witnesses in root frame.
 }
 
 // Streaming to both arms, per command tick: the producer has a target pose `cmd`
-// for each arm. Vet the joint step before emitting it. min_distance is over both
-// arms at once, so a single scale governs both: move each arm that fraction of
-// the way to its target, and the closest pair anywhere paces the whole motion.
-let d_next = model.min_distance(&cmd[0], &cmd[1])?.distance;
-let scale = band.scale(d_now, d_next);
-for arm in [0u8, 1] {
-    let i = arm as usize;
-    let positions: JointVec = std::array::from_fn(|j| q[i][j] + scale * (cmd[i][j] - q[i][j]));
-    let velocities: JointVec = std::array::from_fn(|j| scale * cmd_vel[i][j]);
-    // emit joint_commands { arm_id: arm, positions, velocities }
-}
+// for each arm. The gradient over both arms at once is what the governor's
+// barrier projects the step against, so the closest pair anywhere paces the
+// whole motion.
+let g = model.distance_gradient(&q[0], &q[1])?;
+// g.grad_left, g.grad_right: d(distance)/dq for each arm's joints.
 ```
 
-Separating motion always passes at full scale, so an arm backing out of a tight
-spot is never throttled; only motion that would close the gap is slowed, to a
-stop at `d_stop`. The hold and abort wiring, and the joint_states / joint_commands
-plumbing, live with the backbone, not here.
+The governor slows only motion that would close the gap, to a stop at `d_stop`,
+so an arm backing out of a tight spot is never throttled. The band, the law, the
+hold and abort wiring, and the joint_states / joint_commands plumbing live with
+the backbone, in `openarm_backbone`'s `governor` module.
 
 ## Visualization
 
@@ -308,75 +295,46 @@ cargo run --release --example visualize -- \
 ```
 
 This writes an interactive HTML scene you open in a browser. The solids
-are the true rounded collision surface: each piece's faces offset outward by the
-inflation radius, with cylinders along the edges and spheres at the vertices
-filling the fillets, which is the geometry the distance query actually measures
-against. The pieces are coloured by side, and the closest pair is highlighted
+are the collision pieces, the geometry the distance query measures against. The pieces are coloured by side, and the closest pair is highlighted
 with its GJK or EPA witness segment and the signed distance. With `--wireframes`,
 the decimated source meshes draw underneath, so the gap between a mesh and its
-rounded surface is the conservative margin, visible directly for judging the fit.
+pieces is the conservative margin, visible directly for judging the fit.
 `--d-stop` and `--d-safe` set the HUD thresholds.
 
 ## Layout
 
 ```text
-tests/fixtures/                     OpenArm V1.0 fixture, srs_model-style
+tests/fixtures/                     OpenArm V1.0 fixture, srs_model-style, and openarm.rs (torso regions)
 src/
-  hull.rs            convex hull, simplification (weld and radius), decompose
+  hull.rs            exact convex hull (quickhull), the fit's reference
+  simplify.rs        supporting-plane fit to a deviation budget
+  clip.rs            ClipRegion and the clipping of a mesh to it
   gjk.rs             GJK distance, EPA penetration, the Hull and Placed primitives
   stl.rs             binary STL reader
   urdf_collision.rs  URDF collision extraction, fixed poses, child transforms
-  assemble.rs        construction-time hull decomposition of all bodies
+  assemble.rs        construction-time fit of all bodies and the containment check
   pairs.rs           pair specs (explicit lists for tests and tools)
   model.rs           BimanualCollisionModel queries, pair derivation, exclusions
-  governor.rs        direction-aware proximity scaling
+  error.rs           BuildError, CollisionError, ContainmentFailure
 examples/
   visualize.rs       the HTML scene
 tests/
   dual_arm.rs        two-arm scenarios: converge, fold, separate, with budgets
+  distance_oracle.rs the distance query against support-function bounds
 ```
 
 The fixture meshes are vendored copies of the Enactic `openarm_description` v1.0
-collision proxies, and nothing reads outside the crate at build or run time. A
-robot with a moving mount, such as a lift axis, needs a model extension, because
-fixed bodies are currently baked in the world frame.
-
-## Future work
-
-- **Exclusion verification.** The `exclude` list is trusted today. A useful
-  addition would be a diagnostic, run as a test rather than at construction, that
-  sweeps each excluded pair across the joints that move the two bodies relative
-  to each other and fails if the conservative hulls can reach contact. That turns
-  a wrong assertion or a changed mesh into a CI failure without paying a
-  per-bringup cost. It only generalizes to narrow kinematic gaps (a few joints);
-  a wide gap is exponential to sweep, which is part of why the build trusts the
-  list rather than proving it.
-- **Moving mounts.** A lift or torso axis would need the currently world-fixed
-  bodies posed from a configuration like the arms, rather than baked once.
-- **Automatic concave decomposition.** A concave body is handled today by the
-  caller supplying tight convex pieces (`Builder::hulls`), verified at build to
-  contain the mesh. That is exact but manual. Deriving those pieces automatically
-  from the mesh (an approximate convex decomposition, each part then strictly
-  bounded) would remove the hand-authoring step while keeping the containment
-  guarantee.
-- **Other robot topologies.** The "bimanual" and "SRS" assumptions are confined
-  to `model.rs`: the two `srs_model::Arm` instances, the `q_left`/`q_right` query,
-  the forward-kinematics source, and the same-side and cross-arm pair rules. The
-  `hull`, `gjk`, `governor`, `pairs`, `stl`, and `urdf_collision` modules carry no
-  robot assumptions. A second topology would lift those modules, plus the generic
-  minimum-distance scan in `model.rs`, into a `collision_core` crate, leaving each
-  robot crate to pose its bodies from a configuration (today
-  `srs_model::Arm::link_pose_world`, the one hard dependency, behind a future
-  `BodyPoser` trait) and supply its checked `PairSpec` list. Deliberately not done
-  with a single consumer: the second robot defines the seam.
+collision proxies, and nothing reads outside the crate at build or run time. The
+model places world-fixed bodies once, in the world frame, so it models robots
+whose mount does not move.
 
 ## Testing
 
-`cargo test` covers the hull and GJK analytically (containment of every input
-point, re-containment after simplification, box and sphere distances, EPA depth
-and direction, signed continuity through contact, and isometry invariance), the
-decomposition (a two-lobe shape splits and stays contained), and the fixture
-integration scenarios (arms converging monotonically into collision, folding
-inward, separating sweeps holding the floor, a governor halt before contact,
-separation from inside an overlap passing at full speed, and non-finite
-rejection). `cargo test --release` additionally asserts the per-query time budget.
+`cargo test` covers the hull, the fit and GJK analytically (containment of every
+input point, containment after the fit, box and sphere distances, EPA depth and
+direction, signed continuity through contact, and isometry invariance), the
+clipping (every clipped point lies in its region, and both neighbours keep a
+triangle on their shared plane), and the fixture integration scenarios (arms
+converging monotonically into collision, folding inward, separating sweeps
+holding the floor, and non-finite rejection). `cargo test --release`
+additionally asserts the per-query time budget.

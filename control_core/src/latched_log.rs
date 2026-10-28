@@ -65,8 +65,11 @@ impl LatchedLog {
 mod tests {
     use super::*;
 
+    use crate::test_support::Logged;
+
     #[test]
     fn a_run_latches_until_a_success_rearms_it() {
+        let (_logged, _guard) = Logged::capture();
         let latch = LatchedLog::error("simulation video_stream receive");
         latch.failure("down");
         assert!(!latch.run.first_of_run(), "the failure opened the run");

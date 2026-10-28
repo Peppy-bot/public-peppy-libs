@@ -1,7 +1,8 @@
 //! Shared control-loop and runtime primitives: pacing, filtering, rate
 //! limiting, the timing of a motion, the health of a motor, the setpoint
-//! stream, latched failure logging, and waiting and locking from synchronous
-//! code, for robot nodes and the kinematics crates that plan their moves.
+//! stream, the service and receive loops, latched failure logging, and
+//! waiting and locking from synchronous code, for robot nodes and the
+//! kinematics crates that plan their moves.
 //!
 //! - [`pacer`]: fixed-rate pacing for a control loop, with overrun accounting.
 //! - [`chase`]: the rate-limited chase that absorbs a setpoint's target jumps.
@@ -9,8 +10,7 @@
 //!   [`ButterworthFilter`](filters::ButterworthFilter),
 //!   [`HampelFilter`](filters::HampelFilter)).
 //! - [`time`]: a configured rate or seconds value as a `Duration` to wait on,
-//!   the ticks a window spans, and the pause a receive loop takes after an
-//!   error.
+//!   the ticks a window spans, and waits a cancel ends, async and blocking.
 //! - [`minimum_jerk`]: the quintic blend between two values and its peak rate.
 //! - [`path_timing`]: the time-optimal timing of a path through waypoints
 //!   under velocity and acceleration limits, and the trajectories that play
@@ -21,6 +21,10 @@
 //! - [`motor_health`]: judging one motor's load, temperature and condition
 //!   against its ratings.
 //! - [`positive_finite`]: a positive finite float, carried as proof it was checked.
+//! - [`receiving`]: the loop that receives one subscription for the life of
+//!   a node, with the pause after a receive error.
+//! - [`serving`]: the loop that serves one service for the life of a node,
+//!   with the pause after a runtime error.
 //! - [`servo`]: the tolerances that decide when a Cartesian goal is reached.
 //! - [`setpoint_stream`]: the latest setpoint, published to a sink on a fixed
 //!   interval until cancelled, with one warning per failure burst.
@@ -43,10 +47,14 @@ pub mod motor_health;
 pub mod pacer;
 pub mod path_timing;
 pub mod positive_finite;
+pub mod receiving;
 pub mod report_once;
+pub mod serving;
 pub mod servo;
 pub mod setpoint_stream;
 pub mod sync;
+#[cfg(test)]
+mod test_support;
 pub mod throttle;
 pub mod time;
 pub mod timing;
