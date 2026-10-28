@@ -13,7 +13,10 @@ A grab:
 3. opens the gripper as wide as the item and `approach_margin_m` on each
    side, fully for an item of no known width, so the fingers come down
    beside the item and not on what stands next to it; then moves to the
-   pre-grasp point and to the grasp point;
+   pre-grasp point; with an `aligner` (its port is `aligning.py`), a model then looks
+   through the wrist and chest cameras and corrects the gripper's place
+   and turn above the item, and the pre-grasp, grasp and lifted points
+   become the aligned ones; then moves to the grasp point;
 4. closes with the goal's `max_effort` and judges the hold from the
    result's `final_opening`: below `hold_opening_min` the jaws met nothing;
 5. lifts, then judges the hold again from the first limb_states snapshot
@@ -45,17 +48,25 @@ the item's width; where the descent's result
 put the grasp point against the commanded one; limb_state's grasp point at
 the close; the two openings it judged; and the retreat.
 
-A drop opens the gripper where it is. A place carries the held item to the
-pose, through its pre-grasp point, in the pose's orientation alone when it
-has one, else from above at each roll, opens there and climbs back to the
-pre-place point. An arm that stops short on its way down to the pose does
-not settle, so its move fails with `timeout`; when limb_states puts its
-grasp point at least `MIN_DESCENT_M` below the pre-place point and on the
-line down, the arm has set the item on what is under it: the place opens
-there and logs it. It
-reports where the grasp point stood when the jaws opened. A climb that
-fails is logged, and the place still succeeds: the jaws are open and the
-item is down.
+A drop opens the gripper where it is. A place first reads the gripper's
+opening from the latest snapshot: jaws below `hold_opening_min` stand
+closed on air, the item slipped since the grab, and the place fails
+before any move, naming it. It then carries the held item to the
+pose, through its pre-place point, `clearance_m` and `held_item_depth_m`
+above the pose so the held item clears what it is set on until the
+descent, or `clearance_m` alone above it where the backbone has no plan
+that high; in the pose's orientation alone when it has one, else from
+above at each roll; with an `aligner`, the model then
+corrects the held item's place above the spot as it does above an item in
+a grab; the place opens there and climbs back to the pre-place point. An
+arm that stops short on its way down to the pose does not settle, so its
+move fails with `timeout`; when limb_states puts its grasp point anywhere
+from the pre-place point down and within `RELEASE_OFF_LINE_M` of the line
+down, the arm has set the item on what is under it, the rim or the floor
+of a container included: the place opens there and logs it. It reports
+where the grasp point stood when the jaws opened. A climb that fails is
+logged, and the place still succeeds: the jaws are open and the item is
+down.
 
 The manipulator keeps nothing between goals: ids and held flags live in
 `State`.
@@ -69,11 +80,12 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from ..limb_state import LimbSnapshot
-from ..ports import Cancelled, CancelToken, Grasp, GraspProposer, Gripper, Item, Outcome, Pose, Quat, Vec3
-from ..robot import MoveResult
-from ..waiting import until
-from .grasp import lifted, orientations_for, pre_grasp
+from ...limb_state import LimbSnapshot
+from ...ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose, Quat, Senses, Vec3
+from ...robot import MoveResult
+from ...waiting import until
+from .aligning import Aligned, Aligner, AlignmentFailed, AlignRequest, GaveUp, OutOfSteps
+from .grasp import Grasp, GraspProposer, jaw_line_deg, lifted, orientations_for, pre_grasp
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +94,14 @@ logger = logging.getLogger(__name__)
 # point no plan pointing down, and 7.5 cm does.
 CLEARANCE_M = 0.075
 LIFT_M = 0.075
+# How far below the grasp point a held item may reach: the pre-place point
+# stands this and the clearance above the release point, so the item
+# clears the floor of a container and what already stands in it until the
+# descent. A 10 cm apple grasped 2.5 cm under its top reaches 7.8 cm. In
+# Waldo the OpenArm has no plan pointing down more than about 15 cm above
+# a desk spot near its body, so where this is too high the pre-place
+# point stands at the clearance alone.
+HELD_ITEM_DEPTH_M = 0.075
 HOLD_OPENING_MIN = 0.05
 # How far the opening may fall from the close to after the lift while the
 # jaws still hold the item. In Waldo a held fruit's fell 0.003 to 0.013 (the
@@ -100,13 +120,16 @@ PLAN_ORIENTATION_RAD = 0.01
 SETTLE_POSITION_M = 0.02
 SETTLE_ORIENTATION_RAD = 0.15
 SETTLE_TIMEOUT_S = 2.0
-# How far below the pre-place point an arm that stops short on its way
-# down must stand for a place to open there: higher, it has not set the
-# item down.
-MIN_DESCENT_M = 0.01
 # The limb_motion failure kind of an arm move whose grasp point did not
 # settle by its settle timeout.
 SETTLE_TIMED_OUT = "timeout"
+# How far from the line down an arm that stops short on its way down may
+# stand for a place to open there: pushed further aside, it has not set
+# the item down where it was going. An item whose bottom meets the floor
+# right under the pre-place point tilts the arm a little as it stops, and
+# one whose bottom meets an item already in the container slides off its
+# round top by up to 4 or 5 cm before it rests.
+RELEASE_OFF_LINE_M = 0.05
 # How long a gripper move waits for the jaws to stand still.
 GRIP_SETTLE_TIMEOUT_S = 2.0
 # The span of the jaws fully open: the OpenArm v2's in Waldo, where an
@@ -151,6 +174,7 @@ class ScriptedManipulator:
         *,
         clearance_m: float = CLEARANCE_M,
         lift_m: float = LIFT_M,
+        held_item_depth_m: float = HELD_ITEM_DEPTH_M,
         hold_opening_min: float = HOLD_OPENING_MIN,
         hold_drop_max: float = HOLD_DROP_MAX,
         snapshot_wait_s: float = SNAPSHOT_WAIT_S,
@@ -160,11 +184,16 @@ class ScriptedManipulator:
         grip_settle_timeout_s: float = GRIP_SETTLE_TIMEOUT_S,
         jaw_travel_m: float = JAW_TRAVEL_M,
         approach_margin_m: float = APPROACH_MARGIN_M,
+        aligner: Optional[Aligner] = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.proposer = proposer
+        # The model that corrects the gripper above the item before the
+        # descent; none for the grab with no model.
+        self.aligner = aligner
         self.clearance_m = clearance_m
         self.lift_m = lift_m
+        self.held_item_depth_m = held_item_depth_m
         self.hold_opening_min = hold_opening_min
         self.hold_drop_max = hold_drop_max
         self.snapshot_wait_s = snapshot_wait_s
@@ -184,9 +213,11 @@ class ScriptedManipulator:
             return NOT_STARTED
         return self._limb_states.why_unavailable()
 
-    async def start(self, robot, limb_states) -> None:
-        self._robot = robot
-        self._limb_states = limb_states
+    async def start(self, senses: Senses) -> None:
+        self._robot = senses.robot
+        self._limb_states = senses.limb_states
+        if self.aligner is not None:
+            self.aligner.start(senses)
 
     async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken) -> Outcome:
         notes: list[str] = []
@@ -226,15 +257,21 @@ class ScriptedManipulator:
         # Before any move: a gripper limb_states does not name could never
         # be judged after the lift.
         _opening_of(self._limb_states.latest, gripper.name)
+        if self.aligner is not None:
+            reason = self.aligner.why_unavailable(gripper.arm)
+            if reason:
+                raise _Failed(f"no alignment: {reason}")
         grasp = self._propose(item)
         orientation, (pre, point, lift) = await self._first_reach(
-            gripper, grasp, f"item '{item.item_id}'", cancel, notes, with_lift=True
+            gripper, grasp, f"item '{item.item_id}'", cancel, notes, clearance_m=self.clearance_m, with_lift=True
         )
         opening = self._approach_opening(item)
         if item.width_m is not None:
             notes.append(f"opened to {opening:.2f} for its {100 * item.width_m:.1f} cm width")
         await self._grip(gripper.name, opening, 0.0, cancel)
         await self._move(gripper.arm, pre, orientation, cancel)
+        if self.aligner is not None:
+            pre, point, lift, orientation = await self._align(item, gripper, pre, point, orientation, cancel, notes)
         try:
             return await self._descend_close_lift(item, gripper, max_effort, orientation, point, lift, cancel, notes)
         except _Failed as failure:
@@ -269,6 +306,46 @@ class ScriptedManipulator:
         notes.append("held")
         return Outcome(True)
 
+    async def _align(
+        self, item: Item, gripper: Gripper, pre: Vec3, point: Vec3, orientation: Quat, cancel: CancelToken, notes: list[str]
+    ) -> tuple[Vec3, Vec3, Vec3, Quat]:
+        """The aligner's correction above the item: the pre-grasp, grasp
+        and lifted points and the orientation the grab goes on with."""
+        return await self._run_alignment(AlignRequest(item, gripper, pre, point, orientation, self.lift_m), cancel, notes)
+
+    async def _run_alignment(self, request: AlignRequest, cancel: CancelToken, notes: list[str]) -> tuple[Vec3, Vec3, Vec3, Quat]:
+        """One alignment above the point of `request`: the pre, point and
+        lifted points and the orientation the sequence goes on with. A
+        model that gives up, runs out of steps or has a move stopped ends
+        the sequence here, before the descent, so nothing retreats."""
+        pre = request.pre
+        try:
+            alignment = await self.aligner.align(request, self, cancel)
+        except AlignmentFailed as failure:
+            raise _Failed(f"the alignment failed: {failure.message}") from None
+        if isinstance(alignment, Aligned):
+            moved_cm = 100 * math.dist(alignment.pre[:2], pre[:2])
+            notes.append(
+                f"aligned in {alignment.steps} step{'' if alignment.steps == 1 else 's'}: the grasp point moved {moved_cm:.1f} cm, "
+                f"the jaws close along {jaw_line_deg(alignment.orientation):.0f} degrees"
+            )
+            return alignment.pre, alignment.point, alignment.lift, alignment.orientation
+        if isinstance(alignment, GaveUp):
+            raise _Failed(f"the model gave up after {alignment.steps} step{'' if alignment.steps == 1 else 's'}")
+        if isinstance(alignment, OutOfSteps):
+            raise _Failed(f"no ready in {alignment.steps} steps")
+        raise _Failed(alignment.message, stopped=True)
+
+    async def refusal_for(self, arm: str, points: tuple[Vec3, ...], orientation: Quat, cancel: CancelToken) -> str:
+        """For the aligner: the backbone's words for the first of `points`
+        it has no plan for in `orientation`, or "" when each has one."""
+        return await self._first_refusal(arm, tuple(points), orientation, cancel, _Checks())
+
+    async def move_to(self, arm: str, point: Vec3, orientation: Quat) -> MoveResult:
+        """For the aligner: one arm move with the bars of every arm move;
+        the result says how it ended."""
+        return await self._move_arm(arm, point, orientation)
+
     def _slipped(self, closed: float, after_lift: float) -> bool:
         """Whether the item left the jaws during the lift: they stand near
         closed, or closed further than the item let them at the close."""
@@ -301,13 +378,29 @@ class ScriptedManipulator:
 
     async def _place(self, gripper: Gripper, pose: Pose, cancel: CancelToken) -> Outcome:
         self._require_started()
+        # Jaws closed on air since the grab: the item slipped on the way, and
+        # a place would carry nothing. The caller learns it here, before any
+        # move, and drops to let the brain forget the item.
+        opening = self._limb_states.latest.opening(gripper.name)
+        if opening is not None and opening < self.hold_opening_min:
+            raise _Failed(f"gripper '{gripper.name}' holds nothing now: its jaws stand at {opening:.2f}, closed on air; drop to let it go")
+        if self.aligner is not None:
+            reason = self.aligner.why_unavailable(gripper.arm)
+            if reason:
+                raise _Failed(f"no alignment: {reason}")
         try:
             orientations = orientations_for(pose.orientation)
         except ValueError as error:
             raise _Failed(str(error)) from None
         target = "the pose [{:.3f}, {:.3f}, {:.3f}]".format(*pose.position)
-        orientation, (pre, point) = await self._first_reach(gripper, Grasp(pose.position, orientations), target, cancel, [])
+        notes: list[str] = []
+        orientation, (pre, point) = await self._place_reach(gripper, Grasp(pose.position, orientations), target, cancel, notes)
         await self._move(gripper.arm, pre, orientation, cancel)
+        if self.aligner is not None:
+            request = AlignRequest(None, gripper, pre, point, orientation, self.lift_m, target=pose.position)
+            pre, point, _lift, orientation = await self._run_alignment(request, cancel, notes)
+        if notes:
+            logger.info("place with gripper '%s': %s", gripper.name, "; ".join(notes))
         released_at = await self._lower_to_release(gripper, pre, point, orientation, cancel)
         await self._grip(gripper.name, OPEN, 0.0, cancel)
         try:
@@ -332,16 +425,32 @@ class ScriptedManipulator:
         except ValueError as error:
             raise _Failed(f"no grasp for item '{item.item_id}': {error}") from None
 
+    async def _place_reach(
+        self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str]
+    ) -> tuple[Quat, tuple[Vec3, ...]]:
+        """The orientation and the points of a place: the pre-place point
+        `clearance_m` and `held_item_depth_m` above the pose when the backbone
+        has a plan that high, else `clearance_m` above it, which `notes`
+        says."""
+        high = self.clearance_m + self.held_item_depth_m
+        try:
+            return await self._first_reach(gripper, grasp, target, cancel, [], clearance_m=high)
+        except _Failed:
+            notes.append(f"no plan {100 * high:.1f} cm above the pose: the pre-place point stands {100 * self.clearance_m:.1f} cm above it")
+            return await self._first_reach(gripper, grasp, target, cancel, [], clearance_m=self.clearance_m)
+
     async def _first_reach(
-        self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *, with_lift: bool = False
+        self, gripper: Gripper, grasp: Grasp, target: str, cancel: CancelToken, notes: list[str], *,
+        clearance_m: float, with_lift: bool = False,
     ) -> tuple[Quat, tuple[Vec3, ...]]:
         """The first orientation of `grasp` whose moves all plan, with the
-        points of those moves in order: the pre-grasp point, the grasp
-        point, and the lifted point when `with_lift`."""
+        points of those moves in order: the pre point, `clearance_m` back
+        along the approach, the grasp point, and the lifted point when
+        `with_lift`."""
         last_refusal = ""
         checks = _Checks()
         for index, orientation in enumerate(grasp.orientations):
-            points = (pre_grasp(grasp.point, orientation, self.clearance_m), grasp.point)
+            points = (pre_grasp(grasp.point, orientation, clearance_m), grasp.point)
             if with_lift:
                 points += (lifted(grasp.point, self.lift_m),)
             refusal = await self._first_refusal(gripper.arm, points, orientation, cancel, checks)
@@ -395,13 +504,14 @@ class ScriptedManipulator:
         `timeout`; where it stopped is the grasp point of the latest
         limb_states snapshot, since a failed move gives no result. A move a
         stop ended, one that failed for another reason, or one that stopped
-        higher or off the line down, fails."""
+        more than `RELEASE_OFF_LINE_M` above the pre-place point or off the
+        line down, fails."""
         moved = await self._move_arm(gripper.arm, point, orientation)
         cancel.check()
         if moved.completed:
             return moved.final_position
         at = self._arm_position(gripper.arm) if moved.failure_kind == SETTLE_TIMED_OUT else None
-        if not _short_on_the_way_down(pre, point, at, self.settle_position_m):
+        if not _short_on_the_way_down(pre, point, at, RELEASE_OFF_LINE_M):
             raise _Failed(moved.message or "move_arm failed", stopped=moved.cancelled)
         logger.info(
             "place with gripper '%s' stopped %.1f cm short of the place point on the way down (%s): it releases there",
@@ -440,16 +550,16 @@ class ScriptedManipulator:
 
 
 def _short_on_the_way_down(start: Vec3, end: Vec3, at: Optional[Vec3], off_line_m: float) -> bool:
-    """Whether `at` lies on the line from `start` to `end`, within
-    `off_line_m` of it, and at least `MIN_DESCENT_M` along it from
-    `start`."""
+    """Whether `at` lies between `start` and `end` along the line from one
+    to the other, `start` itself included, within `off_line_m` of that
+    line."""
     if at is None:
         return False
     line = [e - s for s, e in zip(start, end)]
     length = math.sqrt(sum(v * v for v in line))
     along = sum((a - s) * v for s, a, v in zip(start, at, line)) / length
     foot = [s + v * along / length for s, v in zip(start, line)]
-    return along >= MIN_DESCENT_M and math.dist(at, foot) <= off_line_m
+    return -off_line_m <= along <= length and math.dist(at, foot) <= off_line_m
 
 
 def _offset_cm(position: Optional[Vec3], commanded: Vec3) -> str:

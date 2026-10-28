@@ -41,9 +41,9 @@ async def test_a_brain_node_boots_and_stops_on_its_token(caplog):
     ]
     [shutdown] = runner.shutdown_hooks
     # Seven actions, three services, and the camera follower, the two
-    # geometry learners and the limb follower, which return at once on
-    # vacant slots.
-    assert len(loops) == 14
+    # geometry learners, the limb follower and the wrist follower, which
+    # return at once on vacant slots.
+    assert len(loops) == 15
     runner.token.cancel()
     await asyncio.wait_for(asyncio.gather(*loops), 1.0)
     await asyncio.wait_for(shutdown(), 1.0)

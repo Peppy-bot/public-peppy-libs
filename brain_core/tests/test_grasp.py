@@ -9,9 +9,10 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from brain_core.manipulation.centre_proposer import CentreProposer
-from brain_core.manipulation.grasp import (
+from brain_core.manipulators.scripted.centre_proposer import CentreProposer
+from brain_core.manipulators.scripted.grasp import (
     ROLLS,
+    Grasp,
     GraspDirection,
     approach,
     candidates,
@@ -22,7 +23,7 @@ from brain_core.manipulation.grasp import (
     pre_grasp,
     unit,
 )
-from brain_core.ports import Grasp, Item
+from brain_core.ports import Item
 
 
 def rotate(q, v):
@@ -140,3 +141,19 @@ def test_the_pre_grasp_point_lies_clearance_away_against_the_approach(point, rol
     offset = tuple(p - g for p, g in zip(point, pre))
     assert math.dist(pre, point) == pytest.approx(clearance, abs=1e-9)
     assert close(offset, tuple(clearance * a for a in approach(q)), 1e-9)
+
+
+def test_a_turn_about_the_vertical_turns_the_jaw_line_counter_clockwise_and_keeps_the_approach():
+    from brain_core.manipulators.scripted.grasp import jaw_axis, jaw_line_deg, turned_about_z
+
+    down_0 = orientation(GraspDirection.DOWN, 0.0)
+    assert close(jaw_axis(down_0), (0.0, 1.0, 0.0)) and jaw_line_deg(down_0) == pytest.approx(90.0)
+    turned = turned_about_z(down_0, math.radians(45.0))
+    # +45 counter-clockwise seen from above takes the jaw line from +y
+    # (90 degrees) to 135 degrees; the approach still points down.
+    assert jaw_line_deg(turned) == pytest.approx(135.0)
+    assert close(approach(turned), (0.0, 0.0, -1.0), 1e-9)
+    assert jaw_line_deg(turned_about_z(down_0, math.radians(-45.0))) == pytest.approx(45.0)
+    # A line has no sense: a half turn gives the same line.
+    assert jaw_line_deg(turned_about_z(down_0, math.pi)) == pytest.approx(90.0)
+    assert sum(v * v for v in turned) == pytest.approx(1.0)

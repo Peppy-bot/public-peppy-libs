@@ -16,7 +16,7 @@ import pytest
 from hypothesis import settings
 
 from brain_core.brain import Brain
-from brain_core.manipulation.none import NoneManipulator
+from brain_core.manipulators.none import NoneManipulator
 from brain_core.perception.camera import Intrinsics
 from brain_core.perception.none import NoneDetector
 from brain_core.ports import Box, CancelToken, Coverage, Deadline, FailureKind, Gripper, Item, Outcome, Pose, Refusal, Role
@@ -125,6 +125,7 @@ class FakeManipulator:
         self.wait_for_stop = wait_for_stop
         self.calls: list[tuple] = []
         self.stopped = 0
+        self.senses = None
         self.robot = None
         self.limb_states = None
         self._began = asyncio.Event()
@@ -132,9 +133,10 @@ class FakeManipulator:
     def why_unavailable(self) -> str:
         return ""
 
-    async def start(self, robot, limb_states) -> None:
-        self.robot = robot
-        self.limb_states = limb_states
+    async def start(self, senses) -> None:
+        self.senses = senses
+        self.robot = senses.robot
+        self.limb_states = senses.limb_states
 
     async def begun(self) -> None:
         await self._began.wait()

@@ -11,15 +11,19 @@ approach. These are the orientations workspace_core's reach test proves
 reachability with, `DOWN` before `FORWARD`.
 
 Every orientation is a unit quaternion [x, y, z, w].
+
+`Grasp` is where and how a gripper closes on an item, the point and the
+orientations to try there; a `GraspProposer` gives the grasp of an item.
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Optional, Protocol
 
-from ..ports import Quat, Vec3
+from ...ports import Item, Quat, Vec3
 
 ROLLS = 8
 
@@ -76,6 +80,29 @@ def approach(q: Quat) -> Vec3:
     return (2.0 * (x * z + w * y), 2.0 * (y * z - w * x), 1.0 - 2.0 * (x * x + y * y))
 
 
+def jaw_axis(q: Quat) -> Vec3:
+    """The axis the jaws close on in the grasp frame `q`, its +Y, in the
+    robot frame."""
+    x, y, z, w = unit(q)
+    return (2.0 * (x * y - w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + w * x))
+
+
+def jaw_line_deg(q: Quat) -> float:
+    """The direction of the line the jaws of `q` close along, seen from
+    above: degrees counter-clockwise from the robot's +X, in [0, 180),
+    since a line has no sense."""
+    ax, ay, _az = jaw_axis(q)
+    return math.degrees(math.atan2(ay, ax)) % 180.0
+
+
+def turned_about_z(q: Quat, angle_rad: float) -> Quat:
+    """The grasp frame `q` turned `angle_rad` about the robot's +Z,
+    counter-clockwise seen from above: the turn an alignment step asks for
+    with its roll_deg. The approach stays as it was."""
+    half = angle_rad / 2.0
+    return _multiply((0.0, 0.0, math.sin(half), math.cos(half)), unit(q))
+
+
 def pre_grasp(point: Vec3, q: Quat, clearance_m: float) -> Vec3:
     """Where the grasp point stands before it closes in on `point`:
     `clearance_m` back along the approach of `q`, so the gripper reaches
@@ -92,6 +119,18 @@ def lifted(point: Vec3, lift_m: float) -> Vec3:
 def lowered(point: Vec3, depth_m: float) -> Vec3:
     """`point` lowered `depth_m` straight down."""
     return (point[0], point[1], point[2] - depth_m)
+
+
+def _multiply(a: Quat, b: Quat) -> Quat:
+    """The rotation `b` then `a`, as quaternions [x, y, z, w]."""
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
 
 
 def _cross(a: Vec3, b: Vec3) -> Vec3:
@@ -116,3 +155,26 @@ def _quaternion(x: Vec3, y: Vec3, z: Vec3) -> Quat:
         return ((m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s)
     s = 2.0 * math.sqrt(1.0 + m22 - m00 - m11)
     return ((m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s)
+
+
+@dataclass(frozen=True)
+class Grasp:
+    """Where and how a gripper closes on an item: the grasp point, robot
+    frame, and the orientations of the gripper to try there, in order; a
+    manipulator takes the first one the backbone has a plan for. Each is a
+    unit quaternion [x, y, z, w] of limb_motion's grasp frame: +Z along the
+    approach, out of the gripper, +Y the axis the jaws close on."""
+
+    point: Vec3
+    orientations: tuple[Quat, ...]
+
+    def __post_init__(self) -> None:
+        if not self.orientations:
+            raise ValueError("a grasp needs at least one orientation to try")
+
+
+class GraspProposer(Protocol):
+    """Where and how a manipulator grasps an item: the piece of a grab a
+    model can fill. A ValueError names why it has no grasp for the item."""
+
+    def propose(self, item: Item) -> Grasp: ...

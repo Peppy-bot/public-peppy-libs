@@ -17,7 +17,7 @@ class NoneManipulator:
     def why_unavailable(self) -> str:
         return "no manipulation model: manipulation_model is 'none'"
 
-    async def start(self, robot, limb_states) -> None:
+    async def start(self, senses) -> None:
         return None
 
     async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken) -> Outcome:

@@ -392,15 +392,23 @@ class FakeTopic:
     """A generated consumed topic bound to the backbone: a subscription
     gives the messages the test pushes, in order."""
 
-    def __init__(self) -> None:
+    def __init__(self, members=()) -> None:
         self._messages: asyncio.Queue = asyncio.Queue()
         self.subscribed = asyncio.Event()
+        # The slot's bound members, each with a producer and the copy it
+        # belongs to, as a multi-cardinality slot's module gives them.
+        self.members = list(members)
 
     def bound_producer(self, node_runner) -> str:
         return "backbone"
 
-    def push(self, message) -> None:
-        self._messages.put_nowait(message)
+    def bound_members(self, node_runner) -> list:
+        return list(self.members)
+
+    def push(self, message, producer="backbone") -> None:
+        """Publishes `message` as `producer`: the backbone, or a camera
+        given as an object with an `instance_id`."""
+        self._messages.put_nowait((producer, message))
 
     async def subscribe(self, node_runner):
         self.subscribed.set()
@@ -408,7 +416,7 @@ class FakeTopic:
 
     async def _follow(self):
         while True:
-            yield "backbone", await self._messages.get()
+            yield await self._messages.get()
 
 
 class VacantSlot:

@@ -12,8 +12,8 @@ at each roll.
 
 from __future__ import annotations
 
-from ..ports import Grasp, Item
-from .grasp import GraspDirection, candidates, lowered, orientations_for
+from ...ports import Item
+from .grasp import Grasp, GraspDirection, candidates, lowered, orientations_for
 
 # How far under the seen point the grasp point is: in Waldo the chest
 # camera's seen point stands 2.2 to 2.6 cm above the centre of a lemon and
