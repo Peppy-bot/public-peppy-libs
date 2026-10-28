@@ -1,4 +1,4 @@
-//! Durations a loop can actually sleep for.
+//! Durations a loop can actually sleep for, and waits a cancel ends.
 //!
 //! A configured rate or a seconds value is a number; a tick period is a
 //! `Duration` the loop waits on. These convert one into the other or refuse
@@ -6,7 +6,8 @@
 //! with a refusal are the caller's concerns: each failure here describes only
 //! the value.
 
-use std::time::Duration;
+use std::future::Future;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 /// Nanoseconds in a second: the resolution a period is expressed in.
@@ -55,11 +56,6 @@ pub fn period_from_hz(rate_hz: u32, max_hz: u32) -> Result<Duration, RateOutOfRa
         })
 }
 
-/// The pause a receive loop takes after a receive error before it retries,
-/// so a persistently broken subscription cannot hot-spin the loop or flood
-/// the log.
-pub const RECEIVE_ERROR_BACKOFF: Duration = Duration::from_millis(100);
-
 /// Whole ticks of `cycle_period` covering `window`, at least one. Integer
 /// math: a zero period panics in the division.
 pub fn ticks_within(window: Duration, cycle_period: Duration) -> u32 {
@@ -81,9 +77,90 @@ pub fn duration_from_secs(secs: f64) -> Result<Duration, DurationError> {
         .ok_or(DurationError::Underflow(secs))
 }
 
+/// Waits out `duration` unless `cancelled` resolves first. Returns `true`
+/// when the whole duration passed and `false` on a cancel, so a loop that
+/// backs off after an error ends at once when its node stops.
+pub async fn sleep_unless_cancelled(
+    duration: Duration,
+    cancelled: impl Future<Output = ()>,
+) -> bool {
+    tokio::select! {
+        biased;
+        () = cancelled => false,
+        () = tokio::time::sleep(duration) => true,
+    }
+}
+
+/// How often a thread blocked in [`block_until_unless_cancelled`] looks at
+/// its cancel flag.
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Blocks the calling thread until `deadline` unless `is_cancelled` turns
+/// true first, looking at it at least every 50 ms and
+/// never sleeping past the deadline. Returns `true` when the deadline passed
+/// and `false` on a cancel.
+pub fn block_until_unless_cancelled(deadline: Instant, is_cancelled: impl Fn() -> bool) -> bool {
+    while !is_cancelled() {
+        let Some(slice) = cancel_poll_slice(deadline, Instant::now()) else {
+            return true;
+        };
+        std::thread::sleep(slice);
+    }
+    false
+}
+
+/// The next sleep toward `deadline` at `now`: the time left, at most
+/// `CANCEL_POLL_INTERVAL`; `None` once the deadline is reached.
+fn cancel_poll_slice(deadline: Instant, now: Instant) -> Option<Duration> {
+    let left = deadline.saturating_duration_since(now);
+    (!left.is_zero()).then(|| left.min(CANCEL_POLL_INTERVAL))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sleep the cancellation tests wait on.
+    const SLEEP: Duration = Duration::from_millis(100);
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sleep_runs_its_whole_duration_when_nothing_cancels_it() {
+        let start = tokio::time::Instant::now();
+        assert!(sleep_unless_cancelled(SLEEP, std::future::pending()).await);
+        assert!(start.elapsed() >= SLEEP);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancel_ends_the_sleep_at_once() {
+        let start = tokio::time::Instant::now();
+        assert!(!sleep_unless_cancelled(SLEEP, std::future::ready(())).await);
+        assert!(start.elapsed() < SLEEP);
+    }
+
+    #[test]
+    fn a_poll_slice_is_the_time_left_at_most_the_poll_interval() {
+        let now = Instant::now();
+        assert_eq!(
+            cancel_poll_slice(now + Duration::from_secs(1), now),
+            Some(CANCEL_POLL_INTERVAL)
+        );
+        assert_eq!(
+            cancel_poll_slice(now + Duration::from_millis(7), now),
+            Some(Duration::from_millis(7))
+        );
+        assert_eq!(cancel_poll_slice(now, now), None);
+        assert_eq!(cancel_poll_slice(now, now + Duration::from_secs(1)), None);
+    }
+
+    #[test]
+    fn a_blocking_wait_returns_at_once_when_cancelled_or_past_its_deadline() {
+        let past = Instant::now() - Duration::from_millis(1);
+        assert!(block_until_unless_cancelled(past, || false));
+        assert!(!block_until_unless_cancelled(
+            past + Duration::from_secs(60),
+            || true
+        ));
+    }
 
     #[test]
     fn ticks_within_covers_the_window_and_never_counts_zero() {
