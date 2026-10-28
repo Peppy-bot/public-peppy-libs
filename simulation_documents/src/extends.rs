@@ -5,7 +5,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::world::{Entry, Origin, WorldFields, check_name_rules, kept_outside_scene_objects};
+use crate::daylight::Daylight;
+use crate::world::{
+    Entry, Origin, WorldFields, check_name_rules, kept_daylight, kept_outside_scene_objects,
+};
 use crate::{Error, Manifest, Revision, World, WorldDocument};
 
 /// The most bases a world's chain of bases holds.
@@ -143,6 +146,7 @@ fn merged(fields: WorldFields, base: WorldFields) -> Result<WorldFields, Error> 
             base.materials,
             fields.materials,
         )?,
+        daylight: merged_daylight(base.daylight, fields.daylight)?,
         locations: merged_entries(
             "locations",
             MapKind::Other,
@@ -192,6 +196,26 @@ fn merged_entries<K: Ord + std::fmt::Display, T>(
         }
         Ok(merged)
     })
+}
+
+/// The base's daylight with the world's folded in: a value replaces it
+/// whole, `{ removed: true }` drops it and `{ kept: true }` is refused.
+/// Refuses a `{ removed: true }` over a base that leaves no daylight, after
+/// its own marks.
+fn merged_daylight(
+    base: Option<Entry<Daylight>>,
+    over: Option<Entry<Daylight>>,
+) -> Result<Option<Entry<Daylight>>, Error> {
+    match (over, base) {
+        (None, base) => Ok(base),
+        (Some(Entry::Value(daylight)), _) => Ok(Some(Entry::Value(daylight))),
+        (Some(Entry::Removed), Some(Entry::Value(_))) => Ok(None),
+        (Some(Entry::Removed), _) => Err(Error::field(
+            "daylight",
+            "`removed` drops the daylight of a base, and the bases leave no daylight; leave `daylight` out",
+        )),
+        (Some(Entry::Kept), _) => Err(kept_daylight()),
+    }
 }
 
 /// Drops the base's entry of `key` from `merged`, for the mark `mark` at
@@ -608,6 +632,72 @@ mod tests {
                 )
             );
         }
+    }
+
+    fn with_daylight(body: &str) -> String {
+        example_text().replace(
+            "\n  objects: {",
+            &format!("\n  daylight: {body}, objects: {{"),
+        )
+    }
+
+    #[test]
+    fn the_daylight_of_the_world_replaces_the_daylight_of_its_base_whole() {
+        let base = document(&with_daylight(r#"{ date: "2026-11-24", rate: 0 }"#));
+        let replaced = extending(r#"daylight: { time: "06:30" }"#)
+            .resolve(std::slice::from_ref(&base))
+            .unwrap()
+            .daylight
+            .unwrap();
+        assert_eq!(
+            (
+                replaced.date,
+                replaced.time.map(|time| time.to_string()),
+                replaced.rate
+            ),
+            (None, Some("06:30:00".to_owned()), None)
+        );
+        let kept = extending("")
+            .resolve(std::slice::from_ref(&base))
+            .unwrap()
+            .daylight
+            .unwrap();
+        assert_eq!(kept.rate, Some(0.0));
+        let dropped = extending("daylight: { removed: true }")
+            .resolve(&[base])
+            .unwrap();
+        assert_eq!(dropped.daylight, None);
+    }
+
+    #[test]
+    fn a_drop_of_a_daylight_the_bases_do_not_leave_is_refused() {
+        assert_eq!(
+            extending("daylight: { removed: true }")
+                .resolve(&[document(&example_text())])
+                .unwrap_err()
+                .to_string(),
+            "daylight: `removed` drops the daylight of a base, and the bases leave no daylight; leave `daylight` out"
+        );
+        let middle = WorldDocument::parse(
+            r#"{ simulation_schema: "world/v1", manifest: { name: "middle", revision: 1 }, extends: { name: "world_3f9a1c27", revision: 3 }, daylight: { removed: true } }"#,
+        )
+        .unwrap();
+        let top = WorldDocument::parse(
+            r#"{ simulation_schema: "world/v1", manifest: { name: "top", revision: 1 }, extends: { name: "middle", revision: 1 }, daylight: { removed: true } }"#,
+        )
+        .unwrap();
+        let base = document(&with_daylight("{ rate: 0 }"));
+        assert_eq!(
+            top.resolve(&[middle, base]).unwrap_err().to_string(),
+            "daylight: `removed` drops the daylight of a base, and the bases leave no daylight; leave `daylight` out"
+        );
+        assert_eq!(
+            extending("daylight: { kept: true }")
+                .resolve(&[document(&with_daylight("{ rate: 0 }"))])
+                .unwrap_err()
+                .to_string(),
+            "daylight: `kept` drops a `scene_objects` entry of a base; write `removed: true` to drop the daylight of a base, or the daylight's settings"
+        );
     }
 
     #[test]
