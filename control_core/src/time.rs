@@ -55,6 +55,17 @@ pub fn period_from_hz(rate_hz: u32, max_hz: u32) -> Result<Duration, RateOutOfRa
         })
 }
 
+/// The pause a receive loop takes after a receive error before it retries,
+/// so a persistently broken subscription cannot hot-spin the loop or flood
+/// the log.
+pub const RECEIVE_ERROR_BACKOFF: Duration = Duration::from_millis(100);
+
+/// Whole ticks of `cycle_period` covering `window`, at least one. Integer
+/// math: a zero period panics in the division.
+pub fn ticks_within(window: Duration, cycle_period: Duration) -> u32 {
+    window.as_nanos().div_ceil(cycle_period.as_nanos()).max(1) as u32
+}
+
 /// A duration from a seconds value.
 ///
 /// Covers every input `Duration::from_secs_f64` panics on, plus the positive
@@ -73,6 +84,19 @@ pub fn duration_from_secs(secs: f64) -> Result<Duration, DurationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ticks_within_covers_the_window_and_never_counts_zero() {
+        let ms = Duration::from_millis;
+        assert_eq!(ticks_within(ms(1000), ms(10)), 100);
+        assert_eq!(ticks_within(ms(1001), ms(10)), 101);
+        assert_eq!(ticks_within(ms(500), Duration::from_secs(1)), 1);
+        assert_eq!(ticks_within(Duration::ZERO, ms(10)), 1);
+        // A partial trailing tick still counts toward covering the window.
+        assert_eq!(ticks_within(ms(500), ms(200)), 3);
+        // Exact division adds no extra tick.
+        assert_eq!(ticks_within(ms(400), ms(200)), 2);
+    }
 
     /// The refusal quotes the caller's ceiling, not a bound this module chose.
     #[test]

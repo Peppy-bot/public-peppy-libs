@@ -1,12 +1,24 @@
 """The SO-family device boundary over lerobot: calibrated connection, the
-flat motor-list read (five joints then the gripper), and the wire-name
-convention on either side of it, all shared by both hardware nodes."""
+flat motor-list read (five joints then the gripper) and its stamped sample,
+and the position channel names on either side of lerobot."""
 
 from __future__ import annotations
 
 import math
+import time
+from dataclasses import dataclass
 
 from so101_description.units import MOTOR_NAMES, NUM_JOINTS
+
+
+@dataclass(frozen=True)
+class PositionSample:
+    """One full position read: the joints (deg), the gripper (percent), and
+    the monotonic time the read returned."""
+
+    positions_deg: tuple[float, ...]
+    gripper_percent: float
+    captured_monotonic: float
 
 
 def connect_calibrated(robot, what: str) -> None:
@@ -32,10 +44,21 @@ def read_positions_validated(hardware) -> tuple[tuple[float, ...], float]:
     return values[:NUM_JOINTS], values[NUM_JOINTS]
 
 
-# The fastest either hardware node may drive the bus. Six STS3215s share one
-# 1 Mbaud half-duplex line, and a goal write plus a position read must both
-# fit in every cycle. One fact about one bus, so both nodes state this same
-# ceiling rather than each deriving its own.
+def read_position_sample(hardware) -> PositionSample:
+    """One read_positions_validated read, stamped with the monotonic time it
+    returned; raises as that read does."""
+    positions_deg, gripper_percent = read_positions_validated(hardware)
+    return PositionSample(
+        positions_deg=positions_deg,
+        gripper_percent=gripper_percent,
+        captured_monotonic=time.monotonic(),
+    )
+
+
+# The fastest an SO-101 node may run a loop that reaches the bus. Six
+# STS3215s share one 1 Mbaud half-duplex line, and a goal write plus a
+# position read must both fit in every cycle. The leader, the follower and
+# the backbone each cap their rates at this one ceiling.
 BUS_MAX_RATE_HZ = 1000
 
 # lerobot names a motor's position channel `<motor>.pos`; peppy's wire and

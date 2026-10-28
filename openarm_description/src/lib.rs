@@ -20,6 +20,8 @@
 //! - [`HardwareVersion::tcp_link`] names one side's tool-center-point frame in the bundled
 //!   URDF, so poses are commanded and reported at the grasp point (see the method docs for
 //!   the frame convention).
+//! - [`Side`] names an arm (`left`, its wire `arm_name` and `gripper_name`), and
+//!   [`ArmPair`] holds one value per arm, read and written by [`Side`].
 //! - [`HardwareVersion::camera_mounts`] lists where the generation's design carries its
 //!   cameras: each one's name, the URDF link it is fixed to, and its pose in that link's
 //!   frame, the numbers the simulation places its rendered cameras by.
@@ -40,25 +42,12 @@
 use std::fmt;
 use std::str::FromStr;
 
+mod side;
+
+pub use side::{ArmPair, Side, UnknownArmName, UnknownGripperName};
+
 /// Joints per arm (j1..j7) in both generations.
 pub const ARM_DOF: usize = 7;
-
-/// An arm side of the bimanual robot, selecting the `openarm_left_*` or
-/// `openarm_right_*` chain in the bundled URDF.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Side {
-    Left,
-    Right,
-}
-
-impl Side {
-    fn urdf_prefix(self) -> &'static str {
-        match self {
-            Self::Left => "left",
-            Self::Right => "right",
-        }
-    }
-}
 
 /// Where a generation's design carries one camera: fixed to `parent_link` of the
 /// bundled URDF, at `position` and `quat_wxyz` in that link's frame. The camera looks

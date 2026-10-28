@@ -17,6 +17,7 @@ mod sweep;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use control_core::sync::lock_ignoring_poison;
 use openarm_can::{ArmCan, GripperCan, JointVec, Mit, PosForce, v10, v20};
 use socketcan::id::FdFlags;
 use socketcan::{CanAnyFrame, CanFdSocket, CanFrame, EmbeddedFrame, Frame, Socket, StandardId};
@@ -129,7 +130,7 @@ fn replay_against_fixture(fixture_name: &str, drive: fn(&str)) {
         .unwrap_or_else(|e| panic!("cannot read fixture {path}: {e}"));
     let expected: Vec<&str> = fixture.lines().collect();
 
-    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock_ignoring_poison(&BUS_LOCK);
     let recorder = Recorder::open(&iface);
     drive(&iface);
     let recorded = recorder.drain_lines();
@@ -161,7 +162,7 @@ fn a_queued_state_frame_does_not_satisfy_a_refresh_pass() {
         eprintln!("skipped: OPENARM_CAN_TEST_IFACE not set");
         return;
     };
-    let _guard = BUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = lock_ignoring_poison(&BUS_LOCK);
     let mut arm = ArmCan::open(&iface, true).expect("open arm");
     let peer = CanFdSocket::open(&iface).expect("open peer");
     // A well-formed j1 state frame claiming Enabled, mid-scale readings.

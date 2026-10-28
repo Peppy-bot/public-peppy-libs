@@ -218,6 +218,34 @@ pub enum MotorStatus {
     Unknown(u8),
 }
 
+/// Whether a motor is confirmed driving, and when it is not, why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriveState {
+    Driving,
+    /// No state frame within the stale window, or none decoded yet.
+    Silent,
+    Disabled,
+    /// A status nibble without a defined meaning, which cannot confirm the
+    /// motor is driving.
+    Unrecognised,
+}
+
+impl DriveState {
+    pub fn is_driving(self) -> bool {
+        self == Self::Driving
+    }
+
+    /// The words for this state in a log line.
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::Driving => "driving",
+            Self::Silent => "silent",
+            Self::Disabled => "disabled",
+            Self::Unrecognised => "in an unrecognised status",
+        }
+    }
+}
+
 /// Fault kinds from the DM-J4310 manual's feedback-frame table: the complete
 /// set the firmware defines (nibbles 8..=0xE). The enactic C++ reference
 /// decodes no faults at all (it reads bytes 1..8 and discards byte 0), so
@@ -254,6 +282,21 @@ impl MotorStatus {
         match self {
             Self::Fault(kind) => Some(kind),
             _ => None,
+        }
+    }
+
+    /// Whether this status confirms the motor is driving, given whether its
+    /// state frames are `silent` (none within the stale window). Silence
+    /// outranks the cached status: past the stale window the cache is not a
+    /// measurement.
+    pub fn drive_state(self, silent: bool) -> DriveState {
+        if silent || self == Self::Unreported {
+            return DriveState::Silent;
+        }
+        match self {
+            Self::Disabled => DriveState::Disabled,
+            Self::Unknown(_) => DriveState::Unrecognised,
+            _ => DriveState::Driving,
         }
     }
 
@@ -580,6 +623,39 @@ fn dequantize(x: u16, min: f64, max: f64, bits: u32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn silence_outranks_the_cached_status_and_only_a_live_status_drives() {
+        let state = |status: MotorStatus, silent| status.drive_state(silent);
+        assert_eq!(state(MotorStatus::Enabled, true), DriveState::Silent);
+        assert_eq!(state(MotorStatus::Unreported, false), DriveState::Silent);
+        assert_eq!(state(MotorStatus::Disabled, false), DriveState::Disabled);
+        assert_eq!(
+            state(MotorStatus::Unknown(3), false),
+            DriveState::Unrecognised
+        );
+        assert_eq!(state(MotorStatus::Enabled, false), DriveState::Driving);
+        assert_eq!(
+            state(MotorStatus::Fault(FaultKind::Overload), false),
+            DriveState::Driving
+        );
+        let words = [
+            DriveState::Driving,
+            DriveState::Silent,
+            DriveState::Disabled,
+            DriveState::Unrecognised,
+        ]
+        .map(|s| (s.is_driving(), s.words()));
+        assert_eq!(
+            words,
+            [
+                (true, "driving"),
+                (false, "silent"),
+                (false, "disabled"),
+                (false, "in an unrecognised status"),
+            ]
+        );
+    }
 
     #[test]
     fn quantize_truncates_instead_of_rounding() {
