@@ -53,3 +53,8 @@ simulation from the record and the robots of the stack (`StackRobot`), and
 started with and where each robot first joined. `Judge::parse_list` reads a
 JSON5 list of judges, `true` or one of the checks, and `Verdicts` holds a
 `holds` and a `why` for each.
+
+A `ClaimHolder` names the call of an applier of worlds (`world_applier:v1`)
+that holds the setup claim of a simulation: the apply or the run
+(`ClaimCall`), the label of its caller, and its run of the workflow director
+once that run started, as "the run of 'Tidy the table (c2)' (run r3)".
