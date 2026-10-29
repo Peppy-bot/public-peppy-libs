@@ -5,16 +5,20 @@
 //! kinematics crates that plan their moves.
 //!
 //! - [`pacer`]: fixed-rate pacing for a control loop, with overrun accounting.
-//! - [`chase`]: the rate-limited chase that absorbs a setpoint's target jumps.
+//! - [`chase`]: the rate-limited chase that absorbs a setpoint's target jumps
+//!   ([`chase_step`](chase::chase_step)), the chase along the line to a target
+//!   ([`chase_along`](chase::chase_along)), and the check of a step against
+//!   its rates.
 //! - [`filters`]: scalar signal filters ([`LowPassFilter`](filters::LowPassFilter),
 //!   [`ButterworthFilter`](filters::ButterworthFilter),
 //!   [`HampelFilter`](filters::HampelFilter)).
 //! - [`time`]: a configured rate or seconds value as a `Duration` to wait on,
 //!   the ticks a window spans, and waits a cancel ends, async and blocking.
 //! - [`minimum_jerk`]: the quintic blend between two values and its peak rate.
-//! - [`path_timing`]: the time-optimal timing of a path through waypoints
-//!   under velocity and acceleration limits, and the trajectories that play
-//!   it: a timed path over a duration, and the straight joint move.
+//! - [`path_timing`]: a path through waypoints rounded at each corner
+//!   within a deviation, its time-optimal timing under velocity and
+//!   acceleration limits, and the trajectories that play it: a timed path
+//!   over a duration, and the joint path.
 //! - [`timing`]: the clock a motion plays on, the duration a caller may ask
 //!   of it, its control ticks, and the check that what they command moves and
 //!   accelerates within the limits.
