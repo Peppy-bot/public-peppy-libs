@@ -16,7 +16,7 @@ use chain_kinematics::{
 use hegel::TestCase;
 use hegel::generators as gs;
 use kinematics_properties::{
-    ChainProperty, TIP, TOLERANCE, angles, configs, link_name, on_a_drawn_robot, poses,
+    ChainProperty, TIP, TOLERANCE, angles, configs, joint_name, link_name, on_a_drawn_robot, poses,
     unit_vectors,
 };
 use urdf_rs::Robot;
@@ -131,6 +131,14 @@ fn named_selection_fixes_the_joint_order(tc: TestCase) {
                 std::array::from_fn(|i| path_order.limits()[order[i]]),
                 "the limits follow the names"
             );
+            for (i, &joint) in order.iter().enumerate() {
+                assert_eq!(path_order.joint_name(i), joint_name(i + 1));
+                assert_eq!(
+                    named.joint_name(i),
+                    joint_name(joint + 1),
+                    "the names follow the order"
+                );
+            }
             let (a, b) = (path_order.at(&q).ee_pose(), named.at(&permuted).ee_pose());
             assert!(
                 (a.translation.vector - b.translation.vector).norm() < TOLERANCE

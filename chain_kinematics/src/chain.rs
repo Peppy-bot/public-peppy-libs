@@ -219,6 +219,11 @@ impl<const N: usize> Chain<N> {
         Ok(())
     }
 
+    /// The URDF name of driven joint `i`.
+    pub fn joint_name(&self, i: usize) -> &str {
+        &self.tree.joint(self.path[self.actuated[i]]).name
+    }
+
     pub fn limits(&self) -> [Limit; N] {
         self.limits
     }
