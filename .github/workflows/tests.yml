@@ -86,6 +86,9 @@ jobs:
               - '*/Cargo.toml'
               - '*/Cargo.lock'
               - '*/.cargo/**'
+              - 'ros_reference/scenarios/**'
+              - 'ros_reference/reference/**'
+              - 'ros_reference/tools/**'
               - '.github/actions/rust-toolchain/**'
               - '.github/workflows/tests.yml'
 

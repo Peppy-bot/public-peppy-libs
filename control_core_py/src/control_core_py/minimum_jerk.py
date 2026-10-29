@@ -19,13 +19,27 @@ def _shape(u: float) -> float:
     return 10.0 * u**3 - 15.0 * u**4 + 6.0 * u**5
 
 
+def require_caps(caps: tuple[float, ...], quantity: str) -> None:
+    """Refuse `caps` on the `quantity` of each joint ("velocity", say)
+    unless every one is finite and positive."""
+    if not all(math.isfinite(cap) and cap > 0.0 for cap in caps):
+        raise ValueError(f"{quantity} caps must be finite and positive")
+
+
+def require_requested_duration(requested_duration_s: float) -> None:
+    """Refuse a requested duration that is not finite and non-negative."""
+    if not (math.isfinite(requested_duration_s) and requested_duration_s >= 0.0):
+        raise ValueError(
+            f"the requested duration must be finite and non-negative, got {requested_duration_s}"
+        )
+
+
 def min_duration_s(
     start: tuple[float, ...], end: tuple[float, ...], velocity_caps: tuple[float, ...]
 ) -> float:
     if not (len(start) == len(end) == len(velocity_caps)):
         raise ValueError("start, end, and velocity_caps must be the same length")
-    if not all(math.isfinite(cap) and cap > 0.0 for cap in velocity_caps):
-        raise ValueError("velocity caps must be finite and positive")
+    require_caps(velocity_caps, "velocity")
     return max(
         (
             abs(e - s) * QUINTIC_PEAK_VELOCITY / cap
@@ -63,10 +77,8 @@ def plan(
     caps' floor; a requested 0 means fastest allowed. Non-finite inputs are
     refused here: a NaN endpoint would silently zero the duration floor and
     bypass the caps."""
-    values = (*start, *end, requested_duration_s)
-    if not all(math.isfinite(v) for v in values):
-        raise ValueError("non-finite trajectory endpoint or duration")
-    if requested_duration_s < 0.0:
-        raise ValueError("requested duration must be non-negative")
+    if not all(math.isfinite(v) for v in (*start, *end)):
+        raise ValueError("non-finite trajectory endpoint")
+    require_requested_duration(requested_duration_s)
     floor = min_duration_s(start, end, velocity_caps)
     return Profile(start=start, end=end, duration_s=max(requested_duration_s, floor))
