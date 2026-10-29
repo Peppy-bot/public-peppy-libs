@@ -1,7 +1,7 @@
 """What the scripts that write the scenarios of the ROS reference harness share: the
 paths, the generator of each scenario's draws, the --drawn option, a parsed URDF, the
 joints of an arm of OpenArm v2, the joint limits of a URDF, the configurations of a
-chain, and the writing of a scenario.
+chain, the constants of a Rust file, and the writing of a scenario.
 
 Each scenario draws from a generator seeded with its own name, so every run writes the
 same scenarios, and a change to one scenario leaves the draws of the others as they are.
@@ -14,8 +14,11 @@ same rule.
 """
 
 import argparse
+import functools
 import json
+import operator
 import random
+import re
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
@@ -63,6 +66,22 @@ def configurations(rng, limits, drawn):
     upper = [high for _, high in limits]
     inside = [[rng.uniform(low, high) for low, high in limits] for _ in range(drawn)]
     return [[0.0] * len(limits), lower, upper, *inside]
+
+
+def in_order(values):
+    """The sum of `values` added one by one in their order, as Rust adds the terms of a
+    constant and the items of an iterator of f64."""
+    return functools.reduce(operator.add, values, -0.0)
+
+
+def rust_constants(path):
+    """The f64 and usize constants that the Rust file at `path` declares at the top level,
+    by name: each one a number literal, or number literals joined by " + " and added in
+    their order."""
+    declared = re.findall(
+        r"^(?:pub )?const (\w+): (?:f64|usize) = (.+);$", path.read_text(), flags=re.MULTILINE
+    )
+    return {name: in_order(map(float, value.split(" + "))) for name, value in declared}
 
 
 def _is_flat(value):

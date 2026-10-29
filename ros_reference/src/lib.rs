@@ -25,6 +25,7 @@
 pub mod chain_collision;
 pub mod forward_kinematics;
 pub mod occupancy;
+pub mod path_timing;
 pub mod planning;
 pub mod self_distance;
 
@@ -54,6 +55,7 @@ enum Kind {
     ChainCollision,
     ForwardKinematics,
     Occupancy,
+    PathTiming,
     Planning,
     SelfDistance,
 }

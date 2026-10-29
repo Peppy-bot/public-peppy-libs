@@ -16,6 +16,7 @@
 #include "chain_collision.hpp"
 #include "forward_kinematics.hpp"
 #include "occupancy.hpp"
+#include "path_timing.hpp"
 #include "planning.hpp"
 #include "scenario.hpp"
 #include "self_distance.hpp"
@@ -28,6 +29,7 @@ const std::map<std::string, Reference> references = {
     {"chain_collision", ros_reference::chain_collision},
     {"forward_kinematics", ros_reference::forward_kinematics},
     {"occupancy", ros_reference::occupancy},
+    {"path_timing", ros_reference::path_timing},
     {"planning", ros_reference::planning},
     {"self_distance", ros_reference::self_distance},
 };
