@@ -11,10 +11,11 @@ from a URDF and its collision meshes (there is no intermediate artifact that can
 go stale), then queried every control tick at roughly 0.1 ms per query. The
 geometry, the fit of each body's convex pieces and the distance between them, is
 [`collision_geometry`](../collision_geometry)'s, which builds its exact convex
-hulls with Qhull, a C library, so a build needs libclang. The library contains no robot
-names: the caller supplies the URDF, the mesh directory, and the two chain base
-links. Any bimanual URDF whose arms are 7-DOF SRS chains (the `srs_model`
-contract) is supported.
+hulls with Qhull, a C library, so a build needs libclang. The model of a dual-arm robot
+takes the caller's URDF, mesh directory and two chain base links, for any bimanual URDF
+whose arms are 7-DOF SRS chains (the `srs_model` contract). `openarm` builds OpenArm's
+model from `openarm_description`, its URDF, base links and torso regions, with the
+collision meshes in the caller's directory.
 
 ## The proximity band
 
@@ -271,12 +272,14 @@ src/
   assemble.rs        construction-time fit of all bodies
   pairs.rs           pair specs (explicit lists for tests and tools)
   model.rs           SelfCollisionModel queries, pair derivation, exclusions
+  openarm.rs         OpenArm's model from openarm_description
   error.rs           BuildError, CollisionError
 examples/
   visualize.rs       the HTML scene
 tests/
   dual_arm.rs                     two-arm scenarios: converge, fold, separate, with budgets
   distance_oracle.rs              the distance query against support-function bounds
+  openarm.rs                      OpenArm's model from openarm_description
   ros_reference_self_distance.rs  each checked distance against MoveIt's FCL
   fixtures/
     openarm_v10.urdf              the OpenArm v1.0 URDF of the tests, srs_model-style
@@ -284,7 +287,8 @@ tests/
 ```
 
 The tests read the collision meshes, the URDFs and the torso regions of
-`openarm_description`, a dev-dependency. The model places world-fixed bodies once, in
+`openarm_description`, a dependency of the crate, whose `meshes` feature the tests turn
+on to write the meshes. The model places world-fixed bodies once, in
 the world frame, so it models robots whose mount does not move.
 
 ## Testing
