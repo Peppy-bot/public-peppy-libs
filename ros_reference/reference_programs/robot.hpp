@@ -18,13 +18,21 @@ namespace ros_reference {
 // the URDF root stands fixed at the origin of the model frame.
 moveit::core::RobotModelPtr robot_model(const std::string& urdf_text);
 
+// A planning group of an SRDF: the chain of joints from `base_link` to `tip_link`.
+struct ChainGroup {
+  std::string name;
+  std::string base_link;
+  std::string tip_link;
+};
+
 // The robot model of the URDF at `urdf`, whose collision meshes MoveIt loads from the
 // files of the same names in `mesh_directory`, each read through `inputs`; a URDF that
 // names a collision mesh with no mesh directory is refused. Both paths are relative to
-// the repository root.
+// the repository root. Its SRDF names `group` when given, and no virtual joint.
 moveit::core::RobotModelPtr robot_model_with_meshes(
     Inputs& inputs, const std::string& urdf,
-    const std::optional<std::string>& mesh_directory);
+    const std::optional<std::string>& mesh_directory,
+    const std::optional<ChainGroup>& group = std::nullopt);
 
 // The child link of `joint`.
 std::string child_link(const moveit::core::RobotModel& model, const std::string& joint);

@@ -13,6 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "arm_planning.hpp"
 #include "chain_collision.hpp"
 #include "forward_kinematics.hpp"
 #include "occupancy.hpp"
@@ -26,6 +27,7 @@ namespace {
 using Reference = nlohmann::json (*)(const nlohmann::json&, ros_reference::Inputs&);
 
 const std::map<std::string, Reference> references = {
+    {"arm_planning", ros_reference::arm_planning},
     {"chain_collision", ros_reference::chain_collision},
     {"forward_kinematics", ros_reference::forward_kinematics},
     {"occupancy", ros_reference::occupancy},

@@ -18,10 +18,15 @@ std::shared_ptr<urdf::Model> parsed(const std::string& urdf_text) {
   return urdf;
 }
 
-moveit::core::RobotModelPtr model_of(const std::shared_ptr<urdf::Model>& urdf) {
+moveit::core::RobotModelPtr model_of(const std::shared_ptr<urdf::Model>& urdf,
+                                     const std::optional<ChainGroup>& group) {
+  const std::string groups =
+      group ? "<group name=\"" + group->name + "\"><chain base_link=\"" + group->base_link +
+                  "\" tip_link=\"" + group->tip_link + "\"/></group>"
+            : "";
   auto srdf = std::make_shared<srdf::Model>();
-  if (!srdf->initString(*urdf, "<robot name=\"" + urdf->getName() + "\"/>")) {
-    throw std::runtime_error("the empty SRDF does not parse");
+  if (!srdf->initString(*urdf, "<robot name=\"" + urdf->getName() + "\">" + groups + "</robot>")) {
+    throw std::runtime_error("the SRDF does not parse");
   }
   return std::make_shared<moveit::core::RobotModel>(urdf, srdf);
 }
@@ -29,12 +34,13 @@ moveit::core::RobotModelPtr model_of(const std::shared_ptr<urdf::Model>& urdf) {
 }  // namespace
 
 moveit::core::RobotModelPtr robot_model(const std::string& urdf_text) {
-  return model_of(parsed(urdf_text));
+  return model_of(parsed(urdf_text), std::nullopt);
 }
 
 moveit::core::RobotModelPtr robot_model_with_meshes(
     Inputs& inputs, const std::string& urdf,
-    const std::optional<std::string>& mesh_directory) {
+    const std::optional<std::string>& mesh_directory,
+    const std::optional<ChainGroup>& group) {
   auto model = parsed(inputs.read(urdf));
   for (const auto& [name, link] : model->links_) {
     for (const auto& collision : link->collision_array) {
@@ -50,7 +56,7 @@ moveit::core::RobotModelPtr robot_model_with_meshes(
       mesh.filename = inputs.file_uri(*mesh_directory + "/" + file);
     }
   }
-  return model_of(model);
+  return model_of(model, group);
 }
 
 std::string child_link(const moveit::core::RobotModel& model, const std::string& joint) {

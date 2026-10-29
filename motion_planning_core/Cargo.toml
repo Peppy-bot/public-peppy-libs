@@ -20,6 +20,8 @@ camera_core = { path = "../camera_core" }
 hegeltest = { version = "0.51", features = ["static-engine"] }
 kinematics_properties = { path = "../kinematics_properties" }
 openarm_description = { path = "../openarm_description", features = ["meshes"] }
+ros_reference = { path = "../ros_reference" }
+serde_json = "1"
 srs_model = { path = "../srs_model" }
 urdf-rs = "0.10"
 

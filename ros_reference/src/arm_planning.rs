@@ -1,0 +1,385 @@
+//! Arm planning. The scenario holds scenes of an arm among boxes of voxels, each with a
+//! start, a goal and a seed, and motion_planning_core's answer to each, which its
+//! example `plan_arm_scenes` gives `tools/draw_arm_planning.py`. The reference is
+//! MoveIt's planning pipeline, with OMPL's RRTConnect, its default request adapters and
+//! the response adapters AddTimeOptimalParameterization and ValidateSolution, planning
+//! each scene with the voxels as an octomap to the goal state itself, seeded from the
+//! scene and bounded by the scenario's iterations and time limit, and MoveIt's collision
+//! check and distance probing each planned path: MoveIt's own, and motion_planning_core's
+//! with its corners rounded as MoveIt's time-optimal trajectory generation rounds them.
+//! Both check every link that moves with the arm's joints, the gripper's fingers among
+//! them, closed, as MoveIt's default state holds them.
+
+use crate::{Kind, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names};
+use serde::{Deserialize, Serialize};
+use std::num::NonZeroU32;
+use std::path::PathBuf;
+
+/// The `kind` of an arm planning scenario and of its reference output, which refuses
+/// every other kind.
+#[derive(Debug, Deserialize)]
+enum ThisKind {
+    #[serde(rename = "arm_planning")]
+    ArmPlanning,
+}
+
+/// The arm, the map and the plans' parameters of a scenario, and its scenes. A scenario
+/// that `tools/draw_arm_planning.py` has drawn holds no probe spacing and no answer of
+/// motion_planning_core yet; the example `plan_arm_scenes` reads it so.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scenes {
+    kind: ThisKind,
+    /// The path of the robot's URDF, relative to the repository root.
+    pub urdf: String,
+    /// The directory of the collision meshes, which the URDF names by their file names,
+    /// relative to the repository root.
+    pub meshes: String,
+    pub base_link: String,
+    pub tip_link: String,
+    pub joints: Vec<String>,
+    pub voxel_size: f64,
+    /// The half side of the cube about the robot's origin that motion_planning_core's
+    /// map covers.
+    pub map_half_side: f64,
+    pub min_clearance: f64,
+    /// The maximum deviation at which execute_joint_path and MoveIt's time-optimal path
+    /// round a path's corners.
+    pub corner_tolerance: f64,
+    /// The tolerance of each joint of motion_planning_core's goal, above and below its
+    /// target, above 0 as a goal's tolerance is. MoveIt plans to the goal state itself.
+    pub goal_tolerance: f64,
+    /// The time limit of each plan, motion_planning_core's and MoveIt's, in seconds: far
+    /// beyond its iteration bound, which ends it first.
+    pub time_limit: f64,
+    /// The iteration bound of each plan, motion_planning_core's and MoveIt's.
+    pub iterations: u64,
+    /// The joints' L2 distance between two probes of a path: no point of a link moves a
+    /// tenth of a voxel between them.
+    pub probe_spacing: Option<f64>,
+    pub scenes: Vec<Scene>,
+}
+
+/// The voxels from `first` to `last`, by their keys, on every axis: the voxel of key k
+/// on an axis runs from k to k + 1 voxel sizes along it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VoxelBox {
+    pub first: [i32; 3],
+    pub last: [i32; 3],
+}
+
+/// One scene: its boxes, the plan's start, goal and seed, and `ours`,
+/// motion_planning_core's answer to it: an `Option<Ours>` in a scenario, null in one the
+/// example `plan_arm_scenes` reads before it answers, and an [`Ours`] in a [`SceneCase`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scene<O = Option<Ours>> {
+    pub boxes: Vec<VoxelBox>,
+    pub start: Vec<f64>,
+    pub goal: Vec<f64>,
+    /// Both planners' seed, above 0: OMPL takes no seed of 0.
+    pub seed: NonZeroU32,
+    pub ours: O,
+}
+
+impl Scene {
+    /// The scene with the answer it holds; a scene of `what` that holds none panics.
+    fn answered(self, what: &str) -> Scene<Ours> {
+        let Scene {
+            boxes,
+            start,
+            goal,
+            seed,
+            ours,
+        } = self;
+        Scene {
+            boxes,
+            start,
+            goal,
+            seed,
+            ours: ours.unwrap_or_else(|| panic!("{what}: motion_planning_core's answer")),
+        }
+    }
+}
+
+/// motion_planning_core's answer to a scene: the waypoints of its path, or the name of
+/// its failure.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum Ours {
+    Path { waypoints: Vec<Vec<f64>> },
+    Failure { failure: String },
+}
+
+/// MoveIt's collision check and distance along a path, probed at the scenario's spacing.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Probed {
+    /// The probes MoveIt finds in collision.
+    pub collisions: u64,
+    /// The smallest distance MoveIt measures from the arm to the voxels: -1 where a probe
+    /// is in collision, as MoveIt's distanceToCollision answers it.
+    pub clearance: f64,
+    /// The path's length in the joints' L2 norm.
+    pub length: f64,
+}
+
+/// MoveIt's answer to a scene as the reference writes it: its error code, and the probe
+/// of its path, null where it planned none.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MoveItRead {
+    status: i32,
+    #[serde(deserialize_with = "Option::deserialize")]
+    collisions: Option<u64>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    clearance: Option<f64>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    length: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SceneAnswer {
+    moveit: MoveItRead,
+    #[serde(deserialize_with = "Option::deserialize")]
+    ours: Option<Probed>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Reference {
+    kind: ThisKind,
+    scenes: Vec<SceneAnswer>,
+}
+
+/// MoveIt's error code of a plan that succeeds.
+pub const MOVEIT_SUCCESS: i32 = 1;
+
+/// MoveIt's answer to a scene: its error code, and the probe of its path when it planned
+/// one.
+#[derive(Debug)]
+pub struct MoveIt {
+    pub status: i32,
+    pub probed: Option<Probed>,
+}
+
+/// A scene, with motion_planning_core's answer to it, and what the reference found of it.
+#[derive(Debug)]
+pub struct SceneCase {
+    pub scene: Scene<Ours>,
+    pub moveit: MoveIt,
+    /// MoveIt's probe of motion_planning_core's path, when it planned one.
+    pub ours_probed: Option<Probed>,
+}
+
+/// An arm planning scenario paired with its reference output.
+#[derive(Debug)]
+pub struct Case {
+    /// The scenario's file name under `scenarios/`, without `.json`.
+    pub name: String,
+    /// The text of the scenario's URDF.
+    pub urdf: String,
+    /// The scenario's mesh directory.
+    pub meshes: PathBuf,
+    pub scenes: Scenes,
+    /// The scenario's probe spacing.
+    pub probe_spacing: f64,
+    pub cases: Vec<SceneCase>,
+}
+
+impl Case {
+    /// Every arm planning scenario under `scenarios/`, in the order of their names, each
+    /// paired with its reference output: an answer of motion_planning_core in every
+    /// scene, MoveIt's probe of its path exactly where it is a path, and the probe of
+    /// MoveIt's own path exactly where MoveIt succeeds.
+    pub fn load_all() -> Vec<Self> {
+        scenario_names(Kind::ArmPlanning)
+            .into_iter()
+            .map(|name| {
+                let scenes: Scenes = read_scenario(&name);
+                let urdf = read_urdf(&name, &scenes.urdf);
+                let meshes = read_mesh_directory(&name, &scenes.meshes);
+                let reference = read_reference(&name);
+                pair(name, urdf, meshes, scenes, reference)
+            })
+            .collect()
+    }
+}
+
+fn pair(name: String, urdf: String, meshes: PathBuf, scenes: Scenes, reference: Reference) -> Case {
+    let Scenes {
+        kind: ThisKind::ArmPlanning,
+        ..
+    } = &scenes;
+    let Reference {
+        kind: ThisKind::ArmPlanning,
+        scenes: answers,
+    } = reference;
+    let probe_spacing = scenes
+        .probe_spacing
+        .unwrap_or_else(|| panic!("{name}: the scenario's probe spacing"));
+    assert_eq!(
+        scenes.scenes.len(),
+        answers.len(),
+        "{name}: an answer per scene"
+    );
+    let cases = scenes
+        .scenes
+        .iter()
+        .zip(answers)
+        .enumerate()
+        .map(|(index, (scene, answer))| {
+            let what = format!("{name} scene {index}");
+            let scene = scene.clone().answered(&what);
+            assert_eq!(
+                answer.ours.is_some(),
+                matches!(scene.ours, Ours::Path { .. }),
+                "{what}: MoveIt's probe of our path exactly where ours is a path"
+            );
+            SceneCase {
+                scene,
+                moveit: moveit_of(&what, answer.moveit),
+                ours_probed: answer.ours,
+            }
+        })
+        .collect();
+    Case {
+        name,
+        urdf,
+        meshes,
+        scenes,
+        probe_spacing,
+        cases,
+    }
+}
+
+/// MoveIt's answer `read`, whose probe the reference gives exactly where MoveIt succeeds.
+fn moveit_of(what: &str, read: MoveItRead) -> MoveIt {
+    let MoveItRead {
+        status,
+        collisions,
+        clearance,
+        length,
+    } = read;
+    let probed = match (collisions, clearance, length) {
+        (Some(collisions), Some(clearance), Some(length)) => Some(Probed {
+            collisions,
+            clearance,
+            length,
+        }),
+        (None, None, None) => None,
+        _ => panic!("{what}: MoveIt's probe whole or not at all"),
+    };
+    assert_eq!(
+        probed.is_some(),
+        status == MOVEIT_SUCCESS,
+        "{what}: MoveIt's probe exactly where MoveIt succeeds"
+    );
+    MoveIt { status, probed }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scenario of one scene, our answer to it `ours`.
+    fn scenes(ours: &str) -> Scenes {
+        serde_json::from_str(&scenario("arm_planning", ours)).expect("parses")
+    }
+
+    /// The text of a scenario of the kind `kind` and one scene, our answer to it `ours`.
+    fn scenario(kind: &str, ours: &str) -> String {
+        format!(
+            r#"{{"kind": "{kind}", "urdf": "a.urdf", "meshes": "meshes",
+                "base_link": "base", "tip_link": "tip", "joints": ["j"], "voxel_size": 0.04,
+                "map_half_side": 1.6, "min_clearance": 0.0, "corner_tolerance": 0.1,
+                "goal_tolerance": 0.01, "time_limit": 5.0, "iterations": 10,
+                "probe_spacing": 0.01,
+                "scenes": [{{"boxes": [{{"first": [0, 0, 0], "last": [1, 1, 1]}}],
+                             "start": [0.0], "goal": [1.0], "seed": 1, "ours": {ours}}}]}}"#
+        )
+    }
+
+    const PATH: &str = r#"{"waypoints": [[0.0], [1.0]]}"#;
+    const FAILURE: &str = r#"{"failure": "no_path"}"#;
+    const PROBED: &str = r#"{"collisions": 0, "clearance": 0.03125, "length": 1.0}"#;
+
+    /// The output of one scene: MoveIt's `status` and the fields of its probe, and the
+    /// probe of ours.
+    fn reference(status: i32, moveit_probe: &str, ours: &str) -> Reference {
+        serde_json::from_str(&format!(
+            r#"{{"kind": "arm_planning", "scenes": [
+                {{"moveit": {{"status": {status}, {moveit_probe}}}, "ours": {ours}}}]}}"#
+        ))
+        .expect("parses")
+    }
+
+    const MOVEIT_PROBED: &str = r#""collisions": 0, "clearance": 0.03125, "length": 1.0"#;
+    const MOVEIT_NONE: &str = r#""collisions": null, "clearance": null, "length": null"#;
+
+    fn paired(ours: &str, status: i32, moveit_probe: &str, ours_probe: &str) -> Case {
+        pair(
+            "scenario".into(),
+            String::new(),
+            PathBuf::new(),
+            scenes(ours),
+            reference(status, moveit_probe, ours_probe),
+        )
+    }
+
+    #[test]
+    fn a_scenario_of_another_kind_is_refused() {
+        assert!(serde_json::from_str::<Scenes>(&scenario("planning", PATH)).is_err());
+        assert!(serde_json::from_str::<Scenes>(&scenario("arm_planning", PATH)).is_ok());
+    }
+
+    #[test]
+    fn a_scene_seeded_with_0_is_refused() {
+        let text = r#"{"boxes": [], "start": [0.0], "goal": [1.0], "seed": 0, "ours": null}"#;
+        assert!(serde_json::from_str::<Scene>(text).is_err());
+    }
+
+    #[test]
+    fn a_scene_pairs_with_the_answers_of_moveit_and_its_probe_of_ours() {
+        let case = paired(PATH, MOVEIT_SUCCESS, MOVEIT_PROBED, PROBED);
+        let scene = &case.cases[0];
+        assert_eq!(scene.moveit.status, MOVEIT_SUCCESS);
+        assert!(scene.moveit.probed.is_some() && scene.ours_probed.is_some());
+        assert_eq!(case.probe_spacing, 0.01);
+        let refused = paired(FAILURE, -10, MOVEIT_NONE, "null");
+        assert!(refused.cases[0].moveit.probed.is_none() && refused.cases[0].ours_probed.is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "MoveIt's probe of our path exactly where ours is a path")]
+    fn a_probe_of_a_failure_of_ours_does_not_pair() {
+        paired(FAILURE, MOVEIT_SUCCESS, MOVEIT_PROBED, PROBED);
+    }
+
+    #[test]
+    #[should_panic(expected = "MoveIt's probe exactly where MoveIt succeeds")]
+    fn a_failure_of_moveit_with_a_probe_does_not_pair() {
+        paired(PATH, -1, MOVEIT_PROBED, PROBED);
+    }
+
+    #[test]
+    fn an_answer_that_leaves_out_moveits_probe_is_refused() {
+        let text = r#"{"kind": "arm_planning", "scenes": [
+            {"moveit": {"status": -1, "collisions": null, "clearance": null}, "ours": null}]}"#;
+        assert!(serde_json::from_str::<Reference>(text).is_err());
+    }
+
+    #[test]
+    fn every_arm_planning_scenario_pairs_with_its_reference() {
+        let cases = Case::load_all();
+        assert!(
+            !cases.is_empty(),
+            "scenarios/ holds an arm planning scenario"
+        );
+        for case in cases {
+            assert!(!case.cases.is_empty(), "{} holds a scene", case.name);
+        }
+    }
+}

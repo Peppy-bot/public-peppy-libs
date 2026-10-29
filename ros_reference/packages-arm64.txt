@@ -890,6 +890,7 @@ ros-lyrical-message-filters 7.4.2-1resolute.20260915.074736
 ros-lyrical-moveit-common 2.15.2-1resolute.20260918.005507
 ros-lyrical-moveit-core 2.15.2-1resolute.20260918.012431
 ros-lyrical-moveit-msgs 2.7.2-1resolute.20260915.045011
+ros-lyrical-moveit-planners-ompl 2.15.2-1resolute.20260918.023238
 ros-lyrical-moveit-ros-occupancy-map-monitor 2.15.2-1resolute.20260918.020038
 ros-lyrical-moveit-ros-perception 2.15.2-1resolute.20260918.022952
 ros-lyrical-moveit-ros-planning 2.15.2-1resolute.20260918.020648

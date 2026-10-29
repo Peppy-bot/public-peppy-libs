@@ -1,9 +1,10 @@
 # The reference image of the ROS reference harness: ROS 2 Lyrical with the packages that
 # the reference programs use, moveit_core of MoveIt 2 with geometric_shapes, srdfdom and
-# urdf, OMPL, and MoveIt's point cloud updater (moveit_ros_perception) with its
-# occupancy map monitor, rclcpp and sensor_msgs, and the reference program built against
-# them, for amd64 and arm64. Developers run it through run.sh, and the parity tests read
-# the outputs that it wrote.
+# urdf, OMPL, MoveIt's point cloud updater (moveit_ros_perception) with its occupancy map
+# monitor, MoveIt's planning pipeline (moveit_ros_planning) with its OMPL planner
+# (moveit_planners_ompl) and random_numbers, rclcpp and sensor_msgs, and the reference
+# program built against them, for amd64 and arm64. Developers run it through run.sh, and
+# the parity tests read the outputs that it wrote.
 #
 # Every input is pinned, so a rebuild gives the same packages: the base image by the
 # digest of its index of both architectures, the ROS packages by a dated snapshot of the
@@ -35,9 +36,12 @@ RUN rm /etc/apt/sources.list.d/ros2.sources \
       nlohmann-json3-dev \
       ros-lyrical-geometric-shapes \
       ros-lyrical-moveit-core \
+      ros-lyrical-moveit-planners-ompl \
       ros-lyrical-moveit-ros-occupancy-map-monitor \
       ros-lyrical-moveit-ros-perception \
+      ros-lyrical-moveit-ros-planning \
       ros-lyrical-ompl \
+      ros-lyrical-random-numbers \
       ros-lyrical-rclcpp \
       ros-lyrical-sensor-msgs \
       ros-lyrical-srdfdom \
