@@ -13,6 +13,11 @@ serial chain placed at a joint configuration. No hardware or messaging dependenc
   move, places them at a configuration, each with a bounding sphere, and tests
   whether a point lies inside a link, or inside the chain, grown by a padding: every
   point within the offset of each element scaled about its center.
+- `chain::Rider` is a part that a link of a chain carries rigidly, such as a gripper
+  finger at the gripper's opening: the part's link name, the segment of the link that
+  carries it, the part's offset in that link's frame, and its pieces in its own.
+  `ChainGeometry::carried` gives the parts below the chain's links across movable
+  joints off its path, each a `CarriedPart` placed with those joints at 0, as riders.
 - `urdf_collision`, `stl` and `hull` read the collision elements of a URDF (meshes,
   boxes, cylinders and spheres) and build the exact convex hull of a point cloud.
 
@@ -192,7 +197,8 @@ ships Qhull's `COPYING.txt` with it and states that Qhull's source can be obtain
 ```text
 src/
   chain.rs           ChainGeometry, PlacedChain, Padding, Mask, PlacedMask,
-                     PlacedGrownLink: a serial chain's pieces and the robot filter
+                     PlacedGrownLink: a serial chain's pieces and the robot filter;
+                     Rider, CarriedPart: a part a link of a chain carries
   fit.rs             fit_pieces: one body's pieces, and the containment check
   simplify.rs        the supporting-plane fit to a deviation budget
   clip.rs            ClipRegion and the clipping of a mesh to it
