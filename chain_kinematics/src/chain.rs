@@ -36,7 +36,7 @@ pub struct ChainSpec<'a> {
 ///
 /// Plain data: no interior mutability and no shared ownership, so it is `Send`,
 /// `Sync`, and cheap to reason about. Posing is a pure function of `q`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Chain<const N: usize> {
     tree: Tree,
     /// Joint indices from the URDF root down to the tip, in order.

@@ -73,7 +73,7 @@ pub trait Support {
 /// tens to a few hundred vertices, where a branch-predictable dot scan is
 /// fast, its argmax is exact for any vertex set whatever its face graph, and it
 /// is stateless, so a query's answer cannot depend on the queries before it.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Hull {
     vertices: Vec<Point3<f64>>,
     faces: Vec<[usize; 3]>,

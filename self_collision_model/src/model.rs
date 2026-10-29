@@ -42,6 +42,7 @@ enum Placement {
 /// vertices, radius covering the rounded pieces. The radius is rotation
 /// invariant, so placing the center gives a cheap distance lower bound for the
 /// broadphase.
+#[derive(Clone)]
 struct BoundingSphere {
     center: Point3<f64>,
     radius: f64,
@@ -55,6 +56,7 @@ impl BoundingSphere {
     }
 }
 
+#[derive(Clone)]
 struct Body {
     name: String,
     /// Convex-hull pieces, in the body's local frame (world for `Fixed`).
@@ -165,6 +167,7 @@ struct BodyKinematics {
 }
 
 /// One checked pair, resolved to body indices.
+#[derive(Clone)]
 struct Pair {
     a: usize,
     b: usize,
@@ -210,6 +213,7 @@ pub struct DistanceGradient<'a> {
     pub grad_openings: [f64; 2],
 }
 
+#[derive(Clone)]
 pub struct SelfCollisionModel {
     left: Arm,
     right: Arm,
@@ -1121,6 +1125,30 @@ mod tests {
                 analytic_right[j]
             );
         }
+    }
+
+    // A clone is a model of its own: it answers a query as the model it was
+    // cloned from, and the gripper openings set on it leave the original's.
+    // The configuration has a finger nearest, so its answer moves with the
+    // openings.
+    #[test]
+    fn a_clone_answers_as_its_original_and_keeps_its_own_openings() {
+        let (ql, qr): (JointVec, JointVec) = (
+            [0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2],
+            [0.0, 0.0, -1.05, 0.4, -0.1, 0.1, 0.0],
+        );
+        let nearest = |m: &mut SelfCollisionModel| {
+            let p = m.min_distance(&ql, &qr).expect("query");
+            (p.distance, p.link_a.to_string(), p.link_b.to_string())
+        };
+        let mut original = model();
+        original.set_gripper_openings(0.2, 0.2);
+        let mut clone = original.clone();
+        let before = nearest(&mut original);
+        assert_eq!(nearest(&mut clone), before);
+        clone.set_gripper_openings(1.0, 1.0);
+        assert_ne!(nearest(&mut clone), before, "the openings move the answer");
+        assert_eq!(nearest(&mut original), before);
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub const SHELL_MARGIN: f64 = 1e-4;
 /// dynamics + closed-form inverse kinematics. The URDF is parsed once at
 /// construction; pose it with [`at`](Self::at) for FK and dynamics, and solve
 /// targets with [`solve_ik`](Self::solve_ik).
+#[derive(Clone)]
 pub struct Arm {
     fk: ForwardKinematics,
     model: ArmModel,

@@ -53,7 +53,7 @@ impl JointKind {
 }
 
 /// One joint: where it sits on its parent, how it moves, and what it carries.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Joint {
     pub name: String,
     pub child: usize,
@@ -70,7 +70,7 @@ pub struct Joint {
 
 /// One link's rigid-body data, in the link frame. Links carry no pose of their
 /// own: a link's frame *is* its parent joint's frame.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Link {
     pub name: String,
     pub mass: f64,
@@ -80,7 +80,7 @@ pub struct Link {
 }
 
 /// A parsed URDF: links, joints, and the adjacency between them.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tree {
     links: Vec<Link>,
     joints: Vec<Joint>,
