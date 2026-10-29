@@ -28,6 +28,7 @@ GENERATED_MODULES = {
     "get_color_intrinsics": "consumed_services.geometry.get_color_intrinsics",
     "get_depth_intrinsics": "consumed_services.geometry.get_depth_intrinsics",
     "get_camera_poses": "consumed_services.camera_mounts.get_camera_poses",
+    "wrist_video_stream": "consumed_topics.wrist_cameras.video_stream",
     "scan_items": "exposed_actions.item_perception.scan_items",
     "identify_item": "exposed_actions.item_perception.identify_item",
     "grab_item": "exposed_actions.item_manipulation.grab_item",
@@ -89,10 +90,28 @@ class Bindings:
     get_model: Any
     list_models: Any
 
+    # The wrist cameras, rgb_camera:v1 on the `wrist_cameras` slot
+    # (peppygen.consumed_topics.wrist_cameras). None for a brain whose
+    # manifest has no such slot: it has no wrist pictures.
+    wrist_video_stream: Any = None
+
     @classmethod
     def from_generated(cls, package: ModuleType) -> "Bindings":
         """The bindings of a brain's generated package, its `peppygen`: each
         module imported from where `GENERATED_MODULES` says it sits. A
-        module the package lacks raises ModuleNotFoundError naming it."""
-        modules = {field: importlib.import_module(f"{package.__name__}.{path}") for field, path in GENERATED_MODULES.items()}
+        module the package lacks raises ModuleNotFoundError naming it, except
+        one of `OPTIONAL_MODULES`, which is None then."""
+        modules = {}
+        for field, path in GENERATED_MODULES.items():
+            name = f"{package.__name__}.{path}"
+            try:
+                modules[field] = importlib.import_module(name)
+            except ModuleNotFoundError as error:
+                if field not in OPTIONAL_MODULES or not name.startswith(error.name or ""):
+                    raise
+                modules[field] = None
         return cls(**modules)
+
+
+# The modules a brain's package may lack.
+OPTIONAL_MODULES = frozenset({"wrist_video_stream"})

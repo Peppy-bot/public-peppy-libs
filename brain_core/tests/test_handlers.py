@@ -23,8 +23,7 @@ from fake_peppygen import LEFT_AT_REST, FakeTopic, fake_bindings, limb_states_me
 
 from brain_core.brain import Brain
 from brain_core.handlers import abort, drop_item, get_state, grab_item, identify_item, place_item, scan_items
-from brain_core.manipulation.centre_proposer import CentreProposer
-from brain_core.manipulation.scripted import ScriptedManipulator
+from brain_core.manipulators.scripted import CentreProposer, ScriptedManipulator
 from brain_core.ports import Box, Coverage, Detection, FailureKind, Refusal, Role, SearchTimeout
 
 

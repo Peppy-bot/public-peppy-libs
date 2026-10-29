@@ -4,11 +4,10 @@ implements, the cancel token every long call takes, and the deadline every
 search carries.
 
 The core owns every contract rule. A backend only answers one question:
-"what do you see in this image" (a `Detector`), "do this with the arm"
-(a `Manipulator`) or "where and how do I grasp this item" (the
-`GraspProposer` a manipulator asks). None of them mints item ids, touches
-the gripper table, or completes a goal, so swapping a backend cannot break
-a contract rule.
+"what do you see in this image" (a `Detector`) or "do this with the arm"
+(a `Manipulator`, the port of `manipulators`). Neither mints item ids,
+touches the gripper table, or completes a goal, so swapping a backend
+cannot break a contract rule.
 """
 
 from __future__ import annotations
@@ -280,22 +279,6 @@ class Gripper:
 
 
 @dataclass(frozen=True)
-class Grasp:
-    """Where and how a gripper closes on an item: the grasp point, robot
-    frame, and the orientations of the gripper to try there, in order; a
-    manipulator takes the first one the backbone has a plan for. Each is a
-    unit quaternion [x, y, z, w] of limb_motion's grasp frame: +Z along the
-    approach, out of the gripper, +Y the axis the jaws close on."""
-
-    point: Vec3
-    orientations: tuple[Quat, ...]
-
-    def __post_init__(self) -> None:
-        if not self.orientations:
-            raise ValueError("a grasp needs at least one orientation to try")
-
-
-@dataclass(frozen=True)
 class Outcome:
     """What a manipulation backend reports when a sequence ends. The
     measured grasp-point position when the jaws opened, for place_item."""
@@ -303,6 +286,25 @@ class Outcome:
     success: bool
     message: str = ""
     final_position: Optional[Vec3] = None
+
+
+@dataclass(frozen=True)
+class Senses:
+    """What a manipulator senses and moves with, handed to it once at its
+    start: the brain's `Robot` (every move goes through it, so a stop
+    cancels the move in flight), the `LimbStateStore` of the robot's
+    measured limbs, the chest `Perceiver` (its frames and its camera
+    model), the `WristFrames` of the cameras the arms carry, and
+    `camera_pose`, an async callable that asks the robot where the camera
+    of a given name stands now, giving (position, orientation) in the
+    robot frame or a Refusal. The next sense adds a field here, not an
+    argument to `Manipulator.start`."""
+
+    robot: object
+    limb_states: object
+    chest: object
+    wrists: object
+    camera_pose: object
 
 
 class Detector(Protocol):
@@ -338,42 +340,6 @@ class Detector(Protocol):
     def scan_coverage(self) -> Coverage:
         """The labels a scan, a search with no phrases, can name; nothing
         while the detector cannot search."""
-        ...
-
-
-class GraspProposer(Protocol):
-    """Where and how a manipulator grasps an item: the piece of a grab a
-    model can fill. A ValueError names why it has no grasp for the item."""
-
-    def propose(self, item: Item) -> Grasp: ...
-
-
-class Manipulator(Protocol):
-    """The swappable piece of manipulation. Every move it makes goes
-    through the `Robot` it is started with, so a stop can cancel the move
-    in flight whatever the backend is."""
-
-    name: str
-
-    def why_unavailable(self) -> str:
-        """Why a manipulation goal is refused now, in a few words, or ""
-        when the manipulator can move."""
-        ...
-
-    async def start(self, robot, limb_states) -> None:
-        """Hands the manipulator the brain's `Robot` and its
-        `LimbStateStore`, the robot's measured limbs, before it runs."""
-        ...
-
-    async def grab(self, item: Item, gripper: Gripper, max_effort: float, cancel: CancelToken) -> Outcome: ...
-
-    async def drop(self, gripper: Gripper, cancel: CancelToken) -> Outcome: ...
-
-    async def place(self, gripper: Gripper, pose: Pose, cancel: CancelToken) -> Outcome: ...
-
-    async def stop(self) -> None:
-        """Halt whatever is in flight; the running call returns soon
-        after, reporting it was stopped."""
         ...
 
 

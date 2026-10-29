@@ -10,7 +10,7 @@ import pytest
 from conftest import CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeSource, depth_frame, failed_with, make_brain, rgb_frame
 
 from brain_core.handlers import abort, grab_item, place_item, scan_items, switch_model
-from brain_core.manipulation.none import NoneManipulator
+from brain_core.manipulators.none import NoneManipulator
 from brain_core.ports import Box, ExpectedFailure, FailureKind, Refusal, Role
 
 SWITCH_ZERO = dict(role="", model="")

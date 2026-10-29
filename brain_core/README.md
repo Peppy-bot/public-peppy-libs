@@ -63,7 +63,7 @@ model of each role, `perception_model` and `manipulation_model`.
 
 | Module | What it holds |
 |---|---|
-| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Grasp`, `Outcome`, `Pose`), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the ports a backend implements, `Detector` (an awaited `detect`, and `why_unavailable`), `Manipulator` and the `GraspProposer` a manipulator asks, and the port a node implements, `ModelSource` |
+| `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Outcome`, `Pose`, and `Senses`, what a manipulator is started with: the robot, the limbs, the chest perceiver, the wrist frames and the camera poses), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the port a detector implements, `Detector` (an awaited `detect`, and `why_unavailable`), and the port a node implements, `ModelSource` |
 | `words` | The one rule for whether a description names a label |
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
 | `state` | The grippers, the known items and their ids, and the rules that resolve a goal's names |
@@ -74,8 +74,8 @@ model of each role, `perception_model` and `manipulation_model`.
 | `brain` | The parts assembled, `decider`, where a goal is refused before it is accepted, and `run_guarded`, where every goal is admitted, ended the way its contract asks and logged |
 | `handlers` | One module per exposed member |
 | `serve`, `waiting` | The loop of an exposed action or service, and the one way a part waits unless a stop comes first |
-| `perception` | The `Perceiver` (frames in, world detections out), the frame store, the camera model and the geometry learners, `in_daemon_thread` for a detector whose model blocks, and `NoneDetector` |
-| `manipulation` | `NoneManipulator`; `ScriptedManipulator`, a grab from above through a fixed sequence of moves; `CentreProposer`, its grasp from the item's position; `grasp`, the geometry: the orientations workspace_core tries, the pre-grasp and lifted points |
+| `perception` | The `Perceiver` (frames in, world detections out), the frame store, the camera model and the geometry learners, `in_daemon_thread` for a detector whose model blocks, `NoneDetector`; `wrist`, the newest frame of each arm's wrist camera and the wait for one captured after a move |
+| `manipulators` | The `Manipulator` port (started with the `Senses`; `grab`, `drop`, `place`, `stop` and `why_unavailable`); `none`, the `NoneManipulator`; `scripted`, the `ScriptedManipulator`, a grab from above through a fixed sequence of moves, with the `CentreProposer`, the grasp from the item's position, the geometry (`grasp`: the orientations workspace_core tries, the pre-grasp and lifted points, the turn about the vertical, `Grasp` and the `GraspProposer` port) and the `Aligner` port (`aligning`) of the step a node may put between the move above the item and the descent |
 | `bindings`, `node` | The generated modules a node passes in, and the shared entry |
 
 ## Tests
@@ -245,7 +245,7 @@ classDiagram
 A node implements `ModelSource`, and its models implement `Detector` or
 `Manipulator`. `NoneDetector` and `NoneManipulator` are the models of a role
 with none; `ScriptedManipulator` is a manipulator any node can offer, built
-on a `GraspProposer`.
+on a `GraspProposer`, as it is or with an `Aligner` of the node's own.
 
 ### A goal, from its arrival to its result
 
@@ -322,6 +322,23 @@ step that fails once the descent was sent first retreats: the gripper opens
 and the arm moves straight back up to the pre-grasp point. A goal that a stop
 ended, a goal that ends cancelled, retreats from nothing.
 
+With an `aligner`, one more step sits between the move to the pre-grasp
+point and the descent. The manipulator hands it the item, the gripper, the
+pre-grasp, grasp and lifted points and the orientation (`AlignRequest`, in
+`manipulators/scripted/aligning`), and the aligner, a node's own behind the
+`Aligner` port (vlm_router_brain's `ModelAligner`, a model that looks through
+the wrist and chest cameras), may move the gripper sideways and turn it at
+the same height through the manipulator's `refusal_for` (whether the
+backbone has a plan for points at an orientation) and `move_to`, so each of
+its moves carries the bars of every arm move. It ends `Aligned` with the
+points the grab goes on with, `GaveUp`, `OutOfSteps` or `Stopped` when a
+stop ended a move; the last three fail the grab there, before the descent.
+A place runs the same step above the spot the held item goes to, measured
+from the target point, and then lowers the item until it rests or the point
+is reached: an arm the backbone stops short anywhere from the pre-place
+point down, within 5 cm of the line down, has set the item on what is under
+it, and the place opens there.
+
 Every move names its bars, as the limb_motion contract has the caller do. An
 arm move, the retreat's and a place's too, plans within 1 mm and 0.01 rad of
 its pose and settles within `settle_position_m` (2 cm) and
@@ -377,12 +394,23 @@ grasp point against the commanded one (`[dx, dy, dz] cm`), measured once the
 arm settled; limb_state's grasp point at the close; the two openings it
 judged; and the retreat.
 
-A place carries the item to the pose through its pre-place point, opens,
-and climbs back to the pre-place point. An arm that stops short on its way
-down does not settle, so its move fails with `timeout`. When the latest
-limb_states snapshot puts its grasp point at least 1 cm below the pre-place
-point and on the line down, the arm has set the item on what is under it: the
-place opens there, logs how far short it stopped, and reports that point. A stop of the descent, or an arm stopped higher or off
+A place whose jaws stand closed on air (an opening below `hold_opening_min`
+in the latest snapshot: the item slipped since the grab) fails before any
+move and says so; a drop lets the brain forget the item. Otherwise a place
+carries the item to the pose through its pre-place point,
+`clearance_m` and `held_item_depth_m` (7.5 cm, how far a held item may
+reach below the grasp point) above the pose, so the item clears the floor of
+a container and what already stands in it until the descent, or `clearance_m`
+alone above it where the backbone has no plan that high; it opens there and
+climbs back to the pre-place point. An arm that stops short on its way down
+does not settle, so its move fails with `timeout`. When the latest
+limb_states snapshot puts its grasp point anywhere from the pre-place point
+down and within 5 cm (`RELEASE_OFF_LINE_M`) of the line down, the arm has
+set the item on what is under it, the rim or the floor of a container or the
+items already in it included (an item slides off a round top by a few
+centimetres before it rests): the place opens there,
+logs how far short it stopped, and reports that point. A stop of the
+descent, or an arm stopped more than 5 cm above the pre-place point or off
 the line down, fails the place with the jaws closed. A climb that fails is
 logged and the place still succeeds, since the item is down and the jaws are
 open.
