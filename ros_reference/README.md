@@ -19,6 +19,7 @@ change of the reference, which `run.sh --check` proves.
 | `chain_collision` | MoveIt's robot model, robot state and robot filter: the links with collision geometry that a chain carries and the center MoveIt grows each of their bodies about, the global transform of each carried link, and whether each probe point lies inside the links' bodies (a convex mesh for a mesh, the primitive itself for a box, a cylinder or a sphere) grown by a padding | `collision_geometry/tests/ros_reference_chain_collision.rs` |
 | `self_distance` | MoveIt's FCL collision environment: the signed distance between the collision meshes of each pair of links | `self_collision_model/tests/ros_reference_self_distance.rs` |
 | `planning` | OMPL's geometric planners: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
+| `occupancy` | MoveIt's point cloud updater: the log-odds of every voxel of MoveIt's occupancy map after a sequence of point clouds, with a sphere cut out as the robot's own body | `occupancy_map/tests/ros_reference_occupancy.rs` |
 
 ## Layout
 
@@ -45,9 +46,9 @@ The script builds the reference image for the architecture of the host, and runs
 reference program on each scenario in it. It runs the image by the id that its build
 gives, so each checkout runs the image of its own files, and `docker image prune` removes
 the images of earlier builds. On a host without the base image, the build fetches about
-438 MB on amd64 (the base image, 341 MB; the apt indexes, 54.5 MB; and 42.5 MB of
-packages) and about 423 MB on arm64 (326 MB, 55.0 MB and 41.5 MB), and the image takes
-about 2.0 GB of disk on amd64 and 1.4 GB on arm64.
+750 MB on amd64 (the base image, 341 MB; the apt indexes, 54.5 MB; and 354 MB of
+packages) and about 707 MB on arm64 (326 MB, 55.0 MB and 326 MB), and the image takes
+about 3.7 GB of disk on amd64 and 2.6 GB on arm64.
 The reference outputs and their checks run on the developer's machine; the Tests
 workflow runs the parity tests on the committed outputs.
 
@@ -78,15 +79,18 @@ differs from what the image gives. After the write or the check, both run each p
 test, `tests/ros_reference_*.rs` of each crate, on the outputs of the arm64 image, which
 the environment variable `ROS_REFERENCE_OUTPUTS` names to the test, and fail when a test
 does. The committed reference outputs are those of the amd64 image, and tests compare bits
-on amd64 alone. The planning parity test also reads the committed outputs on arm64, and
-compares each simplification with them within its bound.
+on amd64 alone, but for the occupancy test, which rule 4 describes. The planning parity
+test also reads the committed outputs on arm64, and compares each simplification with
+them within its bound.
 
 ## Rules
 
 1. A reference runs in the reference program's process. A reference with a plain C++ API
    is called directly. A reference that reads its parameters from a ROS node creates that
    node in the reference program's process, sets the scenario's parameters on it, and
-   calls the reference on the program's own thread.
+   calls the reference on the program's own thread. It initializes rclcpp with ROS
+   logging unconfigured: configuring it creates a log directory in the home directory,
+   and the container runs as the host's user, whom the image may give none.
 2. A reference gives the same output on every run: the container has no network and one
    OpenMP thread, every random generator of a reference is seeded from its scenario, and
    a search ends on an iteration bound that the scenario gives.
@@ -98,7 +102,14 @@ compares each simplification with them within its bound.
    an output reads back to the bits that the reference computed, so a test compares
    with the reference's own double. A test that compares the exact bits of an output
    runs under `#[cfg(target_arch = "x86_64")]`, since the committed outputs hold amd64
-   bits.
+   bits. The occupancy test compares bits with the committed outputs on every
+   architecture, since the map under test gives the amd64 bits on arm64 too. Against the
+   outputs that `ROS_REFERENCE_OUTPUTS` names, it counts the voxels that differ, held by
+   one map alone or at other log-odds, and fails when more than 1% of the reference's
+   voxels do: MoveIt's arm64 build fuses multiply-adds in its point cloud callback (31 of
+   them in `cloudMsgCallback`). Its map of `occupancy_room` equals the amd64 one in all
+   398 voxels, and that of a drawn set of 60 points of each drawn case (rule 6) differs
+   from the amd64 one in 6 of 7187 voxels (0.08%).
 5. One rule lays out every scenario and every reference output: a value goes on one line
    when it is a scalar, an array of scalars, or a record, an object whose members are
    each a scalar or an array of scalars; every other array or object spreads over lines,
@@ -126,9 +137,15 @@ compares each simplification with them within its bound.
    dimensions under seed 1 and in seven under seed 2, and to a goal walled in, where it
    finds no path, under seed 1, with RRTstar under seed 2 in two dimensions too, each
    plan bounded at 2000 iterations, at which PRM and PRM* grow their roadmap, expand it
-   and grow it again. A large drawn set runs locally and is never committed: draw it into
-   `scenarios/` with the `--drawn` option of the kind's script (for forward kinematics,
-   `python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
+   and grow it again; for occupancy, a sensor that reads a scene five times and then a
+   later cloud, with the points of each case of `tools/draw_occupancy.py`, one of each
+   drawn case, scattered within the range, inside the robot's sphere and beyond the
+   range, a hit on the ray of another hit, a voxel that the later cloud crosses after the
+   scene took it to the upper clamp, a cut-out voxel on the ray of another point, and a
+   voxel that holds a cut-out point and a hit, and the level sensor's two points beyond
+   the range at a voxel face. A large drawn set runs locally and is never committed:
+   draw it into `scenarios/` with the `--drawn` option of the kind's script (for forward
+   kinematics, `python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
    `ros_reference/run.sh` and the parity tests, and restore the committed files with
    `git restore ros_reference/scenarios ros_reference/reference`.
 
@@ -190,7 +207,8 @@ arm64 host.
    the chain collision parity test chains of 7 joints, the self distance parity test
    builds the self model of OpenArm v2 and refuses a scenario that names another URDF,
    and the planning parity test asks each scenario for a plan of each planner that finds
-   a path and one that finds none.
+   a path and one that finds none, and the occupancy parity test asks each scenario's map
+   for at least 199 voxels.
 
 A routine test of `ros_reference` fails when a scenario has no reference output, a
 reference output has no scenario or no digest, or a scenario, a URDF or a mesh differs

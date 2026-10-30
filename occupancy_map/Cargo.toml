@@ -17,6 +17,7 @@ thiserror = "2"
 chain_kinematics = { path = "../chain_kinematics" }
 hegeltest = { version = "0.51", features = ["static-engine"] }
 openarm_description = { path = "../openarm_description", features = ["meshes"] }
+ros_reference = { path = "../ros_reference" }
 
 [profile.dev]
 opt-level = 1

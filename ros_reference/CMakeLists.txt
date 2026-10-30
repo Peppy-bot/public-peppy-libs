@@ -8,8 +8,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(geometric_shapes REQUIRED)
 find_package(moveit_core REQUIRED)
+find_package(moveit_ros_occupancy_map_monitor REQUIRED)
+find_package(moveit_ros_perception REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(ompl REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(srdfdom REQUIRED)
 find_package(urdf REQUIRED)
 
@@ -21,6 +25,7 @@ add_executable(ros_reference
   reference_programs/chain_collision.cpp
   reference_programs/self_distance.cpp
   reference_programs/planning.cpp
+  reference_programs/occupancy.cpp
 )
 target_link_libraries(ros_reference PRIVATE
   geometric_shapes::geometric_shapes
@@ -28,8 +33,12 @@ target_link_libraries(ros_reference PRIVATE
   moveit_core::moveit_collision_detection_fcl
   moveit_core::moveit_robot_model
   moveit_core::moveit_robot_state
+  moveit_ros_occupancy_map_monitor::moveit_ros_occupancy_map_monitor
+  moveit_ros_perception::moveit_pointcloud_octomap_updater_core
   nlohmann_json::nlohmann_json
   ompl::ompl
+  rclcpp::rclcpp
+  ${sensor_msgs_TARGETS}
   srdfdom::srdfdom
   urdf::urdf
 )

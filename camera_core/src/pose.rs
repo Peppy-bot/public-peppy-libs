@@ -2,7 +2,8 @@
 //! a position in meters and a unit quaternion [x, y, z, w]. A pose carries a
 //! point into the frame it is placed in, composes with another and inverts,
 //! each in tf2's arithmetic, operation for operation, so a point lands on the
-//! bits tf2 gives it.
+//! bits tf2 gives it. occupancy_map's parity with MoveIt's point cloud updater,
+//! which places each point by tf2, compares those bits.
 
 use std::fmt;
 

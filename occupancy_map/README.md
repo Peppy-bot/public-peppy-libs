@@ -120,6 +120,38 @@ voxel center on the map's face, with every occupied voxel on that face, the boun
 distance itself. A map with nothing occupied reads infinity everywhere, and a point that
 is not a number is refused.
 
+## Agreement with MoveIt
+
+A voxel's key, a ray's walk and a log-odds update follow OctoMap 1.10's arithmetic, its
+mix of single and double precision included, and a scan goes in by the rules of MoveIt's
+point cloud updater. `tests/ros_reference_occupancy.rs` is the evidence against MoveIt:
+after the clouds of every occupancy scenario of the
+[ROS reference harness](../ros_reference), read from a turned sensor and a level one with
+a sphere cut out and no padding, the map holds exactly the voxels of MoveIt's occupancy
+map, each at MoveIt's log-odds bit for bit. It reads the harness's committed reference
+outputs, so it runs with no ROS on the machine. They hold the bits of MoveIt's amd64
+build, and the map gives them on every architecture. Against the outputs that
+`ROS_REFERENCE_OUTPUTS` names, those of another image, the test counts the voxels that
+differ, held by one map alone or at other log-odds, and fails when more than 1% of the
+reference's voxels do: MoveIt's arm64 build fuses multiply-adds in its point cloud
+callback (31 of them in `cloudMsgCallback`). Its map of `occupancy_room` equals ours in
+all 398 voxels, and that of a drawn set of 60 points of each drawn case differs from
+ours in 6 of 7187 voxels (0.08%).
+
+The scenario cuts out a sphere and no chain, and the test cuts it out as a ball of its
+own (`tests/common/ball.rs`): a point nearer its center than its radius lies inside, the
+strict test MoveIt's robot filter makes of a body's bounding sphere, which for a sphere
+is the sphere. So the test runs neither `RobotCutout` nor collision_geometry's robot
+filter. Every point of a scenario lies more than 1 µm from the sphere's surface, which
+the test checks, so the rounding of the frame a point is judged in, the sensor's for
+MoveIt and the map's for the map, decides no point. A `RobotCutout` grows each collision
+element by collision_geometry's robot filter, and MoveIt's robot filter grows a box, a
+cylinder and a mesh by sharp planes, so the two disagree on some points near such a
+body: that crate's parity test counts them.
+
+A scan with no shape cut out still clears its far points to `max_range_m`: MoveIt's
+updater marks them beyond range only while its shape mask holds a body.
+
 ## Timing
 
 `cargo test --release --test insert_time -- --ignored --nocapture` prints, on the

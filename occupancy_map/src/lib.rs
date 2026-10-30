@@ -17,7 +17,10 @@
 //! arithmetic, and a scan inserted by the rules of MoveIt 2.15.2's point
 //! cloud updater. A scan with no shape cut out still clears its far points to
 //! the range: MoveIt's updater marks them beyond range only while its shape
-//! mask holds a body.
+//! mask holds a body. After the clouds of the ROS reference harness, with a
+//! sphere cut out and no padding, the map holds the voxels that MoveIt's
+//! amd64 build holds, at its log-odds, bit for bit, on every architecture
+//! (`tests/ros_reference_occupancy.rs`).
 #![forbid(unsafe_code)]
 
 mod depth;
