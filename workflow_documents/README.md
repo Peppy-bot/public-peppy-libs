@@ -88,7 +88,11 @@ of a run that ended, the `Suspension` of a suspended run, each
 empty optional one, and its read refuses any other missing field. A `RunEvent`
 is one event of a run, of an `EventKind`, as the feedback of `run`, `resume`
 and `abort` and the topic `run_events` give it, and reads the result, the
-suspension or the assumptions that wait from its details.
+suspension or the assumptions that wait from its details. A run result gives
+the work cell block of the run, each watch value that the director read, and
+each of these values that no test covered (`Uncovered`); the event
+`uncovered` gives these values, and the event `checks_to_judge` gives each
+check of a run of a trial with its value (`CheckToJudge`).
 
 The marks (`marks`) are the marks of fields and members that the director
 reads: `robot_frame`, `item_id`, `reaches_for_item` and `location`.

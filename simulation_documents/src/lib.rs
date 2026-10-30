@@ -3,7 +3,7 @@
 //! A world (`world/v1`, [`World`]) says where simulated robots work: the
 //! catalogue release and the scene, the robots with their joins and stands,
 //! the scene objects moved or removed, the spawned objects, the lighting, the
-//! materials, the daylight and the named locations. A world pattern
+//! materials, the daylight, its regions and the named locations. A world pattern
 //! ([`WorldPattern`]) is a world with samplers, which a [`Seed`] expands into
 //! a concrete world ([`Expansion`]). A sweep (`sweep/v1`, [`Sweep`]) runs one
 //! workflow revision in many worlds of its world patterns. A simulation keeps a [`SetupRecord`] of
@@ -38,7 +38,7 @@ pub use compose::{StackRobot, StartSetup};
 pub use daylight::{Date, Daylight, TimeOfDay, Weather};
 pub use documents_core::{Digest, Manifest, Revision};
 pub use error::Error;
-pub use geometry::{Offset, Placement, Point, Pose};
+pub use geometry::{Offset, Placement, Point, Pose, Region};
 pub use judge::{
     Band, BeltLine, Bound, Bounds, Check, ContentsOn, Control, Count, Holding, Judge, Landmark,
     LandmarkOn, NearPoint, Place, Reachable, Target, Verdict, Verdicts, WithinM,

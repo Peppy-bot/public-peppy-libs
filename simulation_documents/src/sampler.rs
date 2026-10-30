@@ -4,8 +4,9 @@
 //! values and `{ range: [min, max] }` a number from `min` to `max`, in place
 //! of any value of an entry but the join of a robot. `{ on: <surface>,
 //! reachable_by: <robot> }` draws an object pose on a surface, and
-//! `{ in: <region> }` an object pose or the position of a stand in a named
-//! region; the simulation draws these two, in a model of the drawn world.
+//! `{ in: <region> }` an object pose or the position of a stand in a region
+//! of the world; the simulation draws these two, in a model of the drawn
+//! world.
 //!
 //! An entry that holds a sampler keeps its value as written, with the path
 //! of each sampler in it ([`Sampled`]). Its rules are those of the concrete
@@ -108,7 +109,7 @@ pub enum Sampler {
         surfaces: Vec<SurfaceRef>,
         reachable_by: Option<RobotName>,
     },
-    /// An object pose, or the position of a stand, in a named region.
+    /// An object pose, or the position of a stand, in a region of the world.
     In { region: Name },
 }
 
@@ -387,7 +388,7 @@ fn range(ends: &Value) -> Result<(f64, f64), String> {
 }
 
 fn region(name: &Value) -> Result<Name, String> {
-    let text = name.as_str().ok_or("`in` names a region of the scene")?;
+    let text = name.as_str().ok_or("`in` names a region of the world")?;
     Name::parse(text).map_err(|error| error.to_string())
 }
 

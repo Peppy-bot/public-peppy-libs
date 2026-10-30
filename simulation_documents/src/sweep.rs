@@ -634,7 +634,8 @@ mod tests {
             r#"{{ simulation_schema: "world/v1", manifest: {{ name: "{name}", revision: 1 }}, catalogue: "{RELEASE}", scene: {{ asset: "scene/tape_line" }},
               robots: {{ alpha: {{ join: {{ option: "so101_sim" }}, stand: {{ surface: "station_a" }} }}, bravo: {{ join: {{ option: "so101_sim" }}, stand: {{ surface: "station_b" }} }} }},
               objects: {{ conveyor: {{ asset: "object/conveyor", pose: {{ position: [0, 0, 0], yaw: 0 }}, physics: "static" }},
-                          stock: {{ item_kind: "carton", count: {stock}, pose: {{ in: "box_stock" }} }} }} }}"#
+                          stock: {{ item_kind: "carton", count: {stock}, pose: {{ in: "box_stock" }} }} }},
+              regions: {{ box_stock: {{ centre: [2, 1, 0.5], size: [0.8, 0.6, 1] }} }} }}"#
         ))
         .unwrap()
     }

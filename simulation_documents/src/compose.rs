@@ -7,7 +7,10 @@ use documents_core::Manifest;
 
 use crate::geometry::Placement;
 use crate::names::first_named_twice;
-use crate::world::{Catalogue, Join, Robot, Stand, check_namespaces, robot_names_free_of_prefixes};
+use crate::world::{
+    Catalogue, Join, Robot, Stand, check_namespaces, check_region_names,
+    robot_names_free_of_prefixes,
+};
 use crate::{Error, RobotName, SetupRecord, World, text};
 
 /// A simulated robot of the stack as its listing gives it: its name, its join,
@@ -68,9 +71,11 @@ impl World {
             lighting: record.lighting.clone(),
             materials: record.materials.clone(),
             daylight: record.daylight.clone(),
+            regions: record.regions.clone(),
             locations: record.locations.clone(),
         };
         check_namespaces(&world)?;
+        check_region_names(&world)?;
         Ok(world)
     }
 }

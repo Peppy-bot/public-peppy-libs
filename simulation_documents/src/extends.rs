@@ -164,6 +164,7 @@ fn merged(fields: WorldFields, base: WorldFields) -> Result<WorldFields, Error> 
             fields.materials,
         )?,
         daylight: merged_daylight(base.daylight, fields.daylight)?,
+        regions: merged_entries("regions", MapKind::Other, base.regions, fields.regions)?,
         locations: merged_entries(
             "locations",
             MapKind::Other,

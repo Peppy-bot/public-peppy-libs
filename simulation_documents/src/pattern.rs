@@ -21,13 +21,14 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::daylight::Daylight;
+use crate::geometry::Region;
 use crate::sampler::{
     DrawnValue, Sampleable, Sampled, Sampler, Segment, Site, SitePath, SiteRule, SurfaceRef,
 };
 use crate::stream::{Seed, Stream};
 use crate::world::{
     Entry, Light, Location, Material, Object, Origin, Robot, Scene, SceneObject, WORLD,
-    WorldFields, check_name_rules,
+    WorldFields, check_name_rules, no_such_region,
 };
 use crate::{
     Catalogue, Error, Join, Manifest, Name, ParameterName, Physics, RobotName, World,
@@ -93,6 +94,12 @@ impl Sampleable for Daylight {
 }
 
 impl Sampleable for Location {
+    fn rule_at(_: &[&str]) -> SiteRule {
+        SiteRule::Value
+    }
+}
+
+impl Sampleable for Region {
     fn rule_at(_: &[&str]) -> SiteRule {
         SiteRule::Value
     }
@@ -541,7 +548,28 @@ impl WorldPattern {
             fields: fields.clone(),
             origin,
         };
+        for (name, location) in &marked.locations {
+            let candidates = match location {
+                Sampled::Fixed(location) => vec![location.clone()],
+                Sampled::Drawn(drawn) => drawn.candidate_values::<Location>()?,
+            };
+            for candidate in candidates {
+                if let Location::In(region) = &candidate
+                    && !marked.regions.contains_key(region)
+                {
+                    return Err(no_such_region(format!("locations.{name}"), region));
+                }
+            }
+        }
         for (root, site) in pattern.entry_sites(None) {
+            if let Sampler::In { region } = &site.sampler
+                && !marked.regions.contains_key(region)
+            {
+                return Err(no_such_region(
+                    root.joined(site.path.segments()).to_string(),
+                    region,
+                ));
+            }
             let Sampler::On {
                 reachable_by: Some(robot),
                 ..
@@ -769,6 +797,7 @@ impl WorldPattern {
         if let Some(Entry::Value(Sampled::Drawn(daylight))) = &fields.daylight {
             entries.push((root("daylight"), daylight));
         }
+        push_drawn(&mut entries, "regions", &fields.regions);
         push_drawn(&mut entries, "locations", &fields.locations);
         entries
     }
@@ -1062,6 +1091,7 @@ impl<'p> Expansion<'p> {
             let concrete = self.concrete(&root("daylight"), daylight, placed)?;
             fields.daylight = Some(Entry::Value(Sampled::Fixed(concrete)));
         }
+        self.make_concrete(&root("regions"), &mut fields.regions, placed)?;
         self.make_concrete(&root("locations"), &mut fields.locations, placed)?;
         check_name_rules(&fields)?;
         WorldDocument { fields }.into_world(pattern.origin)
@@ -1221,6 +1251,10 @@ mod tests {
     conveyor: {{ asset: "object/conveyor_straight_3m", pose: {{ position: [0, 0, 0], yaw: 0 }}, physics: "static", controls: {{ height: {{ range: [0.38, 0.50] }}, belt_speed: {{ range: [0.05, 0.25] }} }} }},
     stock: {{ item_kind: "carton", count: {{ range: [3, 6] }}, pose: {{ in: "box_stock" }} }},
     tapes: {{ item_kind: "tape_roll", count: {{ range: [12, 20] }}, pose: {{ on: {{ object: "conveyor", landmark: "belt_top" }} }} }},
+  }},
+  regions: {{
+    aisle: {{ centre: [0, -1.2, 0.5], size: [3, 0.8, 1] }},
+    box_stock: {{ centre: [2, 1, 0.5], size: [0.8, 0.6, 1], yaw: 0.3 }},
   }},
   work_cell_parameters: {{
     belt_speed_mps: {{ unit: "m/s", control: {{ object: "conveyor", id: "belt_speed" }} }},
@@ -1431,7 +1465,7 @@ mod tests {
         let text = tape_line_text()
             .replace(
                 "    stock:",
-                "    table: { asset: \"object/table\", pose: { in: \"floor\" } },\n    crate: { asset: \"object/crate\", pose: { on: \"table top\", reachable_by: \"delta\" } },\n    stock:",
+                "    table: { asset: \"object/table\", pose: { in: \"box_stock\" } },\n    crate: { asset: \"object/crate\", pose: { on: \"table top\", reachable_by: \"delta\" } },\n    stock:",
             )
             .replace(
                 "    charlie:",
@@ -1495,6 +1529,16 @@ mod tests {
                 "landmark: \"belt_top\" } } },",
                 "landmark: \"belt_top\" }, reachable_by: \"echo\" } },",
                 "objects.tapes.pose: `reachable_by` names `echo`, which is no robot of the world with a stand",
+            ),
+            (
+                "pose: { in: \"box_stock\" }",
+                "pose: { in: \"box_shelf\" }",
+                "objects.stock.pose: names the region `box_shelf`, which the world does not declare in `regions`",
+            ),
+            (
+                "  min_spacing_m:",
+                "  locations: { drop: { one_of: [{ surface: \"belt\" }, { in: \"output_area\" }] } },\n  min_spacing_m:",
+                "locations.drop: names the region `output_area`, which the world does not declare in `regions`",
             ),
             (
                 "per_robot: [\"alpha\", \"bravo\"]",

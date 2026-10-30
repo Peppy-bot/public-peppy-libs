@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::daylight::Daylight;
-use crate::geometry::{Offset, Placement, Point, Pose};
+use crate::geometry::{Offset, Placement, Point, Pose, Region};
 use crate::names::{
     RESERVED_PEPPY_NAME, RESERVED_REASON, first_named_twice, is_peppy_name, peppy_name_grammar,
 };
@@ -31,6 +31,7 @@ pub struct World {
     pub lighting: BTreeMap<String, Light>,
     pub materials: BTreeMap<String, Material>,
     pub daylight: Option<Daylight>,
+    pub regions: BTreeMap<Name, Region>,
     pub locations: BTreeMap<Name, Location>,
 }
 
@@ -683,7 +684,7 @@ pub struct Finish {
 }
 
 /// A named location of the task: a landmark of an object, a work surface, a
-/// named pose or a named region of the scene.
+/// named pose of the scene or a region of the world.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "LocationFields", into = "LocationFields")]
 pub enum Location {
@@ -845,6 +846,8 @@ pub(crate) struct WorldFields {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub daylight: Option<Entry<Sampled<Daylight>>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub regions: BTreeMap<Name, Entry<Sampled<Region>>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub locations: BTreeMap<Name, Entry<Sampled<Location>>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub work_cell_parameters: BTreeMap<ParameterName, Entry<WorkCellParameter>>,
@@ -897,7 +900,7 @@ impl WorldDocument {
             return Err(pattern_field("min_spacing_m"));
         }
         let maps = fields.concrete_maps(origin)?;
-        Ok(World {
+        let world = World {
             manifest: fields.manifest,
             catalogue,
             scene,
@@ -907,8 +910,11 @@ impl WorldDocument {
             lighting: maps.lighting,
             materials: maps.materials,
             daylight: maps.daylight,
+            regions: maps.regions,
             locations: maps.locations,
-        })
+        };
+        check_region_names(&world)?;
+        Ok(world)
     }
 }
 
@@ -954,6 +960,7 @@ pub(crate) struct ConcreteMaps {
     lighting: BTreeMap<String, Light>,
     materials: BTreeMap<String, Material>,
     daylight: Option<Daylight>,
+    regions: BTreeMap<Name, Region>,
     locations: BTreeMap<Name, Location>,
 }
 
@@ -1018,6 +1025,7 @@ impl WorldFields {
                 .daylight
                 .map(|daylight| concrete_value("daylight", daylight))
                 .transpose()?,
+            regions: concrete_values("regions", marked.regions)?,
             locations: concrete_values("locations", marked.locations)?,
         })
     }
@@ -1047,6 +1055,7 @@ impl WorldFields {
             lighting: entry_values("lighting", &self.lighting)?,
             materials: entry_values("materials", &self.materials)?,
             daylight: daylight_value(&self.daylight)?,
+            regions: entry_values("regions", &self.regions)?,
             locations: entry_values("locations", &self.locations)?,
             work_cell_parameters: entry_values("work_cell_parameters", &self.work_cell_parameters)?,
         })
@@ -1064,6 +1073,7 @@ pub(crate) struct MarkedMaps<'a> {
     pub(crate) lighting: BTreeMap<&'a String, &'a Sampled<Light>>,
     pub(crate) materials: BTreeMap<&'a String, &'a Sampled<Material>>,
     pub(crate) daylight: Option<&'a Sampled<Daylight>>,
+    pub(crate) regions: BTreeMap<&'a Name, &'a Sampled<Region>>,
     pub(crate) locations: BTreeMap<&'a Name, &'a Sampled<Location>>,
     pub(crate) work_cell_parameters: BTreeMap<&'a ParameterName, &'a WorkCellParameter>,
 }
@@ -1170,6 +1180,27 @@ pub(crate) fn check_namespaces(world: &World) -> Result<(), Error> {
     })
 }
 
+/// Each location `in` a region names a region of the world.
+pub(crate) fn check_region_names(world: &World) -> Result<(), Error> {
+    for (name, location) in &world.locations {
+        let Location::In(region) = location else {
+            continue;
+        };
+        if !world.regions.contains_key(region) {
+            return Err(no_such_region(format!("locations.{name}"), region));
+        }
+    }
+    Ok(())
+}
+
+/// The refusal of `region` at `field`, which names no region of the world.
+pub(crate) fn no_such_region(field: String, region: &Name) -> Error {
+    Error::field(
+        field,
+        format!("names the region `{region}`, which the world does not declare in `regions`"),
+    )
+}
+
 /// The refusal of the first of `objects` that `in_the_scene` holds as the
 /// name of a scene object.
 fn first_shared_name<'a>(
@@ -1244,6 +1275,7 @@ impl World {
                 .daylight
                 .clone()
                 .map(|daylight| Entry::Value(Sampled::Fixed(daylight))),
+            regions: value_entries(&self.regions),
             locations: value_entries(&self.locations),
             work_cell_parameters: BTreeMap::new(),
             min_spacing_m: None,
@@ -1536,6 +1568,7 @@ pub(crate) mod tests {
             ("pose", refusals_of::<Pose>()),
             ("offset", refusals_of::<Offset>()),
             ("placement", refusals_of::<Placement>()),
+            ("region", refusals_of::<crate::Region>()),
             ("holding", refusals_of::<Holding>()),
             ("landmark", refusals_of::<Landmark>()),
             ("band", refusals_of::<Band>()),
@@ -1701,7 +1734,7 @@ pub(crate) mod tests {
             ),
             (
                 example_text().replace("catalogue:", "workflow: 1, catalogue:"),
-                "workflow: unknown field `workflow`, expected one of `manifest`, `catalogue`, `extends`, `scene`, `robots`, `scene_objects`, `objects`, `lighting`, `materials`, `daylight`, `locations`, `work_cell_parameters`, `min_spacing_m`",
+                "workflow: unknown field `workflow`, expected one of `manifest`, `catalogue`, `extends`, `scene`, `robots`, `scene_objects`, `objects`, `lighting`, `materials`, `daylight`, `regions`, `locations`, `work_cell_parameters`, `min_spacing_m`",
             ),
             (
                 example_text().replace("scale: 1", "scale: 0"),
@@ -1920,6 +1953,20 @@ pub(crate) mod tests {
                 ),
                 "locations.drop: a location is { object, landmark }, { surface }, { at } (a named pose) or { in } (a named region)",
             ),
+            (
+                example_text().replace(
+                    "\n  objects: {",
+                    "\n  locations: { drop: { in: \"output_area\" } }, objects: {",
+                ),
+                "locations.drop: names the region `output_area`, which the world does not declare in `regions`",
+            ),
+            (
+                example_text().replace(
+                    "\n  objects: {",
+                    "\n  regions: { output_area: { centre: [0, 0, 0], size: [1, 1, -1] } }, objects: {",
+                ),
+                "regions.output_area: the size [1.0, 1.0, -1.0] of a region has a side that is not above 0; write [x, y, z], each above 0 m",
+            ),
         ];
         for (text, expected) in cases {
             assert_eq!(World::parse(&text).unwrap_err().to_string(), expected);
@@ -1931,7 +1978,7 @@ pub(crate) mod tests {
         let text = example_text()
             .replace("stand: { surface: \"coffee table at the origin\" }", "stand: { at: \"corner_a\", offset: { ahead_m: 0.2 } }")
             .replace("features: [\"ai_brain\"]", "features: [{ feature: \"ai_brain\", core_node: \"gpu_box\" }], core_node: \"arm_box\"")
-            .replace("\n  objects: {", "\n  locations: { drop: { in: \"output_area\" }, lid: { object: \"crate\", landmark: \"top\" }, bench: { surface: \"workbench\" }, spot: { at: \"corner_b\" } }, objects: {");
+            .replace("\n  objects: {", "\n  regions: { output_area: { centre: [1, 0, 0.5], size: [1, 1, 1] } }, locations: { drop: { in: \"output_area\" }, lid: { object: \"crate\", landmark: \"top\" }, bench: { surface: \"workbench\" }, spot: { at: \"corner_b\" } }, objects: {");
         let world = World::parse(&text).unwrap();
         let alpha = &world.robots[&robot("alpha")];
         assert_eq!(

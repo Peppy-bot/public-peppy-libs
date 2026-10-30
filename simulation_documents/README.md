@@ -28,7 +28,10 @@ let verdicts = Verdicts::parse(&verdicts_text)?;
 A `World` (`world/v1`) names its catalogue release and its scene, the robots
 with the join each takes on the stack and where each stands, the scene objects
 it moves or removes, the objects it spawns, the lighting, the materials, the
-daylight and the named locations. The daylight sets the settings of the
+daylight, its regions and the named locations. A region is a box in the world
+frame, `{ centre, size, yaw }`, metres and radians, with `yaw` 0 when left
+out. A location `{ in: <region> }`, a sampler `{ in: <region> }` and a judge
+name a region of `regions`. The daylight sets the settings of the
 scene's site in place of the scene's own: the local date
 (`YYYY-MM-DD`), the hour (`HH:MM` or `HH:MM:SS`, written `HH:MM:SS`), the
 clock rate and the weather (`{ cloud_cover, rain_mm_h }`). `World::parse`
@@ -60,7 +63,7 @@ max] }` a number from `min` to `max`, in place of any value of an entry but
 the join of a robot. In an object pose, `{ on: <surface label, { object,
 landmark } or { one_of } of them>, reachable_by: <robot> }` draws a pose on a
 surface where the robot reaches and sees it, and `{ in: <region> }` a pose in
-a named region; `{ in: <region> }` also draws the position of a stand. An
+a region of the world; `{ in: <region> }` also draws the position of a stand. An
 entry of `objects` with `{ item_kind, count }` adds `<name>_1` up to
 `<name>_<count>`, each with an asset of the item kind; the count is a number
 from 0 to 1000, `{ range }` or `{ one_of }`. A pattern also has

@@ -11,6 +11,7 @@ use std::fmt;
 use crate::lock::Lock;
 use crate::names::{Name, NameTag, RobotName};
 use crate::refusal::Located;
+use crate::work_cell::{Uncovered, WorkCell};
 use crate::workflow::Workflow;
 
 /// How a run ended.
@@ -290,6 +291,16 @@ pub struct RunResult {
     /// calls.
     pub unlocked_nodes: Vec<NameTag>,
     pub incidents: Vec<IncidentRecord>,
+    /// The work cell block of the run.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub work_cell: WorkCell,
+    /// The value of each watch parameter that the director read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub watch: BTreeMap<Name, f64>,
+    /// Each value of the work cell and each watch value that no test
+    /// covered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uncovered: Vec<Uncovered>,
 }
 
 /// A lane of a suspended run and the step it suspended at.
@@ -307,6 +318,16 @@ pub struct Suspension {
     pub incidents: Vec<IncidentRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_refusal: Option<Located>,
+}
+
+/// A check of a run of a trial with its value, which the operator compares
+/// with the work cell.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckToJudge {
+    pub assumption: Name,
+    pub says: String,
+    pub check: String,
+    pub value: bool,
 }
 
 /// An assumption that waits for a confirmation.
