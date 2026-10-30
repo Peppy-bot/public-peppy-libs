@@ -12,7 +12,11 @@
 namespace ros_reference {
 
 nlohmann::json forward_kinematics(const nlohmann::json& scenario, Inputs& inputs) {
-  const auto model = robot_model(inputs.read(scenario.at("urdf").get<std::string>()));
+  const auto urdf = scenario.at("urdf").get<std::string>();
+  const auto model = scenario.contains("meshes")
+                         ? robot_model_with_meshes(inputs, urdf,
+                                                   scenario.at("meshes").get<std::string>())
+                         : robot_model(inputs.read(urdf));
   moveit::core::RobotState state(model);
   auto chains = nlohmann::json::array();
   for (const auto& chain : scenario.at("chains")) {
