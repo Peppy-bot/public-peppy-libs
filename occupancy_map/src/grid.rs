@@ -52,14 +52,57 @@ impl Grid {
     /// The grid's voxel nearest `point`: the one holding it, or the one on
     /// the grid's boundary each axis is held to.
     pub fn nearest(&self, point: [f64; 3]) -> Key {
-        let hi = self.hi();
         Key(std::array::from_fn(|i| {
-            let index = self.size.axis_index(point[i]);
-            if index.is_nan() {
-                return self.lo.0[i];
-            }
-            index.clamp(f64::from(self.lo.0[i]), f64::from(hi.0[i])) as i32
+            self.held(i, self.size.axis_index(point[i]))
         }))
+    }
+
+    /// The index `index` of a voxel on axis `axis`, held to the grid's extent on it;
+    /// the grid's lowest for a NaN.
+    fn held(&self, axis: usize, index: f64) -> i32 {
+        if index.is_nan() {
+            return self.lo.0[axis];
+        }
+        index.clamp(f64::from(self.lo.0[axis]), f64::from(self.hi().0[axis])) as i32
+    }
+
+    /// Every voxel of the grid whose box meets the box from `min` to `max`, faces
+    /// included, x slowest and z fastest.
+    pub fn keys_between(&self, min: [f64; 3], max: [f64; 3]) -> impl Iterator<Item = Key> + use<> {
+        let within = self.within(min, max);
+        (0..within.len()).map(move |index| within.key_of(index))
+    }
+
+    /// The voxels of the grid whose boxes meet the box from `min` to `max`, faces
+    /// included, as a grid of their own: on each axis from the voxel whose upper face
+    /// reaches `min` to the one whose lower face reaches `max`.
+    pub fn within(&self, min: [f64; 3], max: [f64; 3]) -> Grid {
+        let size = self.size.get();
+        let lo = Key(std::array::from_fn(|i| {
+            self.held(i, (min[i] / size).ceil() - 1.0)
+        }));
+        let hi = Key(std::array::from_fn(|i| {
+            self.held(i, (max[i] / size).floor())
+        }));
+        Grid {
+            size: self.size,
+            lo,
+            dims: std::array::from_fn(|i| (hi.0[i] - lo.0[i] + 1).max(0) as usize),
+        }
+    }
+
+    /// The storage indices of the grid's voxels that share a face with the voxel at
+    /// storage index `index`.
+    pub fn face_neighbors(&self, index: usize) -> impl Iterator<Item = usize> + use<> {
+        let grid = *self;
+        let key = grid.key_of(index);
+        (0..3)
+            .flat_map(|axis| [(axis, -1), (axis, 1)])
+            .filter_map(move |(axis, step)| {
+                let mut neighbor = key;
+                neighbor.0[axis] += step;
+                grid.index(neighbor)
+            })
     }
 
     /// The center of voxel `key`.

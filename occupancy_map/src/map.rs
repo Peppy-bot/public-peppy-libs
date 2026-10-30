@@ -1,13 +1,16 @@
 //! The voxel map: a bounded grid of OctoMap log-odds, a voxel no ray has
-//! reached unknown, and a scan inserted by the rules of MoveIt's point cloud
-//! updater (moveit2 2.15.2 `PointCloudOctomapUpdater::cloudMsgCallback`).
+//! reached unknown, a scan inserted by the rules of MoveIt's point cloud
+//! updater (moveit2 2.15.2 `PointCloudOctomapUpdater::cloudMsgCallback`),
+//! and the voxels a collision object intersects cleared.
 
 use std::collections::HashSet;
 
 use camera_core::pose::Pose;
-use collision_geometry::chain::PlacedMask;
+use collision_geometry::chain::{Padding, PlacedMask};
+use collision_geometry::gjk::Support;
+use collision_geometry::shapes::{PlacedMesh, PlacedShape};
 use control_core::positive_finite::PositiveFinite;
-use nalgebra::Point3;
+use nalgebra::{Point3, Vector3};
 
 use crate::frame::Frame;
 use crate::grid::Grid;
@@ -18,6 +21,18 @@ use crate::sensor_model::{SensorModel, occupied};
 /// The most voxels a map holds, a gibibyte of log-odds: a map that fits in
 /// memory.
 const MAX_VOXELS: usize = 1 << 28;
+
+/// The distance within which a shape touches a voxel's box: ten times the gap at which
+/// GJK counts two bodies as touching, 1e-10 m. GJK measures a face that touches a voxel's
+/// face as a gap of rounding, 2e-17 m for a box from 10 cm on a grid of 10 cm voxels, and
+/// no inside test can place a point on the surface.
+const TOUCH_M: f64 = 1e-9;
+
+/// How far beyond the bounds of a shape, and of a mesh's triangle, a voxel's box is
+/// measured against it: twice `TOUCH_M`, so a voxel `TOUCH_M` away lies well within it
+/// past the rounding of a coordinate divided by the voxel size, 1e-13 m at the edge of a
+/// tree of 2 cm voxels.
+const REACH_M: f64 = 2.0 * TOUCH_M;
 
 /// The region a map holds, in its frame: the voxels from the one holding
 /// `min` to the one holding `max`, both included.
@@ -113,6 +128,113 @@ impl Cutout for RobotCutout<'_> {
     }
 }
 
+/// A collision object's shape grown by `padding`, by the rule a link grows by: a point
+/// inside it is the sensor seeing the object.
+pub struct ShapeCutout<'a> {
+    /// The frame the shape stands in.
+    pub frame: &'a Frame,
+    pub shape: PlacedShape<'a>,
+    pub padding: Padding,
+}
+
+impl Cutout for ShapeCutout<'_> {
+    fn frame(&self) -> &Frame {
+        self.frame
+    }
+
+    fn contains(&self, point: [f64; 3]) -> bool {
+        self.shape.contains(&Point3::from(point), self.padding)
+    }
+}
+
+/// The box of one voxel, as GJK measures it.
+pub struct VoxelBox {
+    center: Point3<f64>,
+    half: f64,
+}
+
+impl VoxelBox {
+    /// The center and the radius of the sphere through the box's corners.
+    pub fn bounding_sphere(&self) -> (Point3<f64>, f64) {
+        (self.center, self.half * 3.0_f64.sqrt())
+    }
+}
+
+impl Support for VoxelBox {
+    fn core_support(&self, dir: &Vector3<f64>) -> Point3<f64> {
+        self.center + dir.map(|d| if d < 0.0 { -self.half } else { self.half })
+    }
+}
+
+/// The corners of the box from `min` to `max` grown by `REACH_M` on each side.
+fn reach((min, max): (Point3<f64>, Point3<f64>)) -> ([f64; 3], [f64; 3]) {
+    (
+        min.map(|c| c - REACH_M).into(),
+        max.map(|c| c + REACH_M).into(),
+    )
+}
+
+/// What `VoxelMap::mesh_intersecting` knows of a voxel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cell {
+    /// Not yet measured.
+    Unknown,
+    /// Gathered into the region being joined.
+    Joined,
+    /// A triangle of the mesh touches its box.
+    Surface,
+    /// Its box lies wholly inside the mesh.
+    Inside,
+    /// Its box lies wholly outside the mesh.
+    Outside,
+}
+
+/// The storage indices of `grid` of the region of `Unknown` cells joined by their
+/// faces to the one at `start`, each marked `Joined` in `cells`.
+fn join_region(grid: &Grid, start: usize, cells: &mut [Cell]) -> Vec<usize> {
+    let mut region = vec![start];
+    cells[start] = Cell::Joined;
+    let mut next = 0;
+    while let Some(&index) = region.get(next) {
+        next += 1;
+        for neighbor in grid.face_neighbors(index) {
+            if cells[neighbor] == Cell::Unknown {
+                cells[neighbor] = Cell::Joined;
+                region.push(neighbor);
+            }
+        }
+    }
+    region
+}
+
+/// Decides each region of `Unknown` cells of `grid` joined by their faces, whose voxels
+/// all lie inside a mesh or all outside it, `Inside` or `Outside` by `touches`: the first
+/// and the last voxel of the region decide it when they agree, and each voxel decides its
+/// own cell when they disagree, as a wrong inside test of one of them makes them.
+fn decide_regions(grid: &Grid, cells: &mut [Cell], touches: impl Fn(Key) -> bool) {
+    let side = |inside: bool| if inside { Cell::Inside } else { Cell::Outside };
+    for start in 0..cells.len() {
+        if cells[start] != Cell::Unknown {
+            continue;
+        }
+        let region = join_region(grid, start, cells);
+        let last = *region.last().expect("a region holds its first cell");
+        let first_side = touches(grid.key_of(start));
+        let last_side = if last == start {
+            first_side
+        } else {
+            touches(grid.key_of(last))
+        };
+        for index in region {
+            cells[index] = side(match index {
+                _ if first_side == last_side || index == start => first_side,
+                _ if index == last => last_side,
+                _ => touches(grid.key_of(index)),
+            });
+        }
+    }
+}
+
 /// One reading of a sensor: its points in its own frame, in single precision
 /// as a point cloud carries them, the sensor's pose in `frame`, and how far
 /// it reads.
@@ -191,6 +313,14 @@ impl VoxelMap {
         self.grid.center(key)
     }
 
+    /// The box of voxel `key`.
+    pub fn voxel_box(&self, key: Key) -> VoxelBox {
+        VoxelBox {
+            center: self.center(key).into(),
+            half: self.voxel_size() / 2.0,
+        }
+    }
+
     /// The grid the map holds.
     pub(crate) fn grid(&self) -> Grid {
         self.grid
@@ -232,16 +362,12 @@ impl VoxelMap {
     /// The occupied voxels whose centers lie inside the box from `min` to
     /// `max`, in the map's frame, any part of which may lie outside the map.
     pub fn occupied_in(&self, min: [f64; 3], max: [f64; 3]) -> Vec<Key> {
-        let (lo, hi) = (self.grid.nearest(min), self.grid.nearest(max));
         let inside = |key: &Key| {
             let center = self.center(*key);
             (0..3).all(|i| center[i] >= min[i] && center[i] <= max[i])
         };
-        (lo.0[0]..=hi.0[0])
-            .flat_map(|x| {
-                (lo.0[1]..=hi.0[1])
-                    .flat_map(move |y| (lo.0[2]..=hi.0[2]).map(move |z| Key([x, y, z])))
-            })
+        self.grid
+            .keys_between(min, max)
             .filter(|key| inside(key) && self.is_occupied(*key))
             .collect()
     }
@@ -249,6 +375,82 @@ impl VoxelMap {
     /// Empty the map: every voxel unknown.
     pub fn clear(&mut self) {
         self.log_odds.fill(f32::NAN);
+    }
+
+    /// Clears every voxel of the map that `shape` touches, as `touches` finds them: each
+    /// takes the lowest log-odds, as a cut-out point's voxel does, so the map holds nothing
+    /// where a collision object stands. A primitive is measured against each voxel of its
+    /// bounds; a mesh as `mesh_intersecting` finds them, with the same verdicts wherever
+    /// `touches` answers alike across a region of voxels that no triangle touches.
+    pub fn clear_intersecting(&mut self, shape: &PlacedShape) {
+        let (min, max) = reach(shape.bounds());
+        let intersected: Vec<Key> = match shape.mesh() {
+            Some(mesh) => self.mesh_intersecting(shape, &mesh, min, max),
+            None => self
+                .grid
+                .keys_between(min, max)
+                .filter(|key| self.touches(shape, *key))
+                .collect(),
+        };
+        for key in intersected {
+            let index = self
+                .grid
+                .index(key)
+                .expect("a key between two of the grid's voxels");
+            self.update(index, self.model.cut_out);
+        }
+    }
+
+    /// Whether `shape` intersects the box of voxel `key` or comes within 1e-9 m of it,
+    /// `TOUCH_M`.
+    pub fn touches(&self, shape: &PlacedShape, key: Key) -> bool {
+        let voxel = self.voxel_box(key);
+        shape.distance_to(&voxel, voxel.bounding_sphere()) <= TOUCH_M
+    }
+
+    /// The voxels between `min` and `max`, the reach of the closed mesh `shape`, that it
+    /// touches, each as `touches` finds it. A voxel within `TOUCH_M` of a triangle is one,
+    /// and lies within the triangle's reach. Every other voxel lies farther than `TOUCH_M`
+    /// from every triangle, so its box lies wholly inside the mesh or wholly outside it; so
+    /// do the boxes of a region of such voxels joined by their faces, whose union is
+    /// connected and meets no triangle: the surface, which bounds the inside, passes between
+    /// no two of them. `decide_regions` decides each region.
+    fn mesh_intersecting(
+        &self,
+        shape: &PlacedShape,
+        mesh: &PlacedMesh,
+        min: [f64; 3],
+        max: [f64; 3],
+    ) -> Vec<Key> {
+        let within = self.grid.within(min, max);
+        let mut cells = vec![Cell::Unknown; within.len()];
+        for t in mesh.triangles() {
+            let (triangle_min, triangle_max) = reach(mesh.triangle_bounds(t));
+            for key in self.grid.keys_between(triangle_min, triangle_max) {
+                let index = within
+                    .index(key)
+                    .expect("a triangle's voxels lie among its mesh's");
+                if cells[index] == Cell::Unknown
+                    && mesh.triangle_distance(t, &self.voxel_box(key)) <= TOUCH_M
+                {
+                    cells[index] = Cell::Surface;
+                }
+            }
+        }
+        decide_regions(&within, &mut cells, |key| self.touches(shape, key));
+        cells
+            .iter()
+            .enumerate()
+            .filter(|(_, cell)| matches!(cell, Cell::Surface | Cell::Inside))
+            .map(|(index, _)| within.key_of(index))
+            .collect()
+    }
+
+    /// Applies `update` to the log-odds of the voxel at `index`, one never reached
+    /// starting from none.
+    fn update(&mut self, index: usize, update: f32) {
+        let current = Some(self.log_odds[index]).filter(|v| !v.is_nan());
+        self.log_odds[index] = self.model.updated(current, update);
     }
 
     /// Insert one scan, each point by the rules of MoveIt's point cloud
@@ -341,8 +543,7 @@ impl VoxelMap {
         ] {
             for key in keys {
                 if let Some(index) = self.grid.index(*key) {
-                    let current = Some(self.log_odds[index]).filter(|v| !v.is_nan());
-                    self.log_odds[index] = model.updated(current, update);
+                    self.update(index, update);
                 }
             }
         }
@@ -352,6 +553,8 @@ impl VoxelMap {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     fn map() -> VoxelMap {
@@ -412,5 +615,75 @@ mod tests {
             assert_eq!(grid.index(grid.key_of(index)), Some(index));
         }
         assert_eq!(grid.index(Key([1000, 0, 0])), None);
+    }
+
+    // A box whose upper corner is not a number reaches below its lower one: the grid holds
+    // no voxel of it.
+    #[test]
+    fn a_box_with_a_corner_that_is_not_a_number_holds_no_voxel() {
+        let grid = map().grid;
+        assert_eq!(grid.within([0.0; 3], [f64::NAN; 3]).len(), 0);
+        assert_eq!(grid.keys_between([0.0; 3], [f64::NAN; 3]).count(), 0);
+    }
+
+    // Two voxels of a region decide it where they agree, a voxel between them that a
+    // touch test answers otherwise among it; where they disagree each voxel decides its
+    // own cell.
+    #[test]
+    fn the_first_and_the_last_voxel_decide_a_region_where_they_agree() {
+        let grid = map().grid.within([0.01, 0.01, 0.01], [0.19, 0.01, 0.01]);
+        let cells_of = |touches: fn(Key) -> bool| {
+            let mut cells = vec![Cell::Unknown; grid.len()];
+            decide_regions(&grid, &mut cells, touches);
+            (0..grid.len())
+                .map(|index| (grid.key_of(index).0[0], cells[index]))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(grid.len(), 4, "a row of four voxels, x from 0 to 3");
+        assert!(
+            cells_of(|key| key.0[0] != 1)
+                .iter()
+                .all(|(_, cell)| *cell == Cell::Inside)
+        );
+        assert_eq!(
+            cells_of(|key| key.0[0] <= 1),
+            vec![
+                (0, Cell::Inside),
+                (1, Cell::Inside),
+                (2, Cell::Outside),
+                (3, Cell::Outside),
+            ]
+        );
+    }
+
+    // A voxel joins the voxels that share a face with it, those of the grid alone.
+    #[test]
+    fn a_voxel_joins_its_face_neighbors_in_the_grid() {
+        let grid = map().grid;
+        let neighbors = |key: Key| -> BTreeSet<Key> {
+            let index = grid.index(key).expect("a voxel of the grid");
+            grid.face_neighbors(index).map(|n| grid.key_of(n)).collect()
+        };
+        let inner = Key([0, 0, 0]);
+        let steps = [
+            [1, 0, 0],
+            [-1, 0, 0],
+            [0, 1, 0],
+            [0, -1, 0],
+            [0, 0, 1],
+            [0, 0, -1],
+        ];
+        let around: BTreeSet<Key> = steps
+            .iter()
+            .map(|step| Key(std::array::from_fn(|i| inner.0[i] + step[i])))
+            .collect();
+        assert_eq!(neighbors(inner), around);
+        let corner = grid.lo;
+        let inward: BTreeSet<Key> = steps
+            .iter()
+            .filter(|step| step.iter().all(|&s| s >= 0))
+            .map(|step| Key(std::array::from_fn(|i| corner.0[i] + step[i])))
+            .collect();
+        assert_eq!(neighbors(corner), inward);
     }
 }

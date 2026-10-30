@@ -2,7 +2,7 @@
 name = "occupancy_map"
 version = "0.1.0"
 edition = "2024"
-description = "A voxel map of what a depth sensor sees, in a frame the caller names: OctoMap's log-odds occupancy over a bounded grid, points inserted by the rules of MoveIt's point cloud updater with the robot cut out, depth frames as points, and the distance to the nearest occupied voxel, center to center within half a voxel's diagonal inside the map and a lower bound outside it. No hardware or messaging deps."
+description = "A voxel map of what a depth sensor sees, in a frame the caller names: OctoMap's log-odds occupancy over a bounded grid, points inserted by the rules of MoveIt's point cloud updater with the robot and the collision objects cut out, the voxels a collision object intersects cleared, depth frames as points, and the distance to the nearest occupied voxel, center to center within half a voxel's diagonal inside the map and a lower bound outside it. No hardware or messaging deps."
 
 [workspace]
 

@@ -8,7 +8,8 @@
 //! FCL holds a mesh: a body's distance to it is the least over the triangles the
 //! hierarchy cannot rule out, so a body passes through the open corner of an L-shaped
 //! mesh, and a body wholly inside it lies at a negative distance, its distance to the
-//! surface taken as a depth.
+//! surface taken as a depth. [`PlacedMesh`] gives a placed mesh's triangles one by one,
+//! each triangle's bounds and its distance to a convex body as the mesh measures it.
 
 use std::collections::HashMap;
 
@@ -218,6 +219,17 @@ impl<'a> PlacedShape<'a> {
         }
     }
 
+    /// The shape's triangles, placed, for a mesh; none for a primitive.
+    pub fn mesh(&self) -> Option<PlacedMesh<'_>> {
+        match &self.shape.0 {
+            Form::Mesh(mesh) => Some(PlacedMesh {
+                mesh,
+                pose: self.pose,
+            }),
+            _ => None,
+        }
+    }
+
     /// The signed distance between this shape and `other`: negative when they overlap,
     /// and when one lies wholly inside the other.
     pub fn distance_to_shape(&self, other: &PlacedShape) -> f64 {
@@ -374,6 +386,39 @@ impl<C: Support> Support for InFrame<'_, C> {
     }
 }
 
+/// The triangles of a placed mesh, each as `PlacedShape::distance_to` measures it.
+pub struct PlacedMesh<'a> {
+    mesh: &'a TriangleMesh,
+    pose: Isometry3<f64>,
+}
+
+impl PlacedMesh<'_> {
+    /// The index of each of the mesh's triangles.
+    pub fn triangles(&self) -> std::ops::Range<usize> {
+        0..self.mesh.triangles.len()
+    }
+
+    /// The least and the greatest corner of the smallest box along the frame's axes that
+    /// holds triangle `t`, placed.
+    pub fn triangle_bounds(&self, t: usize) -> (Point3<f64>, Point3<f64>) {
+        let placed = self.mesh.triangle(t).placed(&self.pose);
+        let bounds = Bounds::of(&placed.0);
+        (bounds.min, bounds.max)
+    }
+
+    /// The distance from triangle `t` to a convex `body`, as `PlacedShape::distance_to`
+    /// measures each triangle of the mesh: negative where they overlap.
+    pub fn triangle_distance<C: Support>(&self, t: usize, body: &C) -> f64 {
+        self.mesh.triangle_distance(
+            t,
+            &InFrame {
+                body,
+                frame: self.pose,
+            },
+        )
+    }
+}
+
 /// One triangle, as GJK measures it.
 struct Triangle([Point3<f64>; 3]);
 
@@ -526,6 +571,12 @@ impl TriangleMesh {
         Triangle(self.triangles[t].map(|v| self.vertices[v as usize]))
     }
 
+    /// The distance from triangle `t` to `body`, in the mesh's frame: negative where they
+    /// overlap.
+    fn triangle_distance<C: Support>(&self, t: usize, body: &C) -> f64 {
+        gjk::distance(body, &self.triangle(t)).distance
+    }
+
     /// Each vertex a triangle names, once per corner.
     fn used_vertices(&self) -> impl Iterator<Item = &Point3<f64>> {
         self.triangles
@@ -583,8 +634,7 @@ impl TriangleMesh {
             match node {
                 Node::Leaf { triangles, .. } => {
                     for &t in triangles {
-                        nearest =
-                            nearest.min(gjk::distance(body, &self.triangle(t as usize)).distance);
+                        nearest = nearest.min(self.triangle_distance(t as usize, body));
                     }
                 }
                 Node::Inner { left, right, .. } => stack.extend([*left, *right]),

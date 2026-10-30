@@ -246,7 +246,8 @@ src/
   hull.rs            the exact convex hull, by Qhull
   hull/report.rs     the stream in memory that Qhull writes its messages to
   gjk.rs             GJK distance, EPA penetration, Hull, Placed and Vertex
-  shapes.rs          Shape, PlacedShape, the closed triangle mesh's hierarchy and inside test
+  shapes.rs          Shape, PlacedShape, PlacedMesh, the closed triangle mesh's hierarchy
+                     and inside test
   stl.rs             binary STL reader
   urdf_collision.rs  URDF collision elements and their surfaces, fixed poses, joint
                      transforms
