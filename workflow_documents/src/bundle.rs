@@ -2,13 +2,22 @@
 //! with the digest of each of its files and the lock of the versions it ran
 //! with. The bundle names every other document, such as a world, only as a
 //! file with a digest: nothing here reads a field of it.
+//!
+//! The bundle of a signed-off sweep also gives the thresholds, the work cell
+//! parameters and the envelope of the sweep ([`Validation`]), and lists the
+//! reports of the trials of the bundle under `trials/`, which are for people
+//! only. The digest of a bundle is that of its bundle document without
+//! `trials`, so a trial that adds its report keeps the digest.
 
 use documents_core::{Digest, Document, Kind, Revision};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::lock::Lock;
+use crate::names::Name;
 use crate::refusal::{At, Refusal, Refusals};
+use crate::sign_off::Thresholds;
+use crate::work_cell::{Envelope, ParameterKind, Validation, WorkCellParameter, watch_refusals};
 use crate::workflow::Workflow;
 
 /// The kind of a bundle document.
@@ -22,6 +31,9 @@ pub const WORKFLOW_PATH: &str = "workflow.json5";
 
 /// The directory of the other files of a bundle.
 pub const FILES_DIR: &str = "files/";
+
+/// The directory of the reports of the trials of a bundle.
+pub const TRIALS_DIR: &str = "trials/";
 
 /// A file of a bundle directory, its path relative to the directory.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,12 +60,103 @@ pub struct ListedFile {
 }
 
 /// The fields of the bundle document.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(into = "BundleFields")]
 pub struct BundleDocument {
     pub workflow: BundledWorkflow,
     pub files: Vec<ListedFile>,
     pub lock: Lock,
+    /// What a signed-off sweep gives the bundle.
+    pub validation: Option<Validation>,
+    /// The path of the report of each trial of the bundle, under `trials/`.
+    pub trials: Vec<String>,
+}
+
+/// The fields of the bundle document as written.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundleFields {
+    workflow: BundledWorkflow,
+    files: Vec<ListedFile>,
+    lock: Lock,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thresholds: Option<Thresholds>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    work_cell_parameters: Option<BTreeMap<Name, WorkCellParameter>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    envelope: Option<Envelope>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    trials: Vec<String>,
+}
+
+impl From<BundleDocument> for BundleFields {
+    fn from(document: BundleDocument) -> BundleFields {
+        let (thresholds, work_cell_parameters, envelope) = match document.validation {
+            Some(validation) => (
+                Some(validation.thresholds),
+                Some(validation.work_cell_parameters),
+                Some(validation.envelope),
+            ),
+            None => (None, None, None),
+        };
+        BundleFields {
+            workflow: document.workflow,
+            files: document.files,
+            lock: document.lock,
+            thresholds,
+            work_cell_parameters,
+            envelope,
+            trials: document.trials,
+        }
+    }
+}
+
+impl BundleFields {
+    /// The bundle document of these fields: the thresholds, the work cell
+    /// parameters and the envelope all given or none, and the trials only
+    /// with them.
+    fn into_document(self) -> Result<BundleDocument, Refusals> {
+        let validation = match (self.thresholds, self.work_cell_parameters, self.envelope) {
+            (None, None, None) => None,
+            (Some(thresholds), Some(parameters), Some(envelope)) => {
+                Some(Validation::new(thresholds, parameters, envelope)?)
+            }
+            _ => {
+                return Err(Refusals::one(Refusal::new(
+                    At::Document,
+                    "gives some of `thresholds`, `work_cell_parameters` and `envelope`; a signed-off sweep gives all three",
+                )));
+            }
+        };
+        if validation.is_none() && !self.trials.is_empty() {
+            return Err(Refusals::one(Refusal::new(
+                At::field("trials"),
+                "lists trials, and the bundle has no envelope; a trial signs off only the bundle of a signed-off sweep",
+            )));
+        }
+        Ok(BundleDocument {
+            workflow: self.workflow,
+            files: self.files,
+            lock: self.lock,
+            validation,
+            trials: self.trials,
+        })
+    }
+}
+
+impl BundleDocument {
+    /// The digest of the bundle: that of the bundle document without
+    /// `trials`. A trial that adds its report keeps it, and any other change
+    /// of the bundle document changes it.
+    pub fn digest(&self) -> Digest {
+        let without_trials = BundleDocument {
+            trials: Vec::new(),
+            ..self.clone()
+        };
+        Document::of(BUNDLE, &without_trials)
+            .expect("a bundle document serializes to a document")
+            .digest()
+    }
 }
 
 /// A bundle whose files all match their digests.
@@ -90,9 +193,11 @@ impl Bundle {
         let workflow_text = by_path
             .remove(WORKFLOW_PATH)
             .ok_or_else(|| missing(WORKFLOW_PATH))?;
-        let document: BundleDocument = Document::parse(&bundle_text, BUNDLE)
-            .and_then(|document| document.read())
-            .map_err(|error| Refusals::from(error).in_file(BUNDLE_PATH))?;
+        let document = Document::parse(&bundle_text, BUNDLE)
+            .and_then(|document| document.read::<BundleFields>())
+            .map_err(Refusals::from)
+            .and_then(BundleFields::into_document)
+            .map_err(|refusals| refusals.in_file(BUNDLE_PATH))?;
         let workflow =
             Workflow::parse(&workflow_text).map_err(|refusals| refusals.in_file(WORKFLOW_PATH))?;
         let mut refusals = Vec::new();
@@ -146,14 +251,45 @@ impl Bundle {
                 },
             }
         }
+        let trials: BTreeSet<&str> = document.trials.iter().map(String::as_str).collect();
+        for (index, path) in document.trials.iter().enumerate() {
+            let refused = if !path.starts_with(TRIALS_DIR) {
+                Some(format!(
+                    "lists `{path}`; it lists only the reports under `{TRIALS_DIR}`"
+                ))
+            } else if document.trials[..index].contains(path) {
+                Some(format!("lists `{path}` twice"))
+            } else if !by_path.contains_key(path) {
+                Some(format!("lists `{path}`, which is missing"))
+            } else {
+                None
+            };
+            if let Some(reason) = refused {
+                refusals.push(Refusal::new(
+                    At::field(format!("{BUNDLE_PATH}: trials")),
+                    reason,
+                ));
+            }
+        }
         for path in by_path.keys() {
-            if !listed.contains(path.as_str()) {
+            let in_list = match path.starts_with(TRIALS_DIR) {
+                true => trials.contains(path.as_str()),
+                false => listed.contains(path.as_str()),
+            };
+            if !in_list {
                 refusals.push(Refusal::new(
                     At::field(path.clone()),
                     "is a file the bundle document does not list",
                 ));
             }
         }
+        if let Some(validation) = &document.validation {
+            let misfits = Refusals::or_ok(validation_refusals(&workflow, validation), ());
+            if let Err(misfits) = misfits {
+                refusals.extend(misfits.in_file(BUNDLE_PATH));
+            }
+        }
+        by_path.retain(|path, _| path.starts_with(FILES_DIR));
         Refusals::or_ok(
             refusals,
             Bundle {
@@ -165,11 +301,34 @@ impl Bundle {
     }
 
     /// The files of the bundle of `workflow` with `files` (each path under
-    /// `files/`) and `lock`.
+    /// `files/`) and `lock`: the bundle that the chat exports.
     pub fn write(
         workflow: &Workflow,
         files: Vec<BundleFile>,
         lock: Lock,
+    ) -> Result<Vec<BundleFile>, Refusals> {
+        Bundle::written(workflow, files, lock, None)
+    }
+
+    /// The files of the bundle of a signed-off sweep: `workflow` with `files`
+    /// (each path under `files/`), the `lock` of the versions that the sweep
+    /// tested, and its `validation`. Refuses a parameter of `validation`
+    /// whose roles or observation are not those of `workflow`.
+    pub fn write_signed_off(
+        workflow: &Workflow,
+        files: Vec<BundleFile>,
+        lock: Lock,
+        validation: Validation,
+    ) -> Result<Vec<BundleFile>, Refusals> {
+        Refusals::or_ok(validation_refusals(workflow, &validation), ())?;
+        Bundle::written(workflow, files, lock, Some(validation))
+    }
+
+    fn written(
+        workflow: &Workflow,
+        files: Vec<BundleFile>,
+        lock: Lock,
+        validation: Option<Validation>,
     ) -> Result<Vec<BundleFile>, Refusals> {
         let mut refusals = Vec::new();
         let mut seen = BTreeSet::new();
@@ -212,6 +371,8 @@ impl Bundle {
             },
             files: listed,
             lock,
+            validation,
+            trials: Vec::new(),
         };
         let bundle = Document::of(BUNDLE, &document)?;
         let written = [
@@ -226,6 +387,40 @@ impl Bundle {
         ];
         Ok(written.into_iter().chain(files).collect())
     }
+}
+
+/// The refusals of the parameters of `validation` that do not fit
+/// `workflow`: a role of `per_role` that is no role of the workflow, and a
+/// watch parameter that reads no observation of it.
+fn validation_refusals(workflow: &Workflow, validation: &Validation) -> Vec<Refusal> {
+    let mut refusals = Vec::new();
+    for (name, parameter) in &validation.work_cell_parameters {
+        let unknown_roles = parameter
+            .kind
+            .per_role()
+            .into_iter()
+            .flatten()
+            .filter(|role| !workflow.roles.contains_key(*role));
+        refusals.extend(unknown_roles.map(|role| {
+            Refusal::new(
+                At::field(format!("work_cell_parameters.{name}.per_role")),
+                format!("names `{role}`, which is no role of the workflow"),
+            )
+        }));
+    }
+    let observations = validation
+        .work_cell_parameters
+        .iter()
+        .filter_map(|(name, parameter)| match &parameter.kind {
+            ParameterKind::Watch { observation } => Some((name, observation)),
+            ParameterKind::Control | ParameterKind::Distance { .. } => None,
+        });
+    refusals.extend(watch_refusals(
+        workflow,
+        "work_cell_parameters",
+        observations,
+    ));
+    refusals
 }
 
 fn missing(path: &str) -> Refusals {
@@ -245,10 +440,13 @@ fn path_refusal(path: &str) -> Option<String> {
     {
         return Some("is no path inside the bundle directory".to_owned());
     }
-    let known = path == BUNDLE_PATH || path == WORKFLOW_PATH || path.starts_with(FILES_DIR);
+    let known = path == BUNDLE_PATH
+        || path == WORKFLOW_PATH
+        || path.starts_with(FILES_DIR)
+        || path.starts_with(TRIALS_DIR);
     (!known).then(|| {
         format!(
-            "is no file of a bundle: `{BUNDLE_PATH}`, `{WORKFLOW_PATH}` or a file of `{FILES_DIR}`"
+            "is no file of a bundle: `{BUNDLE_PATH}`, `{WORKFLOW_PATH}`, a file of `{FILES_DIR}` or a report of `{TRIALS_DIR}`"
         )
     })
 }

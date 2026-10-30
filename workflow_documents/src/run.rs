@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::names::{Name, NameTag, RobotName};
 use crate::refusal::{At, Refusal, Refusals};
+use crate::work_cell::{RoleValues, WatchParameter, WorkCell, watch_refusals};
 use crate::workflow::Workflow;
 
 /// The kind of a run document.
@@ -137,7 +138,7 @@ impl<'de> Deserialize<'de> for Incidents {
 }
 
 impl Incidents {
-    fn is_none(&self) -> bool {
+    pub fn is_none(&self) -> bool {
         *self == Incidents::None
     }
 }
@@ -165,6 +166,14 @@ pub struct RunDocument {
     pub incidents: Incidents,
     #[serde(default)]
     pub versions: VersionPolicy,
+    /// The measured value of each control and distance parameter of the
+    /// work cell, per role for a parameter with one value per role.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub work_cell: WorkCell,
+    /// The observations that the director reads through the robots before
+    /// the initialization, with those of the bundle.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub watch: BTreeMap<Name, WatchParameter>,
 }
 
 impl RunDocument {
@@ -176,11 +185,12 @@ impl RunDocument {
         Document::of(RUN, self).expect("a run document serializes to a document")
     }
 
-    /// The attended run of `workflow` that binds the roles given and leaves
-    /// every other role to `"auto"`.
+    /// The attended run of `workflow` that binds the roles given, leaves
+    /// every other role to `"auto"` and gives the work cell block given.
     pub fn of_roles(
         workflow: &Workflow,
         roles: BTreeMap<Name, RobotName>,
+        work_cell: WorkCell,
     ) -> Result<RunDocument, Refusals> {
         let unknown: Vec<Refusal> = roles
             .keys()
@@ -214,13 +224,17 @@ impl RunDocument {
             confirmed: BTreeSet::new(),
             incidents: Incidents::None,
             versions: VersionPolicy::Refuse,
+            work_cell,
+            watch: BTreeMap::new(),
         })
     }
 }
 
 /// A run document that fits its workflow: the same name and revision, every
-/// role bound and no other, no robot named for two roles, and `confirmed`
-/// naming only assumptions without a check.
+/// role bound and no other, no robot named for two roles, `confirmed`
+/// naming only assumptions without a check, a value per role of the work
+/// cell only for roles of the workflow, and each watch parameter reading
+/// observations of the workflow.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Run {
     pub document: RunDocument,
@@ -228,33 +242,12 @@ pub struct Run {
 
 impl Run {
     pub fn new(workflow: &Workflow, document: RunDocument) -> Result<Run, Refusals> {
-        let mut refusals = Vec::new();
-        let named = &document.workflow;
-        if named.name != workflow.manifest.name || named.revision != workflow.manifest.revision {
-            refusals.push(Refusal::new(
-                At::field("workflow"),
-                format!(
-                    "names `{}` revision {}, and the workflow is `{}` revision {}",
-                    named.name, named.revision, workflow.manifest.name, workflow.manifest.revision
-                ),
-            ));
-        }
-        for role in workflow.roles.keys() {
-            if !document.roles.contains_key(role) {
-                refusals.push(Refusal::new(
-                    At::field("roles"),
-                    format!("binds no robot to the role `{role}`; name one, or `\"auto\"`"),
-                ));
-            }
-        }
-        for role in document.roles.keys() {
-            if !workflow.roles.contains_key(role) {
-                refusals.push(Refusal::new(
-                    At::field(format!("roles.{role}")),
-                    "is no role of the workflow",
-                ));
-            }
-        }
+        let mut refusals = binding_refusals(
+            workflow,
+            &document.workflow,
+            &document.roles,
+            "name one, or `\"auto\"`",
+        );
         refusals.extend(robots_named_twice(document.roles.iter().filter_map(
             |(role, binding)| match binding {
                 RoleBinding::Robot(robot) => Some((role, robot)),
@@ -273,8 +266,87 @@ impl Run {
                 ));
             }
         }
+        refusals.extend(work_cell_role_refusals(
+            workflow,
+            "work_cell",
+            &document.work_cell,
+        ));
+        refusals.extend(watch_refusals(
+            workflow,
+            "watch",
+            document
+                .watch
+                .iter()
+                .map(|(name, watch)| (name, &watch.observation)),
+        ));
         Refusals::or_ok(refusals, Run { document })
     }
+}
+
+/// The refusals of a document that names the revision `named` of `workflow`
+/// and binds `roles`: another name or revision, a role of the workflow that
+/// `roles` leaves out (with `hint` to bind it), and a role that is not of
+/// the workflow.
+pub fn binding_refusals<T>(
+    workflow: &Workflow,
+    named: &WorkflowRef,
+    roles: &BTreeMap<Name, T>,
+    hint: &str,
+) -> Vec<Refusal> {
+    let mut refusals = Vec::new();
+    if named.name != workflow.manifest.name || named.revision != workflow.manifest.revision {
+        refusals.push(Refusal::new(
+            At::field("workflow"),
+            format!(
+                "names `{}` revision {}, and the workflow is `{}` revision {}",
+                named.name, named.revision, workflow.manifest.name, workflow.manifest.revision
+            ),
+        ));
+    }
+    for role in workflow.roles.keys() {
+        if !roles.contains_key(role) {
+            refusals.push(Refusal::new(
+                At::field("roles"),
+                format!("binds no robot to the role `{role}`; {hint}"),
+            ));
+        }
+    }
+    for role in roles.keys() {
+        if !workflow.roles.contains_key(role) {
+            refusals.push(Refusal::new(
+                At::field(format!("roles.{role}")),
+                "is no role of the workflow",
+            ));
+        }
+    }
+    refusals
+}
+
+/// The refusal of each value per role of `work_cell` whose role is no role
+/// of `workflow`, at `field.<parameter>.<role>`.
+pub(crate) fn work_cell_role_refusals(
+    workflow: &Workflow,
+    field: &str,
+    work_cell: &WorkCell,
+) -> Vec<Refusal> {
+    work_cell
+        .iter()
+        .filter_map(|(name, values)| match values {
+            RoleValues::PerRole(per_role) => Some((name, per_role)),
+            RoleValues::Single(_) => None,
+        })
+        .flat_map(|(name, per_role)| {
+            per_role
+                .keys()
+                .filter(|role| !workflow.roles.contains_key(*role))
+                .map(move |role| {
+                    Refusal::new(
+                        At::field(format!("{field}.{name}.{role}")),
+                        "is no role of the workflow",
+                    )
+                })
+        })
+        .collect()
 }
 
 /// The refusal of each role that names a robot that a role before it, in
@@ -389,7 +461,7 @@ mod tests {
             Name::parse("arm").unwrap(),
             RobotName::parse("alpha").unwrap(),
         )]);
-        let document = RunDocument::of_roles(&workflow, roles).unwrap();
+        let document = RunDocument::of_roles(&workflow, roles, WorkCell::new()).unwrap();
         assert_eq!(
             document.roles[&Name::parse("helper").unwrap()],
             RoleBinding::Auto
@@ -430,6 +502,63 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("needs a `monitor`")
+        );
+    }
+
+    #[test]
+    fn a_run_gives_its_work_cell_and_watch_and_writes_them_back() {
+        let workflow = workflow();
+        let text = r#"{ workflow_schema: "run/v1", workflow: { name: "home", revision: 1 },
+            roles: { arm: "alpha", helper: "beta" }, attendance: "unattended",
+            work_cell: { belt_speed_mps: 0.2, belt_top_above_base_m: { arm: 0.18, helper: 0.21 } } }"#;
+        let document = RunDocument::parse(text).unwrap();
+        let top = &document.work_cell[&Name::parse("belt_top_above_base_m").unwrap()];
+        assert_eq!(
+            *top,
+            RoleValues::PerRole(BTreeMap::from([
+                (Name::parse("arm").unwrap(), 0.18),
+                (Name::parse("helper").unwrap(), 0.21),
+            ]))
+        );
+        let written = document.document().to_json5();
+        assert_eq!(RunDocument::parse(&written).unwrap(), document);
+        assert!(Run::new(&workflow, document).is_ok());
+        let plain = r#"{ workflow_schema: "run/v1", workflow: { name: "home", revision: 1 },
+            roles: { arm: "alpha", helper: "beta" }, attendance: "attended" }"#;
+        let written = RunDocument::parse(plain).unwrap().document().to_json5();
+        assert!(
+            !written.contains("work_cell") && !written.contains("watch"),
+            "{written}"
+        );
+    }
+
+    #[test]
+    fn a_work_cell_value_of_another_role_or_a_watch_of_another_observation_is_refused() {
+        let workflow = workflow();
+        let text = r#"{ workflow_schema: "run/v1", workflow: { name: "home", revision: 1 },
+            roles: { arm: "alpha", helper: "beta" }, attendance: "attended",
+            work_cell: { belt_top_above_base_m: { arm: 0.18, courier: 0.2 } },
+            watch: { loose_items_at_start: { unit: "items", observation: "loose.count" } } }"#;
+        let refused: Vec<String> = Run::new(&workflow, RunDocument::parse(text).unwrap())
+            .unwrap_err()
+            .iter()
+            .map(Refusal::to_string)
+            .collect();
+        assert_eq!(
+            refused,
+            [
+                "work_cell.belt_top_above_base_m.courier: is no role of the workflow",
+                "watch.loose_items_at_start: reads `loose`, which is no observation of the workflow",
+            ]
+        );
+        let blank_unit = r#"{ workflow_schema: "run/v1", workflow: { name: "home", revision: 1 },
+            roles: { arm: "alpha", helper: "beta" }, attendance: "attended",
+            watch: { loose: { unit: "", observation: "loose.count" } } }"#;
+        assert!(
+            RunDocument::parse(blank_unit)
+                .unwrap_err()
+                .to_string()
+                .contains("the unit is blank"),
         );
     }
 }
