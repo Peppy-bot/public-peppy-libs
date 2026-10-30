@@ -12,7 +12,8 @@
 //! seed alone draws: `one_of`, `range`, the count and the asset of each
 //! object of an item kind. The simulation draws each [`PlacementSite`], a stand
 //! or a pose `on` a surface or `in` a region, in a model of the drawn world,
-//! in the order of [`Expansion::placements`]. [`Expansion::world`] then gives
+//! in the order of [`Expansion::placements`]: before each, it builds its
+//! model from [`Expansion::world_so_far`]. [`Expansion::world`] then gives
 //! the concrete world.
 
 use serde::de::DeserializeOwned;
@@ -1097,6 +1098,67 @@ impl<'p> Expansion<'p> {
         WorldDocument { fields }.into_world(pattern.origin)
     }
 
+    /// The world of the placements that `placed` holds so far, as
+    /// [`Expansion::world`] gives it with each other placement left out: an
+    /// object whose pose has no value, the stand of a robot whose position
+    /// has no value, and the stand of a robot at a surface of an object left
+    /// out. The simulation builds its model of the drawn world from it before
+    /// it draws the next placement. `holder_of_surface` is that of
+    /// [`Expansion::placements`].
+    pub fn world_so_far(
+        &self,
+        placed: &BTreeMap<SitePath, Value>,
+        holder_of_surface: &dyn Fn(&str) -> Option<Name>,
+    ) -> Result<World, Error> {
+        let placements = self.placements(holder_of_surface)?;
+        let mut filled = placed.clone();
+        let mut left_out = BTreeSet::new();
+        let mut standless = BTreeSet::new();
+        for placement in placements
+            .iter()
+            .filter(|placement| !placed.contains_key(&placement.path))
+        {
+            let placeholder = match &placement.kind {
+                PlacementKind::ObjectPose { object, .. } => {
+                    left_out.insert(object.clone());
+                    serde_json::json!({ "position": [0.0, 0.0, 0.0], "yaw": 0.0 })
+                }
+                PlacementKind::Stand {
+                    robot,
+                    at: StandAt::Region(_),
+                } => {
+                    standless.insert(robot.clone());
+                    serde_json::json!([0.0, 0.0, 0.0])
+                }
+                PlacementKind::Stand {
+                    at: StandAt::Surface(_),
+                    ..
+                } => continue,
+            };
+            filled.insert(placement.path.clone(), placeholder);
+        }
+        for placement in &placements {
+            let PlacementKind::Stand {
+                robot,
+                at: StandAt::Surface(label),
+            } = &placement.kind
+            else {
+                continue;
+            };
+            if holder_of_surface(label).is_some_and(|holder| left_out.contains(&holder)) {
+                standless.insert(robot.clone());
+            }
+        }
+        let mut world = self.world(&filled)?;
+        world.objects.retain(|name, _| !left_out.contains(name));
+        for robot in &standless {
+            if let Some(robot) = world.robots.get_mut(robot) {
+                robot.stand = None;
+            }
+        }
+        Ok(world)
+    }
+
     /// Each entry of `entries` under `field`, made concrete.
     fn make_concrete<K: Ord + std::fmt::Display, T: DeserializeOwned + Clone>(
         &self,
@@ -1397,6 +1459,54 @@ mod tests {
             panic!("charlie stands where its region draw placed it");
         };
         assert!((-3.0..=3.0).contains(&stand.yaw));
+    }
+
+    #[test]
+    fn the_world_so_far_leaves_out_each_placement_without_a_value() {
+        let text = tape_line_text()
+            .replace(
+                "    stock:",
+                "    table: { asset: \"object/table\", pose: { in: \"box_stock\" } },\n    crate: { asset: \"object/crate\", pose: { on: \"table top\", reachable_by: \"delta\" } },\n    stock:",
+            )
+            .replace(
+                "    charlie:",
+                "    delta: { join: { option: \"openarm_sim\" }, stand: { surface: \"table top\" } },\n    charlie:",
+            );
+        let pattern = WorldPattern::parse(&text).unwrap();
+        let expansion = pattern.expansion(Seed(2), &assets_of_kind).unwrap();
+        let holder = |label: &str| (label == "table top").then(|| name("table"));
+        let nothing = expansion.world_so_far(&BTreeMap::new(), &holder).unwrap();
+        let objects: Vec<&str> = nothing.objects.keys().map(Name::as_str).collect();
+        assert_eq!(objects, ["conveyor"]);
+        let standing = |world: &World| -> Vec<String> {
+            world
+                .robots
+                .iter()
+                .filter(|(_, robot)| robot.stand.is_some())
+                .map(|(name, _)| name.to_string())
+                .collect()
+        };
+        assert_eq!(standing(&nothing), ["alpha", "bravo"]);
+
+        let table_path = SitePath::new(vec![
+            Segment::Key("objects".into()),
+            Segment::Key("table".into()),
+            Segment::Key("pose".into()),
+        ]);
+        let table_placed = BTreeMap::from([(
+            table_path,
+            json!({ "position": [2.0, 1.0, 0.0], "yaw": 0.0 }),
+        )]);
+        let with_the_table = expansion.world_so_far(&table_placed, &holder).unwrap();
+        assert!(with_the_table.objects.contains_key(&name("table")));
+        assert!(!with_the_table.objects.contains_key(&name("crate")));
+        assert_eq!(standing(&with_the_table), ["alpha", "bravo", "delta"]);
+
+        let placements = expansion.placements(&holder).unwrap();
+        let everything = expansion
+            .world_so_far(&placed(&placements), &holder)
+            .unwrap();
+        assert_eq!(everything, expansion.world(&placed(&placements)).unwrap());
     }
 
     #[test]
