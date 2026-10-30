@@ -14,7 +14,7 @@
 //! - [`Surroundings`]: whether the arm at a configuration keeps its clearance from the
 //!   map and the [`Objects`] that stand still, within its own body, and between an
 //!   attached object and the arm that carries it, each term the clearance
-//!   [`term_clearances`] asks of it.
+//!   [`term_clearances`] asks of it, and the distance of each pair it checks.
 //! - [`Goal`]: the constraints a path's last waypoint meets; a [`GoalSampler`] finds
 //!   configurations meeting them, [`IkGoalSampler`] by inverse kinematics for any chain.
 //! - [`plan_arm_path`]: plans a [`PlanRequest`] on a [`Scene`], and checks the rounded
@@ -37,7 +37,7 @@ mod scene;
 mod stop;
 
 pub use arm::{Arm, Body, RiderOffTheArm, SelfModel};
-pub use clearance::{Contact, Surroundings, TERMS, term_clearances};
+pub use clearance::{Contact, Reading, Surroundings, TERMS, term_clearances};
 pub use goal::{
     Axis, Frame, Goal, GoalError, GoalSampler, IkGoalSampler, JointTarget, OrientationTarget,
     PositionTarget,

@@ -22,6 +22,7 @@ change of the reference, which `run.sh --check` proves.
 | `planning` | OMPL's geometric planners: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
 | `occupancy` | MoveIt's point cloud updater: the log-odds of every voxel of MoveIt's occupancy map after a sequence of point clouds, with a sphere cut out as the robot's own body | `occupancy_map/tests/ros_reference_occupancy.rs` |
 | `arm_planning` | MoveIt's planning pipeline with the OMPL planner of the scenario's objective, RRTConnect for `any` and RRTstar for `shortest`, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, on scenes of an arm of OpenArm v2, the fingers of its gripper checked with it, among boxes of voxels as an octomap: MoveIt's answer to each scene, planned to the goal state itself, and MoveIt's collision check, smallest distance and length along its path and along motion_planning_core's, which the scenario carries (`tools/draw_arm_planning.py` writes it, with the answers of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
+| `planning_scene` | MoveIt's planning scene, its FCL collision environment, its path check and its octomap updater's shape mask: the objects, the attached objects and the allowed pairs that name an object after calls of motion_planning's scene members, as MoveIt's planning scene message holds them, the scenario's voxels its octomap from the start; at each configuration the signed distance of each pair of a link or an attached object and an object or the octomap, and of an attached object and a link it may not touch, with whether one body of a pair FCL finds apart lies wholly inside the other's closed mesh; the waypoints of each path of the arm that MoveIt's path check (`PlanningScene::isPathValid`) finds invalid, the rest of the robot standing still, and its dense probe of the path, a state every 1e-3 rad, whether a state is in collision and how far the arm stands from the objects and the octomap, and both again with the robot's links padded by the scenario's path padding; and whether each probe of the scenario lies inside an object the calls leave standing, grown by each padding as the shape mask grows it | `motion_planning_core/tests/ros_reference_planning_scene.rs` |
 
 ## Layout
 
@@ -33,7 +34,7 @@ change of the reference, which `run.sh --check` proves.
 | `packages-amd64.txt`, `packages-arm64.txt` | The version of every package of the reference image, on each architecture. |
 | `reference_programs/` | The reference program `ros_reference`: one function per kind of scenario. |
 | `src/` | The Rust crate `ros_reference`: one module per kind of scenario, which lists the scenarios of the kind and reads each with its reference output, checked with the scenario and the files it names against their digests, for the parity test. |
-| `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, a parsed URDF, the joints of an arm of OpenArm v2, the joint limits of a URDF, the configurations of a chain, the constants of a Rust file, and `write`, which writes a scenario. |
+| `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, a parsed URDF, the joints of an arm of OpenArm v2, the joint limits of a URDF, the configurations of a chain, the origin of a URDF element, the bounds of a link's collision elements, a rotation drawn uniformly, the constants of a Rust file, and `write`, which writes a scenario. |
 | `Dockerfile`, `CMakeLists.txt`, `ros-snapshots.asc` | The reference image and the build of the reference program in it. |
 | `run.sh` | Runs the reference of every scenario in the reference image. |
 
@@ -202,9 +203,21 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    corners among the first 200 drawn, which the script picks, a path of
    `motion_planning_core` where MoveIt's own path fails its check, a start in a box and a
    goal in a box that both refuse, and a start below a lower limit and one above an upper
-   limit, its statistics over 200 drawn scenes as rule 3 says. A large drawn set runs
-   locally and is never committed: draw it into `scenarios/` with the `--drawn` option of
-   the kind's script (for forward kinematics,
+   limit, its statistics over 200 drawn scenes as rule 3 says; for the planning scene, the
+   calls of `tools/draw_planning_scene.py` on OpenArm v2 and eight configurations of its
+   left arm, all joints at zero, at their lower limits, at their upper limits, the one an
+   item and a lid are attached at, the one the lid is detached at, and three drawn inside
+   the limits that each place objects around a link: a sphere that holds a link, beside a
+   box that fills a link it may touch; a link wholly inside a closed box mesh; and a link
+   in the open corner of an L-shaped mesh; sixteen voxels, those the table, the item and
+   the cap fill, one beside a link and twelve drawn, and two the calls mark, where the
+   sphere moves to and where the item is attached, before the move and the attach; twenty
+   paths, each two configurations in turn, the first through a post between two clear
+   waypoints, all eight in one, and twelve from the zero configuration, the lower limits
+   or a configuration drawn inside the limits to one within 0.3 rad of it in each joint;
+   and twelve probes about each of eleven objects at three paddings. A large drawn set
+   runs locally and is never committed: draw it into `scenarios/` with the `--drawn`
+   option of the kind's script (for forward kinematics,
    `python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
    `ros_reference/run.sh` and the parity tests, and restore the committed files with
    `git restore ros_reference/scenarios ros_reference/reference`.
@@ -279,8 +292,10 @@ arm64 host.
    within 0.02 degrees, and a path with corners at the deviation of execute_joint_path,
    the planning parity test asks each scenario for a plan of each planner that finds a
    path and one that finds none, the occupancy parity test asks each scenario's map for at
-   least 199 voxels, and the arm planning parity test asks each scenario for a scene of
-   each outcome that it names.
+   least 199 voxels, the arm planning parity test asks each scenario for a scene of each
+   outcome that it names, and the planning scene parity test builds the self model of
+   OpenArm v2, refuses a scenario that names another URDF or poses another arm, and asks
+   each scenario for a pair of each case that it names.
 
 A routine test of `ros_reference` fails when a scenario has no reference output, a
 reference output has no scenario or no digest, or a scenario, a URDF or a mesh differs

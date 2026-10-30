@@ -31,6 +31,7 @@ add_executable(ros_reference
   reference_programs/planning.cpp
   reference_programs/occupancy.cpp
   reference_programs/arm_planning.cpp
+  reference_programs/planning_scene.cpp
 )
 target_link_libraries(ros_reference PRIVATE
   geometric_shapes::geometric_shapes

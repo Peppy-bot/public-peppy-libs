@@ -19,6 +19,7 @@
 #include "occupancy.hpp"
 #include "path_timing.hpp"
 #include "planning.hpp"
+#include "planning_scene.hpp"
 #include "scenario.hpp"
 #include "self_distance.hpp"
 
@@ -33,6 +34,7 @@ const std::map<std::string, Reference> references = {
     {"occupancy", ros_reference::occupancy},
     {"path_timing", ros_reference::path_timing},
     {"planning", ros_reference::planning},
+    {"planning_scene", ros_reference::planning_scene},
     {"self_distance", ros_reference::self_distance},
 };
 

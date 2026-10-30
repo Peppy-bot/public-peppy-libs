@@ -22,7 +22,7 @@ use collision_geometry::hull::exact_hull;
 use control_core::path_timing::RoundedPath;
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, ArmObjects, AttachRequest, Body, CheckFailure, CheckRequest, Contact, Goal, GoalSampler,
+    Arm, ArmObjects, AttachRequest, CheckFailure, CheckRequest, Contact, Goal, GoalSampler,
     IkGoalSampler, JointTarget, MAX_STEP_M, ObjectFields, ObjectRequest, Objects, PathCheck,
     PathFault, Place, PlanFailure, PlanRequest, PlanningScene, RobotLinks, RobotPart, Scene,
     ShapeFields, StartFault, Surroundings, check_arm_path, plan_arm_path, pose_parts,
@@ -33,8 +33,8 @@ use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::Planner;
 
 use common::{
-    JOINTS, LEFT_ARM, an_hour_from_now, distance_to_map, left_fingers, map, occupied_at, positive,
-    voxel_in_a_finger,
+    JOINTS, LEFT_ARM, an_hour_from_now, distance_to_map, held_from_its_arm, left_fingers, map,
+    occupied_at, positive, voxel_in_a_finger,
 };
 
 const VOXEL_M: f64 = 0.04;
@@ -2050,25 +2050,6 @@ fn a_start_whose_held_item_comes_near_an_object_departs() {
     );
 }
 
-/// The least distance between the shapes of the objects `arm` carries at `q` and the
-/// pieces of its links and fingers that `may_touch` does not name, measured shape against
-/// piece with no screen.
-fn held_from_its_arm(arm: &Arm<JOINTS>, q: &[f64; JOINTS], may_touch: &[&str]) -> f64 {
-    let bodies = arm.bodies(q);
-    let shapes = bodies.iter().filter_map(|(_, body)| body.shape());
-    shapes
-        .flat_map(|shape| {
-            bodies
-                .iter()
-                .filter(|(name, _)| !may_touch.contains(name))
-                .filter_map(move |(_, body)| match body {
-                    Body::Piece(piece) => Some(shape.distance_to(piece, piece.bounding_sphere())),
-                    Body::Shape(_) => None,
-                })
-        })
-        .fold(f64::INFINITY, f64::min)
-}
-
 /// The plan's clearance between an attached object and the arm that carries it: the 0
 /// `term_clearances` asks of it and the 2 mm of spare its two moving bodies keep.
 const HELD_PLAN_CLEARANCE_M: f64 = 0.002;
@@ -2122,7 +2103,7 @@ fn from_its_arm(held: &PlanningScene, q: &[f64; JOINTS]) -> f64 {
     let arm = Arm::new(&LEFT_ARM, None)
         .riding(&riders)
         .expect("the item rides the hand");
-    held_from_its_arm(&arm, q, &GRIPPER)
+    held_from_its_arm(&arm, q, |_, link| GRIPPER.contains(&link))
 }
 
 /// What `with` gives of the left arm carrying what `held` attaches to it, among the

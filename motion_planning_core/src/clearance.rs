@@ -59,12 +59,12 @@ impl std::fmt::Display for Contact {
     }
 }
 
-/// A pair a state checks, and its distance.
+/// A pair a state checks, and its distance as `Surroundings::readings` reads it.
 #[derive(Debug, PartialEq)]
-pub(crate) struct Reading {
-    pub(crate) pair: Contact,
+pub struct Reading {
+    pub pair: Contact,
     /// The distance between the pair (m).
-    pub(crate) distance: f64,
+    pub distance: f64,
 }
 
 /// The pair and how far apart its bodies stand, as a message names them.
@@ -230,6 +230,15 @@ impl<'a> Surroundings<'a> {
             }
         });
         [nearest(world), modeled, nearest(held)]
+    }
+
+    /// Each pair that `arm` at `q` checks besides those of its self model, read as
+    /// `readings_by_term` reads it, the map's and the objects' first.
+    pub fn readings<const N: usize>(&self, arm: &Arm<N>, q: &[f64; N]) -> Vec<Reading> {
+        self.readings_by_term(arm, q)
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     /// What `arm` at `q` touches, if anything: a pair of its self model before the map,

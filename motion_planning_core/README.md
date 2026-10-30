@@ -18,7 +18,7 @@ model where the robot has one, its links, and a goal sampler.
   `apply_attached_collision_object`, `set_allowed_collision`, `get_planning_scene`).
 - `Surroundings` says whether the arm at a configuration keeps its clearance from the
   map (`occupancy_map`) and the objects that stand still (`Objects`), and within its own
-  body.
+  body, and reads the distance of each pair it checks (`Surroundings::readings`).
 - `Goal` holds the constraints a path's last waypoint meets; `IkGoalSampler` finds
   configurations meeting them for any chain.
 - `plan_arm_path` plans a `PlanRequest` on a `Scene` with OMPL (`ompl_bridge`) and
@@ -371,3 +371,45 @@ chain's end effector (`ArmObjects::riders`), and the obstacles, which with the p
 the robot the plan does not move make the scene's `Objects`. A depth frame's intake cuts
 out the objects no link carries where they stand and each arm's riders where its joints
 stood at the frame's stamp (`PlanningScene::standing_shapes`, `PlanningScene::riders`).
+
+After the same calls, the snapshot holds what MoveIt's planning scene message holds, each
+object's shapes in the order the calls gave them, which the message lists primitives first
+and then meshes. At configurations of OpenArm v2's left arm, `Surroundings::readings`
+checks the pairs FCL measures of the arm's links, fingers and carried objects, the
+objects, the voxel map as MoveIt's octomap, and the parts of the robot the arm does not
+move. Each distance is no larger than FCL's, or than 0 where FCL finds the pair in
+contact, and below 0 where FCL finds it in contact deeper than 1e-6 m; a link whose mesh
+is concave reads nearer than FCL where the pieces of the link fill the mesh's hollows, by
+up to 16.6 mm of a pair both read apart (openarm_left_link3 and the tote).
+Between two shapes of objects, and between an object and the map, the distance equals
+FCL's within 1e-6 m. A mesh object is measured by its triangles, so a link in its open
+corner reads apart, and as a solid, so a body wholly inside it reads in contact where FCL,
+which measures the triangles alone, finds the two apart
+(`tests/ros_reference_planning_scene.rs`, on the [`ros_reference`](../ros_reference)
+harness's `planning_scene_openarm_v2` scenario).
+
+The departures from MoveIt, measured on that scenario:
+
+- MoveIt's octomap keeps the voxels an object fills where it is added, moved or attached;
+  this crate clears them. The scenario's calls clear 5 voxels, adds 4 of them, a move 1
+  and an attach 1; over its configurations, 56 readings of a body of the arm and the map
+  lie farther on the map the calls leave than on MoveIt's octomap, and 7 of them FCL finds
+  in contact where this crate reads them apart: an attached object among the voxels it
+  filled.
+- MoveIt's path check (`PlanningScene::isPathValid`) checks a path's waypoints alone;
+  `check_arm_path` checks the runs and the corners between them too, at its clearance. On
+  the scenario's 20 paths, this crate's check fails no later than MoveIt's first invalid
+  waypoint: 8 pass both, 6 fail at the same waypoint in both, 4 fail in this crate's check
+  before MoveIt's first invalid waypoint, and 2 fail this crate's check between two
+  waypoints that MoveIt's check passes, the run through the post among them. Each of the 7
+  paths that MoveIt's dense probe, a state every 1e-3 rad, finds in contact nowhere and 2
+  cm or more from the objects and the octomap passes this crate's check: the 16.6 mm a
+  link reads nearer than FCL, and the 1 mm the check holds, rounded up.
+- MoveIt's shape mask grows a box and a cylinder by sharp planes, and a mesh as its convex
+  hull with each vertex moved the offset out from the hull's center, so a face moves out
+  by less than the offset; this crate rounds a primitive's edges, keeps a mesh concave and
+  grows it by the offset all round. At a scale of 1, a probe this crate's cut-out holds
+  and MoveIt's does not lies within the offset of a mesh. Of the scenario's 132 probes,
+  MoveIt's mask holds 3 that this crate's cut-out does not and this crate's none that
+  MoveIt's does not at no padding, none and 4 at an offset of 4 cm, and 1 and 2 at a scale
+  of 1.2 and an offset of 2 cm.

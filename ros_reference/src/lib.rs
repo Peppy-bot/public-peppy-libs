@@ -28,6 +28,7 @@ pub mod forward_kinematics;
 pub mod occupancy;
 pub mod path_timing;
 pub mod planning;
+pub mod planning_scene;
 pub mod self_distance;
 
 use serde::Deserialize;
@@ -59,6 +60,7 @@ enum Kind {
     Occupancy,
     PathTiming,
     Planning,
+    PlanningScene,
     SelfDistance,
 }
 

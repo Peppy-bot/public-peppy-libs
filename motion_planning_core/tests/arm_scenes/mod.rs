@@ -1,7 +1,8 @@
 //! The scenes of the ROS reference harness's arm planning scenario as this crate plans
 //! them: the arm, the parts its links carry, each scene's map and its plan. The example
 //! `plan_arm_scenes` and the parity test share them, so the paths the scenario carries
-//! are the ones the test plans.
+//! are the ones the test plans. The planning scene parity test shares the reading of a
+//! harness object as an entry of apply_collision_objects.
 #![allow(dead_code)]
 
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
@@ -13,14 +14,15 @@ use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, Goal, IkGoalSampler, JointTarget, Objects, PlanFailure, PlanRequest, Scene, StartFault,
-    plan_arm_path,
+    Arm, Goal, IkGoalSampler, JointTarget, ObjectFields, ObjectRequest, Objects, PlanFailure,
+    PlanRequest, Scene, ShapeFields, StartFault, plan_arm_path,
 };
 use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
 use ompl_bridge::Planner;
 use ros_reference::arm_planning::{
     Objective, Ours, Scene as ReferenceScene, Scenes, Termination, VoxelBox,
 };
+use ros_reference::planning_scene::{Object, Shape};
 
 pub const JOINTS: usize = 7;
 /// The configurations the goal sampler draws for a scene's joint goal.
@@ -64,6 +66,31 @@ pub fn on_the_arm<R>(
         .riding(&riders)
         .expect("the parts ride the arm's links");
     with(&arm)
+}
+
+/// The fields of apply_collision_objects that a harness shape writes.
+fn shape_fields(shape: &Shape) -> ShapeFields {
+    ShapeFields {
+        kind: shape.kind.clone(),
+        dimensions: shape.dimensions.clone(),
+        mesh_vertices: shape.mesh_vertices.clone(),
+        mesh_triangles: shape.mesh_triangles.clone(),
+        position: shape.position,
+        orientation: shape.orientation,
+    }
+}
+
+/// The entry of apply_collision_objects that a harness object writes.
+pub fn object_request(object: &Object) -> ObjectRequest {
+    ObjectRequest {
+        operation: object.operation.clone(),
+        object: ObjectFields {
+            id: object.id.clone(),
+            position: object.position,
+            orientation: object.orientation,
+            shapes: object.shapes.iter().map(shape_fields).collect(),
+        },
+    }
 }
 
 /// The map of the voxels of `scene`'s boxes at the scenario's voxel size, each occupied.

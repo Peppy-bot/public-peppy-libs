@@ -1,6 +1,7 @@
 //! What the tests share: OpenArm v2's left arm and the fingers its hand carries, a
-//! deadline no sampling reaches, voxel maps of drawn points, and the distance from an arm
-//! to every occupied voxel.
+//! deadline no sampling reaches, voxel maps of drawn points, the distance from an arm to
+//! every occupied voxel, and the distance from the objects an arm carries to its own
+//! pieces.
 //!
 //! Each integration test is its own crate, so items unused by one suite are
 //! expected; the allow keeps clippy's -D warnings gate meaningful for the rest.
@@ -15,7 +16,7 @@ use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider, RiderBody};
 use collision_geometry::gjk::{self, Placed};
 use control_core::positive_finite::PositiveFinite;
-use motion_planning_core::Arm;
+use motion_planning_core::{Arm, Body};
 use nalgebra::Point3;
 use occupancy_map::{Bounds, Frame, Scan, VoxelBox, VoxelMap};
 use openarm_description::{HardwareVersion, Side};
@@ -103,6 +104,32 @@ pub fn occupied_at(map: &mut VoxelMap, origin: [f64; 3], points: &[[f64; 3]]) {
 /// The box of every occupied voxel of `map`.
 pub fn voxel_boxes(map: &VoxelMap) -> Vec<VoxelBox> {
     map.occupied().map(|key| map.voxel_box(key)).collect()
+}
+
+/// The least distance at `q` between a shape of an object `arm` carries and a piece of
+/// the arm's links and of the parts they carry that the object may not touch, measured
+/// shape against piece with no screen: `may_touch` takes the object's id and the link's
+/// name.
+pub fn held_from_its_arm<const N: usize>(
+    arm: &Arm<N>,
+    q: &[f64; N],
+    may_touch: impl Fn(&str, &str) -> bool,
+) -> f64 {
+    let bodies = arm.bodies(q);
+    let shapes = bodies
+        .iter()
+        .filter_map(|(object, body)| body.shape().map(|shape| (*object, shape)));
+    shapes
+        .flat_map(|(object, shape)| {
+            bodies
+                .iter()
+                .filter(|(link, _)| !may_touch(object, link))
+                .filter_map(move |(_, body)| match body {
+                    Body::Piece(piece) => Some(shape.distance_to(piece, piece.bounding_sphere())),
+                    Body::Shape(_) => None,
+                })
+        })
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// The least distance from every body of `arm` at `q` to the box of every occupied voxel
