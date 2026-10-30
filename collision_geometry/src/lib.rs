@@ -12,6 +12,9 @@
 //!   element scaled about its center, a mesh from its piece, a primitive as itself.
 //!   [`chain::BodyGeometry`] holds the pieces of the body fixed to the root around the
 //!   chains, and its [`BodyMask`](chain::BodyMask) grows them by the same rule.
+//! - [`shapes`] holds the shapes of collision objects, boxes, spheres, cylinders and
+//!   closed triangle meshes, measures a convex body against them and tests whether a
+//!   point lies inside one grown by a padding by the same rule.
 //! - [`urdf_collision`], [`stl`] and [`hull`] read the collision elements of a URDF
 //!   (meshes, boxes, cylinders and spheres) and build the exact convex hull of a point
 //!   cloud.
@@ -37,6 +40,7 @@ mod error;
 pub mod fit;
 pub mod gjk;
 pub mod hull;
+pub mod shapes;
 mod simplify;
 pub mod stl;
 pub mod urdf_collision;

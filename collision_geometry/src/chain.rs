@@ -33,6 +33,7 @@ use crate::clip::ClipRegion;
 use crate::fit::{fit_fixed_link, fit_pieces};
 use crate::gjk::{self, Hull, Placed, Vertex};
 use crate::hull::ConvexHull;
+use crate::shapes::{distance_outside_box, distance_outside_cylinder};
 use crate::urdf_collision::{Collision, CollisionGeometry, ParentJoint, UrdfCollisions};
 
 /// How far the outer reach of a grown piece reaches past the element's outer ball grown
@@ -845,21 +846,16 @@ impl GrownPiece {
             Scaled::Box {
                 link_to_box,
                 half_extents,
-            } => within(
-                ((link_to_box * point).coords.abs() - half_extents)
-                    .sup(&Vector3::zeros())
-                    .norm(),
-            ),
+            } => within(distance_outside_box(&(link_to_box * point), half_extents)),
             Scaled::Cylinder {
                 link_to_cylinder,
                 radius,
                 half_length,
-            } => {
-                let local = link_to_cylinder * point;
-                let radial = (local.coords.xy().norm() - radius).max(0.0);
-                let axial = (local.z.abs() - half_length).max(0.0);
-                within(radial.hypot(axial))
-            }
+            } => within(distance_outside_cylinder(
+                &(link_to_cylinder * point),
+                *radius,
+                *half_length,
+            )),
             Scaled::Sphere { center, radius } => within((point - center).norm() - radius),
         }
     }
