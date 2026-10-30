@@ -1,10 +1,12 @@
 #include "scenario.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <ostream>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -36,9 +38,50 @@ void Inputs::append_to(const std::filesystem::path& list) const {
   }
 }
 
+namespace {
+
+// Whether `value` is a scalar or an array of scalars.
+bool is_flat(const nlohmann::json& value) {
+  return value.is_primitive() ||
+         (value.is_array() &&
+          std::all_of(value.begin(), value.end(),
+                      [](const nlohmann::json& member) { return member.is_primitive(); }));
+}
+
+// Whether `value` goes on one line: a scalar, an array of scalars, or a record, an object
+// whose members are each a scalar or an array of scalars.
+bool is_one_line(const nlohmann::json& value) {
+  return value.is_object() ? std::all_of(value.begin(), value.end(), is_flat) : is_flat(value);
+}
+
+// Writes `value` indented by `indent`: a value of one line on its line, and every other
+// array or object over several lines, one member a line.
+void write_value(std::ostream& out, const nlohmann::json& value, const std::string& indent) {
+  if (is_one_line(value)) {
+    out << value.dump();
+    return;
+  }
+  const auto inner = indent + "  ";
+  const bool object = value.is_object();
+  out << (object ? "{\n" : "[\n");
+  bool first = true;
+  for (const auto& [key, member] : value.items()) {
+    out << (first ? "" : ",\n") << inner;
+    if (object) {
+      out << nlohmann::json(key).dump() << ": ";
+    }
+    write_value(out, member, inner);
+    first = false;
+  }
+  out << '\n' << indent << (object ? '}' : ']');
+}
+
+}  // namespace
+
 void write_json(const std::filesystem::path& path, const nlohmann::json& document) {
   std::ofstream file(path);
-  file << document.dump(2) << '\n';
+  write_value(file, document, "");
+  file << '\n';
   file.close();
   if (!file) {
     throw std::runtime_error("cannot write " + path.string());

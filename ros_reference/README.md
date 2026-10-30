@@ -26,7 +26,7 @@ the reference, which `run.sh --check` proves.
 | `packages-amd64.txt`, `packages-arm64.txt` | The version of every package of the reference image, on each architecture. |
 | `reference_programs/` | The reference program `ros_reference`: one function per kind of scenario. |
 | `src/` | The Rust crate `ros_reference`: one module per kind of scenario, which lists the scenarios of the kind and reads each with its reference output, checked with the scenario and its URDF against their digests, for the parity test. |
-| `tools/` | The scripts that write the scenarios. |
+| `tools/` | The scripts that write the scenarios, one per kind, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the joint limits of a URDF, the configurations of a chain, and `write`, which writes a scenario. |
 | `Dockerfile`, `CMakeLists.txt`, `ros-snapshots.asc` | The reference image and the build of the reference program in it. |
 | `run.sh` | Runs the reference of every scenario in the reference image. |
 
@@ -91,6 +91,20 @@ on amd64 alone.
    outputs agree with the reference, or the statistic it compares, and why. A test that
    compares the exact bits of an output runs under `#[cfg(target_arch = "x86_64")]`,
    since the committed outputs hold amd64 bits.
+5. One rule lays out every scenario and every reference output: a value goes on one line
+   when it is a scalar, an array of scalars, or a record, an object whose members are
+   each a scalar or an array of scalars; every other array or object spreads over lines,
+   one member a line, indented by two spaces. So a forward kinematics scenario holds one
+   configuration a line, and its output one link pose a line. The reference program
+   writes every output by it through `write_json`, and every scenario tool writes every
+   scenario by it through `write` of `tools/drawing.py`.
+6. A kind commits only the few cases that exercise its behaviors: for forward
+   kinematics, eight configurations a chain, all joints at zero, at their lower limits,
+   at their upper limits, and five drawn inside them. A large drawn set runs locally and
+   is never committed: draw it into `scenarios/` (for forward kinematics,
+   `python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
+   `ros_reference/run.sh` and the parity tests, and restore the committed files with
+   `git restore ros_reference/scenarios ros_reference/reference`.
 
 ## Pins
 
@@ -164,8 +178,8 @@ digest.
    the kind, reading every file of the repository through `Inputs::read`, which lists it
    for `INPUTS.SHA256SUMS`. Add the function to `references` in `main.cpp` and to
    `CMakeLists.txt`, and install the ROS packages it needs in the Dockerfile.
-3. In `tools/`, add a script that writes the scenarios, its random draws seeded by the
-   scenario's name.
+3. In `tools/`, add a script that writes the scenarios through `write` of `drawing.py`,
+   its random draws from the `generator` of each scenario, seeded by the scenario's name.
 4. Run `run.sh` on an amd64 host, which writes their reference outputs and
    `packages-amd64.txt`, and on an arm64 host, which writes `packages-arm64.txt`.
 5. In the crate under test, add `ros_reference` as a dev-dependency and a parity test,

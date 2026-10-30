@@ -28,7 +28,10 @@ class Inputs {
   std::vector<std::string> paths_;
 };
 
-// Writes `document` to `path`, indented by two spaces, with a final newline.
+// Writes `document` to `path`, with a final newline. A scalar, an array of scalars and a
+// record, an object whose members are each a scalar or an array of scalars, go on one
+// line; every other array or object spreads over lines, one member a line, indented by
+// two spaces.
 void write_json(const std::filesystem::path& path, const nlohmann::json& document);
 
 // The IEEE-754 bit pattern of `x` as 0x and 16 hexadecimal digits: the form in which a

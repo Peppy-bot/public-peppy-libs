@@ -13,10 +13,12 @@ use urdf_rs::Robot;
 /// The largest difference allowed between a coordinate of ours and MoveIt's `x`, in units
 /// of `f64::EPSILON * max(1, |x|)`. A pose of ours holds its rotation as a unit
 /// quaternion and MoveIt's as a matrix, so the two round differently. Over the scenarios,
-/// the largest difference measured is 7.5 of these units against the amd64 outputs and 8
-/// against those of the arm64 image, with our side on the sine and cosine of glibc (FMA
-/// and SSE2 variants) and of macOS; the bound is twice the largest. Every coordinate of
-/// the scenarios is at most 1.21 in magnitude, so the bound is at most 4.3e-15.
+/// the largest difference measured is 7.5 of these units, against the amd64 outputs and
+/// against those of the arm64 image alike, with our side on the sine and cosine of glibc
+/// (amd64 FMA and SSE2 variants, and arm64) and of macOS. Over 50 drawn configurations a
+/// chain, a set that runs locally (`draw_forward_kinematics.py --drawn 50`), it is 8,
+/// against the arm64 outputs, and the bound is twice that. Every coordinate of the
+/// scenarios is at most 1.20 in magnitude, so the bound is at most 4.3e-15.
 const ULPS: f64 = 16.0;
 
 /// The largest difference that the parity of forward kinematics with MoveIt allows at any

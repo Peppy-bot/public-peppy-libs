@@ -1,22 +1,21 @@
 """Writes the forward kinematics scenarios of the ROS reference harness.
 
 The configurations of each chain are its zero configuration, its lower limits, its upper
-limits, and configurations drawn uniformly inside its limits. Each scenario draws from a
-generator seeded with its own name, so every run writes the same scenarios, and a change
-to one scenario leaves the draws of the others as they are. Run it from any directory:
+limits, and configurations drawn uniformly inside its limits, five of them by default.
+Run it from any directory:
 
     python3 ros_reference/tools/draw_forward_kinematics.py
+    python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500
+
+The second draws a large set for a local run, which the README describes.
 """
 
-import json
-import random
+import argparse
 import xml.etree.ElementTree as ElementTree
-from pathlib import Path
 
-SEED = 20261028
-DRAWN_CONFIGURATIONS = 50
-REPOSITORY = Path(__file__).resolve().parents[2]
-SCENARIOS = REPOSITORY / "ros_reference" / "scenarios"
+from drawing import REPOSITORY, configurations, generator, joint_limits, write
+
+DRAWN_CONFIGURATIONS = 5
 
 
 def openarm_arm(side):
@@ -41,22 +40,7 @@ ROBOTS = {
 }
 
 
-def joint_limits(robot, joint):
-    element = robot.find(f"joint[@name='{joint}']/limit")
-    if element is None:
-        raise SystemExit(f"the URDF gives no limits for {joint}")
-    # A URDF limit without a lower or an upper bound bounds it at 0.
-    return float(element.get("lower", 0)), float(element.get("upper", 0))
-
-
-def configurations(rng, limits):
-    lower = [low for low, _ in limits]
-    upper = [high for _, high in limits]
-    drawn = [[rng.uniform(low, high) for low, high in limits] for _ in range(DRAWN_CONFIGURATIONS)]
-    return [[0.0] * len(limits), lower, upper, *drawn]
-
-
-def scenario(rng, urdf, chains):
+def scenario(rng, urdf, chains, drawn_count):
     robot = ElementTree.parse(REPOSITORY / urdf).getroot()
     return {
         "kind": "forward_kinematics",
@@ -67,7 +51,7 @@ def scenario(rng, urdf, chains):
                 "joints": joints,
                 "tip_link": tip_link,
                 "configurations": configurations(
-                    rng, [joint_limits(robot, joint) for joint in joints]
+                    rng, [joint_limits(robot, joint) for joint in joints], drawn_count
                 ),
             }
             for name, joints, tip_link in chains
@@ -76,11 +60,16 @@ def scenario(rng, urdf, chains):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--drawn",
+        type=int,
+        default=DRAWN_CONFIGURATIONS,
+        help="configurations drawn inside the limits of each chain",
+    )
+    drawn_count = parser.parse_args().drawn
     for name, (urdf, chains) in ROBOTS.items():
-        rng = random.Random(f"{SEED}:{name}")
-        path = SCENARIOS / f"{name}.json"
-        path.write_text(json.dumps(scenario(rng, urdf, chains), indent=2) + "\n")
-        print(f"wrote {path.relative_to(REPOSITORY)}")
+        write(name, scenario(generator(name), urdf, chains, drawn_count))
 
 
 if __name__ == "__main__":
