@@ -748,6 +748,13 @@ impl WorldPattern {
         })
     }
 
+    /// Each entry of `objects` that adds objects of an item kind, by its
+    /// name, with that item kind, in the order of the names.
+    pub fn item_kinds(&self) -> impl Iterator<Item = (&Name, &str)> {
+        self.item_kind_entries()
+            .map(|(name, entry)| (name, entry.item_kind.as_str()))
+    }
+
     fn item_kind_entries(&self) -> impl Iterator<Item = (&Name, &ItemKindEntry)> {
         self.fields
             .objects
@@ -1459,6 +1466,16 @@ mod tests {
             panic!("charlie stands where its region draw placed it");
         };
         assert!((-3.0..=3.0).contains(&stand.yaw));
+    }
+
+    #[test]
+    fn the_item_kinds_of_a_pattern_are_its_entries_of_an_item_kind() {
+        let pattern = tape_line();
+        let kinds: Vec<(&str, &str)> = pattern
+            .item_kinds()
+            .map(|(name, kind)| (name.as_str(), kind))
+            .collect();
+        assert_eq!(kinds, [("stock", "carton"), ("tapes", "tape_roll")]);
     }
 
     #[test]
