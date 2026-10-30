@@ -1,16 +1,27 @@
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::fmt;
 
+use crate::Error;
+
 /// The sha256 of a document's canonical JSON (RFC 8785): the identity of its
-/// content, the same for every spelling of the same tree.
-#[derive(Clone, Copy, PartialEq)]
+/// content, the same for every spelling of the same tree. It serializes as
+/// its 64 lowercase hex digits.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Digest([u8; 32]);
 
 impl Digest {
     /// The digest of a tree that [`crate::parse`] or [`crate::Document`] built.
     pub(crate) fn of(tree: &Value) -> Digest {
         Digest(Sha256::digest(canonical_json(tree)).into())
+    }
+
+    /// The digest of the JSON5 text of a document or any other file, read by
+    /// the refusals of [`crate::parse`] and no other rule: equal to the
+    /// [`crate::Document::digest`] of the same text.
+    pub fn of_text(text: &str) -> Result<Digest, Error> {
+        crate::parse(text).map(|tree| Digest::of(&tree))
     }
 
     /// The digest written as 64 lowercase hex digits, as sha256 tools print
@@ -43,6 +54,23 @@ fn canonical_json(tree: &Value) -> Vec<u8> {
 impl fmt::Display for Digest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
+    }
+}
+
+impl Serialize for Digest {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Digest {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Digest, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Digest::parse(&text).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "`{text}` is no digest: write 64 lowercase hex digits"
+            ))
+        })
     }
 }
 
@@ -82,5 +110,19 @@ mod tests {
         assert_eq!(Digest::parse(&"g".repeat(64)), None);
         assert_eq!(Digest::parse(&digest.to_string().to_uppercase()), None);
         assert_eq!(Digest::parse(&format!("{digest}0")), None);
+    }
+
+    #[test]
+    fn the_digest_of_a_text_is_that_of_its_document_and_serializes_as_hex() {
+        let text = r#"{ simulation_schema: "world/v1", b: [1, 2.5], a: "x" }"#;
+        let kind = crate::Kind::new("simulation_schema", "world", 1);
+        let document = crate::Document::parse(text, kind).unwrap();
+        assert_eq!(Digest::of_text(text).unwrap(), document.digest());
+        assert!(Digest::of_text("{ a: 1, a: 2 }").is_err());
+        let digest = document.digest();
+        let written = serde_json::to_string(&digest).unwrap();
+        assert_eq!(written, format!("\"{digest}\""));
+        assert_eq!(serde_json::from_str::<Digest>(&written).unwrap(), digest);
+        assert!(serde_json::from_str::<Digest>("\"504661c4\"").is_err());
     }
 }
