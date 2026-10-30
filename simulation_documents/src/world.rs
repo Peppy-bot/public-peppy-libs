@@ -12,7 +12,9 @@ use crate::geometry::{Offset, Placement, Point, Pose};
 use crate::names::{
     RESERVED_PEPPY_NAME, RESERVED_REASON, first_named_twice, is_peppy_name, peppy_name_grammar,
 };
-use crate::{Error, Name, RobotName};
+use crate::pattern::{MinSpacing, ObjectEntry, WorkCellParameter};
+use crate::sampler::Sampled;
+use crate::{Error, Name, ParameterName, RobotName};
 
 /// The kind of a world document.
 pub(crate) const WORLD: Kind = Kind::new("simulation_schema", "world", 1);
@@ -517,7 +519,7 @@ impl From<Object> for ObjectFields {
 
 /// How an object takes part in physics, as `scene.spawn_object` takes it:
 /// written `dynamic`, `static` or `none`.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Physics {
     Dynamic,
@@ -817,6 +819,9 @@ impl<'de, T: DeserializeOwned> Deserialize<'de> for Entry<T> {
 }
 
 /// The fields of a world document as written, before its base is resolved.
+/// An entry holds samplers in a world pattern, and the pattern adds
+/// entries of an item kind to `objects`, `work_cell_parameters` and
+/// `min_spacing_m`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WorldFields {
@@ -826,21 +831,25 @@ pub(crate) struct WorldFields {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extends: Option<Manifest>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scene: Option<Scene>,
+    pub scene: Option<Sampled<Scene>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub robots: BTreeMap<RobotName, Entry<Robot>>,
+    pub robots: BTreeMap<RobotName, Entry<Sampled<Robot>>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub scene_objects: BTreeMap<Name, Entry<SceneObject>>,
+    pub scene_objects: BTreeMap<Name, Entry<Sampled<SceneObject>>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub objects: BTreeMap<Name, Entry<Object>>,
+    pub objects: BTreeMap<Name, Entry<ObjectEntry>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub lighting: BTreeMap<String, Entry<Light>>,
+    pub lighting: BTreeMap<String, Entry<Sampled<Light>>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub materials: BTreeMap<String, Entry<Material>>,
+    pub materials: BTreeMap<String, Entry<Sampled<Material>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub daylight: Option<Entry<Daylight>>,
+    pub daylight: Option<Entry<Sampled<Daylight>>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub locations: BTreeMap<Name, Entry<Location>>,
+    pub locations: BTreeMap<Name, Entry<Sampled<Location>>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub work_cell_parameters: BTreeMap<ParameterName, Entry<WorkCellParameter>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_spacing_m: Option<MinSpacing>,
 }
 
 /// A world document as written: it may extend a base.
@@ -873,29 +882,20 @@ impl WorldDocument {
     /// The concrete world of fields that extend no base. `origin` says where
     /// they come from: the refusal of a missing catalogue or scene says where
     /// it was looked for, and a scene object a base keeps has no entry.
+    /// Refuses the fields of a world pattern.
     pub(crate) fn into_world(self, origin: Origin) -> Result<World, Error> {
         let fields = self.fields;
         if fields.extends.is_some() {
             return Err(Error::Unresolved(fields.manifest.name));
         }
-        let unnamed = |field: &str, what: &str, form: &str| {
-            let reason = match origin {
-                Origin::Alone => format!("a world that extends no base names its {what}"),
-                Origin::WithBases => format!("neither the world nor its bases name a {what}"),
-            };
-            Error::field(field, format!("{reason}; add {form}"))
-        };
-        let catalogue = fields.catalogue.clone().ok_or_else(|| {
-            unnamed(
-                "catalogue",
-                "catalogue release",
-                "`catalogue: \"<digest of the release>\"`, or `catalogue: \"local\"` for a local catalogue",
-            )
-        })?;
-        let scene = fields
-            .scene
-            .clone()
-            .ok_or_else(|| unnamed("scene", "scene", "`scene: { asset: \"scene/<id>\" }`"))?;
+        let (catalogue, scene) = fields.catalogue_and_scene(origin)?;
+        let scene = concrete_value("scene", scene)?;
+        if !fields.work_cell_parameters.is_empty() {
+            return Err(pattern_field("work_cell_parameters"));
+        }
+        if fields.min_spacing_m.is_some() {
+            return Err(pattern_field("min_spacing_m"));
+        }
         let maps = fields.concrete_maps(origin)?;
         Ok(World {
             manifest: fields.manifest,
@@ -913,12 +913,37 @@ impl WorldDocument {
 }
 
 /// Where the fields of a concrete world come from.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Origin {
     /// One document that extends no base.
     Alone,
     /// A document merged with its bases.
     WithBases,
+}
+
+/// The refusal of a field that only a world pattern has, in a concrete
+/// world.
+fn pattern_field(field: &str) -> Error {
+    Error::field(
+        field,
+        "is a field of a world pattern; resolve the world as a pattern, or leave the field out",
+    )
+}
+
+/// The refusal of a sampler at `field` of a concrete world.
+pub(crate) fn sampler_in_concrete_world(field: impl Into<String>) -> Error {
+    Error::field(
+        field,
+        "holds a sampler, so the world is a world pattern; expand it with a seed, or write each value",
+    )
+}
+
+/// The value of an entry that holds no sampler, named by `field`.
+fn concrete_value<T: Clone>(field: &str, entry: &Sampled<T>) -> Result<T, Error> {
+    match entry {
+        Sampled::Fixed(value) => Ok(value.clone()),
+        Sampled::Drawn(_) => Err(sampler_in_concrete_world(field)),
+    }
 }
 
 /// The maps of a world, every entry a value.
@@ -933,15 +958,78 @@ pub(crate) struct ConcreteMaps {
 }
 
 impl WorldFields {
+    /// The catalogue and the scene of fields whose bases are folded in,
+    /// refused when neither the world nor its bases name one, as `origin`
+    /// says.
+    pub(crate) fn catalogue_and_scene(
+        &self,
+        origin: Origin,
+    ) -> Result<(Catalogue, &Sampled<Scene>), Error> {
+        let unnamed = |field: &str, what: &str, form: &str| {
+            let reason = match origin {
+                Origin::Alone => format!("a world that extends no base names its {what}"),
+                Origin::WithBases => format!("neither the world nor its bases name a {what}"),
+            };
+            Error::field(field, format!("{reason}; add {form}"))
+        };
+        let catalogue = self.catalogue.clone().ok_or_else(|| {
+            unnamed(
+                "catalogue",
+                "catalogue release",
+                "`catalogue: \"<digest of the release>\"`, or `catalogue: \"local\"` for a local catalogue",
+            )
+        })?;
+        let scene = self
+            .scene
+            .as_ref()
+            .ok_or_else(|| unnamed("scene", "scene", "`scene: { asset: \"scene/<id>\" }`"))?;
+        Ok((catalogue, scene))
+    }
+
     /// The maps of a document, every entry a value. A document that extends
     /// no base is refused `kept`, and `removed` outside `scene_objects`: each
     /// drops an entry of a base. In a document merged with its bases, a kept
-    /// scene object stands as the scene has it, under no entry.
+    /// scene object stands as the scene has it, under no entry. An entry that
+    /// holds a sampler, or adds objects of an item kind, is refused.
     pub(crate) fn concrete_maps(&self, origin: Origin) -> Result<ConcreteMaps, Error> {
+        let marked = self.marked_maps(origin)?;
+        let robots = concrete_values("robots", marked.robots)?;
+        let scene_objects = concrete_values("scene_objects", marked.scene_objects)?;
+        let objects = marked
+            .objects
+            .into_iter()
+            .map(|(name, entry)| match entry {
+                ObjectEntry::Object(object) => Ok((
+                    name.clone(),
+                    concrete_value(&format!("objects.{name}"), object)?,
+                )),
+                ObjectEntry::ItemKind(_) => {
+                    Err(sampler_in_concrete_world(format!("objects.{name}")))
+                }
+            })
+            .collect::<Result<_, Error>>()?;
+        Ok(ConcreteMaps {
+            robots,
+            scene_objects,
+            objects,
+            lighting: concrete_values("lighting", marked.lighting)?,
+            materials: concrete_values("materials", marked.materials)?,
+            daylight: marked
+                .daylight
+                .map(|daylight| concrete_value("daylight", daylight))
+                .transpose()?,
+            locations: concrete_values("locations", marked.locations)?,
+        })
+    }
+
+    /// The entries of the maps of a document, with the refusals of the marks
+    /// of [`WorldFields::concrete_maps`]; a removed scene object is the value
+    /// [`SceneObject::Removed`].
+    pub(crate) fn marked_maps(&self, origin: Origin) -> Result<MarkedMaps<'_>, Error> {
         let scene_objects = self.scene_objects.iter().filter_map(|(name, entry)| {
             let object = match (entry, origin) {
-                (Entry::Value(object), _) => object.clone(),
-                (Entry::Removed, _) => SceneObject::Removed,
+                (Entry::Value(object), _) => object,
+                (Entry::Removed, _) => &REMOVED_SCENE_OBJECT,
                 (Entry::Kept, Origin::WithBases) => return None,
                 (Entry::Kept, Origin::Alone) => {
                     return Some(Err(Error::field(
@@ -950,29 +1038,62 @@ impl WorldFields {
                     )));
                 }
             };
-            Some(Ok((name.clone(), object)))
+            Some(Ok((name, object)))
         });
-        Ok(ConcreteMaps {
-            robots: concrete_entries("robots", &self.robots)?,
+        Ok(MarkedMaps {
+            robots: entry_values("robots", &self.robots)?,
             scene_objects: scene_objects.collect::<Result<_, _>>()?,
-            objects: concrete_entries("objects", &self.objects)?,
-            lighting: concrete_entries("lighting", &self.lighting)?,
-            materials: concrete_entries("materials", &self.materials)?,
-            daylight: concrete_daylight(&self.daylight)?,
-            locations: concrete_entries("locations", &self.locations)?,
+            objects: entry_values("objects", &self.objects)?,
+            lighting: entry_values("lighting", &self.lighting)?,
+            materials: entry_values("materials", &self.materials)?,
+            daylight: daylight_value(&self.daylight)?,
+            locations: entry_values("locations", &self.locations)?,
+            work_cell_parameters: entry_values("work_cell_parameters", &self.work_cell_parameters)?,
         })
     }
 }
 
-/// The values of a map whose entries drop nothing, named by `field`.
-fn concrete_entries<K: Ord + Clone + std::fmt::Display, T: Clone>(
+/// A scene object that the world removes, as an entry.
+static REMOVED_SCENE_OBJECT: Sampled<SceneObject> = Sampled::Fixed(SceneObject::Removed);
+
+/// The entries of the maps of a document whose marks are resolved.
+pub(crate) struct MarkedMaps<'a> {
+    pub(crate) robots: BTreeMap<&'a RobotName, &'a Sampled<Robot>>,
+    pub(crate) scene_objects: BTreeMap<&'a Name, &'a Sampled<SceneObject>>,
+    pub(crate) objects: BTreeMap<&'a Name, &'a ObjectEntry>,
+    pub(crate) lighting: BTreeMap<&'a String, &'a Sampled<Light>>,
+    pub(crate) materials: BTreeMap<&'a String, &'a Sampled<Material>>,
+    pub(crate) daylight: Option<&'a Sampled<Daylight>>,
+    pub(crate) locations: BTreeMap<&'a Name, &'a Sampled<Location>>,
+    pub(crate) work_cell_parameters: BTreeMap<&'a ParameterName, &'a WorkCellParameter>,
+}
+
+/// The values of entries that hold no sampler, each named by `field` and
+/// its key.
+fn concrete_values<K: Ord + Clone + std::fmt::Display, T: Clone>(
     field: &str,
-    entries: &BTreeMap<K, Entry<T>>,
+    entries: BTreeMap<&K, &Sampled<T>>,
 ) -> Result<BTreeMap<K, T>, Error> {
+    entries
+        .into_iter()
+        .map(|(key, entry)| {
+            Ok((
+                key.clone(),
+                concrete_value(&format!("{field}.{key}"), entry)?,
+            ))
+        })
+        .collect()
+}
+
+/// The values of a map whose entries drop nothing, named by `field`.
+fn entry_values<'a, K: Ord + std::fmt::Display, T>(
+    field: &str,
+    entries: &'a BTreeMap<K, Entry<T>>,
+) -> Result<BTreeMap<&'a K, &'a T>, Error> {
     entries
         .iter()
         .map(|(key, entry)| match entry {
-            Entry::Value(value) => Ok((key.clone(), value.clone())),
+            Entry::Value(value) => Ok((key, value)),
             Entry::Removed => Err(Error::field(
                 format!("{field}.{key}"),
                 "`removed` drops an entry of a base; this world extends no base",
@@ -983,10 +1104,12 @@ fn concrete_entries<K: Ord + Clone + std::fmt::Display, T: Clone>(
 }
 
 /// The daylight of a document whose entry drops nothing.
-fn concrete_daylight(entry: &Option<Entry<Daylight>>) -> Result<Option<Daylight>, Error> {
+fn daylight_value(
+    entry: &Option<Entry<Sampled<Daylight>>>,
+) -> Result<Option<&Sampled<Daylight>>, Error> {
     match entry {
         None => Ok(None),
-        Some(Entry::Value(daylight)) => Ok(Some(daylight.clone())),
+        Some(Entry::Value(daylight)) => Ok(Some(daylight)),
         Some(Entry::Removed) => Err(Error::field(
             "daylight",
             "`removed` drops the daylight of a base; this world extends no base",
@@ -1029,7 +1152,7 @@ pub(crate) fn check_name_rules(fields: &WorldFields) -> Result<(), Error> {
         fields
             .objects
             .iter()
-            .filter(|(_, entry)| matches!(entry, Entry::Value(_)))
+            .filter(|(_, entry)| matches!(entry, Entry::Value(ObjectEntry::Object(_))))
             .map(|(name, _)| name),
         |name| {
             matches!(
@@ -1104,22 +1227,34 @@ impl World {
             manifest: self.manifest.clone(),
             catalogue: Some(self.catalogue.clone()),
             extends: None,
-            scene: Some(self.scene.clone()),
+            scene: Some(Sampled::Fixed(self.scene.clone())),
             robots: value_entries(&self.robots),
             scene_objects: value_entries(&self.scene_objects),
-            objects: value_entries(&self.objects),
+            objects: self
+                .objects
+                .iter()
+                .map(|(name, object)| {
+                    let entry = ObjectEntry::Object(Sampled::Fixed(object.clone()));
+                    (name.clone(), Entry::Value(entry))
+                })
+                .collect(),
             lighting: value_entries(&self.lighting),
             materials: value_entries(&self.materials),
-            daylight: self.daylight.clone().map(Entry::Value),
+            daylight: self
+                .daylight
+                .clone()
+                .map(|daylight| Entry::Value(Sampled::Fixed(daylight))),
             locations: value_entries(&self.locations),
+            work_cell_parameters: BTreeMap::new(),
+            min_spacing_m: None,
         }
     }
 }
 
-/// Each entry of `map` as a value entry.
-fn value_entries<K: Clone + Ord, T: Clone>(map: &BTreeMap<K, T>) -> BTreeMap<K, Entry<T>> {
+/// Each entry of `map` as a value entry that holds no sampler.
+fn value_entries<K: Clone + Ord, T: Clone>(map: &BTreeMap<K, T>) -> BTreeMap<K, Entry<Sampled<T>>> {
     map.iter()
-        .map(|(key, value)| (key.clone(), Entry::Value(value.clone())))
+        .map(|(key, value)| (key.clone(), Entry::Value(Sampled::Fixed(value.clone()))))
         .collect()
 }
 
@@ -1414,6 +1549,12 @@ pub(crate) mod tests {
             ("verdict", refusals_of::<Verdict>()),
             ("setup record", refusals_of::<crate::SetupRecord>()),
             ("count", refusals_of::<Count>()),
+            (
+                "work cell parameter",
+                refusals_of::<crate::WorkCellParameter>(),
+            ),
+            ("seeds", refusals_of::<crate::Seeds>()),
+            ("push", refusals_of::<crate::Push>()),
         ];
         for (named, (other_type, unknown)) in cases {
             assert!(other_type.contains("expected "), "{named}: {other_type}");
@@ -1560,7 +1701,7 @@ pub(crate) mod tests {
             ),
             (
                 example_text().replace("catalogue:", "workflow: 1, catalogue:"),
-                "workflow: unknown field `workflow`, expected one of `manifest`, `catalogue`, `extends`, `scene`, `robots`, `scene_objects`, `objects`, `lighting`, `materials`, `daylight`, `locations`",
+                "workflow: unknown field `workflow`, expected one of `manifest`, `catalogue`, `extends`, `scene`, `robots`, `scene_objects`, `objects`, `lighting`, `materials`, `daylight`, `locations`, `work_cell_parameters`, `min_spacing_m`",
             ),
             (
                 example_text().replace("scale: 1", "scale: 0"),

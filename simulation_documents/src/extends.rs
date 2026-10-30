@@ -6,10 +6,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::daylight::Daylight;
+use crate::sampler::Sampled;
 use crate::world::{
     Entry, Origin, WorldFields, check_name_rules, kept_daylight, kept_outside_scene_objects,
 };
-use crate::{Error, Manifest, Revision, World, WorldDocument};
+use crate::{Error, Manifest, Revision, World, WorldDocument, WorldPattern};
 
 /// The most bases a world's chain of bases holds.
 pub(crate) const MAX_BASES: usize = 128;
@@ -37,15 +38,31 @@ impl WorldDocument {
     /// base that breaks a rule of its own, naming the base: a refusal that
     /// comes of a base, or of a base of a base, names each base it passes
     /// through. The chain of bases is walked and folded in a loop, and holds
-    /// at most 128 bases.
+    /// at most 128 bases. Refuses a world pattern: one that holds a sampler,
+    /// an entry of an item kind, `work_cell_parameters` or `min_spacing_m`.
     pub fn resolve(self, bases: &[WorldDocument]) -> Result<World, Error> {
+        let (fields, origin) = self.folded(bases)?;
+        WorldDocument { fields }.into_world(origin)
+    }
+
+    /// The world pattern of this document with each base found among
+    /// `bases`, with the refusals of [`WorldDocument::resolve`] but those of
+    /// a world pattern. A concrete world is a world pattern whose every seed
+    /// gives that world.
+    pub fn resolve_pattern(self, bases: &[WorldDocument]) -> Result<WorldPattern, Error> {
+        let (fields, origin) = self.folded(bases)?;
+        WorldPattern::of_fields(fields, origin)
+    }
+
+    /// The fields of this document with its bases folded in, and where they
+    /// come from.
+    fn folded(self, bases: &[WorldDocument]) -> Result<(WorldFields, Origin), Error> {
         let origin = match self.fields.extends {
             Some(_) => Origin::WithBases,
             None => Origin::Alone,
         };
         let chain = base_chain(&self, bases)?;
-        let fields = folded(self.fields, &chain)?;
-        WorldDocument { fields }.into_world(origin)
+        Ok((folded(self.fields, &chain)?, origin))
     }
 }
 
@@ -111,7 +128,7 @@ fn folded(fields: WorldFields, chain: &[&WorldDocument]) -> Result<WorldFields, 
         return Ok(fields);
     };
     root.fields
-        .concrete_maps(Origin::Alone)
+        .marked_maps(Origin::Alone)
         .map_err(|refusal| in_bases(chain, refusal))?;
     let base = above.iter().enumerate().rev().try_fold(
         root.fields.clone(),
@@ -153,6 +170,13 @@ fn merged(fields: WorldFields, base: WorldFields) -> Result<WorldFields, Error> 
             base.locations,
             fields.locations,
         )?,
+        work_cell_parameters: merged_entries(
+            "work_cell_parameters",
+            MapKind::Other,
+            base.work_cell_parameters,
+            fields.work_cell_parameters,
+        )?,
+        min_spacing_m: fields.min_spacing_m.or(base.min_spacing_m),
     };
     check_name_rules(&merged)?;
     Ok(merged)
@@ -203,9 +227,9 @@ fn merged_entries<K: Ord + std::fmt::Display, T>(
 /// Refuses a `{ removed: true }` over a base that leaves no daylight, after
 /// its own marks.
 fn merged_daylight(
-    base: Option<Entry<Daylight>>,
-    over: Option<Entry<Daylight>>,
-) -> Result<Option<Entry<Daylight>>, Error> {
+    base: Option<Entry<Sampled<Daylight>>>,
+    over: Option<Entry<Sampled<Daylight>>>,
+) -> Result<Option<Entry<Sampled<Daylight>>>, Error> {
     match (over, base) {
         (None, base) => Ok(base),
         (Some(Entry::Value(daylight)), _) => Ok(Some(Entry::Value(daylight))),

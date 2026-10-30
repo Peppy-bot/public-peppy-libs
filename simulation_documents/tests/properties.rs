@@ -2,7 +2,9 @@
 //! the record of a world with its robots is that world, a document that
 //! extends a base merges each key as its entry says and its daylight as a
 //! whole, a robot name that
-//! another begins is refused by the pair, and judges survive their text.
+//! another begins is refused by the pair, judges survive their text, and a
+//! seed expands a world pattern into the same world each time, with each
+//! drawn value inside its sampler.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
@@ -16,8 +18,8 @@ use simulation_documents::{
     Band, Bounds, Catalogue, Check, Cone, ContentsOn, Control, Count, Date, Daylight, Digest,
     Error, Feature, Finish, Holding, Join, Judge, Landmark, LandmarkOn, Light, Location, Manifest,
     Material, Name, NearPoint, Object, Offset, Physics, Place, Placement, Point, Pose, Reachable,
-    Revision, Robot, RobotName, Scene, SceneObject, SetupRecord, StackRobot, Stand, Target,
-    TimeOfDay, Weather, WithinM, World, WorldDocument,
+    Revision, Robot, RobotName, Scene, SceneObject, Seed, SetupRecord, StackRobot, Stand, Target,
+    TimeOfDay, Weather, WithinM, World, WorldDocument, WorldPattern,
 };
 
 /// Names of objects, scene objects, locations, poses and regions: over the
@@ -801,4 +803,45 @@ fn judges_survive_their_text(tc: TestCase) {
         Judge::parse_list(&text).unwrap_or_else(|error| panic!("{error}\n{text}")),
         judges
     );
+}
+
+/// A world pattern with a drawn mass range, a drawn count range of an item
+/// kind and a choice of scenes expands, for each seed, into the same world
+/// each time, with each value inside its sampler.
+#[hegel::test]
+fn a_seed_expands_a_pattern_into_one_world_inside_its_samplers(tc: TestCase) {
+    let low = tc.draw(gs::floats::<f64>().min_value(0.0).max_value(5.0));
+    let high = low + tc.draw(gs::floats::<f64>().min_value(0.0).max_value(5.0));
+    let fewest = tc.draw(gs::integers::<u32>().min_value(0).max_value(4));
+    let most = fewest + tc.draw(gs::integers::<u32>().min_value(0).max_value(4));
+    let text = json!({
+        "simulation_schema": "world/v1",
+        "manifest": { "name": "drawn", "revision": 1 },
+        "catalogue": "local",
+        "scene": { "one_of": [{ "asset": "scene/kitchen" }, { "asset": "scene/living_room" }] },
+        "objects": {
+            "crate": { "asset": "object/crate", "pose": { "position": [0, 0, 0], "yaw": 0 }, "mass": { "range": [low, high] } },
+            "books": { "item_kind": "book", "count": { "range": [fewest, most] }, "pose": { "position": [1, 0, 0], "yaw": 0 } },
+        },
+    });
+    let pattern = WorldPattern::parse(&text.to_string()).unwrap();
+    let seed = Seed(tc.draw(gs::integers::<u32>()));
+    let assets = |_: &str| vec!["object/book_red".to_owned(), "object/book_blue".to_owned()];
+    let expand = || {
+        pattern
+            .expansion(seed, &assets)
+            .unwrap()
+            .world(&BTreeMap::new())
+            .unwrap()
+    };
+    let world = expand();
+    assert_eq!(world, expand());
+    let mass = world.objects[&Name::parse("crate").unwrap()].mass.unwrap();
+    assert!(low <= mass && mass <= high, "{mass} in [{low}, {high}]");
+    let books = world.objects.len() as u32 - 1;
+    assert!(
+        fewest <= books && books <= most,
+        "{books} in [{fewest}, {most}]"
+    );
+    assert!(["scene/kitchen", "scene/living_room"].contains(&world.scene.asset.as_str()));
 }
