@@ -25,6 +25,7 @@ use crate::daylight::Daylight;
 use crate::geometry::Region;
 use crate::sampler::{
     DrawnValue, Sampleable, Sampled, Sampler, Segment, Site, SitePath, SiteRule, SurfaceRef,
+    placeholder,
 };
 use crate::stream::{Seed, Stream};
 use crate::world::{
@@ -708,13 +709,7 @@ impl WorldPattern {
             assets.sort();
             assets.dedup();
             if assets.is_empty() && count > 0 {
-                return Err(Error::field(
-                    format!("objects.{name}"),
-                    format!(
-                        "no asset of the catalogue has the item kind `{}`",
-                        entry.item_kind
-                    ),
-                ));
+                return Err(no_asset_of_kind(name, &entry.item_kind));
             }
             for index in 1..=count {
                 let object = ItemKindEntry::object_name(name, index);
@@ -746,6 +741,119 @@ impl WorldPattern {
             drawn,
             added,
         })
+    }
+
+    /// The worlds that check each value that a sampler of the pattern can
+    /// draw, but its placements: one world with each sampler at its first
+    /// value (the first of `one_of`, the minimum of `range`), then, for each
+    /// sampler and each of its other values, the world with that sampler at
+    /// that value and every other one at its first. A sampler of the
+    /// template of an entry of an item kind takes its value in each object
+    /// that the entry adds together. Each entry of an item kind adds its
+    /// largest count of objects, each with the first asset of its kind in
+    /// the order of their names, and for each other asset of a kind one more
+    /// world gives that asset to the objects of its entries. Each placement
+    /// stands at the origin, with yaw 0,
+    /// where an expansion has the simulation draw it. Each world is named as
+    /// the expansion of seed 0 names its world. `assets_of_kind` is that of
+    /// [`WorldPattern::expansion`]; an entry of an item kind with no asset is
+    /// refused.
+    pub fn candidate_worlds(
+        &self,
+        assets_of_kind: &dyn Fn(&str) -> Vec<String>,
+    ) -> Result<Vec<World>, Error> {
+        let mut assets_of_entry = BTreeMap::new();
+        for (name, entry) in self.item_kind_entries() {
+            let mut assets = assets_of_kind(&entry.item_kind);
+            assets.sort();
+            assets.dedup();
+            if assets.is_empty() && entry.count.most() > 0 {
+                return Err(no_asset_of_kind(name, &entry.item_kind));
+            }
+            assets_of_entry.insert(name, (entry.count.most(), assets));
+        }
+        let added_with = |asset_of: &dyn Fn(&Name, &[String]) -> String| {
+            let mut added = BTreeMap::new();
+            for (name, (count, assets)) in &assets_of_entry {
+                for index in 1..=*count {
+                    let added_entry = Added {
+                        entry: (*name).clone(),
+                        asset: asset_of(name, assets),
+                    };
+                    added.insert(ItemKindEntry::object_name(name, index), added_entry);
+                }
+            }
+            added
+        };
+        let first_assets = added_with(&|_, assets| assets[0].clone());
+        // The samplers by the value that one choice sets: a sampler of the
+        // template of an entry of an item kind under the path of its entry.
+        let mut choices: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        let mut sites: Vec<(SitePath, String, Vec<Value>)> = Vec::new();
+        for (root, site) in self.entry_sites(Some(&first_assets)) {
+            if site.sampler.is_placement() {
+                continue;
+            }
+            let choice = match root.segments() {
+                [Segment::Key(field), Segment::Key(object)] if field == "objects" => {
+                    let entry = Name::parse(object)
+                        .ok()
+                        .and_then(|object| first_assets.get(&object))
+                        .map_or_else(|| object.clone(), |added| added.entry.to_string());
+                    format!("objects.{entry}.{}", site.path)
+                }
+                _ => root.joined(site.path.segments()).to_string(),
+            };
+            choices.insert(choice.clone(), site.candidates());
+            sites.push((root.joined(site.path.segments()), choice, site.candidates()));
+        }
+        let drawn_with = |chosen: Option<(&str, usize)>| -> BTreeMap<SitePath, Value> {
+            sites
+                .iter()
+                .map(|(path, choice, candidates)| {
+                    let index = match chosen {
+                        Some((picked, index)) if picked == choice => index,
+                        _ => 0,
+                    };
+                    (path.clone(), candidates[index].clone())
+                })
+                .collect()
+        };
+        let world_of = |drawn, added| {
+            let expansion = Expansion {
+                pattern: self,
+                seed: Seed(0),
+                drawn,
+                added,
+            };
+            let placed = expansion
+                .placements(&|_| None)?
+                .iter()
+                .filter_map(|placement| {
+                    Some((placement.path.clone(), placement.kind.placeholder()?))
+                })
+                .collect();
+            expansion.world(&placed)
+        };
+        let mut worlds = vec![world_of(drawn_with(None), first_assets.clone())?];
+        for (choice, candidates) in &choices {
+            for index in 1..candidates.len() {
+                worlds.push(world_of(
+                    drawn_with(Some((choice, index))),
+                    first_assets.clone(),
+                )?);
+            }
+        }
+        let most_assets = assets_of_entry
+            .values()
+            .map(|(_, assets)| assets.len())
+            .max()
+            .unwrap_or(0);
+        for index in 1..most_assets {
+            let added = added_with(&|_, assets| assets[index.min(assets.len() - 1)].clone());
+            worlds.push(world_of(drawn_with(None), added)?);
+        }
+        Ok(worlds)
     }
 
     /// Each entry of `objects` that adds objects of an item kind, by its
@@ -902,6 +1010,23 @@ pub enum StandAt {
 }
 
 impl PlacementKind {
+    /// A value of the form that the placement gives, at the origin, for a
+    /// world that takes it before the simulation draws it; none for a stand
+    /// at a surface, which draws nothing.
+    fn placeholder(&self) -> Option<Value> {
+        match self {
+            PlacementKind::ObjectPose { .. } => Some(placeholder(SiteRule::Pose)),
+            PlacementKind::Stand {
+                at: StandAt::Region(_),
+                ..
+            } => Some(placeholder(SiteRule::StandPosition)),
+            PlacementKind::Stand {
+                at: StandAt::Surface(_),
+                ..
+            } => None,
+        }
+    }
+
     /// The draws without `reachable_by` come first, then the stands, then
     /// the draws with `reachable_by`, when no dependency sets the order.
     fn group(&self) -> u8 {
@@ -1125,22 +1250,12 @@ impl<'p> Expansion<'p> {
             .iter()
             .filter(|placement| !placed.contains_key(&placement.path))
         {
-            let placeholder = match &placement.kind {
-                PlacementKind::ObjectPose { object, .. } => {
-                    left_out.insert(object.clone());
-                    serde_json::json!({ "position": [0.0, 0.0, 0.0], "yaw": 0.0 })
-                }
-                PlacementKind::Stand {
-                    robot,
-                    at: StandAt::Region(_),
-                } => {
-                    standless.insert(robot.clone());
-                    serde_json::json!([0.0, 0.0, 0.0])
-                }
-                PlacementKind::Stand {
-                    at: StandAt::Surface(_),
-                    ..
-                } => continue,
+            let Some(placeholder) = placement.kind.placeholder() else {
+                continue;
+            };
+            match &placement.kind {
+                PlacementKind::ObjectPose { object, .. } => left_out.insert(object.clone()),
+                PlacementKind::Stand { robot, .. } => standless.insert(robot.clone()),
             };
             filled.insert(placement.path.clone(), placeholder);
         }
@@ -1208,6 +1323,15 @@ impl<'p> Expansion<'p> {
             .concrete(&value_of)
             .map_err(|refusal| Error::field(root.to_string(), refusal.to_string()))
     }
+}
+
+/// The refusal of the entry `name` of the item kind `kind`, which no asset
+/// of the catalogue has.
+fn no_asset_of_kind(name: &Name, kind: &str) -> Error {
+    Error::field(
+        format!("objects.{name}"),
+        format!("no asset of the catalogue has the item kind `{kind}`"),
+    )
 }
 
 /// `placements` in the order of their dependencies, as
@@ -1466,6 +1590,54 @@ mod tests {
             panic!("charlie stands where its region draw placed it");
         };
         assert!((-3.0..=3.0).contains(&stand.yaw));
+    }
+
+    #[test]
+    fn the_candidate_worlds_give_each_value_of_each_sampler() {
+        let pattern = tape_line();
+        let worlds = pattern.candidate_worlds(&assets_of_kind).unwrap();
+        let heights: BTreeSet<String> = worlds
+            .iter()
+            .map(|world| world.objects[&name("conveyor")].controls["height"].to_string())
+            .collect();
+        assert_eq!(
+            heights,
+            BTreeSet::from(["0.38".to_owned(), "0.5".to_owned()])
+        );
+        let first = &worlds[0];
+        let cartons: Vec<&Name> = first
+            .objects
+            .keys()
+            .filter(|object| object.as_str().starts_with("stock_"))
+            .collect();
+        assert_eq!(cartons.len(), 6, "the largest count of the entry");
+        let carton_assets: BTreeSet<&str> = worlds
+            .iter()
+            .map(|world| world.objects[&name("stock_1")].asset.as_str())
+            .collect();
+        assert_eq!(
+            carton_assets,
+            BTreeSet::from(["object/carton_a", "object/carton_b"])
+        );
+        let tape_offsets: BTreeSet<String> = worlds
+            .iter()
+            .filter_map(|world| match &world.robots[&robot("alpha")].stand {
+                Some(Stand::Surface { offset, .. }) => Some(offset.ahead_m.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tape_offsets,
+            BTreeSet::from(["-0.05".to_owned(), "0.05".to_owned()])
+        );
+        // The first world, and one more for each other value of each sampler
+        // (five ranges, each with two ends) and each other asset of a kind.
+        assert_eq!(worlds.len(), 1 + 5 + 1);
+        let without_assets = pattern.candidate_worlds(&|_| Vec::new()).unwrap_err();
+        assert_eq!(
+            without_assets.to_string(),
+            "objects.stock: no asset of the catalogue has the item kind `carton`"
+        );
     }
 
     #[test]

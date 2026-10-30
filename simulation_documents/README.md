@@ -90,8 +90,13 @@ the order of `Expansion::placements`: after what each depends on (a stand at
 a surface after the pose of the object of that surface, a pose on a surface
 after its object, a pose with `reachable_by` after the stand of its robot),
 then the draws without `reachable_by`, the stands and the draws with
-`reachable_by`. A cycle is refused, naming its placements.
-`Expansion::world` gives the concrete world, named `<pattern>_seed_<seed>`.
+`reachable_by`. A cycle is refused, naming its placements. Before each
+draw, the simulation builds its model from `Expansion::world_so_far`, the
+world of the placements drawn so far. `Expansion::world` gives the concrete
+world, named `<pattern>_seed_<seed>`. `WorldPattern::candidate_worlds` gives
+the worlds that check each value that a sampler can draw: one with each
+sampler at its first value, then one for each other value of each sampler,
+each placement at the origin; a check of a pattern checks each of them.
 
 A `SweepDocument` (`sweep/v1`) runs one workflow revision in many worlds: the
 launcher of its stack, the robot of each role, each world pattern with its

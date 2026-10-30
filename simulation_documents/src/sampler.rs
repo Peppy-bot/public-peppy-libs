@@ -243,7 +243,7 @@ impl Site {
     /// The values that the checks of an entry put in place of this sampler:
     /// each value of `one_of`, each end of `range`, and a pose or a position
     /// in place of a sampler that the simulation draws.
-    fn candidates(&self) -> Vec<Value> {
+    pub(crate) fn candidates(&self) -> Vec<Value> {
         match &self.sampler {
             Sampler::OneOf(values) => values.clone(),
             Sampler::Range { min, max } => vec![Value::from(*min), Value::from(*max)],
@@ -253,14 +253,20 @@ impl Site {
 
     /// A concrete value of the form a placement gives at this site.
     fn placeholder(&self) -> Value {
-        match self.rule {
-            SiteRule::StandPosition => serde_json::json!([0.0, 0.0, 0.0]),
-            _ => serde_json::json!({ "position": [0.0, 0.0, 0.0], "yaw": 0.0 }),
-        }
+        placeholder(self.rule)
     }
 
     pub(crate) fn rule(&self) -> SiteRule {
         self.rule
+    }
+}
+
+/// A concrete value of the form a placement gives at a site of `rule`: the
+/// origin for the position of a stand, else a pose at the origin with yaw 0.
+pub(crate) fn placeholder(rule: SiteRule) -> Value {
+    match rule {
+        SiteRule::StandPosition => serde_json::json!([0.0, 0.0, 0.0]),
+        _ => serde_json::json!({ "position": [0.0, 0.0, 0.0], "yaw": 0.0 }),
     }
 }
 
