@@ -70,6 +70,11 @@ with a stand), with its unit, and `min_spacing_m`, the least distance between
 sampled objects. Each value that a sampler can draw is checked as the
 concrete entry checks it. `WorldDocument::resolve_pattern` reads any world
 document, and `WorldDocument::resolve` refuses a pattern.
+`WorldPattern::to_json5` writes a pattern with its bases folded in as a
+document that extends no base. `WorkCellParameters` and `Measurements` are
+the JSON5 texts that `measure` of simulation_world takes and gives: the
+parameters, and one value per parameter, or one per robot of its
+`per_robot`; `Measurements::check` refuses measurements of another shape.
 
 An `Expansion` of a pattern and a `Seed` draws each sampler that the seed
 alone draws: `one_of`, `range`, and the count and the asset of each object of
@@ -103,7 +108,11 @@ started with and where each robot first joined. `Judge::parse_list` reads a
 JSON5 list of judges, `true` or one of the checks, and `Verdicts` holds a
 `holds` and a `why` for each.
 
-A `ClaimHolder` names the call of an applier of worlds (`world_applier:v1`)
-that holds the setup claim of a simulation: the apply or the run
-(`ClaimCall`), the label of its caller, and its run of the workflow director
-once that run started, as "the run of 'Tidy the table (c2)' (run r3)".
+A `ClaimHolder` names the call of an applier of worlds (`world_applier:v1`
+and `sweep_runner:v1`) that holds the setup claim of a simulation: the
+apply, the run or the sweep (`ClaimCall`), the label of its caller, the
+sweep, and the run of the workflow director that runs now, as "the run of
+'Tidy the table (c2)' (run r3)" or "the sweep of 'nightly' (sweep s2, run
+r14)". `ApplyFailureKind` names the failure kinds of an apply and of the
+first step of a run, `seed_refused` for the seed of a world pattern that
+gives no world among them.

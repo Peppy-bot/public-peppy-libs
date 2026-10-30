@@ -26,12 +26,14 @@ use crate::sampler::{
 };
 use crate::stream::{Seed, Stream};
 use crate::world::{
-    Entry, Light, Location, Material, Object, Origin, Robot, Scene, SceneObject, WorldFields,
-    check_name_rules,
+    Entry, Light, Location, Material, Object, Origin, Robot, Scene, SceneObject, WORLD,
+    WorldFields, check_name_rules,
 };
 use crate::{
-    Catalogue, Error, Join, Manifest, Name, ParameterName, Physics, RobotName, World, WorldDocument,
+    Catalogue, Error, Join, Manifest, Name, ParameterName, Physics, RobotName, World,
+    WorldDocument, text,
 };
+use documents_core::Document;
 
 /// The most objects that an entry of an item kind adds.
 pub const MAX_COUNT: u32 = 1000;
@@ -235,6 +237,91 @@ impl From<WorkCellParameter> for ParameterFields {
     }
 }
 
+/// The work cell parameters of a world pattern, as `measure` of
+/// simulation_world takes them: JSON5 text of an object from each name to
+/// its parameter.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WorkCellParameters(pub BTreeMap<ParameterName, WorkCellParameter>);
+
+impl WorkCellParameters {
+    pub fn parse(text: &str) -> Result<WorkCellParameters, Error> {
+        text::from_json5(text)
+    }
+
+    pub fn to_json5(&self) -> Result<String, Error> {
+        text::to_json5(self)
+    }
+}
+
+/// The value that a simulation measured for a work cell parameter in its
+/// live world: one value, or one value per robot of its `per_robot`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Measurement {
+    Single(f64),
+    PerRobot(BTreeMap<RobotName, f64>),
+}
+
+/// The value of each work cell parameter, as `measure` of simulation_world
+/// gives them: JSON5 text of an object from each name to its measurement.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Measurements(pub BTreeMap<ParameterName, Measurement>);
+
+impl Measurements {
+    pub fn parse(text: &str) -> Result<Measurements, Error> {
+        text::from_json5(text)
+    }
+
+    pub fn to_json5(&self) -> Result<String, Error> {
+        text::to_json5(self)
+    }
+
+    /// Refuses measurements that are not those of `parameters`: a parameter
+    /// with no value, a value of no parameter, and a value of another shape
+    /// than its parameter, one per robot of `per_robot` or one without it.
+    pub fn check(&self, parameters: &WorkCellParameters) -> Result<(), Error> {
+        for name in self.0.keys() {
+            if !parameters.0.contains_key(name) {
+                return Err(Error::field(name.to_string(), "is no work cell parameter"));
+            }
+        }
+        for (name, parameter) in &parameters.0 {
+            let per_robot = match &parameter.measure {
+                Measure::Distance { per_robot, .. } => per_robot.as_ref(),
+                Measure::Control { .. } => None,
+            };
+            let fits = match (self.0.get(name), per_robot) {
+                (None, _) => false,
+                (Some(Measurement::Single(_)), None) => true,
+                (Some(Measurement::PerRobot(values)), Some(robots)) => {
+                    values.keys().eq(robots.iter())
+                }
+                _ => false,
+            };
+            if !fits {
+                let shape = match per_robot {
+                    Some(robots) => {
+                        let names: Vec<String> =
+                            robots.iter().map(|robot| format!("`{robot}`")).collect();
+                        format!(
+                            "one value for each robot of its `per_robot`: {}",
+                            names.join(", ")
+                        )
+                    }
+                    None => "one value".to_owned(),
+                };
+                return Err(Error::field(
+                    name.to_string(),
+                    format!("has no measurement of its shape; the parameter takes {shape}"),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The robots of `per_robot`, at least one, each named once.
 fn robots_named_once(robots: Vec<RobotName>) -> Result<BTreeSet<RobotName>, Error> {
     if robots.is_empty() {
@@ -393,7 +480,7 @@ impl Count {
 pub struct WorldPattern {
     pub manifest: Manifest,
     pub catalogue: Catalogue,
-    pub work_cell_parameters: BTreeMap<ParameterName, WorkCellParameter>,
+    pub work_cell_parameters: WorkCellParameters,
     /// The least distance between sampled objects, metres.
     pub min_spacing_m: f64,
     fields: WorldFields,
@@ -443,11 +530,13 @@ impl WorldPattern {
         let pattern = WorldPattern {
             manifest: fields.manifest.clone(),
             catalogue,
-            work_cell_parameters: marked
-                .work_cell_parameters
-                .iter()
-                .map(|(name, parameter)| ((*name).clone(), (*parameter).clone()))
-                .collect(),
+            work_cell_parameters: WorkCellParameters(
+                marked
+                    .work_cell_parameters
+                    .iter()
+                    .map(|(name, parameter)| ((*name).clone(), (*parameter).clone()))
+                    .collect(),
+            ),
             min_spacing_m: fields.min_spacing_m.map_or(0.0, f64::from),
             fields: fields.clone(),
             origin,
@@ -469,7 +558,7 @@ impl WorldPattern {
                 ));
             }
         }
-        for (name, parameter) in &pattern.work_cell_parameters {
+        for (name, parameter) in &pattern.work_cell_parameters.0 {
             let Measure::Distance { per_robot, .. } = &parameter.measure else {
                 continue;
             };
@@ -498,6 +587,17 @@ impl WorldPattern {
             }
         }
         Ok(pattern)
+    }
+
+    /// The pattern as JSON5 text of a world document that extends no base:
+    /// the fields of its bases folded in, a scene object that a base keeps
+    /// left out. It reads back as this pattern.
+    pub fn to_json5(&self) -> Result<String, Error> {
+        let mut fields = self.fields.clone();
+        fields
+            .scene_objects
+            .retain(|_, entry| !matches!(entry, Entry::Kept));
+        Ok(Document::of(WORLD, &fields)?.to_json5())
     }
 
     /// Whether every seed gives the same world: no sampler and no entry of
@@ -1187,8 +1287,8 @@ mod tests {
         let pattern = tape_line();
         assert!(!pattern.is_concrete());
         assert_eq!(pattern.min_spacing_m, 0.02);
-        let top =
-            &pattern.work_cell_parameters[&ParameterName::parse("belt_top_above_base_m").unwrap()];
+        let top = &pattern.work_cell_parameters.0
+            [&ParameterName::parse("belt_top_above_base_m").unwrap()];
         assert_eq!(
             top.measure,
             Measure::Distance {
@@ -1472,7 +1572,19 @@ mod tests {
         )
         .unwrap();
         let few = fewer.resolve_pattern(&[books, chat_world.clone()]).unwrap();
-        assert_eq!(few.work_cell_parameters.len(), 1);
+        assert_eq!(few.work_cell_parameters.0.len(), 1);
+        let written = WorldPattern::parse(&few.to_json5().unwrap()).unwrap();
+        assert_eq!(written.work_cell_parameters, few.work_cell_parameters);
+        let expand = |pattern: &WorldPattern| {
+            let expansion = pattern
+                .expansion(Seed(3), &|_| vec!["object/book".into()])
+                .unwrap();
+            let placements = expansion.placements(&no_holder).unwrap();
+            let mut world = expansion.world(&placed(&placements)).unwrap();
+            world.manifest.name.clear();
+            world
+        };
+        assert_eq!(expand(&written), expand(&few));
         let world = {
             let expansion = few
                 .expansion(Seed(3), &|_| vec!["object/book".into()])
@@ -1545,5 +1657,52 @@ mod tests {
         .unwrap();
         let text = crate::text::to_json5(&parameter).unwrap();
         assert_eq!(read(&text).unwrap(), parameter);
+    }
+
+    #[test]
+    fn measurements_take_the_shape_of_their_parameters() {
+        let parameters = tape_line().work_cell_parameters;
+        let text = parameters.to_json5().unwrap();
+        assert_eq!(WorkCellParameters::parse(&text).unwrap(), parameters);
+        let measured = Measurements::parse(
+            "{ belt_speed_mps: 0.2, belt_top_above_base_m: { alpha: 0.18, bravo: 0.21 } }",
+        )
+        .unwrap();
+        measured.check(&parameters).unwrap();
+        assert_eq!(
+            Measurements::parse(&measured.to_json5().unwrap()).unwrap(),
+            measured
+        );
+        for (text, refusal) in [
+            (
+                "{ belt_speed_mps: 0.2 }",
+                "belt_top_above_base_m: has no measurement of its shape; the parameter takes one value for each robot of its `per_robot`: `alpha`, `bravo`",
+            ),
+            (
+                "{ belt_speed_mps: { alpha: 0.2 }, belt_top_above_base_m: { alpha: 0.18, bravo: 0.21 } }",
+                "belt_speed_mps: has no measurement of its shape; the parameter takes one value",
+            ),
+            (
+                "{ belt_speed_mps: 0.2, belt_top_above_base_m: { alpha: 0.18 } }",
+                "belt_top_above_base_m: has no measurement of its shape; the parameter takes one value for each robot of its `per_robot`: `alpha`, `bravo`",
+            ),
+            (
+                "{ belt_speed_mps: 0.2, belt_top_above_base_m: { alpha: 0.18, bravo: 0.21 }, gripper_force: 2 }",
+                "gripper_force: is no work cell parameter",
+            ),
+        ] {
+            let refused = Measurements::parse(text)
+                .unwrap()
+                .check(&parameters)
+                .unwrap_err();
+            assert_eq!(refused.to_string(), refusal, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_pattern_writes_as_a_document_that_extends_no_base_and_reads_back() {
+        let pattern = tape_line();
+        let written = WorldPattern::parse(&pattern.to_json5().unwrap()).unwrap();
+        assert_eq!(written, pattern);
     }
 }

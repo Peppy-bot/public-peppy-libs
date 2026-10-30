@@ -5,12 +5,14 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// The call of the applier that holds the setup claim.
+/// The call of the applier that holds the setup claim: an apply, a run
+/// (world_applier:v1), or a sweep (sweep_runner:v1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaimCall {
     Apply,
     Run,
+    Sweep,
 }
 
 impl ClaimCall {
@@ -19,6 +21,7 @@ impl ClaimCall {
         match self {
             ClaimCall::Apply => "apply",
             ClaimCall::Run => "run",
+            ClaimCall::Sweep => "sweep",
         }
     }
 }
@@ -30,13 +33,15 @@ impl fmt::Display for ClaimCall {
 }
 
 /// The failure kind with which the applier refuses or fails an apply, and
-/// the first step of a run: the world at its check, a hold that ends (the
-/// setup claim of another call, a robot that another client leases, the
-/// halt), or a step after the check.
+/// the first step of a run: the world at its check, the seed of a world
+/// pattern that gives no world, a hold that ends (the setup claim of another
+/// call, a robot that another client leases, the halt), or a step after the
+/// check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApplyFailureKind {
     WorldRefused,
+    SeedRefused,
     Claimed,
     Leased,
     Halted,
@@ -45,8 +50,9 @@ pub enum ApplyFailureKind {
 
 impl ApplyFailureKind {
     /// Every kind, in the order the contract declares them.
-    pub const ALL: [ApplyFailureKind; 5] = [
+    pub const ALL: [ApplyFailureKind; 6] = [
         ApplyFailureKind::WorldRefused,
+        ApplyFailureKind::SeedRefused,
         ApplyFailureKind::Claimed,
         ApplyFailureKind::Leased,
         ApplyFailureKind::Halted,
@@ -62,6 +68,7 @@ impl ApplyFailureKind {
     pub fn name(self) -> &'static str {
         match self {
             ApplyFailureKind::WorldRefused => "world_refused",
+            ApplyFailureKind::SeedRefused => "seed_refused",
             ApplyFailureKind::Claimed => "claimed",
             ApplyFailureKind::Leased => "leased",
             ApplyFailureKind::Halted => "halted",
@@ -86,23 +93,32 @@ impl fmt::Display for ApplyFailureKind {
 }
 
 /// Who holds the setup claim through the applier: the call, the label of
-/// its caller, and the run of the workflow director once it started, empty
-/// before and for an apply.
+/// its caller, the sweep (`s<N>`) of a sweep, and the run of the workflow
+/// director that runs now, empty before it starts, between the runs of a
+/// sweep and for an apply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimHolder {
     pub call: ClaimCall,
     pub started_by: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sweep: String,
     pub run: String,
 }
 
 impl fmt::Display for ClaimHolder {
-    /// "the run of 'Tidy the table (c2)' (run r3)", "the apply of 'eval'".
+    /// "the run of 'Tidy the table (c2)' (run r3)", "the apply of 'eval'",
+    /// "the sweep of 'nightly' (sweep s2, run r14)".
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "the {} of '{}'", self.call, self.started_by)?;
-        if self.run.is_empty() {
+        let ids: Vec<String> = [("sweep", &self.sweep), ("run", &self.run)]
+            .into_iter()
+            .filter(|(_, id)| !id.is_empty())
+            .map(|(what, id)| format!("{what} {id}"))
+            .collect();
+        if ids.is_empty() {
             return Ok(());
         }
-        write!(f, " (run {})", self.run)
+        write!(f, " ({})", ids.join(", "))
     }
 }
 
@@ -117,20 +133,44 @@ mod tests {
         let run = ClaimHolder {
             call: ClaimCall::Run,
             started_by: "Tidy the table (c2)".to_owned(),
+            sweep: String::new(),
             run: "r3".to_owned(),
         };
         assert_eq!(run.to_string(), "the run of 'Tidy the table (c2)' (run r3)");
         let apply = ClaimHolder {
             call: ClaimCall::Apply,
             started_by: "eval".to_owned(),
+            sweep: String::new(),
             run: String::new(),
         };
         assert_eq!(apply.to_string(), "the apply of 'eval'");
+        let sweep = ClaimHolder {
+            call: ClaimCall::Sweep,
+            started_by: "nightly".to_owned(),
+            sweep: "s2".to_owned(),
+            run: "r14".to_owned(),
+        };
+        assert_eq!(
+            sweep.to_string(),
+            "the sweep of 'nightly' (sweep s2, run r14)"
+        );
+        let between_runs = ClaimHolder {
+            run: String::new(),
+            ..sweep.clone()
+        };
+        assert_eq!(
+            between_runs.to_string(),
+            "the sweep of 'nightly' (sweep s2)"
+        );
         assert_eq!(
             serde_json::to_value(&run).unwrap(),
             json!({ "call": "run", "started_by": "Tidy the table (c2)", "run": "r3" })
         );
-        for call in [ClaimCall::Apply, ClaimCall::Run] {
+        assert_eq!(
+            serde_json::to_value(&sweep).unwrap(),
+            json!({ "call": "sweep", "started_by": "nightly", "sweep": "s2", "run": "r14" })
+        );
+        for call in [ClaimCall::Apply, ClaimCall::Run, ClaimCall::Sweep] {
             assert_eq!(serde_json::to_value(call).unwrap(), call.name());
         }
     }
