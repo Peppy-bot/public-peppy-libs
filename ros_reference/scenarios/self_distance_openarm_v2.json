@@ -1,0 +1,10 @@
+{
+  "kind": "self_distance",
+  "urdf": "openarm_description/assets/openarm_v20.urdf",
+  "meshes": "openarm_description/assets/meshes_v20",
+  "configurations": [
+    {"openarm_left_joint1":0.0,"openarm_left_joint2":0.0,"openarm_left_joint3":0.0,"openarm_left_joint4":0.0,"openarm_left_joint5":0.0,"openarm_left_joint6":0.0,"openarm_left_joint7":0.0,"openarm_left_finger_joint1":0.0,"openarm_right_joint1":0.0,"openarm_right_joint2":0.0,"openarm_right_joint3":0.0,"openarm_right_joint4":0.0,"openarm_right_joint5":0.0,"openarm_right_joint6":0.0,"openarm_right_joint7":0.0,"openarm_right_finger_joint1":0.0},
+    {"openarm_left_joint1":1.3963,"openarm_left_joint2":0.17453,"openarm_left_joint3":1.5708,"openarm_left_joint4":2.4435,"openarm_left_joint5":1.5708,"openarm_left_joint6":0.7854,"openarm_left_joint7":1.5708,"openarm_left_finger_joint1":1.5708,"openarm_right_joint1":3.4907,"openarm_right_joint2":3.3161,"openarm_right_joint3":1.5708,"openarm_right_joint4":2.4435,"openarm_right_joint5":1.5708,"openarm_right_joint6":0.7854,"openarm_right_joint7":1.5708,"openarm_right_finger_joint1":0.0},
+    {"openarm_left_joint1":-1.7811909594508912,"openarm_left_joint2":-1.8582967353707973,"openarm_left_joint3":-0.2053957561620796,"openarm_left_joint4":2.436174287671117,"openarm_left_joint5":0.22276399707112282,"openarm_left_joint6":-0.359961014601836,"openarm_left_joint7":-1.2956920248541384,"openarm_left_finger_joint1":0.10890450351424683,"openarm_right_joint1":1.9097720166838443,"openarm_right_joint2":1.9519577872054568,"openarm_right_joint3":0.5277231539322986,"openarm_right_joint4":2.3002925563045142,"openarm_right_joint5":-1.4018714614142593,"openarm_right_joint6":-0.2129347102836846,"openarm_right_joint7":-1.5662122454787824,"openarm_right_finger_joint1":-0.4925311105531742}
+  ]
+}

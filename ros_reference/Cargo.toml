@@ -10,3 +10,6 @@ description = "The scenarios of the ROS reference harness and the reference outp
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.11"
+
+[dev-dependencies]
+hegeltest = { version = "0.50", features = ["static-engine"] }

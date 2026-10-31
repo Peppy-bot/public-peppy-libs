@@ -8,7 +8,7 @@
 //! - [`HardwareVersion::urdf`] returns the bundled URDF string (mechanical joint limits,
 //!   as vendored).
 //! - [`HardwareVersion::write_meshes_to`] (feature `meshes`) materializes the embedded
-//!   collision meshes for the file-based bimanual collision builder and for any non-Rust
+//!   collision meshes for the file-based self-collision model builder and for any non-Rust
 //!   consumer (the sim) via the `emit_meshes` binary.
 //! - [`HardwareVersion::elbow_singularity_floor_rad`] / [`HardwareVersion::elbow_joint_index`]
 //!   describe the elbow control margin the kinematics consumer applies (see the method docs).
@@ -95,6 +95,47 @@ const V2_CAMERA_MOUNTS: &[CameraMount] = &[
         // The ZED Mini's hardware depth range.
         depth_range: Some([0.1, 10.0]),
     },
+];
+
+const INF: f64 = f64::INFINITY;
+
+/// See [`HardwareVersion::torso_regions`]. Feature extents measured from the torso
+/// mesh (`body_link0_symp.stl`, mm, root frame):
+///
+/// ```text
+///  plate   z 0..8, full footprint x [-155, 95], y [-95, 95]
+///  flare   skirt necking y +/-85 (z 12.6) -> +/-30 (z 70), x +/-25
+///  gusset  y +/-30 web from the plate (x -153..-118 at z 8) up a straight
+///          hypotenuse to the column rear (x -30 at z 161..221)
+///  column  x/y +/-30 square (2 mm corner fillets), z 19..604
+///  head    z 603..773; flares to y +/-79 by z 625, x peaks [-85, 65] at
+///          z 695, tapers to about (+/-30, +/-44) at z 770
+/// ```
+///
+/// Where each bound sits:
+/// - Adjacent regions overlap by at least 3 mm. A collision model certifies each
+///   ~1 mm face patch inside a single piece, and the mesh has large wall triangles
+///   crossing every cut, so exact shared cut planes fail that check.
+/// - Bounds sit about 1 mm off large flat mesh faces: a bound resting on the plate
+///   top plane (z = 8 mm) captures fragments of that whole face and balloons its
+///   piece, so the gusset region starts at z = 9 mm.
+/// - The gusset region, clipped on its own, hulls to the wedge along the
+///   hypotenuse, leaving the empty triangle above the diagonal outside every piece.
+/// - The head is banded in z so each piece follows the taper.
+const TORSO_REGIONS: &[[[f64; 3]; 2]] = &[
+    // plate: the full-footprint base, everything below the flare skirt.
+    [[-INF, -INF, -INF], [INF, INF, 0.012]],
+    // flare: skirt and column bottom, fenced off the gusset at x -0.0335.
+    [[-0.0335, -0.086, 0.006], [0.033, 0.086, 0.083]],
+    // gusset: the diagonal web behind the column; hulls to a tight wedge.
+    [[-INF, -0.031, 0.009], [-0.0305, 0.031, 0.226]],
+    // column: the square shaft, fenced off the gusset at x -0.0335.
+    [[-0.0335, -INF, 0.078], [INF, INF, 0.6025]],
+    // head bands: collar and skirt, waist and mid, wide band, top taper.
+    [[-INF, -INF, 0.5995], [INF, INF, 0.638]],
+    [[-INF, -INF, 0.633], [INF, INF, 0.688]],
+    [[-INF, -INF, 0.682], [INF, INF, 0.719]],
+    [[-INF, -INF, 0.713], [INF, INF, INF]],
 ];
 
 /// An OpenArm hardware generation. A node parses its `hardware_version` parameter into
@@ -213,6 +254,28 @@ impl HardwareVersion {
             Self::V2 => V2_CAMERA_MOUNTS,
         }
     }
+
+    /// The torso body, whose concave mesh [`Self::torso_regions`] decomposes into
+    /// convex pieces. The stand is the same in both generations.
+    pub fn torso_body(self) -> &'static str {
+        match self {
+            Self::V1 | Self::V2 => "openarm_body_link0",
+        }
+    }
+
+    /// The axis-aligned regions that decompose the torso mesh into convex pieces for
+    /// a collision model, each as its `[min, max]` corners in meters, in the URDF root
+    /// frame: the plate, the flare, the gusset, the column, and four head bands. One
+    /// hull fitted to the whole torso bridges its features into one bulging solid that
+    /// reads a false near-contact against the grippers at rest; fitted per region, each
+    /// piece follows the mesh as closely as a link's. The regions overlap their cuts by
+    /// at least 3 mm and keep their bounds about 1 mm off flat mesh faces. The stand,
+    /// and so its mesh (`body_link0_symp.stl`), is the same in both generations.
+    pub fn torso_regions(self) -> &'static [[[f64; 3]; 2]] {
+        match self {
+            Self::V1 | Self::V2 => TORSO_REGIONS,
+        }
+    }
 }
 impl fmt::Display for HardwareVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -265,7 +328,7 @@ const TORSO_MESH: &[u8] = include_bytes!("../assets/meshes/body_link0_symp.stl")
 #[cfg(feature = "meshes")]
 const HEAD_CAMERA_MESH: &[u8] = include_bytes!("../assets/meshes_v20/head_camera.stl");
 
-/// The bundled collision meshes as `(file name, bytes)`. The bimanual collision builder
+/// The bundled collision meshes as `(file name, bytes)`. The self-collision model builder
 /// resolves the URDF's `package://` mesh refs by file name against a meshes directory, so
 /// [`HardwareVersion::write_meshes_to`] lays these down under their bare names.
 #[cfg(feature = "meshes")]
@@ -422,6 +485,22 @@ mod tests {
 
     fn parsed(v: HardwareVersion) -> urdf_rs::Robot {
         urdf_rs::read_from_string(v.urdf()).expect("bundled URDF parses")
+    }
+
+    #[test]
+    fn each_torso_region_is_a_box() {
+        for version in [HardwareVersion::V1, HardwareVersion::V2] {
+            for (index, [min, max]) in version.torso_regions().iter().enumerate() {
+                for axis in 0..3 {
+                    assert!(
+                        min[axis] < max[axis],
+                        "{version} torso region {index}: axis {axis} spans {} to {}",
+                        min[axis],
+                        max[axis]
+                    );
+                }
+            }
+        }
     }
 
     #[test]

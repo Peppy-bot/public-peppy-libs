@@ -13,11 +13,13 @@ use chain_kinematics::{
 use control_core::path_timing::TimedPath;
 use hegel::TestCase;
 use hegel::generators as gs;
-use kinematics_properties::{TOLERANCE, configs, points, poses, unit_vectors};
+use kinematics_properties::{
+    ChainProperty, TOLERANCE, configs, on_a_drawn_robot, points, poses, unit_vectors,
+};
 use urdf_rs::Robot;
 
 mod common;
-use common::properties::{ChainProperty, chain_of, on_a_drawn_robot};
+use common::properties::chain_of;
 
 // The line between any two poses puts, at every blend `s`, the position at the
 // fraction `s` of the way and the orientation at the fraction `s` of one

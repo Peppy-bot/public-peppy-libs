@@ -69,7 +69,6 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 name = "chain_kinematics"
 version = "0.1.0"
 dependencies = [
- "approx",
  "control_core",
  "hegeltest",
  "kinematics_properties",
@@ -245,6 +244,7 @@ version = "0.1.0"
 dependencies = [
  "chain_kinematics",
  "hegeltest",
+ "urdf-rs",
 ]
 
 [[package]]

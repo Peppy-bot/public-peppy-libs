@@ -10,23 +10,26 @@ A parity test reads a **scenario**, an input that the test and the reference bot
 and the **reference output** that the reference wrote for it. The reference outputs are
 committed with the digests of them and of their inputs, so the parity tests run in the
 routine `cargo test` of each crate, with no ROS on the machine, and fail on an output, a
-scenario or a URDF that differs from its digest. A change of the digests is a change of
-the reference, which `run.sh --check` proves.
+scenario, a URDF or a mesh that differs from its digest. A change of the digests is a
+change of the reference, which `run.sh --check` proves.
 
 | Kind of scenario | Reference | Parity test |
 |---|---|---|
 | `forward_kinematics` | MoveIt's robot state: the global transform of each link of a chain | `chain_kinematics/tests/ros_reference_forward_kinematics.rs` |
+| `chain_collision` | MoveIt's robot model, robot state and robot filter: the links with collision geometry that a chain carries and the center MoveIt grows each of their bodies about, the global transform of each carried link, and whether each probe point lies inside the links' bodies (a convex mesh for a mesh, the primitive itself for a box, a cylinder or a sphere) grown by a padding | `collision_geometry/tests/ros_reference_chain_collision.rs` |
+| `self_distance` | MoveIt's FCL collision environment: the signed distance between the collision meshes of each pair of links | `self_collision_model/tests/ros_reference_self_distance.rs` |
 
 ## Layout
 
 | Path | What it holds |
 |---|---|
 | `scenarios/` | One JSON file per scenario. Its `kind` names the reference that runs on it. |
-| `reference/` | The reference output of each scenario, under the scenario's file name; `SHA256SUMS`, the SHA-256 digest of each output; and `INPUTS.SHA256SUMS`, the SHA-256 digest of each file of the repository that the references read (each scenario and the files it names), by its path from the repository root, as the reference program lists them. Every number of an output is an IEEE-754 bit pattern, `0x` and 16 hexadecimal digits, so a test reads the reference's own bits. |
+| `robots/` | The URDFs of the robots that the tools draw for scenarios, and their meshes: `primitive_arm.urdf`, an arm of 7 joints dressed in boxes, cylinders and spheres and in `meshes/wedge.stl`, turned about its origin. |
+| `reference/` | The reference output of each scenario, under the scenario's file name; `SHA256SUMS`, the SHA-256 digest of each output; and `INPUTS.SHA256SUMS`, the SHA-256 digest of each file of the repository that the references read (each scenario and the files it names), by its path from the repository root, as the reference program lists them. Every number of an output is a JSON number, the shortest decimal that reads back to the reference's own bits. |
 | `packages-amd64.txt`, `packages-arm64.txt` | The version of every package of the reference image, on each architecture. |
 | `reference_programs/` | The reference program `ros_reference`: one function per kind of scenario. |
-| `src/` | The Rust crate `ros_reference`: one module per kind of scenario, which lists the scenarios of the kind and reads each with its reference output, checked with the scenario and its URDF against their digests, for the parity test. |
-| `tools/` | The scripts that write the scenarios, one per kind, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the joint limits of a URDF, the configurations of a chain, and `write`, which writes a scenario. |
+| `src/` | The Rust crate `ros_reference`: one module per kind of scenario, which lists the scenarios of the kind and reads each with its reference output, checked with the scenario and the files it names against their digests, for the parity test. |
+| `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, a parsed URDF, the joints of an arm of OpenArm v2, the joint limits of a URDF, the configurations of a chain, and `write`, which writes a scenario. |
 | `Dockerfile`, `CMakeLists.txt`, `ros-snapshots.asc` | The reference image and the build of the reference program in it. |
 | `run.sh` | Runs the reference of every scenario in the reference image. |
 
@@ -88,20 +91,36 @@ on amd64 alone.
    over the seeds that its scenario lists, and its committed output holds the statistic,
    with its interval. Like every output, it changes only when the image changes.
 4. A parity test states what the library guarantees, and the bound within which its
-   outputs agree with the reference, or the statistic it compares, and why. A test that
-   compares the exact bits of an output runs under `#[cfg(target_arch = "x86_64")]`,
-   since the committed outputs hold amd64 bits.
+   outputs agree with the reference, or the statistic it compares, and why. A number of
+   an output reads back to the bits that the reference computed, so a test compares
+   with the reference's own double. A test that compares the exact bits of an output
+   runs under `#[cfg(target_arch = "x86_64")]`, since the committed outputs hold amd64
+   bits.
 5. One rule lays out every scenario and every reference output: a value goes on one line
    when it is a scalar, an array of scalars, or a record, an object whose members are
    each a scalar or an array of scalars; every other array or object spreads over lines,
    one member a line, indented by two spaces. So a forward kinematics scenario holds one
    configuration a line, and its output one link pose a line. The reference program
    writes every output by it through `write_json`, and every scenario tool writes every
-   scenario by it through `write` of `tools/drawing.py`.
+   scenario by it through `write` of `tools/drawing.py`. A number goes as the shortest
+   decimal that reads back to its double: `write_json` writes each float through
+   `shortest_decimal`, as `std::to_chars` writes it, and refuses a NaN and an infinity,
+   which JSON has no number for; Python's `json` writes each float of a scenario as
+   `repr` does. On each run, before its reference, the reference program checks with
+   `check_shortest_decimals` that `shortest_decimal` writes the doubles at the edges of
+   the format as the reader test of `src/lib.rs` reads them, and writes a seeded draw of
+   bit patterns as JSON numbers that read back to their bits.
 6. A kind commits only the few cases that exercise its behaviors: for forward
    kinematics, eight configurations a chain, all joints at zero, at their lower limits,
-   at their upper limits, and five drawn inside them. A large drawn set runs locally and
-   is never committed: draw it into `scenarios/` (for forward kinematics,
+   at their upper limits, and five drawn inside them; for chain collision, four
+   configurations a chain, all joints at zero, at their lower limits, at their upper
+   limits, and one drawn inside them, with four probe points a link at each, and at the
+   first, for each padding, the points 10 µm inside and outside the surface of each grown
+   primitive; for self distance, the three configurations of OpenArm v2, of the zero
+   configuration, the lower limits, the upper limits and thirty drawn inside them, that
+   put each pair of links in each state, apart and in contact, that any of them puts it
+   in. A large drawn set runs locally and is never committed: draw it into `scenarios/`
+   with the `--drawn` option of the kind's script (for forward kinematics,
    `python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
    `ros_reference/run.sh` and the parity tests, and restore the committed files with
    `git restore ros_reference/scenarios ros_reference/reference`.
@@ -160,11 +179,13 @@ arm64 host.
    digests, and `ros_reference/run.sh --check` on an arm64 host, which runs the parity
    tests on the outputs of the arm64 image.
 3. The parity test of its kind lists the scenarios of the kind from `scenarios/`, so it
-   runs on the new one. The forward kinematics parity test poses chains of 1 to 7 joints.
+   runs on the new one. The forward kinematics parity test poses chains of 1 to 7 joints,
+   the chain collision parity test chains of 7 joints, and the self distance parity test
+   builds the self model of OpenArm v2 and refuses a scenario that names another URDF.
 
 A routine test of `ros_reference` fails when a scenario has no reference output, a
-reference output has no scenario or no digest, or a scenario or a URDF differs from its
-digest.
+reference output has no scenario or no digest, or a scenario, a URDF or a mesh differs
+from its digest.
 
 ## Adding a kind of scenario
 
@@ -176,8 +197,10 @@ digest.
    digest, and pairs them for the parity test.
 2. In `reference_programs/`, add the function that runs the reference on a scenario of
    the kind, reading every file of the repository through `Inputs::read`, which lists it
-   for `INPUTS.SHA256SUMS`. Add the function to `references` in `main.cpp` and to
-   `CMakeLists.txt`, and install the ROS packages it needs in the Dockerfile.
+   for `INPUTS.SHA256SUMS`; a file that a ROS library reads, as MoveIt loads a mesh, goes
+   to it by `Inputs::file_uri`, which reads it through `Inputs::read`. Add the function to
+   `references` in `main.cpp` and to `CMakeLists.txt`, and install the ROS packages it
+   needs in the Dockerfile.
 3. In `tools/`, add a script that writes the scenarios through `write` of `drawing.py`,
    its random draws from the `generator` of each scenario, seeded by the scenario's name.
 4. Run `run.sh` on an amd64 host, which writes their reference outputs and

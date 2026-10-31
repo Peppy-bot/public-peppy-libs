@@ -20,7 +20,9 @@
 //! its reference output, and pairs them for the parity test. The README says how to add a
 //! scenario and a kind.
 
+pub mod chain_collision;
 pub mod forward_kinematics;
+pub mod self_distance;
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -45,7 +47,9 @@ const INPUT_DIGEST_FILE: &str = "INPUTS.SHA256SUMS";
 #[derive(PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
+    ChainCollision,
     ForwardKinematics,
+    SelfDistance,
 }
 
 /// The directory of the harness, which holds `scenarios/` and `reference/`.
@@ -141,6 +145,37 @@ fn read_input(path: &Path) -> Vec<u8> {
     bytes
 }
 
+/// The text of the URDF at `path`, relative to the repository root, that the scenario
+/// `name` names, after checking it against the digest of the file that the references
+/// read.
+fn read_urdf(name: &str, path: &str) -> String {
+    let path = repository_root().join(path);
+    String::from_utf8(read_input(&path))
+        .unwrap_or_else(|e| panic!("{name}: the URDF {} is not UTF-8: {e}", path.display()))
+}
+
+/// The mesh directory at `path`, relative to the repository root, that the scenario
+/// `name` names, after reading with [`read_input`] each mesh of it that the references
+/// read, as `INPUTS.SHA256SUMS` lists them. A URDF names its collision meshes by their
+/// file names in that directory.
+fn read_mesh_directory(name: &str, path: &str) -> PathBuf {
+    let directory = repository_root().join(path);
+    let meshes: Vec<PathBuf> = Digests::read(&reference_directory().join(INPUT_DIGEST_FILE))
+        .by_file
+        .into_keys()
+        .map(|file| repository_root().join(file))
+        .filter(|file| file.parent() == Some(directory.as_path()))
+        .collect();
+    assert!(
+        !meshes.is_empty(),
+        "{name}: the references read no mesh of {path}"
+    );
+    for mesh in &meshes {
+        read_input(mesh);
+    }
+    directory
+}
+
 fn read_scenario<T: DeserializeOwned>(name: &str) -> T {
     let path = json_file(&scenario_directory(), name);
     parse(&path, &read_input(&path))
@@ -218,34 +253,58 @@ impl Digests {
     }
 }
 
-/// A float that a reference output carries as its IEEE-754 bit pattern: `0x` and 16
-/// hexadecimal digits. A parity test then compares the reference's own bits.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
-#[serde(try_from = "String")]
-pub struct Bits(pub f64);
-
-impl TryFrom<String> for Bits {
-    type Error = String;
-
-    fn try_from(text: String) -> Result<Self, String> {
-        let digits = text
-            .strip_prefix("0x")
-            .filter(|digits| digits.len() == 16 && digits.bytes().all(|b| b.is_ascii_hexdigit()))
-            .ok_or_else(|| format!("{text:?} is not 0x and 16 hexadecimal digits"))?;
-        let pattern = u64::from_str_radix(digits, 16).map_err(|e| format!("{text:?}: {e}"))?;
-        Ok(Bits(f64::from_bits(pattern)))
-    }
+/// The transform of `link` in the frame of the URDF root.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkPose {
+    pub link: String,
+    pub translation: [f64; 3],
+    /// The rotation matrix, row by row.
+    pub rotation: [f64; 9],
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::TestCase;
+    use hegel::generators as gs;
     use std::collections::BTreeSet;
 
     const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-    fn bits(text: &str) -> Result<Bits, String> {
-        Bits::try_from(text.to_owned())
+    /// The doubles at the edges of the format, by their bits, and the decimal that
+    /// `std::to_chars` writes for each, as `check_shortest_decimals` of the reference
+    /// program holds them: the smallest and the largest subnormal, the smallest normal,
+    /// the largest finite value and its negation, and both zeros.
+    const EDGE_DECIMALS: [(u64, &str); 7] = [
+        (0x0000_0000_0000_0001, "5e-324"),
+        (0x000f_ffff_ffff_ffff, "2.225073858507201e-308"),
+        (0x0010_0000_0000_0000, "2.2250738585072014e-308"),
+        (0x7fef_ffff_ffff_ffff, "1.7976931348623157e+308"),
+        (0xffef_ffff_ffff_ffff, "-1.7976931348623157e+308"),
+        (0x0000_0000_0000_0000, "0"),
+        (0x8000_0000_0000_0000, "-0"),
+    ];
+
+    /// Reads `text` as a reference output reads a number.
+    fn read_number(text: &str) -> serde_json::Result<f64> {
+        serde_json::from_str(text)
+    }
+
+    /// The two decimals of `x` that `std::to_chars` writes the shorter of: its shortest
+    /// digits with a point, and in scientific notation, with a sign and at least two
+    /// digits of exponent.
+    fn shortest_decimals(x: f64) -> [String; 2] {
+        let scientific = format!("{x:e}");
+        let (digits, exponent) = scientific
+            .split_once('e')
+            .expect("a finite double writes an exponent");
+        let exponent: i32 = exponent.parse().expect("the exponent is an integer");
+        let sign = if exponent < 0 { '-' } else { '+' };
+        [
+            format!("{x}"),
+            format!("{digits}e{sign}{:02}", exponent.unsigned_abs()),
+        ]
     }
 
     /// The file names of the outputs `names`.
@@ -267,36 +326,43 @@ mod tests {
         );
     }
 
-    /// The bytes of `bytes` with the first hexadecimal digit after a `0x` changed.
+    /// The bytes of `bytes` with their first digit changed.
     fn with_one_digit_changed(mut bytes: Vec<u8>) -> Vec<u8> {
         let digit = bytes
-            .windows(2)
-            .position(|pair| pair == b"0x")
-            .expect("the text holds a bit pattern")
-            + 2;
-        bytes[digit] = if bytes[digit] == b'0' { b'1' } else { b'0' };
+            .iter_mut()
+            .find(|byte| byte.is_ascii_digit())
+            .expect("the text holds a digit");
+        *digit = if *digit == b'0' { b'1' } else { b'0' };
         bytes
     }
 
-    #[test]
-    fn a_bit_pattern_reads_as_its_float() {
-        assert_eq!(bits("0x3ff0000000000000"), Ok(Bits(1.0)));
-        assert_eq!(bits("0xC000000000000000"), Ok(Bits(-2.0)));
-        let negative_zero = bits("0x8000000000000000").unwrap().0;
-        assert_eq!(negative_zero.to_bits(), (-0.0f64).to_bits());
+    #[hegel::test]
+    fn every_finite_double_reads_back_from_its_shortest_decimals(tc: TestCase) {
+        let x = f64::from_bits(tc.draw(gs::integers::<u64>()));
+        tc.assume(x.is_finite());
+        for decimal in shortest_decimals(x) {
+            let read = read_number(&decimal).unwrap_or_else(|e| panic!("{decimal}: {e}"));
+            assert_eq!(read.to_bits(), x.to_bits(), "{decimal}");
+        }
     }
 
     #[test]
-    fn a_text_that_is_not_a_bit_pattern_is_refused() {
-        for text in [
-            "3ff0000000000000",
-            "0x3ff000000000000",
-            "0x3ff00000000000000",
-            "0x+ff0000000000000",
-            "0x3ff000000000000g",
-            "1.0",
-        ] {
-            assert!(bits(text).is_err(), "{text} was read");
+    fn the_decimal_of_each_double_at_the_edges_reads_back_to_its_bits() {
+        for (bits, decimal) in EDGE_DECIMALS {
+            let x = f64::from_bits(bits);
+            assert!(
+                shortest_decimals(x).contains(&decimal.to_owned()),
+                "{decimal} is a shortest decimal of {x:e}"
+            );
+            let read = read_number(decimal).unwrap_or_else(|e| panic!("{decimal}: {e}"));
+            assert_eq!(read.to_bits(), bits, "{decimal}");
+        }
+    }
+
+    #[test]
+    fn a_number_that_is_not_a_finite_double_is_refused() {
+        for text in ["NaN", "Infinity", "-Infinity", "1e309", "-1e309"] {
+            assert!(read_number(text).is_err(), "{text} was read");
         }
     }
 
@@ -380,6 +446,12 @@ mod tests {
     #[should_panic(expected = "holds no digest of README.md")]
     fn a_file_that_no_reference_read_is_refused_as_an_input() {
         read_input(&repository_root().join("README.md"));
+    }
+
+    #[test]
+    #[should_panic(expected = "the references read no mesh of ros_reference/tools")]
+    fn a_mesh_directory_that_no_reference_read_is_refused() {
+        read_mesh_directory("scenario", "ros_reference/tools");
     }
 
     #[test]

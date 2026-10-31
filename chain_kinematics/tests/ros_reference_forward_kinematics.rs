@@ -7,7 +7,8 @@
 
 use chain_kinematics::nalgebra::Isometry3;
 use chain_kinematics::{Chain, ChainSpec, JointSelection};
-use ros_reference::forward_kinematics::{Cases, ChainCase, LinkPose};
+use ros_reference::LinkPose;
+use ros_reference::forward_kinematics::{Cases, ChainCase};
 use urdf_rs::Robot;
 
 /// The largest difference allowed between a coordinate of ours and MoveIt's `x`, in units
@@ -39,13 +40,13 @@ fn assert_pose_agrees(link: &str, ours: &Isometry3<f64>, moveit: &LinkPose, at: 
         (
             coordinate,
             ours.translation.vector[i],
-            moveit.translation[i].0,
+            moveit.translation[i],
         )
     });
     let rotations = (0..9).map(|i| {
         let (row, column) = (i / 3, i % 3);
         let coordinate = format!("rotation ({row}, {column})");
-        (coordinate, rotation[(row, column)], moveit.rotation[i].0)
+        (coordinate, rotation[(row, column)], moveit.rotation[i])
     });
     for (coordinate, ours, theirs) in translations.chain(rotations) {
         let allowed = tolerance(theirs);

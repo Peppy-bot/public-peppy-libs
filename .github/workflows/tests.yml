@@ -70,6 +70,7 @@ jobs:
               - '*/assets/**'
               - '*/.cargo/**'
               - 'ros_reference/scenarios/**'
+              - 'ros_reference/robots/**'
               - 'ros_reference/reference/**'
               - '.github/actions/rust-toolchain/**'
               - '.github/workflows/tests.yml'
@@ -136,6 +137,11 @@ jobs:
       - uses: Peppy-bot/peppy/.github/actions/sticky-disk-report@dev
 
       - uses: ./.github/actions/rust-toolchain
+
+      # collision_geometry builds Qhull through the qhull crate, whose bindings
+      # bindgen generates against libclang at build time.
+      - name: Install libclang
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libclang-dev
 
       # Every crate runs even after one fails, so a red run names every
       # failing crate. `--all-features` because a feature of a library crate

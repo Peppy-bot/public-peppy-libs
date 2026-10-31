@@ -2,9 +2,7 @@
 //! configuration of a chain, it gives the global transform of each link that the chain
 //! moves.
 
-use crate::{
-    Bits, Kind, read_input, read_reference, read_scenario, repository_root, scenario_names,
-};
+use crate::{Kind, LinkPose, read_reference, read_scenario, read_urdf, scenario_names};
 use serde::Deserialize;
 
 /// The `kind` of a forward kinematics scenario and of its reference output, which refuses
@@ -51,16 +49,6 @@ struct Reference {
 struct ChainPoses {
     name: String,
     configurations: Vec<Vec<LinkPose>>,
-}
-
-/// The transform of `link` in the frame of the URDF root.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LinkPose {
-    pub link: String,
-    pub translation: [Bits; 3],
-    /// The rotation matrix, row by row.
-    pub rotation: [Bits; 9],
 }
 
 /// A forward kinematics scenario paired with its reference output.
@@ -112,10 +100,7 @@ impl Cases {
             chains: outputs,
         } = read_reference(&name);
         assert_eq!(chains.len(), outputs.len(), "{name}: one output per chain");
-        let urdf_path = repository_root().join(&urdf);
-        let urdf = String::from_utf8(read_input(&urdf_path)).unwrap_or_else(|e| {
-            panic!("{name}: the URDF {} is not UTF-8: {e}", urdf_path.display())
-        });
+        let urdf = read_urdf(&name, &urdf);
         let chains = chains
             .into_iter()
             .zip(outputs)
@@ -205,8 +190,8 @@ mod tests {
         };
         let link = LinkPose {
             link: "l1".into(),
-            translation: [Bits(0.0); 3],
-            rotation: [Bits(0.0); 9],
+            translation: [0.0; 3],
+            rotation: [0.0; 9],
         };
         let output = ChainPoses {
             name: "arm".into(),
