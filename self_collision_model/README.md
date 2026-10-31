@@ -277,13 +277,10 @@ examples/
 tests/
   dual_arm.rs                     two-arm scenarios: converge, fold, separate, with budgets
   distance_oracle.rs              the distance query against support-function bounds
-  merge_base_distances.rs         the distances of the model at the merge base, held to 1 mm
   ros_reference_self_distance.rs  each checked distance against MoveIt's FCL
   fixtures/
     openarm_v10.urdf              the OpenArm v1.0 URDF of the tests, srs_model-style
     openarm.rs                    the generation and the meshes of openarm_description
-    merge_base/                   the distances of the model at the merge base, and the
-                                  program, the script and the lock that recorded them
 ```
 
 The tests read the collision meshes, the URDFs and the torso regions of
@@ -296,20 +293,20 @@ the world frame, so it models robots whose mount does not move.
 force over every checked pair, the distance gradient against finite differences,
 the fixture integration scenarios (arms converging monotonically into collision,
 folding inward, separating sweeps holding the floor, and non-finite rejection), the
-distance query against independent support-function bounds, the distances of the
-model at its merge base, and each checked distance against MoveIt's FCL. `cargo test
---release` additionally asserts the per-query time budget. The fit and the distance
-are tested in `collision_geometry`.
+distance query against independent support-function bounds, and each checked
+distance against MoveIt's FCL. `cargo test --release` additionally asserts the
+per-query time budget. The fit and the distance are tested in `collision_geometry`.
 
-`tests/merge_base_distances.rs` builds the model of each OpenArm generation as the
-backbone builds it and holds it to `tests/fixtures/merge_base/distances.json`,
-which `capture.sh` there recorded from the model of this repository at its merge
-base, a817e346, with the torso regions of the backbone at nodes-hub 9ccf97a6. On
-each of 152 configurations per generation (home with the grippers open and closed,
-100 drawn over the joint limits, and 25 within 3 mm of each threshold of the
-backbone, 5 mm and 20 mm), the distance of every checked pair and the nearest
-distance lie within 1 mm of the recorded ones, and every verdict at a threshold is
-the same wherever the recorded distance lies farther than 1 mm from it.
+A local run, once, at the head of the change that built this crate on
+`collision_geometry`, compared the model with the self-collision model of this
+repository at that change's merge base, a817e346, built with the torso regions of
+the backbone at nodes-hub 9ccf97a6. For each OpenArm generation, both built as the
+backbone builds them, the model checks the same pairs, and on each of 152
+configurations (home with the grippers open and closed, 100 drawn over the joint
+limits, and 25 within 3 mm of each threshold of the backbone, 5 mm and 20 mm) the
+distance of every checked pair and the nearest distance lie within 1 mm of
+a817e346's, at most 0.93 mm apart on v1 and 1.3e-10 m on v2, and every verdict at a
+threshold is the same wherever a817e346's distance lies farther than 1 mm from it.
 
 `tests/ros_reference_self_distance.rs` is the evidence that the pieces of each body
 hold its link's collision meshes: at every configuration of the self distance

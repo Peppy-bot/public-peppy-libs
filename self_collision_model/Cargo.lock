@@ -516,7 +516,6 @@ dependencies = [
  "collision_geometry",
  "openarm_description",
  "ros_reference",
- "serde",
  "serde_json",
  "srs_model",
  "thiserror 2.0.21",
