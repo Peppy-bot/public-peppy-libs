@@ -210,10 +210,6 @@ pub struct DistanceGradient<'a> {
     pub grad_openings: [f64; 2],
 }
 
-/// Per-body world-frame hull pieces: the shape
-/// [`SelfCollisionModel::world_pieces`] returns.
-pub type BodyPieces<'a> = Vec<(&'a str, Vec<Placed<'a>>)>;
-
 pub struct SelfCollisionModel {
     left: Arm,
     right: Arm,
@@ -868,7 +864,7 @@ impl SelfCollisionModel {
         &mut self,
         q_left: &JointVec,
         q_right: &JointVec,
-    ) -> Result<BodyPieces<'_>, CollisionError> {
+    ) -> Result<Vec<(&str, Vec<Placed<'_>>)>, CollisionError> {
         ensure_finite(q_left, q_right)?;
         self.place(q_left, q_right);
         Ok(self

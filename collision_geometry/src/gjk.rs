@@ -272,7 +272,7 @@ impl Support for Hull {
 }
 
 /// A single point as a GJK body, for the distance from a point to a hull.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct Vertex(pub Point3<f64>);
 
 impl Support for Vertex {

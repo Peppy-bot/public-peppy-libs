@@ -41,7 +41,7 @@ mod pairs;
 
 pub use collision_geometry::gjk::Placed;
 pub use error::{BuildError, CollisionError};
-pub use model::{BodyPieces, Builder, DistanceGradient, Proximity, SelfCollisionModel};
+pub use model::{Builder, DistanceGradient, Proximity, SelfCollisionModel};
 pub use pairs::PairSpec;
 
 /// The linear-algebra crate of every type in this API (the witness points of a
