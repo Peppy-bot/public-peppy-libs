@@ -27,6 +27,11 @@ std::string Inputs::read(const std::string& path) {
   return text.str();
 }
 
+std::string Inputs::file_uri(const std::string& path) {
+  read(path);
+  return "file://" + std::filesystem::absolute(repository_root_ / path).string();
+}
+
 void Inputs::append_to(const std::filesystem::path& list) const {
   std::ofstream file(list, std::ios::app);
   for (const auto& path : paths_) {

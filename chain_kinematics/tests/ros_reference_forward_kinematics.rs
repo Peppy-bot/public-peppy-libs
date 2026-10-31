@@ -7,7 +7,8 @@
 
 use chain_kinematics::nalgebra::Isometry3;
 use chain_kinematics::{Chain, ChainSpec, JointSelection};
-use ros_reference::forward_kinematics::{Cases, ChainCase, LinkPose};
+use ros_reference::LinkPose;
+use ros_reference::forward_kinematics::{Cases, ChainCase};
 use urdf_rs::Robot;
 
 /// The largest difference allowed between a coordinate of ours and MoveIt's `x`, in units

@@ -10,16 +10,13 @@ Run it from any directory:
 The second draws a large set for a local run, which the README describes.
 """
 
-import argparse
-import xml.etree.ElementTree as ElementTree
-
-from drawing import REPOSITORY, configurations, generator, joint_limits, write
+from drawing import configurations, generator, joint_limits, openarm_joints, options, robot, write
 
 DRAWN_CONFIGURATIONS = 5
 
 
 def openarm_arm(side):
-    return (side, [f"openarm_{side}_joint{i}" for i in range(1, 8)], f"openarm_{side}_tcp")
+    return (side, openarm_joints(side), f"openarm_{side}_tcp")
 
 
 ROBOTS = {
@@ -40,8 +37,8 @@ ROBOTS = {
 }
 
 
-def scenario(rng, urdf, chains, drawn_count):
-    robot = ElementTree.parse(REPOSITORY / urdf).getroot()
+def scenario(rng, urdf, chains, drawn):
+    parsed = robot(urdf)
     return {
         "kind": "forward_kinematics",
         "urdf": urdf,
@@ -51,7 +48,7 @@ def scenario(rng, urdf, chains, drawn_count):
                 "joints": joints,
                 "tip_link": tip_link,
                 "configurations": configurations(
-                    rng, [joint_limits(robot, joint) for joint in joints], drawn_count
+                    rng, [joint_limits(parsed, joint) for joint in joints], drawn
                 ),
             }
             for name, joints, tip_link in chains
@@ -60,16 +57,9 @@ def scenario(rng, urdf, chains, drawn_count):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--drawn",
-        type=int,
-        default=DRAWN_CONFIGURATIONS,
-        help="configurations drawn inside the limits of each chain",
-    )
-    drawn_count = parser.parse_args().drawn
+    drawn = options(__doc__, DRAWN_CONFIGURATIONS).parse_args().drawn
     for name, (urdf, chains) in ROBOTS.items():
-        write(name, scenario(generator(name), urdf, chains, drawn_count))
+        write(name, scenario(generator(name), urdf, chains, drawn))
 
 
 if __name__ == "__main__":

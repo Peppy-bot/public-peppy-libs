@@ -4,13 +4,11 @@
 use chain_kinematics::{Jacobian, damped_pseudo_inverse, manipulability};
 use hegel::TestCase;
 use hegel::generators as gs;
-use kinematics_properties::{TOLERANCE, configs};
+use kinematics_properties::{ChainProperty, TIP, TOLERANCE, configs, link_name, on_a_drawn_robot};
 use urdf_rs::Robot;
 
 mod common;
-use common::properties::{
-    ChainProperty, TIP, chain_ending_at, chain_of, link_name, on_a_drawn_robot,
-};
+use common::properties::{chain_ending_at, chain_of};
 use common::singular_values;
 
 /// The Jacobian of a drawn robot at a drawn configuration inside its limits.
