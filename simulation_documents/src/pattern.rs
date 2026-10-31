@@ -20,6 +20,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::daylight::Daylight;
 use crate::geometry::Region;
@@ -693,13 +694,14 @@ impl WorldPattern {
     }
 
     /// An expansion of the pattern with `seed`: each sampler that the seed
-    /// alone draws, drawn. `assets_of_kind` gives the assets of the catalogue
-    /// of an item kind; an entry of an item kind with no asset is refused.
+    /// alone draws, drawn, with a copy of the pattern. `assets_of_kind`
+    /// gives the assets of the catalogue of an item kind; an entry of an
+    /// item kind with no asset is refused.
     pub fn expansion(
         &self,
         seed: Seed,
         assets_of_kind: &dyn Fn(&str) -> Vec<String>,
-    ) -> Result<Expansion<'_>, Error> {
+    ) -> Result<Expansion, Error> {
         let mut added = BTreeMap::new();
         for (name, entry) in self.item_kind_entries() {
             let count = entry
@@ -736,7 +738,7 @@ impl WorldPattern {
             drawn.insert(path, value);
         }
         Ok(Expansion {
-            pattern: self,
+            pattern: Arc::new(self.clone()),
             seed,
             drawn,
             added,
@@ -819,9 +821,10 @@ impl WorldPattern {
                 })
                 .collect()
         };
+        let pattern = Arc::new(self.clone());
         let world_of = |drawn, added| {
             let expansion = Expansion {
-                pattern: self,
+                pattern: Arc::clone(&pattern),
                 seed: Seed(0),
                 drawn,
                 added,
@@ -965,8 +968,8 @@ struct Added {
 
 /// A world pattern with the samplers that its seed alone draws, drawn.
 #[derive(Clone, Debug)]
-pub struct Expansion<'p> {
-    pattern: &'p WorldPattern,
+pub struct Expansion {
+    pattern: Arc<WorldPattern>,
     seed: Seed,
     /// The value of each sampler that the seed alone draws, by its path in
     /// the concrete world.
@@ -1038,13 +1041,13 @@ impl PlacementKind {
     }
 }
 
-impl<'p> Expansion<'p> {
+impl Expansion {
     pub fn seed(&self) -> Seed {
         self.seed
     }
 
-    pub fn pattern(&self) -> &'p WorldPattern {
-        self.pattern
+    pub fn pattern(&self) -> &WorldPattern {
+        &self.pattern
     }
 
     /// The stream of the sampler at `path` in the concrete world, from which
@@ -1080,11 +1083,12 @@ impl<'p> Expansion<'p> {
     /// a surface label in the drawn scene. With no dependency, the draws
     /// without `reachable_by` come first, then the stands, then the draws
     /// with `reachable_by`, each group in the order of the paths. Refuses a
-    /// cycle of dependencies, naming its placements.
+    /// cycle of dependencies, naming its placements. The placements keep
+    /// the expansion ([`Placements::expansion`]).
     pub fn placements(
-        &self,
+        self,
         holder_of_surface: &dyn Fn(&str) -> Option<Name>,
-    ) -> Result<Placements<'_>, Error> {
+    ) -> Result<Placements, Error> {
         let mut placements = Vec::new();
         for (root, site) in self.pattern.entry_sites(Some(&self.added)) {
             if !site.sampler.is_placement() {
@@ -1132,9 +1136,10 @@ impl<'p> Expansion<'p> {
                 });
             }
         }
+        let sites = ordered(placements, holder_of_surface)?;
         Ok(Placements {
             expansion: self,
-            sites: ordered(placements, holder_of_surface)?,
+            sites,
             holders,
         })
     }
@@ -1173,7 +1178,7 @@ impl<'p> Expansion<'p> {
     /// `_seed_<seed>`, its revision that of the pattern. Refuses a placement
     /// with no value, and a value that the world refuses, by its path.
     pub fn world(&self, placed: &BTreeMap<SitePath, Value>) -> Result<World, Error> {
-        let pattern = self.pattern;
+        let pattern = &self.pattern;
         let mut fields = pattern.fields.clone();
         fields.manifest = Manifest {
             name: format!("{}_seed_{}", pattern.manifest.name, self.seed),
@@ -1282,18 +1287,23 @@ fn no_asset_of_kind(name: &Name, kind: &str) -> Error {
     )
 }
 
-/// The placements of an expansion in the order the simulation draws them
-/// ([`Expansion::placements`]).
+/// The placements of an expansion in the order the simulation draws them,
+/// with the expansion ([`Expansion::placements`]).
 #[derive(Clone, Debug)]
-pub struct Placements<'e> {
-    expansion: &'e Expansion<'e>,
+pub struct Placements {
+    expansion: Expansion,
     sites: Vec<PlacementSite>,
     /// The object of the surface of each robot whose stand is a placement
     /// at a surface.
     holders: BTreeMap<RobotName, Name>,
 }
 
-impl<'e> Placements<'e> {
+impl Placements {
+    /// The expansion whose placements these are.
+    pub fn expansion(&self) -> &Expansion {
+        &self.expansion
+    }
+
     /// The placements, in the order the simulation draws them.
     pub fn sites(&self) -> &[PlacementSite] {
         &self.sites
@@ -1537,7 +1547,10 @@ mod tests {
     fn expanded(pattern: &WorldPattern, seed: u32) -> World {
         let expansion = pattern.expansion(Seed(seed), &assets_of_kind).unwrap();
         let placements = expansion.placements(&no_holder).unwrap();
-        expansion.world(&placed(placements.sites())).unwrap()
+        placements
+            .expansion()
+            .world(&placed(placements.sites()))
+            .unwrap()
     }
 
     fn refusal(text: &str) -> String {
@@ -1732,7 +1745,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             everything,
-            expansion.world(&placed(placements.sites())).unwrap()
+            placements
+                .expansion()
+                .world(&placed(placements.sites()))
+                .unwrap()
         );
     }
 
@@ -2031,7 +2047,10 @@ mod tests {
                 .expansion(Seed(3), &|_| vec!["object/book".into()])
                 .unwrap();
             let placements = expansion.placements(&no_holder).unwrap();
-            let mut world = expansion.world(&placed(placements.sites())).unwrap();
+            let mut world = placements
+                .expansion()
+                .world(&placed(placements.sites()))
+                .unwrap();
             world.manifest.name.clear();
             world
         };
@@ -2041,7 +2060,10 @@ mod tests {
                 .expansion(Seed(3), &|_| vec!["object/book".into()])
                 .unwrap();
             let placements = expansion.placements(&no_holder).unwrap();
-            expansion.world(&placed(placements.sites())).unwrap()
+            placements
+                .expansion()
+                .world(&placed(placements.sites()))
+                .unwrap()
         };
         assert!(world.objects.len() <= 2, "{:?}", world.objects.keys());
         let concrete = chat_world.resolve_pattern(&[]).unwrap();
