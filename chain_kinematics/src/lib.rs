@@ -34,6 +34,12 @@
 //! spec, and [`Chain::base_from_world`] relates that to the URDF root for a
 //! caller that needs the world frame (gravity, or composing two chains of one
 //! robot).
+//!
+//! Evidence for the forward kinematics: at every configuration of the forward
+//! kinematics scenarios of the ROS reference harness (`ros_reference`), the
+//! OpenArm v2 arms and SO-101, each link pose agrees with the global link
+//! transform of MoveIt's robot state within 16 units of
+//! `f64::EPSILON * max(1, |x|)` (`tests/ros_reference_forward_kinematics.rs`).
 #![forbid(unsafe_code)]
 
 mod chain;

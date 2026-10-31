@@ -1,0 +1,5 @@
+# The reference image needs only these files of the harness.
+*
+!CMakeLists.txt
+!reference_programs
+!ros-snapshots.asc

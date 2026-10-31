@@ -186,3 +186,9 @@ refusal that would also reject a valid chain fails the suite.
 `tests/ik_quality.rs` is the point-to-point qualification: the debug build
 runs a fast subset of the same draws, and `--release` runs the full scale the
 numbers above are quoted at.
+`tests/ros_reference_forward_kinematics.rs` is the evidence for the forward
+kinematics against MoveIt: at every configuration of the forward kinematics
+scenarios of the [ROS reference harness](../ros_reference), the OpenArm v2 arms
+and SO-101, each link pose agrees with the global link transform of MoveIt's
+robot state within 16 units of `f64::EPSILON * max(1, |x|)`. It reads the
+harness's committed reference outputs, so it runs with no ROS on the machine.

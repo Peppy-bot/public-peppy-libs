@@ -1,0 +1,12 @@
+[package]
+name = "ros_reference"
+version = "0.1.0"
+edition = "2024"
+description = "The scenarios of the ROS reference harness and the reference outputs that ROS references wrote for them in the reference image, read, checked against their digests and paired for the parity tests of the other crates. A dev-dependency of those crates."
+
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.11"
