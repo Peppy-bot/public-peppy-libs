@@ -1,5 +1,5 @@
 //! The metrics that score a planar trajectory, a localization and a global localization
-//! against ground truth.
+//! against ground truth, and summarize them over seeds.
 
 /// A pose on the floor: a position (m) and a heading (rad).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -260,6 +260,34 @@ pub fn global_outcome(
     }
 }
 
+/// The mean of values over seeds, with its standard error: the sample standard deviation
+/// over the square root of the count.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Mean {
+    pub mean: f64,
+    pub standard_error: f64,
+}
+
+/// The mean of `values` with its standard error. None for no value; the standard error of
+/// one value is 0.
+pub fn mean(values: &[f64]) -> Option<Mean> {
+    if values.is_empty() {
+        return None;
+    }
+    let count = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / count;
+    let standard_error = if values.len() < 2 {
+        0.0
+    } else {
+        let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (count - 1.0);
+        (variance / count).sqrt()
+    };
+    Some(Mean {
+        mean,
+        standard_error,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,5 +445,14 @@ mod tests {
         };
         assert!(at(0.3, 0.3) && at(0.0, 0.0));
         assert!(!at(0.31, 0.1) && !at(0.1, 0.31));
+    }
+
+    #[test]
+    fn the_standard_error_is_the_sample_deviation_over_the_root_of_the_count() {
+        let summary = mean(&[1.0, 2.0, 3.0, 4.0]).expect("a mean");
+        assert_eq!(summary.mean, 2.5);
+        assert!((summary.standard_error - (5.0f64 / 3.0 / 4.0).sqrt()).abs() < 1e-15);
+        assert_eq!(mean(&[]), None);
+        assert_eq!(mean(&[2.0]).map(|m| m.standard_error), Some(0.0));
     }
 }
