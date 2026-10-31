@@ -34,8 +34,10 @@ pub enum CollisionError {
 /// [`Geometry`](Self::Geometry) catch-all, since they carry an opaque reason.
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
-    /// Both chains were given the same base link; a bimanual model needs two.
-    #[error("left and right base links are both '{base}'; a bimanual model needs two chains")]
+    /// Both chains were given the same base link; the self-collision model needs two.
+    #[error(
+        "left and right base links are both '{base}'; the self-collision model needs two chains"
+    )]
     IdenticalBases { base: String },
 
     /// Two bodies resolved to the same name.
