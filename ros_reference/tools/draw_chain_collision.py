@@ -133,14 +133,18 @@ def element_corners(geometry, meshes):
             for vertex in stl_vertices(REPOSITORY / meshes / basename)
         ]
     box = geometry.find("box")
+    cylinder = geometry.find("cylinder")
+    sphere = geometry.find("sphere")
     if box is not None:
         half = [float(v) / 2 for v in box.get("size").split()]
+    elif cylinder is not None:
+        radius, length = float(cylinder.get("radius")), float(cylinder.get("length"))
+        half = [radius, radius, length / 2]
+    elif sphere is not None:
+        radius = float(sphere.get("radius"))
+        half = [radius, radius, radius]
     else:
-        shape = geometry.find("cylinder")
-        if shape is None:
-            shape = geometry.find("sphere")
-        radius = float(shape.get("radius"))
-        half = [radius, radius, float(shape.get("length", 2 * radius)) / 2]
+        raise SystemExit("a collision geometry is a mesh, a box, a cylinder or a sphere")
     return [
         [sign_x * half[0], sign_y * half[1], sign_z * half[2]]
         for sign_x in (-1, 1)
