@@ -70,6 +70,7 @@ jobs:
               - '*/assets/**'
               - '*/.cargo/**'
               - 'ros_reference/scenarios/**'
+              - 'ros_reference/robots/**'
               - 'ros_reference/reference/**'
               - '.github/actions/rust-toolchain/**'
               - '.github/workflows/tests.yml'
