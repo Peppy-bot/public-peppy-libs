@@ -297,17 +297,6 @@ distance query against independent support-function bounds, and each checked
 distance against MoveIt's FCL. `cargo test --release` additionally asserts the
 per-query time budget. The fit and the distance are tested in `collision_geometry`.
 
-A local run, once, at the head of the change that built this crate on
-`collision_geometry`, compared the model with the self-collision model of this
-repository at that change's merge base, a817e346, built with the torso regions of
-the backbone at nodes-hub 9ccf97a6. For each OpenArm generation, both built as the
-backbone builds them, the model checks the same pairs, and on each of 152
-configurations (home with the grippers open and closed, 100 drawn over the joint
-limits, and 25 within 3 mm of each threshold of the backbone, 5 mm and 20 mm) the
-distance of every checked pair and the nearest distance lie within 1 mm of
-a817e346's, at most 0.93 mm apart on v1 and 1.3e-10 m on v2, and every verdict at a
-threshold is the same wherever a817e346's distance lies farther than 1 mm from it.
-
 `tests/ros_reference_self_distance.rs` is the evidence that the pieces of each body
 hold its link's collision meshes: at every configuration of the self distance
 scenarios of the [ROS reference harness](../ros_reference), OpenArm v2 with both

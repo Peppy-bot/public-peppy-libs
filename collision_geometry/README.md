@@ -171,10 +171,7 @@ that depends on this crate installs it in its `apptainer.def`.
 
 The C compiler may fuse a multiply and an add of Qhull's into one instruction on
 aarch64, which rounds once where x86_64 rounds twice, so an arm64 build fits pieces that
-differ from an x86_64 build's in the last bits. On the 51,984 distances of a local run
-of the comparison of `self_collision_model` with its merge base (its README, Testing),
-release builds of the two architectures differ by at most 4.53e-12 m, inside every
-distance tolerance of this crate and of `self_collision_model`, the least of them 1 nm.
+differ from an x86_64 build's in the last bits.
 
 Qhull is free software under its own license, `COPYING.txt` in the `qhull/`
 directory of the `qhull-sys` crate (also at [qhull.org](http://www.qhull.org/COPYING.txt)).
