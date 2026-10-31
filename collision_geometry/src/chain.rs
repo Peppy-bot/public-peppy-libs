@@ -525,3 +525,34 @@ fn carrier(
         current = joint.parent_link.clone();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A padding takes a positive finite scale and a non-negative finite offset, and
+    /// refuses a scale or an offset that is NaN, infinite or out of that range.
+    #[test]
+    fn a_padding_refuses_a_scale_or_an_offset_out_of_its_range() {
+        assert!(Padding::new(1.0, 0.0).is_ok());
+        for (scale, offset) in [
+            (f64::NAN, 0.0),
+            (1.0, f64::NAN),
+            (f64::INFINITY, 0.0),
+            (1.0, f64::INFINITY),
+            (f64::NEG_INFINITY, 0.0),
+            (1.0, f64::NEG_INFINITY),
+            (0.0, 0.0),
+            (-1.0, 0.0),
+            (1.0, -0.01),
+        ] {
+            assert!(
+                matches!(
+                    Padding::new(scale, offset),
+                    Err(GeometryError::Padding { .. })
+                ),
+                "a padding of scale {scale} and offset {offset} is accepted"
+            );
+        }
+    }
+}
