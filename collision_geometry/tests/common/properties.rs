@@ -15,11 +15,11 @@ use urdf_rs::{
 };
 
 /// A mesh a drawn mesh collision scales: a cube of unit side about its origin.
-const CUBE: &str = "cube.stl";
+pub const CUBE: &str = "cube.stl";
 
 /// A mesh a drawn mesh collision scales: a wedge from a square of side 0.1 at x = 0 to a
 /// point at x = 1, whose vertices' mean lies off the center of its box.
-pub const WEDGE: &str = "wedge.stl";
+const WEDGE: &str = "wedge.stl";
 
 /// The root of a dressed robot, below which a continuous joint turns `link_0`.
 const MOUNT: &str = "mount";

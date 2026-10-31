@@ -328,6 +328,17 @@ impl Support for Placed<'_> {
     }
 }
 
+/// The distance from `point` to the triangle of `corners`, by the closest feature of the
+/// triangle that GJK's sub-distance finds.
+pub(crate) fn distance_to_triangle(point: &Point3<f64>, corners: [Point3<f64>; 3]) -> f64 {
+    let [a, b, c] = corners.map(|corner| SupportPoint {
+        v: corner - point,
+        a: corner,
+        b: *point,
+    });
+    closest_triangle(a, b, c).closest.norm()
+}
+
 /// Signed surface distance between two convex bodies and the closest points.
 /// Runs GJK on the cores, then subtracts the radii and pushes the witnesses out
 /// to the rounded surfaces along the separating direction.
@@ -820,6 +831,21 @@ mod tests {
 
     fn pt(x: f64, y: f64, z: f64) -> Point3<f64> {
         Point3::new(x, y, z)
+    }
+
+    #[test]
+    fn the_distance_to_a_triangle_is_to_its_nearest_feature() {
+        let corners = [pt(0.0, 0.0, 0.0), pt(1.0, 0.0, 0.0), pt(0.0, 1.0, 0.0)];
+        for (point, expected) in [
+            (pt(0.25, 0.25, 0.5), 0.5),
+            (pt(0.5, -0.5, 0.0), 0.5),
+            (pt(-0.3, -0.4, 0.0), 0.5),
+            (pt(1.0, 1.0, 0.0), std::f64::consts::FRAC_1_SQRT_2),
+            (pt(2.0, 0.0, 2.0), 5.0_f64.sqrt()),
+        ] {
+            let distance = distance_to_triangle(&point, corners);
+            assert!((distance - expected).abs() < 1e-12, "{point}: {distance}");
+        }
     }
 
     fn sp(x: f64, y: f64, z: f64) -> SupportPoint {

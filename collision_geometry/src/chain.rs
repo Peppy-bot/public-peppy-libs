@@ -11,27 +11,19 @@
 //! one fixed to the root. Placed at a configuration, each piece gives its hull and its
 //! bounding sphere in the frame of the URDF root.
 //!
-//! A [`Mask`] grows every collision element as MoveIt's robot filter grows its body, by
-//! a [`Padding`]: a mesh from its piece, a primitive as itself. It tests whether a point
-//! lies inside a grown link, or inside any link of the grown chain.
+//! A [`Mask`] grows every collision element by a [`Padding`]: the element scaled about
+//! its center, a mesh from its piece and a primitive as itself, and every point within
+//! the offset of the scaled element. It tests whether a point lies inside a grown link,
+//! or inside any link of the grown chain.
 
 use chain_kinematics::{Chain, ChainSpec};
 use nalgebra::{Isometry3, Point3, Vector3};
 
 use crate::GeometryError;
 use crate::fit::fit_pieces;
-use crate::gjk::{Hull, Placed};
+use crate::gjk::{self, Hull, Placed, Vertex};
+use crate::hull::ConvexHull;
 use crate::urdf_collision::{Collision, CollisionGeometry, UrdfCollisions};
-
-/// A point this far outside a face or the box of a grown mesh, in meters, counts as
-/// inside it, as MoveIt's robot filter counts it for a face of a convex mesh. A piece's
-/// own vertex then lies inside its grown box whichever way the box's center and extents
-/// round.
-const BOUNDARY_SLACK_M: f64 = 1e-9;
-
-/// A vertex this close to the center of its piece, in meters, keeps its place when the
-/// piece grows: it has no direction to move along. MoveIt's robot filter uses the same.
-const CENTER_EPS_M: f64 = 1e-9;
 
 /// The pieces of one link of a chain.
 #[derive(Debug)]
@@ -190,17 +182,19 @@ impl PlacedChain<'_> {
     }
 }
 
-/// How a [`Mask`] grows each collision element, as MoveIt's robot filter grows its
-/// body. A mesh grows from its piece: each vertex moves away from the center of the
-/// piece's vertices to `scale` times its distance from it, and `offset` meters
-/// farther, and the piece's box along the axes of the mesh element's frame, as MoveIt
-/// aligns a mesh's box, grows to `scale` times its size about its own center, and
-/// `offset` meters farther on each side. A face moves out through its
-/// grown first vertex: by `scale - 1` times its distance from the center, and by at most
-/// `offset` more. Past a sharp edge, where two moved faces meet, the grown piece reaches
-/// farther than its faces moved, as MoveIt's does. A primitive grows as itself, about
-/// its element's origin: a box's half extents, a cylinder's radius and half length and
-/// a sphere's radius each become `scale` times their own, plus `offset`.
+/// How a [`Mask`] grows each collision element: the element scaled by `scale` about its
+/// center, and every point within `offset` meters of the scaled element. A mesh scales
+/// from its piece, about the mean of the piece's vertices; a box, a cylinder and a sphere
+/// scale as themselves, about their element's origin.
+///
+/// So a grown element holds every point within the offset of the scaled element, and no
+/// point farther from it. A mesh's piece holds the convex hull of the mesh and lies
+/// within its fit error of it, so at a scale of 1 a grown mesh holds every point within
+/// the offset of the mesh's convex hull, and no point farther from that hull than the
+/// offset plus the fit error.
+///
+/// MoveIt's robot filter grows a body by sharp planes; the crate's README states how
+/// (The robot filter).
 #[derive(Debug, Clone, Copy)]
 pub struct Padding {
     scale: f64,
@@ -271,7 +265,7 @@ impl PlacedMask<'_> {
 
     /// Whether `point`, in the frame of the URDF root, lies inside a grown link.
     pub fn contains(&self, point: &Point3<f64>) -> bool {
-        self.links.iter().any(|link| link.contains(point))
+        any_holds(|| self.links.iter().flat_map(|link| link.pieces_about(point)))
     }
 }
 
@@ -292,38 +286,79 @@ impl PlacedGrownLink<'_> {
     /// Whether `point`, in the frame of the URDF root, lies inside a grown piece of the
     /// link.
     pub fn contains(&self, point: &Point3<f64>) -> bool {
+        any_holds(|| self.pieces_about(point))
+    }
+
+    /// Each grown piece of the link, with `point`, in the frame of the URDF root, in the
+    /// link's frame.
+    fn pieces_about(
+        &self,
+        point: &Point3<f64>,
+    ) -> impl Iterator<Item = (&GrownPiece, Point3<f64>)> {
         let local = self.root_in_link * point;
-        self.pieces.iter().any(|piece| piece.contains(&local))
+        self.pieces.iter().map(move |piece| (piece, local))
     }
 }
 
-/// A collision element grown by a padding, in its link's frame, as MoveIt's robot filter
-/// holds its body.
+/// Whether a grown piece of `pieces`, each with a point in its link's frame, holds its
+/// point: first by the screens of every piece, then by the distance from each piece
+/// whose screens leave its point in its shell, so a piece that a screen answers for
+/// spares every distance.
+fn any_holds<'a, I>(pieces: impl Fn() -> I) -> bool
+where
+    I: Iterator<Item = (&'a GrownPiece, Point3<f64>)>,
+{
+    let screened = pieces().try_fold(false, |shell, (piece, local)| match piece.screen(&local) {
+        Screen::Inside => None,
+        Screen::Shell(_) => Some(true),
+        Screen::Outside => Some(shell),
+    });
+    match screened {
+        None => true,
+        Some(false) => false,
+        Some(true) => pieces().any(|(piece, local)| match piece.screen(&local) {
+            Screen::Shell(hull) => gjk::distance(&Vertex(local), hull).distance <= piece.offset,
+            Screen::Inside | Screen::Outside => false,
+        }),
+    }
+}
+
+/// What the screens of a grown piece tell of a point.
+enum Screen<'a> {
+    /// The point lies within the offset of the scaled element.
+    Inside,
+    /// The point lies farther than the offset from the scaled element.
+    Outside,
+    /// The point lies beyond this scaled piece of a mesh, and within each of its faces
+    /// moved out by the offset: its distance from the piece tells.
+    Shell(&'a Hull),
+}
+
+/// A collision element grown by a padding, in its link's frame: every point within
+/// `offset` meters of the element scaled about its center.
 #[derive(Debug)]
-enum GrownPiece {
-    /// A mesh, grown from its piece as a convex mesh body: the piece's box, along the
-    /// axes of the frame of the mesh's element, as MoveIt aligns a mesh's box, grown
-    /// about its own center, and the planes of the piece's faces, each moved out through
-    /// a grown vertex of the face. A point lies inside when it lies in both.
-    Mesh {
-        link_to_element: Isometry3<f64>,
-        box_center: Point3<f64>,
-        box_half_extents: Vector3<f64>,
-        /// Each face's outward unit normal and its plane's offset along it.
-        planes: Vec<(Vector3<f64>, f64)>,
-    },
-    /// A box, with its grown half extents along the axes of its frame.
+struct GrownPiece {
+    scaled: Scaled,
+    offset: f64,
+}
+
+/// A collision element scaled about its center, in its link's frame.
+#[derive(Debug)]
+enum Scaled {
+    /// A mesh's piece, scaled about the mean of its vertices.
+    Mesh(Hull),
+    /// A box, with its scaled half extents along the axes of its frame.
     Box {
         link_to_box: Isometry3<f64>,
         half_extents: Vector3<f64>,
     },
-    /// A cylinder about the z axis of its frame, with its grown radius and half length.
+    /// A cylinder about the z axis of its frame, with its scaled radius and half length.
     Cylinder {
         link_to_cylinder: Isometry3<f64>,
         radius: f64,
         half_length: f64,
     },
-    /// A sphere, with its grown radius.
+    /// A sphere, with its scaled radius.
     Sphere { center: Point3<f64>, radius: f64 },
 }
 
@@ -331,108 +366,115 @@ impl GrownPiece {
     fn new(piece: &Piece, padding: Padding) -> Self {
         let Padding { scale, offset } = padding;
         let element = &piece.element;
-        match element.geometry {
-            CollisionGeometry::Mesh { .. } => Self::mesh(piece, padding),
-            CollisionGeometry::Box { size } => GrownPiece::Box {
+        let scaled = match element.geometry {
+            CollisionGeometry::Mesh { .. } => Scaled::Mesh(scaled_hull(&piece.hull, scale)),
+            CollisionGeometry::Box { size } => Scaled::Box {
                 link_to_box: element.origin.inverse(),
-                half_extents: size * (scale / 2.0) + Vector3::repeat(offset),
+                half_extents: size * (scale / 2.0),
             },
-            CollisionGeometry::Cylinder { radius, length } => GrownPiece::Cylinder {
+            CollisionGeometry::Cylinder { radius, length } => Scaled::Cylinder {
                 link_to_cylinder: element.origin.inverse(),
-                radius: radius * scale + offset,
-                half_length: length * scale / 2.0 + offset,
+                radius: radius * scale,
+                half_length: length * scale / 2.0,
             },
-            CollisionGeometry::Sphere { radius } => GrownPiece::Sphere {
+            CollisionGeometry::Sphere { radius } => Scaled::Sphere {
                 center: Point3::from(element.origin.translation.vector),
-                radius: radius * scale + offset,
+                radius: radius * scale,
             },
-        }
+        };
+        GrownPiece { scaled, offset }
     }
 
-    fn mesh(piece: &Piece, padding: Padding) -> Self {
-        let hull = &piece.hull;
-        assert_eq!(hull.inflation(), 0.0, "a fitted piece carries no rounding");
-        let vertices = hull.vertices();
-        let link_to_element = piece.element.origin.inverse();
-        let (lower, upper) = vertices.iter().map(|v| link_to_element * v).fold(
-            (
-                Point3::from(Vector3::repeat(f64::INFINITY)),
-                Point3::from(Vector3::repeat(f64::NEG_INFINITY)),
-            ),
-            |(lower, upper), v| (lower.inf(&v), upper.sup(&v)),
-        );
-        let center = hull.center();
-        let grown: Vec<Point3<f64>> = vertices
-            .iter()
-            .map(|v| {
-                let away = v - center;
-                let distance = away.norm();
-                let reach = if distance > CENTER_EPS_M {
-                    padding.offset / distance
-                } else {
-                    0.0
-                };
-                center + away * (padding.scale + reach)
-            })
-            .collect();
-        let planes = hull
-            .faces()
-            .iter()
-            .zip(hull.planes())
-            .map(|(&[first, ..], &(normal, _))| (normal, normal.dot(&grown[first].coords)))
-            .collect();
-        GrownPiece::Mesh {
-            link_to_element,
-            box_center: nalgebra::center(&lower, &upper),
-            box_half_extents: (upper - lower) * (padding.scale / 2.0)
-                + Vector3::repeat(padding.offset),
-            planes,
-        }
-    }
-
-    fn contains(&self, point: &Point3<f64>) -> bool {
-        match self {
-            GrownPiece::Mesh {
-                link_to_element,
-                box_center,
-                box_half_extents,
-                planes,
-            } => {
-                let in_box = (link_to_element * point - box_center)
-                    .abs()
-                    .iter()
-                    .zip(box_half_extents.iter())
-                    .all(|(from_center, half_extent)| {
-                        from_center - half_extent - BOUNDARY_SLACK_M <= 0.0
-                    });
-                in_box
-                    && planes.iter().all(|(normal, offset)| {
-                        normal.dot(&point.coords) - offset - BOUNDARY_SLACK_M <= 0.0
-                    })
+    /// What the screens tell of `point`, in the link's frame. A primitive's screen is
+    /// its distance from the scaled primitive, which answers for every point. A point
+    /// farther than the offset from a mesh's bounding sphere, or beyond a face moved out
+    /// by the offset, lies outside, and a point inside every face lies inside. A point
+    /// between the two lies inside when it lies within the offset of the face it lies
+    /// highest above, a part of the piece; every other point lies in the shell.
+    fn screen(&self, point: &Point3<f64>) -> Screen<'_> {
+        let offset = self.offset;
+        let within = |distance: f64| {
+            if distance <= offset {
+                Screen::Inside
+            } else {
+                Screen::Outside
             }
-            GrownPiece::Box {
+        };
+        match &self.scaled {
+            Scaled::Mesh(hull) => screen_a_hull(hull, offset, point),
+            Scaled::Box {
                 link_to_box,
                 half_extents,
-            } => (link_to_box * point)
-                .coords
-                .abs()
-                .iter()
-                .zip(half_extents.iter())
-                .all(|(from_center, half_extent)| from_center <= half_extent),
-            GrownPiece::Cylinder {
+            } => within(
+                ((link_to_box * point).coords.abs() - half_extents)
+                    .sup(&Vector3::zeros())
+                    .norm(),
+            ),
+            Scaled::Cylinder {
                 link_to_cylinder,
                 radius,
                 half_length,
             } => {
                 let local = link_to_cylinder * point;
-                local.z.abs() <= *half_length
-                    && local.x * local.x + local.y * local.y <= radius * radius
+                let radial = (local.coords.xy().norm() - radius).max(0.0);
+                let axial = (local.z.abs() - half_length).max(0.0);
+                within(radial.hypot(axial))
             }
-            GrownPiece::Sphere { center, radius } => {
-                (point - center).norm_squared() <= radius * radius
-            }
+            Scaled::Sphere { center, radius } => within((point - center).norm() - radius),
         }
     }
+}
+
+/// What the screens of the scaled piece `hull` of a mesh, grown by `offset`, tell of
+/// `point`; [`GrownPiece::screen`] names them.
+fn screen_a_hull<'a>(hull: &'a Hull, offset: f64, point: &Point3<f64>) -> Screen<'a> {
+    let reach = hull.bound_radius() + offset;
+    if (point - hull.center()).norm_squared() > reach * reach {
+        return Screen::Outside;
+    }
+    let highest = hull.planes().iter().enumerate().try_fold(
+        (f64::NEG_INFINITY, 0),
+        |(highest, at), (face, (normal, plane))| {
+            let height = normal.dot(&point.coords) - plane;
+            (height <= offset).then_some(if height > highest {
+                (height, face)
+            } else {
+                (highest, at)
+            })
+        },
+    );
+    let Some((height, face)) = highest else {
+        return Screen::Outside;
+    };
+    let corners = hull.faces()[face].map(|vertex| hull.vertices()[vertex]);
+    if height <= 0.0 || gjk::distance_to_triangle(point, corners) <= offset {
+        Screen::Inside
+    } else {
+        Screen::Shell(hull)
+    }
+}
+
+/// `hull` scaled by `scale` about the mean of its vertices.
+fn scaled_hull(hull: &Hull, scale: f64) -> Hull {
+    assert_eq!(hull.inflation(), 0.0, "a fitted piece carries no rounding");
+    let center = hull.center();
+    let scaled = ConvexHull {
+        vertices: hull
+            .vertices()
+            .iter()
+            .map(|v| center + (v - center) * scale)
+            .collect(),
+        faces: hull.faces().to_vec(),
+        planes: hull
+            .planes()
+            .iter()
+            .map(|&(normal, plane)| {
+                let from_center = normal.dot(&center.coords);
+                (normal, from_center + (plane - from_center) * scale)
+            })
+            .collect(),
+    };
+    Hull::new(&scaled, 0.0).expect("a scaled piece is a hull")
 }
 
 /// The links on the path from the URDF root to `tip`, the tip included.

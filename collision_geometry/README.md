@@ -11,8 +11,8 @@ serial chain placed at a joint configuration. No hardware or messaging dependenc
 - `gjk` measures the distance between two convex shapes, signed through contact.
 - `chain::ChainGeometry` holds the pieces of every link that a serial chain's joints
   move, places them at a configuration, each with a bounding sphere, and tests
-  whether a point lies inside a link, or inside the chain, grown as MoveIt's robot
-  filter grows it.
+  whether a point lies inside a link, or inside the chain, grown by a padding: every
+  point within the offset of each element scaled about its center.
 - `urdf_collision`, `stl` and `hull` read the collision elements of a URDF (meshes,
   boxes, cylinders and spheres) and build the exact convex hull of a point cloud.
 
@@ -36,7 +36,7 @@ for (link, piece) in left.place(&q).pieces() {
     let (center, radius) = piece.bounding_sphere();
 }
 
-// MoveIt's robot filter: each piece scaled by 1.0 and padded by 3 cm.
+// The robot filter: every point within 3 cm of each element, scaled by 1.0.
 let mask = left.mask(Padding::new(1.0, 0.03)?);
 let grown = mask.at(&q);
 let on_the_arm = grown.contains(&point);
@@ -113,30 +113,54 @@ caller can tell separating motion from approaching motion even inside an overlap
 
 ## The robot filter
 
-`Mask` holds every collision element grown by a `Padding`, as MoveIt's robot filter
-(`point_containment_filter::ShapeMask` over the bodies of geometric_shapes 2.3.4)
-holds a body. Placed at a configuration, it answers for each link
+`Mask` holds every collision element grown by a `Padding`: the element scaled by
+`scale` about its center, and every point within `offset` meters of the scaled
+element. Placed at a configuration, it answers for each link
 (`PlacedGrownLink::contains`) and for the chain (`PlacedMask::contains`, any link).
 
-A mesh grows as MoveIt grows a `bodies::ConvexMesh`, from the piece fitted about it:
+- A mesh scales from its piece, about the mean of the piece's vertices. A point inside
+  every face of the scaled piece is inside it, and a point beyond the piece's bounding
+  sphere or a face moved out by the offset is farther than the offset from it. A point
+  between the two is inside when it lies within the offset of the face it lies highest
+  above, and otherwise when its distance from the scaled piece, by GJK
+  (`gjk::distance` of a `gjk::Vertex`), is at most the offset. A query screens every
+  piece of the link, or of the chain, before it measures a distance.
+- A box, a cylinder and a sphere scale as themselves, about the element's origin, and a
+  point is inside when its distance from the scaled primitive is at most the offset: a
+  grown box and a grown cylinder round their edges. The piece of a primitive, the
+  polytope about it, stays its surface for distances.
 
-- each vertex moves away from the mean of the piece's vertices to `scale` times its
-  distance from it, and `offset` meters farther;
-- the piece's box along the axes of the mesh element's frame, as MoveIt aligns a
-  mesh's box, grows to `scale` times its size about its own center, and `offset`
-  meters farther on each side;
-- a point lies inside when it lies in the grown box and behind every face plane, each
-  moved out through the grown first vertex of its face. Both tests allow 1 nm, the
-  slack MoveIt allows the faces.
+So a grown element holds every point within the offset of the scaled element, and no
+point farther from it. A mesh's piece holds the convex hull of the mesh and lies within
+its fit error (1 mm) of it, so at a scale of 1 a grown mesh holds every point within the
+offset of the mesh's convex hull, and no point farther from that hull than the offset
+plus the fit error.
 
-A face moves out through one grown vertex: by `scale - 1` times its distance from the
-center, and by at most `offset` more. Past a sharp edge, where two moved faces meet,
-the grown piece reaches farther than its faces moved, as MoveIt's does.
+MoveIt's robot filter (`point_containment_filter::ShapeMask` over the bodies of
+geometric_shapes 2.3.4, `bodies.cpp`) grows a body by sharp planes, and departs from
+this growth:
 
-A primitive grows as MoveIt grows its body, about the element's origin, with no slack:
-a box's half extents, a cylinder's radius and half length, and a sphere's radius each
-become `scale` times their own, plus `offset`. Its piece, the polytope about the
-primitive, stays its surface for distances.
+- A box's half extents, and a cylinder's radius and half length, become `scale` times
+  their own plus `offset`, so their edges reach past the offset: a box's corner by up
+  to `sqrt(3)` times it. A sphere grows alike in both.
+- A convex mesh moves each vertex along its line from the mean of the hull's vertices
+  onto the plane of each face about the vertex, scaled and moved out by the offset, and
+  takes the mean of those points (`computeScaledVerticesFromPlaneProjections`). The
+  plane of each face passes through the moved first vertex of the face, and a point is
+  inside when it is inside every such plane (`isPointInsidePlanes`) and inside the
+  mesh's box, scaled about its own center and grown by the offset on each side. Its
+  planes meet in edges that reach past the offset, and a plane that the mean places
+  nearer than the offset keeps points within it.
+
+On the probes of the ROS reference harness (see Testing), this filter deletes all 121
+probes that lie within 3 cm of the hull of an OpenArm v2 mesh at an offset of 3 cm,
+where MoveIt keeps 31 probes within 3 cm of a hull; MoveIt deletes 2 probes of the
+primitive arm that lie beyond 3 cm of every element, which this filter keeps.
+
+On a 640x360 depth frame of a table scene in front of OpenArm v2, 230,400 points with
+both arms at Ready and a padding of 1.0 and 3 cm, on one core, a query takes 105 ns a
+point, 24.1 ms a frame: 378 ns for one of the 33,855 points the arms' mask holds, and
+58 ns for one it does not. Placing the mask of both arms takes 0.5 µs.
 
 ## Building
 
@@ -175,8 +199,11 @@ src/
                      transforms
   error.rs           GeometryError, ContainmentFailure
 tests/
-  chain_geometry.rs                  properties of the pieces of drawn chains
-  common/                            the dressed robots and paddings the properties draw
+  chain_geometry.rs                  properties of the pieces of drawn chains, and
+                                     the robot filter on one link
+  common/properties.rs               the dressed robots and paddings the properties draw
+  common/growth.rs                   MoveIt's growth of a primitive, which the
+                                     properties and the MoveIt comparison read
   fixtures/thin_plate.rs             a cloud whose first hull fails on rounding
   fit_prints_nothing.rs              a fit prints nothing to stdout or stderr
   hull_without_a_free_descriptor.rs  a hull with no file descriptor free
@@ -185,23 +212,34 @@ tests/
 
 ## Testing
 
-`cargo test` covers the hull, the fit and GJK analytically (containment of every
-input point, containment after the fit, box and sphere distances, EPA depth and
-direction, signed continuity through contact, isometry invariance), the clipping, the
-surfaces of the primitives, the near-degenerate box clouds the property tests shrank
-to, and properties of chains of one to seven joints that
+`cargo test` covers the hull, the fit and GJK analytically (containment of every input
+point, containment after the fit, box and sphere distances, EPA depth and direction,
+signed continuity through contact, isometry invariance), the clipping, the surfaces of
+the primitives, the near-degenerate box clouds the property tests shrank to, and
+properties of chains of one to seven joints that
 `kinematics_properties::on_a_drawn_robot` draws, each mounted on a continuous joint
 the chain does not drive, with a second such joint between two drawn links, and
 dressed in meshes (a cube, and a wedge turned about its origin on one link), boxes,
 cylinders and spheres: the chain carries exactly the links its joints move, the link
 on the skipped joint among them, with one piece per collision element, each piece
-holds its element, each bounding sphere holds its piece, a point between an element
-and the element grown by the padding lies inside its grown link, and a point farther
-outside every element than the padding grows it lies outside every grown link; for a
-primitive, a point 1 µm inside the surface of the grown primitive lies inside, and one
-past it outside. A wedge whose vertices' mean lies off the center of its box holds the
-padded points that the inside property draws, and the box of the wedge turned 45
-degrees grows along the axes of its element's frame. `tests/fit_prints_nothing.rs` runs a hull, a cloud with no hull and the fit of
+holds its element, each bounding sphere holds its piece, every point within the offset
+of a scaled element lies inside its grown link, and no point farther than the offset
+from every scaled element of a link lies inside the grown link. The two filter
+properties draw a point of the scaled element's surface, at a vertex, on an edge or on
+a face of a mesh's piece, on a face, an edge or a corner of a box, and on the side, a
+cap or a rim of a cylinder, and step from it along a drawn direction of the surface's
+normal cone, so the step is the point's distance from the scaled element. Three cases
+on one link: a point 1.13 offsets past the rim of a scaled cylinder and one 1.21
+offsets past a corner of a scaled box lie outside the grown link, and each vertex of a
+box mesh's scaled piece, moved out by half the offset along the normal of each face
+through it, lies inside. At the 100 cases a property runs by default, derandomized as
+on CI (hegel's `ci` profile), a filter that grows a cylinder with a sharp rim fails the
+cylinder case and the second property; one that grows a box with sharp edges fails the
+box case, the second property and the MoveIt test below; one that compares a mesh's
+distance with zero fails the mesh case and the MoveIt test; and one that holds every
+point of a mesh within its faces moved out by the offset fails the second property and
+the MoveIt test.
+`tests/fit_prints_nothing.rs` runs a hull, a cloud with no hull and the fit of
 an OpenArm arm in a child process of its own and reads that it prints nothing, and
 `tests/hull_without_a_free_descriptor.rs` builds a hull with no file descriptor free.
 `HEGEL_TEST_CASES` sets the cases each property runs, 100 by default.
@@ -211,16 +249,24 @@ the robot filter against MoveIt: at every configuration of the chain collision
 scenarios of the [ROS reference harness](../ros_reference), the OpenArm v2 arms dressed
 in their meshes and an arm dressed in boxes, cylinders and spheres and a turned wedge,
 with probes 10 µm either side of the surface of each grown primitive, the chain
-carries the links that MoveIt's chain carries, each at MoveIt's frame within 1e-12,
-and, for each padding, the filter answers as MoveIt's robot filter on every probe
-point outside the band of each body: a mesh's fit error plus the padding, and 1 µm
-about the surface of a grown primitive, which MoveIt grows about the element's origin.
-Inside the bands of each padding, the upper end of the 99% Wilson score interval of
-the share of the probes on which the two agree reaches 90%: on OpenArm v2 the two
-agree on 3 of 3, 80 of 88 and 31 of 33, where the test asks for 2, 72 and 26, and the
-bands of the primitive arm hold 0, 1 and 0 probes. At these counts the check fails a
-filter that grows a mesh with no offset, which agrees on 37 of 88, and passes one that
-grows a mesh with no scale, which agrees on 28 of 33: three properties of
-`tests/chain_geometry.rs` fail that filter, and the probes about each grown primitive
-fail one that grows every element with no scale. The test reads the harness's committed
-reference outputs, so it runs with no ROS on the machine.
+carries the links that MoveIt's chain carries, each at MoveIt's frame within 1e-12.
+For each padding, the filter holds to its rule on every probe: a probe within the
+offset of a mesh's hull, scaled about its piece's center, or of a scaled primitive lies
+inside its grown link, and a probe farther than the offset plus the scaled fit error
+from every hull, and than the offset from every scaled primitive, lies outside the
+grown chain. The filter answers as MoveIt's robot filter on every probe outside the
+band of each body: a probe inside a mesh's hull, or within the offset of a scaled
+primitive, both hold, and neither holds a probe that the rule puts outside and that
+lies outside MoveIt's grown box of every mesh and beyond the sharp growth of every
+primitive. Inside the bands, the test holds the counts of the probes by how the two
+answer: on OpenArm v2, 13, 119 and 56 probes at the three paddings (none, 3 cm, and a
+scale of 1.1 with 1 cm), where MoveIt deletes none beyond the offset of every scaled
+body, and keeps 31 probes at 3 cm and 6 at 1.1 with 1 cm within the offset of a scaled
+hull, and 2 more within a fit error past it; on the primitive arm, 2, 2 and 0 probes,
+where MoveIt deletes the 2 at 3 cm beyond the offset of every element. A filter that
+holds every point of a mesh within its faces moved out by the offset puts a probe of
+OpenArm v2 past the offset of every body inside the grown chain, one that grows a box
+with sharp edges a probe of the primitive arm, and one that compares a mesh's distance
+with zero leaves a probe of OpenArm v2 within the offset of a body outside its grown
+link, and the test fails each. The test reads the harness's committed reference
+outputs, so it runs with no ROS on the machine.

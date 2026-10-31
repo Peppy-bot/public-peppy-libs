@@ -1,39 +1,41 @@
 //! The collision geometry of a chain against MoveIt: `ChainGeometry` places the links
 //! that a serial chain read from a URDF carries at a configuration of its joints, and its
-//! `Mask` grows each collision element as MoveIt's robot filter grows its body and tells
-//! whether a point lies inside a grown link or the grown chain. The evidence: at every
-//! configuration of every chain collision scenario of the ROS reference harness, OpenArm
-//! v2 dressed in its meshes and an arm dressed in boxes, cylinders and spheres and a
-//! turned wedge, the chain
-//! carries the links that MoveIt's chain carries, each at MoveIt's transform within
-//! [`FRAME_TOLERANCE`], and for each padding the filter answers as MoveIt's robot filter
-//! on every probe point outside the band of each body.
+//! `Mask` grows each collision element by a padding and tells whether a point lies inside
+//! a grown link or the grown chain. The evidence: at every configuration of every chain
+//! collision scenario of the ROS reference harness, OpenArm v2 dressed in its meshes and
+//! an arm dressed in boxes, cylinders and spheres and a turned wedge, the chain carries
+//! the links that MoveIt's chain carries, each at MoveIt's transform within
+//! [`FRAME_TOLERANCE`], and for each padding the filter holds to its rule on every probe,
+//! and answers as MoveIt's robot filter outside the band of each body.
 //!
-//! MoveIt grows the convex hull of each mesh; the filter grows the piece fitted about it,
-//! which lies at most its fit error outside that hull. A padding moves each face of a
-//! hull out by at most `scale - 1` times its distance from the center the hull grows
-//! about, MoveIt's for the mesh's hull, plus the offset. So a point deeper inside a piece
-//! than its fit error lies inside the mesh's hull, so inside its grown link and both
-//! grown chains; and a point farther beyond a face of every piece, and beyond a face of
-//! every mesh's hull, than the padding moves that face lies outside both grown chains.
-//! Between the two lies the band of a mesh, about as wide as its fit error plus the
-//! padding. Inside the bands the two filters grow different hulls about different
-//! centers, and for each padding the upper end of the Wilson score interval, at
-//! [`BAND_CONFIDENCE`], of the share of the probes on which they agree reaches
-//! [`BAND_AGREEMENT`]. At the committed counts that fails a filter that grows a mesh with
-//! no offset; one that grows a mesh with no scale passes it and fails the properties of
-//! `chain_geometry.rs`, and one that grows every element with no scale fails on the
-//! probes about the grown primitives. A primitive grows alike in both filters, about its
-//! element's origin, which MoveIt's center equals, so its band is [`TOLERANCE`] about the
-//! surface of the grown primitive. Each padding holds probes deep inside a body and
-//! beyond every band.
+//! The rule: a grown element holds every point within the offset of the element scaled
+//! about its center, and no point farther. A mesh scales from its piece, which holds the
+//! convex hull of the mesh and lies within its fit error of it, so a probe within the
+//! offset of that hull, scaled about the piece's center, lies inside its grown link, and
+//! a probe farther than the offset plus the scaled fit error from the hull of every
+//! mesh, and farther than the offset from every scaled primitive, lies outside the grown
+//! chain, each by [`TOLERANCE`], the rounding of two hulls of one mesh.
+//!
+//! MoveIt's robot filter grows a body by sharp planes, as the crate's README states
+//! (The robot filter). The two filters agree on a probe inside a mesh's hull, or within
+//! the offset less [`TOLERANCE`] of a scaled primitive, which both hold, and on a probe
+//! that the rule puts outside and that lies outside MoveIt's grown box of every mesh
+//! and beyond the sharp growth of every primitive, which neither holds. Between the two
+//! lies the band of a body, where MoveIt's edges reach past the offset and its planes
+//! can stop short of it. Inside the bands, MoveIt deletes probes that lie beyond the
+//! offset of every scaled body, and keeps probes within the offset of a scaled body:
+//! [`BAND`] holds the counts on the committed probes, and the test holds the filter to
+//! them. A filter that holds every point of a mesh within its faces moved out by the
+//! offset, or grows a box with sharp edges, puts a probe farther than the offset from
+//! every body inside the grown chain, and fails the rule. Each padding holds probes
+//! deep inside a body, within the offset of one, and beyond every band.
 
 use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{ChainGeometry, Padding, Piece, PlacedChain};
 use collision_geometry::gjk::{self, Hull, Vertex};
 use collision_geometry::hull::{ConvexHull, exact_hull};
 use collision_geometry::nalgebra::{Isometry3, Matrix3, Point3, Rotation3, Translation3, Vector3};
-use collision_geometry::urdf_collision::CollisionGeometry;
+use collision_geometry::urdf_collision::{Collision, CollisionGeometry};
 use kinematics_properties::TOLERANCE;
 use ros_reference::LinkPose;
 use ros_reference::chain_collision::{Cases, ChainCase};
@@ -49,13 +51,59 @@ const FRAME_TOLERANCE: f64 = 1e-12;
 /// The joint count of every chain that the test poses.
 const CHAIN_JOINTS: usize = 7;
 
-/// The share that the upper end of the Wilson score interval, at [`BAND_CONFIDENCE`], of
-/// the share of the probes inside the bands of a padding on which the two filters agree
-/// reaches.
-const BAND_AGREEMENT: f64 = 0.9;
+/// The probes inside the bands of each scenario, for each of its paddings in order, by
+/// how the two filters answer on them.
+const BAND: [(&str, [Band; 3]); 2] = [
+    (
+        "chain_collision_openarm_v2",
+        [
+            Band::new(13, 0, 0, 0),
+            Band::new(88, 0, 31, 0),
+            Band::new(48, 0, 6, 2),
+        ],
+    ),
+    (
+        "chain_collision_primitive_arm",
+        [
+            Band::new(2, 0, 0, 0),
+            Band::new(0, 2, 0, 0),
+            Band::new(0, 0, 0, 0),
+        ],
+    ),
+];
 
-/// The standard normal quantile of the two-sided 99% Wilson score interval.
-const BAND_CONFIDENCE: f64 = 2.576;
+/// How the two filters answer on the probes inside the bands of a padding.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct Band {
+    /// The probes on which the two agree.
+    agreed: usize,
+    /// The probes that MoveIt deletes, and that lie beyond the offset of every scaled
+    /// body.
+    moveit_deletes_beyond: usize,
+    /// The probes that MoveIt keeps, and that lie within the offset of the hull of a
+    /// scaled mesh, or of a scaled primitive.
+    moveit_keeps_within: usize,
+    /// The probes that MoveIt keeps, that lie within the offset of the piece of a scaled
+    /// mesh, and beyond the offset of every scaled hull and primitive: within the fit
+    /// error of a scaled piece past the offset of its hull.
+    moveit_keeps_within_a_fit_error: usize,
+}
+
+impl Band {
+    const fn new(
+        agreed: usize,
+        moveit_deletes_beyond: usize,
+        moveit_keeps_within: usize,
+        moveit_keeps_within_a_fit_error: usize,
+    ) -> Self {
+        Band {
+            agreed,
+            moveit_deletes_beyond,
+            moveit_keeps_within,
+            moveit_keeps_within_a_fit_error,
+        }
+    }
+}
 
 fn moveit_pose(pose: &LinkPose) -> Isometry3<f64> {
     Isometry3::from_parts(
@@ -72,90 +120,120 @@ fn pose_of<'a>(placed: &'a PlacedChain, link: &str) -> &'a Isometry3<f64> {
         .unwrap_or_else(|| panic!("the chain carries {link}"))
 }
 
-/// Whether `point` lies farther beyond a face of the hull of `planes` than `padding`
-/// moves that face out from `center`, by more than [`TOLERANCE`], the rounding of two
-/// hulls of one mesh.
-fn beyond_the_padding(
-    planes: &[(Vector3<f64>, f64)],
-    center: &Point3<f64>,
-    padding: Padding,
-    point: &Point3<f64>,
-) -> bool {
-    planes.iter().any(|(normal, offset)| {
-        let moved =
-            (padding.scale() - 1.0) * (offset - normal.dot(&center.coords)) + padding.offset();
-        normal.dot(&point.coords) - offset > moved + TOLERANCE
-    })
-}
-
-/// Where a probe point lies against a body.
-#[derive(PartialEq)]
-enum Side {
+/// Where a probe point lies against a body grown by a padding.
+struct Side {
     /// Inside the body in both filters.
-    Deep,
+    deep: bool,
     /// Outside the body in both filters.
-    Beyond,
-    /// In the band, where the two filters may differ.
-    Band,
+    beyond: bool,
+    /// Within the offset of the scaled body, less [`TOLERANCE`]: inside it by the rule.
+    within: bool,
+    /// Farther from the scaled body than the offset, by [`TOLERANCE`], and its piece's
+    /// scaled fit error for a mesh: outside it by the rule.
+    past: bool,
+    /// Within the offset of the hull of the scaled mesh, or of the scaled primitive.
+    within_the_offset_of_its_shape: bool,
 }
 
-/// How the test bands a body of a carried link.
+/// How the test places a probe against a body of a carried link.
 enum Body<'a> {
-    /// A mesh: its piece, the convex hull of its surface, the center MoveIt grows that
-    /// hull about, and how far the piece's farthest vertex lies outside that hull.
-    Mesh {
-        piece: &'a Hull,
-        hull: ConvexHull,
-        moveit_center: Point3<f64>,
-        fit_error: f64,
-    },
-    /// A primitive, which both filters grow alike.
+    Mesh(Box<MeshBody>),
+    /// A primitive, which both filters grow about its element's origin.
     Primitive(&'a Piece),
+}
+
+/// A mesh: the convex hull of its surface, that hull scaled about the center of its
+/// piece's vertices for each padding, its box along the axes of its element's frame, and
+/// how far the piece's farthest vertex lies outside the hull.
+struct MeshBody {
+    hull: Hull,
+    scaled_hulls: Vec<Hull>,
+    link_to_element: Isometry3<f64>,
+    box_center: Point3<f64>,
+    box_half_extents: Vector3<f64>,
+    fit_error: f64,
 }
 
 impl Body<'_> {
     /// Where `point`, in the frame of the body's link, lies against the body grown by
-    /// `padding`.
-    fn side(&self, padding: Padding, point: &Point3<f64>) -> Side {
+    /// the padding `padding`, the `index`th of the scenario.
+    fn side(&self, padding: Padding, index: usize, point: &Point3<f64>) -> Side {
+        let offset = padding.offset();
         match self {
-            Body::Mesh {
-                piece,
-                hull,
-                moveit_center,
-                fit_error,
-            } => {
-                if gjk::distance(&Vertex(*point), *piece).distance < -(fit_error + TOLERANCE) {
-                    Side::Deep
-                } else if beyond_the_padding(piece.planes(), &piece.center(), padding, point)
-                    && beyond_the_padding(&hull.planes, moveit_center, padding, point)
-                {
-                    Side::Beyond
-                } else {
-                    Side::Band
+            Body::Mesh(mesh) => {
+                let MeshBody {
+                    hull,
+                    scaled_hulls,
+                    link_to_element,
+                    box_center,
+                    box_half_extents,
+                    fit_error,
+                } = mesh.as_ref();
+                let from_scaled_hull =
+                    gjk::distance(&Vertex(*point), &scaled_hulls[index]).distance;
+                let past = from_scaled_hull > offset + padding.scale() * fit_error + TOLERANCE;
+                let beyond_the_box = ((link_to_element * point - box_center).abs()
+                    - box_half_extents * padding.scale())
+                .add_scalar(-offset)
+                .max()
+                    > TOLERANCE;
+                Side {
+                    deep: gjk::distance(&Vertex(*point), hull).distance < -TOLERANCE,
+                    beyond: past && beyond_the_box,
+                    within: from_scaled_hull <= offset - TOLERANCE,
+                    past,
+                    within_the_offset_of_its_shape: from_scaled_hull <= offset,
                 }
             }
             Body::Primitive(piece) => {
-                let excess = grown_primitive_excess(piece.element(), padding, point)
+                let from_scaled =
+                    signed_distance_from_scaled_primitive(piece.element(), padding.scale(), point);
+                let sharp_excess = grown_primitive_excess(piece.element(), padding, point)
                     .expect("a primitive grows as itself");
-                if excess < -TOLERANCE {
-                    Side::Deep
-                } else if excess > TOLERANCE {
-                    Side::Beyond
-                } else {
-                    Side::Band
+                Side {
+                    deep: from_scaled <= offset - TOLERANCE,
+                    beyond: sharp_excess > TOLERANCE,
+                    within: from_scaled <= offset - TOLERANCE,
+                    past: from_scaled > offset + TOLERANCE,
+                    within_the_offset_of_its_shape: from_scaled <= offset,
                 }
             }
         }
     }
 }
 
-/// The upper end of the Wilson score interval, at [`BAND_CONFIDENCE`], of the share that
-/// `agreed` of `trials` probes make.
-fn wilson_upper(agreed: usize, trials: usize) -> f64 {
-    let (n, z) = (trials as f64, BAND_CONFIDENCE);
-    let share = agreed as f64 / n;
-    let spread = z * (share * (1.0 - share) / n + z * z / (4.0 * n * n)).sqrt();
-    (share + z * z / (2.0 * n) + spread) / (1.0 + z * z / n)
+/// The signed distance from `point`, in the frame of its link, to the primitive `element`
+/// scaled by `scale` about its origin: negative inside it, by the depth.
+fn signed_distance_from_scaled_primitive(
+    element: &Collision,
+    scale: f64,
+    point: &Point3<f64>,
+) -> f64 {
+    let local = element.origin.inverse() * point;
+    let signed = |excess: &[f64]| {
+        let outside = excess
+            .iter()
+            .map(|e| e.max(0.0).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let inside = excess
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max)
+            .min(0.0);
+        outside + inside
+    };
+    match element.geometry {
+        CollisionGeometry::Mesh { .. } => panic!("a mesh is no primitive"),
+        CollisionGeometry::Box { size } => {
+            signed((local.coords.abs() - size * (scale / 2.0)).as_slice())
+        }
+        CollisionGeometry::Cylinder { radius, length } => signed(&[
+            local.coords.xy().norm() - radius * scale,
+            local.z.abs() - length * scale / 2.0,
+        ]),
+        CollisionGeometry::Sphere { radius } => local.coords.norm() - radius * scale,
+    }
 }
 
 /// Every chain collision scenario of the harness.
@@ -200,12 +278,17 @@ fn each_chain_carries_moveits_links_at_moveits_frames() {
 }
 
 #[test]
-fn the_robot_filter_answers_as_moveits_outside_the_band() {
+fn the_robot_filter_holds_to_its_rule_and_answers_as_moveits_outside_the_band() {
     for cases in scenarios() {
-        let mut counts = vec![[0_usize; 4]; cases.paddings.len()];
+        let mut counts = vec![([0_usize; 3], Band::default()); cases.paddings.len()];
         for chain in &cases.chains {
             let at = format!("{} {}", cases.name, chain.name);
             let geometry = geometry_of(&cases, chain);
+            let paddings: Vec<Padding> = cases
+                .paddings
+                .iter()
+                .map(|grown| Padding::new(grown.scale, grown.offset).expect("a valid padding"))
+                .collect();
             let bodies: Vec<(usize, Body)> = geometry
                 .links()
                 .iter()
@@ -228,16 +311,16 @@ fn the_robot_filter_answers_as_moveits_outside_the_band() {
                         .iter()
                         .zip(centers)
                         .map(|(piece, moveit_center)| {
-                            (link, body_of(&cases, piece, moveit_center, &at))
+                            (link, body_of(&cases, piece, moveit_center, &paddings, &at))
                         })
                         .collect::<Vec<_>>()
                 })
                 .collect();
-            for (padding, grown) in cases.paddings.iter().enumerate() {
-                let padding_of = Padding::new(grown.scale, grown.offset).expect("a valid padding");
-                let mask = geometry.mask(padding_of);
-                let [deep, far, band, agreed] = &mut counts[padding];
-                for (index, configuration) in chain.configurations.iter().enumerate() {
+            for (index, (grown, padding)) in cases.paddings.iter().zip(&paddings).enumerate() {
+                let mask = geometry.mask(*padding);
+                let ([deep, within, far], band) = &mut counts[index];
+                for (configuration_index, configuration) in chain.configurations.iter().enumerate()
+                {
                     let q = positions(&configuration.positions);
                     let (placed, grown_chain) = (geometry.place(&q), mask.at(&q));
                     let poses: Vec<&Isometry3<f64>> =
@@ -245,65 +328,103 @@ fn the_robot_filter_answers_as_moveits_outside_the_band() {
                     for (probe, &moveit_inside) in configuration
                         .probes
                         .iter()
-                        .zip(&configuration.inside[padding])
+                        .zip(&configuration.inside[index])
                     {
                         let point = pose_of(&placed, &probe.link) * Point3::from(probe.position);
-                        let sides: Vec<Side> = bodies
+                        let sides: Vec<(usize, Side)> = bodies
                             .iter()
                             .map(|(link, body)| {
-                                body.side(padding_of, &(poses[*link].inverse() * point))
+                                (
+                                    *link,
+                                    body.side(*padding, index, &(poses[*link].inverse() * point)),
+                                )
                             })
                             .collect();
                         let ours = grown_chain.contains(&point);
-                        let context =
-                            format!("{at} configuration {index}, padding {grown:?}, {point}");
-                        let deep_in = bodies
-                            .iter()
-                            .zip(&sides)
-                            .find(|(_, side)| **side == Side::Deep);
-                        if let Some(((link, _), _)) = deep_in {
-                            *deep += 1;
+                        let context = format!(
+                            "{at} configuration {configuration_index}, padding {grown:?}, {point}"
+                        );
+                        *within += usize::from(sides.iter().any(|(_, side)| side.within));
+                        for (link, side) in &sides {
                             let link = &grown_chain.links()[*link];
                             assert!(
-                                link.contains(&point) && ours && moveit_inside,
-                                "{context} deep in {}: its link {}, ours {ours}, MoveIt's \
-                                 {moveit_inside}",
-                                link.name(),
-                                link.contains(&point)
+                                !side.within || link.contains(&point),
+                                "{context} lies within the offset of a scaled body of {}, \
+                                 and outside its grown link",
+                                link.name()
                             );
-                        } else if sides.iter().all(|side| *side == Side::Beyond) {
+                        }
+                        assert!(
+                            !sides.iter().all(|(_, side)| side.past) || !ours,
+                            "{context} lies past the offset of every scaled body, and inside \
+                             the grown chain"
+                        );
+                        if sides.iter().any(|(_, side)| side.deep) {
+                            *deep += 1;
+                            assert!(
+                                ours && moveit_inside,
+                                "{context} deep in a body: ours {ours}, MoveIt's {moveit_inside}"
+                            );
+                        } else if sides.iter().all(|(_, side)| side.beyond) {
                             *far += 1;
                             assert!(
                                 !ours && !moveit_inside,
                                 "{context} beyond every band: ours {ours}, MoveIt's \
                                  {moveit_inside}"
                             );
+                        } else if ours == moveit_inside {
+                            band.agreed += 1;
+                        } else if moveit_inside {
+                            band.moveit_deletes_beyond += 1;
+                        } else if sides
+                            .iter()
+                            .any(|(_, side)| side.within_the_offset_of_its_shape)
+                        {
+                            band.moveit_keeps_within += 1;
                         } else {
-                            *band += 1;
-                            *agreed += usize::from(ours == moveit_inside);
+                            band.moveit_keeps_within_a_fit_error += 1;
                         }
                     }
                 }
             }
         }
-        for (grown, [deep, far, band, agreed]) in cases.paddings.iter().zip(&counts) {
-            let at = format!("{} padding {grown:?}", cases.name);
-            assert!(
-                *deep > 0 && *far > 0,
-                "{at} holds probes deep and beyond the bands: {deep} deep, {far} beyond"
+        for (grown, ([deep, within, far], _)) in cases.paddings.iter().zip(&counts) {
+            println!(
+                "{} padding {grown:?}: {deep} probes deep, {within} within the offset of a \
+                 scaled body, {far} beyond the bands",
+                cases.name
             );
             assert!(
-                *band == 0 || wilson_upper(*agreed, *band) >= BAND_AGREEMENT,
-                "{at}: the filters agree on {agreed} of the {band} probes inside the bands"
+                *deep > 0 && *within > 0 && *far > 0,
+                "{} padding {grown:?} holds probes deep, within the offset of a body and \
+                 beyond the bands: {deep}, {within} and {far}",
+                cases.name
             );
         }
+        let bands: Vec<Band> = counts.iter().map(|(_, band)| *band).collect();
+        let expected = BAND
+            .iter()
+            .find(|(name, _)| *name == cases.name)
+            .map(|(_, bands)| bands.to_vec())
+            .unwrap_or_else(|| panic!("BAND holds no counts of {}", cases.name));
+        assert_eq!(
+            bands, expected,
+            "{}: the probes inside the bands of each padding",
+            cases.name
+        );
     }
 }
 
-/// How the test bands the body of `piece`, whose center, as MoveIt grows it, is
-/// `moveit_center`. A primitive grows about its element's origin, which MoveIt's center
-/// equals within [`FRAME_TOLERANCE`].
-fn body_of<'a>(cases: &Cases, piece: &'a Piece, moveit_center: Point3<f64>, at: &str) -> Body<'a> {
+/// How the test places probes against the body of `piece`, for each of `paddings`, whose
+/// center, as MoveIt grows it, is `moveit_center`. A primitive grows about its element's
+/// origin, which MoveIt's center equals within [`FRAME_TOLERANCE`].
+fn body_of<'a>(
+    cases: &Cases,
+    piece: &'a Piece,
+    moveit_center: Point3<f64>,
+    paddings: &[Padding],
+    at: &str,
+) -> Body<'a> {
     let element = piece.element();
     if !matches!(element.geometry, CollisionGeometry::Mesh { .. }) {
         let origin = Point3::from(element.origin.translation.vector);
@@ -316,20 +437,56 @@ fn body_of<'a>(cases: &Cases, piece: &'a Piece, moveit_center: Point3<f64>, at: 
     let surface = element
         .surface(mesh_directory(cases))
         .expect("the mesh reads");
-    let hull = exact_hull(&surface).expect("a mesh hull");
-    let reference = Hull::new(&hull, 0.0).expect("a hull");
+    let exact = exact_hull(&surface).expect("a mesh hull");
+    let hull = Hull::new(&exact, 0.0).expect("a hull");
     let fit_error = piece
         .hull()
         .vertices()
         .iter()
-        .map(|v| gjk::distance(&Vertex(*v), &reference).distance)
+        .map(|v| gjk::distance(&Vertex(*v), &hull).distance)
         .fold(0.0, f64::max);
-    Body::Mesh {
-        piece: piece.hull(),
+    let center = piece.hull().center();
+    let scaled_hulls = paddings
+        .iter()
+        .map(|padding| {
+            let scaled = ConvexHull {
+                vertices: exact
+                    .vertices
+                    .iter()
+                    .map(|v| center + (v - center) * padding.scale())
+                    .collect(),
+                faces: exact.faces.clone(),
+                planes: exact
+                    .planes
+                    .iter()
+                    .map(|&(normal, plane)| {
+                        let from_center = normal.dot(&center.coords);
+                        (
+                            normal,
+                            from_center + (plane - from_center) * padding.scale(),
+                        )
+                    })
+                    .collect(),
+            };
+            Hull::new(&scaled, 0.0).expect("a scaled hull")
+        })
+        .collect();
+    let link_to_element = element.origin.inverse();
+    let (lower, upper) = exact.vertices.iter().map(|v| link_to_element * v).fold(
+        (
+            Point3::from(Vector3::repeat(f64::INFINITY)),
+            Point3::from(Vector3::repeat(f64::NEG_INFINITY)),
+        ),
+        |(lower, upper), v| (lower.inf(&v), upper.sup(&v)),
+    );
+    Body::Mesh(Box::new(MeshBody {
         hull,
-        moveit_center,
+        scaled_hulls,
+        link_to_element,
+        box_center: collision_geometry::nalgebra::center(&lower, &upper),
+        box_half_extents: (upper - lower) / 2.0,
         fit_error,
-    }
+    }))
 }
 
 /// The scenario's mesh directory, or no directory for a scenario whose URDF names no

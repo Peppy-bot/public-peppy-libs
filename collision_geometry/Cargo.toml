@@ -2,7 +2,7 @@
 name = "collision_geometry"
 version = "0.1.0"
 edition = "2024"
-description = "Collision geometry for any robot: convex pieces fitted to the URDF collision elements, clip regions for a concave body, GJK/EPA distance between convex shapes, and the pieces of a serial chain placed at a joint configuration, with a bounding sphere per piece and MoveIt's padded point containment per link. Rust, with Qhull (C) for the exact convex hulls; no hardware or messaging deps."
+description = "Collision geometry for any robot: convex pieces fitted to the URDF collision elements, clip regions for a concave body, GJK/EPA distance between convex shapes, and the pieces of a serial chain placed at a joint configuration, with a bounding sphere per piece and the robot filter, which tells whether a point lies within the offset of a collision element of a link scaled about its center. Rust, with Qhull (C) for the exact convex hulls; no hardware or messaging deps."
 
 [workspace]
 
