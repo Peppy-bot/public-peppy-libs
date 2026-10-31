@@ -84,12 +84,12 @@ nlohmann::json link_pose(const moveit::core::RobotState& state, const std::strin
   const Eigen::Isometry3d& transform = state.getGlobalLinkTransform(link);
   auto translation = nlohmann::json::array();
   for (int i = 0; i < 3; ++i) {
-    translation.push_back(bits(transform.translation()(i)));
+    translation.push_back(transform.translation()(i));
   }
   auto rotation = nlohmann::json::array();
   for (int row = 0; row < 3; ++row) {
     for (int column = 0; column < 3; ++column) {
-      rotation.push_back(bits(transform.linear()(row, column)));
+      rotation.push_back(transform.linear()(row, column));
     }
   }
   return {{"link", link}, {"translation", translation}, {"rotation", rotation}};

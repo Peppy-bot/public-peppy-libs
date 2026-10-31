@@ -160,7 +160,6 @@ fn pair(name: &str, chain: Chain, output: ChainPoses) -> ChainCase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Bits;
 
     #[test]
     fn a_scenario_of_another_kind_is_refused() {
@@ -191,8 +190,8 @@ mod tests {
         };
         let link = LinkPose {
             link: "l1".into(),
-            translation: [Bits(0.0); 3],
-            rotation: [Bits(0.0); 9],
+            translation: [0.0; 3],
+            rotation: [0.0; 9],
         };
         let output = ChainPoses {
             name: "arm".into(),

@@ -84,7 +84,7 @@ nlohmann::json growth_centers(
       body->computeBoundingSphere(sphere);
       centers.push_back(
           {{"link", link},
-           {"center", {bits(sphere.center.x()), bits(sphere.center.y()), bits(sphere.center.z())}}});
+           {"center", {sphere.center.x(), sphere.center.y(), sphere.center.z()}}});
     }
   }
   return centers;
@@ -125,7 +125,7 @@ nlohmann::json chain_collision(const nlohmann::json& scenario, Inputs& inputs) {
       }
       auto echoed_positions = nlohmann::json::array();
       for (const auto position : positions) {
-        echoed_positions.push_back(bits(position));
+        echoed_positions.push_back(position);
       }
       std::vector<Eigen::Vector3d> points;
       auto echoed_points = nlohmann::json::array();
@@ -139,7 +139,7 @@ nlohmann::json chain_collision(const nlohmann::json& scenario, Inputs& inputs) {
                          Eigen::Vector3d(position[0], position[1], position[2]));
         echoed_points.push_back(
             {{"link", link},
-             {"position", {bits(position[0]), bits(position[1]), bits(position[2])}}});
+             {"position", {position[0], position[1], position[2]}}});
       }
       auto inside = nlohmann::json::array();
       for (const auto& padding : scenario.at("paddings")) {
@@ -175,8 +175,8 @@ nlohmann::json chain_collision(const nlohmann::json& scenario, Inputs& inputs) {
   }
   auto paddings = nlohmann::json::array();
   for (const auto& padding : scenario.at("paddings")) {
-    paddings.push_back({{"scale", bits(padding.at("scale").get<double>())},
-                        {"offset", bits(padding.at("offset").get<double>())}});
+    paddings.push_back({{"scale", padding.at("scale").get<double>()},
+                        {"offset", padding.at("offset").get<double>()}});
   }
   return {{"kind", "chain_collision"}, {"paddings", paddings}, {"chains", chains}};
 }

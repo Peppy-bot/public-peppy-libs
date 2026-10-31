@@ -5,8 +5,7 @@
 //! links grown by a padding, tells whether each probe point lies inside them.
 
 use crate::{
-    Bits, Kind, LinkPose, read_mesh_directory, read_reference, read_scenario, read_urdf,
-    scenario_names,
+    Kind, LinkPose, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names,
 };
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -35,7 +34,7 @@ struct Scenario {
 
 /// How the robot filter grows each link: MoveIt's padding scale, and its padding offset
 /// in meters.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Padding {
     pub scale: f64,
@@ -61,7 +60,7 @@ struct Posed {
 }
 
 /// A probe point, in the frame of `link`.
-#[derive(Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Probe {
     pub link: String,
@@ -77,24 +76,8 @@ pub struct Probe {
 #[serde(deny_unknown_fields)]
 struct Reference {
     kind: ThisKind,
-    paddings: Vec<PaddingRead>,
+    paddings: Vec<Padding>,
     chains: Vec<ChainOutput>,
-}
-
-/// A padding as the reference read it.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PaddingRead {
-    scale: Bits,
-    offset: Bits,
-}
-
-/// A probe point as the reference read it.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProbeRead {
-    link: String,
-    position: [Bits; 3],
 }
 
 /// A chain's output: the links with collision geometry that MoveIt's chain carries, the
@@ -114,14 +97,14 @@ struct ChainOutput {
 #[serde(deny_unknown_fields)]
 pub struct Body {
     pub link: String,
-    pub center: [Bits; 3],
+    pub center: [f64; 3],
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PosedOutput {
-    positions: Vec<Bits>,
-    points: Vec<ProbeRead>,
+    positions: Vec<f64>,
+    points: Vec<Probe>,
     links: Vec<LinkPose>,
     inside: Vec<Vec<bool>>,
 }
@@ -187,15 +170,10 @@ impl Cases {
             paddings: paddings_read,
             chains: outputs,
         } = read_reference(&name);
-        let read_back: Vec<(f64, f64)> = paddings_read
-            .iter()
-            .map(|padding| (padding.scale.0, padding.offset.0))
-            .collect();
-        let given: Vec<(f64, f64)> = paddings
-            .iter()
-            .map(|padding| (padding.scale, padding.offset))
-            .collect();
-        assert_eq!(read_back, given, "{name}: the reference read the paddings");
+        assert_eq!(
+            paddings_read, paddings,
+            "{name}: the reference read the paddings"
+        );
         assert_eq!(chains.len(), outputs.len(), "{name}: one output per chain");
         let chains = chains
             .into_iter()
@@ -243,23 +221,12 @@ fn pair(name: &str, paddings: usize, chain: Chain, output: ChainOutput) -> Chain
                 chain.joints.len(),
                 "{context}: one position per joint"
             );
-            let positions_read: Vec<f64> = output.positions.iter().map(|bits| bits.0).collect();
             assert_eq!(
-                positions_read, posed.positions,
+                output.positions, posed.positions,
                 "{context}: the reference read the positions"
             );
-            let points_read: Vec<(&str, [f64; 3])> = output
-                .points
-                .iter()
-                .map(|point| (point.link.as_str(), point.position.map(|bits| bits.0)))
-                .collect();
-            let points_given: Vec<(&str, [f64; 3])> = posed
-                .points
-                .iter()
-                .map(|point| (point.link.as_str(), point.position))
-                .collect();
             assert_eq!(
-                points_read, points_given,
+                output.points, posed.points,
                 "{context}: the reference read the probe points"
             );
             let linked: Vec<&str> = output.links.iter().map(|pose| pose.link.as_str()).collect();
@@ -330,9 +297,9 @@ mod tests {
             bodies: vec![],
             configurations: vec![PosedOutput {
                 positions: vec![],
-                points: vec![ProbeRead {
+                points: vec![Probe {
                     link: "l".into(),
-                    position: [Bits(0.0); 3],
+                    position: [0.0; 3],
                 }],
                 links: vec![],
                 inside: vec![vec![]],
@@ -363,10 +330,7 @@ mod tests {
             bodies: vec![],
             configurations: vec![PosedOutput {
                 positions: vec![],
-                points: vec![ProbeRead {
-                    link: "l".into(),
-                    position: [Bits(0.25), Bits(0.0), Bits(0.0)],
-                }],
+                points: vec![probe(0.25)],
                 links: vec![],
                 inside: vec![vec![true]],
             }],
@@ -388,7 +352,7 @@ mod tests {
             links: vec![],
             bodies: vec![Body {
                 link: "l".into(),
-                center: [Bits(0.0); 3],
+                center: [0.0; 3],
             }],
             configurations: vec![],
         };

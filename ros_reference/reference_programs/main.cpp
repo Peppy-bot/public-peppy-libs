@@ -1,8 +1,9 @@
-// The reference program of the ROS reference harness. It reads the scenario at argv[1],
-// runs the reference that the scenario's kind names, writes the reference output to
-// argv[2], and appends the path of each file it read, the scenario among them, to the
-// list at argv[4]. The scenario's path and the paths inside it are relative to the
-// repository root, argv[3].
+// The reference program of the ROS reference harness. It checks the writer of the numbers
+// of its output with check_shortest_decimals, reads the scenario at argv[1], runs the
+// reference that the scenario's kind names, writes the reference output to argv[2], and
+// appends the path of each file it read, the scenario among them, to the list at argv[4].
+// The scenario's path and the paths inside it are relative to the repository root,
+// argv[3].
 
 #include <exception>
 #include <filesystem>
@@ -36,6 +37,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   try {
+    ros_reference::check_shortest_decimals();
     ros_reference::Inputs inputs(argv[3]);
     const auto scenario = nlohmann::json::parse(inputs.read(argv[1]));
     const auto kind = scenario.at("kind").get<std::string>();

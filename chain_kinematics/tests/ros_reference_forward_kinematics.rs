@@ -40,13 +40,13 @@ fn assert_pose_agrees(link: &str, ours: &Isometry3<f64>, moveit: &LinkPose, at: 
         (
             coordinate,
             ours.translation.vector[i],
-            moveit.translation[i].0,
+            moveit.translation[i],
         )
     });
     let rotations = (0..9).map(|i| {
         let (row, column) = (i / 3, i % 3);
         let coordinate = format!("rotation ({row}, {column})");
-        (coordinate, rotation[(row, column)], moveit.rotation[i].0)
+        (coordinate, rotation[(row, column)], moveit.rotation[i])
     });
     for (coordinate, ours, theirs) in translations.chain(rotations) {
         let allowed = tolerance(theirs);

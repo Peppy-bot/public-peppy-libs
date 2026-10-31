@@ -20,7 +20,6 @@ the output:
 """
 
 import json
-import struct
 
 from drawing import configurations, generator, joint_limits, openarm_joints, options, robot, write
 
@@ -56,7 +55,7 @@ def select(output):
     pairs = [tuple(pair) for pair in reference["pairs"]]
     states = [
         {
-            (pair, struct.unpack(">d", bytes.fromhex(distance[2:]))[0] > 0)
+            (pair, distance > 0)
             for pair, distance in zip(pairs, configuration["distances"])
         }
         for configuration in reference["configurations"]

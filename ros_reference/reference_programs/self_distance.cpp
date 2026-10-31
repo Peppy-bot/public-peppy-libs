@@ -30,7 +30,7 @@ nlohmann::json self_distance(const nlohmann::json& scenario, Inputs& inputs) {
     auto echoed_positions = nlohmann::json::object();
     for (const auto& [joint, position] : configuration.items()) {
       state.setVariablePosition(joint, position.get<double>());
-      echoed_positions[joint] = bits(position.get<double>());
+      echoed_positions[joint] = position.get<double>();
     }
     state.update();
     collision_detection::DistanceRequest request;
@@ -47,7 +47,7 @@ nlohmann::json self_distance(const nlohmann::json& scenario, Inputs& inputs) {
       for (const auto& data : distances) {
         distance = std::min(distance, data.distance);
       }
-      nearest.push_back(bits(distance));
+      nearest.push_back(distance);
     }
     if (configurations.empty()) {
       pairs = measured;

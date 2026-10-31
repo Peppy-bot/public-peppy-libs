@@ -2,9 +2,7 @@
 //! configuration of the robot, it gives the signed distance between the collision meshes
 //! of each pair of links, negative where they overlap.
 
-use crate::{
-    Bits, Kind, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names,
-};
+use crate::{Kind, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -44,8 +42,8 @@ struct Reference {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Row {
-    positions: BTreeMap<String, Bits>,
-    distances: Vec<Bits>,
+    positions: BTreeMap<String, f64>,
+    distances: Vec<f64>,
 }
 
 /// A self distance scenario paired with its reference output.
@@ -136,13 +134,8 @@ fn pair(
         .zip(rows)
         .enumerate()
         .map(|(index, (positions, row))| {
-            let read_back: BTreeMap<String, f64> = row
-                .positions
-                .into_iter()
-                .map(|(joint, Bits(position))| (joint, position))
-                .collect();
             assert_eq!(
-                read_back, positions,
+                row.positions, positions,
                 "{name} configuration {index}: the reference read the positions"
             );
             assert_eq!(
@@ -153,7 +146,7 @@ fn pair(
             let distances = pairs
                 .iter()
                 .zip(row.distances)
-                .map(|([a, b], Bits(distance))| ((a.clone(), b.clone()), distance))
+                .map(|([a, b], distance)| ((a.clone(), b.clone()), distance))
                 .collect();
             Configuration {
                 positions,
@@ -171,9 +164,9 @@ mod tests {
         Row {
             positions: positions
                 .iter()
-                .map(|&(joint, position)| (joint.to_owned(), Bits(position)))
+                .map(|&(joint, position)| (joint.to_owned(), position))
                 .collect(),
-            distances: distances.iter().copied().map(Bits).collect(),
+            distances: distances.to_vec(),
         }
     }
 

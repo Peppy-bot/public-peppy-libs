@@ -58,10 +58,9 @@ const BAND_AGREEMENT: f64 = 0.9;
 const BAND_CONFIDENCE: f64 = 2.576;
 
 fn moveit_pose(pose: &LinkPose) -> Isometry3<f64> {
-    let rows = pose.rotation.map(|entry| entry.0);
     Isometry3::from_parts(
-        Translation3::from(Vector3::from(pose.translation.map(|entry| entry.0))),
-        Rotation3::from_matrix_unchecked(Matrix3::from_row_slice(&rows)).into(),
+        Translation3::from(Vector3::from(pose.translation)),
+        Rotation3::from_matrix_unchecked(Matrix3::from_row_slice(&pose.rotation)).into(),
     )
 }
 
@@ -216,7 +215,7 @@ fn the_robot_filter_answers_as_moveits_outside_the_band() {
                         .bodies
                         .iter()
                         .filter(|body| body.link == geometry.name())
-                        .map(|body| Point3::from(body.center.map(|entry| entry.0)))
+                        .map(|body| Point3::from(body.center))
                         .collect();
                     assert_eq!(
                         centers.len(),
