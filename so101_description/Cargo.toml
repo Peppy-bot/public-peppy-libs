@@ -1,0 +1,16 @@
+[package]
+name = "so101_description"
+version = "0.1.0"
+edition = "2024"
+description = "SO-101's description for the Rust nodes: the kinematics URDF and the collision meshes of the Python package so101_description, the arm's chain from its base link to its tool point, its limb names, and where its jaw stands at a gripper opening."
+
+[workspace]
+
+[dependencies]
+urdf-rs = "0.10"
+
+[dev-dependencies]
+chain_kinematics = { path = "../chain_kinematics" }
+collision_geometry = { path = "../collision_geometry" }
+hegeltest = { version = "0.51", features = ["static-engine"] }
+kinematics_properties = { path = "../kinematics_properties" }
