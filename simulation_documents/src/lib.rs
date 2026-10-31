@@ -46,7 +46,7 @@ pub use judge::{
 pub use names::{Name, RobotName};
 pub use pattern::{
     Axis, Expansion, MAX_COUNT, Measure, Measurement, Measurements, MinSpacing, PlacementKind,
-    PlacementSite, StandAt, WorkCellParameter, WorkCellParameters, WorldPattern,
+    PlacementSite, Placements, StandAt, WorkCellParameter, WorkCellParameters, WorldPattern,
 };
 pub use sampler::{Sampler, Segment, SitePath, SurfaceRef};
 pub use setup_record::SetupRecord;

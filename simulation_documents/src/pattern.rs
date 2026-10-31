@@ -13,7 +13,7 @@
 //! object of an item kind. The simulation draws each [`PlacementSite`], a stand
 //! or a pose `on` a surface or `in` a region, in a model of the drawn world,
 //! in the order of [`Expansion::placements`]: before each, it builds its
-//! model from [`Expansion::world_so_far`]. [`Expansion::world`] then gives
+//! model from [`Placements::world_so_far`]. [`Expansion::world`] then gives
 //! the concrete world.
 
 use serde::de::DeserializeOwned;
@@ -826,14 +826,7 @@ impl WorldPattern {
                 drawn,
                 added,
             };
-            let placed = expansion
-                .placements(&|_| None)?
-                .iter()
-                .filter_map(|placement| {
-                    Some((placement.path.clone(), placement.kind.placeholder()?))
-                })
-                .collect();
-            expansion.world(&placed)
+            expansion.placements(&|_| None)?.placeholder_world()
         };
         let mut worlds = vec![world_of(drawn_with(None), first_assets.clone())?];
         for (choice, candidates) in &choices {
@@ -1091,7 +1084,7 @@ impl<'p> Expansion<'p> {
     pub fn placements(
         &self,
         holder_of_surface: &dyn Fn(&str) -> Option<Name>,
-    ) -> Result<Vec<PlacementSite>, Error> {
+    ) -> Result<Placements<'_>, Error> {
         let mut placements = Vec::new();
         for (root, site) in self.pattern.entry_sites(Some(&self.added)) {
             if !site.sampler.is_placement() {
@@ -1124,10 +1117,12 @@ impl<'p> Expansion<'p> {
             })
             .collect();
         let robots_path = SitePath::new(vec![Segment::Key("robots".to_owned())]);
+        let mut holders = BTreeMap::new();
         for (robot, surface) in self.stands_at_surfaces()? {
             let holder =
                 holder_of_surface(&surface).filter(|holder| placed_objects.contains(holder));
-            if holder.is_some() {
+            if let Some(holder) = holder {
+                holders.insert(robot.clone(), holder);
                 placements.push(PlacementSite {
                     path: robots_path.key(robot.as_str()).key("stand"),
                     kind: PlacementKind::Stand {
@@ -1137,7 +1132,11 @@ impl<'p> Expansion<'p> {
                 });
             }
         }
-        ordered(placements, holder_of_surface)
+        Ok(Placements {
+            expansion: self,
+            sites: ordered(placements, holder_of_surface)?,
+            holders,
+        })
     }
 
     /// Each robot whose drawn stand is at a surface, with its label.
@@ -1230,57 +1229,6 @@ impl<'p> Expansion<'p> {
         WorldDocument { fields }.into_world(pattern.origin)
     }
 
-    /// The world of the placements that `placed` holds so far, as
-    /// [`Expansion::world`] gives it with each other placement left out: an
-    /// object whose pose has no value, the stand of a robot whose position
-    /// has no value, and the stand of a robot at a surface of an object left
-    /// out. The simulation builds its model of the drawn world from it before
-    /// it draws the next placement. `holder_of_surface` is that of
-    /// [`Expansion::placements`].
-    pub fn world_so_far(
-        &self,
-        placed: &BTreeMap<SitePath, Value>,
-        holder_of_surface: &dyn Fn(&str) -> Option<Name>,
-    ) -> Result<World, Error> {
-        let placements = self.placements(holder_of_surface)?;
-        let mut filled = placed.clone();
-        let mut left_out = BTreeSet::new();
-        let mut standless = BTreeSet::new();
-        for placement in placements
-            .iter()
-            .filter(|placement| !placed.contains_key(&placement.path))
-        {
-            let Some(placeholder) = placement.kind.placeholder() else {
-                continue;
-            };
-            match &placement.kind {
-                PlacementKind::ObjectPose { object, .. } => left_out.insert(object.clone()),
-                PlacementKind::Stand { robot, .. } => standless.insert(robot.clone()),
-            };
-            filled.insert(placement.path.clone(), placeholder);
-        }
-        for placement in &placements {
-            let PlacementKind::Stand {
-                robot,
-                at: StandAt::Surface(label),
-            } = &placement.kind
-            else {
-                continue;
-            };
-            if holder_of_surface(label).is_some_and(|holder| left_out.contains(&holder)) {
-                standless.insert(robot.clone());
-            }
-        }
-        let mut world = self.world(&filled)?;
-        world.objects.retain(|name, _| !left_out.contains(name));
-        for robot in &standless {
-            if let Some(robot) = world.robots.get_mut(robot) {
-                robot.stand = None;
-            }
-        }
-        Ok(world)
-    }
-
     /// Each entry of `entries` under `field`, made concrete.
     fn make_concrete<K: Ord + std::fmt::Display, T: DeserializeOwned + Clone>(
         &self,
@@ -1332,6 +1280,93 @@ fn no_asset_of_kind(name: &Name, kind: &str) -> Error {
         format!("objects.{name}"),
         format!("no asset of the catalogue has the item kind `{kind}`"),
     )
+}
+
+/// The placements of an expansion in the order the simulation draws them
+/// ([`Expansion::placements`]).
+#[derive(Clone, Debug)]
+pub struct Placements<'e> {
+    expansion: &'e Expansion<'e>,
+    sites: Vec<PlacementSite>,
+    /// The object of the surface of each robot whose stand is a placement
+    /// at a surface.
+    holders: BTreeMap<RobotName, Name>,
+}
+
+impl<'e> Placements<'e> {
+    /// The placements, in the order the simulation draws them.
+    pub fn sites(&self) -> &[PlacementSite] {
+        &self.sites
+    }
+
+    /// The world of the expansion with each placement at a placeholder: a
+    /// pose at the origin with yaw 0, the position of a stand at the origin;
+    /// a stand at a surface keeps its value.
+    pub fn placeholder_world(&self) -> Result<World, Error> {
+        let placed = self
+            .sites
+            .iter()
+            .filter_map(|placement| Some((placement.path.clone(), placement.kind.placeholder()?)))
+            .collect();
+        self.expansion.world(&placed)
+    }
+
+    /// The world of the placements that `placed` holds so far, as
+    /// [`Expansion::world`] gives it with each other placement left out: an
+    /// object whose pose has no value, a scene object whose pose has no
+    /// value, removed, the stand of a robot whose position has no value, and
+    /// the stand of a robot at a surface of an object left out. The
+    /// simulation builds its model of the drawn world from it before it
+    /// draws the next placement.
+    pub fn world_so_far(&self, placed: &BTreeMap<SitePath, Value>) -> Result<World, Error> {
+        let mut filled = placed.clone();
+        let mut left_out = BTreeSet::new();
+        let mut removed = BTreeSet::new();
+        let mut standless = BTreeSet::new();
+        for placement in self
+            .sites
+            .iter()
+            .filter(|placement| !placed.contains_key(&placement.path))
+        {
+            let Some(placeholder) = placement.kind.placeholder() else {
+                continue;
+            };
+            match &placement.kind {
+                PlacementKind::ObjectPose { object, .. } if placement.is_of_a_scene_object() => {
+                    removed.insert(object.clone())
+                }
+                PlacementKind::ObjectPose { object, .. } => left_out.insert(object.clone()),
+                PlacementKind::Stand { robot, .. } => standless.insert(robot.clone()),
+            };
+            filled.insert(placement.path.clone(), placeholder);
+        }
+        for (robot, holder) in &self.holders {
+            if left_out.contains(holder) || removed.contains(holder) {
+                standless.insert(robot.clone());
+            }
+        }
+        let mut world = self.expansion.world(&filled)?;
+        world.objects.retain(|name, _| !left_out.contains(name));
+        for name in removed {
+            world.scene_objects.insert(name, SceneObject::Removed);
+        }
+        for robot in &standless {
+            if let Some(robot) = world.robots.get_mut(robot) {
+                robot.stand = None;
+            }
+        }
+        Ok(world)
+    }
+}
+
+impl PlacementSite {
+    /// Whether the placement draws the pose of a scene object.
+    fn is_of_a_scene_object(&self) -> bool {
+        matches!(
+            self.path.segments().first(),
+            Some(Segment::Key(field)) if field == "scene_objects"
+        )
+    }
 }
 
 /// `placements` in the order of their dependencies, as
@@ -1502,7 +1537,7 @@ mod tests {
     fn expanded(pattern: &WorldPattern, seed: u32) -> World {
         let expansion = pattern.expansion(Seed(seed), &assets_of_kind).unwrap();
         let placements = expansion.placements(&no_holder).unwrap();
-        expansion.world(&placed(&placements)).unwrap()
+        expansion.world(&placed(placements.sites())).unwrap()
     }
 
     fn refusal(text: &str) -> String {
@@ -1664,7 +1699,8 @@ mod tests {
         let pattern = WorldPattern::parse(&text).unwrap();
         let expansion = pattern.expansion(Seed(2), &assets_of_kind).unwrap();
         let holder = |label: &str| (label == "table top").then(|| name("table"));
-        let nothing = expansion.world_so_far(&BTreeMap::new(), &holder).unwrap();
+        let placements = expansion.placements(&holder).unwrap();
+        let nothing = placements.world_so_far(&BTreeMap::new()).unwrap();
         let objects: Vec<&str> = nothing.objects.keys().map(Name::as_str).collect();
         assert_eq!(objects, ["conveyor"]);
         let standing = |world: &World| -> Vec<String> {
@@ -1686,16 +1722,87 @@ mod tests {
             table_path,
             json!({ "position": [2.0, 1.0, 0.0], "yaw": 0.0 }),
         )]);
-        let with_the_table = expansion.world_so_far(&table_placed, &holder).unwrap();
+        let with_the_table = placements.world_so_far(&table_placed).unwrap();
         assert!(with_the_table.objects.contains_key(&name("table")));
         assert!(!with_the_table.objects.contains_key(&name("crate")));
         assert_eq!(standing(&with_the_table), ["alpha", "bravo", "delta"]);
 
-        let placements = expansion.placements(&holder).unwrap();
-        let everything = expansion
-            .world_so_far(&placed(&placements), &holder)
+        let everything = placements
+            .world_so_far(&placed(placements.sites()))
             .unwrap();
-        assert_eq!(everything, expansion.world(&placed(&placements)).unwrap());
+        assert_eq!(
+            everything,
+            expansion.world(&placed(placements.sites())).unwrap()
+        );
+    }
+
+    /// A scene object whose pose a placement draws stands in the world so
+    /// far only once its pose has a value: until then the world removes it,
+    /// and a robot that stands at its surface has no stand.
+    #[test]
+    fn the_world_so_far_removes_each_scene_object_whose_pose_has_no_value() {
+        let text = tape_line_text()
+            .replace(
+                "  robots: {",
+                "  scene_objects: { shelf: { pose: { in: \"box_stock\" } } },\n  robots: {",
+            )
+            .replace(
+                "    charlie:",
+                "    delta: { join: { option: \"openarm_sim\" }, stand: { surface: \"shelf top\" } },\n    charlie:",
+            );
+        let pattern = WorldPattern::parse(&text).unwrap();
+        let expansion = pattern.expansion(Seed(2), &assets_of_kind).unwrap();
+        let holder = |label: &str| (label == "shelf top").then(|| name("shelf"));
+        let placements = expansion.placements(&holder).unwrap();
+        let nothing = placements.world_so_far(&BTreeMap::new()).unwrap();
+        assert_eq!(
+            nothing.scene_objects.get(&name("shelf")),
+            Some(&SceneObject::Removed)
+        );
+        assert!(nothing.robots[&robot("delta")].stand.is_none());
+
+        let shelf_path = SitePath::new(vec![
+            Segment::Key("scene_objects".into()),
+            Segment::Key("shelf".into()),
+            Segment::Key("pose".into()),
+        ]);
+        let shelf_placed = BTreeMap::from([(
+            shelf_path,
+            json!({ "position": [2.0, 1.0, 0.0], "yaw": 0.0 }),
+        )]);
+        let with_the_shelf = placements.world_so_far(&shelf_placed).unwrap();
+        assert!(matches!(
+            with_the_shelf.scene_objects.get(&name("shelf")),
+            Some(SceneObject::Placed { .. })
+        ));
+        assert!(with_the_shelf.robots[&robot("delta")].stand.is_some());
+    }
+
+    /// The placeholder world gives each placement its placeholder: an object
+    /// at the origin with yaw 0, a stand in a region at the origin, and a
+    /// stand at a surface as written.
+    #[test]
+    fn the_placeholder_world_puts_each_placement_at_the_origin() {
+        let pattern = tape_line();
+        let expansion = pattern.expansion(Seed(4), &assets_of_kind).unwrap();
+        let world = expansion
+            .placements(&no_holder)
+            .unwrap()
+            .placeholder_world()
+            .unwrap();
+        let origin = Pose::Yawed {
+            position: [0.0, 0.0, 0.0],
+            yaw: 0.0,
+        };
+        assert_eq!(world.objects[&name("stock_1")].pose, origin);
+        let Some(Stand::Placed(stand)) = &world.robots[&robot("charlie")].stand else {
+            panic!("charlie stands in a region");
+        };
+        assert_eq!(stand.position, [0.0, 0.0, 0.0]);
+        assert!(matches!(
+            world.robots[&robot("bravo")].stand,
+            Some(Stand::Surface { .. })
+        ));
     }
 
     #[test]
@@ -1776,6 +1883,7 @@ mod tests {
         let order: Vec<String> = expansion
             .placements(&holder)
             .unwrap()
+            .sites()
             .iter()
             .map(|placement| placement.path.to_string())
             .filter(|path| !path.starts_with("objects.tapes") && !path.starts_with("objects.stock"))
@@ -1923,7 +2031,7 @@ mod tests {
                 .expansion(Seed(3), &|_| vec!["object/book".into()])
                 .unwrap();
             let placements = expansion.placements(&no_holder).unwrap();
-            let mut world = expansion.world(&placed(&placements)).unwrap();
+            let mut world = expansion.world(&placed(placements.sites())).unwrap();
             world.manifest.name.clear();
             world
         };
@@ -1933,7 +2041,7 @@ mod tests {
                 .expansion(Seed(3), &|_| vec!["object/book".into()])
                 .unwrap();
             let placements = expansion.placements(&no_holder).unwrap();
-            expansion.world(&placed(&placements)).unwrap()
+            expansion.world(&placed(placements.sites())).unwrap()
         };
         assert!(world.objects.len() <= 2, "{:?}", world.objects.keys());
         let concrete = chat_world.resolve_pattern(&[]).unwrap();

@@ -24,7 +24,7 @@ use crate::workflow::Workflow;
 const BUNDLE: Kind = Kind::new("workflow_schema", "workflow_bundle", 1);
 
 /// The path of the bundle document in its directory.
-const BUNDLE_PATH: &str = "bundle.json5";
+pub const BUNDLE_PATH: &str = "bundle.json5";
 
 /// The path of the workflow in its directory.
 pub const WORKFLOW_PATH: &str = "workflow.json5";
@@ -145,6 +145,16 @@ impl BundleFields {
 }
 
 impl BundleDocument {
+    /// Parses the text of a bundle document alone, reading none of the files
+    /// it lists: the thresholds, the work cell parameters and the envelope
+    /// all given or none, and the trials only with them.
+    pub fn parse(text: &str) -> Result<BundleDocument, Refusals> {
+        Document::parse(text, BUNDLE)
+            .and_then(|document| document.read::<BundleFields>())
+            .map_err(Refusals::from)
+            .and_then(BundleFields::into_document)
+    }
+
     /// The digest of the bundle: that of the bundle document without
     /// `trials`. A trial that adds its report keeps it, and any other change
     /// of the bundle document changes it.
@@ -193,10 +203,7 @@ impl Bundle {
         let workflow_text = by_path
             .remove(WORKFLOW_PATH)
             .ok_or_else(|| missing(WORKFLOW_PATH))?;
-        let document = Document::parse(&bundle_text, BUNDLE)
-            .and_then(|document| document.read::<BundleFields>())
-            .map_err(Refusals::from)
-            .and_then(BundleFields::into_document)
+        let document = BundleDocument::parse(&bundle_text)
             .map_err(|refusals| refusals.in_file(BUNDLE_PATH))?;
         let workflow =
             Workflow::parse(&workflow_text).map_err(|refusals| refusals.in_file(WORKFLOW_PATH))?;
@@ -522,6 +529,25 @@ mod tests {
             texts(Bundle::open(twice).unwrap_err()),
             [format!("{}: appears twice", written[0].path)]
         );
+    }
+
+    /// The bundle document parses alone, without the files it lists, as
+    /// the bundle that opens with them gives it.
+    #[test]
+    fn a_bundle_document_parses_alone_as_its_bundle_gives_it() {
+        let file = BundleFile {
+            path: format!("{FILES_DIR}world.json5"),
+            content: "{ world: 1 }".into(),
+        };
+        let written = Bundle::write(&a_workflow(), vec![file], a_lock()).unwrap();
+        let text = &written
+            .iter()
+            .find(|file| file.path == BUNDLE_PATH)
+            .unwrap()
+            .content;
+        let alone = BundleDocument::parse(text).unwrap();
+        assert_eq!(alone, Bundle::open(written).unwrap().document);
+        assert!(BundleDocument::parse("{ workflow_schema: \"workflow/v1\" }").is_err());
     }
 
     #[test]

@@ -240,7 +240,8 @@ impl<'de> Deserialize<'de> for StepRef {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum FaultAction {
     Push(Push),
-    /// The robot leaves the stack.
+    /// The robot leaves the stack: a robot of the world pattern that no role
+    /// binds.
     RemoveRobot(RobotName),
 }
 
@@ -322,8 +323,9 @@ impl SweepDocument {
     /// Parses JSON5 text as a sweep document. Refuses, by its place, a blank
     /// launcher, a sweep of no world pattern, a world pattern named twice,
     /// one robot for two roles, and a fault of a world pattern that the sweep
-    /// does not name, of seeds that are not of its world pattern, or of a
-    /// world pattern that expects a refusal.
+    /// does not name, of seeds that are not of its world pattern, of a
+    /// world pattern that expects a refusal, or that removes a robot that a
+    /// role binds.
     pub fn parse(text: &str) -> Result<SweepDocument, Error> {
         let document: SweepDocument = Document::parse(text, SWEEP)?.read()?;
         document.check()?;
@@ -401,6 +403,16 @@ impl SweepDocument {
                     at("world"),
                     format!(
                         "expects the refusal of `{assumption}`, so no run starts for a fault to stop; give a world pattern that runs"
+                    ),
+                ));
+            }
+            if let FaultAction::RemoveRobot(robot) = &fault.action
+                && let Some(role) = bound.get(robot)
+            {
+                return Err(Error::field(
+                    at("do"),
+                    format!(
+                        "removes `{robot}`, which the role `{role}` binds: the director ends a run interrupted when the lease of a robot of the run ends, so no run can end as the fault expects; remove a robot that no role binds"
                     ),
                 ));
             }
@@ -593,7 +605,7 @@ mod tests {
     { world: { name: "tape_line_no_boxes", revision: 1 }, seeds: { from: 1, to: 50 }, expect: { refused: "spare_boxes" } },
   ],
   faults: [
-    { world: { name: "tape_line", revision: 1 }, seeds: { from: 1, to: 10 }, when: { step_starts: "so101_a.pick_loop" }, do: { remove_robot: "alpha" }, expect: "degraded" },
+    { world: { name: "tape_line", revision: 1 }, seeds: { from: 1, to: 10 }, when: { step_starts: "so101_a.pick_loop" }, do: { remove_robot: "charlie" }, expect: "degraded" },
     { world: { name: "tape_line", revision: 1 }, seeds: { from: 11, to: 12 }, when: { step_ends: "so101_b.pick_loop" }, do: { push: { object: "stock_1", force: [5, 0, 0], duration_s: 0.5 } }, expect: "failed" },
   ],
   judges: {
@@ -632,7 +644,8 @@ mod tests {
     fn pattern(name: &str, stock: &str) -> WorldPattern {
         WorldPattern::parse(&format!(
             r#"{{ simulation_schema: "world/v1", manifest: {{ name: "{name}", revision: 1 }}, catalogue: "{RELEASE}", scene: {{ asset: "scene/tape_line" }},
-              robots: {{ alpha: {{ join: {{ option: "so101_sim" }}, stand: {{ surface: "station_a" }} }}, bravo: {{ join: {{ option: "so101_sim" }}, stand: {{ surface: "station_b" }} }} }},
+              robots: {{ alpha: {{ join: {{ option: "so101_sim" }}, stand: {{ surface: "station_a" }} }}, bravo: {{ join: {{ option: "so101_sim" }}, stand: {{ surface: "station_b" }} }},
+                         charlie: {{ join: {{ option: "so101_sim" }}, stand: {{ surface: "spare_station" }} }} }},
               objects: {{ conveyor: {{ asset: "object/conveyor", pose: {{ position: [0, 0, 0], yaw: 0 }}, physics: "static" }},
                           stock: {{ item_kind: "carton", count: {stock}, pose: {{ in: "box_stock" }} }} }},
               regions: {{ box_stock: {{ centre: [2, 1, 0.5], size: [0.8, 0.6, 1] }} }} }}"#
@@ -719,6 +732,11 @@ mod tests {
                 "`pick_loop` is no step: write `<role>.<id>`, such as `so101_a.pick_loop`",
             ),
             (
+                r#"remove_robot: "charlie""#,
+                r#"remove_robot: "alpha""#,
+                "faults[0].do: removes `alpha`, which the role `so101_a` binds: the director ends a run interrupted when the lease of a robot of the run ends, so no run can end as the fault expects; remove a robot that no role binds",
+            ),
+            (
                 r#"expect: "completed""#,
                 r#"expect: "done""#,
                 "an expected ending is `completed`, `degraded`, `failed` or `{ refused: <assumption> }`",
@@ -754,7 +772,7 @@ mod tests {
                 r#"step_ends: "so101_b.close_box""#,
             )
             .replace(r#"object: "stock_1""#, r#"object: "conveyor""#)
-            .replace(r#"remove_robot: "alpha""#, r#"remove_robot: "charlie""#)
+            .replace(r#"remove_robot: "charlie""#, r#"remove_robot: "foxtrot""#)
             .replace("spare_boxes: { count", "belt_runs: { count");
         let document = SweepDocument::parse(&text).unwrap();
         let refused = texts(Sweep::new(document, &workflow(false), &patterns()[..1]).unwrap_err());
@@ -763,7 +781,7 @@ mod tests {
             [
                 "roles.so101_b: `echo` is no robot of the world pattern `tape_line` revision 1",
                 "worlds[1].world: names `tape_line_no_boxes` revision 1, which is not among the world patterns given",
-                "faults[0].do: removes `charlie`, which is no robot of the world pattern",
+                "faults[0].do: removes `foxtrot`, which is no robot of the world pattern",
                 "faults[1].when: names `so101_b.close_box`, which is no step of the workflow",
                 "faults[1].do: pushes `conveyor`, which the world pattern can give the physics `static`; a push moves a dynamic object",
                 "judges.assumptions: has no judge of the assumption `spare_boxes`; give one judge per assumption",
