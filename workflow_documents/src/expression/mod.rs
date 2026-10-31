@@ -7,7 +7,7 @@ mod evaluate;
 mod parse;
 mod types;
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -292,6 +292,13 @@ impl Expression {
             return self.clone();
         }
         Expression::of(expr)
+    }
+}
+
+/// An expression writes the text it was written as.
+impl Serialize for Expression {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.source)
     }
 }
 

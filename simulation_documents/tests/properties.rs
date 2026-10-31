@@ -2,7 +2,9 @@
 //! the record of a world with its robots is that world, a document that
 //! extends a base merges each key as its entry says and its daylight as a
 //! whole, a robot name that
-//! another begins is refused by the pair, and judges survive their text.
+//! another begins is refused by the pair, judges survive their text, and a
+//! seed expands a world pattern into the same world each time, with each
+//! drawn value inside its sampler.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
@@ -16,8 +18,8 @@ use simulation_documents::{
     Band, Bounds, Catalogue, Check, Cone, ContentsOn, Control, Count, Date, Daylight, Digest,
     Error, Feature, Finish, Holding, Join, Judge, Landmark, LandmarkOn, Light, Location, Manifest,
     Material, Name, NearPoint, Object, Offset, Physics, Place, Placement, Point, Pose, Reachable,
-    Revision, Robot, RobotName, Scene, SceneObject, SetupRecord, StackRobot, Stand, Target,
-    TimeOfDay, Weather, WithinM, World, WorldDocument,
+    Region, Revision, Robot, RobotName, Scene, SceneObject, Seed, SetupRecord, StackRobot, Stand,
+    Target, TimeOfDay, Weather, WithinM, World, WorldDocument, WorldPattern,
 };
 
 /// Names of objects, scene objects, locations, poses and regions: over the
@@ -268,6 +270,17 @@ fn locations(tc: &TestCase) -> Location {
     }
 }
 
+#[hegel::composite]
+fn region_boxes(tc: &TestCase) -> Region {
+    Region {
+        centre: tc.draw(points()),
+        size: tc.draw(gs::arrays(
+            gs::floats::<f64>().min_value(0.01).max_value(3.0),
+        )),
+        yaw: tc.draw(yaws()),
+    }
+}
+
 /// A join whose features are named once each.
 #[hegel::composite]
 fn joins(tc: &TestCase) -> Join {
@@ -341,7 +354,7 @@ fn scenes(tc: &TestCase) -> Scene {
 }
 
 /// A concrete world: its object names and scene object names disjoint, its
-/// robot names standing together.
+/// robot names standing together, each region of its locations declared.
 #[hegel::composite]
 fn worlds(tc: &TestCase) -> World {
     let scene_objects: BTreeMap<Name, SceneObject> =
@@ -364,6 +377,17 @@ fn worlds(tc: &TestCase) -> World {
             )
         })
         .collect();
+    let locations: BTreeMap<Name, Location> =
+        tc.draw(gs::btree_maps(names(), locations()).max_size(3));
+    let mut regions: BTreeMap<Name, Region> =
+        tc.draw(gs::btree_maps(names(), region_boxes()).max_size(2));
+    for location in locations.values() {
+        if let Location::In(region) = location
+            && !regions.contains_key(region)
+        {
+            regions.insert(region.clone(), tc.draw(region_boxes()));
+        }
+    }
     World {
         manifest: tc.draw(manifests()),
         catalogue: tc.draw(catalogues()),
@@ -374,7 +398,8 @@ fn worlds(tc: &TestCase) -> World {
         lighting: tc.draw(gs::btree_maps(labels(), lights()).max_size(2)),
         materials: tc.draw(gs::btree_maps(labels(), materials()).max_size(2)),
         daylight: tc.draw(gs::optional(daylights())),
-        locations: tc.draw(gs::btree_maps(names(), locations()).max_size(3)),
+        regions,
+        locations,
     }
 }
 
@@ -575,6 +600,35 @@ fn a_document_that_extends_a_base_merges_each_key_as_its_entry_says(tc: TestCase
         ]))
         .filter(|edit| *edit != Edit::Remove || base.daylight.is_some());
     let location = tc.draw(locations());
+    // A region stays while a location of the resolved world names it, and
+    // the extending document declares the region of its location when the
+    // base has none of that name.
+    let region_of = |location: &Location| match location {
+        Location::In(region) => Some(region.clone()),
+        _ => None,
+    };
+    let named_regions: BTreeSet<Name> = base
+        .locations
+        .iter()
+        .filter_map(|(key, kept)| match location_edits.get(key) {
+            None => region_of(kept),
+            Some(Edit::Replace) => region_of(&location),
+            Some(Edit::Remove | Edit::Keep) => None,
+        })
+        .collect();
+    let region_edits: BTreeMap<Name, Edit> = edits(&tc, base.regions.keys().cloned(), false)
+        .into_iter()
+        .filter(|(key, edit)| *edit != Edit::Remove || !named_regions.contains(key))
+        .collect();
+    let region = tc.draw(region_boxes());
+    let mut regions = edited(&region_edits, &region);
+    let new_region = region_of(&location).filter(|name| {
+        !base.regions.contains_key(name)
+            && location_edits.values().any(|edit| *edit == Edit::Replace)
+    });
+    if let Some(name) = &new_region {
+        regions.insert(name.to_string(), serde_json::to_value(region).unwrap());
+    }
     let new_object = tc
         .draw(gs::optional(names()))
         .filter(|name| !base.objects.contains_key(name) && !base.scene_objects.contains_key(name));
@@ -591,6 +645,7 @@ fn a_document_that_extends_a_base_merges_each_key_as_its_entry_says(tc: TestCase
         "scene_objects": edited(&scene_edits, &scene_object),
         "lighting": edited(&light_edits, &light),
         "materials": edited(&material_edits, &material),
+        "regions": regions,
         "locations": edited(&location_edits, &location),
     });
     match daylight_edit {
@@ -643,6 +698,16 @@ fn a_document_that_extends_a_base_merges_each_key_as_its_entry_says(tc: TestCase
         &material,
         None,
     );
+    assert_merged(
+        &resolved.regions,
+        &base.regions,
+        &region_edits,
+        &region,
+        None,
+    );
+    if let Some(name) = &new_region {
+        assert_eq!(resolved.regions.get(name), Some(&region));
+    }
     assert_merged(
         &resolved.locations,
         &base.locations,
@@ -801,4 +866,45 @@ fn judges_survive_their_text(tc: TestCase) {
         Judge::parse_list(&text).unwrap_or_else(|error| panic!("{error}\n{text}")),
         judges
     );
+}
+
+/// A world pattern with a drawn mass range, a drawn count range of an item
+/// kind and a choice of scenes expands, for each seed, into the same world
+/// each time, with each value inside its sampler.
+#[hegel::test]
+fn a_seed_expands_a_pattern_into_one_world_inside_its_samplers(tc: TestCase) {
+    let low = tc.draw(gs::floats::<f64>().min_value(0.0).max_value(5.0));
+    let high = low + tc.draw(gs::floats::<f64>().min_value(0.0).max_value(5.0));
+    let fewest = tc.draw(gs::integers::<u32>().min_value(0).max_value(4));
+    let most = fewest + tc.draw(gs::integers::<u32>().min_value(0).max_value(4));
+    let text = json!({
+        "simulation_schema": "world/v1",
+        "manifest": { "name": "drawn", "revision": 1 },
+        "catalogue": "local",
+        "scene": { "one_of": [{ "asset": "scene/kitchen" }, { "asset": "scene/living_room" }] },
+        "objects": {
+            "crate": { "asset": "object/crate", "pose": { "position": [0, 0, 0], "yaw": 0 }, "mass": { "range": [low, high] } },
+            "books": { "item_kind": "book", "count": { "range": [fewest, most] }, "pose": { "position": [1, 0, 0], "yaw": 0 } },
+        },
+    });
+    let pattern = WorldPattern::parse(&text.to_string()).unwrap();
+    let seed = Seed(tc.draw(gs::integers::<u32>()));
+    let assets = |_: &str| vec!["object/book_red".to_owned(), "object/book_blue".to_owned()];
+    let expand = || {
+        pattern
+            .expansion(seed, &assets)
+            .unwrap()
+            .world(&BTreeMap::new())
+            .unwrap()
+    };
+    let world = expand();
+    assert_eq!(world, expand());
+    let mass = world.objects[&Name::parse("crate").unwrap()].mass.unwrap();
+    assert!(low <= mass && mass <= high, "{mass} in [{low}, {high}]");
+    let books = world.objects.len() as u32 - 1;
+    assert!(
+        fewest <= books && books <= most,
+        "{books} in [{fewest}, {most}]"
+    );
+    assert!(["scene/kitchen", "scene/living_room"].contains(&world.scene.asset.as_str()));
 }

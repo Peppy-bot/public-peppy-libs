@@ -14,6 +14,12 @@ pub enum EventKind {
     RunStarts,
     ToConfirm,
     Differences,
+    /// Each value of the work cell and each watch value that no test
+    /// covered.
+    Uncovered,
+    /// Each check of a run of a trial with its value, for the operator to
+    /// judge.
+    ChecksToJudge,
     InitializationStarts,
     ActionsStart,
     StepStarts,
@@ -29,10 +35,12 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [EventKind; 14] = [
+    pub const ALL: [EventKind; 16] = [
         EventKind::RunStarts,
         EventKind::ToConfirm,
         EventKind::Differences,
+        EventKind::Uncovered,
+        EventKind::ChecksToJudge,
         EventKind::InitializationStarts,
         EventKind::ActionsStart,
         EventKind::StepStarts,
@@ -57,6 +65,8 @@ impl EventKind {
             EventKind::RunStarts => "run_starts",
             EventKind::ToConfirm => "to_confirm",
             EventKind::Differences => "differences",
+            EventKind::Uncovered => "uncovered",
+            EventKind::ChecksToJudge => "checks_to_judge",
             EventKind::InitializationStarts => "initialization_starts",
             EventKind::ActionsStart => "actions_start",
             EventKind::StepStarts => "step_starts",

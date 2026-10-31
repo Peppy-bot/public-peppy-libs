@@ -3,9 +3,12 @@
 //! A workflow (`workflow/v1`, [`Workflow`]) says what robots do: its roles, the
 //! contracts of their skills, its observations, assumptions and tables, and
 //! one lane of steps per role. A run (`run/v1`, [`RunDocument`]) binds the
-//! roles of one workflow revision to robots. A bundle (`workflow_bundle/v1`,
-//! [`Bundle`]) carries a workflow out of the chat with the digest of each of
-//! its files and the [`Lock`] of the versions it ran with.
+//! roles of one workflow revision to robots, with the values of its work
+//! cell. A bundle (`workflow_bundle/v1`, [`Bundle`]) carries a workflow out
+//! of the chat with the digest of each of its files and the [`Lock`] of the
+//! versions it ran with, and, after a signed-off sweep, the [`Validation`]:
+//! thresholds, work cell parameters and envelope. A trial (`trial/v1`,
+//! [`Trial`]) signs off a bundle on one physical stack.
 //!
 //! Each document carries the root key `workflow_schema`, and takes the root
 //! key rule, the manifest and the digest from `documents_core`. The
@@ -24,6 +27,9 @@ pub mod names;
 pub mod refusal;
 pub mod result;
 pub mod run;
+pub mod sign_off;
+pub mod trial;
+pub mod work_cell;
 pub mod workflow;
 
 pub use bundle::{Bundle, BundleFile};
@@ -35,6 +41,9 @@ pub use lock::{Lock, LockedNode};
 pub use names::{Bound, InstanceName, MemberRef, Name, NameTag, RobotName, Sha256, StepId};
 pub use refusal::{At, Located, Refusal, Refusals};
 pub use run::{Run, RunDocument, robots_named_twice, run_lease_name, run_of_lease_name};
+pub use sign_off::{Measures, Rate, Thresholds};
+pub use trial::{Trial, TrialDocument};
+pub use work_cell::{Uncovered, Validation, WorkCell, uncovered_watch, uncovered_work_cell};
 pub use workflow::{Workflow, WorkflowDraft};
 
 /// The language of `workflow/v1` for a model that writes workflows.

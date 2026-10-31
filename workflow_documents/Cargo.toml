@@ -2,7 +2,7 @@
 name = "workflow_documents"
 version = "0.1.0"
 edition = "2024"
-description = "The documents of the workflow side: workflow/v1, the program of the robots; run/v1, one run of it with its roles bound to robots; and workflow_bundle/v1, a workflow carried out of the chat with the digest of each file and the lock of the versions it ran with. Each carries the root key, the manifest and the digest of documents_core. Parses the expressions of a workflow, a subset of CEL, types them and evaluates them; holds the structural rules of a workflow that need no contract, the marks that the checker of the workflow director reads, and the JSON texts of the events and the results of a run. Pure Rust, no hardware or messaging deps."
+description = "The documents of the workflow side: workflow/v1, the program of the robots; run/v1, one run of it with its roles bound to robots; workflow_bundle/v1, a workflow carried out of the chat with the digest of each file and the lock of the versions it ran with, and after a signed-off sweep its thresholds, work cell parameters and envelope; and trial/v1, the judged runs that sign off a bundle on one physical stack. Each carries the root key, the manifest and the digest of documents_core. Parses the expressions of a workflow, a subset of CEL, types them and evaluates them; holds the structural rules of a workflow that need no contract, the marks that the checker of the workflow director reads, and the JSON texts of the events and the results of a run. Pure Rust, no hardware or messaging deps."
 
 [workspace]
 
