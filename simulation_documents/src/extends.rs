@@ -54,6 +54,22 @@ impl WorldDocument {
         WorldPattern::of_fields(fields, origin)
     }
 
+    /// The name and revision of each base that this document extends, from
+    /// its own base to the base that extends none, each found among
+    /// `bases`; none for a document that extends no base. Refused as
+    /// [`WorldDocument::resolve`] refuses its chain of bases: a missing base,
+    /// a cycle, two documents given as one base, and a chain of more than
+    /// 128 bases.
+    pub fn base_manifests<'a>(
+        &self,
+        bases: &'a [WorldDocument],
+    ) -> Result<Vec<&'a Manifest>, Error> {
+        Ok(base_chain(self, bases)?
+            .into_iter()
+            .map(WorldDocument::manifest)
+            .collect())
+    }
+
     /// The fields of this document with its bases folded in, and where they
     /// come from.
     fn folded(self, bases: &[WorldDocument]) -> Result<(WorldFields, Origin), Error> {
@@ -345,6 +361,20 @@ mod tests {
             .resolve(&[middle.clone(), root.clone()])
             .unwrap();
         assert_eq!(world.scene.asset, "scene/kitchen");
+        let given = [root.clone(), middle.clone()];
+        let chain: Vec<String> = extending("")
+            .base_manifests(&given)
+            .unwrap()
+            .into_iter()
+            .map(|manifest| format!("{}.{}", manifest.name, manifest.revision))
+            .collect();
+        assert_eq!(chain, ["world_3f9a1c27.3", "world_root.1"]);
+        assert!(root.base_manifests(&given).unwrap().is_empty());
+        assert!(
+            extending("")
+                .base_manifests(std::slice::from_ref(&middle))
+                .is_err()
+        );
         assert_eq!(
             extending("").resolve(std::slice::from_ref(&middle)),
             Err(Error::InBase {

@@ -878,7 +878,8 @@ impl WorldDocument {
         Ok(WorldDocument { fields })
     }
 
-    pub(crate) fn manifest(&self) -> &Manifest {
+    /// The name and revision of the document.
+    pub fn manifest(&self) -> &Manifest {
         &self.fields.manifest
     }
 
