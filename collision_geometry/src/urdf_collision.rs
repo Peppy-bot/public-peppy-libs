@@ -50,8 +50,8 @@ pub enum CollisionGeometry {
 impl Collision {
     /// The element's surface in the link frame, as triangles of three points each. A
     /// mesh gives its own triangles, scaled. A box gives its own faces, a cylinder the
-    /// faces of the [`CYLINDER_SIDES`]-sided prism about it, and a sphere the faces of
-    /// a hull of [`SPHERE_POINTS`] points about it, so the surface holds the shape.
+    /// faces of the `CYLINDER_SIDES`-sided prism about it, and a sphere the faces of a
+    /// hull of `SPHERE_POINTS` points about it, so the surface holds the shape.
     pub fn surface(&self, meshes_dir: &str) -> Result<Vec<Point3<f64>>, String> {
         let local = match &self.geometry {
             CollisionGeometry::Mesh { basename, scale } => {
