@@ -23,9 +23,7 @@ use crate::assemble::fit_bodies;
 use collision_geometry::GeometryError;
 use collision_geometry::clip::ClipRegion;
 use collision_geometry::gjk::{self, Hull, Placed};
-use collision_geometry::urdf_collision::{
-    JointKind, ParentJoint, UrdfCollisions, ZERO_AXIS_EPS, place_1dof,
-};
+use collision_geometry::urdf_collision::{JointKind, ParentJoint, UrdfCollisions, place_1dof};
 
 use crate::pairs::PairSpec;
 use crate::{BuildError, CollisionError};
@@ -108,24 +106,17 @@ impl Finger {
         closed: f64,
         open: f64,
     ) -> Result<Self, BuildError> {
-        let revolute = match joint.kind {
-            JointKind::Revolute => true,
-            JointKind::Prismatic => false,
-            _ => {
-                return Err(BuildError::Geometry(format!(
-                    "finger '{name}' joint kind {:?} is not a placeable 1-DOF finger",
-                    joint.kind
-                )));
-            }
-        };
-        if joint.axis.norm() < ZERO_AXIS_EPS {
+        if joint.kind == JointKind::Continuous {
             return Err(BuildError::Geometry(format!(
-                "finger '{name}' parent joint has a zero axis"
+                "finger '{name}' joint is continuous, which bounds no travel"
             )));
         }
+        let (axis, revolute) = joint
+            .one_dof()
+            .map_err(|e| BuildError::Geometry(format!("finger '{name}': {e}")))?;
         Ok(Finger {
             origin: joint.origin,
-            axis: Unit::new_normalize(joint.axis),
+            axis,
             revolute,
             closed,
             open,

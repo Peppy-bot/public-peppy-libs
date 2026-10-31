@@ -225,10 +225,24 @@ impl ParentJoint {
     /// than one degree of freedom and is refused. It reads no mesh;
     /// [`UrdfCollisions::child_surfaces_in_parent`] places a child's surfaces with it.
     pub fn offset(&self, q: f64) -> Result<Isometry3<f64>, String> {
+        if self.is_fixed() {
+            return Ok(self.origin);
+        }
+        let (axis, revolute) = self.one_dof()?;
+        Ok(place_1dof(&self.origin, &axis, revolute, q))
+    }
+
+    /// The unit axis of a joint of one degree of freedom, and whether the joint turns
+    /// about it (revolute or continuous) or slides along it (prismatic). A fixed joint
+    /// has no degree of freedom, a planar or floating joint has more than one, and an
+    /// axis whose norm is below 1e-12 has no direction: each is refused.
+    pub fn one_dof(&self) -> Result<(Unit<Vector3<f64>>, bool), String> {
+        /// An axis whose norm is below this cannot be normalized into a direction.
+        const ZERO_AXIS_EPS: f64 = 1e-12;
         let revolute = match self.kind {
-            JointKind::Fixed => return Ok(self.origin),
             JointKind::Prismatic => false,
             JointKind::Revolute | JointKind::Continuous => true,
+            JointKind::Fixed => return Err("a fixed joint has no degree of freedom".into()),
             JointKind::OtherMovable => {
                 return Err(
                     "a planar or floating joint has more than one degree of freedom, \
@@ -241,14 +255,9 @@ impl ParentJoint {
             return Err("parent joint has a zero axis".into());
         }
         // URDF axes are conventionally unit but the spec does not require it.
-        let axis = Unit::new_normalize(self.axis);
-        Ok(place_1dof(&self.origin, &axis, revolute, q))
+        Ok((Unit::new_normalize(self.axis), revolute))
     }
 }
-
-/// An axis whose norm is below this cannot be normalized into a joint
-/// direction; shared by every joint-axis validation in the crate.
-pub const ZERO_AXIS_EPS: f64 = 1e-12;
 
 /// Compose a joint `origin` with a 1-DOF motion of `q` about (revolute) or along
 /// (prismatic) the unit `axis`: the placement of [`ParentJoint::offset`], for a caller
@@ -535,6 +544,34 @@ mod tests {
             joint.origin * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), FRAC_PI_2);
         assert!((turned.translation.vector - expected.translation.vector).norm() < 1e-12);
         assert!(turned.rotation.angle_to(&expected.rotation) < 1e-12);
+    }
+
+    /// A joint of one degree of freedom gives its unit axis and whether it turns; a fixed
+    /// joint and a planar one are refused.
+    #[test]
+    fn one_dof_gives_the_axis_and_motion_of_a_single_degree_of_freedom() {
+        let u = UrdfCollisions::from_urdf(URDF).expect("parse");
+        let joint = |child| u.parent_joint(child).expect("the child has a parent joint");
+        let (axis, revolute) = joint("arm1").one_dof().expect("a revolute joint");
+        assert!(revolute && (axis.into_inner() - Vector3::z()).norm() < 1e-12);
+        let (axis, revolute) = joint("finger").one_dof().expect("a prismatic joint");
+        assert!(!revolute && (axis.into_inner() + Vector3::y()).norm() < 1e-12);
+        let fixed = joint("body").one_dof().expect_err("a fixed joint");
+        assert!(fixed.contains("no degree of freedom"), "{fixed}");
+        let planar = URDF.replace(
+            r#"<joint name="ma" type="revolute">"#,
+            r#"<joint name="ma" type="planar">"#,
+        );
+        let u = UrdfCollisions::from_urdf(&planar).expect("parse");
+        let planar = u
+            .parent_joint("arm1")
+            .expect("arm1 has a parent joint")
+            .one_dof()
+            .expect_err("a planar joint");
+        assert!(
+            planar.contains("more than one degree of freedom"),
+            "{planar}"
+        );
     }
 
     #[test]
