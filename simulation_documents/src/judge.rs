@@ -331,7 +331,7 @@ impl TryFrom<BandFields> for Band {
     }
 }
 
-/// Where a count looks: in an object, a named region or a location.
+/// Where a count looks: in an object, a region of the world or a location.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "PlaceFields", into = "PlaceFields")]
 pub enum Place {
@@ -340,7 +340,7 @@ pub enum Place {
     Location(Name),
 }
 
-/// What a robot reaches: an object, a landmark of one, a named region or a
+/// What a robot reaches: an object, a landmark of one, a region of the world or a
 /// location.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "TargetFields", into = "TargetFields")]

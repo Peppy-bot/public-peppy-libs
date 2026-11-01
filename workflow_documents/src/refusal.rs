@@ -128,6 +128,15 @@ impl Refusals {
     }
 }
 
+impl IntoIterator for Refusals {
+    type Item = Refusal;
+    type IntoIter = std::vec::IntoIter<Refusal>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
 impl From<documents_core::Error> for Refusals {
     fn from(error: documents_core::Error) -> Refusals {
         Refusals::one(Refusal::new(At::Document, error.to_string()))

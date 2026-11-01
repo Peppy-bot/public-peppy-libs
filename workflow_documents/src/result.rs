@@ -11,6 +11,7 @@ use std::fmt;
 use crate::lock::Lock;
 use crate::names::{Name, NameTag, RobotName};
 use crate::refusal::Located;
+use crate::work_cell::{Uncovered, WorkCell};
 use crate::workflow::Workflow;
 
 /// How a run ended.
@@ -100,6 +101,10 @@ pub struct LaneOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunRefusal {
     pub message: String,
+    /// What refused the run; a refusal that names no cause reads as
+    /// [`RefusalCause::Checks`].
+    #[serde(default)]
+    pub cause: RefusalCause,
     /// The errors of the checks that refused it.
     pub errors: Vec<Located>,
     /// The assumption whose check was false, with what it says.
@@ -107,6 +112,29 @@ pub struct RunRefusal {
     pub assumption: Option<Name>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub says: Option<String>,
+}
+
+/// What refused a run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefusalCause {
+    /// A check of the run before its initialization: its request, its
+    /// documents, the binding of its roles, its work cell, the versions of
+    /// its stack, its sign-off or the leases of its robots. `errors` names
+    /// each error, when there are several.
+    #[default]
+    Checks,
+    /// The check or the confirmation of an assumption, which `assumption`
+    /// names.
+    Assumption,
+    /// A watch parameter whose value did not read.
+    WatchUnread,
+    /// A watch value outside the envelope of the bundle, in an unattended
+    /// run on a physical robot; `uncovered` of the run result names each.
+    WatchOutsideTheEnvelope,
+    /// The judgement of the operator on the checks of a run of a trial: a
+    /// work cell that is not ready, or a wrong check.
+    OperatorJudgement,
 }
 
 /// The step that failed a lane.
@@ -290,6 +318,16 @@ pub struct RunResult {
     /// calls.
     pub unlocked_nodes: Vec<NameTag>,
     pub incidents: Vec<IncidentRecord>,
+    /// The work cell block of the run.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub work_cell: WorkCell,
+    /// The value of each watch parameter that the director read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub watch: BTreeMap<Name, f64>,
+    /// Each value of the work cell and each watch value that no test
+    /// covered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uncovered: Vec<Uncovered>,
 }
 
 /// A lane of a suspended run and the step it suspended at.
@@ -307,6 +345,16 @@ pub struct Suspension {
     pub incidents: Vec<IncidentRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_refusal: Option<Located>,
+}
+
+/// A check of a run of a trial with its value, which the operator compares
+/// with the work cell.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckToJudge {
+    pub assumption: Name,
+    pub says: String,
+    pub check: String,
+    pub value: bool,
 }
 
 /// An assumption that waits for a confirmation.
@@ -381,7 +429,10 @@ pub struct RunStatus {
 mod tests {
     use serde_json::json;
 
-    use super::{DifferenceKind, Ending, RunResult, RunState, SafeStateOutcome, SafeStateResult};
+    use super::{
+        DifferenceKind, Ending, RefusalCause, RunRefusal, RunResult, RunState, SafeStateOutcome,
+        SafeStateResult,
+    };
 
     /// A run result reads and writes the fields its readers read, each
     /// under its name, and a missing field is refused. The result of a run
@@ -417,6 +468,24 @@ mod tests {
         let mut missing = text;
         missing.as_object_mut().unwrap().remove("incidents");
         assert!(serde_json::from_value::<RunResult>(missing).is_err());
+    }
+
+    /// A refusal writes its cause by name, and a refusal that names no
+    /// cause reads as a refusal of the checks of the run.
+    #[test]
+    fn a_refusal_writes_its_cause_and_one_with_none_reads_as_the_checks() {
+        let text = json!({
+            "message": "an unattended run on a physical robot runs inside the envelope of its bundle",
+            "cause": "watch_outside_the_envelope",
+            "errors": [],
+        });
+        let refusal: RunRefusal = serde_json::from_value(text.clone()).unwrap();
+        assert_eq!(refusal.cause, RefusalCause::WatchOutsideTheEnvelope);
+        assert_eq!(serde_json::to_value(&refusal).unwrap(), text);
+        let mut no_cause = text;
+        no_cause.as_object_mut().unwrap().remove("cause");
+        let refusal: RunRefusal = serde_json::from_value(no_cause).unwrap();
+        assert_eq!(refusal.cause, RefusalCause::Checks);
     }
 
     /// A run has ended exactly in the states that an ending gives.

@@ -164,9 +164,154 @@ fn is_zero(value: &f64) -> bool {
     *value == 0.0
 }
 
+/// A named region of a world: a box in the world frame, with its centre, its
+/// size along its own axes and a yaw about +z. A point is in the region when
+/// it is inside the box or on its faces.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RegionFields", into = "RegionFields")]
+pub struct Region {
+    pub centre: Point,
+    pub size: [f64; 3],
+    pub yaw: f64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields, expecting = "a region, { centre, size, yaw }")]
+struct RegionFields {
+    centre: Point,
+    size: [f64; 3],
+    #[serde(default, skip_serializing_if = "is_zero")]
+    yaw: f64,
+}
+
+impl TryFrom<RegionFields> for Region {
+    type Error = Error;
+
+    fn try_from(fields: RegionFields) -> Result<Region, Error> {
+        let finite =
+            fields.centre.iter().all(|metres| metres.is_finite()) && fields.yaw.is_finite();
+        if !finite {
+            return Err(Error::rule(
+                "the centre and the yaw of a region are finite numbers",
+            ));
+        }
+        let has_a_volume = fields
+            .size
+            .iter()
+            .all(|metres| *metres > 0.0 && metres.is_finite());
+        if !has_a_volume {
+            return Err(Error::rule(format!(
+                "the size {:?} of a region has a side that is not above 0; write [x, y, z], each above 0 m",
+                fields.size
+            )));
+        }
+        Ok(Region {
+            centre: fields.centre,
+            size: fields.size,
+            yaw: fields.yaw,
+        })
+    }
+}
+
+impl From<Region> for RegionFields {
+    fn from(region: Region) -> RegionFields {
+        RegionFields {
+            centre: region.centre,
+            size: region.size,
+            yaw: region.yaw,
+        }
+    }
+}
+
+impl Region {
+    /// Whether `point`, in the world frame, is inside the region or on its
+    /// faces.
+    pub fn contains(&self, point: Point) -> bool {
+        let local = self.local(point);
+        (0..3).all(|axis| local[axis].abs() <= self.size[axis] / 2.0)
+    }
+
+    /// The point of the region at `fractions` of its size along each of its
+    /// axes, from its lowest corner (0) to its highest (1). A uniform draw of
+    /// the three fractions gives a uniform point of the region.
+    pub fn point_at(&self, fractions: [f64; 3]) -> Point {
+        let along = |axis: usize| (fractions[axis] - 0.5) * self.size[axis];
+        let (x, y, z) = (along(0), along(1), along(2));
+        let (sin, cos) = self.yaw.sin_cos();
+        [
+            self.centre[0] + cos * x - sin * y,
+            self.centre[1] + sin * x + cos * y,
+            self.centre[2] + z,
+        ]
+    }
+
+    /// `point` on the axes of the region, from its centre.
+    fn local(&self, point: Point) -> Point {
+        let (dx, dy, dz) = (
+            point[0] - self.centre[0],
+            point[1] - self.centre[1],
+            point[2] - self.centre[2],
+        );
+        let (sin, cos) = self.yaw.sin_cos();
+        [cos * dx + sin * dy, -sin * dx + cos * dy, dz]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn region(text: &str) -> Result<Region, String> {
+        serde_json::from_str::<Region>(text).map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn a_region_is_a_box_with_a_volume_and_an_omitted_yaw_is_zero() {
+        let stock = region(r#"{ "centre": [1, 2, 0.5], "size": [0.6, 0.4, 1] }"#).unwrap();
+        assert_eq!(
+            stock,
+            Region {
+                centre: [1.0, 2.0, 0.5],
+                size: [0.6, 0.4, 1.0],
+                yaw: 0.0,
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&stock).unwrap(),
+            r#"{"centre":[1.0,2.0,0.5],"size":[0.6,0.4,1.0]}"#
+        );
+        let flat = region(r#"{ "centre": [0, 0, 0], "size": [1, 0, 1] }"#).unwrap_err();
+        assert!(
+            flat.starts_with("the size [1.0, 0.0, 1.0] of a region has a side that is not above 0"),
+            "{flat}"
+        );
+        let other_field =
+            region(r#"{ "centre": [0, 0, 0], "size": [1, 1, 1], "pose": 1 }"#).unwrap_err();
+        assert!(
+            other_field
+                .starts_with("unknown field `pose`, expected one of `centre`, `size`, `yaw`"),
+            "{other_field}"
+        );
+    }
+
+    #[test]
+    fn a_yawed_region_holds_the_points_of_its_own_axes() {
+        let quarter_turn = Region {
+            centre: [1.0, 1.0, 0.0],
+            size: [2.0, 0.2, 1.0],
+            yaw: std::f64::consts::FRAC_PI_2,
+        };
+        assert!(quarter_turn.contains([1.0, 1.9, 0.0]));
+        assert!(!quarter_turn.contains([1.9, 1.0, 0.0]));
+        assert!(!quarter_turn.contains([1.0, 1.0, 0.6]));
+        let corner = quarter_turn.point_at([1.0, 1.0, 1.0]);
+        let expected = [0.9, 2.0, 0.5];
+        assert!(
+            (0..3).all(|axis| (corner[axis] - expected[axis]).abs() < 1e-12),
+            "{corner:?}"
+        );
+        assert!(quarter_turn.contains(quarter_turn.point_at([0.3, 0.7, 0.1])));
+    }
 
     /// A pose names the same forms whether a value has another type or its
     /// fields form none, and an offset of another type names its fields.

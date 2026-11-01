@@ -14,7 +14,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::expression::Expression;
-use crate::names::{Bound, InstanceName, MemberRef, Name, NameTag};
+use crate::names::{Bound, InstanceName, MemberRef, Name, NameTag, StepId};
 use crate::refusal::{At, Refusal, Refusals};
 use object::{Fields, read_value};
 use step::StepReader;
@@ -254,6 +254,21 @@ impl Workflow {
 
     pub fn document(&self) -> &Document {
         &self.document
+    }
+
+    /// Whether the role `role` has a step `id`, in its initialization or its
+    /// lane.
+    pub fn has_step(&self, role: &Name, id: &StepId) -> bool {
+        let mut found = false;
+        let trees = self
+            .initialization
+            .get(role)
+            .into_iter()
+            .chain(self.lanes.get(role).map(|lane| &lane.tree));
+        for tree in trees {
+            tree.visit(&mut |step| found |= step.id == *id);
+        }
+        found
     }
 
     pub fn digest(&self) -> Digest {
