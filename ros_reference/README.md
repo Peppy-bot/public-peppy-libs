@@ -18,6 +18,7 @@ change of the reference, which `run.sh --check` proves.
 | `forward_kinematics` | MoveIt's robot state: the global transform of each link of a chain | `chain_kinematics/tests/ros_reference_forward_kinematics.rs` |
 | `chain_collision` | MoveIt's robot model, robot state and robot filter: the links with collision geometry that a chain carries and the center MoveIt grows each of their bodies about, the global transform of each carried link, and whether each probe point lies inside the links' bodies (a convex mesh for a mesh, the primitive itself for a box, a cylinder or a sphere) grown by a padding | `collision_geometry/tests/ros_reference_chain_collision.rs` |
 | `self_distance` | MoveIt's FCL collision environment: the signed distance between the collision meshes of each pair of links | `self_collision_model/tests/ros_reference_self_distance.rs` |
+| `planning` | OMPL's geometric planners: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
 
 ## Layout
 
@@ -44,9 +45,9 @@ The script builds the reference image for the architecture of the host, and runs
 reference program on each scenario in it. It runs the image by the id that its build
 gives, so each checkout runs the image of its own files, and `docker image prune` removes
 the images of earlier builds. On a host without the base image, the build fetches about
-434 MB on amd64 (the base image, 341 MB; the apt indexes, 54.5 MB; and 37.9 MB of
-packages) and about 418 MB on arm64 (326 MB, 55.0 MB and 37.2 MB), and the image takes
-about 1.9 GB of disk on each.
+438 MB on amd64 (the base image, 341 MB; the apt indexes, 54.5 MB; and 42.5 MB of
+packages) and about 423 MB on arm64 (326 MB, 55.0 MB and 41.5 MB), and the image takes
+about 2.0 GB of disk on amd64 and 1.4 GB on arm64.
 The reference outputs and their checks run on the developer's machine; the Tests
 workflow runs the parity tests on the committed outputs.
 
@@ -56,7 +57,8 @@ its legacy builder; or Podman, rootful or rootless, which names itself in
 `docker --version`, as the podman-docker package installs it. The container writes its
 outputs as the user who runs the script. Both mounts carry `:z`, so on a host with SELinux
 the host relabels the whole checkout for containers to share, and the checkout must be
-one that the user lets containers read. On arm64, the host runs cargo too.
+one that the user lets containers read. On arm64, the host runs cargo too, and builds
+each crate that holds a parity test with the system libraries that its README names.
 
 On an amd64 host, `run.sh` writes `reference/`, with its `SHA256SUMS` and
 `INPUTS.SHA256SUMS`, and `packages-amd64.txt`, and `run.sh --check` fails when a file
@@ -76,7 +78,8 @@ differs from what the image gives. After the write or the check, both run each p
 test, `tests/ros_reference_*.rs` of each crate, on the outputs of the arm64 image, which
 the environment variable `ROS_REFERENCE_OUTPUTS` names to the test, and fail when a test
 does. The committed reference outputs are those of the amd64 image, and tests compare bits
-on amd64 alone.
+on amd64 alone. The planning parity test also reads the committed outputs on arm64, and
+compares each simplification with them within its bound.
 
 ## Rules
 
@@ -119,8 +122,12 @@ on amd64 alone.
    primitive; for self distance, the three configurations of OpenArm v2, of the zero
    configuration, the lower limits, the upper limits and thirty drawn inside them, that
    put each pair of links in each state, apart and in contact, that any of them puts it
-   in. A large drawn set runs locally and is never committed: draw it into `scenarios/`
-   with the `--drawn` option of the kind's script (for forward kinematics,
+   in; for planning, every planner through a wall with a block before it in two
+   dimensions under seed 1 and in seven under seed 2, and to a goal walled in, where it
+   finds no path, under seed 1, with RRTstar under seed 2 in two dimensions too, each
+   plan bounded at 2000 iterations, at which PRM and PRM* grow their roadmap, expand it
+   and grow it again. A large drawn set runs locally and is never committed: draw it into
+   `scenarios/` with the `--drawn` option of the kind's script (for forward kinematics,
    `python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
    `ros_reference/run.sh` and the parity tests, and restore the committed files with
    `git restore ros_reference/scenarios ros_reference/reference`.
@@ -180,8 +187,10 @@ arm64 host.
    tests on the outputs of the arm64 image.
 3. The parity test of its kind lists the scenarios of the kind from `scenarios/`, so it
    runs on the new one. The forward kinematics parity test poses chains of 1 to 7 joints,
-   the chain collision parity test chains of 7 joints, and the self distance parity test
-   builds the self model of OpenArm v2 and refuses a scenario that names another URDF.
+   the chain collision parity test chains of 7 joints, the self distance parity test
+   builds the self model of OpenArm v2 and refuses a scenario that names another URDF,
+   and the planning parity test asks each scenario for a plan of each planner that finds
+   a path and one that finds none.
 
 A routine test of `ros_reference` fails when a scenario has no reference output, a
 reference output has no scenario or no digest, or a scenario, a URDF or a mesh differs

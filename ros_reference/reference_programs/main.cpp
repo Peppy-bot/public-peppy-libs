@@ -15,6 +15,7 @@
 
 #include "chain_collision.hpp"
 #include "forward_kinematics.hpp"
+#include "planning.hpp"
 #include "scenario.hpp"
 #include "self_distance.hpp"
 
@@ -25,6 +26,7 @@ using Reference = nlohmann::json (*)(const nlohmann::json&, ros_reference::Input
 const std::map<std::string, Reference> references = {
     {"chain_collision", ros_reference::chain_collision},
     {"forward_kinematics", ros_reference::forward_kinematics},
+    {"planning", ros_reference::planning},
     {"self_distance", ros_reference::self_distance},
 };
 

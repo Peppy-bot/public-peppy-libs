@@ -102,6 +102,7 @@ libboost-iostreams-dev 1.90.0.1ubuntu3
 libboost-iostreams1.90-dev 1.90.0-6ubuntu1
 libboost-iostreams1.90.0 1.90.0-6ubuntu1
 libboost-program-options-dev 1.90.0.1ubuntu3
+libboost-program-options1.83.0 1.83.0-5ubuntu5
 libboost-program-options1.90-dev 1.90.0-6ubuntu1
 libboost-program-options1.90.0 1.90.0-6ubuntu1
 libboost-random-dev 1.90.0.1ubuntu3
@@ -112,6 +113,7 @@ libboost-regex-dev 1.90.0.1ubuntu3
 libboost-regex1.90-dev 1.90.0-6ubuntu1
 libboost-regex1.90.0 1.90.0-6ubuntu1
 libboost-serialization-dev 1.90.0.1ubuntu3
+libboost-serialization1.83.0 1.83.0-5ubuntu5
 libboost-serialization1.90-dev 1.90.0-6ubuntu1
 libboost-serialization1.90.0 1.90.0-6ubuntu1
 libboost-thread-dev 1.90.0.1ubuntu3
@@ -168,6 +170,7 @@ libext2fs2t64 1.47.2-3ubuntu4
 libfcl-dev 0.7.0-3ubuntu1
 libfcl0.7 0.7.0-3ubuntu1
 libffi8 3.5.2-4
+libflann1.9 1.9.2+dfsg-7
 libfmt-dev 10.1.1+ds1-4build1
 libfmt10 10.1.1+ds1-4build1
 libfontconfig1 2.17.1-3ubuntu1
@@ -562,6 +565,7 @@ ros-lyrical-moveit-msgs 2.7.2-1resolute.20260915.045011
 ros-lyrical-nav-msgs 5.9.3-1resolute.20260915.041601
 ros-lyrical-object-recognition-msgs 2.0.0-6resolute.20260915.044453
 ros-lyrical-octomap-msgs 2.0.1-3resolute.20260915.043844
+ros-lyrical-ompl 2.0.2-1resolute.20260828.214306
 ros-lyrical-osqp-vendor 1.0.0-1resolute.20260811.125619
 ros-lyrical-pluginlib 5.8.5-1resolute.20260831.172019
 ros-lyrical-random-numbers 2.0.5-1resolute.20260728.175326

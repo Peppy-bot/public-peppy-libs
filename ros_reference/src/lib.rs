@@ -14,7 +14,9 @@
 //!
 //! The parity tests read the reference outputs from `reference/`, or from the directory
 //! that the environment variable `ROS_REFERENCE_OUTPUTS` names, which then holds its own
-//! digests. `run.sh` names the outputs of the arm64 image there.
+//! digests. `run.sh` names the outputs of the arm64 image there. The planning kind also
+//! reads the committed outputs of `reference/`, the amd64 image's, wherever that variable
+//! points.
 //!
 //! Each kind of scenario is a module that lists the scenarios of its kind, reads each with
 //! its reference output, and pairs them for the parity test. The README says how to add a
@@ -22,6 +24,7 @@
 
 pub mod chain_collision;
 pub mod forward_kinematics;
+pub mod planning;
 pub mod self_distance;
 
 use serde::Deserialize;
@@ -49,6 +52,7 @@ const INPUT_DIGEST_FILE: &str = "INPUTS.SHA256SUMS";
 enum Kind {
     ChainCollision,
     ForwardKinematics,
+    Planning,
     SelfDistance,
 }
 
@@ -72,7 +76,12 @@ fn scenario_directory() -> PathBuf {
 /// `reference/`.
 fn reference_directory() -> PathBuf {
     std::env::var_os(REFERENCE_DIRECTORY_VARIABLE)
-        .map_or_else(|| harness_directory().join("reference"), PathBuf::from)
+        .map_or_else(committed_reference_directory, PathBuf::from)
+}
+
+/// `reference/`, which holds the committed reference outputs, the amd64 image's.
+fn committed_reference_directory() -> PathBuf {
+    harness_directory().join("reference")
 }
 
 /// The file `<name>.json` of `directory`.
@@ -183,8 +192,19 @@ fn read_scenario<T: DeserializeOwned>(name: &str) -> T {
 
 /// Reads the reference output `name`, after checking it against its digest.
 fn read_reference<T: DeserializeOwned>(name: &str) -> T {
-    let directory = reference_directory();
-    let path = json_file(&directory, name);
+    read_reference_in(&reference_directory(), name)
+}
+
+/// Reads the committed reference output `name` from `reference/`, after checking it
+/// against its digest.
+fn read_committed_reference<T: DeserializeOwned>(name: &str) -> T {
+    read_reference_in(&committed_reference_directory(), name)
+}
+
+/// Reads the reference output `name` from `directory`, after checking it against its
+/// digest there.
+fn read_reference_in<T: DeserializeOwned>(directory: &Path, name: &str) -> T {
+    let path = json_file(directory, name);
     let bytes = read_bytes(&path);
     Digests::read(&directory.join(OUTPUT_DIGEST_FILE)).check(&format!("{name}.json"), &bytes);
     parse(&path, &bytes)

@@ -10,7 +10,16 @@ Run it from any directory:
 The second draws a large set for a local run, which the README describes.
 """
 
-from drawing import configurations, generator, joint_limits, openarm_joints, options, robot, write
+from drawing import (
+    CONFIGURATIONS_DRAWN,
+    configurations,
+    generator,
+    joint_limits,
+    openarm_joints,
+    options,
+    robot,
+    write,
+)
 
 DRAWN_CONFIGURATIONS = 5
 
@@ -57,7 +66,7 @@ def scenario(rng, urdf, chains, drawn):
 
 
 def main():
-    drawn = options(__doc__, DRAWN_CONFIGURATIONS).parse_args().drawn
+    drawn = options(__doc__, DRAWN_CONFIGURATIONS, CONFIGURATIONS_DRAWN).parse_args().drawn
     for name, (urdf, chains) in ROBOTS.items():
         write(name, scenario(generator(name), urdf, chains, drawn))
 

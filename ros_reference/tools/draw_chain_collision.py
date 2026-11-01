@@ -24,6 +24,7 @@ import math
 import struct
 
 from drawing import (
+    CONFIGURATIONS_DRAWN,
     REPOSITORY,
     configurations,
     generator,
@@ -359,7 +360,7 @@ def write_wedge():
 
 
 def main():
-    drawn = options(__doc__, DRAWN_CONFIGURATIONS).parse_args().drawn
+    drawn = options(__doc__, DRAWN_CONFIGURATIONS, CONFIGURATIONS_DRAWN).parse_args().drawn
     rng = generator(OPENARM)
     parsed = robot(OPENARM_URDF)
     write(

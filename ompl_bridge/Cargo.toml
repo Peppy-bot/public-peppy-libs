@@ -1,0 +1,27 @@
+[package]
+name = "ompl_bridge"
+version = "0.1.0"
+edition = "2024"
+description = "OMPL's geometric planners from Rust: a real vector state space with bounds, the planners chosen by name, path simplification, and constrained planning by projection, with the state check, the motion check and the constraint given as Rust functions, and each plan seeded and bounded by iterations, so that a plan of every planner but PRM repeats with any number of goals, and whether PRM finds a path. Builds OMPL 2.0.2 against the system's Boost headers, Boost.Serialization and Eigen 3 headers, from the source archive of its release tag, which the build downloads and checks against its SHA-256 digest."
+
+[workspace]
+
+[dependencies]
+cxx = "1"
+thiserror = "2"
+
+[dev-dependencies]
+ros_reference = { path = "../ros_reference" }
+sha2 = "0.11"
+
+[build-dependencies]
+cc = { version = "1", features = ["parallel"] }
+cxx-build = "1"
+flate2 = "1"
+pkg-config = "0.3"
+sha2 = "0.11"
+tar = "0.4"
+ureq = "3"
+
+[profile.dev]
+opt-level = 1

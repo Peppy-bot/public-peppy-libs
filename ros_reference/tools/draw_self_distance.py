@@ -21,7 +21,16 @@ the output:
 
 import json
 
-from drawing import configurations, generator, joint_limits, openarm_joints, options, robot, write
+from drawing import (
+    CONFIGURATIONS_DRAWN,
+    configurations,
+    generator,
+    joint_limits,
+    openarm_joints,
+    options,
+    robot,
+    write,
+)
 
 NAME = "self_distance_openarm_v2"
 URDF = "openarm_description/assets/openarm_v20.urdf"
@@ -70,7 +79,7 @@ def select(output):
 
 
 def main():
-    parser = options(__doc__, None)
+    parser = options(__doc__, None, CONFIGURATIONS_DRAWN)
     parser.add_argument("--select", metavar="OUTPUT", help="print KEPT for this output")
     arguments = parser.parse_args()
     if arguments.select:
