@@ -1,6 +1,7 @@
 //! What the camera nodes and the crates that read them share, free of peppy
-//! types: workspace_core sees a perception camera through their pinhole
-//! model. Each node maps these onto its own generated contract members.
+//! types: occupancy_map reads their depth frames, and workspace_core sees a
+//! perception camera through their pinhole model. Each node maps these onto
+//! its own generated contract members.
 //!
 //! - [`controls`]: why a control write gave no value, by the failure kind of
 //!   peppy, the value a control answers when it has none, and the auto/manual

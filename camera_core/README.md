@@ -1,8 +1,9 @@
 # camera_core
 
 What the camera nodes and the crates that read them share, free of peppy types:
-`workspace_core` sees a perception camera through their pinhole model. Each node
-maps these onto its own generated contract members.
+`occupancy_map` reads their depth frames, and `workspace_core` sees a perception
+camera through their pinhole model. Each node maps these onto its own generated
+contract members.
 
 | Module | What it holds |
 |---|---|
