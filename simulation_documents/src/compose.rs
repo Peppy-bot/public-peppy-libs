@@ -1,11 +1,12 @@
 //! The world document of a live simulation: the setup record with the robots
-//! of the stack, and the start world of a launch.
+//! of the stack and their limbs, and the start world of a launch.
 
 use std::collections::BTreeMap;
 
 use documents_core::Manifest;
 
 use crate::geometry::Placement;
+use crate::limbs::Limbs;
 use crate::names::first_named_twice;
 use crate::world::{
     Catalogue, Join, Robot, Stand, check_namespaces, check_region_names,
@@ -14,26 +15,34 @@ use crate::world::{
 use crate::{Error, RobotName, SetupRecord, World, text};
 
 /// A simulated robot of the stack as its listing gives it: its name, its join,
-/// and whether it has a body, which stands in the world.
+/// and whether it has a body, which stands in the world; with its limbs as
+/// the robot measures them, when it measures them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StackRobot {
     pub name: RobotName,
     pub join: Join,
     pub body: bool,
+    pub limbs: Option<Limbs>,
 }
 
 impl World {
     /// The world of the live simulation: `record` with each robot of `robots`
-    /// joined as the listing says and standing as the record says.
+    /// joined as the listing says, standing as the record says, and with a
+    /// body, its limbs as it measures them.
     pub fn from_setup(
         manifest: Manifest,
         catalogue: Catalogue,
         record: &SetupRecord,
         robots: &[StackRobot],
     ) -> Result<World, Error> {
-        World::composed(manifest, catalogue, record, robots, |robot| {
-            record.stands.get(&robot.name).cloned()
-        })
+        World::composed(
+            manifest,
+            catalogue,
+            record,
+            robots,
+            |robot| record.stands.get(&robot.name).cloned(),
+            |robot| robot.limbs.clone(),
+        )
     }
 
     fn composed(
@@ -42,6 +51,7 @@ impl World {
         record: &SetupRecord,
         robots: &[StackRobot],
         stand_of: impl Fn(&StackRobot) -> Option<Stand>,
+        limbs_of: impl Fn(&StackRobot) -> Option<Limbs>,
     ) -> Result<World, Error> {
         if let Some(twice) = first_named_twice(robots, |a, b| a.name == b.name) {
             return Err(Error::rule(format!(
@@ -62,6 +72,7 @@ impl World {
                         Robot {
                             join: robot.join.clone(),
                             stand: robot.body.then(|| stand_of(robot)).flatten(),
+                            limbs: robot.body.then(|| limbs_of(robot)).flatten(),
                         },
                     )
                 })
@@ -105,18 +116,26 @@ impl StartSetup {
     }
 
     /// The start world: the start setup with the copies the launch started,
-    /// each with a body standing where it first joined.
+    /// each with a body standing where it first joined, at home: the limbs
+    /// that `launched` measures are left out.
     pub fn world(
         &self,
         manifest: Manifest,
         catalogue: Catalogue,
         launched: &[StackRobot],
     ) -> Result<World, Error> {
-        World::composed(manifest, catalogue, &self.record, launched, |robot| {
-            self.first_stands
-                .get(&robot.name)
-                .map(|placement| Stand::Placed(*placement))
-        })
+        World::composed(
+            manifest,
+            catalogue,
+            &self.record,
+            launched,
+            |robot| {
+                self.first_stands
+                    .get(&robot.name)
+                    .map(|placement| Stand::Placed(*placement))
+            },
+            |_| None,
+        )
     }
 }
 
@@ -135,7 +154,18 @@ mod tests {
                 core_node: None,
             },
             body: true,
+            limbs: None,
         }
+    }
+
+    /// The limbs of a one-arm robot whose arm stands at `joints` and whose
+    /// gripper is half open.
+    fn measured(joints: [f64; 2]) -> Limbs {
+        crate::text::from_json5(&format!(
+            "{{ arms: {{ arm: [{}, {}] }}, grippers: {{ gripper: 0.5 }} }}",
+            joints[0], joints[1]
+        ))
+        .unwrap()
     }
 
     #[test]
@@ -150,6 +180,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(world, example);
+    }
+
+    #[test]
+    fn a_robot_with_a_body_keeps_the_limbs_it_measures_and_one_without_a_body_has_none() {
+        let example = example();
+        let record = SetupRecord::built(&example);
+        let alpha = StackRobot {
+            limbs: Some(measured([0.5, -1.0])),
+            ..alpha()
+        };
+        let twin = StackRobot {
+            name: robot("feeder"),
+            body: false,
+            ..alpha.clone()
+        };
+        let world = World::from_setup(
+            example.manifest.clone(),
+            example.catalogue.clone(),
+            &record,
+            &[alpha, twin],
+        )
+        .unwrap();
+        assert_eq!(
+            world.robots[&robot("alpha")].limbs,
+            Some(measured([0.5, -1.0]))
+        );
+        assert_eq!(world.robots[&robot("feeder")].limbs, None);
+        let text = world.to_json5().unwrap();
+        assert_eq!(text.matches("limbs:").count(), 1, "{text}");
+        assert_eq!(World::parse(&text).unwrap(), world);
     }
 
     #[test]
@@ -195,6 +255,7 @@ mod tests {
                 core_node: None,
             },
             body: false,
+            limbs: None,
         };
         let newcomer = StackRobot {
             name: robot("bravo"),
@@ -307,10 +368,21 @@ mod tests {
             name: "world_start".into(),
             revision: Revision::FIRST,
         };
-        let world = start.world(manifest, Catalogue::Local, &[alpha()]).unwrap();
+        let measuring = StackRobot {
+            limbs: Some(measured([0.5, -1.0])),
+            ..alpha()
+        };
+        let world = start
+            .world(manifest, Catalogue::Local, &[measuring])
+            .unwrap();
         assert_eq!(
             world.robots[&robot("alpha")].stand,
             Some(Stand::Placed(first))
+        );
+        assert_eq!(
+            world.robots[&robot("alpha")].limbs,
+            None,
+            "the robots of the start world stand at home"
         );
         assert_eq!(world.scene.asset, "scene/default");
         assert!(world.objects.is_empty() && world.scene_objects.is_empty());

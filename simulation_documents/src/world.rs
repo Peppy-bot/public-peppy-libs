@@ -9,6 +9,7 @@ use serde_json::{Map, Value};
 
 use crate::daylight::Daylight;
 use crate::geometry::{Offset, Placement, Point, Pose, Region};
+use crate::limbs::Limbs;
 use crate::names::{
     RESERVED_PEPPY_NAME, RESERVED_REASON, first_named_twice, is_peppy_name, peppy_name_grammar,
 };
@@ -122,13 +123,17 @@ fn written_scale(scale: f64) -> Option<f64> {
     (scale != 1.0).then_some(scale)
 }
 
-/// A simulated robot of the world: how it joins the stack and where it stands.
+/// A simulated robot of the world: how it joins the stack, where it stands,
+/// and where its limbs stand. A robot without limbs stands at home, its
+/// grippers closed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, expecting = "a robot, { join, stand }")]
+#[serde(deny_unknown_fields, expecting = "a robot, { join, stand, limbs }")]
 pub struct Robot {
     pub join: Join,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stand: Option<Stand>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limbs: Option<Limbs>,
 }
 
 /// The join of a robot: an option of the `robot_membership` scope, its
@@ -1247,11 +1252,30 @@ impl World {
         Ok(self.document()?.to_json5())
     }
 
-    /// Whether `other` sets up the same world, whatever the two manifests say.
+    /// Whether `other` sets up the same world, whatever the two manifests say,
+    /// with the limbs of each robot alike ([`Limbs::alike`]) rather than
+    /// equal: a measured joint moves by a hair from one read to the next.
     pub fn same_setup_as(&self, other: &World) -> bool {
-        let mut mine = self.clone();
-        mine.manifest = other.manifest.clone();
-        mine == *other
+        let limbs_alike =
+            self.robots.len() == other.robots.len()
+                && self.robots.iter().zip(&other.robots).all(
+                    |((name, mine), (other_name, theirs))| {
+                        name == other_name
+                            && match (&mine.limbs, &theirs.limbs) {
+                                (Some(mine), Some(theirs)) => mine.alike(theirs),
+                                (mine, theirs) => mine.is_none() && theirs.is_none(),
+                            }
+                    },
+                );
+        let without_limbs = |world: &World| {
+            let mut world = world.clone();
+            world.manifest = other.manifest.clone();
+            for robot in world.robots.values_mut() {
+                robot.limbs = None;
+            }
+            world
+        };
+        limbs_alike && without_limbs(self) == without_limbs(other)
     }
 
     pub(crate) fn fields(&self) -> WorldFields {
@@ -1294,6 +1318,7 @@ fn value_entries<K: Clone + Ord, T: Clone>(map: &BTreeMap<K, T>) -> BTreeMap<K, 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::{JOINT_SLACK, OPENING_SLACK};
     use documents_core::Revision;
     use std::collections::BTreeSet;
 
@@ -1556,6 +1581,7 @@ pub(crate) mod tests {
             ("scene", refusals_of::<Scene>()),
             ("join", refusals_of::<Join>()),
             ("robot", refusals_of::<Robot>()),
+            ("limbs", refusals_of::<Limbs>()),
             ("stand", refusals_of::<Stand>()),
             ("scene object", refusals_of::<SceneObject>()),
             ("object", refusals_of::<Object>()),
@@ -2100,5 +2126,44 @@ pub(crate) mod tests {
         let mut moved = world.clone();
         moved.scene.scale = 2.0;
         assert!(!world.same_setup_as(&moved));
+    }
+
+    /// The world of the worked example whose robot `alpha` stands with its
+    /// one arm at `joint` and its gripper at `opening`, or at home.
+    fn with_limbs(limbs: Option<(f64, f64)>) -> World {
+        let mut world = example();
+        world.robots.get_mut(&robot("alpha")).unwrap().limbs = limbs.map(|(joint, opening)| {
+            crate::text::from_json5(&format!(
+                "{{ arms: {{ left_arm: [{joint}, 0] }}, grippers: {{ left_gripper: {opening} }} }}"
+            ))
+            .unwrap()
+        });
+        world
+    }
+
+    #[test]
+    fn same_setup_takes_limbs_within_their_slack_and_tells_limbs_from_home() {
+        let world = with_limbs(Some((0.5, 0.5)));
+        let mut drifted = with_limbs(Some((0.5 + JOINT_SLACK / 2.0, 0.5 - OPENING_SLACK / 2.0)));
+        drifted.manifest.name = "world_other".into();
+        assert!(world.same_setup_as(&drifted) && drifted.same_setup_as(&world));
+        let unlike = [
+            with_limbs(Some((0.5 + JOINT_SLACK * 2.0, 0.5))),
+            with_limbs(Some((0.5, 0.5 + OPENING_SLACK * 2.0))),
+            with_limbs(None),
+        ];
+        for other in unlike {
+            assert!(
+                !world.same_setup_as(&other) && !other.same_setup_as(&world),
+                "{other:?}"
+            );
+        }
+        let mut moved = with_limbs(Some((0.5, 0.5)));
+        moved.scene.scale = 2.0;
+        assert!(
+            !world.same_setup_as(&moved),
+            "alike limbs keep the other fields compared"
+        );
+        assert!(with_limbs(None).same_setup_as(&example()));
     }
 }
