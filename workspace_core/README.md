@@ -5,7 +5,8 @@ robot's own answer (its backbone's `workspace:v1`, from its design) and a
 simulation's answer (Waldo's `scene_workspace:v1`, from a simulated world) share,
 so that both give the same kind of answer, with the same limits and in the same
 words. Pure Rust on plain arrays (`[f64; 3]` points, row-major `[f64; 9]`
-rotations): no math library, no robot description, no world.
+rotations) and [`camera_core`](../camera_core)'s pinhole model of a camera: no
+math library, no robot description, no world.
 
 A backbone in Python uses it through its bindings,
 [`workspace_core_py`](../workspace_core_py).
@@ -21,7 +22,7 @@ A backbone in Python uses it through its bindings,
 | Reachable (`Reach`) | Some arm brings its grasp point within `REACH_TOLERANCE` (0.01 m) of the target with its approach axis within `GRASP_ANGLE_TOLERANCE` (0.05 rad) of a grasp direction; the roll the gripper ends at about that direction is not checked. A solver of full poses tries each grasp orientation. |
 | Surface target | `ABOVE_SURFACE` (0.04 m) above a point of the surface. |
 | Perception camera (`perception_camera`) | The robot's one camera that gives depth and that no arm carries. None: no view check. Several: an error naming them. |
-| Visible (`View`) | Inside the perception camera's field of view, and where its depth stream reads a depth: its sample of the point, the optical z or the straight-line distance as its depth model says (`DepthModel`), lies inside its depth range (`Camera::view_of`). Each side adds its own test of what hides a point; only a simulation says `View::HiddenBy`. |
+| Visible (`View`) | Inside the perception camera's field of view, a pixel of its colour image showing the point, and where its depth stream reads a depth: its sample of the point, the optical z or the straight-line distance as its depth model says (`camera_core`'s `DepthModel`), lies inside its depth range (`Camera::view_of`). Each side adds its own test of what hides a point; only a simulation says `View::HiddenBy`. |
 | Workable | Reachable and visible; reachable alone for a robot without a perception camera. |
 | Room to work | The workable points cover at least `MIN_WORKABLE_AREA` (0.03 m²). |
 
@@ -33,8 +34,7 @@ A backbone in Python uses it through its bindings,
 | `largest_workable_rectangle` | the largest axis-aligned rectangle of workable grid points; of rectangles as large, the one nearest the robot's midline, then the nearest |
 | `reach_bounds`, `view_bounds` | the rectangles bounding the points the arms reach and the camera sees |
 | `nearest_workable(points, target)` | the workable point nearest a target, where to move an object to |
-| `Camera::view_of` | the field-of-view and depth test of a point, for a camera in the optical convention (+X right, +Y down, +Z along the view) with OpenCV intrinsics |
-| `Intrinsics::from_vertical_fov` | the pinhole model of a rendered camera from its vertical field of view and image size |
+| `Camera::view_of` | the field-of-view and depth test of a point, for a camera in the optical convention (+X right, +Y down, +Z along the view) seen through `camera_core`'s `Pinhole` of its colour stream, its lens included: a pixel of the image shows the point |
 | `workable(reach, view)` | whether a point or an object is workable: reached, and seen or not asked |
 | `messages::{point_message, surface_message, robot_frame_placement, answer_message, unchecked_view_message}` | the one-line text of each verdict, of how many checked points, objects or surfaces are workable, and of why no view is checked |
 

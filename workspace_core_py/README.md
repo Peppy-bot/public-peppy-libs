@@ -84,9 +84,9 @@ uv run pytest
 ```
 
 `uv sync` builds the module and installs it into `.venv`, and builds it again
-when a Rust source of this package or of `workspace_core` changes. `cargo
-test` builds and links the module as maturin does, without libpython
-(`.cargo/config.toml`); the tests of the bindings are in Python.
+when a Rust source of this package, of `workspace_core` or of `camera_core`
+changes. `cargo test` builds and links the module as maturin does, without
+libpython (`.cargo/config.toml`); the tests of the bindings are in Python.
 `tests/test_types.py` compares the types in `workspace_core_py.pyi` with the
 module: through mypy's stubtest, and for the classes that do not hash, which
 stubtest does not compare.
