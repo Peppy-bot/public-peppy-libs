@@ -3,8 +3,8 @@
 OMPL's geometric planners from Rust. A plan runs through a real vector state space with
 bounds, by a planner chosen by name, under the caller's state and motion checks, and
 optionally on the zero set of the caller's constraint; OMPL's path simplifier then
-shortens the path. The crate builds OMPL 2.0.2 from the source archive of its release
-tag (see "Building").
+shortens the path. The crate builds OMPL 2.0.2, the release that the ROS reference
+image holds, from the source archive of its release tag (see "Building").
 
 - `plan` runs one `Request` and answers a `Plan`: the path when the planner found an
   exact one, its simplification when the request asks for it, and what ended the
@@ -156,6 +156,26 @@ the constraint. The process goes on. The bridge catches a panic in a binary that
 on panic, Rust's default; in a binary built with `panic = "abort"`, a panic in the
 caller's functions aborts the process.
 
+## Parity with OMPL
+
+A plan of every planner but PRM that its iteration bound ends repeats, path for path,
+with any number of goals, and a plan of PRM repeats whether it finds a path (see
+"Repeating a plan"). `tests/ros_reference_planning.rs` gives the evidence that the plan
+is OMPL's: it plans every `planning` scenario of the [`ros_reference`](../ros_reference)
+harness, which a C++ program plans in the reference image with the image's OMPL 2.0.2,
+built, seeded and bounded as this crate builds, seeds and bounds a plan, with the same
+stop rule and the same rounds of roadmap growth, through checks of the same arithmetic.
+Every plan finds an exact path exactly where the C++ program's does, and every plan of a
+planner other than PRM gives the C++ program's ending, and its path and the path's
+length within 1e-12, against the outputs of each image, and its simplification within
+1e-12 of the committed outputs of the amd64 image on every architecture; on x86-64, it
+gives the path, the length and the simplification of the committed outputs bit for bit.
+The arm64 image's simplifier branches on the last bits of its fused paths, and 6 of its
+21 simplifications differ from the amd64 ones beyond 1e-12, while this crate built for
+aarch64 gave the committed bits of every simplification on a Jetson. The scenario holds a
+plan of each planner that finds a path and one that finds none. PRM's path is the first
+that its search finds, so the test compares whether it found one alone.
+
 ## Building
 
 The build compiles part of OMPL 2.0.2, the release that OMPL tags `2.0.2` at
@@ -214,5 +234,9 @@ rounds on its own on every target, as on the x86-64 baseline. The flag does not 
 Eigen's vectorized kernels, which fuse multiply-adds by intrinsics on aarch64 and in an
 x86-64 build with FMA enabled. OMPL calls them to project the states of a constrained
 plan onto its constraint, and to place states in the grid of KPIECE1, BKPIECE1,
-LBKPIECE1 and SBL in more than two dimensions. OMPL prints its warnings and errors to
-standard error.
+LBKPIECE1 and SBL in more than two dimensions. On a Jetson, an aarch64 build gave every
+plan of the parity test the bits of the x86-64 baseline, the seven-dimensional plans of
+KPIECE1, BKPIECE1, LBKPIECE1 and SBL among them, whose grid placement fuses: a
+measurement of that scenario, which a plan whose fused placement lands on another side
+of a cell's edge does not share.
+OMPL prints its warnings and errors to standard error.

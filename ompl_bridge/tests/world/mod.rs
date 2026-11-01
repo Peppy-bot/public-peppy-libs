@@ -1,20 +1,16 @@
 //! A world of box obstacles and its checks, which the plans of the tests plan through.
+//! The planning reference of the ROS reference harness checks its worlds with the same
+//! arithmetic, step for step.
 
 use ompl_bridge::{CheckError, Checks, Motion};
+use ros_reference::planning::Obstacle;
 
-/// An axis-aligned box, open: a state on its surface is free.
-pub struct Obstacle {
-    pub min: Vec<f64>,
-    pub max: Vec<f64>,
-}
-
-impl Obstacle {
-    fn holds(&self, state: &[f64]) -> bool {
-        state
-            .iter()
-            .zip(self.min.iter().zip(&self.max))
-            .all(|(x, (lo, hi))| lo < x && x < hi)
-    }
+/// Whether `obstacle`, open, holds `state`.
+fn holds(obstacle: &Obstacle, state: &[f64]) -> bool {
+    state
+        .iter()
+        .zip(obstacle.min.iter().zip(&obstacle.max))
+        .all(|(x, (lo, hi))| lo < x && x < hi)
 }
 
 /// Boxes, and the step a motion is walked in.
@@ -25,7 +21,7 @@ pub struct World {
 
 impl World {
     pub fn free(&self, state: &[f64]) -> bool {
-        !self.obstacles.iter().any(|o| o.holds(state))
+        !self.obstacles.iter().any(|o| holds(o, state))
     }
 
     /// The motion from `from` to `to` walked in steps of at most the motion step,

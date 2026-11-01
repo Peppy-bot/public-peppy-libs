@@ -22,23 +22,20 @@ from pathlib import Path
 SEED = 20261028
 REPOSITORY = Path(__file__).resolve().parents[2]
 SCENARIOS = REPOSITORY / "ros_reference" / "scenarios"
+# What --drawn counts in a script that draws the configurations of a chain.
+CONFIGURATIONS_DRAWN = "configurations drawn inside the limits of each chain"
 
 
 def generator(name):
     return random.Random(f"{SEED}:{name}")
 
 
-def options(doc, drawn):
-    """The options of a script whose docstring is `doc`: --drawn, the configurations
-    drawn inside the limits of each chain, `drawn` by default. A larger count draws a
-    large set for a local run, which the README describes."""
+def options(doc, drawn, what):
+    """The options of a script whose docstring is `doc`: --drawn, how many of `what` it
+    draws, `drawn` by default. A larger count draws a large set for a local run, which
+    the README describes."""
     parser = argparse.ArgumentParser(description=doc.splitlines()[0])
-    parser.add_argument(
-        "--drawn",
-        type=int,
-        default=drawn,
-        help="configurations drawn inside the limits of each chain",
-    )
+    parser.add_argument("--drawn", type=int, default=drawn, help=what)
     return parser
 
 

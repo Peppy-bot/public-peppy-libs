@@ -21,7 +21,8 @@ use ompl_bridge::{
     CONSTRAINED_SPACING, CheckError, Checks, Constraint, Ending, Motion, Plan, PlanError, Planner,
     Projection, Request, Space, plan,
 };
-use world::{Obstacle, World, distance, length};
+use ros_reference::planning::Obstacle;
+use world::{World, distance, length};
 
 /// The step the worlds here walk a motion in.
 const MOTION_STEP: f64 = 0.01;
