@@ -93,7 +93,10 @@ jobs:
   # job carries it between runs. RunsOn restores that disk from the newest
   # snapshot of the same branch, or of main for the first run of a branch, and
   # snapshots it after the job; the run of a pull request reads the snapshot
-  # of main but never writes it, and the push to main is what keeps it current.
+  # of main but never writes it, and the push to main is what keeps it
+  # current. The disk restores lazily (`lazy-init` in the job's label), so a
+  # block comes from the snapshot when the job first reads it and no restore
+  # pays for a provisioned initialization rate.
   #
   # openarm_can's bus tests read OPENARM_CAN_TEST_IFACE for a CAN interface to
   # drive and skip themselves when it names none, which is what they do here:
@@ -111,7 +114,7 @@ jobs:
     # 5 at its peak, and uses near 2 GB. The root disk is 50 GB
     # (a run writes under 10 GB there), and the sticky disk holds the shared
     # target directory and the cargo registry.
-    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=8/ram=16+32/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=rust-crates:60gb${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
+    runs-on: runs-on=${{ github.run_id }}/runner=peppy-ci-ubuntu-24.04-x86_64/image=peppy-ubuntu24/cpu=8/ram=16+32/family=c8a+c7a+m8a+m7a/volume=50gb:gp3:500mbs:6000iops/sticky=rust-crates:60gb:lazy-init${{ fromJSON(github.run_attempt) >= 3 && '/spot=false' || '' }}  # custom Peppy AMI
     permissions:
       contents: read
     env:
