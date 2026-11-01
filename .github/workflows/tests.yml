@@ -65,6 +65,8 @@ jobs:
             rust_crates:
               - '*/Cargo.toml'
               - '*/Cargo.lock'
+              - '*/*.rs'
+              - '*/README.md'
               - '*/src/**'
               - '*/tests/**'
               - '*/assets/**'
@@ -142,9 +144,10 @@ jobs:
       - uses: ./.github/actions/rust-toolchain
 
       # collision_geometry builds Qhull through the qhull crate, whose bindings
-      # bindgen generates against libclang at build time.
-      - name: Install libclang
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libclang-dev
+      # bindgen generates against libclang at build time. ompl_bridge builds OMPL
+      # against Boost and Eigen 3.
+      - name: Install the system libraries the crates build against
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libclang-dev libboost-serialization-dev libeigen3-dev pkg-config
 
       # Every crate runs even after one fails, so a red run names every
       # failing crate. `--all-features` because a feature of a library crate
