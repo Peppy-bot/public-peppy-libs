@@ -43,26 +43,7 @@ impl TryFrom<LimbsFields> for Limbs {
     type Error = Error;
 
     fn try_from(fields: LimbsFields) -> Result<Limbs, Error> {
-        if fields.arms.is_empty() && fields.grippers.is_empty() {
-            return Err(Error::rule(
-                "the limbs name no arm and no gripper; name each arm with its joint positions and each gripper with its opening, or leave limbs out",
-            ));
-        }
-        let names = fields.arms.keys().chain(fields.grippers.keys());
-        if let Some(blank) = names.into_iter().find(|name| name.trim().is_empty()) {
-            return Err(Error::rule(format!(
-                "the limb name `{blank}` is blank; name each limb as the robot names it"
-            )));
-        }
-        if let Some((arm, _)) = fields.arms.iter().find(|(_, joints)| joints.is_empty()) {
-            return Err(Error::rule(format!(
-                "the arm `{arm}` has no joint position; give one position per joint of the arm, in its joint order"
-            )));
-        }
-        Ok(Limbs {
-            arms: fields.arms,
-            grippers: fields.grippers,
-        })
+        Limbs::new(fields.arms, fields.grippers)
     }
 }
 
@@ -76,6 +57,31 @@ impl From<Limbs> for LimbsFields {
 }
 
 impl Limbs {
+    /// The limbs of `arms` and `grippers`. Limbs that name no limb, a blank
+    /// limb name, and an arm without joint positions are refused.
+    pub fn new(
+        arms: BTreeMap<String, Vec<f64>>,
+        grippers: BTreeMap<String, Opening>,
+    ) -> Result<Limbs, Error> {
+        if arms.is_empty() && grippers.is_empty() {
+            return Err(Error::rule(
+                "the limbs name no arm and no gripper; name each arm with its joint positions and each gripper with its opening, or leave limbs out",
+            ));
+        }
+        let names = arms.keys().chain(grippers.keys());
+        if let Some(blank) = names.into_iter().find(|name| name.trim().is_empty()) {
+            return Err(Error::rule(format!(
+                "the limb name `{blank}` is blank; name each limb as the robot names it"
+            )));
+        }
+        if let Some((arm, _)) = arms.iter().find(|(_, joints)| joints.is_empty()) {
+            return Err(Error::rule(format!(
+                "the arm `{arm}` has no joint position; give one position per joint of the arm, in its joint order"
+            )));
+        }
+        Ok(Limbs { arms, grippers })
+    }
+
     /// Whether `other` names the same arms, each with as many joints, and the
     /// same grippers, with each joint within [`JOINT_SLACK`] and each opening
     /// within [`OPENING_SLACK`] of the other's.
@@ -109,6 +115,9 @@ impl Limbs {
 pub struct Opening(f64);
 
 impl Opening {
+    /// A closed gripper.
+    pub const CLOSED: Opening = Opening(0.0);
+
     /// `value` as an opening; a value outside 0 to 1, or not a number, is
     /// refused.
     pub fn new(value: f64) -> Result<Opening, Error> {
@@ -192,6 +201,20 @@ mod tests {
     }
 
     #[test]
+    fn new_limbs_take_the_rules_of_written_limbs() {
+        let arms = BTreeMap::from([("arm".to_owned(), vec![0.5])]);
+        let made = Limbs::new(arms, BTreeMap::new()).unwrap();
+        assert_eq!(made, limbs("{ arms: { arm: [0.5] } }"));
+        let empty_arm = BTreeMap::from([("arm".to_owned(), Vec::new())]);
+        assert_eq!(
+            Limbs::new(empty_arm, BTreeMap::new())
+                .unwrap_err()
+                .to_string(),
+            refusal("{ arms: { arm: [] } }")
+        );
+    }
+
+    #[test]
     fn an_opening_is_from_0_to_1() {
         for value in [0.0, 0.5, 1.0] {
             assert_eq!(Opening::new(value).unwrap().value(), value);
@@ -200,6 +223,7 @@ mod tests {
             let refused = Opening::new(value).unwrap_err().to_string();
             assert!(refused.contains("is not from 0 to 1"), "{value}: {refused}");
         }
+        assert_eq!(Opening::CLOSED, Opening::new(0.0).unwrap());
         let refused = refusal("{ grippers: { gripper: 1.5 } }");
         assert!(
             refused.contains("the opening 1.5 is not from 0 to 1"),
