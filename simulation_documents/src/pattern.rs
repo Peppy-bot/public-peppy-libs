@@ -48,14 +48,15 @@ impl Sampleable for Scene {
     }
 }
 
-/// A robot takes samplers in its stand alone: a sweep checks the workflow
-/// against the join of each robot, so the join is fixed.
+/// A robot takes samplers in its stand and its limbs, not in its join: a
+/// sweep checks the workflow against the join of each robot, so the join is
+/// fixed, and so is the robot as a whole, which holds the join.
 impl Sampleable for Robot {
     fn rule_at(path: &[&str]) -> SiteRule {
         match path {
+            [] | ["join", ..] => SiteRule::Fixed,
             ["stand", "position"] => SiteRule::StandPosition,
-            ["stand", ..] => SiteRule::Value,
-            _ => SiteRule::Fixed,
+            _ => SiteRule::Value,
         }
     }
 }
@@ -1994,6 +1995,11 @@ mod tests {
                 "robots.charlie: join.option: a join is fixed: a sweep checks the workflow against the join of each robot, so write the join without a sampler",
             ),
             (
+                "bravo: { join: { option: \"so101_sim\", features: [\"aspire\", \"packing_skills\"] }, stand: { surface: \"station_b\" } },",
+                "bravo: { one_of: [{ join: { option: \"so101_sim\" } }, { join: { option: \"lekiwi_sim\" } }] },",
+                "robots.bravo: a join is fixed: a sweep checks the workflow against the join of each robot, so write the join without a sampler",
+            ),
+            (
                 "min_spacing_m: 0.02",
                 "min_spacing_m: -1",
                 "min_spacing_m: the spacing -1 is not at least 0; write a distance of 0 m or more",
@@ -2004,6 +2010,40 @@ mod tests {
             let refused = refusal(&text);
             assert!(refused.starts_with(expected), "{expected}\n{refused}");
         }
+    }
+
+    /// The tape line with the limbs of `alpha` as `limbs` writes them.
+    fn tape_line_with_limbs(limbs: &str) -> String {
+        let stand = "stand: { surface: \"station_a\", offset:";
+        assert!(tape_line_text().contains(stand));
+        tape_line_text().replacen(stand, &format!("limbs: {limbs}, {stand}"), 1)
+    }
+
+    #[test]
+    fn a_pattern_draws_the_joints_and_the_openings_of_the_limbs_of_a_robot() {
+        let pattern = WorldPattern::parse(&tape_line_with_limbs(
+            "{ arms: { arm: [{ range: [0, 0.5] }, 1] }, grippers: { gripper: { one_of: [0, 1] } } }",
+        ))
+        .unwrap();
+        let mut openings = BTreeSet::new();
+        for seed in 0..16 {
+            let world = expanded(&pattern, seed);
+            let limbs = world.robots[&robot("alpha")].limbs.clone().unwrap();
+            let joints = &limbs.arms["arm"];
+            assert!(
+                (0.0..=0.5).contains(&joints[0]) && joints[1] == 1.0,
+                "{joints:?}"
+            );
+            openings.insert(limbs.grippers["gripper"].value().to_string());
+        }
+        assert_eq!(openings, BTreeSet::from(["0".to_owned(), "1".to_owned()]));
+        let refused = refusal(&tape_line_with_limbs(
+            "{ grippers: { gripper: { range: [0, 2] } } }",
+        ));
+        assert!(
+            refused.contains("the opening 2 is not from 0 to 1"),
+            "a drawn opening is checked as a written one: {refused}"
+        );
     }
 
     #[test]

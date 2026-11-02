@@ -26,12 +26,17 @@ let verdicts = Verdicts::parse(&verdicts_text)?;
 ```
 
 A `World` (`world/v1`) names its catalogue release and its scene, the robots
-with the join each takes on the stack and where each stands, the scene objects
-it moves or removes, the objects it spawns, the lighting, the materials, the
+with the join each takes on the stack, where each stands and where its limbs
+stand, the scene objects it moves or removes, the objects it spawns, the lighting, the materials, the
 daylight, its regions and the named locations. A region is a box in the world
 frame, `{ centre, size, yaw }`, metres and radians, with `yaw` 0 when left
 out. A location `{ in: <region> }`, a sampler `{ in: <region> }` and a judge
-name a region of `regions`. The daylight sets the settings of the
+name a region of `regions`. The limbs of a robot, `{ arms: { <arm>: [joint
+positions] }, grippers: { <gripper>: opening } }`, name each limb as the
+robot names it (limb_state): an arm with its joint positions, radians or
+metres, in its joint order, and a gripper with its opening, a fraction of
+full jaw travel from 0 (closed) to 1. They name at least one limb. A robot
+without limbs stands at home, its grippers closed. The daylight sets the settings of the
 scene's site in place of the scene's own: the local date
 (`YYYY-MM-DD`), the hour (`HH:MM` or `HH:MM:SS`, written `HH:MM:SS`), the
 clock rate and the weather (`{ cloud_cover, rain_mm_h }`). `World::parse`
@@ -45,7 +50,10 @@ scene object removed and `{ kept: true }` drops the base's entry. A
 the bases leave no entry under, after their own marks, is refused, as is a
 `{ removed: true }` daylight over bases that leave none. A refusal that comes of a base names
 each base on the way to it, and a chain of more than 128 bases is refused.
-`same_setup_as` compares two worlds whatever their manifests say.
+`same_setup_as` compares two worlds whatever their manifests say, with the
+limbs of each robot alike rather than equal: each joint within `JOINT_SLACK`
+and each opening within `OPENING_SLACK` of the other's, since a measured
+joint moves by a hair from one read to the next.
 
 The world carries the root key `simulation_schema` and takes the root key
 rule, the manifest and the digest from `documents_core`. Two joins whose
@@ -110,9 +118,10 @@ world patterns, and names each misfit.
 
 A `SetupRecord` is the last value of each setup call a simulation took, as
 JSON5 text without a root key. `World::from_setup` makes the world of a live
-simulation from the record and the robots of the stack (`StackRobot`), and
-`StartSetup::world` makes the start world from the setup the simulation
-started with and where each robot first joined. `Judge::parse_list` reads a
+simulation from the record and the robots of the stack (`StackRobot`), each
+with a body with the limbs that it measures, and `StartSetup::world` makes the
+start world from the setup the simulation started with and where each robot
+first joined, at home. `Judge::parse_list` reads a
 JSON5 list of judges, `true` or one of the checks, and `Verdicts` holds a
 `holds` and a `why` for each.
 

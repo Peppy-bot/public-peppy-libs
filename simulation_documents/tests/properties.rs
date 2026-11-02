@@ -16,10 +16,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use simulation_documents::{
     Band, Bounds, Catalogue, Check, Cone, ContentsOn, Control, Count, Date, Daylight, Digest,
-    Error, Feature, Finish, Holding, Join, Judge, Landmark, LandmarkOn, Light, Location, Manifest,
-    Material, Name, NearPoint, Object, Offset, Physics, Place, Placement, Point, Pose, Reachable,
-    Region, Revision, Robot, RobotName, Scene, SceneObject, Seed, SetupRecord, StackRobot, Stand,
-    Target, TimeOfDay, Weather, WithinM, World, WorldDocument, WorldPattern,
+    Error, Feature, Finish, Holding, Join, Judge, Landmark, LandmarkOn, Light, Limbs, Location,
+    Manifest, Material, Name, NearPoint, Object, Offset, Opening, Physics, Place, Placement, Point,
+    Pose, Reachable, Region, Revision, Robot, RobotName, Scene, SceneObject, Seed, SetupRecord,
+    StackRobot, Stand, Target, TimeOfDay, Weather, WithinM, World, WorldDocument, WorldPattern,
 };
 
 /// Names of objects, scene objects, locations, poses and regions: over the
@@ -111,6 +111,27 @@ fn placements(tc: &TestCase) -> Placement {
         position: tc.draw(points()),
         yaw: tc.draw(yaws()),
     }
+}
+
+/// Limbs: up to two arms of one to seven joints and up to two grippers, at
+/// least one limb.
+#[hegel::composite]
+fn limbs(tc: &TestCase) -> Limbs {
+    let limb_names = || gs::text().alphabet("ab_").min_size(1).max_size(3);
+    let joints = gs::vecs(yaws()).min_size(1).max_size(7);
+    let openings = gs::floats::<f64>()
+        .min_value(0.0)
+        .max_value(1.0)
+        .map(|value| Opening::new(value).expect("an opening is from 0 to 1"));
+    let arms: BTreeMap<String, Vec<f64>> =
+        tc.draw(gs::btree_maps(limb_names(), joints).max_size(2));
+    let min_grippers = usize::from(arms.is_empty());
+    let grippers = tc.draw(
+        gs::btree_maps(limb_names(), openings)
+            .min_size(min_grippers)
+            .max_size(2),
+    );
+    Limbs { arms, grippers }
 }
 
 #[hegel::composite]
@@ -373,6 +394,7 @@ fn worlds(tc: &TestCase) -> World {
                 Robot {
                     join: tc.draw(joins()),
                     stand: tc.draw(gs::optional(stands())),
+                    limbs: tc.draw(gs::optional(limbs())),
                 },
             )
         })
@@ -403,8 +425,8 @@ fn worlds(tc: &TestCase) -> World {
     }
 }
 
-/// The robots of `world` as the stack lists them: a robot with a stand has a
-/// body, one without may or may not.
+/// The robots of `world` as the stack lists them, each measuring its limbs:
+/// a robot with a stand or limbs has a body, one without may or may not.
 fn listed(tc: &TestCase, world: &World) -> Vec<StackRobot> {
     world
         .robots
@@ -412,7 +434,8 @@ fn listed(tc: &TestCase, world: &World) -> Vec<StackRobot> {
         .map(|(name, robot)| StackRobot {
             name: name.clone(),
             join: robot.join.clone(),
-            body: robot.stand.is_some() || tc.draw(gs::booleans()),
+            body: robot.stand.is_some() || robot.limbs.is_some() || tc.draw(gs::booleans()),
+            limbs: robot.limbs.clone(),
         })
         .collect()
 }
@@ -439,6 +462,7 @@ fn a_robot_name_that_another_begins_is_refused_by_the_pair(tc: TestCase) {
     let robot = Robot {
         join: tc.draw(joins()),
         stand: None,
+        limbs: None,
     };
     world.robots = BTreeMap::from([(shorter.clone(), robot.clone()), (longer.clone(), robot)]);
     let refused = World::parse(&world.to_json5().unwrap()).unwrap_err();
@@ -552,6 +576,7 @@ fn a_document_that_extends_a_base_merges_each_key_as_its_entry_says(tc: TestCase
     let robot = Robot {
         join: tc.draw(joins()),
         stand: tc.draw(gs::optional(stands())),
+        limbs: tc.draw(gs::optional(limbs())),
     };
     let standing: Vec<&RobotName> = base
         .robots

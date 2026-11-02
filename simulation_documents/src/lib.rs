@@ -1,8 +1,8 @@
 //! The documents of the simulation side.
 //!
 //! A world (`world/v1`, [`World`]) says where simulated robots work: the
-//! catalogue release and the scene, the robots with their joins and stands,
-//! the scene objects moved or removed, the spawned objects, the lighting, the
+//! catalogue release and the scene, the robots with their joins, stands and
+//! limbs, the scene objects moved or removed, the spawned objects, the lighting, the
 //! materials, the daylight, its regions and the named locations. A world pattern
 //! ([`WorldPattern`]) is a world with samplers, which a [`Seed`] expands into
 //! a concrete world ([`Expansion`]). A sweep (`sweep/v1`, [`Sweep`]) runs one
@@ -24,6 +24,7 @@ mod error;
 mod extends;
 mod geometry;
 mod judge;
+mod limbs;
 mod names;
 mod pattern;
 mod sampler;
@@ -43,6 +44,7 @@ pub use judge::{
     Band, BeltLine, Bound, Bounds, Check, ContentsOn, Control, Count, Holding, Judge, Landmark,
     LandmarkOn, NearPoint, Place, Reachable, Target, Verdict, Verdicts, WithinM,
 };
+pub use limbs::{JOINT_SLACK, Limbs, OPENING_SLACK, Opening};
 pub use names::{Name, RobotName};
 pub use pattern::{
     Axis, Expansion, MAX_COUNT, Measure, Measurement, Measurements, MinSpacing, PlacementKind,
