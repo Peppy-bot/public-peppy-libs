@@ -23,6 +23,10 @@
 //!   that distance with respect to the joints, for a velocity-barrier caller.
 //! - [`openarm`] builds OpenArm's model from `openarm_description`: both arms and
 //!   the torso decomposed into its clip regions, for every node that checks it.
+//! - [`SelfCollisionModel::fingers`] gives the fingers an arm's chain carries
+//!   (`ChainGeometry::carried`) where they hang at the arm's gripper opening, as
+//!   [`Rider`](collision_geometry::chain::Rider)s of its links, for a planner's check of
+//!   that arm.
 //!
 //! The model is a pure distance oracle: it reports clearances and their gradient,
 //! and the caller decides how to throttle on them.
@@ -45,7 +49,7 @@ mod openarm;
 mod pairs;
 
 pub use collision_geometry::gjk::Placed;
-pub use error::{BuildError, CollisionError};
+pub use error::{BuildError, CollisionError, FingerError};
 pub use model::{Builder, DistanceGradient, Proximity, SelfCollisionModel};
 pub use openarm::openarm;
 pub use pairs::PairSpec;

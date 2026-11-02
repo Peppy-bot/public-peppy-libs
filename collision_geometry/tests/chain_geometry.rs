@@ -7,10 +7,11 @@
 use chain_kinematics::{Chain, ChainSpec, JointSelection};
 use collision_geometry::GeometryError;
 use collision_geometry::chain::{
-    BodyGeometry, ChainGeometry, LinkGeometry, Padding, Piece, PlacedMask,
+    BodyGeometry, BodyMask, ChainGeometry, LinkGeometry, Padding, Piece, PlacedMask,
 };
 use collision_geometry::gjk::Hull;
-use collision_geometry::nalgebra::{Isometry3, Point3, Vector3};
+use collision_geometry::hull::exact_hull;
+use collision_geometry::nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 use collision_geometry::urdf_collision::{CollisionGeometry, UrdfCollisions};
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -926,4 +927,61 @@ fn regions_off_the_body_or_given_twice_are_refused() {
         matches!(&refused, Err(GeometryError::RegionsTwice { body }) if body == "torso"),
         "{refused:?}"
     );
+}
+
+/// A cube of half side 0.1 m, as a fitted piece, rounded by `rounding` meters.
+fn cube_piece(rounding: f64) -> Hull {
+    let corners: Vec<Point3<f64>> = (0..8)
+        .map(|i| {
+            let side = |bit: usize| if i & bit == 0 { -0.1 } else { 0.1 };
+            Point3::new(side(1), side(2), side(4))
+        })
+        .collect();
+    Hull::new(&exact_hull(&corners).expect("a cube's hull"), rounding).expect("a cube")
+}
+
+/// A part a caller places grows where it stands: a cube of half side 0.1 m, turned a
+/// quarter about z and moved 1 m along x, holds at no padding a point 0.09 m past its
+/// middle along each axis and not one 0.11 m past; scaled by 2, 0.19 m and not 0.21 m; and
+/// not the root's origin.
+#[test]
+fn a_placed_part_grows_where_it_stands() {
+    let hull = cube_piece(0.0);
+    let pose = Isometry3::from_parts(
+        Translation3::new(1.0, 0.0, 0.0),
+        UnitQuaternion::from_axis_angle(&Vector3::z_axis(), std::f64::consts::FRAC_PI_2),
+    );
+    let parts = || [("part", std::slice::from_ref(&hull), pose)];
+    for (scale, within, beyond) in [(1.0, 0.09, 0.11), (2.0, 0.19, 0.21)] {
+        let grown = BodyMask::of(parts(), Padding::new(scale, 0.0).expect("a valid padding"));
+        let placed = grown.placed();
+        for axis in [Vector3::x(), Vector3::y(), Vector3::z()] {
+            let (inside, outside) = (
+                pose * Point3::from(axis * within),
+                pose * Point3::from(axis * beyond),
+            );
+            assert!(
+                placed.contains(&inside),
+                "{inside} lies outside the part scaled by {scale}"
+            );
+            assert!(
+                !placed.contains(&outside),
+                "{outside} lies inside the part scaled by {scale}"
+            );
+        }
+        assert!(
+            !placed.contains(&Point3::origin()),
+            "the part stands at the root"
+        );
+    }
+}
+
+/// A part a caller places is a fitted piece, which carries no rounding: a rounded one is
+/// refused.
+#[test]
+#[should_panic(expected = "a fitted piece carries no rounding")]
+fn a_rounded_part_is_refused() {
+    let hull = cube_piece(0.05);
+    let parts = [("part", std::slice::from_ref(&hull), Isometry3::identity())];
+    BodyMask::of(parts, Padding::new(1.0, 0.0).expect("a valid padding"));
 }

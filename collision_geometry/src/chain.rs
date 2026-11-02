@@ -439,7 +439,7 @@ impl BodyGeometry {
     }
 }
 
-/// Pieces grown by a padding where they stand: a robot's body.
+/// Pieces grown by a padding where they stand: a robot's body, or parts a caller places.
 pub struct BodyMask<'a> {
     links: Vec<GrownLink<'a>>,
 }
@@ -452,7 +452,32 @@ struct GrownLink<'a> {
     pieces: Vec<GrownPiece>,
 }
 
-impl BodyMask<'_> {
+impl<'a> BodyMask<'a> {
+    /// The parts `parts`, each its link's name, its pieces in its own frame and its pose
+    /// in the frame of the URDF root, grown by `padding` as a mesh's piece grows.
+    ///
+    /// # Panics
+    ///
+    /// On a piece with a rounding: each piece is one that `fit_pieces` fits.
+    pub fn of(
+        parts: impl IntoIterator<Item = (&'a str, &'a [Hull], Isometry3<f64>)>,
+        padding: Padding,
+    ) -> Self {
+        BodyMask {
+            links: parts
+                .into_iter()
+                .map(|(name, hulls, frame)| GrownLink {
+                    name,
+                    frame,
+                    pieces: hulls
+                        .iter()
+                        .map(|hull| GrownPiece::of_hull(hull, padding))
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
     /// The grown body where it stands, which answers for a point as a placed chain does.
     pub fn placed(&self) -> PlacedMask<'_> {
         PlacedMask::new(
@@ -770,8 +795,9 @@ impl GrownPiece {
         GrownPiece { scaled, offset }
     }
 
-    /// The piece `hull` grown by `padding` as a mesh's piece grows: scaled about the mean
-    /// of its vertices, with the largest ball about that mean that it holds.
+    /// The piece `hull`, a fitted piece with no rounding, grown by `padding` as a mesh's
+    /// piece grows: scaled about the mean of its vertices, with the largest ball about
+    /// that mean that it holds.
     fn of_hull(hull: &Hull, padding: Padding) -> Self {
         let hull = scaled_hull(hull, padding.scale);
         let inscribed = hull

@@ -114,7 +114,12 @@ URDF collision elements
 - A gripper finger, a collision-bearing link on a movable joint off a chain
   link, is fit as its own body and placed at the live opening that
   `set_gripper_openings` sets. The meshes orient the two travel extremes: the
-  extreme with the larger between-finger separation is open.
+  extreme with the larger between-finger separation is open. `fingers(side, carried)`
+  takes the parts an arm's chain carries (`ChainGeometry::carried` of
+  `collision_geometry`), placed there with their joints at 0, and gives each as its
+  `Rider` at the offset where the side's opening places it, so a planner of that arm
+  carries the fingers where they hang. A part the model holds as no finger of that arm,
+  on the same link, is refused (`FingerError`), naming the part.
 - Every collision-bearing link is accounted for. The moving-link names come from
   walking each chain, fixed children fold into their parents, and every
   remaining collision link must be world-fixed or construction fails loudly.
@@ -274,7 +279,7 @@ src/
   pairs.rs           pair specs (explicit lists for tests and tools)
   model.rs           SelfCollisionModel queries, pair derivation, exclusions
   openarm.rs         OpenArm's model from openarm_description
-  error.rs           BuildError, CollisionError
+  error.rs           BuildError, CollisionError, FingerError
 examples/
   visualize.rs       the HTML scene
 tests/

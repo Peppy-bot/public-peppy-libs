@@ -141,7 +141,10 @@ caller can tell separating motion from approaching motion even inside an overlap
 element. Placed at a configuration, it answers for each link
 (`PlacedGrownLink::contains`) and for the chain (`PlacedMask::contains`, any link). A
 `BodyMask` grows a body's pieces by the same rule, a region's piece as a mesh's piece, and
-stands where the body stands as a `PlacedMask` (`BodyMask::placed`).
+stands where the body stands as a `PlacedMask` (`BodyMask::placed`). `BodyMask::of` grows
+parts a caller places, such as the riders of a chain where they stand, each piece as a
+mesh's piece. Each piece is a fitted one, which carries no rounding, and a rounded piece
+panics.
 
 - A mesh scales from its piece, about the mean of the piece's vertices. A point inside
   every face of the scaled piece is inside it, and a point beyond the piece's bounding
@@ -307,7 +310,10 @@ for a link the body does not hold, or twice for one link, are refused. A body th
 the links a movable joint carries, that stands its links or its regions at the root's
 frame or its regions at their link's, that grows its elements or its regions by no
 offset or its regions by no scale, or that takes regions off the body or twice, fails
-these.
+these. A cube of half side 0.1 m, placed turned and moved, holds at no padding a point
+past its middle by 0.09 m along each axis and not by 0.11 m, and scaled by 2, by 0.19 m
+and not 0.21 m; one that does not scale it, or stands the part at the root, fails it. A
+rounded cube is refused.
 `tests/fit_prints_nothing.rs` runs a hull, a cloud with no hull and the fit of
 an OpenArm arm in a child process of its own and reads that it prints nothing, and
 `tests/hull_without_a_free_descriptor.rs` builds a hull with no file descriptor free.

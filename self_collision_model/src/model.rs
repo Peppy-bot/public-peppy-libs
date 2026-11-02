@@ -16,16 +16,19 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use openarm_description::Side;
+
 use crate::nalgebra::{Isometry3, Point3, Unit, Vector3};
 use srs_model::{ARM_DOF, Arm, JointVec};
 
 use crate::assemble::fit_bodies;
+use collision_geometry::chain::{CarriedPart, Rider};
 use collision_geometry::clip::ClipRegion;
 use collision_geometry::gjk::{self, Hull, Placed};
 use collision_geometry::urdf_collision::{JointKind, ParentJoint, UrdfCollisions, place_1dof};
 
 use crate::pairs::PairSpec;
-use crate::{BuildError, CollisionError};
+use crate::{BuildError, CollisionError, FingerError};
 
 /// How a body's hulls reach the world frame.
 #[derive(Clone, Copy)]
@@ -881,6 +884,66 @@ impl SelfCollisionModel {
                 (b.name.as_str(), pieces)
             })
             .collect())
+    }
+
+    /// The gripper fingers of the arm on `side` where they hang at its current opening:
+    /// the parts `carried` that the arm's chain carries (`ChainGeometry::carried`), each
+    /// as its rider at the offset in its link's frame at which the opening places it. A
+    /// part the model does not hold as a finger of that arm, on the same link, is refused
+    /// ([`FingerError`]).
+    pub fn fingers<'g>(
+        &self,
+        side: Side,
+        carried: &'g [CarriedPart],
+    ) -> Result<Vec<Rider<'g>>, FingerError> {
+        carried
+            .iter()
+            .map(|part| {
+                let rider = part.rider();
+                Ok(Rider {
+                    offset: self.finger_offset(side, rider.link, rider.segment)?,
+                    ..rider
+                })
+            })
+            .collect()
+    }
+
+    /// The offset in the frame of link `segment` of the arm on `side` at which that side's
+    /// opening places the finger `link`.
+    fn finger_offset(
+        &self,
+        side: Side,
+        link: &str,
+        segment: usize,
+    ) -> Result<Isometry3<f64>, FingerError> {
+        let named = || link.to_string();
+        let body = self
+            .bodies
+            .iter()
+            .find(|body| body.name == link)
+            .ok_or_else(|| FingerError::NoBody { link: named() })?;
+        let finger = body
+            .finger
+            .as_ref()
+            .ok_or_else(|| FingerError::NotAFinger { link: named() })?;
+        let (host, opening) = match (body.placement, side) {
+            (Placement::Left(i), Side::Left) => (i, self.openings[0]),
+            (Placement::Right(i), Side::Right) => (i, self.openings[1]),
+            _ => {
+                return Err(FingerError::OtherArm {
+                    link: named(),
+                    side,
+                });
+            }
+        };
+        if host != segment {
+            return Err(FingerError::OtherLink {
+                link: named(),
+                model: host,
+                chain: segment,
+            });
+        }
+        Ok(finger.offset(opening))
     }
 
     /// Set the gripper opening per side as a fraction in `[0, 1]` (0 = fully
