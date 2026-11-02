@@ -123,18 +123,31 @@ element. Placed at a configuration, it answers for each link
   sphere or a face moved out by the offset is farther than the offset from it. A point
   between the two is inside when it lies within the offset of the face it lies highest
   above, and otherwise when its distance from the scaled piece, by GJK
-  (`gjk::distance` of a `gjk::Vertex`), is at most the offset. A query screens every
-  piece of the link, or of the chain, before it measures a distance.
+  (`gjk::distance` of a `gjk::Vertex`), is at most the offset. A query of a link screens
+  every piece of the link, and a query of the chain every piece whose outer ball holds
+  the point (below), before either measures a distance.
 - A box, a cylinder and a sphere scale as themselves, about the element's origin, and a
   point is inside when its distance from the scaled primitive is at most the offset: a
   grown box and a grown cylinder round their edges. The piece of a primitive, the
   polytope about it, stays its surface for distances.
 
 So a grown element holds every point within the offset of the scaled element, and no
-point farther from it. A mesh's piece holds the convex hull of the mesh and lies within
+point farther from it, nor a point with a coordinate that is not a finite number. A
+mesh's piece holds the convex hull of the mesh and lies within
 its fit error (1 mm) of it, so at a scale of 1 a grown mesh holds every point within the
 offset of the mesh's convex hull, and no point farther from that hull than the offset
 plus the fit error.
+
+A placed mask holds the reach of each grown piece in the frame of the URDF root, two
+balls about the center of its scaled element: the largest ball that the element holds,
+grown by the offset less 1 nm, and the smallest that holds the element, grown by the
+offset and 1 nm, a nanometer far beyond the rounding of placing a point in the link's
+frame. A mesh's largest ball reaches the face of its scaled piece nearest the center; a
+box's reaches its nearest faces, a cylinder's its side or its caps, whichever is nearer,
+and a sphere's is the sphere. `PlacedMask::contains` answers as the links' `contains` do
+one by one: a point outside the box, square to the root's axes, that holds every outer
+ball lies inside no link, a point within an inner ball lies inside its piece's link, and
+every other point is screened by the pieces whose outer ball holds it.
 
 MoveIt's robot filter (`point_containment_filter::ShapeMask` over the bodies of
 geometric_shapes 2.3.4, `bodies.cpp`) grows a body by sharp planes, and departs from
@@ -156,11 +169,6 @@ On the probes of the ROS reference harness (see Testing), this filter deletes al
 probes that lie within 3 cm of the hull of an OpenArm v2 mesh at an offset of 3 cm,
 where MoveIt keeps 31 probes within 3 cm of a hull; MoveIt deletes 2 probes of the
 primitive arm that lie beyond 3 cm of every element, which this filter keeps.
-
-On a 640x360 depth frame of a table scene in front of OpenArm v2, 230,400 points with
-both arms at Ready and a padding of 1.0 and 3 cm, on one core, a query takes 105 ns a
-point, 24.1 ms a frame: 378 ns for one of the 33,855 points the arms' mask holds, and
-58 ns for one it does not. Placing the mask of both arms takes 0.5 µs.
 
 ## Building
 
@@ -214,28 +222,48 @@ point, containment after the fit, box and sphere distances, EPA depth and direct
 signed continuity through contact, isometry invariance), the clipping, the surfaces of
 the primitives, the near-degenerate box clouds the property tests shrank to, and
 properties of chains of one to seven joints that
-`kinematics_properties::on_a_drawn_robot` draws, each mounted on a continuous joint
-the chain does not drive, with a second such joint between two drawn links, and
-dressed in meshes (a cube, and a wedge turned about its origin on one link), boxes,
-cylinders and spheres: the chain carries exactly the links its joints move, the link
-on the skipped joint among them, with one piece per collision element, each piece
-holds its element, each bounding sphere holds its piece, every point within the offset
-of a scaled element lies inside its grown link, and no point farther than the offset
-from every scaled element of a link lies inside the grown link. The two filter
-properties draw a point of the scaled element's surface, at a vertex, on an edge or on
-a face of a mesh's piece, on a face, an edge or a corner of a box, and on the side, a
-cap or a rim of a cylinder, and step from it along a drawn direction of the surface's
-normal cone, so the step is the point's distance from the scaled element. Three cases
-on one link: a point 1.13 offsets past the rim of a scaled cylinder and one 1.21
-offsets past a corner of a scaled box lie outside the grown link, and each vertex of a
-box mesh's scaled piece, moved out by half the offset along the normal of each face
-through it, lies inside. At the 100 cases a property runs by default, derandomized as
-on CI (hegel's `ci` profile), a filter that grows a cylinder with a sharp rim fails the
-cylinder case and the second property; one that grows a box with sharp edges fails the
-box case, the second property and the MoveIt test below; one that compares a mesh's
-distance with zero fails the mesh case and the MoveIt test; and one that holds every
-point of a mesh within its faces moved out by the offset fails the second property and
-the MoveIt test.
+`kinematics_properties::on_a_drawn_robot` draws, each mounted on a continuous joint the
+chain does not drive, with a second such joint between two drawn links, and dressed in
+meshes (a cube, and a wedge turned about its origin on one link), boxes, cylinders and
+spheres: the chain carries exactly the links its joints move, the link on the skipped
+joint among them, with one piece per collision element, each piece holds its element,
+each bounding sphere holds its piece, every point within the offset of a scaled element
+lies inside its grown link, no point farther than the offset from every scaled element
+of a link lies inside the grown link, and the grown chain answers for a point as its
+links do one by one, each screening every piece. The three filter properties draw a
+point of the scaled element's surface, at a vertex, on an edge or on a face of a mesh's
+piece, on a face, an edge or a corner of a box, and on the side, a cap or a rim of a
+cylinder, and step from it along a drawn direction of the surface's normal cone, so the
+step is the point's distance from the scaled element; the third steps up to one and a
+half offsets, or toward the element's center, and asks for the same point with a drawn
+coordinate not a number, or infinite, which lies inside neither the chain nor a link.
+Three cases on one link ask the chain and the link alike. A point 1.13 offsets past the
+rim of a scaled cylinder lies outside the grown link, one 0.9 offsets past the rim along
+the same diagonal inside, and one 1.1 offsets out from the middle of its side outside. A
+point 1.21 offsets past a corner of a scaled box lies outside, one 0.9 offsets past the
+corner along the same diagonal inside, and one 1.1 offsets out from the middle of its
+nearest face outside. Each vertex of a box mesh's scaled piece, moved out by half the
+offset along the normal of each face through it, or by 0.9 offsets away from the piece's
+center, lies inside, and a point 1.1 offsets out from the middle of its nearest face
+outside. At the 100 cases a property runs by default, derandomized as on CI (hegel's
+`ci` profile), a filter that grows a cylinder with a sharp rim fails the cylinder case
+and the second property; one that grows a box with sharp edges fails the box case, the
+second property and the MoveIt test below; one that compares a mesh's distance with zero
+fails the mesh case and the MoveIt test; one that holds every point of a mesh within its
+faces moved out by the offset fails the second property and the MoveIt test; and screens
+that take a point with a coordinate that is not a finite number fail the third property.
+A placed mask fails the cases and properties named here and the MoveIt test when its
+outer balls are not grown by the offset, or grown by 0.8 of it (the three cases); when
+its box holds the inner balls alone (the three cases and the first and third
+properties); when the outer ball of a box reaches its largest half extent (the box case
+and the third property), that of a cylinder the larger of its radius and half length
+(the cylinder case), or that of a mesh 0.9 of its bounding sphere (the mesh case); when
+the inner ball of a cylinder reaches the larger of its radius and half length (the
+cylinder case), that of a box its largest half extent (the box case and the third
+property), or that of a mesh its farthest face (the mesh case); when its inner balls are
+grown by 1.2 or twice the offset (the three cases and the third property); and when a
+primitive's balls stand about its origin negated (the first and third properties). A
+margin of 0 fails the third property alone.
 `tests/fit_prints_nothing.rs` runs a hull, a cloud with no hull and the fit of
 an OpenArm arm in a child process of its own and reads that it prints nothing, and
 `tests/hull_without_a_free_descriptor.rs` builds a hull with no file descriptor free.

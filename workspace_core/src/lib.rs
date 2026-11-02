@@ -14,7 +14,8 @@
 //!   orientation [`GraspOrientation::all`] lists, eight rolls about each
 //!   direction.
 //! - **View** ([`View`]): the point lies inside the perception camera's field
-//!   of view, and its depth stream reads a depth for it ([`Depth`],
+//!   of view, seen through `camera_core`'s pinhole model of its colour stream,
+//!   and its depth stream reads a depth for it ([`Depth`],
 //!   [`Camera::view_of`]). Each side adds its own
 //!   test of what hides the point; only a simulation can say
 //!   [`View::HiddenBy`].
@@ -43,9 +44,10 @@
 //!   rotated frame.
 //! - Lengths are in metres, angles in radians.
 //!
-//! The crate takes and gives plain values (`[f64; 3]`, `[f64; 9]`): it knows
-//! no math library, no robot description and no world, so a consumer on
-//! nalgebra and one on glam read it alike.
+//! The crate takes and gives plain values (`[f64; 3]`, `[f64; 9]`) and sees a
+//! camera through `camera_core`'s pinhole model: it knows no math library, no
+//! robot description and no world, so a consumer on nalgebra and one on glam
+//! read it alike.
 
 #![forbid(unsafe_code)]
 
@@ -57,10 +59,7 @@ mod grid;
 pub mod messages;
 mod verdict;
 
-pub use camera::{
-    Camera, CameraFacts, Depth, DepthModel, Intrinsics, PerceptionCameraError, UnknownDepthModel,
-    perception_camera,
-};
+pub use camera::{Camera, CameraFacts, Depth, PerceptionCameraError, perception_camera};
 pub use fit::{
     Fit, Rectangle, fit, largest_workable_rectangle, nearest_workable, reach_bounds, view_bounds,
     workable_area,

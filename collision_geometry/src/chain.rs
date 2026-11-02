@@ -14,7 +14,10 @@
 //! A [`Mask`] grows every collision element by a [`Padding`]: the element scaled about
 //! its center, a mesh from its piece and a primitive as itself, and every point within
 //! the offset of the scaled element. It tests whether a point lies inside a grown link,
-//! or inside any link of the grown chain.
+//! or inside any link of the grown chain. Placed, the chain holds the reach of each grown
+//! piece in the frame of the URDF root, a ball that holds only points of the piece and
+//! a ball that holds every point of it, and the box that holds every reach, so a point
+//! screens only the pieces whose reach may hold it.
 
 use chain_kinematics::{Chain, ChainSpec};
 use nalgebra::{Isometry3, Point3, Vector3};
@@ -24,6 +27,14 @@ use crate::fit::fit_pieces;
 use crate::gjk::{self, Hull, Placed, Vertex};
 use crate::hull::ConvexHull;
 use crate::urdf_collision::{Collision, CollisionGeometry, UrdfCollisions};
+
+/// How far the outer reach of a grown piece reaches past the element's outer ball grown
+/// by the offset, and the inner reach falls short of its inner ball grown by the offset,
+/// in meters: far beyond the rounding of placing a point in the link's frame or a ball's
+/// center in the root's, about 1e-15 m a meter out, so the outer reach holds every point
+/// that the piece's screens hold, and the inner reach only points within the offset of
+/// the element.
+const REACH_MARGIN_M: f64 = 1e-9;
 
 /// The pieces of one link of a chain.
 #[derive(Debug)]
@@ -234,7 +245,7 @@ impl<const N: usize> Mask<'_, N> {
     /// Places the grown chain at the configuration `q`.
     pub fn at(&self, q: &[f64; N]) -> PlacedMask<'_> {
         let placed = self.geometry.place(q);
-        let links = self
+        let links: Vec<PlacedGrownLink> = self
             .geometry
             .links
             .iter()
@@ -246,7 +257,34 @@ impl<const N: usize> Mask<'_, N> {
                 root_in_link: pose.inverse(),
             })
             .collect();
-        PlacedMask { links }
+        let reaches: Vec<Reach> = placed
+            .poses
+            .iter()
+            .zip(&self.grown)
+            .enumerate()
+            .flat_map(|(link, (pose, pieces))| {
+                pieces.iter().enumerate().map(move |(piece, grown)| {
+                    let Balls {
+                        center,
+                        inner,
+                        outer,
+                    } = grown.balls();
+                    Reach {
+                        center: pose * center,
+                        inner_squared: (inner + grown.offset - REACH_MARGIN_M).max(0.0).powi(2),
+                        outer_squared: (outer + grown.offset + REACH_MARGIN_M).powi(2),
+                        link,
+                        piece,
+                    }
+                })
+            })
+            .collect();
+        let bounds = ReachBox::holding(&reaches);
+        PlacedMask {
+            links,
+            reaches,
+            bounds,
+        }
     }
 }
 
@@ -255,6 +293,10 @@ impl<const N: usize> Mask<'_, N> {
 pub struct PlacedMask<'a> {
     /// Each grown link, in the order of the geometry's links.
     links: Vec<PlacedGrownLink<'a>>,
+    /// The reach of each grown piece, link by link.
+    reaches: Vec<Reach>,
+    /// The box that holds every outer reach.
+    bounds: ReachBox,
 }
 
 impl PlacedMask<'_> {
@@ -263,9 +305,81 @@ impl PlacedMask<'_> {
         &self.links
     }
 
-    /// Whether `point`, in the frame of the URDF root, lies inside a grown link.
+    /// Whether `point`, in the frame of the URDF root, lies inside a grown link: it
+    /// answers as [`PlacedGrownLink::contains`] of each link. A point outside the box of
+    /// the reaches lies inside none, a point within the inner reach of a piece lies
+    /// inside it, and every other point is screened by the pieces whose outer reach
+    /// holds it.
     pub fn contains(&self, point: &Point3<f64>) -> bool {
-        any_holds(|| self.links.iter().flat_map(|link| link.pieces_about(point)))
+        self.bounds.holds(point)
+            && (self.reaches.iter().any(|reach| reach.surely_holds(point))
+                || any_holds(|| {
+                    self.reaches
+                        .iter()
+                        .filter(|reach| reach.may_hold(point))
+                        .map(|reach| {
+                            let link = &self.links[reach.link];
+                            (&link.pieces[reach.piece], link.root_in_link * point)
+                        })
+                }))
+    }
+}
+
+/// The reach of a grown piece, two balls about the center of its scaled element in the
+/// frame of the URDF root: the inner reach, the largest ball that the element holds grown
+/// by the offset less [`REACH_MARGIN_M`], holds only points the piece holds, and the
+/// outer reach, the smallest ball that holds the element grown by the offset and
+/// [`REACH_MARGIN_M`], holds every point the piece holds.
+#[derive(Debug)]
+struct Reach {
+    center: Point3<f64>,
+    inner_squared: f64,
+    outer_squared: f64,
+    /// The index of the piece's link in the placed chain, and of the piece in its link.
+    link: usize,
+    piece: usize,
+}
+
+impl Reach {
+    /// Whether the inner reach holds `point`, so the piece holds it.
+    fn surely_holds(&self, point: &Point3<f64>) -> bool {
+        (point - self.center).norm_squared() <= self.inner_squared
+    }
+
+    /// Whether the outer reach holds `point`, so the piece's screens tell.
+    fn may_hold(&self, point: &Point3<f64>) -> bool {
+        (point - self.center).norm_squared() <= self.outer_squared
+    }
+}
+
+/// A box square to the axes of the URDF root's frame.
+#[derive(Debug)]
+struct ReachBox {
+    min: Vector3<f64>,
+    max: Vector3<f64>,
+}
+
+impl ReachBox {
+    /// The smallest box that holds the outer reach of every one of `reaches`; it holds no
+    /// point when there is none.
+    fn holding(reaches: &[Reach]) -> Self {
+        reaches.iter().fold(
+            ReachBox {
+                min: Vector3::repeat(f64::INFINITY),
+                max: Vector3::repeat(f64::NEG_INFINITY),
+            },
+            |bounds, reach| {
+                let radius = Vector3::repeat(reach.outer_squared.sqrt());
+                ReachBox {
+                    min: bounds.min.inf(&(reach.center.coords - radius)),
+                    max: bounds.max.sup(&(reach.center.coords + radius)),
+                }
+            },
+        )
+    }
+
+    fn holds(&self, point: &Point3<f64>) -> bool {
+        (0..3).all(|axis| self.min[axis] <= point[axis] && point[axis] <= self.max[axis])
     }
 }
 
@@ -284,13 +398,13 @@ impl PlacedGrownLink<'_> {
     }
 
     /// Whether `point`, in the frame of the URDF root, lies inside a grown piece of the
-    /// link.
+    /// link. A point with a coordinate that is not a finite number lies inside none.
     pub fn contains(&self, point: &Point3<f64>) -> bool {
         any_holds(|| self.pieces_about(point))
     }
 
     /// Each grown piece of the link, with `point`, in the frame of the URDF root, in the
-    /// link's frame.
+    /// link's frame: the plain rule, every piece screened.
     fn pieces_about(
         &self,
         point: &Point3<f64>,
@@ -342,11 +456,21 @@ struct GrownPiece {
     offset: f64,
 }
 
+/// Two balls about the center of a scaled element: the largest that the element holds,
+/// of radius `inner`, and the smallest that holds it, of radius `outer`.
+struct Balls {
+    center: Point3<f64>,
+    inner: f64,
+    outer: f64,
+}
+
 /// A collision element scaled about its center, in its link's frame.
 #[derive(Debug)]
 enum Scaled {
-    /// A mesh's piece, scaled about the mean of its vertices.
-    Mesh(Hull),
+    /// A mesh's piece, scaled about the mean of its vertices, and the radius of the
+    /// largest ball about that mean that it holds: the least height of the mean below a
+    /// face.
+    Mesh { hull: Hull, inscribed: f64 },
     /// A box, with its scaled half extents along the axes of its frame.
     Box {
         link_to_box: Isometry3<f64>,
@@ -363,11 +487,58 @@ enum Scaled {
 }
 
 impl GrownPiece {
+    /// The two balls of the scaled element about its center, in its link's frame. A
+    /// mesh's center is its scaled piece's, and its outer ball the piece's bounding
+    /// sphere; a box, a cylinder and a sphere stand about the element's origin, and their
+    /// outer balls reach their corners, their rims and their surface.
+    fn balls(&self) -> Balls {
+        let center_of = |link_to_element: &Isometry3<f64>| {
+            Point3::from(link_to_element.inverse().translation.vector)
+        };
+        match &self.scaled {
+            Scaled::Mesh { hull, inscribed } => Balls {
+                center: hull.center(),
+                inner: *inscribed,
+                outer: hull.bound_radius(),
+            },
+            Scaled::Box {
+                link_to_box,
+                half_extents,
+            } => Balls {
+                center: center_of(link_to_box),
+                inner: half_extents.min(),
+                outer: half_extents.norm(),
+            },
+            Scaled::Cylinder {
+                link_to_cylinder,
+                radius,
+                half_length,
+            } => Balls {
+                center: center_of(link_to_cylinder),
+                inner: radius.min(*half_length),
+                outer: radius.hypot(*half_length),
+            },
+            Scaled::Sphere { center, radius } => Balls {
+                center: *center,
+                inner: *radius,
+                outer: *radius,
+            },
+        }
+    }
+
     fn new(piece: &Piece, padding: Padding) -> Self {
         let Padding { scale, offset } = padding;
         let element = &piece.element;
         let scaled = match element.geometry {
-            CollisionGeometry::Mesh { .. } => Scaled::Mesh(scaled_hull(&piece.hull, scale)),
+            CollisionGeometry::Mesh { .. } => {
+                let hull = scaled_hull(&piece.hull, scale);
+                let inscribed = hull
+                    .planes()
+                    .iter()
+                    .map(|(normal, plane)| plane - normal.dot(&hull.center().coords))
+                    .fold(f64::INFINITY, f64::min);
+                Scaled::Mesh { hull, inscribed }
+            }
             CollisionGeometry::Box { size } => Scaled::Box {
                 link_to_box: element.origin.inverse(),
                 half_extents: size * (scale / 2.0),
@@ -385,13 +556,17 @@ impl GrownPiece {
         GrownPiece { scaled, offset }
     }
 
-    /// What the screens tell of `point`, in the link's frame. A primitive's screen is
-    /// its distance from the scaled primitive, which answers for every point. A point
-    /// farther than the offset from a mesh's bounding sphere, or beyond a face moved out
-    /// by the offset, lies outside, and a point inside every face lies inside. A point
-    /// between the two lies inside when it lies within the offset of the face it lies
-    /// highest above, a part of the piece; every other point lies in the shell.
+    /// What the screens tell of `point`, in the link's frame. A point with a coordinate
+    /// that is not a finite number lies outside. A primitive's screen is its distance
+    /// from the scaled primitive, which answers for every other point. A point farther
+    /// than the offset from a mesh's bounding sphere, or beyond a face moved out by the
+    /// offset, lies outside, and a point inside every face lies inside. A point between
+    /// the two lies inside when it lies within the offset of the face it lies highest
+    /// above, a part of the piece; every other point lies in the shell.
     fn screen(&self, point: &Point3<f64>) -> Screen<'_> {
+        if !point.coords.iter().all(|c| c.is_finite()) {
+            return Screen::Outside;
+        }
         let offset = self.offset;
         let within = |distance: f64| {
             if distance <= offset {
@@ -401,7 +576,7 @@ impl GrownPiece {
             }
         };
         match &self.scaled {
-            Scaled::Mesh(hull) => screen_a_hull(hull, offset, point),
+            Scaled::Mesh { hull, .. } => screen_a_hull(hull, offset, point),
             Scaled::Box {
                 link_to_box,
                 half_extents,

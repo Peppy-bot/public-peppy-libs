@@ -311,7 +311,7 @@ impl ReachMemo {
 
 /// How an answer checks the view of the points it judges: through the
 /// robot's perception camera, or not at all, and then why.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ViewCheck<'a> {
     /// The robot has no perception camera: no view is checked.
     NoPerceptionCamera,
@@ -321,15 +321,18 @@ pub enum ViewCheck<'a> {
     /// `camera` is the name of the robot's perception camera, and `geometry`
     /// is that camera in the robot frame, placed where the design fixes it,
     /// with the intrinsics and the depth stream the camera gives.
-    Checked { camera: &'a str, geometry: Camera },
+    Checked {
+        camera: &'a str,
+        geometry: Box<Camera>,
+    },
 }
 
 impl<'a> ViewCheck<'a> {
     /// The name of the robot's perception camera, if it has one.
     pub fn perception_camera(&self) -> Option<&'a str> {
-        match *self {
+        match self {
             Self::NoPerceptionCamera => None,
-            Self::NoCameraGeometry { camera } | Self::Checked { camera, .. } => Some(camera),
+            Self::NoCameraGeometry { camera } | Self::Checked { camera, .. } => Some(*camera),
         }
     }
 
@@ -344,7 +347,7 @@ impl<'a> ViewCheck<'a> {
 
     /// Why no view is checked; none when one is.
     pub fn unchecked(&self) -> Option<Unchecked<'a>> {
-        match *self {
+        match self {
             Self::NoPerceptionCamera => Some(Unchecked::NoPerceptionCamera),
             Self::NoCameraGeometry { camera } => Some(Unchecked::NoCameraGeometry { camera }),
             Self::Checked { .. } => None,
@@ -354,7 +357,7 @@ impl<'a> ViewCheck<'a> {
     /// The checked camera as the message of a surface whose top is at `top`
     /// names it; none when no view is checked.
     fn surface_camera(&self, top: f64) -> Option<SurfaceCamera<'a>> {
-        match *self {
+        match self {
             Self::Checked { camera, geometry } => Some(SurfaceCamera {
                 name: camera,
                 above_top: geometry.position[2] - top,
@@ -481,8 +484,10 @@ fn sentences<const N: usize>(parts: [Option<String>; N]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
+
     use super::*;
-    use crate::camera::{Depth, DepthModel, Intrinsics};
+    use crate::camera::Depth;
     use crate::grid::Grid;
 
     fn height(metres: f64) -> SurfaceHeight {
@@ -522,14 +527,17 @@ mod tests {
             // Optical +X (image right) is the robot frame's -Y, +Y (image
             // down) its -X, +Z (the view) its -Z.
             rotation: [0.0, -1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0],
-            intrinsics: Intrinsics {
+            pinhole: Pinhole::parse(&Intrinsics {
                 width: 100,
                 height: 100,
                 fx: 240.0,
                 fy: 240.0,
                 cx: 49.5,
                 cy: 49.5,
-            },
+                distortion_model: "none",
+                distortion: &[],
+            })
+            .expect("a model"),
             depth: Some(Depth {
                 model: DepthModel::Z,
                 range: [0.48, 2.0],
@@ -540,7 +548,7 @@ mod tests {
     fn checked_by_chest() -> ViewCheck<'static> {
         ViewCheck::Checked {
             camera: "chest",
-            geometry: chest(),
+            geometry: Box::new(chest()),
         }
     }
 

@@ -14,9 +14,9 @@
 //!
 //! The parity tests read the reference outputs from `reference/`, or from the directory
 //! that the environment variable `ROS_REFERENCE_OUTPUTS` names, which then holds its own
-//! digests. `run.sh` names the outputs of the arm64 image there. The planning kind also
-//! reads the committed outputs of `reference/`, the amd64 image's, wherever that variable
-//! points.
+//! digests. `run.sh` names the outputs of the arm64 image there. [`Outputs`] tells a
+//! test which of the two it reads. The planning kind also reads the committed outputs of
+//! `reference/`, the amd64 image's, wherever that variable points.
 //!
 //! Each kind of scenario is a module that lists the scenarios of its kind, reads each with
 //! its reference output, and pairs them for the parity test. The README says how to add a
@@ -24,6 +24,7 @@
 
 pub mod chain_collision;
 pub mod forward_kinematics;
+pub mod occupancy;
 pub mod planning;
 pub mod self_distance;
 
@@ -52,6 +53,7 @@ const INPUT_DIGEST_FILE: &str = "INPUTS.SHA256SUMS";
 enum Kind {
     ChainCollision,
     ForwardKinematics,
+    Occupancy,
     Planning,
     SelfDistance,
 }
@@ -72,16 +74,35 @@ fn scenario_directory() -> PathBuf {
     harness_directory().join("scenarios")
 }
 
-/// The directory of the reference outputs: the one that `ROS_REFERENCE_OUTPUTS` names, or
-/// `reference/`.
-fn reference_directory() -> PathBuf {
-    std::env::var_os(REFERENCE_DIRECTORY_VARIABLE)
-        .map_or_else(committed_reference_directory, PathBuf::from)
+/// The reference outputs that the parity tests read.
+pub enum Outputs {
+    /// `reference/`: the committed outputs, which the amd64 image wrote.
+    Committed,
+    /// The directory that `ROS_REFERENCE_OUTPUTS` names, which holds its own digests:
+    /// `run.sh` on arm64 names the outputs of the arm64 image there.
+    Named(PathBuf),
 }
 
-/// `reference/`, which holds the committed reference outputs, the amd64 image's.
-fn committed_reference_directory() -> PathBuf {
-    harness_directory().join("reference")
+impl Outputs {
+    /// The outputs that `ROS_REFERENCE_OUTPUTS` names, or the committed ones when it names
+    /// none.
+    pub fn from_environment() -> Self {
+        std::env::var_os(REFERENCE_DIRECTORY_VARIABLE).map_or(Outputs::Committed, |directory| {
+            Outputs::Named(PathBuf::from(directory))
+        })
+    }
+
+    fn directory(self) -> PathBuf {
+        match self {
+            Outputs::Committed => harness_directory().join("reference"),
+            Outputs::Named(directory) => directory,
+        }
+    }
+}
+
+/// The directory of the reference outputs that the parity tests read.
+fn reference_directory() -> PathBuf {
+    Outputs::from_environment().directory()
 }
 
 /// The file `<name>.json` of `directory`.
@@ -198,7 +219,7 @@ fn read_reference<T: DeserializeOwned>(name: &str) -> T {
 /// Reads the committed reference output `name` from `reference/`, after checking it
 /// against its digest.
 fn read_committed_reference<T: DeserializeOwned>(name: &str) -> T {
-    read_reference_in(&committed_reference_directory(), name)
+    read_reference_in(&Outputs::Committed.directory(), name)
 }
 
 /// Reads the reference output `name` from `directory`, after checking it against its

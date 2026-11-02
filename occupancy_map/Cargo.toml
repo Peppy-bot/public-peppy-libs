@@ -1,0 +1,23 @@
+[package]
+name = "occupancy_map"
+version = "0.1.0"
+edition = "2024"
+description = "A voxel map of what a depth sensor sees, in a frame the caller names: OctoMap's log-odds occupancy over a bounded grid, points inserted by the rules of MoveIt's point cloud updater with the robot cut out, depth frames as points, and the distance to the nearest occupied voxel, center to center within half a voxel's diagonal inside the map and a lower bound outside it. No hardware or messaging deps."
+
+[workspace]
+
+[dependencies]
+camera_core = { path = "../camera_core" }
+collision_geometry = { path = "../collision_geometry" }
+control_core = { path = "../control_core" }
+nalgebra = "0.35"
+thiserror = "2"
+
+[dev-dependencies]
+chain_kinematics = { path = "../chain_kinematics" }
+hegeltest = { version = "0.51", features = ["static-engine"] }
+openarm_description = { path = "../openarm_description", features = ["meshes"] }
+ros_reference = { path = "../ros_reference" }
+
+[profile.dev]
+opt-level = 1

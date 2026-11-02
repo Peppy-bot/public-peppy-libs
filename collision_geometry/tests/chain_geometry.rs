@@ -4,7 +4,7 @@
 //! them.
 
 use chain_kinematics::{Chain, ChainSpec, JointSelection};
-use collision_geometry::chain::{ChainGeometry, LinkGeometry, Padding, Piece};
+use collision_geometry::chain::{ChainGeometry, LinkGeometry, Padding, Piece, PlacedMask};
 use collision_geometry::gjk::Hull;
 use collision_geometry::nalgebra::{Isometry3, Point3, Vector3};
 use collision_geometry::urdf_collision::{CollisionGeometry, UrdfCollisions};
@@ -390,6 +390,63 @@ fn a_point_beyond_the_offset_of_every_scaled_element_of_a_link_is_outside_it(tc:
     on_a_drawn_robot::<BeyondTheOffsetIsOutside>(&tc);
 }
 
+/// The grown chain answers for a point as its links do, one by one, each screening every
+/// piece: the reaches of the grown pieces skip only pieces that do not hold the point,
+/// and hold only points that a piece holds. A drawn point lies beyond a drawn point of
+/// the surface of a scaled element, along a direction of the normal cone there, by up to
+/// one and a half times the offset, or on the segment from the element's center to that
+/// surface point. The same point with a drawn coordinate not a number, or infinite, lies
+/// inside neither the chain nor any of its links.
+#[hegel::test]
+fn the_grown_chain_answers_as_its_links_one_by_one(tc: TestCase) {
+    struct AnswersAsItsLinks;
+    impl ChainProperty for AnswersAsItsLinks {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let geometry = geometry_of::<N>(&dressed_urdf::<N>(tc, robot));
+            let q = tc.draw(configs(geometry.chain().limits()));
+            let padding = tc.draw(paddings());
+            let placed = geometry.place(&q);
+            let links: Vec<(&LinkGeometry, &Isometry3<f64>)> = placed.links().collect();
+            let (link, pose) = links[drawn_index(tc, &links)];
+            let piece = &link.pieces()[drawn_index(tc, link.pieces())];
+            let (surface, direction) = scaled_surface_point(tc, piece, padding.scale());
+            let local = if tc.draw(gs::booleans()) {
+                let out = tc.draw(gs::floats().min_value(0.0).max_value(1.5));
+                surface + direction * (padding.offset() * out)
+            } else {
+                let center = element_center(piece);
+                let along = tc.draw(gs::floats().min_value(0.0).max_value(1.0));
+                center + (surface - center) * along
+            };
+            let point = pose * local;
+            let mask = geometry.mask(padding);
+            let grown = mask.at(&q);
+            let one_by_one = |point: &Point3<f64>| grown.links().iter().any(|l| l.contains(point));
+            assert_eq!(
+                grown.contains(&point),
+                one_by_one(&point),
+                "{point}, padding {padding:?}: the grown chain answers on the left, its links \
+                 one by one on the right"
+            );
+            let axis = tc.draw(gs::integers::<usize>().min_value(0).max_value(2));
+            let value = tc.draw(gs::sampled_from(vec![
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ]));
+            let broken = Point3::from(Vector3::from_fn(
+                |i, _| if i == axis { value } else { point[i] },
+            ));
+            assert_eq!(
+                (grown.contains(&broken), one_by_one(&broken)),
+                (false, false),
+                "{broken}, padding {padding:?}: the grown chain, then its links one by one"
+            );
+        }
+    }
+    on_a_drawn_robot::<AnswersAsItsLinks>(&tc);
+}
+
 /// A chain of one driven joint whose link, [`TIP`], holds the collision element of the
 /// URDF `<geometry>` body `geometry` at its origin, the link's frame the root's at 0.
 fn one_link(geometry: &str) -> ChainGeometry<1> {
@@ -414,37 +471,78 @@ fn one_link_padding() -> Padding {
     Padding::new(1.1, 0.03).expect("a valid padding")
 }
 
+/// Whether the grown chain of [`one_link`] at 0 holds `point`, asked of the chain and of
+/// its link, which answer alike.
+fn one_link_holds(grown: &PlacedMask, point: &Point3<f64>) -> bool {
+    let link = grown.links()[0].contains(point);
+    assert_eq!(
+        grown.contains(point),
+        link,
+        "{point}: the grown chain answers on the left, its link on the right"
+    );
+    link
+}
+
 /// A point beyond the rim of a scaled cylinder by 0.8 of the offset along its radius and
-/// along its axis lies 1.13 offsets from the cylinder, outside the grown link.
+/// along its axis lies 1.13 offsets from the cylinder, outside the grown link, and one 0.9
+/// offsets beyond the rim along the same diagonal lies inside it. A point 1.1 offsets out
+/// from the cylinder's side, halfway along it, lies outside.
 #[test]
-fn a_point_past_the_rim_of_a_scaled_cylinder_is_outside_it() {
+fn a_point_past_the_rim_or_the_side_of_a_scaled_cylinder_is_inside_it_to_the_offset() {
     let padding = one_link_padding();
     let geometry = one_link(r#"<cylinder radius="0.05" length="0.2"/>"#);
-    let step = 0.8 * padding.offset();
-    let point = Point3::new(
-        0.05 * padding.scale() + step,
-        0.0,
-        0.1 * padding.scale() + step,
-    );
+    let mask = geometry.mask(padding);
+    let grown = mask.at(&[0.0]);
+    let (radius, half_length) = (0.05 * padding.scale(), 0.1 * padding.scale());
+    let past_the_rim = |step: f64| Point3::new(radius + step, 0.0, half_length + step);
+    let point = past_the_rim(0.8 * padding.offset());
     assert!(
-        !geometry.mask(padding).at(&[0.0]).contains(&point),
+        !one_link_holds(&grown, &point),
         "{point} lies 1.13 offsets from the scaled cylinder, padding {padding:?}, and \
+         inside the grown link"
+    );
+    let point = past_the_rim(0.9 * padding.offset() / 2f64.sqrt());
+    assert!(
+        one_link_holds(&grown, &point),
+        "{point} lies 0.9 offsets from the scaled cylinder's rim, padding {padding:?}, and \
+         outside the grown link"
+    );
+    let point = Point3::new(radius + 1.1 * padding.offset(), 0.0, 0.0);
+    assert!(
+        !one_link_holds(&grown, &point),
+        "{point} lies 1.1 offsets from the scaled cylinder's side, padding {padding:?}, and \
          inside the grown link"
     );
 }
 
 /// A point beyond a corner of a scaled box by 0.7 of the offset along each axis lies 1.21
-/// offsets from the box, outside the grown link.
+/// offsets from the box, outside the grown link, and one 0.9 offsets beyond the corner
+/// along the same diagonal lies inside it. A point 1.1 offsets out from the middle of the
+/// box's nearest face lies outside.
 #[test]
-fn a_point_past_the_corner_of_a_scaled_box_is_outside_it() {
+fn a_point_past_the_corner_or_a_face_of_a_scaled_box_is_inside_it_to_the_offset() {
     let padding = one_link_padding();
     let geometry = one_link(r#"<box size="0.1 0.2 0.3"/>"#);
+    let mask = geometry.mask(padding);
+    let grown = mask.at(&[0.0]);
     let corner = Vector3::new(0.05, 0.1, 0.15) * padding.scale();
     let point = Point3::from(corner.add_scalar(0.7 * padding.offset()));
     assert!(
-        !geometry.mask(padding).at(&[0.0]).contains(&point),
+        !one_link_holds(&grown, &point),
         "{point} lies 1.21 offsets from the scaled box, padding {padding:?}, and inside \
          the grown link"
+    );
+    let point = Point3::from(corner.add_scalar(0.9 * padding.offset() / 3f64.sqrt()));
+    assert!(
+        one_link_holds(&grown, &point),
+        "{point} lies 0.9 offsets from the scaled box's corner, padding {padding:?}, and \
+         outside the grown link"
+    );
+    let point = Point3::new(corner.x + 1.1 * padding.offset(), 0.0, 0.0);
+    assert!(
+        !one_link_holds(&grown, &point),
+        "{point} lies 1.1 offsets from the scaled box's nearest face, padding {padding:?}, \
+         and inside the grown link"
     );
 }
 
@@ -453,8 +551,11 @@ fn a_point_past_the_corner_of_a_scaled_box_is_outside_it() {
 /// nearest point, and inside the grown link. The mesh is a box, two faces to a side, so
 /// a vertex that one face of a side holds and the other lacks, moved along the side's
 /// normal, lies as high above the other face, which lies farther than the offset from it.
+/// Each vertex moved out by 0.9 offsets along the line from the piece's center, which
+/// leaves the vertex its nearest point, lies inside too, and a point 1.1 offsets out from
+/// the middle of the piece's nearest face lies outside.
 #[test]
-fn a_vertex_of_a_scaled_mesh_moved_out_by_half_the_offset_is_inside_it() {
+fn a_point_past_a_vertex_or_a_face_of_a_scaled_mesh_is_inside_it_to_the_offset() {
     let padding = one_link_padding();
     let geometry = one_link(&format!(
         r#"<mesh filename="package://drawn/meshes/{CUBE}" scale="0.1 0.2 0.3"/>"#
@@ -468,10 +569,28 @@ fn a_vertex_of_a_scaled_mesh_moved_out_by_half_the_offset_is_inside_it() {
             let scaled = center + (vertex - center) * padding.scale();
             let point = scaled + normal * (padding.offset() / 2.0);
             assert!(
-                grown.contains(&point),
+                one_link_holds(&grown, &point),
                 "{point} lies half the offset from the scaled piece, padding {padding:?}, \
                  and outside the grown link"
             );
+            let point = scaled + (scaled - center).normalize() * (0.9 * padding.offset());
+            assert!(
+                one_link_holds(&grown, &point),
+                "{point} lies 0.9 offsets from the scaled piece, padding {padding:?}, and \
+                 outside the grown link"
+            );
         }
     }
+    let (normal, height) = hull
+        .planes()
+        .iter()
+        .map(|(normal, plane)| (normal, plane - normal.dot(&center.coords)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .expect("a piece has faces");
+    let point = center + normal * (height * padding.scale() + 1.1 * padding.offset());
+    assert!(
+        !one_link_holds(&grown, &point),
+        "{point} lies 1.1 offsets from the scaled piece's nearest face, padding \
+         {padding:?}, and inside the grown link"
+    );
 }

@@ -23,8 +23,8 @@ locked = true
 
 [tool.uv]
 # uv builds the package again when one of these changes: the Rust sources of
-# the bindings and of workspace_core and the types of the module, not only
-# this manifest.
+# the bindings, of workspace_core and of camera_core and the types of the
+# module, not only this manifest.
 cache-keys = [
     { file = "pyproject.toml" },
     { file = "Cargo.toml" },
@@ -33,6 +33,8 @@ cache-keys = [
     { file = "workspace_core_py.pyi" },
     { file = "../workspace_core/Cargo.toml" },
     { file = "../workspace_core/src/**/*.rs" },
+    { file = "../camera_core/Cargo.toml" },
+    { file = "../camera_core/src/**/*.rs" },
 ]
 
 [tool.pytest.ini_options]

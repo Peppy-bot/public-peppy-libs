@@ -1,6 +1,6 @@
 //! The camera a robot finds items with, and what it sees.
 
-use std::str::FromStr;
+use camera_core::pinhole::{DepthModel, Pinhole};
 
 use crate::verdict::View;
 
@@ -46,89 +46,6 @@ pub fn perception_camera<'a>(
     }
 }
 
-/// The pinhole model of a camera's colour stream, in pixels, under OpenCV's
-/// conventions (those of `camera_geometry:v1`): `u` runs to the right of the
-/// image and `v` down it, and the centre of the top-left pixel is (0, 0).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Intrinsics {
-    pub width: u32,
-    pub height: u32,
-    pub fx: f64,
-    pub fy: f64,
-    pub cx: f64,
-    pub cy: f64,
-}
-
-impl Intrinsics {
-    /// The model of an ideal pinhole with square pixels whose image of
-    /// `width` by `height` pixels spans `fovy` radians vertically, its
-    /// optical axis through the middle of the image: a rendered camera's.
-    pub fn from_vertical_fov(fovy: f64, width: u32, height: u32) -> Self {
-        let f = f64::from(height) / 2.0 / (fovy / 2.0).tan();
-        Self {
-            width,
-            height,
-            fx: f,
-            fy: f,
-            cx: (f64::from(width) - 1.0) / 2.0,
-            cy: (f64::from(height) - 1.0) / 2.0,
-        }
-    }
-
-    /// Whether the image holds the point `(x, y, z)` of the optical frame,
-    /// `z` ahead of the camera: its pixel falls within the image's edges.
-    fn holds(&self, [x, y, z]: [f64; 3]) -> bool {
-        if z <= 0.0 {
-            return false;
-        }
-        let u = self.fx * x / z + self.cx;
-        let v = self.fy * y / z + self.cy;
-        let inside = |pixel: f64, size: u32| (-0.5..=f64::from(size) - 0.5).contains(&pixel);
-        inside(u, self.width) && inside(v, self.height)
-    }
-}
-
-/// What a camera's depth sample of a point is (`depth_model` of
-/// `camera_geometry:v1`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DepthModel {
-    /// The distance from the camera to the plane through the point, square
-    /// to the optical axis: the point's optical `z` (`"z"`).
-    Z,
-    /// The straight-line distance from the camera to the point
-    /// (`"range"`).
-    Range,
-}
-
-impl DepthModel {
-    /// The sample a camera of this model reads for `local`, a point of its
-    /// optical frame.
-    fn sample(self, local: [f64; 3]) -> f64 {
-        match self {
-            Self::Z => local[2],
-            Self::Range => local.iter().map(|value| value * value).sum::<f64>().sqrt(),
-        }
-    }
-}
-
-/// A depth model `camera_geometry:v1` does not name.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("unknown depth model '{0}': camera_geometry:v1 names \"z\" and \"range\"")]
-pub struct UnknownDepthModel(pub String);
-
-impl FromStr for DepthModel {
-    type Err = UnknownDepthModel;
-
-    /// The model `camera_geometry:v1` names `name`.
-    fn from_str(name: &str) -> Result<Self, Self::Err> {
-        match name {
-            "z" => Ok(Self::Z),
-            "range" => Ok(Self::Range),
-            other => Err(UnknownDepthModel(other.to_owned())),
-        }
-    }
-}
-
 /// What a camera's depth stream measures.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Depth {
@@ -143,7 +60,7 @@ impl Depth {
     /// camera's optical frame.
     fn reads(&self, local: [f64; 3]) -> bool {
         let [nearest, farthest] = self.range;
-        (nearest..=farthest).contains(&self.model.sample(local))
+        (nearest..=farthest).contains(&self.model.reading(local))
     }
 }
 
@@ -157,8 +74,8 @@ pub struct Camera {
     /// asked about, row-major: its columns are the optical frame's +X (to
     /// the right of the image), +Y (down it) and +Z (along the view).
     pub rotation: [f64; 9],
-    /// The pinhole model of its colour stream.
-    pub intrinsics: Intrinsics,
+    /// The pinhole model of its colour stream, with its lens.
+    pub pinhole: Pinhole,
     /// What its depth stream measures; none when it gives no depth.
     pub depth: Option<Depth>,
 }
@@ -169,13 +86,23 @@ impl Camera {
     /// point is not asked.
     pub fn view_of(&self, point: [f64; 3]) -> View {
         let local = self.in_optical_frame(point);
-        if !self.intrinsics.holds(local) {
+        if !self.image_shows(local) {
             return View::OutsideField;
         }
         if self.depth.is_some_and(|depth| !depth.reads(local)) {
             return View::OutOfDepth;
         }
         View::Seen
+    }
+
+    /// Whether a pixel of the colour image shows `local`, a point of the
+    /// optical frame: the pixel the pinhole model gives for it falls within
+    /// the image's edges.
+    fn image_shows(&self, local: [f64; 3]) -> bool {
+        let inside = |pixel: f64, size: u32| (-0.5..=f64::from(size) - 0.5).contains(&pixel);
+        self.pinhole.project(local).is_some_and(|(u, v)| {
+            inside(u, self.pinhole.width()) && inside(v, self.pinhole.height())
+        })
     }
 
     /// `point` in the camera's optical frame.
@@ -190,6 +117,8 @@ impl Camera {
 
 #[cfg(test)]
 mod tests {
+    use camera_core::pinhole::Intrinsics;
+
     use super::*;
 
     fn facts(name: &str, gives_depth: bool, carried_by_arm: bool) -> CameraFacts<'_> {
@@ -240,20 +169,12 @@ mod tests {
             // Optical +X (image right) is the frame's -Y, +Y (image down) its
             // -Z, +Z (the view) its +X.
             rotation: [0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
-            intrinsics: Intrinsics::from_vertical_fov(60f64.to_radians(), 64, 48),
+            pinhole: Pinhole::from_vertical_fov(60f64.to_radians(), 64, 48).expect("a model"),
             depth: Some(Depth {
                 model: DepthModel::Z,
                 range: [0.2, 3.0],
             }),
         }
-    }
-
-    #[test]
-    fn a_rendered_cameras_model_has_square_pixels_and_its_axis_through_the_middle() {
-        let model = Intrinsics::from_vertical_fov(60f64.to_radians(), 64, 48);
-        assert!((model.fy - 24.0 / 30f64.to_radians().tan()).abs() < 1e-9);
-        assert_eq!(model.fx, model.fy);
-        assert_eq!((model.cx, model.cy), (31.5, 23.5));
     }
 
     #[test]
@@ -331,15 +252,30 @@ mod tests {
     }
 
     #[test]
-    fn a_depth_model_is_parsed_from_the_name_camera_geometry_gives_it() {
-        assert_eq!("z".parse(), Ok(DepthModel::Z));
-        assert_eq!("range".parse(), Ok(DepthModel::Range));
-        let unknown = "disparity".parse::<DepthModel>().unwrap_err();
-        assert_eq!(unknown, UnknownDepthModel("disparity".into()));
-        assert_eq!(
-            unknown.to_string(),
-            "unknown depth model 'disparity': camera_geometry:v1 names \"z\" and \"range\""
-        );
+    fn a_camera_sees_through_its_lens_and_not_past_where_the_lens_turns_back() {
+        // A barrel lens pulls a point just beyond the ideal image's left edge
+        // into the image. About 66 degrees off the axis its radial factor
+        // falls to 0, which takes a point there to the middle of the image,
+        // whose pixel looks along the axis.
+        let focal = 24.0 / 30f64.to_radians().tan();
+        let barrel = Camera {
+            pinhole: Pinhole::parse(&Intrinsics {
+                width: 64,
+                height: 48,
+                fx: focal,
+                fy: focal,
+                cx: 31.5,
+                cy: 23.5,
+                distortion_model: "plumb_bob",
+                distortion: &[-0.2, 0.0, 0.0, 0.0, 0.0],
+            })
+            .expect("a model"),
+            ..ahead()
+        };
+        let just_beyond = [1.0, 1.01 * 32.0 / focal, 1.0];
+        assert_eq!(ahead().view_of(just_beyond), View::OutsideField);
+        assert_eq!(barrel.view_of(just_beyond), View::Seen);
+        assert_eq!(barrel.view_of([1.0, -5f64.sqrt(), 1.0]), View::OutsideField);
     }
 
     #[test]
