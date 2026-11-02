@@ -52,13 +52,7 @@ fn workspace_core_py(module: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// A way the gripper points when it grasps, in the robot frame.
-#[pyclass(
-    name = "GraspDirection",
-    module = "workspace_core_py",
-    frozen,
-    eq,
-    skip_from_py_object
-)]
+#[pyclass(name = "GraspDirection", module = "workspace_core_py", frozen, eq)]
 #[derive(Clone, Copy, PartialEq)]
 struct PyGraspDirection(GraspDirection);
 
@@ -90,14 +84,7 @@ fn angle_between(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<f64> {
 
 /// The height of a surface above the robot's base point, parsed off a
 /// describe_workspace request to the millimetre.
-#[pyclass(
-    name = "SurfaceHeight",
-    module = "workspace_core_py",
-    frozen,
-    eq,
-    hash,
-    skip_from_py_object
-)]
+#[pyclass(name = "SurfaceHeight", module = "workspace_core_py", frozen, eq, hash)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct PySurfaceHeight(SurfaceHeight);
 
@@ -165,13 +152,7 @@ impl PyPositions {
 
 /// Whether an arm reaches a target: reached by the arm named, or short of it
 /// by how far the closest arm stops.
-#[pyclass(
-    name = "Reach",
-    module = "workspace_core_py",
-    frozen,
-    eq,
-    skip_from_py_object
-)]
+#[pyclass(name = "Reach", module = "workspace_core_py", frozen, eq)]
 #[derive(Clone, PartialEq)]
 struct PyReach(Reach);
 
@@ -248,12 +229,7 @@ impl PyReach {
 
 /// The reach of a surface at one height: whether an arm reaches each of its
 /// grid targets, in the grid's order.
-#[pyclass(
-    name = "SurfaceReach",
-    module = "workspace_core_py",
-    frozen,
-    skip_from_py_object
-)]
+#[pyclass(name = "SurfaceReach", module = "workspace_core_py", frozen)]
 #[derive(Clone)]
 struct PySurfaceReach(SurfaceReach);
 
@@ -347,13 +323,7 @@ impl From<SurfaceAnswer> for PySurfaceAnswer {
 }
 
 /// What check_positions answers of one point.
-#[pyclass(
-    name = "PointAnswer",
-    module = "workspace_core_py",
-    frozen,
-    get_all,
-    skip_from_py_object
-)]
+#[pyclass(name = "PointAnswer", module = "workspace_core_py", frozen, get_all)]
 #[derive(Clone)]
 struct PyPointAnswer {
     /// The point, `(x, y, z)` in the robot frame.

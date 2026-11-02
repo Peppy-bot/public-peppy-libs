@@ -16,5 +16,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # The stable ABI of Python 3.12: one build loads on every Python from 3.12.
-pyo3 = { version = "0.29", features = ["abi3-py312"] }
+pyo3 = { version = "0.30", features = ["abi3-py312"] }
 workspace_core = { path = "../workspace_core" }
