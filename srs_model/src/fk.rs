@@ -20,6 +20,7 @@ use crate::SrsError;
 use crate::{ARM_DOF, JointVec, Limit, Posed};
 
 /// The arm's chain, with the SRS wrist already resolved.
+#[derive(Clone)]
 pub(crate) struct ForwardKinematics {
     chain: Chain<ARM_DOF>,
 }

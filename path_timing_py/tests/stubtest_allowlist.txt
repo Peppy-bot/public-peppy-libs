@@ -1,0 +1,6 @@
+# What stubtest may find in the module and not in its types. maturin lays the
+# package out as an __init__.py that imports every name of the extension
+# module, the inner path_timing_py.path_timing_py, and takes its __all__. The
+# types are those of the package, and they name the same names.
+path_timing_py.__all__
+path_timing_py.path_timing_py

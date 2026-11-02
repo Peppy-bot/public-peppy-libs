@@ -24,6 +24,7 @@ add_executable(ros_reference
   reference_programs/forward_kinematics.cpp
   reference_programs/chain_collision.cpp
   reference_programs/self_distance.cpp
+  reference_programs/path_timing.cpp
   reference_programs/planning.cpp
   reference_programs/occupancy.cpp
 )
@@ -33,6 +34,7 @@ target_link_libraries(ros_reference PRIVATE
   moveit_core::moveit_collision_detection_fcl
   moveit_core::moveit_robot_model
   moveit_core::moveit_robot_state
+  moveit_core::moveit_trajectory_processing
   moveit_ros_occupancy_map_monitor::moveit_ros_occupancy_map_monitor
   moveit_ros_perception::moveit_pointcloud_octomap_updater_core
   nlohmann_json::nlohmann_json

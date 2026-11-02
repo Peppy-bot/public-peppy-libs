@@ -18,6 +18,7 @@ change of the reference, which `run.sh --check` proves.
 | `forward_kinematics` | MoveIt's robot state: the global transform of each link of a chain | `chain_kinematics/tests/ros_reference_forward_kinematics.rs` |
 | `chain_collision` | MoveIt's robot model, robot state and robot filter: the links with collision geometry that a chain carries and the center MoveIt grows each of their bodies about, the global transform of each carried link, and whether each probe point lies inside the links' bodies (a convex mesh for a mesh, the primitive itself for a box, a cylinder or a sphere) grown by a padding | `collision_geometry/tests/ros_reference_chain_collision.rs` |
 | `self_distance` | MoveIt's FCL collision environment: the signed distance between the collision meshes of each pair of links | `self_collision_model/tests/ros_reference_self_distance.rs` |
+| `path_timing` | MoveIt's time-optimal trajectory generation (TOTG): the blended path through waypoints at a maximum deviation, and its time-optimal duration under velocity and acceleration limits, or its refusal of a path that turns back | `control_core/tests/ros_reference_path_timing.rs` |
 | `planning` | OMPL's geometric planners: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
 | `occupancy` | MoveIt's point cloud updater: the log-odds of every voxel of MoveIt's occupancy map after a sequence of point clouds, with a sphere cut out as the robot's own body | `occupancy_map/tests/ros_reference_occupancy.rs` |
 
@@ -31,7 +32,7 @@ change of the reference, which `run.sh --check` proves.
 | `packages-amd64.txt`, `packages-arm64.txt` | The version of every package of the reference image, on each architecture. |
 | `reference_programs/` | The reference program `ros_reference`: one function per kind of scenario. |
 | `src/` | The Rust crate `ros_reference`: one module per kind of scenario, which lists the scenarios of the kind and reads each with its reference output, checked with the scenario and the files it names against their digests, for the parity test. |
-| `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, a parsed URDF, the joints of an arm of OpenArm v2, the joint limits of a URDF, the configurations of a chain, and `write`, which writes a scenario. |
+| `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, a parsed URDF, the joints of an arm of OpenArm v2, the joint limits of a URDF, the configurations of a chain, the constants of a Rust file, and `write`, which writes a scenario. |
 | `Dockerfile`, `CMakeLists.txt`, `ros-snapshots.asc` | The reference image and the build of the reference program in it. |
 | `run.sh` | Runs the reference of every scenario in the reference image. |
 
@@ -124,30 +125,35 @@ them within its bound.
    `check_shortest_decimals` that `shortest_decimal` writes the doubles at the edges of
    the format as the reader test of `src/lib.rs` reads them, and writes a seeded draw of
    bit patterns as JSON numbers that read back to their bits.
-6. A kind commits only the few cases that exercise its behaviors: for forward
-   kinematics, eight configurations a chain, all joints at zero, at their lower limits,
-   at their upper limits, and five drawn inside them; for chain collision, four
-   configurations a chain, all joints at zero, at their lower limits, at their upper
-   limits, and one drawn inside them, with four probe points a link at each, and at the
-   first, for each padding, the points 10 µm inside and outside the surface of each grown
-   primitive; for self distance, the three configurations of OpenArm v2, of the zero
-   configuration, the lower limits, the upper limits and thirty drawn inside them, that
-   put each pair of links in each state, apart and in contact, that any of them puts it
-   in; for planning, every planner through a wall with a block before it in two
-   dimensions under seed 1 and in seven under seed 2, and to a goal walled in, where it
-   finds no path, under seed 1, with RRTstar under seed 2 in two dimensions too, each
-   plan bounded at 2000 iterations, at which PRM and PRM* grow their roadmap, expand it
-   and grow it again; for occupancy, a sensor that reads a scene five times and then a
-   later cloud, with the points of each case of `tools/draw_occupancy.py`, one of each
-   drawn case, scattered within the range, inside the robot's sphere and beyond the
-   range, a hit on the ray of another hit, a voxel that the later cloud crosses after the
-   scene took it to the upper clamp, a cut-out voxel on the ray of another point, and a
-   voxel that holds a cut-out point and a hit, and the level sensor's two points beyond
-   the range at a voxel face. A large drawn set runs locally and is never committed:
-   draw it into `scenarios/` with the `--drawn` option of the kind's script (for forward
-   kinematics, `python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
-   `ros_reference/run.sh` and the parity tests, and restore the committed files with
-   `git restore ros_reference/scenarios ros_reference/reference`.
+6. A kind commits only the few cases that exercise its behaviors: for forward kinematics,
+   eight configurations a chain, all joints at zero, at their lower limits, at their upper
+   limits, and five drawn inside them; for chain collision, four configurations a chain,
+   all joints at zero, at their lower limits, at their upper limits, and one drawn inside
+   them, with four probe points a link at each, and at the first, for each padding, the
+   points 10 µm inside and outside the surface of each grown primitive; for self distance,
+   the three configurations of OpenArm v2, of the zero configuration, the lower limits,
+   the upper limits and thirty drawn inside them, that put each pair of links in each
+   state, apart and in contact, that any of them puts it in; for path timing, one path of
+   each case of `tools/draw_path_timing.py`, a cornered path blended at each of the four
+   deviations, a short-leg path, a near-reversal path, a straight run and a cruising one,
+   a path that turns back, two corners either side of TOTG's turning-back threshold and
+   two either side of its straight-on threshold, each sampled at its start, its end, the
+   middle of each straight piece and three points along each arc; for planning, every
+   planner through a wall with a block before it in two dimensions under seed 1 and in
+   seven under seed 2, and to a goal walled in, where it finds no path, under seed 1, with
+   RRTstar under seed 2 in two dimensions too, each plan bounded at 2000 iterations, at
+   which PRM and PRM* grow their roadmap, expand it and grow it again; for occupancy, a
+   sensor that reads a scene five times and then a later cloud, with the points of each
+   case of `tools/draw_occupancy.py`, one of each drawn case, scattered within the range,
+   inside the robot's sphere and beyond the range, a hit on the ray of another hit, a
+   voxel that the later cloud crosses after the scene took it to the upper clamp, a
+   cut-out voxel on the ray of another point, and a voxel that holds a cut-out point and a
+   hit, and the level sensor's two points beyond the range at a voxel face. A large drawn
+   set runs locally and is never committed: draw it into `scenarios/` with the `--drawn`
+   option of the kind's script (for forward kinematics, `python3
+   ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
+   `ros_reference/run.sh` and the parity tests, and restore the committed files with `git
+   restore ros_reference/scenarios ros_reference/reference`.
 
 ## Pins
 
@@ -205,9 +211,13 @@ arm64 host.
 3. The parity test of its kind lists the scenarios of the kind from `scenarios/`, so it
    runs on the new one. The forward kinematics parity test poses chains of 1 to 7 joints,
    the chain collision parity test chains of 7 joints, the self distance parity test
-   builds the self model of OpenArm v2 and refuses a scenario that names another URDF,
-   and the planning parity test asks each scenario for a plan of each planner that finds
-   a path and one that finds none, and the occupancy parity test asks each scenario's map
+   builds the self model of OpenArm v2 and refuses a scenario that names another URDF, the
+   path timing parity test asks each scenario for cornered paths that TOTG blends at
+   deviations of 0.01, 0.05, 0.1 and 0.2, a straight run, a path that it refuses, a path
+   with a corner that it runs straight on, turns that bracket its turning-back threshold
+   within 0.02 degrees, and a path with corners at the deviation of execute_joint_path,
+   and the planning parity test asks each scenario for a plan of each planner that finds a
+   path and one that finds none, and the occupancy parity test asks each scenario's map
    for at least 199 voxels.
 
 A routine test of `ros_reference` fails when a scenario has no reference output, a
