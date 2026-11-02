@@ -19,3 +19,5 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+# Each asynchronous fixture runs in the event loop of its test.
+asyncio_default_fixture_loop_scope = "function"
