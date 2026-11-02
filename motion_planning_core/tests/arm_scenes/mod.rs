@@ -6,14 +6,15 @@
 
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use camera_core::pose::Pose;
 use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, Goal, IkGoalSampler, JointTarget, PlanFailure, PlanRequest, Scene, plan_arm_path,
+    Arm, Goal, IkGoalSampler, JointTarget, PlanFailure, PlanRequest, Scene, StartFault,
+    plan_arm_path,
 };
 use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
 use ompl_bridge::Planner;
@@ -150,7 +151,7 @@ pub fn plan_scene<O>(
             sampler,
             goal_samples: NonZeroUsize::new(GOAL_SAMPLES).expect("nonzero"),
             planner: Planner::RrtConnect,
-            time_limit: Duration::from_secs_f64(scenes.time_limit),
+            deadline: Instant::now() + Duration::from_secs_f64(scenes.time_limit),
             max_iterations: NonZeroU64::new(scenes.iterations).expect("nonzero"),
             attempts: NonZeroU32::MIN,
             seed: scene.seed.get(),
@@ -165,8 +166,10 @@ pub fn plan_scene<O>(
         Ok(waypoints) => Ours::Path {
             waypoints: waypoints.iter().map(|q| q.to_vec()).collect(),
         },
-        Err(PlanFailure::StartOutsideLimits { .. }) => failure("start_outside_limits"),
-        Err(PlanFailure::StartInCollision(_)) => failure("start_in_collision"),
+        Err(PlanFailure::Start(StartFault::OutsideLimits { .. })) => {
+            failure("start_outside_limits")
+        }
+        Err(PlanFailure::Start(StartFault::InCollision(_))) => failure("start_in_collision"),
         Err(PlanFailure::Unreachable(_)) => failure("unreachable"),
         Err(PlanFailure::NoPath(_)) => failure("no_path"),
         Err(

@@ -10,7 +10,8 @@
 //! - [`Goal`]: the constraints a path's last waypoint meets; a [`GoalSampler`] finds
 //!   configurations meeting them, [`IkGoalSampler`] by inverse kinematics for any chain.
 //! - [`plan_arm_path`]: plans a [`PlanRequest`] on a [`Scene`], and checks the rounded
-//!   path the robot runs.
+//!   path the robot runs; [`check_arm_path`] checks a caller's path, a [`CheckRequest`],
+//!   with the same checks.
 #![forbid(unsafe_code)]
 
 mod arm;
@@ -26,4 +27,7 @@ pub use goal::{
     Axis, Frame, Goal, GoalError, GoalSampler, IkGoalSampler, JointTarget, OrientationTarget,
     PositionTarget,
 };
-pub use plan::{MAX_STEP_M, PlanFailure, PlanRequest, Scene, plan_arm_path};
+pub use plan::{
+    CheckFailure, CheckRequest, MAX_STEP_M, PathCheck, PathFault, Place, PlanFailure, PlanRequest,
+    Scene, StartFault, check_arm_path, plan_arm_path, start_inside_limits,
+};

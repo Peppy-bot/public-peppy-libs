@@ -1,7 +1,8 @@
 //! Plans of OpenArm v2's left arm around boxes of voxels: the rounded path of every
-//! returned path keeps its clearance under a dense check, the same request on the same
-//! map gives the same path, of one attempt or several, a stop ends a plan, and a goal or
-//! a world that admits no path says why.
+//! returned path keeps its clearance under a dense check and passes the check of a
+//! caller's path, the same request on the same map gives the same path, of one attempt
+//! or several, a stop ends a plan, and a goal or a world that admits no path says why.
+//! Checks of a caller's path: where each fault lies and the waypoints before it.
 
 mod common;
 
@@ -13,15 +14,17 @@ use std::time::{Duration, Instant};
 use control_core::path_timing::RoundedPath;
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, Contact, Goal, GoalSampler, IkGoalSampler, JointTarget, MAX_STEP_M, PlanFailure,
-    PlanRequest, Scene, Surroundings, plan_arm_path,
+    Arm, CheckFailure, CheckRequest, Contact, Goal, GoalSampler, IkGoalSampler, JointTarget,
+    MAX_STEP_M, PathCheck, PathFault, Place, PlanFailure, PlanRequest, Scene, StartFault,
+    Surroundings, check_arm_path, plan_arm_path,
 };
 use nalgebra::Vector3;
 use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::Planner;
 
 use common::{
-    JOINTS, LEFT_ARM, distance_to_map, left_fingers, map, occupied_at, voxel_in_a_finger,
+    JOINTS, LEFT_ARM, an_hour_from_now, distance_to_map, left_fingers, map, occupied_at,
+    voxel_in_a_finger,
 };
 
 const VOXEL_M: f64 = 0.04;
@@ -82,7 +85,7 @@ fn request<'a>(
         sampler,
         goal_samples: NonZeroUsize::new(8).expect("nonzero"),
         planner,
-        time_limit: Duration::from_secs(600),
+        deadline: an_hour_from_now(),
         max_iterations: NonZeroU64::new(20_000).expect("nonzero"),
         attempts: NonZeroU32::MIN,
         seed: 7,
@@ -253,8 +256,8 @@ fn a_plan_its_iterations_end_gives_no_path() {
     assert_eq!(
         failure,
         PlanFailure::NoPath(
-            "RRTConnect found no path within 1 iterations or 600s, keeping the plan's \
-             clearance, 0.0210 m from the map"
+            "RRTConnect found no path within 1 iterations or by its deadline, keeping the \
+             plan's clearance, 0.0210 m from the map"
                 .to_string()
         )
     );
@@ -294,13 +297,13 @@ fn a_plan_whose_sampling_takes_its_time_gives_no_path() {
     let waiting = WaitingOut(HIGH);
     let limited = PlanRequest {
         sampler: &waiting,
-        time_limit: Duration::from_millis(50),
+        deadline: Instant::now() + Duration::from_millis(50),
         ..request(Planner::RrtConnect, LOW, &goal, &sampler)
     };
     assert_eq!(
         plan_arm_path(&arm, &scene, &limited),
         Err(PlanFailure::NoPath(
-            "the time limit 50ms ended before RRTConnect planned".to_string()
+            "the deadline passed before RRTConnect planned".to_string()
         ))
     );
 }
@@ -475,7 +478,7 @@ fn lies_between(w: &[[f64; JOINTS]]) -> bool {
 // From a start 1 cm from the slab, with the box across the way, the plan of seed 10
 // rounds its first corner into the box and adds a waypoint on the first run, which the
 // start rule walks: the answer's rounded path keeps the clearance once it first keeps
-// it.
+// it, and the answer passes the check of a caller's path.
 #[test]
 fn a_first_corner_from_a_start_near_the_slab_gets_waypoints_until_it_clears() {
     let NearTheSlab { start, .. } = near_the_slab(0.01);
@@ -502,13 +505,18 @@ fn a_first_corner_from_a_start_near_the_slab_gets_waypoints_until_it_clears() {
         "no waypoint added on the first run: {waypoints:?}"
     );
     assert_dense_clear_after_departure(&arm, &map, &field, &waypoints);
+    assert_eq!(
+        check(&arm, &scene, start, &waypoints[1..]),
+        passing(&waypoints[1..])
+    );
 }
 
 // On drawn worlds of boxes in front of the arm, clear of it at the start and at the
 // goal, every path a planner returns has a rounded path that keeps the clearance under
-// a dense check, and every plan that returns none says the goal is unreachable or that
-// it found no path. A world whose plan returns none is discarded, so Hegel's
-// FilterTooMuch health check fails a run in which few plans return a path.
+// a dense check and passes the check of a caller's path, and every plan that returns
+// none says the goal is unreachable or that it found no path. A world whose plan returns
+// none is discarded, so Hegel's FilterTooMuch health check fails a run in which few plans
+// return a path.
 #[hegel::test(test_cases = 40)]
 fn on_drawn_worlds_every_returned_path_clears_its_rounding(tc: hegel::TestCase) {
     use hegel::generators as gs;
@@ -544,7 +552,13 @@ fn on_drawn_worlds_every_returned_path_clears_its_rounding(tc: hegel::TestCase) 
     // here.
     tc.assume(surroundings.clear(&arm, &LOW) && surroundings.clear(&arm, &HIGH));
     match plan_arm_path(&arm, &scene, &request(planner, LOW, &goal, &sampler)) {
-        Ok(waypoints) => assert_dense_clear(&arm, &map, &field, &waypoints),
+        Ok(waypoints) => {
+            assert_dense_clear(&arm, &map, &field, &waypoints);
+            assert_eq!(
+                check(&arm, &scene, LOW, &waypoints[1..]),
+                passing(&waypoints[1..])
+            );
+        }
         Err(PlanFailure::Unreachable(_) | PlanFailure::NoPath(_)) => tc.assume(false),
         Err(other) => panic!("{planner}: {other}"),
     }
@@ -639,8 +653,9 @@ fn a_start_moves_onto_a_limit_within_its_tolerance() {
         let refused = plan_arm_path(&arm, &scene, &beyond);
         assert!(
             matches!(
-                refused,
-                Err(PlanFailure::StartOutsideLimits { joint: 3, .. })
+                &refused,
+                Err(PlanFailure::Start(StartFault::OutsideLimits { joint, .. }))
+                    if joint == "openarm_left_joint4"
             ),
             "{refused:?}"
         );
@@ -669,7 +684,7 @@ fn a_start_inside_an_obstacle_is_refused() {
         &scene,
         &request(Planner::RrtConnect, LOW, &goal, &sampler),
     );
-    let Err(PlanFailure::StartInCollision(Contact::Map { link })) = refused else {
+    let Err(PlanFailure::Start(StartFault::InCollision(Contact::Map { link }))) = refused else {
         panic!("a start inside the box gives {refused:?}");
     };
     assert!(
@@ -1044,7 +1059,7 @@ fn a_start_whose_finger_touches_the_map_is_refused_naming_it() {
         &scene,
         &request(Planner::RrtConnect, LOW, &goal, &sampler),
     );
-    let Err(PlanFailure::StartInCollision(Contact::Map { link })) = refused else {
+    let Err(PlanFailure::Start(StartFault::InCollision(Contact::Map { link }))) = refused else {
         panic!("a start whose finger holds a voxel gives {refused:?}");
     };
     assert!(
@@ -1230,5 +1245,327 @@ fn a_stop_ends_the_attempts_at_their_next_question() {
     assert!(
         matches!(answer, Err(PlanFailure::NoPath(_))),
         "one attempt: {answer:?}"
+    );
+}
+
+/// The check of the path from `start` through `waypoints` for `arm` around `scene`, at
+/// the plan's clearance, with no start tolerance and a deadline an hour away.
+fn check(
+    arm: &Arm<JOINTS>,
+    scene: &Scene,
+    start: [f64; JOINTS],
+    waypoints: &[[f64; JOINTS]],
+) -> PathCheck {
+    check_arm_path(
+        arm,
+        scene,
+        &CheckRequest {
+            start,
+            start_tolerance: [0.0; JOINTS],
+            waypoints,
+            min_clearance_m: MIN_CLEARANCE_M,
+            deadline: an_hour_from_now(),
+        },
+    )
+    .expect("a check of a valid request answers")
+}
+
+/// The check of a path through `waypoints` that passes.
+fn passing(waypoints: &[[f64; JOINTS]]) -> PathCheck {
+    PathCheck {
+        clear_waypoints: waypoints.len(),
+        fault: None,
+    }
+}
+
+/// The path around the box from `LOW` to `HIGH` that RRTConnect plans under seed 7.
+fn around_the_box(arm: &Arm<JOINTS>, scene: &Scene) -> Vec<[f64; JOINTS]> {
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goal = at(&HIGH);
+    plan_arm_path(
+        arm,
+        scene,
+        &request(Planner::RrtConnect, LOW, &goal, &sampler),
+    )
+    .expect("a path around the box")
+}
+
+/// Asserts that `check` finds a state short of the plan's clearance from the map at
+/// `place`, leaving `passing` waypoints before it.
+fn assert_falls_short(check: &PathCheck, place: Place, passing: usize) {
+    let Some(PathFault::Clearance {
+        place: found,
+        distances,
+        clearances,
+    }) = check.fault
+    else {
+        panic!("{check:?} finds no state short of its clearance");
+    };
+    assert_eq!(
+        (found, check.clear_waypoints),
+        (place, passing),
+        "{check:?}"
+    );
+    assert!(distances[0] < clearances[0], "{check:?}");
+    let reason = check.fault.as_ref().expect("a fault").to_string();
+    assert!(
+        reason.starts_with(&format!("{place}, the arm comes "))
+            && reason.ends_with("m from the map, nearer than the plan's clearance, 0.0210 m"),
+        "{reason}"
+    );
+}
+
+/// How much farther than `MIN_CLEARANCE_M` from the map a plan keeps its states, as its
+/// messages name it: the 0.0210 m of the plan's clearance.
+const PLAN_SPARE_M: f64 = 0.001;
+
+// The path the plan answers around the box passes its check; the same path and then
+// straight back to the start, through the box, passes up to its last waypoint and
+// breaks on the run from it; and, around no box, with a waypoint past joint 4's lower
+// limit added after it, passes up to its last waypoint and names the joint.
+#[test]
+fn a_check_answers_the_waypoints_before_the_first_fault() {
+    let (map, field) = world(&box_between());
+    let arm = Arm::new(&LEFT_ARM, None);
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+    };
+    let planned = around_the_box(&arm, &scene);
+    let waypoints = &planned[1..];
+    let count = waypoints.len();
+    assert_eq!(check(&arm, &scene, LOW, waypoints), passing(waypoints));
+    let back: Vec<[f64; JOINTS]> = waypoints.iter().copied().chain([LOW]).collect();
+    assert_falls_short(&check(&arm, &scene, LOW, &back), Place::Run(count), count);
+    let limit = LEFT_ARM.chain().limits()[3].lo;
+    let mut outside = waypoints[count - 1];
+    outside[3] = limit - 0.01;
+    let past: Vec<[f64; JOINTS]> = waypoints.iter().copied().chain([outside]).collect();
+    let (open, open_field) = world(&[]);
+    let open_scene = Scene {
+        map: &open,
+        field: &open_field,
+        stamp: 1,
+    };
+    let checked = check(&arm, &open_scene, LOW, &past);
+    assert_eq!(checked.clear_waypoints, count);
+    assert_eq!(
+        checked.fault,
+        Some(PathFault::OutsideLimits {
+            waypoint: count + 1,
+            joint: "openarm_left_joint4".to_string(),
+            position: limit - 0.01,
+            low: limit,
+            high: LEFT_ARM.chain().limits()[3].hi,
+        })
+    );
+}
+
+/// A self model whose pair stands a meter apart at every configuration, which refuses, by
+/// a panic, to be asked about more than 10 000 states.
+struct AskedAtMostTenThousand(AtomicUsize);
+
+impl motion_planning_core::SelfModel<JOINTS> for AskedAtMostTenThousand {
+    fn clearance(&self, _: &[f64; JOINTS]) -> f64 {
+        let asked = self.0.fetch_add(1, Ordering::Relaxed);
+        assert!(asked < 10_000, "asked about more than 10 000 states");
+        1.0
+    }
+
+    fn nearest_pair(&self, _: &[f64; JOINTS]) -> (String, String) {
+        ("a link".to_string(), "its neighbor".to_string())
+    }
+}
+
+// A waypoint at 1e12 rad on joint 7 answers that it lies outside the joint's limits:
+// the walk of the run to it ends where the run leaves them, within 10 000 states of the
+// arm.
+#[test]
+fn a_waypoint_far_outside_a_limit_answers_promptly() {
+    let (map, field) = world(&[]);
+    let model = AskedAtMostTenThousand(AtomicUsize::new(0));
+    let arm = Arm::new(&LEFT_ARM, Some(&model));
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+    };
+    let mut far = LOW;
+    far[6] = 1e12;
+    let checked = check(&arm, &scene, LOW, &[far]);
+    assert_eq!(checked.clear_waypoints, 0);
+    assert!(
+        matches!(
+            &checked.fault,
+            Some(PathFault::OutsideLimits { waypoint: 1, joint, position, .. })
+                if joint == "openarm_left_joint7" && *position == 1e12
+        ),
+        "{checked:?}"
+    );
+}
+
+// A start inside the box fails with its contact, a start past a joint's limit by more
+// than its tolerance with the joint, each passing no waypoint, and a start within its
+// tolerance of the limit moves onto it and passes.
+#[test]
+fn a_check_answers_the_faults_of_its_start() {
+    let start_hand = hand(&LOW);
+    let (map, field) = world(&solid(
+        start_hand - Vector3::repeat(0.05),
+        start_hand + Vector3::repeat(0.05),
+    ));
+    let arm = Arm::new(&LEFT_ARM, None);
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+    };
+    let checked = check(&arm, &scene, LOW, &[HIGH]);
+    assert_eq!(checked.clear_waypoints, 0);
+    assert!(
+        matches!(
+            checked.fault,
+            Some(PathFault::Start(StartFault::InCollision(
+                Contact::Map { .. }
+            )))
+        ),
+        "{checked:?}"
+    );
+    let (empty, empty_field) = world(&[]);
+    let clear = Scene {
+        map: &empty,
+        field: &empty_field,
+        stamp: 1,
+    };
+    let limit = LEFT_ARM.chain().limits()[3].lo;
+    let mut near = HIGH;
+    near[3] = limit - 0.005;
+    let at_tolerance = |tolerance: f64| {
+        check_arm_path(
+            &arm,
+            &clear,
+            &CheckRequest {
+                start: near,
+                start_tolerance: [tolerance; JOINTS],
+                waypoints: &[HIGH],
+                min_clearance_m: MIN_CLEARANCE_M,
+                deadline: an_hour_from_now(),
+            },
+        )
+        .expect("a valid request")
+    };
+    assert_eq!(at_tolerance(0.01), passing(&[HIGH]));
+    let beyond = at_tolerance(0.001);
+    assert_eq!(beyond.clear_waypoints, 0);
+    assert!(
+        matches!(
+            &beyond.fault,
+            Some(PathFault::Start(StartFault::OutsideLimits { joint, .. }))
+                if joint == "openarm_left_joint4"
+        ),
+        "{beyond:?}"
+    );
+}
+
+// From a start a centimeter from the slab, the path the plan answers passes its check,
+// and so does a path whose run from the start rises from the slab; a path whose first
+// waypoint lies nearer the slab than the start breaks the start rule on the run from
+// the start, and one whose first run rises yet ends short of the plan's clearance
+// passes the run and fails at its waypoint; each passes no waypoint.
+#[test]
+fn a_check_walks_the_run_from_its_start_by_the_start_rule() {
+    let NearTheSlab { map, field, start } = near_the_slab(0.01);
+    let arm = Arm::new(&LEFT_ARM, None);
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goal = at(&HIGH);
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+    };
+    let planned = plan_arm_path(
+        &arm,
+        &scene,
+        &request(Planner::RrtConnect, start, &goal, &sampler),
+    )
+    .expect("a path away from the slab");
+    assert_eq!(
+        check(&arm, &scene, start, &planned[1..]),
+        passing(&planned[1..])
+    );
+    // Along the line from `LOW` through the start, the slab lies past the start.
+    let along =
+        |t: f64| -> [f64; JOINTS] { std::array::from_fn(|i| LOW[i] + (start[i] - LOW[i]) * t) };
+    let distance = |q: &[f64; JOINTS]| distance_to_map(&arm, &map, q);
+    let toward_the_slab = along(1.02);
+    assert!(distance(&toward_the_slab) < distance(&start));
+    assert_falls_short(
+        &check(&arm, &scene, start, &[toward_the_slab]),
+        Place::Run(0),
+        0,
+    );
+    let plan_clearance = MIN_CLEARANCE_M + PLAN_SPARE_M;
+    let rising_short = (1..100)
+        .map(|k| along(1.0 - f64::from(k) * 0.01))
+        .find(|q| {
+            let d = distance(q);
+            d > distance(&start) + 0.002 && d < plan_clearance
+        })
+        .expect("a state on the line, rising from the start, short of the plan's clearance");
+    assert_falls_short(
+        &check(&arm, &scene, start, &[rising_short]),
+        Place::Waypoint(1),
+        0,
+    );
+}
+
+// A check refuses a request that holds no waypoint, a clearance that is not a number, or
+// a negative start tolerance, and one whose deadline has passed ends before its walks.
+#[test]
+fn a_check_refuses_a_request_out_of_range_and_ends_by_its_deadline() {
+    let (map, field) = world(&box_between());
+    let arm = Arm::new(&LEFT_ARM, None);
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+    };
+    let base = CheckRequest {
+        start: LOW,
+        start_tolerance: [0.0; JOINTS],
+        waypoints: &[HIGH],
+        min_clearance_m: MIN_CLEARANCE_M,
+        deadline: an_hour_from_now(),
+    };
+    for refused in [
+        CheckRequest {
+            waypoints: &[],
+            ..base
+        },
+        CheckRequest {
+            min_clearance_m: f64::NAN,
+            ..base
+        },
+        CheckRequest {
+            start_tolerance: [-0.01; JOINTS],
+            ..base
+        },
+    ] {
+        assert!(
+            matches!(
+                check_arm_path(&arm, &scene, &refused),
+                Err(CheckFailure::Request(_))
+            ),
+            "a request out of range"
+        );
+    }
+    let late = CheckRequest {
+        deadline: Instant::now(),
+        ..base
+    };
+    assert_eq!(
+        check_arm_path(&arm, &scene, &late),
+        Err(CheckFailure::TimeEnded)
     );
 }

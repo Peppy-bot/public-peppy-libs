@@ -2,7 +2,7 @@
 name = "motion_planning_core"
 version = "0.1.0"
 edition = "2024"
-description = "Plans the paths of one serial chain of joints around a voxel map of what its cameras see: a state keeps a clearance from every occupied voxel and between the pairs of the robot's self model, a motion is checked by conservative advancement, goals are sampled by inverse kinematics, OMPL plans and simplifies, and the path the robot will run, its corners rounded, is checked before it is answered. Knows no robot."
+description = "Plans the paths of one serial chain of joints around a voxel map of what its cameras see: a state keeps a clearance from every occupied voxel and between the pairs of the robot's self model, a motion is checked by conservative advancement, goals are sampled by inverse kinematics, OMPL plans, the request's attempts at once, and simplifies, by the request's deadline, the path the robot will run, its corners rounded, is checked before it is answered, and a caller's path is checked with the same checks. Knows no robot."
 
 [workspace]
 
