@@ -95,7 +95,12 @@ each of these values that no test covered (`Uncovered`); the event
 check of a run of a trial with its value (`CheckToJudge`).
 
 The marks (`marks`) are the marks of fields and members that the director
-reads: `robot_frame`, `item_id`, `reaches_for_item` and `location`.
+reads: `robot_frame`, `item_id`, `reaches_for_item`, `checks_reach` and
+`location`. `Workflow::names_before_calls` gives, for each call of a role,
+the results and the loop elements named before it on every path, which the
+director reads to find the reach checks before a reaching call.
+`Workflow::trees_of` gives the trees of a role, and `Workflow::step` the step
+of a role with an id.
 `LANGUAGE` is the language reference that a model that writes workflows
 reads.
 

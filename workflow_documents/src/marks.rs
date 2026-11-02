@@ -14,8 +14,17 @@ pub const ROBOT_FRAME: &str = "robot_frame";
 pub const ITEM_ID: &str = "item_id";
 
 /// A member that reaches for an item: a lane that calls it has a reach
-/// assumption whose check reads an observation of its role.
+/// assumption whose check reads an observation of its role, or a reach
+/// check before it on every path that reads the position of each item it
+/// reaches ([`CHECKS_REACH`]).
 pub const REACHES_FOR_ITEM: &str = "reaches_for_item";
+
+/// A boolean field of the result of a member that tells whether the robot
+/// reaches every position of its request: a call of the member with `as`
+/// and a `done_when` that is this field of its result, alone or as a term
+/// of `&&`, is a reach check, which fails its step in the run when the
+/// robot does not reach.
+pub const CHECKS_REACH: &str = "checks_reach";
 
 /// A string field that receives the name of a location the node knows
 /// through locations:v1: a workflow gives it only a `{ $location }` of a

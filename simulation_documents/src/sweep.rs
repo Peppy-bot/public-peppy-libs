@@ -207,6 +207,19 @@ pub struct StepRef {
     pub id: StepId,
 }
 
+impl StepRef {
+    /// The step that `text`, `<role>.<id>`, names.
+    pub fn parse(text: &str) -> Result<StepRef, String> {
+        let refused =
+            || format!("`{text}` is no step: write `<role>.<id>`, such as `so101_a.pick_loop`");
+        let (role, id) = text.split_once('.').ok_or_else(refused)?;
+        Ok(StepRef {
+            role: WorkflowName::parse(role).map_err(|_| refused())?,
+            id: StepId::parse(id).map_err(|_| refused())?,
+        })
+    }
+}
+
 impl fmt::Display for StepRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}", self.role, self.id)
@@ -222,16 +235,7 @@ impl Serialize for StepRef {
 impl<'de> Deserialize<'de> for StepRef {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<StepRef, D::Error> {
         let text = String::deserialize(deserializer)?;
-        let refused = || {
-            serde::de::Error::custom(format!(
-                "`{text}` is no step: write `<role>.<id>`, such as `so101_a.pick_loop`"
-            ))
-        };
-        let (role, id) = text.split_once('.').ok_or_else(refused)?;
-        Ok(StepRef {
-            role: WorkflowName::parse(role).map_err(|_| refused())?,
-            id: StepId::parse(id).map_err(|_| refused())?,
-        })
+        StepRef::parse(&text).map_err(serde::de::Error::custom)
     }
 }
 
@@ -805,5 +809,21 @@ mod tests {
                 "judges: has no `minimum` judge, and the workflow has a `minimum`; give the judge that checks each degraded ending"
             ]
         );
+    }
+
+    /// A step is `<role>.<id>`, as a run result names it: a text with no
+    /// role, an empty part or a part that is no name is refused.
+    #[test]
+    fn a_step_reads_its_role_and_its_id() {
+        let step = StepRef::parse("so101_a.pick_loop").unwrap();
+        assert_eq!(step.role.as_str(), "so101_a");
+        assert_eq!(step.id.as_str(), "pick_loop");
+        assert_eq!(step.to_string(), "so101_a.pick_loop");
+        for text in ["pick_loop", ".pick_loop", "so101_a.", "So 101.pick_loop"] {
+            assert_eq!(
+                StepRef::parse(text).unwrap_err(),
+                format!("`{text}` is no step: write `<role>.<id>`, such as `so101_a.pick_loop`")
+            );
+        }
     }
 }

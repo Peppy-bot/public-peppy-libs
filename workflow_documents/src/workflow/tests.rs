@@ -178,6 +178,81 @@ fn a_ref_reads_only_names_defined_before_it_on_every_path() {
     );
 }
 
+/// The names before a call are the results that the steps before it name on
+/// every path, in the initialization and in the lane, and the loop elements
+/// around it: not a result of one branch of an `if`, and not a result of a
+/// sibling in a parallel.
+#[test]
+fn the_names_before_a_call_are_the_results_named_before_it_on_every_path() {
+    let mut value = with("/initialization/clearer/call/as", json!("ready"));
+    value["actions"]["clearer"]["tree"]["body"]["sequence"] = json!([
+        { "id": "scan", "call": { "member": "perception.scan_items", "as": "found" } },
+        { "id": "maybe", "if": "found.mode == 'slow'", "then": { "id": "check", "call": { "member": "space.check_positions", "as": "near" } } },
+        { "id": "both", "policy": "all", "parallel": [
+            { "id": "left", "call": { "member": "postures.move_to_ready", "as": "left_done" } },
+            { "id": "right", "call": { "member": "postures.move_to_ready" } },
+        ] },
+        { "id": "each", "for_each": { "list": "found.item_ids", "as": "item" }, "max_items": 2, "body": {
+            "id": "grab", "call": { "member": "manipulation.grab_item", "args": { "item_id": { "$ref": "item" } } },
+        } },
+    ]);
+    let workflow = parse(&value).unwrap();
+
+    let names = workflow.names_before_calls(&name("clearer"));
+
+    let before = |id: &str| -> BTreeSet<&str> {
+        names[&StepId::parse(id).unwrap()]
+            .iter()
+            .map(Name::as_str)
+            .collect()
+    };
+    assert_eq!(before("ready"), BTreeSet::new());
+    assert_eq!(before("scan"), BTreeSet::from(["ready"]));
+    assert_eq!(before("check"), BTreeSet::from(["ready", "found"]));
+    assert_eq!(before("left"), BTreeSet::from(["ready", "found"]));
+    assert_eq!(before("right"), BTreeSet::from(["ready", "found"]));
+    assert_eq!(
+        before("grab"),
+        BTreeSet::from(["ready", "found", "left_done", "item"])
+    );
+    assert_eq!(names.len(), 6);
+    assert!(workflow.names_before_calls(&name("nobody")).is_empty());
+}
+
+/// The trees of a role are its initialization then its lane, and the step of
+/// a role with an id is found in either; another role, an id of another role
+/// and a safe-state call give none.
+#[test]
+fn a_step_of_a_role_is_found_in_its_initialization_or_its_lane() {
+    let workflow = parse(&clear_table()).unwrap();
+    let clearer = name("clearer");
+    let step_id = |id: &str| StepId::parse(id).unwrap();
+
+    let roots: Vec<&str> = workflow
+        .trees_of(&clearer)
+        .map(|tree| tree.id.as_str())
+        .collect();
+    assert_eq!(roots, ["ready", "clear"]);
+    assert_eq!(workflow.trees_of(&name("nobody")).count(), 0);
+
+    for id in ["ready", "clear", "scan", "grab"] {
+        let step = workflow.step(&clearer, &step_id(id)).unwrap();
+        assert_eq!(step.id, step_id(id));
+        assert!(workflow.has_step(&clearer, &step_id(id)), "{id}");
+    }
+    let grab = workflow.step(&clearer, &step_id("grab")).unwrap();
+    assert!(
+        matches!(&grab.kind, StepKind::Call(call) if call.member.member.as_str() == "grab_item")
+    );
+    for (role, id) in [("clearer", "home"), ("clearer", "drop"), ("nobody", "scan")] {
+        assert!(
+            workflow.step(&name(role), &step_id(id)).is_none(),
+            "{role}.{id}"
+        );
+        assert!(!workflow.has_step(&name(role), &step_id(id)), "{role}.{id}");
+    }
+}
+
 #[test]
 fn ids_and_local_names_are_unique_per_role_and_apart_from_global_names() {
     refuses(
