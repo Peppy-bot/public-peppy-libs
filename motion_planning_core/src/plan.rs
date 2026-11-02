@@ -64,14 +64,16 @@
 //!
 //! The request's time limit bounds the plan as MoveIt's allowed planning time bounds a
 //! request: the goal sampler draws up to `goal_samples` configurations, ending early once
-//! the limit passes, OMPL plans in what remains of it, and its simplifier takes what
-//! remains after the plan, at most `SIMPLIFICATION_ITERATIONS` iterations, starting only
-//! before the limit. A planner that plans until its time ends, such as RRT*, leaves the
-//! simplifier none, and the plan answers the path it planned. A corner's repair runs only
-//! before the limit: a corner whose rounding fails once it has passed ends the plan with no
-//! path. The check of the rounded path runs to its end past the limit.
+//! the limit passes, OMPL makes the request's attempts in what remains of it, each under
+//! all of it, and its simplifier takes what remains after the attempts, at most
+//! `SIMPLIFICATION_ITERATIONS` iterations, starting only before the limit. A planner that
+//! plans until its time ends, such as RRT*, leaves the simplifier none, and the plan
+//! answers the path it planned. A corner's repair runs only before the limit: a corner
+//! whose rounding fails once it has passed ends the plan with no path. The check of the
+//! rounded path runs to its end past the limit.
 
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use control_core::path_timing::{MIN_JOINT_CHANGE_RAD, RoundedPath, distinct_joint_waypoints};
@@ -82,6 +84,7 @@ use crate::arm::Arm;
 use crate::clearance::{Contact, Surroundings};
 use crate::draws::mixed_seed;
 use crate::goal::{Goal, GoalSampler};
+use crate::stop::is_set;
 
 /// The iterations the simplification of a planned path takes at most.
 const SIMPLIFICATION_ITERATIONS: u32 = 1000;
@@ -149,8 +152,13 @@ pub struct PlanRequest<'a, const N: usize> {
     /// says.
     pub time_limit: Duration,
     pub max_iterations: NonZeroU64,
+    /// The attempts OMPL makes, as MoveIt's `num_planning_attempts`: each from its own
+    /// seed, under the whole time limit, their paths joined by OMPL's path hybridization.
+    pub attempts: NonZeroU32,
     pub seed: u32,
     pub min_clearance_m: f64,
+    /// A flag the caller sets to end the plan, at any part of it.
+    pub stop: Option<&'a AtomicBool>,
 }
 
 /// Why a plan gives no path.
@@ -174,6 +182,8 @@ pub enum PlanFailure {
     Unreachable(String),
     #[error("{0}")]
     NoPath(String),
+    #[error("the plan was stopped")]
+    Stopped,
     #[error(transparent)]
     Planner(#[from] PlanError),
 }
@@ -235,14 +245,17 @@ pub fn plan_arm_path<const N: usize>(
             time_limit: remaining,
             iterations: request.max_iterations,
             seed: mixed_seed(request.seed, scene.stamp),
-            attempts: NonZeroU32::MIN,
+            attempts: request.attempts,
             simplification: NonZeroU32::new(SIMPLIFICATION_ITERATIONS),
             simplification_time: Duration::ZERO,
             projection: None,
-            stop: None,
+            stop: request.stop,
         },
         &checks,
     )?;
+    if is_set(request.stop) {
+        return Err(PlanFailure::Stopped);
+    }
     let (Some(planned), Some(simplification)) = (answer.path, answer.simplified) else {
         return Err(PlanFailure::NoPath(format!(
             "{} found no path within {} iterations or {:?}, keeping {}",
@@ -253,19 +266,22 @@ pub fn plan_arm_path<const N: usize>(
         )));
     };
     let simplified = simplification.path;
-    answered(&checks, &simplified, deadline).or_else(|failure| match failure {
-        PlanFailure::NoPath(_) if planned != simplified => answered(&checks, &planned, deadline),
+    answered(&checks, &simplified, deadline, request.stop).or_else(|failure| match failure {
+        PlanFailure::NoPath(_) if planned != simplified => {
+            answered(&checks, &planned, deadline, request.stop)
+        }
         other => Err(other),
     })
 }
 
 /// The answer of a plan whose planner found `path`: its waypoints, the waypoints added
 /// near its corners among them, when the path the robot runs through them passes its
-/// check, or why it does not.
+/// check, or why it does not. A set `stop` ends the check of its corners.
 fn answered<const N: usize>(
     checks: &ArmChecks<N>,
     path: &[Vec<f64>],
     deadline: Instant,
+    stop: Option<&AtomicBool>,
 ) -> Result<Vec<[f64; N]>, PlanFailure> {
     let waypoints: Vec<[f64; N]> = path
         .iter()
@@ -276,7 +292,12 @@ fn answered<const N: usize>(
                 .expect("a state of the arm's space")
         })
         .collect();
-    let answer = rounded_clear(checks, &distinct_joint_waypoints(&waypoints), deadline)?;
+    let answer = rounded_clear(
+        checks,
+        &distinct_joint_waypoints(&waypoints),
+        deadline,
+        stop,
+    )?;
     match first_failing_run(checks, &answer) {
         None => Ok(answer),
         Some(k) => Err(PlanFailure::NoPath(format!(
@@ -325,7 +346,7 @@ fn start_inside_limits<const N: usize>(
 }
 
 /// The configurations that meet the goal and keep their clearance, drawn before
-/// `deadline`, or why there are none.
+/// `deadline`, or why there are none; a set stop flag ends the plan.
 fn goal_configurations<const N: usize>(
     arm: &Arm<N>,
     checks: &ArmChecks<N>,
@@ -337,7 +358,11 @@ fn goal_configurations<const N: usize>(
         request.goal_samples.get(),
         u64::from(request.seed),
         deadline,
+        request.stop,
     );
+    if is_set(request.stop) {
+        return Err(PlanFailure::Stopped);
+    }
     if sampled.is_empty() {
         return Err(PlanFailure::Unreachable(format!(
             "inverse kinematics found no configuration that meets the goal in {} samples or {:?}",
@@ -645,11 +670,12 @@ impl<const N: usize> Checks for ArmChecks<'_, N> {
 /// The planned waypoints, with waypoints added near each corner whose rounding, as
 /// execute_joint_path rounds it, does not keep its clearance, until each does; or why
 /// some corner cannot before `deadline`, or which planned waypoint after the start falls
-/// short of the plan's clearances.
+/// short of the plan's clearances. A set `stop` ends it before each walk of the path.
 fn rounded_clear<const N: usize>(
     checks: &ArmChecks<N>,
     planned: &[[f64; N]],
     deadline: Instant,
+    stop: Option<&AtomicBool>,
 ) -> Result<Vec<[f64; N]>, PlanFailure> {
     // Each planned waypoint after the start keeps the plan's clearances, so the start rule
     // holds at no corner, and each arc keeps the plan's clearances.
@@ -673,6 +699,9 @@ fn rounded_clear<const N: usize>(
                 Some((_, [into, out])) => vec![(into, k), (at, k), (out, k)],
             })
             .unzip();
+        if is_set(stop) {
+            return Err(PlanFailure::Stopped);
+        }
         let path = RoundedPath::joint_path(&vectors(&waypoints));
         let Some(corner) = first_failing_probe(checks, &path, &corner_of, planned) else {
             return Ok(waypoints);
@@ -971,6 +1000,29 @@ mod tests {
         }
     }
 
+    // A set stop flag ends the check of a rounded path before its walk, and the same
+    // path with the flag clear passes.
+    #[test]
+    fn a_stop_ends_the_check_of_the_rounded_path() {
+        let geometry = two_links();
+        let arm = Arm::new(&geometry, None);
+        let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], &[]);
+        let scene = Scene {
+            map: &map,
+            field: &field,
+            stamp: 0,
+        };
+        let checks = ArmChecks::new(&arm, &scene, [0.0, 0.0], MIN_CLEARANCE_M);
+        let path = [[0.0, 0.0], [0.5, 0.5], [1.0, 0.0]];
+        let far = Instant::now() + Duration::from_secs(3600);
+        let (clear, set) = (AtomicBool::new(false), AtomicBool::new(true));
+        assert!(rounded_clear(&checks, &path, far, Some(&clear)).is_ok());
+        assert_eq!(
+            rounded_clear(&checks, &path, far, Some(&set)),
+            Err(PlanFailure::Stopped)
+        );
+    }
+
     /// Whether the plain walk, a run from a state that is not the start, of the sliding
     /// box from x = -0.3 to 0.3 passes, at `gap` meters from a wall of voxels beside it or,
     /// with no wall, between a pair of its own body `apart` meters apart.
@@ -1215,7 +1267,14 @@ mod tests {
     struct At<const N: usize>([f64; N]);
 
     impl<const N: usize> GoalSampler<N> for At<N> {
-        fn sample(&self, _: &Goal, _: usize, _: u64, _: Instant) -> Vec<[f64; N]> {
+        fn sample(
+            &self,
+            _: &Goal,
+            _: usize,
+            _: u64,
+            _: Instant,
+            _: Option<&AtomicBool>,
+        ) -> Vec<[f64; N]> {
             vec![self.0]
         }
     }
@@ -1288,8 +1347,10 @@ mod tests {
                 planner: Planner::RrtConnect,
                 time_limit: Duration::from_secs(600),
                 max_iterations: NonZeroU64::new(20_000).expect("nonzero"),
+                attempts: NonZeroU32::MIN,
                 seed: 7,
                 min_clearance_m: MIN_CLEARANCE_M,
+                stop: None,
             },
         );
         assert_eq!(
@@ -1339,7 +1400,7 @@ mod tests {
             "the corner's rounding clears the block: nothing to repair"
         );
         let deadline = Instant::now() + Duration::from_secs(3600);
-        let answer = match answered(&checks, &vectors(&planned), deadline) {
+        let answer = match answered(&checks, &vectors(&planned), deadline, None) {
             Ok(answer) => answer,
             Err(failure) => panic!("the corner is not repaired: {failure}"),
         };

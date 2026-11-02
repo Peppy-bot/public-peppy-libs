@@ -112,7 +112,13 @@ fn the_generic_sampler_reaches_each_branch_srs_model_finds() {
         )
         .expect("a valid goal");
         let reached: BTreeSet<(bool, bool)> = sampler
-            .sample(&goal, GOAL_SAMPLES, pose_index as u64, an_hour_from_now())
+            .sample(
+                &goal,
+                GOAL_SAMPLES,
+                pose_index as u64,
+                an_hour_from_now(),
+                None,
+            )
             .iter()
             .map(branch)
             .collect();
@@ -189,8 +195,13 @@ fn the_sampler_reaches_the_poses_of_links_and_carried_parts() {
                 }],
             )
             .expect("a valid goal");
-            let reached =
-                sampler.sample(&goal, LINK_SAMPLES, pose_index as u64, an_hour_from_now());
+            let reached = sampler.sample(
+                &goal,
+                LINK_SAMPLES,
+                pose_index as u64,
+                an_hour_from_now(),
+                None,
+            );
             assert!(
                 !reached.is_empty(),
                 "no configuration brings {frame:?} to its pose at {q:?}"

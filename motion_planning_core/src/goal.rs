@@ -1,6 +1,7 @@
 //! A goal: the constraints a path's last waypoint meets, and the samplers that find
 //! configurations meeting them.
 
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use chain_kinematics::{
@@ -12,6 +13,7 @@ use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3, Vector6};
 
 use crate::arm::frame_on_segment;
 use crate::draws::Draws;
+use crate::stop::is_set;
 
 /// Two goal configurations closer than this in every joint, in radians or meters, are
 /// one: the sampler keeps the first.
@@ -286,16 +288,24 @@ fn frame_pose<const N: usize>(chain: &Chain<N>, q: &[f64; N], frame: Frame) -> I
 /// What finds configurations that meet a goal.
 pub trait GoalSampler<const N: usize>: Sync {
     /// Up to `count` configurations of the arm, inside its joint limits, that meet
-    /// `goal`, each drawn from `seed`, the ones drawn before `deadline`.
-    fn sample(&self, goal: &Goal, count: usize, seed: u64, deadline: Instant) -> Vec<[f64; N]>;
+    /// `goal`, each drawn from `seed`, the ones drawn before `deadline` and before `stop`,
+    /// if any, is set.
+    fn sample(
+        &self,
+        goal: &Goal,
+        count: usize,
+        seed: u64,
+        deadline: Instant,
+        stop: Option<&AtomicBool>,
+    ) -> Vec<[f64; N]>;
 }
 
 /// The goal sampler of any chain: inverse kinematics descends from each of `count`
 /// configurations drawn inside the joint limits, the joints a goal names drawn inside
 /// their targets, toward a pose of the goal's frame drawn within its position and
-/// orientation tolerances, until the deadline passes. The chain's own solver reaches for
-/// its grasp point, and a damped least-squares descent on the frame's Jacobian for a
-/// link.
+/// orientation tolerances, until the deadline passes or the stop flag is set. The chain's
+/// own solver reaches for its grasp point, and a damped least-squares descent on the
+/// frame's Jacobian for a link.
 pub struct IkGoalSampler<const N: usize> {
     chain: Chain<N>,
 }
@@ -365,7 +375,14 @@ fn descend_to<const N: usize>(
 }
 
 impl<const N: usize> GoalSampler<N> for IkGoalSampler<N> {
-    fn sample(&self, goal: &Goal, count: usize, seed: u64, deadline: Instant) -> Vec<[f64; N]> {
+    fn sample(
+        &self,
+        goal: &Goal,
+        count: usize,
+        seed: u64,
+        deadline: Instant,
+        stop: Option<&AtomicBool>,
+    ) -> Vec<[f64; N]> {
         let mut draws = Draws::new(seed);
         let limits = self.chain.limits();
         // The frame inverse kinematics reaches for: the one the goal's position and
@@ -383,7 +400,7 @@ impl<const N: usize> GoalSampler<N> for IkGoalSampler<N> {
         });
         let mut kept: Vec<[f64; N]> = Vec::new();
         for _ in 0..count {
-            if Instant::now() >= deadline {
+            if Instant::now() >= deadline || is_set(stop) {
                 break;
             }
             let mut start: [f64; N] =

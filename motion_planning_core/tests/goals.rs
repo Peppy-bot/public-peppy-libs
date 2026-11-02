@@ -3,6 +3,7 @@
 
 mod common;
 
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use hegel::TestCase;
@@ -167,10 +168,10 @@ fn malformed_goals_are_refused() {
     );
 }
 
-// The sampler draws its count while its deadline lies ahead, and nothing once it has
-// passed.
+// The sampler draws its count while its deadline lies ahead and its stop flag is clear,
+// and nothing once the deadline has passed or the flag is set.
 #[test]
-fn the_sampler_draws_until_its_deadline() {
+fn the_sampler_draws_until_its_deadline_or_its_stop() {
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = Goal::new(
         JOINTS,
@@ -184,8 +185,24 @@ fn the_sampler_draws_until_its_deadline() {
         Vec::new(),
     )
     .expect("a valid goal");
-    assert_eq!(sampler.sample(&goal, 8, 1, an_hour_from_now()).len(), 8);
-    assert!(sampler.sample(&goal, 8, 1, Instant::now()).is_empty());
+    let clear = AtomicBool::new(false);
+    let set = AtomicBool::new(true);
+    assert_eq!(
+        sampler.sample(&goal, 8, 1, an_hour_from_now(), None).len(),
+        8
+    );
+    assert_eq!(
+        sampler
+            .sample(&goal, 8, 1, an_hour_from_now(), Some(&clear))
+            .len(),
+        8
+    );
+    assert!(sampler.sample(&goal, 8, 1, Instant::now(), None).is_empty());
+    assert!(
+        sampler
+            .sample(&goal, 8, 1, an_hour_from_now(), Some(&set))
+            .is_empty()
+    );
 }
 
 // A goal on a finger, in the frame its rider gives, holds where the arm's clearance

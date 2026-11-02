@@ -4,7 +4,7 @@
 //! are the ones the test plans.
 #![allow(dead_code)]
 
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::Path;
 use std::time::Duration;
 
@@ -152,8 +152,10 @@ pub fn plan_scene<O>(
             planner: Planner::RrtConnect,
             time_limit: Duration::from_secs_f64(scenes.time_limit),
             max_iterations: NonZeroU64::new(scenes.iterations).expect("nonzero"),
+            attempts: NonZeroU32::MIN,
             seed: scene.seed.get(),
             min_clearance_m: scenes.min_clearance,
+            stop: None,
         },
     );
     let failure = |name: &str| Ours::Failure {
@@ -167,7 +169,9 @@ pub fn plan_scene<O>(
         Err(PlanFailure::StartInCollision(_)) => failure("start_in_collision"),
         Err(PlanFailure::Unreachable(_)) => failure("unreachable"),
         Err(PlanFailure::NoPath(_)) => failure("no_path"),
-        Err(failure @ (PlanFailure::Request(_) | PlanFailure::Planner(_))) => {
+        Err(
+            failure @ (PlanFailure::Request(_) | PlanFailure::Planner(_) | PlanFailure::Stopped),
+        ) => {
             panic!("the scene's request fails: {failure}")
         }
     }

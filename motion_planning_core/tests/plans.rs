@@ -1,10 +1,13 @@
 //! Plans of OpenArm v2's left arm around boxes of voxels: the rounded path of every
 //! returned path keeps its clearance under a dense check, the same request on the same
-//! map gives the same path, and a goal or a world that admits no path says why.
+//! map gives the same path, of one attempt or several, a stop ends a plan, and a goal or
+//! a world that admits no path says why.
 
 mod common;
 
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
 use control_core::path_timing::RoundedPath;
@@ -81,8 +84,10 @@ fn request<'a>(
         planner,
         time_limit: Duration::from_secs(600),
         max_iterations: NonZeroU64::new(20_000).expect("nonzero"),
+        attempts: NonZeroU32::MIN,
         seed: 7,
         min_clearance_m: MIN_CLEARANCE_M,
+        stop: None,
     }
 }
 
@@ -259,7 +264,14 @@ fn a_plan_its_iterations_end_gives_no_path() {
 struct WaitingOut([f64; JOINTS]);
 
 impl GoalSampler<JOINTS> for WaitingOut {
-    fn sample(&self, _: &Goal, _: usize, _: u64, deadline: Instant) -> Vec<[f64; JOINTS]> {
+    fn sample(
+        &self,
+        _: &Goal,
+        _: usize,
+        _: u64,
+        deadline: Instant,
+        _: Option<&AtomicBool>,
+    ) -> Vec<[f64; JOINTS]> {
         std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
         vec![self.0]
     }
@@ -1038,5 +1050,185 @@ fn a_start_whose_finger_touches_the_map_is_refused_naming_it() {
     assert!(
         riders.iter().any(|rider| rider.link == link),
         "{link} is not a finger"
+    );
+}
+
+/// A goal sampler that sets `stop` once it has drawn, as a caller's stop that comes while
+/// the plan runs.
+struct StoppingOnceDrawn<'a> {
+    sampler: IkGoalSampler<JOINTS>,
+    stop: &'a AtomicBool,
+}
+
+impl GoalSampler<JOINTS> for StoppingOnceDrawn<'_> {
+    fn sample(
+        &self,
+        goal: &Goal,
+        count: usize,
+        seed: u64,
+        deadline: Instant,
+        stop: Option<&AtomicBool>,
+    ) -> Vec<[f64; JOINTS]> {
+        let drawn = self.sampler.sample(goal, count, seed, deadline, stop);
+        self.stop.store(true, Ordering::Relaxed);
+        drawn
+    }
+}
+
+// A stop set before the plan, or once its goal sampling has drawn, ends it: the plan
+// says it was stopped and gives no path. The same plan with its flag clear finds a path.
+#[test]
+fn a_stopped_plan_says_so() {
+    let (map, field) = world(&box_between());
+    let arm = Arm::new(&LEFT_ARM, None);
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goal = at(&HIGH);
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+    };
+    let clear = AtomicBool::new(false);
+    let unstopped = PlanRequest {
+        stop: Some(&clear),
+        ..request(Planner::RrtConnect, LOW, &goal, &sampler)
+    };
+    assert!(plan_arm_path(&arm, &scene, &unstopped).is_ok());
+    let set = AtomicBool::new(true);
+    let stopped = PlanRequest {
+        stop: Some(&set),
+        ..request(Planner::RrtConnect, LOW, &goal, &sampler)
+    };
+    assert_eq!(
+        plan_arm_path(&arm, &scene, &stopped),
+        Err(PlanFailure::Stopped)
+    );
+    let stop = AtomicBool::new(false);
+    let stopping = StoppingOnceDrawn {
+        sampler: IkGoalSampler::new(LEFT_ARM.chain().clone()),
+        stop: &stop,
+    };
+    let stopped_while_sampling = PlanRequest {
+        sampler: &stopping,
+        stop: Some(&stop),
+        ..request(Planner::RrtConnect, LOW, &goal, &sampler)
+    };
+    assert_eq!(
+        plan_arm_path(&arm, &scene, &stopped_while_sampling),
+        Err(PlanFailure::Stopped)
+    );
+}
+
+// A plan of three attempts around the box repeats path for path, reaches the goal, and
+// keeps the clearance on its rounded path.
+#[test]
+fn a_plan_of_several_attempts_repeats_and_keeps_its_clearance() {
+    let (map, field) = world(&box_between());
+    let arm = Arm::new(&LEFT_ARM, None);
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goal = at(&HIGH);
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+    };
+    let attempts = PlanRequest {
+        attempts: NonZeroU32::new(3).expect("nonzero"),
+        ..request(Planner::RrtConnect, LOW, &goal, &sampler)
+    };
+    let waypoints = plan_arm_path(&arm, &scene, &attempts).expect("a path");
+    assert_eq!(
+        plan_arm_path(&arm, &scene, &attempts).expect("a path"),
+        waypoints,
+        "three attempts repeat"
+    );
+    assert_eq!(waypoints.first(), Some(&LOW));
+    assert!(goal.met(LEFT_ARM.chain(), waypoints.last().expect("a waypoint")));
+    assert_dense_clear(&arm, &map, &field, &waypoints);
+}
+
+/// A self model that keeps its clearance only within 0.05 rad of `LOW` and of `HIGH` in
+/// each joint, so no motion between them passes. Asked on a thread other than the one
+/// that made it, an attempt's, it sets `stop`, and it counts the questions asked once
+/// `stop` is set.
+struct StopsTheAttempts<'a> {
+    made_on: ThreadId,
+    stop: &'a AtomicBool,
+    asked_once_stopped: AtomicUsize,
+}
+
+impl motion_planning_core::SelfModel<JOINTS> for StopsTheAttempts<'_> {
+    fn clearance(&self, q: &[f64; JOINTS]) -> f64 {
+        if std::thread::current().id() != self.made_on {
+            self.stop.store(true, Ordering::Relaxed);
+        }
+        if self.stop.load(Ordering::Relaxed) {
+            self.asked_once_stopped.fetch_add(1, Ordering::Relaxed);
+        }
+        let near = |at: &[f64; JOINTS]| (0..JOINTS).all(|i| (q[i] - at[i]).abs() <= 0.05);
+        if near(&LOW) || near(&HIGH) { 1.0 } else { -1.0 }
+    }
+
+    fn nearest_pair(&self, _: &[f64; JOINTS]) -> (String, String) {
+        ("a link".to_string(), "a wall of its own".to_string())
+    }
+}
+
+/// The plan from `LOW` to `HIGH` in `attempts` attempts of at most 2000 iterations each,
+/// of the arm checked against a [`StopsTheAttempts`] that sets `stop`; the plan's answer,
+/// and how many times the attempts asked the self model once the stop was set.
+fn plan_with_a_stopping_self_model(
+    attempts: u32,
+) -> (Result<Vec<[f64; JOINTS]>, PlanFailure>, usize) {
+    let (map, field) = world(&[]);
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goal = at(&HIGH);
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+    };
+    let stop = AtomicBool::new(false);
+    let model = StopsTheAttempts {
+        made_on: std::thread::current().id(),
+        stop: &stop,
+        asked_once_stopped: AtomicUsize::new(0),
+    };
+    let arm = Arm::new(&LEFT_ARM, Some(&model));
+    let answer = plan_arm_path(
+        &arm,
+        &scene,
+        &PlanRequest {
+            max_iterations: NonZeroU64::new(2000).expect("nonzero"),
+            attempts: NonZeroU32::new(attempts).expect("nonzero"),
+            stop: Some(&stop),
+            ..request(Planner::RrtConnect, LOW, &goal, &sampler)
+        },
+    );
+    (answer, model.asked_once_stopped.load(Ordering::Relaxed))
+}
+
+/// The questions the attempts of a plan may ask the self model once the stop is set,
+/// each before its next question whether to stop: far fewer than one attempt of 2000
+/// iterations asks.
+const ASKED_ONCE_STOPPED: usize = 200;
+
+// The caller's stop, set as an attempt of two first checks a state on its own thread,
+// ends a plan that finds no path at the attempts' next question whether to stop: the
+// plan says it was stopped, its attempts having asked the self model fewer than
+// `ASKED_ONCE_STOPPED` times since. A plan of one attempt plans on the caller's thread,
+// sets no stop, and its iteration bound ends it.
+#[test]
+fn a_stop_ends_the_attempts_at_their_next_question() {
+    let (answer, asked) = plan_with_a_stopping_self_model(2);
+    assert_eq!(answer, Err(PlanFailure::Stopped));
+    assert!(
+        asked < ASKED_ONCE_STOPPED,
+        "the attempts asked the self model {asked} times once stopped"
+    );
+    let (answer, _) = plan_with_a_stopping_self_model(1);
+    assert!(
+        matches!(answer, Err(PlanFailure::NoPath(_))),
+        "one attempt: {answer:?}"
     );
 }

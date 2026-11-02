@@ -18,6 +18,7 @@ mod clearance;
 mod draws;
 mod goal;
 mod plan;
+mod stop;
 
 pub use arm::{Arm, RiderOffTheArm, SelfModel};
 pub use clearance::{Contact, Surroundings};

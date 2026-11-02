@@ -41,8 +41,10 @@ let waypoints = plan_arm_path(
         planner: Planner::RrtConnect,
         time_limit: Duration::from_secs(1),
         max_iterations: NonZeroU64::new(20_000).unwrap(),
+        attempts: NonZeroU32::new(4).unwrap(),
         seed: 1,
         min_clearance_m: 0.02,
+        stop: Some(&stop),
     },
 )?;
 ```
@@ -153,19 +155,27 @@ of the forearm, of the wrist link, and of a part the hand carries.
 
 The request's time limit bounds the plan as MoveIt's allowed planning time bounds a
 request: the goal sampler draws up to `goal_samples` configurations, ending early once the
-limit passes, OMPL plans in what remains of it, and OMPL's simplifier takes what remains
-after the plan, at most 1000 iterations, starting only before the limit. A planner that
-plans until its time ends, such as RRT*, leaves the simplifier none, and the plan answers
-the path it planned. A corner's repair runs only before the limit, and a corner whose
-rounding fails once the limit has passed fails `NoPath`. The check of the rounded path
-runs to its end past the limit: on the 200 drawn scenes of the arm planning scenario of
-the ROS reference harness, in a container of 1.5 CPUs of an Intel Core Ultra 9 290HX, RRT*
-at a time limit of 1 s answers each of its paths unsimplified and ends within 60 ms past
-the limit at a clearance of 0 and of 0.02 m, and no corner's repair meets the limit. OMPL
-plans with the request's planner and iteration bound, seeded from the request's seed and
-the map's stamp, so the same request on the same map gives the same path when the plan
-ends before its time limit, for every planner but PRM and PRM*. OMPL's simplifier shortens
-the path.
+limit passes, OMPL makes the request's `attempts` in what remains of it, as MoveIt makes a
+request's `num_planning_attempts` (ompl_bridge's README, Attempts): each from its own
+seed, under the whole of that time and the whole iteration bound, their paths joined by
+OMPL's path hybridization, and OMPL's simplifier takes what remains after the attempts,
+at most 1000 iterations, starting only before the limit. A planner that plans until its
+time ends, such as RRT*, leaves the simplifier none, and the plan answers the path it
+planned. A corner's repair runs only before the limit, and a corner whose rounding fails
+once the limit has passed fails `NoPath`. The check of the rounded path runs to its end
+past the limit: on the 200 drawn scenes of the arm planning scenario of the ROS reference
+harness, in a container of 1.5 CPUs of an Intel Core Ultra 9 290HX, RRT* at a time limit
+of 1 s answers each of its paths unsimplified and ends within 60 ms past the limit at a
+clearance of 0 and of 0.02 m, and no corner's repair meets the limit. OMPL plans with the
+request's planner and iteration bound, seeded from the request's seed and the map's
+stamp, so the same request on the same map gives the same path when the plan ends before
+its time limit, for every planner but PRM and PRM*, with any number of attempts. OMPL's
+simplifier shortens the path.
+
+The caller's flag `stop` ends a plan at any part of it, and the plan fails `Stopped`:
+the goal sampler draws no further configuration, OMPL's planners and simplifier end at
+their next question whether to stop, and the check of the rounded path ends before its
+next walk of the path.
 
 The robot runs the path with its corners rounded as execute_joint_path rounds them
 (`RoundedPath::joint_path`). The planner walks each arc of the rounded path, from where
