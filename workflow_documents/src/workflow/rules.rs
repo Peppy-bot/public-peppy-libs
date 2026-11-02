@@ -47,8 +47,9 @@ pub(super) fn names_before_calls(
     let globals = Globals::of(workflow);
     let mut refusals = Vec::new();
     let mut walker = Walker::new(role, &globals, &mut refusals);
+    walker.names_before_calls = Some(BTreeMap::new());
     walker.walk_trees(workflow.initialization.get(role), &lane.tree);
-    walker.names_before_calls
+    walker.names_before_calls.unwrap_or_default()
 }
 
 fn roles_and_lanes(workflow: &Workflow, refusals: &mut Vec<Refusal>) {
@@ -424,8 +425,9 @@ struct Walker<'a> {
     ids: BTreeSet<StepId>,
     locals: BTreeSet<Name>,
     in_initialization: bool,
-    /// The names defined before each call on every path, by its step id.
-    names_before_calls: BTreeMap<StepId, BTreeSet<Name>>,
+    /// The names defined before each call on every path, by its step id,
+    /// when the walk records them ([`names_before_calls`]).
+    names_before_calls: Option<BTreeMap<StepId, BTreeSet<Name>>>,
 }
 
 impl<'a> Walker<'a> {
@@ -437,7 +439,7 @@ impl<'a> Walker<'a> {
             ids: BTreeSet::new(),
             locals: BTreeSet::new(),
             in_initialization: false,
-            names_before_calls: BTreeMap::new(),
+            names_before_calls: None,
         }
     }
 
@@ -559,8 +561,9 @@ impl<'a> Walker<'a> {
                     ));
                 }
                 self.args(&call.args, &defined, &at);
-                self.names_before_calls
-                    .insert(step.id.clone(), defined.clone());
+                if let Some(names) = &mut self.names_before_calls {
+                    names.insert(step.id.clone(), defined.clone());
+                }
                 let mut after = defined.clone();
                 if let Some(result) = &call.result {
                     self.local(result, &at);

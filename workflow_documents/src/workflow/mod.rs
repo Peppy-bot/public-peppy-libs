@@ -256,19 +256,32 @@ impl Workflow {
         &self.document
     }
 
+    /// The trees of the role `role`: its initialization, when it has one,
+    /// then the tree of its lane, when it has one.
+    pub fn trees_of(&self, role: &Name) -> impl Iterator<Item = &Step> {
+        self.initialization
+            .get(role)
+            .into_iter()
+            .chain(self.lanes.get(role).map(|lane| &lane.tree))
+    }
+
+    /// The step `id` of the role `role`, in its initialization or its lane.
+    pub fn step(&self, role: &Name, id: &StepId) -> Option<&Step> {
+        let mut found = None;
+        for tree in self.trees_of(role) {
+            tree.visit(&mut |step| {
+                if found.is_none() && step.id == *id {
+                    found = Some(step);
+                }
+            });
+        }
+        found
+    }
+
     /// Whether the role `role` has a step `id`, in its initialization or its
     /// lane.
     pub fn has_step(&self, role: &Name, id: &StepId) -> bool {
-        let mut found = false;
-        let trees = self
-            .initialization
-            .get(role)
-            .into_iter()
-            .chain(self.lanes.get(role).map(|lane| &lane.tree));
-        for tree in trees {
-            tree.visit(&mut |step| found |= step.id == *id);
-        }
-        found
+        self.step(role, id).is_some()
     }
 
     /// The names that each call of the role `role` may read as a result or
