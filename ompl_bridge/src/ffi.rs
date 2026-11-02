@@ -31,8 +31,14 @@ pub(crate) mod bridge {
         time_limit_s: f64,
         iterations: u64,
         seed: u32,
+        /// 1 or more; a request of several plans each on a thread of its own.
+        attempts: u32,
+        /// 1 or more: the attempts that plan at once, `PLANNING_THREADS`.
+        planning_threads: u32,
         /// 0 for no simplification.
         simplification_iterations: u32,
+        /// The simplification's time, from the end of the time limit.
+        simplification_time_s: f64,
         /// 0 for a plan without a constraint.
         codimension: u32,
         tolerance: f64,
@@ -57,6 +63,7 @@ pub(crate) mod bridge {
         TimeLimit,
         IterationBound,
         Failure,
+        Stopped,
     }
 
     struct PlanResult {
@@ -77,6 +84,7 @@ pub(crate) mod bridge {
         fn constraint_function(self: &Callbacks, state: &[f64], out: &mut [f64]);
         fn constraint_jacobian(self: &Callbacks, state: &[f64], out: &mut [f64]);
         fn failed(self: &Callbacks) -> bool;
+        fn stopped(self: &Callbacks) -> bool;
     }
 
     unsafe extern "C++" {

@@ -7,8 +7,10 @@ shortens the path. The crate builds OMPL 2.0.2, the release that the ROS referen
 image holds, from the source archive of its release tag (see "Building").
 
 - `plan` runs one `Request` and answers a `Plan`: the path when the planner found an
-  exact one, its simplification when the request asks for it, and what ended the
-  planner and the simplifier.
+  exact one, its simplification when the request asks for it, and what ended the planner
+  and the simplifier. A request of several attempts makes them `PLANNING_THREADS` at once
+  and joins their paths with OMPL's path hybridization, as MoveIt joins the attempts of a
+  request (see "Attempts").
 - `Planner` names the planners: RRTConnect, RRT, RRTstar, BiTRRT, KPIECE1, BKPIECE1,
   LBKPIECE1, EST, SBL, PRM and PRMstar, spelled as OMPL spells their classes.
 - `Checks` and `Constraint` are the caller's functions, called from OMPL.
@@ -51,8 +53,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             time_limit: Duration::from_secs(1),
             iterations: NonZeroU64::new(10_000).ok_or("a bound of 0 iterations")?,
             seed: NonZeroU32::MIN,
+            attempts: NonZeroU32::new(4).ok_or("no attempts")?,
             simplification: NonZeroU32::new(100),
+            simplification_time: Duration::from_millis(200),
             projection: None,
+            stop: None,
         },
         &Cube,
     )?;
@@ -64,20 +69,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Repeating a plan
 
-OMPL seeds each of its random number generators from one seed generator of the process.
-A plan reseeds it with the request's seed before it builds anything, and holds it until
-it ends, so its planner, samplers and simplifier take their seeds in the order of its
-own construction. One plan runs at a time in a process: a plan waits for another until
-its time limit, and `plan` refuses a call from a check or the constraint of a plan.
+OMPL seeds each of its random number generators from a seed generator, which the
+crate's patch of OMPL gives each thread of its own (`ompl::RNG::setThreadSeed`, see
+"Building"). Each attempt of a plan seeds the generator of its thread before it builds
+anything, attempt 0 from the request's seed and each other from a seed derived from it,
+so its planner, samplers and simplifier take their seeds in the order of its own
+construction, whatever runs on other threads. A plan of several attempts joins and
+simplifies their paths in a problem of its own on the thread that calls `plan`, seeded
+the same way from the seed of index `attempts`, one past its last attempt's. Plans run
+at once in a process. `plan` refuses a call from a check or the constraint of a plan: a
+plan there reseeds the generator of the thread that the other plan draws from.
 
-The planner ends when it returns, when it asks whether to stop once more after it has
-been told to go on as many times as the request's iteration bound, or at the time limit,
-whichever comes first, and `Plan::ended_by` says which. The questions of the thread that
-calls `plan` alone count toward the bound. The simplifier ends the same way under the
-simplification bound, and `Simplification::ended_by` says which. A plan that the time
-limit ends neither in its planner nor in its simplifier repeats, path for path and
-simplification for simplification, in the same process and in another, for every
-planner but PRM, with any number of goals.
+Each attempt's planner ends when it returns, when the caller's stop flag is set, when it
+asks whether to stop once more after it has been told to go on as many times as the
+request's iteration bound, or at the time limit, whichever comes first, and
+`Plan::ended_by` says which; of several attempts, it says the stop when the stop ended
+any, then the time limit, then the iteration bound, and that they returned when each did.
+The questions of the attempt's own thread alone count toward the bound. The simplifier
+ends the same way under the simplification bound and the simplification's time, and
+`Simplification::ended_by` says which. A plan that neither a time limit nor the caller's
+stop ends, in its planners or in its simplifier, repeats, path for path and
+simplification for simplification, in the same process and in another, for every planner
+but PRM, with any number of goals and of attempts.
 
 PRM and PRM* plan as OMPL's `PRM::solve` does, with five changes. Three make their
 roadmap depend on the plan's questions whether to stop and on nothing else. They take
@@ -95,13 +108,71 @@ never meet. The search thread's questions do not count toward the bound. PRM end
 first path that its search finds, and that path depends on when the search runs; whether
 PRM finds a path repeats, and so does PRM*'s path, the shortest in the finished roadmap.
 
+## Attempts
+
+`Request::attempts` is MoveIt's `num_planning_attempts`. One attempt plans on the thread
+that calls `plan`. Several plan as MoveIt's `ModelBasedPlanningContext::solve` plans them
+through OMPL's `ParallelPlan`, each on a thread of its own: `PLANNING_THREADS`, 4, at
+once, MoveIt's default `max_planning_threads`, and each further batch of as many once the
+one before it has ended, while the time limit lasts and the plan is not stopped. Each
+attempt poses the request's problem on its thread, checks its start and its goals, and
+plans under the whole time limit and the whole iteration bound. The plan joins the exact
+paths of two or more attempts with OMPL's `PathHybridization`, as `ParallelPlan` joins
+them: it records each in turn, joins it to each recorded before it where their states
+align by the motions that pass the motion check, and takes the shortest path through them
+all, the hybrid. It keeps the shortest of the attempts' paths and the hybrid, the first
+of the equally short in attempt order and the hybrid last, and simplifies it.
+
+The plan departs from MoveIt in seven ways, each a choice its caller sees:
+
+- MoveIt's attempts draw the seeds of their samplers from one seed generator of the
+  process, in the order their threads construct them, and its hybrid records each path
+  as the attempt that found it returns. Here each attempt draws from its own seed, and
+  the hybrid records the paths in attempt order once every attempt has ended, so a plan
+  of several attempts repeats.
+- OMPL joins two paths by a motion it checks from a state of the later path to one of
+  the earlier, and its hybrid may take that motion the other way. MoveIt keeps the
+  hybrid as OMPL joins it; here it stands only when its start passes the state check and
+  each of its motions the motion check, in its order. That check runs the motion check
+  once more for each motion of the hybrid.
+- The iteration bound counts the questions of each attempt's own thread. MoveIt's
+  iteration termination condition, when its planner configuration names one, counts the
+  questions of every attempt on one count.
+- MoveIt's simplification takes what is left of the request's allowed planning time once
+  the attempts have ended. Here it takes `Request::simplification_time`, counted from the
+  end of the time limit, whatever the attempts leave of the time limit.
+- A stopped plan makes no hybrid and no simplification. MoveIt's `terminate` ends the
+  planners, and its hybrid of the paths found by then runs to its end.
+- MoveIt's batches add their paths to one problem, and it takes a batch as solved when
+  that problem then holds an exact path (`ModelBasedPlanningContext::solve`, the
+  `result.val ... && r` of each batch). So a request of more attempts than one batch
+  fails unless its first batch finds an exact path. Here a plan answers a path when any
+  of its attempts finds one.
+- MoveIt's hybrid records every path its planners answer, the approximate ones among
+  them (`ParallelPlan::solveMore` records each solution of the problem once a planner's
+  `solve` answers one). Here only the exact paths of the attempts join the hybrid.
+
+## Stopping a plan
+
+`Request::stop` is the caller's flag that ends a plan. Once it is set, each planner and
+the simplifier end at their next question whether to stop, and the plan starts no further
+batch of attempts, no hybrid and no simplification. `Plan::ended_by` says `Stopped` when
+the stop ended a planner or kept a batch from starting; a stop once every planner has
+returned leaves it saying what ended them. `Simplification::ended_by` says `Stopped` when
+the stop ended the simplifier or kept it from starting, and a path whose simplification
+the stop kept from starting comes back unsimplified.
+
 ## The time limit
 
-`Request::time_limit` bounds `plan` from its call: its wait while another plan runs, its
-planner and its simplification, which starts only before the limit. The planner and the
-simplifier end at their first question whether to stop past the limit. What runs between
-two questions runs to its end, a call of the caller's functions among it, and so do the
-checks of the start and the goals and the simplifier's first pass: OMPL's simplifier runs
+`Request::time_limit` bounds the attempts from the call of `plan`, and
+`Request::simplification_time` the simplification after them, counted from the end of
+the time limit. The planners end at their first question whether to stop past the time
+limit, and no batch of attempts starts past it. The simplification starts only before
+the end of its own time, and the simplifier ends at its first question whether to stop
+past it. What runs between two questions runs to its end, a call of the caller's
+functions among it, and so do the checks of the start and the goals, the hybrid of the
+attempts' paths, with the motion checks that join the paths and those of the hybrid, as
+OMPL's `ParallelPlan` runs it, and the simplifier's first pass: OMPL's simplifier runs
 that pass to its end whatever its termination condition answers, and bounds it by counts
 of attempts, most of them the path's number of states. A plan of PRM or PRM* runs two
 more steps to their end whatever the limit. Before its first question, it takes every
@@ -120,8 +191,9 @@ state that fails the checks. It reports when its result may still touch an inval
 state. `Simplification::path` is its result when OMPL reports it valid and it is at most
 as long as the planned path, and the planned path otherwise. The simplifier counts its
 questions whether to stop toward the request's simplification bound, and stops at the
-bound once its first pass has ended. A simplification that the time limit ends before
-it starts gives the planned path, and `Simplification::ended_by` says `TimeLimit`.
+bound once its first pass has ended. A simplification that its time or the caller's stop
+ends before it starts gives the planned path, and `Simplification::ended_by` says
+`TimeLimit` or `Stopped`.
 
 ## Constrained plans
 
@@ -139,8 +211,9 @@ planner lies within the projection's tolerance of the constraint.
 `Checks::state` judges a state and `Checks::motion` the straight motion between two
 states, its end included: OMPL takes the motion's start as valid. When a motion is
 invalid it answers the fraction of the way along it to its last valid state. A plan calls
-both on the thread that calls `plan`, and shares them with the thread on which PRM and
-PRM* search their roadmap, so both traits are `Sync`.
+both on the thread that calls `plan`, and, when it makes several attempts, on the thread
+of each, and shares them with the threads on which PRM and PRM* search their roadmap, so
+both traits are `Sync`.
 
 Before the planner starts, the start passes the state check and lies on the constraint,
 or the plan answers `PlanError::InvalidStart`. The plan keeps the goals that pass, and
@@ -148,7 +221,8 @@ answers `PlanError::InvalidGoal` when none does. A start or a goal outside the s
 bounds is refused with `PlanError::Request`.
 
 An error or a panic in any of the caller's functions, in the error's message or in its
-drop, ends the plan with `PlanError::Check`, which says what the first one said. It
+drop, ends the plan with `PlanError::Check`, which says what the first one said, and
+ends every attempt of the plan at its next question whether to stop. It
 never reaches C++: the bridge answers OMPL a failed check, and the plan's termination
 condition ends the plan. The constraint's function and Jacobian find their output filled
 with NaN, so a value that a failed call leaves unwritten is NaN, which OMPL takes as off
@@ -158,7 +232,8 @@ caller's functions aborts the process.
 
 ## Parity with OMPL
 
-A plan of every planner but PRM that its iteration bound ends repeats, path for path,
+A plan of every planner but PRM that its iteration bound ends, and no stop, repeats, path
+for path,
 with any number of goals, and a plan of PRM repeats whether it finds a path (see
 "Repeating a plan"). `tests/ros_reference_planning.rs` gives the evidence that the plan
 is OMPL's: it plans every `planning` scenario of the [`ros_reference`](../ros_reference)
@@ -188,13 +263,22 @@ SE(3), SO(3), Klein bottle, Mobius strip, sphere and torus spaces. The Dubins,
 Reeds-Shepp, Owen, Vana, VanaOwen and Trochoid spaces and SE(2) stay, since OMPL's space
 information chooses its default motion validator among them.
 
+OMPL's sources are unmodified but for one patch, `patches/thread_seed.patch`, which the
+build applies to the extracted sources. It adds `ompl::RNG::setThreadSeed`, which gives
+the calling thread a seed generator of its own: every random number generator the
+thread constructs afterwards takes its seed from it, so each attempt of a plan seeds its
+planner and samplers from its own seed whatever the threads of the other attempts do. A
+hunk of the patch applies where its context and its removed lines stand in the file, line
+for line; a patch that does not apply stops the build and names the file and the hunk.
+
 The build downloads the archive from
 <https://github.com/ompl/ompl/archive/refs/tags/2.0.2.tar.gz> and checks it against its
 SHA-256 digest, `d867190a46a7f730923475a68af2e09fc9e796017a59be395a4bf3900d0c3ae4`. It
 stops on an archive of another digest, and names the expected digest and the actual one.
-It extracts the release's `LICENSE` and its `src/ompl` into its output directory with a
-marker of the digest, and a later build into that directory reuses the extraction and
-downloads nothing. In a peppy container build, which starts from an empty target
+It extracts the release's `LICENSE` and its `src/ompl` into its output directory,
+applies the patch, and writes a marker of the archive's digest and the patch's; a later
+build into that directory reuses the extraction and downloads nothing while the patch
+stays the same. In a peppy container build, which starts from an empty target
 directory each time, `PEPPY_DOWNLOAD_CACHE` names peppy's download cache: the build reads
 the archive from there, stored under its digest, when the file there has that digest, and
 otherwise downloads it and stores it there in place of the file, so the archive downloads
@@ -213,9 +297,9 @@ cargo fetch
 OMPL_SOURCE_TARBALL="$PWD/ompl-2.0.2.tar.gz" cargo build --offline
 ```
 
-OMPL is under its BSD license. A binary that links this crate links OMPL, and the
-license's second clause asks a binary distribution to reproduce OMPL's copyright notice,
-conditions and disclaimer. The build extracts the license to `ompl-2.0.2/LICENSE` in its
+OMPL is under its BSD license, which permits the patch's modification of its sources. A
+binary that links this crate links OMPL, and the license's second clause asks a binary
+distribution to reproduce OMPL's copyright notice, conditions and disclaimer. The build extracts the license to `ompl-2.0.2/LICENSE` in its
 output directory, `target/<profile>/build/ompl_bridge-<hash>/out/`, which cargo reports
 as the `out_dir` of ompl_bridge's `build-script-executed` message under
 `--message-format=json`: ship that file with the binary.

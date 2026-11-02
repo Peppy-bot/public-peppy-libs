@@ -235,8 +235,11 @@ pub fn plan_arm_path<const N: usize>(
             time_limit: remaining,
             iterations: request.max_iterations,
             seed: mixed_seed(request.seed, scene.stamp),
+            attempts: NonZeroU32::MIN,
             simplification: NonZeroU32::new(SIMPLIFICATION_ITERATIONS),
+            simplification_time: Duration::ZERO,
             projection: None,
+            stop: None,
         },
         &checks,
     )?;

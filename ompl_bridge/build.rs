@@ -3,11 +3,13 @@
 //! `OMPL_SOURCE_TARBALL` names, or the one in the download cache that
 //! `PEPPY_DOWNLOAD_CACHE` names, or else downloaded from GitHub and stored in that
 //! cache; each is checked against the archive's SHA-256 digest and extracted into
-//! `OUT_DIR`. OMPL needs Boost's headers, from the compiler's own include path, its
+//! `OUT_DIR`, where the crate's patch of OMPL's sources changes the extracted files.
+//! OMPL needs Boost's headers, from the compiler's own include path, its
 //! Boost.Serialization library, from the linker's, and Eigen 3's headers, from
 //! pkg-config.
 
 mod download_cache;
+mod source_patch;
 
 use std::env;
 use std::fmt;
@@ -35,6 +37,11 @@ const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the whole download may take, its connection included: the archive's
 /// 77,135,911 bytes within 600 s, 128.6 kB/s on average.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The crate's patch of OMPL's sources, applied to the extracted release, under the
+/// crate's directory: it gives a thread a seed generator of its own,
+/// `ompl::RNG::setThreadSeed`.
+const OMPL_PATCH: &str = "patches/thread_seed.patch";
 
 /// The environment variable that names a local copy of the source archive, read in
 /// place of the download.
@@ -216,19 +223,27 @@ fn archive_url() -> String {
     )
 }
 
-/// The release's tree in `out`, which holds its `LICENSE` and its `src/ompl`. The build
-/// extracts it from the source archive, and reuses an extraction whose marker holds the
-/// archive's digest. It checks a local copy that `OMPL_SOURCE_TARBALL` names on each
-/// run, and reads the download cache or downloads the archive only to extract it.
+/// The release's tree in `out`, which holds its `LICENSE` and its `src/ompl`, as the
+/// crate's patch changes them. The build extracts it from the source archive and patches
+/// it, and reuses an extraction whose marker holds the archive's digest and the patch's.
+/// It checks a local copy that `OMPL_SOURCE_TARBALL` names on each run, and reads the
+/// download cache or downloads the archive only to extract it.
 fn extracted_release(out: &Path) -> PathBuf {
     println!("cargo:rerun-if-env-changed={ARCHIVE_VARIABLE}");
     println!("cargo:rerun-if-env-changed={DOWNLOAD_CACHE_VARIABLE}");
+    println!("cargo:rerun-if-changed={OMPL_PATCH}");
+    let patch = fs::read_to_string(OMPL_PATCH)
+        .unwrap_or_else(|error| panic!("the crate's {OMPL_PATCH} cannot be read: {error}"));
     let local_archive =
         env::var_os(ARCHIVE_VARIABLE).map(|path| read_local_archive(Path::new(&path)));
     let root = format!("ompl-{}", ompl_release());
     let release = out.join(&root);
     let marker = out.join(format!("{root}.sha256"));
-    if fs::read_to_string(&marker).is_ok_and(|digest| digest == OMPL_ARCHIVE_SHA256) {
+    let digests = format!(
+        "{OMPL_ARCHIVE_SHA256} {}",
+        download_cache::sha256_hex(patch.as_bytes())
+    );
+    if fs::read_to_string(&marker).is_ok_and(|marked| marked == digests) {
         return release;
     }
     let archive = local_archive.unwrap_or_else(cached_or_downloaded_archive);
@@ -236,7 +251,14 @@ fn extracted_release(out: &Path) -> PathBuf {
         fs::remove_dir_all(&release).expect("the removal of an earlier extraction");
     }
     extract(&archive, &root, out);
-    fs::write(&marker, OMPL_ARCHIVE_SHA256).expect("the extraction's digest marker");
+    source_patch::apply(&release, &patch).unwrap_or_else(|error| {
+        panic!(
+            "ompl_bridge changes OMPL {}'s sources by {OMPL_PATCH}, which does not apply to \
+             the release's sources: {error}",
+            ompl_release()
+        )
+    });
+    fs::write(&marker, digests).expect("the extraction's digest marker");
     release
 }
 
