@@ -26,18 +26,15 @@
 //!   cameras: each one's name, the URDF link it is fixed to, and its pose in that link's
 //!   frame, the numbers the simulation places its rendered cameras by.
 //!
-//! Pure data: this crate carries no solver dependency. A consumer that wants a kinematic
-//! model builds it from these, e.g.
+//! - [`HardwareVersion::arm_model`] (feature `kinematics`) builds one side's arm as
+//!   `srs_model` models it from these: its chain from the base link, the elbow's lower
+//!   limit raised to its singularity floor, and its tool at the grasp point.
 //!
-//! ```text
-//! srs_model::Arm::from_urdf(v.urdf(), v.base_link(side))?
-//!     .with_lower_floor(v.elbow_joint_index(), v.elbow_singularity_floor_rad())
-//!     .with_tool_link(v.tcp_link(side))?
-//! ```
-//!
-//! so the description stays reusable by any consumer (a viz tool, a sim bridge) without
-//! pulling a solver in. A consumer that only needs dynamics (an arm driver's gravity
-//! feedforward) can skip the tool: it moves the end-effector frame, not the masses.
+//! Pure data by default: without the `kinematics` feature this crate carries no solver
+//! dependency, so the description stays reusable by any consumer (a viz tool, a sim
+//! bridge) without pulling a solver in. The model's tool moves its end-effector frame,
+//! not its masses, so a consumer that only needs dynamics, such as an arm driver's
+//! gravity feedforward, reads the same masses from it.
 
 use std::fmt;
 use std::str::FromStr;
@@ -418,6 +415,19 @@ const V2_MESHES: &[(&str, &[u8])] = &[
     ),
 ];
 
+#[cfg(feature = "kinematics")]
+impl HardwareVersion {
+    /// The arm on `side` as `srs_model` models it: its chain from
+    /// [`Self::base_link`], the lower limit of the joint at [`Self::elbow_joint_index`]
+    /// raised to [`Self::elbow_singularity_floor_rad`], and its tool at
+    /// [`Self::tcp_link`], the grasp point.
+    pub fn arm_model(self, side: Side) -> Result<srs_model::Arm, srs_model::SrsError> {
+        srs_model::Arm::from_urdf(self.urdf(), self.base_link(side))?
+            .with_lower_floor(self.elbow_joint_index(), self.elbow_singularity_floor_rad())
+            .with_tool_link(self.tcp_link(side))
+    }
+}
+
 #[cfg(feature = "meshes")]
 impl HardwareVersion {
     /// The embedded collision meshes for this generation.
@@ -555,6 +565,7 @@ mod tests {
 
     /// The hull's extents in the pedestal link's frame under that placement:
     /// the camera reaches 63 mm above the torso mesh, whose own top is 0.773.
+    #[cfg(feature = "meshes")]
     const HEAD_CAMERA_EXTENTS_M: [[f64; 3]; 2] =
         [[0.0230, -0.0564, 0.7220], [0.0895, 0.0738, 0.8364]];
 
@@ -830,6 +841,40 @@ mod tests {
                     v.elbow_singularity_floor_rad(),
                     "{v} {side:?}: elbow lower must be the singularity floor"
                 );
+            }
+        }
+    }
+
+    // Each arm's model keeps the joint limits the description gives, the elbow held off
+    // its singularity, and carries its tool at the grasp point the URDF fixes to the
+    // chain's tip.
+    #[cfg(feature = "kinematics")]
+    #[test]
+    fn each_arm_model_keeps_the_joint_limits_and_its_tool() {
+        for v in [HardwareVersion::V1, HardwareVersion::V2] {
+            for side in Side::BOTH {
+                let arm = v.arm_model(side).expect("the arm model");
+                assert_eq!(
+                    arm.limits().map(|l| [l.lo, l.hi]),
+                    v.joint_limits(side),
+                    "{v} {side:?}"
+                );
+                let tool = arm.tool();
+                let rotation = tool.rotation.to_rotation_matrix();
+                let (expected_translation, expected_rotation) = tcp_joint(v, side);
+                for i in 0..3 {
+                    assert!(
+                        (tool.translation.vector[i] - expected_translation[i]).abs() < 1e-12,
+                        "{v} {side:?}: the tool stands at {:?}",
+                        tool.translation.vector
+                    );
+                    for j in 0..3 {
+                        assert!(
+                            (rotation[(i, j)] - expected_rotation[i][j]).abs() < 1e-12,
+                            "{v} {side:?}: the tool turns as {rotation:?}"
+                        );
+                    }
+                }
             }
         }
     }
@@ -1134,13 +1179,7 @@ mod tests {
                 // tcp_joint itself asserts existence and fixity; the two sides must
                 // also mirror in y and agree elsewhere, like the arms they hang off.
                 let (t, _) = tcp_joint(v, side);
-                let (u, _) = tcp_joint(
-                    v,
-                    match side {
-                        Side::Left => Side::Right,
-                        Side::Right => Side::Left,
-                    },
-                );
+                let (u, _) = tcp_joint(v, side.other());
                 assert_eq!(t[0], u[0], "{v}: tcp x differs across sides");
                 assert_eq!(t[1], -u[1], "{v}: tcp y must mirror across sides");
                 assert_eq!(t[2], u[2], "{v}: tcp z differs across sides");
