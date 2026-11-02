@@ -173,6 +173,14 @@ where a hull is still a hair larger than the real part. Plain GJK reports zero o
 overlap and cannot tell separating from approaching, but EPA's signed depth can,
 so a separating step out of a torso overlap still reads as separating.
 
+## What a planner builds on
+
+A planner that moves one arm while the other holds where it stands reads
+`min_distance_of_arm(side, ...)`: `min_distance` over the checked pairs one of whose
+bodies rides the arm on `side`, its fingers included, the distance a motion of that arm
+changes. Every checked pair holds a body of an arm, so `min_distance` is the lesser of
+the two arms' own. It carries the arm's fingers with `fingers` (Construction, above).
+
 ## What the caller supplies
 
 | Supplied by the caller | Why it cannot be derived |

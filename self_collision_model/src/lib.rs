@@ -21,6 +21,8 @@
 //!   surface distance over the checked pairs, negative meaning penetration.
 //! - [`SelfCollisionModel::distance_gradient`] adds the analytic gradient of
 //!   that distance with respect to the joints, for a velocity-barrier caller.
+//! - [`SelfCollisionModel::min_distance_of_arm`] is that distance over the pairs
+//!   one arm's bodies ride, for a planner that moves that arm alone.
 //! - [`openarm`] builds OpenArm's model from `openarm_description`: both arms and
 //!   the torso decomposed into its clip regions, for every node that checks it.
 //! - [`SelfCollisionModel::fingers`] gives the fingers an arm's chain carries

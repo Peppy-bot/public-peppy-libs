@@ -667,16 +667,27 @@ impl SelfCollisionModel {
             .collect()
     }
 
-    /// The nearest checked pair at the given configurations: places the hulls by
+    /// The nearest checked pair at the given configurations, of the pairs one of
+    /// whose bodies rides the arm on `moving` when it names one: places the hulls by
     /// FK, then scans the pairs (broadphase-ordered) for the minimum signed
-    /// distance. The shared core of [`min_distance`](Self::min_distance) and
+    /// distance. The shared core of [`min_distance`](Self::min_distance),
+    /// [`min_distance_of_arm`](Self::min_distance_of_arm) and
     /// [`distance_gradient`](Self::distance_gradient).
     fn closest(
         &mut self,
         q_left: &JointVec,
         q_right: &JointVec,
+        moving: Option<Side>,
     ) -> Result<Closest, CollisionError> {
         self.place(q_left, q_right);
+        let rides = |body: usize| {
+            moving.is_none_or(|side| {
+                matches!(
+                    (self.bodies[body].placement, side),
+                    (Placement::Left(_), Side::Left) | (Placement::Right(_), Side::Right)
+                )
+            })
+        };
 
         // Broadphase: a pair's bounding-sphere gap is a lower bound on its true
         // distance. Scanned in ascending order of that bound, once it exceeds
@@ -691,6 +702,7 @@ impl SelfCollisionModel {
             .pairs
             .iter()
             .enumerate()
+            .filter(|(_, p)| rides(p.a) || rides(p.b))
             .map(|(i, p)| {
                 (
                     (centers[p.a] - centers[p.b]).norm()
@@ -753,8 +765,31 @@ impl SelfCollisionModel {
         q_left: &JointVec,
         q_right: &JointVec,
     ) -> Result<Proximity<'_>, CollisionError> {
+        self.proximity(q_left, q_right, None)
+    }
+
+    /// [`min_distance`](Self::min_distance) over the checked pairs one of whose
+    /// bodies rides the arm on `side`, its fingers included: the distance a motion of
+    /// that arm changes while the other arm holds where it stands.
+    pub fn min_distance_of_arm(
+        &mut self,
+        side: Side,
+        q_left: &JointVec,
+        q_right: &JointVec,
+    ) -> Result<Proximity<'_>, CollisionError> {
+        self.proximity(q_left, q_right, Some(side))
+    }
+
+    /// The nearest pair of the pairs [`closest`](Self::closest) scans, with its
+    /// witness points, at finite configurations.
+    fn proximity(
+        &mut self,
+        q_left: &JointVec,
+        q_right: &JointVec,
+        moving: Option<Side>,
+    ) -> Result<Proximity<'_>, CollisionError> {
         ensure_finite(q_left, q_right)?;
-        let c = self.closest(q_left, q_right)?;
+        let c = self.closest(q_left, q_right, moving)?;
         Ok(Proximity {
             distance: c.distance,
             link_a: &self.bodies[c.a].name,
@@ -778,7 +813,7 @@ impl SelfCollisionModel {
         q_right: &JointVec,
     ) -> Result<DistanceGradient<'_>, CollisionError> {
         ensure_finite(q_left, q_right)?;
-        let c = self.closest(q_left, q_right)?;
+        let c = self.closest(q_left, q_right, None)?;
         // GJK carries the separating direction explicitly (the witness difference
         // reverses sense with the sign of the distance); the +1/-1 signs below
         // sum the projected witness velocities to d(distance)/dq.

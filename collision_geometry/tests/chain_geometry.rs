@@ -288,6 +288,48 @@ fn each_piece_holds_its_collision_surface(tc: TestCase) {
     on_a_drawn_robot::<PieceHoldsSurface>(&tc);
 }
 
+/// A floor on a joint raises its lower limit as the chain's own floor does, and leaves
+/// every other limit and every link where it stands.
+#[hegel::test]
+fn a_floor_raises_one_lower_limit_alone(tc: TestCase) {
+    struct FloorRaisesOneLimit;
+    impl ChainProperty for FloorRaisesOneLimit {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let urdf = dressed_urdf::<N>(tc, robot);
+            let joint = tc.draw(gs::integers::<usize>().min_value(0).max_value(N - 1));
+            let limits = geometry_of::<N>(&urdf).chain().limits();
+            let floor = tc.draw(
+                gs::floats()
+                    .min_value(limits[joint].lo - 1.0)
+                    .max_value(limits[joint].hi + 1.0),
+            );
+            let floored = geometry_of::<N>(&urdf).with_lower_floor(joint, floor);
+            let names = driven_joints::<N>();
+            let joints: Vec<&str> = names.iter().map(String::as_str).collect();
+            let expected = Chain::<N>::from_urdf(
+                &urdf_rs::read_from_string(&urdf).expect("the written URDF reads"),
+                &spec(&joints),
+            )
+            .expect("a drawn robot is a valid chain")
+            .with_lower_floor(joint, floor)
+            .limits();
+            assert_eq!(floored.chain().limits(), expected);
+            assert!(
+                (0..N)
+                    .filter(|&i| i != joint)
+                    .all(|i| floored.chain().limits()[i] == limits[i]),
+                "a floor on joint {joint} moved another limit"
+            );
+            let q = tc.draw(configs(floored.chain().limits()));
+            let poses = |geometry: &ChainGeometry<N>| -> Vec<Isometry3<f64>> {
+                geometry.place(&q).links().map(|(_, pose)| *pose).collect()
+            };
+            assert_eq!(poses(&floored), poses(&geometry_of::<N>(&urdf)));
+        }
+    }
+    on_a_drawn_robot::<FloorRaisesOneLimit>(&tc);
+}
+
 /// The bounding sphere of each piece holds the piece wherever the chain stands.
 #[hegel::test]
 fn each_bounding_sphere_holds_its_piece(tc: TestCase) {

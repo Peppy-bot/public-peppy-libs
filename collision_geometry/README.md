@@ -71,7 +71,9 @@ faces, a `<cylinder>` the faces of a 64-sided prism whose faces touch it, and a
 `<sphere>` the faces of a polytope of 1024 points whose nearest face touches it, so
 each piece holds its primitive. Each element is moved by its `<origin>`. A
 `<capsule>`, and a primitive whose size is not positive and finite, is refused with an
-error naming its link.
+error naming its link. `ChainGeometry::with_lower_floor` raises a joint's lower limit as
+`Chain::with_lower_floor` does, so the chain a planner checks keeps the limits a robot's
+controller enforces.
 
 ## The body
 

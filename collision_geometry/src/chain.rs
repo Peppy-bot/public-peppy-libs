@@ -178,6 +178,16 @@ impl<const N: usize> ChainGeometry<N> {
         })
     }
 
+    /// The geometry with the lower limit of joint `i` raised to at least `floor`, as
+    /// [`Chain::with_lower_floor`] raises it: a control margin over the URDF's limit,
+    /// which every reader of the chain's limits then keeps.
+    pub fn with_lower_floor(self, i: usize, floor: f64) -> Self {
+        Self {
+            chain: self.chain.with_lower_floor(i, floor),
+            ..self
+        }
+    }
+
     pub fn chain(&self) -> &Chain<N> {
         &self.chain
     }

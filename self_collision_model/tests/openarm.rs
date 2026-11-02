@@ -254,3 +254,59 @@ fn a_part_the_model_holds_as_no_finger_of_the_arm_is_refused() {
         }
     );
 }
+
+// Every checked pair of OpenArm v2 holds a body of an arm, so the robot's least distance
+// is the lesser of its arms' own, each over the pairs one of whose bodies rides it, and
+// each arm's own pair holds a body of that arm. At each turn of the right arm at which a
+// pair of the right arm alone is the robot's nearest, the left arm's own distance lies
+// farther off.
+#[test]
+fn an_arms_distance_counts_the_pairs_it_rides() {
+    let version = HardwareVersion::V2;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("V2_arm_meshes");
+    version.write_meshes_to(&dir).expect("write the meshes");
+    let mut model =
+        openarm(version, dir.to_str().expect("a UTF-8 directory")).expect("the model builds");
+    // The left arm stands turned 0.05 rad at its second joint, between the right arm's
+    // turns, so the arms never stand as mirror images, whose distances tie.
+    let left = [0.0, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0];
+    // A body rides an arm when it carries the arm's name, its fixed base excepted.
+    let rides = |side: Side, link: &str| {
+        let name = match side {
+            Side::Left => "left",
+            Side::Right => "right",
+        };
+        link.starts_with(&format!("openarm_{name}_")) && link != version.base_link(side)
+    };
+    let mut right_nearest_turns = 0;
+    for turn in (-15..=15).map(|k| f64::from(k) * 0.1) {
+        let right = [0.0, turn, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let robot = model.min_distance(&left, &right).expect("a distance");
+        let (nearest, a, b) = (
+            robot.distance,
+            robot.link_a.to_string(),
+            robot.link_b.to_string(),
+        );
+        let of_left = model
+            .min_distance_of_arm(Side::Left, &left, &right)
+            .expect("a distance");
+        assert!(rides(Side::Left, of_left.link_a) || rides(Side::Left, of_left.link_b));
+        let of_left = of_left.distance;
+        let of_right = model
+            .min_distance_of_arm(Side::Right, &left, &right)
+            .expect("a distance");
+        assert!(rides(Side::Right, of_right.link_a) || rides(Side::Right, of_right.link_b));
+        assert_eq!(nearest, of_left.min(of_right.distance), "turn {turn}");
+        if !rides(Side::Left, &a) && !rides(Side::Left, &b) {
+            assert!(
+                of_left > nearest,
+                "turn {turn}: {of_left} against {nearest}"
+            );
+            right_nearest_turns += 1;
+        }
+    }
+    assert!(
+        right_nearest_turns > 0,
+        "no turn of the right arm whose pair is the robot's nearest"
+    );
+}
