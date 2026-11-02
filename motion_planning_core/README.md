@@ -18,6 +18,9 @@ sampler.
   checks the rounded path the robot runs
   (`control_core::path_timing::RoundedPath::joint_path`); `check_arm_path` checks a
   caller's path, a `CheckRequest`, with the same checks.
+- The map's intake of a depth frame: `DepthCamera` reads its points, `JointHistory`
+  gives the robot's joint positions at its stamp, and `insert_cut_out` inserts the
+  points with the robot there, a `RobotMask`, cut out.
 
 ## Quick start
 
@@ -49,6 +52,27 @@ let waypoints = plan_arm_path(
     },
 )?;
 ```
+
+## The map's intake
+
+A robot's node and a replay of its recorded frames build the map with the same calls:
+
+- `DepthCamera` holds the depth stream of a camera the robot carries: its depth optical
+  frame in the robot frame, the color optical frame's pose there composed with the depth
+  frame's offset in it (`DepthCamera::new`), its lens, depth model and meters per count.
+  `DepthCamera::points` reads a z16 frame's points in the depth optical frame, a sample
+  of 0 making none (`occupancy_map::depth_points`).
+- `JointHistory` keeps the robot's measured positions over a span longer than the
+  camera's delay, `N` values each, such as both arms' joints and the grippers' openings,
+  and reads them at any instant inside it, interpolated between the measurements around
+  it; a measurement no newer than the newest is dropped.
+- `RobotMask` is the robot at the frame's stamp grown by a padding: each chain at its
+  joint positions (`PosedChain`), the parts its links carry, such as a gripper's fingers
+  at the gripper's opening, and the body fixed around the chains, each piece grown as
+  `collision_geometry` grows it for MoveIt's distance rule. `insert_cut_out` inserts the
+  scan into the voxel map with the mask cut out (`occupancy_map::RobotCutout`), the
+  URDF root at the origin of the scan's frame: a point inside it marks nothing, and its
+  ray clears the space before it.
 
 ## A valid state
 

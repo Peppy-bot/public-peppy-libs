@@ -12,12 +12,17 @@
 //! - [`plan_arm_path`]: plans a [`PlanRequest`] on a [`Scene`], and checks the rounded
 //!   path the robot runs; [`check_arm_path`] checks a caller's path, a [`CheckRequest`],
 //!   with the same checks.
+//! - The map's intake of a depth frame: a [`DepthCamera`]'s points of the frame, the
+//!   robot's joint positions at the frame's stamp from a [`JointHistory`], and
+//!   [`insert_cut_out`], which inserts the points with the robot there, a [`RobotMask`]
+//!   of its [`PosedChain`]s and its body, cut out.
 #![forbid(unsafe_code)]
 
 mod arm;
 mod clearance;
 mod draws;
 mod goal;
+mod intake;
 mod plan;
 mod stop;
 
@@ -27,6 +32,7 @@ pub use goal::{
     Axis, Frame, Goal, GoalError, GoalSampler, IkGoalSampler, JointTarget, OrientationTarget,
     PositionTarget,
 };
+pub use intake::{DepthCamera, JointHistory, PosedChain, RobotMask, insert_cut_out};
 pub use plan::{
     CheckFailure, CheckRequest, MAX_STEP_M, PathCheck, PathFault, Place, PlanFailure, PlanRequest,
     Scene, StartFault, check_arm_path, plan_arm_path, start_inside_limits,
