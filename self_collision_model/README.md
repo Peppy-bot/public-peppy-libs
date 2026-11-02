@@ -104,12 +104,13 @@ URDF collision elements
   clip regions (supplied)       one fit per region's slice        (collision_geometry::fit, assemble)
   fixed children                their pieces join the parent body (assemble)
   gripper fingers               own bodies, placed per query      (assemble)
-  fixed bodies                  root-frame pieces
+  fixed bodies                  root-frame pieces                 (collision_geometry::fit)
 ```
 
 - A clip region is an axis-aligned box in the body's fit frame, its `[min, max]`
   corners, with infinite bounds for open sides. Adjacent regions should overlap by
-  a few millimeters.
+  a few millimeters. `Builder::regions` takes one list of regions for each body; a body
+  named twice is refused at build, as `collision_geometry`'s `BodyGeometry` refuses it.
 - A gripper finger, a collision-bearing link on a movable joint off a chain
   link, is fit as its own body and placed at the live opening that
   `set_gripper_openings` sets. The meshes orient the two travel extremes: the

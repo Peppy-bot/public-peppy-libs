@@ -14,13 +14,12 @@
 //! caller's job (a deployment band over the reported distance), not a margin the
 //! model papers over.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::nalgebra::{Isometry3, Point3, Unit, Vector3};
 use srs_model::{ARM_DOF, Arm, JointVec};
 
 use crate::assemble::fit_bodies;
-use collision_geometry::GeometryError;
 use collision_geometry::clip::ClipRegion;
 use collision_geometry::gjk::{self, Hull, Placed};
 use collision_geometry::urdf_collision::{JointKind, ParentJoint, UrdfCollisions, place_1dof};
@@ -254,8 +253,9 @@ pub struct Builder {
     left_base: String,
     right_base: String,
     exclude: Vec<PairSpec>,
-    /// The bounds of the clip regions of each body the caller decomposes.
-    supplied: HashMap<String, Vec<[[f64; 3]; 2]>>,
+    /// The bounds of the clip regions of each body the caller decomposes, in the order
+    /// the caller gives them.
+    supplied: Vec<(String, Vec<[[f64; 3]; 2]>)>,
 }
 
 impl Builder {
@@ -276,21 +276,22 @@ impl Builder {
     /// concave body (a torso) is bound as tightly as the links are, piece by piece.
     /// The regions must jointly cover the body's surfaces, checked at build; see
     /// [`ClipRegion`] for the overlap and bound-placement rules. Naming a body that
-    /// does not exist, or giving bounds that span no volume, errors at build.
+    /// does not exist, naming a body twice, or giving bounds that span no volume, errors
+    /// at build.
     pub fn regions(mut self, body: &str, bounds: &[[[f64; 3]; 2]]) -> Self {
-        self.supplied.insert(body.to_string(), bounds.to_vec());
+        self.supplied.push((body.to_string(), bounds.to_vec()));
         self
     }
 
     /// Fit the bodies (supplied regions override the auto-fit), derive the checked
     /// pairs from the structural rules, and apply the exclusions.
     pub fn build(self) -> Result<SelfCollisionModel, CollisionError> {
-        let supplied = self
+        let named: Vec<(&str, &[[[f64; 3]; 2]])> = self
             .supplied
             .iter()
-            .map(|(body, bounds)| Ok((body.clone(), ClipRegion::all_from_bounds(body, bounds)?)))
-            .collect::<Result<HashMap<_, _>, GeometryError>>()
-            .map_err(BuildError::Fit)?;
+            .map(|(body, bounds)| (body.as_str(), bounds.as_slice()))
+            .collect();
+        let supplied = ClipRegion::by_body(&named).map_err(BuildError::Fit)?;
         let mut model = SelfCollisionModel::assemble(
             &self.urdf,
             &self.meshes_dir,
@@ -359,7 +360,7 @@ impl SelfCollisionModel {
             left_base: left_base.to_string(),
             right_base: right_base.to_string(),
             exclude: Vec::new(),
-            supplied: HashMap::new(),
+            supplied: Vec::new(),
         }
     }
 
@@ -387,7 +388,7 @@ impl SelfCollisionModel {
         right_base: &str,
         pair_specs: &[PairSpec],
     ) -> Result<Self, BuildError> {
-        let mut model = Self::assemble(urdf, meshes_dir, left_base, right_base, &HashMap::new())?;
+        let mut model = Self::assemble(urdf, meshes_dir, left_base, right_base, &BTreeMap::new())?;
         model.set_pairs(pair_specs)?;
         Ok(model)
     }
@@ -399,7 +400,7 @@ impl SelfCollisionModel {
         meshes_dir: &str,
         left_base: &str,
         right_base: &str,
-        supplied: &HashMap<String, Vec<ClipRegion>>,
+        supplied: &BTreeMap<String, Vec<ClipRegion>>,
     ) -> Result<Self, BuildError> {
         if left_base == right_base {
             return Err(BuildError::IdenticalBases {
@@ -1029,6 +1030,7 @@ fn ensure_finite(q_left: &JointVec, q_right: &JointVec) -> Result<(), CollisionE
 mod tests {
     use super::*;
     use crate::pairs::PairSpec;
+    use collision_geometry::GeometryError;
 
     const URDF: &str = include_str!("../tests/fixtures/openarm_v10.urdf");
     const MESHES: &str = concat!(
@@ -1467,6 +1469,77 @@ mod tests {
             matches!(
                 &e,
                 CollisionError::Build(BuildError::UnknownSuppliedBody { .. })
+            ),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn rejects_supplied_regions_for_a_body_named_twice() {
+        let e =
+            SelfCollisionModel::builder(URDF, MESHES, "openarm_left_link0", "openarm_right_link0")
+                .regions("openarm_body_link0", &COVERING_REGIONS)
+                .regions("openarm_body_link0", &COVERING_REGIONS)
+                .build()
+                .err()
+                .expect("a body named twice must fail");
+        assert!(
+            matches!(
+                &e,
+                CollisionError::Build(BuildError::Fit(GeometryError::RegionsTwice { body }))
+                    if body == "openarm_body_link0"
+            ),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_collision_link_on_a_movable_joint_off_the_body() {
+        let flap = r#"<link name="flap">
+              <collision><geometry><box size="0.01 0.01 0.01"/></geometry></collision>
+            </link>
+            <joint name="flap_joint" type="revolute">
+              <parent link="openarm_body_link0"/><child link="flap"/><axis xyz="0 0 1"/>
+              <limit lower="-1" upper="1" effort="1" velocity="1"/>
+            </joint>
+          </robot>"#;
+        let urdf = URDF.replacen("</robot>", flap, 1);
+        let e =
+            SelfCollisionModel::builder(&urdf, MESHES, "openarm_left_link0", "openarm_right_link0")
+                .build()
+                .err()
+                .expect("a link no chain carries on a movable joint must fail");
+        assert!(
+            matches!(
+                &e,
+                CollisionError::Build(BuildError::Geometry(reason))
+                    if reason.starts_with(
+                        "collision link 'flap' is neither a chain link, an attached child, nor world-fixed: "
+                    )
+            ),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_world_fixed_link_whose_fit_fails_answers_the_fit() {
+        let plate = r#"<link name="plate">
+              <collision><geometry><mesh filename="package://none/no_such_mesh.stl"/></geometry></collision>
+            </link>
+            <joint name="plate_joint" type="fixed">
+              <parent link="openarm_body_link0"/><child link="plate"/>
+            </joint>
+          </robot>"#;
+        let urdf = URDF.replacen("</robot>", plate, 1);
+        let e =
+            SelfCollisionModel::builder(&urdf, MESHES, "openarm_left_link0", "openarm_right_link0")
+                .build()
+                .err()
+                .expect("a world-fixed link with no mesh to read must fail");
+        assert!(
+            matches!(
+                &e,
+                CollisionError::Build(BuildError::Fit(GeometryError::Geometry(_)))
             ),
             "{e}"
         );

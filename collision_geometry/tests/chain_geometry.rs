@@ -1,10 +1,14 @@
 //! The collision pieces of a chain of any shape: which links the chain carries, where
 //! they stand, what each piece holds, and which points each grown link holds: every
 //! point within the offset of its scaled elements, and no point farther from all of
-//! them.
+//! them. The body fixed to the root around a chain: which links it holds, and which
+//! points it holds, by the chain's rule.
 
 use chain_kinematics::{Chain, ChainSpec, JointSelection};
-use collision_geometry::chain::{ChainGeometry, LinkGeometry, Padding, Piece, PlacedMask};
+use collision_geometry::GeometryError;
+use collision_geometry::chain::{
+    BodyGeometry, ChainGeometry, LinkGeometry, Padding, Piece, PlacedMask,
+};
 use collision_geometry::gjk::Hull;
 use collision_geometry::nalgebra::{Isometry3, Point3, Vector3};
 use collision_geometry::urdf_collision::{CollisionGeometry, UrdfCollisions};
@@ -12,13 +16,13 @@ use hegel::TestCase;
 use hegel::generators as gs;
 use kinematics_properties::{
     ChainProperty, TIP, TOLERANCE, angles, configs, joint_name, link_name, on_a_drawn_robot,
-    unit_vectors,
+    placements, unit_vectors,
 };
-use urdf_rs::Robot;
+use urdf_rs::{Axis, Joint, JointLimit, JointType, Link, LinkName, Robot, Vec3};
 
 mod common;
 use common::growth::grown_primitive_excess;
-use common::properties::{CUBE, MESHES_DIR, SPUN, dressed, paddings};
+use common::properties::{CUBE, MESHES_DIR, MOUNT, SPUN, dressed, paddings};
 
 /// The joints a dressed robot's chain drives: its drawn joints, from its mount to its
 /// tip, past the continuous joints of the mount and of [`SPUN`], which the chain holds
@@ -592,5 +596,334 @@ fn a_point_past_a_vertex_or_a_face_of_a_scaled_mesh_is_inside_it_to_the_offset()
         !one_link_holds(&grown, &point),
         "{point} lies 1.1 offsets from the scaled piece's nearest face, padding \
          {padding:?}, and inside the grown link"
+    );
+}
+
+/// The root a body test hangs a dressed robot's mount from: it holds no collision element.
+const HANGER: &str = "hanger";
+
+/// The joint from [`HANGER`] to the mount.
+const HANG: &str = "hang_joint";
+
+/// `robot`, a dressed robot, with its mount hung from [`HANGER`] by [`HANG`], a joint of
+/// kind `kind` at `origin` that turns about its z axis where it moves.
+fn hung(robot: &Robot, kind: JointType, origin: urdf_rs::Pose) -> String {
+    let hanger = Link {
+        name: HANGER.to_owned(),
+        inertial: Default::default(),
+        visual: Vec::new(),
+        collision: Vec::new(),
+    };
+    let hang = Joint {
+        name: HANG.to_owned(),
+        joint_type: kind,
+        origin,
+        parent: LinkName {
+            link: HANGER.to_owned(),
+        },
+        child: LinkName {
+            link: MOUNT.to_owned(),
+        },
+        axis: Axis {
+            xyz: Vec3([0.0, 0.0, 1.0]),
+        },
+        limit: JointLimit {
+            lower: -1.0,
+            upper: 1.0,
+            effort: 1.0,
+            velocity: 1.0,
+            ..JointLimit::default()
+        },
+        calibration: None,
+        dynamics: None,
+        mimic: None,
+        safety_controller: None,
+    };
+    let robot = Robot {
+        links: robot.links.iter().cloned().chain([hanger]).collect(),
+        joints: robot.joints.iter().cloned().chain([hang]).collect(),
+        ..robot.clone()
+    };
+    urdf_rs::write_to_string(&robot).expect("a hung robot writes")
+}
+
+/// The body of a dressed robot hung by a fixed joint at a drawn placement holds the mount
+/// alone: not the empty hanger at the root, nor the stand fixed to `link_0` below the
+/// mount's continuous joint, nor any link a joint moves. Its grown mount answers for every
+/// point as the grown chain that a revolute joint at that placement carries the mount on
+/// answers at 0: a point beyond a drawn point of the surface of a scaled element of the
+/// mount, along a direction of the normal cone there, by up to one and a half times the
+/// offset, [`TOLERANCE`] or more off the grown element's surface, or on the segment from
+/// the element's center to that surface point, short of it by [`TOLERANCE`] of the
+/// segment or more.
+#[hegel::test]
+fn the_body_answers_for_a_point_as_a_chain_carrying_its_link(tc: TestCase) {
+    struct AnswersAsAChain;
+    impl ChainProperty for AnswersAsAChain {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let dressed = tc.draw(dressed(robot.clone(), N));
+            let origin = tc.draw(placements());
+            let body = BodyGeometry::from_urdf(
+                &hung(&dressed, JointType::Fixed, origin.clone()),
+                meshes_dir(),
+                &[],
+            )
+            .expect("a dressed body fits");
+            assert_eq!(body.link_names().collect::<Vec<_>>(), [MOUNT]);
+            let carrier = ChainGeometry::<1>::from_urdf(
+                &hung(&dressed, JointType::Revolute, origin),
+                meshes_dir(),
+                &ChainSpec {
+                    base_link: None,
+                    tip_link: MOUNT,
+                    joints: JointSelection::Named(&[HANG]),
+                },
+            )
+            .expect("a dressed mount on a joint fits");
+            let placed = carrier.place(&[0.0]);
+            let [(link, pose)] = <[_; 1]>::try_from(placed.links().collect::<Vec<_>>())
+                .expect("the chain carries the mount alone");
+            assert_eq!(link.name(), MOUNT);
+            let padding = tc.draw(paddings());
+            let piece = &link.pieces()[drawn_index(tc, link.pieces())];
+            let (surface, direction) = scaled_surface_point(tc, piece, padding.scale());
+            let local = if tc.draw(gs::booleans()) {
+                let out: f64 = tc.draw(gs::floats().min_value(0.0).max_value(1.5));
+                tc.assume((out - 1.0).abs() * padding.offset() >= TOLERANCE);
+                surface + direction * (padding.offset() * out)
+            } else {
+                let center = element_center(piece);
+                let along = tc.draw(gs::floats().min_value(0.0).max_value(1.0 - TOLERANCE));
+                center + (surface - center) * along
+            };
+            let point = pose * local;
+            let grown_body = body.mask(padding);
+            let grown_chain = carrier.mask(padding);
+            assert_eq!(
+                grown_body.placed().contains(&point),
+                grown_chain.at(&[0.0]).contains(&point),
+                "{point}, padding {padding:?}: the grown body answers on the left, the \
+                 grown chain on the right"
+            );
+        }
+    }
+    on_a_drawn_robot::<AnswersAsAChain>(&tc);
+}
+
+/// The overlap of the two clip regions that a test decomposes a body's link into, as the
+/// regions' rules ask of adjoining regions.
+const OVERLAP_M: f64 = 0.005;
+
+/// The mean of `points`.
+fn mean(points: &[&Point3<f64>]) -> Point3<f64> {
+    Point3::from(
+        points
+            .iter()
+            .fold(Vector3::zeros(), |sum, p| sum + p.coords)
+            / points.len() as f64,
+    )
+}
+
+/// A drawn point inside the convex hull of `surface`, off its boundary: a weighted mean of
+/// four of its points, moved [`TOLERANCE`] of the way toward the mean of all its points,
+/// which lies inside the hull.
+fn inside_surface(tc: &TestCase, surface: &[Point3<f64>]) -> Point3<f64> {
+    let weighted: Vec<(Point3<f64>, f64)> = (0..4)
+        .map(|_| {
+            let vertex = surface[drawn_index(tc, surface)];
+            (vertex, tc.draw(gs::floats().min_value(0.0).max_value(1.0)))
+        })
+        .collect();
+    let total: f64 = weighted.iter().map(|(_, weight)| weight).sum();
+    tc.assume(total > 0.0);
+    let drawn = Point3::from(
+        weighted
+            .iter()
+            .fold(Vector3::zeros(), |sum, (vertex, weight)| {
+                sum + vertex.coords * (weight / total)
+            }),
+    );
+    let middle = mean(&surface.iter().collect::<Vec<_>>());
+    drawn + (middle - drawn) * TOLERANCE
+}
+
+/// A body whose mount, hung by a fixed joint at a drawn placement, is decomposed into two
+/// clip regions in the frame of the root, split across a drawn axis in the middle half of
+/// the mount's surfaces and overlapping by [`OVERLAP_M`], holds a drawn point inside the
+/// hull of a surface of the mount, off its boundary, for every padding, which grows each
+/// region's piece about its center, and no point farther from the surfaces' middle than
+/// the pieces reach: a scaled piece lies within the scale times the surfaces' diameter of
+/// their middle, and its grown points within the offset more.
+#[hegel::test]
+fn a_body_decomposed_into_regions_holds_its_link_alone(tc: TestCase) {
+    struct Decomposed;
+    impl ChainProperty for Decomposed {
+        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
+            let dressed = tc.draw(dressed(robot.clone(), N));
+            let urdf = hung(&dressed, JointType::Fixed, tc.draw(placements()));
+            let surfaces = UrdfCollisions::from_urdf(&urdf)
+                .expect("a hung robot's collisions read")
+                .fixed_surfaces_in_root(MOUNT, meshes_dir())
+                .expect("the mount is fixed to the root");
+            let points: Vec<&Point3<f64>> = surfaces.iter().flatten().collect();
+            let axis = tc.draw(gs::integers::<usize>().min_value(0).max_value(2));
+            let (low, high) = points
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), p| {
+                    (low.min(p[axis]), high.max(p[axis]))
+                });
+            let split = low + (high - low) * tc.draw(gs::floats().min_value(0.25).max_value(0.75));
+            let (mut below, mut above) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            below[axis] = split + OVERLAP_M / 2.0;
+            above[axis] = split - OVERLAP_M / 2.0;
+            let regions = [[[f64::NEG_INFINITY; 3], below], [above, [f64::INFINITY; 3]]];
+            let body = BodyGeometry::from_urdf(&urdf, meshes_dir(), &[(MOUNT, &regions)])
+                .expect("a decomposed body fits");
+            assert_eq!(body.link_names().collect::<Vec<_>>(), [MOUNT]);
+
+            let padding = tc.draw(paddings());
+            let grown = body.mask(padding);
+            let placed = grown.placed();
+            let point = inside_surface(tc, &surfaces[drawn_index(tc, &surfaces)]);
+            assert!(
+                placed.contains(&point),
+                "{point} lies inside a surface of {MOUNT}, and outside its regions grown by \
+                 {padding:?}"
+            );
+            let middle = mean(&points);
+            let radius = points
+                .iter()
+                .map(|p| (*p - middle).norm())
+                .fold(0.0, f64::max);
+            let reach = radius * (1.0 + 2.0 * padding.scale()) + padding.offset() + 0.01;
+            let far = middle + tc.draw(unit_vectors()) * reach;
+            assert!(
+                !placed.contains(&far),
+                "{far} lies beyond the reach of the regions grown by {padding:?}, and inside \
+                 them"
+            );
+        }
+    }
+    on_a_drawn_robot::<Decomposed>(&tc);
+}
+
+/// A robot whose body is a box at the root, a cylinder on a link fixed at a turned origin
+/// beside it, and a cube mesh on a link fixed above it, whose arm and hand a revolute
+/// joint moves.
+const PLACED_BODY: &str = r#"<robot name="placed_body">
+    <link name="base">
+      <collision><geometry><box size="0.2 0.2 0.2"/></geometry></collision>
+    </link>
+    <joint name="plate_joint" type="fixed">
+      <parent link="base"/><child link="plate"/>
+      <origin xyz="0.5 0 0" rpy="0 0 1.5707963267948966"/>
+    </joint>
+    <link name="plate">
+      <collision>
+        <origin xyz="0 0.1 0"/>
+        <geometry><cylinder radius="0.05" length="0.2"/></geometry>
+      </collision>
+    </link>
+    <joint name="torso_joint" type="fixed">
+      <parent link="base"/><child link="torso"/><origin xyz="0 0 1"/>
+    </joint>
+    <link name="torso">
+      <collision>
+        <geometry><mesh filename="package://drawn/meshes/cube.stl" scale="0.4 0.4 0.4"/></geometry>
+      </collision>
+    </link>
+    <joint name="arm_joint" type="revolute">
+      <parent link="base"/><child link="arm"/><origin xyz="-0.5 0 0"/>
+      <axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/>
+    </joint>
+    <link name="arm">
+      <collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision>
+    </link>
+    <joint name="hand_joint" type="fixed">
+      <parent link="arm"/><child link="hand"/><origin xyz="0 0 0.3"/>
+    </joint>
+    <link name="hand">
+      <collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision>
+    </link>
+  </robot>"#;
+
+/// The clip regions that split [`PLACED_BODY`]'s torso, the cube from z = 0.8 m to 1.2 m
+/// in the root's frame, at z = 1 m, overlapping by [`OVERLAP_M`].
+const TORSO_HALVES: [[[f64; 3]; 2]; 2] = [
+    [
+        [f64::NEG_INFINITY; 3],
+        [f64::INFINITY, f64::INFINITY, 1.0 + OVERLAP_M / 2.0],
+    ],
+    [
+        [f64::NEG_INFINITY, f64::NEG_INFINITY, 1.0 - OVERLAP_M / 2.0],
+        [f64::INFINITY; 3],
+    ],
+];
+
+/// The body of [`PLACED_BODY`], its torso split into [`TORSO_HALVES`].
+fn placed_body() -> BodyGeometry {
+    BodyGeometry::from_urdf(PLACED_BODY, meshes_dir(), &[("torso", &TORSO_HALVES)])
+        .expect("the placed body fits")
+}
+
+/// The body holds the root's box, the plate's cylinder where its turned joint puts it,
+/// at x = 0.4 m along the root's z, and the torso's halves where the root's frame puts
+/// them, each to the offset of 3 cm and not 3.3 cm past it; it holds no point of the arm
+/// or the hand. Scaled by 1.5, the torso's upper half, from z = 0.9975 m to 1.2 m about
+/// its middle, reaches z = 1.2506 m.
+#[test]
+fn a_body_stands_where_its_fixed_joints_place_it() {
+    let body = placed_body();
+    let mut names: Vec<&str> = body.link_names().collect();
+    names.sort_unstable();
+    assert_eq!(names, ["base", "plate", "torso"]);
+    let offset = 0.03;
+    let grown = body.mask(Padding::new(1.0, offset).expect("a valid padding"));
+    let placed = grown.placed();
+    let within = 0.9 * offset;
+    let beyond = 1.1 * offset;
+    for (inside, outside) in [
+        ([0.1 + within, 0.0, 0.0], [0.1 + beyond, 0.0, 0.0]),
+        ([0.4, 0.05 + within, 0.0], [0.4, 0.05 + beyond, 0.0]),
+        ([0.4, 0.0, 0.1 + within], [0.4, 0.0, 0.1 + beyond]),
+        ([0.0, 0.0, 1.2 + within], [0.0, 0.0, 1.2 + beyond]),
+        ([0.2 + within, 0.0, 0.85], [0.2 + beyond, 0.0, 0.85]),
+    ] {
+        let (inside, outside) = (Point3::from(inside), Point3::from(outside));
+        assert!(placed.contains(&inside), "{inside} lies outside the body");
+        assert!(!placed.contains(&outside), "{outside} lies inside the body");
+    }
+    for moved in [[-0.5, 0.0, 0.0], [-0.5, 0.0, 0.3]] {
+        let point = Point3::from(moved);
+        assert!(
+            !placed.contains(&point),
+            "{point}, inside a link a joint moves, lies inside the body"
+        );
+    }
+    let scaled = body.mask(Padding::new(1.5, 0.0).expect("a valid padding"));
+    let placed = scaled.placed();
+    assert!(placed.contains(&Point3::new(0.0, 0.0, 1.245)));
+    assert!(!placed.contains(&Point3::new(0.0, 0.0, 1.256)));
+}
+
+/// Clip regions for a link a joint moves, for a link the robot does not have, or twice
+/// for one link of the body, are refused, naming the link.
+#[test]
+fn regions_off_the_body_or_given_twice_are_refused() {
+    for link in ["arm", "hand", "nowhere"] {
+        let refused = BodyGeometry::from_urdf(PLACED_BODY, meshes_dir(), &[(link, &TORSO_HALVES)]);
+        assert!(
+            matches!(&refused, Err(GeometryError::RegionsOffTheBody { body }) if body == link),
+            "regions for {link}: {refused:?}"
+        );
+    }
+    let refused = BodyGeometry::from_urdf(
+        PLACED_BODY,
+        meshes_dir(),
+        &[("torso", &TORSO_HALVES), ("torso", &TORSO_HALVES)],
+    );
+    assert!(
+        matches!(&refused, Err(GeometryError::RegionsTwice { body }) if body == "torso"),
+        "{refused:?}"
     );
 }

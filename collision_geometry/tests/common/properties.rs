@@ -22,7 +22,7 @@ pub const CUBE: &str = "cube.stl";
 const WEDGE: &str = "wedge.stl";
 
 /// The root of a dressed robot, below which a continuous joint turns `link_0`.
-const MOUNT: &str = "mount";
+pub const MOUNT: &str = "mount";
 
 /// A link of a dressed robot on a continuous joint of its chain that the chain does not
 /// drive, between a drawn link and the next.

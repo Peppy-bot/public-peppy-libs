@@ -249,9 +249,10 @@ fn mesh_wireframes(args: &Args) -> Result<Vec<serde_json::Value>, String> {
         if chain_links.contains(&name) || attached.contains(&name) {
             continue;
         }
-        out.push(wire_json(decimate(
-            &urdf.fixed_surfaces_in_root(&name, &args.meshes)?.concat(),
-        )));
+        let surfaces = urdf
+            .fixed_surfaces_in_root(&name, &args.meshes)
+            .map_err(|e| e.to_string())?;
+        out.push(wire_json(decimate(&surfaces.concat())));
     }
     for (base, q, opening) in [
         (&args.left_base, &args.left, args.left_gripper),

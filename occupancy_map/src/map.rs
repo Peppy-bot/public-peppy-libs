@@ -78,25 +78,26 @@ pub trait Cutout {
     fn contains(&self, point: [f64; 3]) -> bool;
 }
 
-/// The robot's body as a cutout: its chains, each grown by a padding and
-/// placed at the frame's joint positions by `collision_geometry` in the frame
-/// of the URDF root, and where that root stands in the cutout's frame.
+/// The robot's body as a cutout: its parts grown by a padding by
+/// `collision_geometry` where they stood when the frame was taken, in the
+/// frame of the URDF root, its chains at the frame's joint positions and the
+/// body fixed around them, and where that root stands in the cutout's frame.
 pub struct RobotCutout<'a> {
     frame: &'a Frame,
     /// The cutout's frame placed in the URDF root's: the root's pose,
     /// inverted.
     to_root: Pose,
-    chains: Vec<PlacedMask<'a>>,
+    parts: Vec<PlacedMask<'a>>,
 }
 
 impl<'a> RobotCutout<'a> {
-    /// The robot of placed chains `chains`, whose URDF root stands at `root`
-    /// in `frame`.
-    pub fn new(frame: &'a Frame, root: Pose, chains: Vec<PlacedMask<'a>>) -> Self {
+    /// The robot of grown parts `parts`, whose URDF root stands at `root` in
+    /// `frame`.
+    pub fn new(frame: &'a Frame, root: Pose, parts: Vec<PlacedMask<'a>>) -> Self {
         Self {
             frame,
             to_root: root.inverse(),
-            chains,
+            parts,
         }
     }
 }
@@ -108,7 +109,7 @@ impl Cutout for RobotCutout<'_> {
 
     fn contains(&self, point: [f64; 3]) -> bool {
         let in_root = Point3::from(self.to_root.apply(point));
-        self.chains.iter().any(|chain| chain.contains(&in_root))
+        self.parts.iter().any(|part| part.contains(&in_root))
     }
 }
 
@@ -134,7 +135,7 @@ pub enum Voxel {
 }
 
 /// A voxel map of what a sensor sees.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VoxelMap {
     frame: Frame,
     grid: Grid,
