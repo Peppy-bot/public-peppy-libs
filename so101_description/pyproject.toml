@@ -14,7 +14,7 @@ dependencies = ["control_core_py", "numpy>=1.26"]
 # the extra and the solver stack with it. A placo 0.x minor release can
 # change its QP and its API, so the extra stays inside the minor that the
 # solvers of the kinematics module are checked on.
-kinematics = ["placo>=0.10.1,<0.11"]
+kinematics = ["placo>=0.11.0,<0.12"]
 
 [tool.uv.sources]
 control_core_py = { path = "../control_core_py" }
