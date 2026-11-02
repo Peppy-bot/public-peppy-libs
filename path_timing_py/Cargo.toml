@@ -1,0 +1,20 @@
+[package]
+name = "path_timing_py"
+version = "0.1.0"
+edition = "2024"
+description = "Python bindings of control_core's path timing for a robot's backbone in Python: the joint trajectory of limb_motion's execute_joint_path, its corners rounded and its time-optimal timing under each joint's velocity and acceleration limits, played on the caller's clock."
+publish = false
+
+# A workspace root of its own, so cargo's search for one ends at this manifest
+# whatever sits above this repository, which is what lets a consumer pull the
+# package by git from any checkout layout.
+[workspace]
+
+# The extension module that Python imports as path_timing_py.
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The stable ABI of Python 3.12: one build loads on every Python from 3.12.
+pyo3 = { version = "0.30", features = ["abi3-py312"] }
+control_core = { path = "../control_core" }
