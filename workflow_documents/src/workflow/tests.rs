@@ -178,6 +178,47 @@ fn a_ref_reads_only_names_defined_before_it_on_every_path() {
     );
 }
 
+/// The names before a call are the results that the steps before it name on
+/// every path, in the initialization and in the lane, and the loop elements
+/// around it: not a result of one branch of an `if`, and not a result of a
+/// sibling in a parallel.
+#[test]
+fn the_names_before_a_call_are_the_results_named_before_it_on_every_path() {
+    let mut value = with("/initialization/clearer/call/as", json!("ready"));
+    value["actions"]["clearer"]["tree"]["body"]["sequence"] = json!([
+        { "id": "scan", "call": { "member": "perception.scan_items", "as": "found" } },
+        { "id": "maybe", "if": "found.mode == 'slow'", "then": { "id": "check", "call": { "member": "space.check_positions", "as": "near" } } },
+        { "id": "both", "policy": "all", "parallel": [
+            { "id": "left", "call": { "member": "postures.move_to_ready", "as": "left_done" } },
+            { "id": "right", "call": { "member": "postures.move_to_ready" } },
+        ] },
+        { "id": "each", "for_each": { "list": "found.item_ids", "as": "item" }, "max_items": 2, "body": {
+            "id": "grab", "call": { "member": "manipulation.grab_item", "args": { "item_id": { "$ref": "item" } } },
+        } },
+    ]);
+    let workflow = parse(&value).unwrap();
+
+    let names = workflow.names_before_calls(&name("clearer"));
+
+    let before = |id: &str| -> BTreeSet<&str> {
+        names[&StepId::parse(id).unwrap()]
+            .iter()
+            .map(Name::as_str)
+            .collect()
+    };
+    assert_eq!(before("ready"), BTreeSet::new());
+    assert_eq!(before("scan"), BTreeSet::from(["ready"]));
+    assert_eq!(before("check"), BTreeSet::from(["ready", "found"]));
+    assert_eq!(before("left"), BTreeSet::from(["ready", "found"]));
+    assert_eq!(before("right"), BTreeSet::from(["ready", "found"]));
+    assert_eq!(
+        before("grab"),
+        BTreeSet::from(["ready", "found", "left_done", "item"])
+    );
+    assert_eq!(names.len(), 6);
+    assert!(workflow.names_before_calls(&name("nobody")).is_empty());
+}
+
 #[test]
 fn ids_and_local_names_are_unique_per_role_and_apart_from_global_names() {
     refuses(

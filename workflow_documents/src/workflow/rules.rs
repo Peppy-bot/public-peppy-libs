@@ -23,24 +23,8 @@ pub(super) fn check(workflow: &Workflow) -> Vec<Refusal> {
     expressions_of_the_workflow(workflow, &globals, &mut refusals);
     let mut lanes_of_signals = SignalUse::default();
     for (role, lane) in &workflow.lanes {
-        let mut walker = Walker {
-            role,
-            globals: &globals,
-            refusals: &mut refusals,
-            ids: BTreeSet::new(),
-            locals: BTreeSet::new(),
-            in_initialization: false,
-        };
-        let defined = match workflow.initialization.get(role) {
-            Some(tree) => {
-                walker.in_initialization = true;
-                let defined = walker.walk(tree, BTreeSet::new(), false);
-                walker.in_initialization = false;
-                defined
-            }
-            None => BTreeSet::new(),
-        };
-        walker.walk(&lane.tree, defined, false);
+        let mut walker = Walker::new(role, &globals, &mut refusals);
+        walker.walk_trees(workflow.initialization.get(role), &lane.tree);
         lanes_of_signals.add_lane(role, &lane.tree);
         for call in &lane.safe_state {
             walker.id(&call.id);
@@ -49,6 +33,22 @@ pub(super) fn check(workflow: &Workflow) -> Vec<Refusal> {
     }
     lanes_of_signals.check(&mut refusals);
     refusals
+}
+
+/// The names that each call of `role` may read as a result or a loop element,
+/// by the id of its step (see [`Workflow::names_before_calls`]).
+pub(super) fn names_before_calls(
+    workflow: &Workflow,
+    role: &Name,
+) -> BTreeMap<StepId, BTreeSet<Name>> {
+    let Some(lane) = workflow.lanes.get(role) else {
+        return BTreeMap::new();
+    };
+    let globals = Globals::of(workflow);
+    let mut refusals = Vec::new();
+    let mut walker = Walker::new(role, &globals, &mut refusals);
+    walker.walk_trees(workflow.initialization.get(role), &lane.tree);
+    walker.names_before_calls
 }
 
 fn roles_and_lanes(workflow: &Workflow, refusals: &mut Vec<Refusal>) {
@@ -424,9 +424,38 @@ struct Walker<'a> {
     ids: BTreeSet<StepId>,
     locals: BTreeSet<Name>,
     in_initialization: bool,
+    /// The names defined before each call on every path, by its step id.
+    names_before_calls: BTreeMap<StepId, BTreeSet<Name>>,
 }
 
-impl Walker<'_> {
+impl<'a> Walker<'a> {
+    fn new(role: &'a Name, globals: &'a Globals, refusals: &'a mut Vec<Refusal>) -> Self {
+        Walker {
+            role,
+            globals,
+            refusals,
+            ids: BTreeSet::new(),
+            locals: BTreeSet::new(),
+            in_initialization: false,
+            names_before_calls: BTreeMap::new(),
+        }
+    }
+
+    /// Walks the initialization of the role, when it has one, then its lane
+    /// with the names that the initialization defines on every path.
+    fn walk_trees(&mut self, initialization: Option<&Step>, lane: &Step) {
+        let defined = match initialization {
+            Some(tree) => {
+                self.in_initialization = true;
+                let defined = self.walk(tree, BTreeSet::new(), false);
+                self.in_initialization = false;
+                defined
+            }
+            None => BTreeSet::new(),
+        };
+        self.walk(lane, defined, false);
+    }
+
     fn at(&self, id: &StepId) -> At {
         At::step(self.role, id)
     }
@@ -530,6 +559,8 @@ impl Walker<'_> {
                     ));
                 }
                 self.args(&call.args, &defined, &at);
+                self.names_before_calls
+                    .insert(step.id.clone(), defined.clone());
                 let mut after = defined.clone();
                 if let Some(result) = &call.result {
                     self.local(result, &at);

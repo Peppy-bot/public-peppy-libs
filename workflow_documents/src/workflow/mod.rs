@@ -271,6 +271,15 @@ impl Workflow {
         found
     }
 
+    /// The names that each call of the role `role` may read as a result or
+    /// a loop element, by the id of its step: the results that the steps
+    /// before it name on every path, in the initialization of the role and
+    /// in its lane, and the elements of the loops around it. A role without
+    /// a lane gives none.
+    pub fn names_before_calls(&self, role: &Name) -> BTreeMap<StepId, BTreeSet<Name>> {
+        rules::names_before_calls(self, role)
+    }
+
     pub fn digest(&self) -> Digest {
         self.document.digest()
     }

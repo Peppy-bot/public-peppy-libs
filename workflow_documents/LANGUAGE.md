@@ -109,8 +109,11 @@ named before it on every path, loop elements and parameters, never an optional f
   the locations of a world, and the director lists them before a run.
 - `repeat_until` and its `fail_when` read no result of the body.
 - Signals pass between the lanes of `actions`: an initialization emits and awaits none.
-- A lane commands only its role. A lane that calls a member that reaches for an item has a
-  `kind: "reach"` assumption whose check reads an observation of its role.
+- A lane commands only its role. A lane that calls a member that reaches for an item checks
+  first that the robot reaches: with a `kind: "reach"` assumption whose check reads an
+  observation of its role, or with a call of a member that checks reach, with `as` and a
+  `done_when` that reads its result, named before the reaching call on every path. The
+  second checks the position of the item that a perception call of the run gives.
 - No observation reads a member that moves the robot.
 - Each awaited signal has a `signal` step in another lane, and no waits hold each other: a
   wait reached on every path needs a signal that some lane emits before, or beside, the waits
