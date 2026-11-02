@@ -262,7 +262,7 @@ def test_the_jacobian_is_linear_in_the_step(kinematics):
 
 
 def test_the_jacobian_is_taken_at_the_tool_point(kinematics):
-    # The trap this closes: Pinocchio's world Jacobian refers the twist to the
+    # The trap this closes: placo's world Jacobian refers the twist to the
     # world origin, and its linear rows are not the tool's velocity. A pure
     # shoulder rotation moves the tool, so the linear part cannot vanish.
     import numpy as np

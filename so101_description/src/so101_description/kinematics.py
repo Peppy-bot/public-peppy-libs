@@ -205,7 +205,7 @@ class Kinematics:
         the arm and differencing forward kinematics does not have that
         property, because forward kinematics is not linear.
 
-        Local-world-aligned, not world: Pinocchio's world Jacobian gives the
+        Local-world-aligned, not world: placo's world Jacobian gives the
         twist of the body frame referred to the world origin, whose linear
         part is not the tool point's velocity. Against a finite difference the
         two disagree by tens of percent at every step size."""

@@ -28,8 +28,10 @@ const ROOT: &str = "";
 /// before it parses it. Refuses a key twice in one object, NaN, an infinity,
 /// and a number beyond 2^53 in either direction, each with its own [`Error`]
 /// naming the path of the value. Numbers come out as the canonical form holds
-/// them: a float that names an integer is that integer. JSON5 reads integers
-/// from -2^127 to 2^128 - 1 and refuses one beyond them as [`Error::Syntax`].
+/// them: a float that names an integer is that integer. JSON5 reads an
+/// integer from -2^63 to 2^64 - 1 as that integer, and one beyond them as the
+/// f64 nearest to it, which is refused as a float. It refuses a hexadecimal
+/// integer beyond 128 bits as [`Error::Syntax`].
 pub fn parse(text: &str) -> Result<Value, Error> {
     Raw::parse(text)?.into_tree()
 }
@@ -182,8 +184,9 @@ fn ends_a_line(character: char) -> bool {
 pub(crate) enum Raw {
     Null,
     Bool(bool),
-    /// An integer: its sign and its magnitude, from -2^127 to 2^128 - 1 as
-    /// JSON5 reads them.
+    /// An integer: its sign and its magnitude, from -2^63 to 2^64 - 1 as
+    /// JSON5 reads them, and from -2^127 to 2^128 - 1 as a typed body
+    /// serializes them.
     Integer {
         negative: bool,
         magnitude: u128,
@@ -387,6 +390,13 @@ mod tests {
         }
     }
 
+    fn float_beyond(path: &str, number: f64) -> Error {
+        Error::FloatBeyondRange {
+            path: path.into(),
+            number,
+        }
+    }
+
     #[test]
     fn json5_syntax_parses_to_the_same_tree_as_json() {
         let tree =
@@ -468,25 +478,38 @@ mod tests {
         );
     }
 
+    /// -2^63 is the last negative integer that JSON5 reads as an integer, so
+    /// it is named in decimal; the next one reads as the f64 -2^63.
     #[test]
-    fn an_integer_at_or_beyond_2_64_is_refused_by_the_same_rule() {
+    fn an_integer_beyond_64_bits_reads_as_the_nearest_float_and_is_refused_as_one() {
+        assert_eq!(
+            parse("[-9223372036854775808]"),
+            Err(integer_beyond("[0]", "-9223372036854775808"))
+        );
+        assert_eq!(
+            parse("[-9223372036854775809]"),
+            Err(float_beyond("[0]", -(2f64.powi(63))))
+        );
         assert_eq!(
             parse("[18446744073709551616]"),
-            Err(integer_beyond("[0]", "18446744073709551616"))
+            Err(float_beyond("[0]", 2f64.powi(64)))
         );
         assert_eq!(
-            parse("[340282366920938463463374607431768211455]"),
-            Err(integer_beyond(
-                "[0]",
-                "340282366920938463463374607431768211455"
-            ))
+            parse("[340282366920938463463374607431768211456]"),
+            Err(float_beyond("[0]", 2f64.powi(128)))
         );
         assert_eq!(
-            parse("[-170141183460469231731687303715884105728]"),
-            Err(integer_beyond(
-                "[0]",
-                "-170141183460469231731687303715884105728"
-            ))
+            parse("{ n: -170141183460469231731687303715884105729 }")
+                .unwrap_err()
+                .to_string(),
+            "n: the number -1.7014118346046923e38 is beyond 2^53, the largest magnitude of a number in a document"
+        );
+        assert_eq!(
+            parse(&format!("[{}]", "9".repeat(400))),
+            Err(Error::NotFinite {
+                path: "[0]".into(),
+                number: f64::INFINITY
+            })
         );
     }
 
@@ -520,14 +543,18 @@ mod tests {
     }
 
     #[test]
-    fn an_integer_beyond_2_53_is_named_in_decimal_and_beyond_128_bits_is_syntax() {
+    fn a_hexadecimal_integer_reads_as_the_decimal_one_and_beyond_128_bits_is_syntax() {
         assert_eq!(
             parse("[0x20000000000001]"),
             Err(integer_beyond("[0]", "9007199254740993"))
         );
+        assert_eq!(
+            parse("[0x10000000000000000]"),
+            Err(float_beyond("[0]", 2f64.powi(64)))
+        );
         for beyond_json5 in [
-            "[340282366920938463463374607431768211456]",
-            "[-170141183460469231731687303715884105729]",
+            "[0x100000000000000000000000000000000]",
+            "[-0x80000000000000000000000000000001]",
         ] {
             assert!(
                 parse(beyond_json5)
@@ -619,13 +646,7 @@ mod tests {
 
     #[test]
     fn a_float_beyond_2_53_is_refused_like_an_integer() {
-        assert_eq!(
-            parse("[1e20]"),
-            Err(Error::FloatBeyondRange {
-                path: "[0]".into(),
-                number: 1e20
-            })
-        );
+        assert_eq!(parse("[1e20]"), Err(float_beyond("[0]", 1e20)));
         assert_eq!(
             parse("{ objects: { a: { mass: -9007199254740994.0 } } }")
                 .unwrap_err()

@@ -14,7 +14,7 @@ thiserror = "2"
 urdf-rs = "0.10"
 
 [dev-dependencies]
-hegeltest = { version = "0.50", features = ["static-engine"] }
+hegeltest = { version = "0.51", features = ["static-engine"] }
 kinematics_properties = { path = "../kinematics_properties" }
 libc = "0.2"
 openarm_description = { path = "../openarm_description" }

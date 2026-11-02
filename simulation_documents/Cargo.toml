@@ -17,4 +17,4 @@ thiserror = "2"
 workflow_documents = { path = "../workflow_documents" }
 
 [dev-dependencies]
-hegeltest = { version = "0.50", features = ["static-engine"] }
+hegeltest = { version = "0.51", features = ["static-engine"] }
