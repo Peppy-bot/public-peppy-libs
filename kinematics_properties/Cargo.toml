@@ -8,5 +8,5 @@ description = "The Hegel generators that the property tests of chain_kinematics,
 
 [dependencies]
 chain_kinematics = { path = "../chain_kinematics" }
-hegeltest = { version = "0.50", features = ["static-engine"] }
+hegeltest = { version = "0.51", features = ["static-engine"] }
 urdf-rs = "0.10"

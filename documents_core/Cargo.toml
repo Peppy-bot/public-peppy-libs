@@ -16,4 +16,4 @@ sha2 = "0.11"
 thiserror = "2"
 
 [dev-dependencies]
-hegeltest = { version = "0.50", features = ["static-engine"] }
+hegeltest = { version = "0.51", features = ["static-engine"] }
