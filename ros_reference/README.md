@@ -9,9 +9,8 @@ wrote.
 A parity test reads a **scenario**, an input that the test and the reference both read,
 and the **reference output** that the reference wrote for it. The reference outputs are
 committed with the digests of them and of their inputs, so the parity tests run in the
-routine tests of each library, `cargo test` of a crate and `pytest` of a Python package,
-with no ROS on the machine, and fail on an output, a scenario, a URDF or a mesh that
-differs from its digest. A change of the digests is a
+routine `cargo test` of each crate, with no ROS on the machine, and fail on an output, a
+scenario, a URDF or a mesh that differs from its digest. A change of the digests is a
 change of the reference, which `run.sh --check` proves.
 
 | Kind of scenario | Reference | Parity test |
@@ -19,7 +18,7 @@ change of the reference, which `run.sh --check` proves.
 | `forward_kinematics` | MoveIt's robot state: the global transform of each link of a chain | `chain_kinematics/tests/ros_reference_forward_kinematics.rs` |
 | `chain_collision` | MoveIt's robot model, robot state and robot filter: the links with collision geometry that a chain carries and the center MoveIt grows each of their bodies about, the global transform of each carried link, and whether each probe point lies inside the links' bodies (a convex mesh for a mesh, the primitive itself for a box, a cylinder or a sphere) grown by a padding | `collision_geometry/tests/ros_reference_chain_collision.rs` |
 | `self_distance` | MoveIt's FCL collision environment: the signed distance between the collision meshes of each pair of links | `self_collision_model/tests/ros_reference_self_distance.rs` |
-| `path_timing` | MoveIt's time-optimal trajectory generation (TOTG): the blended path through waypoints at a maximum deviation, and its time-optimal duration under velocity and acceleration limits, or its refusal of a path that turns back | `control_core/tests/ros_reference_path_timing.rs`, `control_core_py/tests/test_joint_path_parity.py` |
+| `path_timing` | MoveIt's time-optimal trajectory generation (TOTG): the blended path through waypoints at a maximum deviation, and its time-optimal duration under velocity and acceleration limits, or its refusal of a path that turns back | `control_core/tests/ros_reference_path_timing.rs` |
 | `planning` | OMPL's geometric planners: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
 | `occupancy` | MoveIt's point cloud updater: the log-odds of every voxel of MoveIt's occupancy map after a sequence of point clouds, with a sphere cut out as the robot's own body | `occupancy_map/tests/ros_reference_occupancy.rs` |
 
@@ -60,9 +59,8 @@ its legacy builder; or Podman, rootful or rootless, which names itself in
 `docker --version`, as the podman-docker package installs it. The container writes its
 outputs as the user who runs the script. Both mounts carry `:z`, so on a host with SELinux
 the host relabels the whole checkout for containers to share, and the checkout must be
-one that the user lets containers read. On arm64, the host runs cargo and uv too, and
-builds each crate that holds a parity test with the system libraries that its README
-names.
+one that the user lets containers read. On arm64, the host runs cargo too, and builds
+each crate that holds a parity test with the system libraries that its README names.
 
 On an amd64 host, `run.sh` writes `reference/`, with its `SHA256SUMS` and
 `INPUTS.SHA256SUMS`, and `packages-amd64.txt`, and `run.sh --check` fails when a file
@@ -79,13 +77,12 @@ and OSXSAVE by name; no math selector reads them, and the mask leaves them.
 
 On an arm64 host, `run.sh` writes `packages-arm64.txt`, and `run.sh --check` fails when it
 differs from what the image gives. After the write or the check, both run each parity
-test, `tests/ros_reference_*.rs` of each crate under `cargo test` and
-`tests/test_*_parity.py` of each Python package under `pytest`, on the outputs of the
-arm64 image, which the environment variable `ROS_REFERENCE_OUTPUTS` names to the test, and
-fail when a test does. The committed reference outputs are those of the amd64 image, and
-tests compare bits on amd64 alone, but for the occupancy test, which rule 4 describes. The
-planning parity test also reads the committed outputs on arm64, and compares each
-simplification with them within its bound.
+test, `tests/ros_reference_*.rs` of each crate, on the outputs of the arm64 image, which
+the environment variable `ROS_REFERENCE_OUTPUTS` names to the test, and fail when a test
+does. The committed reference outputs are those of the amd64 image, and tests compare bits
+on amd64 alone, but for the occupancy test, which rule 4 describes. The planning parity
+test also reads the committed outputs on arm64, and compares each simplification with
+them within its bound.
 
 ## Rules
 
@@ -229,9 +226,7 @@ from its digest.
 
 ## Adding a kind of scenario
 
-1. In `src/`, add the kind to `Kind` in `lib.rs`, and to `KINDS` in
-   `control_core_py/tests/ros_reference.py`, which a test of that package holds to
-   `Kind`, and a module with a `kind` tag type of
+1. In `src/`, add the kind to `Kind` in `lib.rs`, and a module with a `kind` tag type of
    its own, which its scenario and its reference output hold, so each refuses another
    kind. The module lists the scenarios of the kind with `scenario_names`, reads each with
    `read_scenario` and its reference output with `read_reference`, and every other file

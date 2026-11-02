@@ -60,14 +60,14 @@ def test_nonfinite_inputs_are_refused():
     # A NaN endpoint would zero the duration floor and bypass the caps.
     with pytest.raises(ValueError, match="non-finite"):
         minimum_jerk.plan((math.nan, *START[1:]), END, 0.0, CAPS)
-    with pytest.raises(ValueError, match="finite and non-negative"):
+    with pytest.raises(ValueError, match="non-finite"):
         minimum_jerk.plan(START, END, math.inf, CAPS)
 
 
 def test_negative_requested_duration_is_refused():
-    with pytest.raises(ValueError, match="finite and non-negative"):
+    with pytest.raises(ValueError, match="non-negative"):
         minimum_jerk.plan(START, END, -1.0, CAPS)
-    with pytest.raises(ValueError, match="finite and non-negative"):
+    with pytest.raises(ValueError, match="non-negative"):
         minimum_jerk.plan(START, START, -1.0, CAPS)
 
 

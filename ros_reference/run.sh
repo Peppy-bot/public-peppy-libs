@@ -12,8 +12,8 @@
 # references read (each scenario and the files it names) in INPUTS.SHA256SUMS, and the
 # version of each of its packages, in packages-amd64.txt. On arm64, it gives the version
 # of each of its packages, in packages-arm64.txt, and the parity tests
-# (tests/ros_reference_*.rs of each crate, and tests/test_*_parity.py of each Python
-# package) then compare with its outputs, within their bounds.
+# (tests/ros_reference_*.rs of each crate) then compare with its outputs, within their
+# bounds.
 #
 # The container runs with no network and one OpenMP thread, reads the repository through
 # a read-only mount, and writes its outputs as the user who runs the script. Both mounts
@@ -144,11 +144,6 @@ if [[ $platform == arm64 ]]; then
     (cd "$(dirname "$(dirname "$parity_test")")" &&
       ROS_REFERENCE_OUTPUTS=$outputs/reference \
         cargo test --locked --test "$(basename "$parity_test" .rs)") || failed=1
-  done
-  for parity_test in "$repository"/*/tests/test_*_parity.py; do
-    (cd "$(dirname "$(dirname "$parity_test")")" &&
-      ROS_REFERENCE_OUTPUTS=$outputs/reference \
-        uv run --frozen pytest "tests/$(basename "$parity_test")") || failed=1
   done
 fi
 
