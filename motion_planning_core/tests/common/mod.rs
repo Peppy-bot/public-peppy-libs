@@ -52,6 +52,11 @@ pub fn left_fingers() -> Vec<Rider<'static>> {
     LEFT_ARM.carried().iter().map(CarriedPart::rider).collect()
 }
 
+/// `value`, a tolerance of the tests above 0.
+pub fn positive(value: f64) -> PositiveFinite {
+    PositiveFinite::parse(value).expect("a positive tolerance")
+}
+
 /// A deadline no test's goal sampling reaches: an hour from now.
 pub fn an_hour_from_now() -> Instant {
     Instant::now() + Duration::from_secs(3600)

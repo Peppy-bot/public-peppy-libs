@@ -160,9 +160,10 @@ point, a link of the chain, or a part a link carries rigidly through a plan (`Fr
 part's `Frame::from` its `Rider` stands where the clearance checks place the part):
 its origin within a distance of a position of the robot frame, and its orientation
 within an angle of a target, the angle of the rotation between them, or, with a free
-axis, the angle between that axis and its target direction. A goal that mixes joints
-with poses, holds a tolerance that is not above 0, names a joint or a frame twice in one
-list, or holds the position of one frame and the orientation of another is refused
+axis, the angle between that axis and its target direction. Each tolerance is a
+`control_core` `PositiveFinite`. A goal that mixes joints with poses, names a joint or a
+frame twice in one list, or holds the position of one frame and the orientation of
+another is refused
 (`GoalError`): a goal holds one frame, whose pose the sampler reaches for. MoveIt keeps
 one sampler for a goal on several links, the link whose constraints leave the least
 volume, and accepts a sample that meets the others by chance.

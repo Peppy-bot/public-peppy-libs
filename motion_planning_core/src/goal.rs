@@ -9,6 +9,7 @@ use chain_kinematics::{
     damped_pseudo_inverse,
 };
 use collision_geometry::chain::Rider;
+use control_core::positive_finite::PositiveFinite;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3, Vector6};
 
 use crate::arm::frame_on_segment;
@@ -78,8 +79,8 @@ impl std::fmt::Display for Frame {
 pub struct JointTarget {
     pub joint: usize,
     pub position: f64,
-    pub above: f64,
-    pub below: f64,
+    pub above: PositiveFinite,
+    pub below: PositiveFinite,
 }
 
 /// A frame's origin held within `tolerance_m` of `position`, in the robot frame.
@@ -87,13 +88,13 @@ pub struct JointTarget {
 pub struct PositionTarget {
     pub frame: Frame,
     pub position: Vector3<f64>,
-    pub tolerance_m: f64,
+    pub tolerance_m: PositiveFinite,
 }
 
 impl PositionTarget {
     /// Whether `p` lies within the tolerance of the position.
     fn holds(&self, p: &Vector3<f64>) -> bool {
-        (p - self.position).norm() <= self.tolerance_m
+        (p - self.position).norm() <= self.tolerance_m.get()
     }
 
     /// A point within the tolerance of the position, drawn uniformly.
@@ -101,7 +102,7 @@ impl PositionTarget {
         loop {
             let p = Vector3::from_fn(|_, _| draws.between(-1.0, 1.0));
             if p.norm_squared() <= 1.0 {
-                return self.position + p * self.tolerance_m;
+                return self.position + p * self.tolerance_m.get();
             }
         }
     }
@@ -132,7 +133,7 @@ impl Axis {
 pub struct OrientationTarget {
     pub frame: Frame,
     pub orientation: UnitQuaternion<f64>,
-    pub tolerance_rad: f64,
+    pub tolerance_rad: PositiveFinite,
     pub free_axis: Option<Axis>,
 }
 
@@ -158,8 +159,6 @@ pub enum GoalError {
     Mixed,
     #[error("joint {0} is not a joint of the arm, whose joints run from 0 to {1}")]
     Joint(usize, usize),
-    #[error("a tolerance is a finite number above 0, got {0}")]
-    Tolerance(f64),
     #[error("a target position is finite, got {0:?}")]
     Position([f64; 3]),
     #[error("{0} is named twice in one list of the goal")]
@@ -200,11 +199,6 @@ impl Goal {
                 .then_some(())
                 .ok_or(GoalError::Joint(joint, dimension.saturating_sub(1)))
         };
-        let tolerance = |t: f64| {
-            (t.is_finite() && t > 0.0)
-                .then_some(())
-                .ok_or(GoalError::Tolerance(t))
-        };
         let named_once = |names: Vec<String>| {
             names
                 .iter()
@@ -218,19 +212,15 @@ impl Goal {
         };
         for target in &joints {
             in_arm(target.joint)?;
-            tolerance(target.above)?;
-            tolerance(target.below)?;
         }
         for target in &positions {
             frame(target.frame)?;
-            tolerance(target.tolerance_m)?;
             if !target.position.iter().all(|c| c.is_finite()) {
                 return Err(GoalError::Position(target.position.into()));
             }
         }
         for target in &orientations {
             frame(target.frame)?;
-            tolerance(target.tolerance_rad)?;
         }
         named_once(
             joints
@@ -265,15 +255,16 @@ impl Goal {
     /// Whether `chain` at `q` meets every constraint of the goal.
     pub fn met<const N: usize>(&self, chain: &Chain<N>, q: &[f64; N]) -> bool {
         let pose = |frame: Frame| frame_pose(chain, q, frame);
-        self.joints
-            .iter()
-            .all(|t| q[t.joint] <= t.position + t.above && q[t.joint] >= t.position - t.below)
+        let held = |t: &JointTarget| {
+            (t.position - t.below.get()..=t.position + t.above.get()).contains(&q[t.joint])
+        };
+        self.joints.iter().all(held)
             && self
                 .position
                 .is_none_or(|t| t.holds(&pose(t.frame).translation.vector))
             && self
                 .orientation
-                .is_none_or(|t| t.error(&pose(t.frame).rotation) <= t.tolerance_rad)
+                .is_none_or(|t| t.error(&pose(t.frame).rotation) <= t.tolerance_rad.get())
     }
 }
 
@@ -406,8 +397,8 @@ impl<const N: usize> GoalSampler<N> for IkGoalSampler<N> {
             let mut start: [f64; N] =
                 std::array::from_fn(|i| draws.between(limits[i].lo, limits[i].hi));
             for t in &goal.joints {
-                let low = (t.position - t.below).max(limits[t.joint].lo);
-                let high = (t.position + t.above).min(limits[t.joint].hi);
+                let low = (t.position - t.below.get()).max(limits[t.joint].lo);
+                let high = (t.position + t.above.get()).min(limits[t.joint].hi);
                 if low <= high {
                     start[t.joint] = draws.between(low, high);
                 }
@@ -450,7 +441,7 @@ impl<const N: usize> GoalSampler<N> for IkGoalSampler<N> {
                             }
                             if let Some(t) = orientation {
                                 target = target
-                                    .orientation_within(t.tolerance_rad)
+                                    .orientation_within(t.tolerance_rad.get())
                                     .expect("a goal's tolerance is positive");
                             }
                             kinematics.continue_to(&start, &target)

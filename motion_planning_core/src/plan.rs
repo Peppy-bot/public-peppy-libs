@@ -1689,14 +1689,15 @@ mod tests {
         let geometry = turn_and_slide();
         let arm = Arm::new(&geometry, None);
         let (start, end) = ([-0.6, 0.5], [0.6, 0.5]);
+        let tolerance = PositiveFinite::parse(0.01).expect("a positive tolerance");
         let goal = Goal::new(
             2,
             (0..2)
                 .map(|joint| crate::goal::JointTarget {
                     joint,
                     position: end[joint],
-                    above: 0.01,
-                    below: 0.01,
+                    above: tolerance,
+                    below: tolerance,
                 })
                 .collect(),
             Vec::new(),

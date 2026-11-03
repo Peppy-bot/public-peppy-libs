@@ -23,7 +23,7 @@ use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::Planner;
 
 use common::{
-    JOINTS, LEFT_ARM, an_hour_from_now, distance_to_map, left_fingers, map, occupied_at,
+    JOINTS, LEFT_ARM, an_hour_from_now, distance_to_map, left_fingers, map, occupied_at, positive,
     voxel_in_a_finger,
 };
 
@@ -65,8 +65,8 @@ fn at(q: &[f64; JOINTS]) -> Goal {
         .map(|joint| JointTarget {
             joint,
             position: q[joint],
-            above: 0.01,
-            below: 0.01,
+            above: positive(0.01),
+            below: positive(0.01),
         })
         .collect();
     Goal::new(JOINTS, joints, Vec::new(), Vec::new()).expect("a valid goal")

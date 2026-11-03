@@ -123,14 +123,16 @@ pub fn plan_scene<O>(
     let map = map_of(scenes, scene);
     let field = DistanceField::of(&map);
     let goal_q = configuration(&scene.goal);
+    let tolerance =
+        PositiveFinite::parse(scenes.goal_tolerance).expect("the scenes' goal tolerance");
     let goal = Goal::new(
         JOINTS,
         (0..JOINTS)
             .map(|joint| JointTarget {
                 joint,
                 position: goal_q[joint],
-                above: scenes.goal_tolerance,
-                below: scenes.goal_tolerance,
+                above: tolerance,
+                below: tolerance,
             })
             .collect(),
         Vec::new(),
