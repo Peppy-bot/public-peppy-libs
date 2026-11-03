@@ -2,7 +2,9 @@
 //! every 100 ms while the left elbow bends, and the frames a depth camera facing the robot
 //! took between them, each arriving after the next measurement. Each frame, cut out where
 //! the history puts the robot at its stamp, marks nothing; cut out where the robot stood at
-//! the newest measurement, it marks the arm.
+//! the newest measurement, it marks the arm. A depth point inside an object of the planning
+//! scene, or inside an object the left hand holds where the hand stood at the frame's
+//! stamp, marks nothing.
 
 mod openarm_v2;
 
@@ -12,9 +14,12 @@ use std::time::{Duration, SystemTime};
 
 use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
 use camera_core::pose::Pose;
-use collision_geometry::chain::{BodyMask, Padding, PlacedMask, Rider};
+use collision_geometry::chain::{BodyMask, Padding, PlacedMask, Rider, RiderBody};
 use control_core::positive_finite::PositiveFinite;
-use motion_planning_core::{DepthCamera, JointHistory, RobotMask, insert_cut_out};
+use motion_planning_core::{
+    AttachRequest, DepthCamera, JointHistory, ObjectFields, ObjectRequest, PlanningScene,
+    RobotLinks, RobotMask, ShapeFields, insert_cut_out,
+};
 use nalgebra::{Isometry3, Matrix3, Point3, Rotation3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{Bounds, Frame, Scan, VoxelMap};
 use openarm_description::{ARM_DOF, ArmPair, HardwareVersion, Side, ready};
@@ -144,7 +149,10 @@ fn frame_of(joints: &Joints) -> Vec<u8> {
             let posed = OPENARM_V2.arms[side].chain().at(&arm(joints, side));
             riders[side].iter().map(move |finger| {
                 let hand = posed.link_pose_world(finger.segment);
-                (finger.link, finger.pieces, hand * finger.offset)
+                let RiderBody::Pieces(pieces) = finger.body else {
+                    panic!("a finger is a part of the robot");
+                };
+                (finger.name, pieces, hand * finger.offset)
             })
         }),
         none,
@@ -205,19 +213,29 @@ enum CutAt {
     Newest,
 }
 
-/// The map the recording builds, each frame inserted with the robot cut out as `cut_at`
-/// says.
-fn replay(recording: &[Event], cut_at: CutAt) -> VoxelMap {
-    let world = Frame::parse("world").expect("a frame name");
-    let mut map = VoxelMap::new(
-        world.clone(),
+/// The frame of OpenArm's URDF root, which the maps stand in.
+fn world() -> Frame {
+    Frame::parse("world").expect("a frame name")
+}
+
+/// An empty map of 2.5 cm voxels about the robot and the camera.
+fn empty_map() -> VoxelMap {
+    VoxelMap::new(
+        world(),
         PositiveFinite::parse(0.025).expect("a positive voxel size"),
         Bounds {
             min: [-0.4, -1.0, 0.0],
             max: [1.2, 1.0, 1.6],
         },
     )
-    .expect("a map");
+    .expect("a map")
+}
+
+/// The map the recording builds, each frame inserted with the robot cut out as `cut_at`
+/// says.
+fn replay(recording: &[Event], cut_at: CutAt) -> VoxelMap {
+    let world = world();
+    let mut map = empty_map();
     let camera = depth_camera();
     let riders = fingers();
     let padding = Padding::new(1.0, PADDING_OFFSET_M).expect("a padding");
@@ -282,5 +300,121 @@ fn a_replayed_frame_cut_out_at_its_stamp_marks_nothing() {
         at_newest.occupied().count() > 10,
         "the arm marks the map where the newest measurement put it: {} voxels",
         at_newest.occupied().count()
+    );
+}
+
+/// A box of `size` at `position`, as apply_collision_objects adds it.
+fn add_box(id: &str, position: [f64; 3], size: [f64; 3]) -> ObjectRequest {
+    ObjectRequest {
+        operation: "add".to_string(),
+        object: ObjectFields {
+            id: id.to_string(),
+            position,
+            orientation: [0.0, 0.0, 0.0, 1.0],
+            shapes: vec![ShapeFields {
+                kind: "box".to_string(),
+                dimensions: size.to_vec(),
+                mesh_vertices: Vec::new(),
+                mesh_triangles: Vec::new(),
+                position: [0.0; 3],
+                orientation: [0.0, 0.0, 0.0, 1.0],
+            }],
+        },
+    }
+}
+
+/// Whether the voxel of `map` that holds `point` is occupied.
+fn occupied(map: &VoxelMap, point: [f64; 3]) -> bool {
+    map.is_occupied(map.key(point).expect("a point inside the map"))
+}
+
+// The left hand holds a block 8 cm past its grasp point, attached where the arm stands
+// now; a table stands apart from the robot. A frame taken with the left elbow bent half a
+// radian from now sees a point on the table, a point at the block's center where the hand
+// then held it, and one at its center where the hand holds it now. Cut out with the
+// scene, the first two mark nothing and the third is a hit; cut out with the robot alone,
+// the first two are hits.
+#[test]
+fn a_depth_point_inside_an_object_or_a_held_one_marks_nothing() {
+    let version = HardwareVersion::V2;
+    let grasp_links = Side::BOTH.map(|side| version.tcp_link(side).to_string());
+    let left_grasp = grasp_links[0].as_str();
+    let mut scene = PlanningScene::new(RobotLinks::new(grasp_links.clone(), grasp_links.clone()));
+    let mut map = empty_map();
+    let (now, then) = (bent(0.0), bent(0.5));
+    let left = &OPENARM_V2.arms.left;
+    let hand_at = |joints: &Joints| left.chain().world_ee_pose(&arm(joints, Side::Left));
+    let held_at = |joints: &Joints| -> [f64; 3] {
+        (hand_at(joints) * Point3::new(0.0, 0.0, 0.08))
+            .coords
+            .into()
+    };
+    let table = [1.0, 0.0, 0.1];
+    scene
+        .apply_collision_objects(
+            &[
+                add_box("table", table, [0.3, 0.3, 0.04]),
+                add_box("block", held_at(&now), [0.04; 3]),
+            ],
+            &mut map,
+        )
+        .expect("the objects apply");
+    scene
+        .apply_attached_collision_object(
+            &AttachRequest {
+                object_id: "block".to_string(),
+                link_name: left_grasp.to_string(),
+                touch_links: Vec::new(),
+                operation: "attach".to_string(),
+            },
+            |link| (link == left_grasp).then(|| hand_at(&now)),
+            &mut map,
+        )
+        .expect("the block attaches to the left hand");
+    let points = [table, held_at(&then), held_at(&now)];
+    let fingers = fingers();
+    let riders = ArmPair::from_fn(|side| {
+        let held = match side {
+            Side::Left => scene.riders(left_grasp, left),
+            Side::Right => Vec::new(),
+        };
+        fingers[side]
+            .iter()
+            .copied()
+            .chain(held)
+            .collect::<Vec<_>>()
+    });
+    let padding = Padding::new(1.0, 0.0).expect("the padding that grows nothing");
+    let joints = ArmPair::from_fn(|side| arm(&then, side));
+    let with_scene = OPENARM_V2
+        .mask(&joints, &riders, padding)
+        .with_objects(scene.standing_shapes());
+    let robot_alone = OPENARM_V2.mask(&joints, &fingers, padding);
+    let sensor = Pose::new([0.4, 0.0, 1.5], [0.0, 0.0, 0.0, 1.0]).expect("a pose");
+    let relative: Vec<[f32; 3]> = points
+        .iter()
+        .map(|p| std::array::from_fn(|i| (p[i] - sensor.origin()[i]) as f32))
+        .collect();
+    let world = world();
+    let scan = Scan {
+        frame: &world,
+        sensor,
+        points: &relative,
+        max_range_m: PositiveFinite::parse(3.0).expect("a positive range"),
+    };
+    let marked = |robot: &RobotMask<ARM_DOF>| {
+        let mut fresh = empty_map();
+        insert_cut_out(&mut fresh, &scan, robot).expect("the scan stands in the map's frame");
+        points.map(|point| occupied(&fresh, point))
+    };
+    assert_eq!(
+        marked(&with_scene),
+        [false, false, true],
+        "cut out with the scene"
+    );
+    assert_eq!(
+        marked(&robot_alone),
+        [true, true, true],
+        "cut out with the robot alone"
     );
 }

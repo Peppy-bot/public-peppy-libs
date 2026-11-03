@@ -14,9 +14,11 @@ or messaging dependencies.
   move, places them at a configuration, each with a bounding sphere, and tests
   whether a point lies inside a link, or inside the chain, grown by a padding: every
   point within the offset of each element scaled about its center.
-- `chain::Rider` is a part that a link of a chain carries rigidly, such as a gripper
-  finger at the gripper's opening: the part's link name, the segment of the link that
-  carries it, the part's offset in that link's frame, and its pieces in its own.
+- `chain::Rider` is a body that a link of a chain carries rigidly: a part of the robot,
+  such as a gripper finger at the gripper's opening, or a shape of a collision object
+  attached to the link. It holds its name, the part's link name or the object's id, the
+  segment of the link that carries it, its offset in that link's frame, and its body in
+  its own frame (`RiderBody`): a part's pieces, or the object's shape.
   `ChainGeometry::carried` gives the parts below the chain's links across movable
   joints off its path, each a `CarriedPart` placed with those joints at 0, as riders.
 - `chain::BodyGeometry` holds the pieces of the links that fixed joints alone join to
@@ -146,15 +148,14 @@ caller can tell separating motion from approaching motion even inside an overlap
 
 ## The robot filter
 
-`Mask` holds every collision element grown by a `Padding`: the element scaled by
-`scale` about its center, and every point within `offset` meters of the scaled
-element. Placed at a configuration, it answers for each link
-(`PlacedGrownLink::contains`) and for the chain (`PlacedMask::contains`, any link). A
-`BodyMask` grows a body's pieces by the same rule, a region's piece as a mesh's piece, and
-stands where the body stands as a `PlacedMask` (`BodyMask::placed`). `BodyMask::of` grows
-parts a caller places, such as the riders of a chain where they stand, each piece as a
-mesh's piece. Each piece is a fitted one, which carries no rounding, and a rounded piece
-panics.
+`Mask` holds every collision element grown by a `Padding`: the element scaled by `scale`
+about its center, and every point within `offset` meters of the scaled element. Placed at
+a configuration, it answers for each link (`PlacedGrownLink::contains`) and for the chain
+(`PlacedMask::contains`, any link). A `BodyMask` grows a body's pieces by the same rule, a
+region's piece as a mesh's piece, and stands where the body stands as a `PlacedMask`
+(`BodyMask::placed`). `BodyMask::of` grows parts a caller places, such as the parts that
+ride a chain where they stand, each piece as a mesh's piece. Each piece is a fitted one,
+which carries no rounding, and a rounded piece panics.
 
 - A mesh scales from its piece, about the mean of the piece's vertices. A point inside
   every face of the scaled piece is inside it, and a point beyond the piece's bounding
@@ -238,7 +239,8 @@ ships Qhull's `COPYING.txt` with it and states that Qhull's source can be obtain
 src/
   chain.rs           ChainGeometry, PlacedChain, Padding, Mask, PlacedMask,
                      PlacedGrownLink: a serial chain's pieces and the robot filter;
-                     Rider, CarriedPart: a part a link of a chain carries;
+                     Rider, RiderBody, CarriedPart: a body a link of a chain
+                     carries;
                      BodyGeometry, BodyMask: the body fixed to the root
   fit.rs             fit_pieces: one body's pieces, and the containment check
   simplify.rs        the supporting-plane fit to a deviation budget

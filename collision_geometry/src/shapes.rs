@@ -164,6 +164,10 @@ impl<'a> PlacedShape<'a> {
         Self { shape, pose }
     }
 
+    pub fn shape(&self) -> &'a Shape {
+        self.shape
+    }
+
     pub fn pose(&self) -> &Isometry3<f64> {
         &self.pose
     }

@@ -50,7 +50,7 @@ use collision_geometry::chain::Padding;
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
     Arm, DepthCamera, Frame, Goal, GoalSampler, IkGoalSampler, JointHistory, OrientationTarget,
-    PositionTarget, Surroundings, insert_cut_out, start_inside_limits,
+    PositionTarget, Surroundings, insert_cut_out, start_inside_limits, term_clearances,
 };
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 use occupancy_map::{Bounds, DistanceField, Frame as MapFrame, Scan, VoxelMap};
@@ -630,12 +630,7 @@ fn scene_of(
     };
     let kind_map = map_of(scenes, &scene);
     let field = DistanceField::of(&kind_map);
-    let surroundings = Surroundings::new(
-        &kind_map,
-        &field,
-        scenes.min_clearance,
-        scenes.min_clearance,
-    );
+    let surroundings = Surroundings::new(&kind_map, &field, term_clearances(scenes.min_clearance));
     let deadline = Instant::now() + Duration::from_secs_f64(scenes.time_limit);
     let sampled = sampler.sample(
         &episode.goal,

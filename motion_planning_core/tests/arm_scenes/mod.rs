@@ -13,7 +13,7 @@ use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, Goal, IkGoalSampler, JointTarget, PlanFailure, PlanRequest, Scene, StartFault,
+    Arm, Goal, IkGoalSampler, JointTarget, Objects, PlanFailure, PlanRequest, Scene, StartFault,
     plan_arm_path,
 };
 use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
@@ -185,6 +185,7 @@ pub fn plan_scene<O>(
             map: &map,
             field: &field,
             stamp: 0,
+            objects: Objects::none(),
         },
         &PlanRequest {
             start: configuration(&scene.start),

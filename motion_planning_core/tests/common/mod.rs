@@ -12,12 +12,12 @@ use std::time::{Duration, Instant};
 
 use camera_core::pose::Pose;
 use chain_kinematics::{ChainSpec, JointSelection};
-use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
-use collision_geometry::gjk::{self, Placed, Support};
+use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider, RiderBody};
+use collision_geometry::gjk::{self, Placed};
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::Arm;
-use nalgebra::{Point3, Vector3};
-use occupancy_map::{Bounds, Frame, Scan, VoxelMap};
+use nalgebra::Point3;
+use occupancy_map::{Bounds, Frame, Scan, VoxelBox, VoxelMap};
 use openarm_description::{HardwareVersion, Side};
 
 pub const JOINTS: usize = 7;
@@ -100,35 +100,22 @@ pub fn occupied_at(map: &mut VoxelMap, origin: [f64; 3], points: &[[f64; 3]]) {
     .expect("the scan stands in the map's frame");
 }
 
-/// The box of an occupied voxel, as GJK measures it.
-pub struct VoxelBox {
-    pub center: Point3<f64>,
-    pub half: f64,
-}
-
-impl Support for VoxelBox {
-    fn core_support(&self, dir: &Vector3<f64>) -> Point3<f64> {
-        self.center + dir.map(|d| if d < 0.0 { -self.half } else { self.half })
-    }
-}
-
 /// The box of every occupied voxel of `map`.
 pub fn voxel_boxes(map: &VoxelMap) -> Vec<VoxelBox> {
-    map.occupied()
-        .map(|key| VoxelBox {
-            center: map.center(key).into(),
-            half: map.voxel_size() / 2.0,
-        })
-        .collect()
+    map.occupied().map(|key| map.voxel_box(key)).collect()
 }
 
-/// The least distance GJK measures from every piece of `arm` at `q` to the box of every
-/// occupied voxel of `map`, with no screen.
+/// The least distance from every body of `arm` at `q` to the box of every occupied voxel
+/// of `map`, with no screen.
 pub fn distance_to_map<const N: usize>(arm: &Arm<N>, map: &VoxelMap, q: &[f64; N]) -> f64 {
     let boxes = voxel_boxes(map);
-    arm.pieces(q)
+    arm.bodies(q)
         .iter()
-        .flat_map(|(_, piece)| boxes.iter().map(|b| gjk::distance(piece, b).distance))
+        .flat_map(|(_, body)| {
+            boxes
+                .iter()
+                .map(|b| body.distance_to_convex(b, b.bounding_sphere()))
+        })
         .fold(f64::INFINITY, f64::min)
 }
 
@@ -137,21 +124,21 @@ pub fn distance_to_map<const N: usize>(arm: &Arm<N>, map: &VoxelMap, q: &[f64; N
 /// a vertex of a finger's piece toward its center, one the finger touches. With that
 /// distance from the bare arm. Each finger stands where its hand carries it.
 pub fn voxel_in_a_finger(map: &VoxelMap, q: &[f64; JOINTS]) -> ([f64; 3], f64) {
-    let bare = Arm::new(&LEFT_ARM, None).pieces(q);
+    let bare = Arm::new(&LEFT_ARM, None).bodies(q);
     let posed = LEFT_ARM.chain().at(q);
     let fingers: Vec<Placed> = left_fingers()
         .into_iter()
         .flat_map(|rider| {
             let pose = posed.link_pose_world(rider.segment) * rider.offset;
-            rider.pieces.iter().map(move |hull| Placed::new(hull, pose))
+            let RiderBody::Pieces(pieces) = rider.body else {
+                panic!("a finger is a part of the robot");
+            };
+            pieces.iter().map(move |hull| Placed::new(hull, pose))
         })
         .collect();
     let voxel_of = |point: Point3<f64>| {
         let key = map.key(point.into()).expect("a point inside the map");
-        VoxelBox {
-            center: map.center(key).into(),
-            half: map.voxel_size() / 2.0,
-        }
+        map.voxel_box(key)
     };
     fingers
         .iter()
@@ -164,11 +151,12 @@ pub fn voxel_in_a_finger(map: &VoxelMap, q: &[f64; JOINTS]) -> ([f64; 3], f64) {
                 .collect::<Vec<_>>()
         })
         .map(|voxel| {
+            let sphere = voxel.bounding_sphere();
             let away = bare
                 .iter()
-                .map(|(_, piece)| gjk::distance(piece, &voxel).distance)
+                .map(|(_, body)| body.distance_to_convex(&voxel, sphere))
                 .fold(f64::INFINITY, f64::min);
-            (voxel.center.into(), away)
+            (sphere.0.into(), away)
         })
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .expect("a voxel inside a finger")

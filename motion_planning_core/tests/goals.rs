@@ -9,8 +9,8 @@ use std::time::Instant;
 use hegel::TestCase;
 use hegel::generators as gs;
 use motion_planning_core::{
-    Arm, Axis, Frame, Goal, GoalError, GoalSampler, IkGoalSampler, JointTarget, OrientationTarget,
-    PositionTarget,
+    Arm, Axis, Body, Frame, Goal, GoalError, GoalSampler, IkGoalSampler, JointTarget,
+    OrientationTarget, PositionTarget,
 };
 use nalgebra::{Isometry3, Unit, UnitQuaternion, Vector3};
 
@@ -211,11 +211,13 @@ fn a_goal_on_a_rider_stands_where_the_checks_place_it() {
         .riding(&fingers)
         .expect("the fingers ride the hand");
     let q = [0.3, -0.2, 0.1, 1.0, 0.2, 0.1, 0.0];
-    let (_, finger) = arm
-        .pieces(&q)
+    let Some((_, Body::Piece(finger))) = arm
+        .bodies(&q)
         .into_iter()
-        .find(|(link, _)| *link == fingers[0].link)
-        .expect("a piece of the finger");
+        .find(|(name, _)| *name == fingers[0].name)
+    else {
+        panic!("a piece of the finger");
+    };
     let frame = Frame::from(&fingers[0]);
     let goal = Goal::new(
         JOINTS,

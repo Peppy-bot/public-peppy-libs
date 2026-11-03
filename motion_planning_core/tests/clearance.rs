@@ -3,7 +3,6 @@
 
 mod common;
 
-use collision_geometry::gjk;
 use hegel::TestCase;
 use hegel::generators as gs;
 use kinematics_properties::{configs, unit_vectors};
@@ -15,14 +14,14 @@ use common::{JOINTS, LEFT_ARM, left_fingers, map, occupied_at, voxel_boxes, voxe
 
 const VOXEL_M: f64 = 0.05;
 
-/// Whether every piece of the arm at `q` lies at least `clearance` from the box of
-/// every occupied voxel of `map`, hull against box, with no screen.
+/// Whether every body of the arm at `q` lies at least `clearance` from the box of every
+/// occupied voxel of `map`, hull against box, with no screen.
 fn hulls_alone(arm: &Arm<JOINTS>, map: &VoxelMap, q: &[f64; JOINTS], clearance: f64) -> bool {
     let boxes = voxel_boxes(map);
-    arm.pieces(q).iter().all(|(_, piece)| {
+    arm.bodies(q).iter().all(|(_, body)| {
         boxes
             .iter()
-            .all(|b| gjk::distance(piece, b).distance >= clearance)
+            .all(|b| body.distance_to_convex(b, b.bounding_sphere()) >= clearance)
     })
 }
 
@@ -37,9 +36,9 @@ fn the_sphere_screen_gives_the_hulls_verdict(tc: TestCase) {
         .expect("the fingers ride the hand");
     let q = tc.draw(configs(LEFT_ARM.chain().limits()));
     let spheres: Vec<(Point3<f64>, f64)> = arm
-        .pieces(&q)
+        .bodies(&q)
         .iter()
-        .map(|(_, piece)| piece.bounding_sphere())
+        .map(|(_, body)| body.bounding_sphere())
         .collect();
     let clearance: f64 = tc.draw(gs::floats().min_value(0.0).max_value(0.15));
     // Each point lies outside a piece's bounding sphere, up to twice the clearance and
@@ -65,7 +64,7 @@ fn the_sphere_screen_gives_the_hulls_verdict(tc: TestCase) {
     let mut map = map(VOXEL_M, 1.5);
     occupied_at(&mut map, [0.0, 0.0, 2.0], &points);
     let field = DistanceField::of(&map);
-    let surroundings = Surroundings::new(&map, &field, clearance, 0.0);
+    let surroundings = Surroundings::new(&map, &field, [clearance, 0.0, 0.0]);
     assert_eq!(
         surroundings.clear(&arm, &q),
         hulls_alone(&arm, &map, &q, clearance),
@@ -87,7 +86,7 @@ fn a_finger_keeps_its_clearance_as_the_links_do() {
     );
     occupied_at(&mut map, [0.0, 0.0, 2.0], &[voxel]);
     let field = DistanceField::of(&map);
-    let surroundings = Surroundings::new(&map, &field, CLEARANCE_M, 0.0);
+    let surroundings = Surroundings::new(&map, &field, [CLEARANCE_M, 0.0, 0.0]);
     let riders = left_fingers();
     let riding = Arm::new(&LEFT_ARM, None)
         .riding(&riders)
@@ -96,7 +95,7 @@ fn a_finger_keeps_its_clearance_as_the_links_do() {
     assert!(!surroundings.clear(&riding, &q));
     let contact = surroundings.contact(&riding, &q);
     assert!(
-        matches!(&contact, Some(Contact::Map { link }) if riders.iter().any(|r| r.link == *link)),
+        matches!(&contact, Some(Contact::Map { body }) if riders.iter().any(|r| r.name == *body)),
         "{contact:?}"
     );
 }

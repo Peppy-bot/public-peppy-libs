@@ -10,8 +10,9 @@
 //! is not part of the chain, and neither is a link that no driven joint moves, such as
 //! one fixed to the root. Such a part below a link of the chain is a part the chain
 //! carries ([`CarriedPart`]), placed with the joints between them at 0, which a
-//! [`Rider`] places on the link that carries it. Placed at a configuration, each piece
-//! gives its hull and its bounding sphere in the frame of the URDF root.
+//! [`Rider`] places on the link that carries it; a rider is also a shape of a collision
+//! object attached to a link. Placed at a configuration, each piece gives its hull and
+//! its bounding sphere in the frame of the URDF root.
 //!
 //! A [`Mask`] grows every collision element by a [`Padding`]: the element scaled about
 //! its center, a mesh from its piece and a primitive as itself, and every point within
@@ -33,7 +34,7 @@ use crate::clip::ClipRegion;
 use crate::fit::{fit_fixed_link, fit_pieces};
 use crate::gjk::{self, Hull, Placed, Vertex};
 use crate::hull::ConvexHull;
-use crate::shapes::{distance_outside_box, distance_outside_cylinder};
+use crate::shapes::{Shape, distance_outside_box, distance_outside_cylinder};
 use crate::urdf_collision::{Collision, CollisionGeometry, ParentJoint, UrdfCollisions};
 
 /// How far the outer reach of a grown piece reaches past the element's outer ball grown
@@ -91,15 +92,25 @@ impl Piece {
     }
 }
 
-/// A part of the robot that a link of a chain carries rigidly through a plan, such as a
-/// gripper finger at the gripper's opening: its own link's name, the index of the driven
-/// joint whose child link carries it, its frame in that link's frame, and its pieces in
-/// its own frame.
+/// A body that a link of a chain carries rigidly through a plan: a part of the robot,
+/// such as a gripper finger at the gripper's opening, or a shape of a collision object
+/// attached to the link. Its name, the part's own link's or the object's id; the index of
+/// the driven joint whose child link carries it; its frame in that link's frame; and what
+/// it is made of, in its own frame.
+#[derive(Debug, Clone, Copy)]
 pub struct Rider<'a> {
-    pub link: &'a str,
+    pub name: &'a str,
     pub segment: usize,
     pub offset: Isometry3<f64>,
-    pub pieces: &'a [Hull],
+    pub body: RiderBody<'a>,
+}
+
+/// What a [`Rider`] is made of: a part's convex pieces, one per `<collision>` element,
+/// or one shape of a collision object.
+#[derive(Debug, Clone, Copy)]
+pub enum RiderBody<'a> {
+    Pieces(&'a [Hull]),
+    Shape(&'a Shape),
 }
 
 /// A link with collision elements below a link of a chain across a movable joint off the
@@ -118,10 +129,10 @@ impl CarriedPart {
     /// The part as a rider of the link that carries it.
     pub fn rider(&self) -> Rider<'_> {
         Rider {
-            link: &self.link,
+            name: &self.link,
             segment: self.segment,
             offset: self.offset,
-            pieces: &self.pieces,
+            body: RiderBody::Pieces(&self.pieces),
         }
     }
 }
@@ -1071,7 +1082,7 @@ mod tests {
             panic!("one carried part: {:?}", geometry.carried());
         };
         let rider = part.rider();
-        assert_eq!((rider.link, rider.segment), ("finger", 0));
+        assert_eq!((rider.name, rider.segment), ("finger", 0));
         assert_eq!(rider.offset, Isometry3::translation(0.1, 0.05, 0.0));
         let q = [0.7, -0.3];
         let placed = geometry.chain().at(&q).link_pose_world(rider.segment) * rider.offset;

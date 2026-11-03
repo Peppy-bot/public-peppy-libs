@@ -1,42 +1,59 @@
 //! The reach of the arm's joints: on a straight joint motion, no point of a link or of a
-//! part a link carries moves farther than the reach bounds, and along a rounded path no
+//! body a link carries moves farther than the reach bounds, and along a rounded path no
 //! farther than the lever of the stretch's tangent; on OpenArm v2's left arm with its
-//! fingers, and on drawn robots of revolute and prismatic joints, each carrying a part.
+//! fingers and an object held past its grasp point, and on drawn robots of revolute and
+//! prismatic joints, each carrying a part.
 
 mod common;
 
 use chain_kinematics::{ChainSpec, JointSelection};
-use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
-use collision_geometry::gjk::Hull;
+use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider, RiderBody};
+use collision_geometry::shapes::{Shape, ShapeKind};
 use control_core::path_timing::RoundedPath;
 use hegel::TestCase;
 use hegel::generators as gs;
 use kinematics_properties::{
     ChainProperty, TIP, configs, link_name, on_a_drawn_robot, placements, unit_vectors,
 };
-use motion_planning_core::{Arm, RiderOffTheArm};
-use nalgebra::{Isometry3, Vector3};
+use motion_planning_core::{Arm, Body, RiderOffTheArm};
+use nalgebra::{Isometry3, Point3, Vector3};
 use urdf_rs::{
     Axis, Collision, Geometry, Joint, JointLimit, JointType, Link, LinkName, Robot, Vec3,
 };
 
 use common::{JOINTS, LEFT_ARM, left_fingers};
 
-/// The farthest a point of `hull` moves from where `from` places it to where `to` does,
-/// over its vertices, each pushed out by the hull's inflation along `out`.
-fn farthest_moved(
-    hull: &Hull,
-    from: &Isometry3<f64>,
-    to: &Isometry3<f64>,
-    out: &Vector3<f64>,
-) -> f64 {
-    hull.vertices()
-        .iter()
-        .map(|vertex| {
-            let point = vertex + out * hull.inflation();
-            (to * point - from * point).norm()
-        })
-        .fold(0.0, f64::max)
+/// The points of `body` in its own frame that move farthest under a rigid motion, with
+/// the pose that places them: a piece's vertices, each pushed out by the hull's inflation
+/// along `out`, and the corners of a box or the vertices of a mesh.
+fn extreme_points(body: &Body, out: &Vector3<f64>) -> (Vec<Point3<f64>>, Isometry3<f64>) {
+    match body {
+        Body::Piece(piece) => {
+            let hull = piece.hull();
+            let points = hull
+                .vertices()
+                .iter()
+                .map(|vertex| vertex + out * hull.inflation())
+                .collect();
+            (points, *piece.pose())
+        }
+        Body::Shape(shape) => {
+            let points = match shape.shape().kind() {
+                ShapeKind::Box { size } => (0..8)
+                    .map(|i| {
+                        let side = |bit: usize, axis: usize| {
+                            let half = size[axis] / 2.0;
+                            if i & bit == 0 { -half } else { half }
+                        };
+                        Point3::new(side(1, 0), side(2, 1), side(4, 2))
+                    })
+                    .collect(),
+                ShapeKind::Mesh { vertices, .. } => vertices.to_vec(),
+                kind => panic!("the test's objects are boxes and meshes, not {kind:?}"),
+            };
+            (points, *shape.pose())
+        }
+    }
 }
 
 /// Asserts that no point of `arm` moves farther than `bound` from where it stands at
@@ -48,8 +65,13 @@ fn assert_moves_within<const N: usize>(
     bound: f64,
     out: &Vector3<f64>,
 ) {
-    for ((link, a), (_, b)) in arm.pieces(from).iter().zip(&arm.pieces(to)) {
-        let moved = farthest_moved(a.hull(), a.pose(), b.pose(), out);
+    for ((link, a), (_, b)) in arm.bodies(from).iter().zip(&arm.bodies(to)) {
+        let (points, at_a) = extreme_points(a, out);
+        let (_, at_b) = extreme_points(b, out);
+        let moved = points
+            .iter()
+            .map(|point| (at_b * point - at_a * point).norm())
+            .fold(0.0, f64::max);
         assert!(
             moved <= bound * (1.0 + 1e-9) + 1e-12,
             "a point of {link} moves {moved} m, past the bound {bound} m"
@@ -84,12 +106,27 @@ fn assert_moves_within_reach<const N: usize>(tc: &TestCase, arm: &Arm<N>) {
     assert_moves_within(arm, &at(start), &at(end), lever * (end - start), &out);
 }
 
+/// How far past the grasp point, along its z axis, the hand holds the object of the
+/// test: past every link.
+const OBJECT_AHEAD_M: f64 = 0.15;
+
 #[hegel::test]
 fn no_point_of_openarm_moves_farther_than_its_reach(tc: TestCase) {
-    let riders = left_fingers();
+    let object = Shape::cuboid([0.06, 0.04, 0.08]).expect("a box");
+    let zero = [0.0; JOINTS];
+    let chain = LEFT_ARM.chain();
+    let grasp_point =
+        chain.at(&zero).link_pose_world(JOINTS - 1).inverse() * chain.world_ee_pose(&zero);
+    let held = Rider {
+        name: "object",
+        segment: JOINTS - 1,
+        offset: grasp_point * Isometry3::translation(0.0, 0.0, OBJECT_AHEAD_M),
+        body: RiderBody::Shape(&object),
+    };
+    let riders: Vec<Rider> = left_fingers().into_iter().chain([held]).collect();
     let arm = Arm::new(&LEFT_ARM, None)
         .riding(&riders)
-        .expect("the fingers ride the hand");
+        .expect("the fingers and the object ride the hand");
     assert_moves_within_reach(&tc, &arm);
 }
 
@@ -175,7 +212,7 @@ impl ChainProperty for MovesWithinReach {
         .expect("a dressed robot fits");
         let riders: Vec<Rider> = geometry.carried().iter().map(CarriedPart::rider).collect();
         assert_eq!(
-            riders.iter().map(|rider| rider.link).collect::<Vec<_>>(),
+            riders.iter().map(|rider| rider.name).collect::<Vec<_>>(),
             [PART],
             "the chain carries the part"
         );
@@ -205,7 +242,7 @@ fn a_rider_off_the_arm_is_refused() {
     assert_eq!(
         Arm::new(&LEFT_ARM, None).riding(&off).err(),
         Some(RiderOffTheArm {
-            link: fingers[0].link.to_string(),
+            name: fingers[0].name.to_string(),
             segment: JOINTS,
             last: JOINTS - 1,
         })
