@@ -187,24 +187,24 @@ of the forearm, of the wrist link, and of a part the hand carries.
 ## The plan and its path
 
 The request's deadline bounds the plan as MoveIt's allowed planning time bounds a
-request: the goal sampler draws up to `goal_samples` configurations, ending early once the
-deadline passes, OMPL makes the request's `attempts` in what remains before it, as MoveIt
-makes a request's `num_planning_attempts` (ompl_bridge's README, Attempts): each from its
-own seed, under the whole of that time and the whole iteration bound, their paths joined
-by OMPL's path hybridization, and OMPL's simplifier takes what remains after the
-attempts, at most 1000 iterations, as MoveIt simplifies in the allowed planning time less
-the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve` calls `simplifySolution`
-with that time, whatever is left of it). OMPL's simplifier runs its first pass however
-little time it has (`PathSimplifier::simplify`, `atLeastOnce`), so a planner that plans
-until its time ends, such as RRT*, has its path simplified once, past the deadline. A
-corner's repair runs only before the deadline: when a corner of the simplified path
-rounds short of the clearances once the deadline has passed, the plan answers its
-planned path if that passes its own check, and fails `NoPath` otherwise. The hybrid of several attempts and its checks,
-and the check of the rounded path, run to their end past the deadline. OMPL plans with
-the request's planner and iteration bound, seeded from the request's seed and the map's
-stamp, so the same request on the same map gives the same path when the plan ends before
-its deadline, for every planner but PRM and PRM*, with any number of attempts. OMPL's
-simplifier shortens the path.
+request: the goal sampler draws up to `goal_samples` configurations, ending early once
+the deadline passes, OMPL makes the request's `attempts` in what remains before it, as
+MoveIt makes a request's `num_planning_attempts` (ompl_bridge's README, Attempts): each
+from its own seed, under the whole of that time and the whole iteration bound, their
+paths joined by OMPL's path hybridization, and OMPL's simplifier takes what remains after
+the attempts, at most 1000 iterations, as MoveIt simplifies in the allowed planning time
+less the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve` calls
+`simplifySolution` with that time, whatever is left of it). OMPL's simplifier runs its
+first pass however little time it has (`PathSimplifier::simplify`, `atLeastOnce`), so a
+planner that plans until its time ends, such as RRT*, has its path simplified once, past
+the deadline. A corner's repair runs only before the deadline: when a corner of the
+simplified path rounds short of the clearances once the deadline has passed, the plan
+answers its planned path if that passes its own check, and fails `NoPath` otherwise. The
+hybrid of several attempts and its checks, and the check of the rounded path, run to
+their end past the deadline. OMPL plans with the request's planner and iteration bound,
+seeded from the request's seed and the map's stamp, so the same request on the same map
+gives the same path when the plan ends before its deadline, for every planner but PRM and
+PRM*, with any number of attempts. OMPL's simplifier shortens the path.
 
 The caller's flag `stop` ends a plan at any part of it, and the plan fails `Stopped`:
 the goal sampler draws no further configuration, OMPL's planners and simplifier end at
