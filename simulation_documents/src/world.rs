@@ -1,6 +1,7 @@
 //! The world/v1 document: its fields, their rules, and the text form.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use documents_core::{Digest, Document, Kind, Manifest};
 use serde::de::DeserializeOwned;
@@ -309,24 +310,82 @@ impl Feature {
     }
 }
 
-/// Where a robot with a body stands: at a work surface or a named pose of the
-/// scene, offset on its own axes, or at a position with a yaw.
+/// A side of a work surface's rectangle, in the frame of the body of the
+/// landmark the work surface stands on: the edge at its highest or lowest x
+/// or y. Written `"+x"`, `"-x"`, `"+y"` or `"-y"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Side {
+    #[serde(rename = "+x")]
+    PosX,
+    #[serde(rename = "-x")]
+    NegX,
+    #[serde(rename = "+y")]
+    PosY,
+    #[serde(rename = "-y")]
+    NegY,
+}
+
+impl Side {
+    /// Every side, in the order a catalogue lists them.
+    pub const ALL: [Side; 4] = [Side::PosX, Side::NegX, Side::PosY, Side::NegY];
+
+    /// The side as a document writes it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Side::PosX => "+x",
+            Side::NegX => "-x",
+            Side::PosY => "+y",
+            Side::NegY => "-y",
+        }
+    }
+
+    /// The side `written` names, if any.
+    pub fn parse(written: &str) -> Option<Side> {
+        Side::ALL.into_iter().find(|side| side.as_str() == written)
+    }
+}
+
+impl fmt::Display for Side {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Where a robot with a body stands: at a side of a work surface of an
+/// object or at a named pose of the scene, offset on its own axes, or at a
+/// position with a yaw. A stand at a work surface without a side stands at
+/// the side the simulation takes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "StandFields", into = "StandFields")]
 pub enum Stand {
-    Surface { surface: String, offset: Offset },
-    At { at: Name, offset: Offset },
+    Surface {
+        object: Name,
+        landmark: String,
+        side: Option<Side>,
+        offset: Offset,
+    },
+    At {
+        at: Name,
+        offset: Offset,
+    },
     Placed(Placement),
 }
+
+/// The words of a refusal of a stand of another form.
+const STAND_FORM: &str = "a stand is { object, landmark, side, offset } (a work surface of an object), { at, offset } (a named pose of the scene) or { position, yaw }; side and offset are optional";
 
 #[derive(Serialize, Deserialize)]
 #[serde(
     deny_unknown_fields,
-    expecting = "a stand, { surface, offset }, { at, offset } or { position, yaw }"
+    expecting = "a stand, { object, landmark, side, offset }, { at, offset } or { position, yaw }"
 )]
 struct StandFields {
     #[serde(skip_serializing_if = "Option::is_none")]
-    surface: Option<String>,
+    object: Option<Name>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    landmark: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    side: Option<Side>,
     #[serde(skip_serializing_if = "Option::is_none")]
     at: Option<Name>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -343,17 +402,23 @@ impl TryFrom<StandFields> for Stand {
     fn try_from(fields: StandFields) -> Result<Stand, Error> {
         match fields {
             StandFields {
-                surface: Some(surface),
+                object: Some(object),
+                landmark: Some(landmark),
+                side,
                 at: None,
                 position: None,
                 yaw: None,
                 offset,
             } => Ok(Stand::Surface {
-                surface,
+                object,
+                landmark,
+                side,
                 offset: offset.unwrap_or_default(),
             }),
             StandFields {
-                surface: None,
+                object: None,
+                landmark: None,
+                side: None,
                 at: Some(at),
                 position: None,
                 yaw: None,
@@ -363,15 +428,15 @@ impl TryFrom<StandFields> for Stand {
                 offset: offset.unwrap_or_default(),
             }),
             StandFields {
-                surface: None,
+                object: None,
+                landmark: None,
+                side: None,
                 at: None,
                 position: Some(position),
                 yaw: Some(yaw),
                 offset: None,
             } => Ok(Stand::Placed(Placement { position, yaw })),
-            _ => Err(Error::rule(
-                "a stand is { surface, offset }, { at, offset } (a named pose of the scene) or { position, yaw }; offset is optional",
-            )),
+            _ => Err(Error::rule(STAND_FORM)),
         }
     }
 }
@@ -379,27 +444,37 @@ impl TryFrom<StandFields> for Stand {
 impl From<Stand> for StandFields {
     fn from(stand: Stand) -> StandFields {
         let written_offset = |offset: Offset| (offset != Offset::default()).then_some(offset);
+        let none = StandFields {
+            object: None,
+            landmark: None,
+            side: None,
+            at: None,
+            position: None,
+            yaw: None,
+            offset: None,
+        };
         match stand {
-            Stand::Surface { surface, offset } => StandFields {
-                surface: Some(surface),
-                at: None,
-                position: None,
-                yaw: None,
+            Stand::Surface {
+                object,
+                landmark,
+                side,
+                offset,
+            } => StandFields {
+                object: Some(object),
+                landmark: Some(landmark),
+                side,
                 offset: written_offset(offset),
+                ..none
             },
             Stand::At { at, offset } => StandFields {
-                surface: None,
                 at: Some(at),
-                position: None,
-                yaw: None,
                 offset: written_offset(offset),
+                ..none
             },
             Stand::Placed(Placement { position, yaw }) => StandFields {
-                surface: None,
-                at: None,
                 position: Some(position),
                 yaw: Some(yaw),
-                offset: None,
+                ..none
             },
         }
     }
@@ -688,13 +763,13 @@ pub struct Finish {
     pub roughness: f64,
 }
 
-/// A named location of the task: a landmark of an object, a work surface, a
-/// named pose of the scene or a region of the world.
+/// A named location of the task: a landmark of an object, which names a
+/// work surface by the landmark it stands on, a named pose of the scene or
+/// a region of the world.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "LocationFields", into = "LocationFields")]
 pub enum Location {
     Landmark { object: Name, landmark: String },
-    Surface(String),
     At(Name),
     In(Name),
 }
@@ -702,15 +777,13 @@ pub enum Location {
 #[derive(Serialize, Deserialize)]
 #[serde(
     deny_unknown_fields,
-    expecting = "a location, { object, landmark }, { surface }, { at } or { in }"
+    expecting = "a location, { object, landmark }, { at } or { in }"
 )]
 struct LocationFields {
     #[serde(skip_serializing_if = "Option::is_none")]
     object: Option<Name>,
     #[serde(skip_serializing_if = "Option::is_none")]
     landmark: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    surface: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     at: Option<Name>,
     #[serde(rename = "in", skip_serializing_if = "Option::is_none")]
@@ -725,33 +798,23 @@ impl TryFrom<LocationFields> for Location {
             LocationFields {
                 object: Some(object),
                 landmark: Some(landmark),
-                surface: None,
                 at: None,
                 region: None,
             } => Ok(Location::Landmark { object, landmark }),
             LocationFields {
                 object: None,
                 landmark: None,
-                surface: Some(surface),
-                at: None,
-                region: None,
-            } => Ok(Location::Surface(surface)),
-            LocationFields {
-                object: None,
-                landmark: None,
-                surface: None,
                 at: Some(at),
                 region: None,
             } => Ok(Location::At(at)),
             LocationFields {
                 object: None,
                 landmark: None,
-                surface: None,
                 at: None,
                 region: Some(region),
             } => Ok(Location::In(region)),
             _ => Err(Error::rule(
-                "a location is { object, landmark }, { surface }, { at } (a named pose) or { in } (a named region)",
+                "a location is { object, landmark } (a landmark of an object, a work surface among them), { at } (a named pose) or { in } (a named region)",
             )),
         }
     }
@@ -759,18 +822,14 @@ impl TryFrom<LocationFields> for Location {
 
 impl From<Location> for LocationFields {
     fn from(location: Location) -> LocationFields {
-        let (object, landmark, surface, at, region) = match location {
-            Location::Landmark { object, landmark } => {
-                (Some(object), Some(landmark), None, None, None)
-            }
-            Location::Surface(surface) => (None, None, Some(surface), None, None),
-            Location::At(at) => (None, None, None, Some(at), None),
-            Location::In(region) => (None, None, None, None, Some(region)),
+        let (object, landmark, at, region) = match location {
+            Location::Landmark { object, landmark } => (Some(object), Some(landmark), None, None),
+            Location::At(at) => (None, None, Some(at), None),
+            Location::In(region) => (None, None, None, Some(region)),
         };
         LocationFields {
             object,
             landmark,
-            surface,
             at,
             region,
         }
@@ -1333,7 +1392,7 @@ pub(crate) mod tests {
   manifest: {{ name: "world_3f9a1c27", revision: 3 }},
   catalogue: "{RELEASE}",
   scene: {{ asset: "scene/living_room", scale: 1 }},
-  robots: {{ alpha: {{ join: {{ option: "openarm_sim", features: ["ai_brain"] }}, stand: {{ surface: "coffee table at the origin" }} }} }},
+  robots: {{ alpha: {{ join: {{ option: "openarm_sim", features: ["ai_brain"] }}, stand: {{ object: "modern_coffee_table_01", landmark: "top", side: "-x" }} }} }},
   scene_objects: {{ mantel_clock_01: {{ removed: true }} }},
   objects: {{ crate: {{ asset: "object/polyhaven_plastic_crate_01", pose: {{ position: [0.55, 0.0, 0.39], yaw: 0.0 }}, physics: "dynamic", mass: 1.6 }} }},
 }}"#
@@ -1385,7 +1444,9 @@ pub(crate) mod tests {
         assert_eq!(
             alpha.stand,
             Some(Stand::Surface {
-                surface: "coffee table at the origin".into(),
+                object: name("modern_coffee_table_01"),
+                landmark: "top".into(),
+                side: Some(Side::NegX),
                 offset: Offset::default()
             })
         );
@@ -1961,24 +2022,24 @@ pub(crate) mod tests {
             ),
             (
                 example_text().replace(
-                    "stand: { surface: \"coffee table at the origin\" }",
-                    "stand: { surface: \"x\", yaw: 1 }",
+                    "stand: { object: \"modern_coffee_table_01\", landmark: \"top\", side: \"-x\" }",
+                    "stand: { object: \"x\", landmark: \"top\", yaw: 1 }",
                 ),
-                "robots.alpha: stand: a stand is { surface, offset }, { at, offset } (a named pose of the scene) or { position, yaw }; offset is optional",
+                "robots.alpha: stand: a stand is { object, landmark, side, offset } (a work surface of an object), { at, offset } (a named pose of the scene) or { position, yaw }; side and offset are optional",
             ),
             (
                 example_text().replace(
-                    "stand: { surface: \"coffee table at the origin\" }",
+                    "stand: { object: \"modern_coffee_table_01\", landmark: \"top\", side: \"-x\" }",
                     "stand: { position: [0, 0, 0], yaw: 1, offset: { ahead_m: 0.2 } }",
                 ),
-                "robots.alpha: stand: a stand is { surface, offset }, { at, offset } (a named pose of the scene) or { position, yaw }; offset is optional",
+                "robots.alpha: stand: a stand is { object, landmark, side, offset } (a work surface of an object), { at, offset } (a named pose of the scene) or { position, yaw }; side and offset are optional",
             ),
             (
                 example_text().replace(
                     "\n  objects: {",
                     "\n  locations: { drop: { object: \"crate\" } }, objects: {",
                 ),
-                "locations.drop: a location is { object, landmark }, { surface }, { at } (a named pose) or { in } (a named region)",
+                "locations.drop: a location is { object, landmark } (a landmark of an object, a work surface among them), { at } (a named pose) or { in } (a named region)",
             ),
             (
                 example_text().replace(
@@ -2003,9 +2064,9 @@ pub(crate) mod tests {
     #[test]
     fn stands_locations_and_features_take_each_of_their_forms() {
         let text = example_text()
-            .replace("stand: { surface: \"coffee table at the origin\" }", "stand: { at: \"corner_a\", offset: { ahead_m: 0.2 } }")
+            .replace("stand: { object: \"modern_coffee_table_01\", landmark: \"top\", side: \"-x\" }", "stand: { at: \"corner_a\", offset: { ahead_m: 0.2 } }")
             .replace("features: [\"ai_brain\"]", "features: [{ feature: \"ai_brain\", core_node: \"gpu_box\" }], core_node: \"arm_box\"")
-            .replace("\n  objects: {", "\n  regions: { output_area: { centre: [1, 0, 0.5], size: [1, 1, 1] } }, locations: { drop: { in: \"output_area\" }, lid: { object: \"crate\", landmark: \"top\" }, bench: { surface: \"workbench\" }, spot: { at: \"corner_b\" } }, objects: {");
+            .replace("\n  objects: {", "\n  regions: { output_area: { centre: [1, 0, 0.5], size: [1, 1, 1] } }, locations: { drop: { in: \"output_area\" }, lid: { object: \"crate\", landmark: \"top\" }, spot: { at: \"corner_b\" } }, objects: {");
         let world = World::parse(&text).unwrap();
         let alpha = &world.robots[&robot("alpha")];
         assert_eq!(
@@ -2038,10 +2099,6 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(
-            world.locations[&name("bench")],
-            Location::Surface("workbench".into())
-        );
-        assert_eq!(
             world.locations[&name("spot")],
             Location::At(name("corner_b"))
         );
@@ -2049,11 +2106,62 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_stand_at_a_work_surface_names_its_object_its_landmark_and_maybe_its_side() {
+        let stand = |written: &str| {
+            World::parse(&example_text().replace(
+                "stand: { object: \"modern_coffee_table_01\", landmark: \"top\", side: \"-x\" }",
+                written,
+            ))
+            .map(|world| world.robots[&robot("alpha")].stand.clone())
+            .map_err(|error| error.to_string())
+        };
+        assert_eq!(
+            stand("stand: { object: \"shelving\", landmark: \"level_2\" }").unwrap(),
+            Some(Stand::Surface {
+                object: name("shelving"),
+                landmark: "level_2".into(),
+                side: None,
+                offset: Offset::default()
+            })
+        );
+        for side in Side::ALL {
+            let written =
+                format!("stand: {{ object: \"shelving\", landmark: \"top\", side: \"{side}\" }}");
+            let Some(Stand::Surface { side: read, .. }) = stand(&written).unwrap() else {
+                panic!("{written}");
+            };
+            assert_eq!(read, Some(side));
+            assert_eq!(Side::parse(side.as_str()), Some(side));
+        }
+        assert!(
+            stand("stand: { object: \"shelving\", landmark: \"top\", side: \"front\" }")
+                .unwrap_err()
+                .contains("unknown variant `front`")
+        );
+        for refused in [
+            "stand: { object: \"shelving\" }",
+            "stand: { landmark: \"top\" }",
+            "stand: { at: \"corner_a\", side: \"-y\" }",
+            "stand: { surface: \"coffee table at the origin\" }",
+        ] {
+            let error = stand(refused).unwrap_err();
+            assert!(
+                error.starts_with("robots.alpha: stand"),
+                "{refused}: {error}"
+            );
+        }
+        let world = World::parse(&example_text()).unwrap();
+        let written = world.to_json5().unwrap();
+        assert!(written.contains("side: \"-x\""), "{written}");
+        assert_eq!(World::parse(&written).unwrap(), world);
+    }
+
+    #[test]
     fn a_stand_writes_its_offset_unless_the_offset_is_zero() {
         let stand = |offset: &str| {
             World::parse(&example_text().replace(
-                "stand: { surface: \"coffee table at the origin\" }",
-                &format!("stand: {{ surface: \"coffee table at the origin\"{offset} }}"),
+                "stand: { object: \"modern_coffee_table_01\", landmark: \"top\", side: \"-x\" }",
+                &format!("stand: {{ object: \"modern_coffee_table_01\", landmark: \"top\", side: \"-x\"{offset} }}"),
             ))
             .unwrap()
         };

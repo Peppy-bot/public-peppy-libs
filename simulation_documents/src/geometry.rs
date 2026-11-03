@@ -121,8 +121,8 @@ pub struct Placement {
     pub yaw: f64,
 }
 
-/// Where a robot stands relative to a surface's joining spot or a named pose,
-/// on the robot's own axes: ahead of it and to its side, metres. The default
+/// Where a robot stands relative to the place of its stand at a work surface
+/// or at a named pose, on the robot's own axes: ahead of it and to its side, metres. The default
 /// offset is zero on both axes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "OffsetFields")]

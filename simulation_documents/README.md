@@ -13,7 +13,7 @@ let digest = world.document()?.digest();
 
 let pattern = WorldDocument::parse(pattern_text)?.resolve_pattern(&bases)?;
 let expansion = pattern.expansion(Seed(7), &assets_of_kind)?;
-let placements = expansion.placements(&holder_of_surface)?;
+let placements = expansion.placements()?;
 let world = expansion.world(&placed)?;
 
 let sweep = Sweep::new(SweepDocument::parse(sweep_text)?, &workflow, &patterns)?;
@@ -28,10 +28,16 @@ let verdicts = Verdicts::parse(&verdicts_text)?;
 A `World` (`world/v1`) names its catalogue release and its scene, the robots
 with the join each takes on the stack, where each stands and where its limbs
 stand, the scene objects it moves or removes, the objects it spawns, the lighting, the materials, the
-daylight, its regions and the named locations. A region is a box in the world
-frame, `{ centre, size, yaw }`, metres and radians, with `yaw` 0 when left
-out. A location `{ in: <region> }`, a sampler `{ in: <region> }` and a judge
-name a region of `regions`. The limbs of a robot, `{ arms: { <arm>: [joint
+daylight, its regions and the named locations. A robot stands at a side of a
+work surface of an object, `{ object, landmark, side, offset }` (`side` one of
+`"+x"`, `"-x"`, `"+y"`, `"-y"` of the frame of the landmark's body; without
+it, the simulation takes the side), at a named pose of the scene, `{ at,
+offset }`, or at `{ position, yaw }`; `offset` is optional. A location is a
+landmark of an object, `{ object, landmark }`, which names a work surface by
+the landmark it stands on, a named pose, `{ at }`, or a region, `{ in }`. A
+region is a box in the world frame, `{ centre, size, yaw }`, metres and
+radians, with `yaw` 0 when left out. A location `{ in: <region> }`, a sampler
+`{ in: <region> }` and a judge name a region of `regions`. The limbs of a robot, `{ arms: { <arm>: [joint
 positions] }, grippers: { <gripper>: opening } }`, name each limb as the
 robot names it (limb_state): an arm with its joint positions, radians or
 metres, in its joint order, and a gripper with its opening, a fraction of
@@ -68,16 +74,17 @@ in each document and at each base folded in.
 A world pattern (`WorldPattern`) is a world with samplers in place of some
 values. `{ one_of: [v, ...] }` draws one of its values and `{ range: [min,
 max] }` a number from `min` to `max`, in place of any value of an entry but
-the join of a robot. In an object pose, `{ on: <surface label, { object,
-landmark } or { one_of } of them>, reachable_by: <robot> }` draws a pose on a
-surface where the robot reaches and sees it, and `{ in: <region> }` a pose in
+the join of a robot. In an object pose, `{ on: <{ object, landmark } or {
+one_of } of them>, reachable_by: <robot> }` draws a pose on a work surface of
+an object where the robot reaches and sees it, and `{ in: <region> }` a pose in
 a region of the world; `{ in: <region> }` also draws the position of a stand. An
 entry of `objects` with `{ item_kind, count }` adds `<name>_1` up to
 `<name>_<count>`, each with an asset of the item kind; the count is a number
 from 0 to 1000, `{ range }` or `{ one_of }`. A pattern also has
 `work_cell_parameters`, each a `control: { object, id }` or a `distance: {
-surface, axis }` from the base of each robot of `per_robot` (or the one robot
-with a stand), with its unit, and `min_spacing_m`, the least distance between
+object, landmark, axis }` from the base of each robot of `per_robot` (or the
+one robot with a stand) to a landmark of an object, with its unit, and
+`min_spacing_m`, the least distance between
 sampled objects. Each value that a sampler can draw is checked as the
 concrete entry checks it. `WorldDocument::resolve_pattern` reads any world
 document, and `WorldDocument::resolve` refuses a pattern.
@@ -95,8 +102,8 @@ so the same pattern and seed always give the same values, and an added entry
 changes no other value. The simulation draws each `PlacementSite`, a pose
 `on` a surface or `in` a region or a stand, in a model of the drawn world, in
 the order of `Expansion::placements`: after what each depends on (a stand at
-a surface after the pose of the object of that surface, a pose on a surface
-after its object, a pose with `reachable_by` after the stand of its robot),
+a work surface after the pose of its object, a pose on a work surface after
+its object, a pose with `reachable_by` after the stand of its robot),
 then the draws without `reachable_by`, the stands and the draws with
 `reachable_by`. A cycle is refused, naming its placements. Before each
 draw, the simulation builds its model from `Expansion::world_so_far`, the

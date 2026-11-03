@@ -19,7 +19,8 @@ use simulation_documents::{
     Error, Feature, Finish, Holding, Join, Judge, Landmark, LandmarkOn, Light, Limbs, Location,
     Manifest, Material, Name, NearPoint, Object, Offset, Opening, Physics, Place, Placement, Point,
     Pose, Reachable, Region, Revision, Robot, RobotName, Scene, SceneObject, Seed, SetupRecord,
-    StackRobot, Stand, Target, TimeOfDay, Weather, WithinM, World, WorldDocument, WorldPattern,
+    Side, StackRobot, Stand, Target, TimeOfDay, Weather, WithinM, World, WorldDocument,
+    WorldPattern,
 };
 
 /// Names of objects, scene objects, locations, poses and regions: over the
@@ -134,11 +135,23 @@ fn limbs(tc: &TestCase) -> Limbs {
     Limbs { arms, grippers }
 }
 
+/// A side of a work surface, or none for a stand that lets the simulation
+/// take it.
+#[hegel::composite]
+fn sides(tc: &TestCase) -> Option<Side> {
+    match tc.draw(gs::integers::<u8>().min_value(0).max_value(4)) {
+        4 => None,
+        index => Some(Side::ALL[usize::from(index)]),
+    }
+}
+
 #[hegel::composite]
 fn stands(tc: &TestCase) -> Stand {
     match tc.draw(gs::integers::<u8>().min_value(0).max_value(2)) {
         0 => Stand::Surface {
-            surface: tc.draw(labels()),
+            object: tc.draw(names()),
+            landmark: tc.draw(labels()),
+            side: tc.draw(sides()),
             offset: tc.draw(offsets()),
         },
         1 => Stand::At {
@@ -280,13 +293,12 @@ fn daylights(tc: &TestCase) -> Daylight {
 
 #[hegel::composite]
 fn locations(tc: &TestCase) -> Location {
-    match tc.draw(gs::integers::<u8>().min_value(0).max_value(3)) {
+    match tc.draw(gs::integers::<u8>().min_value(0).max_value(2)) {
         0 => Location::Landmark {
             object: tc.draw(names()),
             landmark: tc.draw(labels()),
         },
-        1 => Location::Surface(tc.draw(labels())),
-        2 => Location::At(tc.draw(names())),
+        1 => Location::At(tc.draw(names())),
         _ => Location::In(tc.draw(names())),
     }
 }
