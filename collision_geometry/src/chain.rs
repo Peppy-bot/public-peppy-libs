@@ -8,8 +8,10 @@
 //! surface in the link's frame, each a [`Hull`] with its bounding sphere. A link below a
 //! movable joint off that path that the chain does not drive, such as a gripper finger,
 //! is not part of the chain, and neither is a link that no driven joint moves, such as
-//! one fixed to the root. Placed at a configuration, each piece gives its hull and its
-//! bounding sphere in the frame of the URDF root.
+//! one fixed to the root. Such a part below a link of the chain is a part the chain
+//! carries ([`CarriedPart`]), placed with the joints between them at 0, which a
+//! [`Rider`] places on the link that carries it. Placed at a configuration, each piece
+//! gives its hull and its bounding sphere in the frame of the URDF root.
 //!
 //! A [`Mask`] grows every collision element by a [`Padding`]: the element scaled about
 //! its center, a mesh from its piece and a primitive as itself, and every point within
@@ -19,14 +21,14 @@
 //! a ball that holds every point of it, and the box that holds every reach, so a point
 //! screens only the pieces whose reach may hold it.
 
-use chain_kinematics::{Chain, ChainSpec};
+use chain_kinematics::{Chain, ChainSpec, Posed};
 use nalgebra::{Isometry3, Point3, Vector3};
 
 use crate::GeometryError;
 use crate::fit::fit_pieces;
 use crate::gjk::{self, Hull, Placed, Vertex};
 use crate::hull::ConvexHull;
-use crate::urdf_collision::{Collision, CollisionGeometry, UrdfCollisions};
+use crate::urdf_collision::{Collision, CollisionGeometry, ParentJoint, UrdfCollisions};
 
 /// How far the outer reach of a grown piece reaches past the element's outer ball grown
 /// by the offset, and the inner reach falls short of its inner ball grown by the offset,
@@ -57,6 +59,12 @@ impl LinkGeometry {
     pub fn pieces(&self) -> &[Piece] {
         &self.pieces
     }
+
+    /// The index, in a configuration, of the driven joint whose child link carries
+    /// this link: the joints from it toward the base move it.
+    pub fn segment(&self) -> usize {
+        self.segment
+    }
 }
 
 /// A convex piece of a link, in the link's frame, and the `<collision>` element it is
@@ -77,11 +85,47 @@ impl Piece {
     }
 }
 
+/// A part of the robot that a link of a chain carries rigidly through a plan, such as a
+/// gripper finger at the gripper's opening: its own link's name, the index of the driven
+/// joint whose child link carries it, its frame in that link's frame, and its pieces in
+/// its own frame.
+pub struct Rider<'a> {
+    pub link: &'a str,
+    pub segment: usize,
+    pub offset: Isometry3<f64>,
+    pub pieces: &'a [Hull],
+}
+
+/// A link with collision elements below a link of a chain across a movable joint off the
+/// chain's path, such as a gripper finger: its name, the index of the driven joint whose
+/// child link carries it, its frame in that link's frame with every joint between them at
+/// 0, and its pieces in its own frame, one per `<collision>` element as a link's.
+#[derive(Debug)]
+pub struct CarriedPart {
+    link: String,
+    segment: usize,
+    offset: Isometry3<f64>,
+    pieces: Vec<Hull>,
+}
+
+impl CarriedPart {
+    /// The part as a rider of the link that carries it.
+    pub fn rider(&self) -> Rider<'_> {
+        Rider {
+            link: &self.link,
+            segment: self.segment,
+            offset: self.offset,
+            pieces: &self.pieces,
+        }
+    }
+}
+
 /// The collision pieces of a serial chain with `N` driven joints.
 #[derive(Debug)]
 pub struct ChainGeometry<const N: usize> {
     chain: Chain<N>,
     links: Vec<LinkGeometry>,
+    carried: Vec<CarriedPart>,
 }
 
 impl<const N: usize> ChainGeometry<N> {
@@ -100,31 +144,33 @@ impl<const N: usize> ChainGeometry<N> {
         let segments: Vec<String> = (0..N).map(|i| posed.link_name(i).to_owned()).collect();
         let path = path_to(&collisions, spec.tip_link)?;
         let mut links = Vec::new();
+        let mut carried = Vec::new();
         for name in collisions.collision_link_names() {
-            let Some((segment, offset)) = carrier(&collisions, &segments, &path, &name)? else {
-                continue;
-            };
-            let pieces = collisions
-                .collisions_of(&name)
-                .into_iter()
-                .map(|element| {
-                    let surface = element.surface(meshes_dir)?;
-                    let [hull] = <[Hull; 1]>::try_from(fit_pieces(&name, &[surface], None)?)
-                        .expect("a fit without clip regions gives one piece per surface");
-                    Ok(Piece {
-                        hull,
-                        element: element.clone(),
-                    })
-                })
-                .collect::<Result<_, GeometryError>>()?;
-            links.push(LinkGeometry {
-                name,
-                segment,
-                offset,
-                pieces,
-            });
+            if let Some((segment, offset)) = carrier(&collisions, &segments, &path, &name)? {
+                links.push(LinkGeometry {
+                    pieces: pieces_of(&collisions, &name, meshes_dir)?,
+                    name,
+                    segment,
+                    offset,
+                });
+            } else if let Some((segment, offset)) = carrier_of_part(&collisions, &segments, &name)?
+            {
+                carried.push(CarriedPart {
+                    pieces: pieces_of(&collisions, &name, meshes_dir)?
+                        .into_iter()
+                        .map(|piece| piece.hull)
+                        .collect(),
+                    link: name,
+                    segment,
+                    offset,
+                });
+            }
         }
-        Ok(ChainGeometry { chain, links })
+        Ok(ChainGeometry {
+            chain,
+            links,
+            carried,
+        })
     }
 
     pub fn chain(&self) -> &Chain<N> {
@@ -135,9 +181,18 @@ impl<const N: usize> ChainGeometry<N> {
         &self.links
     }
 
+    /// The parts the chain's links carry off its path.
+    pub fn carried(&self) -> &[CarriedPart] {
+        &self.carried
+    }
+
     /// Places every link at the configuration `q`.
     pub fn place(&self, q: &[f64; N]) -> PlacedChain<'_> {
-        let posed = self.chain.at(q);
+        self.place_at(&self.chain.at(q))
+    }
+
+    /// Places every link where the chain posed at `posed` holds it.
+    pub fn place_at(&self, posed: &Posed<N>) -> PlacedChain<'_> {
         let poses = self
             .links
             .iter()
@@ -176,15 +231,15 @@ pub struct PlacedChain<'a> {
     poses: Vec<Isometry3<f64>>,
 }
 
-impl PlacedChain<'_> {
+impl<'a> PlacedChain<'a> {
     /// Each link with its pose in the frame of the URDF root.
-    pub fn links(&self) -> impl Iterator<Item = (&LinkGeometry, &Isometry3<f64>)> {
+    pub fn links(&self) -> impl Iterator<Item = (&'a LinkGeometry, &Isometry3<f64>)> {
         self.links.iter().zip(&self.poses)
     }
 
     /// Every piece of every link, placed in the frame of the URDF root, with the name
-    /// of its link.
-    pub fn pieces(&self) -> impl Iterator<Item = (&str, Placed<'_>)> {
+    /// of its link. A piece borrows the chain's geometry alone.
+    pub fn pieces(&self) -> impl Iterator<Item = (&'a str, Placed<'a>)> + '_ {
         self.links().flat_map(|(link, pose)| {
             link.pieces
                 .iter()
@@ -666,6 +721,28 @@ fn path_to(collisions: &UrdfCollisions, tip: &str) -> Result<Vec<String>, Geomet
     Ok(path)
 }
 
+/// The pieces of `link`, one per `<collision>` element, each fitted to the element's
+/// surface in the link's frame, the meshes read from `meshes_dir`.
+fn pieces_of(
+    collisions: &UrdfCollisions,
+    link: &str,
+    meshes_dir: &str,
+) -> Result<Vec<Piece>, GeometryError> {
+    collisions
+        .collisions_of(link)
+        .into_iter()
+        .map(|element| {
+            let surface = element.surface(meshes_dir)?;
+            let [hull] = <[Hull; 1]>::try_from(fit_pieces(link, &[surface], None)?)
+                .expect("a fit without clip regions gives one piece per surface");
+            Ok(Piece {
+                hull,
+                element: element.clone(),
+            })
+        })
+        .collect()
+}
+
 /// The driven joint whose child link carries `link`, with `link`'s frame in the frame
 /// of that child link; `None` when the chain's joints do not decide where `link` stands.
 /// The walk up from `link` crosses fixed joints, and the movable joints of the path that
@@ -675,6 +752,32 @@ fn carrier(
     segments: &[String],
     path: &[String],
     link: &str,
+) -> Result<Option<(usize, Isometry3<f64>)>, GeometryError> {
+    walk_up(collisions, segments, link, |joint, below| {
+        joint.is_fixed() || path.iter().any(|on_path| on_path == below)
+    })
+}
+
+/// The driven joint whose child link carries `link`, a part below a link of the chain
+/// that `carrier` leaves out, with `link`'s frame in the frame of that child link, every
+/// joint between them at 0; `None` when no driven joint moves `link`.
+fn carrier_of_part(
+    collisions: &UrdfCollisions,
+    segments: &[String],
+    link: &str,
+) -> Result<Option<(usize, Isometry3<f64>)>, GeometryError> {
+    walk_up(collisions, segments, link, |_, _| true)
+}
+
+/// The walk up from `link` to the child link of a driven joint, of `segments`, crossing
+/// each joint that `crosses` takes, given the joint and the link below it, at 0: that
+/// joint's index and `link`'s frame in its child link's frame; `None` where the walk
+/// reaches the root or a joint it does not cross.
+fn walk_up(
+    collisions: &UrdfCollisions,
+    segments: &[String],
+    link: &str,
+    crosses: impl Fn(&ParentJoint, &str) -> bool,
 ) -> Result<Option<(usize, Isometry3<f64>)>, GeometryError> {
     let mut offset = Isometry3::identity();
     let mut current = link.to_owned();
@@ -690,7 +793,7 @@ fn carrier(
         let Some(joint) = collisions.parent_joint(&current) else {
             return Ok(None);
         };
-        if !joint.is_fixed() && !path.contains(&current) {
+        if !crosses(joint, &current) {
             return Ok(None);
         }
         let motion = joint
@@ -704,6 +807,75 @@ fn carrier(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A chain of two revolute joints about z, the second 30 cm out, whose first link
+    /// holds no collision element and carries a camera on a fixed joint and a finger on a
+    /// revolute joint off the chain's path.
+    const FINGER_ON_A_BARE_LINK: &str = r#"<robot name="finger_on_a_bare_link">
+        <link name="base"/>
+        <link name="link_1"/>
+        <link name="link_2">
+          <collision><geometry><box size="0.1 0.04 0.04"/></geometry></collision>
+        </link>
+        <link name="camera">
+          <collision><geometry><box size="0.03 0.03 0.03"/></geometry></collision>
+        </link>
+        <link name="finger">
+          <collision><geometry><box size="0.02 0.02 0.04"/></geometry></collision>
+        </link>
+        <joint name="joint_1" type="revolute">
+          <parent link="base"/><child link="link_1"/><axis xyz="0 0 1"/>
+          <limit lower="-3" upper="3" effort="1" velocity="1"/>
+        </joint>
+        <joint name="joint_2" type="revolute">
+          <origin xyz="0.3 0 0"/>
+          <parent link="link_1"/><child link="link_2"/><axis xyz="0 0 1"/>
+          <limit lower="-3" upper="3" effort="1" velocity="1"/>
+        </joint>
+        <joint name="camera_mount" type="fixed">
+          <origin xyz="0 0 0.1"/>
+          <parent link="link_1"/><child link="camera"/>
+        </joint>
+        <joint name="finger_joint" type="revolute">
+          <origin xyz="0.1 0.05 0"/>
+          <parent link="link_1"/><child link="finger"/><axis xyz="1 0 0"/>
+          <limit lower="0" upper="1" effort="1" velocity="1"/>
+        </joint>
+      </robot>"#;
+
+    // A finger off the path of a chain, on a link that holds no collision element, is a
+    // part the chain carries: the first joint's link carries it at the finger joint's
+    // origin, and placed with the chain it stands where the first joint turns it. The
+    // camera fixed to that link is a link of the chain.
+    #[test]
+    fn a_part_off_the_path_rides_the_driven_link_above_it() {
+        let geometry = ChainGeometry::<2>::from_urdf(
+            FINGER_ON_A_BARE_LINK,
+            "",
+            &ChainSpec {
+                base_link: None,
+                tip_link: "link_2",
+                joints: chain_kinematics::JointSelection::PathOrder,
+            },
+        )
+        .expect("the chain fits");
+        let names: Vec<&str> = geometry.links().iter().map(LinkGeometry::name).collect();
+        assert_eq!(names, ["link_2", "camera"]);
+        let [part] = geometry.carried() else {
+            panic!("one carried part: {:?}", geometry.carried());
+        };
+        let rider = part.rider();
+        assert_eq!((rider.link, rider.segment), ("finger", 0));
+        assert_eq!(rider.offset, Isometry3::translation(0.1, 0.05, 0.0));
+        let q = [0.7, -0.3];
+        let placed = geometry.chain().at(&q).link_pose_world(rider.segment) * rider.offset;
+        let turned =
+            Isometry3::rotation(Vector3::z() * 0.7) * Isometry3::translation(0.1, 0.05, 0.0);
+        assert!(
+            (placed.to_homogeneous() - turned.to_homogeneous()).norm() < 1e-12,
+            "{placed} stands off {turned}"
+        );
+    }
 
     /// A padding takes a positive finite scale and a non-negative finite offset, and
     /// refuses a scale or an offset that is NaN, infinite or out of that range.

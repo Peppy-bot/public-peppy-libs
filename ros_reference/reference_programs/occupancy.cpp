@@ -159,14 +159,7 @@ nlohmann::json points_read(const sensor_msgs::msg::PointCloud2& cloud) {
 }  // namespace
 
 nlohmann::json occupancy(const nlohmann::json& scenario, Inputs&) {
-  if (!rclcpp::ok()) {
-    // The context leaves ROS logging unconfigured: configuring it creates a log directory
-    // in the home directory, and the container runs as the host's user, whom the image
-    // may give no home directory. ROS messages still go to the console.
-    rclcpp::InitOptions options;
-    options.auto_initialize_logging(false);
-    rclcpp::init(0, nullptr, options);
-  }
+  start_ros();
   auto node = node_of(scenario);
   // The monitor as the planning scene monitor builds it, with a tf buffer and the map
   // frame. It logs that no 3D sensor plugin is defined: it loads the updaters that its

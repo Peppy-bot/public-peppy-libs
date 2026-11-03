@@ -180,6 +180,11 @@ impl VoxelMap {
         self.grid.key(point)
     }
 
+    /// The edge of a voxel, in meters.
+    pub fn voxel_size(&self) -> f64 {
+        self.grid.size.get()
+    }
+
     /// The center of voxel `key`.
     pub fn center(&self, key: Key) -> [f64; 3] {
         self.grid.center(key)

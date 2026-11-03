@@ -22,6 +22,7 @@
 //! its reference output, and pairs them for the parity test. The README says how to add a
 //! scenario and a kind.
 
+pub mod arm_planning;
 pub mod chain_collision;
 pub mod forward_kinematics;
 pub mod occupancy;
@@ -52,6 +53,7 @@ const INPUT_DIGEST_FILE: &str = "INPUTS.SHA256SUMS";
 #[derive(PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
+    ArmPlanning,
     ChainCollision,
     ForwardKinematics,
     Occupancy,

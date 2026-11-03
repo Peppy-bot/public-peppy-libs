@@ -263,19 +263,21 @@ const REVERSAL_COS: f64 = -1.0 + 1e-5;
 /// long, so sums that round otherwise judge such a corner alike.
 const STRAIGHT_SIN: f64 = 1e-9;
 
-/// A piece of the path, the path position it starts at, from 0, and whether
-/// the path rests where the piece ends.
+/// A piece of the path, the path position it starts at, from 0, the index of
+/// its point among the points the path runs through, and whether the path
+/// rests where the piece ends.
 #[derive(Debug, Clone, PartialEq)]
 struct Placed {
     start_at: f64,
     piece: Piece,
+    point: usize,
     rests_after: bool,
 }
 
-/// Lay `piece` where the last of `placed` ends, the path resting at its end
-/// when `rests_after`. A piece of no length goes, and a rest at its end moves
-/// to the piece before it, which ends at the same point.
-fn lay(placed: &mut Vec<Placed>, piece: Piece, rests_after: bool) {
+/// Lay `piece` of point `point` where the last of `placed` ends, the path
+/// resting at its end when `rests_after`. A piece of no length goes, and a
+/// rest at its end moves to the piece before it, which ends at the same point.
+fn lay(placed: &mut Vec<Placed>, piece: Piece, point: usize, rests_after: bool) {
     let start_at = placed
         .last()
         .map_or(0.0, |before| before.start_at + before.piece.length());
@@ -283,6 +285,7 @@ fn lay(placed: &mut Vec<Placed>, piece: Piece, rests_after: bool) {
         placed.push(Placed {
             start_at,
             piece,
+            point,
             rests_after,
         });
     } else if let Some(before) = placed.last_mut() {
@@ -295,7 +298,8 @@ fn lay(placed: &mut Vec<Placed>, piece: Piece, rests_after: bool) {
 /// to both runs, meeting each where `corners` puts it. A corner the path turns
 /// back at, or one `stops` marks, keeps its point, where the path rests, and a
 /// corner that `corners` runs straight on keeps its point, which the path runs
-/// through.
+/// through. Each piece is of a point: the one a straight run starts from, or
+/// the corner an arc rounds.
 fn pieces(points: &[&[f64]], stops: &[bool], corners: Corners) -> Vec<Placed> {
     let mut placed: Vec<Placed> = Vec::new();
     let mut from = points[0].to_vec();
@@ -312,6 +316,7 @@ fn pieces(points: &[&[f64]], stops: &[bool], corners: Corners) -> Vec<Placed> {
                     direction: direction_in,
                     length: length_in,
                 },
+                k - 1,
                 true,
             );
             break;
@@ -334,6 +339,7 @@ fn pieces(points: &[&[f64]], stops: &[bool], corners: Corners) -> Vec<Placed> {
                     direction: direction_in,
                     length: length_in,
                 },
+                k - 1,
                 rests,
             );
             from = to.to_vec();
@@ -349,6 +355,7 @@ fn pieces(points: &[&[f64]], stops: &[bool], corners: Corners) -> Vec<Placed> {
                 direction: direction_in.clone(),
                 length: length_in - tangent_length,
             },
+            k - 1,
             false,
         );
         lay(
@@ -360,6 +367,7 @@ fn pieces(points: &[&[f64]], stops: &[bool], corners: Corners) -> Vec<Placed> {
                 radius,
                 turn,
             },
+            k,
             false,
         );
         from = sum(to, &scaled(&direction_out, tangent_length));
@@ -382,6 +390,9 @@ fn lies_within(waypoint: &[f64], before: &[f64], within: f64) -> bool {
 pub struct RoundedPath {
     pieces: Vec<Placed>,
     end: Vec<f64>,
+    /// The index, among the waypoints the path was given, of each point it
+    /// runs through.
+    waypoints: Vec<usize>,
 }
 
 impl RoundedPath {
@@ -419,24 +430,28 @@ impl RoundedPath {
             !rests_at_repeats || waypoints.iter().flatten().all(|v| v.is_finite()),
             "the waypoints of a path rounded within a deviation are finite"
         );
-        // Each point the path runs through, and whether it rests there.
-        let (points, stops) = waypoints.windows(2).fold(
-            (vec![waypoints[0].as_slice()], vec![false]),
-            |(mut points, mut stops): (Vec<&[f64]>, Vec<bool>), pair| {
+        // Each point the path runs through, whether it rests there, and the
+        // index of its waypoint.
+        let (points, stops, indices) = waypoints.windows(2).enumerate().fold(
+            (vec![waypoints[0].as_slice()], vec![false], vec![0]),
+            |(mut points, mut stops, mut indices): (Vec<&[f64]>, Vec<bool>, Vec<usize>),
+             (k, pair)| {
                 let (before, waypoint) = (&pair[0], &pair[1]);
                 let last = points.last().expect("the first waypoint is a point");
                 if norm(&difference(waypoint, last)) > 0.0 {
                     points.push(waypoint.as_slice());
                     stops.push(rests_at_repeats && lies_within(waypoint, before, repeat_within));
+                    indices.push(k + 1);
                 } else {
                     *stops.last_mut().expect("the first waypoint is a point") |= rests_at_repeats;
                 }
-                (points, stops)
+                (points, stops, indices)
             },
         );
         Self {
             pieces: pieces(&points, &stops, corners),
             end: points[points.len() - 1].to_vec(),
+            waypoints: indices,
         }
     }
 
@@ -474,6 +489,17 @@ impl RoundedPath {
         Some(piece.at((s - start_at).clamp(0.0, piece.length())))
     }
 
+    /// The index, among the waypoints the path was given, of the waypoint the
+    /// point at `s` belongs to: the one its straight run starts from, or the
+    /// corner its arc rounds; the last waypoint at or after the path's length.
+    /// Of waypoints at no distance from each other, the first.
+    pub fn waypoint_at(&self, s: f64) -> usize {
+        let point = self
+            .piece_at(s)
+            .map_or(self.waypoints.len() - 1, |placed| placed.point);
+        self.waypoints[point]
+    }
+
     /// The piece the point at `s` lies on, or `None` at or after the path's
     /// length.
     fn piece_at(&self, s: f64) -> Option<&Placed> {
@@ -501,6 +527,28 @@ impl RoundedPath {
             || vec![0.0; self.dimension()],
             |placed| placed.piece.at(placed.piece.length()).1,
         )
+    }
+
+    /// The largest share of the path's unit tangent each component has
+    /// anywhere on the pieces that the positions from `from` to `to` touch, 0
+    /// for each where they touch none. A planner bounds how far a point moves
+    /// along that stretch by it.
+    pub fn max_abs_tangent(&self, from: f64, to: f64) -> Vec<f64> {
+        self.pieces
+            .iter()
+            .filter(|placed| {
+                placed.start_at <= to && placed.start_at + placed.piece.length() >= from
+            })
+            .map(|placed| {
+                let length = placed.piece.length();
+                placed.piece.max_abs_tangent(
+                    (from - placed.start_at).clamp(0.0, length),
+                    (to - placed.start_at).clamp(0.0, length),
+                )
+            })
+            .fold(vec![0.0; self.dimension()], |most, share| {
+                most.iter().zip(&share).map(|(m, s)| m.max(*s)).collect()
+            })
     }
 
     /// Positions along the path from its first waypoint, 0, to its last, its
@@ -802,6 +850,31 @@ impl TimedTrajectory {
 /// The most a waypoint of a joint path differs, in every joint, from the
 /// waypoint given before it and still repeats it, so the path rests there.
 pub const MIN_JOINT_CHANGE_RAD: f64 = 0.001;
+
+/// The waypoints (one or more) of a joint path that repeats none of them: the
+/// first, and each one that lies more than [`MIN_JOINT_CHANGE_RAD`] in some
+/// joint from the one kept before it. The last waypoint is where the path
+/// ends, so it replaces the waypoint kept before it when it lies within that
+/// of it in every joint, unless that one is the first. A planner answers
+/// these, so the path it answers rests at no repeat before its end.
+pub fn distinct_joint_waypoints<const N: usize>(waypoints: &[[f64; N]]) -> Vec<[f64; N]> {
+    assert!(!waypoints.is_empty(), "a joint path has a waypoint");
+    let last = waypoints.len() - 1;
+    waypoints
+        .iter()
+        .enumerate()
+        .fold(Vec::new(), |mut kept: Vec<[f64; N]>, (k, waypoint)| {
+            let repeats = |before: &[f64; N]| lies_within(waypoint, before, MIN_JOINT_CHANGE_RAD);
+            match kept.last() {
+                Some(before) if repeats(before) && k == last && kept.len() > 1 => {
+                    *kept.last_mut().expect("a waypoint is kept") = *waypoint;
+                }
+                Some(before) if repeats(before) && k < last => {}
+                _ => kept.push(*waypoint),
+            }
+            kept
+        })
+}
 
 /// A path of limb_motion's execute_joint_path played from rest to rest:
 /// straight between its waypoints, each corner rounded within
@@ -1145,8 +1218,9 @@ mod tests {
     }
 
     // A waypoint at no distance from the one before it is the same point: a
-    // path through repeats is the path through the distinct waypoints, and a
-    // path through one point takes no time and sits on it.
+    // path through repeats lays the pieces of the path through the distinct
+    // waypoints and takes its time, each naming the waypoints it was given,
+    // and a path through one point takes no time and sits on it.
     #[test]
     fn repeated_waypoints_are_one_point() {
         let (v, a) = ([1.0; JOINTS], [1.0; JOINTS]);
@@ -1168,7 +1242,8 @@ mod tests {
             &a,
         );
         let distinct = TimedPath::new(&[origin.clone(), corner, end.clone()], &v, &a);
-        assert_eq!(repeated, distinct);
+        assert_eq!(repeated.path().pieces, distinct.path().pieces);
+        assert_eq!(repeated.duration_s(), distinct.duration_s());
         let still = TimedPath::new(&[end.clone(), end.clone()], &v, &a);
         assert_eq!(still.duration_s(), 0.0);
         assert_eq!(still.at_fraction(0.3), end);
@@ -1550,10 +1625,111 @@ mod tests {
             vec![0.3, 0.2, 0.0, 0.0],
         );
         let nan = vec![f64::NAN, 0.0, 0.0, 0.0];
+        let through_nan =
+            TimedPath::new(&[origin.clone(), corner.clone(), nan, end.clone()], &v, &a);
+        let without = TimedPath::new(&[origin, corner, end], &v, &a);
+        assert_eq!(through_nan.path().pieces, without.path().pieces);
+        assert_eq!(through_nan.duration_s(), without.duration_s());
+    }
+
+    // A planner's path keeps the first waypoint, and each one that lies more
+    // than MIN_JOINT_CHANGE_RAD in some joint from the one kept before it; the
+    // last replaces the one kept before it when it lies within that of it,
+    // unless that one is the first.
+    #[test]
+    fn a_planners_path_drops_a_waypoint_within_the_least_change_of_the_one_kept_before_it() {
+        let near = MIN_JOINT_CHANGE_RAD / 2.0;
+        let far = MIN_JOINT_CHANGE_RAD * 2.0;
+        let q = |x: f64, y: f64| [x, y];
         assert_eq!(
-            TimedPath::new(&[origin.clone(), corner.clone(), nan, end.clone()], &v, &a),
-            TimedPath::new(&[origin, corner, end], &v, &a)
+            distinct_joint_waypoints(&[q(0.0, 0.0), q(near, 0.0), q(far, 0.0), q(far, 1.0)]),
+            [q(0.0, 0.0), q(far, 0.0), q(far, 1.0)]
         );
+        // Two near steps add up to the least change, and each is judged
+        // against the waypoint kept, the first.
+        assert_eq!(
+            distinct_joint_waypoints(&[q(0.0, 0.0), q(near, 0.0), q(2.0 * near, 0.0), q(1.0, 0.0)]),
+            [q(0.0, 0.0), q(1.0, 0.0)]
+        );
+        assert_eq!(
+            distinct_joint_waypoints(&[q(0.0, 0.0), q(1.0, 0.0), q(1.0, near)]),
+            [q(0.0, 0.0), q(1.0, near)]
+        );
+        assert_eq!(
+            distinct_joint_waypoints(&[q(0.0, 0.0), q(near, near)]),
+            [q(0.0, 0.0), q(near, near)]
+        );
+        assert_eq!(distinct_joint_waypoints(&[q(0.5, 0.5)]), [q(0.5, 0.5)]);
+    }
+
+    // Through any waypoints, near repeats among them, a planner's path starts
+    // on the first and ends on the last; no waypoint of it before the last
+    // repeats the one before it, so its joint path rests at no repeat before
+    // its end; and each waypoint given lies within MIN_JOINT_CHANGE_RAD in
+    // every joint of one it keeps, or of the one the last replaced, a waypoint
+    // given within it of the last.
+    #[hegel::test]
+    fn a_planners_path_repeats_no_waypoint_and_keeps_each_one_given(tc: TestCase) {
+        let waypoints: Vec<[f64; JOINTS]> =
+            joint_waypoints(&tc).into_iter().map(|(q, _)| q).collect();
+        let kept = distinct_joint_waypoints(&waypoints);
+        assert_eq!(kept[0], waypoints[0]);
+        assert_eq!(kept.last(), waypoints.last());
+        let before_the_last = &kept[..kept.len() - 1];
+        for pair in before_the_last.windows(2) {
+            assert!(
+                !lies_within(&pair[1], &pair[0], MIN_JOINT_CHANGE_RAD),
+                "{:?} repeats {:?}",
+                pair[1],
+                pair[0]
+            );
+        }
+        let end = kept.last().expect("a waypoint is kept");
+        let replaced = |r: &[f64; JOINTS]| lies_within(r, end, MIN_JOINT_CHANGE_RAD);
+        for q in &waypoints {
+            assert!(
+                kept.iter().any(|k| lies_within(q, k, MIN_JOINT_CHANGE_RAD))
+                    || waypoints
+                        .iter()
+                        .any(|r| replaced(r) && lies_within(q, r, MIN_JOINT_CHANGE_RAD)),
+                "{q:?} lies near no waypoint kept"
+            );
+        }
+    }
+
+    // A path names a waypoint by its index among the waypoints it was given,
+    // the first of waypoints at no distance from each other: here one repeated
+    // exactly, and one whose distance squares to nothing.
+    #[test]
+    fn a_path_names_its_waypoints_by_their_given_indices() {
+        let waypoints = vec![
+            vec![0.0, 0.0],
+            vec![0.0, 0.0],
+            vec![1e-162, 0.0],
+            vec![1.0, 0.0],
+            vec![1.0, 1.0],
+        ];
+        let path = RoundedPath::through(&waypoints, Corners::HalfShorterRun);
+        assert_eq!(path.waypoint_at(0.1), 0);
+        assert_eq!(path.waypoint_at(1.0), 3);
+        assert_eq!(path.waypoint_at(path.length() - 0.1), 3);
+        assert_eq!(path.waypoint_at(path.length()), 4);
+    }
+
+    // A joint path names a waypoint within MIN_JOINT_CHANGE_RAD of the one
+    // before it by its own index: the path rests there, and the run from it
+    // is its own.
+    #[test]
+    fn a_joint_path_names_a_near_repeat_by_its_own_index() {
+        let near = MIN_JOINT_CHANGE_RAD / 2.0;
+        let path = RoundedPath::joint_path(&[
+            vec![0.0, 0.0],
+            vec![near, 0.0],
+            vec![1.0, 0.0],
+            vec![1.0, 1.0],
+        ]);
+        assert_eq!(path.waypoint_at(near / 2.0), 0);
+        assert_eq!(path.waypoint_at(near + 0.1), 1);
     }
 
     // The arcs every spacing along a path run in order from 0 to its length
@@ -1583,6 +1759,33 @@ mod tests {
         for w in points.windows(2) {
             let apart = norm(&difference(&w[1], &w[0]));
             assert!(apart <= spacing.get() * (1.0 + 1e-9), "{apart} apart");
+        }
+    }
+
+    // Between any two positions of a path, each component of its heading
+    // keeps within the largest share of the tangent the path gives for them.
+    #[hegel::test]
+    fn the_heading_keeps_within_the_largest_share_of_the_tangent(tc: TestCase) {
+        let waypoints = waypoints(&tc);
+        let path = RoundedPath::through(&waypoints, Corners::joint_path());
+        let length = path.length();
+        let position = || -> f64 { tc.draw(gs::floats().min_value(0.0).max_value(length)) };
+        let (a, b) = (position(), position());
+        let (from, to) = (a.min(b), a.max(b));
+        let share = path.max_abs_tangent(from, to);
+        assert!(
+            share.iter().all(|&s| (0.0..=1.0 + 1e-12).contains(&s)),
+            "{share:?}"
+        );
+        for k in 0..=16 {
+            let s = from + (to - from) * f64::from(k) / 16.0;
+            let heading = path.heading_at(s);
+            for (h, most) in heading.iter().zip(&share) {
+                assert!(
+                    h.abs() <= most + 1e-12,
+                    "the heading {heading:?} at {s} passes the share {share:?}"
+                );
+            }
         }
     }
 

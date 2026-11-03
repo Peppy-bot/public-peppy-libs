@@ -47,4 +47,11 @@ void write_json(const std::filesystem::path& path, const nlohmann::json& documen
 // its bits, and refuses each NaN and infinity.
 void check_shortest_decimals();
 
+// Initializes rclcpp in the reference program's process, once, for a reference that reads
+// its parameters from a ROS node. The context leaves ROS logging unconfigured:
+// configuring it creates a log directory in the home directory, and the container runs as
+// the host's user, whom the image may give no home directory. ROS messages still go to
+// the console.
+void start_ros();
+
 }  // namespace ros_reference

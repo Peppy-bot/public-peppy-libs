@@ -21,6 +21,7 @@ change of the reference, which `run.sh --check` proves.
 | `path_timing` | MoveIt's time-optimal trajectory generation (TOTG): the blended path through waypoints at a maximum deviation, and its time-optimal duration under velocity and acceleration limits, or its refusal of a path that turns back | `control_core/tests/ros_reference_path_timing.rs` |
 | `planning` | OMPL's geometric planners: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
 | `occupancy` | MoveIt's point cloud updater: the log-odds of every voxel of MoveIt's occupancy map after a sequence of point clouds, with a sphere cut out as the robot's own body | `occupancy_map/tests/ros_reference_occupancy.rs` |
+| `arm_planning` | MoveIt's planning pipeline with OMPL's RRTConnect, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, on scenes of OpenArm v2's left arm, the fingers of its gripper checked with it, among boxes of voxels as an octomap: MoveIt's answer to each scene, planned to the goal state itself, and MoveIt's collision check, smallest distance and length along its path and along motion_planning_core's, which the scenario carries (`tools/draw_arm_planning.py` writes it, with the answers of `motion_planning_core`'s example `plan_arm_scenes`) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
 
 ## Layout
 
@@ -94,10 +95,17 @@ them within its bound.
    and the container runs as the host's user, whom the image may give none.
 2. A reference gives the same output on every run: the container has no network and one
    OpenMP thread, every random generator of a reference is seeded from its scenario, and
-   a search ends on an iteration bound that the scenario gives.
-3. A reference that is statistical by nature (a sampling planner, a particle filter) runs
-   over the seeds that its scenario lists, and its committed output holds the statistic,
-   with its interval. Like every output, it changes only when the image changes.
+   a search ends on an iteration bound that the scenario gives. MoveIt's samplers draw
+   from generators of random_numbers that they construct by its default constructor, which
+   random_numbers seeds from the clock; the reference program defines that constructor and
+   exports it, so MoveIt's libraries construct their generators through it, and the arm
+   planning reference seeds them from each scene.
+3. A comparison that is statistical by nature, a sampling planner's against another's,
+   runs over a drawn set, locally: draw the set with the `--drawn` option of the kind's
+   script, run `run.sh`, and run the crate's parity test with `cargo test -- --ignored`,
+   which holds the statistical test; the pull request states its tally at its head. The
+   statistical test refuses a set too small for its intervals. The committed cases of such
+   a kind compare bit for bit, as every other output does.
 4. A parity test states what the library guarantees, and the bound within which its
    outputs agree with the reference, or the statistic it compares, and why. A number of
    an output reads back to the bits that the reference computed, so a test compares
@@ -110,7 +118,15 @@ them within its bound.
    voxels do: MoveIt's arm64 build fuses multiply-adds in its point cloud callback (31 of
    them in `cloudMsgCallback`). Its map of `occupancy_room` equals the amd64 one in all
    398 voxels, and that of a drawn set of 60 points of each drawn case (rule 6) differs
-   from the amd64 one in 6 of 7187 voxels (0.08%).
+   from the amd64 one in 6 of 7187 voxels (0.08%). The arm planning test plans and
+   compares this crate's paths, and asks for a scene of each outcome, on amd64 alone,
+   where the committed outputs hold the answers of MoveIt that the scenes were picked
+   by. Against the outputs that `ROS_REFERENCE_OUTPUTS` names, it holds every probe of
+   those paths free in MoveIt's check and each refusal as MoveIt's. MoveIt's arm64 build
+   answers the committed scenes otherwise: it refuses the same four starts and goals, and
+   of the four scenes it plans, it plans the straight path to other last bits and another
+   path with corners, its own check passes the path that fails it on amd64, and fails
+   the path with the most corners that passes it on amd64.
 5. One rule lays out every scenario and every reference output: a value goes on one line
    when it is a scalar, an array of scalars, or a record, an object whose members are
    each a scalar or an array of scalars; every other array or object spreads over lines,
@@ -148,12 +164,18 @@ them within its bound.
    inside the robot's sphere and beyond the range, a hit on the ray of another hit, a
    voxel that the later cloud crosses after the scene took it to the upper clamp, a
    cut-out voxel on the ray of another point, and a voxel that holds a cut-out point and a
-   hit, and the level sensor's two points beyond the range at a voxel face. A large drawn
-   set runs locally and is never committed: draw it into `scenarios/` with the `--drawn`
-   option of the kind's script (for forward kinematics, `python3
-   ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
-   `ros_reference/run.sh` and the parity tests, and restore the committed files with `git
-   restore ros_reference/scenarios ros_reference/reference`.
+   hit, and the level sensor's two points beyond the range at a voxel face; for arm
+   planning, one drawn scene of each outcome of `tools/draw_arm_planning.py`, a straight
+   path and a path with corners that MoveIt plans too, the scene whose path has the most
+   corners among the first 200 drawn, which the script picks, a path of
+   `motion_planning_core` where MoveIt's own path fails its check, a start in a box and a
+   goal in a box that both refuse, and a start below a lower limit and one above an upper
+   limit, its statistics over 200 drawn scenes as rule 3 says. A large drawn set runs
+   locally and is never committed: draw it into `scenarios/` with the `--drawn` option of
+   the kind's script (for forward kinematics,
+   `python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
+   `ros_reference/run.sh` and the parity tests, and restore the committed files with
+   `git restore ros_reference/scenarios ros_reference/reference`.
 
 ## Pins
 
@@ -216,9 +238,10 @@ arm64 host.
    deviations of 0.01, 0.05, 0.1 and 0.2, a straight run, a path that it refuses, a path
    with a corner that it runs straight on, turns that bracket its turning-back threshold
    within 0.02 degrees, and a path with corners at the deviation of execute_joint_path,
-   and the planning parity test asks each scenario for a plan of each planner that finds a
-   path and one that finds none, and the occupancy parity test asks each scenario's map
-   for at least 199 voxels.
+   the planning parity test asks each scenario for a plan of each planner that finds a
+   path and one that finds none, the occupancy parity test asks each scenario's map for at
+   least 199 voxels, and the arm planning parity test asks each scenario for a scene of
+   each outcome that it names.
 
 A routine test of `ros_reference` fails when a scenario has no reference output, a
 reference output has no scenario or no digest, or a scenario, a URDF or a mesh differs

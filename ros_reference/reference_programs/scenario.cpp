@@ -16,6 +16,8 @@
 #include <system_error>
 #include <utility>
 
+#include <rclcpp/rclcpp.hpp>
+
 namespace ros_reference {
 
 Inputs::Inputs(std::filesystem::path repository_root)
@@ -207,6 +209,15 @@ void check_shortest_decimals() {
                          -std::numeric_limits<double>::infinity()}) {
     require_refused(x);
   }
+}
+
+void start_ros() {
+  if (rclcpp::ok()) {
+    return;
+  }
+  rclcpp::InitOptions options;
+  options.auto_initialize_logging(false);
+  rclcpp::init(0, nullptr, options);
 }
 
 }  // namespace ros_reference
