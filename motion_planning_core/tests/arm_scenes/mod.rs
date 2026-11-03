@@ -18,7 +18,9 @@ use motion_planning_core::{
 };
 use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
 use ompl_bridge::Planner;
-use ros_reference::arm_planning::{Ours, Scene as ReferenceScene, Scenes, VoxelBox};
+use ros_reference::arm_planning::{
+    Objective, Ours, Scene as ReferenceScene, Scenes, Termination, VoxelBox,
+};
 
 pub const JOINTS: usize = 7;
 /// The configurations the goal sampler draws for a scene's joint goal.
@@ -133,6 +135,24 @@ fn configuration(values: &[f64]) -> [f64; JOINTS] {
     values.try_into().expect("one position per joint")
 }
 
+/// The planner of `objective`: RRTConnect for `any`, as the motion planner node plans it,
+/// and RRTstar for `shortest`.
+fn planner_of(objective: Objective) -> Planner {
+    match objective {
+        Objective::Any => Planner::RrtConnect,
+        Objective::Shortest => Planner::RrtStar,
+    }
+}
+
+/// The iteration bound of this crate's plans of `scenes`, as their termination says.
+fn max_iterations(scenes: &Scenes) -> NonZeroU64 {
+    let bound = NonZeroU64::new(scenes.iterations).expect("nonzero");
+    match (scenes.termination, scenes.objective) {
+        (Termination::Iterations, _) | (Termination::Time, Objective::Any) => bound,
+        (Termination::Time, Objective::Shortest) => NonZeroU64::MAX,
+    }
+}
+
 /// This crate's answer to `scene`, among the voxels its boxes occupy.
 pub fn plan_scene<O>(
     arm: &Arm<JOINTS>,
@@ -172,9 +192,9 @@ pub fn plan_scene<O>(
             goal: &goal,
             sampler,
             goal_samples: NonZeroUsize::new(GOAL_SAMPLES).expect("nonzero"),
-            planner: Planner::RrtConnect,
+            planner: planner_of(scenes.objective),
             deadline: Instant::now() + Duration::from_secs_f64(scenes.time_limit),
-            max_iterations: NonZeroU64::new(scenes.iterations).expect("nonzero"),
+            max_iterations: max_iterations(scenes),
             attempts: NonZeroU32::MIN,
             seed: scene.seed.get(),
             min_clearance_m: scenes.min_clearance,

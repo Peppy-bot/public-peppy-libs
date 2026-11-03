@@ -16,6 +16,8 @@ directory:
     python3 ros_reference/tools/draw_arm_planning.py --drawn 200
     python3 ros_reference/tools/draw_arm_planning.py --episodes <episodes> \
         --launcher <launchers-hub>/openarm/fragments/motion_planner.json5
+    python3 ros_reference/tools/draw_arm_planning.py --drawn 200 --objective shortest \
+        --planning-time 5
 
 The second keeps the first 200 drawn scenes in place of those it picks, a large set for a
 local run, which the README describes. The third writes, in place of the drawn scenes,
@@ -23,7 +25,11 @@ the scenes of episodes of OpenArm v2 recorded in simulation, each a subdirectory
 <episodes> in the format the README gives, in the map of the motion planner whose
 launcher fragment `--launcher` names, also a large set for a local run:
 motion_planning_core's example scenes_from_episodes turns each episode into a scene, and
-the script prints the episodes it drops and why.
+the script prints the episodes it drops and why. Each plan optimizes `--objective`:
+`any`, the planner RRTConnect, by default, as plan_joint_path names it, or `shortest`,
+RRTstar, a mode the harness measures ahead of the contract. Each plan ends on ITERATIONS, TIME_LIMIT far beyond them, so it repeats under
+its seed. The fourth ends each plan on `--planning-time` alone, as a robot's plan ends;
+that option and `--objective shortest` go with a drawn set or the episodes' scenes.
 """
 
 import json
@@ -43,6 +49,7 @@ OUTSIDE_LIMITS = 2
 MIN_CLEARANCE = 0.0
 CORNER_TOLERANCE = 0.1
 GOAL_TOLERANCE = 0.01
+OBJECTIVES = ("any", "shortest")
 TIME_LIMIT = 600.0
 ITERATIONS = 20000
 # The drawn scenes the scenario picks from.
@@ -131,10 +138,18 @@ def corners(ours):
     return max(len(ours.get("waypoints", [])) - 2, 0)
 
 
-def header(arm, voxel_map):
+def plans(objective, planning_time):
+    """The plans' objective and termination: ended on ITERATIONS, or with `planning_time`
+    on that time alone."""
+    if planning_time is None:
+        return {"objective": objective, "termination": "iterations", "time_limit": TIME_LIMIT}
+    return {"objective": objective, "termination": "time", "time_limit": planning_time}
+
+
+def header(arm, voxel_map, planning):
     """The scenario's header: the robot, the arm `arm` (its base_link, tip_link and
     joints), the map `voxel_map` (its voxel_size and map_half_side) and the plans'
-    parameters."""
+    parameters, `planning` (their objective and termination) among them."""
     return {
         "kind": "arm_planning",
         "urdf": URDF,
@@ -144,7 +159,7 @@ def header(arm, voxel_map):
         "min_clearance": MIN_CLEARANCE,
         "corner_tolerance": CORNER_TOLERANCE,
         "goal_tolerance": GOAL_TOLERANCE,
-        "time_limit": TIME_LIMIT,
+        **planning,
         "iterations": ITERATIONS,
     }
 
@@ -159,9 +174,9 @@ def planned(scenario_header, scenes):
     return {**scenario_header, "probe_spacing": answers["probe_spacing"], "scenes": answered}
 
 
-def drawn_scenario(drawn):
+def drawn_scenario(drawn, planning):
     """The scenario of the drawn scenes: those it picks, or with `drawn` the first `drawn`,
-    and the starts outside the limits."""
+    and the starts outside the limits, planned as `planning` says."""
     rng = generator(NAME)
     model = robot(URDF)
     limits = [joint_limits(model, joint) for joint in openarm_joints("left")]
@@ -173,7 +188,7 @@ def drawn_scenario(drawn):
         "joints": openarm_joints("left"),
     }
     voxel_map = {"voxel_size": VOXEL_SIZE, "map_half_side": MAP_HALF_SIDE}
-    scenario = planned(header(left, voxel_map), [*drawn_scenes, *outside])
+    scenario = planned(header(left, voxel_map, planning), [*drawn_scenes, *outside])
     answered = scenario["scenes"]
     kept_drawn = answered[: len(drawn_scenes)]
     if not drawn:
@@ -182,18 +197,20 @@ def drawn_scenario(drawn):
     return {**scenario, "scenes": [*kept_drawn, *answered[len(drawn_scenes) :]]}
 
 
-def episodes_scenario(episodes, launcher):
+def episodes_scenario(episodes, launcher, planning):
     """The scenario of the episodes under `episodes`, in the map of the motion planner of
-    the launcher fragment `launcher`; prints the episodes the example drops."""
+    the launcher fragment `launcher`, planned as `planning` says; prints the episodes the
+    example drops. The example draws each goal within TIME_LIMIT, so the scenes are the
+    same under every `planning`."""
     command = example("scenes_from_episodes", str(episodes), str(launcher))
-    converted = run_example(command, header({}, {}))
+    converted = run_example(command, header({}, {}, plans("any", None)))
     scenes, dropped = converted["scenes"], converted["dropped"]
     print(f"{len(scenes)} scenes of {len(scenes) + len(dropped)} episodes")
     for reason, count in Counter(d["reason"] for d in dropped).items():
         print(f"dropped {count}: {reason}")
     for d in dropped:
         print(f"  {d['episode']}: {d['reason']}: {d['detail']}")
-    return planned(header(converted["arm"], converted["map"]), scenes)
+    return planned(header(converted["arm"], converted["map"], planning), scenes)
 
 
 def main():
@@ -204,6 +221,18 @@ def main():
     parser.add_argument(
         "--launcher", type=Path, help="the launcher fragment of the motion planner, with --episodes"
     )
+    parser.add_argument(
+        "--objective",
+        choices=OBJECTIVES,
+        default="any",
+        help="what each plan optimizes: any (RRTConnect) or shortest (RRTstar)",
+    )
+    parser.add_argument(
+        "--planning-time",
+        type=float,
+        metavar="SECONDS",
+        help="the time each plan ends on alone, as a robot's plan ends",
+    )
     args = parser.parse_args()
     if (args.episodes is None) != (args.launcher is None):
         parser.error(
@@ -212,10 +241,20 @@ def main():
         )
     if args.episodes is not None and args.drawn:
         parser.error("--episodes writes the episodes' scenes in place of drawn ones: drop --drawn")
+    if args.planning_time is not None and not 0 < args.planning_time < math.inf:
+        parser.error(f"--planning-time is {args.planning_time}; give the seconds, more than 0")
+    committed = args.episodes is None and not args.drawn
+    if committed and (args.objective != "any" or args.planning_time is not None):
+        parser.error(
+            "the committed scenario plans `any` on its iterations, the plans its scenes are "
+            "picked by: give --drawn 200, or --episodes and --launcher, with --objective or "
+            "--planning-time"
+        )
+    planning = plans(args.objective, args.planning_time)
     if args.episodes is None:
-        write(NAME, drawn_scenario(args.drawn))
+        write(NAME, drawn_scenario(args.drawn, planning))
         return
-    write(NAME, episodes_scenario(args.episodes, args.launcher))
+    write(NAME, episodes_scenario(args.episodes, args.launcher, planning))
 
 
 if __name__ == "__main__":

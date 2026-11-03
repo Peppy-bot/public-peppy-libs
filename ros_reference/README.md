@@ -21,7 +21,7 @@ change of the reference, which `run.sh --check` proves.
 | `path_timing` | MoveIt's time-optimal trajectory generation (TOTG): the blended path through waypoints at a maximum deviation, and its time-optimal duration under velocity and acceleration limits, or its refusal of a path that turns back | `control_core/tests/ros_reference_path_timing.rs` |
 | `planning` | OMPL's geometric planners: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
 | `occupancy` | MoveIt's point cloud updater: the log-odds of every voxel of MoveIt's occupancy map after a sequence of point clouds, with a sphere cut out as the robot's own body | `occupancy_map/tests/ros_reference_occupancy.rs` |
-| `arm_planning` | MoveIt's planning pipeline with OMPL's RRTConnect, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, on scenes of an arm of OpenArm v2, the fingers of its gripper checked with it, among boxes of voxels as an octomap: MoveIt's answer to each scene, planned to the goal state itself, and MoveIt's collision check, smallest distance and length along its path and along motion_planning_core's, which the scenario carries (`tools/draw_arm_planning.py` writes it, with the answers of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
+| `arm_planning` | MoveIt's planning pipeline with the OMPL planner of the scenario's objective, RRTConnect for `any` and RRTstar for `shortest`, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, on scenes of an arm of OpenArm v2, the fingers of its gripper checked with it, among boxes of voxels as an octomap: MoveIt's answer to each scene, planned to the goal state itself, and MoveIt's collision check, smallest distance and length along its path and along motion_planning_core's, which the scenario carries (`tools/draw_arm_planning.py` writes it, with the answers of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
 
 ## Layout
 
@@ -130,9 +130,14 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    `tools/draw_arm_planning.py --episodes <directory> --launcher <fragment>` writes their
    scenes in place of the drawn ones, each the map the motion planner of the launcher
    fragment builds of the episode's depth frames, its measured start, and a goal
-   configuration drawn for its pose goal. The statistical test refuses a set too small
-   for its intervals. The committed cases of such a kind compare bit for bit, as every
-   other output does.
+   configuration drawn for its pose goal. The arm planning script's `--objective
+   shortest` plans each scene with RRTstar, and its `--planning-time <seconds>` ends each
+   plan on that time alone, MoveIt's on its allowed planning time and
+   motion_planning_core's on its deadline, as a robot's plan ends; a set planned so gives
+   other paths on each run, and runs locally, never committed. The statistical test
+   refuses a set too small for its intervals. The committed cases of such a kind compare
+   bit for bit, as every other output does: the arm planning scenario plans `any` on its
+   iterations.
 4. A parity test states what the library guarantees, and the bound within which its
    outputs agree with the reference, or the statistic it compares, and why. A number of
    an output reads back to the bits that the reference computed, so a test compares
@@ -203,6 +208,13 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    `python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
    `ros_reference/run.sh` and the parity tests, and restore the committed files with
    `git restore ros_reference/scenarios ros_reference/reference`.
+7. Every mode of arm planning that a caller selects, each objective and planner that the
+   contracts expose, has its own arm planning scenario and tally against MoveIt at
+   MoveIt's production time model: each plan ended on its allowed planning time alone
+   (`--planning-time`), at MoveIt's default of 5 s (moveit2 2.15.2
+   `MoveGroupInterfaceImpl`, `allowed_planning_time_ = 5.0`) and at the time that the
+   robot's callers ask, over the drawn set and the recorded episodes, as rule 3 says. The
+   pull request states which modes its tally covers.
 
 ## Pins
 
