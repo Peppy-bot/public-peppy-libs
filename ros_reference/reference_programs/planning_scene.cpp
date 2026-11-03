@@ -81,8 +81,8 @@ const std::map<std::string, std::uint8_t> primitive_types = {
     {"cylinder", SolidPrimitive::CYLINDER},
 };
 
-// The collision object message that adds the object of `entry`, an entry of
-// apply_collision_objects as motion_planning writes it, with its shapes, in `frame`.
+}  // namespace
+
 moveit_msgs::msg::CollisionObject object_added(const nlohmann::json& entry,
                                                const std::string& frame) {
   moveit_msgs::msg::CollisionObject object;
@@ -122,6 +122,8 @@ moveit_msgs::msg::CollisionObject object_added(const nlohmann::json& entry,
   }
   return object;
 }
+
+namespace {
 
 // Sets each joint `positions` names to its position in the scene's current state, after
 // refusing positions that leave a movable joint on the path to `link` unnamed.

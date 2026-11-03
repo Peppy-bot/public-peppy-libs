@@ -1,16 +1,16 @@
 //! Parity with MoveIt's planning pipeline on the arm planning scenarios of the ROS
-//! reference harness, at a clearance of 0 and one attempt, the gripper's fingers carried
-//! by the arm in both, each plan with the planner of the scenario's objective. This crate
-//! still plans the paths each scenario carries; MoveIt's collision check finds every
-//! probe of each of them free; this crate refuses each start that MoveIt refuses outside
-//! a joint limit or in collision; and over the scenes of a drawn set, the success rate
-//! and the mean smallest clearance lie within or above MoveIt's 95% intervals, and the
-//! mean path length within or below its interval. Each scenario holds a scene of each
-//! outcome the README names.
+//! reference harness, at one attempt, the gripper's fingers carried by the arm in both,
+//! each plan with the planner of the scenario's objective. The committed scenarios plan at
+//! a clearance of 0: this crate still plans the paths each of them carries; MoveIt's
+//! collision check finds every probe of each of them free; this crate refuses each start
+//! that MoveIt refuses outside a joint limit or in collision; and each holds a scene of
+//! each outcome the README names. Over the scenes of a drawn set, at its clearance, which
+//! pads MoveIt's links, the success rate and the mean smallest clearance lie within or
+//! above MoveIt's 95% intervals, and the mean path length within or below its interval.
 
 mod arm_scenes;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use control_core::path_timing::JOINT_PATH_CORNER_DEVIATION;
 use hegel::TestCase;
@@ -21,6 +21,8 @@ use ros_reference::arm_planning::{
 };
 
 use arm_scenes::{boxes_of, geometry, map_of, on_the_arm, plan_scene, probe_spacing};
+use nalgebra::Point3;
+use openarm_description::{HardwareVersion, Side};
 
 /// MoveIt's error codes of a refusal: a start outside a joint limit, a start in
 /// collision, and a goal state that is not valid; and of a planned path that MoveIt's
@@ -93,6 +95,10 @@ fn a_maps_voxels_as_boxes_fill_a_scenes_map_with_them(tc: TestCase) {
         .draw(gs::vecs(gs::arrays(gs::integers::<i32>().min_value(-5).max_value(4))).max_size(60));
     let scene_of = |boxes: Vec<VoxelBox>| Scene {
         boxes,
+        objects: Vec::new(),
+        attached: None,
+        other_arm_holds: None,
+        allowed: Vec::new(),
         start: Vec::new(),
         goal: Vec::new(),
         seed: std::num::NonZeroU32::MIN,
@@ -134,6 +140,73 @@ fn a_maps_voxels_as_boxes_fill_a_scenes_map_with_them(tc: TestCase) {
     assert_eq!(occupied(&map_of(&scenes, &scene_of(boxes))), occupied(&map));
 }
 
+// The robot around a scenario's arm, the left or the right one, holds the other arm at its
+// zero configuration: of the planned arm's side only its base link, which no joint moves,
+// stands, some parts lie on the other arm's, and each lies where the self model at zero
+// places it, however far the planned arm stands from zero.
+#[test]
+fn the_robot_around_either_arm_holds_the_other_arm_at_zero() {
+    let mut case = Case::load_all()
+        .into_iter()
+        .find(|case| case.name == "arm_planning_openarm_v2")
+        .expect("the scenario among boxes");
+    let meshes = case.meshes.to_str().expect("a UTF-8 mesh directory");
+    let mut model = self_collision_model::openarm(HardwareVersion::V2, meshes)
+        .expect("the self model of OpenArm v2");
+    let at_zero: BTreeMap<String, Vec<Point3<f64>>> = model
+        .world_pieces(&[0.0; 7], &[0.0; 7])
+        .expect("finite joint positions")
+        .into_iter()
+        .map(|(link, pieces)| {
+            let centers = pieces
+                .iter()
+                .map(|piece| piece.bounding_sphere().0)
+                .collect();
+            (link.to_string(), centers)
+        })
+        .collect();
+    let start = [0.3, -0.4, 0.2, 0.9, -0.1, 0.5, 0.2];
+    let prefix = |side| HardwareVersion::V2.tcp_link(side).trim_end_matches("tcp");
+    for side in Side::BOTH {
+        let named = |name: &str| name.replace(prefix(Side::Left), prefix(side));
+        case.scenes.base_link = named(&case.scenes.base_link);
+        case.scenes.tip_link = named(&case.scenes.tip_link);
+        case.scenes.joints = case
+            .scenes
+            .joints
+            .iter()
+            .map(|joint| named(joint))
+            .collect();
+        on_the_arm(&case.scenes, &case.urdf, &case.meshes, |arm, standing| {
+            let parts = standing.parts(arm, &start);
+            let base = HardwareVersion::V2.base_link(side);
+            for part in &parts {
+                assert!(
+                    !part.link.starts_with(prefix(side)) || part.link == base,
+                    "{side:?}: {} of the planned arm stands",
+                    part.link
+                );
+            }
+            assert!(
+                parts
+                    .iter()
+                    .any(|part| part.link.starts_with(prefix(side.other()))),
+                "{side:?}: no part of the other arm stands"
+            );
+            let mut given: BTreeMap<String, Vec<Point3<f64>>> = BTreeMap::new();
+            for part in &parts {
+                given
+                    .entry(part.link.to_string())
+                    .or_default()
+                    .push(part.piece.bounding_sphere().0);
+            }
+            for (link, centers) in given {
+                assert_eq!(centers, at_zero[&link], "{side:?}: {link}");
+            }
+        });
+    }
+}
+
 // This crate plans, scene by scene, the answer each scenario carries for it: the paths
 // the reference probed are this crate's, rounded as execute_joint_path rounds them, and
 // probed at the spacing this crate's arm gives. Each scenario's plans end on its
@@ -150,7 +223,7 @@ fn each_scenario_carries_the_paths_this_crate_plans() {
             case.name
         );
         assert_eq!(case.scenes.corner_tolerance, JOINT_PATH_CORNER_DEVIATION);
-        on_the_arm(&case.scenes, &case.urdf, &case.meshes, |arm| {
+        on_the_arm(&case.scenes, &case.urdf, &case.meshes, |arm, standing| {
             let sampler = IkGoalSampler::new(arm.geometry().chain().clone());
             assert_eq!(
                 case.probe_spacing,
@@ -160,7 +233,7 @@ fn each_scenario_carries_the_paths_this_crate_plans() {
             );
             for (k, c) in case.cases.iter().enumerate() {
                 assert_eq!(
-                    plan_scene(arm, &sampler, &case.scenes, &c.scene),
+                    plan_scene(arm, standing, &sampler, &case.scenes, &c.scene).ours,
                     c.scene.ours,
                     "{} scene {k}",
                     case.name
@@ -286,72 +359,158 @@ fn moveit_finds_every_path_of_this_crate_free() {
     }
 }
 
-// Over the scenes of a drawn set, this crate's success rate and mean smallest clearance
-// lie within or above MoveIt's 95% intervals, and its mean path length within or below
-// MoveIt's; a probe of MoveIt's in collision measures a clearance of -1. The committed
-// scenes, one of each outcome, are too few for the intervals: the test runs on a drawn
-// set, locally, as the harness README's rule 3 says, and the pull request states its
-// tally at its head, for each objective and termination it ran.
-#[test]
-#[ignore = "statistics of a drawn set, run locally as the harness README's rule 3 says"]
-fn the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() {
-    for case in Case::load_all() {
-        let scenes: &[SceneCase] = &case.cases;
-        assert!(
-            scenes.len() >= MIN_SCENES,
-            "{}: {} scenes; the statistics need a drawn set of at least {MIN_SCENES}: \
-             draw_arm_planning.py --drawn 200, run.sh, then cargo test -- --ignored",
-            case.name,
-            scenes.len()
-        );
-        println!(
-            "{}: {} scenes, objective {:?}, ended by {:?}, time limit {} s",
-            case.name,
-            scenes.len(),
-            case.scenes.objective,
-            case.scenes.termination,
-            case.scenes.time_limit
-        );
-        let ours: Vec<Probed> = scenes.iter().filter_map(|c| c.ours_probed).collect();
-        let theirs: Vec<Probed> = scenes.iter().filter_map(|c| c.moveit.probed).collect();
-        let (low, high) = rate_interval(theirs.len(), scenes.len());
-        let rate = ours.len() as f64 / scenes.len() as f64;
-        let moveit_rate = theirs.len() as f64 / scenes.len() as f64;
-        println!(
-            "{}: success rate ours {rate}, MoveIt's {moveit_rate} in {low}..{high}",
-            case.name
-        );
-        assert!(
-            rate >= low,
-            "{}: a success rate of {rate}, below MoveIt's interval from {low}",
-            case.name
-        );
-        let interval = |of: fn(&Probed) -> f64| {
-            let values: Vec<f64> = theirs.iter().map(of).collect();
-            let mean = ours.iter().map(of).sum::<f64>() / ours.len() as f64;
-            (mean, mean_interval(&values))
-        };
-        let (clearance, (low, high)) = interval(|p| p.clearance);
-        println!(
-            "{}: clearance ours {clearance}, MoveIt's {} in {low}..{high}",
-            case.name,
-            (low + high) / 2.0
-        );
-        assert!(
-            clearance >= low,
-            "{}: a mean clearance of {clearance}, below MoveIt's interval from {low}",
-            case.name
-        );
-        let (length, (low, high)) = interval(|p| p.length);
-        println!(
-            "{}: length ours {length}, MoveIt's {} in {low}..{high}",
-            case.name,
-            (low + high) / 2.0
-        );
-        assert!(
-            length <= high,
-            "{}: a mean length of {length}, above MoveIt's interval to {high}",
-            case.name
-        );
+/// The spare a plan keeps above its clearance from an object, 1 mm (the plan module's
+/// `MIN_SPARE_M`, for a term of one moving body): a held object keeps the clearance and this
+/// from an object at each checked state.
+const OBJECT_SPARE_M: f64 = 1e-3;
+
+/// A group of scenes, by its name, and whether a scene belongs to it.
+type Group = (&'static str, fn(&SceneCase) -> bool);
+
+/// What `scenes` show: their number; this crate's paths and failures by name, and
+/// MoveIt's paths and error codes; the mean smallest clearance and path length of each
+/// one's paths; how many of each one's paths MoveIt's check finds in collision at a
+/// probe; and how many bring the object the arm holds nearer an object or a voxel than
+/// `held_within`.
+fn tally(scenes: &[&SceneCase], held_within: f64) -> String {
+    let mut failures: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut codes: BTreeMap<i32, usize> = BTreeMap::new();
+    for c in scenes {
+        if let Some(name) = failure(&c.scene.ours) {
+            *failures.entry(name).or_default() += 1;
+        }
+        *codes.entry(c.moveit.status).or_default() += 1;
     }
+    let ours: Vec<Probed> = scenes.iter().filter_map(|c| c.ours_probed).collect();
+    let theirs: Vec<Probed> = scenes.iter().filter_map(|c| c.moveit.probed).collect();
+    let mean = |paths: &[Probed], of: fn(&Probed) -> f64| {
+        paths.iter().map(of).sum::<f64>() / paths.len() as f64
+    };
+    let colliding = |paths: &[Probed]| paths.iter().filter(|p| p.collisions > 0).count();
+    let held_near = |paths: &[Probed]| {
+        paths
+            .iter()
+            .filter(|p| p.held_clearance.is_some_and(|held| held < held_within))
+            .count()
+    };
+    format!(
+        "{} scenes; ours {} paths, failures {failures:?}, clearance {:.4}, length {:.3}, {} \
+         in collision at a probe, {} holding an object nearer than {held_within} m; MoveIt's \
+         {} paths, codes {codes:?}, clearance {:.4}, length {:.3}, {} in collision at a \
+         probe, {} holding an object nearer than {held_within} m",
+        scenes.len(),
+        ours.len(),
+        mean(&ours, |p| p.clearance),
+        mean(&ours, |p| p.length),
+        colliding(&ours),
+        held_near(&ours),
+        theirs.len(),
+        mean(&theirs, |p| p.clearance),
+        mean(&theirs, |p| p.length),
+        colliding(&theirs),
+        held_near(&theirs),
+    )
+}
+
+/// Asserts that over the scenes of the drawn set in the scenario `name`, this crate's
+/// success rate and mean smallest clearance lie within or above MoveIt's 95% intervals,
+/// and its mean path length within or below MoveIt's interval.
+fn lies_on_its_side_of_moveits(name: &str) {
+    let case = Case::load_all()
+        .into_iter()
+        .find(|case| case.name == name)
+        .unwrap_or_else(|| panic!("scenarios/ holds no scenario {name}"));
+    let scenes: &[SceneCase] = &case.cases;
+    assert!(
+        scenes.len() >= MIN_SCENES,
+        "{}: {} scenes; the statistics need a drawn set of at least {MIN_SCENES}: \
+         draw_arm_planning.py --drawn 200, run.sh, then this test",
+        case.name,
+        scenes.len()
+    );
+    println!(
+        "{}: {} scenes, objective {:?}, ended by {:?}, time limit {} s, clearance {} m",
+        case.name,
+        scenes.len(),
+        case.scenes.objective,
+        case.scenes.termination,
+        case.scenes.time_limit,
+        case.scenes.min_clearance
+    );
+    let held_within = case.scenes.min_clearance + OBJECT_SPARE_M;
+    let groups: [Group; 5] = [
+        ("all", |_| true),
+        ("holding", |c| c.scene.attached.is_some()),
+        ("not holding", |c| c.scene.attached.is_none()),
+        ("the other arm holding", |c| {
+            c.scene.other_arm_holds.is_some()
+        }),
+        ("with an allowed pair", |c| !c.scene.allowed.is_empty()),
+    ];
+    for (group, holds) in groups {
+        let kept: Vec<&SceneCase> = scenes.iter().filter(|c| holds(c)).collect();
+        if !kept.is_empty() {
+            println!("{}: {group}: {}", case.name, tally(&kept, held_within));
+        }
+    }
+    let ours: Vec<Probed> = scenes.iter().filter_map(|c| c.ours_probed).collect();
+    let theirs: Vec<Probed> = scenes.iter().filter_map(|c| c.moveit.probed).collect();
+    let (low, high) = rate_interval(theirs.len(), scenes.len());
+    let rate = ours.len() as f64 / scenes.len() as f64;
+    let moveit_rate = theirs.len() as f64 / scenes.len() as f64;
+    println!(
+        "{}: success rate ours {rate}, MoveIt's {moveit_rate} in {low}..{high}",
+        case.name
+    );
+    assert!(
+        rate >= low,
+        "{}: a success rate of {rate}, below MoveIt's interval from {low}",
+        case.name
+    );
+    let interval = |of: fn(&Probed) -> f64| {
+        let values: Vec<f64> = theirs.iter().map(of).collect();
+        let mean = ours.iter().map(of).sum::<f64>() / ours.len() as f64;
+        (mean, mean_interval(&values))
+    };
+    let (clearance, (low, high)) = interval(|p| p.clearance);
+    println!(
+        "{}: clearance ours {clearance}, MoveIt's {} in {low}..{high}",
+        case.name,
+        (low + high) / 2.0
+    );
+    assert!(
+        clearance >= low,
+        "{}: a mean clearance of {clearance}, below MoveIt's interval from {low}",
+        case.name
+    );
+    let (length, (low, high)) = interval(|p| p.length);
+    println!(
+        "{}: length ours {length}, MoveIt's {} in {low}..{high}",
+        case.name,
+        (low + high) / 2.0
+    );
+    assert!(
+        length <= high,
+        "{}: a mean length of {length}, above MoveIt's interval to {high}",
+        case.name
+    );
+}
+
+// Over the scenes of a drawn set, among boxes of voxels or among collision objects, this
+// crate's success rate and mean smallest clearance lie within or above MoveIt's 95%
+// intervals, and its mean path length within or below MoveIt's; a probe of MoveIt's in
+// collision measures a clearance of -1. The committed scenes, one of each outcome, are too
+// few for the intervals: each test runs on its scenario's drawn set, locally, as the
+// harness README's rule 3 says, and the pull request states its tally at its head, for
+// each objective, termination and clearance it ran.
+#[test]
+#[ignore = "statistics of a drawn set among boxes, run locally as the harness README's rule 3 says"]
+fn among_boxes_the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() {
+    lies_on_its_side_of_moveits("arm_planning_openarm_v2");
+}
+
+#[test]
+#[ignore = "statistics of a drawn set among objects, run locally as the harness README's rule 3 says"]
+fn among_objects_the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() {
+    lies_on_its_side_of_moveits("arm_planning_objects_openarm_v2");
 }

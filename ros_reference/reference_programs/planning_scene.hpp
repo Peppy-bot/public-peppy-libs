@@ -13,6 +13,9 @@
 // leave standing, as the octomap updater's shape mask grows it.
 #pragma once
 
+#include <string>
+
+#include <moveit_msgs/msg/collision_object.hpp>
 #include <nlohmann/json.hpp>
 
 #include "scenario.hpp"
@@ -20,5 +23,10 @@
 namespace ros_reference {
 
 nlohmann::json planning_scene(const nlohmann::json& scenario, Inputs& inputs);
+
+// The collision object message that adds the object of `entry`, an entry of
+// apply_collision_objects as motion_planning writes it, with its shapes, in `frame`.
+moveit_msgs::msg::CollisionObject object_added(const nlohmann::json& entry,
+                                               const std::string& frame);
 
 }  // namespace ros_reference

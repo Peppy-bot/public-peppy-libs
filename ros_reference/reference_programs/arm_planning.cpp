@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <set>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -14,17 +15,20 @@
 
 #include <Eigen/Core>
 #include <geometric_shapes/shapes.h>
+#include <moveit/collision_detection/collision_common.hpp>
 #include <moveit/kinematic_constraints/utils.hpp>
 #include <moveit/planning_pipeline/planning_pipeline.hpp>
 #include <moveit/planning_scene/planning_scene.hpp>
 #include <moveit/robot_state/conversions.hpp>
 #include <moveit/trajectory_processing/time_optimal_trajectory_generation.hpp>
+#include <moveit_msgs/msg/attached_collision_object.hpp>
 #include <octomap/OcTree.h>
 #include <ompl/util/Console.h>
 #include <ompl/util/RandomNumbers.h>
 #include <random_numbers/random_numbers.h>
 #include <rclcpp/rclcpp.hpp>
 
+#include "planning_scene.hpp"
 #include "robot.hpp"
 
 namespace ros_reference {
@@ -196,15 +200,40 @@ bool moves_with_group(const moveit::core::LinkModel* link,
   return false;
 }
 
-// The scene of `boxes`, each the voxels from its first key to its last on every axis, in
-// an octomap of `voxel_size`: collisions between the robot's own links allowed, and those
-// of every link that does not move with the group's joints: the body, both arms' bases,
-// the head camera, and the other arm and its gripper.
+// The grasp link of the other arm, which holds a scene's other_arm_holds: the mirror of
+// `tip_link`, OpenArm's name of it with left and right swapped, as ros_reference's
+// Scenes::other_tip_link names it.
+std::string other_tip_link(const std::string& tip_link) {
+  const bool left = tip_link.find("left") != std::string::npos;
+  const std::string side = left ? "left" : "right";
+  const auto at = tip_link.find(side);
+  if (at == std::string::npos) {
+    throw std::runtime_error("the tip link " + tip_link + " names no side, left or right");
+  }
+  return std::string(tip_link).replace(at, side.size(), left ? "right" : "left");
+}
+
+// The scene `s`: its boxes, each the voxels from its first key to its last on every axis,
+// in an octomap of `voxel_size`; its objects; and the object it attaches to `tip_link`
+// with its touch links, at its pose in the link's frame, the arm at the scene's start,
+// which stays the scene's state; the object it attaches to the other arm's grasp link,
+// that arm at its zero configuration; and its allowed pairs. Every link with collision
+// geometry is padded by `padding` against the octomap and the objects, and the robot meets
+// itself unpadded, as a collision request's defaults pad_environment_collisions and
+// pad_self_collisions ask. An attached object takes the padding of its link (moveit2
+// 2.15.2 collision_env_fcl.cpp:195-196), and the grasp link has no collision geometry, which
+// setPadding pads alone (collision_env.cpp:127-133), so its padding is 0
+// (collision_env.cpp:166-176): MoveIt keeps a held object unpadded from the objects. Collisions between the robot's
+// own links are allowed, and those of every link that does not move with the group's
+// joints, the body, both arms' bases, the head camera, and the other arm and its gripper,
+// but against the object the arm holds.
 planning_scene::PlanningScenePtr scene_of(const moveit::core::RobotModelPtr& model,
-                                         const nlohmann::json& boxes, double voxel_size) {
+                                         const nlohmann::json& s, double voxel_size,
+                                         const std::string& tip_link, double padding) {
   auto scene = std::make_shared<planning_scene::PlanningScene>(model);
+  scene->getCollisionEnvNonConst()->setPadding(padding);
   auto tree = std::make_shared<octomap::OcTree>(voxel_size);
-  for (const auto& box : boxes) {
+  for (const auto& box : s.at("boxes")) {
     const auto first = box.at("first").get<std::vector<int>>();
     const auto last = box.at("last").get<std::vector<int>>();
     for (int x = first[0]; x <= last[0]; ++x) {
@@ -221,14 +250,58 @@ planning_scene::PlanningScenePtr scene_of(const moveit::core::RobotModelPtr& mod
   scene->getWorldNonConst()->addToObject(planning_scene::PlanningScene::OCTOMAP_NS,
                                          std::make_shared<const shapes::OcTree>(tree),
                                          Eigen::Isometry3d::Identity());
+  const auto frame = model->getModelFrame();
+  for (const auto& entry : s.at("objects")) {
+    if (!scene->processCollisionObjectMsg(object_added(entry, frame))) {
+      throw std::runtime_error("MoveIt refused the object " + entry.dump());
+    }
+  }
+  auto& state = scene->getCurrentStateNonConst();
+  state.setToDefaultValues();
+  state.setJointGroupPositions(group, numbers(s.at("start")));
+  state.update();
+  const auto attach = [&](const nlohmann::json& held, const std::string& link) {
+    moveit_msgs::msg::AttachedCollisionObject attached;
+    attached.link_name = link;
+    attached.object = object_added(held.at("object"), link);
+    attached.touch_links = held.at("touch_links").get<std::vector<std::string>>();
+    if (!scene->processAttachedCollisionObjectMsg(attached)) {
+      throw std::runtime_error("MoveIt refused the attached object " + held.dump());
+    }
+  };
+  const auto& held = s.at("attached");
+  if (!held.is_null()) {
+    attach(held, tip_link);
+  }
+  const auto& other = s.at("other_arm_holds");
+  if (!other.is_null()) {
+    attach(other, other_tip_link(tip_link));
+  }
   auto& acm = scene->getAllowedCollisionMatrixNonConst();
   const auto& links = model->getLinkModelNamesWithCollisionGeometry();
   acm.setEntry(links, links, true);
   const auto& arm = *model->getJointModelGroup(group);
+  std::vector<std::string> standing;
   for (const auto* link : model->getLinkModelsWithCollisionGeometry()) {
     if (!moves_with_group(link, arm)) {
       acm.setDefaultEntry(link->getName(), true);
+      standing.push_back(link->getName());
     }
+  }
+  // The object the arm holds meets the links that stand still, as it meets the parts of
+  // the robot motion_planning_core's plan does not move.
+  if (!held.is_null()) {
+    acm.setEntry(held.at("object").at("id").get<std::string>(), standing, false);
+  }
+  // The object the other arm holds stands still with that arm: it meets the arm the plan
+  // moves and what it holds, as an obstacle another arm holds meets them.
+  if (!other.is_null()) {
+    const auto id = other.at("object").at("id").get<std::string>();
+    acm.setEntry(id, scene->getWorld()->getObjectIds(), true);
+    acm.setEntry(id, standing, true);
+  }
+  for (const auto& pair : s.at("allowed")) {
+    acm.setEntry(pair.at(0).get<std::string>(), pair.at(1).get<std::string>(), true);
   }
   return scene;
 }
@@ -237,7 +310,21 @@ planning_scene::PlanningScenePtr scene_of(const moveit::core::RobotModelPtr& mod
 struct Probed {
   std::size_t collisions = 0;
   double clearance = std::numeric_limits<double>::infinity();
+  // The grasp link when it holds an object, and the least unpadded distance from what it
+  // holds to the objects and the octomap.
+  const moveit::core::LinkModel* holding = nullptr;
+  double held = std::numeric_limits<double>::infinity();
 };
+
+// The probe of a path in `scene`, whose grasp link `tip_link` holds an object or none.
+Probed probe_of(const planning_scene::PlanningScene& scene, const std::string& tip_link) {
+  Probed probed;
+  std::vector<const moveit::core::AttachedBody*> held;
+  const auto* tip = scene.getRobotModel()->getLinkModel(tip_link);
+  scene.getCurrentState().getAttachedBodies(held, tip);
+  probed.holding = held.empty() ? nullptr : tip;
+  return probed;
+}
 
 void probe(const planning_scene::PlanningScene& scene, moveit::core::RobotState& state,
            const moveit::core::JointModelGroup& arm, const Eigen::VectorXd& q, Probed& probed) {
@@ -246,7 +333,20 @@ void probe(const planning_scene::PlanningScene& scene, moveit::core::RobotState&
   if (scene.isStateColliding(state, group)) {
     ++probed.collisions;
   }
-  probed.clearance = std::min(probed.clearance, scene.distanceToCollision(state));
+  // FCL's distance to an octomap a body touches is no measure: the planning scene's dense
+  // probe read -2.3e190 of one. MoveIt reads -1 for a body in contact otherwise, so -1
+  // stands for every distance below it.
+  probed.clearance =
+      std::min(probed.clearance, std::max(scene.distanceToCollisionUnpadded(state), -1.0));
+  if (probed.holding != nullptr) {
+    collision_detection::DistanceRequest request;
+    const std::set<const moveit::core::LinkModel*> holding{probed.holding};
+    request.active_components_only = &holding;
+    request.acm = &scene.getAllowedCollisionMatrix();
+    collision_detection::DistanceResult result;
+    scene.getCollisionEnvUnpadded()->distanceRobot(request, result, state);
+    probed.held = std::min(probed.held, std::max(result.minimum_distance.distance, -1.0));
+  }
 }
 
 // The number of probes of a stretch `length` long, each at most `spacing` from the next.
@@ -257,8 +357,9 @@ std::size_t steps_of(double length, double spacing) {
 // MoveIt's trajectory, straight between its points, probed at most `spacing` apart.
 Probed probe_polyline(const planning_scene::PlanningScene& scene,
                       moveit::core::RobotState& state, const moveit::core::JointModelGroup& arm,
-                      const std::vector<Eigen::VectorXd>& points, double spacing) {
-  Probed probed;
+                      const std::vector<Eigen::VectorXd>& points, double spacing,
+                      const std::string& tip_link) {
+  Probed probed = probe_of(scene, tip_link);
   probe(scene, state, arm, points.front(), probed);
   for (std::size_t i = 1; i < points.size(); ++i) {
     const std::size_t steps = steps_of((points[i] - points[i - 1]).norm(), spacing);
@@ -279,7 +380,11 @@ double polyline_length(const std::vector<Eigen::VectorXd>& points) {
 }
 
 nlohmann::json measured(const Probed& probed, double length) {
-  return {{"collisions", probed.collisions}, {"clearance", probed.clearance}, {"length", length}};
+  return {{"collisions", probed.collisions},
+          {"clearance", probed.clearance},
+          {"held_clearance",
+           probed.holding != nullptr ? nlohmann::json(probed.held) : nlohmann::json(nullptr)},
+          {"length", length}};
 }
 
 // MoveIt's answer to a scene, planned within `time_limit` seconds: its error code, and
@@ -288,12 +393,10 @@ nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
                              const std::string& planner_id,
                              const planning_scene::PlanningScenePtr& scene,
                              const moveit::core::RobotModelPtr& model, const nlohmann::json& s,
-                             double time_limit, double spacing) {
+                             const std::string& tip_link, double time_limit, double spacing) {
   const auto& arm = *model->getJointModelGroup(group);
-  moveit::core::RobotState start(model);
-  start.setToDefaultValues();
-  start.setJointGroupPositions(&arm, numbers(s.at("start")));
-  start.update();
+  // The scene's state: the arm at the scene's start, holding what the scene attaches.
+  const moveit::core::RobotState start(scene->getCurrentState());
   moveit::core::RobotState goal(start);
   goal.setJointGroupPositions(&arm, numbers(s.at("goal")));
   goal.update();
@@ -330,8 +433,11 @@ nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
         "constructor: its samplers draw from the clock");
   }
 
-  nlohmann::json answer = {
-      {"status", status}, {"collisions", nullptr}, {"clearance", nullptr}, {"length", nullptr}};
+  nlohmann::json answer = {{"status", status},
+                            {"collisions", nullptr},
+                            {"clearance", nullptr},
+                            {"held_clearance", nullptr},
+                            {"length", nullptr}};
   if (!planned || status != moveit_success || !response.trajectory) {
     return answer;
   }
@@ -342,7 +448,7 @@ nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
     points.push_back(vector_of(q));
   }
   moveit::core::RobotState state(start);
-  answer.update(measured(probe_polyline(*scene, state, arm, points, spacing),
+  answer.update(measured(probe_polyline(*scene, state, arm, points, spacing, tip_link),
                          polyline_length(points)));
   return answer;
 }
@@ -352,7 +458,7 @@ nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
 nlohmann::json ours_probed(const planning_scene::PlanningScene& scene,
                            const moveit::core::RobotModelPtr& model,
                            const nlohmann::json& waypoints, double corner_tolerance,
-                           double spacing) {
+                           double spacing, const std::string& tip_link) {
   const auto& arm = *model->getJointModelGroup(group);
   std::vector<Eigen::VectorXd> points;
   for (const auto& w : waypoints) {
@@ -362,9 +468,8 @@ nlohmann::json ours_probed(const planning_scene::PlanningScene& scene,
   if (!path) {
     throw std::runtime_error("MoveIt's time-optimal path does not round a path of ours");
   }
-  moveit::core::RobotState state(model);
-  state.setToDefaultValues();
-  Probed probed;
+  moveit::core::RobotState state(scene.getCurrentState());
+  Probed probed = probe_of(scene, tip_link);
   const double length = path->getLength();
   const std::size_t steps = steps_of(length, spacing);
   for (std::size_t k = 0; k <= steps; ++k) {
@@ -381,19 +486,24 @@ nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
   const PlannerConfig config =
       planner_config(scenario.at("objective").get<std::string>(), pipeline_namespace);
   auto planner = pipeline(model, scenario, config);
+  const auto tip_link = scenario.at("tip_link").get<std::string>();
   const double voxel_size = scenario.at("voxel_size").get<double>();
+  // MoveIt keeps the plans' clearance as the padding of the robot's links.
+  const double padding = scenario.at("min_clearance").get<double>();
   const double spacing = scenario.at("probe_spacing").get<double>();
   const double corner_tolerance = scenario.at("corner_tolerance").get<double>();
   const double time_limit = scenario.at("time_limit").get<double>();
 
   auto answers = nlohmann::json::array();
   for (const auto& s : scenario.at("scenes")) {
-    const auto scene = scene_of(model, s.at("boxes"), voxel_size);
+    const auto scene = scene_of(model, s, voxel_size, tip_link, padding);
     const auto& ours = s.at("ours");
     answers.push_back({
-        {"moveit", moveit_answer(*planner, config.name, scene, model, s, time_limit, spacing)},
+        {"moveit",
+         moveit_answer(*planner, config.name, scene, model, s, tip_link, time_limit, spacing)},
         {"ours", ours.contains("waypoints")
-                     ? ours_probed(*scene, model, ours.at("waypoints"), corner_tolerance, spacing)
+                     ? ours_probed(*scene, model, ours.at("waypoints"), corner_tolerance, spacing,
+                                   tip_link)
                      : nlohmann::json(nullptr)},
     });
   }

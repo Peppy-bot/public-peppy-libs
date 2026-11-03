@@ -30,7 +30,7 @@ enum ThisKind {
 }
 
 /// A shape as motion_planning writes it.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Shape {
     pub kind: String,
@@ -42,7 +42,7 @@ pub struct Shape {
 }
 
 /// One entry of apply_collision_objects, as motion_planning writes it.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Object {
     pub id: String,

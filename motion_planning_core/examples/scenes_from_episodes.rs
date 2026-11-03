@@ -113,7 +113,7 @@ fn main() {
         scenes.urdf
     );
     let answers: Vec<(String, Result<Value, Dropped>)> =
-        on_the_arm(&scenes, &urdf, &meshes, |kind_arm| {
+        on_the_arm(&scenes, &urdf, &meshes, |kind_arm, _| {
             let sampler = IkGoalSampler::new(kind_arm.geometry().chain().clone());
             recorded
                 .episodes
@@ -623,6 +623,10 @@ fn scene_of(
     let boxes = boxes_of(&map);
     let scene = ReferenceScene {
         boxes,
+        objects: Vec::new(),
+        attached: None,
+        other_arm_holds: None,
+        allowed: Vec::new(),
         start: start.to_vec(),
         goal: Vec::new(),
         seed,
@@ -663,6 +667,10 @@ fn scene_of(
             .iter()
             .map(|b| json!({ "first": b.first, "last": b.last }))
             .collect::<Vec<_>>(),
+        "objects": [],
+        "attached": null,
+        "other_arm_holds": null,
+        "allowed": [],
         "start": scene.start,
         "goal": goal.to_vec(),
         "seed": seed.get(),
