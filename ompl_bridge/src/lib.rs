@@ -321,9 +321,10 @@ pub struct Request<'a> {
     /// first pass, which runs to its end, has ended; none skips the simplification.
     pub simplification: Option<NonZeroU32>,
     /// The time limit of the simplification, counted from the end of `time_limit`. The
-    /// simplification starts only before it, and the simplifier ends at its first
-    /// question whether to stop past it. Its first pass runs to its end, which OMPL
-    /// bounds by counts of attempts, most of them the path's number of states.
+    /// simplification starts past it too, as MoveIt's `simplifySolution` starts with
+    /// whatever time its plan left, and its first pass runs to its end, which OMPL
+    /// bounds by counts of attempts, most of them the path's number of states; the
+    /// simplifier ends at its first question whether to stop past it after that pass.
     pub simplification_time: Duration,
     pub projection: Option<Projection<'a>>,
     /// A flag the caller sets to end the plan: the planners and the simplifier end at
@@ -338,7 +339,8 @@ pub enum Ending {
     /// The planner, or the simplifier, returned of its own accord.
     Returned,
     /// The request's time limit passed while a planner planned or before an attempt
-    /// started, or the simplification's time before or while its simplifier ran.
+    /// started, or the simplification's time passed by a question of its simplifier
+    /// after its first pass.
     TimeLimit,
     /// The planner asked whether to stop once more after the request's iteration
     /// bound, or the simplifier after its simplification bound.

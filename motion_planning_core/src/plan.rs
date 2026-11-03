@@ -69,13 +69,11 @@
 //! request: the goal sampler draws up to `goal_samples` configurations, ending early once
 //! the deadline passes, OMPL makes the request's attempts in what remains before it, each
 //! under all of it, and its simplifier takes what remains after the attempts, at most
-//! `SIMPLIFICATION_ITERATIONS` iterations, starting only before the deadline. A planner
-//! that plans until its time ends, such as RRT*, leaves the simplifier none, and the plan
-//! answers the path it planned, unsimplified. MoveIt simplifies in the allowed planning
+//! `SIMPLIFICATION_ITERATIONS` iterations, as MoveIt simplifies in the allowed planning
 //! time less the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve`), whatever is
-//! left of it, and OMPL's simplifier runs its first pass however little time it has
-//! (`PathSimplifier::simplify`, `atLeastOnce`), so MoveIt's RRT* answers come back
-//! simplified once. A corner's repair runs only before the deadline: a corner whose
+//! left of it. OMPL's simplifier runs its first pass however little time it has
+//! (`PathSimplifier::simplify`, `atLeastOnce`), so a planner that plans until its time
+//! ends, such as RRT*, answers its path simplified once, past the deadline. A corner's repair runs only before the deadline: a corner whose
 //! rounding fails once it has passed ends the plan with no path. The check of the rounded
 //! path runs to its end past the deadline.
 //!

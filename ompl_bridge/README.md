@@ -167,9 +167,9 @@ the stop kept from starting comes back unsimplified.
 `Request::time_limit` bounds the attempts from the call of `plan`, and
 `Request::simplification_time` the simplification after them, counted from the end of
 the time limit. The planners end at their first question whether to stop past the time
-limit, and no batch of attempts starts past it. The simplification starts only before
-the end of its own time, and the simplifier ends at its first question whether to stop
-past it. What runs between two questions runs to its end, a call of the caller's
+limit, and no batch of attempts starts past it. The simplification starts past the end
+of its own time too, as MoveIt's `simplifySolution` starts with whatever time its plan
+left, and the simplifier ends at its first question whether to stop past it. What runs between two questions runs to its end, a call of the caller's
 functions among it, and so do the checks of the start and the goals, the hybrid of the
 attempts' paths, with the motion checks that join the paths and those of the hybrid, as
 OMPL's `ParallelPlan` runs it, and the simplifier's first pass: OMPL's simplifier runs

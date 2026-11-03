@@ -4,7 +4,8 @@
 //! that does not fit its space, or whose start or goals fail the checks, is refused; a
 //! failure in a check or the constraint ends a plan without ending the process; a plan
 //! says what ended its planner and its simplifier; the time limit bounds a plan from its
-//! call, and the simplification's time the simplification after it; plans run at once;
+//! call, and the simplification's time the simplification after it, whose first pass runs
+//! past it; plans run at once;
 //! the caller's stop ends a plan; and several attempts, four at once, join into a path at
 //! most as long as one attempt's.
 
@@ -48,6 +49,12 @@ const ROADMAP_SEEDS: RangeInclusive<u32> = 1..=5;
 const GOAL_COUNTS: [usize; 2] = [2, 8];
 /// The plans of one request in the tests that a plan of PRM or PRM* repeats.
 const REPEATS: usize = 4;
+/// A time limit within which a plan here poses its problem and asks its planner's first
+/// question whether to stop, on any host: OMPL's setup of a 2-dimensional wall takes
+/// well under a millisecond.
+const SETUP_TIME_LIMIT: Duration = Duration::from_secs(1);
+/// How long the slow first motion check takes: past `SETUP_TIME_LIMIT`.
+const SLOW_MOTION: Duration = Duration::from_secs(2);
 /// How long the slow host's first check of a state of the roadmap takes: longer than
 /// OMPL's first round of roadmap growth, 0.4 s.
 const SLOW_CHECK: Duration = Duration::from_millis(450);
@@ -1133,31 +1140,61 @@ fn a_time_limit_that_passes_ends_the_plan() {
     );
 }
 
-// PRM joins the start to the goal in a world with no obstacle as it takes them into its
-// roadmap, before it asks whether to stop. A plan whose time limit passes before that
-// question, with no time of its own for the simplification, says that the time limit
-// ended its planner, gives the path of the roadmap, and says that the time ended its
-// simplification before it started, whose path is then the planned path.
+/// Checks whose first motion check sleeps `SLOW_MOTION`, past the setup's time limit.
+struct SlowMotion<C> {
+    checks: C,
+    slept: AtomicBool,
+}
+
+impl<C: Checks> Checks for SlowMotion<C> {
+    fn state(&self, state: &[f64]) -> Result<bool, CheckError> {
+        self.checks.state(state)
+    }
+
+    fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        if !self.slept.swap(true, Ordering::SeqCst) {
+            thread::sleep(SLOW_MOTION);
+        }
+        self.checks.motion(from, to)
+    }
+}
+
+// RRTConnect joins the start to the goal in its first iteration in a world with no
+// obstacle, through the states each tree grew, and returns before it asks whether to
+// stop again. A plan whose time limit passes during that iteration, with no time of its
+// own for the simplification, still simplifies the path, as MoveIt does in the time its
+// plan left: the simplifier's first pass joins the start straight to the goal, and the
+// simplifier says that the time limit ended it.
 #[test]
-fn a_time_limit_that_passes_before_the_simplification_ends_it() {
+fn the_simplifier_makes_its_first_pass_past_the_time_limit() {
     let ends = WallEnds::new(2);
-    let checks = Slow::new(World {
-        obstacles: Vec::new(),
-        motion_step: MOTION_STEP,
-    });
+    let checks = SlowMotion {
+        checks: World {
+            obstacles: Vec::new(),
+            motion_step: MOTION_STEP,
+        },
+        slept: AtomicBool::new(false),
+    };
     let request = Request {
-        time_limit: SHORT_TIME_LIMIT,
+        time_limit: SETUP_TIME_LIMIT,
         simplification: NonZeroU32::new(SIMPLIFICATION),
         simplification_time: Duration::ZERO,
-        ..ends.request(Planner::Prm, 1)
+        ..ends.request(Planner::RrtConnect, 1)
     };
     let answer = plan(&request, &checks).expect("a plan");
-    assert_eq!(answer.ended_by, Ending::TimeLimit, "the planner");
-    let joined = [ends.start.clone(), ends.goal().to_vec()];
-    assert_eq!(answer.path.as_deref(), Some(joined.as_slice()));
+    assert_eq!(answer.ended_by, Ending::Returned, "the planner");
+    let planned = answer.path.expect("a path");
+    assert!(
+        planned.len() > 2,
+        "the planned path holds {} states",
+        planned.len()
+    );
     let simplification = answer.simplified.expect("a simplification");
     assert_eq!(simplification.ended_by, Ending::TimeLimit, "the simplifier");
-    assert_eq!(Some(simplification.path), answer.path);
+    assert_eq!(
+        simplification.path,
+        [ends.start.clone(), ends.goal().to_vec()]
+    );
 }
 
 /// The wall, whose first state check tells the test that its plan has started and waits

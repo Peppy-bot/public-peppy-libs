@@ -685,8 +685,9 @@ og::PathGeometricPtr hybrid_of(const Problem& problem,
 // Writes `planned`, as the plan answers it, into `result`, and, when the request asks for
 // it, its simplification. OMPL's simplifier smooths and repairs the path it shortens, and
 // says when the result may touch an invalid state; its result stands when it is valid
-// and at most as long as the path. It starts only before `deadline` and while the plan
-// is not interrupted: otherwise the plan answers what kept it from starting. Its first
+// and at most as long as the path. It starts unless the plan is interrupted, past
+// `deadline` too, as MoveIt's `simplifySolution` starts with whatever time its plan
+// left: an interruption keeps it from starting, and the plan answers that. Its first
 // pass runs to its end whatever the termination condition answers: OMPL bounds that pass
 // by counts of attempts, most of them the path's number of states. Each pass after it
 // ends at the iteration bound, at an interruption or at `deadline`.
@@ -700,8 +701,8 @@ void write_path(PlanResult& result, const Problem& problem, const og::PathGeomet
   }
   og::PathGeometric simplified(planned);
   bool valid = false;
-  if (const std::optional<Ending> unstarted = ended_before(callbacks, deadline)) {
-    result.simplification_ended_by = *unstarted;
+  if (const std::optional<Ending> interrupted = interruption(callbacks)) {
+    result.simplification_ended_by = *interrupted;
   } else {
     Bounds simplification_bounds(callbacks, request.simplification_iterations, deadline);
     valid = problem.setup->getPathSimplifier()->simplify(simplified,

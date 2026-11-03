@@ -190,22 +190,15 @@ deadline passes, OMPL makes the request's `attempts` in what remains before it, 
 makes a request's `num_planning_attempts` (ompl_bridge's README, Attempts): each from its
 own seed, under the whole of that time and the whole iteration bound, their paths joined
 by OMPL's path hybridization, and OMPL's simplifier takes what remains after the
-attempts, at most 1000 iterations, starting only before the deadline. A planner that
-plans until its time ends, such as RRT*, leaves the simplifier none, and the plan answers
-the path it planned, unsimplified. MoveIt simplifies in the allowed planning time less the
-plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve` calls `simplifySolution` with
-that time, whatever is left of it), and OMPL's simplifier runs its first pass however
-little time it has (`PathSimplifier::simplify`, `atLeastOnce`), so MoveIt's RRT* answers
-come back simplified once. A corner's repair runs only before the deadline, and a corner
-whose rounding fails once the deadline has passed fails `NoPath`. The hybrid of several
+attempts, at most 1000 iterations, as MoveIt simplifies in the allowed planning time less
+the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve` calls `simplifySolution`
+with that time, whatever is left of it). OMPL's simplifier runs its first pass however
+little time it has (`PathSimplifier::simplify`, `atLeastOnce`), so a planner that plans
+until its time ends, such as RRT*, answers its path simplified once, past the deadline.
+A corner's repair runs only before the deadline, and a corner whose rounding fails once
+the deadline has passed fails `NoPath`. The hybrid of several
 attempts and its checks, and the check of the rounded path, run to their end past the
-deadline. On the 200 drawn scenes of the arm planning scenario of the ROS reference
-harness, in a container of 1.5 CPUs of an Intel Core Ultra 9 290HX (amd64), RRT* at a
-time limit of 1 s and one attempt a plan, measured at commit e720a8cb, answers each of its
-paths unsimplified and ends at most 25.0 ms past the limit at a clearance of 0 and 14.6 ms
-past it at 0.02 m, and no corner's repair meets the limit. That measurement times no
-hybrid: a plan of several attempts answers later by the time its hybrid and the hybrid's
-checks take. OMPL plans with the
+deadline. OMPL plans with the
 request's planner and iteration bound, seeded from the request's seed and the map's
 stamp, so the same request on the same map gives the same path when the plan ends before
 its deadline, for every planner but PRM and PRM*, with any number of attempts. OMPL's
