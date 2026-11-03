@@ -2,7 +2,7 @@
 name = "openarm_description"
 version = "0.1.0"
 edition = "2024"
-description = "The OpenArm robot descriptions (v1.0 and v2.0): the single embedded source of truth for the URDFs (and, behind the `meshes` feature, the collision meshes), plus the torso regions that decompose its mesh into convex pieces, the constants and joint limits describing their control margins, selected by HardwareVersion, and Side and ArmPair naming each arm. Pure data, no solver deps."
+description = "The OpenArm robot descriptions (v1.0 and v2.0): the single embedded source of truth for the URDFs (and, behind the `meshes` feature, the collision meshes), plus the torso regions that decompose its mesh into convex pieces, the constants and joint limits describing their control margins, selected by HardwareVersion, and Side and ArmPair naming each arm. Pure data by default; behind the `kinematics` feature, each arm's srs_model model."
 
 # A workspace root of its own, so cargo's search for one ends at this manifest
 # whatever sits above this repository, which is what lets a consumer pull the
@@ -15,6 +15,7 @@ description = "The OpenArm robot descriptions (v1.0 and v2.0): the single embedd
 # control node) do not carry the mesh bytes.
 meshes = []
 serde = ["dep:serde"]
+kinematics = ["dep:srs_model"]
 
 # Materialize a generation's collision meshes to a directory for a non-Rust consumer
 # (the sim). Needs the embedded bytes, so it requires the `meshes` feature.
@@ -25,6 +26,7 @@ required-features = ["meshes"]
 [dependencies]
 urdf-rs = "0.10"
 serde = { version = "1", features = ["derive"], optional = true }
+srs_model = { path = "../srs_model", optional = true }
 
 [dev-dependencies]
 # The camera mounts are pinned to the simulation's model of the generation,

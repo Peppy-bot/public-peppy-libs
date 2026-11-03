@@ -1,0 +1,50 @@
+--- a/src/ompl/util/RandomNumbers.h
++++ b/src/ompl/util/RandomNumbers.h
+@@ -125,6 +125,12 @@
+             function to ensure the same sequence of random numbers is generated across multiple instances of RNG. */
+         static void setSeed(std::uint_fast32_t seed);
+ 
++        /** \brief Give the calling thread a seed generator of its own, seeded with \e seed. Every RNG
++            instance the thread constructs afterwards, and setSeed() and getSeed() on it, use that
++            generator, so a thread that builds and runs a whole plan draws the same numbers whatever
++            other threads do. Each call replaces the thread's generator. */
++        static void setThreadSeed(std::uint_fast32_t seed);
++
+         /** \brief Get the seed used to generate the seeds of each RNG instance.
+             Passing the returned value to setSeed() at a subsequent execution of the code will ensure deterministic
+             (repeatable) behaviour across multiple instances of RNG. Useful for debugging. */
+--- a/src/ompl/util/src/RandomNumbers.cpp
++++ b/src/ompl/util/src/RandomNumbers.cpp
+@@ -116,6 +116,10 @@
+     std::once_flag g_once;
+     boost::scoped_ptr<RNGSeedGenerator> g_RNGSeedGenerator;
+ 
++    /// The seed generator of the calling thread, once RNG::setThreadSeed has given it
++    /// one: it stands in for the process's generator on that thread.
++    thread_local std::unique_ptr<RNGSeedGenerator> t_RNGSeedGenerator;
++
+     void initRNGSeedGenerator()
+     {
+         g_RNGSeedGenerator.reset(new RNGSeedGenerator());
+@@ -123,6 +127,8 @@
+ 
+     RNGSeedGenerator &getRNGSeedGenerator()
+     {
++        if (t_RNGSeedGenerator)
++            return *t_RNGSeedGenerator;
+         std::call_once(g_once, &initRNGSeedGenerator);
+         return *g_RNGSeedGenerator;
+     }
+@@ -216,6 +222,12 @@
+     getRNGSeedGenerator().setSeed(seed);
+ }
+ 
++void ompl::RNG::setThreadSeed(std::uint_fast32_t seed)
++{
++    t_RNGSeedGenerator = std::make_unique<RNGSeedGenerator>();
++    t_RNGSeedGenerator->setSeed(seed);
++}
++
+ ompl::RNG::RNG()
+   : localSeed_(getRNGSeedGenerator().nextSeed())
+   , generator_(localSeed_)

@@ -3,23 +3,26 @@
 //! on a slow host, simplify to paths at most as long, and walk a constraint; a request
 //! that does not fit its space, or whose start or goals fail the checks, is refused; a
 //! failure in a check or the constraint ends a plan without ending the process; a plan
-//! says what ended its planner and its simplifier; and the time limit bounds a plan from
-//! its call.
+//! says what ended its planner and its simplifier; the time limit bounds a plan from its
+//! call, and the simplification's time the simplification after it, whose first pass runs
+//! past it; plans run at once;
+//! the caller's stop ends a plan; and several attempts, four at once, join into a path at
+//! most as long as one attempt's.
 
 use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::ops::RangeInclusive;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::sync::{Condvar, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
 
 mod world;
 
 use ompl_bridge::{
-    CONSTRAINED_SPACING, CheckError, Checks, Constraint, Ending, Motion, Plan, PlanError, Planner,
-    Projection, Request, Space, plan,
+    CONSTRAINED_SPACING, CheckError, Checks, Constraint, Ending, Motion, PLANNING_THREADS, Plan,
+    PlanError, Planner, Projection, Request, Space, plan,
 };
 use ros_reference::planning::Obstacle;
 use world::{World, distance, length};
@@ -34,7 +37,7 @@ const ITERATIONS: u64 = 2_000;
 const NO_TIME_LIMIT: Duration = Duration::MAX;
 /// The time limit of a plan here that its time limit ends.
 const SHORT_TIME_LIMIT: Duration = Duration::from_millis(10);
-/// How long a test here waits for a plan that its time limit ends before it fails, so a
+/// How long a test here waits for a plan, or for attempts to meet, before it fails, so a
 /// plan that never answers fails the test.
 const ANSWER_GUARD: Duration = Duration::from_secs(60);
 /// The environment variable under which a test here runs alone in its process, which
@@ -46,6 +49,12 @@ const ROADMAP_SEEDS: RangeInclusive<u32> = 1..=5;
 const GOAL_COUNTS: [usize; 2] = [2, 8];
 /// The plans of one request in the tests that a plan of PRM or PRM* repeats.
 const REPEATS: usize = 4;
+/// A time limit within which a plan here poses its problem and asks its planner's first
+/// question whether to stop, on any host: OMPL's setup of a 2-dimensional wall takes
+/// well under a millisecond.
+const SETUP_TIME_LIMIT: Duration = Duration::from_secs(1);
+/// How long the slow first motion check takes: past `SETUP_TIME_LIMIT`.
+const SLOW_MOTION: Duration = Duration::from_secs(2);
 /// How long the slow host's first check of a state of the roadmap takes: longer than
 /// OMPL's first round of roadmap growth, 0.4 s.
 const SLOW_CHECK: Duration = Duration::from_millis(450);
@@ -60,8 +69,12 @@ const FINAL_SEARCH_BOUND: u64 = 2 * FINAL_ROADMAP_STATE as u64 + 1;
 const TOLERANCE: f64 = 1e-4;
 /// The simplification iterations of the plans here that simplify.
 const SIMPLIFICATION: u32 = 100;
+/// The attempts that plan at once, as a count of threads.
+const AT_ONCE: usize = PLANNING_THREADS.get() as usize;
+/// The attempts of the plans here that make several: one batch.
+const ATTEMPTS: u32 = PLANNING_THREADS.get();
 /// What `plan` says when a check calls it.
-const REENTERED: &str = "plan was called from a check or the constraint of a plan; a process runs one plan at a time, so call plan outside the checks of another";
+const REENTERED: &str = "plan was called from a check or the constraint of a plan; a plan seeds the generator of its thread, which the other plan draws from, so call plan outside the checks of another";
 
 /// A wall across the first dimension at its middle, open at the top of the second
 /// dimension, and a lower block before it, each whole across every other dimension.
@@ -101,8 +114,11 @@ fn request<'a>(
         time_limit: NO_TIME_LIMIT,
         iterations: NonZeroU64::new(ITERATIONS).expect("nonzero"),
         seed: NonZeroU32::new(seed).expect("nonzero"),
+        attempts: NonZeroU32::MIN,
         simplification: None,
+        simplification_time: NO_TIME_LIMIT,
         projection: None,
+        stop: None,
     }
 }
 
@@ -156,6 +172,17 @@ fn wall_plan_simplified(
 /// The plan of `planner` through the wall of `dimension` dimensions under `seed`.
 fn wall_plan(planner: Planner, dimension: usize, seed: u32) -> Plan {
     wall_plan_simplified(planner, dimension, seed, 0)
+}
+
+/// The plan of `attempts` attempts of `planner` through the wall of `dimension`
+/// dimensions under `seed`.
+fn wall_attempts(planner: Planner, dimension: usize, seed: u32, attempts: u32) -> Plan {
+    let ends = WallEnds::new(dimension);
+    let request = Request {
+        attempts: NonZeroU32::new(attempts).expect("nonzero"),
+        ..ends.request(planner, seed)
+    };
+    plan(&request, &wall(dimension)).expect("a plan")
 }
 
 /// The seeds a test plans `planner` under: seed 1 for a planner whose plans repeat,
@@ -237,21 +264,29 @@ fn a_plan_repeats_under_its_seed() {
     }
 }
 
-/// The path of a 7-D plan of every repeatable planner with seed 1, as the bits of its
-/// values, one planner per line.
+/// The bits of the values of `plan`'s path, state after state.
+fn bits(plan: Plan) -> String {
+    let path = plan.path.expect("a path");
+    let bits: Vec<String> = path
+        .iter()
+        .flatten()
+        .map(|v| format!("{:016x}", v.to_bits()))
+        .collect();
+    bits.join(" ")
+}
+
+/// The path of a 7-D plan of every repeatable planner with seed 1, one planner per line,
+/// and of `ATTEMPTS` attempts of RRTConnect, as the bits of its values.
 fn path_bits() -> String {
+    let attempts = format!(
+        "{ATTEMPTS} attempts of RRTConnect {}",
+        bits(wall_attempts(Planner::RrtConnect, 7, 1, ATTEMPTS))
+    );
     Planner::ALL
         .into_iter()
         .filter(|p| p.repeats())
-        .map(|planner| {
-            let path = wall_plan(planner, 7, 1).path.expect("a path");
-            let bits: Vec<String> = path
-                .iter()
-                .flatten()
-                .map(|v| format!("{:016x}", v.to_bits()))
-                .collect();
-            format!("{planner} {}", bits.join(" "))
-        })
+        .map(|planner| format!("{planner} {}", bits(wall_plan(planner, 7, 1))))
+        .chain([attempts])
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -277,7 +312,8 @@ fn run_alone(name: &str) -> String {
     String::from_utf8(output.stdout).expect("UTF-8")
 }
 
-// A plan with seed 1 in another process gives the paths that it gives in this one.
+// A plan with seed 1 in another process gives the paths that it gives in this one, of one
+// attempt and of several.
 #[test]
 fn a_plan_repeats_in_another_process() {
     if alone() {
@@ -1020,24 +1056,29 @@ fn a_plan_called_from_a_check_is_refused() {
 }
 
 // A plan that its iteration bound ends before the planner finds a path says so and
-// gives no path, and a plan whose planner returns says so.
+// gives no path, and a plan whose planner returns says so, of one attempt and of
+// several.
 #[test]
 fn a_plan_says_what_ended_it() {
     let ends = WallEnds::new(2);
-    let short = Request {
-        iterations: NonZeroU64::new(1).expect("nonzero"),
-        ..ends.request(Planner::RrtConnect, 1)
-    };
-    assert_eq!(
-        plan(&short, &wall(2)),
-        Ok(Plan {
-            path: None,
-            simplified: None,
-            ended_by: Ending::IterationBound
-        })
-    );
-    let solved = wall_plan(Planner::RrtConnect, 2, 1);
-    assert_eq!(solved.ended_by, Ending::Returned);
+    for attempts in [1, ATTEMPTS] {
+        let short = Request {
+            iterations: NonZeroU64::new(1).expect("nonzero"),
+            attempts: NonZeroU32::new(attempts).expect("nonzero"),
+            ..ends.request(Planner::RrtConnect, 1)
+        };
+        assert_eq!(
+            plan(&short, &wall(2)),
+            Ok(Plan {
+                path: None,
+                simplified: None,
+                ended_by: Ending::IterationBound
+            }),
+            "{attempts} attempts"
+        );
+        let solved = wall_attempts(Planner::RrtConnect, 2, 1, attempts);
+        assert_eq!(solved.ended_by, Ending::Returned, "{attempts} attempts");
+    }
 }
 
 // A simplifier under a bound that it does not reach says that it returned, and one under
@@ -1060,32 +1101,32 @@ const TIMED_OUT: Plan = Plan {
     ended_by: Ending::TimeLimit,
 };
 
-/// A world whose first state check, the check of the start, sleeps past the short time
+/// Checks whose first state check, the check of the start, sleeps past the short time
 /// limit.
-struct Slow {
-    world: World,
+struct Slow<C> {
+    checks: C,
     slept: AtomicBool,
 }
 
-impl Slow {
-    fn new(world: World) -> Self {
+impl<C: Checks> Slow<C> {
+    fn new(checks: C) -> Self {
         Self {
-            world,
+            checks,
             slept: AtomicBool::new(false),
         }
     }
 }
 
-impl Checks for Slow {
+impl<C: Checks> Checks for Slow<C> {
     fn state(&self, state: &[f64]) -> Result<bool, CheckError> {
         if !self.slept.swap(true, Ordering::SeqCst) {
             thread::sleep(2 * SHORT_TIME_LIMIT);
         }
-        Ok(self.world.free(state))
+        self.checks.state(state)
     }
 
     fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
-        Ok(self.world.walk(from, to))
+        self.checks.motion(from, to)
     }
 }
 
@@ -1099,39 +1140,65 @@ fn a_time_limit_that_passes_ends_the_plan() {
     );
 }
 
-// PRM joins the start to the goal in a world with no obstacle as it takes them into its
-// roadmap, before it asks whether to stop. A plan whose time limit passes before that
-// question says that the time limit ended its planner, gives the path of the roadmap,
-// and says that the time limit ended its simplification before it started, whose path
-// is then the planned path. The test runs alone in its process, where no other plan
-// keeps it waiting toward its time limit.
-#[test]
-fn a_time_limit_that_passes_before_the_simplification_ends_it() {
-    if !alone() {
-        run_alone("a_time_limit_that_passes_before_the_simplification_ends_it");
-        return;
-    }
-    let ends = WallEnds::new(2);
-    let checks = Slow::new(World {
-        obstacles: Vec::new(),
-        motion_step: MOTION_STEP,
-    });
-    let request = Request {
-        time_limit: SHORT_TIME_LIMIT,
-        simplification: NonZeroU32::new(SIMPLIFICATION),
-        ..ends.request(Planner::Prm, 1)
-    };
-    let answer = plan(&request, &checks).expect("a plan");
-    assert_eq!(answer.ended_by, Ending::TimeLimit, "the planner");
-    let joined = [ends.start.clone(), ends.goal().to_vec()];
-    assert_eq!(answer.path.as_deref(), Some(joined.as_slice()));
-    let simplification = answer.simplified.expect("a simplification");
-    assert_eq!(simplification.ended_by, Ending::TimeLimit, "the simplifier");
-    assert_eq!(Some(simplification.path), answer.path);
+/// Checks whose first motion check sleeps `SLOW_MOTION`, past the setup's time limit.
+struct SlowMotion<C> {
+    checks: C,
+    slept: AtomicBool,
 }
 
-/// The wall, whose first state check tells the test that its plan holds the process
-/// and waits for the test to release it.
+impl<C: Checks> Checks for SlowMotion<C> {
+    fn state(&self, state: &[f64]) -> Result<bool, CheckError> {
+        self.checks.state(state)
+    }
+
+    fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        if !self.slept.swap(true, Ordering::SeqCst) {
+            thread::sleep(SLOW_MOTION);
+        }
+        self.checks.motion(from, to)
+    }
+}
+
+// RRTConnect joins the start to the goal in its first iteration in a world with no
+// obstacle, through the states each tree grew, and returns before it asks whether to
+// stop again. A plan whose time limit passes during that iteration, with no time of its
+// own for the simplification, still simplifies the path, as MoveIt does in the time its
+// plan left: the simplifier's first pass joins the start straight to the goal, and the
+// simplifier says that the time limit ended it.
+#[test]
+fn the_simplifier_makes_its_first_pass_past_the_time_limit() {
+    let ends = WallEnds::new(2);
+    let checks = SlowMotion {
+        checks: World {
+            obstacles: Vec::new(),
+            motion_step: MOTION_STEP,
+        },
+        slept: AtomicBool::new(false),
+    };
+    let request = Request {
+        time_limit: SETUP_TIME_LIMIT,
+        simplification: NonZeroU32::new(SIMPLIFICATION),
+        simplification_time: Duration::ZERO,
+        ..ends.request(Planner::RrtConnect, 1)
+    };
+    let answer = plan(&request, &checks).expect("a plan");
+    assert_eq!(answer.ended_by, Ending::Returned, "the planner");
+    let planned = answer.path.expect("a path");
+    assert!(
+        planned.len() > 2,
+        "the planned path holds {} states",
+        planned.len()
+    );
+    let simplification = answer.simplified.expect("a simplification");
+    assert_eq!(simplification.ended_by, Ending::TimeLimit, "the simplifier");
+    assert_eq!(
+        simplification.path,
+        [ends.start.clone(), ends.goal().to_vec()]
+    );
+}
+
+/// The wall, whose first state check tells the test that its plan has started and waits
+/// for the test to release it.
 struct Holding {
     world: World,
     channels: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
@@ -1152,10 +1219,24 @@ impl Checks for Holding {
     }
 }
 
-// A plan that waits for another plan of the process past its time limit gives no path
-// and says that its time limit ended it; the other plan then goes on to a path.
+/// The simplified plan of RRTConnect through the 2-D wall under `seed`, with no time
+/// limit and no iteration bound, under `checks`.
+fn simplified_wall_plan(seed: u32, checks: &dyn Checks) -> Result<Plan, PlanError> {
+    let ends = WallEnds::new(2);
+    let request = Request {
+        iterations: NonZeroU64::MAX,
+        simplification: NonZeroU32::new(SIMPLIFICATION),
+        ..ends.request(Planner::RrtConnect, seed)
+    };
+    plan(&request, checks)
+}
+
+// Plans run at once, each drawing from the seeds of its own thread. The first plan waits
+// in its first state check, before it builds its planner and its simplifier and their
+// generators; a plan under another seed runs to its end meanwhile; then the first goes
+// on. Each answers the simplified plan it gives alone.
 #[test]
-fn a_plan_waits_for_another_plan_until_its_time_limit() {
+fn a_plan_runs_while_another_waits_in_its_check() {
     let (holding, held) = mpsc::channel();
     let (release, released) = mpsc::channel();
     let first_checks = Holding {
@@ -1163,45 +1244,50 @@ fn a_plan_waits_for_another_plan_until_its_time_limit() {
         channels: Mutex::new(Some((holding, released))),
     };
     let world = wall(2);
+    let (first_alone, second_alone) = (
+        simplified_wall_plan(1, &world),
+        simplified_wall_plan(2, &world),
+    );
     thread::scope(|scope| {
-        let first = scope.spawn(|| plan_within(NO_TIME_LIMIT, &first_checks));
-        held.recv().expect("the first plan holds the process");
+        let first = scope.spawn(|| simplified_wall_plan(1, &first_checks));
+        held.recv().expect("the first plan has started");
         let (answer, answered) = mpsc::channel();
         let world = &world;
-        scope.spawn(move || answer.send(plan_within(SHORT_TIME_LIMIT, world)));
-        let waited = answered.recv_timeout(ANSWER_GUARD);
+        scope.spawn(move || answer.send(simplified_wall_plan(2, world)));
+        let second = answered.recv_timeout(ANSWER_GUARD);
         release.send(()).expect("the first plan waits");
         assert_eq!(
-            waited.expect("the second plan answers at its time limit"),
-            Ok(TIMED_OUT)
+            second.expect("the second plan answers while the first waits"),
+            second_alone
         );
-        let first = first.join().expect("the first plan returns");
-        assert!(
-            first.expect("a plan").path.is_some(),
-            "the first plan found no path"
-        );
+        assert_eq!(first.join().expect("the first plan returns"), first_alone);
     });
 }
 
 // A start or every goal that fails the state check or lies off the constraint is
-// refused before the planner starts; a plan with one goal that fails and one that
-// passes reaches the one that passes.
+// refused before the planner starts, in a plan of one attempt and of several; a plan
+// with one goal that fails and one that passes reaches the one that passes.
 #[test]
 fn a_start_or_goals_that_fail_the_checks_are_refused() {
     let world = wall(2);
     let ends = WallEnds::new(2);
     let inside = vec![0.5, 0.5];
-    let inside_start = Request {
-        start: &inside,
-        ..ends.request(Planner::RrtConnect, 1)
-    };
-    assert_eq!(plan(&inside_start, &world), Err(PlanError::InvalidStart));
     let inside_goals = [inside.clone(), vec![0.5, 0.4]];
-    let inside_goals = Request {
-        goals: &inside_goals,
-        ..ends.request(Planner::RrtConnect, 1)
-    };
-    assert_eq!(plan(&inside_goals, &world), Err(PlanError::InvalidGoal));
+    for attempts in [1, ATTEMPTS] {
+        let attempts = NonZeroU32::new(attempts).expect("nonzero");
+        let inside_start = Request {
+            start: &inside,
+            attempts,
+            ..ends.request(Planner::RrtConnect, 1)
+        };
+        assert_eq!(plan(&inside_start, &world), Err(PlanError::InvalidStart));
+        let inside_goals = Request {
+            goals: &inside_goals,
+            attempts,
+            ..ends.request(Planner::RrtConnect, 1)
+        };
+        assert_eq!(plan(&inside_goals, &world), Err(PlanError::InvalidGoal));
+    }
     let one_passes = [inside, ends.goal().to_vec()];
     let one_passes = Request {
         goals: &one_passes,
@@ -1395,5 +1481,441 @@ fn a_request_that_does_not_fit_its_space_is_refused() {
         Some(
             "dimension 0 runs from 0 to inf; a dimension runs from a finite low to a finite high above it"
         )
+    );
+}
+
+// A plan whose time limit passes during its planner, with time of its own left for the
+// simplification, simplifies its path: the simplification's time runs from the end of
+// the time limit.
+#[test]
+fn a_simplification_has_its_own_time_after_the_time_limit() {
+    let ends = WallEnds::new(2);
+    let checks = Slow::new(World {
+        obstacles: Vec::new(),
+        motion_step: MOTION_STEP,
+    });
+    let request = Request {
+        time_limit: SHORT_TIME_LIMIT,
+        simplification: Some(NonZeroU32::MAX),
+        ..ends.request(Planner::Prm, 1)
+    };
+    let answer = plan(&request, &checks).expect("a plan");
+    assert_eq!(answer.ended_by, Ending::TimeLimit, "the planner");
+    let simplification = answer.simplified.expect("a simplification");
+    assert_eq!(simplification.ended_by, Ending::Returned, "the simplifier");
+}
+
+/// The wall, which counts the checks it answers off the thread that built it, on the
+/// threads of a plan's attempts, and sets `stop`, when it holds one, at each of them.
+struct OffThread<'a> {
+    world: World,
+    planning: thread::ThreadId,
+    calls: AtomicUsize,
+    stop: Option<&'a AtomicBool>,
+}
+
+impl<'a> OffThread<'a> {
+    fn new(stop: Option<&'a AtomicBool>) -> Self {
+        Self {
+            world: wall(2),
+            planning: thread::current().id(),
+            calls: AtomicUsize::new(0),
+            stop,
+        }
+    }
+
+    fn count(&self) {
+        if thread::current().id() == self.planning {
+            return;
+        }
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(stop) = self.stop {
+            stop.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Checks for OffThread<'_> {
+    fn state(&self, state: &[f64]) -> Result<bool, CheckError> {
+        self.count();
+        Ok(self.world.free(state))
+    }
+
+    fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        self.count();
+        Ok(self.world.walk(from, to))
+    }
+}
+
+/// What a plan that its stop ends before it finds a path answers.
+const STOPPED: Plan = Plan {
+    path: None,
+    simplified: None,
+    ended_by: Ending::Stopped,
+};
+
+// A plan whose stop flag is set before it starts ends at its planner's first question
+// whether to stop, says so, and gives no path; a plan of several attempts starts none.
+#[test]
+fn a_stopped_plan_ends_without_a_path() {
+    let ends = WallEnds::new(2);
+    let stop = AtomicBool::new(true);
+    for attempts in [1, ATTEMPTS] {
+        let checks = OffThread::new(None);
+        let stopped = Request {
+            stop: Some(&stop),
+            attempts: NonZeroU32::new(attempts).expect("nonzero"),
+            ..ends.request(Planner::RrtStar, 1)
+        };
+        assert_eq!(plan(&stopped, &checks), Ok(STOPPED), "{attempts} attempts");
+        assert_eq!(
+            checks.calls.load(Ordering::SeqCst),
+            0,
+            "the checks of {attempts} attempts"
+        );
+    }
+}
+
+// The first check of each attempt sets the stop flag, which ends every attempt at its
+// planner's first question whether to stop: the plan says so and gives no path.
+#[test]
+fn a_stop_ends_every_running_attempt() {
+    let ends = WallEnds::new(2);
+    let stop = AtomicBool::new(false);
+    let checks = OffThread::new(Some(&stop));
+    let stopped = Request {
+        stop: Some(&stop),
+        attempts: NonZeroU32::new(ATTEMPTS).expect("nonzero"),
+        ..ends.request(Planner::RrtConnect, 1)
+    };
+    assert_eq!(plan(&stopped, &checks), Ok(STOPPED));
+    assert!(
+        checks.calls.load(Ordering::SeqCst) > 0,
+        "no attempt started"
+    );
+}
+
+// A plan of several attempts whose time limit passes in the check of its start, on the
+// thread that calls plan, starts no attempt, and says that its time limit ended it.
+#[test]
+fn a_time_limit_that_passes_before_the_attempts_start_none() {
+    let ends = WallEnds::new(2);
+    let checks = Slow::new(OffThread::new(None));
+    let request = Request {
+        time_limit: SHORT_TIME_LIMIT,
+        attempts: NonZeroU32::new(ATTEMPTS).expect("nonzero"),
+        ..ends.request(Planner::RrtConnect, 1)
+    };
+    assert_eq!(plan(&request, &checks), Ok(TIMED_OUT));
+    assert_eq!(
+        checks.checks.calls.load(Ordering::SeqCst),
+        0,
+        "an attempt checked"
+    );
+}
+
+/// The wall, whose motion checks set `stop` at the `stop_at`th of them, and count them.
+struct StopAt<'a> {
+    world: World,
+    motions: AtomicUsize,
+    stop_at: usize,
+    stop: &'a AtomicBool,
+}
+
+impl Checks for StopAt<'_> {
+    fn state(&self, state: &[f64]) -> Result<bool, CheckError> {
+        Ok(self.world.free(state))
+    }
+
+    fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        if self.motions.fetch_add(1, Ordering::SeqCst) + 1 == self.stop_at {
+            self.stop.store(true, Ordering::SeqCst);
+        }
+        Ok(self.world.walk(from, to))
+    }
+}
+
+// RRT* plans until its iteration bound, and has found a path by its last motion check. A
+// stop at that check ends the planner at its next question with that path, and keeps
+// the simplification from starting: the simplification says that the stop ended it,
+// and its path is the planned path.
+#[test]
+fn a_plan_stopped_after_its_path_answers_it_unsimplified() {
+    let ends = WallEnds::new(2);
+    let unstopped = AtomicBool::new(false);
+    let counting = StopAt {
+        world: wall(2),
+        motions: AtomicUsize::new(0),
+        stop_at: usize::MAX,
+        stop: &unstopped,
+    };
+    let full = plan(&ends.request(Planner::RrtStar, 1), &counting).expect("a plan");
+    assert_eq!(
+        full.ended_by,
+        Ending::IterationBound,
+        "the unstopped planner"
+    );
+    let stop = AtomicBool::new(false);
+    let stopping = StopAt {
+        world: wall(2),
+        motions: AtomicUsize::new(0),
+        stop_at: counting.motions.load(Ordering::SeqCst),
+        stop: &stop,
+    };
+    let request = Request {
+        simplification: NonZeroU32::new(SIMPLIFICATION),
+        stop: Some(&stop),
+        ..ends.request(Planner::RrtStar, 1)
+    };
+    let answer = plan(&request, &stopping).expect("a plan");
+    assert_eq!(answer.ended_by, Ending::Stopped, "the planner");
+    let path = answer.path.expect("a path");
+    let simplification = answer.simplified.expect("a simplification");
+    assert_eq!(simplification.ended_by, Ending::Stopped, "the simplifier");
+    assert_eq!(simplification.path, path);
+}
+
+// A check that fails on the thread of an attempt ends a plan of several attempts with an
+// error that says what failed, and the next plan in the process succeeds. The fifth
+// state check comes after the checks of the start and the goal on the thread that calls
+// plan, on an attempt's thread.
+#[test]
+fn a_failing_check_on_an_attempts_thread_ends_its_plan() {
+    let ends = WallEnds::new(2);
+    let failing = Failing::new(FailingCheck::State, 5, Failure::Panics);
+    let request = Request {
+        attempts: NonZeroU32::new(ATTEMPTS).expect("nonzero"),
+        ..ends.request(Planner::RrtConnect, 1)
+    };
+    assert_eq!(
+        plan(&request, &failing),
+        Err(PlanError::Check(Failure::Panics.says().to_string()))
+    );
+    assert!(
+        wall_attempts(Planner::RrtConnect, 2, 1, ATTEMPTS)
+            .path
+            .is_some(),
+        "the plan after the failure found no path"
+    );
+}
+
+// Several attempts plan at once, each from its own seed, and join their paths: the plan
+// repeats path for path, passes the checks, and is at most as long as the plan of its
+// attempt 0 alone, which plans from the same seed, for RRTConnect and for PRM*, whose
+// search thread runs beside each attempt's.
+#[test]
+fn several_attempts_repeat_and_keep_the_shortest_path() {
+    for dimension in [2, 7] {
+        let world = wall(dimension);
+        let ends = WallEnds::new(dimension);
+        for planner in [Planner::RrtConnect, Planner::PrmStar] {
+            let what = format!("{ATTEMPTS} attempts of {planner} in {dimension} dimensions");
+            let one = wall_plan(planner, dimension, 3)
+                .path
+                .expect("one attempt finds a path");
+            let joined = wall_attempts(planner, dimension, 3, ATTEMPTS);
+            assert_eq!(
+                wall_attempts(planner, dimension, 3, ATTEMPTS),
+                joined,
+                "{what} repeat"
+            );
+            let path = joined.path.expect("several attempts find a path");
+            assert_passes(&world, &path, &ends, &what);
+            assert!(length(&path) <= length(&one), "{what} give a longer path");
+        }
+    }
+}
+
+// Four attempts of RRTConnect from seed 4 join into their hybrid: the joined path is
+// shorter than the path of attempt 0, which plans from the same seed, and holds a state
+// of that path between its ends, so it joins part of it with another attempt's.
+#[test]
+fn several_attempts_join_into_their_hybrid() {
+    let first = wall_plan(Planner::RrtConnect, 2, 4)
+        .path
+        .expect("one attempt finds a path");
+    let joined = wall_attempts(Planner::RrtConnect, 2, 4, ATTEMPTS)
+        .path
+        .expect("several attempts find a path");
+    assert!(
+        length(&joined) < length(&first),
+        "the joined path is {} long, attempt 0's {}",
+        length(&joined),
+        length(&first)
+    );
+    let between = &first[1..first.len() - 1];
+    assert!(
+        joined.iter().any(|state| between.contains(state)),
+        "the joined path holds no state of attempt 0's"
+    );
+}
+
+/// The wall, a motion that descends in the second dimension before the wall's far face
+/// refused: valid one way and refused the other. It records each motion it checks on the
+/// thread that built it, the plan's own, with its verdict.
+struct OneWay {
+    world: World,
+    thread: thread::ThreadId,
+    checked: Mutex<Vec<Judged>>,
+}
+
+/// A motion a check judged, and whether it passed.
+struct Judged {
+    from: Vec<f64>,
+    to: Vec<f64>,
+    passed: bool,
+}
+
+impl OneWay {
+    fn walk(&self, from: &[f64], to: &[f64]) -> Motion {
+        if to[1] < from[1] && from[0].min(to[0]) < 0.55 {
+            return Motion::Invalid { last_valid: 0.0 };
+        }
+        self.world.walk(from, to)
+    }
+}
+
+impl Checks for OneWay {
+    fn state(&self, state: &[f64]) -> Result<bool, CheckError> {
+        Ok(self.world.free(state))
+    }
+
+    fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        let motion = self.walk(from, to);
+        if thread::current().id() == self.thread {
+            self.checked.lock().expect("the record").push(Judged {
+                from: from.to_vec(),
+                to: to.to_vec(),
+                passed: motion == Motion::Valid,
+            });
+        }
+        Ok(motion)
+    }
+}
+
+// With a check that passes a motion one way and refuses it the other, eight attempts of
+// RRTConnect from seed 1 plan on threads of their own, and the plan's thread joins their
+// paths: the hybrid holds a motion whose other way passed when it joined two paths, and
+// its check in the path's order refuses it. The plan keeps the shortest path whose every
+// motion passes in its order.
+#[test]
+fn a_hybrid_that_fails_the_checks_in_its_order_is_not_kept() {
+    let world = OneWay {
+        world: wall(2),
+        thread: thread::current().id(),
+        checked: Mutex::default(),
+    };
+    let ends = WallEnds::new(2);
+    let eight = Request {
+        attempts: NonZeroU32::new(8).expect("nonzero"),
+        ..ends.request(Planner::RrtConnect, 1)
+    };
+    let path = plan(&eight, &world)
+        .expect("a plan")
+        .path
+        .expect("eight attempts find a path");
+    for w in path.windows(2) {
+        assert_eq!(
+            world.walk(&w[0], &w[1]),
+            Motion::Valid,
+            "the path moves from {:?} to {:?}",
+            w[0],
+            w[1]
+        );
+    }
+    let checked = world.checked.lock().expect("the record");
+    let backward = checked.iter().enumerate().any(|(k, refused)| {
+        !refused.passed
+            && checked[..k]
+                .iter()
+                .any(|other| other.passed && other.from == refused.to && other.to == refused.from)
+    });
+    assert!(backward, "the hybrid holds no motion checked the other way");
+}
+
+/// When each check on an attempt's thread came, in the order of all of them: its
+/// thread's first and last, in the order the threads made their first.
+#[derive(Default)]
+struct Spans {
+    checks: usize,
+    threads: Vec<(thread::ThreadId, usize, usize)>,
+}
+
+/// The wall, whose checks on the threads of a plan's attempts record their `Spans`, and
+/// hold a thread's first check until the threads of its batch, `AT_ONCE` in the
+/// order of their first checks, have all made theirs.
+struct Batches {
+    world: World,
+    planning: thread::ThreadId,
+    spans: Mutex<Spans>,
+    met: Condvar,
+}
+
+impl Batches {
+    fn record(&self) {
+        if thread::current().id() == self.planning {
+            return;
+        }
+        let mut spans = self.spans.lock().expect("the spans");
+        spans.checks += 1;
+        let at = spans.checks;
+        let id = thread::current().id();
+        if let Some(span) = spans.threads.iter_mut().find(|span| span.0 == id) {
+            span.2 = at;
+            return;
+        }
+        spans.threads.push((id, at, at));
+        let batch_end = spans.threads.len().div_ceil(AT_ONCE) * AT_ONCE;
+        self.met.notify_all();
+        let (_spans, waited) = self
+            .met
+            .wait_timeout_while(spans, ANSWER_GUARD, |spans| spans.threads.len() < batch_end)
+            .expect("the spans");
+        assert!(
+            !waited.timed_out(),
+            "{AT_ONCE} attempts never planned at once"
+        );
+    }
+}
+
+impl Checks for Batches {
+    fn state(&self, state: &[f64]) -> Result<bool, CheckError> {
+        self.record();
+        Ok(self.world.free(state))
+    }
+
+    fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        self.record();
+        Ok(self.world.walk(from, to))
+    }
+}
+
+// Eight attempts plan four at once: each of the first four checks while the other three
+// do, and the second four check only once the first four have ended.
+#[test]
+fn four_attempts_plan_at_once_and_the_next_four_after_them() {
+    assert_eq!(AT_ONCE, 4, "MoveIt's default max_planning_threads");
+    let checks = Batches {
+        world: wall(2),
+        planning: thread::current().id(),
+        spans: Mutex::default(),
+        met: Condvar::new(),
+    };
+    let ends = WallEnds::new(2);
+    let eight = Request {
+        attempts: NonZeroU32::new(2 * ATTEMPTS).expect("nonzero"),
+        ..ends.request(Planner::RrtConnect, 1)
+    };
+    let answer = plan(&eight, &checks).unwrap_or_else(|error| panic!("{error}"));
+    assert!(answer.path.is_some(), "eight attempts found no path");
+    let spans = checks.spans.into_inner().expect("the spans");
+    assert_eq!(spans.threads.len(), 2 * AT_ONCE, "the attempts' threads");
+    let (first, second) = spans.threads.split_at(AT_ONCE);
+    let first_ended = first.iter().map(|span| span.2).max();
+    let second_started = second.iter().map(|span| span.1).min();
+    assert!(
+        first_ended < second_started,
+        "the first four checked until check {first_ended:?}, and the second four from check \
+         {second_started:?}"
     );
 }

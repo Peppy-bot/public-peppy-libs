@@ -10,15 +10,25 @@
 //! EPA recovering penetration depth on overlap, so the signed distance is continuous
 //! through contact and cheap enough for every control tick.
 //!
-//! Robot-agnostic: any bimanual URDF whose arms are 7-DOF SRS chains
-//! (`srs_model`'s contract) runs through the same construction. The caller
-//! supplies the URDF, the collision mesh directory, the chain base links, and an
-//! optional list of pairs to exclude from checking.
+//! Any bimanual URDF whose arms are 7-DOF SRS chains (`srs_model`'s contract)
+//! runs through the same construction: the caller supplies the URDF, the
+//! collision mesh directory, the chain base links, and an optional list of pairs
+//! to exclude from checking. [`openarm`] builds OpenArm's model with the URDF,
+//! the base links and the torso's clip regions of `openarm_description`, and the
+//! caller's mesh directory.
 //!
 //! - [`SelfCollisionModel::min_distance`] is the runtime query: the signed
 //!   surface distance over the checked pairs, negative meaning penetration.
 //! - [`SelfCollisionModel::distance_gradient`] adds the analytic gradient of
 //!   that distance with respect to the joints, for a velocity-barrier caller.
+//! - [`SelfCollisionModel::min_distance_of_arm`] is that distance over the pairs
+//!   one arm's bodies ride, for a planner that moves that arm alone.
+//! - [`openarm`] builds OpenArm's model from `openarm_description`: both arms and
+//!   the torso decomposed into its clip regions, for every node that checks it.
+//! - [`SelfCollisionModel::fingers`] gives the fingers an arm's chain carries
+//!   (`ChainGeometry::carried`) where they hang at the arm's gripper opening, as
+//!   [`Rider`](collision_geometry::chain::Rider)s of its links, for a planner's check of
+//!   that arm.
 //!
 //! The model is a pure distance oracle: it reports clearances and their gradient,
 //! and the caller decides how to throttle on them.
@@ -37,11 +47,13 @@
 mod assemble;
 mod error;
 mod model;
+mod openarm;
 mod pairs;
 
 pub use collision_geometry::gjk::Placed;
-pub use error::{BuildError, CollisionError};
+pub use error::{BuildError, CollisionError, FingerError};
 pub use model::{Builder, DistanceGradient, Proximity, SelfCollisionModel};
+pub use openarm::openarm;
 pub use pairs::PairSpec;
 
 /// The linear-algebra crate of every type in this API (the witness points of a

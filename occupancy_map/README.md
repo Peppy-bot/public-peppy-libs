@@ -7,8 +7,9 @@ to the nearest occupied voxel. No hardware or messaging dependencies.
 
 - `VoxelMap` holds the voxels in its `Frame`, inserts a `Scan` with the shapes it cuts
   out, answers each voxel's state and the occupied voxels inside a box, and `clear`s.
-- `RobotCutout` is the robot's body to cut out: its chains placed and grown by
-  `collision_geometry`, where the robot's URDF root stands in the map's frame.
+- `RobotCutout` is the robot's body to cut out: its chains placed and the body fixed
+  around them, grown by `collision_geometry`, where the robot's URDF root stands in the
+  map's frame.
 - `depth_points` reads a z16 depth frame as the points of its valid samples, from its
   stream's pinhole model (`camera_core::pinhole`).
 - `DistanceField` holds, for a map as it stands, the distance from each voxel's center
@@ -52,14 +53,16 @@ let depth_to_color = Pose::new(
 )?;
 let sensor = color_in_world.compose(&depth_to_color);
 
-// Both arms at the frame's joint positions, each collision element scaled by 1.1 about
-// its center and grown by 3 cm, with the URDF root where it stands in the map's frame.
+// Both arms at the frame's joint positions and the body fixed around them, each collision
+// element scaled by 1.1 about its center and grown by 3 cm, with the URDF root where it
+// stands in the map's frame.
 let padding = Padding::new(1.1, 0.03)?;
 let (left_grown, right_grown) = (left.mask(padding), right.mask(padding));
+let body_grown = body.mask(padding);
 let robot = RobotCutout::new(
     &world,
     root_in_world,
-    vec![left_grown.at(&left_q), right_grown.at(&right_q)],
+    vec![left_grown.at(&left_q), right_grown.at(&right_q), body_grown.placed()],
 );
 let max_range_m = PositiveFinite::parse(3.0)?;
 map.insert(&Scan { frame: &world, sensor, points: &points, max_range_m }, &[&robot])?;
@@ -102,11 +105,12 @@ reads. It goes in by the rules of MoveIt's point cloud updater
 - In one scan each voxel takes one update: a cut-out voxel is free, else a hit voxel is
   a hit, else a crossed voxel is a miss.
 
-A cut-out shape is any `Cutout`. A `RobotCutout` is the robot's body: the `PlacedMask`
-of each of its chains from `collision_geometry`, the chain's links at the frame's joint
-positions grown by a padding, every point within the offset of each collision element
-scaled about its center (collision_geometry's README, The robot filter), in the frame of
-the URDF root, and the root's pose in the map's frame.
+A cut-out shape is any `Cutout`. A `RobotCutout` is the robot's body: a `PlacedMask`
+from `collision_geometry` for each of its chains, the chain's links at the frame's joint
+positions, and for the body fixed around them (`BodyGeometry`), each grown by a padding,
+every point within the offset of each collision element scaled about its center
+(collision_geometry's README, The robot filter), in the frame of the URDF root, and the
+root's pose in the map's frame.
 
 ## The distance field
 

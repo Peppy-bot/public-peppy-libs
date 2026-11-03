@@ -408,13 +408,17 @@ impl UrdfCollisions {
     }
 
     /// The collision surfaces of a world-fixed `link`, mapped into the URDF root frame
-    /// through its fixed mount chain.
+    /// through its fixed mount chain. A link a movable joint carries is refused
+    /// ([`GeometryError::NotFixedToTheRoot`]).
     pub fn fixed_surfaces_in_root(
         &self,
         link: &str,
         meshes_dir: &str,
-    ) -> Result<Vec<Vec<Point3<f64>>>, String> {
-        let pose = self.fixed_pose_in_root(link)?;
+    ) -> Result<Vec<Vec<Point3<f64>>>, GeometryError> {
+        let not_fixed = || GeometryError::NotFixedToTheRoot {
+            link: link.to_owned(),
+        };
+        let pose = self.fixed_pose_in_root(link)?.ok_or_else(not_fixed)?;
         Ok(posed(pose, self.link_surfaces(link, meshes_dir)?))
     }
 
@@ -435,21 +439,19 @@ impl UrdfCollisions {
         Ok(posed(pose, self.link_surfaces(child, meshes_dir)?))
     }
 
-    /// Pose of `link` in the URDF root frame, composing only fixed joints.
-    /// Errs if any joint on the path is movable (such a link has no constant
-    /// root pose and belongs to an FK chain instead), or if the parent chain
+    /// Pose of `link` in the URDF root frame, composing only fixed joints;
+    /// `None` when a joint on the path is movable (such a link has no constant
+    /// root pose and belongs to an FK chain instead). Errs if the parent chain
     /// does not terminate (a malformed, cyclic URDF).
-    fn fixed_pose_in_root(&self, link: &str) -> Result<Isometry3<f64>, String> {
+    pub(crate) fn fixed_pose_in_root(&self, link: &str) -> Result<Option<Isometry3<f64>>, String> {
         let mut pose = Isometry3::identity();
         let mut current = link.to_string();
         for _ in 0..=self.parent_joints.len() {
             let Some(j) = self.parent_joints.get(&current) else {
-                return Ok(pose); // reached the root
+                return Ok(Some(pose)); // reached the root
             };
             if !j.is_fixed() {
-                return Err(format!(
-                    "link '{link}' hangs below movable joint into '{current}', not world-fixed"
-                ));
+                return Ok(None);
             }
             pose = j.origin * pose;
             current = j.parent_link.clone();
@@ -776,13 +778,16 @@ mod tests {
     #[test]
     fn fixed_pose_composes_through_fixed_joints_only() {
         let u = UrdfCollisions::from_urdf(URDF).expect("parse");
-        let m = u.fixed_pose_in_root("mount").expect("mount is fixed");
+        let m = u
+            .fixed_pose_in_root("mount")
+            .expect("an acyclic URDF")
+            .expect("mount is fixed");
         assert!((m.translation.vector - Vector3::new(0.0, 0.1, 0.5)).norm() < 1e-12);
         // The +90 degree X rotation maps local z to world -y.
         let z = m.rotation * Vector3::z();
         assert!((z + Vector3::y()).norm() < 1e-9);
-        assert!(u.fixed_pose_in_root("arm1").is_err());
-        assert!(u.fixed_pose_in_root("finger").is_err());
+        assert_eq!(u.fixed_pose_in_root("arm1"), Ok(None));
+        assert_eq!(u.fixed_pose_in_root("finger"), Ok(None));
     }
 
     #[test]

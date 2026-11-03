@@ -16,7 +16,11 @@ sampler.
   configurations meeting them for any chain.
 - `plan_arm_path` plans a `PlanRequest` on a `Scene` with OMPL (`ompl_bridge`) and
   checks the rounded path the robot runs
-  (`control_core::path_timing::RoundedPath::joint_path`).
+  (`control_core::path_timing::RoundedPath::joint_path`); `check_arm_path` checks a
+  caller's path, a `CheckRequest`, with the same checks.
+- The map's intake of a depth frame: `DepthCamera` reads its points, `JointHistory`
+  gives the robot's joint positions at its stamp, and `insert_cut_out` inserts the
+  points with the robot there, a `RobotMask`, cut out.
 
 ## Quick start
 
@@ -39,13 +43,37 @@ let waypoints = plan_arm_path(
         sampler: &sampler,
         goal_samples: NonZeroUsize::new(64).unwrap(),
         planner: Planner::RrtConnect,
-        time_limit: Duration::from_secs(1),
+        deadline: Instant::now() + Duration::from_secs(1),
         max_iterations: NonZeroU64::new(20_000).unwrap(),
+        attempts: NonZeroU32::new(4).unwrap(),
         seed: 1,
         min_clearance_m: 0.02,
+        stop: Some(&stop),
     },
 )?;
 ```
+
+## The map's intake
+
+A robot's node and a replay of its recorded frames, such as the example
+`scenes_from_episodes`, build the map with the same calls:
+
+- `DepthCamera` holds the depth stream of a camera the robot carries: its depth optical
+  frame in the robot frame, the color optical frame's pose there composed with the depth
+  frame's offset in it (`DepthCamera::new`), its lens, depth model and meters per count.
+  `DepthCamera::points` reads a z16 frame's points in the depth optical frame, a sample
+  of 0 making none (`occupancy_map::depth_points`).
+- `JointHistory` keeps the robot's measured positions over a span longer than the
+  camera's delay, `N` values each, such as both arms' joints and the grippers' openings,
+  and reads them at any instant inside it, interpolated between the measurements around
+  it; a measurement no newer than the newest is dropped.
+- `RobotMask` is the robot at the frame's stamp grown by a padding: each chain at its
+  joint positions (`PosedChain`), the parts its links carry, such as a gripper's fingers
+  at the gripper's opening, and the body fixed around the chains, each piece grown as
+  `collision_geometry` grows it for MoveIt's distance rule. `insert_cut_out` inserts the
+  scan into the voxel map with the mask cut out (`occupancy_map::RobotCutout`), the
+  URDF root at the origin of the scan's frame: a point inside it marks nothing, and its
+  ray clears the space before it.
 
 ## A valid state
 
@@ -92,8 +120,10 @@ voxel stands for.
 ## The start
 
 A joint that starts outside its limits by no more than its start tolerance moves onto
-the limit; one farther out refuses the plan. A start in contact with an obstacle or with
-its own body refuses it too, and the refusal names the pair (`Contact`).
+the limit; one farther out refuses the plan, naming the joint by its URDF name
+(`StartFault::OutsideLimits`), and a caller asks `start_inside_limits` before it takes
+a request. A start in contact with an obstacle or with its own body refuses it too, and
+the refusal names the pair (`StartFault::InCollision`, `Contact`).
 
 The robot runs a path from its measured joints, the start. A start closer than the plan's
 clearance of a term, the map's or the robot's own body's, such as one a millimeter from
@@ -111,10 +141,12 @@ its farthest distance: from a start below `min_clearance_m` above half that dist
 nothing touches; from one at least 0.2 mm (map) or 0.4 mm (own body) above it, above
 `min_clearance_m`; and from one nearer above it, at most 0.1 mm (map) or 0.2 mm (own
 body) below it. A motion ends where its step falls under 0.1 mm. A term the start keeps
-the clearance of keeps it as on any run. A run on the straight line from the start, past
-a waypoint on it such as one a corner's repair adds to the first run, is walked by the
-rule from the start; any other run is walked by its spare from its first state, so one
-that leaves a state short of the plan's clearance fails there.
+the clearance of keeps it as on any run. A run whose path from the start lies on the
+straight line from the start to the run's end, past waypoints on it such as one a
+corner's repair adds to the first run, is walked by the rule from the start, and so is a
+planner's motion whose first state lies on the straight line from the start to its end;
+any other run is walked by its spare from its first state, so one that leaves a state
+short of the plan's clearance fails there.
 
 Run from the plan's start, the path keeps `min_clearance_m`. Run from up to a tolerance
 from the start in each joint, as a robot's controller allows, it comes nearer anything
@@ -129,20 +161,23 @@ point, a link of the chain, or a part a link carries rigidly through a plan (`Fr
 part's `Frame::from` its `Rider` stands where the clearance checks place the part):
 its origin within a distance of a position of the robot frame, and its orientation
 within an angle of a target, the angle of the rotation between them, or, with a free
-axis, the angle between that axis and its target direction. A goal that mixes joints
-with poses, holds a tolerance that is not above 0, names a joint or a frame twice in one
-list, or holds the position of one frame and the orientation of another is refused
+axis, the angle between that axis and its target direction. Each tolerance is a
+`control_core` `PositiveFinite`. A goal that mixes joints with poses, names a joint or a
+frame twice in one list, or holds the position of one frame and the orientation of
+another is refused
 (`GoalError`): a goal holds one frame, whose pose the sampler reaches for. MoveIt keeps
 one sampler for a goal on several links, the link whose constraints leave the least
 volume, and accepts a sample that meets the others by chance.
-`IkGoalSampler` draws up to `goal_samples` configurations, until the plan's time limit
+`IkGoalSampler` draws up to `goal_samples` configurations, until the plan's deadline
 passes, inside the joint limits, the targeted joints inside their targets, and descends
 from each toward a pose drawn inside the goal: by `chain_kinematics`' inverse kinematics
 for the grasp point, and for a link by damped least squares on the link's Jacobian, each
 column taken as the change of the link's pose over a small turn of its joint. It keeps
 the distinct ones that meet the goal. A plan whose sampler finds none fails
 `Unreachable`, saying so; one whose every configuration is in collision fails
-`Unreachable` and says that instead.
+`Unreachable` and says that instead, naming, of the configuration that falls short least,
+the pair of the robot's own links, or the link nearest the map, of each clearance it falls
+short of and how far apart they stand.
 
 On 200 drawn reachable poses of OpenArm v2's left arm, the sampler reaches every
 shoulder and wrist branch that `srs_model`'s closed form finds on 199 of them, 144 of
@@ -151,21 +186,30 @@ of the forearm, of the wrist link, and of a part the hand carries.
 
 ## The plan and its path
 
-The request's time limit bounds the plan as MoveIt's allowed planning time bounds a
+The request's deadline bounds the plan as MoveIt's allowed planning time bounds a
 request: the goal sampler draws up to `goal_samples` configurations, ending early once the
-limit passes, OMPL plans in what remains of it, and OMPL's simplifier takes what remains
-after the plan, at most 1000 iterations, starting only before the limit. A planner that
-plans until its time ends, such as RRT*, leaves the simplifier none, and the plan answers
-the path it planned. A corner's repair runs only before the limit, and a corner whose
-rounding fails once the limit has passed fails `NoPath`. The check of the rounded path
-runs to its end past the limit: on the 200 drawn scenes of the arm planning scenario of
-the ROS reference harness, in a container of 1.5 CPUs of an Intel Core Ultra 9 290HX, RRT*
-at a time limit of 1 s answers each of its paths unsimplified and ends within 60 ms past
-the limit at a clearance of 0 and of 0.02 m, and no corner's repair meets the limit. OMPL
-plans with the request's planner and iteration bound, seeded from the request's seed and
-the map's stamp, so the same request on the same map gives the same path when the plan
-ends before its time limit, for every planner but PRM and PRM*. OMPL's simplifier shortens
-the path.
+deadline passes, OMPL makes the request's `attempts` in what remains before it, as MoveIt
+makes a request's `num_planning_attempts` (ompl_bridge's README, Attempts): each from its
+own seed, under the whole of that time and the whole iteration bound, their paths joined
+by OMPL's path hybridization, and OMPL's simplifier takes what remains after the
+attempts, at most 1000 iterations, as MoveIt simplifies in the allowed planning time less
+the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve` calls `simplifySolution`
+with that time, whatever is left of it). OMPL's simplifier runs its first pass however
+little time it has (`PathSimplifier::simplify`, `atLeastOnce`), so a planner that plans
+until its time ends, such as RRT*, has its path simplified once, past the deadline. A
+corner's repair runs only before the deadline: when a corner of the simplified path
+rounds short of the clearances once the deadline has passed, the plan answers its
+planned path if that passes its own check, and fails `NoPath` otherwise. The hybrid of several attempts and its checks,
+and the check of the rounded path, run to their end past the deadline. OMPL plans with
+the request's planner and iteration bound, seeded from the request's seed and the map's
+stamp, so the same request on the same map gives the same path when the plan ends before
+its deadline, for every planner but PRM and PRM*, with any number of attempts. OMPL's
+simplifier shortens the path.
+
+The caller's flag `stop` ends a plan at any part of it, and the plan fails `Stopped`:
+the goal sampler draws no further configuration, OMPL's planners and simplifier end at
+their next question whether to stop, and the check of the rounded path ends before its
+next walk of the path.
 
 The robot runs the path with its corners rounded as execute_joint_path rounds them
 (`RoundedPath::joint_path`). The planner walks each arc of the rounded path, from where
@@ -174,9 +218,11 @@ segment is left to the walk of the path's runs. At a corner whose rounding falls
 it adds a waypoint on each of the corner's runs within a quarter of the run from the
 corner, which shrinks the arc, and halves that share at each failure until the rounding
 passes, or fails `NoPath` once the added waypoints lie within twice
-`MIN_JOINT_CHANGE_RAD` of the corner or a run's walk checks no state within the share.
-Each added waypoint is the state the run's walk checks there farthest from the corner,
-the start rule's walk included, so each run it splits walks only states the plan walked.
+`MIN_JOINT_CHANGE_RAD` of the corner or a run's walk checks no state within the share
+that keeps the plan's clearance. Each added waypoint is the state the run's walk checks
+there farthest from the corner that keeps the plan's clearance, the start rule's walk
+included, so each run it splits walks only states the plan walked and each waypoint
+after the start keeps the plan's clearance.
 It then walks every run of its answer, a run that joins two waypoints past one the path
 drops, one within `MIN_JOINT_CHANGE_RAD` of the waypoint before it, among them, and fails
 `NoPath` on a run that falls short.
@@ -188,3 +234,23 @@ states it checks only as points of a checked motion, so the plan answers the sim
 path when the path the robot runs through it passes the checks above, and the planned
 path when only that one passes. MoveIt checks the simplified path alone, and answers
 INVALID_MOTION_PLAN when it fails.
+
+## Checking a path
+
+`check_arm_path` checks the path execute_joint_path runs from a caller's start through
+its waypoints with the checks of a plan's answer: the start inside its limits by its
+tolerance and out of contact, each waypoint inside the joint limits and, after the
+start, at the plan's clearances, each run as the plan walks the runs of its answer, the
+run whose path from the start lies on the straight line from the start by the start
+rule, and each arc of the rounded path as the plan walks its arcs. The walks follow the
+run into the first waypoint outside a limit up to where it leaves the limits, and go no
+farther. It answers the first fault along the path
+(`PathFault`): the start's, a waypoint that holds a joint, by its URDF name, outside its
+limits, or a state short of the plan's clearance, where it lies (`Place`: at a waypoint,
+on a run, or on the arc at a corner) and how near it comes to the map and between the
+robot's own links. It answers too the most waypoints, from the first, whose path, run on
+its own, passes: the waypoints up to the one whose run or corner fails, the start
+counted as waypoint 0, or before the waypoint that fails. A corner's arc runs before the
+rest of the run from its waypoint, and that run before the waypoint it ends at. Each walk
+of a run or of a corner starts only before the check's deadline, and a check that
+reaches its deadline fails `TimeEnded`.

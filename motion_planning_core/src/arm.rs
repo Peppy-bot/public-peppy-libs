@@ -134,7 +134,7 @@ pub(crate) fn frame_on_segment<const N: usize>(
 }
 
 /// Where `rider` stands in the frame of the URDF root with its chain posed at `posed`.
-fn rider_pose<const N: usize>(posed: &Posed<N>, rider: &Rider) -> Isometry3<f64> {
+pub(crate) fn rider_pose<const N: usize>(posed: &Posed<N>, rider: &Rider) -> Isometry3<f64> {
     frame_on_segment(posed, rider.segment, &rider.offset)
 }
 

@@ -40,6 +40,22 @@ pub enum GeometryError {
         index: usize,
         reason: String,
     },
+    /// Clip regions given for a link that is not a link of the body: one with collision
+    /// elements that fixed joints alone join to the URDF root.
+    #[error(
+        "clip regions name '{body}', which is no link of the body: name a link with collision \
+         elements that fixed joints alone join to the URDF root"
+    )]
+    RegionsOffTheBody { body: String },
+    /// A link to fit in the frame of the URDF root that a movable joint carries, so no
+    /// fixed joints alone join it to the root.
+    #[error(
+        "'{link}' hangs below a movable joint: fixed joints alone do not join it to the URDF root"
+    )]
+    NotFixedToTheRoot { link: String },
+    /// Two lists of clip regions given for one body.
+    #[error("clip regions name '{body}' twice: give each body one list of regions")]
+    RegionsTwice { body: String },
     /// The chain itself could not be built from the URDF.
     #[error(transparent)]
     Chain(#[from] chain_kinematics::ChainError),

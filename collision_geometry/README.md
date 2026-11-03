@@ -18,6 +18,8 @@ serial chain placed at a joint configuration. No hardware or messaging dependenc
   carries it, the part's offset in that link's frame, and its pieces in its own.
   `ChainGeometry::carried` gives the parts below the chain's links across movable
   joints off its path, each a `CarriedPart` placed with those joints at 0, as riders.
+- `chain::BodyGeometry` holds the pieces of the links that fixed joints alone join to
+  the URDF root, the robot's body around its chains, and grows them by the same rule.
 - `urdf_collision`, `stl` and `hull` read the collision elements of a URDF (meshes,
   boxes, cylinders and spheres) and build the exact convex hull of a point cloud.
 
@@ -28,7 +30,7 @@ OpenArm on this crate.
 
 ```rust
 use chain_kinematics::{ChainSpec, JointSelection};
-use collision_geometry::chain::{ChainGeometry, Padding};
+use collision_geometry::chain::{BodyGeometry, ChainGeometry, Padding};
 
 let left = ChainGeometry::<7>::from_urdf(&urdf, &meshes_dir, &ChainSpec {
     base_link: Some("openarm_left_link0"),
@@ -48,6 +50,11 @@ let on_the_arm = grown.contains(&point);
 for link in grown.links() {
     let on_this_link = link.contains(&point);
 }
+
+// The body fixed around the arms, its torso decomposed into clip regions.
+let body = BodyGeometry::from_urdf(&urdf, &meshes_dir, &[(torso, torso_regions)])?;
+let grown_body = body.mask(Padding::new(1.0, 0.03)?);
+let on_the_body = grown_body.placed().contains(&point);
 ```
 
 ## The links of a chain
@@ -64,15 +71,28 @@ faces, a `<cylinder>` the faces of a 64-sided prism whose faces touch it, and a
 `<sphere>` the faces of a polytope of 1024 points whose nearest face touches it, so
 each piece holds its primitive. Each element is moved by its `<origin>`. A
 `<capsule>`, and a primitive whose size is not positive and finite, is refused with an
-error naming its link.
+error naming its link. `ChainGeometry::with_lower_floor` raises a joint's lower limit as
+`Chain::with_lower_floor` does, so the chain a planner checks keeps the limits a robot's
+controller enforces.
+
+## The body
+
+A body holds the links that fixed joints alone join to the URDF root, the root among
+them, each with collision elements: the parts of the robot that stand where they are
+whatever its joints do, such as a torso and the mounts of its arms. A link has one piece
+per `<collision>` element, in the link's frame, as a chain's link has, or, for a link
+the caller names with its clip regions, one piece per region, fitted to the region's
+slice of the link's elements in the frame of the URDF root, the frame the regions are
+given in, by `fit::fit_fixed_link`, which a self model's fixed bodies are fitted by too.
+Regions that name a link outside the body, or one link twice, are refused.
 
 ## The fit
 
 Every collision element is wrapped in a convex polytope. A body fits one polytope per
 element; for a concave body, whose one polytope bulges far past it, the caller names clip
-regions (`ClipRegion::all_from_bounds` reads them from their corners), each region's
-slice of the body's elements gets its own fit, and the build checks that the pieces
-jointly contain the elements.
+regions (`ClipRegion::by_body` reads each body's from their corners, and refuses a body
+named twice), each region's slice of the body's elements gets its own fit, and the build
+checks that the pieces jointly contain the elements.
 
 The fit is conservative, so a distance to it is a lower bound on the distance to the
 mesh:
@@ -121,7 +141,12 @@ caller can tell separating motion from approaching motion even inside an overlap
 `Mask` holds every collision element grown by a `Padding`: the element scaled by
 `scale` about its center, and every point within `offset` meters of the scaled
 element. Placed at a configuration, it answers for each link
-(`PlacedGrownLink::contains`) and for the chain (`PlacedMask::contains`, any link).
+(`PlacedGrownLink::contains`) and for the chain (`PlacedMask::contains`, any link). A
+`BodyMask` grows a body's pieces by the same rule, a region's piece as a mesh's piece, and
+stands where the body stands as a `PlacedMask` (`BodyMask::placed`). `BodyMask::of` grows
+parts a caller places, such as the riders of a chain where they stand, each piece as a
+mesh's piece. Each piece is a fitted one, which carries no rounding, and a rounded piece
+panics.
 
 - A mesh scales from its piece, about the mean of the piece's vertices. A point inside
   every face of the scaled piece is inside it, and a point beyond the piece's bounding
@@ -198,7 +223,8 @@ ships Qhull's `COPYING.txt` with it and states that Qhull's source can be obtain
 src/
   chain.rs           ChainGeometry, PlacedChain, Padding, Mask, PlacedMask,
                      PlacedGrownLink: a serial chain's pieces and the robot filter;
-                     Rider, CarriedPart: a part a link of a chain carries
+                     Rider, CarriedPart: a part a link of a chain carries;
+                     BodyGeometry, BodyMask: the body fixed to the root
   fit.rs             fit_pieces: one body's pieces, and the containment check
   simplify.rs        the supporting-plane fit to a deviation budget
   clip.rs            ClipRegion and the clipping of a mesh to it
@@ -210,8 +236,8 @@ src/
                      transforms
   error.rs           GeometryError, ContainmentFailure
 tests/
-  chain_geometry.rs                  properties of the pieces of drawn chains, and
-                                     the robot filter on one link
+  chain_geometry.rs                  properties of the pieces of drawn chains, the
+                                     robot filter on one link, and the body
   common/properties.rs               the dressed robots and paddings the properties draw
   common/growth.rs                   MoveIt's growth of a primitive, which the
                                      properties and the MoveIt comparison read
@@ -270,6 +296,26 @@ property), or that of a mesh its farthest face (the mesh case); when its inner b
 grown by 1.2 or twice the offset (the three cases and the third property); and when a
 primitive's balls stand about its origin negated (the first and third properties). A
 margin of 0 fails the third property alone.
+
+The body's properties draw the dressed robots with the mount hung from a new root by a
+fixed joint at a drawn placement. The body holds the mount alone, and answers for each
+point that the filter properties draw near a scaled element of the mount, off the grown
+element's surface, as the grown chain that a revolute joint at that placement carries the
+mount on answers at 0. With the mount split into two clip regions across a drawn axis,
+overlapping by 5 mm, the body holds a drawn point inside the hull of a surface of the
+mount, off its boundary, and no point beyond the reach of the grown regions. One case
+places a box at the root, a cylinder on a turned fixed joint and a cube mesh split into
+two regions on a fixed joint above it, and a link a revolute joint moves with a link
+fixed below it: the body holds each element and region to 0.9 of the offset and not to
+1.1, a region scaled by 1.5 about its center, and no point of the moving links. Regions
+for a link the body does not hold, or twice for one link, are refused. A body that takes
+the links a movable joint carries, that stands its links or its regions at the root's
+frame or its regions at their link's, that grows its elements or its regions by no
+offset or its regions by no scale, or that takes regions off the body or twice, fails
+these. A cube of half side 0.1 m, placed turned and moved, holds at no padding a point
+past its middle by 0.09 m along each axis and not by 0.11 m, and scaled by 2, by 0.19 m
+and not 0.21 m; one that does not scale it, or stands the part at the root, fails it. A
+rounded cube is refused.
 `tests/fit_prints_nothing.rs` runs a hull, a cloud with no hull and the fit of
 an OpenArm arm in a child process of its own and reads that it prints nothing, and
 `tests/hull_without_a_free_descriptor.rs` builds a hull with no file descriptor free.

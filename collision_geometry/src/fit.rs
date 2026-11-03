@@ -7,6 +7,7 @@ use nalgebra::Point3;
 use crate::clip::ClipRegion;
 use crate::gjk::{self, Hull, Vertex};
 use crate::simplify::circumscribe;
+use crate::urdf_collision::UrdfCollisions;
 use crate::{ContainmentFailure, GeometryError};
 
 /// How much slack a fitted piece may carry: the widest gap (meters) from its own
@@ -29,6 +30,20 @@ const FACE_FLOOR: f64 = 1e-3;
 /// from mesh simplification: it bounds no surface, so the face check skips it.
 /// Its corners are still checked by the per-vertex pass.
 const SLIVER_ALTITUDE: f64 = 1e-4;
+
+/// The pieces of `link`, which fixed joints alone join to the URDF root, in the frame of
+/// the root, as `fit_pieces` fits its collision surfaces with `regions`, the meshes read
+/// from `meshes_dir`. A link a movable joint carries is refused
+/// ([`GeometryError::NotFixedToTheRoot`]).
+pub fn fit_fixed_link(
+    collisions: &UrdfCollisions,
+    link: &str,
+    meshes_dir: &str,
+    regions: Option<&[ClipRegion]>,
+) -> Result<Vec<Hull>, GeometryError> {
+    let surfaces = collisions.fixed_surfaces_in_root(link, meshes_dir)?;
+    fit_pieces(link, &surfaces, regions)
+}
 
 /// The pieces of one body whose collision elements have `surfaces` (each a triangle
 /// soup, every three points a triangle). Without clip regions: one circumscribing fit

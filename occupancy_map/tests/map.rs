@@ -1,7 +1,8 @@
 //! Properties of the voxel map on drawn scenes: what one point does to the
 //! voxels of its ray, what an empty depth sample and a point that is not a
 //! number do, what repeated scans of a still scene make of a surface, the
-//! robot cut out where it stands, the frames a map refuses, the distance
+//! robot cut out where it stands, its chains and the body fixed around them,
+//! the frames a map refuses, the distance
 //! field against a brute-force distance inside the map and outside it, and a
 //! rendered depth frame of a box.
 
@@ -9,7 +10,7 @@ use std::collections::BTreeSet;
 
 use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
 use camera_core::pose::Pose;
-use collision_geometry::chain::Padding;
+use collision_geometry::chain::{BodyGeometry, Padding};
 use control_core::positive_finite::PositiveFinite;
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -392,6 +393,60 @@ fn the_padded_robot_is_cut_out_where_it_stands(tc: TestCase) {
         &[&RobotCutout::new(&frame, root, vec![bare])],
     );
     assert!(bare_arm.is_occupied(key), "the bare arm cut out the point");
+}
+
+/// A robot whose body is a box 20 cm on a side about its root.
+const BOX_BODY: &str = r#"<robot name="box_body">
+    <link name="base">
+      <collision><geometry><box size="0.2 0.2 0.2"/></geometry></collision>
+    </link>
+  </robot>"#;
+
+/// A robot whose body is a box 20 cm on a side 1 m along x from its root.
+const FAR_BOX_BODY: &str = r#"<robot name="far_box_body">
+    <link name="base">
+      <collision><origin xyz="1 0 0"/><geometry><box size="0.2 0.2 0.2"/></geometry></collision>
+    </link>
+  </robot>"#;
+
+// A point inside the body fixed around the robot's chains, the root away from
+// the map's origin, is cut out of a scan by the robot's parts, the first of
+// which, a box 1 m away, does not hold it: it marks nothing and its voxel
+// takes the lowest log-odds. The same scan with nothing cut out marks it.
+#[test]
+fn a_point_inside_the_robots_body_is_cut_out() {
+    let body = BodyGeometry::from_urdf(BOX_BODY, "", &[]).expect("a box body");
+    let far = BodyGeometry::from_urdf(FAR_BOX_BODY, "", &[]).expect("a box body");
+    let none = Padding::new(1.0, 0.0).expect("the padding that grows nothing");
+    let (grown, far) = (body.mask(none), far.mask(none));
+    let root = Isometry3::translation(0.4, -0.3, -0.6);
+    let in_map = root * Point3::new(0.05, -0.02, 0.03);
+    // A sensor half a meter from the point, along the map's x axis.
+    let sensor = Isometry3::translation(in_map.x - 0.5, in_map.y, in_map.z);
+    let reading: [f32; 3] = (sensor.inverse() * in_map).coords.map(|c| c as f32).into();
+    let (frame, sensor, root) = (frame(), pose_of(&sensor), pose_of(&root));
+    let key = map().key(in_map.coords.into()).expect("in the map");
+
+    let mut cut = map();
+    insert(
+        &mut cut,
+        sensor,
+        &[reading],
+        &[&RobotCutout::new(
+            &frame,
+            root,
+            vec![far.placed(), grown.placed()],
+        )],
+    );
+    assert_eq!(cut.occupied().count(), 0, "the body marked a voxel");
+    assert_eq!(log_odds(&cut, key), Some(lowest()));
+
+    let mut marked = map();
+    insert(&mut marked, sensor, &[reading], &[]);
+    assert!(
+        marked.is_occupied(key),
+        "a scan with nothing cut out cut the point"
+    );
 }
 
 // A map takes a scan whose sensor stands in its own frame and cutouts in its

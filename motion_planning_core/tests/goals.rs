@@ -3,6 +3,7 @@
 
 mod common;
 
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use hegel::TestCase;
@@ -13,7 +14,7 @@ use motion_planning_core::{
 };
 use nalgebra::{Isometry3, Unit, UnitQuaternion, Vector3};
 
-use common::{JOINTS, LEFT_ARM, an_hour_from_now, left_fingers};
+use common::{JOINTS, LEFT_ARM, an_hour_from_now, left_fingers, positive};
 
 /// An axis drawn by its polar and azimuth angles.
 fn drawn_axis(tc: &TestCase) -> Unit<Vector3<f64>> {
@@ -35,7 +36,7 @@ fn target(orientation: UnitQuaternion<f64>, free_axis: Option<Axis>) -> Orientat
     OrientationTarget {
         frame: Frame::GraspPoint,
         orientation,
-        tolerance_rad: 0.1,
+        tolerance_rad: positive(0.1),
         free_axis,
     }
 }
@@ -72,8 +73,8 @@ fn joint(joint: usize) -> JointTarget {
     JointTarget {
         joint,
         position: 0.0,
-        above: 0.1,
-        below: 0.1,
+        above: positive(0.1),
+        below: positive(0.1),
     }
 }
 
@@ -89,13 +90,13 @@ fn position(frame: Frame, tolerance_m: f64) -> PositionTarget {
     PositionTarget {
         frame,
         position: Vector3::new(0.3, 0.1, 0.2),
-        tolerance_m,
+        tolerance_m: positive(tolerance_m),
     }
 }
 
-// A goal that names nothing, mixes joints with poses, holds a tolerance that is not
-// above 0, names a joint or a frame twice in one list, or names a position and an
-// orientation of two frames, is refused, the last naming both frames.
+// A goal that names nothing, mixes joints with poses, names a joint or a frame twice in
+// one list, or names a position and an orientation of two frames, is refused, the last
+// naming both frames.
 #[test]
 fn malformed_goals_are_refused() {
     let new = |joints, positions, orientations| Goal::new(JOINTS, joints, positions, orientations);
@@ -107,10 +108,6 @@ fn malformed_goals_are_refused() {
             vec![]
         ),
         Err(GoalError::Mixed)
-    );
-    assert_eq!(
-        new(vec![], vec![position(Frame::GraspPoint, 0.0)], vec![]),
-        Err(GoalError::Tolerance(0.0))
     );
     assert!(matches!(
         new(vec![joint(2), joint(2)], vec![], vec![]),
@@ -167,25 +164,41 @@ fn malformed_goals_are_refused() {
     );
 }
 
-// The sampler draws its count while its deadline lies ahead, and nothing once it has
-// passed.
+// The sampler draws its count while its deadline lies ahead and its stop flag is clear,
+// and nothing once the deadline has passed or the flag is set.
 #[test]
-fn the_sampler_draws_until_its_deadline() {
+fn the_sampler_draws_until_its_deadline_or_its_stop() {
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = Goal::new(
         JOINTS,
         vec![JointTarget {
             joint: 3,
             position: 1.0,
-            above: 0.1,
-            below: 0.1,
+            above: positive(0.1),
+            below: positive(0.1),
         }],
         Vec::new(),
         Vec::new(),
     )
     .expect("a valid goal");
-    assert_eq!(sampler.sample(&goal, 8, 1, an_hour_from_now()).len(), 8);
-    assert!(sampler.sample(&goal, 8, 1, Instant::now()).is_empty());
+    let clear = AtomicBool::new(false);
+    let set = AtomicBool::new(true);
+    assert_eq!(
+        sampler.sample(&goal, 8, 1, an_hour_from_now(), None).len(),
+        8
+    );
+    assert_eq!(
+        sampler
+            .sample(&goal, 8, 1, an_hour_from_now(), Some(&clear))
+            .len(),
+        8
+    );
+    assert!(sampler.sample(&goal, 8, 1, Instant::now(), None).is_empty());
+    assert!(
+        sampler
+            .sample(&goal, 8, 1, an_hour_from_now(), Some(&set))
+            .is_empty()
+    );
 }
 
 // A goal on a finger, in the frame its rider gives, holds where the arm's clearance
@@ -210,12 +223,12 @@ fn a_goal_on_a_rider_stands_where_the_checks_place_it() {
         vec![PositionTarget {
             frame,
             position: finger.pose().translation.vector,
-            tolerance_m: 1e-9,
+            tolerance_m: positive(1e-9),
         }],
         vec![OrientationTarget {
             frame,
             orientation: finger.pose().rotation,
-            tolerance_rad: 1e-9,
+            tolerance_rad: positive(1e-9),
             free_axis: None,
         }],
     )

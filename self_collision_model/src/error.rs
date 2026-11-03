@@ -1,6 +1,7 @@
 //! The crate's error types.
 
 use collision_geometry::GeometryError;
+use openarm_description::Side;
 
 /// A failure from building or querying a
 /// [`SelfCollisionModel`](crate::SelfCollisionModel). The query variants
@@ -72,6 +73,36 @@ pub enum BuildError {
     /// A lower-level geometry, URDF, or mesh failure during assembly.
     #[error("{0}")]
     Geometry(String),
+}
+
+/// Why [`SelfCollisionModel::fingers`](crate::SelfCollisionModel::fingers) cannot give a
+/// part an arm's chain carries as a finger of that arm: the model and the chain come from
+/// different robots. Each variant names the part, by its link.
+#[derive(Debug, PartialEq, thiserror::Error)]
+pub enum FingerError {
+    /// The model holds no body of the part's name.
+    #[error("the self model holds no body '{link}'; give the parts of this robot's chain")]
+    NoBody { link: String },
+
+    /// The model holds the part as a body that is no gripper finger.
+    #[error(
+        "the self model holds '{link}' as no gripper finger; give the parts of this robot's chain"
+    )]
+    NotAFinger { link: String },
+
+    /// The model holds the part as a finger of the other arm.
+    #[error("the self model holds '{link}' as no finger of the {side} arm; give that arm's chain")]
+    OtherArm { link: String, side: Side },
+
+    /// The model hangs the finger off another link of the arm than the chain carries it on.
+    #[error(
+        "the self model hangs '{link}' off link {model} of its arm and the chain carries it on link {chain}"
+    )]
+    OtherLink {
+        link: String,
+        model: usize,
+        chain: usize,
+    },
 }
 
 /// Lower-level helpers report opaque `String` reasons; fold them into the

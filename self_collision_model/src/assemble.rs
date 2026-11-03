@@ -2,11 +2,12 @@
 //! its meshes, at construction time. There is no intermediate artifact: the
 //! hulls can never go stale against the geometry.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::nalgebra::Point3;
+use collision_geometry::GeometryError;
 use collision_geometry::clip::ClipRegion;
-use collision_geometry::fit::fit_pieces;
+use collision_geometry::fit::{fit_fixed_link, fit_pieces};
 use collision_geometry::gjk::Hull;
 use collision_geometry::urdf_collision::{ParentJoint, UrdfCollisions};
 
@@ -50,7 +51,7 @@ pub(crate) fn fit_bodies(
     urdf: &UrdfCollisions,
     chains: &[Vec<String>],
     meshes_dir: &str,
-    supplied: &HashMap<String, Vec<ClipRegion>>,
+    supplied: &BTreeMap<String, Vec<ClipRegion>>,
 ) -> Result<FittedBodies, BuildError> {
     let chain_set: HashSet<&str> = chains.iter().flatten().map(String::as_str).collect();
     let mut body_names: HashSet<String> = HashSet::new();
@@ -123,10 +124,13 @@ pub(crate) fn fit_bodies(
         if chain_set.contains(name.as_str()) || attached.contains(&name) {
             continue;
         }
-        let surfaces = urdf
-            .fixed_surfaces_in_root(&name, meshes_dir)
-            .map_err(|e| format!("collision link '{name}' is neither a chain link, an attached child, nor world-fixed: {e}"))?;
-        let hulls = fit_pieces(&name, &surfaces, regions_of(supplied, &name))?;
+        let hulls = fit_fixed_link(urdf, &name, meshes_dir, regions_of(supplied, &name))
+            .map_err(|error| match error {
+                GeometryError::NotFixedToTheRoot { .. } => BuildError::Geometry(format!(
+                    "collision link '{name}' is neither a chain link, an attached child, nor world-fixed: {error}"
+                )),
+                fit => BuildError::Fit(fit),
+            })?;
         body_names.insert(name.clone());
         fixed.push((name, hulls));
     }
@@ -212,7 +216,7 @@ fn vertex_centroid(verts: &[Point3<f64>]) -> Point3<f64> {
 
 /// The clip regions the caller supplied for `body`, if any.
 fn regions_of<'a>(
-    supplied: &'a HashMap<String, Vec<ClipRegion>>,
+    supplied: &'a BTreeMap<String, Vec<ClipRegion>>,
     body: &str,
 ) -> Option<&'a [ClipRegion]> {
     supplied.get(body).map(Vec::as_slice)

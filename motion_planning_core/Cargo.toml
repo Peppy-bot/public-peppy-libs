@@ -2,11 +2,12 @@
 name = "motion_planning_core"
 version = "0.1.0"
 edition = "2024"
-description = "Plans the paths of one serial chain of joints around a voxel map of what its cameras see: a state keeps a clearance from every occupied voxel and between the pairs of the robot's self model, a motion is checked by conservative advancement, goals are sampled by inverse kinematics, OMPL plans and simplifies, and the path the robot will run, its corners rounded, is checked before it is answered. Knows no robot."
+description = "Plans the paths of one serial chain of joints around a voxel map of what its cameras see: a state keeps a clearance from every occupied voxel and between the pairs of the robot's self model; a motion is checked by conservative advancement; goals are sampled by inverse kinematics; OMPL makes the request's attempts in batches of ompl_bridge's PLANNING_THREADS and simplifies their path, all by the request's deadline; the path the robot will run, its corners rounded, is checked before it is answered; a caller's path is checked with the same checks; and a depth frame's points go into the map with the robot cut out where a history of its joint positions puts it at the frame's stamp. Knows no robot."
 
 [workspace]
 
 [dependencies]
+camera_core = { path = "../camera_core" }
 chain_kinematics = { path = "../chain_kinematics" }
 collision_geometry = { path = "../collision_geometry" }
 control_core = { path = "../control_core" }
@@ -16,11 +17,13 @@ ompl_bridge = { path = "../ompl_bridge" }
 thiserror = "2"
 
 [dev-dependencies]
-camera_core = { path = "../camera_core" }
 hegeltest = { version = "0.51", features = ["static-engine"] }
+json5 = "1.3"
 kinematics_properties = { path = "../kinematics_properties" }
 openarm_description = { path = "../openarm_description", features = ["meshes"] }
 ros_reference = { path = "../ros_reference" }
+self_collision_model = { path = "../self_collision_model" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 srs_model = { path = "../srs_model" }
 urdf-rs = "0.10"

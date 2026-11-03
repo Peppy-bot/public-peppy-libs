@@ -104,6 +104,25 @@ impl<'a> Surroundings<'a> {
         [map, own_distance(arm, q)]
     }
 
+    /// The link of `arm` at `q` nearest the map and its distance from it, in meters: exact
+    /// where it lies within the world clearance, a lower bound at or above it elsewhere.
+    /// `None` for an arm with no pieces.
+    pub(crate) fn nearest_to_map<const N: usize>(
+        &self,
+        arm: &Arm<N>,
+        q: &[f64; N],
+    ) -> Option<(String, f64)> {
+        arm.pieces(q)
+            .into_iter()
+            .map(|(link, piece)| {
+                let distance = self.screened(&piece).map_or(f64::NEG_INFINITY, |screen| {
+                    self.piece_distance_below(&piece, screen, f64::INFINITY)
+                });
+                (link.to_string(), distance)
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
     /// What `arm` at `q` touches, if anything: a pair of its own body before the map.
     pub fn contact<const N: usize>(&self, arm: &Arm<N>, q: &[f64; N]) -> Option<Contact> {
         let own = arm

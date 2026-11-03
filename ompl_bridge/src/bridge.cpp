@@ -1,8 +1,10 @@
 #include "ompl_bridge/src/bridge.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -10,6 +12,8 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
+#include <variant>
 #include <vector>
 
 #include <Eigen/Core>
@@ -21,6 +25,7 @@
 #include <ompl/base/spaces/RealVectorStateSpace.h>
 #include <ompl/base/spaces/constraint/ProjectedStateSpace.h>
 #include <ompl/base/terminationconditions/IterationTerminationCondition.h>
+#include <ompl/geometric/PathHybridization.h>
 #include <ompl/geometric/SimpleSetup.h>
 #include <ompl/geometric/planners/est/EST.h>
 #include <ompl/geometric/planners/kpiece/BKPIECE1.h>
@@ -46,20 +51,19 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-// OMPL seeds each of its random number generators from one seed generator of the
-// process. A plan holds this lock from its seed to its last draw, so its generators
-// take their seeds in the order of its own construction. A plan waits for the lock
-// until its deadline.
-std::timed_mutex plan_lock;
-
-// Reseeds OMPL's seed generator. RNG::setSeed reseeds it however many seeds it has
-// handed out, and reports it as an error once it has handed out any; each plan
-// reseeds, so the report is silenced.
-void reseed(std::uint32_t seed) {
-  const auto level = ompl::msg::getLogLevel();
-  ompl::msg::setLogLevel(ompl::msg::LOG_NONE);
-  ompl::RNG::setSeed(seed);
-  ompl::msg::setLogLevel(level);
+// The seed of attempt `k` of a plan seeded with `seed`: the seed itself for attempt 0,
+// and for each other a mix of the two by SplitMix64's finalizer, never 0, which OMPL does
+// not take as a seed. A plan of several attempts joins their paths in a problem seeded
+// with the seed of index `attempts`, one past its last attempt's.
+std::uint32_t attempt_seed(std::uint32_t seed, std::uint32_t k) {
+  if (k == 0) {
+    return seed;
+  }
+  std::uint64_t z = ((static_cast<std::uint64_t>(seed) << 32) | k) + 0x9E3779B97F4A7C15ULL;
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  const auto mixed = static_cast<std::uint32_t>(z ^ (z >> 31));
+  return mixed == 0 ? 1 : mixed;
 }
 
 // The values of a state of the plan's space, a real vector space or the space
@@ -346,18 +350,43 @@ Status status_of(ob::PlannerStatus status) {
   }
 }
 
-// The answer to a plan that ends before its planner starts.
-PlanResult ended_before_planning(ob::PlannerStatus::StatusType status, Ending ended_by) {
+// The answer of a plan whose planner answered `status` and was ended by `ended_by`,
+// before the plan writes a path into it.
+PlanResult answer_of(ob::PlannerStatus status, Ending ended_by) {
   PlanResult result;
   result.status = status_of(status);
-  result.status_name = ob::PlannerStatus(status).asString();
+  result.status_name = status.asString();
   result.ended_by = ended_by;
   return result;
 }
 
-// A termination condition that ends the planner or the simplifier it is given to once
-// the caller's checks fail, at the first question after the thread that built it has
-// asked it `iterations` times, or once `deadline` has passed, tested in that order, and
+// What ends a plan's planners and its simplifier at their next question whether to stop,
+// whatever their bounds: a failed check, then the caller's stop.
+std::optional<Ending> interruption(const Callbacks& callbacks) {
+  if (callbacks.failed()) {
+    return Ending::Failure;
+  }
+  if (callbacks.stopped()) {
+    return Ending::Stopped;
+  }
+  return std::nullopt;
+}
+
+// What keeps a step of a plan from starting, a batch of its attempts or its
+// simplification: an interruption, then the passing of `deadline`.
+std::optional<Ending> ended_before(const Callbacks& callbacks, Clock::time_point deadline) {
+  if (const std::optional<Ending> interrupted = interruption(callbacks)) {
+    return interrupted;
+  }
+  if (Clock::now() >= deadline) {
+    return Ending::TimeLimit;
+  }
+  return std::nullopt;
+}
+
+// A termination condition that ends the planner or the simplifier it is given to at an
+// interruption, at the first question after the thread that built it has asked it
+// `iterations` times, or once `deadline` has passed, tested in that order, and
 // remembers what ended it first. Another thread, such as the one on which PRM and PRM*
 // search their roadmap for a solution, adds nothing to the count, so the count does not
 // depend on how the plan's threads are scheduled.
@@ -387,8 +416,8 @@ class Bounds {
   }
 
   std::optional<Ending> ending_now() {
-    if (callbacks_.failed()) {
-      return Ending::Failure;
+    if (const std::optional<Ending> interrupted = interruption(callbacks_)) {
+      return interrupted;
     }
     if (at_iteration_bound()) {
       return Ending::IterationBound;
@@ -417,14 +446,13 @@ class Bounds {
   std::atomic<Ending> ended_by_{Ending::Returned};
 };
 
-// The instant `seconds` from now, or the end of the clock when that lies beyond it.
-Clock::time_point deadline_after(double seconds) {
-  const auto now = Clock::now();
+// The instant `seconds` after `from`, or the end of the clock when that lies beyond it.
+Clock::time_point later_by(Clock::time_point from, double seconds) {
   const auto limit = std::chrono::duration<double>(seconds);
-  if (limit >= Clock::time_point::max() - now) {
+  if (limit >= Clock::time_point::max() - from) {
     return Clock::time_point::max();
   }
-  return now + std::chrono::duration_cast<Clock::duration>(limit);
+  return from + std::chrono::duration_cast<Clock::duration>(limit);
 }
 
 // `path` as a plan answers it: a constrained path walked along the constraint, as
@@ -437,17 +465,24 @@ og::PathGeometric answered(og::PathGeometric path, bool constrained) {
   return path;
 }
 
-}  // namespace
+// A request's problem: a setup of its state space, the space's information with the
+// caller's checks, its start, the goals that pass the state check and lie on the
+// constraint, and its planner.
+struct Problem {
+  og::SimpleSetupPtr setup;
+  std::size_t dimension;
+  bool constrained;
+};
 
-PlanResult plan(const PlanRequest& request, const Callbacks& callbacks) {
-  const Clock::time_point deadline = deadline_after(request.time_limit_s);
-  const std::unique_lock<std::timed_mutex> lock(plan_lock, deadline);
-  if (!lock.owns_lock()) {
-    return ended_before_planning(ob::PlannerStatus::TIMEOUT, Ending::TimeLimit);
-  }
-  ompl::msg::setLogLevel(ompl::msg::LOG_WARN);
-  reseed(request.seed);
-
+// The problem of `request`, built on the calling thread once its seed generator takes
+// `seed`, so `seed` seeds every random number generator of the problem, the planner's,
+// the samplers' and the simplifier's, in the order of the problem's construction; or the
+// status that refuses the request's start, when it fails the state check or lies off the
+// constraint, or its every goal.
+std::variant<Problem, ob::PlannerStatus::StatusType> posed(const PlanRequest& request,
+                                                           const Callbacks& callbacks,
+                                                           std::uint32_t seed) {
+  ompl::RNG::setThreadSeed(seed);
   const std::size_t dimension = request.low.size();
   auto real = std::make_shared<ob::RealVectorStateSpace>(dimension);
   ob::RealVectorBounds bounds(dimension);
@@ -482,7 +517,7 @@ PlanResult plan(const PlanRequest& request, const Callbacks& callbacks) {
   };
   const auto start = state_of(space, request.start.data(), dimension, constrained);
   if (!passes(start.get())) {
-    return ended_before_planning(ob::PlannerStatus::INVALID_START, Ending::Returned);
+    return ob::PlannerStatus::INVALID_START;
   }
   auto goals = std::make_shared<ob::GoalStates>(si);
   for (std::size_t at = 0; at < request.goals.size(); at += dimension) {
@@ -492,50 +527,264 @@ PlanResult plan(const PlanRequest& request, const Callbacks& callbacks) {
     }
   }
   if (!goals->hasStates()) {
-    return ended_before_planning(ob::PlannerStatus::INVALID_GOAL, Ending::Returned);
+    return ob::PlannerStatus::INVALID_GOAL;
   }
 
-  og::SimpleSetup setup(si);
-  setup.setStartState(start);
-  setup.setGoal(goals);
-  setup.setPlanner(planner_of(request.planner, si));
-  setup.setup();
+  auto setup = std::make_shared<og::SimpleSetup>(si);
+  setup->setStartState(start);
+  setup->setGoal(goals);
+  setup->setPlanner(planner_of(request.planner, si));
+  setup->setup();
+  return Problem{setup, dimension, constrained};
+}
 
-  Bounds plan_bounds(callbacks, request.iterations, deadline);
-  const ob::PlannerStatus status = setup.solve(plan_bounds.condition());
+// What an attempt of a plan found: what its planner answered, what ended it, and the
+// path, flattened, once it found an exact one.
+struct Attempt {
+  ob::PlannerStatus status;
+  Ending ended_by = Ending::Returned;
+  rust::Vec<double> path;
+};
 
-  PlanResult result;
-  result.status = status_of(status);
-  result.status_name = status.asString();
-  result.ended_by = plan_bounds.ended_by();
+// The attempt at `problem` on the calling thread until `deadline`, whose thread's
+// questions alone count toward the iteration bound. Its path stays in the problem's
+// setup.
+Attempt solved(const Problem& problem, const PlanRequest& request, const Callbacks& callbacks,
+               Clock::time_point deadline) {
+  Bounds bounds(callbacks, request.iterations, deadline);
+  Attempt attempt{problem.setup->solve(bounds.condition())};
+  attempt.ended_by = bounds.ended_by();
+  return attempt;
+}
+
+// The attempt at `request` from `seed` until `deadline` on the calling thread, with its
+// path; a request that its problem refuses plans nothing.
+Attempt attempt_from(const PlanRequest& request, const Callbacks& callbacks, std::uint32_t seed,
+                     Clock::time_point deadline) {
+  const auto problem = posed(request, callbacks, seed);
+  if (const auto* refused = std::get_if<ob::PlannerStatus::StatusType>(&problem)) {
+    return Attempt{*refused};
+  }
+  const Problem& own = std::get<Problem>(problem);
+  Attempt attempt = solved(own, request, callbacks, deadline);
+  if (status_of(attempt.status) == Status::Exact && !callbacks.failed()) {
+    attempt.path = flattened(own.setup->getSolutionPath(), own.dimension, own.constrained);
+  }
+  return attempt;
+}
+
+// The ending of a plan whose attempts ended by `a` and by `b`: the caller's stop over a
+// failed check, over the time limit, over the iteration bound, over the planners' own
+// return.
+Ending prevailing(Ending a, Ending b) {
+  for (const Ending ending :
+       {Ending::Stopped, Ending::Failure, Ending::TimeLimit, Ending::IterationBound}) {
+    if (a == ending || b == ending) {
+      return ending;
+    }
+  }
+  return Ending::Returned;
+}
+
+// What the attempts of a plan found: the paths of those that found an exact one, in
+// attempt order; the exact solution once one found it, and otherwise what attempt 0
+// answered, or a timeout when no attempt ran; and what ended them.
+struct Attempts {
+  std::vector<rust::Vec<double>> paths;
+  ob::PlannerStatus status = ob::PlannerStatus::TIMEOUT;
+  Ending ended_by = Ending::Returned;
+};
+
+// The attempts of `request` until `deadline`, `request.planning_threads` at once, each
+// on a thread of its own from its own seed. A batch starts once the one before it has
+// ended, unless the plan is interrupted or `deadline` has passed, which then ends the
+// plan's attempts. An exception of an attempt is rethrown once its batch has ended.
+Attempts attempts_of(const PlanRequest& request, const Callbacks& callbacks,
+                     Clock::time_point deadline) {
+  Attempts attempts;
+  for (std::uint32_t first = 0; first < request.attempts;) {
+    if (const std::optional<Ending> ended = ended_before(callbacks, deadline)) {
+      attempts.ended_by = prevailing(attempts.ended_by, *ended);
+      break;
+    }
+    const std::uint32_t size = std::min(request.planning_threads, request.attempts - first);
+    std::vector<Attempt> batch(size);
+    std::vector<std::exception_ptr> errors(size);
+    std::vector<std::thread> threads;
+    // Reserved, so that a thread that starts always joins; a thread that cannot start
+    // ends the plan once the started ones have joined.
+    threads.reserve(size);
+    const auto join = [&threads] {
+      for (std::thread& thread : threads) {
+        thread.join();
+      }
+    };
+    try {
+      for (std::uint32_t k = 0; k < size; ++k) {
+        const std::uint32_t seed = attempt_seed(request.seed, first + k);
+        threads.emplace_back([&request, &callbacks, &batch, &errors, k, seed, deadline] {
+          try {
+            batch[k] = attempt_from(request, callbacks, seed, deadline);
+          } catch (...) {
+            errors[k] = std::current_exception();
+          }
+        });
+      }
+    } catch (...) {
+      join();
+      throw;
+    }
+    join();
+    for (const std::exception_ptr& error : errors) {
+      if (error) {
+        std::rethrow_exception(error);
+      }
+    }
+    for (std::uint32_t k = 0; k < size; ++k) {
+      Attempt& ended = batch[k];
+      if (first + k == 0) {
+        attempts.status = ended.status;
+      }
+      attempts.ended_by = prevailing(attempts.ended_by, ended.ended_by);
+      if (!ended.path.empty()) {
+        attempts.status = ob::PlannerStatus::EXACT_SOLUTION;
+        attempts.paths.push_back(std::move(ended.path));
+      }
+    }
+    first += size;
+  }
+  return attempts;
+}
+
+// The path of the flattened `values` in `problem`'s space.
+og::PathGeometricPtr path_of(const Problem& problem, const rust::Vec<double>& values) {
+  auto path = std::make_shared<og::PathGeometric>(problem.setup->getSpaceInformation());
+  for (std::size_t at = 0; at < values.size(); at += problem.dimension) {
+    path->append(state_of(problem.setup->getStateSpace(), values.data() + at, problem.dimension,
+                          problem.constrained)
+                     .get());
+  }
+  return path;
+}
+
+// The hybrid of `paths`, two or more paths of `problem`'s space, as OMPL's ParallelPlan
+// joins the paths of its planners: each path recorded in turn and joined to each
+// recorded before it where their states align, by the motions between aligned states
+// that pass the motion check from the later path's state, and the hybrid the shortest
+// path through them all; none when OMPL finds none.
+og::PathGeometricPtr hybrid_of(const Problem& problem,
+                               const std::vector<og::PathGeometricPtr>& paths) {
+  og::PathHybridization hybridization(problem.setup->getSpaceInformation());
+  for (const og::PathGeometricPtr& path : paths) {
+    hybridization.recordPath(path, false);
+  }
+  hybridization.computeHybridPath();
+  return hybridization.getHybridPath();
+}
+
+// Writes `planned`, as the plan answers it, into `result`, and, when the request asks for
+// it, its simplification. OMPL's simplifier smooths and repairs the path it shortens, and
+// says when the result may touch an invalid state; its result stands when it is valid
+// and at most as long as the path. It starts unless the plan is interrupted, past
+// `deadline` too, as MoveIt's `simplifySolution` starts with whatever time its plan
+// left: an interruption keeps it from starting, and the plan answers that. Its first
+// pass runs to its end whatever the termination condition answers: OMPL bounds that pass
+// by counts of attempts, most of them the path's number of states. Each pass after it
+// ends at the iteration bound, at an interruption or at `deadline`.
+void write_path(PlanResult& result, const Problem& problem, const og::PathGeometric& planned,
+                const PlanRequest& request, const Callbacks& callbacks,
+                Clock::time_point deadline) {
+  const og::PathGeometric path = answered(planned, problem.constrained);
+  result.path = flattened(path, problem.dimension, problem.constrained);
+  if (request.simplification_iterations == 0) {
+    return;
+  }
+  og::PathGeometric simplified(planned);
+  bool valid = false;
+  if (const std::optional<Ending> interrupted = interruption(callbacks)) {
+    result.simplification_ended_by = *interrupted;
+  } else {
+    Bounds simplification_bounds(callbacks, request.simplification_iterations, deadline);
+    valid = problem.setup->getPathSimplifier()->simplify(simplified,
+                                                          simplification_bounds.condition());
+    result.simplification_ended_by = simplification_bounds.ended_by();
+  }
+  const og::PathGeometric simplified_path = answered(simplified, problem.constrained);
+  const bool better = valid && simplified_path.length() <= path.length();
+  result.simplified =
+      flattened(better ? simplified_path : path, problem.dimension, problem.constrained);
+}
+
+// A plan of one attempt, on the calling thread from the request's seed: its problem
+// plans, and simplifies the path it finds.
+PlanResult plan_once(const PlanRequest& request, const Callbacks& callbacks,
+                     Clock::time_point deadline, Clock::time_point simplification_deadline) {
+  const auto problem = posed(request, callbacks, request.seed);
+  if (const auto* refused = std::get_if<ob::PlannerStatus::StatusType>(&problem)) {
+    return answer_of(*refused, Ending::Returned);
+  }
+  const Problem& one = std::get<Problem>(problem);
+  const Attempt attempt = solved(one, request, callbacks, deadline);
+  PlanResult result = answer_of(attempt.status, attempt.ended_by);
   if (result.status != Status::Exact || callbacks.failed()) {
     return result;
   }
-  const og::PathGeometric& planned = setup.getSolutionPath();
-  const og::PathGeometric path = answered(planned, constrained);
-  result.path = flattened(path, dimension, constrained);
-  if (request.simplification_iterations == 0) {
+  write_path(result, one, one.setup->getSolutionPath(), request, callbacks,
+             simplification_deadline);
+  return result;
+}
+
+// A plan of several attempts. Its problem, posed on the calling thread from the seed of
+// attempt `attempts`, refuses the request's start or goals before any attempt starts,
+// and joins and simplifies what the attempts find. The paths of two or more join into
+// their hybrid, unless the plan is stopped, and the plan keeps the shortest of the paths
+// and the hybrid, the first of the equally short in attempt order, the hybrid last; the
+// hybrid when it passes the checks, the state check of its start and the motion check of
+// each motion in its order, since OMPL joins two paths by a motion checked in one
+// direction and may take it in the other.
+PlanResult plan_attempts(const PlanRequest& request, const Callbacks& callbacks,
+                         Clock::time_point deadline, Clock::time_point simplification_deadline) {
+  const auto problem = posed(request, callbacks, attempt_seed(request.seed, request.attempts));
+  if (const auto* refused = std::get_if<ob::PlannerStatus::StatusType>(&problem)) {
+    return answer_of(*refused, Ending::Returned);
+  }
+  const Problem& joining = std::get<Problem>(problem);
+  const Attempts attempts = attempts_of(request, callbacks, deadline);
+  PlanResult result = answer_of(attempts.status, attempts.ended_by);
+  if (attempts.paths.empty() || callbacks.failed()) {
     return result;
   }
-  // OMPL's simplifier smooths and repairs the path it shortens, and says when the
-  // result may touch an invalid state; its result stands when it is valid and at most
-  // as long as the path. It starts only before the deadline: past it, the plan answers
-  // that the deadline ended the simplification. Its first pass runs to its end whatever
-  // the termination condition answers: OMPL bounds that pass by counts of attempts,
-  // most of them the path's number of states. Each pass after it ends at the iteration
-  // bound or the deadline.
-  og::PathGeometric simplified(planned);
-  bool valid = false;
-  result.simplification_ended_by = Ending::TimeLimit;
-  if (Clock::now() < deadline) {
-    Bounds simplification_bounds(callbacks, request.simplification_iterations, deadline);
-    valid = setup.getPathSimplifier()->simplify(simplified, simplification_bounds.condition());
-    result.simplification_ended_by = simplification_bounds.ended_by();
+  std::vector<og::PathGeometricPtr> candidates;
+  for (const rust::Vec<double>& path : attempts.paths) {
+    candidates.push_back(path_of(joining, path));
   }
-  const og::PathGeometric simplified_path = answered(simplified, constrained);
-  const bool better = valid && simplified_path.length() <= path.length();
-  result.simplified = flattened(better ? simplified_path : path, dimension, constrained);
+  if (candidates.size() > 1 && !callbacks.stopped()) {
+    if (const og::PathGeometricPtr hybrid = hybrid_of(joining, candidates);
+        hybrid && hybrid->check()) {
+      candidates.push_back(hybrid);
+    }
+  }
+  const auto shortest = std::min_element(
+      candidates.begin(), candidates.end(),
+      [](const og::PathGeometricPtr& a, const og::PathGeometricPtr& b) {
+        return a->length() < b->length();
+      });
+  write_path(result, joining, **shortest, request, callbacks, simplification_deadline);
   return result;
+}
+
+}  // namespace
+
+PlanResult plan(const PlanRequest& request, const Callbacks& callbacks) {
+  static std::once_flag log_level;
+  std::call_once(log_level, [] { ompl::msg::setLogLevel(ompl::msg::LOG_WARN); });
+  const Clock::time_point deadline = later_by(Clock::now(), request.time_limit_s);
+  const Clock::time_point simplification_deadline =
+      later_by(deadline, request.simplification_time_s);
+  if (request.attempts == 1) {
+    return plan_once(request, callbacks, deadline, simplification_deadline);
+  }
+  return plan_attempts(request, callbacks, deadline, simplification_deadline);
 }
 
 }  // namespace ompl_bridge

@@ -1,14 +1,14 @@
 //! Arm planning. The scenario holds scenes of an arm among boxes of voxels, each with a
 //! start, a goal and a seed, and motion_planning_core's answer to each, which its
 //! example `plan_arm_scenes` gives `tools/draw_arm_planning.py`. The reference is
-//! MoveIt's planning pipeline, with OMPL's RRTConnect, its default request adapters and
-//! the response adapters AddTimeOptimalParameterization and ValidateSolution, planning
-//! each scene with the voxels as an octomap to the goal state itself, seeded from the
-//! scene and bounded by the scenario's iterations and time limit, and MoveIt's collision
-//! check and distance probing each planned path: MoveIt's own, and motion_planning_core's
-//! with its corners rounded as MoveIt's time-optimal trajectory generation rounds them.
-//! Both check every link that moves with the arm's joints, the gripper's fingers among
-//! them, closed, as MoveIt's default state holds them.
+//! MoveIt's planning pipeline, with the OMPL planner of the scenario's objective, its
+//! default request adapters and the response adapters AddTimeOptimalParameterization and
+//! ValidateSolution, planning each scene with the voxels as an octomap to the goal state
+//! itself, seeded from the scene and ended as the scenario's termination says, and
+//! MoveIt's collision check and distance probing each planned path: MoveIt's own, and
+//! motion_planning_core's with its corners rounded as MoveIt's time-optimal trajectory
+//! generation rounds them. Both check every link that moves with the arm's joints, the
+//! gripper's fingers among them, closed, as MoveIt's default state holds them.
 
 use crate::{Kind, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names};
 use serde::{Deserialize, Serialize};
@@ -49,15 +49,43 @@ pub struct Scenes {
     /// The tolerance of each joint of motion_planning_core's goal, above and below its
     /// target, above 0 as a goal's tolerance is. MoveIt plans to the goal state itself.
     pub goal_tolerance: f64,
-    /// The time limit of each plan, motion_planning_core's and MoveIt's, in seconds: far
-    /// beyond its iteration bound, which ends it first.
+    pub objective: Objective,
+    pub termination: Termination,
+    /// The time limit of each plan, motion_planning_core's and MoveIt's, in seconds: the
+    /// request's allowed planning time.
     pub time_limit: f64,
-    /// The iteration bound of each plan, motion_planning_core's and MoveIt's.
+    /// The iteration bound of each plan, as [`Termination`] applies it: the motion
+    /// planner node's `max_iterations`.
     pub iterations: u64,
     /// The joints' L2 distance between two probes of a path: no point of a link moves a
     /// tenth of a voxel between them.
     pub probe_spacing: Option<f64>,
     pub scenes: Vec<Scene>,
+}
+
+/// What each plan optimizes, and the OMPL planner that plans for it: `any`, as
+/// plan_joint_path's `objective` names it and the motion planner node plans it, and
+/// `shortest`, a mode the harness measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Objective {
+    /// The first valid path found: RRTConnect.
+    Any,
+    /// The path's joint-space length, shortened until the plan's time ends: RRTstar.
+    Shortest,
+}
+
+/// What ends each plan, motion_planning_core's and MoveIt's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Termination {
+    /// The scenario's `iterations` (MoveIt's termination condition Iteration), its
+    /// `time_limit` far beyond them, so a plan repeats under its seed.
+    Iterations,
+    /// The scenario's `time_limit`, as a robot's plan ends: MoveIt's by the time alone,
+    /// its default termination, and motion_planning_core's by `iterations` for `any`, as
+    /// the motion planner node bounds it, and by no iteration count for `shortest`.
+    Time,
 }
 
 /// The voxels from `first` to `last`, by their keys, on every axis: the voxel of key k
@@ -286,16 +314,18 @@ mod tests {
 
     /// A scenario of one scene, our answer to it `ours`.
     fn scenes(ours: &str) -> Scenes {
-        serde_json::from_str(&scenario("arm_planning", ours)).expect("parses")
+        serde_json::from_str(&scenario("arm_planning", "any", "iterations", ours)).expect("parses")
     }
 
-    /// The text of a scenario of the kind `kind` and one scene, our answer to it `ours`.
-    fn scenario(kind: &str, ours: &str) -> String {
+    /// The text of a scenario of the kind `kind`, its plans for `objective` ended by
+    /// `termination`, and of one scene, our answer to it `ours`.
+    fn scenario(kind: &str, objective: &str, termination: &str, ours: &str) -> String {
         format!(
             r#"{{"kind": "{kind}", "urdf": "a.urdf", "meshes": "meshes",
                 "base_link": "base", "tip_link": "tip", "joints": ["j"], "voxel_size": 0.04,
                 "map_half_side": 1.6, "min_clearance": 0.0, "corner_tolerance": 0.1,
-                "goal_tolerance": 0.01, "time_limit": 5.0, "iterations": 10,
+                "goal_tolerance": 0.01, "objective": "{objective}",
+                "termination": "{termination}", "time_limit": 5.0, "iterations": 10,
                 "probe_spacing": 0.01,
                 "scenes": [{{"boxes": [{{"first": [0, 0, 0], "last": [1, 1, 1]}}],
                              "start": [0.0], "goal": [1.0], "seed": 1, "ours": {ours}}}]}}"#
@@ -331,8 +361,28 @@ mod tests {
 
     #[test]
     fn a_scenario_of_another_kind_is_refused() {
-        assert!(serde_json::from_str::<Scenes>(&scenario("planning", PATH)).is_err());
-        assert!(serde_json::from_str::<Scenes>(&scenario("arm_planning", PATH)).is_ok());
+        let of_kind =
+            |kind| serde_json::from_str::<Scenes>(&scenario(kind, "any", "iterations", PATH));
+        assert!(of_kind("planning").is_err());
+        assert!(of_kind("arm_planning").is_ok());
+    }
+
+    #[test]
+    fn a_scenario_names_its_objective_and_its_termination() {
+        let planned = |objective, termination| {
+            serde_json::from_str::<Scenes>(&scenario("arm_planning", objective, termination, PATH))
+                .map(|s| (s.objective, s.termination))
+        };
+        assert_eq!(
+            planned("any", "iterations").ok(),
+            Some((Objective::Any, Termination::Iterations))
+        );
+        assert_eq!(
+            planned("shortest", "time").ok(),
+            Some((Objective::Shortest, Termination::Time))
+        );
+        assert!(planned("fastest", "time").is_err());
+        assert!(planned("any", "deadline").is_err());
     }
 
     #[test]

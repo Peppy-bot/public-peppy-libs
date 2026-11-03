@@ -11,11 +11,12 @@ description = "Runtime self-collision detection for a robot with two 7-DOF SRS a
 
 [dependencies]
 collision_geometry = { path = "../collision_geometry" }
+openarm_description = { path = "../openarm_description" }
 srs_model = { path = "../srs_model" }
 thiserror = "2"
 
 [dev-dependencies]
-openarm_description = { path = "../openarm_description" }
+openarm_description = { path = "../openarm_description", features = ["meshes"] }
 ros_reference = { path = "../ros_reference" }
 serde_json = "1"
 

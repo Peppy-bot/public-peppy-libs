@@ -33,10 +33,12 @@
 //!   for the robot's own body. A motion ends where its step falls under
 //!   `MIN_DEPARTURE_STEP_M`, so a start within `2k` times that above a floor of 0 takes
 //!   no step. A term the start keeps the plan's clearance of, or that has risen to it,
-//!   steps by its spare and keeps it, as on any run. A run on the straight line from the
-//!   start, past a waypoint on it such as one a corner's repair adds to the first run, is
-//!   walked by the rule from the start. Any other run is walked by its spare from its
-//!   first state, so one that leaves a state short of the plan's clearance fails there.
+//!   steps by its spare and keeps it, as on any run. A run whose path from the start lies
+//!   on the straight line from the start to the run's end, past waypoints on it such as
+//!   one a corner's repair adds to the first run, is walked by the rule from the start,
+//!   and so is a planner's motion whose first state lies on the straight line from the
+//!   start to its end. Any other run is walked by its spare from its first state, so one
+//!   that leaves a state short of the plan's clearance fails there.
 //! - The planner keeps every state of its paths but the start at the plan's clearances:
 //!   its check of a motion fails one whose first state, the start excepted, falls short
 //!   of them, and one from the start that ends before each term keeps them. OMPL's
@@ -59,21 +61,34 @@
 //!   `MIN_JOINT_CHANGE_RAD` of the one before, among them. Each planned waypoint after the
 //!   start keeps the plan's clearances, so the start rule holds at no corner, and each arc
 //!   keeps the plan's clearances. A corner's repair adds waypoints at states its runs'
-//!   walks check, the start rule's among them, so each run they split walks only states
-//!   the plan walked: walked from a state it checks, a run steps as the walk stepped.
+//!   walks check that keep the plan's clearances, the start rule's among them, so each
+//!   run they split walks only states the plan walked: walked from a state it checks, a
+//!   run steps as the walk stepped.
 //!
-//! The request's time limit bounds the plan as MoveIt's allowed planning time bounds a
+//! The request's deadline bounds the plan as MoveIt's allowed planning time bounds a
 //! request: the goal sampler draws up to `goal_samples` configurations, ending early once
-//! the limit passes, OMPL plans in what remains of it, and its simplifier takes what
-//! remains after the plan, at most `SIMPLIFICATION_ITERATIONS` iterations, starting only
-//! before the limit. A planner that plans until its time ends, such as RRT*, leaves the
-//! simplifier none, and the plan answers the path it planned. A corner's repair runs only
-//! before the limit: a corner whose rounding fails once it has passed ends the plan with no
-//! path. The check of the rounded path runs to its end past the limit.
+//! the deadline passes, OMPL makes the request's attempts in what remains before it, each
+//! under all of it, and its simplifier takes what remains after the attempts, at most
+//! `SIMPLIFICATION_ITERATIONS` iterations, as MoveIt simplifies in the allowed planning
+//! time less the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve`), whatever is
+//! left of it. OMPL's simplifier runs its first pass however little time it has
+//! (`PathSimplifier::simplify`, `atLeastOnce`), so a planner that plans until its time
+//! ends, such as RRT*, has its path simplified once, past the deadline. A corner's repair
+//! runs only before the deadline: when a corner of the simplified path rounds short of the
+//! clearances once it has passed, the plan answers its planned path if that passes its
+//! own check, and no path otherwise. The check of the rounded path runs to its end past
+//! the deadline.
+//!
+//! `check_arm_path` checks a caller's path with the same checks: each waypoint after the
+//! start keeps the plan's clearances, each run keeps them as the plan's runs keep them,
+//! the run from the start by the start rule, and each arc as the plan's arcs; its walks
+//! end at the check's deadline.
 
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
+use chain_kinematics::Chain;
 use control_core::path_timing::{MIN_JOINT_CHANGE_RAD, RoundedPath, distinct_joint_waypoints};
 use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::{CheckError, Checks, Motion, PlanError, Planner, Request, Space, plan};
@@ -82,6 +97,7 @@ use crate::arm::Arm;
 use crate::clearance::{Contact, Surroundings};
 use crate::draws::mixed_seed;
 use crate::goal::{Goal, GoalSampler};
+use crate::stop::is_set;
 
 /// The iterations the simplification of a planned path takes at most.
 const SIMPLIFICATION_ITERATIONS: u32 = 1000;
@@ -145,12 +161,145 @@ pub struct PlanRequest<'a, const N: usize> {
     /// The configurations the sampler draws for the goal.
     pub goal_samples: NonZeroUsize,
     pub planner: Planner,
-    /// The time the goal sampling and the planner's plan take at most, as the module
-    /// says.
-    pub time_limit: Duration,
+    /// The instant the goal sampling, the planner's plan and its simplification end by,
+    /// as the module says.
+    pub deadline: Instant,
     pub max_iterations: NonZeroU64,
+    /// The attempts OMPL makes, as MoveIt's `num_planning_attempts`: each from its own
+    /// seed, under all the time before the deadline, their paths joined by OMPL's path
+    /// hybridization.
+    pub attempts: NonZeroU32,
     pub seed: u32,
     pub min_clearance_m: f64,
+    /// A flag the caller sets to end the plan, at any part of it.
+    pub stop: Option<&'a AtomicBool>,
+}
+
+/// A path to check, as limb_motion's execute_joint_path runs it.
+pub struct CheckRequest<'a, const N: usize> {
+    /// Where the arm stands.
+    pub start: [f64; N],
+    /// How far, per joint, the start may lie outside a joint limit and still be moved
+    /// onto it, as a plan's.
+    pub start_tolerance: [f64; N],
+    /// The waypoints after the start, at least one.
+    pub waypoints: &'a [[f64; N]],
+    pub min_clearance_m: f64,
+    /// The instant the check ends by.
+    pub deadline: Instant,
+}
+
+/// Why a check of a path gives no answer.
+#[derive(Debug, PartialEq, thiserror::Error)]
+pub enum CheckFailure {
+    #[error("{0}")]
+    Request(String),
+    #[error("the check of the path ran past its deadline")]
+    TimeEnded,
+}
+
+/// Why a path cannot start where it starts.
+#[derive(Debug, PartialEq, thiserror::Error)]
+pub enum StartFault {
+    /// The joint, by its URDF name, that starts outside its limits.
+    #[error(
+        "{joint} starts at {position}, outside its limits {low} to {high} by more than its start tolerance {tolerance}"
+    )]
+    OutsideLimits {
+        joint: String,
+        position: f64,
+        low: f64,
+        high: f64,
+        tolerance: f64,
+    },
+    #[error("the start is in contact: {0}")]
+    InCollision(Contact),
+}
+
+/// What a check of a path finds.
+#[derive(Debug, PartialEq)]
+pub struct PathCheck {
+    /// The most waypoints, from the first, whose path, run on its own, passes: all of
+    /// them when the whole path passes, and 0 when the start or the path to the first
+    /// waypoint fails.
+    pub clear_waypoints: usize,
+    /// The first fault along the path; `None` when the whole path passes.
+    pub fault: Option<PathFault>,
+}
+
+/// A fault of a path.
+#[derive(Debug, PartialEq, thiserror::Error)]
+pub enum PathFault {
+    #[error(transparent)]
+    Start(StartFault),
+    /// Waypoint `waypoint`, counted from 1 after the start, holds `joint`, by its URDF
+    /// name, outside its limits.
+    #[error("waypoint {waypoint} holds {joint} at {position}, outside its limits {low} to {high}")]
+    OutsideLimits {
+        waypoint: usize,
+        joint: String,
+        position: f64,
+        low: f64,
+        high: f64,
+    },
+    /// A state at `place` falls short of a plan clearance: it lies `distances` meters
+    /// from the map and between the robot's own links, and the plan keeps `clearances`.
+    #[error("{place}, {}", nearness(distances, clearances))]
+    Clearance {
+        place: Place,
+        distances: [f64; 2],
+        clearances: [f64; 2],
+    },
+}
+
+/// Where on a path a state falls short of its clearances, by its waypoints counted from 1
+/// after the start, the start 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Place {
+    /// At waypoint `k`.
+    Waypoint(usize),
+    /// On the run from waypoint `k` to the next.
+    Run(usize),
+    /// On the arc that rounds the corner at waypoint `k`.
+    Corner(usize),
+}
+
+impl std::fmt::Display for Place {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Waypoint(k) => write!(f, "at waypoint {k}"),
+            Self::Run(0) => write!(f, "on the run from the start"),
+            Self::Run(k) => write!(f, "on the run from waypoint {k}"),
+            Self::Corner(k) => write!(f, "on the corner rounded at waypoint {k}"),
+        }
+    }
+}
+
+/// How near a state comes that lies `distances` meters from the map and between the
+/// robot's own links, of each term it keeps less than its plan clearance of
+/// `clearances`.
+fn nearness(distances: &[f64; 2], clearances: &[f64; 2]) -> String {
+    let [map, own] = *distances;
+    let [map_clearance, own_clearance] = *clearances;
+    let terms = [
+        (map < map_clearance).then(|| {
+            format!(
+                "the arm comes {map:.4} m from the map, nearer than the plan's clearance, \
+                 {map_clearance:.4} m"
+            )
+        }),
+        (own < own_clearance).then(|| {
+            format!(
+                "the robot's own links come {own:.4} m apart, nearer than the plan's \
+                 clearance, {own_clearance:.4} m"
+            )
+        }),
+    ];
+    terms
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", and ")
 }
 
 /// Why a plan gives no path.
@@ -158,22 +307,14 @@ pub struct PlanRequest<'a, const N: usize> {
 pub enum PlanFailure {
     #[error("{0}")]
     Request(String),
-    #[error(
-        "joint {joint} starts at {position}, outside its limits {low} to {high} by more than its start tolerance {tolerance}"
-    )]
-    StartOutsideLimits {
-        joint: usize,
-        position: f64,
-        low: f64,
-        high: f64,
-        tolerance: f64,
-    },
-    #[error("the start is in contact: {0}")]
-    StartInCollision(Contact),
+    #[error(transparent)]
+    Start(#[from] StartFault),
     #[error("{0}")]
     Unreachable(String),
     #[error("{0}")]
     NoPath(String),
+    #[error("the plan was stopped")]
+    Stopped,
     #[error(transparent)]
     Planner(#[from] PlanError),
 }
@@ -186,40 +327,17 @@ pub fn plan_arm_path<const N: usize>(
     scene: &Scene,
     request: &PlanRequest<N>,
 ) -> Result<Vec<[f64; N]>, PlanFailure> {
-    let distance = |what: &str, value: f64| {
-        (value.is_finite() && value >= 0.0)
-            .then_some(())
-            .ok_or_else(|| {
-                PlanFailure::Request(format!(
-                    "{what} is {value}; it is a finite distance of 0 or more"
-                ))
-            })
-    };
-    distance("min_clearance_m", request.min_clearance_m)?;
-    request
-        .start_tolerance
-        .iter()
-        .try_for_each(|&t| distance("a start tolerance", t))?;
-    let deadline = Instant::now()
-        .checked_add(request.time_limit)
-        .ok_or_else(|| {
-            PlanFailure::Request(format!(
-                "the time limit {:?} runs past the clock's range; it is at most a few years",
-                request.time_limit
-            ))
-        })?;
-    let start = start_inside_limits(arm, &request.start, &request.start_tolerance)?;
-    if let Some(contact) = Surroundings::new(scene.map, scene.field, 0.0, 0.0).contact(arm, &start)
-    {
-        return Err(PlanFailure::StartInCollision(contact));
-    }
+    distances_in_range(request.min_clearance_m, &request.start_tolerance)
+        .map_err(PlanFailure::Request)?;
+    let start = start_clear(arm, scene, &request.start, &request.start_tolerance)?;
     let checks = ArmChecks::new(arm, scene, start, request.min_clearance_m);
+    let deadline = request.deadline;
     let goals = goal_configurations(arm, &checks, request, deadline)?;
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         return Err(PlanFailure::NoPath(format!(
-            "the time limit {:?} ended before {} planned",
-            request.time_limit, request.planner
+            "the deadline passed before {} planned",
+            request.planner
         )));
     }
     let limits = arm.geometry().chain().limits();
@@ -235,34 +353,42 @@ pub fn plan_arm_path<const N: usize>(
             time_limit: remaining,
             iterations: request.max_iterations,
             seed: mixed_seed(request.seed, scene.stamp),
+            attempts: request.attempts,
             simplification: NonZeroU32::new(SIMPLIFICATION_ITERATIONS),
+            simplification_time: Duration::ZERO,
             projection: None,
+            stop: request.stop,
         },
         &checks,
     )?;
+    if is_set(request.stop) {
+        return Err(PlanFailure::Stopped);
+    }
     let (Some(planned), Some(simplification)) = (answer.path, answer.simplified) else {
         return Err(PlanFailure::NoPath(format!(
-            "{} found no path within {} iterations or {:?}, keeping {}",
+            "{} found no path within {} iterations or by its deadline, keeping {}",
             request.planner,
             request.max_iterations,
-            request.time_limit,
             checks.plan_clearance()
         )));
     };
     let simplified = simplification.path;
-    answered(&checks, &simplified, deadline).or_else(|failure| match failure {
-        PlanFailure::NoPath(_) if planned != simplified => answered(&checks, &planned, deadline),
+    answered(&checks, &simplified, deadline, request.stop).or_else(|failure| match failure {
+        PlanFailure::NoPath(_) if planned != simplified => {
+            answered(&checks, &planned, deadline, request.stop)
+        }
         other => Err(other),
     })
 }
 
 /// The answer of a plan whose planner found `path`: its waypoints, the waypoints added
 /// near its corners among them, when the path the robot runs through them passes its
-/// check, or why it does not.
+/// check, or why it does not. A set `stop` ends the check before its next run or corner.
 fn answered<const N: usize>(
     checks: &ArmChecks<N>,
     path: &[Vec<f64>],
     deadline: Instant,
+    stop: Option<&AtomicBool>,
 ) -> Result<Vec<[f64; N]>, PlanFailure> {
     let waypoints: Vec<[f64; N]> = path
         .iter()
@@ -273,14 +399,193 @@ fn answered<const N: usize>(
                 .expect("a state of the arm's space")
         })
         .collect();
-    let answer = rounded_clear(checks, &distinct_joint_waypoints(&waypoints), deadline)?;
-    match first_failing_run(checks, &answer) {
-        None => Ok(answer),
-        Some(k) => Err(PlanFailure::NoPath(format!(
-            "the run from waypoint {k} of the path to the next falls short of {}",
-            checks.plan_clearance()
+    let answer = rounded_clear(
+        checks,
+        &distinct_joint_waypoints(&waypoints),
+        deadline,
+        stop,
+    )?;
+    match first_failing_run(checks, &answer, &|| is_set(stop)) {
+        Err(Ended) => Err(PlanFailure::Stopped),
+        Ok(None) => Ok(answer),
+        Ok(Some((k, broken))) => Err(PlanFailure::NoPath(format!(
+            "the planned path falls short {}",
+            checks.fault(Place::Run(k), broken.distances)
         ))),
     }
+}
+
+/// Checks the path of `request` for `arm` around `scene` with the checks of a plan's
+/// answer, as the module says: the start inside its limits by its tolerance and out of
+/// contact, each waypoint inside the joint limits and, after the start, at the plan's
+/// clearances, each run as the plan walks the runs of its answer, the first from the
+/// start by the start rule, and each arc of the rounded path as the plan walks its arcs.
+/// The walks follow the run into the first waypoint outside a limit up to where it leaves
+/// the limits, and go no farther. The fault nearest the start along the path leaves the
+/// waypoints before it passing:
+/// one on the run from a waypoint, or on the corner rounded at it, the waypoints up to
+/// that one, the start counted as waypoint 0; one at a waypoint, those before it. A walk
+/// of a run or a corner that starts past the deadline ends the check.
+pub fn check_arm_path<const N: usize>(
+    arm: &Arm<N>,
+    scene: &Scene,
+    request: &CheckRequest<N>,
+) -> Result<PathCheck, CheckFailure> {
+    check_arm_path_until(arm, scene, request, &|| Instant::now() >= request.deadline)
+}
+
+/// `check_arm_path`, its walks of a run or a corner ended once `ended` holds before them.
+fn check_arm_path_until<const N: usize>(
+    arm: &Arm<N>,
+    scene: &Scene,
+    request: &CheckRequest<N>,
+    ended: &dyn Fn() -> bool,
+) -> Result<PathCheck, CheckFailure> {
+    distances_in_range(request.min_clearance_m, &request.start_tolerance)
+        .map_err(CheckFailure::Request)?;
+    if request.waypoints.is_empty() {
+        return Err(CheckFailure::Request(
+            "the path holds no waypoint after its start: give one or more".to_string(),
+        ));
+    }
+    let start = match start_clear(arm, scene, &request.start, &request.start_tolerance) {
+        Ok(start) => start,
+        Err(fault) => {
+            return Ok(PathCheck {
+                clear_waypoints: 0,
+                fault: Some(PathFault::Start(fault)),
+            });
+        }
+    };
+    let checks = ArmChecks::new(arm, scene, start, request.min_clearance_m);
+    let path: Vec<[f64; N]> = std::iter::once(start)
+        .chain(request.waypoints.iter().copied())
+        .collect();
+    // Each fault with the waypoints its path leaves passing, and its rank among the
+    // faults that leave as many: a corner's arc comes before the rest of the run from its
+    // waypoint, and that run before the waypoint it ends at. The walks follow the run
+    // into the first waypoint outside a limit up to where it leaves the limits, so a
+    // fault the arm meets on its way there comes first.
+    let outside = first_outside_limits(arm, &path);
+    let (inside, walked) = match &outside {
+        None => (path.as_slice(), path.clone()),
+        Some((k, _)) => {
+            let leaving = where_it_leaves_the_limits(arm, &path[k - 1], &path[*k]);
+            (&path[..*k], [&path[..*k], &[leaving]].concat())
+        }
+    };
+    let walked = walked.as_slice();
+    let outside = outside.map(|(k, fault)| (k - 1, 2, fault));
+    let short = first_short_waypoint(&checks, inside)
+        .map(|(k, distances)| (k - 1, 2, checks.fault(Place::Waypoint(k), distances)));
+    let on_run = first_failing_run(&checks, walked, ended)
+        .map_err(|Ended| CheckFailure::TimeEnded)?
+        .map(|(k, broken)| (k, 1, checks.fault(Place::Run(k), broken.distances)));
+    let each_its_own: Vec<usize> = (0..walked.len()).collect();
+    let on_corner = first_failing_probe(
+        &checks,
+        &RoundedPath::joint_path(&vectors(walked)),
+        &each_its_own,
+        walked,
+        ended,
+    )
+    .map_err(|Ended| CheckFailure::TimeEnded)?
+    .map(|(k, broken)| (k, 0, checks.fault(Place::Corner(k), broken.distances)));
+    let first = [outside, short, on_run, on_corner]
+        .into_iter()
+        .flatten()
+        .min_by_key(|(passing, rank, _)| (*passing, *rank));
+    Ok(match first {
+        None => PathCheck {
+            clear_waypoints: request.waypoints.len(),
+            fault: None,
+        },
+        Some((passing, _, fault)) => PathCheck {
+            clear_waypoints: passing,
+            fault: Some(fault),
+        },
+    })
+}
+
+/// Refuses `min_clearance_m` or a start tolerance that is no distance, saying why.
+fn distances_in_range<const N: usize>(
+    min_clearance_m: f64,
+    start_tolerance: &[f64; N],
+) -> Result<(), String> {
+    let distance = |what: &str, value: f64| {
+        (value.is_finite() && value >= 0.0)
+            .then_some(())
+            .ok_or_else(|| format!("{what} is {value}; it is a finite distance of 0 or more"))
+    };
+    distance("min_clearance_m", min_clearance_m)?;
+    start_tolerance
+        .iter()
+        .try_for_each(|&t| distance("a start tolerance", t))
+}
+
+/// The start a plan or a check of `arm` takes from `start`: inside the joint limits by
+/// `tolerance` and out of contact with the map and the robot's own body.
+fn start_clear<const N: usize>(
+    arm: &Arm<N>,
+    scene: &Scene,
+    start: &[f64; N],
+    tolerance: &[f64; N],
+) -> Result<[f64; N], StartFault> {
+    let start = start_inside_limits(arm.geometry().chain(), start, tolerance)?;
+    match Surroundings::new(scene.map, scene.field, 0.0, 0.0).contact(arm, &start) {
+        Some(contact) => Err(StartFault::InCollision(contact)),
+        None => Ok(start),
+    }
+}
+
+/// The first waypoint of `path`, the start first, that holds a joint outside the limits of
+/// `arm`'s chain, by its index, and the fault.
+fn first_outside_limits<const N: usize>(
+    arm: &Arm<N>,
+    path: &[[f64; N]],
+) -> Option<(usize, PathFault)> {
+    let chain = arm.geometry().chain();
+    let limits = chain.limits();
+    path.iter().enumerate().skip(1).find_map(|(k, q)| {
+        let joint = (0..N).find(|&i| !(limits[i].lo..=limits[i].hi).contains(&q[i]))?;
+        Some((
+            k,
+            PathFault::OutsideLimits {
+                waypoint: k,
+                joint: chain.joint_name(joint).to_string(),
+                position: q[joint],
+                low: limits[joint].lo,
+                high: limits[joint].hi,
+            },
+        ))
+    })
+}
+
+/// The state where the straight run from `from`, inside the joint limits of `arm`'s
+/// chain, to `to`, outside them, leaves them: the first limit it crosses, held on it. A
+/// `to` with a value that is not finite leaves them at `from`.
+fn where_it_leaves_the_limits<const N: usize>(
+    arm: &Arm<N>,
+    from: &[f64; N],
+    to: &[f64; N],
+) -> [f64; N] {
+    let limits = arm.geometry().chain().limits();
+    let share = (0..N)
+        .filter(|&i| !(limits[i].lo..=limits[i].hi).contains(&to[i]))
+        .map(|i| {
+            let bound = if to[i] > limits[i].hi {
+                limits[i].hi
+            } else {
+                limits[i].lo
+            };
+            ((bound - from[i]) / (to[i] - from[i])).max(0.0)
+        })
+        .fold(1.0, f64::min);
+    if share == 0.0 {
+        return *from;
+    }
+    let leaving = toward(from, to, share);
+    std::array::from_fn(|i| leaving[i].clamp(limits[i].lo, limits[i].hi))
 }
 
 /// The floor a start `distance` meters from the bodies of a term with `moved` moving
@@ -294,21 +599,22 @@ fn floor_of(distance: f64, min_clearance_m: f64, moved: f64) -> f64 {
         .max(0.0)
 }
 
-/// `start`, each joint outside its limits by no more than its tolerance moved onto
-/// the limit.
-fn start_inside_limits<const N: usize>(
-    arm: &Arm<N>,
+/// `start`, each joint outside the limits of `chain` by no more than its tolerance moved
+/// onto the limit; a start farther out is refused. A plan and a check start where this
+/// puts them, and a caller asks it before it takes a request.
+pub fn start_inside_limits<const N: usize>(
+    chain: &Chain<N>,
     start: &[f64; N],
     tolerance: &[f64; N],
-) -> Result<[f64; N], PlanFailure> {
-    let limits = arm.geometry().chain().limits();
+) -> Result<[f64; N], StartFault> {
+    let limits = chain.limits();
     (0..N)
         .map(|i| {
             let (low, high) = (limits[i].lo, limits[i].hi);
             let position = start[i];
             if !(low - tolerance[i]..=high + tolerance[i]).contains(&position) {
-                return Err(PlanFailure::StartOutsideLimits {
-                    joint: i,
+                return Err(StartFault::OutsideLimits {
+                    joint: chain.joint_name(i).to_string(),
                     position,
                     low,
                     high,
@@ -322,7 +628,7 @@ fn start_inside_limits<const N: usize>(
 }
 
 /// The configurations that meet the goal and keep their clearance, drawn before
-/// `deadline`, or why there are none.
+/// `deadline`, or why there are none; a set stop flag ends the plan.
 fn goal_configurations<const N: usize>(
     arm: &Arm<N>,
     checks: &ArmChecks<N>,
@@ -334,11 +640,15 @@ fn goal_configurations<const N: usize>(
         request.goal_samples.get(),
         u64::from(request.seed),
         deadline,
+        request.stop,
     );
+    if is_set(request.stop) {
+        return Err(PlanFailure::Stopped);
+    }
     if sampled.is_empty() {
         return Err(PlanFailure::Unreachable(format!(
-            "inverse kinematics found no configuration that meets the goal in {} samples or {:?}",
-            request.goal_samples, request.time_limit
+            "inverse kinematics found no configuration that meets the goal in {} samples or by the deadline",
+            request.goal_samples
         )));
     }
     let clear: Vec<[f64; N]> = sampled
@@ -347,14 +657,32 @@ fn goal_configurations<const N: usize>(
         .copied()
         .collect();
     if clear.is_empty() {
+        let (least_short, _) = sampled
+            .iter()
+            .map(|q| (q, checks.shortfall(q)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .expect("the sampled configurations are not empty");
         return Err(PlanFailure::Unreachable(format!(
-            "each of the {} configurations that meet the goal is in collision, nearer than {}",
+            "each of the {} configurations that meet the goal is in collision, nearer than {}; the one that falls short least has {}",
             sampled.len(),
-            checks.plan_clearance()
+            checks.plan_clearance(),
+            checks.short_of(least_short)
         )));
     }
     Ok(clear)
 }
+
+/// Where a walk breaks: the position of the last state it checks that keeps its
+/// clearances, the walk's first among them, and the distances of the state that breaks it
+/// from the bodies of each term.
+struct Break {
+    last_valid: f64,
+    distances: [f64; 2],
+}
+
+/// A walk of a path that its caller ended before it reached the path's end: the plan's
+/// stop flag, or the check's deadline.
+struct Ended;
 
 /// The checks of the plan's states and motions.
 struct ArmChecks<'a, const N: usize> {
@@ -406,12 +734,63 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
         if *from != self.start && !self.surroundings.clear(self.arm, from) {
             return Motion::Invalid { last_valid: 0.0 };
         }
-        let by_rule = self.departs_by_rule(from, to);
-        match self.walk_run(from, to) {
+        // The planner's path to `from` is unknown here: a motion whose first state lies on
+        // the straight line from the start to its end departs from the start.
+        let along = [self.start, *from];
+        let reached: &[[f64; N]] = if on_segment(from, &self.start, to) {
+            &along
+        } else {
+            std::slice::from_ref(from)
+        };
+        let by_rule = self.departs_by_rule(reached, to);
+        match self.walk_run(reached, to) {
             Ok(false) => Motion::Valid,
-            Err(last_valid) if !by_rule => Motion::Invalid { last_valid },
+            Err(Break { last_valid, .. }) if !by_rule => Motion::Invalid { last_valid },
             Ok(true) | Err(_) => Motion::Invalid { last_valid: 0.0 },
         }
+    }
+
+    /// The fault of a state at `place` that lies `distances` meters from the bodies of
+    /// each term, as a check of a path answers it.
+    fn fault(&self, place: Place, distances: [f64; 2]) -> PathFault {
+        PathFault::Clearance {
+            place,
+            distances,
+            clearances: self.clearance,
+        }
+    }
+
+    /// How far `q` falls short of the plan's clearance of the term it falls shortest of, in
+    /// meters; at or below 0 where it keeps both.
+    fn shortfall(&self, q: &[f64; N]) -> f64 {
+        let distances = self.surroundings.distances(self.arm, q);
+        (0..2)
+            .map(|term| self.clearance[term] - distances[term])
+            .fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    /// What `q` falls short of the plan's clearances against, as a message names it: the
+    /// pair of the robot's own links, and the link and the map, of each term it falls short
+    /// of, and how far apart they stand.
+    fn short_of(&self, q: &[f64; N]) -> String {
+        let [map, own] = self.surroundings.distances(self.arm, q);
+        let own_pair = self
+            .arm
+            .self_model()
+            .filter(|_| own < self.clearance[1])
+            .map(|model| {
+                let (a, b) = model.nearest_pair(q);
+                format!("{a} {own:.4} m from {b}")
+            });
+        let map_link = (map < self.clearance[0])
+            .then(|| self.surroundings.nearest_to_map(self.arm, q))
+            .flatten()
+            .map(|(link, distance)| format!("{link} {distance:.4} m from the map"));
+        [own_pair, map_link]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" and ")
     }
 
     /// The plan's clearances, as a message names them.
@@ -425,29 +804,33 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
         }
     }
 
-    /// Whether `walk_run` walks the run from `from` to `to` by the start rule from the
-    /// start: a run that leaves the start, or lies on the straight line from it, while
-    /// the start falls short of a term's plan clearance.
-    fn departs_by_rule(&self, from: &[f64; N], to: &[f64; N]) -> bool {
+    /// Whether `walk_run` walks the run from the last of `reached`, the path's waypoints
+    /// up to the run's first, to `to` by the start rule from the start: `reached` leaves
+    /// the start and each of its waypoints after the start lies on the straight line from
+    /// the start to `to`, while the start falls short of a term's plan clearance.
+    fn departs_by_rule(&self, reached: &[[f64; N]], to: &[f64; N]) -> bool {
+        let (first, after) = reached.split_first().expect("a run leaves a waypoint");
         self.start_short.contains(&true)
-            && (*from == self.start || on_segment(from, &self.start, to))
+            && *first == self.start
+            && after.iter().all(|q| on_segment(q, &self.start, to))
     }
 
-    /// Walks the run from `from` to `to` of a path from the start, as the module says: a
-    /// run on the straight line from the start by the start rule from the start, and any
-    /// other run by its spare, as `advance_by_spare` walks it. Whether a term the start
-    /// falls short of still falls short of its plan clearance at `to`; where the run
-    /// breaks, the share of it before the state that breaks it.
-    fn walk_run(&self, from: &[f64; N], to: &[f64; N]) -> Result<bool, f64> {
-        self.walk_run_checking(from, to, &mut |_| {})
+    /// Walks the run from the last of `reached`, the path's waypoints from the start up to
+    /// the run's first, to `to`, as the module says: a run on the straight line from the
+    /// start by the start rule from the start, and any other run by its spare, as
+    /// `advance_by_spare` walks it. Whether a term the start falls short of still falls
+    /// short of its plan clearance at `to`; where the run breaks, the share of it before
+    /// the state that breaks it, and that state's distances.
+    fn walk_run(&self, reached: &[[f64; N]], to: &[f64; N]) -> Result<bool, Break> {
+        self.walk_run_checking(reached, to, &mut |_| {})
     }
 
-    /// The shares of the run from `from` to `to` at which `walk_run` checks a state that
-    /// passes.
-    fn walked_shares(&self, from: &[f64; N], to: &[f64; N]) -> Vec<f64> {
+    /// The shares of the run from the last of `reached` to `to` at which `walk_run` checks
+    /// a state that passes.
+    fn walked_shares(&self, reached: &[[f64; N]], to: &[f64; N]) -> Vec<f64> {
         let mut shares = Vec::new();
         // A run that breaks leaves the shares of the states before the break.
-        let _ = self.walk_run_checking(from, to, &mut |share| shares.push(share));
+        let _ = self.walk_run_checking(reached, to, &mut |share| shares.push(share));
         shares
     }
 
@@ -455,11 +838,12 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
     /// passes.
     fn walk_run_checking(
         &self,
-        from: &[f64; N],
+        reached: &[[f64; N]],
         to: &[f64; N],
         checked: &mut dyn FnMut(f64),
-    ) -> Result<bool, f64> {
-        if self.departs_by_rule(from, to) {
+    ) -> Result<bool, Break> {
+        let from = reached.last().expect("a run leaves a waypoint");
+        if self.departs_by_rule(reached, to) {
             let skipped = self.arm.displacement(&self.start, from);
             let total = self.arm.displacement(&self.start, to);
             let mut past_from = |t: f64| {
@@ -469,7 +853,10 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
             };
             return self
                 .depart_from_start(to, &mut past_from)
-                .map_err(|t| share_past(t, skipped, total));
+                .map_err(|broken| Break {
+                    last_valid: share_past(broken.last_valid, skipped, total),
+                    ..broken
+                });
         }
         let total = self.arm.displacement(from, to);
         self.advance_by_spare(0.0, 1.0, total, |t| toward(from, to, t), checked)
@@ -481,8 +868,9 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
     /// position moving any point of a link at most `lever` meters, handing `checked` each
     /// position past `from` at which it checks a state that keeps the plan's clearances.
     /// The motion's state at `from` sets the first step, and a state from which a step
-    /// would move a point less than `MIN_SPARE_M` ends it. The position of the last state
-    /// it checks, `from` among them, where the motion breaks.
+    /// would move a point less than `MIN_SPARE_M` ends it. Where the motion breaks, the
+    /// position of the last state it checks, `from` among them, and the distances of the
+    /// state that breaks it.
     fn advance_by_spare(
         &self,
         from: f64,
@@ -490,11 +878,15 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
         lever: f64,
         at: impl Fn(f64) -> [f64; N],
         checked: &mut dyn FnMut(f64),
-    ) -> Result<(), f64> {
+    ) -> Result<(), Break> {
         let mut position = from;
         let mut here = self.distances(&at(from));
         while position < to {
-            let step = self.spare_step(&here).ok_or(position)?;
+            let broken = |distances| Break {
+                last_valid: position,
+                distances,
+            };
+            let step = self.spare_step(&here).ok_or(broken(here))?;
             let next = if lever > 0.0 {
                 (position + step / lever).min(to)
             } else {
@@ -502,7 +894,7 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
             };
             here = self.distances(&at(next));
             if !self.keeps_clearances(&here) {
-                return Err(position);
+                return Err(broken(here));
             }
             checked(next);
             position = next;
@@ -537,18 +929,26 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
     /// handing `checked` the share of the motion at each state it checks that passes.
     /// Whether a term the start falls short of still falls short of its plan clearance
     /// at `to`; where the rule breaks, the share of the motion before the state that
-    /// breaks it.
-    fn depart_from_start(&self, to: &[f64; N], checked: &mut dyn FnMut(f64)) -> Result<bool, f64> {
+    /// breaks it, and that state's distances.
+    fn depart_from_start(
+        &self,
+        to: &[f64; N],
+        checked: &mut dyn FnMut(f64),
+    ) -> Result<bool, Break> {
         let total = self.arm.displacement(&self.start, to);
         let mut here = self.distances(&self.start);
         let mut before = here;
         let mut t = 0.0;
         while t < 1.0 {
-            let step = self.step_from(&here, &before).ok_or(t)?;
+            let broken = |distances| Break {
+                last_valid: t,
+                distances,
+            };
+            let step = self.step_from(&here, &before).ok_or(broken(here))?;
             let next = advance(t, step, total);
             here = self.distances(&toward(&self.start, to, next));
             if !self.keeps(&here, &before) {
-                return Err(t);
+                return Err(broken(here));
             }
             checked(next);
             before = std::array::from_fn(|term| before[term].max(here[term]));
@@ -642,20 +1042,19 @@ impl<const N: usize> Checks for ArmChecks<'_, N> {
 /// The planned waypoints, with waypoints added near each corner whose rounding, as
 /// execute_joint_path rounds it, does not keep its clearance, until each does; or why
 /// some corner cannot before `deadline`, or which planned waypoint after the start falls
-/// short of the plan's clearances.
+/// short of the plan's clearances. A set `stop` ends it before each walk of the path.
 fn rounded_clear<const N: usize>(
     checks: &ArmChecks<N>,
     planned: &[[f64; N]],
     deadline: Instant,
+    stop: Option<&AtomicBool>,
 ) -> Result<Vec<[f64; N]>, PlanFailure> {
     // Each planned waypoint after the start keeps the plan's clearances, so the start rule
     // holds at no corner, and each arc keeps the plan's clearances.
-    if let Some(k) =
-        (1..planned.len()).find(|&k| !checks.surroundings.clear(checks.arm, &planned[k]))
-    {
+    if let Some((k, distances)) = first_short_waypoint(checks, planned) {
         return Err(PlanFailure::NoPath(format!(
-            "waypoint {k} of the planned path falls short of {}",
-            checks.plan_clearance()
+            "the planned path falls short {}",
+            checks.fault(Place::Waypoint(k), distances)
         )));
     }
     // For each planned waypoint, the share of its runs within which the waypoints added at
@@ -671,13 +1070,15 @@ fn rounded_clear<const N: usize>(
             })
             .unzip();
         let path = RoundedPath::joint_path(&vectors(&waypoints));
-        let Some(corner) = first_failing_probe(checks, &path, &corner_of, planned) else {
+        let Some((corner, _)) =
+            first_failing_probe(checks, &path, &corner_of, planned, &|| is_set(stop))
+                .map_err(|Ended| PlanFailure::Stopped)?
+        else {
             return Ok(waypoints);
         };
         if Instant::now() >= deadline {
             return Err(PlanFailure::NoPath(
-                "the plan's time limit ended before its rounded path kept its clearance"
-                    .to_string(),
+                "the plan's deadline passed before its rounded path kept its clearance".to_string(),
             ));
         }
         let fraction = added[corner].map_or(FIRST_CORNER_FRACTION, |(f, _)| f / 2.0);
@@ -700,8 +1101,9 @@ fn rounded_clear<const N: usize>(
 
 /// The waypoints a repair of the corner of waypoint `corner` of `planned` adds, one on
 /// each of its runs within the share `fraction` of the run from the corner: the state the
-/// run's walk checks there farthest from the corner, so that each run they split walks
-/// only states the plan walked. `None` when the walk of a run checks no state there.
+/// run's walk checks there farthest from the corner that keeps the plan's clearances, so
+/// that each run they split walks only states the plan walked and each waypoint after the
+/// start keeps them. `None` when the walk of a run checks no such state there.
 fn repair_waypoints<const N: usize>(
     checks: &ArmChecks<N>,
     planned: &[[f64; N]],
@@ -709,16 +1111,19 @@ fn repair_waypoints<const N: usize>(
     fraction: f64,
 ) -> Option<[[f64; N]; 2]> {
     let (before, at, after) = (&planned[corner - 1], &planned[corner], &planned[corner + 1]);
+    let keeps = |from: &[f64; N], to: &[f64; N], s: f64| {
+        checks.surroundings.clear(checks.arm, &toward(from, to, s))
+    };
     let into = checks
-        .walked_shares(before, at)
+        .walked_shares(&planned[..corner], at)
         .into_iter()
-        .find(|&s| s >= 1.0 - fraction && s < 1.0)?;
+        .find(|&s| s >= 1.0 - fraction && s < 1.0 && keeps(before, at, s))?;
     let out = checks
-        .walked_shares(at, after)
+        .walked_shares(&planned[..=corner], after)
         .into_iter()
         .take_while(|&s| s <= fraction)
-        .last()
-        .filter(|&s| s < 1.0)?;
+        .filter(|&s| s < 1.0 && keeps(at, after, s))
+        .last()?;
     Some([toward(before, at, into), toward(at, after, out)])
 }
 
@@ -732,31 +1137,59 @@ fn toward<const N: usize>(at: &[f64; N], other: &[f64; N], fraction: f64) -> [f6
     std::array::from_fn(|i| at[i] + (other[i] - at[i]) * fraction)
 }
 
+/// The first waypoint of `path` after the start that falls short of the plan's
+/// clearances, by its index, and its distances from the bodies of each term.
+fn first_short_waypoint<const N: usize>(
+    checks: &ArmChecks<N>,
+    path: &[[f64; N]],
+) -> Option<(usize, [f64; 2])> {
+    (1..path.len())
+        .find(|&k| !checks.surroundings.clear(checks.arm, &path[k]))
+        .map(|k| (k, checks.distances(&path[k])))
+}
+
 /// The first run of `path`, which leaves from the start, by the waypoint it leaves from,
-/// that does not keep its clearances as `ArmChecks::walk_run` walks it.
-fn first_failing_run<const N: usize>(checks: &ArmChecks<N>, path: &[[f64; N]]) -> Option<usize> {
-    path.windows(2)
-        .position(|run| checks.walk_run(&run[0], &run[1]).is_err())
+/// that does not keep its clearances as `ArmChecks::walk_run` walks it, and where it
+/// breaks. `ended` ends the walk before a run.
+fn first_failing_run<const N: usize>(
+    checks: &ArmChecks<N>,
+    path: &[[f64; N]],
+    ended: &dyn Fn() -> bool,
+) -> Result<Option<(usize, Break)>, Ended> {
+    for k in 0..path.len().saturating_sub(1) {
+        if ended() {
+            return Err(Ended);
+        }
+        if let Err(broken) = checks.walk_run(&path[..=k], &path[k + 1]) {
+            return Ok(Some((k, broken)));
+        }
+    }
+    Ok(None)
 }
 
 /// The waypoint of `planned` whose corner holds the first arc of `path` that does not keep
 /// its clearances as `ArmChecks::advance_by_spare` walks it along the path, at the arc's
 /// lever (`Arm::lever_along`). `corner_of` names, for each waypoint of `path`, the
 /// waypoint of `planned` whose corner it rounds. A state on a segment of `planned` is not
-/// checked: the plan walks each run of its answer.
+/// checked: the plan walks each run of its answer. That waypoint, and where the arc
+/// breaks; `ended` ends the walk before an arc.
 fn first_failing_probe<const N: usize>(
     checks: &ArmChecks<N>,
     path: &RoundedPath,
     corner_of: &[usize],
     planned: &[[f64; N]],
-) -> Option<usize> {
+    ended: &dyn Fn() -> bool,
+) -> Result<Option<(usize, Break)>, Ended> {
     let length = path.length();
     let at = |s: f64| -> [f64; N] { path.at(s).as_slice().try_into().expect("a configuration") };
     let walked = |s: f64| {
         let q = at(s);
         planned.windows(2).any(|w| on_segment(&q, &w[0], &w[1]))
     };
-    (1..corner_of.len().saturating_sub(1)).find_map(|corner| {
+    for corner in 1..corner_of.len().saturating_sub(1) {
+        if ended() {
+            return Err(Ended);
+        }
         // The arc at `corner` runs from where the path reaches the corner's waypoint to
         // where it lies on a planned segment again, before the next waypoint.
         let from = first_position(0.0, length, |s| path.waypoint_at(s) >= corner);
@@ -767,11 +1200,14 @@ fn first_failing_probe<const N: usize>(
             .try_into()
             .expect("a share of the tangent per joint");
         let lever = checks.arm.lever_along(&share);
-        checks
-            .advance_by_spare(from, to, lever, at, &mut |_| {})
-            .err()
-            .map(|s| corner_of[path.waypoint_at(s)])
-    })
+        if let Err(broken) = checks.advance_by_spare(from, to, lever, at, &mut |_| {}) {
+            return Ok(Some((
+                corner_of[path.waypoint_at(broken.last_valid)],
+                broken,
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// The first position from `low` to `high` at which `holds` holds, to the rounding of
@@ -968,6 +1404,36 @@ mod tests {
         }
     }
 
+    // A set stop flag ends the check of a rounded path before the walk of its corner, and
+    // the check of a plan's answer before the walk of its run; the same paths with the
+    // flag clear pass.
+    #[test]
+    fn a_stop_ends_the_check_of_the_rounded_path() {
+        let geometry = two_links();
+        let arm = Arm::new(&geometry, None);
+        let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], &[]);
+        let scene = Scene {
+            map: &map,
+            field: &field,
+            stamp: 0,
+        };
+        let checks = ArmChecks::new(&arm, &scene, [0.0, 0.0], MIN_CLEARANCE_M);
+        let path = [[0.0, 0.0], [0.5, 0.5], [1.0, 0.0]];
+        let far = Instant::now() + Duration::from_secs(3600);
+        let (clear, set) = (AtomicBool::new(false), AtomicBool::new(true));
+        assert!(rounded_clear(&checks, &path, far, Some(&clear)).is_ok());
+        assert_eq!(
+            rounded_clear(&checks, &path, far, Some(&set)),
+            Err(PlanFailure::Stopped)
+        );
+        let run = [vec![0.0, 0.0], vec![0.5, 0.5]];
+        assert!(answered(&checks, &run, far, Some(&clear)).is_ok());
+        assert_eq!(
+            answered(&checks, &run, far, Some(&set)),
+            Err(PlanFailure::Stopped)
+        );
+    }
+
     /// Whether the plain walk, a run from a state that is not the start, of the sliding
     /// box from x = -0.3 to 0.3 passes, at `gap` meters from a wall of voxels beside it or,
     /// with no wall, between a pair of its own body `apart` meters apart.
@@ -993,7 +1459,7 @@ mod tests {
             stamp: 0,
         };
         let checks = ArmChecks::new(&arm, &scene, [0.45], MIN_CLEARANCE_M);
-        checks.walk_run(&[-0.3], &[0.3]).is_ok()
+        checks.walk_run(&[[-0.3]], &[0.3]).is_ok()
     }
 
     // A motion that holds 2 mm more than `MIN_CLEARANCE_M` from the map, a spare of 2 mm
@@ -1099,7 +1565,7 @@ mod tests {
         tc.assume(checks.surroundings.clear(&arm, &from));
         let dense = Surroundings::new(&map, &field, min_clearance, min_clearance);
         let keeps = |q: &[f64; 2]| dense.clear(&arm, q);
-        if checks.walk_run(&from, &via).is_ok() {
+        if checks.walk_run(&[from], &via).is_ok() {
             let count = (arm.displacement(&from, &via) / DENSE_M).ceil() as usize;
             for k in 0..=count {
                 let q = toward(&from, &via, k as f64 / count.max(1) as f64);
@@ -1205,14 +1671,21 @@ mod tests {
             (gap - 0.005).abs() < 1e-12,
             "the plate starts {gap} m from the voxel"
         );
-        assert!(checks.walk_run(&from, &to).is_err());
+        assert!(checks.walk_run(&[from], &to).is_err());
     }
 
     /// A goal sampler that answers one configuration.
     struct At<const N: usize>([f64; N]);
 
     impl<const N: usize> GoalSampler<N> for At<N> {
-        fn sample(&self, _: &Goal, _: usize, _: u64, _: Instant) -> Vec<[f64; N]> {
+        fn sample(
+            &self,
+            _: &Goal,
+            _: usize,
+            _: u64,
+            _: Instant,
+            _: Option<&AtomicBool>,
+        ) -> Vec<[f64; N]> {
             vec![self.0]
         }
     }
@@ -1255,14 +1728,15 @@ mod tests {
         let geometry = turn_and_slide();
         let arm = Arm::new(&geometry, None);
         let (start, end) = ([-0.6, 0.5], [0.6, 0.5]);
+        let tolerance = PositiveFinite::parse(0.01).expect("a positive tolerance");
         let goal = Goal::new(
             2,
             (0..2)
                 .map(|joint| crate::goal::JointTarget {
                     joint,
                     position: end[joint],
-                    above: 0.01,
-                    below: 0.01,
+                    above: tolerance,
+                    below: tolerance,
                 })
                 .collect(),
             Vec::new(),
@@ -1283,17 +1757,19 @@ mod tests {
                 sampler: &At(end),
                 goal_samples: NonZeroUsize::new(1).expect("nonzero"),
                 planner: Planner::RrtConnect,
-                time_limit: Duration::from_secs(600),
+                deadline: Instant::now() + Duration::from_secs(600),
                 max_iterations: NonZeroU64::new(20_000).expect("nonzero"),
+                attempts: NonZeroU32::MIN,
                 seed: 7,
                 min_clearance_m: MIN_CLEARANCE_M,
+                stop: None,
             },
         );
         assert_eq!(
             answer,
             Err(PlanFailure::NoPath(
-                "RRTConnect found no path within 20000 iterations or 600s, keeping the plan's \
-                 clearance, 0.0210 m from the map"
+                "RRTConnect found no path within 20000 iterations or by its deadline, keeping \
+                 the plan's clearance, 0.0210 m from the map"
                     .to_string()
             ))
         );
@@ -1336,7 +1812,7 @@ mod tests {
             "the corner's rounding clears the block: nothing to repair"
         );
         let deadline = Instant::now() + Duration::from_secs(3600);
-        let answer = match answered(&checks, &vectors(&planned), deadline) {
+        let answer = match answered(&checks, &vectors(&planned), deadline, None) {
             Ok(answer) => answer,
             Err(failure) => panic!("the corner is not repaired: {failure}"),
         };
@@ -1347,5 +1823,315 @@ mod tests {
             );
         }
         assert_eq!(answer.len(), planned.len() + 2, "{answer:?}");
+        // A check of a caller's path finds the corner the plan repairs, and passes the
+        // repaired path.
+        let check = |waypoints: &[[f64; 2]]| {
+            check_arm_path(
+                &arm,
+                &scene,
+                &CheckRequest {
+                    start: planned[0],
+                    start_tolerance: [0.0; 2],
+                    waypoints,
+                    min_clearance_m: MIN_CLEARANCE_M,
+                    deadline,
+                },
+            )
+            .unwrap_or_else(|failure| panic!("{failure}"))
+        };
+        let unrepaired = check(&planned[1..]);
+        assert_eq!(unrepaired.clear_waypoints, 1, "{unrepaired:?}");
+        assert!(
+            matches!(
+                unrepaired.fault,
+                Some(PathFault::Clearance {
+                    place: Place::Corner(1),
+                    ..
+                })
+            ),
+            "{unrepaired:?}"
+        );
+        let repaired = check(&answer[1..]);
+        assert_eq!(
+            (repaired.clear_waypoints, repaired.fault),
+            (answer.len() - 1, None)
+        );
+    }
+
+    /// The check of `waypoints` from the start `start` of the gantry around `block`'s
+    /// voxels, its walks ended once `ended` holds.
+    fn gantry_check(
+        start: [f64; 2],
+        waypoints: &[[f64; 2]],
+        block: &[[f64; 3]],
+        ended: &dyn Fn() -> bool,
+    ) -> Result<PathCheck, CheckFailure> {
+        let (map, field) = world(VOXEL_M, [-1.2, -0.6, -0.1], [1.2, 0.6, 0.1], block);
+        let geometry = gantry();
+        let arm = Arm::new(&geometry, None);
+        let scene = Scene {
+            map: &map,
+            field: &field,
+            stamp: 0,
+        };
+        let request = CheckRequest {
+            start,
+            start_tolerance: [0.0; 2],
+            waypoints,
+            min_clearance_m: MIN_CLEARANCE_M,
+            deadline: Instant::now(),
+        };
+        check_arm_path_until(&arm, &scene, &request, ended)
+    }
+
+    /// Four voxels at the middle of the run from the gantry's start at the origin to
+    /// (0.25, 0.25), and a voxel 1 cm below the cube at the start, which so falls short of
+    /// the plan's clearance.
+    fn block_on_the_diagonal() -> Vec<[f64; 3]> {
+        [0.115, 0.125]
+            .into_iter()
+            .flat_map(|x| [0.115, 0.125].map(|y| [x, y, 0.0]))
+            .chain([[0.0, -0.025, 0.0]])
+            .collect()
+    }
+
+    // A start short of the plan's clearance, a path from it around a block by a waypoint
+    // off the straight line to its end, then on through a waypoint on that line: the run
+    // from that waypoint is walked by its spare, and the path passes. The straight path
+    // to that waypoint runs into the block.
+    #[test]
+    fn a_run_on_the_starts_line_after_a_waypoint_off_it_walks_by_its_spare() {
+        let block = block_on_the_diagonal();
+        let around = [[0.0, 0.25], [0.25, 0.25], [0.45, 0.45]];
+        let check = gantry_check([0.0, 0.0], &around, &block, &|| false)
+            .unwrap_or_else(|failure| panic!("{failure}"));
+        assert_eq!((check.clear_waypoints, check.fault), (3, None));
+        let straight = gantry_check([0.0, 0.0], &around[1..], &block, &|| false)
+            .unwrap_or_else(|failure| panic!("{failure}"));
+        assert_eq!(check_place(&straight), Some(Place::Run(0)), "{straight:?}");
+    }
+
+    /// Where the first fault of `check` lies, when it is a clearance fault.
+    fn check_place(check: &PathCheck) -> Option<Place> {
+        match check.fault {
+            Some(PathFault::Clearance { place, .. }) => Some(place),
+            _ => None,
+        }
+    }
+
+    // A path whose first waypoint lies past joint 1's limit at 1 m, its run into a block
+    // before it leaves the limits: the check answers the block on the run, the first
+    // fault along the path. With the block past the limit, where the arm cannot go, and
+    // with no block, the check answers the waypoint outside the limit.
+    #[test]
+    fn a_fault_on_the_run_to_a_waypoint_outside_a_limit_comes_first() {
+        let check = gantry_check([0.0, 0.0], &[[1.2, 0.0]], &[[0.3, 0.0, 0.0]], &|| false)
+            .unwrap_or_else(|failure| panic!("{failure}"));
+        assert_eq!(check.clear_waypoints, 0, "{check:?}");
+        assert_eq!(check_place(&check), Some(Place::Run(0)), "{check:?}");
+        for block in [&[[1.1, 0.0, 0.0]][..], &[]] {
+            let past = gantry_check([0.0, 0.0], &[[1.2, 0.0]], block, &|| false)
+                .unwrap_or_else(|failure| panic!("{failure}"));
+            assert!(
+                matches!(
+                    past.fault,
+                    Some(PathFault::OutsideLimits { waypoint: 1, .. })
+                ),
+                "{block:?}: {past:?}"
+            );
+        }
+    }
+
+    // A waypoint with a value that is not finite answers that it lies outside the limits,
+    // first on the path and after a waypoint that passes.
+    #[test]
+    fn a_waypoint_that_is_not_finite_lies_outside_the_limits() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for (waypoints, waypoint) in [
+                (vec![[value, 0.0]], 1),
+                (vec![[0.0, value]], 1),
+                (vec![[0.3, 0.0], [value, 0.0]], 2),
+            ] {
+                let check = gantry_check([0.0, 0.0], &waypoints, &[], &|| false)
+                    .unwrap_or_else(|failure| panic!("{failure}"));
+                assert_eq!(check.clear_waypoints, waypoint - 1, "{check:?}");
+                assert!(
+                    matches!(
+                        check.fault,
+                        Some(PathFault::OutsideLimits { waypoint: k, .. }) if k == waypoint
+                    ),
+                    "{value} in {waypoints:?}: {check:?}"
+                );
+            }
+        }
+    }
+
+    /// A self model whose pair stands a meter apart at every configuration, which counts
+    /// the states it is asked about and refuses, by a panic, to be asked about more than
+    /// `MOST_STATES`.
+    struct CountsItsStates(std::sync::atomic::AtomicUsize);
+
+    /// The states a check of one run along 1 m of a joint asks `CountsItsStates` about at
+    /// most: its walk measures some 67, at steps of `MAX_STEP_M`.
+    const MOST_STATES: usize = 1000;
+
+    impl<const N: usize> SelfModel<N> for CountsItsStates {
+        fn clearance(&self, _: &[f64; N]) -> f64 {
+            let asked = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            assert!(
+                asked < MOST_STATES,
+                "asked about more than {MOST_STATES} states"
+            );
+            1.0
+        }
+
+        fn nearest_pair(&self, _: &[f64; N]) -> (String, String) {
+            ("a link".to_string(), "its neighbor".to_string())
+        }
+    }
+
+    // A waypoint 1e12 m along joint 1 answers that it lies outside the limit, and the walk
+    // of the run to it stops where the run leaves the limit, 1 m from the start: steps of
+    // `MAX_STEP_M` there, nothing near, take some 67 states, within `MOST_STATES`.
+    #[test]
+    fn a_waypoint_far_outside_a_limit_ends_the_walk_at_the_limit() {
+        let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], &[]);
+        let geometry = gantry();
+        let model = CountsItsStates(std::sync::atomic::AtomicUsize::new(0));
+        let arm = Arm::new(&geometry, Some(&model));
+        let scene = Scene {
+            map: &map,
+            field: &field,
+            stamp: 0,
+        };
+        let request = CheckRequest {
+            start: [0.0, 0.0],
+            start_tolerance: [0.0; 2],
+            waypoints: &[[1e12, 0.0]],
+            min_clearance_m: MIN_CLEARANCE_M,
+            deadline: Instant::now(),
+        };
+        let check = check_arm_path_until(&arm, &scene, &request, &|| false)
+            .unwrap_or_else(|failure| panic!("{failure}"));
+        assert!(
+            matches!(
+                check.fault,
+                Some(PathFault::OutsideLimits { waypoint: 1, position, .. }) if position == 1e12
+            ),
+            "{check:?}"
+        );
+    }
+
+    // A check whose deadline passes once it has walked its runs ends before it walks its
+    // corner; the same check with no deadline passes.
+    #[test]
+    fn a_check_ends_at_its_deadline_before_the_walk_of_a_corner() {
+        let path = [[0.3, 0.0], [0.3, 0.3]];
+        let asked = std::cell::Cell::new(0);
+        let after_the_runs = || {
+            asked.set(asked.get() + 1);
+            asked.get() > path.len()
+        };
+        assert_eq!(
+            gantry_check([0.0, 0.0], &path, &[], &after_the_runs),
+            Err(CheckFailure::TimeEnded)
+        );
+        assert_eq!(
+            asked.get(),
+            path.len() + 1,
+            "the check asked past its corner"
+        );
+        let check = gantry_check([0.0, 0.0], &path, &[], &|| false)
+            .unwrap_or_else(|failure| panic!("{failure}"));
+        assert_eq!((check.clear_waypoints, check.fault), (2, None));
+    }
+
+    // From a start 1 cm from a voxel behind it, short of the plan's clearance, the
+    // planner's motion from a state further along the x axis, clear of everything, departs
+    // by the start rule from the start, and a block between the start and that state ends
+    // it; the same motion beside the start's line walks by its spare and passes.
+    #[test]
+    fn a_planner_motion_from_the_starts_line_departs_by_the_rule() {
+        let points = [[-0.025, 0.0, 0.0], [0.15, 0.0, 0.0]];
+        let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], &points);
+        let geometry = gantry();
+        let arm = Arm::new(&geometry, None);
+        let scene = Scene {
+            map: &map,
+            field: &field,
+            stamp: 0,
+        };
+        let checks = ArmChecks::new(&arm, &scene, [0.0, 0.0], MIN_CLEARANCE_M);
+        assert!(
+            checks.start_short[0],
+            "the start keeps the plan's clearance"
+        );
+        assert_eq!(
+            checks.walk(&[0.3, 0.0], &[0.45, 0.0]),
+            Motion::Invalid { last_valid: 0.0 }
+        );
+        assert_eq!(checks.walk(&[0.3, 0.05], &[0.45, 0.05]), Motion::Valid);
+    }
+
+    // From a start 1 cm above a wall that runs under the first run to 5 cm before the
+    // corner, short of the plan's clearance, the first try at repairing the corner puts
+    // its waypoint on the first run where the start rule's walk has risen to the plan's
+    // clearance, within 2.2 cm of the corner, though the share it takes from the corner,
+    // a quarter, reaches over the wall. A corner rounded into a block gets
+    // waypoints until it clears, and the answer passes the check of a caller's path.
+    #[test]
+    fn a_first_corner_repair_adds_a_waypoint_that_keeps_the_clearance() {
+        let wall = (0..50).map(|i| [-0.545 + f64::from(i) * VOXEL_M, -0.025, 0.0]);
+        let block = [-0.085, -0.075]
+            .into_iter()
+            .flat_map(|x| [0.075, 0.085].map(|y| [x, y, 0.0]));
+        let points: Vec<[f64; 3]> = wall.chain(block).collect();
+        let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], &points);
+        let geometry = gantry();
+        let arm = Arm::new(&geometry, None);
+        let scene = Scene {
+            map: &map,
+            field: &field,
+            stamp: 0,
+        };
+        let planned = [[-0.5, 0.0], [0.0, 0.0], [0.0, 0.5]];
+        let checks = ArmChecks::new(&arm, &scene, planned[0], MIN_CLEARANCE_M);
+        assert!(
+            checks.start_short[0],
+            "the start keeps the plan's clearance"
+        );
+        let farthest = toward(&planned[0], &planned[1], 1.0 - FIRST_CORNER_FRACTION);
+        assert!(!checks.surroundings.clear(&arm, &farthest), "{farthest:?}");
+        let [into, _] = repair_waypoints(&checks, &planned, 1, FIRST_CORNER_FRACTION)
+            .expect("a waypoint on each run");
+        assert!(checks.surroundings.clear(&arm, &into), "{into:?}");
+        assert!(
+            into[0] > -0.022,
+            "{into:?} lies 2.2 cm or more before the corner"
+        );
+        let deadline = Instant::now() + Duration::from_secs(3600);
+        let answer = answered(&checks, &vectors(&planned), deadline, None)
+            .unwrap_or_else(|failure| panic!("the corner is not repaired: {failure}"));
+        assert!(
+            answer.len() > planned.len(),
+            "no waypoint added: {answer:?}"
+        );
+        let check = check_arm_path(
+            &arm,
+            &scene,
+            &CheckRequest {
+                start: planned[0],
+                start_tolerance: [0.0; 2],
+                waypoints: &answer[1..],
+                min_clearance_m: MIN_CLEARANCE_M,
+                deadline,
+            },
+        )
+        .unwrap_or_else(|failure| panic!("{failure}"));
+        assert_eq!(
+            (check.clear_waypoints, check.fault),
+            (answer.len() - 1, None),
+            "{answer:?}"
+        );
     }
 }

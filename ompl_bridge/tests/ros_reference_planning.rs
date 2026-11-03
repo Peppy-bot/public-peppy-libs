@@ -79,8 +79,11 @@ fn plan_world(
         time_limit: TIME_LIMIT,
         iterations: NonZeroU64::new(iterations).expect("nonzero"),
         seed: NonZeroU32::new(seed).expect("nonzero"),
+        attempts: NonZeroU32::MIN,
         simplification: NonZeroU32::new(simplification),
+        simplification_time: TIME_LIMIT,
         projection: None,
+        stop: None,
     };
     plan(&request, &worlds[index]).expect("a plan")
 }
@@ -91,6 +94,7 @@ fn ending(ending: &ompl_bridge::Ending) -> Ending {
         ompl_bridge::Ending::Returned => Ending::PlannerReturned,
         ompl_bridge::Ending::IterationBound => Ending::IterationBound,
         ompl_bridge::Ending::TimeLimit => Ending::TimeLimit,
+        ompl_bridge::Ending::Stopped => unreachable!("a plan with no stop flag ends by no stop"),
     }
 }
 

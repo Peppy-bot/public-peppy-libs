@@ -10,24 +10,31 @@
 //!   binary that unwinds on panic, Rust's default; under `panic = "abort"`, a panic in
 //!   one aborts the process.
 //!
-//! A plan seeds every random number generator OMPL draws from in it, the planner's,
-//! the samplers' and the simplifier's, from the request's seed. Its planner ends at
-//! whichever comes first: the planner's return, the request's iteration bound or its
-//! time limit, and its simplifier the same way, under the simplification bound;
-//! [`Plan::ended_by`] and [`Simplification::ended_by`] say which. A plan that the time
-//! limit ends neither in its planner nor in its simplifier repeats, path for path, in
-//! the same process and in another, for every planner but PRM, with any number of goals.
-//! PRM and PRM* take every goal into their roadmap before they search it, grow and
-//! expand the roadmap in rounds of questions whether to stop, and search it on a second
-//! thread, whose questions do not count toward the bound. PRM ends at the first path
-//! that search finds, and that path depends on when the search runs. Otherwise the plan
-//! searches the finished roadmap once the planner has ended, so PRM*'s path repeats, and
-//! whether PRM finds a path. One plan runs at a time in a process.
+//! A plan makes the request's attempts, as MoveIt makes the attempts of a request: one
+//! on the thread that calls [`plan`], or several on threads of their own,
+//! [`PLANNING_THREADS`] at once, whose paths join into their hybrid by OMPL's path
+//! hybridization. A plan seeds every random number generator OMPL draws from in it, the
+//! planners', the samplers' and the simplifier's, from the request's seed: attempt 0 from
+//! the seed itself, each other attempt from a seed derived from it, and the simplifier of
+//! a plan of several attempts from another. Each attempt's planner ends at whichever
+//! comes first: the planner's return, the caller's stop, the request's iteration bound or
+//! its time limit, and the plan's simplifier the same way, under the simplification bound
+//! and the simplification's time; [`Plan::ended_by`] and [`Simplification::ended_by`] say
+//! which. A plan that neither a time limit nor the caller's stop ends, in its planners or
+//! in its simplifier, repeats, path for path, in the same process and in another, for
+//! every planner but PRM, with any number of goals and of attempts. PRM and PRM* take
+//! every goal into their roadmap before they search it, grow and expand the roadmap in
+//! rounds of questions whether to stop, and search it on a second thread, whose questions
+//! do not count toward the bound. PRM ends at the first path that search finds, and that
+//! path depends on when the search runs. Otherwise the plan searches the finished roadmap
+//! once the planner has ended, so PRM*'s path repeats, and whether PRM finds a path.
+//! Plans run at once in a process.
 //!
 //! The crate builds OMPL 2.0.2 from the source archive of its release tag, which its
 //! build reads from the copy that `OMPL_SOURCE_TARBALL` names, or from the download
 //! cache that `PEPPY_DOWNLOAD_CACHE` names, or downloads, and checks against the
-//! archive's SHA-256 digest.
+//! archive's SHA-256 digest. One patch changes the archive's sources: it gives a thread
+//! a seed generator of its own.
 
 mod callbacks;
 mod ffi;
@@ -40,6 +47,7 @@ struct ReadmeDoctests;
 use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::str::FromStr;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use callbacks::Callbacks;
@@ -53,6 +61,11 @@ pub type CheckError = Box<dyn std::error::Error + Send + Sync>;
 /// constraint in steps of half this length, as OMPL's projected state space walks
 /// one, and OMPL takes a motion whose step stretches beyond this length as invalid.
 pub const CONSTRAINED_SPACING: f64 = 0.1;
+
+/// The attempts of a plan that plan at once, each on a thread of its own: MoveIt's
+/// default `max_planning_threads`. A plan of more attempts makes them in batches of this
+/// many, each batch once the one before it has ended.
+pub const PLANNING_THREADS: NonZeroU32 = NonZeroU32::new(4).expect("4 is above 0");
 
 /// A geometric planner of OMPL.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -102,10 +115,10 @@ impl Planner {
         }
     }
 
-    /// Whether a plan of the planner that the time limit ends neither in its planner
-    /// nor in its simplifier repeats under one seed, with any number of goals. PRM's
-    /// path is the first that its search finds, and depends on when that is; whether it
-    /// finds one repeats.
+    /// Whether a plan of the planner that neither the time limit nor the caller's stop
+    /// ends, in its planner or in its simplifier, repeats under one seed, with any number
+    /// of goals. PRM's path is the first that its search finds, and depends on when that
+    /// is; whether it finds one repeats.
     pub const fn repeats(self) -> bool {
         !matches!(self, Self::Prm)
     }
@@ -229,8 +242,9 @@ pub enum Motion {
     },
 }
 
-/// The caller's checks. A plan calls them on the thread that calls [`plan`], and shares
-/// them with the thread on which PRM and PRM* search their roadmap.
+/// The caller's checks. A plan calls them on the thread that calls [`plan`], and, when it
+/// makes several attempts, on the thread of each, and shares them with the threads on
+/// which PRM and PRM* search their roadmap.
 pub trait Checks: Sync {
     /// Whether `state` is valid.
     fn state(&self, state: &[f64]) -> Result<bool, CheckError>;
@@ -243,8 +257,8 @@ pub trait Checks: Sync {
 }
 
 /// The caller's constraint: the states whose function is zero. A plan calls it on the
-/// thread that calls [`plan`], and shares it with the thread on which PRM and PRM*
-/// search their roadmap.
+/// thread that calls [`plan`], and, when it makes several attempts, on the thread of
+/// each, and shares it with the threads on which PRM and PRM* search their roadmap.
 pub trait Constraint: Sync {
     /// The number of the function's components.
     fn codimension(&self) -> usize;
@@ -279,28 +293,44 @@ pub struct Request<'a> {
     /// The states that end the plan, each within the space's bounds. The plan reaches
     /// one of those that pass the state check and lie on the constraint.
     pub goals: &'a [Vec<f64>],
-    /// The time limit of `plan`, from its call: its wait while another plan runs, its
-    /// planner and its simplification. The planner and the simplifier end at their first
-    /// question whether to stop past the limit. What runs between two questions runs to
-    /// its end, a call of the caller's functions among it, and so do the checks of the
-    /// start and the goals and the simplifier's first pass, which OMPL bounds by counts
-    /// of attempts, most of them the path's number of states. So do two steps of a plan
-    /// of PRM or PRM*: taking every goal into the roadmap, with the motion checks of
-    /// each, before the first question, and searching the finished roadmap once the
-    /// planner has ended, with one A* search for each goal that the roadmap joins to the
-    /// start, unless PRM's search found a path that ended the planner. PRM* planning the
-    /// 7-D wall of the crate's tests until the limit answered 14 ms past a limit of 1 s
-    /// with one goal and 55 ms past a limit of 3 s with 32 goals, as measured on an
-    /// x86-64 host.
+    /// The time limit of the plan's attempts, from the call of `plan`. The planners end
+    /// at their first question whether to stop past the limit, and no batch of attempts
+    /// starts past it. What runs between two questions runs to its end, a call of the
+    /// caller's functions among it, and so do the checks of the start and the goals and
+    /// the hybrid of the attempts' paths, with the motion checks that join the paths and
+    /// those of the hybrid. So do two steps of a plan of PRM or PRM*: taking every goal
+    /// into the roadmap, with the motion checks of each, before the first question, and
+    /// searching the finished roadmap once the planner has ended, with one A* search for
+    /// each goal that the roadmap joins to the start, unless PRM's search found a path
+    /// that ended the planner. PRM* planning the 7-D wall of the crate's tests until the
+    /// limit answered 14 ms past a limit of 1 s with one goal and 55 ms past a limit of
+    /// 3 s with 32 goals, as measured on an x86-64 host.
     pub time_limit: Duration,
-    /// The times the planner may ask whether to stop, on the thread that calls `plan`,
+    /// The times each attempt's planner may ask whether to stop, on the attempt's thread,
     /// before it stops.
     pub iterations: NonZeroU64,
     pub seed: NonZeroU32,
+    /// The attempts the plan makes, as MoveIt's `num_planning_attempts`: attempt 0 from
+    /// `seed`, and each other from a seed derived from it. One attempt plans on the
+    /// thread that calls `plan`. Several plan on threads of their own, in batches of
+    /// [`PLANNING_THREADS`], each batch once the one before it has ended, and the plan
+    /// keeps the shortest of their paths and of the hybrid that OMPL's path hybridization
+    /// joins of two or more of them, the hybrid when it passes the checks in its order.
+    pub attempts: NonZeroU32,
     /// The times the simplifier may ask whether to stop before it stops, once its
     /// first pass, which runs to its end, has ended; none skips the simplification.
     pub simplification: Option<NonZeroU32>,
+    /// The time limit of the simplification, counted from the end of `time_limit`. The
+    /// simplification starts past it too, as MoveIt's `simplifySolution` starts with
+    /// whatever time its plan left, and its first pass runs to its end, which OMPL
+    /// bounds by counts of attempts, most of them the path's number of states; the
+    /// simplifier ends at its first question whether to stop past it after that pass.
+    pub simplification_time: Duration,
     pub projection: Option<Projection<'a>>,
+    /// A flag the caller sets to end the plan: the planners and the simplifier end at
+    /// their next question whether to stop, and no attempt, hybrid or simplification
+    /// starts once it is set.
+    pub stop: Option<&'a AtomicBool>,
 }
 
 /// What ended a plan's planner, or its simplifier.
@@ -308,12 +338,16 @@ pub struct Request<'a> {
 pub enum Ending {
     /// The planner, or the simplifier, returned of its own accord.
     Returned,
-    /// The request's time limit passed: while the plan waited for another plan to end,
-    /// while its planner planned, or before or while its simplifier ran.
+    /// The request's time limit passed while a planner planned or before an attempt
+    /// started, or the simplification's time passed by a question of its simplifier
+    /// after its first pass.
     TimeLimit,
     /// The planner asked whether to stop once more after the request's iteration
     /// bound, or the simplifier after its simplification bound.
     IterationBound,
+    /// The caller's stop flag ended a planner or the simplifier, or kept an attempt or
+    /// the simplifier from starting.
+    Stopped,
 }
 
 /// The answer to a request.
@@ -327,7 +361,9 @@ pub struct Plan {
     /// The simplification of the path, when the request asked for it and the planner
     /// found an exact path.
     pub simplified: Option<Simplification>,
-    /// What ended the planner.
+    /// What ended the planner. Of several attempts, what ended any of them: the caller's
+    /// stop first, then the time limit, then the iteration bound; and their return when
+    /// each returned.
     pub ended_by: Ending,
 }
 
@@ -361,12 +397,16 @@ pub enum PlanError {
 pub fn plan(request: &Request, checks: &dyn Checks) -> Result<Plan, PlanError> {
     if callbacks::in_callback() {
         return Err(PlanError::Request(
-            "plan was called from a check or the constraint of a plan; a process runs one plan at a time, so call plan outside the checks of another"
+            "plan was called from a check or the constraint of a plan; a plan seeds the generator of its thread, which the other plan draws from, so call plan outside the checks of another"
                 .to_string(),
         ));
     }
     let ffi_request = ffi_request(request)?;
-    let callbacks = Callbacks::new(checks, request.projection.map(|p| p.constraint));
+    let callbacks = Callbacks::new(
+        checks,
+        request.projection.map(|p| p.constraint),
+        request.stop,
+    );
     let answer = bridge::plan(&ffi_request, &callbacks);
     if let Some(failure) = callbacks.failure() {
         return Err(PlanError::Check(failure));
@@ -407,6 +447,7 @@ fn ending(ended_by: bridge::Ending) -> Ending {
         bridge::Ending::Returned => Ending::Returned,
         bridge::Ending::TimeLimit => Ending::TimeLimit,
         bridge::Ending::IterationBound => Ending::IterationBound,
+        bridge::Ending::Stopped => Ending::Stopped,
         other => unreachable!(
             "the bridge ends a plan by a failure only when a check failed, not by {}",
             other.repr
@@ -495,7 +536,10 @@ fn ffi_request(request: &Request) -> Result<bridge::PlanRequest, PlanError> {
         time_limit_s: request.time_limit.as_secs_f64(),
         iterations: request.iterations.get(),
         seed: request.seed.get(),
+        attempts: request.attempts.get(),
+        planning_threads: PLANNING_THREADS.get(),
         simplification_iterations: request.simplification.map_or(0, NonZeroU32::get),
+        simplification_time_s: request.simplification_time.as_secs_f64(),
         codimension,
         tolerance,
         projection_iterations,

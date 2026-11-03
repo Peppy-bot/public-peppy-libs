@@ -13,7 +13,7 @@ use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use openarm_description::{HardwareVersion, Side};
 use srs_model::ArmAnglePolicy;
 
-use common::{JOINTS, LEFT_ARM, an_hour_from_now};
+use common::{JOINTS, LEFT_ARM, an_hour_from_now, positive};
 
 /// The poses drawn.
 const POSES: usize = 200;
@@ -101,18 +101,24 @@ fn the_generic_sampler_reaches_each_branch_srs_model_finds() {
             vec![PositionTarget {
                 frame: Frame::GraspPoint,
                 position: pose.translation.vector,
-                tolerance_m: POSITION_TOLERANCE_M,
+                tolerance_m: positive(POSITION_TOLERANCE_M),
             }],
             vec![OrientationTarget {
                 frame: Frame::GraspPoint,
                 orientation: pose.rotation,
-                tolerance_rad: ORIENTATION_TOLERANCE_RAD,
+                tolerance_rad: positive(ORIENTATION_TOLERANCE_RAD),
                 free_axis: None,
             }],
         )
         .expect("a valid goal");
         let reached: BTreeSet<(bool, bool)> = sampler
-            .sample(&goal, GOAL_SAMPLES, pose_index as u64, an_hour_from_now())
+            .sample(
+                &goal,
+                GOAL_SAMPLES,
+                pose_index as u64,
+                an_hour_from_now(),
+                None,
+            )
             .iter()
             .map(branch)
             .collect();
@@ -179,18 +185,23 @@ fn the_sampler_reaches_the_poses_of_links_and_carried_parts() {
                 vec![PositionTarget {
                     frame,
                     position: pose.translation.vector,
-                    tolerance_m: POSITION_TOLERANCE_M,
+                    tolerance_m: positive(POSITION_TOLERANCE_M),
                 }],
                 vec![OrientationTarget {
                     frame,
                     orientation: pose.rotation,
-                    tolerance_rad: ORIENTATION_TOLERANCE_RAD,
+                    tolerance_rad: positive(ORIENTATION_TOLERANCE_RAD),
                     free_axis: None,
                 }],
             )
             .expect("a valid goal");
-            let reached =
-                sampler.sample(&goal, LINK_SAMPLES, pose_index as u64, an_hour_from_now());
+            let reached = sampler.sample(
+                &goal,
+                LINK_SAMPLES,
+                pose_index as u64,
+                an_hour_from_now(),
+                None,
+            );
             assert!(
                 !reached.is_empty(),
                 "no configuration brings {frame:?} to its pose at {q:?}"

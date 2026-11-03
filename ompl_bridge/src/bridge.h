@@ -9,7 +9,8 @@ struct PlanResult;
 struct Callbacks;
 
 // Plans one request with OMPL, calling the caller's checks and constraint back
-// through `callbacks`. One plan runs at a time in a process.
+// through `callbacks`: on the calling thread for a request of one attempt, and on a
+// thread of each attempt besides for a request of several.
 PlanResult plan(const PlanRequest& request, const Callbacks& callbacks);
 
 }  // namespace ompl_bridge

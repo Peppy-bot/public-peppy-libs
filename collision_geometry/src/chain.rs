@@ -20,12 +20,17 @@
 //! piece in the frame of the URDF root, a ball that holds only points of the piece and
 //! a ball that holds every point of it, and the box that holds every reach, so a point
 //! screens only the pieces whose reach may hold it.
+//!
+//! A [`BodyGeometry`] holds the pieces of the links that fixed joints alone join to the
+//! URDF root, the robot's body around its chains. Its [`BodyMask`] grows them by the same
+//! rule, and stands where the body stands as a [`PlacedMask`].
 
 use chain_kinematics::{Chain, ChainSpec, Posed};
 use nalgebra::{Isometry3, Point3, Vector3};
 
 use crate::GeometryError;
-use crate::fit::fit_pieces;
+use crate::clip::ClipRegion;
+use crate::fit::{fit_fixed_link, fit_pieces};
 use crate::gjk::{self, Hull, Placed, Vertex};
 use crate::hull::ConvexHull;
 use crate::urdf_collision::{Collision, CollisionGeometry, ParentJoint, UrdfCollisions};
@@ -173,6 +178,16 @@ impl<const N: usize> ChainGeometry<N> {
         })
     }
 
+    /// The geometry with the lower limit of joint `i` raised to at least `floor`, as
+    /// [`Chain::with_lower_floor`] raises it: a control margin over the URDF's limit,
+    /// which every reader of the chain's limits then keeps.
+    pub fn with_lower_floor(self, i: usize, floor: f64) -> Self {
+        Self {
+            chain: self.chain.with_lower_floor(i, floor),
+            ..self
+        }
+    }
+
     pub fn chain(&self) -> &Chain<N> {
         &self.chain
     }
@@ -300,50 +315,191 @@ impl<const N: usize> Mask<'_, N> {
     /// Places the grown chain at the configuration `q`.
     pub fn at(&self, q: &[f64; N]) -> PlacedMask<'_> {
         let placed = self.geometry.place(q);
-        let links: Vec<PlacedGrownLink> = self
-            .geometry
-            .links
-            .iter()
-            .zip(&placed.poses)
-            .zip(&self.grown)
-            .map(|((link, pose), pieces)| PlacedGrownLink {
-                name: &link.name,
-                pieces,
-                root_in_link: pose.inverse(),
+        PlacedMask::new(
+            self.geometry
+                .links
+                .iter()
+                .zip(placed.poses)
+                .zip(&self.grown)
+                .map(|((link, pose), pieces)| (link.name.as_str(), pieces.as_slice(), pose)),
+        )
+    }
+}
+
+/// The collision pieces of a robot's body: the links that fixed joints alone join to the
+/// URDF root, which stand where they are whatever the robot's joints do.
+#[derive(Debug)]
+pub struct BodyGeometry {
+    links: Vec<BodyLink>,
+}
+
+/// The pieces of one link of a body, and where the frame they stand in lies in the frame
+/// of the URDF root.
+#[derive(Debug)]
+struct BodyLink {
+    name: String,
+    frame: Isometry3<f64>,
+    pieces: BodyPieces,
+}
+
+impl BodyLink {
+    /// The link `name` of a body, which stands at `pose` in the frame of the URDF root,
+    /// with its pieces fitted from the meshes of `meshes_dir`: one per region of
+    /// `regions`, and one per element without them.
+    fn fitted(
+        collisions: &UrdfCollisions,
+        meshes_dir: &str,
+        regions: Option<&[ClipRegion]>,
+        name: String,
+        pose: Isometry3<f64>,
+    ) -> Result<Self, GeometryError> {
+        let (frame, pieces) = match regions {
+            None => (
+                pose,
+                BodyPieces::Elements(pieces_of(collisions, &name, meshes_dir)?),
+            ),
+            Some(regions) => (
+                Isometry3::identity(),
+                BodyPieces::Regions(fit_fixed_link(
+                    collisions,
+                    &name,
+                    meshes_dir,
+                    Some(regions),
+                )?),
+            ),
+        };
+        Ok(BodyLink {
+            name,
+            frame,
+            pieces,
+        })
+    }
+}
+
+/// The pieces of a link of a body: one per `<collision>` element, in the link's frame;
+/// or, for a link that clip regions decompose, one per region, in the frame of the URDF
+/// root, each fitted to the region's slice of every element.
+#[derive(Debug)]
+enum BodyPieces {
+    Elements(Vec<Piece>),
+    Regions(Vec<Hull>),
+}
+
+impl BodyGeometry {
+    /// Reads the body from the URDF and fits the pieces of each of its links from the
+    /// meshes of `meshes_dir`. Each link that `regions` names is decomposed into its clip
+    /// regions, each its `[min, max]` corners in the frame of the URDF root, meters, as
+    /// the self model's builder takes a body's regions. Regions that name a link outside
+    /// the body, or a link twice, are refused.
+    pub fn from_urdf(
+        urdf: &str,
+        meshes_dir: &str,
+        regions: &[(&str, &[[[f64; 3]; 2]])],
+    ) -> Result<Self, GeometryError> {
+        let collisions = UrdfCollisions::from_urdf(urdf)?;
+        let regions = ClipRegion::by_body(regions)?;
+        let links = collisions
+            .collision_link_names()
+            .into_iter()
+            .filter_map(|name| {
+                let pose = collisions.fixed_pose_in_root(&name).transpose()?;
+                let link_regions = regions.get(&name).map(Vec::as_slice);
+                Some(pose.map_err(GeometryError::from).and_then(|pose| {
+                    BodyLink::fitted(&collisions, meshes_dir, link_regions, name, pose)
+                }))
             })
-            .collect();
-        let reaches: Vec<Reach> = placed
-            .poses
-            .iter()
-            .zip(&self.grown)
-            .enumerate()
-            .flat_map(|(link, (pose, pieces))| {
-                pieces.iter().enumerate().map(move |(piece, grown)| {
-                    let Balls {
-                        center,
-                        inner,
-                        outer,
-                    } = grown.balls();
-                    Reach {
-                        center: pose * center,
-                        inner_squared: (inner + grown.offset - REACH_MARGIN_M).max(0.0).powi(2),
-                        outer_squared: (outer + grown.offset + REACH_MARGIN_M).powi(2),
-                        link,
-                        piece,
-                    }
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(link) = regions
+            .keys()
+            .find(|link| !links.iter().any(|body| body.name == **link))
+        {
+            return Err(GeometryError::RegionsOffTheBody { body: link.clone() });
+        }
+        Ok(BodyGeometry { links })
+    }
+
+    /// The names of the body's links.
+    pub fn link_names(&self) -> impl Iterator<Item = &str> {
+        self.links.iter().map(|link| link.name.as_str())
+    }
+
+    /// The body's pieces grown by `padding`, to test points against: an element's piece
+    /// as a chain's [`Mask`] grows it, and a region's as a mesh's piece.
+    pub fn mask(&self, padding: Padding) -> BodyMask<'_> {
+        BodyMask {
+            links: self
+                .links
+                .iter()
+                .map(|link| GrownLink {
+                    name: &link.name,
+                    frame: link.frame,
+                    pieces: match &link.pieces {
+                        BodyPieces::Elements(pieces) => pieces
+                            .iter()
+                            .map(|piece| GrownPiece::new(piece, padding))
+                            .collect(),
+                        BodyPieces::Regions(hulls) => hulls
+                            .iter()
+                            .map(|hull| GrownPiece::of_hull(hull, padding))
+                            .collect(),
+                    },
                 })
-            })
-            .collect();
-        let bounds = ReachBox::holding(&reaches);
-        PlacedMask {
-            links,
-            reaches,
-            bounds,
+                .collect(),
         }
     }
 }
 
-/// A grown chain, placed at one configuration.
+/// Pieces grown by a padding where they stand: a robot's body, or parts a caller places.
+pub struct BodyMask<'a> {
+    links: Vec<GrownLink<'a>>,
+}
+
+/// The grown pieces of a link of a body, and where the frame they stand in lies in the
+/// frame of the URDF root.
+struct GrownLink<'a> {
+    name: &'a str,
+    frame: Isometry3<f64>,
+    pieces: Vec<GrownPiece>,
+}
+
+impl<'a> BodyMask<'a> {
+    /// The parts `parts`, each its link's name, its pieces in its own frame and its pose
+    /// in the frame of the URDF root, grown by `padding` as a mesh's piece grows.
+    ///
+    /// # Panics
+    ///
+    /// On a piece with a rounding: each piece is one that `fit_pieces` fits.
+    pub fn of(
+        parts: impl IntoIterator<Item = (&'a str, &'a [Hull], Isometry3<f64>)>,
+        padding: Padding,
+    ) -> Self {
+        BodyMask {
+            links: parts
+                .into_iter()
+                .map(|(name, hulls, frame)| GrownLink {
+                    name,
+                    frame,
+                    pieces: hulls
+                        .iter()
+                        .map(|hull| GrownPiece::of_hull(hull, padding))
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    /// The grown body where it stands, which answers for a point as a placed chain does.
+    pub fn placed(&self) -> PlacedMask<'_> {
+        PlacedMask::new(
+            self.links
+                .iter()
+                .map(|link| (link.name, link.pieces.as_slice(), link.frame)),
+        )
+    }
+}
+
+/// Grown links where they stand: a grown chain placed at one configuration, or a grown
+/// body.
 #[derive(Debug)]
 pub struct PlacedMask<'a> {
     /// Each grown link, in the order of the geometry's links.
@@ -354,8 +510,37 @@ pub struct PlacedMask<'a> {
     bounds: ReachBox,
 }
 
-impl PlacedMask<'_> {
-    /// Each link of the chain, grown and placed, in the order of the geometry's links.
+impl<'a> PlacedMask<'a> {
+    /// The grown links `links`, each its name, its grown pieces and its pose in the frame
+    /// of the URDF root, with the reach of each piece and the box that holds them.
+    fn new(links: impl Iterator<Item = (&'a str, &'a [GrownPiece], Isometry3<f64>)>) -> Self {
+        let posed: Vec<_> = links.collect();
+        let reaches: Vec<Reach> = posed
+            .iter()
+            .enumerate()
+            .flat_map(|(link, (_, pieces, pose))| {
+                pieces
+                    .iter()
+                    .enumerate()
+                    .map(move |(piece, grown)| Reach::of(grown, pose, link, piece))
+            })
+            .collect();
+        let bounds = ReachBox::holding(&reaches);
+        PlacedMask {
+            links: posed
+                .into_iter()
+                .map(|(name, pieces, pose)| PlacedGrownLink {
+                    name,
+                    pieces,
+                    root_in_link: pose.inverse(),
+                })
+                .collect(),
+            reaches,
+            bounds,
+        }
+    }
+
+    /// Each grown link where it stands, in the order of the geometry's links.
     pub fn links(&self) -> &[PlacedGrownLink<'_>] {
         &self.links
     }
@@ -396,6 +581,23 @@ struct Reach {
 }
 
 impl Reach {
+    /// The reach of `grown`, the piece of index `piece` of the link of index `link`, whose
+    /// link stands at `pose` in the frame of the URDF root.
+    fn of(grown: &GrownPiece, pose: &Isometry3<f64>, link: usize, piece: usize) -> Self {
+        let Balls {
+            center,
+            inner,
+            outer,
+        } = grown.balls();
+        Reach {
+            center: pose * center,
+            inner_squared: (inner + grown.offset - REACH_MARGIN_M).max(0.0).powi(2),
+            outer_squared: (outer + grown.offset + REACH_MARGIN_M).powi(2),
+            link,
+            piece,
+        }
+    }
+
     /// Whether the inner reach holds `point`, so the piece holds it.
     fn surely_holds(&self, point: &Point3<f64>) -> bool {
         (point - self.center).norm_squared() <= self.inner_squared
@@ -585,15 +787,7 @@ impl GrownPiece {
         let Padding { scale, offset } = padding;
         let element = &piece.element;
         let scaled = match element.geometry {
-            CollisionGeometry::Mesh { .. } => {
-                let hull = scaled_hull(&piece.hull, scale);
-                let inscribed = hull
-                    .planes()
-                    .iter()
-                    .map(|(normal, plane)| plane - normal.dot(&hull.center().coords))
-                    .fold(f64::INFINITY, f64::min);
-                Scaled::Mesh { hull, inscribed }
-            }
+            CollisionGeometry::Mesh { .. } => return GrownPiece::of_hull(&piece.hull, padding),
             CollisionGeometry::Box { size } => Scaled::Box {
                 link_to_box: element.origin.inverse(),
                 half_extents: size * (scale / 2.0),
@@ -609,6 +803,22 @@ impl GrownPiece {
             },
         };
         GrownPiece { scaled, offset }
+    }
+
+    /// The piece `hull`, a fitted piece with no rounding, grown by `padding` as a mesh's
+    /// piece grows: scaled about the mean of its vertices, with the largest ball about
+    /// that mean that it holds.
+    fn of_hull(hull: &Hull, padding: Padding) -> Self {
+        let hull = scaled_hull(hull, padding.scale);
+        let inscribed = hull
+            .planes()
+            .iter()
+            .map(|(normal, plane)| plane - normal.dot(&hull.center().coords))
+            .fold(f64::INFINITY, f64::min);
+        GrownPiece {
+            scaled: Scaled::Mesh { hull, inscribed },
+            offset: padding.offset,
+        }
     }
 
     /// What the screens tell of `point`, in the link's frame. A point with a coordinate

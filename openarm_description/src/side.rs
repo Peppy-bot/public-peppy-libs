@@ -21,6 +21,14 @@ impl Side {
     /// wire, and the order [`ArmPair::from_fn`] builds a pair in.
     pub const BOTH: [Side; 2] = [Side::Left, Side::Right];
 
+    /// The arm across: the right side for the left, and the left for the right.
+    pub fn other(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+
     /// The side's lowercase name: the word the URDF names its chain by, and
     /// how the side is written in logs and messages.
     fn name(self) -> &'static str {
@@ -212,6 +220,12 @@ mod tests {
             Side::BOTH.map(Side::gripper_name),
             ["left_gripper", "right_gripper"]
         );
+    }
+
+    #[test]
+    fn each_side_has_the_other_across() {
+        assert_eq!(Side::Left.other(), Side::Right);
+        assert_eq!(Side::Right.other(), Side::Left);
     }
 
     #[test]

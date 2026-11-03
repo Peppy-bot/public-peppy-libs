@@ -10,6 +10,8 @@
 //!   [`Mask`](chain::Mask) tests whether a point lies inside a link, or inside the
 //!   chain, grown by a padding: every point within the offset of each collision
 //!   element scaled about its center, a mesh from its piece, a primitive as itself.
+//!   [`chain::BodyGeometry`] holds the pieces of the body fixed to the root around the
+//!   chains, and its [`BodyMask`](chain::BodyMask) grows them by the same rule.
 //! - [`urdf_collision`], [`stl`] and [`hull`] read the collision elements of a URDF
 //!   (meshes, boxes, cylinders and spheres) and build the exact convex hull of a point
 //!   cloud.

@@ -11,10 +11,12 @@ from a URDF and its collision meshes (there is no intermediate artifact that can
 go stale), then queried every control tick at roughly 0.1 ms per query. The
 geometry, the fit of each body's convex pieces and the distance between them, is
 [`collision_geometry`](../collision_geometry)'s, which builds its exact convex
-hulls with Qhull, a C library, so a build needs libclang. The library contains no robot
-names: the caller supplies the URDF, the mesh directory, and the two chain base
-links. Any bimanual URDF whose arms are 7-DOF SRS chains (the `srs_model`
-contract) is supported.
+hulls with Qhull, a C library, so a build needs libclang. The model of a dual-arm robot
+takes the caller's URDF, mesh directory and two chain base links, for any bimanual URDF
+whose arms are 7-DOF SRS chains (the `srs_model` contract). `openarm` builds OpenArm's
+model from `openarm_description`, its URDF, base links and torso regions, leaving out the
+pairs the description names as never touching, with the collision meshes in the caller's
+directory.
 
 ## The proximity band
 
@@ -103,16 +105,22 @@ URDF collision elements
   clip regions (supplied)       one fit per region's slice        (collision_geometry::fit, assemble)
   fixed children                their pieces join the parent body (assemble)
   gripper fingers               own bodies, placed per query      (assemble)
-  fixed bodies                  root-frame pieces
+  fixed bodies                  root-frame pieces                 (collision_geometry::fit)
 ```
 
 - A clip region is an axis-aligned box in the body's fit frame, its `[min, max]`
   corners, with infinite bounds for open sides. Adjacent regions should overlap by
-  a few millimeters.
+  a few millimeters. `Builder::regions` takes one list of regions for each body; a body
+  named twice is refused at build, as `collision_geometry`'s `BodyGeometry` refuses it.
 - A gripper finger, a collision-bearing link on a movable joint off a chain
   link, is fit as its own body and placed at the live opening that
   `set_gripper_openings` sets. The meshes orient the two travel extremes: the
-  extreme with the larger between-finger separation is open.
+  extreme with the larger between-finger separation is open. `fingers(side, carried)`
+  takes the parts an arm's chain carries (`ChainGeometry::carried` of
+  `collision_geometry`), placed there with their joints at 0, and gives each as its
+  `Rider` at the offset where the side's opening places it, so a planner of that arm
+  carries the fingers where they hang. A part the model holds as no finger of that arm,
+  on the same link, is refused (`FingerError`), naming the part.
 - Every collision-bearing link is accounted for. The moving-link names come from
   walking each chain, fixed children fold into their parents, and every
   remaining collision link must be world-fixed or construction fails loudly.
@@ -165,6 +173,14 @@ The signed distance is what keeps separating motion free inside an overlap,
 where a hull is still a hair larger than the real part. Plain GJK reports zero on
 overlap and cannot tell separating from approaching, but EPA's signed depth can,
 so a separating step out of a torso overlap still reads as separating.
+
+## What a planner builds on
+
+A planner that moves one arm while the other holds where it stands reads
+`min_distance_of_arm(side, ...)`: `min_distance` over the checked pairs one of whose
+bodies rides the arm on `side`, its fingers included, the distance a motion of that arm
+changes. Every checked pair holds a body of an arm, so `min_distance` is the lesser of
+the two arms' own. It carries the arm's fingers with `fingers` (Construction, above).
 
 ## What the caller supplies
 
@@ -271,12 +287,14 @@ src/
   assemble.rs        construction-time fit of all bodies
   pairs.rs           pair specs (explicit lists for tests and tools)
   model.rs           SelfCollisionModel queries, pair derivation, exclusions
-  error.rs           BuildError, CollisionError
+  openarm.rs         OpenArm's model from openarm_description
+  error.rs           BuildError, CollisionError, FingerError
 examples/
   visualize.rs       the HTML scene
 tests/
   dual_arm.rs                     two-arm scenarios: converge, fold, separate, with budgets
   distance_oracle.rs              the distance query against support-function bounds
+  openarm.rs                      OpenArm's model from openarm_description
   ros_reference_self_distance.rs  each checked distance against MoveIt's FCL
   fixtures/
     openarm_v10.urdf              the OpenArm v1.0 URDF of the tests, srs_model-style
@@ -284,7 +302,8 @@ tests/
 ```
 
 The tests read the collision meshes, the URDFs and the torso regions of
-`openarm_description`, a dev-dependency. The model places world-fixed bodies once, in
+`openarm_description`, a dependency of the crate, whose `meshes` feature the tests turn
+on to write the meshes. The model places world-fixed bodies once, in
 the world frame, so it models robots whose mount does not move.
 
 ## Testing

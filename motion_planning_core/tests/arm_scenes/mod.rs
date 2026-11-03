@@ -4,20 +4,23 @@
 //! are the ones the test plans.
 #![allow(dead_code)]
 
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use camera_core::pose::Pose;
 use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, Goal, IkGoalSampler, JointTarget, PlanFailure, PlanRequest, Scene, plan_arm_path,
+    Arm, Goal, IkGoalSampler, JointTarget, PlanFailure, PlanRequest, Scene, StartFault,
+    plan_arm_path,
 };
 use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
 use ompl_bridge::Planner;
-use ros_reference::arm_planning::{Ours, Scene as ReferenceScene, Scenes};
+use ros_reference::arm_planning::{
+    Objective, Ours, Scene as ReferenceScene, Scenes, Termination, VoxelBox,
+};
 
 pub const JOINTS: usize = 7;
 /// The configurations the goal sampler draws for a scene's joint goal.
@@ -101,6 +104,26 @@ pub fn map_of<O>(scenes: &Scenes, scene: &ReferenceScene<O>) -> VoxelMap {
     map
 }
 
+/// The occupied voxels of `map` as boxes, each run of them along x one box: the boxes
+/// whose voxels [`map_of`] fills a scene's map with.
+pub fn boxes_of(map: &VoxelMap) -> Vec<VoxelBox> {
+    let mut keys: Vec<[i32; 3]> = map.occupied().map(|key| key.0).collect();
+    keys.sort_by_key(|k| (k[1], k[2], k[0]));
+    keys.into_iter()
+        .fold(Vec::new(), |mut boxes: Vec<VoxelBox>, key| {
+            match boxes.last_mut() {
+                Some(run) if run.last[1..] == key[1..] && run.last[0] + 1 == key[0] => {
+                    run.last = key;
+                }
+                _ => boxes.push(VoxelBox {
+                    first: key,
+                    last: key,
+                }),
+            }
+            boxes
+        })
+}
+
 /// The joints' L2 distance between two probes of a path at which no point of `arm`'s
 /// links or of its riders moves more than [`PROBE_SHARE_OF_VOXEL`] of a voxel: the
 /// reference probes every path at it.
@@ -110,6 +133,24 @@ pub fn probe_spacing(arm: &Arm<JOINTS>, scenes: &Scenes) -> f64 {
 
 fn configuration(values: &[f64]) -> [f64; JOINTS] {
     values.try_into().expect("one position per joint")
+}
+
+/// The planner of `objective`: RRTConnect for `any`, as the motion planner node plans it,
+/// and RRTstar for `shortest`.
+fn planner_of(objective: Objective) -> Planner {
+    match objective {
+        Objective::Any => Planner::RrtConnect,
+        Objective::Shortest => Planner::RrtStar,
+    }
+}
+
+/// The iteration bound of this crate's plans of `scenes`, as their termination says.
+fn max_iterations(scenes: &Scenes) -> NonZeroU64 {
+    let bound = NonZeroU64::new(scenes.iterations).expect("nonzero");
+    match (scenes.termination, scenes.objective) {
+        (Termination::Iterations, _) | (Termination::Time, Objective::Any) => bound,
+        (Termination::Time, Objective::Shortest) => NonZeroU64::MAX,
+    }
 }
 
 /// This crate's answer to `scene`, among the voxels its boxes occupy.
@@ -122,14 +163,16 @@ pub fn plan_scene<O>(
     let map = map_of(scenes, scene);
     let field = DistanceField::of(&map);
     let goal_q = configuration(&scene.goal);
+    let tolerance =
+        PositiveFinite::parse(scenes.goal_tolerance).expect("the scenes' goal tolerance");
     let goal = Goal::new(
         JOINTS,
         (0..JOINTS)
             .map(|joint| JointTarget {
                 joint,
                 position: goal_q[joint],
-                above: scenes.goal_tolerance,
-                below: scenes.goal_tolerance,
+                above: tolerance,
+                below: tolerance,
             })
             .collect(),
         Vec::new(),
@@ -149,11 +192,13 @@ pub fn plan_scene<O>(
             goal: &goal,
             sampler,
             goal_samples: NonZeroUsize::new(GOAL_SAMPLES).expect("nonzero"),
-            planner: Planner::RrtConnect,
-            time_limit: Duration::from_secs_f64(scenes.time_limit),
-            max_iterations: NonZeroU64::new(scenes.iterations).expect("nonzero"),
+            planner: planner_of(scenes.objective),
+            deadline: Instant::now() + Duration::from_secs_f64(scenes.time_limit),
+            max_iterations: max_iterations(scenes),
+            attempts: NonZeroU32::MIN,
             seed: scene.seed.get(),
             min_clearance_m: scenes.min_clearance,
+            stop: None,
         },
     );
     let failure = |name: &str| Ours::Failure {
@@ -163,11 +208,15 @@ pub fn plan_scene<O>(
         Ok(waypoints) => Ours::Path {
             waypoints: waypoints.iter().map(|q| q.to_vec()).collect(),
         },
-        Err(PlanFailure::StartOutsideLimits { .. }) => failure("start_outside_limits"),
-        Err(PlanFailure::StartInCollision(_)) => failure("start_in_collision"),
+        Err(PlanFailure::Start(StartFault::OutsideLimits { .. })) => {
+            failure("start_outside_limits")
+        }
+        Err(PlanFailure::Start(StartFault::InCollision(_))) => failure("start_in_collision"),
         Err(PlanFailure::Unreachable(_)) => failure("unreachable"),
         Err(PlanFailure::NoPath(_)) => failure("no_path"),
-        Err(failure @ (PlanFailure::Request(_) | PlanFailure::Planner(_))) => {
+        Err(
+            failure @ (PlanFailure::Request(_) | PlanFailure::Planner(_) | PlanFailure::Stopped),
+        ) => {
             panic!("the scene's request fails: {failure}")
         }
     }

@@ -23,22 +23,30 @@ pub(crate) fn in_callback() -> bool {
 pub(crate) struct Callbacks<'a> {
     checks: &'a dyn Checks,
     constraint: Option<&'a dyn Constraint>,
+    /// The caller's flag that ends the plan.
+    stop: Option<&'a AtomicBool>,
     failed: AtomicBool,
     /// The first failure: what the error or the panic said.
     failure: Mutex<Option<String>>,
 }
 
-// C++ shares one `&Callbacks` between the threads of a plan of PRM or PRM*.
+// C++ shares one `&Callbacks` between the threads of a plan: its attempts' and those on
+// which PRM and PRM* search their roadmap.
 const _: () = {
     const fn shared_between_threads<T: Sync>() {}
     shared_between_threads::<Callbacks<'static>>();
 };
 
 impl<'a> Callbacks<'a> {
-    pub(crate) fn new(checks: &'a dyn Checks, constraint: Option<&'a dyn Constraint>) -> Self {
+    pub(crate) fn new(
+        checks: &'a dyn Checks,
+        constraint: Option<&'a dyn Constraint>,
+        stop: Option<&'a AtomicBool>,
+    ) -> Self {
         Self {
             checks,
             constraint,
+            stop,
             failed: AtomicBool::new(false),
             failure: Mutex::new(None),
         }
@@ -54,6 +62,11 @@ impl<'a> Callbacks<'a> {
 
     pub(crate) fn failed(&self) -> bool {
         self.failed.load(Ordering::SeqCst)
+    }
+
+    /// Whether the caller has set its flag that ends the plan.
+    pub(crate) fn stopped(&self) -> bool {
+        self.stop.is_some_and(|stop| stop.load(Ordering::SeqCst))
     }
 
     pub(crate) fn state_valid(&self, state: &[f64]) -> bool {

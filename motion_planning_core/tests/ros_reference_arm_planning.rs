@@ -1,19 +1,26 @@
 //! Parity with MoveIt's planning pipeline on the arm planning scenarios of the ROS
 //! reference harness, at a clearance of 0 and one attempt, the gripper's fingers carried
-//! by the arm in both. This crate still plans the paths each scenario carries; MoveIt's
-//! collision check finds every probe of each of them free; this crate refuses each start
-//! that MoveIt refuses outside a joint limit or in collision; and over the scenes of a
-//! drawn set, the success rate and the mean smallest clearance lie within or above
-//! MoveIt's 95% intervals, and the mean path length within or below its interval. Each
-//! scenario holds a scene of each outcome the README names.
+//! by the arm in both, each plan with the planner of the scenario's objective. This crate
+//! still plans the paths each scenario carries; MoveIt's collision check finds every
+//! probe of each of them free; this crate refuses each start that MoveIt refuses outside
+//! a joint limit or in collision; and over the scenes of a drawn set, the success rate
+//! and the mean smallest clearance lie within or above MoveIt's 95% intervals, and the
+//! mean path length within or below its interval. Each scenario holds a scene of each
+//! outcome the README names.
 
 mod arm_scenes;
 
-use control_core::path_timing::JOINT_PATH_CORNER_DEVIATION;
-use motion_planning_core::IkGoalSampler;
-use ros_reference::arm_planning::{Case, MOVEIT_SUCCESS, Ours, Probed, SceneCase};
+use std::collections::BTreeSet;
 
-use arm_scenes::{geometry, on_the_arm, plan_scene, probe_spacing};
+use control_core::path_timing::JOINT_PATH_CORNER_DEVIATION;
+use hegel::TestCase;
+use hegel::generators as gs;
+use motion_planning_core::IkGoalSampler;
+use ros_reference::arm_planning::{
+    Case, MOVEIT_SUCCESS, Ours, Probed, Scene, SceneCase, Scenes, Termination, VoxelBox,
+};
+
+use arm_scenes::{boxes_of, geometry, map_of, on_the_arm, plan_scene, probe_spacing};
 
 /// MoveIt's error codes of a refusal: a start outside a joint limit, a start in
 /// collision, and a goal state that is not valid; and of a planned path that MoveIt's
@@ -68,13 +75,80 @@ fn failure(ours: &Ours) -> Option<&str> {
     }
 }
 
+// The occupied voxels of a map, as boxes of runs along x, fill a scene's map with them
+// and no other: the example scenes_from_episodes writes the map an episode's frames build
+// as its scene's boxes. Each box is one whole run: no two boxes of a row touch or share a
+// voxel.
+#[hegel::test]
+fn a_maps_voxels_as_boxes_fill_a_scenes_map_with_them(tc: TestCase) {
+    let scenes: Scenes = serde_json::from_str(
+        r#"{"kind": "arm_planning", "urdf": "", "meshes": "", "base_link": "", "tip_link": "",
+            "joints": [], "voxel_size": 0.04, "map_half_side": 0.2, "min_clearance": 0.0,
+            "corner_tolerance": 0.1, "goal_tolerance": 0.01, "objective": "any",
+            "termination": "iterations", "time_limit": 1.0, "iterations": 1, "scenes": []}"#,
+    )
+    .expect("a scenario's header");
+    // Keys -5 to 4 lie inside the map of 0.04 m voxels 0.2 m about the origin.
+    let keys: Vec<[i32; 3]> = tc
+        .draw(gs::vecs(gs::arrays(gs::integers::<i32>().min_value(-5).max_value(4))).max_size(60));
+    let scene_of = |boxes: Vec<VoxelBox>| Scene {
+        boxes,
+        start: Vec::new(),
+        goal: Vec::new(),
+        seed: std::num::NonZeroU32::MIN,
+        ours: (),
+    };
+    let voxels = scene_of(
+        keys.iter()
+            .map(|&key| VoxelBox {
+                first: key,
+                last: key,
+            })
+            .collect(),
+    );
+    let map = map_of(&scenes, &voxels);
+    let boxes = boxes_of(&map);
+    let occupied = |map: &occupancy_map::VoxelMap| -> BTreeSet<[i32; 3]> {
+        map.occupied().map(|key| key.0).collect()
+    };
+    assert_eq!(occupied(&map), keys.iter().copied().collect());
+    assert!(
+        boxes
+            .iter()
+            .all(|b| b.first[1..] == b.last[1..] && b.first[0] <= b.last[0]),
+        "each box a run along x: {boxes:?}"
+    );
+    let held: usize = boxes
+        .iter()
+        .map(|b| (b.last[0] - b.first[0] + 1) as usize)
+        .sum();
+    assert_eq!(held, occupied(&map).len(), "no two boxes share a voxel");
+    let mut rows: Vec<&VoxelBox> = boxes.iter().collect();
+    rows.sort_by_key(|b| (b.first[1], b.first[2], b.first[0]));
+    assert!(
+        rows.windows(2).all(|pair| {
+            pair[0].first[1..] != pair[1].first[1..] || pair[0].last[0] + 1 < pair[1].first[0]
+        }),
+        "no two boxes of a row touch: {boxes:?}"
+    );
+    assert_eq!(occupied(&map_of(&scenes, &scene_of(boxes))), occupied(&map));
+}
+
 // This crate plans, scene by scene, the answer each scenario carries for it: the paths
 // the reference probed are this crate's, rounded as execute_joint_path rounds them, and
-// probed at the spacing this crate's arm gives.
+// probed at the spacing this crate's arm gives. Each scenario's plans end on its
+// iterations, so they repeat.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn each_scenario_carries_the_paths_this_crate_plans() {
     for case in Case::load_all() {
+        assert_eq!(
+            case.scenes.termination,
+            Termination::Iterations,
+            "{}: a committed scenario's plans end on its iterations; one ended by time runs \
+             locally, as the harness README's rule 3 says",
+            case.name
+        );
         assert_eq!(case.scenes.corner_tolerance, JOINT_PATH_CORNER_DEVIATION);
         on_the_arm(&case.scenes, &case.urdf, &case.meshes, |arm| {
             let sampler = IkGoalSampler::new(arm.geometry().chain().clone());
@@ -217,7 +291,7 @@ fn moveit_finds_every_path_of_this_crate_free() {
 // MoveIt's; a probe of MoveIt's in collision measures a clearance of -1. The committed
 // scenes, one of each outcome, are too few for the intervals: the test runs on a drawn
 // set, locally, as the harness README's rule 3 says, and the pull request states its
-// tally at its head.
+// tally at its head, for each objective and termination it ran.
 #[test]
 #[ignore = "statistics of a drawn set, run locally as the harness README's rule 3 says"]
 fn the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() {
@@ -230,12 +304,21 @@ fn the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() 
             case.name,
             scenes.len()
         );
+        println!(
+            "{}: {} scenes, objective {:?}, ended by {:?}, time limit {} s",
+            case.name,
+            scenes.len(),
+            case.scenes.objective,
+            case.scenes.termination,
+            case.scenes.time_limit
+        );
         let ours: Vec<Probed> = scenes.iter().filter_map(|c| c.ours_probed).collect();
         let theirs: Vec<Probed> = scenes.iter().filter_map(|c| c.moveit.probed).collect();
         let (low, high) = rate_interval(theirs.len(), scenes.len());
         let rate = ours.len() as f64 / scenes.len() as f64;
+        let moveit_rate = theirs.len() as f64 / scenes.len() as f64;
         println!(
-            "{}: success rate ours {rate}, MoveIt's interval {low}..{high}",
+            "{}: success rate ours {rate}, MoveIt's {moveit_rate} in {low}..{high}",
             case.name
         );
         assert!(
@@ -250,8 +333,9 @@ fn the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() 
         };
         let (clearance, (low, high)) = interval(|p| p.clearance);
         println!(
-            "{}: clearance ours {clearance}, MoveIt's interval {low}..{high}",
-            case.name
+            "{}: clearance ours {clearance}, MoveIt's {} in {low}..{high}",
+            case.name,
+            (low + high) / 2.0
         );
         assert!(
             clearance >= low,
@@ -260,8 +344,9 @@ fn the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() 
         );
         let (length, (low, high)) = interval(|p| p.length);
         println!(
-            "{}: length ours {length}, MoveIt's interval {low}..{high}",
-            case.name
+            "{}: length ours {length}, MoveIt's {} in {low}..{high}",
+            case.name,
+            (low + high) / 2.0
         );
         assert!(
             length <= high,

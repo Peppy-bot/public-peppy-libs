@@ -4,6 +4,8 @@
 //! mesh surface gets the same fit every link gets, and the union of pieces bounds
 //! the body tightly.
 
+use std::collections::BTreeMap;
+
 use nalgebra::Point3;
 
 use crate::GeometryError;
@@ -44,9 +46,28 @@ impl ClipRegion {
         Ok(ClipRegion { min, max })
     }
 
+    /// The regions of each body that `regions` names, by the body's name: each body
+    /// with the `[min, max]` corners of its regions. Errors on a body named twice, and on
+    /// the first bounds of a body that span no volume.
+    pub fn by_body(
+        regions: &[(&str, &[[[f64; 3]; 2]])],
+    ) -> Result<BTreeMap<String, Vec<ClipRegion>>, GeometryError> {
+        regions
+            .iter()
+            .try_fold(BTreeMap::new(), |mut by_body, &(body, bounds)| {
+                if by_body.contains_key(body) {
+                    return Err(GeometryError::RegionsTwice {
+                        body: body.to_owned(),
+                    });
+                }
+                by_body.insert(body.to_owned(), Self::all_from_bounds(body, bounds)?);
+                Ok(by_body)
+            })
+    }
+
     /// The regions of `body` that `bounds` give, each its `[min, max]` corners. Errors
     /// on the first bounds that span no volume, naming the body and their index.
-    pub fn all_from_bounds(
+    fn all_from_bounds(
         body: &str,
         bounds: &[[[f64; 3]; 2]],
     ) -> Result<Vec<ClipRegion>, GeometryError> {

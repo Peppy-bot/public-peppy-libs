@@ -9,6 +9,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <Eigen/Core>
@@ -60,7 +61,6 @@ namespace {
 
 constexpr const char* group = "arm";
 constexpr const char* pipeline_namespace = "ompl";
-constexpr const char* planner_config = "RRTConnectkConfigDefault";
 // OctoMap's key of the voxel at the origin of each axis.
 constexpr int tree_max_val = 32768;
 // The acceleration bound of each joint of the arm, in rad/s^2, for the pipeline's time
@@ -100,19 +100,50 @@ moveit::core::RobotModelPtr arm_model(const nlohmann::json& scenario, Inputs& in
   return model;
 }
 
-// The pipeline: OMPL's RRTConnect, ended by `iterations` (MoveIt's termination condition
-// Iteration), MoveIt's default request adapters, a start outside a joint limit by any
-// amount refused, and the response adapters AddTimeOptimalParameterization and
-// ValidateSolution: MoveIt's defaults but DisplayMotionPath, which publishes the path for
-// display.
+// The planner configuration of the scenario's objective, by its name and its parameters:
+// RRTConnect for `any` and RRTstar for `shortest`, each at the parameters of MoveIt's
+// default planner configurations (moveit2 2.15.2
+// moveit_configs_utils/default_configs/ompl_defaults.yaml, RRTConnect and RRTstar).
+struct PlannerConfig {
+  std::string name;
+  std::vector<rclcpp::Parameter> parameters;
+};
+
+PlannerConfig planner_config(const std::string& objective, const std::string& ns) {
+  const auto config = [&](const std::string& name, const std::string& type,
+                          std::vector<std::pair<std::string, rclcpp::ParameterValue>> values) {
+    std::vector<rclcpp::Parameter> parameters{{ns + ".planner_configs." + name + ".type", type}};
+    for (auto& [key, value] : values) {
+      parameters.emplace_back(ns + ".planner_configs." + name + "." + key, std::move(value));
+    }
+    return PlannerConfig{name, parameters};
+  };
+  if (objective == "any") {
+    return config("RRTConnectkConfigDefault", "geometric::RRTConnect",
+                  {{"range", rclcpp::ParameterValue(0.0)}});
+  }
+  if (objective == "shortest") {
+    return config("RRTstarkConfigDefault", "geometric::RRTstar",
+                  {{"range", rclcpp::ParameterValue(0.0)},
+                   {"goal_bias", rclcpp::ParameterValue(0.05)},
+                   {"delay_collision_checking", rclcpp::ParameterValue(1)}});
+  }
+  throw std::runtime_error("the scenario's objective is any or shortest, and it is " + objective);
+}
+
+// The pipeline: the OMPL planner of the scenario's objective, ended as its termination
+// says, by its `iterations` (MoveIt's termination condition Iteration) or by the
+// request's allowed planning time alone (MoveIt's default); MoveIt's default request
+// adapters, a start outside a joint limit by any amount refused; and the response
+// adapters AddTimeOptimalParameterization and ValidateSolution: MoveIt's defaults but
+// DisplayMotionPath, which publishes the path for display. MoveIt simplifies each path
+// in the time left, as simplify_solutions, true by default, says.
 std::shared_ptr<planning_pipeline::PlanningPipeline> pipeline(
-    const moveit::core::RobotModelPtr& model, std::uint64_t iterations) {
+    const moveit::core::RobotModelPtr& model, const nlohmann::json& scenario,
+    const PlannerConfig& planner) {
   start_ros();
   const std::string ns = pipeline_namespace;
-  const std::string config = ns + ".planner_configs." + planner_config;
-  rclcpp::NodeOptions options;
-  options.automatically_declare_parameters_from_overrides(true);
-  options.parameter_overrides({
+  std::vector<rclcpp::Parameter> parameters{
       {ns + ".planning_plugins", std::vector<std::string>{"ompl_interface/OMPLPlanner"}},
       {ns + ".request_adapters",
        std::vector<std::string>{"default_planning_request_adapters/ResolveConstraintFrames",
@@ -123,10 +154,21 @@ std::shared_ptr<planning_pipeline::PlanningPipeline> pipeline(
        std::vector<std::string>{"default_planning_response_adapters/AddTimeOptimalParameterization",
                                 "default_planning_response_adapters/ValidateSolution"}},
       {ns + ".start_state_max_bounds_error", 0.0},
-      {ns + "." + group + ".planner_configs", std::vector<std::string>{planner_config}},
-      {config + ".type", std::string("geometric::RRTConnect")},
-      {config + ".termination_condition", "Iteration[" + std::to_string(iterations) + "]"},
-  });
+      {ns + "." + group + ".planner_configs", std::vector<std::string>{planner.name}},
+  };
+  parameters.insert(parameters.end(), planner.parameters.begin(), planner.parameters.end());
+  const auto termination = scenario.at("termination").get<std::string>();
+  if (termination == "iterations") {
+    parameters.emplace_back(
+        ns + ".planner_configs." + planner.name + ".termination_condition",
+        "Iteration[" + std::to_string(scenario.at("iterations").get<std::uint64_t>()) + "]");
+  } else if (termination != "time") {
+    throw std::runtime_error("the scenario's termination is iterations or time, and it is " +
+                             termination);
+  }
+  rclcpp::NodeOptions options;
+  options.automatically_declare_parameters_from_overrides(true);
+  options.parameter_overrides(parameters);
   auto node = std::make_shared<rclcpp::Node>("arm_planning_reference", options);
   return std::make_shared<planning_pipeline::PlanningPipeline>(model, node, ns);
 }
@@ -243,6 +285,7 @@ nlohmann::json measured(const Probed& probed, double length) {
 // MoveIt's answer to a scene, planned within `time_limit` seconds: its error code, and
 // its path's probe when it planned one.
 nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
+                             const std::string& planner_id,
                              const planning_scene::PlanningScenePtr& scene,
                              const moveit::core::RobotModelPtr& model, const nlohmann::json& s,
                              double time_limit, double spacing) {
@@ -258,7 +301,7 @@ nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
   planning_interface::MotionPlanRequest request;
   request.group_name = group;
   request.pipeline_id = pipeline_namespace;
-  request.planner_id = planner_config;
+  request.planner_id = planner_id;
   request.num_planning_attempts = 1;
   request.allowed_planning_time = time_limit;
   request.max_velocity_scaling_factor = 1.0;
@@ -335,7 +378,9 @@ nlohmann::json ours_probed(const planning_scene::PlanningScene& scene,
 
 nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
   const auto model = arm_model(scenario, inputs);
-  auto planner = pipeline(model, scenario.at("iterations").get<std::uint64_t>());
+  const PlannerConfig config =
+      planner_config(scenario.at("objective").get<std::string>(), pipeline_namespace);
+  auto planner = pipeline(model, scenario, config);
   const double voxel_size = scenario.at("voxel_size").get<double>();
   const double spacing = scenario.at("probe_spacing").get<double>();
   const double corner_tolerance = scenario.at("corner_tolerance").get<double>();
@@ -346,7 +391,7 @@ nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
     const auto scene = scene_of(model, s.at("boxes"), voxel_size);
     const auto& ours = s.at("ours");
     answers.push_back({
-        {"moveit", moveit_answer(*planner, scene, model, s, time_limit, spacing)},
+        {"moveit", moveit_answer(*planner, config.name, scene, model, s, time_limit, spacing)},
         {"ours", ours.contains("waypoints")
                      ? ours_probed(*scene, model, ours.at("waypoints"), corner_tolerance, spacing)
                      : nlohmann::json(nullptr)},
