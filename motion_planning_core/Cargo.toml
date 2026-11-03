@@ -18,10 +18,12 @@ thiserror = "2"
 
 [dev-dependencies]
 hegeltest = { version = "0.51", features = ["static-engine"] }
+json5 = "1.3"
 kinematics_properties = { path = "../kinematics_properties" }
 openarm_description = { path = "../openarm_description", features = ["meshes"] }
 ros_reference = { path = "../ros_reference" }
 self_collision_model = { path = "../self_collision_model" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 srs_model = { path = "../srs_model" }
 urdf-rs = "0.10"

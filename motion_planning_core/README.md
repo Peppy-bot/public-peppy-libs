@@ -55,7 +55,8 @@ let waypoints = plan_arm_path(
 
 ## The map's intake
 
-A robot's node and a replay of its recorded frames build the map with the same calls:
+A robot's node and a replay of its recorded frames, such as the example
+`scenes_from_episodes`, build the map with the same calls:
 
 - `DepthCamera` holds the depth stream of a camera the robot carries: its depth optical
   frame in the robot frame, the color optical frame's pose there composed with the depth

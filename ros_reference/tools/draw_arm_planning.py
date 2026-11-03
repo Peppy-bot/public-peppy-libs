@@ -14,19 +14,29 @@ directory:
 
     python3 ros_reference/tools/draw_arm_planning.py
     python3 ros_reference/tools/draw_arm_planning.py --drawn 200
+    python3 ros_reference/tools/draw_arm_planning.py --episodes <episodes> \
+        --launcher <launchers-hub>/openarm/fragments/motion_planner.json5
 
 The second keeps the first 200 drawn scenes in place of those it picks, a large set for a
-local run, which the README describes.
+local run, which the README describes. The third writes, in place of the drawn scenes,
+the scenes of episodes of OpenArm v2 recorded in simulation, each a subdirectory of
+<episodes> in the format the README gives, in the map of the motion planner whose
+launcher fragment `--launcher` names, also a large set for a local run:
+motion_planning_core's example scenes_from_episodes turns each episode into a scene, and
+the script prints the episodes it drops and why.
 """
 
 import json
 import math
 import subprocess
+from collections import Counter
+from pathlib import Path
 
 from drawing import REPOSITORY, generator, joint_limits, openarm_joints, options, robot, write
 
 NAME = "arm_planning_openarm_v2"
 URDF = "openarm_description/assets/openarm_v20.urdf"
+MESHES = "openarm_description/assets/meshes_v20"
 VOXEL_SIZE = 0.04
 MAP_HALF_SIDE = 1.6
 OUTSIDE_LIMITS = 2
@@ -49,16 +59,31 @@ COMMITTED = {
 # Where the boxes stand: in front of the arm, between its hand's reach low and high.
 BOX_CORNERS = [(0.15, 0.5), (-0.1, 0.4), (0.2, 0.7)]
 BOX_SIZES = (0.04, 0.2)
-EXAMPLE = [
-    "cargo",
-    "run",
-    "--release",
-    "--quiet",
-    "--manifest-path",
-    str(REPOSITORY / "motion_planning_core" / "Cargo.toml"),
-    "--example",
-    "plan_arm_scenes",
-]
+
+
+def example(name, *arguments):
+    """The command that runs motion_planning_core's example `name` with `arguments`."""
+    manifest = str(REPOSITORY / "motion_planning_core" / "Cargo.toml")
+    return [
+        "cargo",
+        "run",
+        "--release",
+        "--quiet",
+        "--manifest-path",
+        manifest,
+        "--example",
+        name,
+        "--",
+        *arguments,
+    ]
+
+
+def run_example(command, given):
+    """What `command` writes on stdout, as JSON, given `given` as JSON on stdin."""
+    done = subprocess.run(
+        command, input=json.dumps(given), stdout=subprocess.PIPE, text=True, check=True
+    )
+    return json.loads(done.stdout)
 
 
 def voxel_box(rng):
@@ -106,47 +131,91 @@ def corners(ours):
     return max(len(ours.get("waypoints", [])) - 2, 0)
 
 
-def main():
-    drawn = options(__doc__, 0, "drawn scenes kept in place of those it picks; 0 picks")
-    drawn = drawn.parse_args().drawn
-    rng = generator(NAME)
-    model = robot(URDF)
-    limits = [joint_limits(model, joint) for joint in openarm_joints("left")]
-    outside = [outside_limits(rng, limits, k) for k in range(OUTSIDE_LIMITS)]
-    drawn_scenes = [drawn_scene(rng, limits) for _ in range(drawn or DRAWN)]
-    header = {
+def header(arm, voxel_map):
+    """The scenario's header: the robot, the arm `arm` (its base_link, tip_link and
+    joints), the map `voxel_map` (its voxel_size and map_half_side) and the plans'
+    parameters."""
+    return {
         "kind": "arm_planning",
         "urdf": URDF,
-        "meshes": "openarm_description/assets/meshes_v20",
-        "base_link": "openarm_left_base_link",
-        "tip_link": "openarm_left_tcp",
-        "joints": openarm_joints("left"),
-        "voxel_size": VOXEL_SIZE,
-        "map_half_side": MAP_HALF_SIDE,
+        "meshes": MESHES,
+        **arm,
+        **voxel_map,
         "min_clearance": MIN_CLEARANCE,
         "corner_tolerance": CORNER_TOLERANCE,
         "goal_tolerance": GOAL_TOLERANCE,
         "time_limit": TIME_LIMIT,
         "iterations": ITERATIONS,
     }
-    scenes = [*drawn_scenes, *outside]
-    planned = subprocess.run(
-        EXAMPLE,
-        input=json.dumps({**header, "scenes": scenes}),
-        stdout=subprocess.PIPE,
-        text=True,
-        check=True,
-    )
-    answers = json.loads(planned.stdout)
+
+
+def planned(scenario_header, scenes):
+    """The scenario of `scenes`, each with motion_planning_core's answer, and the spacing
+    at which the reference probes a path, from the example plan_arm_scenes."""
+    answers = run_example(example("plan_arm_scenes"), {**scenario_header, "scenes": scenes})
     answered = [
         {**scene, "ours": ours} for scene, ours in zip(scenes, answers["ours"], strict=True)
     ]
+    return {**scenario_header, "probe_spacing": answers["probe_spacing"], "scenes": answered}
+
+
+def drawn_scenario(drawn):
+    """The scenario of the drawn scenes: those it picks, or with `drawn` the first `drawn`,
+    and the starts outside the limits."""
+    rng = generator(NAME)
+    model = robot(URDF)
+    limits = [joint_limits(model, joint) for joint in openarm_joints("left")]
+    outside = [outside_limits(rng, limits, k) for k in range(OUTSIDE_LIMITS)]
+    drawn_scenes = [drawn_scene(rng, limits) for _ in range(drawn or DRAWN)]
+    left = {
+        "base_link": "openarm_left_base_link",
+        "tip_link": "openarm_left_tcp",
+        "joints": openarm_joints("left"),
+    }
+    voxel_map = {"voxel_size": VOXEL_SIZE, "map_half_side": MAP_HALF_SIDE}
+    scenario = planned(header(left, voxel_map), [*drawn_scenes, *outside])
+    answered = scenario["scenes"]
     kept_drawn = answered[: len(drawn_scenes)]
     if not drawn:
         most = max(range(DRAWN), key=lambda k: corners(kept_drawn[k]["ours"]))
         kept_drawn = [kept_drawn[k] for k in dict.fromkeys([*COMMITTED.values(), most])]
-    kept = [*kept_drawn, *answered[len(drawn_scenes) :]]
-    write(NAME, {**header, "probe_spacing": answers["probe_spacing"], "scenes": kept})
+    return {**scenario, "scenes": [*kept_drawn, *answered[len(drawn_scenes) :]]}
+
+
+def episodes_scenario(episodes, launcher):
+    """The scenario of the episodes under `episodes`, in the map of the motion planner of
+    the launcher fragment `launcher`; prints the episodes the example drops."""
+    command = example("scenes_from_episodes", str(episodes), str(launcher))
+    converted = run_example(command, header({}, {}))
+    scenes, dropped = converted["scenes"], converted["dropped"]
+    print(f"{len(scenes)} scenes of {len(scenes) + len(dropped)} episodes")
+    for reason, count in Counter(d["reason"] for d in dropped).items():
+        print(f"dropped {count}: {reason}")
+    for d in dropped:
+        print(f"  {d['episode']}: {d['reason']}: {d['detail']}")
+    return planned(header(converted["arm"], converted["map"]), scenes)
+
+
+def main():
+    parser = options(__doc__, 0, "drawn scenes kept in place of those it picks; 0 picks")
+    parser.add_argument(
+        "--episodes", type=Path, help="a directory of episodes, in the format the README gives"
+    )
+    parser.add_argument(
+        "--launcher", type=Path, help="the launcher fragment of the motion planner, with --episodes"
+    )
+    args = parser.parse_args()
+    if (args.episodes is None) != (args.launcher is None):
+        parser.error(
+            "--episodes and --launcher go together: give the episodes and the launcher fragment "
+            "of the motion planner whose map they fill"
+        )
+    if args.episodes is not None and args.drawn:
+        parser.error("--episodes writes the episodes' scenes in place of drawn ones: drop --drawn")
+    if args.episodes is None:
+        write(NAME, drawn_scenario(args.drawn))
+        return
+    write(NAME, episodes_scenario(args.episodes, args.launcher))
 
 
 if __name__ == "__main__":

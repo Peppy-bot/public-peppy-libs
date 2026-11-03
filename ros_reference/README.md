@@ -21,7 +21,7 @@ change of the reference, which `run.sh --check` proves.
 | `path_timing` | MoveIt's time-optimal trajectory generation (TOTG): the blended path through waypoints at a maximum deviation, and its time-optimal duration under velocity and acceleration limits, or its refusal of a path that turns back | `control_core/tests/ros_reference_path_timing.rs` |
 | `planning` | OMPL's geometric planners: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
 | `occupancy` | MoveIt's point cloud updater: the log-odds of every voxel of MoveIt's occupancy map after a sequence of point clouds, with a sphere cut out as the robot's own body | `occupancy_map/tests/ros_reference_occupancy.rs` |
-| `arm_planning` | MoveIt's planning pipeline with OMPL's RRTConnect, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, on scenes of OpenArm v2's left arm, the fingers of its gripper checked with it, among boxes of voxels as an octomap: MoveIt's answer to each scene, planned to the goal state itself, and MoveIt's collision check, smallest distance and length along its path and along motion_planning_core's, which the scenario carries (`tools/draw_arm_planning.py` writes it, with the answers of `motion_planning_core`'s example `plan_arm_scenes`) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
+| `arm_planning` | MoveIt's planning pipeline with OMPL's RRTConnect, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, on scenes of an arm of OpenArm v2, the fingers of its gripper checked with it, among boxes of voxels as an octomap: MoveIt's answer to each scene, planned to the goal state itself, and MoveIt's collision check, smallest distance and length along its path and along motion_planning_core's, which the scenario carries (`tools/draw_arm_planning.py` writes it, with the answers of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
 
 ## Layout
 
@@ -85,6 +85,28 @@ on amd64 alone, but for the occupancy test, which rule 4 describes. The planning
 test also reads the committed outputs on arm64, and compares each simplification with
 them within its bound.
 
+## Recorded episodes
+
+`tools/draw_arm_planning.py --episodes <directory> --launcher <fragment>` reads episodes
+of OpenArm v2 recorded in simulation, one plan request of an arm each: each subdirectory
+of `<directory>` that holds an `episode.json`. A stamp is in seconds on the clock of the
+robot's messages, and a pose is a `position` in meters and an `orientation`, a unit
+quaternion [x, y, z, w], in the robot frame unless the member says otherwise.
+
+| Member of `episode.json` | What it holds |
+|---|---|
+| `index` | The episode's number; the scene's seed is it plus one. |
+| `arm` | The planned arm's limb name, `left_arm` or `right_arm`. |
+| `start` | The arm's measured joints at the request, in radians. |
+| `goal` | The request's pose goal: `link`, the arm's grasp point; `position`; `orientation`; `tolerance_m`; `tolerance_rad`. |
+| `camera` | The depth camera as the motion planner reads it: `color_in_robot`, the pose of its color optical frame; `depth_in_color`, the pose of its depth optical frame in the color one; `intrinsics`, its depth stream's `width`, `height`, `fx`, `fy`, `cx`, `cy`, `distortion_model`, `distortion` and `depth_model`; `depth_unit`, the meters of a sample step; and `align_mode`. |
+| `limb_states` | Each limb_states message of the recording: `at`, its stamp; `joints`, each arm's joints by limb name; `openings`, each gripper's opening by gripper name. |
+| `frames` | Each depth frame that the planner's map took in between the recording's clear of the map and its plan request: `at`, its stamp; `encoding`, `z16`; `width`; `height`; `align_mode`; and `samples`, the file of its samples, little-endian u16, relative to the episode's directory. |
+
+Its other members are for the reader. `motion_planning_core`'s example
+`scenes_from_episodes` turns each episode into a scene in the map of the planner's
+arguments that the launcher fragment gives, and names each episode it drops and why.
+
 ## Rules
 
 1. A reference runs in the reference program's process. A reference with a plain C++ API
@@ -103,9 +125,14 @@ them within its bound.
 3. A comparison that is statistical by nature, a sampling planner's against another's,
    runs over a drawn set, locally: draw the set with the `--drawn` option of the kind's
    script, run `run.sh`, and run the crate's parity test with `cargo test -- --ignored`,
-   which holds the statistical test; the pull request states its tally at its head. The
-   statistical test refuses a set too small for its intervals. The committed cases of such
-   a kind compare bit for bit, as every other output does.
+   which holds the statistical test; the pull request states its tally at its head. For
+   arm planning, a set of recorded episodes (see "Recorded episodes") runs the same way:
+   `tools/draw_arm_planning.py --episodes <directory> --launcher <fragment>` writes their
+   scenes in place of the drawn ones, each the map the motion planner of the launcher
+   fragment builds of the episode's depth frames, its measured start, and a goal
+   configuration drawn for its pose goal. The statistical test refuses a set too small
+   for its intervals. The committed cases of such a kind compare bit for bit, as every
+   other output does.
 4. A parity test states what the library guarantees, and the bound within which its
    outputs agree with the reference, or the statistic it compares, and why. A number of
    an output reads back to the bits that the reference computed, so a test compares

@@ -18,7 +18,7 @@ use motion_planning_core::{
 };
 use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
 use ompl_bridge::Planner;
-use ros_reference::arm_planning::{Ours, Scene as ReferenceScene, Scenes};
+use ros_reference::arm_planning::{Ours, Scene as ReferenceScene, Scenes, VoxelBox};
 
 pub const JOINTS: usize = 7;
 /// The configurations the goal sampler draws for a scene's joint goal.
@@ -100,6 +100,26 @@ pub fn map_of<O>(scenes: &Scenes, scene: &ReferenceScene<O>) -> VoxelMap {
     )
     .expect("the scan stands in the map's frame");
     map
+}
+
+/// The occupied voxels of `map` as boxes, each run of them along x one box: the boxes
+/// whose voxels [`map_of`] fills a scene's map with.
+pub fn boxes_of(map: &VoxelMap) -> Vec<VoxelBox> {
+    let mut keys: Vec<[i32; 3]> = map.occupied().map(|key| key.0).collect();
+    keys.sort_by_key(|k| (k[1], k[2], k[0]));
+    keys.into_iter()
+        .fold(Vec::new(), |mut boxes: Vec<VoxelBox>, key| {
+            match boxes.last_mut() {
+                Some(run) if run.last[1..] == key[1..] && run.last[0] + 1 == key[0] => {
+                    run.last = key;
+                }
+                _ => boxes.push(VoxelBox {
+                    first: key,
+                    last: key,
+                }),
+            }
+            boxes
+        })
 }
 
 /// The joints' L2 distance between two probes of a path at which no point of `arm`'s
