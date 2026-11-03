@@ -65,7 +65,7 @@ pub struct Scenes {
 
 /// What each plan optimizes, and the OMPL planner that plans for it: `any`, as
 /// plan_joint_path's `objective` names it and the motion planner node plans it, and
-/// `shortest`, a mode the harness measures ahead of the contract.
+/// `shortest`, a mode the harness measures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Objective {

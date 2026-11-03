@@ -27,9 +27,10 @@ launcher fragment `--launcher` names, also a large set for a local run:
 motion_planning_core's example scenes_from_episodes turns each episode into a scene, and
 the script prints the episodes it drops and why. Each plan optimizes `--objective`:
 `any`, the planner RRTConnect, by default, as plan_joint_path names it, or `shortest`,
-RRTstar, a mode the harness measures ahead of the contract. Each plan ends on ITERATIONS, TIME_LIMIT far beyond them, so it repeats under
-its seed. The fourth ends each plan on `--planning-time` alone, as a robot's plan ends;
-that option and `--objective shortest` go with a drawn set or the episodes' scenes.
+RRTstar, a mode the harness measures. Each plan ends on ITERATIONS, TIME_LIMIT far beyond
+them, so it repeats under its seed. The fourth ends each plan on `--planning-time` alone,
+as a robot's plan ends; that option and `--objective shortest` go with a drawn set or the
+episodes' scenes.
 """
 
 import json
