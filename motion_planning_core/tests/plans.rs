@@ -202,7 +202,8 @@ fn the_same_request_on_the_same_map_gives_the_same_path() {
 }
 
 // A goal inside a box is unreachable, and the message says that each configuration
-// meeting it is in collision, nearer than the plan's clearance it names.
+// meeting it is in collision, nearer than the plan's clearance it names, and names the
+// link of the one that falls short least nearest the map.
 #[test]
 fn a_goal_inside_an_obstacle_is_unreachable() {
     let goal_hand = hand(&HIGH);
@@ -227,10 +228,55 @@ fn a_goal_inside_an_obstacle_is_unreachable() {
     let PlanFailure::Unreachable(message) = failure else {
         panic!("not unreachable: {failure}");
     };
+    let (clearance, short) = message
+        .split_once("; the one that falls short least has ")
+        .expect("the message names what the nearest configuration falls short against");
     assert!(
-        message.ends_with(
+        clearance.ends_with(
             "that meet the goal is in collision, nearer than the plan's clearance, 0.0210 m from the map"
         ),
+        "{message}"
+    );
+    assert!(short.ends_with(" m from the map"), "{message}");
+}
+
+// A goal whose grasp point a point of the robot's own body stands on is unreachable: each
+// configuration within the goal's 0.01 rad of it stands within the plan's own clearance,
+// and the message names the pair of the one that falls short least and how far apart
+// they stand.
+#[test]
+fn a_goal_within_the_clearance_of_its_own_body_names_the_pair() {
+    let (map, field) = world(&[]);
+    let model = HandAndBall {
+        center: hand(&HIGH),
+        radius: 0.0,
+    };
+    let arm = Arm::new(&LEFT_ARM, Some(&model));
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goal = at(&HIGH);
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+    };
+    let failure = plan_arm_path(
+        &arm,
+        &scene,
+        &request(Planner::RrtConnect, LOW, &goal, &sampler),
+    )
+    .expect_err("no goal clear of the ball");
+    let PlanFailure::Unreachable(message) = failure else {
+        panic!("not unreachable: {failure}");
+    };
+    let distance: f64 = message
+        .split_once("; the one that falls short least has grasp point ")
+        .and_then(|(_, short)| short.strip_suffix(" m from ball"))
+        .expect("the message names the pair")
+        .parse()
+        .expect("a distance");
+    // The plan's own clearance: the clearance and 1 mm for each of the pair's two links.
+    assert!(
+        (0.0..MIN_CLEARANCE_M + 0.002).contains(&distance),
         "{message}"
     );
 }

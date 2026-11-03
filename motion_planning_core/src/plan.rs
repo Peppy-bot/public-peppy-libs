@@ -655,10 +655,15 @@ fn goal_configurations<const N: usize>(
         .copied()
         .collect();
     if clear.is_empty() {
+        let least_short = sampled
+            .iter()
+            .min_by(|a, b| checks.shortfall(a).total_cmp(&checks.shortfall(b)))
+            .expect("the sampled configurations are not empty");
         return Err(PlanFailure::Unreachable(format!(
-            "each of the {} configurations that meet the goal is in collision, nearer than {}",
+            "each of the {} configurations that meet the goal is in collision, nearer than {}; the one that falls short least has {}",
             sampled.len(),
-            checks.plan_clearance()
+            checks.plan_clearance(),
+            checks.short_of(least_short)
         )));
     }
     Ok(clear)
@@ -750,6 +755,39 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
             distances,
             clearances: self.clearance,
         }
+    }
+
+    /// How far `q` falls short of the plan's clearance of the term it falls shortest of, in
+    /// meters; at or below 0 where it keeps both.
+    fn shortfall(&self, q: &[f64; N]) -> f64 {
+        let distances = self.surroundings.distances(self.arm, q);
+        (0..2)
+            .map(|term| self.clearance[term] - distances[term])
+            .fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    /// What `q` falls short of the plan's clearances against, as a message names it: the
+    /// pair of the robot's own links, and the link and the map, of each term it falls short
+    /// of, and how far apart they stand.
+    fn short_of(&self, q: &[f64; N]) -> String {
+        let [map, own] = self.surroundings.distances(self.arm, q);
+        let own_pair = self
+            .arm
+            .self_model()
+            .filter(|_| own < self.clearance[1])
+            .map(|model| {
+                let (a, b) = model.nearest_pair(q);
+                format!("{a} {own:.4} m from {b}")
+            });
+        let map_link = (map < self.clearance[0])
+            .then(|| self.surroundings.nearest_to_map(self.arm, q))
+            .flatten()
+            .map(|(link, distance)| format!("{link} {distance:.4} m from the map"));
+        [own_pair, map_link]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" and ")
     }
 
     /// The plan's clearances, as a message names them.

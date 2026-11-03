@@ -175,7 +175,9 @@ for the grasp point, and for a link by damped least squares on the link's Jacobi
 column taken as the change of the link's pose over a small turn of its joint. It keeps
 the distinct ones that meet the goal. A plan whose sampler finds none fails
 `Unreachable`, saying so; one whose every configuration is in collision fails
-`Unreachable` and says that instead.
+`Unreachable` and says that instead, naming, of the configuration that falls short least,
+the pair of the robot's own links, or the link nearest the map, of each clearance it falls
+short of and how far apart they stand.
 
 On 200 drawn reachable poses of OpenArm v2's left arm, the sampler reaches every
 shoulder and wrist branch that `srs_model`'s closed form finds on 199 of them, 144 of
