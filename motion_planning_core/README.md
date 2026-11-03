@@ -196,9 +196,10 @@ attempts, at most 1000 iterations, as MoveIt simplifies in the allowed planning 
 the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve` calls `simplifySolution`
 with that time, whatever is left of it). OMPL's simplifier runs its first pass however
 little time it has (`PathSimplifier::simplify`, `atLeastOnce`), so a planner that plans
-until its time ends, such as RRT*, answers its path simplified once, past the deadline.
-A corner's repair runs only before the deadline, and a corner whose rounding fails once
-the deadline has passed fails `NoPath`. The hybrid of several attempts and its checks,
+until its time ends, such as RRT*, has its path simplified once, past the deadline. A
+corner's repair runs only before the deadline: when a corner of the simplified path
+rounds short of the clearances once the deadline has passed, the plan answers its
+planned path if that passes its own check, and fails `NoPath` otherwise. The hybrid of several attempts and its checks,
 and the check of the rounded path, run to their end past the deadline. OMPL plans with
 the request's planner and iteration bound, seeded from the request's seed and the map's
 stamp, so the same request on the same map gives the same path when the plan ends before

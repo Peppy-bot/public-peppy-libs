@@ -73,10 +73,11 @@
 //! time less the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve`), whatever is
 //! left of it. OMPL's simplifier runs its first pass however little time it has
 //! (`PathSimplifier::simplify`, `atLeastOnce`), so a planner that plans until its time
-//! ends, such as RRT*, answers its path simplified once, past the deadline. A corner's
-//! repair runs only before the deadline: a corner whose rounding fails once it has passed
-//! ends the plan with no path. The check of the rounded path runs to its end past the
-//! deadline.
+//! ends, such as RRT*, has its path simplified once, past the deadline. A corner's repair
+//! runs only before the deadline: when a corner of the simplified path rounds short of the
+//! clearances once it has passed, the plan answers its planned path if that passes its
+//! own check, and no path otherwise. The check of the rounded path runs to its end past
+//! the deadline.
 //!
 //! `check_arm_path` checks a caller's path with the same checks: each waypoint after the
 //! start keeps the plan's clearances, each run keeps them as the plan's runs keep them,
