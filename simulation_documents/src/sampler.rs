@@ -3,8 +3,8 @@
 //! The set of samplers is closed. `{ one_of: [v, ...] }` draws one of its
 //! values and `{ range: [min, max] }` a number from `min` to `max`, in place
 //! of any value of an entry but the join of a robot. `{ on: { object,
-//! landmark }, reachable_by: <robot> }` draws an object pose on a work
-//! surface of an object, and
+//! landmark }, reachable_by: <robot> }` draws an object pose on a landmark
+//! of an object that faces up, such as a work surface, and
 //! `{ in: <region> }` an object pose or the position of a stand in a region
 //! of the world; the simulation draws these two, in a model of the drawn
 //! world.
@@ -79,7 +79,7 @@ impl fmt::Display for SitePath {
 }
 
 /// A landmark of an object of the world, by the object's name and the
-/// landmark's: what `on` draws a pose on, a work surface, and what a
+/// landmark's: what `on` draws a pose on, such as a work surface, and what a
 /// distance of a work cell measures to. It follows the pose of its object.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,8 +96,9 @@ pub enum Sampler {
     /// A uniform number from `min` to `max`; an integer, both ends included,
     /// for a count.
     Range { min: f64, max: f64 },
-    /// An object pose on one of the work surfaces, where `reachable_by`
-    /// reaches and sees it when it names a robot.
+    /// An object pose on one of the landmarks, each a face of an object that
+    /// faces up such as a work surface, where `reachable_by` reaches and
+    /// sees it when it names a robot.
     On {
         surfaces: Vec<LandmarkRef>,
         reachable_by: Option<RobotName>,
@@ -391,10 +392,10 @@ fn region(name: &Value) -> Result<Name, String> {
     Name::parse(text).map_err(|error| error.to_string())
 }
 
-/// `{ on, reachable_by }`: `on` a work surface `{ object, landmark }`, or
+/// `{ on, reachable_by }`: `on` a landmark `{ object, landmark }`, or
 /// `{ one_of }` of them.
 fn on(fields: &Map<String, Value>) -> Result<Sampler, String> {
-    let form = "`on` draws a pose on a work surface: { on: { object, landmark }, reachable_by: <robot> }, and `on` takes `{ one_of }` of work surfaces";
+    let form = "`on` draws a pose on a landmark of an object: { on: { object, landmark }, reachable_by: <robot> }, and `on` takes `{ one_of }` of landmarks";
     let known = fields
         .keys()
         .all(|key| key == "on" || key == "reachable_by");
@@ -570,15 +571,15 @@ mod tests {
             ),
             (
                 json!({ "pose": { "on": { "object": "table", "landmark": "top" }, "near": 1 } }),
-                "pose: `on` draws a pose on a work surface",
+                "pose: `on` draws a pose on a landmark of an object",
             ),
             (
                 json!({ "pose": { "on": "table top" } }),
-                "pose: `on` draws a pose on a work surface",
+                "pose: `on` draws a pose on a landmark of an object",
             ),
             (
                 json!({ "pose": { "on": { "object": "table" } } }),
-                "pose: `on` draws a pose on a work surface",
+                "pose: `on` draws a pose on a landmark of an object",
             ),
             (
                 json!({ "pose": { "in": "Box Stock" } }),

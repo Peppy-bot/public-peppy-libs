@@ -75,8 +75,9 @@ A world pattern (`WorldPattern`) is a world with samplers in place of some
 values. `{ one_of: [v, ...] }` draws one of its values and `{ range: [min,
 max] }` a number from `min` to `max`, in place of any value of an entry but
 the join of a robot. In an object pose, `{ on: <{ object, landmark } or {
-one_of } of them>, reachable_by: <robot> }` draws a pose on a work surface of
-an object where the robot reaches and sees it, and `{ in: <region> }` a pose in
+one_of } of them>, reachable_by: <robot> }` draws a pose on a landmark of an
+object that faces up, such as a work surface, where the robot reaches and sees
+it, and `{ in: <region> }` a pose in
 a region of the world; `{ in: <region> }` also draws the position of a stand. An
 entry of `objects` with `{ item_kind, count }` adds `<name>_1` up to
 `<name>_<count>`, each with an asset of the item kind; the count is a number
