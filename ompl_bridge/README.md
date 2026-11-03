@@ -169,20 +169,21 @@ the stop kept from starting comes back unsimplified.
 the time limit. The planners end at their first question whether to stop past the time
 limit, and no batch of attempts starts past it. The simplification starts past the end
 of its own time too, as MoveIt's `simplifySolution` starts with whatever time its plan
-left, and the simplifier ends at its first question whether to stop past it. What runs between two questions runs to its end, a call of the caller's
-functions among it, and so do the checks of the start and the goals, the hybrid of the
-attempts' paths, with the motion checks that join the paths and those of the hybrid, as
-OMPL's `ParallelPlan` runs it, and the simplifier's first pass: OMPL's simplifier runs
-that pass to its end whatever its termination condition answers, and bounds it by counts
-of attempts, most of them the path's number of states. A plan of PRM or PRM* runs two
-more steps to their end whatever the limit. Before its first question, it takes every
-goal into the roadmap, with the motion checks of each. And once its planner has ended, it
-searches the finished roadmap, with one A* search for each goal that the roadmap joins to
-the start, unless PRM's search found a path that ended the planner. Planning the
-seven-dimensional wall of `tests/plans.rs` under seed 2 until the limit, in a container
-of two CPUs on an x86-64 host, PRM* answered 13.7 ms past a limit of 1 s with one goal,
-34.4 ms past it with 32 goals and 55.4 ms past a limit of 3 s with 32 goals, while RRT*
-answered within 1.3 ms of each limit: a measurement on that host.
+left, and the simplifier ends at its first question whether to stop past it. What runs
+between two questions runs to its end, a call of the caller's functions among it, and so
+do the checks of the start and the goals, the hybrid of the attempts' paths, with the
+motion checks that join the paths and those of the hybrid, as OMPL's `ParallelPlan` runs
+it, and the simplifier's first pass: OMPL's simplifier runs that pass to its end whatever
+its termination condition answers, and bounds it by counts of attempts, most of them the
+path's number of states. A plan of PRM or PRM* runs two more steps to their end whatever
+the limit. Before its first question, it takes every goal into the roadmap, with the
+motion checks of each. And once its planner has ended, it searches the finished roadmap,
+with one A* search for each goal that the roadmap joins to the start, unless PRM's search
+found a path that ended the planner. Planning the seven-dimensional wall of
+`tests/plans.rs` under seed 2 until the limit, in a container of two CPUs on an x86-64
+host, PRM* answered 13.7 ms past a limit of 1 s with one goal, 34.4 ms past it with 32
+goals and 55.4 ms past a limit of 3 s with 32 goals, while RRT* answered within 1.3 ms of
+each limit: a measurement on that host.
 
 ## The simplified path
 
@@ -299,10 +300,11 @@ OMPL_SOURCE_TARBALL="$PWD/ompl-2.0.2.tar.gz" cargo build --offline
 
 OMPL is under its BSD license, which permits the patch's modification of its sources. A
 binary that links this crate links OMPL, and the license's second clause asks a binary
-distribution to reproduce OMPL's copyright notice, conditions and disclaimer. The build extracts the license to `ompl-2.0.2/LICENSE` in its
-output directory, `target/<profile>/build/ompl_bridge-<hash>/out/`, which cargo reports
-as the `out_dir` of ompl_bridge's `build-script-executed` message under
-`--message-format=json`: ship that file with the binary.
+distribution to reproduce OMPL's copyright notice, conditions and disclaimer. The build
+extracts the license to `ompl-2.0.2/LICENSE` in its output directory,
+`target/<profile>/build/ompl_bridge-<hash>/out/`, which cargo reports as the `out_dir` of
+ompl_bridge's `build-script-executed` message under `--message-format=json`: ship that
+file with the binary.
 
 The build compiles OMPL against the system's Boost headers, links Boost.Serialization,
 which OMPL's planner data storage uses and OMPL's CMake links, and finds Eigen 3 through

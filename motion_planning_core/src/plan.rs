@@ -73,9 +73,10 @@
 //! time less the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve`), whatever is
 //! left of it. OMPL's simplifier runs its first pass however little time it has
 //! (`PathSimplifier::simplify`, `atLeastOnce`), so a planner that plans until its time
-//! ends, such as RRT*, answers its path simplified once, past the deadline. A corner's repair runs only before the deadline: a corner whose
-//! rounding fails once it has passed ends the plan with no path. The check of the rounded
-//! path runs to its end past the deadline.
+//! ends, such as RRT*, answers its path simplified once, past the deadline. A corner's
+//! repair runs only before the deadline: a corner whose rounding fails once it has passed
+//! ends the plan with no path. The check of the rounded path runs to its end past the
+//! deadline.
 //!
 //! `check_arm_path` checks a caller's path with the same checks: each waypoint after the
 //! start keeps the plan's clearances, each run keeps them as the plan's runs keep them,
@@ -655,9 +656,10 @@ fn goal_configurations<const N: usize>(
         .copied()
         .collect();
     if clear.is_empty() {
-        let least_short = sampled
+        let (least_short, _) = sampled
             .iter()
-            .min_by(|a, b| checks.shortfall(a).total_cmp(&checks.shortfall(b)))
+            .map(|q| (q, checks.shortfall(q)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
             .expect("the sampled configurations are not empty");
         return Err(PlanFailure::Unreachable(format!(
             "each of the {} configurations that meet the goal is in collision, nearer than {}; the one that falls short least has {}",
