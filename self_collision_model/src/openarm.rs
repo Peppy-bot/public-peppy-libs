@@ -3,14 +3,20 @@
 
 use openarm_description::{HardwareVersion, Side};
 
-use crate::{CollisionError, SelfCollisionModel};
+use crate::{CollisionError, PairSpec, SelfCollisionModel};
 
 /// The self-collision model of OpenArm `version`, from its embedded URDF and the
-/// collision meshes written to `meshes_dir`.
+/// collision meshes written to `meshes_dir`, leaving out the pairs the generation's
+/// joint limits keep apart (`HardwareVersion::never_touching_pairs`).
 pub fn openarm(
     version: HardwareVersion,
     meshes_dir: &str,
 ) -> Result<SelfCollisionModel, CollisionError> {
+    let never_touching: Vec<PairSpec> = version
+        .never_touching_pairs()
+        .iter()
+        .map(|[a, b]| PairSpec::new(*a, *b))
+        .collect();
     SelfCollisionModel::builder(
         version.urdf(),
         meshes_dir,
@@ -18,5 +24,6 @@ pub fn openarm(
         version.base_link(Side::Right),
     )
     .regions(version.torso_body(), version.torso_regions())
+    .exclude(&never_touching)
     .build()
 }

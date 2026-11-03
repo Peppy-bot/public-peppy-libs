@@ -14,8 +14,9 @@ geometry, the fit of each body's convex pieces and the distance between them, is
 hulls with Qhull, a C library, so a build needs libclang. The model of a dual-arm robot
 takes the caller's URDF, mesh directory and two chain base links, for any bimanual URDF
 whose arms are 7-DOF SRS chains (the `srs_model` contract). `openarm` builds OpenArm's
-model from `openarm_description`, its URDF, base links and torso regions, with the
-collision meshes in the caller's directory.
+model from `openarm_description`, its URDF, base links and torso regions, leaving out the
+pairs the description names as never touching, with the collision meshes in the caller's
+directory.
 
 ## The proximity band
 

@@ -1,8 +1,9 @@
 //! OpenArm's self-collision model, built from openarm_description alone.
 
 use collision_geometry::chain::ChainGeometry;
-use openarm_description::{ArmPair, HardwareVersion, Side};
-use self_collision_model::{FingerError, openarm};
+use openarm_description::{ArmPair, HardwareVersion, Side, home};
+use self_collision_model::{FingerError, PairSpec, SelfCollisionModel, openarm};
+use srs_model::Arm;
 use srs_model::chain_kinematics::{ChainSpec, JointSelection};
 
 // Each hardware generation's model builds from its embedded description, checks pairs,
@@ -308,5 +309,106 @@ fn an_arms_distance_counts_the_pairs_it_rides() {
     assert!(
         right_nearest_turns > 0,
         "no turn of the right arm whose pair is the robot's nearest"
+    );
+}
+
+/// The least distance the pairs v2 leaves out keep within the joint limits on the grid
+/// below: under the 12.9 mm the description measures on a finer grid.
+const NEVER_TOUCHING_LEAST_M: f64 = 0.01;
+
+/// The steps of the grid over each of j1 to j3, from its lower limit to its upper.
+const LIMIT_STEPS: u32 = 24;
+
+// The pairs v2's model leaves out stay NEVER_TOUCHING_LEAST_M or farther apart over a grid
+// of each arm's j1 to j3 within the limits, the other joints at home: a model that checks
+// those pairs alone measures them.
+#[test]
+fn the_pairs_v2_leaves_out_stay_apart_within_the_joint_limits() {
+    let version = HardwareVersion::V2;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("V2_left_out_meshes");
+    version.write_meshes_to(&dir).expect("write the meshes");
+    let meshes = dir.to_str().expect("a UTF-8 directory");
+    let builder = || {
+        SelfCollisionModel::builder(
+            version.urdf(),
+            meshes,
+            version.base_link(Side::Left),
+            version.base_link(Side::Right),
+        )
+        .regions(version.torso_body(), version.torso_regions())
+    };
+    let left_out = |a: &str, b: &str| {
+        version
+            .never_touching_pairs()
+            .iter()
+            .any(|[x, y]| (*x == a && *y == b) || (*x == b && *y == a))
+    };
+    let others: Vec<PairSpec> = builder()
+        .build()
+        .expect("the model builds")
+        .checked_pairs()
+        .into_iter()
+        .filter(|(a, b)| !left_out(a, b))
+        .map(|(a, b)| PairSpec::new(a, b))
+        .collect();
+    let mut model = builder()
+        .exclude(&others)
+        .build()
+        .expect("the model of the left-out pairs builds");
+    assert_eq!(
+        model.checked_pairs().len(),
+        version.never_touching_pairs().len()
+    );
+    for side in Side::BOTH {
+        let limits = Arm::from_urdf(version.urdf(), version.base_link(side))
+            .expect("the arm")
+            .limits();
+        let grid = |j: usize| {
+            (0..=LIMIT_STEPS).map(move |i| {
+                limits[j].lo + (limits[j].hi - limits[j].lo) * f64::from(i) / f64::from(LIMIT_STEPS)
+            })
+        };
+        for (j1, j2, j3) in
+            grid(0).flat_map(|j1| grid(1).flat_map(move |j2| grid(2).map(move |j3| (j1, j2, j3))))
+        {
+            let mut arms = ArmPair::new(home(Side::Left), home(Side::Right));
+            (arms[side][0], arms[side][1], arms[side][2]) = (j1, j2, j3);
+            let nearest = model
+                .min_distance_of_arm(side, &arms[Side::Left], &arms[Side::Right])
+                .expect("a distance");
+            assert!(
+                nearest.distance >= NEVER_TOUCHING_LEAST_M,
+                "{side:?} at j1 {j1}, j2 {j2}, j3 {j3}: {} - {} at {}",
+                nearest.link_a,
+                nearest.link_b,
+                nearest.distance
+            );
+        }
+    }
+}
+
+/// The self clearance the OpenArm launchers' motion planner checks a state at: its
+/// 0.04 m clearance and 1 mm of spare for each of a pair's two moving links.
+const PLANNER_SELF_CLEARANCE_M: f64 = 0.042;
+
+// At home with the grippers closed, v2's bodies stand farther apart than the planner's
+// self clearance, so a plan reaches home.
+#[test]
+fn home_with_the_grippers_closed_stands_past_the_planners_self_clearance() {
+    let version = HardwareVersion::V2;
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("V2_home_meshes");
+    version.write_meshes_to(&dir).expect("write the meshes");
+    let mut model =
+        openarm(version, dir.to_str().expect("a UTF-8 directory")).expect("the model builds");
+    model.set_gripper_openings(0.0, 0.0);
+    let nearest = model
+        .min_distance(&home(Side::Left), &home(Side::Right))
+        .expect("a distance");
+    assert!(
+        nearest.distance > PLANNER_SELF_CLEARANCE_M,
+        "{} - {} at {}",
+        nearest.link_a,
+        nearest.link_b,
+        nearest.distance
     );
 }

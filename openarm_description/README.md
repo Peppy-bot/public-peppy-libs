@@ -15,6 +15,9 @@ the `kinematics` feature, `HardwareVersion::arm_model(side)` builds one side's a
 - `HardwareVersion::torso_body()` / `torso_regions()` name the torso link and the
   axis-aligned regions, `[min, max]` in meters in the URDF root frame, that decompose
   its concave mesh into convex pieces for a collision model.
+- `HardwareVersion::never_touching_pairs()` names the pairs of bodies the joint limits
+  keep apart, which a collision model leaves out: on v2, each upper arm (`link3`)
+  against the torso and against its own arm's base.
 - `HardwareVersion::elbow_singularity_floor_rad()` / `elbow_joint_index()` describe the
   elbow control margin (see below), and `joint_limits(side)` gives one side's joint
   limits with that margin applied.

@@ -135,6 +135,14 @@ const TORSO_REGIONS: &[[[f64; 3]; 2]] = &[
     [[-INF, -INF, 0.713], [INF, INF, INF]],
 ];
 
+/// See [`HardwareVersion::never_touching_pairs`].
+const V2_NEVER_TOUCHING_PAIRS: &[[&str; 2]] = &[
+    ["openarm_body_link0", "openarm_left_link3"],
+    ["openarm_body_link0", "openarm_right_link3"],
+    ["openarm_left_base_link", "openarm_left_link3"],
+    ["openarm_right_base_link", "openarm_right_link3"],
+];
+
 /// An OpenArm hardware generation. A node parses its `hardware_version` parameter into
 /// this once (parse, don't validate) and then reads the bundled description through it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,6 +279,18 @@ impl HardwareVersion {
     pub fn torso_regions(self) -> &'static [[[f64; 3]; 2]] {
         match self {
             Self::V1 | Self::V2 => TORSO_REGIONS,
+        }
+    }
+
+    /// The pairs of bodies the joint limits keep apart, which a collision model leaves
+    /// out, as MoveIt's setup assistant disables a pair it never finds in contact: on v2,
+    /// each upper arm (`link3`) against the torso and against its own arm's base. Over j1
+    /// to j3 within the limits, every 0.07 rad or finer, v2's upper arm stays 12.9 mm or
+    /// farther from the torso and 18.5 mm or farther from its base. v1 names none.
+    pub fn never_touching_pairs(self) -> &'static [[&'static str; 2]] {
+        match self {
+            Self::V1 => &[],
+            Self::V2 => V2_NEVER_TOUCHING_PAIRS,
         }
     }
 }
