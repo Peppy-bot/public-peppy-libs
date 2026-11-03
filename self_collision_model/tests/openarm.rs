@@ -1,21 +1,35 @@
 //! OpenArm's self-collision model, built from openarm_description alone.
 
+use std::path::Path;
+use std::sync::LazyLock;
+
 use collision_geometry::chain::ChainGeometry;
 use openarm_description::{ArmPair, HardwareVersion, Side, home};
 use self_collision_model::{FingerError, PairSpec, SelfCollisionModel, openarm};
 use srs_model::Arm;
 use srs_model::chain_kinematics::{ChainSpec, JointSelection};
 
+/// The directory of `version`'s collision meshes, written once per test binary.
+fn meshes_dir(version: HardwareVersion) -> &'static str {
+    fn written(version: HardwareVersion) -> String {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{version:?}_meshes"));
+        version.write_meshes_to(&dir).expect("write the meshes");
+        dir.to_str().expect("a UTF-8 directory").to_string()
+    }
+    static V1: LazyLock<String> = LazyLock::new(|| written(HardwareVersion::V1));
+    static V2: LazyLock<String> = LazyLock::new(|| written(HardwareVersion::V2));
+    match version {
+        HardwareVersion::V1 => &V1,
+        HardwareVersion::V2 => &V2,
+    }
+}
+
 // Each hardware generation's model builds from its embedded description, checks pairs,
 // and finds both arms at their zero configuration clear of each other and the torso.
 #[test]
 fn each_generation_builds_from_its_description() {
     for version in [HardwareVersion::V1, HardwareVersion::V2] {
-        let dir =
-            std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{version:?}_meshes"));
-        version.write_meshes_to(&dir).expect("write the meshes");
-        let mut model =
-            openarm(version, dir.to_str().expect("a UTF-8 directory")).expect("the model builds");
+        let mut model = openarm(version, meshes_dir(version)).expect("the model builds");
         assert!(
             !model.checked_pairs().is_empty(),
             "{version:?} checks no pair"
@@ -36,9 +50,7 @@ fn each_generation_builds_from_its_description() {
 #[test]
 fn the_fingers_hang_where_the_model_places_them() {
     let version = HardwareVersion::V2;
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("V2_finger_meshes");
-    version.write_meshes_to(&dir).expect("write the meshes");
-    let meshes = dir.to_str().expect("a UTF-8 directory");
+    let meshes = meshes_dir(version);
     let mut model = openarm(version, meshes).expect("the model builds");
     let arm = |side: Side| {
         ChainGeometry::<7>::from_urdf(
@@ -108,10 +120,7 @@ fn the_fingers_hang_where_the_model_places_them() {
 #[test]
 fn a_closed_finger_hangs_where_the_chain_carries_it() {
     for version in [HardwareVersion::V1, HardwareVersion::V2] {
-        let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("{version:?}_closed_finger_meshes"));
-        version.write_meshes_to(&dir).expect("write the meshes");
-        let meshes = dir.to_str().expect("a UTF-8 directory");
+        let meshes = meshes_dir(version);
         let mut model = openarm(version, meshes).expect("the model builds");
         model.set_gripper_openings(0.0, 0.0);
         for side in Side::BOTH {
@@ -187,9 +196,7 @@ const STRANGE_PARTS: &str = r#"<robot name="strange_parts">
 #[test]
 fn a_part_the_model_holds_as_no_finger_of_the_arm_is_refused() {
     let version = HardwareVersion::V2;
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("V2_refused_meshes");
-    version.write_meshes_to(&dir).expect("write the meshes");
-    let meshes = dir.to_str().expect("a UTF-8 directory");
+    let meshes = meshes_dir(version);
     let model = openarm(version, meshes).expect("the model builds");
     let strange = ChainGeometry::<1>::from_urdf(
         STRANGE_PARTS,
@@ -264,10 +271,7 @@ fn a_part_the_model_holds_as_no_finger_of_the_arm_is_refused() {
 #[test]
 fn an_arms_distance_counts_the_pairs_it_rides() {
     let version = HardwareVersion::V2;
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("V2_arm_meshes");
-    version.write_meshes_to(&dir).expect("write the meshes");
-    let mut model =
-        openarm(version, dir.to_str().expect("a UTF-8 directory")).expect("the model builds");
+    let mut model = openarm(version, meshes_dir(version)).expect("the model builds");
     // The left arm stands turned 0.05 rad at its second joint, between the right arm's
     // turns, so the arms never stand as mirror images, whose distances tie.
     let left = [0.0, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0];
@@ -325,9 +329,7 @@ const LIMIT_STEPS: u32 = 24;
 #[test]
 fn the_pairs_v2_leaves_out_stay_apart_within_the_joint_limits() {
     let version = HardwareVersion::V2;
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("V2_left_out_meshes");
-    version.write_meshes_to(&dir).expect("write the meshes");
-    let meshes = dir.to_str().expect("a UTF-8 directory");
+    let meshes = meshes_dir(version);
     let builder = || {
         SelfCollisionModel::builder(
             version.urdf(),
@@ -396,10 +398,7 @@ const PLANNER_SELF_CLEARANCE_M: f64 = 0.042;
 #[test]
 fn home_with_the_grippers_closed_stands_past_the_planners_self_clearance() {
     let version = HardwareVersion::V2;
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("V2_home_meshes");
-    version.write_meshes_to(&dir).expect("write the meshes");
-    let mut model =
-        openarm(version, dir.to_str().expect("a UTF-8 directory")).expect("the model builds");
+    let mut model = openarm(version, meshes_dir(version)).expect("the model builds");
     model.set_gripper_openings(0.0, 0.0);
     let nearest = model
         .min_distance(&home(Side::Left), &home(Side::Right))
@@ -410,5 +409,43 @@ fn home_with_the_grippers_closed_stands_past_the_planners_self_clearance() {
         nearest.link_a,
         nearest.link_b,
         nearest.distance
+    );
+}
+
+// At home, v2's grippers bring a finger within the planner's self clearance of the torso
+// as they open from 0.4 to 0.5 of their travel: at 0.4 the bodies stand farther apart
+// than it, and at 0.5 the nearest pair, nearer than it, is a finger and the torso.
+#[test]
+fn at_home_a_finger_crosses_the_planners_self_clearance_of_the_torso_from_opening_0_4_to_0_5() {
+    let version = HardwareVersion::V2;
+    let mut model = openarm(version, meshes_dir(version)).expect("the model builds");
+    let mut nearest_at = |opening: f64| {
+        model.set_gripper_openings(opening, opening);
+        let nearest = model
+            .min_distance(&home(Side::Left), &home(Side::Right))
+            .expect("a distance");
+        (
+            nearest.distance,
+            nearest.link_a.to_string(),
+            nearest.link_b.to_string(),
+        )
+    };
+    let (apart, a, b) = nearest_at(0.4);
+    assert!(
+        apart > PLANNER_SELF_CLEARANCE_M,
+        "at 0.4: {a} - {b} at {apart}"
+    );
+    let (within, a, b) = nearest_at(0.5);
+    let fingers: Vec<String> = Side::BOTH
+        .into_iter()
+        .flat_map(|side| [1, 2].map(|n| format!("openarm_{side}_ee_link{n}")))
+        .collect();
+    let finger_against_torso = |finger: &str, torso: &str| {
+        fingers.iter().any(|f| f == finger) && torso == version.torso_body()
+    };
+    assert!(
+        within < PLANNER_SELF_CLEARANCE_M
+            && (finger_against_torso(&a, &b) || finger_against_torso(&b, &a)),
+        "at 0.5: {a} - {b} at {within}"
     );
 }
