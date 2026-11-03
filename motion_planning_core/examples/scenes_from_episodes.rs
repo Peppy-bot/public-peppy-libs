@@ -64,8 +64,6 @@ use openarm_v2::Robot;
 
 /// The node whose deployment in the launcher fragment gives the planner's arguments.
 const PLANNER_NODE: &str = "motion_planner";
-/// The planner's `robot` argument that names OpenArm v2, the robot of the episodes.
-const OPENARM_V2: &str = "openarm_v2";
 /// The values of one measurement as the replay's history keeps them: the left arm's
 /// joints, the right arm's, then the left and the right gripper's openings.
 const VALUES: usize = 2 * ARM_DOF + 2;
@@ -154,7 +152,6 @@ struct Dropped {
 /// them; the fragment's other arguments do not change a map or a goal.
 #[derive(Deserialize)]
 struct PlannerArguments {
-    robot: String,
     start_tolerance_rad: f64,
     padding_scale: f64,
     padding_offset_m: f64,
@@ -228,12 +225,6 @@ impl Planner {
         });
         let a: PlannerArguments = serde_json::from_value(instance.arguments)
             .unwrap_or_else(|e| panic!("the {PLANNER_NODE} arguments of {}: {e}", path.display()));
-        assert_eq!(
-            a.robot,
-            OPENARM_V2,
-            "{}: the replay rebuilds OpenArm v2's map",
-            path.display()
-        );
         let positive = |name: &str, value: f64| {
             PositiveFinite::parse(value)
                 .unwrap_or_else(|_| panic!("{name} is {value}; it is a finite number above 0"))
