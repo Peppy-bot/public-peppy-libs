@@ -4,17 +4,19 @@
 //! A world pattern is a world whose entries can hold samplers
 //! ([`crate::sampler`]), with three more fields. An entry of `objects` with
 //! an `item_kind` adds `<name>_1` up to `<name>_<count>`, each with an asset
-//! of that item kind. `work_cell_parameters` says how to measure each
+//! of that item kind, and an entry of `objects` whose pose is `furnish` is a
+//! piece that the simulation lays out in the room with the other such pieces
+//! ([`crate::furnish`]). `work_cell_parameters` says how to measure each
 //! quantity of the work cell that an operator can measure in a real one, and
 //! `min_spacing_m` is the least distance between sampled objects.
 //!
 //! An [`Expansion`] of a pattern and a seed draws every sampler that the
 //! seed alone draws: `one_of`, `range`, the count and the asset of each
-//! object of an item kind. The simulation draws each [`PlacementSite`], a stand
-//! or a pose `on` a work surface or `in` a region, in a model of the drawn world,
-//! in the order of [`Expansion::placements`]: before each, it builds its
-//! model from [`Placements::world_so_far`]. [`Expansion::world`] then gives
-//! the concrete world.
+//! object of an item kind. The simulation draws each [`PlacementSite`], the
+//! furnish layout, a stand or a pose `on` a work surface or `in` a region, in
+//! a model of the drawn world, in the order of [`Expansion::placements`]:
+//! before each, it builds its model from [`Placements::world_so_far`].
+//! [`Expansion::world`] then gives the concrete world.
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -23,6 +25,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::daylight::Daylight;
+use crate::furnish::{
+    FurnishEntry, FurnishPiece, check_furnish_poses, furnish_path, placeholder_places, places_of,
+    writes_a_furnish_pose,
+};
 use crate::geometry::Region;
 use crate::sampler::{
     DrawnValue, LandmarkRef, Sampleable, Sampled, Sampler, Segment, Site, SitePath, SiteRule,
@@ -367,11 +373,13 @@ fn robots_named_once(robots: Vec<RobotName>) -> Result<BTreeSet<RobotName>, Erro
     Ok(once)
 }
 
-/// An entry of `objects`: one object, or the objects of an item kind.
+/// An entry of `objects`: one object, the objects of an item kind, or one
+/// object whose pose is `furnish`.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ObjectEntry {
     Object(Sampled<Object>),
     ItemKind(ItemKindEntry),
+    Furnished(FurnishEntry),
 }
 
 impl Serialize for ObjectEntry {
@@ -379,21 +387,47 @@ impl Serialize for ObjectEntry {
         match self {
             ObjectEntry::Object(object) => object.serialize(serializer),
             ObjectEntry::ItemKind(entry) => entry.written.serialize(serializer),
+            ObjectEntry::Furnished(entry) => entry.written.serialize(serializer),
         }
     }
 }
 
-/// An object that holds the key `item_kind` is an entry of an item kind.
+/// An object that holds the key `item_kind` is an entry of an item kind,
+/// and an object whose pose holds the key `furnish` is a furnish pose.
 impl<'de> Deserialize<'de> for ObjectEntry {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<ObjectEntry, D::Error> {
         let value = Value::deserialize(deserializer)?;
-        let entry = match value {
-            Value::Object(fields) if fields.contains_key("item_kind") => {
-                ItemKindEntry::of(fields).map(ObjectEntry::ItemKind)
-            }
-            value => Sampled::of(value).map(ObjectEntry::Object),
+        ObjectEntry::of(value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl ObjectEntry {
+    /// The entry `value` writes. Refuses a scale `{ min, max }` on an entry
+    /// whose pose is not `furnish`; an entry of an item kind refuses a
+    /// furnish pose ([`Sampled::of`]).
+    fn of(value: Value) -> Result<ObjectEntry, Error> {
+        let fields = match value {
+            Value::Object(fields) => fields,
+            value => return Sampled::of(value).map(ObjectEntry::Object),
         };
-        entry.map_err(serde::de::Error::custom)
+        let of_an_item_kind = fields.contains_key("item_kind");
+        if writes_a_furnish_pose(&fields) && !of_an_item_kind {
+            return FurnishEntry::of(fields).map(ObjectEntry::Furnished);
+        }
+        let scale_range = fields
+            .get("scale")
+            .and_then(Value::as_object)
+            .is_some_and(|scale| scale.contains_key("min") || scale.contains_key("max"));
+        if scale_range {
+            return Err(Error::field(
+                "scale",
+                "a scale `{ min, max }` is for an object whose pose is `furnish`, whose scale the solver picks; write one scale, or `{ range }` or `{ one_of }` of scales",
+            ));
+        }
+        match of_an_item_kind {
+            true => ItemKindEntry::of(fields).map(ObjectEntry::ItemKind),
+            false => Sampled::of(Value::Object(fields)).map(ObjectEntry::Object),
+        }
     }
 }
 
@@ -522,10 +556,11 @@ impl WorldPattern {
 
     /// The pattern of fields whose bases are folded in. Refuses a missing
     /// catalogue or scene, a mark with no base entry, an entry of an item
-    /// kind that adds the name of another entry or of a scene object, a
-    /// `reachable_by` that names no robot with a body, and a distance that
-    /// names no robot with a body or, without `per_robot`, a pattern with
-    /// other than one robot with a body.
+    /// kind that adds the name of another entry or of a scene object, the
+    /// furnish poses that break a rule across entries
+    /// ([`check_furnish_poses`]), a `reachable_by` that names no robot with
+    /// a body, and a distance that names no robot with a body or, without
+    /// `per_robot`, a pattern with other than one robot with a body.
     pub(crate) fn of_fields(fields: WorldFields, origin: Origin) -> Result<WorldPattern, Error> {
         let (catalogue, _) = fields.catalogue_and_scene(origin)?;
         let marked = fields.marked_maps(origin)?;
@@ -548,6 +583,15 @@ impl WorldPattern {
                 ));
             }
         }
+        let pieces = marked
+            .objects
+            .iter()
+            .filter_map(|(name, entry)| match entry {
+                ObjectEntry::Furnished(piece) => Some((*name, piece)),
+                _ => None,
+            })
+            .collect();
+        check_furnish_poses(&pieces, &marked.robots)?;
         let with_a_body: BTreeSet<&RobotName> = marked
             .robots
             .iter()
@@ -648,15 +692,16 @@ impl WorldPattern {
         Ok(Document::of(WORLD, &fields)?.to_json5())
     }
 
-    /// Whether every seed gives the same world: no sampler and no entry of
-    /// an item kind.
+    /// Whether every seed gives the same world: no sampler, no entry of an
+    /// item kind and no furnish pose.
     pub fn is_concrete(&self) -> bool {
-        let no_item_kind = self
-            .fields
-            .objects
-            .values()
-            .all(|entry| !matches!(entry, Entry::Value(ObjectEntry::ItemKind(_))));
-        no_item_kind && self.entry_sites(None).is_empty()
+        let each_object_fixed = self.fields.objects.values().all(|entry| {
+            !matches!(
+                entry,
+                Entry::Value(ObjectEntry::ItemKind(_) | ObjectEntry::Furnished(_))
+            )
+        });
+        each_object_fixed && self.entry_sites(None).is_empty()
     }
 
     /// The robots of the pattern, each with its join.
@@ -683,31 +728,22 @@ impl WorldPattern {
     /// `None` in the set for the physics of the catalogue, and no set for a
     /// name that the pattern gives no object.
     pub fn physics_of(&self, name: &Name) -> Option<BTreeSet<Option<Physics>>> {
-        let entry = self.fields.objects.iter().find_map(|(key, entry)| {
+        self.fields.objects.iter().find_map(|(key, entry)| {
             let Entry::Value(entry) = entry else {
                 return None;
             };
             match entry {
-                ObjectEntry::Object(object) if key == name => Some(object),
+                ObjectEntry::Object(object) if key == name => Some(physics_candidates(object)),
+                ObjectEntry::Furnished(piece) if key == name => Some(piece.physics_in_worlds()),
                 ObjectEntry::ItemKind(kind)
                     if (1..=kind.count.most())
                         .any(|index| ItemKindEntry::object_name(key, index) == *name) =>
                 {
-                    Some(&kind.template)
+                    Some(physics_candidates(&kind.template))
                 }
                 _ => None,
             }
-        })?;
-        let physics = match entry {
-            Sampled::Fixed(object) => BTreeSet::from([object.physics]),
-            Sampled::Drawn(drawn) => drawn
-                .candidate_values::<Object>()
-                .expect("the candidates of a pattern read")
-                .into_iter()
-                .map(|object| object.physics)
-                .collect(),
-        };
-        Some(physics)
+        })
     }
 
     /// An expansion of the pattern with `seed`: each sampler that the seed
@@ -772,8 +808,9 @@ impl WorldPattern {
     /// largest count of objects, each with the first asset of its kind in
     /// the order of their names, and for each other asset of a kind one more
     /// world gives that asset to the objects of its entries. Each placement
-    /// stands at the origin, with yaw 0,
-    /// where an expansion has the simulation draw it. Each world is named as
+    /// stands at the origin, with yaw 0, and each piece of the furnish layout
+    /// at the least scale of its range, where an expansion has the
+    /// simulation draw it. Each world is named as
     /// the expansion of seed 0 names its world. `assets_of_kind` is that of
     /// [`WorldPattern::expansion`]; an entry of an item kind with no asset is
     /// refused.
@@ -886,6 +923,18 @@ impl WorldPattern {
             })
     }
 
+    /// Each entry of `objects` whose pose is `furnish`, by its name, in the
+    /// order of the names.
+    fn furnish_entries(&self) -> impl Iterator<Item = (&Name, &FurnishEntry)> {
+        self.fields
+            .objects
+            .iter()
+            .filter_map(|(name, entry)| match entry {
+                Entry::Value(ObjectEntry::Furnished(entry)) => Some((name, entry)),
+                _ => None,
+            })
+    }
+
     /// Each entry that holds samplers, by the path of its value: in the
     /// concrete world of an expansion, with the objects that `added` adds in
     /// place of their entry of an item kind, or in the pattern with no
@@ -904,7 +953,13 @@ impl WorldPattern {
         push_drawn(&mut entries, "scene_objects", &fields.scene_objects);
         for (name, entry) in &fields.objects {
             match entry {
-                Entry::Value(ObjectEntry::Object(Sampled::Drawn(drawn))) => {
+                Entry::Value(
+                    ObjectEntry::Object(Sampled::Drawn(drawn))
+                    | ObjectEntry::Furnished(FurnishEntry {
+                        template: Sampled::Drawn(drawn),
+                        ..
+                    }),
+                ) => {
                     entries.push((objects_path(name), drawn));
                 }
                 Entry::Value(ObjectEntry::ItemKind(kind)) => {
@@ -968,6 +1023,20 @@ fn objects_path(name: &Name) -> SitePath {
     ])
 }
 
+/// Each physics that the object entry `object` can take, `None` for the
+/// physics of the catalogue.
+pub(crate) fn physics_candidates(object: &Sampled<Object>) -> BTreeSet<Option<Physics>> {
+    match object {
+        Sampled::Fixed(object) => BTreeSet::from([object.physics]),
+        Sampled::Drawn(drawn) => drawn
+            .candidate_values::<Object>()
+            .expect("the candidates of a pattern read")
+            .into_iter()
+            .map(|object| object.physics)
+            .collect(),
+    }
+}
+
 /// Whether a robot entry stands the robot: a robot with a body has a stand.
 fn stands(robot: &Sampled<Robot>) -> bool {
     match robot {
@@ -994,18 +1063,24 @@ pub struct Expansion {
     added: BTreeMap<Name, Added>,
 }
 
-/// A stand or a pose that the simulation draws or places in a model of the
-/// drawn world.
+/// The furnish layout, a stand or a pose that the simulation draws or
+/// places in a model of the drawn world.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlacementSite {
     /// The path of the value that the placement gives in the concrete world:
-    /// a pose, the position of a stand, or a stand that draws nothing.
+    /// a pose, the position of a stand, or a stand that draws nothing; for
+    /// the furnish layout, `furnish`, the path of its placed value.
     pub path: SitePath,
     pub kind: PlacementKind,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlacementKind {
+    /// The layout of every object whose pose is `furnish`, in the order of
+    /// their names, which one call of the solver draws. Its placed value is
+    /// an object from the name of each piece to its place, `{ position: [x,
+    /// y, z], yaw, scale }`.
+    Furnish { pieces: Vec<FurnishPiece> },
     /// A pose of the object, drawn by its sampler: `on` or `in`.
     ObjectPose { object: Name, sampler: Sampler },
     /// The stand of the robot: its position drawn in a region, or its stand
@@ -1024,10 +1099,12 @@ pub enum StandAt {
 
 impl PlacementKind {
     /// A value of the form that the placement gives, at the origin, for a
-    /// world that takes it before the simulation draws it; none for a stand
-    /// at a surface, which draws nothing.
+    /// world that takes it before the simulation draws it: each piece of the
+    /// furnish layout at the least scale of its range. None for a stand at a
+    /// surface, which draws nothing.
     fn placeholder(&self) -> Option<Value> {
         match self {
+            PlacementKind::Furnish { pieces } => Some(placeholder_places(pieces)),
             PlacementKind::ObjectPose { .. } => Some(placeholder(SiteRule::Pose)),
             PlacementKind::Stand {
                 at: StandAt::Region(_),
@@ -1040,10 +1117,12 @@ impl PlacementKind {
         }
     }
 
-    /// The draws without `reachable_by` come first, then the stands, then
-    /// the draws with `reachable_by`, when no dependency sets the order.
+    /// The furnish layout comes first, then the draws without
+    /// `reachable_by`, then the stands, then the draws with `reachable_by`,
+    /// when no dependency sets the order.
     fn group(&self) -> u8 {
         match self {
+            PlacementKind::Furnish { .. } => 0,
             PlacementKind::ObjectPose {
                 sampler:
                     Sampler::On {
@@ -1051,9 +1130,18 @@ impl PlacementKind {
                         ..
                     },
                 ..
-            } => 2,
-            PlacementKind::ObjectPose { .. } => 0,
-            PlacementKind::Stand { .. } => 1,
+            } => 3,
+            PlacementKind::ObjectPose { .. } => 1,
+            PlacementKind::Stand { .. } => 2,
+        }
+    }
+
+    /// The objects whose poses the placement gives.
+    fn objects(&self) -> Vec<&Name> {
+        match self {
+            PlacementKind::Furnish { pieces } => pieces.iter().map(|piece| &piece.object).collect(),
+            PlacementKind::ObjectPose { object, .. } => vec![object],
+            PlacementKind::Stand { .. } => Vec::new(),
         }
     }
 }
@@ -1068,7 +1156,8 @@ impl Expansion {
     }
 
     /// The stream of the sampler at `path` in the concrete world, from which
-    /// the simulation draws its placement.
+    /// the simulation draws its placement: for the furnish layout, the path
+    /// `furnish`, whose first value seeds the solver.
     pub fn stream(&self, path: &SitePath) -> Stream {
         Stream::new(self.seed, path)
     }
@@ -1093,16 +1182,25 @@ impl Expansion {
     }
 
     /// The placements of the expansion, in the order the simulation draws
-    /// them. A placement comes after each placement it depends on: a stand at
-    /// a work surface after the pose of the object of that surface, a pose
-    /// `on` a work surface after the pose of its object, and a pose with
-    /// `reachable_by` after the stand of its robot. With no dependency, the
-    /// draws without `reachable_by` come first, then the stands, then the
-    /// draws with `reachable_by`, each group in the order of the paths.
-    /// Refuses a cycle of dependencies, naming its placements. The
-    /// placements keep the expansion ([`Placements::expansion`]).
+    /// them. The furnish layout, when the pattern has a furnish pose, comes
+    /// first of all. A placement comes after each placement it depends on: a
+    /// stand at a work surface after the pose of the object of that surface,
+    /// a pose `on` a work surface after the pose of its object, and a pose
+    /// with `reachable_by` after the stand of its robot; the furnish layout
+    /// gives the pose of each piece. With no dependency, the draws without
+    /// `reachable_by` come first, then the stands, then the draws with
+    /// `reachable_by`, each group in the order of the paths. Refuses a cycle
+    /// of dependencies, naming its placements. The placements keep the
+    /// expansion ([`Placements::expansion`]).
     pub fn placements(self) -> Result<Placements, Error> {
         let mut placements = Vec::new();
+        let pieces = self.furnish_pieces()?;
+        if !pieces.is_empty() {
+            placements.push(PlacementSite {
+                path: furnish_path(),
+                kind: PlacementKind::Furnish { pieces },
+            });
+        }
         for (root, site) in self.pattern.entry_sites(Some(&self.added)) {
             if !site.sampler.is_placement() {
                 continue;
@@ -1128,10 +1226,8 @@ impl Expansion {
         }
         let placed_objects: BTreeSet<Name> = placements
             .iter()
-            .filter_map(|placement| match &placement.kind {
-                PlacementKind::ObjectPose { object, .. } => Some(object.clone()),
-                PlacementKind::Stand { .. } => None,
-            })
+            .flat_map(|placement| placement.kind.objects())
+            .cloned()
             .collect();
         let robots_path = SitePath::new(vec![Segment::Key("robots".to_owned())]);
         let mut holders = BTreeMap::new();
@@ -1153,6 +1249,19 @@ impl Expansion {
             sites,
             holders,
         })
+    }
+
+    /// Each piece of the furnish layout, in the order of the names, with
+    /// the values that the seed draws.
+    fn furnish_pieces(&self) -> Result<Vec<FurnishPiece>, Error> {
+        self.pattern
+            .furnish_entries()
+            .map(|(name, entry)| {
+                let drawn =
+                    self.concrete(&objects_path(name), &entry.template, &BTreeMap::new())?;
+                Ok(entry.piece(name, drawn))
+            })
+            .collect()
     }
 
     /// Each robot whose drawn stand is at a work surface, with the object of
@@ -1194,11 +1303,19 @@ impl Expansion {
 
     /// The concrete world of the expansion, with the value of each placement
     /// by its path in `placed`: a pose for a pose, a position `[x, y, z]` for
-    /// the position of a stand. Its name is that of the pattern with
+    /// the position of a stand, and for the furnish layout an object from
+    /// the name of each piece to its place, `{ position: [x, y, z], yaw,
+    /// scale }`. Each piece takes the pose `{ position, yaw }` and the scale
+    /// of its place, and the physics `static` when it has a station, as the
+    /// solver sets it up. Its name is that of the pattern with
     /// `_seed_<seed>`, its revision that of the pattern. Refuses a placement
-    /// with no value, and a value that the world refuses, by its path.
+    /// with no value, a value that the world refuses, by its path, and a
+    /// furnish layout that gives no place to a piece, a place to an object
+    /// that is no piece, a place of another form, or a scale outside the
+    /// range of its piece.
     pub fn world(&self, placed: &BTreeMap<SitePath, Value>) -> Result<World, Error> {
         let pattern = &self.pattern;
+        let places = places_of(&pattern.furnish_entries().collect(), placed)?;
         let mut fields = pattern.fields.clone();
         fields.manifest = Manifest {
             name: format!("{}_seed_{}", pattern.manifest.name, self.seed),
@@ -1226,6 +1343,12 @@ impl Expansion {
                 ObjectEntry::Object(object) => {
                     let concrete = self.concrete(&objects_path(&name), &object, placed)?;
                     let entry = ObjectEntry::Object(Sampled::Fixed(concrete));
+                    objects.insert(name, Entry::Value(entry));
+                }
+                ObjectEntry::Furnished(piece) => {
+                    let drawn = self.concrete(&objects_path(&name), &piece.template, placed)?;
+                    let place = places.get(&name).expect("each piece has a place");
+                    let entry = ObjectEntry::Object(Sampled::Fixed(piece.placed(drawn, place)));
                     objects.insert(name, Entry::Value(entry));
                 }
                 ObjectEntry::ItemKind(kind) => {
@@ -1330,8 +1453,9 @@ impl Placements {
     }
 
     /// The world of the expansion with each placement at a placeholder: a
-    /// pose at the origin with yaw 0, the position of a stand at the origin;
-    /// a stand at a work surface keeps its value.
+    /// pose at the origin with yaw 0, the position of a stand at the origin,
+    /// each piece of the furnish layout at the origin with yaw 0 and the
+    /// least scale of its range; a stand at a work surface keeps its value.
     pub fn placeholder_world(&self) -> Result<World, Error> {
         let placed = self
             .sites
@@ -1343,11 +1467,12 @@ impl Placements {
 
     /// The world of the placements that `placed` holds so far, as
     /// [`Expansion::world`] gives it with each other placement left out: an
-    /// object whose pose has no value, a scene object whose pose has no
-    /// value, removed, the stand of a robot whose position has no value, and
-    /// the stand of a robot at a work surface of an object left out. The
-    /// simulation builds its model of the drawn world from it before it
-    /// draws the next placement.
+    /// object whose pose has no value, each piece of a furnish layout that
+    /// has no value, a scene object whose pose has no value, removed, the
+    /// stand of a robot whose position has no value, and the stand of a
+    /// robot at a work surface of an object left out. The simulation builds
+    /// its model of the drawn world from it before it draws the next
+    /// placement.
     pub fn world_so_far(&self, placed: &BTreeMap<SitePath, Value>) -> Result<World, Error> {
         let mut filled = placed.clone();
         let mut left_out = BTreeSet::new();
@@ -1362,12 +1487,19 @@ impl Placements {
                 continue;
             };
             match &placement.kind {
-                PlacementKind::ObjectPose { object, .. } if placement.is_of_a_scene_object() => {
-                    removed.insert(object.clone())
+                PlacementKind::Furnish { pieces } => {
+                    left_out.extend(pieces.iter().map(|piece| piece.object.clone()));
                 }
-                PlacementKind::ObjectPose { object, .. } => left_out.insert(object.clone()),
-                PlacementKind::Stand { robot, .. } => standless.insert(robot.clone()),
-            };
+                PlacementKind::ObjectPose { object, .. } if placement.is_of_a_scene_object() => {
+                    removed.insert(object.clone());
+                }
+                PlacementKind::ObjectPose { object, .. } => {
+                    left_out.insert(object.clone());
+                }
+                PlacementKind::Stand { robot, .. } => {
+                    standless.insert(robot.clone());
+                }
+            }
             filled.insert(placement.path.clone(), placeholder);
         }
         for (robot, holder) in &self.holders {
@@ -1405,9 +1537,12 @@ fn ordered(placements: Vec<PlacementSite>) -> Result<Vec<PlacementSite>, Error> 
     let object_at: BTreeMap<&Name, usize> = placements
         .iter()
         .enumerate()
-        .filter_map(|(index, placement)| match &placement.kind {
-            PlacementKind::ObjectPose { object, .. } => Some((object, index)),
-            PlacementKind::Stand { .. } => None,
+        .flat_map(|(index, placement)| {
+            placement
+                .kind
+                .objects()
+                .into_iter()
+                .map(move |object| (object, index))
         })
         .collect();
     let robot_at: BTreeMap<&RobotName, usize> = placements
@@ -1415,7 +1550,7 @@ fn ordered(placements: Vec<PlacementSite>) -> Result<Vec<PlacementSite>, Error> 
         .enumerate()
         .filter_map(|(index, placement)| match &placement.kind {
             PlacementKind::Stand { robot, .. } => Some((robot, index)),
-            PlacementKind::ObjectPose { .. } => None,
+            PlacementKind::Furnish { .. } | PlacementKind::ObjectPose { .. } => None,
         })
         .collect();
     let after: Vec<BTreeSet<usize>> = placements
@@ -1441,7 +1576,8 @@ fn ordered(placements: Vec<PlacementSite>) -> Result<Vec<PlacementSite>, Error> 
                 at: StandAt::Surface(holder),
                 ..
             } => object_at.get(holder).copied().into_iter().collect(),
-            PlacementKind::ObjectPose { .. }
+            PlacementKind::Furnish { .. }
+            | PlacementKind::ObjectPose { .. }
             | PlacementKind::Stand {
                 at: StandAt::Region(_),
                 ..
@@ -1478,7 +1614,7 @@ fn ordered(placements: Vec<PlacementSite>) -> Result<Vec<PlacementSite>, Error> 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::world::tests::{RELEASE, name, robot};
     use crate::{Feature, Offset, Pose, Stand};
@@ -1530,13 +1666,21 @@ mod tests {
     }
 
     /// A value for each placement: a pose for a pose, a position for a stand
-    /// in a region.
-    fn placed(placements: &[PlacementSite]) -> BTreeMap<SitePath, Value> {
+    /// in a region, and for the furnish layout each piece number `k` at
+    /// `[k, 3, 0]`, with yaw 0.5, at the largest scale of its range.
+    pub(crate) fn placed(placements: &[PlacementSite]) -> BTreeMap<SitePath, Value> {
         placements
             .iter()
             .enumerate()
             .filter_map(|(index, placement)| {
                 let value = match &placement.kind {
+                    PlacementKind::Furnish { pieces } => {
+                        let places = pieces.iter().enumerate().map(|(k, piece)| {
+                            let place = json!({ "position": [k as f64, 3.0, 0.0], "yaw": 0.5, "scale": piece.scale.max });
+                            (piece.object.to_string(), place)
+                        });
+                        Value::Object(places.collect())
+                    }
                     PlacementKind::ObjectPose { .. } => {
                         json!({ "position": [index as f64, 0.0, 0.8], "yaw": 0.0 })
                     }

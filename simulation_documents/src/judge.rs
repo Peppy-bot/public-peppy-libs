@@ -27,7 +27,7 @@ impl Serialize for Judge {
 }
 
 /// The keys that name a check, each the key of one variant of [`Check`].
-const CHECKS: [&str; 14] = [
+const CHECKS: [&str; 15] = [
     "count",
     "landmark_on",
     "contents_on",
@@ -39,6 +39,7 @@ const CHECKS: [&str; 14] = [
     "crushed",
     "reachable",
     "control",
+    "clear_ways",
     "all",
     "any",
     "not",
@@ -95,6 +96,7 @@ pub enum Check {
     Crushed(Name),
     Reachable(Reachable),
     Control(Control),
+    ClearWays(ClearWays),
     /// Every judge holds; names at least one.
     #[serde(deserialize_with = "all_judges")]
     All(Vec<Judge>),
@@ -142,6 +144,17 @@ pub struct NearPoint {
 pub struct Reachable {
     pub robot: RobotName,
     pub target: Target,
+}
+
+/// The ways of the room are clear: each doorway of the scene is clear over
+/// its width and 1.0 m into the room, no object but a wall enters the zone
+/// of a window, and a walkway `walkway_m` wide joins the entry of the free
+/// floor to the box, seen from above, of each robot that stands, by the
+/// rules of the furnish layout: robots are no obstacle.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, expecting = "a clear_ways, { walkway_m }")]
+pub struct ClearWays {
+    pub walkway_m: WithinM,
 }
 
 /// The control value is within the bounds.
@@ -476,7 +489,7 @@ impl From<Place> for PlaceFields {
     }
 }
 
-/// A distance a judge compares at, metres, above 0.
+/// A distance a judge compares at or a width it keeps clear, metres, above 0.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "f64", into = "f64")]
 pub struct WithinM(f64);
@@ -622,7 +635,7 @@ mod tests {
 
     /// The refusal of a value that is not a judge, at the first judge of a
     /// list.
-    const JUDGE_FORM: &str = "[0]: a judge is `true` or an object with one key naming a check: `count`, `landmark_on`, `contents_on`, `belt_line`, `in_band`, `spans_band`, `near_point`, `broken`, `crushed`, `reachable`, `control`, `all`, `any`, `not`";
+    const JUDGE_FORM: &str = "[0]: a judge is `true` or an object with one key naming a check: `count`, `landmark_on`, `contents_on`, `belt_line`, `in_band`, `spans_band`, `near_point`, `broken`, `crushed`, `reachable`, `control`, `clear_ways`, `all`, `any`, `not`";
 
     const JUDGES: &str = r#"[
   { count: { item_kind: "book", in: { object: "crate" }, at_least: 2 } },
@@ -637,6 +650,7 @@ mod tests {
   { crushed: "can" },
   { reachable: { robot: "alpha", target: { object: "crate", landmark: "top" } } },
   { control: { object: "cooker", id: "heat", at_least: 2 } },
+  { clear_ways: { walkway_m: 0.8 } },
   { all: [{ broken: "egg" }, { not: { crushed: "can" } }] },
   { any: [true, { broken: "egg" }] },
   true,
@@ -645,7 +659,7 @@ mod tests {
     #[test]
     fn every_judge_of_the_table_parses_and_writes_back_to_the_same_list() {
         let judges = Judge::parse_list(JUDGES).unwrap();
-        assert_eq!(judges.len(), 15);
+        assert_eq!(judges.len(), 16);
         assert_eq!(
             judges[0],
             Check::Count(Count {
@@ -671,10 +685,17 @@ mod tests {
             .into()
         );
         assert_eq!(
-            judges[13],
+            judges[12],
+            Check::ClearWays(ClearWays {
+                walkway_m: WithinM::try_from(0.8).unwrap()
+            })
+            .into()
+        );
+        assert_eq!(
+            judges[14],
             Check::Any(vec![Judge::True, Check::Broken(name("egg")).into()]).into()
         );
-        assert_eq!(judges[14], Judge::True);
+        assert_eq!(judges[15], Judge::True);
         let written = Judge::list_to_json5(&judges).unwrap();
         assert!(written.ends_with("  true,\n]"), "{written}");
         assert_eq!(Judge::parse_list(&written).unwrap(), judges);
@@ -691,6 +712,7 @@ mod tests {
             ("near_point", "a near_point, { object, point, within_m }"),
             ("reachable", "a reachable, { robot, target }"),
             ("control", "a control, { object, id, at_least, at_most }"),
+            ("clear_ways", "a clear_ways, { walkway_m }"),
             (
                 "count",
                 "a count, { item_kind, in, at_least, at_most, each_holding }",
@@ -757,6 +779,18 @@ mod tests {
                 "[0]: near_point.within_m: 0 is not above 0; write a distance above 0 metres",
             ),
             (
+                r#"[{ clear_ways: { walkway_m: 0 } }]"#,
+                "[0]: clear_ways.walkway_m: 0 is not above 0; write a distance above 0 metres",
+            ),
+            (
+                r#"[{ clear_ways: { walkway_m: -0.8 } }]"#,
+                "[0]: clear_ways.walkway_m: -0.8 is not above 0; write a distance above 0 metres",
+            ),
+            (
+                r#"[{ clear_ways: {} }]"#,
+                "[0]: clear_ways: missing field `walkway_m`",
+            ),
+            (
                 r#"[{ belt_line: ["belt_1"] }]"#,
                 "[0]: belt_line: a belt line names at least two modules; name every module of the line",
             ),
@@ -816,6 +850,7 @@ mod tests {
             r#"near_point: { object: "cup", point: [0, 0, 0], within_m: 0.05, typo: 1 }"#,
             r#"reachable: { robot: "alpha", target: { object: "crate" }, typo: 1 }"#,
             r#"control: { object: "cooker", id: "heat", at_least: 2, typo: 1 }"#,
+            r#"clear_ways: { walkway_m: 0.8, typo: 1 }"#,
         ];
         for judge in judges {
             let error = Judge::parse_list(&format!("[{{ {judge} }}]"))
@@ -889,6 +924,7 @@ mod tests {
             Check::Crushed(_) => "crushed",
             Check::Reachable(_) => "reachable",
             Check::Control(_) => "control",
+            Check::ClearWays(_) => "clear_ways",
             Check::All(_) => "all",
             Check::Any(_) => "any",
             Check::Not(_) => "not",
@@ -951,6 +987,9 @@ mod tests {
                     at_least: Some(2.0),
                     at_most: None,
                 },
+            }),
+            Check::ClearWays(ClearWays {
+                walkway_m: WithinM::try_from(0.8).unwrap(),
             }),
             Check::All(vec![Judge::True]),
             Check::Any(vec![Judge::True]),

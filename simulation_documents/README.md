@@ -95,24 +95,81 @@ the JSON5 texts that `measure` of simulation_world takes and gives: the
 parameters, and one value per parameter, or one per robot of its
 `per_robot`; `Measurements::check` refuses measurements of another shape.
 
+The pose of an entry of `objects` may be `{ furnish: <rule>, stations:
+[<station>, ...] }`, `stations` optional: a piece that the simulation lays
+out in the room together with every other such piece, in one call of its
+solver. The rule is an object with one key:
+
+- `{ against_wall: { on_wall } }`: the back of the piece, the side opposite
+  its front, against the wall whose id `on_wall` gives, or against any wall
+  when `on_wall` is left out;
+- `{ in_corner: {} }`: the back against one wall and one side against
+  another wall that meets it;
+- `{ free: { near: [x, y] } }`: walkway room on every side, nearest the
+  point `near` when it is given;
+- `{ beside: { object, gap_m } }`: against the same wall as `object`, side
+  by side with it at a gap of `gap_m` metres, at least 0;
+- `{ facing: { object, distance_m } }`: front to front with `object`,
+  `distance_m` metres between the two fronts, above 0.
+
+The `object` of `beside` and `facing` is another object of the pattern
+whose pose is `furnish`, `beside` names a piece whose rule is
+`against_wall` or `in_corner`, and the rules name each other in no cycle. A
+station is the room that a robot needs to work a work surface of the piece
+from one of its sides: `{ landmark, side, robot }` for a robot of the
+pattern, or `{ landmark, side, depth_m, width_m }` for a room of that size,
+`depth_m` deep out of the edge of the side and `width_m` wide along it, each
+above 0. No two stations of a piece work one side of one landmark. The robot
+of a station stands at it: its stand is `{ object: <the piece>, landmark,
+side }` of the station, without an offset, one station names it, and a
+robot that stands at a piece is the robot of a station of that piece. A
+piece with a station stands still: its `physics` is `static` or left out,
+and the concrete world gives it `static`. The `scale` of a piece is a number
+or `{ min, max }`, each above 0 and `min` at most `max`, the range in which
+the solver picks the scale; a range whose ends differ is for a piece with
+the station of a robot, since the solver picks the scale at which the robots
+of its stations work its surfaces. The scale of a piece takes no sampler. An
+entry of an item kind and a scene object take no `furnish` pose, and an
+object whose pose is not `furnish` takes no scale `{ min, max }`.
+
 An `Expansion` of a pattern and a `Seed` draws each sampler that the seed
 alone draws: `one_of`, `range`, and the count and the asset of each object of
 an item kind. Each sampler draws from its own `Stream`, which the seed and the
 path of the sampler in the concrete world give (xoshiro256** from a sha256),
 so the same pattern and seed always give the same values, and an added entry
-changes no other value. The simulation draws each `PlacementSite`, a pose
-`on` a surface or `in` a region or a stand, in a model of the drawn world, in
-the order of `Expansion::placements`: after what each depends on (a stand at
-a work surface after the pose of its object, a pose on a work surface after
-its object, a pose with `reachable_by` after the stand of its robot),
-then the draws without `reachable_by`, the stands and the draws with
-`reachable_by`. A cycle is refused, naming its placements. Before each
-draw, the simulation builds its model from `Expansion::world_so_far`, the
-world of the placements drawn so far. `Expansion::world` gives the concrete
-world, named `<pattern>_seed_<seed>`. `WorldPattern::candidate_worlds` gives
-the worlds that check each value that a sampler can draw: one with each
-sampler at its first value, then one for each other value of each sampler,
-each placement at the origin; a check of a pattern checks each of them.
+changes no other value. The simulation draws each `PlacementSite`, the
+furnish layout, a pose `on` a surface or `in` a region or a stand, in a model
+of the drawn world, in the order of `Expansion::placements`. The furnish
+layout comes first of all, in a pattern with a furnish pose: one placement at
+the path `furnish`, `PlacementKind::Furnish`, with a `FurnishPiece` for each
+piece in the order of the names (its asset, physics, mass and controls after
+the draws of the seed, its scale range, its rule and its stations). The
+other placements come after what each depends on (a stand at a work surface
+after the pose of its object, a pose on a work surface after its object, a
+pose with `reachable_by` after the stand of its robot, and the furnish
+layout gives the pose of each piece), then the draws without
+`reachable_by`, the stands and the draws with `reachable_by`. So the stand of
+the robot of a station, a pose on a piece and a stand in a region come after
+the furnish layout. A cycle is refused, naming its placements. The
+simulation seeds its solver with `expansion.stream(&path).next_u64()`, the
+first value of the stream of the path of the furnish layout, and places the
+layout as one value: `{ "<object>": { position: [x, y, z], yaw, scale }, ...
+}`, with the place of each piece, its scale within its range. Before each
+draw, the simulation builds its model from `Placements::world_so_far`, the
+world of the placements drawn so far: it leaves out each piece, and the
+stand of each robot at a piece, until the furnish layout has its value.
+`Expansion::world` gives the concrete world, named `<pattern>_seed_<seed>`,
+each piece at the pose `{ position, yaw }` and the scale of its place, and
+refuses a furnish layout without a place for each piece, with a place of an
+object that is no piece, or with a scale outside the range of its piece. An
+expansion draws the world at once and takes no steps. The furnish poses of a
+pattern draw together: an added furnish pose can move the other pieces and
+what stands on them, and changes no other value.
+`WorldPattern::candidate_worlds` gives the worlds that check each value that
+a sampler can draw: one with each sampler at its first value, then one for
+each other value of each sampler, each placement at the origin and each
+piece at the least scale of its range; a check of a pattern checks each of
+them.
 
 A `SweepDocument` (`sweep/v1`) runs one workflow revision in many worlds: the
 launcher of its stack, the robot of each role, each world pattern with its
@@ -131,7 +188,12 @@ with a body with the limbs that it measures, and `StartSetup::world` makes the
 start world from the setup the simulation started with and where each robot
 first joined, at home. `Judge::parse_list` reads a
 JSON5 list of judges, `true` or one of the checks, and `Verdicts` holds a
-`holds` and a `why` for each.
+`holds` and a `why` for each. The check `{ clear_ways: { walkway_m } }`
+holds when each doorway of the scene is clear over its width and 1.0 m into
+the room, no object but a wall enters the zone of a window, and a walkway
+`walkway_m` wide, above 0, joins the entry of the free floor to the box,
+seen from above, of each robot that stands, by the rules of the furnish
+layout: robots are no obstacle.
 
 A `ClaimHolder` names the call of an applier of worlds (`world_applier:v1`
 and `sweep_runner:v1`) that holds the setup claim of a simulation: the
