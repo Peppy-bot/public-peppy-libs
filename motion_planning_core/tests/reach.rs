@@ -124,7 +124,7 @@ fn no_point_of_openarm_moves_farther_than_its_reach(tc: TestCase) {
         body: RiderBody::Shape(&object),
     };
     let riders: Vec<Rider> = left_fingers().into_iter().chain([held]).collect();
-    let arm = Arm::new(&LEFT_ARM, None)
+    let arm = Arm::new("left_arm", &LEFT_ARM)
         .riding(&riders)
         .expect("the fingers and the object ride the hand");
     assert_moves_within_reach(&tc, &arm);
@@ -216,7 +216,7 @@ impl ChainProperty for MovesWithinReach {
             [PART],
             "the chain carries the part"
         );
-        let arm = Arm::new(&geometry, None)
+        let arm = Arm::new("arm", &geometry)
             .riding(&riders)
             .expect("the part rides a link of the chain");
         assert_moves_within_reach(tc, &arm);
@@ -240,7 +240,7 @@ fn a_rider_off_the_arm_is_refused() {
         ..fingers[0]
     }];
     assert_eq!(
-        Arm::new(&LEFT_ARM, None).riding(&off).err(),
+        Arm::new("left_arm", &LEFT_ARM).riding(&off).err(),
         Some(RiderOffTheArm {
             name: fingers[0].name.to_string(),
             segment: JOINTS,

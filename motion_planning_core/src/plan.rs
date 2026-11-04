@@ -1,20 +1,23 @@
-//! Planning an arm path: the start, the goal configurations, OMPL's plan and its
-//! simplification, and the check of the path the robot runs.
+//! Planning the path of one or more arms that a plan moves together (`Arms`): the start,
+//! the goal configurations, OMPL's plan and its simplification, and the check of the path
+//! the robot runs. A state of the plan holds the joints of every arm, one arm after
+//! another.
 //!
 //! A motion is walked, and each arc of a rounded path, by conservative advancement. A
 //! joint turning by an angle moves a point of a link, or of a body a link carries, a part
-//! of the robot or an object, at most that angle times the joint's reach (`Arm::reach`).
-//! Each term of the clearances, as `Surroundings` holds them, is asked a clearance
-//! (`term_clearances`): `min_clearance_m` from the map and the objects and within the
-//! robot's own body, and 0 between an attached object and the links of the arm that
-//! carries it, outside its touch links, which keep out of contact. A term has `k` moving
-//! bodies: 1 for the map and the objects, which stand still, and 2 for the robot's own
-//! body and for an attached object against the arm that carries it, both bodies of whose
-//! pairs move. At each checked state the walk measures each term's distance, and the
-//! term's spare is its distance above the clearance asked of it over `k`: a step that
-//! moves no point of a link farther than the least spare of the terms keeps every state
-//! up to the next checked one at the clearance asked of each term or more. A step moves a
-//! point at most `MAX_STEP_M`. So:
+//! of the robot or an object, at most that angle times the joint's reach (`Arm::reach`);
+//! a point rides one arm, so a motion moves it at most the largest of the arms' bounds
+//! (`Arms::displacement`). Each term of the clearances, as `Surroundings` holds them, is
+//! asked a clearance (`term_clearances`): `min_clearance_m` from the map and the objects
+//! and within the robot's own body, and 0 between an attached object and the links of the
+//! arm that carries it, outside its touch links, which keep out of contact. A term has
+//! `k` moving bodies: 1 for the map and the objects, which stand still, and 2 for the
+//! robot's own body and for an attached object against the arm that carries it, both
+//! bodies of whose pairs move. At each checked state the walk measures each term's
+//! distance, and the term's spare is its distance above the clearance asked of it over
+//! `k`: a step that moves no point of a link farther than the least spare of the terms
+//! keeps every state up to the next checked one at the clearance asked of each term or
+//! more. A step moves a point at most `MAX_STEP_M`. So:
 //!
 //! - A state keeps the plan's clearance of each term: the clearance asked of it plus `k`
 //!   times `MIN_SPARE_M`, 1 mm from the map and the objects and 2 mm within the robot's
@@ -58,20 +61,21 @@
 //! - Run from the plan's start, the path keeps the clearance asked of each term as these
 //!   say. Run from up to a tolerance from the start in each joint, as a robot's
 //!   controller allows, it comes nearer anything near its start by at most the sum over
-//!   the joints of the tolerance times the joint's reach, as MoveIt's execution starts
-//!   within its allowed start tolerance and checks nothing more.
+//!   the joints of the tolerance times the joint's reach, over the joints of both arms for
+//!   a pair of two arms, as MoveIt's execution starts within its allowed start tolerance
+//!   and checks nothing more.
 //! - Each arc of a rounded path is walked from where it leaves a run to where it joins
 //!   the next, along the path: a step of the path's length moves a point at most the step
 //!   times the arc's lever, the sum over the joints of the largest share of the path's
 //!   unit tangent the joint has on the arc times its reach, at most the joints' reach in
-//!   their L2 norm (`Arm::lever_along`). A state on a run is not checked: the plan walks
-//!   every run of its answer, a run it joins past a waypoint it drops, one within
-//!   `MIN_JOINT_CHANGE_RAD` of the one before, among them. Each planned waypoint after
-//!   the start keeps the plan's clearances, so the start rule holds at no corner, and
-//!   each arc keeps the plan's clearances. A corner's repair adds waypoints at states its
-//!   runs' walks check that keep the plan's clearances, the start rule's among them, so
-//!   each run they split walks only states the plan walked: walked from a state it
-//!   checks, a run steps as the walk stepped.
+//!   their L2 norm, the largest of the arms' (`Arms::lever_along`). A state on a run is
+//!   not checked: the plan walks every run of its answer, a run it joins past a waypoint
+//!   it drops, one within `MIN_JOINT_CHANGE_RAD` of the one before, among them. Each
+//!   planned waypoint after the start keeps the plan's clearances, so the start rule
+//!   holds at no corner, and each arc keeps the plan's clearances. A corner's repair adds
+//!   waypoints at states its runs' walks check that keep the plan's clearances, the start
+//!   rule's among them, so each run they split walks only states the plan walked: walked
+//!   from a state it checks, a run steps as the walk stepped.
 //!
 //! The request's deadline bounds the plan as MoveIt's allowed planning time bounds a
 //! request: the goal sampling (`sample_goals`) samples up to `goal_samples` goals, ending
@@ -87,13 +91,13 @@
 //! plan answers its planned path if that passes its own check, and no path otherwise. The
 //! check of the rounded path runs to its end past the deadline.
 //!
-//! `check_arm_path` checks a caller's path with the same checks: each waypoint after the
+//! `check_path` checks a caller's path with the same checks: each waypoint after the
 //! start keeps the plan's clearances, each run keeps them as the plan's runs keep them,
 //! the run from the start by the start rule, and each arc as the plan's arcs; its walks
 //! end at the check's deadline.
 
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use chain_kinematics::Chain;
@@ -101,7 +105,8 @@ use control_core::path_timing::{MIN_JOINT_CHANGE_RAD, RoundedPath, distinct_join
 use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::{CheckError, Checks, Motion, PlanError, Planner, Request, Space, plan};
 
-use crate::arm::Arm;
+use crate::arm::Moving;
+use crate::arms::Arms;
 use crate::clearance::{Contact, Surroundings, TERMS, term_clearances};
 use crate::draws::{Draws, mixed_seed};
 use crate::goal::{Goal, GoalSampler};
@@ -168,15 +173,22 @@ impl<'a> Scene<'a> {
     }
 }
 
-/// One plan of an arm's path.
-pub struct PlanRequest<'a, const N: usize> {
-    /// Where the arm stands.
-    pub start: [f64; N],
-    /// How far, per joint, the start may lie outside a joint limit and still be moved
-    /// onto it.
-    pub start_tolerance: [f64; N],
+/// The goal of one arm of a plan: the constraints its last waypoint meets, and what finds
+/// configurations of the arm meeting them.
+pub struct ArmGoal<'a, const N: usize> {
     pub goal: &'a Goal,
     pub sampler: &'a dyn GoalSampler<N>,
+}
+
+/// One plan of the path of the arms of a group, `N` joints each and `D` in all.
+pub struct PlanRequest<'a, const N: usize, const D: usize> {
+    /// Where the arms stand.
+    pub start: [f64; D],
+    /// How far, per joint, the start may lie outside a joint limit and still be moved
+    /// onto it.
+    pub start_tolerance: [f64; D],
+    /// The goal of each arm, in the group's order.
+    pub goals: Vec<ArmGoal<'a, N>>,
     /// The most goals the plan samples, as MoveIt's `max_goal_samples` bounds the goal
     /// states its goal sampler adds (`sample_goals`).
     pub goal_samples: NonZeroUsize,
@@ -196,15 +208,15 @@ pub struct PlanRequest<'a, const N: usize> {
     pub stop: Option<&'a AtomicBool>,
 }
 
-/// A path to check, as limb_motion's execute_joint_path runs it.
-pub struct CheckRequest<'a, const N: usize> {
-    /// Where the arm stands.
-    pub start: [f64; N],
+/// A path of the arms of a group to check, as limb_motion's execute_joint_path runs it.
+pub struct CheckRequest<'a, const D: usize> {
+    /// Where the arms stand.
+    pub start: [f64; D],
     /// How far, per joint, the start may lie outside a joint limit and still be moved
     /// onto it, as a plan's.
-    pub start_tolerance: [f64; N],
-    /// The waypoints after the start, at least one.
-    pub waypoints: &'a [[f64; N]],
+    pub start_tolerance: [f64; D],
+    /// The waypoints after the start, at least one, each holding every arm's joints.
+    pub waypoints: &'a [[f64; D]],
     /// The clearance each state keeps, as `term_clearances` asks it of each term.
     pub min_clearance_m: f64,
     /// The instant the check ends by.
@@ -264,11 +276,13 @@ pub enum PathFault {
         low: f64,
         high: f64,
     },
-    /// A state at `place` falls short of a plan clearance: it lies `distances` meters
-    /// from the bodies of each term, and the plan keeps `clearances`.
-    #[error("{place}, {}", nearness(distances, clearances))]
+    /// A state at `place` of a path of `arms` arms falls short of a plan clearance: it
+    /// lies `distances` meters from the bodies of each term, and the plan keeps
+    /// `clearances`.
+    #[error("{place}, {}", nearness(*arms, distances, clearances))]
     Clearance {
         place: Place,
+        arms: usize,
         distances: [f64; TERMS],
         clearances: [f64; TERMS],
     },
@@ -297,22 +311,28 @@ impl std::fmt::Display for Place {
     }
 }
 
-/// How near a state comes that lies `distances` meters from the bodies of each term, of
-/// each term it keeps less than its plan clearance of `clearances`.
-fn nearness(distances: &[f64; TERMS], clearances: &[f64; TERMS]) -> String {
+/// How near a state of a path of `arms` arms comes that lies `distances` meters from the
+/// bodies of each term, of each term it keeps less than its plan clearance of
+/// `clearances`.
+fn nearness(arms: usize, distances: &[f64; TERMS], clearances: &[f64; TERMS]) -> String {
     let [world, own, held] = *distances;
     let [world_clearance, own_clearance, held_clearance] = *clearances;
+    let moving = if arms == 1 {
+        "the arm comes"
+    } else {
+        "the arms come"
+    };
     let terms = [
         (world < world_clearance).then(|| {
             format!(
-                "the arm comes {world:.4} m from the map and the objects, nearer than the \
-                 plan's clearance, {world_clearance:.4} m"
+                "{moving} {world:.4} m from the map and the objects, nearer than the plan's \
+                 clearance, {world_clearance:.4} m"
             )
         }),
         (own < own_clearance).then(|| {
             format!(
-                "the robot's own links come {own:.4} m apart, nearer than the plan's \
-                 clearance, {own_clearance:.4} m"
+                "the robot's own links and what they carry come {own:.4} m apart, nearer \
+                 than the plan's clearance, {own_clearance:.4} m"
             )
         }),
         (held < held_clearance).then(|| {
@@ -346,20 +366,29 @@ pub enum PlanFailure {
     Planner(#[from] PlanError),
 }
 
-/// Plans `request` for `arm` around `scene`: the waypoints of a path from the start to
-/// a configuration that meets the goal, whose rounded path, as execute_joint_path
+/// Plans `request` for `arms` around `scene`: the waypoints of a path from the start to
+/// a state at which each arm meets its goal, whose rounded path, as execute_joint_path
 /// rounds it, keeps its clearance.
-pub fn plan_arm_path<const N: usize>(
-    arm: &Arm<N>,
+///
+/// # Panics
+///
+/// When `request` holds a goal for other than each arm of `arms`.
+pub fn plan_path<const N: usize, const D: usize>(
+    arms: &Arms<N, D>,
     scene: &Scene,
-    request: &PlanRequest<N>,
-) -> Result<Vec<[f64; N]>, PlanFailure> {
+    request: &PlanRequest<N, D>,
+) -> Result<Vec<[f64; D]>, PlanFailure> {
+    assert_eq!(
+        request.goals.len(),
+        arms.arms().len(),
+        "a plan holds one goal for each arm"
+    );
     distances_in_range(request.min_clearance_m, &request.start_tolerance)
         .map_err(PlanFailure::Request)?;
-    let start = start_clear(arm, scene, &request.start, &request.start_tolerance)?;
-    let checks = ArmChecks::new(arm, scene, start, request.min_clearance_m);
+    let start = start_clear(arms, scene, &request.start, &request.start_tolerance)?;
+    let checks = PathChecks::new(arms, scene, start, request.min_clearance_m);
     let deadline = request.deadline;
-    let goals = goal_configurations(arm, &checks, request, &start, deadline)?;
+    let goals = goal_configurations(arms, &checks, request, &start, deadline)?;
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         return Err(PlanFailure::NoPath(format!(
@@ -367,8 +396,7 @@ pub fn plan_arm_path<const N: usize>(
             request.planner
         )));
     }
-    let limits = arm.geometry().chain().limits();
-    let bounds: Vec<(f64, f64)> = limits.iter().map(|l| (l.lo, l.hi)).collect();
+    let bounds: Vec<(f64, f64)> = arms.limits().iter().map(|l| (l.lo, l.hi)).collect();
     let space = Space::new(&bounds).map_err(|e| PlanFailure::NoPath(e.to_string()))?;
     let goal_values = vectors(&goals);
     let answer = plan(
@@ -411,19 +439,19 @@ pub fn plan_arm_path<const N: usize>(
 /// The answer of a plan whose planner found `path`: its waypoints, the waypoints added
 /// near its corners among them, when the path the robot runs through them passes its
 /// check, or why it does not. A set `stop` ends the check before its next run or corner.
-fn answered<const N: usize>(
-    checks: &ArmChecks<N>,
+fn answered<const N: usize, const D: usize>(
+    checks: &PathChecks<N, D>,
     path: &[Vec<f64>],
     deadline: Instant,
     stop: Option<&AtomicBool>,
-) -> Result<Vec<[f64; N]>, PlanFailure> {
-    let waypoints: Vec<[f64; N]> = path
+) -> Result<Vec<[f64; D]>, PlanFailure> {
+    let waypoints: Vec<[f64; D]> = path
         .iter()
         .map(|state| {
             state
                 .as_slice()
                 .try_into()
-                .expect("a state of the arm's space")
+                .expect("a state of the arms' space")
         })
         .collect();
     let answer = rounded_clear(
@@ -442,7 +470,7 @@ fn answered<const N: usize>(
     }
 }
 
-/// Checks the path of `request` for `arm` around `scene` with the checks of a plan's
+/// Checks the path of `request` for `arms` around `scene` with the checks of a plan's
 /// answer, as the module says: the start inside its limits by its tolerance and out of
 /// contact, each waypoint inside the joint limits and, after the start, at the plan's
 /// clearances, each run as the plan walks the runs of its answer, the first from the
@@ -453,19 +481,19 @@ fn answered<const N: usize>(
 /// one on the run from a waypoint, or on the corner rounded at it, the waypoints up to
 /// that one, the start counted as waypoint 0; one at a waypoint, those before it. A walk
 /// of a run or a corner that starts past the deadline ends the check.
-pub fn check_arm_path<const N: usize>(
-    arm: &Arm<N>,
+pub fn check_path<const N: usize, const D: usize>(
+    arms: &Arms<N, D>,
     scene: &Scene,
-    request: &CheckRequest<N>,
+    request: &CheckRequest<D>,
 ) -> Result<PathCheck, CheckFailure> {
-    check_arm_path_until(arm, scene, request, &|| Instant::now() >= request.deadline)
+    check_path_until(arms, scene, request, &|| Instant::now() >= request.deadline)
 }
 
-/// `check_arm_path`, its walks of a run or a corner ended once `ended` holds before them.
-fn check_arm_path_until<const N: usize>(
-    arm: &Arm<N>,
+/// `check_path`, its walks of a run or a corner ended once `ended` holds before them.
+fn check_path_until<const N: usize, const D: usize>(
+    arms: &Arms<N, D>,
     scene: &Scene,
-    request: &CheckRequest<N>,
+    request: &CheckRequest<D>,
     ended: &dyn Fn() -> bool,
 ) -> Result<PathCheck, CheckFailure> {
     distances_in_range(request.min_clearance_m, &request.start_tolerance)
@@ -475,7 +503,7 @@ fn check_arm_path_until<const N: usize>(
             "the path holds no waypoint after its start: give one or more".to_string(),
         ));
     }
-    let start = match start_clear(arm, scene, &request.start, &request.start_tolerance) {
+    let start = match start_clear(arms, scene, &request.start, &request.start_tolerance) {
         Ok(start) => start,
         Err(fault) => {
             return Ok(PathCheck {
@@ -484,20 +512,20 @@ fn check_arm_path_until<const N: usize>(
             });
         }
     };
-    let checks = ArmChecks::new(arm, scene, start, request.min_clearance_m);
-    let path: Vec<[f64; N]> = std::iter::once(start)
+    let checks = PathChecks::new(arms, scene, start, request.min_clearance_m);
+    let path: Vec<[f64; D]> = std::iter::once(start)
         .chain(request.waypoints.iter().copied())
         .collect();
     // Each fault with the waypoints its path leaves passing, and its rank among the
     // faults that leave as many: a corner's arc comes before the rest of the run from its
     // waypoint, and that run before the waypoint it ends at. The walks follow the run
     // into the first waypoint outside a limit up to where it leaves the limits, so a
-    // fault the arm meets on its way there comes first.
-    let outside = first_outside_limits(arm, &path);
+    // fault the arms meet on their way there comes first.
+    let outside = first_outside_limits(arms, &path);
     let (inside, walked) = match &outside {
         None => (path.as_slice(), path.clone()),
         Some((k, _)) => {
-            let leaving = where_it_leaves_the_limits(arm, &path[k - 1], &path[*k]);
+            let leaving = where_it_leaves_the_limits(arms, &path[k - 1], &path[*k]);
             (&path[..*k], [&path[..*k], &[leaving]].concat())
         }
     };
@@ -550,36 +578,48 @@ fn distances_in_range<const N: usize>(
         .try_for_each(|&t| distance("a start tolerance", t))
 }
 
-/// The start a plan or a check of `arm` takes from `start`: inside the joint limits by
-/// `tolerance` and out of contact with the map, the objects and the robot's own body.
-fn start_clear<const N: usize>(
-    arm: &Arm<N>,
+/// The start a plan or a check of `arms` takes from `start`: each arm's joints inside its
+/// joint limits by `tolerance`, the arms in the group's order, and out of contact with the
+/// map, the objects and the robot's own body.
+fn start_clear<const N: usize, const D: usize>(
+    arms: &Arms<N, D>,
     scene: &Scene,
-    start: &[f64; N],
-    tolerance: &[f64; N],
-) -> Result<[f64; N], StartFault> {
-    let start = start_inside_limits(arm.geometry().chain(), start, tolerance)?;
-    match scene.surroundings([0.0; TERMS]).contact(arm, &start) {
+    start: &[f64; D],
+    tolerance: &[f64; D],
+) -> Result<[f64; D], StartFault> {
+    let inside = arms
+        .arms()
+        .iter()
+        .enumerate()
+        .map(|(k, arm)| {
+            start_inside_limits(
+                arm.geometry().chain(),
+                &Arms::<N, D>::slice(start, k),
+                &Arms::<N, D>::slice(tolerance, k),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let start = Arms::<N, D>::join(&inside);
+    match scene.surroundings([0.0; TERMS]).contact(arms, &start) {
         Some(contact) => Err(StartFault::InCollision(contact)),
         None => Ok(start),
     }
 }
 
 /// The first waypoint of `path`, the start first, that holds a joint outside the limits of
-/// `arm`'s chain, by its index, and the fault.
-fn first_outside_limits<const N: usize>(
-    arm: &Arm<N>,
-    path: &[[f64; N]],
+/// `arms`' chains, by its index, and the fault.
+fn first_outside_limits<const N: usize, const D: usize>(
+    arms: &Arms<N, D>,
+    path: &[[f64; D]],
 ) -> Option<(usize, PathFault)> {
-    let chain = arm.geometry().chain();
-    let limits = chain.limits();
+    let limits = arms.limits();
     path.iter().enumerate().skip(1).find_map(|(k, q)| {
-        let joint = (0..N).find(|&i| !(limits[i].lo..=limits[i].hi).contains(&q[i]))?;
+        let joint = (0..D).find(|&i| !(limits[i].lo..=limits[i].hi).contains(&q[i]))?;
         Some((
             k,
             PathFault::OutsideLimits {
                 waypoint: k,
-                joint: chain.joint_name(joint).to_string(),
+                joint: arms.joint_name(joint).to_string(),
                 position: q[joint],
                 low: limits[joint].lo,
                 high: limits[joint].hi,
@@ -588,16 +628,16 @@ fn first_outside_limits<const N: usize>(
     })
 }
 
-/// The state where the straight run from `from`, inside the joint limits of `arm`'s
-/// chain, to `to`, outside them, leaves them: the first limit it crosses, held on it. A
+/// The state where the straight run from `from`, inside the joint limits of `arms`'
+/// chains, to `to`, outside them, leaves them: the first limit it crosses, held on it. A
 /// `to` with a value that is not finite leaves them at `from`.
-fn where_it_leaves_the_limits<const N: usize>(
-    arm: &Arm<N>,
-    from: &[f64; N],
-    to: &[f64; N],
-) -> [f64; N] {
-    let limits = arm.geometry().chain().limits();
-    let share = (0..N)
+fn where_it_leaves_the_limits<const N: usize, const D: usize>(
+    arms: &Arms<N, D>,
+    from: &[f64; D],
+    to: &[f64; D],
+) -> [f64; D] {
+    let limits = arms.limits();
+    let share = (0..D)
         .filter(|&i| !(limits[i].lo..=limits[i].hi).contains(&to[i]))
         .map(|i| {
             let bound = if to[i] > limits[i].hi {
@@ -654,34 +694,55 @@ pub fn start_inside_limits<const N: usize>(
         .map(|values| values.try_into().expect("one value per joint"))
 }
 
-/// The configurations that meet the goal and keep their clearance, sampled from the
-/// plan's `start` before `deadline` (`sample_goals`, the plan's clearance check deciding
-/// inside each sample), or why there are none; a set stop flag ends the plan.
-fn goal_configurations<const N: usize>(
-    arm: &Arm<N>,
-    checks: &ArmChecks<N>,
-    request: &PlanRequest<N>,
-    start: &[f64; N],
+/// The states at which each arm meets its goal and that keep their clearance, sampled from
+/// the plan's `start` before `deadline` (`sample_goals`, the plan's clearance check
+/// deciding inside each sample), or why there are none; a set stop flag ends the plan. Each
+/// turn of a sample judges the whole state from a start that keeps its clearances, as
+/// MoveIt's validity callback does, and from a start nearer than the plan's clearance,
+/// which the start rule plans from, the pairs `Moving::Arm` names of the turn's arm.
+fn goal_configurations<const N: usize, const D: usize>(
+    arms: &Arms<N, D>,
+    checks: &PathChecks<N, D>,
+    request: &PlanRequest<N, D>,
+    start: &[f64; D],
     deadline: Instant,
-) -> Result<Vec<[f64; N]>, PlanFailure> {
-    // The rejections of configurations that meet the goal and fall short of the
-    // clearances: how many, and the configuration that falls short least.
-    let short = std::cell::RefCell::new((0_usize, None::<([f64; N], f64)>));
-    let clear = |q: &[f64; N]| {
-        if checks.surroundings.clear(arm, q) {
+) -> Result<Vec<[f64; D]>, PlanFailure> {
+    // The rejections of states that fall short of the clearances in the pairs a turn
+    // judges: how many, and the state that falls short least, with those pairs.
+    let short = std::cell::RefCell::new((0_usize, None::<([f64; D], Moving, f64)>));
+    let start_keeps = !checks.start_short.contains(&true);
+    let clear = |q: &[f64; D], turn: Moving| {
+        let moving = if start_keeps { Moving::All } else { turn };
+        if checks.surroundings.clear_moving(arms, q, moving) {
             return true;
         }
-        let shortfall = checks.shortfall(q);
+        let shortfall = checks.shortfall(q, moving);
         let mut short = short.borrow_mut();
         short.0 += 1;
-        if short.1.is_none_or(|(_, least)| shortfall < least) {
-            short.1 = Some((*q, shortfall));
+        if short.1.is_none_or(|(_, _, least)| shortfall < least) {
+            short.1 = Some((*q, moving, shortfall));
         }
         false
     };
-    let goals = sample_goals(
-        request.sampler,
-        request.goal,
+    let recording: Vec<Recording<N>> = request
+        .goals
+        .iter()
+        .map(|goal| Recording {
+            sampler: goal.sampler,
+            found: AtomicBool::new(false),
+        })
+        .collect();
+    let goals: Vec<ArmGoal<N>> = request
+        .goals
+        .iter()
+        .zip(&recording)
+        .map(|(goal, sampler)| ArmGoal {
+            goal: goal.goal,
+            sampler,
+        })
+        .collect();
+    let sampled = sample_goals(
+        &goals,
         start,
         request.goal_samples,
         u64::from(request.seed),
@@ -691,20 +752,58 @@ fn goal_configurations<const N: usize>(
     if is_set(request.stop) {
         return Err(PlanFailure::Stopped);
     }
-    if !goals.is_empty() {
-        return Ok(goals);
+    if !sampled.is_empty() {
+        return Ok(sampled);
     }
+    let several = arms.arms().len() > 1;
     let (rejections, least_short) = short.into_inner();
-    let Some((least_short, _)) = least_short else {
+    let Some((least_short, moving, _)) = least_short else {
+        let of = arms
+            .arms()
+            .iter()
+            .zip(&recording)
+            .find(|(_, sampler)| !sampler.found.load(Ordering::Relaxed))
+            .filter(|_| several)
+            .map_or(String::new(), |(arm, _)| format!(" of {}", arm.name()));
         return Err(PlanFailure::Unreachable(format!(
-            "inverse kinematics found no configuration that meets the goal in {MAX_GOAL_SAMPLING_ATTEMPTS} goal samples or by the deadline"
+            "inverse kinematics found no configuration{of} that meets the goal in {MAX_GOAL_SAMPLING_ATTEMPTS} goal samples or by the deadline"
         )));
     };
+    let tried = if several {
+        "states of the arms"
+    } else {
+        "configurations that meet the goal"
+    };
     Err(PlanFailure::Unreachable(format!(
-        "the goal sampling rejected {rejections} configurations that meet the goal, each nearer than {}; the one that falls short least has {}",
+        "the goal sampling rejected {rejections} {tried}, each nearer than {}; the one that falls short least has {}",
         checks.plan_clearance(),
-        checks.short_of(&least_short)
+        checks.short_of(&least_short, moving)
     )))
+}
+
+/// An arm's goal sampler that records whether it found a configuration.
+struct Recording<'a, const N: usize> {
+    sampler: &'a dyn GoalSampler<N>,
+    found: AtomicBool,
+}
+
+impl<const N: usize> GoalSampler<N> for Recording<'_, N> {
+    fn sample_from(
+        &self,
+        goal: &Goal,
+        working: &[f64; N],
+        attempts: usize,
+        draws: &mut Draws,
+        valid: &dyn Fn(&[f64; N]) -> bool,
+    ) -> Option<[f64; N]> {
+        let found = self
+            .sampler
+            .sample_from(goal, working, attempts, draws, valid);
+        if found.is_some() {
+            self.found.store(true, Ordering::Relaxed);
+        }
+        found
+    }
 }
 
 /// The attempts of each goal sample: MoveIt's `max_state_sampling_attempts` default
@@ -717,60 +816,100 @@ const MAX_STATE_SAMPLING_ATTEMPTS: usize = 4;
 /// bounds the goal samples in a row that find no goal, as `sample_goals` says.
 const MAX_GOAL_SAMPLING_ATTEMPTS: usize = 1000;
 
-/// The goals `sampler` finds for `goal` from `start`, as MoveIt's
-/// `ConstrainedGoalSampler` finds them (moveit2 2.15.2 constrained_goal_sampler.cpp). A
-/// working state starts at `start` (:66). Each goal sample runs from it with
-/// `MAX_STATE_SAMPLING_ATTEMPTS` attempts, drawing from the draws of `seed`, `valid`
-/// deciding inside it, as MoveIt's validity callback does (`GoalSampler::sample_from`;
-/// :84-94, :126-137). The goal a sample finds becomes the working state (:137), and joins
-/// the goals when it lies farther than the double's epsilon from each of them in the sum
-/// of its joints' differences, as OMPL adds a goal state
-/// (`GoalLazySamples::addStateIfDifferent` at its default `minDist`,
+/// The states at which each arm of `goals`, a group of `D` joints in all, meets its goal,
+/// found from `start` as MoveIt's `ConstrainedGoalSampler` finds the goals of a group
+/// (moveit2 2.15.2 constrained_goal_sampler.cpp). A working state starts at `start` (:66).
+/// Each goal sample runs from it (`sample_group`), each arm drawing from the draws of
+/// `seed` plus its place in the group, `valid` deciding inside it as MoveIt's validity
+/// callback does (:84-94, :126-137), asked of the pairs `sample_group` names. The state a
+/// sample finds becomes the working state (:137), and joins the goals when it lies farther
+/// than the double's epsilon from each of them in the sum of its joints' differences, as
+/// OMPL adds a goal state (`GoalLazySamples::addStateIfDifferent` at its default `minDist`,
 /// GoalLazySamples.cpp:205-215, :211, GoalLazySamples.h:101) in MoveIt's distance of a
 /// group's states (`JointModelGroup::distance`, joint_model_group.cpp:466-476). Sampling
 /// ends at `goal_samples` goals (:105-107), before a sample once `ended` holds, and once
-/// the samples since the last goal found reach `MAX_GOAL_SAMPLING_ATTEMPTS` less the
-/// goals found so far: OMPL counts each goal its sampling function returns
+/// the samples since the last goal found reach `MAX_GOAL_SAMPLING_ATTEMPTS` less the goals
+/// found so far: OMPL counts each goal its sampling function returns
 /// (GoalLazySamples.cpp:114-116), and MoveIt's function samples from that count up to
 /// `MAX_GOAL_SAMPLING_ATTEMPTS` until a sample finds a goal, and ends the sampling when
 /// none does (constrained_goal_sampler.cpp:98-114, :169).
-pub fn sample_goals<const N: usize>(
-    sampler: &dyn GoalSampler<N>,
-    goal: &Goal,
-    start: &[f64; N],
+///
+/// # Panics
+///
+/// When `goals` holds other than one goal for each arm of `N` joints of the `D`.
+pub fn sample_goals<const N: usize, const D: usize>(
+    goals: &[ArmGoal<'_, N>],
+    start: &[f64; D],
     goal_samples: NonZeroUsize,
     seed: u64,
     ended: &dyn Fn() -> bool,
-    valid: &dyn Fn(&[f64; N]) -> bool,
-) -> Vec<[f64; N]> {
-    let mut draws = Draws::new(seed);
+    valid: &dyn Fn(&[f64; D], Moving) -> bool,
+) -> Vec<[f64; D]> {
+    assert_eq!(
+        goals.len() * N,
+        D,
+        "a goal for each arm of {N} joints of the {D}"
+    );
+    let mut draws: Vec<Draws> = (0..goals.len())
+        .map(|k| Draws::new(seed + k as u64))
+        .collect();
     let mut working = *start;
-    let mut goals: Vec<[f64; N]> = Vec::new();
+    let mut kept: Vec<[f64; D]> = Vec::new();
     // The goals the samples have found, OMPL's `samplingAttempts_`, and the samples since
     // the last of them.
     let (mut found_so_far, mut failing) = (0, 0);
-    while goals.len() < goal_samples.get()
+    while kept.len() < goal_samples.get()
         && failing < MAX_GOAL_SAMPLING_ATTEMPTS.saturating_sub(found_so_far)
         && !ended()
     {
-        let Some(found) = sampler.sample_from(
-            goal,
-            &working,
-            MAX_STATE_SAMPLING_ATTEMPTS,
-            &mut draws,
-            valid,
-        ) else {
+        let Some(found) = sample_group(goals, &working, &mut draws, valid) else {
             failing += 1;
             continue;
         };
         (found_so_far, failing) = (found_so_far + 1, 0);
         working = found;
-        let distance = |kept: &[f64; N]| (0..N).map(|i| (kept[i] - found[i]).abs()).sum::<f64>();
-        if goals.iter().all(|kept| distance(kept) > f64::EPSILON) {
-            goals.push(found);
+        let distance = |goal: &[f64; D]| (0..D).map(|i| (goal[i] - found[i]).abs()).sum::<f64>();
+        if kept.iter().all(|goal| distance(goal) > f64::EPSILON) {
+            kept.push(found);
         }
     }
-    goals
+    kept
+}
+
+/// One goal sample of the arms of `goals` from the working state `working`, as MoveIt's
+/// `UnionConstraintSampler::sample` samples a group from its arms' samplers (moveit2 2.15.2
+/// union_constraint_sampler.cpp): each arm in turn (`GoalSampler::sample_from`), from its
+/// joints of the state the sample has reached, drawing from its `draws`, `valid` deciding on
+/// that state with the arm at the configuration tried, the arms before it at their sampled
+/// joints and the arms after it at `working`'s, asked of the pairs of the arm's turn
+/// (`Moving::Arm`): each that holds a body of the arm and none of an arm after it. A pair
+/// with an arm after it is asked on that arm's turn, where both stand as the state the
+/// sample finds holds them, so that state keeps each pair `valid` judges of it. A caller
+/// that judges the whole state on every turn samples as MoveIt's validity callback does.
+/// None when an arm finds none.
+fn sample_group<const N: usize, const D: usize>(
+    goals: &[ArmGoal<'_, N>],
+    working: &[f64; D],
+    draws: &mut [Draws],
+    valid: &dyn Fn(&[f64; D], Moving) -> bool,
+) -> Option<[f64; D]> {
+    let mut state = *working;
+    for (k, (goal, draws)) in goals.iter().zip(draws.iter_mut()).enumerate() {
+        let placed = |q: &[f64; N]| {
+            let mut placed = state;
+            placed[k * N..(k + 1) * N].copy_from_slice(q);
+            placed
+        };
+        let found = goal.sampler.sample_from(
+            goal.goal,
+            &Arms::<N, D>::slice(&state, k),
+            MAX_STATE_SAMPLING_ATTEMPTS,
+            draws,
+            &|q| valid(&placed(q), Moving::Arm(k)),
+        )?;
+        state = placed(&found);
+    }
+    Some(state)
 }
 
 /// Where a walk breaks: the position of the last state it checks that keeps its
@@ -786,8 +925,8 @@ struct Break {
 struct Ended;
 
 /// The checks of the plan's states and motions.
-struct ArmChecks<'a, const N: usize> {
-    arm: &'a Arm<'a, N>,
+struct PathChecks<'a, const N: usize, const D: usize> {
+    arms: &'a Arms<'a, N, D>,
     /// The plan's clearances.
     surroundings: Surroundings<'a>,
     /// The surroundings at which a state's distances are measured, exactly up to the
@@ -795,7 +934,7 @@ struct ArmChecks<'a, const N: usize> {
     measuring: Surroundings<'a>,
     /// The clearance the caller asks of each term (`term_clearances`).
     asked: [f64; TERMS],
-    start: [f64; N],
+    start: [f64; D],
     /// Whether the start falls short of the plan's clearance of each term.
     start_short: [bool; TERMS],
     /// The plan's clearance of each term.
@@ -804,18 +943,23 @@ struct ArmChecks<'a, const N: usize> {
     floor: [f64; TERMS],
 }
 
-impl<'a, const N: usize> ArmChecks<'a, N> {
-    /// The checks of `arm`'s states and motions around `scene`, keeping the clearance
+impl<'a, const N: usize, const D: usize> PathChecks<'a, N, D> {
+    /// The checks of `arms`' states and motions around `scene`, keeping the clearance
     /// `min_clearance_m` asks of each term along every path from `start`, as the module
     /// says.
-    fn new(arm: &'a Arm<'a, N>, scene: &Scene<'a>, start: [f64; N], min_clearance_m: f64) -> Self {
+    fn new(
+        arms: &'a Arms<'a, N, D>,
+        scene: &Scene<'a>,
+        start: [f64; D],
+        min_clearance_m: f64,
+    ) -> Self {
         let asked = term_clearances(min_clearance_m);
         let clearance = std::array::from_fn(|term| asked[term] + MOVED[term] * MIN_SPARE_M);
         let measured = std::array::from_fn(|term| asked[term] + MOVED[term] * MAX_STEP_M);
         let measuring = scene.surroundings(measured);
-        let at_start = measuring.distances(arm, &start);
+        let at_start = measuring.distances(arms, &start, Moving::All);
         Self {
-            arm,
+            arms,
             surroundings: scene.surroundings(clearance),
             measuring,
             asked,
@@ -831,14 +975,14 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
     /// it is the start, and the motion keeps them as `walk_run` walks it, a motion by the
     /// start rule ending where each term keeps them. A motion by the start rule that fails
     /// keeps no state.
-    fn walk(&self, from: &[f64; N], to: &[f64; N]) -> Motion {
-        if *from != self.start && !self.surroundings.clear(self.arm, from) {
+    fn walk(&self, from: &[f64; D], to: &[f64; D]) -> Motion {
+        if *from != self.start && !self.surroundings.clear(self.arms, from) {
             return Motion::Invalid { last_valid: 0.0 };
         }
         // The planner's path to `from` is unknown here: a motion whose first state lies on
         // the straight line from the start to its end departs from the start.
         let along = [self.start, *from];
-        let reached: &[[f64; N]] = if on_segment(from, &self.start, to) {
+        let reached: &[[f64; D]] = if on_segment(from, &self.start, to) {
             &along
         } else {
             std::slice::from_ref(from)
@@ -856,26 +1000,28 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
     fn fault(&self, place: Place, distances: [f64; TERMS]) -> PathFault {
         PathFault::Clearance {
             place,
+            arms: self.arms.arms().len(),
             distances,
             clearances: self.clearance,
         }
     }
 
     /// How far `q` falls short of the plan's clearance of the term it falls shortest of, in
-    /// meters; at or below 0 where it keeps each.
-    fn shortfall(&self, q: &[f64; N]) -> f64 {
-        let distances = self.surroundings.distances(self.arm, q);
+    /// the pairs that a body of a `moving` arm is one of, in meters; at or below 0 where it
+    /// keeps each.
+    fn shortfall(&self, q: &[f64; D], moving: Moving) -> f64 {
+        let distances = self.surroundings.distances(self.arms, q, moving);
         (0..TERMS)
             .map(|term| self.clearance[term] - distances[term])
             .fold(f64::NEG_INFINITY, f64::max)
     }
 
-    /// What `q` falls short of the plan's clearances against, as a message names it: the
-    /// nearest pair of each term it falls short of, the robot's own body first, then an
-    /// attached object against the arm that carries it, then the map and the objects, and
-    /// how far apart they stand.
-    fn short_of(&self, q: &[f64; N]) -> String {
-        let [world, own, held] = self.surroundings.nearest_pairs(self.arm, q);
+    /// What `q` falls short of the plan's clearances against in the pairs that a body of a
+    /// `moving` arm is one of, as a message names it: the nearest pair of each term it falls
+    /// short of, the robot's own body first, then an attached object against the arm that
+    /// carries it, then the map and the objects, and how far apart they stand.
+    fn short_of(&self, q: &[f64; D], moving: Moving) -> String {
+        let [world, own, held] = self.surroundings.nearest_pairs(self.arms, q, moving);
         let [world_clearance, own_clearance, held_clearance] = self.clearance;
         [
             (own, own_clearance),
@@ -894,10 +1040,10 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
         let [world, own, held] = self.clearance;
         let terms = [
             Some(format!("{world:.4} m from the map and the objects")),
-            self.arm
-                .self_model()
-                .map(|_| format!("{own:.4} m between the robot's own links")),
-            self.arm.carries_an_object().then(|| {
+            (self.arms.self_model().is_some()
+                || (self.arms.arms().len() > 1 && self.arms.carries_an_object()))
+            .then(|| format!("{own:.4} m between the robot's own links and what they carry")),
+            self.arms.carries_an_object().then(|| {
                 format!("{held:.4} m between an attached object and the arm that carries it")
             }),
         ];
@@ -912,7 +1058,7 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
     /// up to the run's first, to `to` by the start rule from the start: `reached` leaves
     /// the start and each of its waypoints after the start lies on the straight line from
     /// the start to `to`, while the start falls short of a term's plan clearance.
-    fn departs_by_rule(&self, reached: &[[f64; N]], to: &[f64; N]) -> bool {
+    fn departs_by_rule(&self, reached: &[[f64; D]], to: &[f64; D]) -> bool {
         let (first, after) = reached.split_first().expect("a run leaves a waypoint");
         self.start_short.contains(&true)
             && *first == self.start
@@ -925,13 +1071,13 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
     /// `advance_by_spare` walks it. Whether a term the start falls short of still falls
     /// short of its plan clearance at `to`; where the run breaks, the share of it before
     /// the state that breaks it, and that state's distances.
-    fn walk_run(&self, reached: &[[f64; N]], to: &[f64; N]) -> Result<bool, Break> {
+    fn walk_run(&self, reached: &[[f64; D]], to: &[f64; D]) -> Result<bool, Break> {
         self.walk_run_checking(reached, to, &mut |_| {})
     }
 
     /// The shares of the run from the last of `reached` to `to` at which `walk_run` checks
     /// a state that passes.
-    fn walked_shares(&self, reached: &[[f64; N]], to: &[f64; N]) -> Vec<f64> {
+    fn walked_shares(&self, reached: &[[f64; D]], to: &[f64; D]) -> Vec<f64> {
         let mut shares = Vec::new();
         // A run that breaks leaves the shares of the states before the break.
         let _ = self.walk_run_checking(reached, to, &mut |share| shares.push(share));
@@ -942,14 +1088,14 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
     /// passes.
     fn walk_run_checking(
         &self,
-        reached: &[[f64; N]],
-        to: &[f64; N],
+        reached: &[[f64; D]],
+        to: &[f64; D],
         checked: &mut dyn FnMut(f64),
     ) -> Result<bool, Break> {
         let from = reached.last().expect("a run leaves a waypoint");
         if self.departs_by_rule(reached, to) {
-            let skipped = self.arm.displacement(&self.start, from);
-            let total = self.arm.displacement(&self.start, to);
+            let skipped = self.arms.displacement(&self.start, from);
+            let total = self.arms.displacement(&self.start, to);
             let mut past_from = |t: f64| {
                 if t * total > skipped {
                     checked(share_past(t, skipped, total));
@@ -962,7 +1108,7 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
                     ..broken
                 });
         }
-        let total = self.arm.displacement(from, to);
+        let total = self.arms.displacement(from, to);
         self.advance_by_spare(0.0, 1.0, total, |t| toward(from, to, t), checked)
             .map(|()| false)
     }
@@ -980,7 +1126,7 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
         from: f64,
         to: f64,
         lever: f64,
-        at: impl Fn(f64) -> [f64; N],
+        at: impl Fn(f64) -> [f64; D],
         checked: &mut dyn FnMut(f64),
     ) -> Result<(), Break> {
         let mut position = from;
@@ -1036,10 +1182,10 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
     /// breaks it, and that state's distances.
     fn depart_from_start(
         &self,
-        to: &[f64; N],
+        to: &[f64; D],
         checked: &mut dyn FnMut(f64),
     ) -> Result<bool, Break> {
-        let total = self.arm.displacement(&self.start, to);
+        let total = self.arms.displacement(&self.start, to);
         let mut here = self.distances(&self.start);
         let mut before = here;
         let mut t = 0.0;
@@ -1061,10 +1207,10 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
         Ok((0..TERMS).any(|term| self.start_short[term] && before[term] < self.clearance[term]))
     }
 
-    /// The distance of the arm at `q` from the bodies of each term: exact up to the
+    /// The distance of the arms at `q` from the bodies of each term: exact up to the
     /// distance a step of `MAX_STEP_M` needs, and a lower bound past it.
-    fn distances(&self, q: &[f64; N]) -> [f64; TERMS] {
-        self.measuring.distances(self.arm, q)
+    fn distances(&self, q: &[f64; D]) -> [f64; TERMS] {
+        self.measuring.distances(self.arms, q, Moving::All)
     }
 
     /// The longest step by the start rule from a state `here` meters from the bodies of
@@ -1132,10 +1278,10 @@ fn advance(t: f64, step: f64, total: f64) -> f64 {
     }
 }
 
-impl<const N: usize> Checks for ArmChecks<'_, N> {
+impl<const N: usize, const D: usize> Checks for PathChecks<'_, N, D> {
     fn state(&self, state: &[f64]) -> Result<bool, CheckError> {
-        let q: [f64; N] = state.try_into()?;
-        Ok(q == self.start || self.surroundings.clear(self.arm, &q))
+        let q: [f64; D] = state.try_into()?;
+        Ok(q == self.start || self.surroundings.clear(self.arms, &q))
     }
 
     fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
@@ -1147,12 +1293,12 @@ impl<const N: usize> Checks for ArmChecks<'_, N> {
 /// execute_joint_path rounds it, does not keep its clearance, until each does; or why
 /// some corner cannot before `deadline`, or which planned waypoint after the start falls
 /// short of the plan's clearances. A set `stop` ends it before each walk of the path.
-fn rounded_clear<const N: usize>(
-    checks: &ArmChecks<N>,
-    planned: &[[f64; N]],
+fn rounded_clear<const N: usize, const D: usize>(
+    checks: &PathChecks<N, D>,
+    planned: &[[f64; D]],
     deadline: Instant,
     stop: Option<&AtomicBool>,
-) -> Result<Vec<[f64; N]>, PlanFailure> {
+) -> Result<Vec<[f64; D]>, PlanFailure> {
     // Each planned waypoint after the start keeps the plan's clearances, so the start rule
     // holds at no corner, and each arc keeps the plan's clearances.
     if let Some((k, distances)) = first_short_waypoint(checks, planned) {
@@ -1163,9 +1309,9 @@ fn rounded_clear<const N: usize>(
     }
     // For each planned waypoint, the share of its runs within which the waypoints added at
     // its corner lie, and those waypoints.
-    let mut added: Vec<Option<(f64, [[f64; N]; 2])>> = vec![None; planned.len()];
+    let mut added: Vec<Option<(f64, [[f64; D]; 2])>> = vec![None; planned.len()];
     loop {
-        let (waypoints, corner_of): (Vec<[f64; N]>, Vec<usize>) = planned
+        let (waypoints, corner_of): (Vec<[f64; D]>, Vec<usize>) = planned
             .iter()
             .enumerate()
             .flat_map(|(k, &at)| match added[k] {
@@ -1186,8 +1332,8 @@ fn rounded_clear<const N: usize>(
             ));
         }
         let fraction = added[corner].map_or(FIRST_CORNER_FRACTION, |(f, _)| f / 2.0);
-        let apart = |q: &[f64; N]| {
-            (0..N).any(|i| (q[i] - planned[corner][i]).abs() > 2.0 * MIN_JOINT_CHANGE_RAD)
+        let apart = |q: &[f64; D]| {
+            (0..D).any(|i| (q[i] - planned[corner][i]).abs() > 2.0 * MIN_JOINT_CHANGE_RAD)
         };
         let repair = (corner > 0 && corner + 1 < planned.len())
             .then(|| repair_waypoints(checks, planned, corner, fraction))
@@ -1208,15 +1354,15 @@ fn rounded_clear<const N: usize>(
 /// run's walk checks there farthest from the corner that keeps the plan's clearances, so
 /// that each run they split walks only states the plan walked and each waypoint after the
 /// start keeps them. `None` when the walk of a run checks no such state there.
-fn repair_waypoints<const N: usize>(
-    checks: &ArmChecks<N>,
-    planned: &[[f64; N]],
+fn repair_waypoints<const N: usize, const D: usize>(
+    checks: &PathChecks<N, D>,
+    planned: &[[f64; D]],
     corner: usize,
     fraction: f64,
-) -> Option<[[f64; N]; 2]> {
+) -> Option<[[f64; D]; 2]> {
     let (before, at, after) = (&planned[corner - 1], &planned[corner], &planned[corner + 1]);
-    let keeps = |from: &[f64; N], to: &[f64; N], s: f64| {
-        checks.surroundings.clear(checks.arm, &toward(from, to, s))
+    let keeps = |from: &[f64; D], to: &[f64; D], s: f64| {
+        checks.surroundings.clear(checks.arms, &toward(from, to, s))
     };
     let into = checks
         .walked_shares(&planned[..corner], at)
@@ -1243,21 +1389,21 @@ fn toward<const N: usize>(at: &[f64; N], other: &[f64; N], fraction: f64) -> [f6
 
 /// The first waypoint of `path` after the start that falls short of the plan's
 /// clearances, by its index, and its distances from the bodies of each term.
-fn first_short_waypoint<const N: usize>(
-    checks: &ArmChecks<N>,
-    path: &[[f64; N]],
+fn first_short_waypoint<const N: usize, const D: usize>(
+    checks: &PathChecks<N, D>,
+    path: &[[f64; D]],
 ) -> Option<(usize, [f64; TERMS])> {
     (1..path.len())
-        .find(|&k| !checks.surroundings.clear(checks.arm, &path[k]))
+        .find(|&k| !checks.surroundings.clear(checks.arms, &path[k]))
         .map(|k| (k, checks.distances(&path[k])))
 }
 
 /// The first run of `path`, which leaves from the start, by the waypoint it leaves from,
-/// that does not keep its clearances as `ArmChecks::walk_run` walks it, and where it
+/// that does not keep its clearances as `PathChecks::walk_run` walks it, and where it
 /// breaks. `ended` ends the walk before a run.
-fn first_failing_run<const N: usize>(
-    checks: &ArmChecks<N>,
-    path: &[[f64; N]],
+fn first_failing_run<const N: usize, const D: usize>(
+    checks: &PathChecks<N, D>,
+    path: &[[f64; D]],
     ended: &dyn Fn() -> bool,
 ) -> Result<Option<(usize, Break)>, Ended> {
     for k in 0..path.len().saturating_sub(1) {
@@ -1272,20 +1418,20 @@ fn first_failing_run<const N: usize>(
 }
 
 /// The waypoint of `planned` whose corner holds the first arc of `path` that does not keep
-/// its clearances as `ArmChecks::advance_by_spare` walks it along the path, at the arc's
-/// lever (`Arm::lever_along`). `corner_of` names, for each waypoint of `path`, the
+/// its clearances as `PathChecks::advance_by_spare` walks it along the path, at the arc's
+/// lever (`Arms::lever_along`). `corner_of` names, for each waypoint of `path`, the
 /// waypoint of `planned` whose corner it rounds. A state on a segment of `planned` is not
 /// checked: the plan walks each run of its answer. That waypoint, and where the arc
 /// breaks; `ended` ends the walk before an arc.
-fn first_failing_probe<const N: usize>(
-    checks: &ArmChecks<N>,
+fn first_failing_probe<const N: usize, const D: usize>(
+    checks: &PathChecks<N, D>,
     path: &RoundedPath,
     corner_of: &[usize],
-    planned: &[[f64; N]],
+    planned: &[[f64; D]],
     ended: &dyn Fn() -> bool,
 ) -> Result<Option<(usize, Break)>, Ended> {
     let length = path.length();
-    let at = |s: f64| -> [f64; N] { path.at(s).as_slice().try_into().expect("a configuration") };
+    let at = |s: f64| -> [f64; D] { path.at(s).as_slice().try_into().expect("a configuration") };
     let walked = |s: f64| {
         let q = at(s);
         planned.windows(2).any(|w| on_segment(&q, &w[0], &w[1]))
@@ -1299,11 +1445,11 @@ fn first_failing_probe<const N: usize>(
         let from = first_position(0.0, length, |s| path.waypoint_at(s) >= corner);
         let next = first_position(from, length, |s| path.waypoint_at(s) > corner);
         let to = first_position(from, next, walked);
-        let share: [f64; N] = path
+        let share: [f64; D] = path
             .max_abs_tangent(from, to)
             .try_into()
             .expect("a share of the tangent per joint");
-        let lever = checks.arm.lever_along(&share);
+        let lever = checks.arms.lever_along(&share);
         if let Err(broken) = checks.advance_by_spare(from, to, lever, at, &mut |_| {}) {
             return Ok(Some((
                 corner_of[path.waypoint_at(broken.last_valid)],
@@ -1359,7 +1505,7 @@ mod tests {
     use occupancy_map::{Bounds, Frame, Scan};
 
     use super::*;
-    use crate::arm::{Body, SelfModel};
+    use crate::arm::{Arm, Body, SelfModel};
 
     const MIN_CLEARANCE_M: f64 = 0.02;
 
@@ -1496,15 +1642,23 @@ mod tests {
         (map, field)
     }
 
+    /// The group of the one arm `geometry` holds, checked against `self_model`.
+    fn one_arm<'a, const N: usize>(
+        geometry: &'a ChainGeometry<N>,
+        self_model: Option<&'a dyn SelfModel<N>>,
+    ) -> Arms<'a, N, N> {
+        Arms::new(vec![Arm::new("arm", geometry)], self_model)
+    }
+
     /// A self model whose pair stands `apart` meters apart at every configuration.
     struct StandsApart(f64);
 
     impl<const N: usize> SelfModel<N> for StandsApart {
-        fn clearance(&self, _: &[f64; N]) -> f64 {
+        fn clearance(&self, _: &[f64; N], _: Moving) -> f64 {
             self.0
         }
 
-        fn nearest_pair(&self, _: &[f64; N]) -> (String, String) {
+        fn nearest_pair(&self, _: &[f64; N], _: Moving) -> (String, String) {
             ("a link".to_string(), "its neighbor".to_string())
         }
     }
@@ -1515,7 +1669,7 @@ mod tests {
     #[test]
     fn a_stop_ends_the_check_of_the_rounded_path() {
         let geometry = two_links();
-        let arm = Arm::new(&geometry, None);
+        let arms = one_arm(&geometry, None);
         let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], &[]);
         let scene = Scene {
             map: &map,
@@ -1523,7 +1677,7 @@ mod tests {
             stamp: 0,
             objects: Objects::none(),
         };
-        let checks = ArmChecks::new(&arm, &scene, [0.0, 0.0], MIN_CLEARANCE_M);
+        let checks = PathChecks::new(&arms, &scene, [0.0, 0.0], MIN_CLEARANCE_M);
         let path = [[0.0, 0.0], [0.5, 0.5], [1.0, 0.0]];
         let far = Instant::now() + Duration::from_secs(3600);
         let (clear, set) = (AtomicBool::new(false), AtomicBool::new(true));
@@ -1558,14 +1712,14 @@ mod tests {
             .unwrap_or_default();
         let (map, field) = world(VOXEL_M, [-0.6, -0.2, -0.1], [0.6, 0.2, 0.1], &wall);
         let model = apart.map(StandsApart);
-        let arm = Arm::new(&geometry, model.as_ref().map(|m| m as &dyn SelfModel<1>));
+        let arms = one_arm(&geometry, model.as_ref().map(|m| m as &dyn SelfModel<1>));
         let scene = Scene {
             map: &map,
             field: &field,
             stamp: 0,
             objects: Objects::none(),
         };
-        let checks = ArmChecks::new(&arm, &scene, [0.45], MIN_CLEARANCE_M);
+        let checks = PathChecks::new(&arms, &scene, [0.45], MIN_CLEARANCE_M);
         checks.walk_run(&[[-0.3]], &[0.3]).is_ok()
     }
 
@@ -1592,7 +1746,7 @@ mod tests {
     struct TipAndBall;
 
     impl SelfModel<2> for TipAndBall {
-        fn clearance(&self, q: &[f64; 2]) -> f64 {
+        fn clearance(&self, q: &[f64; 2], _: Moving) -> f64 {
             let tip = [
                 0.3 * q[0].cos() + 0.25 * (q[0] + q[1]).cos(),
                 0.3 * q[0].sin() + 0.25 * (q[0] + q[1]).sin(),
@@ -1600,7 +1754,7 @@ mod tests {
             ((tip[0] + 0.1).powi(2) + tip[1].powi(2)).sqrt() - 0.05
         }
 
-        fn nearest_pair(&self, _: &[f64; 2]) -> (String, String) {
+        fn nearest_pair(&self, _: &[f64; 2], _: Moving) -> (String, String) {
             ("link_2".to_string(), "the ball".to_string())
         }
     }
@@ -1619,7 +1773,7 @@ mod tests {
 
     // On drawn worlds about a planar arm, at a drawn `min_clearance_m`, every straight
     // motion and every rounded path through three drawn configurations that the walk
-    // passes, a path at the lever of its tangent (`Arm::lever_along`), keeps
+    // passes, a path at the lever of its tangent (`Arms::lever_along`), keeps
     // `min_clearance_m` from the map and between its own pair at every state of a dense
     // check, each link point moving at most `DENSE_M` between two. Each world
     // holds a voxel within 1.5 cm of where an outer corner of the second link passes
@@ -1661,7 +1815,7 @@ mod tests {
             .collect();
         let (map, field) = world(VOXEL_M, [-0.7, -0.7, -0.1], [0.7, 0.7, 0.1], &points);
         let geometry = two_links();
-        let arm = Arm::new(&geometry, Some(&TipAndBall));
+        let arms = one_arm(&geometry, Some(&TipAndBall));
         let min_clearance: f64 = tc.draw(gs::floats().min_value(0.0).max_value(0.01));
         let scene = Scene {
             map: &map,
@@ -1669,12 +1823,12 @@ mod tests {
             stamp: 0,
             objects: Objects::none(),
         };
-        let checks = ArmChecks::new(&arm, &scene, [2.9, 2.9], min_clearance);
-        tc.assume(checks.surroundings.clear(&arm, &from));
+        let checks = PathChecks::new(&arms, &scene, [2.9, 2.9], min_clearance);
+        tc.assume(checks.surroundings.clear(&arms, &from));
         let dense = Surroundings::new(&map, &field, term_clearances(min_clearance));
-        let keeps = |q: &[f64; 2]| dense.clear(&arm, q);
+        let keeps = |q: &[f64; 2]| dense.clear(&arms, q);
         if checks.walk_run(&[from], &via).is_ok() {
-            let count = (arm.displacement(&from, &via) / DENSE_M).ceil() as usize;
+            let count = (arms.displacement(&from, &via) / DENSE_M).ceil() as usize;
             for k in 0..=count {
                 let q = toward(&from, &via, k as f64 / count.max(1) as f64);
                 assert!(
@@ -1688,14 +1842,14 @@ mod tests {
             .max_abs_tangent(0.0, path.length())
             .try_into()
             .expect("a share of the tangent per joint");
-        let lever = arm.lever_along(&share);
+        let lever = arms.lever_along(&share);
         let at =
             |s: f64| -> [f64; 2] { path.at(s).as_slice().try_into().expect("a configuration") };
         if checks
             .advance_by_spare(0.0, path.length(), lever, at, &mut |_| {})
             .is_ok()
         {
-            let count = (path.length() * arm.lever() / DENSE_M).ceil() as usize;
+            let count = (path.length() * arms.lever() / DENSE_M).ceil() as usize;
             for k in 0..=count {
                 let q = at(path.length() * k as f64 / count.max(1) as f64);
                 assert!(
@@ -1763,7 +1917,7 @@ mod tests {
         let face =
             map.center(map.key([0.011, 0.0, 0.0]).expect("a voxel of the map"))[0] - VOXEL / 2.0;
         let geometry = sliding_box(PLATE, 0.0);
-        let arm = Arm::new(&geometry, None);
+        let arms = one_arm(&geometry, None);
         let scene = Scene {
             map: &map,
             field: &field,
@@ -1772,9 +1926,9 @@ mod tests {
         };
         let from = [face - 0.005 - PLATE[0] / 2.0];
         let to = [face + 0.03];
-        let checks = ArmChecks::new(&arm, &scene, [-0.4], 0.0);
+        let checks = PathChecks::new(&arms, &scene, [-0.4], 0.0);
         let touching = Surroundings::new(&map, &field, [0.0; TERMS]);
-        assert!(touching.contact(&arm, &[face + VOXEL / 2.0]).is_some());
+        assert!(touching.contact(&arms, &[face + VOXEL / 2.0]).is_some());
         let gap = checks.distances(&from)[0];
         assert!(
             (gap - 0.005).abs() < 1e-12,
@@ -1805,7 +1959,7 @@ mod tests {
     #[test]
     fn the_reach_of_a_turn_covers_the_slide_past_it() {
         let geometry = turn_and_slide();
-        let arm = Arm::new(&geometry, None);
+        let arm = Arm::new("arm", &geometry);
         let (from, to) = ([-0.6, 0.5], [0.6, 0.5]);
         let pieces = |q: &[f64; 2]| -> Vec<Placed> {
             arm.bodies(q)
@@ -1843,7 +1997,7 @@ mod tests {
         let wall: Vec<[f64; 3]> = (0..=75).map(|i| [f64::from(i) * 0.01, 0.0, 0.0]).collect();
         let (map, field) = world(0.02, [-0.8, -0.8, -0.2], [0.8, 0.8, 0.2], &wall);
         let geometry = turn_and_slide();
-        let arm = Arm::new(&geometry, None);
+        let arms = one_arm(&geometry, None);
         let (start, end) = ([-0.6, 0.5], [0.6, 0.5]);
         let tolerance = PositiveFinite::parse(0.01).expect("a positive tolerance");
         let goal = Goal::new(
@@ -1860,8 +2014,8 @@ mod tests {
             Vec::new(),
         )
         .expect("a valid goal");
-        let answer = plan_arm_path(
-            &arm,
+        let answer = plan_path(
+            &arms,
             &Scene {
                 map: &map,
                 field: &field,
@@ -1871,8 +2025,10 @@ mod tests {
             &PlanRequest {
                 start,
                 start_tolerance: [0.0; 2],
-                goal: &goal,
-                sampler: &At(end),
+                goals: vec![ArmGoal {
+                    goal: &goal,
+                    sampler: &At(end),
+                }],
                 goal_samples: NonZeroUsize::new(1).expect("nonzero"),
                 planner: Planner::RrtConnect,
                 deadline: Instant::now() + Duration::from_secs(600),
@@ -1906,7 +2062,7 @@ mod tests {
             .collect();
         let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], &block);
         let geometry = gantry();
-        let arm = Arm::new(&geometry, None);
+        let arms = one_arm(&geometry, None);
         let scene = Scene {
             map: &map,
             field: &field,
@@ -1914,20 +2070,22 @@ mod tests {
             objects: Objects::none(),
         };
         let planned = [[-0.5, 0.0], [0.0, 0.0], [0.0, 0.5]];
-        let checks = ArmChecks::new(&arm, &scene, planned[0], MIN_CLEARANCE_M);
+        let checks = PathChecks::new(&arms, &scene, planned[0], MIN_CLEARANCE_M);
         let rounded_first = RoundedPath::joint_path(&vectors(&planned));
         let dense = Surroundings::new(&map, &field, term_clearances(MIN_CLEARANCE_M));
         let at = |path: &RoundedPath, s: f64| -> [f64; 2] {
             path.at(s).as_slice().try_into().expect("a configuration")
         };
         let probes = |path: &RoundedPath| -> Vec<[f64; 2]> {
-            let count = (path.length() * arm.lever() / DENSE_M).ceil() as usize;
+            let count = (path.length() * arms.lever() / DENSE_M).ceil() as usize;
             (0..=count)
                 .map(|k| at(path, path.length() * k as f64 / count as f64))
                 .collect()
         };
         assert!(
-            probes(&rounded_first).iter().any(|q| !dense.clear(&arm, q)),
+            probes(&rounded_first)
+                .iter()
+                .any(|q| !dense.clear(&arms, q)),
             "the corner's rounding clears the block: nothing to repair"
         );
         let deadline = Instant::now() + Duration::from_secs(3600);
@@ -1937,7 +2095,7 @@ mod tests {
         };
         for q in probes(&RoundedPath::joint_path(&vectors(&answer))) {
             assert!(
-                dense.clear(&arm, &q),
+                dense.clear(&arms, &q),
                 "the rounded path through {answer:?} touches the block at {q:?}"
             );
         }
@@ -1945,8 +2103,8 @@ mod tests {
         // A check of a caller's path finds the corner the plan repairs, and passes the
         // repaired path.
         let check = |waypoints: &[[f64; 2]]| {
-            check_arm_path(
-                &arm,
+            check_path(
+                &arms,
                 &scene,
                 &CheckRequest {
                     start: planned[0],
@@ -1987,7 +2145,7 @@ mod tests {
     ) -> Result<PathCheck, CheckFailure> {
         let (map, field) = world(VOXEL_M, [-1.2, -0.6, -0.1], [1.2, 0.6, 0.1], block);
         let geometry = gantry();
-        let arm = Arm::new(&geometry, None);
+        let arms = one_arm(&geometry, None);
         let scene = Scene {
             map: &map,
             field: &field,
@@ -2001,7 +2159,7 @@ mod tests {
             min_clearance_m: MIN_CLEARANCE_M,
             deadline: Instant::now(),
         };
-        check_arm_path_until(&arm, &scene, &request, ended)
+        check_path_until(&arms, &scene, &request, ended)
     }
 
     /// Four voxels at the middle of the run from the gantry's start at the origin to
@@ -2096,7 +2254,7 @@ mod tests {
     const MOST_STATES: usize = 1000;
 
     impl<const N: usize> SelfModel<N> for CountsItsStates {
-        fn clearance(&self, _: &[f64; N]) -> f64 {
+        fn clearance(&self, _: &[f64; N], _: Moving) -> f64 {
             let asked = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             assert!(
                 asked < MOST_STATES,
@@ -2105,7 +2263,7 @@ mod tests {
             1.0
         }
 
-        fn nearest_pair(&self, _: &[f64; N]) -> (String, String) {
+        fn nearest_pair(&self, _: &[f64; N], _: Moving) -> (String, String) {
             ("a link".to_string(), "its neighbor".to_string())
         }
     }
@@ -2118,7 +2276,7 @@ mod tests {
         let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], &[]);
         let geometry = gantry();
         let model = CountsItsStates(std::sync::atomic::AtomicUsize::new(0));
-        let arm = Arm::new(&geometry, Some(&model));
+        let arms = one_arm(&geometry, Some(&model));
         let scene = Scene {
             map: &map,
             field: &field,
@@ -2132,7 +2290,7 @@ mod tests {
             min_clearance_m: MIN_CLEARANCE_M,
             deadline: Instant::now(),
         };
-        let check = check_arm_path_until(&arm, &scene, &request, &|| false)
+        let check = check_path_until(&arms, &scene, &request, &|| false)
             .unwrap_or_else(|failure| panic!("{failure}"));
         assert!(
             matches!(
@@ -2176,14 +2334,14 @@ mod tests {
         let points = [[-0.025, 0.0, 0.0], [0.15, 0.0, 0.0]];
         let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], &points);
         let geometry = gantry();
-        let arm = Arm::new(&geometry, None);
+        let arms = one_arm(&geometry, None);
         let scene = Scene {
             map: &map,
             field: &field,
             stamp: 0,
             objects: Objects::none(),
         };
-        let checks = ArmChecks::new(&arm, &scene, [0.0, 0.0], MIN_CLEARANCE_M);
+        let checks = PathChecks::new(&arms, &scene, [0.0, 0.0], MIN_CLEARANCE_M);
         assert!(
             checks.start_short[0],
             "the start keeps the plan's clearance"
@@ -2210,7 +2368,7 @@ mod tests {
         let points: Vec<[f64; 3]> = wall.chain(block).collect();
         let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], &points);
         let geometry = gantry();
-        let arm = Arm::new(&geometry, None);
+        let arms = one_arm(&geometry, None);
         let scene = Scene {
             map: &map,
             field: &field,
@@ -2218,16 +2376,16 @@ mod tests {
             objects: Objects::none(),
         };
         let planned = [[-0.5, 0.0], [0.0, 0.0], [0.0, 0.5]];
-        let checks = ArmChecks::new(&arm, &scene, planned[0], MIN_CLEARANCE_M);
+        let checks = PathChecks::new(&arms, &scene, planned[0], MIN_CLEARANCE_M);
         assert!(
             checks.start_short[0],
             "the start keeps the plan's clearance"
         );
         let farthest = toward(&planned[0], &planned[1], 1.0 - FIRST_CORNER_FRACTION);
-        assert!(!checks.surroundings.clear(&arm, &farthest), "{farthest:?}");
+        assert!(!checks.surroundings.clear(&arms, &farthest), "{farthest:?}");
         let [into, _] = repair_waypoints(&checks, &planned, 1, FIRST_CORNER_FRACTION)
             .expect("a waypoint on each run");
-        assert!(checks.surroundings.clear(&arm, &into), "{into:?}");
+        assert!(checks.surroundings.clear(&arms, &into), "{into:?}");
         assert!(
             into[0] > -0.022,
             "{into:?} lies 2.2 cm or more before the corner"
@@ -2239,8 +2397,8 @@ mod tests {
             answer.len() > planned.len(),
             "no waypoint added: {answer:?}"
         );
-        let check = check_arm_path(
-            &arm,
+        let check = check_path(
+            &arms,
             &scene,
             &CheckRequest {
                 start: planned[0],

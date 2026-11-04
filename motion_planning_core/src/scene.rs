@@ -5,10 +5,11 @@
 //! [`PlanningScene`] holds them and decides every rule of motion_planning's scene
 //! members: a batch of objects applied all or none, an attach and a detach, the allowed
 //! pairs, and the snapshot get_planning_scene reports. It clears the map where an object
-//! is added, moved or attached. A plan of one arm meets the scene as [`ArmObjects`]: the
-//! objects the arm carries, each shape a [`Rider`] of its grasp link, and the
-//! [`Obstacle`]s, which stand still through the plan; a depth frame's intake cuts out
-//! the objects where they stand and the riders of each arm.
+//! is added, moved or attached. Each shape of an object attached to a grasp link rides
+//! it, a [`Rider`] of the arm. A plan of one or more arms meets the scene as
+//! [`PlanObjects`]: the objects the arms carry and the [`Obstacle`]s, which stand still
+//! through the plan; a depth frame's intake cuts out the objects where they stand and the
+//! riders of each arm.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -638,25 +639,26 @@ impl PlanningScene {
         }
     }
 
-    /// The scene as a plan of the arm whose grasp link is `grasp_link` meets it: the
-    /// objects that link carries, and the obstacles, each object no link carries where it
+    /// The scene as a plan of the arms whose grasp links are `grasp_links` meets it: the
+    /// objects those links carry, and the obstacles, each object no link carries where it
     /// stands and each object another grasp link carries where `grasp_pose` puts that
     /// link in the robot frame.
-    pub fn for_arm(
+    pub fn for_arms(
         &self,
-        grasp_link: &str,
+        grasp_links: &[&str],
         grasp_pose: impl Fn(&str) -> Isometry3<f64>,
-    ) -> ArmObjects<'_> {
+    ) -> PlanObjects<'_> {
+        let moved = |attachment: &Attachment| grasp_links.contains(&attachment.link.as_str());
         let carried = self
             .attached
             .iter()
-            .filter(|(_, attachment)| attachment.link == grasp_link)
+            .filter(|(_, attachment)| moved(attachment))
             .map(|(id, attachment)| Carried { id, attachment })
             .collect();
         let held = self
             .attached
             .iter()
-            .filter(|(_, attachment)| attachment.link != grasp_link)
+            .filter(|(_, attachment)| !moved(attachment))
             .map(|(id, attachment)| Obstacle {
                 id,
                 shapes: placed(
@@ -666,7 +668,7 @@ impl PlanningScene {
                 .collect(),
                 holder: Some(attachment),
             });
-        ArmObjects {
+        PlanObjects {
             carried,
             obstacles: self.standing_obstacles().chain(held).collect(),
             allowed: &self.allowed,
@@ -675,7 +677,8 @@ impl PlanningScene {
 
     /// The shapes of the objects `grasp_link` carries, each a rider of the child link of
     /// the last joint of `geometry`'s chain, whose grasp point, the chain's end effector,
-    /// is that link: how a depth frame's intake cuts out the objects an arm holds.
+    /// is that link: how a plan carries the objects an arm holds and a depth frame's
+    /// intake cuts them out.
     pub fn riders<'s, const N: usize>(
         &'s self,
         grasp_link: &str,
@@ -773,25 +776,16 @@ fn riders_of<'s, const N: usize>(
     })
 }
 
-/// The scene as a plan of one arm meets it: the objects the arm carries, the obstacles,
-/// which stand still through the plan, and the pairs allowed to touch.
-pub struct ArmObjects<'a> {
+/// The scene as a plan of one or more arms meets it: the objects the arms carry, the
+/// obstacles, which stand still through the plan, and the pairs allowed to touch.
+pub struct PlanObjects<'a> {
     carried: Vec<Carried<'a>>,
     obstacles: Vec<Obstacle<'a>>,
     allowed: &'a AllowedPairs,
 }
 
-impl<'a> ArmObjects<'a> {
-    /// The shapes of the objects the arm carries, each a rider of the child link of the
-    /// last joint of `geometry`'s chain, the arm's: its end effector is the grasp link.
-    pub fn riders<const N: usize>(&self, geometry: &ChainGeometry<N>) -> Vec<Rider<'a>> {
-        self.carried
-            .iter()
-            .flat_map(|carried| riders_of(carried.id, carried.attachment, geometry))
-            .collect()
-    }
-
-    /// The obstacles, which a plan of the arm keeps clear of.
+impl<'a> PlanObjects<'a> {
+    /// The obstacles, which a plan of the arms keeps clear of.
     pub fn obstacles(&self) -> &[Obstacle<'a>] {
         &self.obstacles
     }
@@ -809,7 +803,8 @@ impl<'a> ArmObjects<'a> {
 }
 
 /// An object as a plan meets it: its shapes placed in the robot frame, where it stands
-/// or where the grasp link of another arm holds it, and that arm's attachment.
+/// or where the grasp link of an arm the plan does not move holds it, and that arm's
+/// attachment.
 pub struct Obstacle<'a> {
     id: &'a str,
     shapes: Vec<PlacedShape<'a>>,
@@ -825,15 +820,15 @@ impl<'a> Obstacle<'a> {
         &self.shapes
     }
 
-    /// Whether the object, held by another arm, may touch the link `link`: the link that
-    /// holds it, or a touch link.
+    /// Whether the object, held by an arm the plan does not move, may touch the link
+    /// `link`: the link that holds it, or a touch link.
     pub(crate) fn may_touch(&self, link: &str) -> bool {
         self.holder
             .is_some_and(|attachment| attachment.may_touch(link))
     }
 }
 
-/// An object attached to the grasp link of the arm a plan moves, by its id.
+/// An object attached to the grasp link of an arm a plan moves, by its id.
 pub(crate) struct Carried<'a> {
     id: &'a str,
     attachment: &'a Attachment,
@@ -848,14 +843,14 @@ impl Attachment {
 }
 
 /// A piece of the robot that a plan does not move, by the name of its link: a piece of
-/// another arm where it stands, or of the body.
+/// an arm the plan does not move where it stands, or of the body.
 pub struct RobotPart<'a> {
     pub link: &'a str,
     pub piece: Placed<'a>,
 }
 
 /// What a plan keeps clear of besides the map: the obstacles, the parts of the robot it
-/// does not move, the objects the arm carries, and the pairs allowed to touch.
+/// does not move, the objects the arms carry, and the pairs allowed to touch.
 #[derive(Clone, Copy)]
 pub struct Objects<'a> {
     pub(crate) obstacles: &'a [Obstacle<'a>],
@@ -880,9 +875,9 @@ impl Objects<'static> {
 }
 
 impl Objects<'_> {
-    /// Whether a plan never checks the pair of `a`, a body of the arm by its link's name
+    /// Whether a plan never checks the pair of `a`, a body of an arm by its link's name
     /// or its object's id, and `b`, a link, an object or the map: a pair allowed to
-    /// touch, or an object the arm carries and its grasp link or a touch link.
+    /// touch, or an object an arm carries and its grasp link or a touch link.
     pub(crate) fn exempt(&self, a: &str, b: &str) -> bool {
         self.allowed.allows(a, b)
             || self

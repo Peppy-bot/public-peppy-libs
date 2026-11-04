@@ -1,16 +1,18 @@
-//! Whether the arm at a configuration keeps its clearances. They form three terms, in
+//! Whether the arms of a plan at a state keep their clearances. They form three terms, in
 //! the order of every array of them:
 //!
-//! - The map and the objects, which stand still through a plan: each body of the arm, a
+//! - The map and the objects, which stand still through a plan: each body of the arms, a
 //!   piece of a link, a piece of a part a link carries or a shape of an object it
 //!   carries, keeps the world clearance from every occupied voxel of the map and from
-//!   each obstacle, an object of the scene where it stands or where another arm holds
-//!   it; and each object the arm carries keeps it from each part of the robot the plan
-//!   does not move.
+//!   each obstacle, an object of the scene where it stands or where an arm the plan does
+//!   not move holds it; and each object the arms carry keeps it from each part of the
+//!   robot the plan does not move.
 //! - The robot's own body, where both bodies of a pair move: each pair of the self model
-//!   keeps the own clearance.
+//!   keeps the own clearance, and so does each object an arm carries from each piece of
+//!   another arm of the plan and of the parts it carries, and from each object another arm
+//!   carries.
 //! - An attached object against the arm that carries it, where both bodies of a pair
-//!   move: each object the arm carries keeps the held clearance from each piece of the
+//!   move: each object an arm carries keeps the held clearance from each piece of the
 //!   arm's links and of the parts they carry, outside its touch links. A caller's
 //!   clearance asks 0 of it (`term_clearances`): an attached object moves rigidly with its
 //!   grasp link and keeps out of contact with the arm that carries it.
@@ -18,34 +20,35 @@
 //! Objects one arm carries are never checked against each other: they move rigidly
 //! together.
 //!
-//! A pair allowed to touch keeps none; nor does an object the arm carries from its grasp
-//! link and its touch links, or an obstacle another arm holds from that arm's grasp link
-//! and its touch links.
+//! A pair allowed to touch keeps none; nor does an object an arm carries from its grasp
+//! link and its touch links, or an obstacle an arm the plan does not move holds from that
+//! arm's grasp link and its touch links.
 //!
 //! A body's bounding sphere screens first: against the map's distance field, and against
-//! an obstacle's shape or a robot piece by the distance between their spheres. When the
-//! sphere keeps the clearance, so does the body. A body whose sphere does not is
-//! measured exactly: against the box of each occupied voxel near it, against the shape,
-//! a mesh by its triangles, or against the piece's hull.
+//! an obstacle's shape, a robot piece or another arm's object by the distance between
+//! their spheres. When the sphere keeps the clearance, so does the body. A body whose
+//! sphere does not is measured exactly: against the box of each occupied voxel near it,
+//! against the shape, a mesh by its triangles, or against the piece's hull.
 
 use collision_geometry::gjk::Placed;
 use collision_geometry::shapes::PlacedShape;
 use nalgebra::{Point3, Vector3};
 use occupancy_map::{DistanceField, Key, VoxelMap};
 
-use crate::arm::{Arm, Body};
+use crate::arm::{Body, Moving};
+use crate::arms::{Arms, GroupBody};
 use crate::scene::{OCCUPANCY_MAP, Objects};
 
 /// What a state touches.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Contact {
-    /// A body of the arm, a link or what a link carries, and an occupied voxel of the
+    /// A body of an arm, a link or what a link carries, and an occupied voxel of the
     /// map.
     Map { body: String },
-    /// A body of the arm and an object of the scene the arm does not carry.
+    /// A body of an arm and an object of the scene no arm of the plan carries.
     Object { body: String, object: String },
-    /// Two bodies of the robot: a pair its self model checks, or an object the arm
-    /// carries and a link of the robot.
+    /// Two bodies of the robot: a pair its self model checks, or an object an arm carries
+    /// and a link of the robot or an object another arm carries.
     Own { a: String, b: String },
 }
 
@@ -134,221 +137,300 @@ impl<'a> Surroundings<'a> {
         Self { objects, ..self }
     }
 
-    /// Whether `arm` at `q` keeps its clearances.
-    pub fn clear<const N: usize>(&self, arm: &Arm<N>, q: &[f64; N]) -> bool {
-        if own_distance(arm, q) < self.clearances[OWN] {
+    /// Whether `arms` at `q` keep their clearances.
+    pub fn clear<const N: usize, const D: usize>(&self, arms: &Arms<N, D>, q: &[f64; D]) -> bool {
+        self.clear_moving(arms, q, Moving::All)
+    }
+
+    /// Whether `arms` at `q` keep their clearances in each pair that `moving` judges.
+    pub(crate) fn clear_moving<const N: usize, const D: usize>(
+        &self,
+        arms: &Arms<N, D>,
+        q: &[f64; D],
+        moving: Moving,
+    ) -> bool {
+        let moving = of_the_group(moving, arms);
+        if own_distance(arms, q, moving) < self.clearances[OWN] {
             return false;
         }
-        let bodies = arm.bodies(q);
-        self.on_the_map(&bodies)
-            .all(|(_, body)| self.body_clear(body))
-            && self
-                .world_pairs(&bodies)
-                .iter()
-                .all(|pair| pair.keeps(self.clearances[WORLD]))
-            && self
-                .held_pairs(&bodies)
-                .iter()
-                .all(|pair| pair.keeps(self.clearances[HELD]))
+        let bodies = arms.bodies(q);
+        self.on_the_map(&bodies, moving)
+            .all(|body| self.body_clear(&body.body))
+            && all_keep(&self.world_pairs(&bodies, moving), self.clearances[WORLD])
+            && all_keep(&self.own_pairs(&bodies, moving), self.clearances[OWN])
+            && all_keep(&self.held_pairs(&bodies, moving), self.clearances[HELD])
     }
 
-    /// The distance of `arm` at `q` from the bodies of each term, in meters: from the map
-    /// and the objects, the least between the pairs of its self model, and the least
-    /// between an attached object and the arm that carries it; each exact where it lies within
-    /// its clearance, and a lower bound at or above the clearance elsewhere; infinite for a
-    /// term that checks no pair. The bodies are measured against the map nearest screen
-    /// first, and a body whose screen, a voxel whose bounding sphere, or a pair whose
-    /// spheres' gap lies past the least distance found by `SPHERE_BOUND_MARGIN_M` is set
-    /// aside: it lies no nearer.
-    pub(crate) fn distances<const N: usize>(&self, arm: &Arm<N>, q: &[f64; N]) -> [f64; TERMS] {
-        let bodies = arm.bodies(q);
-        let world = self
-            .world_pairs(&bodies)
-            .iter()
-            .fold(self.map_distance(&bodies), |least, pair| {
-                pair.least_with(least, self.clearances[WORLD])
-            });
-        let held = self
-            .held_pairs(&bodies)
-            .iter()
-            .fold(f64::INFINITY, |least, pair| {
-                pair.least_with(least, self.clearances[HELD])
-            });
-        [world, own_distance(arm, q), held]
-    }
-
-    /// The pairs of each term that `arm` at `q` checks besides those of its self model, in
-    /// the order of the terms, the robot's own body's, whose pairs its self model holds,
-    /// empty; each as a contact names it, with its distance read against the clearance of
-    /// its term: exact where it lies within the clearance, and a lower bound at or above
-    /// the clearance elsewhere. A body of several pieces or shapes reads once per piece or
-    /// shape, and each body reads the map once.
-    fn readings_by_term<const N: usize>(
+    /// The distance of `arms` at `q` from the bodies of each term over each pair that
+    /// `moving` judges, in meters: from the map and the objects; the least
+    /// between the pairs of the self model and between an object an arm carries and another
+    /// arm or its objects; and the least between an attached object and the arm that
+    /// carries it; each exact where it lies within its clearance, and a lower bound at or
+    /// above the clearance elsewhere; infinite for a term that checks no pair. The bodies
+    /// are measured against the map nearest screen first, and a body whose screen, a voxel
+    /// whose bounding sphere, or a pair whose spheres' gap lies past the least distance
+    /// found by `SPHERE_BOUND_MARGIN_M` is set aside: it lies no nearer.
+    pub(crate) fn distances<const N: usize, const D: usize>(
         &self,
-        arm: &Arm<N>,
-        q: &[f64; N],
-    ) -> [Vec<Reading>; TERMS] {
-        let bodies = arm.bodies(q);
-        let on_the_map = self.on_the_map(&bodies).map(|(name, body)| Reading {
-            pair: Contact::Map {
-                body: name.to_string(),
-            },
-            distance: self.screened(body).map_or(f64::NEG_INFINITY, |screen| {
-                self.body_distance_below(body, screen, f64::INFINITY)
-            }),
-        });
-        let world = self.world_pairs(&bodies).into_iter().map(|pair| Reading {
-            pair: pair.contact(),
-            distance: pair.least_with(f64::INFINITY, self.clearances[WORLD]),
-        });
-        let held = self.held_pairs(&bodies).into_iter().map(|pair| Reading {
-            pair: pair.contact(),
-            distance: pair.least_with(f64::INFINITY, self.clearances[HELD]),
-        });
+        arms: &Arms<N, D>,
+        q: &[f64; D],
+        moving: Moving,
+    ) -> [f64; TERMS] {
+        let moving = of_the_group(moving, arms);
+        let bodies = arms.bodies(q);
+        let least = |pairs: Vec<Pair>, from: f64, term: usize| {
+            pairs.iter().fold(from, |least, pair| {
+                pair.least_with(least, self.clearances[term])
+            })
+        };
         [
-            on_the_map.chain(world).collect(),
-            Vec::new(),
-            held.collect(),
+            least(
+                self.world_pairs(&bodies, moving),
+                self.map_distance(&bodies, moving),
+                WORLD,
+            ),
+            least(
+                self.own_pairs(&bodies, moving),
+                own_distance(arms, q, moving),
+                OWN,
+            ),
+            least(self.held_pairs(&bodies, moving), f64::INFINITY, HELD),
         ]
     }
 
-    /// The nearest pair of each term of `arm` at `q`, read as `readings_by_term` reads it:
-    /// a body of the arm and the map, an object or a part of the robot; a pair of its self
-    /// model; and an object the arm carries and a link of the arm. None
-    /// for a term that checks no pair.
-    pub(crate) fn nearest_pairs<const N: usize>(
+    /// The pairs of each term that `arms` at `q` check besides those of the self model, each
+    /// that `moving` judges, in the order of the terms, each as a contact
+    /// names it, with its distance read against the clearance of its term: exact where it
+    /// lies within the clearance, and a lower bound at or above the clearance elsewhere. A
+    /// body of several pieces or shapes reads once per piece or shape, and each body reads
+    /// the map once.
+    fn readings_by_term<const N: usize, const D: usize>(
         &self,
-        arm: &Arm<N>,
-        q: &[f64; N],
-    ) -> [Option<Reading>; TERMS] {
-        let [world, _, held] = self.readings_by_term(arm, q);
-        let modeled = arm.self_model().map(|model| {
-            let (a, b) = model.nearest_pair(q);
-            Reading {
-                pair: Contact::Own { a, b },
-                distance: own_distance(arm, q),
-            }
+        arms: &Arms<N, D>,
+        q: &[f64; D],
+        moving: Moving,
+    ) -> [Vec<Reading>; TERMS] {
+        let moving = of_the_group(moving, arms);
+        let bodies = arms.bodies(q);
+        let on_the_map = self.on_the_map(&bodies, moving).map(|body| Reading {
+            pair: Contact::Map {
+                body: body.name.to_string(),
+            },
+            distance: self
+                .screened(&body.body)
+                .map_or(f64::NEG_INFINITY, |screen| {
+                    self.body_distance_below(&body.body, screen, f64::INFINITY)
+                }),
         });
-        [nearest(world), modeled, nearest(held)]
+        let read = |pairs: Vec<Pair>, term: usize| -> Vec<Reading> {
+            pairs
+                .iter()
+                .map(|pair| Reading {
+                    pair: pair.contact(),
+                    distance: pair.least_with(f64::INFINITY, self.clearances[term]),
+                })
+                .collect()
+        };
+        [
+            on_the_map
+                .chain(read(self.world_pairs(&bodies, moving), WORLD))
+                .collect(),
+            read(self.own_pairs(&bodies, moving), OWN),
+            read(self.held_pairs(&bodies, moving), HELD),
+        ]
     }
 
-    /// Each pair that `arm` at `q` checks besides those of its self model, read as
+    /// The nearest pair of each term of `arms` at `q` that `moving` judges, read as
+    /// `readings_by_term` reads it: a body of the arms and the map, an object or
+    /// a part of the robot; a pair of the self model, or an object an arm carries and
+    /// another arm or its object; and an object an arm carries and a link of that arm. None
+    /// for a term that checks no pair.
+    pub(crate) fn nearest_pairs<const N: usize, const D: usize>(
+        &self,
+        arms: &Arms<N, D>,
+        q: &[f64; D],
+        moving: Moving,
+    ) -> [Option<Reading>; TERMS] {
+        let [world, own, held] = self.readings_by_term(arms, q, moving);
+        let modeled = arms.self_model().map(|model| {
+            let (a, b) = model.nearest_pair(q, moving);
+            Reading {
+                pair: Contact::Own { a, b },
+                distance: own_distance(arms, q, moving),
+            }
+        });
+        [
+            nearest(world),
+            nearest(modeled.into_iter().chain(own)),
+            nearest(held),
+        ]
+    }
+
+    /// Each pair that `arms` at `q` check besides those of the self model, read as
     /// `readings_by_term` reads it, the map's and the objects' first.
-    pub fn readings<const N: usize>(&self, arm: &Arm<N>, q: &[f64; N]) -> Vec<Reading> {
-        self.readings_by_term(arm, q)
+    pub fn readings<const N: usize, const D: usize>(
+        &self,
+        arms: &Arms<N, D>,
+        q: &[f64; D],
+    ) -> Vec<Reading> {
+        self.readings_by_term(arms, q, Moving::All)
             .into_iter()
             .flatten()
             .collect()
     }
 
-    /// What `arm` at `q` touches, if anything: a pair of its self model before the map,
-    /// the map before an object, and an object before a piece of the robot that an
-    /// object the arm carries touches.
-    pub fn contact<const N: usize>(&self, arm: &Arm<N>, q: &[f64; N]) -> Option<Contact> {
-        let own = arm
+    /// What `arms` at `q` touch, if anything: a pair of the robot's own body first, of
+    /// the self model and then an object an arm carries and another arm or its object;
+    /// then the map; then an object; then a piece of the robot that an object an arm
+    /// carries touches.
+    pub fn contact<const N: usize, const D: usize>(
+        &self,
+        arms: &Arms<N, D>,
+        q: &[f64; D],
+    ) -> Option<Contact> {
+        let modeled = arms
             .self_model()
-            .filter(|model| short_if_nan(model.clearance(q)) <= 0.0)
+            .filter(|model| short_if_nan(model.clearance(q, Moving::All)) <= 0.0)
             .map(|model| {
-                let (a, b) = model.nearest_pair(q);
+                let (a, b) = model.nearest_pair(q, Moving::All);
                 Contact::Own { a, b }
             });
-        own.or_else(|| {
-            let bodies = arm.bodies(q);
-            let on_the_map = self
-                .on_the_map(&bodies)
-                .find(|(_, body)| {
-                    self.near_voxels(body)
-                        .any(|key| self.voxel_distance(body, key) <= 0.0)
+        modeled.or_else(|| {
+            let bodies = arms.bodies(q);
+            let touching =
+                |pairs: Vec<Pair>| pairs.iter().find(|pair| pair.touches()).map(Pair::contact);
+            touching(self.own_pairs(&bodies, Moving::All))
+                .or_else(|| {
+                    self.on_the_map(&bodies, Moving::All)
+                        .find(|body| {
+                            self.near_voxels(&body.body)
+                                .any(|key| self.voxel_distance(&body.body, key) <= 0.0)
+                        })
+                        .map(|body| Contact::Map {
+                            body: body.name.to_string(),
+                        })
                 })
-                .map(|(name, _)| Contact::Map {
-                    body: name.to_string(),
-                });
-            on_the_map.or_else(|| {
-                let world = self.world_pairs(&bodies);
-                let held = self.held_pairs(&bodies);
-                world
-                    .iter()
-                    .chain(&held)
-                    .find(|pair| pair.touches())
-                    .map(Pair::contact)
-            })
+                .or_else(|| touching(self.world_pairs(&bodies, Moving::All)))
+                .or_else(|| touching(self.held_pairs(&bodies, Moving::All)))
         })
     }
 
-    /// The bodies of `bodies` that keep a clearance from the map: each but an object
-    /// allowed to touch it.
+    /// The bodies of `bodies` that keep a clearance from the map and whose pair with it
+    /// `moving` judges: each but an object allowed to touch it.
     fn on_the_map<'b>(
         &self,
-        bodies: &'b [(&'b str, Body<'b>)],
-    ) -> impl Iterator<Item = &'b (&'b str, Body<'b>)> {
-        bodies
-            .iter()
-            .filter(|(name, _)| !self.objects.exempt(name, OCCUPANCY_MAP))
+        bodies: &'b [GroupBody<'b>],
+        moving: Moving,
+    ) -> impl Iterator<Item = &'b GroupBody<'b>> {
+        bodies.iter().filter(move |body| {
+            moving.judges(body.arm, body.arm) && !self.objects.exempt(body.name, OCCUPANCY_MAP)
+        })
     }
 
-    /// The pairs of the map and the objects besides the map's own: each body of `bodies`
-    /// and each shape of each obstacle it may touch, and each object the arm carries and
-    /// each piece of a part of the robot the plan does not move that it may touch.
-    fn world_pairs<'p>(&'p self, bodies: &'p [(&'p str, Body<'p>)]) -> Vec<Pair<'p>> {
-        let obstacles = bodies.iter().flat_map(|(name, body)| {
+    /// The pairs of the map and the objects besides the map's own that `moving` judges:
+    /// each body of `bodies` and each shape of each obstacle it may not touch, and each
+    /// object an arm carries and each piece of a part of the robot the plan does not move
+    /// that it may not touch.
+    fn world_pairs<'p>(&'p self, bodies: &'p [GroupBody<'p>], moving: Moving) -> Vec<Pair<'p>> {
+        let on_moving = bodies
+            .iter()
+            .filter(move |body| moving.judges(body.arm, body.arm));
+        let obstacles = on_moving.flat_map(|body| {
             self.objects
                 .obstacles
                 .iter()
                 .filter(move |obstacle| {
-                    !self.objects.exempt(name, obstacle.id()) && !obstacle.may_touch(name)
+                    !self.objects.exempt(body.name, obstacle.id()) && !obstacle.may_touch(body.name)
                 })
                 .flat_map(move |obstacle| {
                     obstacle.shapes().iter().map(move |shape| Pair::Obstacle {
-                        body: (name, body),
+                        body: (body.name, &body.body),
                         object: obstacle.id(),
                         shape,
                     })
                 })
         });
-        let parts = carried(bodies).flat_map(|(object, shape)| {
-            self.objects
-                .parts
-                .iter()
-                .filter(move |part| !self.objects.exempt(object, part.link))
-                .map(move |part| Pair::Piece {
-                    object,
-                    shape,
-                    link: part.link,
-                    piece: &part.piece,
-                })
-        });
+        let parts = carried(bodies)
+            .filter(move |held| moving.judges(held.arm, held.arm))
+            .flat_map(|held| {
+                self.objects
+                    .parts
+                    .iter()
+                    .filter(move |part| !self.objects.exempt(held.object, part.link))
+                    .map(move |part| Pair::Piece {
+                        object: held.object,
+                        shape: held.shape,
+                        link: part.link,
+                        piece: &part.piece,
+                    })
+            });
         obstacles.chain(parts).collect()
     }
 
-    /// The pairs of an attached object and the arm that carries it: each object the arm
-    /// carries and each piece of the arm's links and of the parts they carry that it may
-    /// not touch.
-    fn held_pairs<'p>(&'p self, bodies: &'p [(&'p str, Body<'p>)]) -> Vec<Pair<'p>> {
-        let with_pieces = carried(bodies).flat_map(|(object, shape)| {
-            bodies
-                .iter()
-                .filter_map(|(link, body)| match body {
-                    Body::Piece(piece) => Some((*link, piece)),
-                    Body::Shape(_) => None,
+    /// The pairs of an object an arm carries and another arm of the plan that `moving`
+    /// judges: each object an arm carries and each piece of another arm's links and of the
+    /// parts they carry that it may not touch, and each two objects that two arms carry
+    /// that may not touch.
+    fn own_pairs<'p>(&'p self, bodies: &'p [GroupBody<'p>], moving: Moving) -> Vec<Pair<'p>> {
+        let with_pieces = carried(bodies).flat_map(move |held| {
+            pieces(bodies)
+                .filter(move |(arm, link, _)| {
+                    *arm != held.arm
+                        && moving.judges(held.arm, *arm)
+                        && !self.objects.exempt(held.object, link)
                 })
-                .filter(move |(link, _)| !self.objects.exempt(object, link))
-                .map(move |(link, piece)| Pair::Piece {
-                    object,
-                    shape,
+                .map(move |(_, link, piece)| Pair::Piece {
+                    object: held.object,
+                    shape: held.shape,
                     link,
                     piece,
                 })
         });
-        with_pieces.collect()
+        let with_objects = carried(bodies).flat_map(move |held| {
+            carried(bodies)
+                .filter(move |other| {
+                    other.arm > held.arm
+                        && moving.judges(held.arm, other.arm)
+                        && !self.objects.exempt(held.object, other.object)
+                })
+                .map(move |other| Pair::Shapes {
+                    object: held.object,
+                    shape: held.shape,
+                    other: other.object,
+                    other_shape: other.shape,
+                })
+        });
+        with_pieces.chain(with_objects).collect()
+    }
+
+    /// The pairs of an attached object and the arm that carries it that `moving` judges:
+    /// each object an arm carries and each piece of that arm's links and of the parts they
+    /// carry that it may not touch.
+    fn held_pairs<'p>(&'p self, bodies: &'p [GroupBody<'p>], moving: Moving) -> Vec<Pair<'p>> {
+        carried(bodies)
+            .filter(move |held| moving.judges(held.arm, held.arm))
+            .flat_map(|held| {
+                pieces(bodies)
+                    .filter(move |(arm, link, _)| {
+                        *arm == held.arm && !self.objects.exempt(held.object, link)
+                    })
+                    .map(move |(_, link, piece)| Pair::Piece {
+                        object: held.object,
+                        shape: held.shape,
+                        link,
+                        piece,
+                    })
+            })
+            .collect()
     }
 
     /// The distance from `bodies` to the map, exact where it lies within the world
     /// clearance and a lower bound at or above it elsewhere, measured nearest screen
     /// first as `distances` says.
-    fn map_distance(&self, bodies: &[(&str, Body)]) -> f64 {
+    fn map_distance(&self, bodies: &[GroupBody], moving: Moving) -> f64 {
         let mut screens: Vec<(Option<f64>, &Body)> = self
-            .on_the_map(bodies)
-            .map(|(_, body)| (self.screened(body), body))
+            .on_the_map(bodies, moving)
+            .map(|body| (self.screened(&body.body), &body.body))
             .collect();
         screens.sort_by(|a, b| {
             let nearest = |screen: Option<f64>| screen.unwrap_or(f64::NEG_INFINITY);
@@ -433,30 +515,64 @@ impl<'a> Surroundings<'a> {
     }
 }
 
-/// Each shape of an object the arm carries among `bodies`, with the object's id.
-fn carried<'b>(
-    bodies: &'b [(&'b str, Body<'b>)],
-) -> impl Iterator<Item = (&'b str, &'b PlacedShape<'b>)> {
-    bodies
-        .iter()
-        .filter_map(|(name, body)| body.shape().map(|shape| (*name, shape)))
+/// A shape of an object an arm carries: the arm's index in the group, the object's id and
+/// the shape.
+struct Held<'b> {
+    arm: usize,
+    object: &'b str,
+    shape: &'b PlacedShape<'b>,
+}
+
+/// Each shape of an object an arm carries among `bodies`.
+fn carried<'b>(bodies: &'b [GroupBody<'b>]) -> impl Iterator<Item = Held<'b>> {
+    bodies.iter().filter_map(|body| {
+        body.body.shape().map(|shape| Held {
+            arm: body.arm,
+            object: body.name,
+            shape,
+        })
+    })
+}
+
+/// Each piece of a link or of a part a link carries among `bodies`: its arm's index in
+/// the group, its link's name and the piece.
+fn pieces<'b>(
+    bodies: &'b [GroupBody<'b>],
+) -> impl Iterator<Item = (usize, &'b str, &'b Placed<'b>)> {
+    bodies.iter().filter_map(|body| match &body.body {
+        Body::Piece(piece) => Some((body.arm, body.name, piece)),
+        Body::Shape(_) => None,
+    })
+}
+
+/// Whether each of `pairs` keeps `clearance`.
+fn all_keep(pairs: &[Pair], clearance: f64) -> bool {
+    pairs.iter().all(|pair| pair.keeps(clearance))
 }
 
 /// A pair a term checks besides the map and the self model.
 enum Pair<'p> {
-    /// A body of the arm, by its name, and a shape of the obstacle `object`.
+    /// A body of an arm, by its name, and a shape of the obstacle `object`.
     Obstacle {
         body: (&'p str, &'p Body<'p>),
         object: &'p str,
         shape: &'p PlacedShape<'p>,
     },
-    /// A shape of the object `object` the arm carries and a piece of the link `link` of
+    /// A shape of the object `object` an arm carries and a piece of the link `link` of
     /// the robot.
     Piece {
         object: &'p str,
         shape: &'p PlacedShape<'p>,
         link: &'p str,
         piece: &'p Placed<'p>,
+    },
+    /// A shape of the object `object` an arm carries and a shape of the object `other`
+    /// another arm carries.
+    Shapes {
+        object: &'p str,
+        shape: &'p PlacedShape<'p>,
+        other: &'p str,
+        other_shape: &'p PlacedShape<'p>,
     },
 }
 
@@ -469,6 +585,9 @@ impl Pair<'_> {
                 (body.1.bounding_sphere(), shape.bounding_sphere())
             }
             Self::Piece { shape, piece, .. } => (shape.bounding_sphere(), piece.bounding_sphere()),
+            Self::Shapes {
+                shape, other_shape, ..
+            } => (shape.bounding_sphere(), other_shape.bounding_sphere()),
         };
         (a.0 - b.0).norm() - a.1 - b.1
     }
@@ -479,6 +598,9 @@ impl Pair<'_> {
         short_if_nan(match self {
             Self::Obstacle { body, shape, .. } => body.1.distance_to_shape(shape),
             Self::Piece { shape, piece, .. } => shape.distance_to(*piece, piece.bounding_sphere()),
+            Self::Shapes {
+                shape, other_shape, ..
+            } => shape.distance_to_shape(other_shape),
         })
     }
 
@@ -516,15 +638,38 @@ impl Pair<'_> {
                 a: object.to_string(),
                 b: link.to_string(),
             },
+            Self::Shapes { object, other, .. } => Contact::Own {
+                a: object.to_string(),
+                b: other.to_string(),
+            },
         }
     }
 }
 
-/// The least distance between the pairs of `arm`'s self model at `q`: infinite for an
-/// arm with no self model, and minus infinity where the model answers no number.
-fn own_distance<const N: usize>(arm: &Arm<N>, q: &[f64; N]) -> f64 {
-    arm.self_model()
-        .map_or(f64::INFINITY, |model| short_if_nan(model.clearance(q)))
+/// The least distance between the pairs of the self model of `arms` at `q` that `moving`
+/// judges: infinite without a self model, and minus infinity where the model answers no
+/// number.
+fn own_distance<const N: usize, const D: usize>(
+    arms: &Arms<N, D>,
+    q: &[f64; D],
+    moving: Moving,
+) -> f64 {
+    arms.self_model().map_or(f64::INFINITY, |model| {
+        short_if_nan(model.clearance(q, moving))
+    })
+}
+
+/// `moving`, which names an arm of `arms` when it names one.
+///
+/// # Panics
+///
+/// When `moving` names an arm past the group's last.
+fn of_the_group<const N: usize, const D: usize>(moving: Moving, arms: &Arms<N, D>) -> Moving {
+    if let Moving::Arm(k) = moving {
+        let count = arms.arms().len();
+        assert!(k < count, "arm {k} of a group of {count} arms");
+    }
+    moving
 }
 
 /// `distance`, or minus infinity, short of every clearance, where it is not a number.
@@ -547,7 +692,7 @@ mod tests {
     use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
 
     use super::*;
-    use crate::arm::SelfModel;
+    use crate::arm::{Arm, SelfModel};
     use crate::scene::{
         AttachRequest, ObjectFields, ObjectRequest, PlanningScene, RobotLinks, RobotPart,
         ShapeFields,
@@ -592,6 +737,14 @@ mod tests {
           <limit lower="-2" upper="2" effort="1" velocity="1"/>
         </joint>
       </robot>"#;
+
+    /// The group of the one arm `geometry` holds, checked against `self_model`.
+    fn one_arm<'a, const N: usize>(
+        geometry: &'a ChainGeometry<N>,
+        self_model: Option<&'a dyn SelfModel<N>>,
+    ) -> Arms<'a, N, N> {
+        Arms::new(vec![Arm::new("arm", geometry)], self_model)
+    }
 
     fn geometry<const N: usize>(urdf: &str, tip_link: &str) -> ChainGeometry<N> {
         ChainGeometry::from_urdf(
@@ -644,14 +797,14 @@ mod tests {
     #[test]
     fn a_configuration_that_is_not_a_number_keeps_no_clearance() {
         let geometry = geometry::<1>(ONE_BOX, "link_1");
-        let arm = Arm::new(&geometry, None);
+        let arms = one_arm(&geometry, None);
         let (map, field) = world(0.05, &[]);
         let surroundings = Surroundings::new(&map, &field, [0.0; TERMS]);
-        assert!(surroundings.clear(&arm, &[0.0]));
+        assert!(surroundings.clear(&arms, &[0.0]));
         let not_a_number = [f64::NAN];
-        assert!(!surroundings.clear(&arm, &not_a_number));
+        assert!(!surroundings.clear(&arms, &not_a_number));
         assert_eq!(
-            surroundings.distances(&arm, &not_a_number)[WORLD],
+            surroundings.distances(&arms, &not_a_number, Moving::All)[WORLD],
             f64::NEG_INFINITY
         );
     }
@@ -660,11 +813,11 @@ mod tests {
     struct NotANumber;
 
     impl SelfModel<1> for NotANumber {
-        fn clearance(&self, _: &[f64; 1]) -> f64 {
+        fn clearance(&self, _: &[f64; 1], _: Moving) -> f64 {
             f64::NAN
         }
 
-        fn nearest_pair(&self, _: &[f64; 1]) -> (String, String) {
+        fn nearest_pair(&self, _: &[f64; 1], _: Moving) -> (String, String) {
             ("a link".to_string(), "its neighbor".to_string())
         }
     }
@@ -675,18 +828,97 @@ mod tests {
     #[test]
     fn a_self_model_that_answers_no_number_counts_as_short() {
         let geometry = geometry::<1>(ONE_BOX, "link_1");
-        let arm = Arm::new(&geometry, Some(&NotANumber));
+        let arms = one_arm(&geometry, Some(&NotANumber));
         let (map, field) = world(0.05, &[]);
         let surroundings = Surroundings::new(&map, &field, [0.0; TERMS]);
-        assert!(!surroundings.clear(&arm, &[0.0]));
+        assert!(!surroundings.clear(&arms, &[0.0]));
         assert_eq!(
-            surroundings.contact(&arm, &[0.0]),
+            surroundings.contact(&arms, &[0.0]),
             Some(Contact::Own {
                 a: "a link".to_string(),
                 b: "its neighbor".to_string()
             })
         );
-        assert_eq!(surroundings.distances(&arm, &[0.0])[OWN], f64::NEG_INFINITY);
+        assert_eq!(
+            surroundings.distances(&arms, &[0.0], Moving::All)[OWN],
+            f64::NEG_INFINITY
+        );
+    }
+
+    /// A self model of two arms whose pair of the second arm and the torso stands in
+    /// contact, and whose pair of the first arm and the torso stands 1 m apart.
+    struct SecondArmTouches;
+
+    impl SelfModel<4> for SecondArmTouches {
+        fn clearance(&self, _: &[f64; 4], moving: Moving) -> f64 {
+            if moving.judges(1, 1) { 0.0 } else { 1.0 }
+        }
+
+        fn nearest_pair(&self, _: &[f64; 4], moving: Moving) -> (String, String) {
+            let link = if moving.judges(1, 1) {
+                "b_link_2"
+            } else {
+                "link_2"
+            };
+            (link.to_string(), "the torso".to_string())
+        }
+    }
+
+    // A check of one moving arm judges the pairs that a body of that arm is one of. Two
+    // arms side by side at zero, a voxel 1 cm past the second arm's ball and far from the
+    // first arm: the first arm's check keeps the map's clearance, and the second arm's
+    // and the whole state's fall short; each arm's check reads the map as that arm alone
+    // does. A self model asked of the second arm answers its pairs in contact, and of the
+    // first arm its own.
+    #[test]
+    fn a_check_of_one_moving_arm_judges_the_pairs_of_its_bodies() {
+        let first = geometry::<2>(BOXES_AND_A_BALL, "link_2");
+        let second = geometry::<2>(&beside(), "b_link_2");
+        let both = |self_model: Option<&'static dyn SelfModel<4>>| {
+            Arms::<2, 4>::new(
+                vec![Arm::new("first", &first), Arm::new("second", &second)],
+                self_model,
+            )
+        };
+        let q = [0.0; 4];
+        // The second arm's ball, of radius 0.04 m, stands at (0.47, 0.4, 0); this point's
+        // voxel spans 0.52 to 0.56 m along x.
+        let (map, field) = world(0.04, &[[0.54, 0.41, 0.01]]);
+        let surroundings = Surroundings::new(&map, &field, [0.03, 0.0, 0.0]);
+        let arms = both(None);
+        assert!(!surroundings.clear(&arms, &q));
+        assert!(surroundings.clear_moving(&arms, &q, Moving::Arm(0)));
+        assert!(!surroundings.clear_moving(&arms, &q, Moving::Arm(1)));
+        for (k, geometry) in [(0, &first), (1, &second)] {
+            let alone = Arms::<2, 2>::new(vec![Arm::new("alone", geometry)], None);
+            assert_eq!(
+                surroundings.distances(&arms, &q, Moving::Arm(k))[WORLD],
+                surroundings.distances(&alone, &[0.0; 2], Moving::All)[WORLD],
+                "arm {k}"
+            );
+        }
+        let [world_pair, _, _] = surroundings.nearest_pairs(&arms, &q, Moving::Arm(1));
+        assert_eq!(
+            world_pair.map(|reading| reading.pair),
+            Some(Contact::Map {
+                body: "b_link_2".to_string()
+            })
+        );
+
+        let (empty, empty_field) = world(0.04, &[]);
+        let apart = Surroundings::new(&empty, &empty_field, [0.0, 0.01, 0.0]);
+        let modeled = both(Some(&SecondArmTouches));
+        assert!(!apart.clear(&modeled, &q));
+        assert!(apart.clear_moving(&modeled, &q, Moving::Arm(0)));
+        assert!(!apart.clear_moving(&modeled, &q, Moving::Arm(1)));
+        let [_, own_pair, _] = apart.nearest_pairs(&modeled, &q, Moving::Arm(0));
+        assert_eq!(
+            own_pair.map(|reading| reading.pair),
+            Some(Contact::Own {
+                a: "link_2".to_string(),
+                b: "the torso".to_string()
+            })
+        );
     }
 
     // On drawn configurations of an arm of boxes and a ball among drawn voxels just
@@ -699,7 +931,7 @@ mod tests {
     #[hegel::test(test_cases = 300)]
     fn the_distance_from_the_map_sets_aside_no_nearer_body_or_voxel(tc: TestCase) {
         let geometry = geometry::<2>(BOXES_AND_A_BALL, "link_2");
-        let arm = Arm::new(&geometry, None);
+        let arm = Arm::new("arm", &geometry);
         let limits = geometry.chain().limits();
         let q: [f64; 2] = std::array::from_fn(|i| {
             tc.draw(gs::floats().min_value(limits[i].lo).max_value(limits[i].hi))
@@ -732,7 +964,8 @@ mod tests {
             .iter()
             .map(|(_, piece)| from_piece(piece))
             .fold(f64::INFINITY, f64::min);
-        let measured = surroundings.distances(&arm, &q)[0];
+        let measured =
+            surroundings.distances(&Arms::<2, 2>::new(vec![arm], None), &q, Moving::All)[0];
         if exact < clearance {
             assert_eq!(measured, exact);
         } else {
@@ -844,7 +1077,7 @@ mod tests {
         let still: [f64; 2] = std::array::from_fn(|i| {
             tc.draw(gs::floats().min_value(limits[i].lo).max_value(limits[i].hi))
         });
-        let parts: Vec<RobotPart> = Arm::new(&geometry, None)
+        let parts: Vec<RobotPart> = Arm::new("standing", &geometry)
             .bodies(&still)
             .into_iter()
             .map(|(_, body)| match body {
@@ -855,7 +1088,7 @@ mod tests {
                 Body::Shape(_) => panic!("the bare arm carries no object"),
             })
             .collect();
-        let spheres: Vec<(Point3<f64>, f64)> = Arm::new(&geometry, None)
+        let spheres: Vec<(Point3<f64>, f64)> = Arm::new("arm", &geometry)
             .bodies(&q)
             .iter()
             .map(|(_, body)| body.bounding_sphere())
@@ -942,9 +1175,9 @@ mod tests {
             )
             .expect("the held object attaches to the tip");
         let field = DistanceField::of(&map);
-        let objects = scene.for_arm("link_2", |link| panic!("{link} is no other arm's"));
-        let riders = objects.riders(&geometry);
-        let arm = Arm::new(&geometry, None)
+        let objects = scene.for_arms(&["link_2"], |link| panic!("{link} is no other arm's"));
+        let riders = scene.riders("link_2", &geometry);
+        let arm = Arm::new("arm", &geometry)
             .riding(&riders)
             .expect("the held object rides the tip");
         let [world_clearance, held_clearance]: [f64; 2] =
@@ -983,7 +1216,8 @@ mod tests {
                     })
             })
             .fold(f64::INFINITY, f64::min);
-        let measured = surroundings.distances(&arm, &q);
+        let arms = Arms::<2, 2>::new(vec![arm], None);
+        let measured = surroundings.distances(&arms, &q, Moving::All);
         for (term, exact, clearance) in [
             (WORLD, exact_world, world_clearance),
             (HELD, exact_held, held_clearance),
@@ -1000,8 +1234,209 @@ mod tests {
             }
         }
         assert_eq!(
-            surroundings.clear(&arm, &q),
+            surroundings.clear(&arms, &q),
             exact_world >= world_clearance && exact_held >= held_clearance
+        );
+    }
+
+    /// `BOXES_AND_A_BALL` 40 cm along y, its links and joints named `b_link_1`,
+    /// `b_link_2`, `b_joint_1` and `b_joint_2`.
+    fn beside() -> String {
+        BOXES_AND_A_BALL
+            .replace("link_", "b_link_")
+            .replace("joint_", "b_joint_")
+            .replace(
+                r#"<parent link="base"/><child link="b_link_1"/>"#,
+                r#"<origin xyz="0 0.4 0"/><parent link="base"/><child link="b_link_1"/>"#,
+            )
+    }
+
+    // On drawn states of two arms of boxes and a ball, side by side, each holding a drawn
+    // object on its tip, at drawn clearances: the distance of the robot's own body that
+    // the spheres and the bounds set aside measure equals the least distance from each
+    // held object to each piece of the other arm and to the other's object, where that
+    // lies within the clearance, and lies between the clearance and it, past it by no more
+    // than a gap of bounding spheres rounds, elsewhere; the distance of an attached object
+    // from the arm that carries it reads that arm's links alone. The state is clear exactly
+    // where both keep their clearance. A check of the first arm reads its own object's
+    // held distance alone and no pair of the own term, each of which holds a body of the
+    // second arm; a check of the second reads every pair of the own term and its own
+    // object's held distance.
+    #[hegel::test(test_cases = 300)]
+    fn the_distance_between_the_arms_objects_sets_aside_no_nearer_pair(tc: TestCase) {
+        let first = geometry::<2>(BOXES_AND_A_BALL, "link_2");
+        let second = geometry::<2>(&beside(), "b_link_2");
+        let limits = [first.chain().limits(), second.chain().limits()].concat();
+        let q: [f64; 4] = std::array::from_fn(|i| {
+            tc.draw(gs::floats().min_value(limits[i].lo).max_value(limits[i].hi))
+        });
+        let (q_first, q_second) = (Arms::<2, 4>::slice(&q, 0), Arms::<2, 4>::slice(&q, 1));
+        let grasp = |link: &str| match link {
+            "link_2" => first.chain().world_ee_pose(&q_first),
+            _ => second.chain().world_ee_pose(&q_second),
+        };
+        // Each object stands up to 12 cm off its arm's tip.
+        let near_the_tip = |link: &str| -> [f64; 3] {
+            let tip = grasp(link).translation.vector;
+            let off: f64 = tc.draw(gs::floats().min_value(0.0).max_value(0.12));
+            (tip + tc.draw(unit_vectors()) * off).into()
+        };
+        // A unit quaternion `[x, y, z, w]` drawn about a drawn axis.
+        let drawn_orientation = || -> [f64; 4] {
+            let axis = tc.draw(unit_vectors());
+            let angle: f64 = tc.draw(gs::floats().min_value(-3.0).max_value(3.0));
+            let q = nalgebra::UnitQuaternion::from_scaled_axis(axis * angle);
+            [q.i, q.j, q.k, q.w]
+        };
+        // A shape of a drawn kind, a box, a sphere or a cylinder 1 cm to 8 cm across, as
+        // motion_planning writes it, at its object's origin.
+        let drawn_shape = || -> ShapeFields {
+            let length = || gs::floats().min_value(0.01).max_value(0.08);
+            let (kind, dimensions) =
+                match tc.draw(gs::integers::<usize>().min_value(0).max_value(2)) {
+                    0 => {
+                        let size: [f64; 3] = tc.draw(gs::arrays(length()));
+                        ("box", size.to_vec())
+                    }
+                    1 => ("sphere", vec![tc.draw(length()) / 2.0]),
+                    _ => ("cylinder", vec![tc.draw(length()), tc.draw(length()) / 2.0]),
+                };
+            ShapeFields {
+                kind: kind.to_string(),
+                dimensions,
+                mesh_vertices: Vec::new(),
+                mesh_triangles: Vec::new(),
+                position: [0.0; 3],
+                orientation: [0.0, 0.0, 0.0, 1.0],
+            }
+        };
+        let held = |id: &str, link: &str| ObjectRequest {
+            operation: "add".to_string(),
+            object: ObjectFields {
+                id: id.to_string(),
+                position: near_the_tip(link),
+                orientation: drawn_orientation(),
+                shapes: vec![drawn_shape()],
+            },
+        };
+        let requests = [held("first", "link_2"), held("second", "b_link_2")];
+        let (mut map, _) = world(0.04, &[]);
+        let names = ["link_1", "link_2", "b_link_1", "b_link_2"].map(String::from);
+        let mut scene = PlanningScene::new(RobotLinks::new(
+            names,
+            ["link_2", "b_link_2"].map(String::from),
+        ));
+        scene
+            .apply_collision_objects(&requests, &mut map)
+            .expect("the drawn objects apply");
+        for (id, link) in [("first", "link_2"), ("second", "b_link_2")] {
+            scene
+                .apply_attached_collision_object(
+                    &AttachRequest {
+                        object_id: id.to_string(),
+                        link_name: link.to_string(),
+                        touch_links: Vec::new(),
+                        operation: "attach".to_string(),
+                    },
+                    |link| Some(grasp(link)),
+                    &mut map,
+                )
+                .expect("each object attaches to its arm's tip");
+        }
+        let field = DistanceField::of(&map);
+        let objects = scene.for_arms(&["link_2", "b_link_2"], |link| {
+            panic!("{link} is the grasp link of an arm of the plan")
+        });
+        let (first_riders, second_riders) = (
+            scene.riders("link_2", &first),
+            scene.riders("b_link_2", &second),
+        );
+        let arms = Arms::<2, 4>::new(
+            vec![
+                Arm::new("first", &first)
+                    .riding(&first_riders)
+                    .expect("its object rides the tip"),
+                Arm::new("second", &second)
+                    .riding(&second_riders)
+                    .expect("its object rides the tip"),
+            ],
+            None,
+        );
+        let [own_clearance, held_clearance]: [f64; 2] =
+            std::array::from_fn(|_| tc.draw(gs::floats().min_value(0.0).max_value(0.15)));
+        let surroundings = Surroundings::new(&map, &field, [0.0, own_clearance, held_clearance])
+            .with_objects(objects.objects(&[]));
+        let bodies = arms.bodies(&q);
+        let shapes = |arm: usize| -> Vec<&PlacedShape> {
+            bodies
+                .iter()
+                .filter(|body| body.arm == arm)
+                .filter_map(|body| body.body.shape())
+                .collect()
+        };
+        // The pieces of `arm`, past its grasp link, which its object may touch, for the
+        // held term; every piece of it for the other arm's object.
+        let pieces = |arm: usize, past_its_grasp_link: bool| -> Vec<&Placed> {
+            bodies
+                .iter()
+                .filter(|body| body.arm == arm)
+                .filter(|body| !past_its_grasp_link || !body.name.ends_with("link_2"))
+                .filter_map(|body| match &body.body {
+                    Body::Piece(piece) => Some(piece),
+                    Body::Shape(_) => None,
+                })
+                .collect()
+        };
+        let from_pieces = |shapes: &[&PlacedShape], pieces: &[&Placed]| {
+            shapes
+                .iter()
+                .flat_map(|shape| {
+                    pieces
+                        .iter()
+                        .map(|piece| shape.distance_to(*piece, piece.bounding_sphere()))
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        let between_objects = shapes(0)
+            .iter()
+            .flat_map(|a| shapes(1).into_iter().map(|b| a.distance_to_shape(b)))
+            .fold(f64::INFINITY, f64::min);
+        let exact_own = from_pieces(&shapes(0), &pieces(1, false))
+            .min(from_pieces(&shapes(1), &pieces(0, false)))
+            .min(between_objects);
+        let held_of = |arm: usize| from_pieces(&shapes(arm), &pieces(arm, true));
+        let exact_held = held_of(0).min(held_of(1));
+        for (moving, exact_own, exact_held) in [
+            (Moving::All, exact_own, exact_held),
+            (Moving::Arm(0), f64::INFINITY, held_of(0)),
+            (Moving::Arm(1), exact_own, held_of(1)),
+        ] {
+            let measured = surroundings.distances(&arms, &q, moving);
+            for (term, exact, clearance) in [
+                (OWN, exact_own, own_clearance),
+                (HELD, exact_held, held_clearance),
+            ] {
+                if exact < clearance {
+                    assert_eq!(measured[term], exact, "{moving:?}, term {term}");
+                } else {
+                    assert!(
+                        clearance <= measured[term]
+                            && measured[term] <= exact + SPHERE_GAP_ROUNDING_M,
+                        "{moving:?}, term {term}: {} lies outside {clearance} to {}",
+                        measured[term],
+                        exact + SPHERE_GAP_ROUNDING_M
+                    );
+                }
+            }
+            assert_eq!(
+                surroundings.clear_moving(&arms, &q, moving),
+                exact_own >= own_clearance && exact_held >= held_clearance,
+                "{moving:?}"
+            );
+        }
+        assert_eq!(
+            surroundings.clear(&arms, &q),
+            exact_own >= own_clearance && exact_held >= held_clearance
         );
     }
 }

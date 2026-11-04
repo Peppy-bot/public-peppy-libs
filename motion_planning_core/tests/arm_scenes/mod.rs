@@ -17,9 +17,10 @@ use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, AttachRequest, Goal, IkGoalSampler, JointTarget, ObjectFields, ObjectRequest,
-    OrientationTarget, PlanFailure, PlanRequest, PlanningScene, PositionTarget, RobotLinks,
-    RobotPart, Scene, ShapeFields, StartFault, plan_arm_path, pose_from_parts, pose_parts,
+    Arm, ArmGoal, Arms, AttachRequest, Goal, IkGoalSampler, JointTarget, ObjectFields,
+    ObjectRequest, OrientationTarget, PlanFailure, PlanRequest, PlanningScene, PositionTarget,
+    RobotLinks, RobotPart, Scene, ShapeFields, StartFault, plan_path, pose_from_parts,
+    pose_parts,
 };
 use nalgebra::Isometry3;
 use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
@@ -70,7 +71,7 @@ pub fn on_the_arm<R>(
 ) -> R {
     let geometry = geometry(scenes, urdf, meshes);
     let riders = parts(&geometry);
-    let arm = Arm::new(&geometry, None)
+    let arm = Arm::new("arm", &geometry)
         .riding(&riders)
         .expect("the parts ride the arm's links");
     let mut standing = Standing::new(urdf, meshes, &scenes.tip_link);
@@ -443,22 +444,27 @@ pub fn plan_scene<O>(
         .map(|_| standing.other_grasp_pose(&scenes.other_tip_link()));
     let planning = planning_scene_of(arm, scenes, scene, other_grasp, &mut map);
     let field = DistanceField::of(&map);
-    let objects = planning.for_arm(&scenes.tip_link, |_| {
+    let objects = planning.for_arms(&[&scenes.tip_link], |_| {
         other_grasp.expect("the other arm's grasp link placed")
     });
     let standing_parts = standing.parts(arm, &configuration(&scene.start));
     let geometry = arm.geometry();
     let riders: Vec<Rider> = parts(geometry)
         .into_iter()
-        .chain(objects.riders(geometry))
+        .chain(planning.riders(&scenes.tip_link, geometry))
         .collect();
-    let arm = &Arm::new(geometry, None)
-        .riding(&riders)
-        .expect("the parts and the held object ride the arm's links");
+    let arms = Arms::<JOINTS, JOINTS>::new(
+        vec![
+            Arm::new("arm", geometry)
+                .riding(&riders)
+                .expect("the parts and the held object ride the arm's links"),
+        ],
+        None,
+    );
     let goal = goal_of(scenes, &scene.goal);
     let deadline = Instant::now() + Duration::from_secs_f64(scenes.time_limit);
-    let answer = plan_arm_path(
-        arm,
+    let answer = plan_path(
+        &arms,
         &Scene {
             map: &map,
             field: &field,
@@ -468,8 +474,10 @@ pub fn plan_scene<O>(
         &PlanRequest {
             start: configuration(&scene.start),
             start_tolerance: [0.0; JOINTS],
-            goal: &goal,
-            sampler,
+            goals: vec![ArmGoal {
+                goal: &goal,
+                sampler,
+            }],
             goal_samples: NonZeroUsize::new(LAUNCH_GOAL_SAMPLES).expect("nonzero"),
             planner: planner_of(scenes.objective),
             deadline,

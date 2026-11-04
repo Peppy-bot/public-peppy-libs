@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
 use motion_planning_core::{
-    Draws, Frame, Goal, GoalSampler, IkGoalSampler, OrientationTarget, PositionTarget, sample_goals,
+    ArmGoal, Draws, Frame, Goal, GoalSampler, IkGoalSampler, OrientationTarget, PositionTarget,
+    sample_goals,
 };
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use openarm_description::{HardwareVersion, Side};
@@ -185,13 +186,15 @@ fn the_sampler_reaches_the_poses_of_links_and_carried_parts() {
             )
             .expect("a valid goal");
             let reached = sample_goals(
-                &sampler,
-                &goal,
+                &[ArmGoal {
+                    goal: &goal,
+                    sampler: &sampler,
+                }],
                 &START,
                 NonZeroUsize::new(LINK_GOALS).expect("nonzero"),
                 pose_index as u64,
                 &|| false,
-                &|_| true,
+                &|_, _| true,
             );
             assert!(
                 !reached.is_empty(),

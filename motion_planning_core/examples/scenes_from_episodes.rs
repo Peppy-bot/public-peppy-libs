@@ -49,8 +49,9 @@ use camera_core::pose::Pose;
 use collision_geometry::chain::Padding;
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, DepthCamera, Frame, Goal, IkGoalSampler, JointHistory, OrientationTarget, PositionTarget,
-    Surroundings, insert_cut_out, sample_goals, start_inside_limits, term_clearances,
+    Arm, ArmGoal, Arms, DepthCamera, Frame, Goal, IkGoalSampler, JointHistory, OrientationTarget,
+    PositionTarget, Surroundings, insert_cut_out, sample_goals, start_inside_limits,
+    term_clearances,
 };
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 use occupancy_map::{Bounds, DistanceField, Frame as MapFrame, Scan, VoxelMap};
@@ -636,14 +637,17 @@ fn scene_of(
     let field = DistanceField::of(&kind_map);
     let surroundings = Surroundings::new(&kind_map, &field, term_clearances(scenes.min_clearance));
     let deadline = Instant::now() + Duration::from_secs_f64(scenes.time_limit);
+    let alone = Arms::<ARM_DOF, ARM_DOF>::new(vec![arm.clone()], None);
     let sampled = sample_goals(
-        sampler,
-        &episode.goal,
+        &[ArmGoal {
+            goal: &episode.goal,
+            sampler,
+        }],
         &start,
         planner.goal_samples,
         u64::from(seed.get()),
         &|| Instant::now() >= deadline,
-        &|q| surroundings.clear(arm, q),
+        &|q, _| surroundings.clear(&alone, q),
     );
     let goal = sampled.first().ok_or_else(|| Dropped {
         reason: "no_free_goal",

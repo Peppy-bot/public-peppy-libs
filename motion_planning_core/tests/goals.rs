@@ -10,8 +10,8 @@ use std::sync::Mutex;
 use hegel::TestCase;
 use hegel::generators as gs;
 use motion_planning_core::{
-    Arm, Axis, Body, Draws, Frame, Goal, GoalError, GoalSampler, IkGoalSampler, JointTarget,
-    OrientationTarget, PositionTarget, sample_goals,
+    Arm, ArmGoal, Axis, Body, Draws, Frame, Goal, GoalError, GoalSampler, IkGoalSampler,
+    JointTarget, OrientationTarget, PositionTarget, sample_goals,
 };
 use nalgebra::{Isometry3, Unit, UnitQuaternion, Vector3};
 use openarm_description::{HardwareVersion, Side};
@@ -193,12 +193,16 @@ fn goal_sampling_keeps_its_count_until_its_end() {
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = joint_goal();
     let eight = NonZeroUsize::new(8).expect("nonzero");
-    let all = |_: &[f64; JOINTS]| true;
-    let goals = sample_goals(&sampler, &goal, &ZERO, eight, 1, &|| false, &all);
+    let all = |_: &[f64; JOINTS], _| true;
+    let arm = [ArmGoal {
+        goal: &goal,
+        sampler: &sampler,
+    }];
+    let goals = sample_goals(&arm, &ZERO, eight, 1, &|| false, &all);
     assert_eq!(goals.len(), 8);
     assert!(goals.iter().all(|q| goal.met(LEFT_ARM.chain(), q)));
-    assert!(sample_goals(&sampler, &goal, &ZERO, eight, 1, &|| true, &all).is_empty());
-    assert!(sample_goals(&sampler, &goal, &ZERO, eight, 1, &|| false, &|_| false).is_empty());
+    assert!(sample_goals(&arm, &ZERO, eight, 1, &|| true, &all).is_empty());
+    assert!(sample_goals(&arm, &ZERO, eight, 1, &|| false, &|_, _| false).is_empty());
 }
 
 /// A goal sampler that answers its script in turn, each configuration where it is valid,
@@ -235,14 +239,17 @@ fn each_goal_sample_runs_from_the_last_valid_goal() {
         script: vec![first, rejected, again, last],
         workings: Mutex::new(Vec::new()),
     };
+    let goal = joint_goal();
     let goals = sample_goals(
-        &scripted,
-        &joint_goal(),
+        &[ArmGoal {
+            goal: &goal,
+            sampler: &scripted,
+        }],
         &ZERO,
         NonZeroUsize::new(2).expect("nonzero"),
         1,
         &|| false,
-        &|q| *q != rejected,
+        &|q, _| *q != rejected,
     );
     assert_eq!(goals, vec![first, last]);
     assert_eq!(
@@ -265,13 +272,15 @@ fn goal_sampling_ends_once_its_failing_samples_reach_1000_less_its_goals() {
         workings: Mutex::new(Vec::new()),
     };
     let goals = sample_goals(
-        &scripted,
-        &joint_goal(),
+        &[ArmGoal {
+            goal: &joint_goal(),
+            sampler: &scripted,
+        }],
         &ZERO,
         NonZeroUsize::new(10).expect("nonzero"),
         1,
         &|| false,
-        &|_| true,
+        &|_, _| true,
     );
     assert_eq!(goals, found.to_vec());
     assert_eq!(
@@ -442,7 +451,7 @@ fn a_goal_sample_answers_only_what_its_validity_accepts() {
 #[test]
 fn a_goal_on_a_rider_stands_where_the_checks_place_it() {
     let fingers = left_fingers();
-    let arm = Arm::new(&LEFT_ARM, None)
+    let arm = Arm::new("left_arm", &LEFT_ARM)
         .riding(&fingers)
         .expect("the fingers ride the hand");
     let q = [0.3, -0.2, 0.1, 1.0, 0.2, 0.1, 0.0];
