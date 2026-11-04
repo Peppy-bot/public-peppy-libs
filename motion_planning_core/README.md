@@ -60,7 +60,7 @@ let waypoints = plan_arm_path(
         start_tolerance: [0.01; 7],
         goal: &goal,
         sampler: &sampler,
-        goal_samples: NonZeroUsize::new(64).unwrap(),
+        goal_samples: NonZeroUsize::new(10).unwrap(),
         planner: Planner::RrtConnect,
         deadline: Instant::now() + Duration::from_secs(1),
         max_iterations: NonZeroU64::new(20_000).unwrap(),
@@ -235,37 +235,76 @@ tolerance and checks nothing more.
 ## The goal
 
 A goal holds joints within tolerances above and below their targets, or holds the grasp
-point, a link of the chain, or a part a link carries rigidly through a plan (`Frame`; a
-part's `Frame::from` its `Rider` stands where the clearance checks place the part): its
-origin within a distance of a position of the robot frame, and its orientation within an
-angle of a target, the angle of the rotation between them, or, with a free axis, the angle
-between that axis and its target direction. Each tolerance is a `control_core`
-`PositiveFinite`. A goal that mixes joints with poses, names a joint or a frame twice in
-one list, or holds the position of one frame and the orientation of another is refused
-(`GoalError`): a goal holds one frame, whose pose the sampler reaches for. MoveIt keeps
-one sampler for a goal on several links, the link whose constraints leave the least
-volume, and accepts a sample that meets the others by chance. `IkGoalSampler` draws up to
-`goal_samples` configurations, until the plan's deadline passes, inside the joint limits,
-the targeted joints inside their targets, and descends from each toward a pose drawn
-inside the goal: by `chain_kinematics`' inverse kinematics for the grasp point, and for a
-link by damped least squares on the link's Jacobian, each column taken as the change of
-the link's pose over a small turn of its joint. It keeps the distinct ones that meet the
-goal. A plan whose sampler finds none fails `Unreachable`, saying so; one whose every
-configuration is in collision fails `Unreachable` and says that instead, naming, of the
-configuration that falls short least, the nearest pair of the robot's own body, of an
-attached object and the arm that carries it, or of a body of the arm and the map, an
-object or a part of the robot, of each clearance it falls short of and how far apart they
-stand.
+point, a link of the chain or one fixed below it, or a part a link carries through a plan
+(`Frame`; `Frame::Part`, from a part's `Rider`, stands where the clearance checks place
+the part): its origin within a distance of a position of the robot frame, and its
+orientation within an angle of a target, the angle of the rotation between them, or, with
+a free axis, the angle between that axis and its target direction. Each tolerance is a
+`control_core` `PositiveFinite`. A goal that mixes joints with poses, names a joint or a
+frame twice in one list, or holds the position of one frame and the orientation of another
+is refused (`GoalError`): a goal holds one frame, whose pose the sampler reaches for.
+MoveIt keeps one sampler for a goal on several links, the link whose constraints leave the
+least volume, and accepts a sample that meets the others by chance.
 
-On 200 drawn reachable poses of OpenArm v2's left arm, the sampler reaches every
-shoulder and wrist branch that `srs_model`'s closed form finds on 199 of them, 144 of
-which have two (`tests/goal_coverage.rs`). It reaches each of 10 drawn reachable poses
-of the forearm, of the wrist link, and of a part the hand carries.
+The plan samples its goals as MoveIt's `ConstrainedGoalSampler` samples a goal's states
+(moveit2 2.15.2 constrained_goal_sampler.cpp; `sample_goals`). A working state starts at
+the plan's start. Each goal sample sets out from it with MoveIt's 4 attempts
+(`max_state_sampling_attempts`), the plan's clearance check deciding inside the sample, as
+MoveIt's validity callback does. The goal a sample finds becomes the working state, so the
+goals of a short pose move gather about the first one, which lies on the start's shoulder
+and wrist branches where the first attempt from the start reaches the pose; a goal joins
+the goals unless it equals one of them. Sampling ends at `goal_samples` goals, as MoveIt's
+`max_goal_samples` (10 by default) ends it; once the samples since the last goal found
+reach 1000 less the goals found so far, as MoveIt's `max_goal_sampling_attempts` (1000)
+bounds the samples its sampling function makes before it returns a goal, counting from the
+goals OMPL has taken; or before a sample once the deadline passes or the stop flag is set.
+MoveIt samples on a thread beside its planner and ends once the planner has a path; this
+crate samples the goals, then plans to them.
+
+`IkGoalSampler` makes a sample. For a goal of joints it draws one configuration inside the
+joint limits, the targeted joints inside their targets, as MoveIt's
+`JointConstraintSampler` does. For a pose, as MoveIt's `IKConstraintSampler`, each attempt
+draws a pose of the goal's frame inside the goal and searches for it by MoveIt's KDL
+inverse kinematics, ported (kdl_kinematics_plugin.cpp at its defaults): the first attempt
+from the working state, each later one from a configuration drawn inside the limits. A
+descent converges where the frame's position and orientation both lie within 1e-5 m and
+rad of the pose; a step that does not lower its error is cut, a joint clipped at its limit
+weighs 0.01 in the next step, and a stuck descent steps off by a drawn turn, for at most
+500 steps. A search re-seeds from a drawn configuration after each descent. KDL's search
+ends on a clock, the 0.05 s move_group gives each inverse kinematics call; this one starts
+no descent once its descents have made 9274 passes of KDL's loop, 0.05 s over the mean
+time of a pass in the reference image, so a seed gives the same goals on every machine.
+From the seeds of seven descents of MoveIt's KDL plugin recorded in the reference image,
+converged, stuck and at the 500 step cap, the port's descents end within 1e-6 rad of
+KDL's, after as many passes (`tests/kdl_descents.json`). The grasp point, and a link that
+the chain's every joint moves and that is fixed below the last joint's link, are the tip
+of MoveIt's solver or a link fixed to it, and the search solves for them as KDL does. A
+link the chain's later joints do not move, and a part a link carries such as a finger,
+which hangs on a joint of its own, depart from MoveIt, which has no inverse kinematics for
+them: MoveIt builds no IK sampler for a link that is neither the tip nor fixed to it
+(`IKConstraintSampler::loadIKSolver`, default_constraint_samplers.cpp:386-439), so its
+constraint sampler manager selects none (constraint_sampler_manager.cpp:395) and its goal
+sampler draws states uniformly and keeps those that meet the goal by chance
+(constrained_goal_sampler.cpp:71-72, :158-166). This sampler descends toward what the goal
+names, with KDL's position-only and approximate-solution options applied
+(kdl_kinematics_plugin.cpp:344-350, :389), and the goal's constraints decide. A plan whose
+sampling finds no goal fails `Unreachable`, saying so; one whose every configuration that
+meets the goal is in collision fails `Unreachable` and says that instead, how many such
+configurations the sampling rejected, naming, of the configuration that falls short least,
+the nearest pair of the robot's own body, of an attached object and the arm that carries
+it, or of a body of the arm and the map, an object or a part of the robot, of each
+clearance it falls short of and how far apart they stand.
+
+On 200 drawn reachable poses of OpenArm v2's left arm, with the configurations of every
+other branch invalid, one goal sample from all joints at zero reaches each shoulder and
+wrist branch that `srs_model`'s closed form finds on each of them, 144 of which have two
+(`tests/goal_coverage.rs`). The goal sampling reaches each of 10 drawn reachable poses of
+the forearm, of the wrist link, and of a part the hand carries.
 
 ## The plan and its path
 
 The request's deadline bounds the plan as MoveIt's allowed planning time bounds a
-request: the goal sampler draws up to `goal_samples` configurations, ending early once
+request: the goal sampling samples up to `goal_samples` goals, ending before a sample once
 the deadline passes, OMPL makes the request's `attempts` in what remains before it, as
 MoveIt makes a request's `num_planning_attempts` (ompl_bridge's README, Attempts): each
 from its own seed, under the whole of that time and the whole iteration bound, their
@@ -285,7 +324,7 @@ gives the same path when the plan ends before its deadline, for every planner bu
 PRM*, with any number of attempts. OMPL's simplifier shortens the path.
 
 The caller's flag `stop` ends a plan at any part of it, and the plan fails `Stopped`:
-the goal sampler draws no further configuration, OMPL's planners and simplifier end at
+the goal sampling makes no further sample, OMPL's planners and simplifier end at
 their next question whether to stop, and the check of the rounded path ends before its
 next walk of the path.
 

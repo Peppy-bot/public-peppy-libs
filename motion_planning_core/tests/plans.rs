@@ -16,25 +16,26 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
+use chain_kinematics::{Goal as PoseGoal, Kinematics};
 use collision_geometry::chain::Rider;
 use collision_geometry::gjk::{Hull, Placed};
 use collision_geometry::hull::exact_hull;
 use control_core::path_timing::RoundedPath;
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, ArmObjects, AttachRequest, CheckFailure, CheckRequest, Contact, Goal, GoalSampler,
-    IkGoalSampler, JointTarget, MAX_STEP_M, ObjectFields, ObjectRequest, Objects, PathCheck,
-    PathFault, Place, PlanFailure, PlanRequest, PlanningScene, RobotLinks, RobotPart, Scene,
-    ShapeFields, StartFault, Surroundings, check_arm_path, plan_arm_path, pose_parts,
-    term_clearances,
+    Arm, ArmObjects, AttachRequest, CheckFailure, CheckRequest, Contact, Draws, Frame, Goal,
+    GoalSampler, IkGoalSampler, JointTarget, MAX_STEP_M, ObjectFields, ObjectRequest, Objects,
+    OrientationTarget, PathCheck, PathFault, Place, PlanFailure, PlanRequest, PlanningScene,
+    PositionTarget, RobotLinks, RobotPart, Scene, ShapeFields, StartFault, Surroundings,
+    check_arm_path, plan_arm_path, pose_parts, term_clearances,
 };
 use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::Planner;
 
 use common::{
-    JOINTS, LEFT_ARM, an_hour_from_now, distance_to_map, held_from_its_arm, left_fingers, map,
-    occupied_at, positive, voxel_in_a_finger,
+    JOINTS, LEFT_ARM, an_hour_from_now, branch, distance_to_map, held_from_its_arm, left_fingers,
+    map, occupied_at, off_the_branch_seams, positive, voxel_in_a_finger,
 };
 
 const VOXEL_M: f64 = 0.04;
@@ -231,9 +232,111 @@ fn the_same_request_on_the_same_map_gives_the_same_path() {
     assert_ne!(plan_at(1), plan_at(2));
 }
 
-// A goal inside a box is unreachable, and the message says that each configuration
-// meeting it is in collision, nearer than the plan's clearance it names, and names the
-// link of the one that falls short least nearest the map.
+/// The most goals the motion planner's launch samples for a goal (its fragment's
+/// goal_samples, launchers-hub openarm/fragments/motion_planner.json5).
+const LAUNCH_GOAL_SAMPLES: usize = 10;
+/// How far the short pose moves lower the grasp point: 8 cm, a short move against the
+/// arm's reach, the 0.6 m from its shoulder (openarm_left_link2's origin) to its grasp
+/// point with the arm straight.
+const LOWERING_M: f64 = 0.08;
+/// How near the goal's pose the grasp point lands: goal_coverage.rs's tolerances.
+const GOAL_TOLERANCE_M: f64 = 0.005;
+const GOAL_TOLERANCE_RAD: f64 = 0.01;
+/// The short pose moves each test plans.
+const SHORT_MOVES: usize = 12;
+/// The most starts drawn for them, ten for each: the test fails when fewer than
+/// `SHORT_MOVES` of them can be lowered.
+const STARTS_DRAWN: usize = 10 * SHORT_MOVES;
+
+// From each of 12 drawn starts from which inverse kinematics lowers the grasp point 8 cm
+// straight down inside the joint limits, its orientation kept, a pose goal there plans a
+// path that ends on the start's shoulder and wrist branches: the first goal sample sets
+// out from the start, and each later one from the goal before it, as MoveIt's do.
+#[test]
+fn a_short_pose_move_from_the_start_ends_on_its_branches() {
+    let (map, field) = world(&[]);
+    let arm = Arm::new(&LEFT_ARM, None);
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+        objects: Objects::none(),
+    };
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let (mut longest, mut planned, mut drawn): (f64, usize, usize) = (0.0, 0, 0);
+    let kinematics = Kinematics::new(LEFT_ARM.chain().clone());
+    for start in off_the_branch_seams(20261103).take(STARTS_DRAWN) {
+        if planned == SHORT_MOVES {
+            break;
+        }
+        drawn += 1;
+        let pose = LEFT_ARM.chain().world_ee_pose(&start);
+        let lowered = pose.translation.vector - Vector3::z() * LOWERING_M;
+        let reached = kinematics.continue_to(
+            &start,
+            &PoseGoal::at(Isometry3::from_parts(
+                Translation3::from(lowered),
+                pose.rotation,
+            ))
+            .orientation_within(GOAL_TOLERANCE_RAD)
+            .expect("a positive tolerance"),
+        );
+        if reached.is_none() {
+            continue;
+        }
+        let goal = Goal::new(
+            JOINTS,
+            Vec::new(),
+            vec![PositionTarget {
+                frame: Frame::GraspPoint,
+                position: lowered,
+                tolerance_m: positive(GOAL_TOLERANCE_M),
+            }],
+            vec![OrientationTarget {
+                frame: Frame::GraspPoint,
+                orientation: pose.rotation,
+                tolerance_rad: positive(GOAL_TOLERANCE_RAD),
+                free_axis: None,
+            }],
+        )
+        .expect("a valid goal");
+        let request = PlanRequest {
+            goal_samples: NonZeroUsize::new(LAUNCH_GOAL_SAMPLES).expect("nonzero"),
+            ..request(Planner::RrtConnect, start, &goal, &sampler)
+        };
+        let waypoints = plan_arm_path(&arm, &scene, &request)
+            .unwrap_or_else(|failure| panic!("from {start:?}: {failure}"));
+        let length: f64 = waypoints
+            .windows(2)
+            .map(|pair| {
+                (0..JOINTS)
+                    .map(|i| (pair[1][i] - pair[0][i]).powi(2))
+                    .sum::<f64>()
+                    .sqrt()
+            })
+            .sum();
+        let end = waypoints.last().expect("a path");
+        assert_eq!(
+            branch(end),
+            branch(&start),
+            "from {start:?}, an 8 cm lowering plans {length} rad to {end:?}"
+        );
+        longest = longest.max(length);
+        planned += 1;
+    }
+    assert_eq!(
+        planned, SHORT_MOVES,
+        "too few starts can be lowered inside the limits"
+    );
+    println!(
+        "of {drawn} starts drawn, {planned} could be lowered; the longest of their moves turns \
+         the joints {longest} rad"
+    );
+}
+
+// A goal inside a box is unreachable, and the message says that the goal sampling
+// rejected the configurations meeting it, each nearer than the plan's clearance it names,
+// and names the link of the one that falls short least nearest the map.
 #[test]
 fn a_goal_inside_an_obstacle_is_unreachable() {
     let goal_hand = hand(&HIGH);
@@ -264,8 +367,8 @@ fn a_goal_inside_an_obstacle_is_unreachable() {
         .expect("the message names what the nearest configuration falls short against");
     assert!(
         clearance.ends_with(
-            "that meet the goal is in collision, nearer than the plan's clearance, 0.0210 m from \
-             the map and the objects"
+            "configurations that meet the goal, each nearer than the plan's clearance, 0.0210 m \
+             from the map and the objects"
         ),
         "{message}"
     );
@@ -343,20 +446,24 @@ fn a_plan_its_iterations_end_gives_no_path() {
     );
 }
 
-/// A goal sampler that waits out the plan's time limit, then answers `0`.
-struct WaitingOut([f64; JOINTS]);
+/// A goal sampler that waits out the plan's time limit, until `until`, then answers
+/// `answer` where it is valid.
+struct WaitingOut {
+    answer: [f64; JOINTS],
+    until: Instant,
+}
 
 impl GoalSampler<JOINTS> for WaitingOut {
-    fn sample(
+    fn sample_from(
         &self,
         _: &Goal,
+        _: &[f64; JOINTS],
         _: usize,
-        _: u64,
-        deadline: Instant,
-        _: Option<&AtomicBool>,
-    ) -> Vec<[f64; JOINTS]> {
-        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
-        vec![self.0]
+        _: &mut Draws,
+        valid: &dyn Fn(&[f64; JOINTS]) -> bool,
+    ) -> Option<[f64; JOINTS]> {
+        std::thread::sleep(self.until.saturating_duration_since(Instant::now()));
+        valid(&self.answer).then_some(self.answer)
     }
 }
 
@@ -375,10 +482,14 @@ fn a_plan_whose_sampling_takes_its_time_gives_no_path() {
         stamp: 1,
         objects: Objects::none(),
     };
-    let waiting = WaitingOut(HIGH);
+    let deadline = Instant::now() + Duration::from_millis(50);
+    let waiting = WaitingOut {
+        answer: HIGH,
+        until: deadline,
+    };
     let limited = PlanRequest {
         sampler: &waiting,
-        deadline: Instant::now() + Duration::from_millis(50),
+        deadline,
         ..request(Planner::RrtConnect, LOW, &goal, &sampler)
     };
     assert_eq!(
@@ -1178,15 +1289,17 @@ struct StoppingOnceDrawn<'a> {
 }
 
 impl GoalSampler<JOINTS> for StoppingOnceDrawn<'_> {
-    fn sample(
+    fn sample_from(
         &self,
         goal: &Goal,
-        count: usize,
-        seed: u64,
-        deadline: Instant,
-        stop: Option<&AtomicBool>,
-    ) -> Vec<[f64; JOINTS]> {
-        let drawn = self.sampler.sample(goal, count, seed, deadline, stop);
+        working: &[f64; JOINTS],
+        attempts: usize,
+        draws: &mut Draws,
+        valid: &dyn Fn(&[f64; JOINTS]) -> bool,
+    ) -> Option<[f64; JOINTS]> {
+        let drawn = self
+            .sampler
+            .sample_from(goal, working, attempts, draws, valid);
         self.stop.store(true, Ordering::Relaxed);
         drawn
     }

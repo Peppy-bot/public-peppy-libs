@@ -7,11 +7,11 @@
     },
     {
       "moveit": {"clearance":0.045242737939103515,"collisions":0,"held_clearance":null,"length":3.8427368398168653,"status":1},
-      "ours": {"clearance":0.024907815940070438,"collisions":0,"held_clearance":null,"length":3.0651569161597525}
+      "ours": {"clearance":0.004920899170764285,"collisions":0,"held_clearance":null,"length":3.072618097035593}
     },
     {
       "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"status":-2},
-      "ours": {"clearance":0.0013284423062045214,"collisions":0,"held_clearance":null,"length":5.0672209671238235}
+      "ours": {"clearance":0.0013042979149601643,"collisions":0,"held_clearance":null,"length":5.065967570240161}
     },
     {
       "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"status":-10},
@@ -22,8 +22,8 @@
       "ours": null
     },
     {
-      "moveit": {"clearance":-1,"collisions":20,"held_clearance":null,"length":6.767020354711343,"status":1},
-      "ours": {"clearance":0.001865489360321054,"collisions":0,"held_clearance":null,"length":5.838660700596109}
+      "moveit": {"clearance":-1,"collisions":29,"held_clearance":null,"length":3.365662154706074,"status":1},
+      "ours": {"clearance":0.001486939128194616,"collisions":0,"held_clearance":null,"length":5.430802551450284}
     },
     {
       "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"status":-26},

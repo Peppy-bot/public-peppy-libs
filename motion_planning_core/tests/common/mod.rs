@@ -1,7 +1,8 @@
-//! What the tests share: OpenArm v2's left arm and the fingers its hand carries, a
-//! deadline no sampling reaches, voxel maps of drawn points, the distance from an arm to
-//! every occupied voxel, and the distance from the objects an arm carries to its own
-//! pieces.
+//! What the tests share: OpenArm v2's left arm and the fingers its hand carries, the
+//! shoulder and wrist branch of a configuration and configurations drawn off the seams of
+//! the branches, a deadline no sampling reaches, voxel maps of drawn points, the distance
+//! from an arm to every occupied voxel, and the distance from the objects an arm carries
+//! to its own pieces.
 //!
 //! Each integration test is its own crate, so items unused by one suite are
 //! expected; the allow keeps clippy's -D warnings gate meaningful for the rest.
@@ -51,6 +52,41 @@ pub static LEFT_ARM: LazyLock<ChainGeometry<JOINTS>> = LazyLock::new(|| {
 /// hand.
 pub fn left_fingers() -> Vec<Rider<'static>> {
     LEFT_ARM.carried().iter().map(CarriedPart::rider).collect()
+}
+
+/// The shoulder and wrist branch of `q`: on which side of a quarter turn the middle joint
+/// of each spherical limb stands. The two solutions of a limb differ there.
+pub fn branch(q: &[f64; JOINTS]) -> (bool, bool) {
+    (q[1].cos() >= 0.0, q[5].cos() >= 0.0)
+}
+
+/// SplitMix64 draws in `[0, 1)`.
+pub struct SplitMix64(pub u64);
+
+impl SplitMix64 {
+    pub fn unit(&mut self) -> f64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1_u64 << 53) as f64
+    }
+}
+
+/// Configurations of the left arm drawn inside its limits by SplitMix64 from `seed`, the
+/// middle joint of each spherical limb (joints 2 and 6) at least a quarter of pi from the
+/// quarter turn its two branches meet at.
+pub fn off_the_branch_seams(seed: u64) -> impl Iterator<Item = [f64; JOINTS]> {
+    let limits = LEFT_ARM.chain().limits();
+    let mut draws = SplitMix64(seed);
+    std::iter::repeat_with(move || -> [f64; JOINTS] {
+        std::array::from_fn(|i| limits[i].lo + (limits[i].hi - limits[i].lo) * draws.unit())
+    })
+    .filter(|q| {
+        [q[1], q[5]]
+            .iter()
+            .all(|v| v.cos().abs() >= std::f64::consts::FRAC_1_SQRT_2)
+    })
 }
 
 /// `value`, a tolerance of the tests above 0.

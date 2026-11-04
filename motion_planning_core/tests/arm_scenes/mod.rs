@@ -32,8 +32,9 @@ use ros_reference::planning_scene::{Object, Shape};
 use self_collision_model::SelfCollisionModel;
 
 pub const JOINTS: usize = 7;
-/// The configurations the goal sampler draws for a scene's joint goal.
-const GOAL_SAMPLES: usize = 8;
+/// The most goals a scene's plan samples: the motion planner's launch's (launchers-hub
+/// openarm/fragments/motion_planner.json5, `goal_samples`).
+const LAUNCH_GOAL_SAMPLES: usize = 10;
 /// The share of a voxel a link point moves at most between two probes of a path.
 const PROBE_SHARE_OF_VOXEL: f64 = 0.1;
 /// The frame of OpenArm's URDF root, in which the scenes' boxes stand.
@@ -438,7 +439,7 @@ pub fn plan_scene<O>(
             start_tolerance: [0.0; JOINTS],
             goal: &goal,
             sampler,
-            goal_samples: NonZeroUsize::new(GOAL_SAMPLES).expect("nonzero"),
+            goal_samples: NonZeroUsize::new(LAUNCH_GOAL_SAMPLES).expect("nonzero"),
             planner: planner_of(scenes.objective),
             deadline,
             max_iterations: max_iterations(scenes),

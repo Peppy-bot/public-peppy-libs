@@ -178,8 +178,7 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    those paths free in MoveIt's check and each refusal as MoveIt's. MoveIt's arm64 build
    answers the committed scenes otherwise: it refuses the same four starts and goals, and
    of the four scenes it plans, it plans the straight path to other last bits and another
-   path with corners, its own check passes the path that fails it on amd64, and fails
-   the path with the most corners that passes it on amd64.
+   path with corners, and its own check passes the path that fails it on amd64.
 5. One rule lays out every scenario and every reference output: a value goes on one line
    when it is a scalar, an array of scalars, or a record, an object whose members are
    each a scalar or an array of scalars; every other array or object spreads over lines,
@@ -253,8 +252,9 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    robot's iteration bound, whichever comes first, at MoveIt's default of 5 s (moveit2
    2.15.2 `MoveGroupInterfaceImpl`, `allowed_planning_time_ = 5.0`) and at the time that
    the robot's callers ask, over the drawn set and the recorded episodes, as rule 3 says,
-   at a clearance of 0 and at the clearance of the robot's launch (`--min-clearance`). The
-   pull request states which modes its tally covers.
+   at a clearance of 0 and at the clearance of the robot's launch (`--min-clearance`),
+   each plan of this crate sampling the launch's goals (its fragment's `goal_samples`).
+   The pull request states which modes its tally covers.
 
 ## Pins
 
