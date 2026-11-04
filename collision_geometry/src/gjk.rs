@@ -578,7 +578,9 @@ fn epa_face(v: [usize; 3], points: &[SupportPoint], inside: &Vector3<f64>) -> Op
 }
 
 /// Undirected edges bordering exactly one visible face: the horizon the new
-/// faces attach to.
+/// faces attach to, in edge order. The order the faces attach in decides which
+/// face EPA picks as closest among near ties and the face it stops on, at its
+/// tolerance or at its cap, so a sorted walk gives one depth on every run.
 fn epa_horizon(faces: &[EpaFace], visible: &[usize]) -> Vec<(usize, usize)> {
     let mut count: HashMap<(usize, usize), u32> = HashMap::new();
     for &fi in visible {
@@ -589,11 +591,13 @@ fn epa_horizon(faces: &[EpaFace], visible: &[usize]) -> Vec<(usize, usize)> {
                 .or_insert(0) += 1;
         }
     }
-    count
+    let mut horizon: Vec<(usize, usize)> = count
         .into_iter()
         .filter(|&(_, c)| c == 1)
         .map(|(e, _)| e)
-        .collect()
+        .collect();
+    horizon.sort_unstable();
+    horizon
 }
 
 /// Signed distance, witnesses and the separating normal from the closest face: depth
@@ -826,7 +830,8 @@ fn origin_outside_plane(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nalgebra::{Isometry3, Translation3, UnitQuaternion};
+    use crate::shapes::{PlacedShape, Shape};
+    use nalgebra::{Isometry3, Quaternion, Translation3, UnitQuaternion};
     use rand::{RngExt, SeedableRng};
 
     fn pt(x: f64, y: f64, z: f64) -> Point3<f64> {
@@ -1047,6 +1052,104 @@ mod tests {
         let at = |x: f64, y: f64, z: f64| support(&a, &b, &Vector3::new(x, y, z));
         let r = epa(&a, &b, &[at(1.0, 1.0, 1.0), at(1.0, -1.0, -1.0)], 0.0, 0.0);
         assert!(r.distance.abs() <= EPA_TOL, "{}", r.distance);
+    }
+
+    /// A pose from its translation and its rotation's quaternion coordinates `[i, j, k, w]`,
+    /// the bits as given.
+    fn pose(translation: [f64; 3], rotation: [f64; 4]) -> Isometry3<f64> {
+        let [i, j, k, w] = rotation;
+        Isometry3::from_parts(
+            Translation3::new(translation[0], translation[1], translation[2]),
+            UnitQuaternion::new_unchecked(Quaternion::new(w, i, j, k)),
+        )
+    }
+
+    /// The two drawn overlaps of motion_planning_core's clearance test whose depth the
+    /// hash map's horizon order moved between measurements, each as that test measured
+    /// it, with the depth it measured: a held cylinder 1.77 cm into a box of the arm, and
+    /// a held cylinder 5.4 cm into a cylinder of the scene.
+    fn drawn_overlaps() -> [(Box<dyn Fn() -> f64>, f64); 2] {
+        let box_of_the_arm = hull_of(&[
+            pt(0.21000000000000002, -0.02, -0.029999999999999995),
+            pt(0.21000000000000002, -0.02, 0.029999999999999995),
+            pt(0.21000000000000002, 0.02, -0.029999999999999992),
+            pt(0.21000000000000002, 0.02, 0.029999999999999995),
+            pt(0.33, -0.02, -0.029999999999999995),
+            pt(0.33, -0.02, 0.029999999999999995),
+            pt(0.33, 0.02, -0.029999999999999992),
+            pt(0.33, 0.02, 0.029999999999999995),
+        ]);
+        let held_in_the_box =
+            Shape::cylinder(0.03338356643628502, 0.03014184077798001).expect("a cylinder");
+        let into_the_box = Box::new(move || {
+            let piece = Placed::new(&box_of_the_arm, Isometry3::identity());
+            PlacedShape::new(
+                &held_in_the_box,
+                pose(
+                    [
+                        0.3302484891602228,
+                        -0.03563873670475025,
+                        8.673617379884035e-19,
+                    ],
+                    [0.0, 0.0, 0.0, 1.0],
+                ),
+            )
+            .distance_to(&piece, piece.bounding_sphere())
+        });
+        let held_in_the_cylinder =
+            Shape::cylinder(0.01805849621202426, 0.07570234298885986).expect("a cylinder");
+        let cylinder_of_the_scene =
+            Shape::cylinder(0.03627662369005499, 0.039286549512989134).expect("a cylinder");
+        let into_the_cylinder = Box::new(move || {
+            PlacedShape::new(
+                &held_in_the_cylinder,
+                pose(
+                    [0.34, 1.3634657116416653e-18, 2.7755575615628914e-17],
+                    [
+                        -5.551115123125783e-17,
+                        -6.938893903907228e-18,
+                        -0.9921086858517549,
+                        0.12538084166850966,
+                    ],
+                ),
+            )
+            .distance_to_shape(&PlacedShape::new(
+                &cylinder_of_the_scene,
+                pose(
+                    [0.3400505952980983, 0.0, 8.673617379884035e-19],
+                    [0.0, 0.0, 0.0, 1.0],
+                ),
+            ))
+        });
+        [
+            (into_the_box, -0.017742855456495506),
+            (into_the_cylinder, -0.054029421761482496),
+        ]
+    }
+
+    /// How many times the test measures each overlap: under the hash map's order the
+    /// second overlap's depth differed from a given one in 6 of 20 replays, so 50 equal
+    /// depths by chance lie below 0.7^49, some 3e-8.
+    const MEASUREMENTS: usize = 50;
+
+    /// How far the depth of a drawn overlap may lie from the one the clearance test
+    /// measured: the two it measured under the hash map's order lie 4.95e-6 m apart.
+    const SAME_OVERLAP_M: f64 = 1e-4;
+
+    // The depth of an overlap is the same bits on every measurement, on the two drawn
+    // overlaps whose depth the hash map's horizon order moved.
+    #[test]
+    fn an_overlaps_depth_is_the_same_on_every_measurement() {
+        for (measure, measured) in drawn_overlaps() {
+            let first = measure();
+            assert!(
+                (first - measured).abs() <= SAME_OVERLAP_M,
+                "{first} against {measured}"
+            );
+            for _ in 1..MEASUREMENTS {
+                assert_eq!(measure(), first);
+            }
+        }
     }
 
     /// `count` offsets drawn within half a unit on each axis.
