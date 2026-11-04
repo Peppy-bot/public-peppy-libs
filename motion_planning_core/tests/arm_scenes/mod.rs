@@ -17,16 +17,16 @@ use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, AttachRequest, Goal, IkGoalSampler, JointTarget, ObjectFields, ObjectRequest, PlanFailure,
-    PlanRequest, PlanningScene, RobotLinks, RobotPart, Scene, ShapeFields, StartFault,
-    plan_arm_path, pose_from_parts, pose_parts,
+    Arm, AttachRequest, Goal, IkGoalSampler, JointTarget, ObjectFields, ObjectRequest,
+    OrientationTarget, PlanFailure, PlanRequest, PlanningScene, PositionTarget, RobotLinks,
+    RobotPart, Scene, ShapeFields, StartFault, plan_arm_path, pose_from_parts, pose_parts,
 };
 use nalgebra::Isometry3;
 use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
 use ompl_bridge::Planner;
 use openarm_description::{ArmPair, HardwareVersion, Side};
 use ros_reference::arm_planning::{
-    Objective, Ours, Scene as ReferenceScene, Scenes, Termination, VoxelBox,
+    Objective, Ours, Scene as ReferenceScene, SceneGoal, Scenes, Termination, VoxelBox,
 };
 use ros_reference::planning_scene::{Object, Shape};
 use self_collision_model::SelfCollisionModel;
@@ -350,7 +350,7 @@ pub fn probe_spacing(arm: &Arm<JOINTS>, scenes: &Scenes) -> f64 {
     scenes.voxel_size * PROBE_SHARE_OF_VOXEL / arm.lever()
 }
 
-fn configuration(values: &[f64]) -> [f64; JOINTS] {
+pub fn configuration(values: &[f64]) -> [f64; JOINTS] {
     values.try_into().expect("one position per joint")
 }
 
@@ -370,6 +370,53 @@ fn max_iterations(scenes: &Scenes) -> NonZeroU64 {
         (Termination::Iterations, _) | (Termination::Time, Objective::Any) => bound,
         (Termination::Time, Objective::Shortest) => NonZeroU64::MAX,
     }
+}
+
+/// The goal of `goal`: each joint within the scenes' goal tolerance of a configuration, or
+/// the grasp point within the pose's tolerances of a pose.
+fn goal_of(scenes: &Scenes, goal: &SceneGoal) -> Goal {
+    match goal {
+        SceneGoal::Joints(q) => {
+            let goal_q = configuration(q);
+            let tolerance =
+                PositiveFinite::parse(scenes.goal_tolerance).expect("the scenes' goal tolerance");
+            Goal::new(
+                JOINTS,
+                (0..JOINTS)
+                    .map(|joint| JointTarget {
+                        joint,
+                        position: goal_q[joint],
+                        above: tolerance,
+                        below: tolerance,
+                    })
+                    .collect(),
+                Vec::new(),
+                Vec::new(),
+            )
+        }
+        SceneGoal::Pose(pose) => {
+            let placed =
+                pose_from_parts(pose.position, pose.orientation).expect("a pose goal's pose");
+            Goal::new(
+                JOINTS,
+                Vec::new(),
+                vec![PositionTarget {
+                    frame: motion_planning_core::Frame::GraspPoint,
+                    position: placed.translation.vector,
+                    tolerance_m: PositiveFinite::parse(pose.position_tolerance)
+                        .expect("a pose goal's position tolerance"),
+                }],
+                vec![OrientationTarget {
+                    frame: motion_planning_core::Frame::GraspPoint,
+                    orientation: placed.rotation,
+                    tolerance_rad: PositiveFinite::parse(pose.orientation_tolerance)
+                        .expect("a pose goal's orientation tolerance"),
+                    free_axis: None,
+                }],
+            )
+        }
+    }
+    .expect("a valid goal")
 }
 
 /// This crate's answer to a scene, and whether its plan returned at or after its
@@ -408,23 +455,7 @@ pub fn plan_scene<O>(
     let arm = &Arm::new(geometry, None)
         .riding(&riders)
         .expect("the parts and the held object ride the arm's links");
-    let goal_q = configuration(&scene.goal);
-    let tolerance =
-        PositiveFinite::parse(scenes.goal_tolerance).expect("the scenes' goal tolerance");
-    let goal = Goal::new(
-        JOINTS,
-        (0..JOINTS)
-            .map(|joint| JointTarget {
-                joint,
-                position: goal_q[joint],
-                above: tolerance,
-                below: tolerance,
-            })
-            .collect(),
-        Vec::new(),
-        Vec::new(),
-    )
-    .expect("a valid goal");
+    let goal = goal_of(scenes, &scene.goal);
     let deadline = Instant::now() + Duration::from_secs_f64(scenes.time_limit);
     let answer = plan_arm_path(
         arm,

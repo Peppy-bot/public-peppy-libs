@@ -239,12 +239,17 @@ point, a link of the chain or one fixed below it, or a part a link carries throu
 (`Frame`; `Frame::Part`, from a part's `Rider`, stands where the clearance checks place
 the part): its origin within a distance of a position of the robot frame, and its
 orientation within an angle of a target, the angle of the rotation between them, or, with
-a free axis, the angle between that axis and its target direction. Each tolerance is a
-`control_core` `PositiveFinite`. A goal that mixes joints with poses, names a joint or a
-frame twice in one list, or holds the position of one frame and the orientation of another
-is refused (`GoalError`): a goal holds one frame, whose pose the sampler reaches for.
-MoveIt keeps one sampler for a goal on several links, the link whose constraints leave the
-least volume, and accepts a sample that meets the others by chance.
+a free axis, the angle between that axis and its target direction. MoveIt holds a pose
+goal's orientation by each component of the rotation vector between the two within the
+tolerance (moveit2 2.15.2 `constructGoalConstraints`, `ROTATION_VECTOR`, utils.cpp:220-226
+and kinematic_constraint.cpp:765-775), a box that admits a rotation of up to the square
+root of 3 times the tolerance; this crate holds the rotation's angle within it, the ball
+inside that box. The pose scenario's tally plans both at the same tolerance. Each
+tolerance is a `control_core` `PositiveFinite`. A goal that mixes joints with poses, names
+a joint or a frame twice in one list, or holds the position of one frame and the
+orientation of another is refused (`GoalError`): a goal holds one frame, whose pose the
+sampler reaches for. MoveIt keeps one sampler for a goal on several links, the link whose
+constraints leave the least volume, and accepts a sample that meets the others by chance.
 
 The plan samples its goals as MoveIt's `ConstrainedGoalSampler` samples a goal's states
 (moveit2 2.15.2 constrained_goal_sampler.cpp; `sample_goals`). A working state starts at

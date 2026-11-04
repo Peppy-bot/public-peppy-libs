@@ -76,8 +76,10 @@ const SVD_THRESHOLD: f64 = 1e-3;
 /// 0.05 s over the mean time of a pass in the reference image, 5.39 µs. Measured on
 /// jarednm (Intel Core Ultra 9 290HX Plus, amd64, glibc hwcaps masked as run.sh runs the
 /// image) on 2026-11-04: 40000 single descents of MoveIt's KDL plugin, 200 from seeds
-/// drawn inside the limits toward each of 200 drawn pose goals of the grasp point, took
-/// 9.159 s over 1698897 passes, each descent's passes read from the plugin's debug line
+/// drawn inside the limits toward each of the 200 pose goals of the pose scenario drawn
+/// at the launch clearance
+/// (`draw_arm_planning.py --poses --drawn 200 --min-clearance 0.04`), took 9.159 s over
+/// 1698897 passes, each descent's passes read from the plugin's debug line
 /// (kdl_kinematics_plugin.cpp:493-494); per goal, 0.05 s holds 7750 to 10361 passes.
 const SEARCH_ITERATIONS: usize = 9274;
 

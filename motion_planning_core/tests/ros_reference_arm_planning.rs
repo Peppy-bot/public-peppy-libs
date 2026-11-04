@@ -4,7 +4,8 @@
 //! a clearance of 0: this crate still plans the paths each of them carries; MoveIt's
 //! collision check finds every probe of each of them free; this crate refuses each start
 //! that MoveIt refuses outside a joint limit or in collision; and each holds a scene of
-//! each outcome the README names. Over the scenes of a drawn set, at its clearance, which
+//! each outcome the README names. The robot around a scenario's arm, either arm, holds the
+//! other arm at its zero configuration. Over the scenes of a drawn set, at its clearance, which
 //! pads MoveIt's links, the success rate and the mean smallest clearance lie within or
 //! above MoveIt's 95% intervals, and the mean path length within or below its interval.
 
@@ -17,11 +18,13 @@ use hegel::TestCase;
 use hegel::generators as gs;
 use motion_planning_core::IkGoalSampler;
 use ros_reference::arm_planning::{
-    Case, MOVEIT_SUCCESS, Ours, Probed, Scene, SceneCase, Scenes, Termination, VoxelBox,
+    Case, MOVEIT_SUCCESS, Ours, Probed, Scene, SceneCase, SceneGoal, Scenes, Termination, VoxelBox,
 };
 
-use arm_scenes::{boxes_of, geometry, map_of, on_the_arm, plan_scene, probe_spacing};
-use nalgebra::Point3;
+use arm_scenes::{
+    boxes_of, configuration, geometry, map_of, on_the_arm, plan_scene, probe_spacing,
+};
+use nalgebra::{Point3, Vector3};
 use openarm_description::{HardwareVersion, Side};
 
 /// MoveIt's error codes of a refusal: a start outside a joint limit, a start in
@@ -100,7 +103,7 @@ fn a_maps_voxels_as_boxes_fill_a_scenes_map_with_them(tc: TestCase) {
         other_arm_holds: None,
         allowed: Vec::new(),
         start: Vec::new(),
-        goal: Vec::new(),
+        goal: SceneGoal::Joints(Vec::new()),
         seed: std::num::NonZeroU32::MIN,
         ours: (),
     };
@@ -180,6 +183,10 @@ fn the_robot_around_either_arm_holds_the_other_arm_at_zero() {
         on_the_arm(&case.scenes, &case.urdf, &case.meshes, |arm, standing| {
             let parts = standing.parts(arm, &start);
             let base = HardwareVersion::V2.base_link(side);
+            assert!(
+                parts.iter().any(|part| part.link == base),
+                "{side:?}: the planned arm's base link {base} does not stand"
+            );
             for part in &parts {
                 assert!(
                     !part.link.starts_with(prefix(side)) || part.link == base,
@@ -365,7 +372,11 @@ fn moveit_finds_every_path_of_this_crate_free() {
 const OBJECT_SPARE_M: f64 = 1e-3;
 
 /// A group of scenes, by its name, and whether a scene belongs to it.
-type Group = (&'static str, fn(&SceneCase) -> bool);
+type Group<'a> = (&'static str, &'a dyn Fn(&SceneCase) -> bool);
+
+/// The reach of the pose scenario's short moves: how far the drawing tool moves a short
+/// move's grasp point (draw_arm_planning.py's SHORT_REACH_M).
+const SHORT_REACH_M: f64 = 0.1;
 
 /// What `scenes` show: their number; this crate's paths and failures by name, and
 /// MoveIt's paths and error codes; the mean smallest clearance and path length of each
@@ -438,14 +449,34 @@ fn lies_on_its_side_of_moveits(name: &str) {
         case.scenes.min_clearance
     );
     let held_within = case.scenes.min_clearance + OBJECT_SPARE_M;
-    let groups: [Group; 5] = [
-        ("all", |_| true),
-        ("holding", |c| c.scene.attached.is_some()),
-        ("not holding", |c| c.scene.attached.is_none()),
-        ("the other arm holding", |c| {
+    let geometry = geometry(&case.scenes, &case.urdf, &case.meshes);
+    let chain = geometry.chain();
+    // How far the goal's grasp point stands from the start's, for a pose goal.
+    let reach = |c: &SceneCase| match &c.scene.goal {
+        SceneGoal::Pose(pose) => Some(
+            (Vector3::from(pose.position)
+                - chain
+                    .world_ee_pose(&configuration(&c.scene.start))
+                    .translation
+                    .vector)
+                .norm(),
+        ),
+        SceneGoal::Joints(_) => None,
+    };
+    let groups: [Group; 7] = [
+        ("all", &|_| true),
+        ("holding", &|c| c.scene.attached.is_some()),
+        ("not holding", &|c| c.scene.attached.is_none()),
+        ("the other arm holding", &|c| {
             c.scene.other_arm_holds.is_some()
         }),
-        ("with an allowed pair", |c| !c.scene.allowed.is_empty()),
+        ("with an allowed pair", &|c| !c.scene.allowed.is_empty()),
+        ("a pose within the short reach of the start's", &|c| {
+            reach(c).is_some_and(|r| r <= SHORT_REACH_M)
+        }),
+        ("a pose beyond it", &|c| {
+            reach(c).is_some_and(|r| r > SHORT_REACH_M)
+        }),
     ];
     for (group, holds) in groups {
         let kept: Vec<&SceneCase> = scenes.iter().filter(|c| holds(c)).collect();
@@ -496,13 +527,14 @@ fn lies_on_its_side_of_moveits(name: &str) {
     );
 }
 
-// Over the scenes of a drawn set, among boxes of voxels or among collision objects, this
-// crate's success rate and mean smallest clearance lie within or above MoveIt's 95%
-// intervals, and its mean path length within or below MoveIt's; a probe of MoveIt's in
-// collision measures a clearance of -1. The committed scenes, one of each outcome, are too
-// few for the intervals: each test runs on its scenario's drawn set, locally, as the
-// harness README's rule 3 says, and the pull request states its tally at its head, for
-// each objective, termination and clearance it ran.
+// Over the scenes of a drawn set, among boxes of voxels, among collision objects or to a
+// pose of the grasp point, this crate's success rate and mean smallest clearance lie
+// within or above MoveIt's 95% intervals, and its mean path length within or below
+// MoveIt's; a probe of MoveIt's in collision measures a clearance of -1. The committed
+// scenes, one of each outcome, are too few for the intervals: each test runs on its
+// scenario's drawn set, locally, as the harness README's rule 3 says, and the pull
+// request states its tally at its head, for each objective, termination and clearance it
+// ran.
 #[test]
 #[ignore = "statistics of a drawn set among boxes, run locally as the harness README's rule 3 says"]
 fn among_boxes_the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() {
@@ -513,4 +545,10 @@ fn among_boxes_the_success_rate_the_clearance_and_the_length_lie_on_their_side_o
 #[ignore = "statistics of a drawn set among objects, run locally as the harness README's rule 3 says"]
 fn among_objects_the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() {
     lies_on_its_side_of_moveits("arm_planning_objects_openarm_v2");
+}
+
+#[test]
+#[ignore = "statistics of a drawn set of pose goals, run locally as the harness README's rule 3 says"]
+fn among_poses_the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() {
+    lies_on_its_side_of_moveits("arm_planning_poses_openarm_v2");
 }

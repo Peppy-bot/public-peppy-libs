@@ -761,8 +761,9 @@ mod tests {
 
     /// How far the gap of two bounding spheres, the distance of their centers less their
     /// radii, may round above the distance that GJK measures between the two balls: far
-    /// beyond the some 1e-15 m by which GJK's distance rounds and the dozen roundings of
-    /// the gap, each within half an ulp at the map's scale of 1 m, 1.1e-16 m.
+    /// beyond the 4e-18 m by which the gap of the drawn case below rounds above GJK's, and
+    /// the 1.3e-15 m of the dozen roundings of the gap, each within half an ulp at the
+    /// map's scale of 1 m, 1.1e-16 m.
     const SPHERE_GAP_ROUNDING_M: f64 = 1e-14;
 
     // On drawn configurations of the arm of boxes and a ball, among drawn objects just
@@ -992,8 +993,9 @@ mod tests {
             } else {
                 assert!(
                     clearance <= measured[term] && measured[term] <= exact + SPHERE_GAP_ROUNDING_M,
-                    "term {term}: {} lies outside {clearance} to {exact}",
-                    measured[term]
+                    "term {term}: {} lies outside {clearance} to {}",
+                    measured[term],
+                    exact + SPHERE_GAP_ROUNDING_M
                 );
             }
         }

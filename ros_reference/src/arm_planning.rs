@@ -142,7 +142,7 @@ pub struct Scene<O = Option<Ours>> {
     /// The pairs of names allowed to touch, as set_allowed_collision allows them.
     pub allowed: Vec<[String; 2]>,
     pub start: Vec<f64>,
-    pub goal: Vec<f64>,
+    pub goal: SceneGoal,
     /// Both planners' seed, above 0: OMPL takes no seed of 0.
     pub seed: NonZeroU32,
     pub ours: O,
@@ -174,6 +174,31 @@ impl Scene {
             ours: ours.unwrap_or_else(|| panic!("{what}: motion_planning_core's answer")),
         }
     }
+}
+
+/// What a scene's plan reaches for: a configuration of the arm, each joint within the
+/// scenario's `goal_tolerance` of it for motion_planning_core and at it for MoveIt; or a
+/// pose of the tip link, which both reach through inverse kinematics, MoveIt's KDL.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum SceneGoal {
+    Joints(Vec<f64>),
+    Pose(PoseGoal),
+}
+
+/// A pose of the tip link in the robot frame, its position (m) and its orientation `[x, y,
+/// z, w]`, and how near each the goal holds: within `position_tolerance` (m) of the
+/// position, and turned within `orientation_tolerance` (rad) of the orientation, which
+/// MoveIt's `constructGoalConstraints` takes as the radius of its position region and as
+/// the tolerance of each component of the rotation vector of its orientation (moveit2
+/// 2.15.2 utils.cpp:220-226).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoseGoal {
+    pub position: [f64; 3],
+    pub orientation: [f64; 4],
+    pub position_tolerance: f64,
+    pub orientation_tolerance: f64,
 }
 
 /// An object a grasp link holds: the object, its pose in the link's frame, and the links
@@ -484,6 +509,16 @@ mod tests {
                              "allowed": [], "start": [0.0],
             "goal": [1.0], "seed": 0, "ours": null}"#;
         assert!(serde_json::from_str::<Scene>(text).is_err());
+    }
+
+    #[test]
+    fn a_scenes_goal_is_a_configuration_or_a_pose_of_the_tip_link() {
+        let goal = |text: &str| serde_json::from_str::<SceneGoal>(text);
+        assert!(matches!(goal("[1.0, 2.0]"), Ok(SceneGoal::Joints(q)) if q == [1.0, 2.0]));
+        let pose = r#"{"position": [0.1, 0.2, 0.3], "orientation": [0.0, 0.0, 0.0, 1.0],
+                       "position_tolerance": 0.005, "orientation_tolerance": 0.05}"#;
+        assert!(matches!(goal(pose), Ok(SceneGoal::Pose(p)) if p.orientation_tolerance == 0.05));
+        assert!(goal(&pose.replace('}', r#", "frame": "world"}"#)).is_err());
     }
 
     #[test]

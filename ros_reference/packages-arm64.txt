@@ -889,6 +889,7 @@ ros-lyrical-mcap-vendor 0.33.4-1resolute.20260919.190434
 ros-lyrical-message-filters 7.4.2-1resolute.20260915.074736
 ros-lyrical-moveit-common 2.15.2-1resolute.20260918.005507
 ros-lyrical-moveit-core 2.15.2-1resolute.20260918.012431
+ros-lyrical-moveit-kinematics 2.15.2-1resolute.20260918.022823
 ros-lyrical-moveit-msgs 2.7.2-1resolute.20260915.045011
 ros-lyrical-moveit-planners-ompl 2.15.2-1resolute.20260918.023238
 ros-lyrical-moveit-ros-occupancy-map-monitor 2.15.2-1resolute.20260918.020038
@@ -898,6 +899,7 @@ ros-lyrical-nav-msgs 5.9.3-1resolute.20260915.041601
 ros-lyrical-object-recognition-msgs 2.0.0-6resolute.20260915.044453
 ros-lyrical-octomap-msgs 2.0.1-3resolute.20260915.043844
 ros-lyrical-ompl 2.0.2-1resolute.20260828.214306
+ros-lyrical-orocos-kdl-vendor 0.8.0-3resolute.20260728.171925
 ros-lyrical-osqp-vendor 1.0.0-1resolute.20260811.125619
 ros-lyrical-pluginlib 5.8.5-1resolute.20260831.172019
 ros-lyrical-random-numbers 2.0.5-1resolute.20260728.175326

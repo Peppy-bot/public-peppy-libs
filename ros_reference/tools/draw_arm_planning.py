@@ -15,7 +15,11 @@ each one of OBJECT_KINDS turned any way, the hand holding a cube or a cylinder p
 grasp point in every other scene, the gripper its touch links, the other hand holding a
 cube in every third, and in every eighth the held object set down on a table at the
 goal, the table allowed to touch the object and the gripper; the scenario keeps the
-drawn scenes at COMMITTED_OBJECTS. Run it from any directory:
+drawn scenes at COMMITTED_OBJECTS. With --poses it writes POSES_NAME, scenes among one to
+three boxes whose goal is a pose of the grasp point, which MoveIt reaches through KDL's
+inverse kinematics: a short move from the start's grasp pose in every other scene, and the
+grasp pose of a configuration drawn inside the limits in the rest; the scenario keeps the
+drawn scenes at COMMITTED_POSES. Run it from any directory:
 
     python3 ros_reference/tools/draw_arm_planning.py
     python3 ros_reference/tools/draw_arm_planning.py --drawn 200
@@ -25,6 +29,7 @@ drawn scenes at COMMITTED_OBJECTS. Run it from any directory:
         --planning-time 5
     python3 ros_reference/tools/draw_arm_planning.py --objects --drawn 200 --planning-time 1 \
         --min-clearance 0.04
+    python3 ros_reference/tools/draw_arm_planning.py --poses --drawn 200 --planning-time 5
 
 The second keeps the first 200 drawn scenes in place of those it picks, a large set for a
 local run, which the README describes. The third writes, in place of the drawn scenes,
@@ -40,7 +45,8 @@ alone and ours on ITERATIONS or that time, whichever comes first, as the robot r
 motion planner's launcher fragment bounds a plan by max_iterations); that option and
 `--objective shortest` go with a drawn set or the episodes' scenes. The fifth draws 200
 scenes among collision objects, planned as the fourth plans them at 1 s, at a clearance
-of 4 cm; `--objects` goes with every option but `--episodes`.
+of 4 cm, and the sixth 200 scenes whose goal is a pose, planned so at 5 s; `--objects` and
+`--poses` each go with every option but `--episodes` and the other.
 `--min-clearance` sets the clearance of the plans, MIN_CLEARANCE by default: the
 min_clearance_m of motion_planning_core's plans, and the padding of each link of MoveIt's
 robot against the octomap and the objects, which meets itself unpadded; it goes with a
@@ -56,13 +62,17 @@ from pathlib import Path
 from drawing import (
     IDENTITY,
     REPOSITORY,
+    about_axis,
     box_mesh,
     generator,
     joint_limits,
     l_mesh,
+    link_pose,
     openarm_joints,
     options,
     pose_by_link,
+    product,
+    quaternion,
     robot,
     shape,
     unit_quaternion,
@@ -72,6 +82,8 @@ from drawing import (
 NAME = "arm_planning_openarm_v2"
 # The scenario of scenes among collision objects, written with --objects.
 OBJECTS_NAME = "arm_planning_objects_openarm_v2"
+# The scenario of scenes whose goal is a pose of the grasp point, written with --poses.
+POSES_NAME = "arm_planning_poses_openarm_v2"
 URDF = "openarm_description/assets/openarm_v20.urdf"
 MESHES = "openarm_description/assets/meshes_v20"
 VOXEL_SIZE = 0.04
@@ -106,6 +118,24 @@ COMMITTED_OBJECTS = {
     "MoveIt's path invalid": 8,
     "a start in an object": 10,
     "a goal in an object": 23,
+}
+# The short pose moves: the goal's grasp point at most 10 cm from the start's, a sixth of
+# the arm's 0.6 m reach from its shoulder (openarm_left_link2's origin) to its grasp point
+# with the arm straight, and turned at most 0.3 rad, which turns the grasp point about 5
+# cm, half that, about the wrist 16 cm from it (openarm_left_link6's origin). Each pose
+# goal holds within 1 mm and 0.01 rad, the plan tolerances that the robot MCP's move_arm
+# tool names for a seven-joint arm such as OpenArm v2 (mcp-hub robot/robot_control.json5).
+SHORT_REACH_M = 0.1
+SHORT_TURN_RAD = 0.3
+POSE_TOLERANCE_M = 0.001
+POSE_TOLERANCE_RAD = 0.01
+# The drawn scenes of the pose scenario it keeps, as COMMITTED names them.
+COMMITTED_POSES = {
+    "a straight path": 0,
+    "a path with corners": 9,
+    "MoveIt's path invalid": 103,
+    "a start in a box": 17,
+    "a goal in a box": 2,
 }
 # The kinds of a drawn object: a box, a sphere, a cylinder, a closed box mesh, an L-shaped
 # closed mesh, and an object of two shapes, a box with a cylinder standing on it.
@@ -295,6 +325,38 @@ def object_scene(rng, model, limits, k):
     }
 
 
+def pose_scene(rng, model, limits, k):
+    """A scene among one to three boxes whose goal is a pose of the grasp point: for an even
+    `k` a short move, the start's grasp pose moved within SHORT_REACH_M and turned within
+    SHORT_TURN_RAD, and for an odd `k` the grasp pose of a configuration drawn inside the
+    limits; each within POSE_TOLERANCE_M and POSE_TOLERANCE_RAD."""
+    scene = drawn_scene(rng, limits)
+    joints = openarm_joints("left")
+    if k % 2:
+        drawn = dict(zip(joints, configuration(rng, limits)))
+        goal = pose_by_link(model, GRASP_LINK, drawn, [0, 0, 0])
+    else:
+        turn, at = link_pose(model, GRASP_LINK, dict(zip(joints, scene["start"])))
+        direction = [rng.gauss(0, 1) for _ in range(3)]
+        norm = math.sqrt(sum(d * d for d in direction))
+        reach = SHORT_REACH_M * rng.random() ** (1 / 3)
+        axis = [rng.gauss(0, 1) for _ in range(3)]
+        goal = {
+            "position": [a + reach * d / norm for a, d in zip(at, direction)],
+            "orientation": quaternion(
+                product(about_axis(axis, SHORT_TURN_RAD * rng.random()), turn)
+            ),
+        }
+    return {
+        **scene,
+        "goal": {
+            **goal,
+            "position_tolerance": POSE_TOLERANCE_M,
+            "orientation_tolerance": POSE_TOLERANCE_RAD,
+        },
+    }
+
+
 def corners(ours):
     """The corners of our answer to a scene: its waypoints but the first and the last."""
     return max(len(ours.get("waypoints", [])) - 2, 0)
@@ -338,19 +400,21 @@ def planned(scenario_header, scenes):
     return {**scenario_header, "probe_spacing": answers["probe_spacing"], "scenes": answered}
 
 
-def drawn_scenario(drawn, planning, min_clearance, among_objects):
-    """The scenario of the drawn scenes, among boxes of voxels or, `among_objects`, among
-    collision objects: those it picks, or with `drawn` the first `drawn`, and the starts
-    outside the limits, planned as `planning` says at `min_clearance`."""
-    rng = generator(OBJECTS_NAME if among_objects else NAME)
+def drawn_scenario(drawn, planning, min_clearance, name):
+    """The scenario `name` of the drawn scenes, among boxes of voxels (NAME), among
+    collision objects (OBJECTS_NAME) or among boxes to a pose (POSES_NAME): those it picks,
+    or with `drawn` the first `drawn`, and the starts outside the limits, planned as
+    `planning` says at `min_clearance`."""
+    rng = generator(name)
     model = robot(URDF)
     limits = [joint_limits(model, joint) for joint in openarm_joints("left")]
     outside = [outside_limits(rng, limits, k) for k in range(OUTSIDE_LIMITS)]
-    drawn_scenes = [
-        object_scene(rng, model, limits, k) if among_objects else drawn_scene(rng, limits)
-        for k in range(drawn or DRAWN)
-    ]
-    committed = COMMITTED_OBJECTS if among_objects else COMMITTED
+    scene_of, committed = {
+        NAME: (lambda k: drawn_scene(rng, limits), COMMITTED),
+        OBJECTS_NAME: (lambda k: object_scene(rng, model, limits, k), COMMITTED_OBJECTS),
+        POSES_NAME: (lambda k: pose_scene(rng, model, limits, k), COMMITTED_POSES),
+    }[name]
+    drawn_scenes = [scene_of(k) for k in range(drawn or DRAWN)]
     left = {
         "base_link": "openarm_left_base_link",
         "tip_link": "openarm_left_tcp",
@@ -406,6 +470,11 @@ def main():
         "in every other one",
     )
     parser.add_argument(
+        "--poses",
+        action="store_true",
+        help=f"write {POSES_NAME}, scenes among boxes whose goal is a pose of the grasp point",
+    )
+    parser.add_argument(
         "--planning-time",
         type=float,
         metavar="SECONDS",
@@ -444,9 +513,13 @@ def main():
             "with --objective, --planning-time or --min-clearance"
         )
     planning = plans(args.objective, args.planning_time)
+    if args.objects and args.poses:
+        parser.error("--objects and --poses each write a scenario of their own: give one")
+    if args.episodes is not None and args.poses:
+        parser.error("--episodes writes the episodes' scenes to their configurations: drop --poses")
     if args.episodes is None:
-        name = OBJECTS_NAME if args.objects else NAME
-        write(name, drawn_scenario(args.drawn, planning, args.min_clearance, args.objects))
+        name = OBJECTS_NAME if args.objects else POSES_NAME if args.poses else NAME
+        write(name, drawn_scenario(args.drawn, planning, args.min_clearance, name))
         return
     write(NAME, episodes_scenario(args.episodes, args.launcher, planning, args.min_clearance))
 

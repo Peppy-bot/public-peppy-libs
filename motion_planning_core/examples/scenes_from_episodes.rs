@@ -55,7 +55,7 @@ use motion_planning_core::{
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 use occupancy_map::{Bounds, DistanceField, Frame as MapFrame, Scan, VoxelMap};
 use openarm_description::{ARM_DOF, ArmPair, HardwareVersion, Side};
-use ros_reference::arm_planning::{Scene as ReferenceScene, Scenes};
+use ros_reference::arm_planning::{Scene as ReferenceScene, SceneGoal, Scenes};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -628,7 +628,7 @@ fn scene_of(
         other_arm_holds: None,
         allowed: Vec::new(),
         start: start.to_vec(),
-        goal: Vec::new(),
+        goal: SceneGoal::Joints(Vec::new()),
         seed,
         ours: (),
     };
