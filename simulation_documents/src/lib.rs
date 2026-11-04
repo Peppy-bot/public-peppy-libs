@@ -50,7 +50,7 @@ pub use pattern::{
     Axis, Expansion, MAX_COUNT, Measure, Measurement, Measurements, MinSpacing, PlacementKind,
     PlacementSite, Placements, StandAt, WorkCellParameter, WorkCellParameters, WorldPattern,
 };
-pub use sampler::{Sampler, Segment, SitePath, SurfaceRef};
+pub use sampler::{LandmarkRef, Sampler, Segment, SitePath};
 pub use setup_record::SetupRecord;
 pub use stream::{Seed, Stream};
 pub use sweep::{
@@ -63,5 +63,5 @@ pub use sweep::{
 pub use workflow_documents::Name as ParameterName;
 pub use world::{
     Catalogue, Cone, Feature, Finish, Join, Light, Location, Material, Object, Physics, Robot,
-    Scene, SceneObject, Stand, World, WorldDocument,
+    Scene, SceneObject, Side, Stand, World, WorldDocument,
 };

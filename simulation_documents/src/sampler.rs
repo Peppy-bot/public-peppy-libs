@@ -2,8 +2,9 @@
 //!
 //! The set of samplers is closed. `{ one_of: [v, ...] }` draws one of its
 //! values and `{ range: [min, max] }` a number from `min` to `max`, in place
-//! of any value of an entry but the join of a robot. `{ on: <surface>,
-//! reachable_by: <robot> }` draws an object pose on a surface, and
+//! of any value of an entry but the join of a robot. `{ on: { object,
+//! landmark }, reachable_by: <robot> }` draws an object pose on a landmark
+//! of an object that faces up, such as a work surface, and
 //! `{ in: <region> }` an object pose or the position of a stand in a region
 //! of the world; the simulation draws these two, in a model of the drawn
 //! world.
@@ -77,22 +78,14 @@ impl fmt::Display for SitePath {
     }
 }
 
-/// A surface that `on` names: a surface label, or a landmark of an object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum SurfaceRef {
-    Label(String),
-    Landmark { object: Name, landmark: String },
-}
-
-impl SurfaceRef {
-    /// The object whose pose this surface follows, for a landmark.
-    pub fn object(&self) -> Option<&Name> {
-        match self {
-            SurfaceRef::Label(_) => None,
-            SurfaceRef::Landmark { object, .. } => Some(object),
-        }
-    }
+/// A landmark of an object of the world, by the object's name and the
+/// landmark's: what `on` draws a pose on, such as a work surface, and what a
+/// distance of a work cell measures to. It follows the pose of its object.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandmarkRef {
+    pub object: Name,
+    pub landmark: String,
 }
 
 /// A sampler of the closed set.
@@ -103,10 +96,11 @@ pub enum Sampler {
     /// A uniform number from `min` to `max`; an integer, both ends included,
     /// for a count.
     Range { min: f64, max: f64 },
-    /// An object pose on one of the surfaces, where `reachable_by` reaches
-    /// and sees it when it names a robot.
+    /// An object pose on one of the landmarks, each a face of an object that
+    /// faces up such as a work surface, where `reachable_by` reaches and
+    /// sees it when it names a robot.
     On {
-        surfaces: Vec<SurfaceRef>,
+        surfaces: Vec<LandmarkRef>,
         reachable_by: Option<RobotName>,
     },
     /// An object pose, or the position of a stand, in a region of the world.
@@ -398,10 +392,10 @@ fn region(name: &Value) -> Result<Name, String> {
     Name::parse(text).map_err(|error| error.to_string())
 }
 
-/// `{ on, reachable_by }`: `on` a surface label, a landmark `{ object,
-/// landmark }`, or `{ one_of }` of them.
+/// `{ on, reachable_by }`: `on` a landmark `{ object, landmark }`, or
+/// `{ one_of }` of them.
 fn on(fields: &Map<String, Value>) -> Result<Sampler, String> {
-    let form = "`on` draws a pose on a surface: { on: <surface label or { object, landmark }>, reachable_by: <robot> }, and `on` takes `{ one_of }` of surfaces";
+    let form = "`on` draws a pose on a landmark of an object: { on: { object, landmark }, reachable_by: <robot> }, and `on` takes `{ one_of }` of landmarks";
     let known = fields
         .keys()
         .all(|key| key == "on" || key == "reachable_by");
@@ -409,7 +403,7 @@ fn on(fields: &Map<String, Value>) -> Result<Sampler, String> {
         return Err(form.to_owned());
     }
     let surface = |value: &Value| {
-        serde_json::from_value::<SurfaceRef>(value.clone()).map_err(|_| form.to_owned())
+        serde_json::from_value::<LandmarkRef>(value.clone()).map_err(|_| form.to_owned())
     };
     let surfaces = match &fields["on"] {
         Value::Object(choice) if choice.contains_key("one_of") && choice.len() == 1 => {
@@ -504,7 +498,7 @@ mod tests {
                 (
                     "pose".to_owned(),
                     Sampler::On {
-                        surfaces: vec![SurfaceRef::Landmark {
+                        surfaces: vec![LandmarkRef {
                             object: Name::parse("conveyor").unwrap(),
                             landmark: "belt_top".into()
                         }],
@@ -516,13 +510,22 @@ mod tests {
         let nested =
             sites(json!({ "pose": { "position": [{ "one_of": [0, 1] }, 0, 0.4], "yaw": 0 } }));
         assert_eq!(nested[0].0, "pose.position[0]");
-        let labels = sites(json!({ "pose": { "on": { "one_of": ["table top", "shelf"] } } }));
+        let choice = sites(json!({ "pose": { "on": { "one_of": [
+            { "object": "table", "landmark": "top" },
+            { "object": "shelving", "landmark": "level_1" }
+        ] } } }));
         assert_eq!(
-            labels[0].1,
+            choice[0].1,
             Sampler::On {
                 surfaces: vec![
-                    SurfaceRef::Label("table top".into()),
-                    SurfaceRef::Label("shelf".into())
+                    LandmarkRef {
+                        object: Name::parse("table").unwrap(),
+                        landmark: "top".into()
+                    },
+                    LandmarkRef {
+                        object: Name::parse("shelving").unwrap(),
+                        landmark: "level_1".into()
+                    }
                 ],
                 reachable_by: None
             }
@@ -567,8 +570,16 @@ mod tests {
                 "fixed: a join is fixed: a sweep checks the workflow against the join of each robot, so write the join without a sampler",
             ),
             (
-                json!({ "pose": { "on": "table", "near": 1 } }),
-                "pose: `on` draws a pose on a surface",
+                json!({ "pose": { "on": { "object": "table", "landmark": "top" }, "near": 1 } }),
+                "pose: `on` draws a pose on a landmark of an object",
+            ),
+            (
+                json!({ "pose": { "on": "table top" } }),
+                "pose: `on` draws a pose on a landmark of an object",
+            ),
+            (
+                json!({ "pose": { "on": { "object": "table" } } }),
+                "pose: `on` draws a pose on a landmark of an object",
             ),
             (
                 json!({ "pose": { "in": "Box Stock" } }),

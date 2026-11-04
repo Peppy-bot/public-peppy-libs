@@ -11,7 +11,7 @@
 //! An [`Expansion`] of a pattern and a seed draws every sampler that the
 //! seed alone draws: `one_of`, `range`, the count and the asset of each
 //! object of an item kind. The simulation draws each [`PlacementSite`], a stand
-//! or a pose `on` a surface or `in` a region, in a model of the drawn world,
+//! or a pose `on` a work surface or `in` a region, in a model of the drawn world,
 //! in the order of [`Expansion::placements`]: before each, it builds its
 //! model from [`Placements::world_so_far`]. [`Expansion::world`] then gives
 //! the concrete world.
@@ -25,7 +25,7 @@ use std::sync::Arc;
 use crate::daylight::Daylight;
 use crate::geometry::Region;
 use crate::sampler::{
-    DrawnValue, Sampleable, Sampled, Sampler, Segment, Site, SitePath, SiteRule, SurfaceRef,
+    DrawnValue, LandmarkRef, Sampleable, Sampled, Sampler, Segment, Site, SitePath, SiteRule,
     placeholder,
 };
 use crate::stream::{Seed, Stream};
@@ -147,12 +147,12 @@ pub struct WorkCellParameter {
 pub enum Measure {
     /// A control value of an object.
     Control { object: Name, id: String },
-    /// The distance from the base of each robot of `per_robot` to a surface
-    /// label or a landmark, along an axis of the robot: one value per robot.
-    /// Without `per_robot`, from the base of the one robot of the world with
-    /// a body.
+    /// The distance from the base of each robot of `per_robot` to a
+    /// landmark of an object, along an axis of the robot: one value per
+    /// robot. Without `per_robot`, from the base of the one robot of the
+    /// world with a body.
     Distance {
-        surface: SurfaceRef,
+        to: LandmarkRef,
         axis: Axis,
         per_robot: Option<BTreeSet<RobotName>>,
     },
@@ -190,9 +190,13 @@ struct ControlFields {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields, expecting = "a distance, { surface, axis }")]
+#[serde(
+    deny_unknown_fields,
+    expecting = "a distance, { object, landmark, axis }"
+)]
 struct DistanceFields {
-    surface: SurfaceRef,
+    object: Name,
+    landmark: String,
     axis: Axis,
 }
 
@@ -207,8 +211,16 @@ impl TryFrom<ParameterFields> for WorkCellParameter {
         }
         let measure = match (fields.control, fields.distance, fields.per_robot) {
             (Some(ControlFields { object, id }), None, None) => Measure::Control { object, id },
-            (None, Some(DistanceFields { surface, axis }), per_robot) => Measure::Distance {
-                surface,
+            (
+                None,
+                Some(DistanceFields {
+                    object,
+                    landmark,
+                    axis,
+                }),
+                per_robot,
+            ) => Measure::Distance {
+                to: LandmarkRef { object, landmark },
                 axis,
                 per_robot: per_robot.map(robots_named_once).transpose()?,
             },
@@ -230,12 +242,16 @@ impl From<WorkCellParameter> for ParameterFields {
         let (control, distance, per_robot) = match parameter.measure {
             Measure::Control { object, id } => (Some(ControlFields { object, id }), None, None),
             Measure::Distance {
-                surface,
+                to: LandmarkRef { object, landmark },
                 axis,
                 per_robot,
             } => (
                 None,
-                Some(DistanceFields { surface, axis }),
+                Some(DistanceFields {
+                    object,
+                    landmark,
+                    axis,
+                }),
                 per_robot.map(|robots| robots.into_iter().collect()),
             ),
         };
@@ -830,7 +846,7 @@ impl WorldPattern {
                 drawn,
                 added,
             };
-            expansion.placements(&|_| None)?.placeholder_world()
+            expansion.placements()?.placeholder_world()
         };
         let mut worlds = vec![world_of(drawn_with(None), first_assets.clone())?];
         for (choice, candidates) in &choices {
@@ -993,7 +1009,7 @@ pub enum PlacementKind {
     /// A pose of the object, drawn by its sampler: `on` or `in`.
     ObjectPose { object: Name, sampler: Sampler },
     /// The stand of the robot: its position drawn in a region, or its stand
-    /// at the surface of an object placed before it.
+    /// at a work surface of an object placed before it.
     Stand { robot: RobotName, at: StandAt },
 }
 
@@ -1002,8 +1018,8 @@ pub enum PlacementKind {
 pub enum StandAt {
     /// A position drawn in the region, with the yaw of the stand.
     Region(Name),
-    /// The stand at the surface label, as written.
-    Surface(String),
+    /// The stand at a work surface of this object, as written.
+    Surface(Name),
 }
 
 impl PlacementKind {
@@ -1078,18 +1094,14 @@ impl Expansion {
 
     /// The placements of the expansion, in the order the simulation draws
     /// them. A placement comes after each placement it depends on: a stand at
-    /// a surface after the pose of the object of that surface, a pose `on` a
-    /// surface after the pose of its object, and a pose with `reachable_by`
-    /// after the stand of its robot. `holder_of_surface` gives the object of
-    /// a surface label in the drawn scene. With no dependency, the draws
-    /// without `reachable_by` come first, then the stands, then the draws
-    /// with `reachable_by`, each group in the order of the paths. Refuses a
-    /// cycle of dependencies, naming its placements. The placements keep
-    /// the expansion ([`Placements::expansion`]).
-    pub fn placements(
-        self,
-        holder_of_surface: &dyn Fn(&str) -> Option<Name>,
-    ) -> Result<Placements, Error> {
+    /// a work surface after the pose of the object of that surface, a pose
+    /// `on` a work surface after the pose of its object, and a pose with
+    /// `reachable_by` after the stand of its robot. With no dependency, the
+    /// draws without `reachable_by` come first, then the stands, then the
+    /// draws with `reachable_by`, each group in the order of the paths.
+    /// Refuses a cycle of dependencies, naming its placements. The
+    /// placements keep the expansion ([`Placements::expansion`]).
+    pub fn placements(self) -> Result<Placements, Error> {
         let mut placements = Vec::new();
         for (root, site) in self.pattern.entry_sites(Some(&self.added)) {
             if !site.sampler.is_placement() {
@@ -1123,21 +1135,19 @@ impl Expansion {
             .collect();
         let robots_path = SitePath::new(vec![Segment::Key("robots".to_owned())]);
         let mut holders = BTreeMap::new();
-        for (robot, surface) in self.stands_at_surfaces()? {
-            let holder =
-                holder_of_surface(&surface).filter(|holder| placed_objects.contains(holder));
-            if let Some(holder) = holder {
-                holders.insert(robot.clone(), holder);
+        for (robot, holder) in self.stands_at_surfaces()? {
+            if placed_objects.contains(&holder) {
+                holders.insert(robot.clone(), holder.clone());
                 placements.push(PlacementSite {
                     path: robots_path.key(robot.as_str()).key("stand"),
                     kind: PlacementKind::Stand {
                         robot,
-                        at: StandAt::Surface(surface),
+                        at: StandAt::Surface(holder),
                     },
                 });
             }
         }
-        let sites = ordered(placements, holder_of_surface)?;
+        let sites = ordered(placements)?;
         Ok(Placements {
             expansion: self,
             sites,
@@ -1145,8 +1155,9 @@ impl Expansion {
         })
     }
 
-    /// Each robot whose drawn stand is at a surface, with its label.
-    fn stands_at_surfaces(&self) -> Result<Vec<(RobotName, String)>, Error> {
+    /// Each robot whose drawn stand is at a work surface, with the object of
+    /// that work surface.
+    fn stands_at_surfaces(&self) -> Result<Vec<(RobotName, Name)>, Error> {
         let marked = self.pattern.fields.marked_maps(self.pattern.origin)?;
         let mut stands = Vec::new();
         for (name, robot) in marked.robots {
@@ -1166,8 +1177,16 @@ impl Expansion {
                     drawn.with_values(&drawn_or_kept)?["stand"].clone()
                 }
             };
-            if let Some(surface) = stand["surface"].as_str() {
-                stands.push((name.clone(), surface.to_owned()));
+            let holder = stand["landmark"]
+                .is_string()
+                .then(|| {
+                    stand["object"]
+                        .as_str()
+                        .and_then(|object| Name::parse(object).ok())
+                })
+                .flatten();
+            if let Some(holder) = holder {
+                stands.push((name.clone(), holder));
             }
         }
         Ok(stands)
@@ -1294,8 +1313,8 @@ fn no_asset_of_kind(name: &Name, kind: &str) -> Error {
 pub struct Placements {
     expansion: Expansion,
     sites: Vec<PlacementSite>,
-    /// The object of the surface of each robot whose stand is a placement
-    /// at a surface.
+    /// The object of the work surface of each robot whose stand is a
+    /// placement at a work surface.
     holders: BTreeMap<RobotName, Name>,
 }
 
@@ -1312,7 +1331,7 @@ impl Placements {
 
     /// The world of the expansion with each placement at a placeholder: a
     /// pose at the origin with yaw 0, the position of a stand at the origin;
-    /// a stand at a surface keeps its value.
+    /// a stand at a work surface keeps its value.
     pub fn placeholder_world(&self) -> Result<World, Error> {
         let placed = self
             .sites
@@ -1326,7 +1345,7 @@ impl Placements {
     /// [`Expansion::world`] gives it with each other placement left out: an
     /// object whose pose has no value, a scene object whose pose has no
     /// value, removed, the stand of a robot whose position has no value, and
-    /// the stand of a robot at a surface of an object left out. The
+    /// the stand of a robot at a work surface of an object left out. The
     /// simulation builds its model of the drawn world from it before it
     /// draws the next placement.
     pub fn world_so_far(&self, placed: &BTreeMap<SitePath, Value>) -> Result<World, Error> {
@@ -1382,10 +1401,7 @@ impl PlacementSite {
 
 /// `placements` in the order of their dependencies, as
 /// [`Expansion::placements`] says.
-fn ordered(
-    placements: Vec<PlacementSite>,
-    holder_of_surface: &dyn Fn(&str) -> Option<Name>,
-) -> Result<Vec<PlacementSite>, Error> {
+fn ordered(placements: Vec<PlacementSite>) -> Result<Vec<PlacementSite>, Error> {
     let object_at: BTreeMap<&Name, usize> = placements
         .iter()
         .enumerate()
@@ -1402,8 +1418,6 @@ fn ordered(
             PlacementKind::ObjectPose { .. } => None,
         })
         .collect();
-    let holder_index =
-        |label: &str| holder_of_surface(label).and_then(|holder| object_at.get(&holder).copied());
     let after: Vec<BTreeSet<usize>> = placements
         .iter()
         .map(|placement| match &placement.kind {
@@ -1415,19 +1429,18 @@ fn ordered(
                     },
                 ..
             } => {
-                let on = surfaces.iter().filter_map(|surface| match surface {
-                    SurfaceRef::Label(label) => holder_index(label),
-                    SurfaceRef::Landmark { object, .. } => object_at.get(object).copied(),
-                });
+                let on = surfaces
+                    .iter()
+                    .filter_map(|surface| object_at.get(&surface.object).copied());
                 let robot = reachable_by
                     .iter()
                     .filter_map(|robot| robot_at.get(robot).copied());
                 on.chain(robot).collect()
             }
             PlacementKind::Stand {
-                at: StandAt::Surface(label),
+                at: StandAt::Surface(holder),
                 ..
-            } => holder_index(label).into_iter().collect(),
+            } => object_at.get(holder).copied().into_iter().collect(),
             PlacementKind::ObjectPose { .. }
             | PlacementKind::Stand {
                 at: StandAt::Region(_),
@@ -1482,8 +1495,8 @@ mod tests {
   catalogue: "{RELEASE}",
   scene: {{ asset: "scene/tape_line" }},
   robots: {{
-    alpha: {{ join: {{ option: "so101_sim", features: ["aspire", "packing_skills"] }}, stand: {{ surface: "station_a", offset: {{ ahead_m: {{ range: [-0.05, 0.05] }}, side_m: {{ range: [-0.03, 0.03] }} }} }} }},
-    bravo: {{ join: {{ option: "so101_sim", features: ["aspire", "packing_skills"] }}, stand: {{ surface: "station_b" }} }},
+    alpha: {{ join: {{ option: "so101_sim", features: ["aspire", "packing_skills"] }}, stand: {{ object: "conveyor", landmark: "belt_top", side: "-y", offset: {{ ahead_m: {{ range: [-0.05, 0.05] }}, side_m: {{ range: [-0.03, 0.03] }} }} }} }},
+    bravo: {{ join: {{ option: "so101_sim", features: ["aspire", "packing_skills"] }}, stand: {{ object: "conveyor", landmark: "belt_top", side: "+y" }} }},
     charlie: {{ join: {{ option: "sourccey_sim" }}, stand: {{ position: {{ in: "aisle" }}, yaw: {{ range: [-3, 3] }} }} }},
   }},
   objects: {{
@@ -1497,7 +1510,7 @@ mod tests {
   }},
   work_cell_parameters: {{
     belt_speed_mps: {{ unit: "m/s", control: {{ object: "conveyor", id: "belt_speed" }} }},
-    belt_top_above_base_m: {{ unit: "m", per_robot: ["alpha", "bravo"], distance: {{ surface: {{ object: "conveyor", landmark: "belt_top" }}, axis: "up" }} }},
+    belt_top_above_base_m: {{ unit: "m", per_robot: ["alpha", "bravo"], distance: {{ object: "conveyor", landmark: "belt_top", axis: "up" }} }},
   }},
   min_spacing_m: 0.02,
 }}"#
@@ -1514,10 +1527,6 @@ mod tests {
             "tape_roll" => vec!["object/tape_roll_blue".into()],
             _ => Vec::new(),
         }
-    }
-
-    fn no_holder(_: &str) -> Option<Name> {
-        None
     }
 
     /// A value for each placement: a pose for a pose, a position for a stand
@@ -1547,7 +1556,7 @@ mod tests {
 
     fn expanded(pattern: &WorldPattern, seed: u32) -> World {
         let expansion = pattern.expansion(Seed(seed), &assets_of_kind).unwrap();
-        let placements = expansion.placements(&no_holder).unwrap();
+        let placements = expansion.placements().unwrap();
         placements
             .expansion()
             .world(&placed(placements.sites()))
@@ -1568,7 +1577,7 @@ mod tests {
         assert_eq!(
             top.measure,
             Measure::Distance {
-                surface: SurfaceRef::Landmark {
+                to: LandmarkRef {
                     object: name("conveyor"),
                     landmark: "belt_top".into()
                 },
@@ -1704,16 +1713,15 @@ mod tests {
         let text = tape_line_text()
             .replace(
                 "    stock:",
-                "    table: { asset: \"object/table\", pose: { in: \"box_stock\" } },\n    crate: { asset: \"object/crate\", pose: { on: \"table top\", reachable_by: \"delta\" } },\n    stock:",
+                "    table: { asset: \"object/table\", pose: { in: \"box_stock\" } },\n    crate: { asset: \"object/crate\", pose: { on: { object: \"table\", landmark: \"top\" }, reachable_by: \"delta\" } },\n    stock:",
             )
             .replace(
                 "    charlie:",
-                "    delta: { join: { option: \"openarm_sim\" }, stand: { surface: \"table top\" } },\n    charlie:",
+                "    delta: { join: { option: \"openarm_sim\" }, stand: { object: \"table\", landmark: \"top\" } },\n    charlie:",
             );
         let pattern = WorldPattern::parse(&text).unwrap();
         let expansion = pattern.expansion(Seed(2), &assets_of_kind).unwrap();
-        let holder = |label: &str| (label == "table top").then(|| name("table"));
-        let placements = expansion.placements(&holder).unwrap();
+        let placements = expansion.placements().unwrap();
         let nothing = placements.world_so_far(&BTreeMap::new()).unwrap();
         let objects: Vec<&str> = nothing.objects.keys().map(Name::as_str).collect();
         assert_eq!(objects, ["conveyor"]);
@@ -1765,12 +1773,11 @@ mod tests {
             )
             .replace(
                 "    charlie:",
-                "    delta: { join: { option: \"openarm_sim\" }, stand: { surface: \"shelf top\" } },\n    charlie:",
+                "    delta: { join: { option: \"openarm_sim\" }, stand: { object: \"shelf\", landmark: \"top\" } },\n    charlie:",
             );
         let pattern = WorldPattern::parse(&text).unwrap();
         let expansion = pattern.expansion(Seed(2), &assets_of_kind).unwrap();
-        let holder = |label: &str| (label == "shelf top").then(|| name("shelf"));
-        let placements = expansion.placements(&holder).unwrap();
+        let placements = expansion.placements().unwrap();
         let nothing = placements.world_so_far(&BTreeMap::new()).unwrap();
         assert_eq!(
             nothing.scene_objects.get(&name("shelf")),
@@ -1802,11 +1809,7 @@ mod tests {
     fn the_placeholder_world_puts_each_placement_at_the_origin() {
         let pattern = tape_line();
         let expansion = pattern.expansion(Seed(4), &assets_of_kind).unwrap();
-        let world = expansion
-            .placements(&no_holder)
-            .unwrap()
-            .placeholder_world()
-            .unwrap();
+        let world = expansion.placements().unwrap().placeholder_world().unwrap();
         let origin = Pose::Yawed {
             position: [0.0, 0.0, 0.0],
             yaw: 0.0,
@@ -1888,17 +1891,16 @@ mod tests {
         let text = tape_line_text()
             .replace(
                 "    stock:",
-                "    table: { asset: \"object/table\", pose: { in: \"box_stock\" } },\n    crate: { asset: \"object/crate\", pose: { on: \"table top\", reachable_by: \"delta\" } },\n    stock:",
+                "    table: { asset: \"object/table\", pose: { in: \"box_stock\" } },\n    crate: { asset: \"object/crate\", pose: { on: { object: \"table\", landmark: \"top\" }, reachable_by: \"delta\" } },\n    stock:",
             )
             .replace(
                 "    charlie:",
-                "    delta: { join: { option: \"openarm_sim\" }, stand: { surface: \"table top\" } },\n    charlie:",
+                "    delta: { join: { option: \"openarm_sim\" }, stand: { object: \"table\", landmark: \"top\" } },\n    charlie:",
             );
         let pattern = WorldPattern::parse(&text).unwrap();
         let expansion = pattern.expansion(Seed(2), &assets_of_kind).unwrap();
-        let holder = |label: &str| (label == "table top").then(|| name("table"));
         let order: Vec<String> = expansion
-            .placements(&holder)
+            .placements()
             .unwrap()
             .sites()
             .iter()
@@ -1921,17 +1923,16 @@ mod tests {
         let text = tape_line_text()
             .replace(
                 "    stock:",
-                "    table: { asset: \"object/table\", pose: { on: \"floor\", reachable_by: \"delta\" } },\n    stock:",
+                "    table: { asset: \"object/table\", pose: { on: { object: \"conveyor\", landmark: \"belt_top\" }, reachable_by: \"delta\" } },\n    stock:",
             )
             .replace(
                 "    charlie:",
-                "    delta: { join: { option: \"openarm_sim\" }, stand: { surface: \"table top\" } },\n    charlie:",
+                "    delta: { join: { option: \"openarm_sim\" }, stand: { object: \"table\", landmark: \"top\" } },\n    charlie:",
             );
         let pattern = WorldPattern::parse(&text).unwrap();
         let expansion = pattern.expansion(Seed(2), &assets_of_kind).unwrap();
-        let holder = |label: &str| (label == "table top").then(|| name("table"));
         assert_eq!(
-            expansion.placements(&holder).unwrap_err().to_string(),
+            expansion.placements().unwrap_err().to_string(),
             "the stands and poses `objects.table.pose`, `robots.delta.stand` depend on each other in a cycle; place one of them without the others"
         );
     }
@@ -1961,7 +1962,7 @@ mod tests {
             ),
             (
                 "  min_spacing_m:",
-                "  locations: { drop: { one_of: [{ surface: \"belt\" }, { in: \"output_area\" }] } },\n  min_spacing_m:",
+                "  locations: { drop: { one_of: [{ object: \"conveyor\", landmark: \"belt_top\" }, { in: \"output_area\" }] } },\n  min_spacing_m:",
                 "locations.drop: names the region `output_area`, which the world does not declare in `regions`",
             ),
             (
@@ -1995,7 +1996,7 @@ mod tests {
                 "robots.charlie: join.option: a join is fixed: a sweep checks the workflow against the join of each robot, so write the join without a sampler",
             ),
             (
-                "bravo: { join: { option: \"so101_sim\", features: [\"aspire\", \"packing_skills\"] }, stand: { surface: \"station_b\" } },",
+                "bravo: { join: { option: \"so101_sim\", features: [\"aspire\", \"packing_skills\"] }, stand: { object: \"conveyor\", landmark: \"belt_top\", side: \"+y\" } },",
                 "bravo: { one_of: [{ join: { option: \"so101_sim\" } }, { join: { option: \"lekiwi_sim\" } }] },",
                 "robots.bravo: a join is fixed: a sweep checks the workflow against the join of each robot, so write the join without a sampler",
             ),
@@ -2014,7 +2015,7 @@ mod tests {
 
     /// The tape line with the limbs of `alpha` as `limbs` writes them.
     fn tape_line_with_limbs(limbs: &str) -> String {
-        let stand = "stand: { surface: \"station_a\", offset:";
+        let stand = "stand: { object: \"conveyor\", landmark: \"belt_top\", side: \"-y\", offset:";
         assert!(tape_line_text().contains(stand));
         tape_line_text().replacen(stand, &format!("limbs: {limbs}, {stand}"), 1)
     }
@@ -2050,14 +2051,14 @@ mod tests {
     fn a_pattern_extends_a_concrete_world_and_another_pattern() {
         let chat_world = WorldDocument::parse(&format!(
             r#"{{ simulation_schema: "world/v1", manifest: {{ name: "world_3f9a1c27", revision: 3 }}, catalogue: "{RELEASE}", scene: {{ asset: "scene/living_room" }},
-              robots: {{ alpha: {{ join: {{ option: "openarm_sim" }}, stand: {{ surface: "coffee table at the origin" }} }} }},
+              robots: {{ alpha: {{ join: {{ option: "openarm_sim" }}, stand: {{ object: "modern_coffee_table_01", landmark: "top", side: "-x" }} }} }},
               objects: {{ crate: {{ asset: "object/crate", pose: {{ position: [0.55, 0, 0.39], yaw: 0 }}, physics: "dynamic" }} }} }}"#
         ))
         .unwrap();
         let books = WorldDocument::parse(
             r#"{ simulation_schema: "world/v1", manifest: { name: "books", revision: 1 }, extends: { name: "world_3f9a1c27", revision: 3 },
-              objects: { books: { item_kind: "book", count: { range: [1, 4] }, pose: { on: "coffee table at the origin", reachable_by: "alpha" } } },
-              work_cell_parameters: { table_ahead_m: { unit: "m", distance: { surface: "coffee table at the origin", axis: "ahead" } } } }"#,
+              objects: { books: { item_kind: "book", count: { range: [1, 4] }, pose: { on: { object: "modern_coffee_table_01", landmark: "top" }, reachable_by: "alpha" } } },
+              work_cell_parameters: { table_ahead_m: { unit: "m", distance: { object: "modern_coffee_table_01", landmark: "top", axis: "ahead" } } } }"#,
         )
         .unwrap();
         let pattern = books
@@ -2075,7 +2076,7 @@ mod tests {
         assert_eq!(pattern.physics_of(&name("books_5")), None);
         let fewer = WorldDocument::parse(
             r#"{ simulation_schema: "world/v1", manifest: { name: "few_books", revision: 1 }, extends: { name: "books", revision: 1 },
-              objects: { books: { item_kind: "book", count: { one_of: [0, 1] }, pose: { on: "coffee table at the origin" } } } }"#,
+              objects: { books: { item_kind: "book", count: { one_of: [0, 1] }, pose: { on: { object: "modern_coffee_table_01", landmark: "top" } } } } }"#,
         )
         .unwrap();
         let few = fewer.resolve_pattern(&[books, chat_world.clone()]).unwrap();
@@ -2086,7 +2087,7 @@ mod tests {
             let expansion = pattern
                 .expansion(Seed(3), &|_| vec!["object/book".into()])
                 .unwrap();
-            let placements = expansion.placements(&no_holder).unwrap();
+            let placements = expansion.placements().unwrap();
             let mut world = placements
                 .expansion()
                 .world(&placed(placements.sites()))
@@ -2099,7 +2100,7 @@ mod tests {
             let expansion = few
                 .expansion(Seed(3), &|_| vec!["object/book".into()])
                 .unwrap();
-            let placements = expansion.placements(&no_holder).unwrap();
+            let placements = expansion.placements().unwrap();
             placements
                 .expansion()
                 .world(&placed(placements.sites()))
@@ -2123,7 +2124,9 @@ mod tests {
         assert_eq!(
             same.robots[&robot("alpha")].stand,
             Some(Stand::Surface {
-                surface: "coffee table at the origin".into(),
+                object: name("modern_coffee_table_01"),
+                landmark: "top".into(),
+                side: Some(crate::Side::NegX),
                 offset: Offset::default()
             })
         );
@@ -2158,14 +2161,14 @@ mod tests {
                 "the unit is blank; name the unit of the value, such as `m`",
             ),
             (
-                r#"{ unit: "m", distance: { surface: "belt", axis: "up" }, per_robot: ["alpha", "alpha"] }"#,
+                r#"{ unit: "m", distance: { object: "belt", landmark: "belt_top", axis: "up" }, per_robot: ["alpha", "alpha"] }"#,
                 "`per_robot` names the robot `alpha` twice; name each robot once",
             ),
         ] {
             assert_eq!(read(text).unwrap_err(), expected, "{text}");
         }
         let parameter = read(
-            r#"{ unit: "m", distance: { surface: "belt", axis: "side" }, per_robot: ["alpha"] }"#,
+            r#"{ unit: "m", distance: { object: "belt", landmark: "belt_top", axis: "side" }, per_robot: ["alpha"] }"#,
         )
         .unwrap();
         let text = crate::text::to_json5(&parameter).unwrap();
