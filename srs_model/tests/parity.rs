@@ -168,7 +168,7 @@ fn record(side: &str) -> Parity {
         g.push(format!("links[{k}]"), links);
         g.push(format!("pwj[{k}]"), pwj);
 
-        // World-frame round trip, and the arm angle the panel displays.
+        // World-frame round trip, and the arm angle.
         g.push_pose(format!("world_ee[{k}]"), &arm.world_pose(&ee));
         g.push(
             format!("arm_angle[{k}]"),
@@ -183,7 +183,6 @@ fn record(side: &str) -> Parity {
         let seed = configs[(k + 7) % configs.len()];
         for (name, policy) in [
             ("from_seed", ArmAnglePolicy::FromSeed),
-            ("swiveled", ArmAnglePolicy::Swiveled { by_rad: 0.25 }),
             (
                 "fixed",
                 ArmAnglePolicy::Fixed(arm.arm_angle(q).unwrap_or(0.0)),

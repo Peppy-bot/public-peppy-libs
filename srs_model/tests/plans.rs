@@ -1,36 +1,37 @@
-//! What any planned line promises, on the fixture arms: it lasts at least the
-//! request, starts where the arm is and ends at the goal, and the configurations
-//! it commands one control period apart stay within the joint velocity and
-//! acceleration limits it was sized against.
+//! What any planned line promises, on the fixture arms: its walk starts at the seed and
+//! keeps the hand within MoveIt's Cartesian precision of the straight line to the goal,
+//! and played as a joint path it keeps the hand on that line.
 
 use std::time::{Duration, Instant};
 
-use control_core::timing::tick_fractions;
+use control_core::path_timing::{JointTrajectory, distinct_joint_waypoints};
 use hegel::TestCase;
 use hegel::generators as gs;
-use kinematics_properties::{TOLERANCE, configs, unit_vectors};
-use srs_model::chain_kinematics::pose_miss;
+use kinematics_properties::{configs, unit_vectors};
+use srs_model::chain_kinematics::{PRECISION_M, PRECISION_RAD, interpolate, pose_miss};
 use srs_model::nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion};
-use srs_model::{ELBOW, JointVec, LineCursor, LineTrajectory, PlanLimits, plan_line};
+use srs_model::{ELBOW, JointVec, plan_line};
 
 mod common;
 use common::arm;
 use common::properties::sides;
 
-const PERIOD: Duration = Duration::from_millis(10);
-const LONGEST_MOVE: Duration = Duration::from_secs(60);
-
 /// The joint whose zero is the wrist's singular surface.
 const WRIST_BEND: usize = 5;
+/// How far (m) a played line's hand may stray from the exact line: twice the precision
+/// of its walk, which holds at the walk's states and their midpoints, where a joint path
+/// rounds its corners.
+const STRAY_M: f64 = 2.0 * PRECISION_M;
+/// How far a played line's hand may turn from the exact line's, likewise.
+const STRAY_RAD: f64 = 2.0 * PRECISION_RAD;
 
 // A goal near any posture of either fixture arm, the wrist or the elbow beside its
-// singular surface among them, at any request and any joint limits: a line, when
-// there is one, lasts at least the request, starts at the seed's own solution of
-// the start pose and ends on the goal, and the configurations the runtime commands,
-// one period apart, keep every joint within its velocity limit and within its
-// acceleration limit, as the plan checked.
-#[hegel::test]
-fn a_planned_line_plays_within_the_limits_it_was_sized_against(tc: TestCase) {
+// singular surface among them: a line, when there is one, starts at the seed and lands
+// on the goal within the precision, inside the joint limits, and a second plan gives the
+// same walk. Played as a joint path at any joint limits, the hand stays on the line between
+// the samples and lands on the goal.
+#[hegel::test(test_cases = 200, seed = Some(69))]
+fn a_planned_line_walks_the_line_and_plays_on_it(tc: TestCase) {
     let arm = arm(tc.draw(sides()));
     let joint_limits = arm.limits();
     let mut seed: JointVec = tc.draw(configs(joint_limits));
@@ -51,95 +52,73 @@ fn a_planned_line_plays_within_the_limits_it_was_sized_against(tc: TestCase) {
         Translation3::from(start.translation.vector + direction * travel),
         UnitQuaternion::from_axis_angle(&Unit::new_normalize(axis), turn) * start.rotation,
     );
-    let requested: f64 = tc.draw(gs::floats().min_value(0.0).max_value(5.0));
-    let limits = PlanLimits {
-        max_joint_velocity_rad_s: tc.draw(gs::arrays(gs::floats().min_value(0.5).max_value(20.0))),
-        max_joint_acceleration_rad_s2: tc
-            .draw(gs::arrays(gs::floats().min_value(0.5).max_value(50.0))),
-        control_period: PERIOD,
-        max_duration: LONGEST_MOVE,
-    };
-    let Some(line) = plan_line(arm, &end, seed, &limits, Duration::from_secs_f64(requested)) else {
+    let Some(walk) = plan_line(arm, &end, seed) else {
         tc.event("no line");
         return;
     };
-    tc.event(format!("line {:?}", line.elbow));
-    let duration_s = line.duration.as_secs_f64();
-    assert!(
-        duration_s >= requested - 1e-9,
-        "a {duration_s}s plan under a {requested}s request"
-    );
-    assert!(
-        line.duration <= LONGEST_MOVE,
-        "a {duration_s}s plan past the longest a move may take"
-    );
-    let normalized = arm
-        .solve_ik(
-            &arm.base_pose(&start),
-            srs_model::ArmAnglePolicy::FromSeed,
-            &seed,
-        )
-        .expect("the seed's own pose solves")
-        .q;
+    assert_eq!(walk[0], seed, "the walk starts at the seed");
     assert_eq!(
-        line.start_q, normalized,
-        "the line starts off the seed's own solution"
+        plan_line(arm, &end, seed).as_ref(),
+        Some(&walk),
+        "a plan repeats"
     );
-    let period_s = PERIOD.as_secs_f64();
-    let mut cursor = LineCursor::new(line.start_q, line.swivel);
-    let t0 = Instant::now();
-    let traj = LineTrajectory::new(start, end, line.path.clone(), line.duration, t0);
-    let ticks: Vec<JointVec> = tick_fractions(duration_s, period_s)
-        .map(|f| {
-            let blend = traj.blend(t0 + Duration::from_secs_f64(f * duration_s));
-            cursor
-                .advance(arm, |s| traj.pose_at_blend(s), blend)
-                .expect("the plan validated every tick of its line")
-        })
-        .collect();
-    let landed = ticks[ticks.len() - 1];
-    let miss = pose_miss(&arm.world_pose(&arm.at(&landed).ee_pose()), &end);
-    assert!(
-        miss.position_m <= TOLERANCE && miss.orientation_rad <= TOLERANCE,
-        "the line ends {miss:?} from the goal"
-    );
-    let joint_limits = limits
-        .max_joint_velocity_rad_s
-        .iter()
-        .zip(&limits.max_joint_acceleration_rad_s2);
-    for (k, w) in ticks.windows(3).enumerate() {
-        for (i, (&v_max, &a_max)) in joint_limits.clone().enumerate() {
-            let speed = (w[1][i] - w[0][i]).abs() / period_s;
-            assert!(
-                speed <= v_max * (1.0 + 1e-6),
-                "joint {i} at {speed} rad/s at tick {k}, past its {v_max}"
-            );
-            // A second difference over a period magnifies the positions'
-            // rounding ten-thousandfold.
-            let acceleration = (w[2][i] - 2.0 * w[1][i] + w[0][i]).abs() / (period_s * period_s);
-            assert!(
-                acceleration <= a_max * (1.0 + 1e-6),
-                "joint {i} at {acceleration} rad/s² at tick {k}, past its {a_max}"
-            );
+    for (k, q) in walk.iter().enumerate() {
+        for (i, (&v, limit)) in q.iter().zip(&joint_limits).enumerate() {
+            assert!(limit.contains(v), "joint {i} at {v} on state {k}");
         }
     }
+    let landed = pose_miss(&arm.world_ee_pose(&walk[walk.len() - 1]), &end);
+    assert!(
+        landed.position_m <= PRECISION_M && landed.orientation_rad <= PRECISION_RAD,
+        "the walk lands {landed:?} off the goal"
+    );
+    let t0 = Instant::now();
+    let played = JointTrajectory::through(
+        &distinct_joint_waypoints(&walk),
+        &tc.draw(gs::arrays(gs::floats().min_value(0.5).max_value(20.0))),
+        &tc.draw(gs::arrays(gs::floats().min_value(0.5).max_value(50.0))),
+        Duration::ZERO,
+        t0,
+    );
+    let duration = played.clock().duration();
+    let ab = end.translation.vector - start.translation.vector;
+    for k in 0..=400u32 {
+        let ee = arm.world_ee_pose(&played.sample(t0 + duration * k / 400));
+        let from_start = ee.translation.vector - start.translation.vector;
+        let along = if ab.norm_squared() > 0.0 {
+            (from_start.dot(&ab) / ab.norm_squared()).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let off_m = (from_start - ab * along).norm();
+        assert!(off_m <= STRAY_M, "the hand strays {off_m} m at {k}/400");
+        let off_rad = (0..=100)
+            .map(|j| {
+                let on_the_turn = interpolate(&start, &end, f64::from(j) / 100.0).rotation;
+                ee.rotation.angle_to(&on_the_turn)
+            })
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            off_rad <= STRAY_RAD,
+            "the hand turns {off_rad} rad off the line at {k}/400"
+        );
+    }
+    let miss = pose_miss(&arm.world_ee_pose(&played.sample(t0 + duration)), &end);
+    assert!(
+        miss.position_m <= PRECISION_M && miss.orientation_rad <= PRECISION_RAD,
+        "the line ends {miss:?} from the goal"
+    );
 }
 
-// A line that tracks is refused once it cannot run within the longest a move may
-// take, and planned once it can.
+// A goal out of reach has no line.
 #[test]
-fn a_line_past_the_longest_a_move_may_take_has_no_plan() {
+fn a_goal_out_of_reach_has_no_line() {
     let arm = arm("left");
-    let seed: JointVec = [0.2, -0.3, 0.3, 1.0, -0.4, 0.5, 0.3];
-    let mut end = arm.world_pose(&arm.at(&seed).ee_pose());
-    end.translation.vector.z += 0.05;
-    let limits = |max_duration| PlanLimits {
-        max_joint_velocity_rad_s: [2.0; 7],
-        max_joint_acceleration_rad_s2: [5.0; 7],
-        control_period: PERIOD,
-        max_duration,
-    };
-    let plan = |max_duration| plan_line(arm, &end, seed, &limits(max_duration), Duration::ZERO);
-    let line = plan(LONGEST_MOVE).expect("a 5 cm lift tracks");
-    assert_eq!(plan(line.duration / 2), None);
+    let seed: JointVec = std::array::from_fn(|i| arm.limits()[i].midpoint());
+    let start = arm.world_ee_pose(&seed);
+    let far = Isometry3::from_parts(
+        Translation3::from(start.translation.vector + srs_model::nalgebra::Vector3::x() * 3.0),
+        start.rotation,
+    );
+    assert_eq!(plan_line(arm, &far, seed), None);
 }

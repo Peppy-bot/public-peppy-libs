@@ -4,9 +4,7 @@
 use std::f64::consts::PI;
 
 use chain_kinematics::nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion};
-use chain_kinematics::{
-    COINCIDENT_ARC_EPS, Limit, all_within, clamp_into, interpolate, limit_margin,
-};
+use chain_kinematics::{COINCIDENT_ARC_EPS, Limit, all_within, clamp_into, interpolate};
 use hegel::TestCase;
 use hegel::generators as gs;
 use kinematics_properties::{TOLERANCE, points, poses, unit_vectors};
@@ -77,21 +75,4 @@ fn a_clamped_configuration_lies_inside_the_limits(tc: TestCase) {
         }
     }
     assert_eq!(all_within(&limits, &q), clamped == q);
-}
-
-// A configuration's limit margin is non-negative exactly when it lies inside
-// its limits, and for one outside them it is minus the distance clamping
-// moves the joint it moves furthest.
-#[hegel::test]
-fn the_limit_margin_is_signed_by_whether_the_limits_hold(tc: TestCase) {
-    let (limits, q) = limits_and_configuration(&tc);
-    let margin = limit_margin(&limits, &q);
-    assert_eq!(margin >= 0.0, all_within(&limits, &q));
-    if margin < 0.0 {
-        let clamped = clamp_into(&limits, &q);
-        let furthest = (0..7)
-            .map(|i| (clamped[i] - q[i]).abs())
-            .fold(0.0, f64::max);
-        assert_eq!(-margin, furthest);
-    }
 }

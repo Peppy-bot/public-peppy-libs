@@ -1,8 +1,7 @@
 //! One damped resolved-rate step: the inner loop of every Cartesian controller
 //! here, and the whole of a streaming jog.
 //!
-//! A discrete inverse-kinematics walk cannot cross the singular surface between
-//! two solution branches. The damped law can: the damping bounds the joint rates
+//! The damped law crosses a singular surface: the damping bounds the joint rates
 //! while the task error carries the chain across, deviating from the straight
 //! line only where the geometry forces it and re-converging beyond.
 
@@ -37,7 +36,7 @@ pub struct StepLimits<const N: usize> {
 /// pose already computed at `q`.
 ///
 /// The task error is capped before it is resolved: position at the speed budget,
-/// orientation at the slew budget. A target meters away therefore produces the
+/// orientation at the turn budget. A target meters away therefore produces the
 /// same bounded step as one millimeters away.
 ///
 /// It always returns a configuration. An unreachable target moves toward the

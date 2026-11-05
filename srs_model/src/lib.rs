@@ -14,9 +14,8 @@
 //! - [`Arm::limits`] are the URDF joint limits; [`Arm::base_pose`] /
 //!   [`Arm::world_pose`] convert between world and arm base frames.
 //! - [`plan_line`] plans a move of the end effector to a pose: a straight line
-//!   walked by the IK with the elbow held or swiveled (a [`LinePlan`], run with a
-//!   [`LineCursor`] and a [`LineTrajectory`]), within the limits a [`PlanLimits`]
-//!   carries.
+//!   walked by `chain_kinematics`' KDL search, whose configurations a caller times
+//!   and plays as a joint path.
 //!
 //! Frames: FK and IK work in the **arm base frame** (the arm's own mounting link).
 //! Gravity / Coriolis compute in the **world frame**, because gravity is a world
@@ -49,10 +48,10 @@ mod model;
 /// The library entry point: build an [`Arm`] from a URDF, then read FK, gravity,
 /// Coriolis, and IK off it. [`Posed`] is the read-only view returned by
 /// [`Arm::at`]; [`ArmAnglePolicy`] / [`Solution`] are the IK types.
-pub use arm::{Arm, DEFAULT_DLS_LAMBDA, SHELL_MARGIN};
+pub use arm::{Arm, DEFAULT_DLS_LAMBDA};
 pub use error::SrsError;
 pub use ik::{ArmAnglePolicy, Solution};
-pub use line::{Elbow, LineCursor, LinePlan, LineTrajectory, PlanLimits, Swivel, plan_line};
+pub use line::plan_line;
 
 /// The arm posed at one configuration: the chain's own read-only view, at
 /// seven joints. Every pose-dependent quantity, the feedforward dynamics
@@ -62,8 +61,8 @@ pub type Posed<'a> = chain_kinematics::Posed<'a, ARM_DOF>;
 /// The geometric Jacobian of the end effector at seven joints, read off a
 /// [`Posed`] view via [`Posed::jacobian`]: maps joint rates (rad/s) to the EE
 /// spatial twist, both in the arm base frame. Rows 0..3 are linear velocity
-/// (m/s), rows 3..6 are angular velocity (rad/s). Its damped inverse and its
-/// manipulability are [`Posed`] methods too.
+/// (m/s), rows 3..6 are angular velocity (rad/s). Its damped inverse is a [`Posed`]
+/// method too.
 pub type Jacobian = chain_kinematics::Jacobian<ARM_DOF>;
 
 /// Degrees of freedom of the arm. The URDF chain is validated against this at
@@ -147,20 +146,6 @@ pub(crate) mod test_support {
         }
         static LEFT: LazyLock<ForwardKinematics> = LazyLock::new(|| load("left"));
         static RIGHT: LazyLock<ForwardKinematics> = LazyLock::new(|| load("right"));
-        match side {
-            "left" => &LEFT,
-            "right" => &RIGHT,
-            _ => panic!("the fixture's arms are \"left\" and \"right\", not {side:?}"),
-        }
-    }
-
-    /// The fixture's arm on `side`, built once per test binary.
-    pub(crate) fn v1_arm(side: &str) -> &'static crate::Arm {
-        fn load(side: &str) -> crate::Arm {
-            crate::Arm::from_urdf(FIXTURE_URDF, &base(side)).expect("load fixture arm")
-        }
-        static LEFT: LazyLock<crate::Arm> = LazyLock::new(|| load("left"));
-        static RIGHT: LazyLock<crate::Arm> = LazyLock::new(|| load("right"));
         match side {
             "left" => &LEFT,
             "right" => &RIGHT,

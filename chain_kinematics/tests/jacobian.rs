@@ -1,28 +1,20 @@
-//! The damped inverse and manipulability, held to the identities that define
-//! them on robots of any serial shape.
+//! The damped inverse, held to the identities that define it on robots of any
+//! serial shape.
 
-use chain_kinematics::{Jacobian, damped_pseudo_inverse, manipulability};
+use chain_kinematics::{Jacobian, damped_pseudo_inverse};
 use hegel::TestCase;
 use hegel::generators as gs;
-use kinematics_properties::{ChainProperty, TIP, TOLERANCE, configs, link_name, on_a_drawn_robot};
+use kinematics_properties::{ChainProperty, TOLERANCE, configs, on_a_drawn_robot};
 use urdf_rs::Robot;
 
 mod common;
-use common::properties::{chain_ending_at, chain_of};
+use common::properties::chain_of;
 use common::singular_values;
 
 /// The Jacobian of a drawn robot at a drawn configuration inside its limits.
 fn drawn_jacobian<const N: usize>(tc: &TestCase, robot: &Robot) -> Jacobian<N> {
     let chain = chain_of::<N>(robot);
     chain.at(&tc.draw(configs(chain.limits()))).jacobian()
-}
-
-/// The scale the determinant behind [`manipulability`] rounds on: the largest
-/// singular value of `j` to the power of their count.
-fn determinant_scale<const N: usize>(j: &Jacobian<N>) -> f64 {
-    let singular = singular_values(j);
-    let largest = singular.iter().copied().fold(0.0, f64::max);
-    largest.powi(i32::try_from(singular.len()).expect("at most six singular values"))
 }
 
 #[hegel::test]
@@ -130,60 +122,7 @@ fn the_posture_answers_as_the_free_functions_do(tc: TestCase) {
                 posed.damped_pseudo_inverse(lambda),
                 damped_pseudo_inverse(&j, lambda)
             );
-            assert_eq!(posed.manipulability(), manipulability(&j));
         }
     }
     on_a_drawn_robot::<SameAnswers>(&tc);
-}
-
-#[hegel::test]
-fn manipulability_is_the_product_of_the_singular_values_at_any_joint_count(tc: TestCase) {
-    // The index is a distance to a singularity, and a chain of fewer than six
-    // joints is not standing in one just for being short. Read off `J Jᵀ` alone
-    // it would be: that product is 6x6 of rank at most N, so its determinant is
-    // zero at every posture a five-joint arm can hold. The determinant the index
-    // takes rounds on its own scale, which bounds the miss.
-    struct Product;
-    impl ChainProperty for Product {
-        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
-            let j = drawn_jacobian::<N>(tc, robot);
-            let singular = singular_values(&j);
-            let want: f64 = singular.iter().product();
-            let got = manipulability(&j);
-            assert!(
-                (got - want).abs() <= TOLERANCE * determinant_scale(&j),
-                "manipulability is {got}, the singular values {singular:?} multiply to {want}"
-            );
-        }
-    }
-    on_a_drawn_robot::<Product>(&tc);
-}
-
-#[hegel::test]
-fn manipulability_is_invariant_under_a_mounted_tool(tc: TestCase) {
-    // A tool moves the point the linear rows read, which adds the angular rows
-    // crossed with the offset to them: a shear of determinant one. On a chain of
-    // six joints or more the index reads det(J Jᵀ), which a shear of determinant
-    // one leaves alone; below six it reads det(Jᵀ J), which a shear changes.
-    struct ToolInvariant;
-    impl ChainProperty for ToolInvariant {
-        fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
-            if N < 6 {
-                return;
-            }
-            let bare = chain_ending_at::<N>(robot, &link_name(N));
-            let tooled = chain_ending_at::<N>(robot, &link_name(N))
-                .with_tool_link(TIP)
-                .expect("the drawn tip is fixed below the last link");
-            let q = tc.draw(configs(bare.limits()));
-            let (bare_j, tooled_j) = (bare.at(&q).jacobian(), tooled.at(&q).jacobian());
-            let (without, with) = (manipulability(&bare_j), manipulability(&tooled_j));
-            let scale = determinant_scale(&bare_j).max(determinant_scale(&tooled_j));
-            assert!(
-                (without - with).abs() <= TOLERANCE * scale,
-                "the tool moved the manipulability from {without} to {with}"
-            );
-        }
-    }
-    on_a_drawn_robot::<ToolInvariant>(&tc);
 }

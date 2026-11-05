@@ -63,7 +63,7 @@ pub use chain::{Chain, ChainSpec, JointSelection, Posed};
 pub use draws::Draws;
 pub use error::ChainError;
 pub use ik::{Aims, ChainFrame, Ends, IkSolver, RandomSource, SEARCH_ITERATIONS};
-pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse, manipulability};
+pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse};
 pub use line::{
     CARTESIAN_STEP_M, CARTESIAN_STEP_RAD, COINCIDENT_ARC_EPS, LinePrecision, LineSolver, LineState,
     MAX_RESOLUTION, PRECISION, PRECISION_M, PRECISION_RAD, PrecisionError, WalkEnd, interpolate,
@@ -115,14 +115,4 @@ pub fn clamp_into<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> [f64; N]
 /// True if every joint of `q` lies inside its limit.
 pub fn all_within<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> bool {
     limits.iter().zip(q).all(|(limit, v)| limit.contains(*v))
-}
-
-/// How far the joint of `q` closest to a limit sits inside it, negative when
-/// that joint lies outside.
-pub fn limit_margin<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> f64 {
-    limits
-        .iter()
-        .zip(q)
-        .map(|(limit, v)| (v - limit.lo).min(limit.hi - v))
-        .fold(f64::INFINITY, f64::min)
 }

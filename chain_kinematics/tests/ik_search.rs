@@ -9,9 +9,7 @@ mod common;
 use std::cell::Cell;
 
 use chain_kinematics::nalgebra::Isometry3;
-use chain_kinematics::{
-    Aims, Chain, ChainFrame, Draws, Ends, IkSolver, SEARCH_ITERATIONS, limit_margin,
-};
+use chain_kinematics::{Aims, Chain, ChainFrame, Draws, Ends, IkSolver, Limit, SEARCH_ITERATIONS};
 use common::openarm;
 use common::properties::{chain_of, named_chain_of, permutations, unreachable_poses};
 use hegel::TestCase;
@@ -27,6 +25,14 @@ const ITERATIONS: usize = 1000;
 const ONE_DESCENT: usize = 1;
 /// The state of the draws of a search.
 const DRAWS: u64 = 20261105;
+
+/// Whether every joint of `q` stands inside `limits`, to the rounding of a clipped step.
+fn inside<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> bool {
+    limits
+        .iter()
+        .zip(q)
+        .all(|(limit, v)| *v >= limit.lo - TOLERANCE && *v <= limit.hi + TOLERANCE)
+}
 
 /// The inverse kinematics of the end effector of `chain`, as KDL solves it.
 fn end_effector_solver<const N: usize>(chain: &Chain<N>) -> IkSolver<'_, N> {
@@ -71,7 +77,7 @@ fn an_answer_stands_at_its_target_inside_the_limits(tc: TestCase) {
                 return;
             };
             assert_stands_at(&chain, &answer, &target);
-            assert!(limit_margin(&limits, &answer) >= -TOLERANCE, "{answer:?}");
+            assert!(inside(&limits, &answer), "{answer:?}");
         }
     }
     on_a_drawn_robot::<Sound>(&tc);
@@ -185,7 +191,7 @@ fn a_target_past_the_reach_gets_an_approximate_end_alone(tc: TestCase) {
             };
             assert_eq!(search(Ends::Converged), None);
             let end = search(Ends::Approximate).expect("the end of the search's one descent");
-            assert!(limit_margin(&limits, &end) >= -TOLERANCE, "{end:?}");
+            assert!(inside(&limits, &end), "{end:?}");
         }
     }
     on_a_drawn_robot::<PastReach>(&tc);

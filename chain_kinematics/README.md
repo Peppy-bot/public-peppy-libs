@@ -65,13 +65,12 @@ error, so it is a refusal at construction.
 | `Posed::{mass, com_world, inertia_world}` | per-segment rigid-body data |
 | `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics, revolute and prismatic joints alike, with everything each segment carries folded in |
 | `damped_pseudo_inverse` | `Jᵀ(J Jᵀ + λ²I)⁻¹`, defined everywhere including at singularities |
-| `manipulability` | Yoshikawa index, the product of the singular values, at any joint count |
 | `IkSolver::search` | the inverse kinematics of a `ChainFrame`, as MoveIt's KDL plugin searches: descents from a seed, then from drawn configurations, until the caller accepts an end or the budget is spent |
 | `rate_step` | one damped resolved-rate step under a velocity budget and joint limits, holding a joint it would carry past a limit and solving the task again on the rest |
 | `rate_step_toward` | the step toward a pose, capped at an end-effector speed budget (`EeCaps`, `StepLimits`), within the joint limits |
 | `interpolate` | the straight line between two poses |
 | `walk_line` | a walk along a line by inverse kinematics from a seed: each step solved from the state before by a `LineSolver`, kept or refused by the caller, and with a `LinePrecision` held to the line between states |
-| `clamp_into` / `all_within` / `limit_margin` / `pose_miss` | joint-limit and pose-distance helpers |
+| `clamp_into` / `all_within` / `pose_miss` | joint-limit and pose-distance helpers |
 
 ## Inverse kinematics
 
@@ -108,8 +107,8 @@ offers the callback each descent's end, converged or not, as
 `walk_line` walks the line a caller traces, a pose for each blend such as
 `interpolate` gives between two poses, through the blends it is given, from a
 state of the caller's. A `LineSolver` solves each step from the state before
-it, which keeps the walk on one branch of the solutions; `srs_model` walks its
-line tier with its closed form and the elbow swiveling. The caller gets each
+it; `srs_model` walks its lines with one descent of `IkSolver::search` per
+step. The caller gets each
 step with the state before it and keeps it or refuses it. The walk ends at the
 first step that has no solution, cannot keep the precision, or is refused, and
 the caller has kept every step before it.
@@ -163,7 +162,7 @@ cargo test                                     # every suite, each property at 1
 HEGEL_TEST_CASES=100000 cargo test --release   # every property at 100000 cases
 ```
 
-The forward kinematics, the Jacobian, its damped inverse and manipulability,
+The forward kinematics, the Jacobian, its damped inverse,
 the dynamics and the inverse kinematics' search are checked as [Hegel](https://hegel.dev)
 properties on drawn robots: serial chains of one to seven revolute or prismatic
 joints, each placed anywhere on its parent, about any axis, with any range, and

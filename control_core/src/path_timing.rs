@@ -14,9 +14,7 @@
 //! arc the two shares are summed, so the bound there is tighter than the
 //! limits, and the timing is the fastest under that bound.
 //!
-//! A waypoint's components are whatever the limits are stated for: a joint
-//! configuration, or one extended by an end effector's progress, so a cap on
-//! the end effector times the path alongside the joints' limits.
+//! A waypoint's components are the joints the limits are stated for.
 
 use std::f64::consts::PI;
 use std::time::{Duration, Instant};
@@ -172,80 +170,6 @@ impl Piece {
     }
 }
 
-/// How a path rounds its corners, and where it stops.
-#[derive(Clone, Copy)]
-pub enum Corners {
-    /// The arc meets the run in, measured from where the arc before it
-    /// leaves it, and the run out at half the shorter of the two, so the arcs
-    /// of neighboring corners never overlap and the path stays within the
-    /// runs it rounds. A waypoint at no positive distance from the one before
-    /// it, a NaN waypoint among them, repeats it, and the two are one point; a
-    /// corner where the runs are exactly in line runs straight on, and one
-    /// where they turn exactly back stops the path.
-    HalfShorterRun,
-    /// TOTG's blend at its maximum deviation: the arc meets each leg at half
-    /// the shorter leg, or nearer the corner where that keeps the arc's
-    /// midpoint within this distance of it. Every point of the arc then lies
-    /// within this distance of the two legs. The path runs through finite
-    /// waypoints, and stops at a waypoint at no distance from the one before
-    /// it and where it turns back on itself (`REVERSAL_COS`), and a corner
-    /// within `STRAIGHT_SIN` of straight on runs straight on. TOTG blends a
-    /// corner so where it turns by about 0.081 degrees or more (a cosine of
-    /// at most 0.999999, `CircularPathSegment`, moveit2 2.15.2) and runs a
-    /// milder one straight on through its waypoint; this rounds each corner
-    /// whose turn has a sine above `STRAIGHT_SIN`, within this distance.
-    Within(PositiveFinite),
-}
-
-impl Corners {
-    /// How far from a corner turning by `turn` radians the arc meets each run:
-    /// for [`Corners::HalfShorterRun`] half the shorter of `length_in`, the run
-    /// in from where the arc before it leaves it, and `length_out`; for
-    /// [`Corners::Within`] TOTG's blend distance (`CircularPathSegment`,
-    /// moveit2 2.15.2) between the legs `leg_in` and `length_out`.
-    fn tangent_length(self, turn: f64, length_in: f64, leg_in: f64, length_out: f64) -> f64 {
-        match self {
-            Self::HalfShorterRun => length_in.min(length_out) / 2.0,
-            Self::Within(deviation) => {
-                let half = 0.5 * turn;
-                (leg_in.min(length_out) / 2.0)
-                    .min(deviation.get() * half.sin() / (1.0 - half.cos()))
-            }
-        }
-    }
-
-    /// Whether the path stops at a corner whose turn has the cosine
-    /// `cos_turn` and the sine `sin_turn`.
-    fn turns_back(self, cos_turn: f64, sin_turn: f64) -> bool {
-        match self {
-            Self::HalfShorterRun => sin_turn == 0.0 && cos_turn < 0.0,
-            Self::Within(_) => cos_turn <= REVERSAL_COS,
-        }
-    }
-
-    /// Whether a corner whose turn has the sine `sin_turn` runs straight on.
-    fn runs_straight_on(self, sin_turn: f64) -> bool {
-        match self {
-            Self::HalfShorterRun => sin_turn == 0.0,
-            Self::Within(_) => sin_turn <= STRAIGHT_SIN,
-        }
-    }
-
-    /// Whether the path stops at a waypoint that repeats the one before it.
-    fn rests_at_repeats(self) -> bool {
-        matches!(self, Self::Within(_))
-    }
-
-    /// The corners of limb_motion's execute_joint_path: within
-    /// [`JOINT_PATH_CORNER_DEVIATION`].
-    fn joint_path() -> Self {
-        Self::Within(
-            PositiveFinite::parse(JOINT_PATH_CORNER_DEVIATION)
-                .expect("the deviation is positive and finite"),
-        )
-    }
-}
-
 /// The farthest the midpoint of a corner's arc lies from the corner on a path
 /// of limb_motion's execute_joint_path, Euclidean over the joints (rad, or m
 /// for a prismatic joint).
@@ -262,6 +186,12 @@ const REVERSAL_COS: f64 = -1.0 + 1e-5;
 /// times above the rounding of the sine between runs in line a ten-thousandth
 /// long, so sums that round otherwise judge such a corner alike.
 const STRAIGHT_SIN: f64 = 1e-9;
+
+/// The deviation limb_motion's execute_joint_path rounds its corners within.
+fn joint_path_deviation() -> PositiveFinite {
+    PositiveFinite::parse(JOINT_PATH_CORNER_DEVIATION)
+        .expect("the deviation is positive and finite")
+}
 
 /// A piece of the path, the path position it starts at, from 0, the index of
 /// its point among the points the path runs through, and whether the path
@@ -294,13 +224,19 @@ fn lay(placed: &mut Vec<Placed>, piece: Piece, point: usize, rests_after: bool) 
 }
 
 /// The pieces of the path through `points`, no two consecutive ones the same
-/// point: a straight run between each pair, and at each corner an arc tangent
-/// to both runs, meeting each where `corners` puts it. A corner the path turns
-/// back at, or one `stops` marks, keeps its point, where the path rests, and a
-/// corner that `corners` runs straight on keeps its point, which the path runs
-/// through. Each piece is of a point: the one a straight run starts from, or
-/// the corner an arc rounds.
-fn pieces(points: &[&[f64]], stops: &[bool], corners: Corners) -> Vec<Placed> {
+/// point: a straight run between each pair, and at each corner TOTG's blend at
+/// its maximum deviation. The arc meets each leg at half the shorter leg, or
+/// nearer the corner where that keeps the arc's midpoint within `deviation` of
+/// it, so every point of the arc lies within `deviation` of the two legs. A
+/// corner the path turns back at (`REVERSAL_COS`), or one `stops` marks, keeps
+/// its point, where the path rests, and a corner within `STRAIGHT_SIN` of
+/// straight on keeps its point, which the path runs through. TOTG blends a
+/// corner so where it turns by about 0.081 degrees or more (a cosine of at most
+/// 0.999999, `CircularPathSegment`, moveit2 2.15.2) and runs a milder one
+/// straight on through its waypoint; this rounds each corner whose turn has a
+/// sine above `STRAIGHT_SIN`. Each piece is of a point: the one a straight run
+/// starts from, or the corner an arc rounds.
+fn pieces(points: &[&[f64]], stops: &[bool], deviation: PositiveFinite) -> Vec<Placed> {
     let mut placed: Vec<Placed> = Vec::new();
     let mut from = points[0].to_vec();
     for k in 1..points.len() {
@@ -330,8 +266,8 @@ fn pieces(points: &[&[f64]], stops: &[bool], corners: Corners) -> Vec<Placed> {
         // length is the sine of the turn, and it points toward the center.
         let across = difference(&direction_out, &scaled(&direction_in, cos_turn));
         let sin_turn = norm(&across);
-        let rests = stops[k] || corners.turns_back(cos_turn, sin_turn);
-        if rests || corners.runs_straight_on(sin_turn) {
+        let rests = stops[k] || cos_turn <= REVERSAL_COS;
+        if rests || sin_turn <= STRAIGHT_SIN {
             lay(
                 &mut placed,
                 Piece::Straight {
@@ -346,7 +282,9 @@ fn pieces(points: &[&[f64]], stops: &[bool], corners: Corners) -> Vec<Placed> {
             continue;
         }
         let turn = sin_turn.atan2(cos_turn);
-        let tangent_length = corners.tangent_length(turn, length_in, leg_in, length_out);
+        let half = 0.5 * turn;
+        let tangent_length =
+            (leg_in.min(length_out) / 2.0).min(deviation.get() * half.sin() / (1.0 - half.cos()));
         let radius = tangent_length / (turn / 2.0).tan();
         lay(
             &mut placed,
@@ -384,8 +322,8 @@ fn lies_within(waypoint: &[f64], before: &[f64], within: f64) -> bool {
 }
 
 /// The geometric path through waypoints: straight runs, each corner rounded
-/// on an arc as [`Corners`] says, and at a corner the path turns back at, a
-/// stop and a turn back.
+/// on an arc within a deviation, and at a corner the path turns back at, a stop
+/// and a turn back.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RoundedPath {
     pieces: Vec<Placed>,
@@ -396,10 +334,11 @@ pub struct RoundedPath {
 }
 
 impl RoundedPath {
-    /// The path through `waypoints` (one or more, of one dimension; finite
-    /// for [`Corners::Within`]), its corners rounded as `corners` says.
-    pub fn through(waypoints: &[Vec<f64>], corners: Corners) -> Self {
-        Self::resting_at_repeats(waypoints, corners, 0.0)
+    /// The path through `waypoints` (one or more, finite, of one dimension),
+    /// each corner rounded within `deviation`, resting where it turns back on
+    /// itself and at each waypoint at no distance from the one before it.
+    pub fn through(waypoints: &[Vec<f64>], deviation: PositiveFinite) -> Self {
+        Self::resting_at_repeats(waypoints, deviation, 0.0)
     }
 
     /// The path of limb_motion's execute_joint_path through `waypoints` (one
@@ -409,25 +348,27 @@ impl RoundedPath {
     /// joint of the waypoint given before it. [`JointTrajectory`] plays this
     /// path.
     pub fn joint_path(waypoints: &[Vec<f64>]) -> Self {
-        Self::resting_at_repeats(waypoints, Corners::joint_path(), MIN_JOINT_CHANGE_RAD)
+        Self::resting_at_repeats(waypoints, joint_path_deviation(), MIN_JOINT_CHANGE_RAD)
     }
 
-    /// The path through `waypoints` (one or more, of one dimension; finite
-    /// for [`Corners::Within`]), its corners rounded as `corners` says. A
-    /// waypoint at no positive distance from the one before it is the same
-    /// point; where `corners` rests at repeats,
-    /// the path rests there, and at each waypoint that lies within
-    /// `repeat_within` in every component of the waypoint given before it.
-    fn resting_at_repeats(waypoints: &[Vec<f64>], corners: Corners, repeat_within: f64) -> Self {
+    /// The path through `waypoints` (one or more, finite, of one dimension),
+    /// each corner rounded within `deviation`. A waypoint at no positive
+    /// distance from the one before it is the same point, and the path rests
+    /// there, and at each waypoint that lies within `repeat_within` in every
+    /// component of the waypoint given before it.
+    fn resting_at_repeats(
+        waypoints: &[Vec<f64>],
+        deviation: PositiveFinite,
+        repeat_within: f64,
+    ) -> Self {
         assert!(!waypoints.is_empty(), "a path has a waypoint");
         let dimension = waypoints[0].len();
         assert!(
             waypoints.iter().all(|w| w.len() == dimension),
             "the waypoints have one dimension"
         );
-        let rests_at_repeats = corners.rests_at_repeats();
         assert!(
-            !rests_at_repeats || waypoints.iter().flatten().all(|v| v.is_finite()),
+            waypoints.iter().flatten().all(|v| v.is_finite()),
             "the waypoints of a path rounded within a deviation are finite"
         );
         // Each point the path runs through, whether it rests there, and the
@@ -440,16 +381,16 @@ impl RoundedPath {
                 let last = points.last().expect("the first waypoint is a point");
                 if norm(&difference(waypoint, last)) > 0.0 {
                     points.push(waypoint.as_slice());
-                    stops.push(rests_at_repeats && lies_within(waypoint, before, repeat_within));
+                    stops.push(lies_within(waypoint, before, repeat_within));
                     indices.push(k + 1);
                 } else {
-                    *stops.last_mut().expect("the first waypoint is a point") |= rests_at_repeats;
+                    *stops.last_mut().expect("the first waypoint is a point") = true;
                 }
                 (points, stops, indices)
             },
         );
         Self {
-            pieces: pieces(&points, &stops, corners),
+            pieces: pieces(&points, &stops, deviation),
             end: points[points.len() - 1].to_vec(),
             waypoints: indices,
         }
@@ -654,19 +595,6 @@ pub struct TimedPath {
 }
 
 impl TimedPath {
-    /// The path through `waypoints` (one or more, of the limits' dimension; a
-    /// waypoint at no positive distance from the one before it is the same
-    /// point), its corners rounded as [`Corners::HalfShorterRun`] rounds
-    /// them, timed under `max_velocity` and `max_acceleration` as
-    /// [`TimedPath::along`] times it.
-    pub fn new(waypoints: &[Vec<f64>], max_velocity: &[f64], max_acceleration: &[f64]) -> Self {
-        Self::along(
-            RoundedPath::through(waypoints, Corners::HalfShorterRun),
-            max_velocity,
-            max_acceleration,
-        )
-    }
-
     /// `path` timed under `max_velocity` and `max_acceleration`, every
     /// component of which is positive, infinite for a component the limit
     /// leaves free, and which together bound the path's speed.
@@ -808,14 +736,14 @@ impl TimedPath {
 /// [`MotionClock`]: the path's configuration at the fraction of that duration
 /// the clock has played.
 #[derive(Debug, Clone, PartialEq)]
-pub struct TimedTrajectory {
+struct TimedTrajectory {
     path: TimedPath,
     clock: MotionClock,
 }
 
 impl TimedTrajectory {
     /// `path` over `duration`, starting at `now`.
-    pub fn new(path: TimedPath, duration: Duration, now: Instant) -> Self {
+    fn new(path: TimedPath, duration: Duration, now: Instant) -> Self {
         assert!(
             duration >= Duration::from_secs_f64(path.duration_s()),
             "a path plays no faster than its own time"
@@ -826,7 +754,7 @@ impl TimedTrajectory {
         }
     }
 
-    pub fn clock(&self) -> &MotionClock {
+    fn clock(&self) -> &MotionClock {
         &self.clock
     }
 
@@ -837,7 +765,7 @@ impl TimedTrajectory {
 
     /// The configuration at `now` if the path plays on at full pace from its
     /// last advance: what its player proposes for `now`.
-    pub fn sample(&self, now: Instant) -> Vec<f64> {
+    fn sample(&self, now: Instant) -> Vec<f64> {
         self.path.at_fraction(self.clock.fraction(now))
     }
 
@@ -856,25 +784,31 @@ pub const MIN_JOINT_CHANGE_RAD: f64 = 0.001;
 /// joint from the one kept before it. The last waypoint is where the path
 /// ends, so it replaces the waypoint kept before it when it lies within that
 /// of it in every joint, unless that one is the first. A planner answers
-/// these, so the path it answers rests at no repeat before its end.
-pub fn distinct_joint_waypoints<const N: usize>(waypoints: &[[f64; N]]) -> Vec<[f64; N]> {
+/// these, and a straight line's walk plays through them, so the path rests at no
+/// repeat before its end.
+pub fn distinct_joint_waypoints<W: AsRef<[f64]> + Clone>(waypoints: &[W]) -> Vec<W> {
     distinct_joint_waypoint_indices(waypoints)
         .into_iter()
-        .map(|k| waypoints[k])
+        .map(|k| waypoints[k].clone())
         .collect()
 }
 
 /// The indices, in order, of the waypoints [`distinct_joint_waypoints`] keeps
 /// of `waypoints`.
-pub fn distinct_joint_waypoint_indices<const N: usize>(waypoints: &[[f64; N]]) -> Vec<usize> {
+pub fn distinct_joint_waypoint_indices<W: AsRef<[f64]>>(waypoints: &[W]) -> Vec<usize> {
     assert!(!waypoints.is_empty(), "a joint path has a waypoint");
     let last = waypoints.len() - 1;
     waypoints
         .iter()
         .enumerate()
         .fold(Vec::new(), |mut kept: Vec<usize>, (k, waypoint)| {
-            let repeats =
-                |before: usize| lies_within(waypoint, &waypoints[before], MIN_JOINT_CHANGE_RAD);
+            let repeats = |before: usize| {
+                lies_within(
+                    waypoint.as_ref(),
+                    waypoints[before].as_ref(),
+                    MIN_JOINT_CHANGE_RAD,
+                )
+            };
             match kept.last() {
                 Some(&before) if repeats(before) && k == last && kept.len() > 1 => {
                     *kept.last_mut().expect("a waypoint is kept") = k;
@@ -994,6 +928,19 @@ mod tests {
             .collect()
     }
 
+    /// The joint path through `waypoints`, timed under the limits.
+    fn timed_joint_path(
+        waypoints: &[Vec<f64>],
+        max_velocity: &[f64],
+        max_acceleration: &[f64],
+    ) -> TimedPath {
+        TimedPath::along(
+            RoundedPath::joint_path(waypoints),
+            max_velocity,
+            max_acceleration,
+        )
+    }
+
     fn limits(tc: &TestCase) -> ([f64; JOINTS], [f64; JOINTS]) {
         (
             tc.draw(gs::arrays(gs::floats().min_value(0.1).max_value(5.0))),
@@ -1046,7 +993,7 @@ mod tests {
             return;
         }
         let (max_velocity, max_acceleration) = limits(&tc);
-        let path = TimedPath::new(&waypoints, &max_velocity, &max_acceleration);
+        let path = timed_joint_path(&waypoints, &max_velocity, &max_acceleration);
         let duration = path.duration_s();
         assert!(duration > 0.0 && duration.is_finite(), "a {duration}s path");
         assert_eq!(path.at_fraction(0.0), waypoints[0]);
@@ -1099,7 +1046,7 @@ mod tests {
         }
         let (max_velocity, max_acceleration) = limits(&tc);
         let path = TimedPath::along(
-            RoundedPath::through(&waypoints, Corners::Within(deviation(&tc))),
+            RoundedPath::through(&waypoints, deviation(&tc)),
             &max_velocity,
             &max_acceleration,
         );
@@ -1197,7 +1144,7 @@ mod tests {
         } else {
             2.0 * (length / a).sqrt()
         };
-        let path = TimedPath::new(&[vec![0.0; JOINTS], end], &max_velocity, &max_acceleration);
+        let path = timed_joint_path(&[vec![0.0; JOINTS], end], &max_velocity, &max_acceleration);
         let duration = path.duration_s();
         assert!(
             duration >= trapezoid / SLACK,
@@ -1216,8 +1163,8 @@ mod tests {
     fn a_reversal_stops_at_its_corner() {
         let (v, a) = ([1.0; JOINTS], [1.0; JOINTS]);
         let corner = vec![0.5, 0.0, 0.0, 0.0];
-        let single = TimedPath::new(&[vec![0.0; JOINTS], corner.clone()], &v, &a);
-        let out_and_back = TimedPath::new(
+        let single = timed_joint_path(&[vec![0.0; JOINTS], corner.clone()], &v, &a);
+        let out_and_back = timed_joint_path(
             &[vec![0.0; JOINTS], corner.clone(), vec![0.0; JOINTS]],
             &v,
             &a,
@@ -1225,38 +1172,6 @@ mod tests {
         assert!((out_and_back.duration_s() - 2.0 * single.duration_s()).abs() < 1e-9);
         let midway = out_and_back.at_fraction(0.5);
         assert!((midway[0] - corner[0]).abs() < 1e-9, "midway at {midway:?}");
-    }
-
-    // A waypoint at no distance from the one before it is the same point: a
-    // path through repeats lays the pieces of the path through the distinct
-    // waypoints and takes its time, each naming the waypoints it was given,
-    // and a path through one point takes no time and sits on it.
-    #[test]
-    fn repeated_waypoints_are_one_point() {
-        let (v, a) = ([1.0; JOINTS], [1.0; JOINTS]);
-        let (origin, corner, end) = (
-            vec![0.0; JOINTS],
-            vec![0.3, 0.0, 0.0, 0.0],
-            vec![0.3, 0.2, 0.0, 0.0],
-        );
-        let repeated = TimedPath::new(
-            &[
-                origin.clone(),
-                origin.clone(),
-                corner.clone(),
-                corner.clone(),
-                end.clone(),
-                end.clone(),
-            ],
-            &v,
-            &a,
-        );
-        let distinct = TimedPath::new(&[origin.clone(), corner, end.clone()], &v, &a);
-        assert_eq!(repeated.path().pieces, distinct.path().pieces);
-        assert_eq!(repeated.duration_s(), distinct.duration_s());
-        let still = TimedPath::new(&[end.clone(), end.clone()], &v, &a);
-        assert_eq!(still.duration_s(), 0.0);
-        assert_eq!(still.at_fraction(0.3), end);
     }
 
     // A path rounded within a deviation stops at a waypoint at no distance from
@@ -1274,7 +1189,7 @@ mod tests {
         );
         let timed = |waypoints: &[Vec<f64>]| {
             TimedPath::along(
-                RoundedPath::through(waypoints, Corners::joint_path()),
+                RoundedPath::through(waypoints, joint_path_deviation()),
                 &v,
                 &a,
             )
@@ -1349,7 +1264,7 @@ mod tests {
             Duration::from_secs_f64(requested),
             Instant::now(),
         );
-        let path = TimedPath::new(
+        let path = timed_joint_path(
             &[start.to_vec(), end.to_vec()],
             &max_velocity,
             &max_acceleration,
@@ -1399,7 +1314,7 @@ mod tests {
     }
 
     // A joint trajectory between two configurations, under any limits and
-    // request, is the move TimedPath::new times between them, over the longer
+    // request, is the joint path timed between them, over the longer
     // of the request and its own time on a clock played at full pace: the same
     // duration, the same sample to the bit at any instant, and complete from
     // its duration on.
@@ -1432,7 +1347,7 @@ mod tests {
             requested,
             now,
         );
-        let path = TimedPath::new(
+        let path = timed_joint_path(
             &[start.to_vec(), end.to_vec()],
             &max_velocity,
             &max_acceleration,
@@ -1512,7 +1427,7 @@ mod tests {
             return;
         }
         let deviation = deviation(&tc);
-        let path = RoundedPath::through(&waypoints, Corners::Within(deviation));
+        let path = RoundedPath::through(&waypoints, deviation);
         const SAMPLES: usize = 2000;
         for k in 0..=SAMPLES {
             let q = path.at(path.length() * k as f64 / SAMPLES as f64);
@@ -1541,7 +1456,7 @@ mod tests {
         let deviation = 0.01;
         let path = RoundedPath::through(
             &waypoints,
-            Corners::Within(PositiveFinite::parse(deviation).expect("positive")),
+            PositiveFinite::parse(deviation).expect("positive"),
         );
         let arc = &path.pieces[1];
         let (midpoint, _) = arc.piece.at(arc.piece.length() / 2.0);
@@ -1603,7 +1518,7 @@ mod tests {
     // runs straight on through its point, and one of 1e-8 is rounded.
     #[test]
     fn a_corner_within_the_straight_sine_runs_straight_on_and_one_past_it_is_rounded() {
-        let path = |sin: f64| RoundedPath::through(&turning(1.0, sin), Corners::joint_path());
+        let path = |sin: f64| RoundedPath::through(&turning(1.0, sin), joint_path_deviation());
         assert!(keeps_its_corner(&path(1e-10), false));
         assert!(rounds_its_corner(&path(1e-8)));
     }
@@ -1619,27 +1534,8 @@ mod tests {
     fn a_path_within_a_deviation_through_an_infinite_waypoint_is_refused() {
         RoundedPath::through(
             &[vec![0.0; 2], vec![0.0, f64::INFINITY]],
-            Corners::joint_path(),
+            joint_path_deviation(),
         );
-    }
-
-    // TimedPath::new takes a NaN waypoint, at no positive distance from the
-    // waypoint before it, as a repeat of that one: the path through the
-    // waypoints either side of it.
-    #[test]
-    fn a_timed_path_takes_a_nan_waypoint_as_a_repeat() {
-        let (v, a) = ([1.0; JOINTS], [1.0; JOINTS]);
-        let (origin, corner, end) = (
-            vec![0.0; JOINTS],
-            vec![0.3, 0.0, 0.0, 0.0],
-            vec![0.3, 0.2, 0.0, 0.0],
-        );
-        let nan = vec![f64::NAN, 0.0, 0.0, 0.0];
-        let through_nan =
-            TimedPath::new(&[origin.clone(), corner.clone(), nan, end.clone()], &v, &a);
-        let without = TimedPath::new(&[origin, corner, end], &v, &a);
-        assert_eq!(through_nan.path().pieces, without.path().pieces);
-        assert_eq!(through_nan.duration_s(), without.duration_s());
     }
 
     // A planner's path keeps the first waypoint, and each one that lies more
@@ -1719,7 +1615,7 @@ mod tests {
             vec![1.0, 0.0],
             vec![1.0, 1.0],
         ];
-        let path = RoundedPath::through(&waypoints, Corners::HalfShorterRun);
+        let path = RoundedPath::through(&waypoints, joint_path_deviation());
         assert_eq!(path.waypoint_at(0.1), 0);
         assert_eq!(path.waypoint_at(1.0), 3);
         assert_eq!(path.waypoint_at(path.length() - 0.1), 3);
@@ -1751,7 +1647,7 @@ mod tests {
         let waypoints = waypoints(&tc);
         let spacing = PositiveFinite::parse(tc.draw(gs::floats().min_value(0.001).max_value(1.0)))
             .expect("positive");
-        let path = RoundedPath::through(&waypoints, Corners::joint_path());
+        let path = RoundedPath::through(&waypoints, joint_path_deviation());
         let arcs = path.arcs_every(spacing);
         assert_eq!((arcs[0], arcs[arcs.len() - 1]), (0.0, path.length()));
         assert!(arcs.windows(2).all(|w| w[0] < w[1]), "{arcs:?}");
@@ -1777,7 +1673,7 @@ mod tests {
     #[hegel::test]
     fn the_heading_keeps_within_the_largest_share_of_the_tangent(tc: TestCase) {
         let waypoints = waypoints(&tc);
-        let path = RoundedPath::through(&waypoints, Corners::joint_path());
+        let path = RoundedPath::through(&waypoints, joint_path_deviation());
         let length = path.length();
         let position = || -> f64 { tc.draw(gs::floats().min_value(0.0).max_value(length)) };
         let (a, b) = (position(), position());
@@ -1807,7 +1703,7 @@ mod tests {
     #[hegel::test]
     fn a_path_heads_along_its_tangent(tc: TestCase) {
         let waypoints = waypoints(&tc);
-        let path = RoundedPath::through(&waypoints, Corners::Within(deviation(&tc)));
+        let path = RoundedPath::through(&waypoints, deviation(&tc));
         let (Some(first), Some(last)) = (path.pieces.first(), path.pieces.last()) else {
             assert!(path.heading_at(0.0).iter().all(|&h| h == 0.0));
             return;
@@ -1986,7 +1882,7 @@ mod tests {
     fn rounded_within_the_joint_deviation(waypoints: &[Vec<f64>]) -> [RoundedPath; 2] {
         [
             RoundedPath::joint_path(waypoints),
-            RoundedPath::through(waypoints, Corners::joint_path()),
+            RoundedPath::through(waypoints, joint_path_deviation()),
         ]
     }
 
