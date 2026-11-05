@@ -175,6 +175,17 @@ struct Pair {
     b: usize,
 }
 
+/// The checked pairs a distance query reads.
+enum Read {
+    /// Every checked pair.
+    All,
+    /// Each pair one of whose bodies rides the arm on the side.
+    OfArm(Side),
+    /// Each pair one of whose bodies rides the arm on the side and neither of whose
+    /// bodies rides the other arm.
+    OfArmAlone(Side),
+}
+
 /// Best candidate while scanning pairs in [`SelfCollisionModel::min_distance`].
 struct Closest {
     distance: f64,
@@ -667,26 +678,34 @@ impl SelfCollisionModel {
             .collect()
     }
 
-    /// The nearest checked pair at the given configurations, of the pairs one of
-    /// whose bodies rides the arm on `moving` when it names one: places the hulls by
-    /// FK, then scans the pairs (broadphase-ordered) for the minimum signed
-    /// distance. The shared core of [`min_distance`](Self::min_distance),
-    /// [`min_distance_of_arm`](Self::min_distance_of_arm) and
+    /// The nearest checked pair at the given configurations, of the pairs `read`
+    /// names: places the hulls by FK, then scans the pairs (broadphase-ordered) for
+    /// the minimum signed distance. The shared core of
+    /// [`min_distance`](Self::min_distance),
+    /// [`min_distance_of_arm`](Self::min_distance_of_arm),
+    /// [`min_distance_of_arm_alone`](Self::min_distance_of_arm_alone) and
     /// [`distance_gradient`](Self::distance_gradient).
     fn closest(
         &mut self,
         q_left: &JointVec,
         q_right: &JointVec,
-        moving: Option<Side>,
+        read: Read,
     ) -> Result<Closest, CollisionError> {
         self.place(q_left, q_right);
-        let rides = |body: usize| {
-            moving.is_none_or(|side| {
-                matches!(
-                    (self.bodies[body].placement, side),
-                    (Placement::Left(_), Side::Left) | (Placement::Right(_), Side::Right)
-                )
-            })
+        let rides = |body: usize, side: Side| {
+            matches!(
+                (self.bodies[body].placement, side),
+                (Placement::Left(_), Side::Left) | (Placement::Right(_), Side::Right)
+            )
+        };
+        let reads = |pair: &Pair| match read {
+            Read::All => true,
+            Read::OfArm(side) => rides(pair.a, side) || rides(pair.b, side),
+            Read::OfArmAlone(side) => {
+                (rides(pair.a, side) || rides(pair.b, side))
+                    && !rides(pair.a, side.other())
+                    && !rides(pair.b, side.other())
+            }
         };
 
         // Broadphase: a pair's bounding-sphere gap is a lower bound on its true
@@ -702,7 +721,7 @@ impl SelfCollisionModel {
             .pairs
             .iter()
             .enumerate()
-            .filter(|(_, p)| rides(p.a) || rides(p.b))
+            .filter(|(_, p)| reads(p))
             .map(|(i, p)| {
                 (
                     (centers[p.a] - centers[p.b]).norm()
@@ -765,7 +784,7 @@ impl SelfCollisionModel {
         q_left: &JointVec,
         q_right: &JointVec,
     ) -> Result<Proximity<'_>, CollisionError> {
-        self.proximity(q_left, q_right, None)
+        self.proximity(q_left, q_right, Read::All)
     }
 
     /// [`min_distance`](Self::min_distance) over the checked pairs one of whose
@@ -777,7 +796,19 @@ impl SelfCollisionModel {
         q_left: &JointVec,
         q_right: &JointVec,
     ) -> Result<Proximity<'_>, CollisionError> {
-        self.proximity(q_left, q_right, Some(side))
+        self.proximity(q_left, q_right, Read::OfArm(side))
+    }
+
+    /// [`min_distance_of_arm`](Self::min_distance_of_arm) over the pairs neither of
+    /// whose bodies rides the other arm: the arm against the robot's fixed bodies and
+    /// against itself, with the other arm's bodies set aside.
+    pub fn min_distance_of_arm_alone(
+        &mut self,
+        side: Side,
+        q_left: &JointVec,
+        q_right: &JointVec,
+    ) -> Result<Proximity<'_>, CollisionError> {
+        self.proximity(q_left, q_right, Read::OfArmAlone(side))
     }
 
     /// The nearest pair of the pairs [`closest`](Self::closest) scans, with its
@@ -786,10 +817,10 @@ impl SelfCollisionModel {
         &mut self,
         q_left: &JointVec,
         q_right: &JointVec,
-        moving: Option<Side>,
+        read: Read,
     ) -> Result<Proximity<'_>, CollisionError> {
         ensure_finite(q_left, q_right)?;
-        let c = self.closest(q_left, q_right, moving)?;
+        let c = self.closest(q_left, q_right, read)?;
         Ok(Proximity {
             distance: c.distance,
             link_a: &self.bodies[c.a].name,
@@ -813,7 +844,7 @@ impl SelfCollisionModel {
         q_right: &JointVec,
     ) -> Result<DistanceGradient<'_>, CollisionError> {
         ensure_finite(q_left, q_right)?;
-        let c = self.closest(q_left, q_right, None)?;
+        let c = self.closest(q_left, q_right, Read::All)?;
         // GJK carries the separating direction explicitly (the witness difference
         // reverses sense with the sign of the distance); the +1/-1 signs below
         // sum the projected witness velocities to d(distance)/dq.

@@ -314,6 +314,71 @@ fn an_arms_distance_counts_the_pairs_it_rides() {
     );
 }
 
+// An arm's distance alone reads the pairs it rides that no body of the other arm is one
+// of: on postures of both arms folded inward, its pair holds a body of that arm and none
+// of the other's, and it equals the arm's own distance where that one's pair holds no
+// body of the other arm, and lies at or past it elsewhere; on some posture a pair of the
+// two arms is the arm's nearest.
+#[test]
+fn an_arms_distance_alone_sets_the_other_arm_aside() {
+    let version = HardwareVersion::V2;
+    let mut model = openarm(version, meshes_dir(version)).expect("the model builds");
+    let rides = |side: Side, link: &str| {
+        let name = match side {
+            Side::Left => "left",
+            Side::Right => "right",
+        };
+        link.starts_with(&format!("openarm_{name}_")) && link != version.base_link(side)
+    };
+    let postures: [([f64; 7], [f64; 7]); 4] = [
+        (
+            [0.15, 0.1, 0.85, 0.5, -0.2, 0.1, 0.0],
+            [-0.05, -0.25, -0.45, 0.35, 0.1, -0.1, 0.0],
+        ),
+        (
+            [0.0, 0.3, 0.95, 0.45, 0.1, 0.0, 0.0],
+            [0.0, -0.1, -0.55, 0.4, 0.0, 0.1, 0.0],
+        ),
+        (
+            [0.25, -0.1, 0.6, 0.65, 0.0, 0.2, 0.1],
+            [-0.1, 0.05, -0.7, 0.3, 0.0, -0.2, 0.0],
+        ),
+        (
+            [0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2],
+            [0.0, 0.0, -1.05, 0.4, -0.1, 0.1, 0.0],
+        ),
+    ];
+    let mut crossing = 0;
+    for (left, right) in postures {
+        for side in Side::BOTH {
+            let own = model
+                .min_distance_of_arm(side, &left, &right)
+                .expect("a distance");
+            let own_crosses = rides(side.other(), own.link_a) || rides(side.other(), own.link_b);
+            let own = own.distance;
+            let alone = model
+                .min_distance_of_arm_alone(side, &left, &right)
+                .expect("a distance");
+            assert!(rides(side, alone.link_a) || rides(side, alone.link_b));
+            assert!(!rides(side.other(), alone.link_a) && !rides(side.other(), alone.link_b));
+            if own_crosses {
+                crossing += 1;
+                assert!(
+                    alone.distance >= own,
+                    "{side:?}: {} against {own}",
+                    alone.distance
+                );
+            } else {
+                assert_eq!(alone.distance, own, "{side:?}");
+            }
+        }
+    }
+    assert!(
+        crossing > 0,
+        "no posture whose arm's nearest pair is of the two arms"
+    );
+}
+
 /// The least distance the pairs v2 leaves out keep within the joint limits on the grid
 /// below: under the 12.9 mm the description measures on a finer grid.
 const NEVER_TOUCHING_LEAST_M: f64 = 0.01;
