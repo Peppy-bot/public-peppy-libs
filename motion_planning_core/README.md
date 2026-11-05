@@ -332,23 +332,14 @@ stand.
 joint limits, the targeted joints inside their targets, as MoveIt's
 `JointConstraintSampler` does. For a pose, as MoveIt's `IKConstraintSampler`, each attempt
 draws a pose of the goal's frame inside the goal and searches for it by MoveIt's KDL
-inverse kinematics, ported (kdl_kinematics_plugin.cpp at its defaults): the first attempt
-from the working state, each later one from a configuration drawn inside the limits. A
-descent converges where the frame's position and orientation both lie within 1e-5 m and
-rad of the pose; a step that does not lower its error is cut, a joint clipped at its limit
-weighs 0.01 in the next step, and a stuck descent steps off by a drawn turn, for at most
-500 steps. A search re-seeds from a drawn configuration after each descent. KDL's search
-ends on a clock, the 0.05 s move_group gives each inverse kinematics call; this one starts
-no descent once its descents have made 9274 passes of KDL's loop, 0.05 s over the mean
-time of a pass in the reference image, so a seed gives the same goals on every machine.
-From the seeds of seven descents of MoveIt's KDL plugin recorded in the reference image,
-converged, stuck and at the 500 step cap, the port's descents end within 1e-6 rad of
-KDL's, after as many passes (`tests/kdl_descents.json`). The grasp point, and a link that
-the chain's every joint moves and that is fixed below the last joint's link, are the tip
-of MoveIt's solver or a link fixed to it, and the search solves for them as KDL does. A
-link the chain's later joints do not move, and a part a link carries such as a finger,
-which hangs on a joint of its own, depart from MoveIt, which has no inverse kinematics for
-them: MoveIt builds no IK sampler for a link that is neither the tip nor fixed to it
+inverse kinematics, as [`chain_kinematics`](../chain_kinematics) holds it, at the search's
+budget of 9274 passes, so a seed gives the same goals on every machine: the first attempt
+from the working state, each later one from a configuration drawn inside the limits. The
+grasp point, and a link that the chain's every joint moves and that is fixed below the last
+joint's link, are the tip of MoveIt's solver or a link fixed to it, and the search solves
+for them as KDL does. A link the chain's later joints do not move, and a part a link
+carries such as a finger, which hangs on a joint of its own, depart from MoveIt, which has
+no inverse kinematics for them: MoveIt builds no IK sampler for a link that is neither the tip nor fixed to it
 (`IKConstraintSampler::loadIKSolver`, default_constraint_samplers.cpp:386-439), so its
 constraint sampler manager selects none (constraint_sampler_manager.cpp:395) and its goal
 sampler draws states uniformly and keeps those that meet the goal by chance

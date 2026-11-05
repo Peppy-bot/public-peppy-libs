@@ -102,7 +102,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use chain_kinematics::Chain;
+use chain_kinematics::{Chain, Draws};
 use control_core::path_timing::{MIN_JOINT_CHANGE_RAD, RoundedPath, distinct_joint_waypoints};
 use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::{
@@ -113,7 +113,6 @@ use ompl_bridge::{
 use crate::arm::Moving;
 use crate::arms::Arms;
 use crate::clearance::{Contact, Surroundings, TERMS, term_clearances};
-use crate::draws::{Draws, mixed_seed};
 use crate::goal::{Goal, GoalSampler};
 use crate::scene::Objects;
 use crate::stop::is_set;
@@ -647,6 +646,13 @@ fn floor_of(distance: f64, asked: f64, moved: f64) -> f64 {
     asked
         .min(distance - 2.0 * moved * (MIN_DEPARTURE_STEP_M + ROUNDING_SLACK_M))
         .max(0.0)
+}
+
+/// One seed from `seed` and `stamp`: the bits of both mixed, never zero.
+fn mixed_seed(seed: u32, stamp: u64) -> NonZeroU32 {
+    let mut draws = Draws::new(u64::from(seed) ^ stamp.rotate_left(32));
+    let mixed = (draws.next_bits() >> 32) as u32;
+    NonZeroU32::new(mixed).unwrap_or(NonZeroU32::MIN)
 }
 
 /// `start`, each joint outside the limits of `chain` by no more than its tolerance moved

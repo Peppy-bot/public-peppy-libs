@@ -197,17 +197,6 @@ impl<'a, const N: usize> Arm<'a, N> {
     }
 }
 
-/// Where the frame `offset` in the frame of the child link of joint `segment` stands in
-/// the frame of the URDF root with the chain posed at `posed`: a rider's frame, and the
-/// frame of a goal on a link or on a part a link carries.
-pub(crate) fn frame_on_segment<const N: usize>(
-    posed: &Posed<N>,
-    segment: usize,
-    offset: &Isometry3<f64>,
-) -> Isometry3<f64> {
-    posed.link_pose_world(segment) * offset
-}
-
 /// The grasp point of `chain`, its end effector, as a frame on the child link of its last
 /// joint: where a goal of the grasp point and an object attached to the grasp link ride.
 pub(crate) fn grasp_frame<const N: usize>(chain: &Chain<N>) -> Isometry3<f64> {
@@ -217,7 +206,7 @@ pub(crate) fn grasp_frame<const N: usize>(chain: &Chain<N>) -> Isometry3<f64> {
 
 /// Where `rider` stands in the frame of the URDF root with its chain posed at `posed`.
 pub(crate) fn rider_pose<const N: usize>(posed: &Posed<N>, rider: &Rider) -> Isometry3<f64> {
-    frame_on_segment(posed, rider.segment, &rider.offset)
+    posed.link_pose_world(rider.segment) * rider.offset
 }
 
 /// The bodies of `rider` standing at `pose` in the frame of the URDF root: each of a

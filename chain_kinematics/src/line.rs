@@ -5,9 +5,6 @@ use std::slice;
 
 use nalgebra::Isometry3;
 
-use crate::SolveError;
-use crate::ik::positive;
-
 /// Below this sine of the half-angle between two orientations, a turn of
 /// 2e-6 rad, they are one orientation, and the arc between them is whatever
 /// the last few bits of the quaternion happened to be. Slerp divides by that
@@ -59,25 +56,43 @@ pub struct LinePrecision {
     max_resolution: f64,
 }
 
+/// A value that is not a [`LinePrecision`]'s: zero, negative or not finite.
+#[derive(Debug, thiserror::Error)]
+pub enum PrecisionError {
+    #[error("translational precision {0} m is not a finite positive distance")]
+    Translational(f64),
+    #[error("rotational precision {0} rad is not a finite positive angle")]
+    Rotational(f64),
+    #[error("precision resolution {0} is not a finite positive share of a line")]
+    Resolution(f64),
+}
+
+/// True if `value` is finite and above zero.
+const fn finite_positive(value: f64) -> bool {
+    value.is_finite() && value > 0.0
+}
+
 impl LinePrecision {
-    /// The precision, or a refusal of a value that is not finite and positive.
+    /// The precision, or a refusal of the first value that is not finite and positive.
     pub const fn new(
         translational_m: f64,
         rotational_rad: f64,
         max_resolution: f64,
-    ) -> Result<Self, SolveError> {
-        match (
-            positive(translational_m, "translational precision"),
-            positive(rotational_rad, "rotational precision"),
-            positive(max_resolution, "precision resolution"),
-        ) {
-            (Ok(translational_m), Ok(rotational_rad), Ok(max_resolution)) => Ok(Self {
-                translational_m,
-                rotational_rad,
-                max_resolution,
-            }),
-            (Err(refused), _, _) | (_, Err(refused), _) | (_, _, Err(refused)) => Err(refused),
+    ) -> Result<Self, PrecisionError> {
+        if !finite_positive(translational_m) {
+            return Err(PrecisionError::Translational(translational_m));
         }
+        if !finite_positive(rotational_rad) {
+            return Err(PrecisionError::Rotational(rotational_rad));
+        }
+        if !finite_positive(max_resolution) {
+            return Err(PrecisionError::Resolution(max_resolution));
+        }
+        Ok(Self {
+            translational_m,
+            rotational_rad,
+            max_resolution,
+        })
     }
 
     /// True when `actual` stands within the precision of `target`.

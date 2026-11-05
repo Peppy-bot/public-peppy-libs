@@ -18,14 +18,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
-use chain_kinematics::{Goal as PoseGoal, Kinematics};
+use chain_kinematics::{Aims, ChainFrame, Draws, Ends, IkSolver};
 use collision_geometry::chain::Rider;
 use collision_geometry::gjk::{Hull, Placed};
 use collision_geometry::hull::exact_hull;
 use control_core::path_timing::RoundedPath;
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, ArmGoal, Arms, AttachRequest, CheckFailure, CheckRequest, Contact, Draws, Frame, Goal,
+    Arm, ArmGoal, Arms, AttachRequest, CheckFailure, CheckRequest, Contact, Frame, Goal,
     GoalSampler, IkGoalSampler, JointTarget, MAX_STEP_M, Moving, ObjectFields, ObjectRequest,
     Objects, OrientationTarget, PathCheck, PathFault, Place, PlanFailure, PlanObjects, PlanRequest,
     PlanningScene, PositionTarget, RobotLinks, RobotPart, Scene, ShapeFields, StartFault,
@@ -249,12 +249,15 @@ const SHORT_MOVES: usize = 12;
 /// `SHORT_MOVES` of them can be lowered.
 const STARTS_DRAWN: usize = 10 * SHORT_MOVES;
 
-// From each of 12 drawn starts from which inverse kinematics lowers the grasp point 8 cm
-// straight down inside the joint limits, its orientation kept, a pose goal there plans a
-// path that ends on the start's shoulder and wrist branches: the first goal sample sets
-// out from the start, and each later one from the goal before it, as MoveIt's do.
+// From each of 12 drawn starts from which one descent of the inverse kinematics lowers the
+// grasp point 8 cm straight down inside the joint limits, its orientation kept, a pose goal
+// there plans a path that ends on the start's shoulder and wrist branches: the first goal
+// sample sets out from the start, and each later one from the goal before it, as MoveIt's
+// do.
 #[test]
 fn a_short_pose_move_from_the_start_ends_on_its_branches() {
+    /// The budget of a search of one descent: its first pass spends it.
+    const ONE_DESCENT: usize = 1;
     let (map, field) = world(&[]);
     let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
     let scene = Scene {
@@ -265,7 +268,12 @@ fn a_short_pose_move_from_the_start_ends_on_its_branches() {
     };
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let (mut longest, mut planned, mut drawn): (f64, usize, usize) = (0.0, 0, 0);
-    let kinematics = Kinematics::new(LEFT_ARM.chain().clone());
+    let ik = IkSolver::new(
+        LEFT_ARM.chain(),
+        ChainFrame::EndEffector,
+        Aims::Both,
+        Ends::Converged,
+    );
     for start in off_the_branch_seams(20261103).take(STARTS_DRAWN) {
         if planned == SHORT_MOVES {
             break;
@@ -273,14 +281,12 @@ fn a_short_pose_move_from_the_start_ends_on_its_branches() {
         drawn += 1;
         let pose = LEFT_ARM.chain().world_ee_pose(&start);
         let lowered = pose.translation.vector - Vector3::z() * LOWERING_M;
-        let reached = kinematics.continue_to(
-            &start,
-            &PoseGoal::at(Isometry3::from_parts(
-                Translation3::from(lowered),
-                pose.rotation,
-            ))
-            .orientation_within(GOAL_TOLERANCE_RAD)
-            .expect("a positive tolerance"),
+        let reached = ik.search(
+            start,
+            &Isometry3::from_parts(Translation3::from(lowered), pose.rotation),
+            &mut Draws::new(1),
+            &|_| true,
+            ONE_DESCENT,
         );
         if reached.is_none() {
             continue;

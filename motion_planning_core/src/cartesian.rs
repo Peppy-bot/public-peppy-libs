@@ -40,7 +40,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use chain_kinematics::{
-    Chain, JointKind, LinePrecision, LineSolver, LineState, WalkEnd, interpolate, walk_line,
+    Aims, Chain, Draws, IkSolver, JointKind, LinePrecision, LineSolver, LineState,
+    SEARCH_ITERATIONS, WalkEnd, interpolate, walk_line,
 };
 use control_core::path_timing::{RoundedPath, distinct_joint_waypoint_indices};
 use control_core::positive_finite::PositiveFinite;
@@ -48,9 +49,7 @@ use nalgebra::{Isometry3, Vector3};
 
 use crate::arm::Moving;
 use crate::arms::Arms;
-use crate::draws::Draws;
 use crate::goal::{Frame, frame_pose_at};
-use crate::goal_ik::{Aims, GoalIk};
 use crate::plan::{
     CheckFailure, CheckRequest, PathChecks, Scene, StartFault, check_path_until,
     distances_in_range, start_clear, start_inside_limits, vectors,
@@ -97,16 +96,14 @@ const PROBE_TURN_RAD: f64 = (1.0 - PROBE_SHARE) / 2.0 * PRECISION_RAD;
 
 /// A frame a Cartesian path follows: the grasp point, or a link the arm's every joint
 /// moves. An inner link, which fewer joints move, and a part a link carries on a joint of
-/// its own have no inverse kinematics in MoveIt (`crate::goal_ik`).
+/// its own have no inverse kinematics in MoveIt (`Frame::solved_by_moveit`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FollowedFrame(Frame);
 
 impl FollowedFrame {
     /// `frame` of `chain`, where a Cartesian path can follow it.
     pub fn of<const N: usize>(chain: &Chain<N>, frame: Frame) -> Option<Self> {
-        GoalIk::new(chain, frame, Aims::BOTH)
-            .is_exact()
-            .then_some(Self(frame))
+        frame.solved_by_moveit(chain).then_some(Self(frame))
     }
 }
 
@@ -181,7 +178,7 @@ pub fn cartesian_path<const N: usize>(
     let follower = Follower {
         chain,
         frame,
-        ik: GoalIk::new(chain, frame, Aims::BOTH),
+        ik: frame.ik_solver(chain, Aims::Both),
         draws: RefCell::new(Draws::new(request.seed)),
         judge: match request.collisions {
             Collisions::Checked {
@@ -398,7 +395,7 @@ impl<const N: usize> Judge<'_, N> {
 struct Follower<'a, const N: usize> {
     chain: &'a Chain<N>,
     frame: Frame,
-    ik: GoalIk<'a, N>,
+    ik: IkSolver<'a, N>,
     draws: RefCell<Draws>,
     judge: Judge<'a, N>,
     stop: Option<&'a AtomicBool>,
@@ -426,8 +423,13 @@ impl<const N: usize> Follower<'_, N> {
         pose: &Isometry3<f64>,
     ) -> Option<[f64; N]> {
         let accept = self.judge.accepting(before);
-        self.ik
-            .search(*seed, pose, &mut self.draws.borrow_mut(), &accept)
+        self.ik.search(
+            *seed,
+            pose,
+            &mut *self.draws.borrow_mut(),
+            &accept,
+            SEARCH_ITERATIONS,
+        )
     }
 
     /// Walks the line to each pose of `waypoints` in turn from `start`, each from the
@@ -719,7 +721,7 @@ mod tests {
 
     use super::*;
     use crate::arm::Arm;
-    use crate::goal_ik::tests::left_arm;
+    use crate::goal::tests::left_arm;
     use crate::plan::tests::world;
     use crate::scene::Objects;
 
@@ -771,7 +773,7 @@ mod tests {
         Follower {
             chain,
             frame: Frame::GraspPoint,
-            ik: GoalIk::new(chain, Frame::GraspPoint, Aims::BOTH),
+            ik: Frame::GraspPoint.ik_solver(chain, Aims::Both),
             draws: RefCell::new(Draws::new(1)),
             judge,
             stop,

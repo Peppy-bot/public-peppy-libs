@@ -13,7 +13,7 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use camera_core::pose::Pose;
-use chain_kinematics::{ChainSpec, JointSelection, interpolate};
+use chain_kinematics::{ChainSpec, Draws, JointSelection, interpolate};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider, RiderBody};
 use collision_geometry::gjk::{self, Placed};
 use control_core::positive_finite::PositiveFinite;
@@ -76,25 +76,12 @@ pub fn branch(q: &[f64; JOINTS]) -> (bool, bool) {
     (q[1].cos() >= 0.0, q[5].cos() >= 0.0)
 }
 
-/// SplitMix64 draws in `[0, 1)`.
-pub struct SplitMix64(pub u64);
-
-impl SplitMix64 {
-    pub fn unit(&mut self) -> f64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        ((z ^ (z >> 31)) >> 11) as f64 / (1_u64 << 53) as f64
-    }
-}
-
-/// Configurations of the left arm drawn inside its limits by SplitMix64 from `seed`, the
+/// Configurations of the left arm drawn inside its limits from `seed`, the
 /// middle joint of each spherical limb (joints 2 and 6) at least a quarter of pi from the
 /// quarter turn its two branches meet at.
 pub fn off_the_branch_seams(seed: u64) -> impl Iterator<Item = [f64; JOINTS]> {
     let limits = LEFT_ARM.chain().limits();
-    let mut draws = SplitMix64(seed);
+    let mut draws = Draws::new(seed);
     std::iter::repeat_with(move || -> [f64; JOINTS] {
         std::array::from_fn(|i| limits[i].lo + (limits[i].hi - limits[i].lo) * draws.unit())
     })

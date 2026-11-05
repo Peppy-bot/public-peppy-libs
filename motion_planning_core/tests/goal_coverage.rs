@@ -8,15 +8,16 @@ mod common;
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
+use chain_kinematics::Draws;
 use motion_planning_core::{
-    ArmGoal, Draws, Frame, Goal, GoalSampler, IkGoalSampler, OrientationTarget, PositionTarget,
+    ArmGoal, Frame, Goal, GoalSampler, IkGoalSampler, OrientationTarget, PositionTarget,
     sample_goals,
 };
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use openarm_description::{HardwareVersion, Side};
 use srs_model::ArmAnglePolicy;
 
-use common::{JOINTS, LEFT_ARM, SplitMix64, branch, positive};
+use common::{JOINTS, LEFT_ARM, branch, positive};
 
 /// The poses drawn.
 const POSES: usize = 200;
@@ -46,7 +47,7 @@ fn one_goal_sample_reaches_each_branch_srs_model_finds_when_the_others_are_inval
     let chain = LEFT_ARM.chain();
     let sampler = IkGoalSampler::new(chain.clone());
     let limits = chain.limits();
-    let mut draws = SplitMix64(20261028);
+    let mut draws = Draws::new(20261028);
     let mut covered = 0;
     // The poses on which srs_model finds more than one branch.
     let mut several = 0;
@@ -146,7 +147,7 @@ fn the_sampler_reaches_the_poses_of_links_and_carried_parts() {
         Translation3::new(0.0, 0.03, -0.1),
         UnitQuaternion::from_euler_angles(0.3, 0.0, 0.0),
     );
-    let mut draws = SplitMix64(20261029);
+    let mut draws = Draws::new(20261029);
     for frame in [
         Frame::Link {
             segment: 3,

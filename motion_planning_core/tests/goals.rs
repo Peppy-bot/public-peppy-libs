@@ -7,11 +7,12 @@ mod common;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
+use chain_kinematics::Draws;
 use hegel::TestCase;
 use hegel::generators as gs;
 use motion_planning_core::{
-    Arm, ArmGoal, Axis, Body, Draws, Frame, Goal, GoalError, GoalSampler, IkGoalSampler,
-    JointTarget, OrientationTarget, PositionTarget, sample_goals,
+    Arm, ArmGoal, Axis, Body, Frame, Goal, GoalError, GoalSampler, IkGoalSampler, JointTarget,
+    OrientationTarget, PositionTarget, sample_goals,
 };
 use nalgebra::{Isometry3, Unit, UnitQuaternion, Vector3};
 use openarm_description::{HardwareVersion, Side};

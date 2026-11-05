@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::f64::consts::PI;
 
 use chain_kinematics::nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion, Vector3};
-use chain_kinematics::{LinePrecision, LineSolver, LineState, SolveError, WalkEnd, walk_line};
+use chain_kinematics::{LinePrecision, LineSolver, LineState, PrecisionError, WalkEnd, walk_line};
 use hegel::TestCase;
 use hegel::generators as gs;
 use kinematics_properties::{TOLERANCE, poses, unit_vectors};
@@ -293,7 +293,7 @@ fn a_precision_holds_a_pose_within_both_of_its_bounds(tc: TestCase) {
 }
 
 // A precision is built from three finite positive values; the first of them
-// that is zero, negative or not finite is refused, by its value.
+// that is zero, negative or not finite is refused, by its place and its value.
 #[hegel::test]
 fn a_precision_that_is_not_finite_and_positive_is_refused(tc: TestCase) {
     let value = || {
@@ -303,14 +303,13 @@ fn a_precision_that_is_not_finite_and_positive_is_refused(tc: TestCase) {
         )
     };
     let values: [f64; 3] = [tc.draw(value()), tc.draw(value()), tc.draw(value())];
-    let refused = values
-        .iter()
-        .copied()
-        .find(|v| !(v.is_finite() && *v > 0.0));
+    let refused = values.iter().position(|v| !(v.is_finite() && *v > 0.0));
     match (LinePrecision::new(values[0], values[1], values[2]), refused) {
         (Ok(_), None) => {}
-        (Err(SolveError::Tolerance { value, .. }), Some(bad)) => {
-            assert_eq!(value.to_bits(), bad.to_bits());
+        (Err(PrecisionError::Translational(value)), Some(place @ 0))
+        | (Err(PrecisionError::Rotational(value)), Some(place @ 1))
+        | (Err(PrecisionError::Resolution(value)), Some(place @ 2)) => {
+            assert_eq!(value.to_bits(), values[place].to_bits());
         }
         (built, refused) => panic!(
             "{values:?} built {:?} with {refused:?} refusable",

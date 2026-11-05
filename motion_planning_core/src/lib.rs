@@ -18,8 +18,9 @@
 //!   [`term_clearances`] asks of it, and the distance of each pair it checks.
 //! - [`Goal`]: the constraints an arm's last waypoint meets; [`sample_goals`] samples
 //!   configurations meeting a plan's [`ArmGoal`]s as MoveIt's goal sampler does, one goal
-//!   sample at a time by each arm's [`GoalSampler`] from the plan's [`Draws`],
-//!   [`IkGoalSampler`] by a port of MoveIt's KDL inverse kinematics for any chain.
+//!   sample at a time by each arm's [`GoalSampler`] from the plan's [`Draws`](chain_kinematics::Draws),
+//!   [`IkGoalSampler`] by `chain_kinematics`' inverse kinematics, MoveIt's KDL, for any
+//!   chain.
 //! - [`plan_path`]: plans a [`PlanRequest`] on a [`Scene`], each arm to its [`ArmGoal`],
 //!   and checks the rounded path the robot runs; [`check_path`] checks a caller's path, a
 //!   [`CheckRequest`], with the same checks.
@@ -36,9 +37,7 @@ mod arm;
 mod arms;
 mod cartesian;
 mod clearance;
-mod draws;
 mod goal;
-mod goal_ik;
 mod intake;
 mod plan;
 mod pose;
@@ -52,7 +51,6 @@ pub use cartesian::{
     Collisions, FollowedFrame, PRECISION_M, PRECISION_RAD, cartesian_path, poses_in_range,
 };
 pub use clearance::{Contact, Reading, Surroundings, TERMS, term_clearances};
-pub use draws::Draws;
 pub use goal::{
     Axis, Frame, Goal, GoalError, GoalSampler, IkGoalSampler, JointTarget, OrientationTarget,
     PositionTarget,
