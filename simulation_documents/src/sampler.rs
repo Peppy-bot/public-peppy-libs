@@ -279,8 +279,9 @@ fn value_at<'a>(value: &'a mut Value, path: &[Segment]) -> &'a mut Value {
 
 /// The sites of the samplers of `value`, an entry of the kind `T`, in the
 /// order of their paths. Refuses a sampler that breaks the form of its kind,
-/// a sampler where the entry takes none, and a sampler inside a value of
-/// `one_of`.
+/// a sampler where the entry takes none, a sampler inside a value of
+/// `one_of`, and a furnish pose, which an entry of `objects` alone takes
+/// ([`crate::furnish`]).
 pub(crate) fn sites_of<T: Sampleable>(value: &Value) -> Result<Vec<Site>, Error> {
     let mut sites = Vec::new();
     collect_sites(value, &mut Vec::new(), &T::rule_at, &mut sites)?;
@@ -348,6 +349,12 @@ fn sampler_of(value: &Value, rule: SiteRule, path: &SitePath) -> Result<Option<S
         (["in"], SiteRule::Pose | SiteRule::StandPosition) => Sampler::In {
             region: region(&fields["in"]).map_err(at)?,
         },
+        (_, SiteRule::Pose) if fields.contains_key("furnish") => {
+            return Err(at(
+                "`furnish` lays out an object of `objects` that names its asset; a scene object and an entry of an item kind take a pose, `on` or `in`"
+                    .to_owned(),
+            ));
+        }
         (_, SiteRule::Pose) if fields.contains_key("on") => on(fields).map_err(at)?,
         _ => return Ok(None),
     };

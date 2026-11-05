@@ -2,9 +2,11 @@
 //! the record of a world with its robots is that world, a document that
 //! extends a base merges each key as its entry says and its daylight as a
 //! whole, a robot name that
-//! another begins is refused by the pair, judges survive their text, and a
-//! seed expands a world pattern into the same world each time, with each
-//! drawn value inside its sampler.
+//! another begins is refused by the pair, judges survive their text, a seed
+//! expands a world pattern into the same world each time, with each drawn
+//! value inside its sampler, and a pattern with furnish poses into the same
+//! placements each time, its furnish layout first. The stream that seeds
+//! the solver of a furnish layout gives the value it always gave.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
@@ -15,12 +17,12 @@ use hegel::generators::{self as gs, Generator, PrintableGenerator};
 use serde::Serialize;
 use serde_json::{Value, json};
 use simulation_documents::{
-    Band, Bounds, Catalogue, Check, Cone, ContentsOn, Control, Count, Date, Daylight, Digest,
-    Error, Feature, Finish, Holding, Join, Judge, Landmark, LandmarkOn, Light, Limbs, Location,
-    Manifest, Material, Name, NearPoint, Object, Offset, Opening, Physics, Place, Placement, Point,
-    Pose, Reachable, Region, Revision, Robot, RobotName, Scene, SceneObject, Seed, SetupRecord,
-    Side, StackRobot, Stand, Target, TimeOfDay, Weather, WithinM, World, WorldDocument,
-    WorldPattern,
+    Band, Bounds, Catalogue, Check, ClearWays, Cone, ContentsOn, Control, Count, Date, Daylight,
+    Digest, Error, Feature, Finish, Holding, Join, Judge, Landmark, LandmarkOn, Light, Limbs,
+    Location, Manifest, Material, Name, NearPoint, Object, Offset, Opening, Physics, Place,
+    Placement, PlacementKind, Point, Pose, Reachable, Region, Revision, Robot, RobotName,
+    ScaleRange, Scene, SceneObject, Seed, SetupRecord, Side, SitePath, StackRobot, Stand, Target,
+    TimeOfDay, Weather, WithinM, World, WorldDocument, WorldPattern,
 };
 
 /// Names of objects, scene objects, locations, poses and regions: over the
@@ -816,7 +818,7 @@ fn bands(tc: &TestCase) -> Band {
 
 #[hegel::composite]
 fn checks(tc: &TestCase) -> Check {
-    match tc.draw(gs::integers::<u8>().min_value(0).max_value(10)) {
+    match tc.draw(gs::integers::<u8>().min_value(0).max_value(11)) {
         0 => Check::Count(Count {
             item_kind: tc.draw(labels()),
             place: match tc.draw(targets()) {
@@ -862,7 +864,7 @@ fn checks(tc: &TestCase) -> Check {
             robot: tc.draw(robot_names()),
             target: tc.draw(targets()),
         }),
-        _ => {
+        10 => {
             let bounds = tc.draw(bounds());
             Check::Control(Control {
                 object: tc.draw(names()),
@@ -873,6 +875,9 @@ fn checks(tc: &TestCase) -> Check {
                 },
             })
         }
+        _ => Check::ClearWays(ClearWays {
+            walkway_m: tc.draw(within()),
+        }),
     }
 }
 
@@ -944,4 +949,86 @@ fn a_seed_expands_a_pattern_into_one_world_inside_its_samplers(tc: TestCase) {
         "{books} in [{fewest}, {most}]"
     );
     assert!(["scene/kitchen", "scene/living_room"].contains(&world.scene.asset.as_str()));
+}
+
+/// A room with two furnish poses, a desk that a robot works and a shelf
+/// beside it, each with a drawn asset, and a lamp at a fixed position.
+fn furnished_room() -> WorldPattern {
+    let text = json!({
+        "simulation_schema": "world/v1",
+        "manifest": { "name": "furnished", "revision": 1 },
+        "catalogue": "local",
+        "scene": { "asset": "scene/empty_room" },
+        "robots": {
+            "alpha": { "join": { "option": "openarm_sim" }, "stand": { "object": "desk", "landmark": "top", "side": "-y" } },
+        },
+        "objects": {
+            "desk": {
+                "asset": { "one_of": ["object/standing_desk", "object/office_desk"] },
+                "pose": { "furnish": { "against_wall": {} }, "stations": [{ "landmark": "top", "side": "-y", "robot": "alpha" }] },
+                "scale": { "min": 0.5, "max": 1.0 },
+                "controls": { "height": { "range": [0.7, 1.1] } },
+            },
+            "shelf": {
+                "asset": { "one_of": ["object/shelf_a", "object/shelf_b"] },
+                "pose": { "furnish": { "beside": { "object": "desk", "gap_m": 0.2 } } },
+            },
+            "lamp": { "asset": "object/lamp", "pose": { "position": [2, 2, 0], "yaw": 0 } },
+        },
+    });
+    WorldPattern::parse(&text.to_string()).unwrap()
+}
+
+/// For each seed, a pattern with furnish poses expands into the same
+/// placements each time: the furnish layout first, with each piece inside
+/// its samplers, then the stand of the robot of the station.
+#[hegel::test]
+fn a_seed_expands_a_pattern_with_furnish_poses_into_the_same_placements(tc: TestCase) {
+    let pattern = furnished_room();
+    let seed = Seed(tc.draw(gs::integers::<u32>()));
+    let placements = || {
+        pattern
+            .expansion(seed, &|_| Vec::new())
+            .unwrap()
+            .placements()
+            .unwrap()
+    };
+    let placements_once = placements();
+    assert_eq!(placements_once.sites(), placements().sites());
+    let paths: Vec<String> = placements_once
+        .sites()
+        .iter()
+        .map(|site| site.path.to_string())
+        .collect();
+    assert_eq!(paths, ["furnish", "robots.alpha.stand"]);
+    let PlacementKind::Furnish { pieces } = &placements_once.sites()[0].kind else {
+        panic!("the furnish layout comes first");
+    };
+    let desk = &pieces[0];
+    assert_eq!(desk.object.as_str(), "desk");
+    assert!(
+        ["object/standing_desk", "object/office_desk"].contains(&desk.asset.as_str()),
+        "{desk:?}"
+    );
+    assert!((0.7..=1.1).contains(&desk.controls["height"]), "{desk:?}");
+    assert_eq!(desk.scale, ScaleRange { min: 0.5, max: 1.0 });
+    let shelf = &pieces[1];
+    assert!(["object/shelf_a", "object/shelf_b"].contains(&shelf.asset.as_str()));
+}
+
+/// The simulation seeds the solver of a furnish layout with the first value
+/// of the stream of its placement, the path `furnish`: a value that never
+/// changes for a seed.
+#[test]
+fn the_stream_of_the_furnish_layout_seeds_the_solver_with_the_value_it_always_gave() {
+    let expansion = furnished_room()
+        .expansion(Seed(7), &|_| Vec::new())
+        .unwrap();
+    let placements = expansion.clone().placements().unwrap();
+    let layout: &SitePath = &placements.sites()[0].path;
+    assert_eq!(layout.to_string(), "furnish");
+    assert_eq!(
+        expansion.stream(layout).next_u64(),
+        15_865_342_306_866_294_196
+    );
 }

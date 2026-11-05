@@ -4,9 +4,10 @@
 //! catalogue release and the scene, the robots with their joins, stands and
 //! limbs, the scene objects moved or removed, the spawned objects, the lighting, the
 //! materials, the daylight, its regions and the named locations. A world pattern
-//! ([`WorldPattern`]) is a world with samplers, which a [`Seed`] expands into
-//! a concrete world ([`Expansion`]). A sweep (`sweep/v1`, [`Sweep`]) runs one
-//! workflow revision in many worlds of its world patterns. A simulation keeps a [`SetupRecord`] of
+//! ([`WorldPattern`]) is a world with samplers and furnish poses, which a
+//! [`Seed`] expands into a concrete world ([`Expansion`]). A sweep
+//! (`sweep/v1`, [`Sweep`]) runs one workflow revision in many worlds of its
+//! world patterns. A simulation keeps a [`SetupRecord`] of
 //! its setup calls, and the world document of a live simulation is that record
 //! with the robots of the stack ([`World::from_setup`]). A [`Judge`] checks
 //! ground truth in a live world and gives a verdict. A [`ClaimHolder`] names
@@ -22,6 +23,7 @@ mod compose;
 mod daylight;
 mod error;
 mod extends;
+mod furnish;
 mod geometry;
 mod judge;
 mod limbs;
@@ -39,10 +41,11 @@ pub use compose::{StackRobot, StartSetup};
 pub use daylight::{Date, Daylight, TimeOfDay, Weather};
 pub use documents_core::{Digest, Manifest, Revision};
 pub use error::Error;
+pub use furnish::{FurnishPiece, FurnishRule, FurnishStation, ScaleRange, StationRoom};
 pub use geometry::{Offset, Placement, Point, Pose, Region};
 pub use judge::{
-    Band, BeltLine, Bound, Bounds, Check, ContentsOn, Control, Count, Holding, Judge, Landmark,
-    LandmarkOn, NearPoint, Place, Reachable, Target, Verdict, Verdicts, WithinM,
+    Band, BeltLine, Bound, Bounds, Check, ClearWays, ContentsOn, Control, Count, Holding, Judge,
+    Landmark, LandmarkOn, NearPoint, Place, Reachable, Target, Verdict, Verdicts, WithinM,
 };
 pub use limbs::{JOINT_SLACK, Limbs, OPENING_SLACK, Opening};
 pub use names::{Name, RobotName};

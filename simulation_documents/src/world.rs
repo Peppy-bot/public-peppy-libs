@@ -109,7 +109,7 @@ impl From<Scene> for SceneFields {
 }
 
 /// An omitted scale is 1; a written one is positive.
-fn positive_scale(scale: Option<f64>) -> Result<f64, Error> {
+pub(crate) fn positive_scale(scale: Option<f64>) -> Result<f64, Error> {
     let scale = scale.unwrap_or(1.0);
     let above_zero = scale > 0.0;
     if !above_zero {
@@ -1062,7 +1062,8 @@ impl WorldFields {
     /// no base is refused `kept`, and `removed` outside `scene_objects`: each
     /// drops an entry of a base. In a document merged with its bases, a kept
     /// scene object stands as the scene has it, under no entry. An entry that
-    /// holds a sampler, or adds objects of an item kind, is refused.
+    /// holds a sampler, adds objects of an item kind or has a furnish pose is
+    /// refused.
     pub(crate) fn concrete_maps(&self, origin: Origin) -> Result<ConcreteMaps, Error> {
         let marked = self.marked_maps(origin)?;
         let robots = concrete_values("robots", marked.robots)?;
@@ -1075,7 +1076,7 @@ impl WorldFields {
                     name.clone(),
                     concrete_value(&format!("objects.{name}"), object)?,
                 )),
-                ObjectEntry::ItemKind(_) => {
+                ObjectEntry::ItemKind(_) | ObjectEntry::Furnished(_) => {
                     Err(sampler_in_concrete_world(format!("objects.{name}")))
                 }
             })
@@ -1227,7 +1228,12 @@ pub(crate) fn check_name_rules(fields: &WorldFields) -> Result<(), Error> {
         fields
             .objects
             .iter()
-            .filter(|(_, entry)| matches!(entry, Entry::Value(ObjectEntry::Object(_))))
+            .filter(|(_, entry)| {
+                matches!(
+                    entry,
+                    Entry::Value(ObjectEntry::Object(_) | ObjectEntry::Furnished(_))
+                )
+            })
             .map(|(name, _)| name),
         |name| {
             matches!(
