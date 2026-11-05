@@ -45,7 +45,6 @@ fn loads_arms_of_different_joint_counts() {
 fn servo_limits<const N: usize>(position_m: f64) -> ServoLimits<N> {
     ServoLimits {
         max_joint_velocity: [2.0; N],
-        max_joint_acceleration: [5.0; N],
         ee: EeCaps {
             linear_m_s: 0.15,
             angular_rad_s: 1.0,
@@ -321,42 +320,21 @@ fn an_arrival_tolerance_is_a_finite_positive_slack_on_each_axis(tc: TestCase) {
     );
 }
 
-// A step toward any target leaves every joint inside its limits, and a joint
-// that moved toward a limit can still stop before it from the speed it moved
-// at, braking at its acceleration limit from the next tick on: the room left
-// covers its braking distance.
+// A step toward any target leaves every joint inside its limits.
 #[hegel::test]
-fn a_step_heads_into_a_limit_no_faster_than_it_can_stop_there(tc: TestCase) {
-    struct StopsInTime;
-    impl ChainProperty for StopsInTime {
+fn a_step_toward_any_target_stays_inside_the_limits(tc: TestCase) {
+    struct StaysInside;
+    impl ChainProperty for StaysInside {
         fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
             let chain = chain_of::<N>(robot);
             let q = tc.draw(configs(chain.limits()));
             let target = tc.draw(poses());
-            let limits = ServoLimits {
-                max_joint_acceleration: tc
-                    .draw(gs::arrays(gs::floats().min_value(0.1).max_value(50.0))),
-                ..servo_limits::<N>(1e-3)
-            };
+            let limits = servo_limits::<N>(1e-3);
             let next = rate_step_toward(&chain, &q, &chain.world_ee_pose(&q), &target, &limits);
             assert!(all_within(&chain.limits(), &next));
-            for (i, limit) in chain.limits().iter().enumerate() {
-                let (moved, room_left) = if next[i] < q[i] {
-                    (q[i] - next[i], next[i] - limit.lo)
-                } else {
-                    (next[i] - q[i], limit.hi - next[i])
-                };
-                let speed = moved / limits.dt_s;
-                let braking = speed * speed / (2.0 * limits.max_joint_acceleration[i]);
-                assert!(
-                    room_left + TOLERANCE >= braking,
-                    "joint {i} moved at {speed} rad/s with {room_left} left, under the {braking} it \
-                     brakes over"
-                );
-            }
         }
     }
-    on_a_drawn_robot::<StopsInTime>(&tc);
+    on_a_drawn_robot::<StaysInside>(&tc);
 }
 
 // A task increment of up to 0.1 m and 0.1 rad on each axis, from anywhere in

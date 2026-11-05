@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use chain_kinematics::{EeCaps, ServoTolerances, command_smoothing, joints};
+use chain_kinematics::{ServoTolerances, command_smoothing, joints};
 use control_core::timing::tick_fractions;
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -48,10 +48,6 @@ fn an_accepted_plan_plays_within_the_limits_it_was_sized_against(tc: TestCase) {
         max_joint_velocity_rad_s: tc.draw(gs::arrays(gs::floats().min_value(0.5).max_value(20.0))),
         max_joint_acceleration_rad_s2: tc
             .draw(gs::arrays(gs::floats().min_value(0.5).max_value(50.0))),
-        ee: EeCaps {
-            linear_m_s: tc.draw(gs::floats().min_value(0.05).max_value(1.0)),
-            angular_rad_s: tc.draw(gs::floats().min_value(0.2).max_value(1.5)),
-        },
         control_period: PERIOD,
         smoothing: command_smoothing(PERIOD).expect("a 100 Hz period carries the cutoff"),
     };

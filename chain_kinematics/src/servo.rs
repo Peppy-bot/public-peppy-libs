@@ -33,7 +33,7 @@ use nalgebra::{Isometry3, Vector3, Vector6};
 
 use crate::line::interpolate;
 use crate::rate::{DEFAULT_DLS_LAMBDA, pose_error, rate_step};
-use crate::{Chain, Limit, clamp_into, pose_miss};
+use crate::{Chain, clamp_into, pose_miss};
 
 /// The end-effector speed budget a Cartesian step runs under.
 #[derive(Debug, Clone, Copy)]
@@ -50,6 +50,15 @@ impl EeCaps {
         (miss.position_m / self.linear_m_s).max(miss.orientation_rad / self.angular_rad_s)
     }
 }
+
+/// MoveIt Servo's defaults for `scale.linear` and `scale.rotational`
+/// (`servo_parameters.yaml`, moveit2 2.15.2): the budget a planned servo move's
+/// rollout steps at, which shapes its path, and the rates the end effector's
+/// progress along a timed path is measured at. The joint limits time the move.
+pub const MOVEIT_SERVO_RATES: EeCaps = EeCaps {
+    linear_m_s: 0.4,
+    angular_rad_s: 0.8,
+};
 
 /// How close counts as arrived: a finite positive distance and angle. Arrival
 /// is all it decides: a caller's slack changes when a move is done, never how
@@ -95,9 +104,8 @@ pub enum ToleranceError {
     Orientation(f64),
 }
 
-/// Everything one servo tick runs under: the per-joint velocity and
-/// acceleration budgets, the end-effector speed caps, the arrival tolerances,
-/// and the control period.
+/// Everything one servo tick runs under: the per-joint velocity budget, the
+/// end-effector speed budget, the arrival tolerances, and the control period.
 ///
 /// Grouped because they are one decision - "how this move is allowed to go" -
 /// taken once by the caller and then threaded unchanged through every step, and
@@ -106,7 +114,6 @@ pub enum ToleranceError {
 #[derive(Debug, Clone, Copy)]
 pub struct ServoLimits<const N: usize> {
     pub max_joint_velocity: [f64; N],
-    pub max_joint_acceleration: [f64; N],
     pub ee: EeCaps,
     pub tolerances: ServoTolerances,
     pub dt_s: f64,
@@ -138,10 +145,6 @@ impl<const N: usize> Smoother<N> for NoSmoothing {
 /// same bounded step as one millimetres away, which is what lets one law serve
 /// both a planned move and a live stream.
 ///
-/// A joint heading toward a limit moves no faster than lets it come to rest on
-/// that limit decelerating within its acceleration budget, so it arrives there
-/// braking, never stopped by the limit itself.
-///
 /// It always returns a configuration. An unreachable target moves toward the
 /// closest pose this step can find and saturates there: a teleoperator pushing
 /// past the edge feels a wall.
@@ -168,44 +171,11 @@ pub fn rate_step_toward<const N: usize>(
         chain,
         q,
         &Vector6::new(dp.x, dp.y, dp.z, dw.x, dw.y, dw.z),
-        &stopping_limits(&chain.limits(), q, &limits.max_joint_acceleration, dt_s),
+        &chain.limits(),
         &limits.max_joint_velocity,
         dt_s,
         DEFAULT_DLS_LAMBDA,
     )
-}
-
-/// The positions each joint of `q` may reach within `dt_s` and still stop on
-/// the limit it heads toward at its acceleration budget: at `room` from a
-/// limit, a joint moves toward it this tick no faster than the speed `v` whose
-/// travel this tick and braking distance after it, `v dt + v²/2a`, fit the
-/// room, so it comes to rest exactly on the limit decelerating at most at
-/// `a`. A joint outside its limits counts from the nearer one, and an infinite
-/// budget brakes nothing.
-fn stopping_limits<const N: usize>(
-    limits: &[Limit; N],
-    q: &[f64; N],
-    max_joint_acceleration: &[f64; N],
-    dt_s: f64,
-) -> [Limit; N] {
-    std::array::from_fn(|i| {
-        let Limit { lo, hi } = limits[i];
-        let at = limits[i].clamp(q[i]);
-        let a = max_joint_acceleration[i];
-        let reach = |room: f64| {
-            if !a.is_finite() {
-                return f64::INFINITY;
-            }
-            if room <= 0.0 {
-                return 0.0;
-            }
-            a * (dt_s * dt_s + 2.0 * room / a).sqrt().mul_add(1.0, -dt_s) * dt_s
-        };
-        Limit {
-            lo: (at - reach(at - lo)).max(lo),
-            hi: (at + reach(hi - at)).min(hi),
-        }
-    })
 }
 
 /// One servo move's state: where the reference has reached along the line, and
@@ -314,19 +284,17 @@ pub fn rollout<const N: usize, S: Smoother<N>>(
 }
 
 /// The timed path through `configs`, the configurations a Cartesian move
-/// commands, under the joints' velocity and acceleration limits and the end
-/// effector's `ee` caps. Alongside the joints runs the end effector's progress:
-/// the time its travel from one configuration to the next takes at the caps,
-/// summed along the path, which runs no faster than real time, so each step
-/// between two configurations takes at least the time its chord needs at the
-/// caps. The path starts at rest on the first configuration and ends at rest
-/// on the last.
+/// commands, under the joints' velocity and acceleration limits. Alongside the
+/// joints runs the end effector's progress, which no limit binds: the time its
+/// travel from one configuration to the next takes at [`MOVEIT_SERVO_RATES`],
+/// summed along the path, which a caller reads off a sample ([`ee_progress`]).
+/// The path starts at rest on the first configuration and ends at rest on the
+/// last.
 pub fn timed_with_ee<const N: usize>(
     chain: &Chain<N>,
     configs: &[[f64; N]],
     max_joint_velocity: &[f64; N],
     max_joint_acceleration: &[f64; N],
-    ee: &EeCaps,
 ) -> TimedPath {
     assert!(
         !configs.is_empty(),
@@ -334,7 +302,7 @@ pub fn timed_with_ee<const N: usize>(
     );
     let poses: Vec<Isometry3<f64>> = configs.iter().map(|q| chain.world_ee_pose(q)).collect();
     let ee_time = std::iter::once(0.0).chain(poses.windows(2).scan(0.0, |t, w| {
-        *t += ee.time_between(&w[0], &w[1]);
+        *t += MOVEIT_SERVO_RATES.time_between(&w[0], &w[1]);
         Some(*t)
     }));
     let with_ee = |joints: &[f64; N], progress: f64| -> Vec<f64> {
@@ -351,7 +319,7 @@ pub fn timed_with_ee<const N: usize>(
         .collect();
     TimedPath::new(
         &waypoints,
-        &with_ee(max_joint_velocity, 1.0),
+        &with_ee(max_joint_velocity, f64::INFINITY),
         &with_ee(max_joint_acceleration, f64::INFINITY),
     )
 }
@@ -464,13 +432,15 @@ pub struct ServoPlan {
 /// The servo plan for a move from the end effector's pose at `seed` to `end`,
 /// under `limits` and behind `smoother`: the law's rollout, which must converge
 /// within [`MAX_SERVO_S`] with the reference leashed by [`LEASH_M`], timed with
-/// the end effector and played over the longer of `requested` and the path's
-/// own time from rest to rest; `None` when the law does not converge.
+/// the end effector under `max_joint_acceleration` and played over the longer
+/// of `requested` and the path's own time from rest to rest; `None` when the law
+/// does not converge.
 pub fn plan_servo<const N: usize, S: Smoother<N>>(
     chain: &Chain<N>,
     end: &Isometry3<f64>,
     seed: [f64; N],
     limits: &ServoLimits<N>,
+    max_joint_acceleration: &[f64; N],
     smoother: S,
     requested: Duration,
 ) -> Option<ServoPlan> {
@@ -480,8 +450,7 @@ pub fn plan_servo<const N: usize, S: Smoother<N>>(
         chain,
         &configs,
         &limits.max_joint_velocity,
-        &limits.max_joint_acceleration,
-        &limits.ee,
+        max_joint_acceleration,
     );
     let duration = duration_at_least(path.duration_s(), requested);
     Some(ServoPlan { duration, path })

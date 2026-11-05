@@ -73,9 +73,11 @@ const LINE_OVERRUN_FACTOR: f64 = 2.0;
 
 /// Floor on the line-acceptance budget: a line whose duration is within this
 /// many seconds is kept straight whatever the request, so a request under half
-/// of it, "as fast as possible" among them, still admits a few seconds of
-/// near-singular graze as honest motion.
-const MIN_LINE_BUDGET_S: f64 = 3.0;
+/// of it, "as fast as possible" among them, still admits a near-singular graze
+/// as honest motion. An acceleration-limited line's time grows with the inverse
+/// square root of the limit, so this is the 3 s that served a limit of 5 rad/s²
+/// times the square root of ten, for OpenArm's default of 0.5 rad/s².
+const MIN_LINE_BUDGET_S: f64 = 9.5;
 
 /// The longest duration a straight line may take and still be kept over the
 /// servo: [`LINE_OVERRUN_FACTOR`] times the request, floored at
@@ -287,8 +289,8 @@ fn ranked(
         .map(move |(_, i)| (walks[i].0, walks[i].1.as_slice()))
 }
 
-/// The blend of the line the end effector has reached at `progress` seconds of
-/// its time at the caps, out of the `ee_s` the whole line takes: 1 from the
+/// The blend of the line the end effector has reached at `progress` along it,
+/// out of the `ee_s` of the whole line: 1 from the
 /// whole on, so a line the end effector does not move along is at its end at
 /// once.
 fn blend_of(progress: f64, ee_s: f64) -> f64 {
@@ -299,7 +301,7 @@ fn blend_of(progress: f64, ee_s: f64) -> f64 {
     }
 }
 
-/// The end effector's time at the caps along a timed walk: its progress at the
+/// The end effector's whole progress along a timed walk: its progress at the
 /// end.
 fn ee_s(path: &TimedPath) -> f64 {
     ee_progress(&path.at_fraction(1.0))
@@ -373,11 +375,11 @@ impl LineTrajectory {
 /// manipulability down.
 ///
 /// A swivel is taken when the line tracks continuously under it and its
-/// duration stays within twice the request, or three seconds for a near-zero
-/// request; `None` when none is. The duration is the longer of the request and
-/// the walk's time with the end effector ([`timed_with_ee`]), which keeps every
-/// joint within its velocity and acceleration limits along the walk and the
-/// end effector within both caps, stretched, to within a control period, until
+/// duration stays within twice the request, or [`MIN_LINE_BUDGET_S`] for a
+/// near-zero request; `None` when none is. The duration is the longer of the
+/// request and the walk's time with the end effector ([`timed_with_ee`]), which
+/// keeps every joint within its velocity and acceleration limits along the walk,
+/// stretched, to within a control period, until
 /// every joint moves and accelerates within its limits as the runtime commands
 /// the line tick by tick. Poses are in the world frame; IK runs in the arm base
 /// frame, so each sample is converted with [`Arm::base_pose`].
@@ -401,7 +403,6 @@ pub(crate) fn plan_line(
             walk,
             &limits.max_joint_velocity_rad_s,
             &limits.max_joint_acceleration_rad_s2,
-            &limits.ee,
         );
         let floor = duration_at_least(path.duration_s(), requested).as_secs_f64();
         if floor > duration_cap {

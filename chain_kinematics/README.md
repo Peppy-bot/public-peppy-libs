@@ -68,9 +68,9 @@ error, so it is a refusal at construction.
 | `manipulability` | Yoshikawa index, the product of the singular values, at any joint count |
 | `IkSolver::search` | the inverse kinematics of a `ChainFrame`, as MoveIt's KDL plugin searches: descents from a seed, then from drawn configurations, until the caller accepts an end or the budget is spent |
 | `rate_step` | one damped resolved-rate step under a velocity budget and joint limits, holding a joint it would carry past a limit and solving the task again on the rest |
-| `rate_step_toward` | the step toward a pose, capped at the end-effector speed caps and braking into joint limits within the acceleration budget |
+| `rate_step_toward` | the step toward a pose, capped at an end-effector speed budget, within the joint limits |
 | `ServoState` / `rollout` | a guarded Cartesian move, and the same law rolled out offline as its reachability proof and the configurations it commands |
-| `timed_with_ee` / `ServoTrajectory` | a move's configurations timed from rest to rest within the joints' velocity and acceleration limits and the end effector's caps, and the trajectory that plays the path over a duration |
+| `timed_with_ee` / `ServoTrajectory` | a move's configurations timed from rest to rest within the joints' velocity and acceleration limits, and the trajectory that plays the path over a duration |
 | `plan_servo` | the servo plan: the rollout timed with the end effector, played over the longer of a request and the path's own time |
 | `JointSmoothing` / `command_smoothing` | one Butterworth per joint at MoveIt Servo's default cutoff for the control period |
 | `interpolate` | the straight line between two poses |
@@ -140,8 +140,8 @@ away.
 reachability check: a goal that does not converge within the caller's budget is
 refused, and one that does comes back as the configurations
 the law commanded, one per control period. `timed_with_ee` times them from
-rest to rest within the joint velocity and acceleration limits and the
-end-effector caps, for the caller to play over a duration of its own
+rest to rest within the joint velocity and acceleration limits, for the caller
+to play over a duration of its own
 (`ServoTrajectory`). The law is deterministic, so the path that was validated is
 the path that runs.
 

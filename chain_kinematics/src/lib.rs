@@ -72,9 +72,9 @@ pub use line::{
 pub use payload::{Payload, segments_carrying};
 pub use rate::{DEFAULT_DLS_LAMBDA, PoseMiss, pose_miss, rate_step};
 pub use servo::{
-    EeCaps, JointSmoothing, LEASH_M, MAX_SERVO_S, NoSmoothing, ServoLimits, ServoPlan, ServoState,
-    ServoStep, ServoTolerances, ServoTrajectory, Smoother, ToleranceError, command_smoothing,
-    ee_progress, joints, plan_servo, rate_step_toward, rollout, timed_with_ee,
+    EeCaps, JointSmoothing, LEASH_M, MAX_SERVO_S, MOVEIT_SERVO_RATES, NoSmoothing, ServoLimits,
+    ServoPlan, ServoState, ServoStep, ServoTolerances, ServoTrajectory, Smoother, ToleranceError,
+    command_smoothing, ee_progress, joints, plan_servo, rate_step_toward, rollout, timed_with_ee,
 };
 pub use tree::{JointKind, Tree};
 

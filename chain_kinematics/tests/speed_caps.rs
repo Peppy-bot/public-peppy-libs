@@ -20,12 +20,11 @@ use common::{openarm, so101};
 
 const DT: f64 = 0.01;
 
-/// A generous per-joint velocity budget and no acceleration budget, so the
-/// end-effector cap is the only thing binding.
+/// A generous per-joint velocity budget, so the end-effector cap is the only
+/// thing binding.
 fn limits<const N: usize>(linear_m_s: f64, angular_rad_s: f64) -> ServoLimits<N> {
     ServoLimits {
         max_joint_velocity: [8.0; N],
-        max_joint_acceleration: [f64::INFINITY; N],
         ee: EeCaps {
             linear_m_s,
             angular_rad_s,

@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use chain_kinematics::nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion};
 use chain_kinematics::{
-    COINCIDENT_ARC_EPS, EeCaps, Limit, ServoTrajectory, all_within, clamp_into, ee_progress,
-    interpolate, limit_margin, timed_with_ee,
+    COINCIDENT_ARC_EPS, Limit, MOVEIT_SERVO_RATES, ServoTrajectory, all_within, clamp_into,
+    ee_progress, interpolate, limit_margin, timed_with_ee,
 };
 use control_core::path_timing::TimedPath;
 use hegel::TestCase;
@@ -62,12 +62,11 @@ fn a_line_blends_the_position_and_the_orientation_along_the_geodesic(tc: TestCas
 
 /// A path shaped like a rollout's: up to 40 joint steps of up to 0.05 rad or
 /// m each, on a nanoradian grid, from any configuration of `chain`, with the
-/// velocity limits, acceleration limits and end-effector caps drawn for it.
+/// velocity and acceleration limits drawn for it.
 struct DrawnPath<const N: usize> {
     configs: Vec<[f64; N]>,
     max_joint_velocity: [f64; N],
     max_joint_acceleration: [f64; N],
-    ee: EeCaps,
 }
 
 impl<const N: usize> DrawnPath<N> {
@@ -91,10 +90,6 @@ impl<const N: usize> DrawnPath<N> {
             max_joint_velocity: tc.draw(gs::arrays(gs::floats().min_value(0.5).max_value(20.0))),
             max_joint_acceleration: tc
                 .draw(gs::arrays(gs::floats().min_value(0.5).max_value(50.0))),
-            ee: EeCaps {
-                linear_m_s: tc.draw(gs::floats().min_value(0.05).max_value(1.0)),
-                angular_rad_s: tc.draw(gs::floats().min_value(0.2).max_value(1.5)),
-            },
         }
     }
 
@@ -104,30 +99,28 @@ impl<const N: usize> DrawnPath<N> {
             &self.configs,
             &self.max_joint_velocity,
             &self.max_joint_acceleration,
-            &self.ee,
         )
     }
 
-    /// The time the end effector takes along the path at its caps: each step's travel
-    /// at the binding cap, summed.
+    /// The end effector's whole progress along the path: each step's travel at
+    /// the binding rate, summed.
     fn ee_time(&self, chain: &chain_kinematics::Chain<N>) -> f64 {
         self.configs
             .windows(2)
             .map(|w| {
-                self.ee
+                MOVEIT_SERVO_RATES
                     .time_between(&chain.world_ee_pose(&w[0]), &chain.world_ee_pose(&w[1]))
             })
             .sum()
     }
 }
 
-// A drawn path timed with the hand takes at least the end effector's time at its caps.
+// A drawn path timed with the hand carries the end effector's whole progress to its end.
 // Played over the longer of a request and its own time, it rests on its first
 // configuration at the start and on its last from its duration on; and, sampled
 // through the duration, every joint stays within its velocity limit,
 // accelerates within its acceleration limit and leaves and reaches rest at no
-// more than one sample's worth of that acceleration, and the end effector's progress
-// runs no faster than real time.
+// more than one sample's worth of that acceleration.
 struct PlaysFromRestToRestWithinTheLimits;
 
 impl ChainProperty for PlaysFromRestToRestWithinTheLimits {
@@ -137,11 +130,11 @@ impl ChainProperty for PlaysFromRestToRestWithinTheLimits {
         let requested: f64 = tc.draw(gs::floats().min_value(0.0).max_value(5.0));
         let path = drawn.timed(&chain);
         let ee_s = drawn.ee_time(&chain);
-        // The hand's time is a sum of steps, each rounded.
+        // The hand's progress is a sum of steps, each rounded.
+        let whole = ee_progress(&path.at_fraction(1.0));
         assert!(
-            path.duration_s() >= ee_s * (1.0 - 1e-12),
-            "a {}s path under the {ee_s}s the end effector needs at its caps",
-            path.duration_s()
+            (whole - ee_s).abs() <= ee_s * 1e-9,
+            "the path ends {whole} along, off the {ee_s} of its steps"
         );
         let (first, last) = (drawn.configs[0], drawn.configs[drawn.configs.len() - 1]);
         let duration_s = requested.max(path.duration_s());
@@ -171,20 +164,6 @@ impl ChainProperty for PlaysFromRestToRestWithinTheLimits {
         let samples: Vec<[f64; N]> = (0..=SAMPLES).map(|k| traj.sample(t0 + step * k)).collect();
         let rounding =
             |i: usize| 4.0 * f64::EPSILON * samples.iter().map(|q| q[i].abs()).fold(0.0, f64::max);
-        // The samples sit on whole nanoseconds, so the path is read at the
-        // fraction of the duration each one is at.
-        let progress: Vec<f64> = (0..=SAMPLES)
-            .map(|k| {
-                ee_progress(&path.at_fraction((step * k).as_secs_f64() / duration.as_secs_f64()))
-            })
-            .collect();
-        for (k, w) in progress.windows(2).enumerate() {
-            assert!(
-                w[1] - w[0] <= dt * slack,
-                "the end effector's progress ran {} s in one {dt} s sample at sample {k}",
-                w[1] - w[0]
-            );
-        }
         let limits = || {
             drawn
                 .max_joint_velocity

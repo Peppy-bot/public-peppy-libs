@@ -5,7 +5,8 @@
 use std::time::Duration;
 
 use chain_kinematics::{
-    EeCaps, JointSmoothing, ServoLimits, ServoPlan, ServoTolerances, ToleranceError, plan_servo,
+    JointSmoothing, MOVEIT_SERVO_RATES, ServoLimits, ServoPlan, ServoTolerances, ToleranceError,
+    plan_servo,
 };
 use control_core::filters::ButterworthFilter;
 use nalgebra::Isometry3;
@@ -14,27 +15,24 @@ use crate::line::{LinePlan, plan_line};
 use crate::{ARM_DOF, Arm, JointVec};
 
 /// The motion limits a Cartesian plan sizes and validates against: the joint
-/// velocity and acceleration limits, the end-effector speed caps, the control
-/// period a plan is checked tick by tick at and the servo rollout steps at, and
+/// velocity and acceleration limits, the control period a plan is checked tick
+/// by tick at and the servo rollout steps at, and
 /// the servo's per-joint command smoother, built for that period.
 pub struct PlanLimits {
     pub max_joint_velocity_rad_s: JointVec,
     pub max_joint_acceleration_rad_s2: JointVec,
-    pub ee: EeCaps,
     pub control_period: Duration,
     pub smoothing: ButterworthFilter,
 }
 
 impl PlanLimits {
     /// The plan's budgets as one step of the servo law at the control period,
-    /// so the rollout that plans a move and the step that follows a streamed
-    /// pose run under the same numbers. `tolerance` is the caller's arrival
-    /// slack, which decides convergence alone.
+    /// at the rates of a planned move's rollout. `tolerance` is the caller's
+    /// arrival slack, which decides convergence alone.
     pub fn servo_at(&self, tolerance: ServoTolerances) -> ServoLimits<ARM_DOF> {
         ServoLimits {
             max_joint_velocity: self.max_joint_velocity_rad_s,
-            max_joint_acceleration: self.max_joint_acceleration_rad_s2,
-            ee: self.ee,
+            ee: MOVEIT_SERVO_RATES,
             tolerances: tolerance,
             dt_s: self.control_period.as_secs_f64(),
         }
@@ -117,6 +115,7 @@ pub fn plan_cartesian(
         end,
         seed,
         &limits.servo_at(tolerance),
+        &limits.max_joint_acceleration_rad_s2,
         JointSmoothing::new(limits.smoothing),
         requested,
     )
