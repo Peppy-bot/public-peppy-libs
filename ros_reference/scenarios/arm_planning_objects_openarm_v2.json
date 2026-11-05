@@ -2,9 +2,10 @@
   "kind": "arm_planning",
   "urdf": "openarm_description/assets/openarm_v20.urdf",
   "meshes": "openarm_description/assets/meshes_v20",
-  "base_link": "openarm_left_base_link",
-  "tip_link": "openarm_left_tcp",
-  "joints": ["openarm_left_joint1","openarm_left_joint2","openarm_left_joint3","openarm_left_joint4","openarm_left_joint5","openarm_left_joint6","openarm_left_joint7"],
+  "chains": [
+    {"name":"left_arm","base_link":"openarm_left_base_link","tip_link":"openarm_left_tcp","joints":["openarm_left_joint1","openarm_left_joint2","openarm_left_joint3","openarm_left_joint4","openarm_left_joint5","openarm_left_joint6","openarm_left_joint7"]}
+  ],
+  "checked_pairs": [],
   "voxel_size": 0.04,
   "map_half_side": 1.6,
   "min_clearance": 0.0,
@@ -30,19 +31,21 @@
           ]
         }
       ],
-      "attached": null,
-      "other_arm_holds": {
-        "object": {
-          "id": "other",
-          "operation": "add",
-          "position": [0.0,0.0,0.04],
-          "orientation": [0.0,0.0,0.0,1.0],
-          "shapes": [
-            {"kind":"box","dimensions":[0.03,0.03,0.03],"mesh_vertices":[],"mesh_triangles":[],"position":[0.0,0.0,0.0],"orientation":[0.0,0.0,0.0,1.0]}
-          ]
-        },
-        "touch_links": ["openarm_right_ee_base_link","openarm_right_ee_link1","openarm_right_ee_link2"]
-      },
+      "attached": [
+        {
+          "object": {
+            "id": "other",
+            "operation": "add",
+            "position": [0.0,0.0,0.04],
+            "orientation": [0.0,0.0,0.0,1.0],
+            "shapes": [
+              {"kind":"box","dimensions":[0.03,0.03,0.03],"mesh_vertices":[],"mesh_triangles":[],"position":[0.0,0.0,0.0],"orientation":[0.0,0.0,0.0,1.0]}
+            ]
+          },
+          "link": "openarm_right_tcp",
+          "touch_links": ["openarm_right_ee_base_link","openarm_right_ee_link1","openarm_right_ee_link2"]
+        }
+      ],
       "allowed": [],
       "start": [-3.1852533291256906,-1.8070625018929631,0.23993605359225634,0.6010723406065671,-0.8740784813959934,-0.6981565101364331,1.4556582260879993],
       "goal": [-0.3666248400087162,-1.9751511846265575,0.9098932502908419,1.0640186358538675,1.0189787578414806,-0.476462383908581,1.1174318266114283],
@@ -77,8 +80,7 @@
           ]
         }
       ],
-      "attached": null,
-      "other_arm_holds": null,
+      "attached": [],
       "allowed": [],
       "start": [0.07693243765892666,-0.4030788807282817,1.4079769536348354,0.04807565467616558,-0.28788219488206734,-0.046986543005181236,0.4593887493356019],
       "goal": [-0.9813087542717529,-0.7267077516932052,-0.701928759511421,1.8400190735540976,-1.1469555497029664,0.49970133252720295,-0.7357661416613273],
@@ -104,8 +106,7 @@
           ]
         }
       ],
-      "attached": null,
-      "other_arm_holds": null,
+      "attached": [],
       "allowed": [],
       "start": [0.3092463829668741,-0.6563502730801445,1.565332894735936,1.0830698536442607,-0.009310922767888474,-0.4845254220231496,1.4113591277539281],
       "goal": [-2.2029650258158355,-2.685286593766,0.6280724056000462,0.41040274042814345,-0.8308203207070076,0.5424620132060115,-0.2347050084703195],
@@ -141,8 +142,7 @@
           ]
         }
       ],
-      "attached": null,
-      "other_arm_holds": null,
+      "attached": [],
       "allowed": [],
       "start": [-0.23078461734058164,-0.23728747322280652,-1.2294382165848527,2.2789664181991474,-0.8210364342717369,-0.6067382366565028,-0.05403445649352423],
       "goal": [-2.341887017997607,-2.1422856162322903,-1.0592763611361895,1.26201264613432,-1.355368828313015,0.638267296763294,1.4748842390886947],
@@ -189,19 +189,21 @@
           ]
         }
       ],
-      "attached": {
-        "object": {
-          "id": "held",
-          "operation": "add",
-          "position": [0.0,0.0,0.04],
-          "orientation": [0.0,0.0,0.0,1.0],
-          "shapes": [
-            {"kind":"cylinder","dimensions":[0.03,0.015],"mesh_vertices":[],"mesh_triangles":[],"position":[0.0,0.0,0.0],"orientation":[0.0,0.0,0.0,1.0]}
-          ]
-        },
-        "touch_links": ["openarm_left_ee_base_link","openarm_left_ee_link1","openarm_left_ee_link2"]
-      },
-      "other_arm_holds": null,
+      "attached": [
+        {
+          "object": {
+            "id": "held",
+            "operation": "add",
+            "position": [0.0,0.0,0.04],
+            "orientation": [0.0,0.0,0.0,1.0],
+            "shapes": [
+              {"kind":"cylinder","dimensions":[0.03,0.015],"mesh_vertices":[],"mesh_triangles":[],"position":[0.0,0.0,0.0],"orientation":[0.0,0.0,0.0,1.0]}
+            ]
+          },
+          "link": "openarm_left_tcp",
+          "touch_links": ["openarm_left_ee_base_link","openarm_left_ee_link1","openarm_left_ee_link2"]
+        }
+      ],
       "allowed": [
         ["held","table"],
         ["table","openarm_left_ee_base_link"],
@@ -245,19 +247,21 @@
           ]
         }
       ],
-      "attached": {
-        "object": {
-          "id": "held",
-          "operation": "add",
-          "position": [0.0,0.0,0.04],
-          "orientation": [0.0,0.0,0.0,1.0],
-          "shapes": [
-            {"kind":"box","dimensions":[0.03,0.03,0.03],"mesh_vertices":[],"mesh_triangles":[],"position":[0.0,0.0,0.0],"orientation":[0.0,0.0,0.0,1.0]}
-          ]
-        },
-        "touch_links": ["openarm_left_ee_base_link","openarm_left_ee_link1","openarm_left_ee_link2"]
-      },
-      "other_arm_holds": null,
+      "attached": [
+        {
+          "object": {
+            "id": "held",
+            "operation": "add",
+            "position": [0.0,0.0,0.04],
+            "orientation": [0.0,0.0,0.0,1.0],
+            "shapes": [
+              {"kind":"box","dimensions":[0.03,0.03,0.03],"mesh_vertices":[],"mesh_triangles":[],"position":[0.0,0.0,0.0],"orientation":[0.0,0.0,0.0,1.0]}
+            ]
+          },
+          "link": "openarm_left_tcp",
+          "touch_links": ["openarm_left_ee_base_link","openarm_left_ee_link1","openarm_left_ee_link2"]
+        }
+      ],
       "allowed": [],
       "start": [0.6099250264736695,-0.5504021832654411,0.8478745486534931,0.030143647368811723,-0.12502816018761265,0.6432246732824575,0.6740249617594161],
       "goal": [-1.533195286703959,-0.10408848223131617,-0.31267338971868197,1.4344913822477827,-0.5186016818479557,-0.10325526842004717,-1.5057070270406936],
@@ -278,8 +282,7 @@
     {
       "boxes": [],
       "objects": [],
-      "attached": null,
-      "other_arm_holds": null,
+      "attached": [],
       "allowed": [],
       "start": [-3.5107,-1.5833273141826063,-1.076340098267385,1.8102089564224888,1.1697000351043199,-0.7344806126706253,-0.32379084456870544],
       "goal": [-0.18936769176908008,-2.6648831956118246,-0.04900060450435628,2.2740984652718588,1.2487304680957017,-0.23998846493963732,-1.4722157214777285],
@@ -289,8 +292,7 @@
     {
       "boxes": [],
       "objects": [],
-      "attached": null,
-      "other_arm_holds": null,
+      "attached": [],
       "allowed": [],
       "start": [0.20999040315744244,0.19452999999999998,0.7339940029940466,1.6160532682966722,-1.2136385952379365,0.31939170028005803,0.435216941779897],
       "goal": [-1.1019873426066509,-3.2159665963314867,0.3026312312019279,0.9633095677335661,0.5429823052584879,0.47572875605821563,0.9788343605697538],

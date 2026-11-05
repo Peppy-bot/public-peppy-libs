@@ -20,10 +20,23 @@ std::shared_ptr<urdf::Model> parsed(const std::string& urdf_text) {
 
 moveit::core::RobotModelPtr model_of(const std::shared_ptr<urdf::Model>& urdf,
                                      const std::optional<ChainGroup>& group) {
-  const std::string groups =
-      group ? "<group name=\"" + group->name + "\"><chain base_link=\"" + group->base_link +
-                  "\" tip_link=\"" + group->tip_link + "\"/></group>"
-            : "";
+  std::string groups;
+  if (group) {
+    const auto chain_of = [](const Chain& chain) {
+      return "<chain base_link=\"" + chain.base_link + "\" tip_link=\"" + chain.tip_link + "\"/>";
+    };
+    if (group->chains.size() == 1) {
+      groups = "<group name=\"" + group->name + "\">" + chain_of(group->chains.front()) +
+               "</group>";
+    } else {
+      std::string members;
+      for (const auto& chain : group->chains) {
+        groups += "<group name=\"" + chain.name + "\">" + chain_of(chain) + "</group>";
+        members += "<group name=\"" + chain.name + "\"/>";
+      }
+      groups += "<group name=\"" + group->name + "\">" + members + "</group>";
+    }
+  }
   auto srdf = std::make_shared<srdf::Model>();
   if (!srdf->initString(*urdf, "<robot name=\"" + urdf->getName() + "\">" + groups + "</robot>")) {
     throw std::runtime_error("the SRDF does not parse");
@@ -32,6 +45,17 @@ moveit::core::RobotModelPtr model_of(const std::shared_ptr<urdf::Model>& urdf,
 }
 
 }  // namespace
+
+std::vector<std::string> ChainGroup::solver_groups() const {
+  if (chains.size() == 1) {
+    return {name};
+  }
+  std::vector<std::string> names;
+  for (const auto& chain : chains) {
+    names.push_back(chain.name);
+  }
+  return names;
+}
 
 moveit::core::RobotModelPtr robot_model(const std::string& urdf_text) {
   return model_of(parsed(urdf_text), std::nullopt);

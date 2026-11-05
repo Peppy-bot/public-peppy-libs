@@ -1,7 +1,8 @@
 //! Plans every scene of an arm planning scenario of the ROS reference harness, which it
-//! reads on stdin, and writes on stdout this crate's answer to each scene and the spacing
-//! at which the reference probes a path, as JSON, and on stderr how many of its plans that
-//! found no path ended at the planning time and how many before it.
+//! reads on stdin, and writes on stdout this crate's answer to each scene, the pairs of
+//! the robot's own links its plans check and the spacing at which the reference probes a
+//! path, as JSON, and on stderr how many of its plans that found no path ended at the
+//! planning time and how many before it.
 //! `ros_reference/tools/draw_arm_planning.py` draws the scenes, runs it, and writes its
 //! answers into the scenario.
 
@@ -10,27 +11,26 @@ mod arm_scenes;
 
 use std::path::Path;
 
-use motion_planning_core::IkGoalSampler;
 use ros_reference::arm_planning::{Ours, Scenes};
 use serde_json::json;
 
-use arm_scenes::{Planned, on_the_arm, plan_scene, probe_spacing};
+use arm_scenes::{Planned, on_the_arms, plan_scene, probe_spacing, samplers};
 
 fn main() {
     let scenes: Scenes =
         serde_json::from_reader(std::io::stdin()).expect("the scenario on stdin parses");
     let repository = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
     let urdf = std::fs::read_to_string(repository.join(&scenes.urdf)).expect("the URDF reads");
-    let answers = on_the_arm(
+    let answers = on_the_arms(
         &scenes,
         &urdf,
         &repository.join(&scenes.meshes),
-        |arm, standing| {
-            let sampler = IkGoalSampler::new(arm.geometry().chain().clone());
+        |arms, standing| {
+            let samplers = samplers(arms);
             let planned: Vec<Planned> = scenes
                 .scenes
                 .iter()
-                .map(|scene| plan_scene(arm, standing, &sampler, &scenes, scene))
+                .map(|scene| plan_scene(arms, standing, &samplers, &scenes, scene))
                 .collect();
             let no_path: Vec<&Planned> = planned
                 .iter()
@@ -45,7 +45,8 @@ fn main() {
             );
             let ours: Vec<Ours> = planned.into_iter().map(|p| p.ours).collect();
             json!({
-                "probe_spacing": probe_spacing(arm, &scenes),
+                "checked_pairs": standing.checked_pairs(),
+                "probe_spacing": probe_spacing(arms, &scenes),
                 "ours": ours,
             })
         },
