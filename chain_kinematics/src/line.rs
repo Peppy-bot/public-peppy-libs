@@ -8,8 +8,8 @@ use nalgebra::Isometry3;
 /// Below this sine of the half-angle between two orientations, a turn of
 /// 2e-6 rad, they are one orientation, and the arc between them is whatever
 /// the last few bits of the quaternion happened to be. Slerp divides by that
-/// sine, so the goal's orientation is taken instead: four orders below the
-/// orientation tolerance a chain is servoed to.
+/// sine, so the goal's orientation is taken instead: four orders below
+/// [`ACCEPT_ORIENTATION_RAD`](crate::ACCEPT_ORIENTATION_RAD).
 pub const COINCIDENT_ARC_EPS: f64 = 1e-6;
 
 /// Pose on the straight line between two poses: position lerped, orientation

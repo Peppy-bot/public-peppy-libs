@@ -168,7 +168,7 @@ impl Pace {
 }
 
 /// When a motion started, how long it lasts and how much of it has played:
-/// the clock a joint trajectory, a line and a servo path play on. A joint
+/// the clock a joint trajectory and a line play on. A joint
 /// trajectory's player may advance its clock each tick
 /// ([`JointTrajectory::advance`](crate::path_timing::JointTrajectory::advance)):
 /// the motion then plays at the [`Pace`] the player sets, so a motion held

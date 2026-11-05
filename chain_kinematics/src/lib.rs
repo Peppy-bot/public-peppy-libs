@@ -57,7 +57,6 @@ mod jacobian;
 mod line;
 mod payload;
 mod rate;
-mod servo;
 mod tree;
 
 pub use chain::{Chain, ChainSpec, JointSelection, Posed};
@@ -70,11 +69,8 @@ pub use line::{
     walk_line,
 };
 pub use payload::{Payload, segments_carrying};
-pub use rate::{DEFAULT_DLS_LAMBDA, PoseMiss, pose_miss, rate_step};
-pub use servo::{
-    EeCaps, JointSmoothing, LEASH_M, MAX_SERVO_S, MOVEIT_SERVO_RATES, NoSmoothing, ServoLimits,
-    ServoPlan, ServoState, ServoStep, ServoTolerances, ServoTrajectory, Smoother, ToleranceError,
-    command_smoothing, ee_progress, joints, plan_servo, rate_step_toward, rollout, timed_with_ee,
+pub use rate::{
+    DEFAULT_DLS_LAMBDA, EeCaps, PoseMiss, StepLimits, pose_miss, rate_step, rate_step_toward,
 };
 pub use tree::{JointKind, Tree};
 

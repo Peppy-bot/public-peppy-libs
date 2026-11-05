@@ -1,27 +1,22 @@
-//! The line tier of a Cartesian move: the end effector's straight line from
-//! its pose to the goal, walked by closed-form IK with the elbow held or
-//! swiveled at a constant rate along the line, timed with the end effector
-//! within the joints' velocity and acceleration limits and the end-effector
-//! caps, and checked tick by tick as the runtime commands it: the runtime's
-//! ticks are fresh IK solutions of the exact line, which the hundred-sample
-//! walk the timing runs on only approximates, so the line alone is checked on
-//! the ticks themselves, where a joint move and a servo path play their timed
-//! path, whose bounds hold at every point. [`plan_line`] takes the line when a
-//! swivel tracks it continuously at a sane duration, a [`LineCursor`] walks it,
-//! at plan time and at run time alike, and a [`LineTrajectory`] plays it.
+//! A Cartesian move: the end effector's straight line from its pose to the goal,
+//! walked by closed-form IK with the elbow held or swiveled at a constant rate
+//! along the line, timed within the joints' velocity and acceleration limits, and
+//! checked tick by tick as the runtime commands it: the runtime's ticks are fresh
+//! IK solutions of the exact line, which the hundred-sample walk the timing runs
+//! on only approximates. [`plan_line`] takes the line when a swivel tracks it
+//! continuously within the longest a move may take, a [`LineCursor`] walks it, at
+//! plan time and at run time alike, and a [`LineTrajectory`] plays it.
 //! Both walks are `chain_kinematics`' [`walk_line`] with the elbow swiveling.
 
 use std::time::{Duration, Instant};
 
 use chain_kinematics::{
-    LineSolver, LineState, WalkEnd, ee_progress, interpolate, limit_margin, timed_with_ee,
-    walk_line,
+    LineSolver, LineState, WalkEnd, interpolate, limit_margin, pose_miss, walk_line,
 };
 use control_core::path_timing::{TimedPath, TimedTrajectory};
 use control_core::timing::{MotionClock, duration_at_least, tick_checked_duration, tick_fractions};
 use nalgebra::Isometry3;
 
-use crate::plan::PlanLimits;
 use crate::{ARM_DOF, Arm, ArmAnglePolicy, JointVec};
 
 /// Path resolution of a line's plan-time walk: the line is IK-solved at this
@@ -61,32 +56,16 @@ const MAX_ELBOW_SWIVEL_RAD: f64 = 2.0;
 /// which no continuous tracking can execute.
 const MAX_LINE_STEP_RAD: f64 = 0.35;
 
-/// A trackable straight line whose duration overruns the request by more than
-/// this factor is too slow to keep straight, and the servo, which reconfigures
-/// around the near-singular posture forcing the slowdown, takes the move. The
-/// cap scales with the move: a long move gets proportional slack and a short
-/// one gets no multi-second budget it never needed. Near a singularity the
-/// duration diverges, so the factor only arbitrates the mild-graze regime: 2x
-/// keeps a line that is merely slowed and sends one that has to crawl to the
-/// servo.
-const LINE_OVERRUN_FACTOR: f64 = 2.0;
-
-/// Floor on the line-acceptance budget: a line whose duration is within this
-/// many seconds is kept straight whatever the request, so a request under half
-/// of it, "as fast as possible" among them, still admits a near-singular graze
-/// as honest motion. An acceleration-limited line's time grows with the inverse
-/// square root of the limit, so this is the 3 s that served a limit of 5 rad/s²
-/// times the square root of ten, for OpenArm's default of 0.5 rad/s².
-const MIN_LINE_BUDGET_S: f64 = 9.5;
-
-/// The longest duration a straight line may take and still be kept over the
-/// servo: [`LINE_OVERRUN_FACTOR`] times the request, floored at
-/// [`MIN_LINE_BUDGET_S`].
-fn line_duration_cap(requested: Duration) -> f64 {
-    (requested.as_secs_f64() * LINE_OVERRUN_FACTOR).max(MIN_LINE_BUDGET_S)
+/// What a line is sized and checked against: the joint velocity and acceleration
+/// limits, the control period its ticks run at, and the longest it may take.
+pub struct PlanLimits {
+    pub max_joint_velocity_rad_s: JointVec,
+    pub max_joint_acceleration_rad_s2: JointVec,
+    pub control_period: Duration,
+    pub max_duration: Duration,
 }
 
-/// Why a line's elbow moves as it does, in the order the line tier tries them.
+/// Why a line's elbow moves as it does, in the order the plan tries them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Elbow {
     /// Held at the start's arm angle, the quiet default: an ordinary move never
@@ -95,9 +74,9 @@ pub enum Elbow {
     /// Swiveled toward the widest joint-limit margin, when the held elbow
     /// would carry a joint past its limit mid-move.
     LimitMargin,
-    /// Swiveled toward higher manipulability, when no line above tracks at a
-    /// sane duration (a singular graze inflating it, or a limit wall the
-    /// swivel can dodge).
+    /// Swiveled toward higher manipulability, when no line above tracks within
+    /// the longest a move may take (a singular graze inflating it, or a limit
+    /// wall the swivel can dodge).
     Manipulability,
 }
 
@@ -301,6 +280,42 @@ fn blend_of(progress: f64, ee_s: f64) -> f64 {
     }
 }
 
+/// The timed path through a line's `walk` under the joints' limits. Alongside
+/// the joints runs the end effector's progress, which no limit binds: the larger
+/// of its travel in meters and its turn in radians from one configuration to the
+/// next, summed along the walk, which a caller reads off a sample
+/// ([`ee_progress`]).
+fn timed_walk(arm: &Arm, walk: &[JointVec], limits: &PlanLimits) -> TimedPath {
+    let poses: Vec<Isometry3<f64>> = walk.iter().map(|q| arm.world_ee_pose(q)).collect();
+    let progress = std::iter::once(0.0).chain(poses.windows(2).scan(0.0, |sum, w| {
+        let miss = pose_miss(&w[0], &w[1]);
+        *sum += miss.position_m.max(miss.orientation_rad);
+        Some(*sum)
+    }));
+    let with_ee = |joints: &JointVec, progress: f64| -> Vec<f64> {
+        joints
+            .iter()
+            .copied()
+            .chain(std::iter::once(progress))
+            .collect()
+    };
+    let waypoints: Vec<Vec<f64>> = walk
+        .iter()
+        .zip(progress)
+        .map(|(q, p)| with_ee(q, p))
+        .collect();
+    TimedPath::new(
+        &waypoints,
+        &with_ee(&limits.max_joint_velocity_rad_s, f64::INFINITY),
+        &with_ee(&limits.max_joint_acceleration_rad_s2, f64::INFINITY),
+    )
+}
+
+/// The end effector's progress in a sample of a path from [`timed_walk`].
+fn ee_progress(sample: &[f64]) -> f64 {
+    sample[ARM_DOF]
+}
+
 /// The end effector's whole progress along a timed walk: its progress at the
 /// end.
 fn ee_s(path: &TimedPath) -> f64 {
@@ -319,8 +334,8 @@ pub struct LinePlan {
     /// line from: the seed and its re-solve can differ at a redundancy or
     /// joint-limit boundary.
     pub start_q: JointVec,
-    /// The plan's walk and the end effector's progress along it, timed with
-    /// the end effector (see [`timed_with_ee`]).
+    /// The plan's walk and the end effector's progress along it
+    /// ([`timed_walk`]).
     pub path: TimedPath,
 }
 
@@ -375,15 +390,14 @@ impl LineTrajectory {
 /// manipulability down.
 ///
 /// A swivel is taken when the line tracks continuously under it and its
-/// duration stays within twice the request, or [`MIN_LINE_BUDGET_S`] for a
-/// near-zero request; `None` when none is. The duration is the longer of the
-/// request and the walk's time with the end effector ([`timed_with_ee`]), which
+/// duration stays within `limits.max_duration`; `None` when none is. The duration
+/// is the longer of the request and the walk's own time ([`timed_walk`]), which
 /// keeps every joint within its velocity and acceleration limits along the walk,
-/// stretched, to within a control period, until
-/// every joint moves and accelerates within its limits as the runtime commands
-/// the line tick by tick. Poses are in the world frame; IK runs in the arm base
-/// frame, so each sample is converted with [`Arm::base_pose`].
-pub(crate) fn plan_line(
+/// stretched, to within a control period, until every joint moves and accelerates
+/// within its limits as the runtime commands the line tick by tick. Poses are in
+/// the world frame; IK runs in the arm base frame, so each sample is converted
+/// with [`Arm::base_pose`].
+pub fn plan_line(
     arm: &Arm,
     end: &Isometry3<f64>,
     seed: JointVec,
@@ -395,15 +409,10 @@ pub(crate) fn plan_line(
         .solve_ik(&arm.base_pose(&start), ArmAnglePolicy::FromSeed, &seed)?
         .q;
     let at_blend = |s: f64| interpolate(&start, end, s);
-    let duration_cap = line_duration_cap(requested);
+    let duration_cap = limits.max_duration.as_secs_f64();
     let period = limits.control_period.as_secs_f64();
     let sized = |swivel: Swivel, walk: &[JointVec]| -> Option<(Duration, TimedPath)> {
-        let path = timed_with_ee(
-            arm.chain(),
-            walk,
-            &limits.max_joint_velocity_rad_s,
-            &limits.max_joint_acceleration_rad_s2,
-        );
+        let path = timed_walk(arm, walk, limits);
         let floor = duration_at_least(path.duration_s(), requested).as_secs_f64();
         if floor > duration_cap {
             return None;
@@ -580,18 +589,39 @@ mod tests {
         }
     }
 
-    // The line-acceptance budget scales with the request and floors at
-    // MIN_LINE_BUDGET_S for a request under its share of the floor.
+    // A timed walk ends with the end effector's whole progress: each step's
+    // travel or turn, whichever is larger, summed.
     #[hegel::test]
-    fn the_line_duration_cap_scales_with_the_request_above_its_floor(tc: TestCase) {
-        let requested =
-            Duration::from_secs_f64(tc.draw(gs::floats().min_value(0.0).max_value(100.0)));
-        let cap = line_duration_cap(requested);
-        let requested = requested.as_secs_f64();
-        assert!(cap >= requested);
-        assert_eq!(
-            cap,
-            (requested * LINE_OVERRUN_FACTOR).max(MIN_LINE_BUDGET_S)
+    fn a_timed_walk_carries_the_end_effectors_whole_progress_to_its_end(tc: TestCase) {
+        // A step under a nanoradian is no motion.
+        const GRID: f64 = 1e-9;
+        let arm = fixture_arm();
+        let start: JointVec = [0.2, -0.3, 0.3, 1.0, -0.4, 0.5, 0.3];
+        let steps: Vec<JointVec> = tc
+            .draw(gs::vecs(gs::arrays(gs::floats().min_value(-0.05).max_value(0.05))).max_size(20));
+        let walk: Vec<JointVec> = std::iter::once(start)
+            .chain(steps.iter().scan(start, |q, step| {
+                *q = std::array::from_fn(|i| q[i] + (step[i] / GRID).round() * GRID);
+                Some(*q)
+            }))
+            .collect();
+        let limits = PlanLimits {
+            max_joint_velocity_rad_s: [2.0; ARM_DOF],
+            max_joint_acceleration_rad_s2: [5.0; ARM_DOF],
+            control_period: Duration::from_millis(10),
+            max_duration: Duration::from_secs(60),
+        };
+        let whole: f64 = walk
+            .windows(2)
+            .map(|w| {
+                let miss = pose_miss(&arm.world_ee_pose(&w[0]), &arm.world_ee_pose(&w[1]));
+                miss.position_m.max(miss.orientation_rad)
+            })
+            .sum();
+        let got = ee_s(&timed_walk(&arm, &walk, &limits));
+        assert!(
+            (got - whole).abs() <= whole * 1e-9,
+            "the path ends {got} along, off the {whole} of its steps"
         );
     }
 

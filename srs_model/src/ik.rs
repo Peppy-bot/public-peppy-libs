@@ -34,7 +34,7 @@ use crate::{ARM_DOF, ELBOW, JointVec, Limit, PARALLEL_SIN_EPS, SHOULDER, WRIST};
 /// How to resolve the redundant arm angle when the caller doesn't pin it.
 #[derive(Debug, Clone, Copy)]
 pub enum ArmAnglePolicy {
-    /// Use the arm angle of the seed configuration (continuity; servoing).
+    /// Use the arm angle of the seed configuration (continuity along a walk).
     FromSeed,
     /// Use this exact arm angle (radians). Infeasible if it violates a limit.
     Fixed(f64),
@@ -950,10 +950,10 @@ mod tests {
     }
 
     #[test]
-    fn cartesian_trajectory_servos_continuously() {
+    fn a_cartesian_trajectory_solves_continuously() {
         // Trace a smooth closed Cartesian path (a circle in position plus a gentle
-        // orientation wobble) and servo along it in FromSeed mode, seeding each
-        // solve with the *previous* solution, as a real servo consumer would.
+        // orientation wobble) and walk along it in FromSeed mode, seeding each
+        // solve with the *previous* solution, as a line's walk does.
         // This is the one test that exercises the README's continuity guarantee:
         // along a smooth path the joints move smoothly, with no branch flip or psi
         // jump, while every pose is still hit exactly.

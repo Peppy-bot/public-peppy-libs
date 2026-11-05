@@ -234,7 +234,7 @@ fn record(side: &str) -> Parity {
         g.push(format!("degenerate_lambda[{k}]"), out);
     }
 
-    // Chained damped resolved-rate steps: the servo law's inner loop, run long
+    // Chained damped resolved-rate steps: a pose stream's inner loop, run long
     // enough that any drift in the DLS inverse compounds visibly.
     let v_max: JointVec = [2.0; ARM_DOF];
     for (k, start) in configs.iter().enumerate().take(8) {

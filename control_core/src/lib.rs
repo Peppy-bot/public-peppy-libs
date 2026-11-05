@@ -29,7 +29,6 @@
 //!   a node, with the pause after a receive error.
 //! - [`serving`]: the loop that serves one service for the life of a node,
 //!   with the pause after a runtime error.
-//! - [`servo`]: the tolerances that decide when a Cartesian goal is reached.
 //! - [`setpoint_stream`]: the latest setpoint, published to a sink on a fixed
 //!   interval until cancelled, with one warning per failure burst.
 //! - [`throttle`]: admitting a repeating event at most once per window.
@@ -54,7 +53,6 @@ pub mod positive_finite;
 pub mod receiving;
 pub mod report_once;
 pub mod serving;
-pub mod servo;
 pub mod setpoint_stream;
 pub mod sync;
 #[cfg(test)]
