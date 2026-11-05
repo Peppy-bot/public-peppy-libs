@@ -9,6 +9,8 @@ type _Joints = tuple[float, ...]
 JOINT_PATH_CORNER_DEVIATION: Final[float]
 MIN_JOINT_CHANGE_RAD: Final[float]
 
+def distinct_joint_waypoints(waypoints: Iterable[Iterable[float]]) -> list[_Joints]: ...
+
 @final
 class JointTrajectory:
     @staticmethod
