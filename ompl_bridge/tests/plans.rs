@@ -6,8 +6,8 @@
 //! says what ended its planner and its simplifier; the time limit bounds a plan from its
 //! call, and the simplification's time the simplification after it, whose first pass runs
 //! past it; plans run at once;
-//! the caller's stop ends a plan; and several attempts, four at once, join into a path at
-//! most as long as one attempt's.
+//! the caller's stop ends a plan; several attempts, four at once, join into a path at
+//! most as long as one attempt's; and goals sampled while a plan runs serve each planner.
 
 use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
@@ -21,8 +21,9 @@ use std::time::Duration;
 mod world;
 
 use ompl_bridge::{
-    CONSTRAINED_SPACING, CheckError, Checks, Constraint, Ending, Motion, PLANNING_THREADS, Plan,
-    PlanError, Planner, Projection, Request, Space, plan,
+    CONSTRAINED_SPACING, CheckError, Checks, Constraint, Ending, GoalSample, GoalSampling, Goals,
+    Motion, PLANNING_THREADS, Plan, PlanError, Planner, Projection, Request, SampledGoals, Space,
+    plan,
 };
 use ros_reference::planning::Obstacle;
 use world::{World, distance, length};
@@ -71,10 +72,12 @@ const TOLERANCE: f64 = 1e-4;
 const SIMPLIFICATION: u32 = 100;
 /// The attempts that plan at once, as a count of threads.
 const AT_ONCE: usize = PLANNING_THREADS.get() as usize;
+/// The seeds the test of a simplifier that moves a path's end plans under.
+const SIMPLIFIER_SEEDS: u32 = 40;
 /// The attempts of the plans here that make several: one batch.
 const ATTEMPTS: u32 = PLANNING_THREADS.get();
 /// What `plan` says when a check calls it.
-const REENTERED: &str = "plan was called from a check or the constraint of a plan; a plan seeds the generator of its thread, which the other plan draws from, so call plan outside the checks of another";
+const REENTERED: &str = "plan was called from a check, the constraint or the goal sampling of a plan; a plan seeds the generator of its thread, which the other plan draws from, so call plan outside the checks of another";
 
 /// A wall across the first dimension at its middle, open at the top of the second
 /// dimension, and a lower block before it, each whole across every other dimension.
@@ -110,7 +113,7 @@ fn request<'a>(
         planner,
         space,
         start,
-        goals,
+        goals: Goals::States(goals),
         time_limit: NO_TIME_LIMIT,
         iterations: NonZeroU64::new(ITERATIONS).expect("nonzero"),
         seed: NonZeroU32::new(seed).expect("nonzero"),
@@ -794,7 +797,7 @@ fn a_roadmap_plan_with_several_goals_repeats() {
             for planner in [Planner::Prm, Planner::PrmStar] {
                 let what = format!("{planner} with {count} goals in {dimension} dimensions");
                 let request = Request {
-                    goals: &goals,
+                    goals: Goals::States(&goals),
                     ..ends.request(planner, 1)
                 };
                 let first = plan(&request, &world).expect("a plan");
@@ -903,7 +906,7 @@ fn a_roadmap_plan_checks_on_the_planning_thread_alone() {
     };
     for planner in [Planner::Prm, Planner::PrmStar] {
         let request = Request {
-            goals: &goals,
+            goals: Goals::States(&goals),
             ..ends.request(planner, 1)
         };
         let answer = plan(&request, &checks).unwrap_or_else(|error| panic!("{planner}: {error}"));
@@ -1282,7 +1285,7 @@ fn a_start_or_goals_that_fail_the_checks_are_refused() {
         };
         assert_eq!(plan(&inside_start, &world), Err(PlanError::InvalidStart));
         let inside_goals = Request {
-            goals: &inside_goals,
+            goals: Goals::States(&inside_goals),
             attempts,
             ..ends.request(Planner::RrtConnect, 1)
         };
@@ -1290,7 +1293,7 @@ fn a_start_or_goals_that_fail_the_checks_are_refused() {
     }
     let one_passes = [inside, ends.goal().to_vec()];
     let one_passes = Request {
-        goals: &one_passes,
+        goals: Goals::States(&one_passes),
         ..ends.request(Planner::RrtConnect, 1)
     };
     let path = plan(&one_passes, &world)
@@ -1363,14 +1366,14 @@ fn a_request_that_does_not_fit_its_space_is_refused() {
     );
     assert_refused(
         &Request {
-            goals: &[],
+            goals: Goals::States(&[]),
             ..ends.request(Planner::Rrt, 1)
         },
         "a plan has at least one goal",
     );
     assert_refused(
         &Request {
-            goals: &short_goal,
+            goals: Goals::States(&short_goal),
             ..ends.request(Planner::Rrt, 1)
         },
         "a goal has 1 value; the space has 2 dimensions",
@@ -1391,7 +1394,7 @@ fn a_request_that_does_not_fit_its_space_is_refused() {
     );
     assert_refused(
         &Request {
-            goals: &goal_beyond,
+            goals: Goals::States(&goal_beyond),
             ..ends.request(Planner::Rrt, 1)
         },
         "goal 1 holds -0.5 in dimension 1, which runs from 0 to 1; a state lies within the space's bounds",
@@ -1918,4 +1921,492 @@ fn four_attempts_plan_at_once_and_the_next_four_after_them() {
         "the first four checked until check {first_ended:?}, and the second four from check \
          {second_started:?}"
     );
+}
+
+/// What a sample of `ScriptedGoals` answers, given the attempt, the sample's count in its
+/// attempt from 0 and the goal to write.
+type Script<'a> = Box<dyn Fn(u32, usize, &mut [f64]) -> Result<GoalSample, CheckError> + Sync + 'a>;
+
+/// Goal samplings whose samples answer as a script says, each sample and each attempt
+/// counted.
+struct ScriptedGoals<'a> {
+    script: Script<'a>,
+    samples: AtomicUsize,
+    attempts: Mutex<Vec<u32>>,
+}
+
+impl<'a> ScriptedGoals<'a> {
+    fn new(
+        script: impl Fn(u32, usize, &mut [f64]) -> Result<GoalSample, CheckError> + Sync + 'a,
+    ) -> Self {
+        Self {
+            script: Box::new(script),
+            samples: AtomicUsize::new(0),
+            attempts: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn samples(&self) -> usize {
+        self.samples.load(Ordering::SeqCst)
+    }
+}
+
+impl SampledGoals for ScriptedGoals<'_> {
+    fn sampling(&self, attempt: u32) -> Box<dyn GoalSampling + '_> {
+        self.attempts.lock().expect("no panic").push(attempt);
+        Box::new(Scripted {
+            goals: self,
+            attempt,
+            taken: 0,
+        })
+    }
+}
+
+/// The sampling of one attempt of `ScriptedGoals`.
+struct Scripted<'s, 'a> {
+    goals: &'s ScriptedGoals<'a>,
+    attempt: u32,
+    taken: usize,
+}
+
+impl GoalSampling for Scripted<'_, '_> {
+    fn sample(&mut self, goal: &mut [f64]) -> Result<GoalSample, CheckError> {
+        self.goals.samples.fetch_add(1, Ordering::SeqCst);
+        let answer = (self.goals.script)(self.attempt, self.taken, goal);
+        self.taken += 1;
+        answer
+    }
+}
+
+/// Samplings of `goals` in turn, each after `misses` samples that find none, then ended.
+fn listed(goals: &[Vec<f64>], misses: usize) -> ScriptedGoals<'_> {
+    ScriptedGoals::new(move |_, taken, goal| {
+        let Some(found) = goals.get(taken / (misses + 1)) else {
+            return Ok(GoalSample::Ended);
+        };
+        if taken % (misses + 1) < misses {
+            return Ok(GoalSample::Missed);
+        }
+        goal.copy_from_slice(found);
+        Ok(GoalSample::Found)
+    })
+}
+
+// Every planner plans to goals sampled while it plans, some samples finding none: it reaches
+// one of them, and its plan repeats under one seed, or whether PRM finds a path.
+#[test]
+fn a_plan_of_sampled_goals_reaches_one_and_repeats() {
+    let world = wall(2);
+    let ends = WallEnds::new(2);
+    let goals = goals_beyond_the_wall(2, GOAL_COUNTS[0]);
+    for planner in Planner::ALL {
+        let sampled = listed(&goals, 2);
+        let request = Request {
+            goals: Goals::Sampled(&sampled),
+            ..ends.request(planner, 1)
+        };
+        let first = plan(&request, &world).expect("a plan");
+        match &first.path {
+            Some(path) => {
+                let reached = path.last().expect("a path has states");
+                assert!(goals.contains(reached), "{planner} reaches no sampled goal");
+            }
+            None => assert!(!planner.repeats(), "{planner} found no path"),
+        }
+        let first = repeating(planner, first);
+        let again = repeating(planner, plan(&request, &world).expect("a plan"));
+        assert_eq!(again, first, "{planner}");
+    }
+}
+
+// RRTConnect takes a sampled goal when it asks for one, where it takes a given goal: one
+// goal found after any misses, and several found each at the sample that asks for it, give
+// the plan of the same goals given.
+#[test]
+fn rrt_connect_plans_to_sampled_goals_as_to_given_ones() {
+    for dimension in [2, 7] {
+        let world = wall(dimension);
+        let ends = WallEnds::new(dimension);
+        let several = goals_beyond_the_wall(dimension, GOAL_COUNTS[1]);
+        let cases: [(&[Vec<f64>], usize); 3] = [(&ends.goals, 0), (&ends.goals, 3), (&several, 0)];
+        for (goals, misses) in cases {
+            let given = Request {
+                goals: Goals::States(goals),
+                ..ends.request(Planner::RrtConnect, 1)
+            };
+            let sampled = listed(goals, misses);
+            let on_demand = Request {
+                goals: Goals::Sampled(&sampled),
+                ..ends.request(Planner::RrtConnect, 1)
+            };
+            let answer = plan(&on_demand, &world).expect("a plan");
+            assert!(answer.path.is_some(), "no path in {dimension} dimensions");
+            assert_eq!(
+                answer,
+                plan(&given, &world).expect("a plan"),
+                "{} goals in {dimension} dimensions, {misses} misses each",
+                goals.len()
+            );
+        }
+    }
+}
+
+// PRM* takes every sampled goal before its roadmap grows, whatever samples miss among them:
+// its plan is the plan of the same goals given.
+#[test]
+fn prm_star_plans_to_sampled_goals_as_to_given_ones() {
+    let world = wall(2);
+    let ends = WallEnds::new(2);
+    let goals = goals_beyond_the_wall(2, GOAL_COUNTS[1]);
+    let given = Request {
+        goals: Goals::States(&goals),
+        ..ends.request(Planner::PrmStar, 1)
+    };
+    let sampled = listed(&goals, 2);
+    let on_demand = Request {
+        goals: Goals::Sampled(&sampled),
+        ..ends.request(Planner::PrmStar, 1)
+    };
+    let answer = plan(&on_demand, &world).expect("a plan");
+    assert!(answer.path.is_some(), "no path");
+    assert_eq!(answer, plan(&given, &world).expect("a plan"));
+}
+
+// A sampling that has not ended holds no planner back: RRTConnect plans to the goal of the
+// first sample, though no later sample finds one and the sampling never ends.
+#[test]
+fn a_sampling_that_has_not_ended_holds_no_planner_back() {
+    let world = wall(2);
+    let ends = WallEnds::new(2);
+    let sampled = ScriptedGoals::new(|_, taken, goal| {
+        if taken > 0 {
+            return Ok(GoalSample::Missed);
+        }
+        goal.copy_from_slice(ends.goal());
+        Ok(GoalSample::Found)
+    });
+    let request = Request {
+        goals: Goals::Sampled(&sampled),
+        time_limit: ANSWER_GUARD,
+        ..ends.request(Planner::RrtConnect, 1)
+    };
+    let answer = plan(&request, &world).expect("a plan");
+    assert!(
+        answer.path.is_some(),
+        "no path, ended by {:?}",
+        answer.ended_by
+    );
+}
+
+// A sampling that ends with no goal takes no sample after it, and every planner answers what
+// has no goal: those that hold a tree or a roadmap of goals that its goals are invalid, those
+// that grow from the start alone, which plan to their bound, that they found no path.
+#[test]
+fn a_sampling_that_ends_with_no_goal_leaves_no_path() {
+    let world = wall(2);
+    let ends = WallEnds::new(2);
+    for planner in Planner::ALL {
+        let sampled = ScriptedGoals::new(|_, taken, _| {
+            Ok(if taken < 2 {
+                GoalSample::Missed
+            } else {
+                GoalSample::Ended
+            })
+        });
+        let request = Request {
+            goals: Goals::Sampled(&sampled),
+            ..ends.request(planner, 1)
+        };
+        let answer = plan(&request, &world);
+        match planner {
+            Planner::Rrt | Planner::RrtStar | Planner::Kpiece1 | Planner::Est => {
+                assert_eq!(answer.map(|plan| plan.path), Ok(None), "{planner}")
+            }
+            _ => assert_eq!(answer, Err(PlanError::InvalidGoal), "{planner}"),
+        }
+        assert_eq!(sampled.samples(), 3, "{planner}");
+    }
+}
+
+// An error or a panic in a sampling, and a goal it finds outside the space, end the plan
+// with what they say, and the next plan in the process succeeds.
+#[test]
+fn a_failing_sampling_ends_its_plan() {
+    let world = wall(2);
+    let ends = WallEnds::new(2);
+    let plan_of = |sampled: &dyn SampledGoals| {
+        let request = Request {
+            goals: Goals::Sampled(sampled),
+            ..ends.request(Planner::RrtConnect, 1)
+        };
+        plan(&request, &world)
+    };
+    assert_eq!(
+        plan_of(&ScriptedGoals::new(|_, _, _| Err(
+            "the sampling broke".into()
+        ))),
+        Err(PlanError::Check("the sampling broke".to_string()))
+    );
+    assert_eq!(
+        plan_of(&ScriptedGoals::new(|_, _, _| panic!(
+            "the sampling panicked"
+        ))),
+        Err(PlanError::Check(
+            "panicked: the sampling panicked".to_string()
+        ))
+    );
+    assert_eq!(
+        plan_of(&ScriptedGoals::new(|_, _, goal| {
+            goal.fill(f64::NAN);
+            Ok(GoalSample::Found)
+        })),
+        Err(PlanError::Check(
+            "a sampled goal holds NaN in dimension 0, which runs from 0 to 1; a goal lies within the space's bounds"
+                .to_string()
+        ))
+    );
+    assert!(
+        wall_plan(Planner::RrtConnect, 2, 1).path.is_some(),
+        "the plan after the failures found no path"
+    );
+}
+
+// The caller's stop ends a planner waiting for its first sampled goal, as it ends a planner
+// later on: the plan answers no path and says the stop ended it.
+#[test]
+fn a_stop_ends_the_wait_for_the_first_goal() {
+    let world = wall(2);
+    let ends = WallEnds::new(2);
+    for planner in [Planner::RrtConnect, Planner::Prm, Planner::PrmStar] {
+        let stop = AtomicBool::new(false);
+        let sampled = ScriptedGoals::new(|_, taken, _| {
+            stop.store(taken >= 2, Ordering::SeqCst);
+            Ok(GoalSample::Missed)
+        });
+        let request = Request {
+            goals: Goals::Sampled(&sampled),
+            stop: Some(&stop),
+            ..ends.request(planner, 1)
+        };
+        assert_eq!(
+            plan(&request, &world).expect("a plan"),
+            Plan {
+                path: None,
+                simplified: None,
+                ended_by: Ending::Stopped,
+            },
+            "{planner}"
+        );
+        assert_eq!(sampled.samples(), 3, "{planner}");
+    }
+}
+
+// The time limit ends a planner waiting on a sampling that neither finds a goal nor ends:
+// the plan answers no path and says the time limit ended it.
+#[test]
+fn the_time_limit_ends_the_wait_for_the_first_goal() {
+    let world = wall(2);
+    let ends = WallEnds::new(2);
+    for planner in [Planner::RrtConnect, Planner::Prm, Planner::PrmStar] {
+        let sampled = ScriptedGoals::new(|_, _, _| Ok(GoalSample::Missed));
+        let request = Request {
+            goals: Goals::Sampled(&sampled),
+            time_limit: SHORT_TIME_LIMIT,
+            ..ends.request(planner, 1)
+        };
+        assert_eq!(
+            plan(&request, &world).expect("a plan"),
+            Plan {
+                path: None,
+                simplified: None,
+                ended_by: Ending::TimeLimit,
+            },
+            "{planner}"
+        );
+    }
+}
+
+// A goal found past the time limit joins no goals: in a world with nothing in the way, where
+// RRTConnect's first iteration reaches a goal it holds, the plan answers no path, and says
+// the time limit ended it.
+#[test]
+fn a_goal_found_past_the_time_limit_joins_no_goals() {
+    let world = World {
+        obstacles: Vec::new(),
+        motion_step: MOTION_STEP,
+    };
+    let ends = WallEnds::new(2);
+    let sampled = ScriptedGoals::new(|_, _, goal| {
+        thread::sleep(2 * SHORT_TIME_LIMIT);
+        goal.copy_from_slice(ends.goal());
+        Ok(GoalSample::Found)
+    });
+    let request = Request {
+        goals: Goals::Sampled(&sampled),
+        time_limit: SHORT_TIME_LIMIT,
+        ..ends.request(Planner::RrtConnect, 1)
+    };
+    assert_eq!(
+        plan(&request, &world).expect("a plan"),
+        Plan {
+            path: None,
+            simplified: None,
+            ended_by: Ending::TimeLimit,
+        }
+    );
+}
+
+// Each attempt of a plan of several starts a sampling of its own, on its first sample, in
+// each batch of attempts, and the plan repeats, path for path.
+#[test]
+fn each_attempt_samples_its_own_goals() {
+    let world = wall(2);
+    let ends = WallEnds::new(2);
+    let goals = goals_beyond_the_wall(2, GOAL_COUNTS[0]);
+    let plan_once = || {
+        let sampled = listed(&goals, 1);
+        let request = Request {
+            goals: Goals::Sampled(&sampled),
+            attempts: NonZeroU32::new(2 * ATTEMPTS).expect("nonzero"),
+            simplification: NonZeroU32::new(SIMPLIFICATION),
+            ..ends.request(Planner::RrtConnect, 1)
+        };
+        let answer = plan(&request, &world).expect("a plan");
+        let mut attempts = sampled.attempts.lock().expect("no panic").clone();
+        attempts.sort_unstable();
+        assert_eq!(attempts, (0..2 * ATTEMPTS).collect::<Vec<u32>>());
+        answer
+    };
+    let first = plan_once();
+    assert!(first.path.is_some(), "no path");
+    assert_eq!(plan_once(), first);
+}
+
+// A sampling ends with its planner: the simplifier, which reads the plan's goals, samples no
+// more of them, and the same plan with no simplification takes as many samples.
+#[test]
+fn a_simplifier_samples_no_goal() {
+    let world = wall(2);
+    let ends = WallEnds::new(2);
+    let goals = goals_beyond_the_wall(2, GOAL_COUNTS[1]);
+    let samples_of = |simplification| {
+        let sampled = listed(&goals, 1);
+        let request = Request {
+            goals: Goals::Sampled(&sampled),
+            simplification,
+            ..ends.request(Planner::RrtConnect, 1)
+        };
+        let answer = plan(&request, &world).expect("a plan");
+        assert!(answer.path.is_some(), "no path");
+        sampled.samples()
+    };
+    assert_eq!(
+        samples_of(NonZeroU32::new(SIMPLIFICATION)),
+        samples_of(None)
+    );
+}
+
+// The simplifier of a plan of several attempts reads the goals of all of them: each attempt
+// samples a goal of its own, attempt 1 the nearest to the wall's opening, and under some seed
+// the simplifier moves the end of the path of another attempt to it.
+#[test]
+fn a_simplifier_reads_the_goals_of_every_attempt() {
+    let world = wall(2);
+    let ends = WallEnds::new(2);
+    let goals = goals_beyond_the_wall(2, ATTEMPTS as usize);
+    let nearest = goals.last().expect("goals beyond the wall");
+    let goal_of = |attempt: u32| match attempt {
+        1 => nearest,
+        k if k + 1 == ATTEMPTS => &goals[1],
+        k => &goals[k as usize],
+    };
+    let moved_to_the_nearest = |seed| {
+        let sampled = ScriptedGoals::new(|attempt, taken, goal| {
+            if taken > 0 {
+                return Ok(GoalSample::Ended);
+            }
+            goal.copy_from_slice(goal_of(attempt));
+            Ok(GoalSample::Found)
+        });
+        let request = Request {
+            goals: Goals::Sampled(&sampled),
+            attempts: NonZeroU32::new(ATTEMPTS).expect("nonzero"),
+            simplification: NonZeroU32::new(SIMPLIFICATION),
+            ..ends.request(Planner::RrtConnect, seed)
+        };
+        let answer = plan(&request, &world).expect("a plan");
+        let planned = answer.path.expect("a path");
+        let simplified = answer.simplified.expect("a simplified path").path;
+        planned.last() != Some(nearest) && simplified.last() == Some(nearest)
+    };
+    assert!((1..=SIMPLIFIER_SEEDS).any(moved_to_the_nearest));
+}
+
+/// A sampling that panics as it drops.
+struct SamplingPanicsWhenDropped;
+
+impl GoalSampling for SamplingPanicsWhenDropped {
+    fn sample(&mut self, _: &mut [f64]) -> Result<GoalSample, CheckError> {
+        Ok(GoalSample::Ended)
+    }
+}
+
+impl Drop for SamplingPanicsWhenDropped {
+    fn drop(&mut self) {
+        panic!("the sampling's drop broke");
+    }
+}
+
+struct PanickingDrops;
+
+impl SampledGoals for PanickingDrops {
+    fn sampling(&self, _: u32) -> Box<dyn GoalSampling + '_> {
+        Box::new(SamplingPanicsWhenDropped)
+    }
+}
+
+// A panic in the drop of a sampling ends its plan with what it said, at the plan's end and
+// where a later batch's attempt replaces it, and the next plan in the process succeeds.
+#[test]
+fn a_panic_in_the_drop_of_a_sampling_ends_its_plan() {
+    let world = wall(2);
+    let ends = WallEnds::new(2);
+    for attempts in [1, 2 * ATTEMPTS] {
+        let request = Request {
+            goals: Goals::Sampled(&PanickingDrops),
+            attempts: NonZeroU32::new(attempts).expect("nonzero"),
+            ..ends.request(Planner::RrtConnect, 1)
+        };
+        assert_eq!(
+            plan(&request, &world),
+            Err(PlanError::Check(
+                "panicked: the sampling's drop broke".to_string()
+            )),
+            "{attempts} attempts"
+        );
+    }
+    assert!(
+        wall_plan(Planner::RrtConnect, 2, 1).path.is_some(),
+        "the plan after the panic found no path"
+    );
+}
+
+// A sampled goal off the constraint joins no goals: a constrained plan reaches the goal on
+// the constraint that its sampling finds after it.
+#[test]
+fn a_sampled_goal_off_the_constraint_is_left_out() {
+    let (space, start, goal) = sphere_ends();
+    let off = vec![0.1; goal.len()];
+    let goals = [off, goal.clone()];
+    let given = [goal.clone()];
+    let sampled = listed(&goals, 0);
+    let request = Request {
+        goals: Goals::Sampled(&sampled),
+        ..on_the_sphere(Planner::RrtConnect, &space, &start, &given, &UnitSphere)
+    };
+    let path = plan(&request, &Equator)
+        .expect("a plan")
+        .path
+        .expect("a path on the sphere");
+    assert_walks_the_sphere(&path, &start, &goal, "the path to the sampled goal");
 }

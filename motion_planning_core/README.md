@@ -293,13 +293,18 @@ the plan's start. Each goal sample sets out from it with MoveIt's 4 attempts
 MoveIt's validity callback does. The goal a sample finds becomes the working state, so the
 goals of a short pose move gather about the first one, which lies on the start's shoulder
 and wrist branches where the first attempt from the start reaches the pose; a goal joins
-the goals unless it equals one of them. Sampling ends at `goal_samples` goals, as MoveIt's
-`max_goal_samples` (10 by default) ends it; once the samples since the last goal found
-reach 1000 less the goals found so far, as MoveIt's `max_goal_sampling_attempts` (1000)
-bounds the samples its sampling function makes before it returns a goal, counting from the
-goals OMPL has taken; or before a sample once the deadline passes or the stop flag is set.
-MoveIt samples on a thread beside its planner and ends once the planner has a path; this
-crate samples the goals, then plans to them.
+the goals unless it equals one of them. An attempt's sampling ends at `goal_samples`
+goals, as MoveIt's `max_goal_samples` (10 by default) ends it; once the samples since the
+last goal found reach 1000 less the goals found so far, as MoveIt's
+`max_goal_sampling_attempts` (1000) bounds the samples its sampling function makes before
+it returns a goal, counting from the goals OMPL has taken; or before a sample once the
+deadline passes or the stop flag is set. MoveIt samples on a thread beside its planner and
+ends once the problem holds a path (constrained_goal_sampler.cpp:109-111). Here each
+attempt samples its own goals on its own thread when its planner asks for one
+(`ompl_bridge::Goals::Sampled`, and its README's "Sampled goals"), so a plan's goals
+depend on its planner's questions alone and the plan repeats: RRTConnect waits for its
+first goal, and plans once it holds one, whatever the later samples find. PRM and PRM*
+plan once the sampling has ended.
 
 Each arm of a plan has its own goal and sampler (`ArmGoal`), and a goal sample of several
 arms is MoveIt's sample of a group whose constraint sampler is the union of its arms'
@@ -359,25 +364,25 @@ the forearm, of the wrist link, and of a part the hand carries.
 
 ## The plan and its path
 
-The request's deadline bounds the plan as MoveIt's allowed planning time bounds a
-request: the goal sampling samples up to `goal_samples` goals, ending before a sample once
-the deadline passes, OMPL makes the request's `attempts` in what remains before it, as
-MoveIt makes a request's `num_planning_attempts` (ompl_bridge's README, Attempts): each
-from its own seed, under the whole of that time and the whole iteration bound, their
-paths joined by OMPL's path hybridization, and OMPL's simplifier takes what remains after
-the attempts, at most 1000 iterations, as MoveIt simplifies in the allowed planning time
-less the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve` calls
-`simplifySolution` with that time, whatever is left of it). OMPL's simplifier runs its
-first pass however little time it has (`PathSimplifier::simplify`, `atLeastOnce`), so a
-planner that plans until its time ends, such as RRT*, has its path simplified once, past
-the deadline. A corner's repair runs only before the deadline: when a corner of the
-simplified path rounds short of the clearances once the deadline has passed, the plan
-answers its planned path if that passes its own check, and fails `NoPath` otherwise. The
-hybrid of several attempts and its checks, and the check of the rounded path, run to
-their end past the deadline. OMPL plans with the request's planner and iteration bound,
-seeded from the request's seed and the map's stamp, so the same request on the same map
-gives the same path when the plan ends before its deadline, for every planner but PRM and
-PRM*, with any number of attempts. OMPL's simplifier shortens the path.
+The request's deadline bounds the plan as MoveIt's allowed planning time bounds a request:
+OMPL makes the request's `attempts` before it, as MoveIt makes a request's
+`num_planning_attempts` (ompl_bridge's README, Attempts): each from its own seed, under
+the whole of that time and the whole iteration bound, sampling up to `goal_samples` goals
+as its planner asks for them, ending before a sample once the deadline passes, their paths
+joined by OMPL's path hybridization, and OMPL's simplifier takes what remains after the
+attempts, at most 1000 iterations, as MoveIt simplifies in the allowed planning time less
+the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve` calls `simplifySolution`
+with that time, whatever is left of it). OMPL's simplifier runs its first pass however
+little time it has (`PathSimplifier::simplify`, `atLeastOnce`), so a planner that plans
+until its time ends, such as RRT*, has its path simplified once, past the deadline. A
+corner's repair runs only before the deadline: when a corner of the simplified path rounds
+short of the clearances once the deadline has passed, the plan answers its planned path if
+that passes its own check, and fails `NoPath` otherwise. The hybrid of several attempts
+and its checks, and the check of the rounded path, run to their end past the deadline.
+OMPL plans with the request's planner and iteration bound, seeded from the request's seed
+and the map's stamp, so the same request on the same map gives the same path when the plan
+ends before its deadline, for every planner but PRM and PRM*, with any number of attempts.
+OMPL's simplifier shortens the path.
 
 The caller's flag `stop` ends a plan at any part of it, and the plan fails `Stopped`:
 the goal sampling makes no further sample, OMPL's planners and simplifier end at

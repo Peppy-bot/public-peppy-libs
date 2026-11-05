@@ -78,11 +78,12 @@
 //!   from a state it checks, a run steps as the walk stepped.
 //!
 //! The request's deadline bounds the plan as MoveIt's allowed planning time bounds a
-//! request: the goal sampling (`sample_goals`) samples up to `goal_samples` goals, ending
-//! before a sample once the deadline passes, OMPL makes the request's attempts in what
-//! remains before it, each under all of it, and its simplifier takes what remains after
-//! the attempts, at most `SIMPLIFICATION_ITERATIONS` iterations, as MoveIt simplifies in
-//! the allowed planning time less the plan's (moveit2 2.15.2
+//! request: OMPL makes the request's attempts before it, each under all of it, each
+//! sampling up to `goal_samples` goals as its planner asks for them (`Sampling`,
+//! `ompl_bridge::Goals::Sampled`), ending before a sample once the deadline passes, as a
+//! planner of MoveIt plans while its goal sampler samples, and its simplifier takes what
+//! remains after the attempts, at most `SIMPLIFICATION_ITERATIONS` iterations, as MoveIt
+//! simplifies in the allowed planning time less the plan's (moveit2 2.15.2
 //! `ModelBasedPlanningContext::solve`), whatever is left of it. OMPL's simplifier runs
 //! its first pass however little time it has (`PathSimplifier::simplify`, `atLeastOnce`),
 //! so a planner that plans until its time ends, such as RRT*, has its path simplified
@@ -98,12 +99,16 @@
 
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use chain_kinematics::Chain;
 use control_core::path_timing::{MIN_JOINT_CHANGE_RAD, RoundedPath, distinct_joint_waypoints};
 use occupancy_map::{DistanceField, VoxelMap};
-use ompl_bridge::{CheckError, Checks, Motion, PlanError, Planner, Request, Space, plan};
+use ompl_bridge::{
+    CheckError, Checks, Ending, GoalSample, GoalSampling, Goals, Motion, Plan, PlanError, Planner,
+    Request, SampledGoals, Space, plan,
+};
 
 use crate::arm::Moving;
 use crate::arms::Arms;
@@ -189,8 +194,8 @@ pub struct PlanRequest<'a, const N: usize, const D: usize> {
     pub start_tolerance: [f64; D],
     /// The goal of each arm, in the group's order.
     pub goals: Vec<ArmGoal<'a, N>>,
-    /// The most goals the plan samples, as MoveIt's `max_goal_samples` bounds the goal
-    /// states its goal sampler adds (`sample_goals`).
+    /// The most goals each attempt of the plan samples, as MoveIt's `max_goal_samples`
+    /// bounds the goal states its goal sampler adds (`Sampling`).
     pub goal_samples: NonZeroUsize,
     pub planner: Planner,
     /// The instant the goal sampling, the planner's plan and its simplification end by,
@@ -388,7 +393,6 @@ pub fn plan_path<const N: usize, const D: usize>(
     let start = start_clear(arms, scene, &request.start, &request.start_tolerance)?;
     let checks = PathChecks::new(arms, scene, start, request.min_clearance_m);
     let deadline = request.deadline;
-    let goals = goal_configurations(arms, &checks, request, &start, deadline)?;
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         return Err(PlanFailure::NoPath(format!(
@@ -396,29 +400,7 @@ pub fn plan_path<const N: usize, const D: usize>(
             request.planner
         )));
     }
-    let bounds: Vec<(f64, f64)> = arms.limits().iter().map(|l| (l.lo, l.hi)).collect();
-    let space = Space::new(&bounds).map_err(|e| PlanFailure::NoPath(e.to_string()))?;
-    let goal_values = vectors(&goals);
-    let answer = plan(
-        &Request {
-            planner: request.planner,
-            space: &space,
-            start: &start,
-            goals: &goal_values,
-            time_limit: remaining,
-            iterations: request.max_iterations,
-            seed: mixed_seed(request.seed, scene.stamp),
-            attempts: request.attempts,
-            simplification: NonZeroU32::new(SIMPLIFICATION_ITERATIONS),
-            simplification_time: Duration::ZERO,
-            projection: None,
-            stop: request.stop,
-        },
-        &checks,
-    )?;
-    if is_set(request.stop) {
-        return Err(PlanFailure::Stopped);
-    }
+    let answer = plan_to_sampled_goals(arms, scene, &checks, request, &start, remaining)?;
     let (Some(planned), Some(simplification)) = (answer.path, answer.simplified) else {
         return Err(PlanFailure::NoPath(format!(
             "{} found no path within {} iterations or by its deadline, keeping {}",
@@ -694,22 +676,27 @@ pub fn start_inside_limits<const N: usize>(
         .map(|values| values.try_into().expect("one value per joint"))
 }
 
-/// The states at which each arm meets its goal and that keep their clearance, sampled from
-/// the plan's `start` before `deadline` (`sample_goals`, the plan's clearance check
-/// deciding inside each sample), or why there are none; a set stop flag ends the plan. Each
-/// turn of a sample judges the whole state from a start that keeps its clearances, as
-/// MoveIt's validity callback does, and from a start nearer than the plan's clearance,
-/// which the start rule plans from, the pairs `Moving::Arm` names of the turn's arm.
-fn goal_configurations<const N: usize, const D: usize>(
+/// OMPL's plan of `request` from `start` around `scene` under `checks`, `remaining` before the
+/// request's deadline, whose attempts each sample the states at which each arm meets its goal and
+/// that keep their clearance as their planners ask (`PlanGoals`), the plan's clearance check
+/// deciding inside each sample; or why it has none: no sample found a goal, or the stop flag
+/// was set. Each turn of a sample judges the whole state from a start that keeps its
+/// clearances, as MoveIt's validity callback does, and from a start nearer than the plan's
+/// clearance, which the start rule plans from, the pairs `Moving::Arm` names of the turn's
+/// arm. Once a sample of any attempt has found a goal, an attempt that found none answers no
+/// path, whichever attempt it is.
+fn plan_to_sampled_goals<const N: usize, const D: usize>(
     arms: &Arms<N, D>,
+    scene: &Scene,
     checks: &PathChecks<N, D>,
     request: &PlanRequest<N, D>,
     start: &[f64; D],
-    deadline: Instant,
-) -> Result<Vec<[f64; D]>, PlanFailure> {
+    remaining: Duration,
+) -> Result<Plan, PlanFailure> {
+    let deadline = request.deadline;
     // The rejections of states that fall short of the clearances in the pairs a turn
     // judges: how many, and the state that falls short least, with those pairs.
-    let short = std::cell::RefCell::new((0_usize, None::<([f64; D], Moving, f64)>));
+    let short = Mutex::new((0_usize, None::<([f64; D], Moving, f64)>));
     let start_keeps = !checks.start_short.contains(&true);
     let clear = |q: &[f64; D], turn: Moving| {
         let moving = if start_keeps { Moving::All } else { turn };
@@ -717,7 +704,7 @@ fn goal_configurations<const N: usize, const D: usize>(
             return true;
         }
         let shortfall = checks.shortfall(q, moving);
-        let mut short = short.borrow_mut();
+        let mut short = short.lock().unwrap_or_else(PoisonError::into_inner);
         short.0 += 1;
         if short.1.is_none_or(|(_, _, least)| shortfall < least) {
             short.1 = Some((*q, moving, shortfall));
@@ -741,22 +728,56 @@ fn goal_configurations<const N: usize, const D: usize>(
             sampler,
         })
         .collect();
-    let sampled = sample_goals(
-        &goals,
-        start,
-        request.goal_samples,
-        u64::from(request.seed),
-        &|| Instant::now() >= deadline || is_set(request.stop),
-        &clear,
-    );
+    let found_a_goal = AtomicBool::new(false);
+    let sampled = PlanGoals {
+        goals: &goals,
+        start: *start,
+        goal_samples: request.goal_samples,
+        seed: u64::from(request.seed),
+        ended: &|| Instant::now() >= deadline || is_set(request.stop),
+        valid: &clear,
+        found_a_goal: &found_a_goal,
+    };
+    let bounds: Vec<(f64, f64)> = arms.limits().iter().map(|l| (l.lo, l.hi)).collect();
+    let space = Space::new(&bounds).map_err(|e| PlanFailure::NoPath(e.to_string()))?;
+    let answer = match plan(
+        &Request {
+            planner: request.planner,
+            space: &space,
+            start,
+            goals: Goals::Sampled(&sampled),
+            time_limit: remaining,
+            iterations: request.max_iterations,
+            seed: mixed_seed(request.seed, scene.stamp),
+            attempts: request.attempts,
+            simplification: NonZeroU32::new(SIMPLIFICATION_ITERATIONS),
+            simplification_time: Duration::ZERO,
+            projection: None,
+            stop: request.stop,
+        },
+        checks,
+    ) {
+        Err(PlanError::InvalidGoal) => Plan {
+            path: None,
+            simplified: None,
+            ended_by: Ending::Returned,
+        },
+        Err(failure) => return Err(failure.into()),
+        Ok(answer) => answer,
+    };
     if is_set(request.stop) {
         return Err(PlanFailure::Stopped);
     }
-    if !sampled.is_empty() {
-        return Ok(sampled);
+    if found_a_goal.load(Ordering::Relaxed) {
+        return Ok(answer);
     }
     let several = arms.arms().len() > 1;
-    let (rejections, least_short) = short.into_inner();
+    let more_time = if Instant::now() >= deadline {
+        "; the deadline ended the sampling, and more time may find a goal"
+    } else {
+        ""
+    };
+    let (rejections, least_short) = short.into_inner().unwrap_or_else(PoisonError::into_inner);
     let Some((least_short, moving, _)) = least_short else {
         let of = arms
             .arms()
@@ -766,7 +787,7 @@ fn goal_configurations<const N: usize, const D: usize>(
             .filter(|_| several)
             .map_or(String::new(), |(arm, _)| format!(" of {}", arm.name()));
         return Err(PlanFailure::Unreachable(format!(
-            "inverse kinematics found no configuration{of} that meets the goal in {MAX_GOAL_SAMPLING_ATTEMPTS} goal samples or by the deadline"
+            "inverse kinematics found no configuration{of} that meets the goal in {MAX_GOAL_SAMPLING_ATTEMPTS} goal samples or by the deadline{more_time}"
         )));
     };
     let tried = if several {
@@ -775,10 +796,60 @@ fn goal_configurations<const N: usize, const D: usize>(
         "configurations that meet the goal"
     };
     Err(PlanFailure::Unreachable(format!(
-        "the goal sampling rejected {rejections} {tried}, each nearer than {}; the one that falls short least has {}",
+        "the goal sampling rejected {rejections} {tried}, each nearer than {}; the one that falls short least has {}{more_time}",
         checks.plan_clearance(),
         checks.short_of(&least_short, moving)
     )))
+}
+
+/// The goals of a plan's attempts, each attempt sampling its own (`Sampling`): attempt 0 from
+/// `seed`, as `sample_goals` samples from it, and each other from the seeds after those of
+/// the attempts before it, one for each arm.
+struct PlanGoals<'p, const N: usize, const D: usize> {
+    goals: &'p [ArmGoal<'p, N>],
+    start: [f64; D],
+    goal_samples: NonZeroUsize,
+    seed: u64,
+    ended: &'p (dyn Fn() -> bool + Sync),
+    valid: &'p (dyn Fn(&[f64; D], Moving) -> bool + Sync),
+    /// Whether a sample of an attempt has found a goal.
+    found_a_goal: &'p AtomicBool,
+}
+
+impl<const N: usize, const D: usize> SampledGoals for PlanGoals<'_, N, D> {
+    fn sampling(&self, attempt: u32) -> Box<dyn GoalSampling + '_> {
+        Box::new(AttemptSampling {
+            sampling: Sampling::new(
+                self.goals,
+                &self.start,
+                self.goal_samples,
+                self.seed + u64::from(attempt) * self.goals.len() as u64,
+                self.ended,
+                self.valid,
+            ),
+            found_a_goal: self.found_a_goal,
+        })
+    }
+}
+
+/// The goal sampling of one attempt of a plan.
+struct AttemptSampling<'p, const N: usize, const D: usize> {
+    sampling: Sampling<'p, N, D>,
+    found_a_goal: &'p AtomicBool,
+}
+
+impl<const N: usize, const D: usize> GoalSampling for AttemptSampling<'_, N, D> {
+    fn sample(&mut self, goal: &mut [f64]) -> Result<GoalSample, CheckError> {
+        Ok(match self.sampling.sample() {
+            Sampled::Goal(found) => {
+                self.found_a_goal.store(true, Ordering::Relaxed);
+                goal.copy_from_slice(&found);
+                GoalSample::Found
+            }
+            Sampled::Missed => GoalSample::Missed,
+            Sampled::Ended => GoalSample::Ended,
+        })
+    }
 }
 
 /// An arm's goal sampler that records whether it found a configuration.
@@ -813,11 +884,21 @@ impl<const N: usize> GoalSampler<N> for Recording<'_, N> {
 const MAX_STATE_SAMPLING_ATTEMPTS: usize = 4;
 
 /// MoveIt's `max_goal_sampling_attempts` default (planning_context_manager.cpp:260), which
-/// bounds the goal samples in a row that find no goal, as `sample_goals` says.
+/// bounds the goal samples in a row that find no goal, as `Sampling` says.
 const MAX_GOAL_SAMPLING_ATTEMPTS: usize = 1000;
 
-/// The states at which each arm of `goals`, a group of `D` joints in all, meets its goal,
-/// found from `start` as MoveIt's `ConstrainedGoalSampler` finds the goals of a group
+/// What one goal sample of a `Sampling` found.
+enum Sampled<const D: usize> {
+    /// A goal, farther than the double's epsilon from each goal before it.
+    Goal([f64; D]),
+    /// No new goal; a later sample may find one.
+    Missed,
+    /// No sample ran: the sampling has ended.
+    Ended,
+}
+
+/// The goal sampling of each arm of `goals`, a group of `D` joints in all, one sample at a
+/// time, from `start`, as MoveIt's `ConstrainedGoalSampler` finds the goals of a group
 /// (moveit2 2.15.2 constrained_goal_sampler.cpp). A working state starts at `start` (:66).
 /// Each goal sample runs from it (`sample_group`), each arm drawing from the draws of
 /// `seed` plus its place in the group, `valid` deciding inside it as MoveIt's validity
@@ -833,6 +914,77 @@ const MAX_GOAL_SAMPLING_ATTEMPTS: usize = 1000;
 /// (GoalLazySamples.cpp:114-116), and MoveIt's function samples from that count up to
 /// `MAX_GOAL_SAMPLING_ATTEMPTS` until a sample finds a goal, and ends the sampling when
 /// none does (constrained_goal_sampler.cpp:98-114, :169).
+struct Sampling<'s, const N: usize, const D: usize> {
+    goals: &'s [ArmGoal<'s, N>],
+    goal_samples: NonZeroUsize,
+    ended: &'s (dyn Fn() -> bool + Sync),
+    valid: &'s (dyn Fn(&[f64; D], Moving) -> bool + Sync),
+    draws: Vec<Draws>,
+    working: [f64; D],
+    kept: Vec<[f64; D]>,
+    /// The goals the samples have found, OMPL's `samplingAttempts_`.
+    found_so_far: usize,
+    /// The samples since the last goal found.
+    failing: usize,
+}
+
+impl<'s, const N: usize, const D: usize> Sampling<'s, N, D> {
+    /// # Panics
+    ///
+    /// When `goals` holds other than one goal for each arm of `N` joints of the `D`.
+    fn new(
+        goals: &'s [ArmGoal<'s, N>],
+        start: &[f64; D],
+        goal_samples: NonZeroUsize,
+        seed: u64,
+        ended: &'s (dyn Fn() -> bool + Sync),
+        valid: &'s (dyn Fn(&[f64; D], Moving) -> bool + Sync),
+    ) -> Self {
+        assert_eq!(
+            goals.len() * N,
+            D,
+            "a goal for each arm of {N} joints of the {D}"
+        );
+        Self {
+            goals,
+            goal_samples,
+            ended,
+            valid,
+            draws: (0..goals.len())
+                .map(|k| Draws::new(seed + k as u64))
+                .collect(),
+            working: *start,
+            kept: Vec::new(),
+            found_so_far: 0,
+            failing: 0,
+        }
+    }
+
+    fn sample(&mut self) -> Sampled<D> {
+        if self.kept.len() >= self.goal_samples.get()
+            || self.failing >= MAX_GOAL_SAMPLING_ATTEMPTS.saturating_sub(self.found_so_far)
+            || (self.ended)()
+        {
+            return Sampled::Ended;
+        }
+        let Some(found) = sample_group(self.goals, &self.working, &mut self.draws, self.valid)
+        else {
+            self.failing += 1;
+            return Sampled::Missed;
+        };
+        (self.found_so_far, self.failing) = (self.found_so_far + 1, 0);
+        self.working = found;
+        let distance = |goal: &[f64; D]| (0..D).map(|i| (goal[i] - found[i]).abs()).sum::<f64>();
+        if self.kept.iter().any(|goal| distance(goal) <= f64::EPSILON) {
+            return Sampled::Missed;
+        }
+        self.kept.push(found);
+        Sampled::Goal(found)
+    }
+}
+
+/// The states at which each arm of `goals`, a group of `D` joints in all, meets its goal,
+/// found from `start` by a `Sampling` of them sampled until it ends.
 ///
 /// # Panics
 ///
@@ -842,38 +994,12 @@ pub fn sample_goals<const N: usize, const D: usize>(
     start: &[f64; D],
     goal_samples: NonZeroUsize,
     seed: u64,
-    ended: &dyn Fn() -> bool,
-    valid: &dyn Fn(&[f64; D], Moving) -> bool,
+    ended: &(dyn Fn() -> bool + Sync),
+    valid: &(dyn Fn(&[f64; D], Moving) -> bool + Sync),
 ) -> Vec<[f64; D]> {
-    assert_eq!(
-        goals.len() * N,
-        D,
-        "a goal for each arm of {N} joints of the {D}"
-    );
-    let mut draws: Vec<Draws> = (0..goals.len())
-        .map(|k| Draws::new(seed + k as u64))
-        .collect();
-    let mut working = *start;
-    let mut kept: Vec<[f64; D]> = Vec::new();
-    // The goals the samples have found, OMPL's `samplingAttempts_`, and the samples since
-    // the last of them.
-    let (mut found_so_far, mut failing) = (0, 0);
-    while kept.len() < goal_samples.get()
-        && failing < MAX_GOAL_SAMPLING_ATTEMPTS.saturating_sub(found_so_far)
-        && !ended()
-    {
-        let Some(found) = sample_group(goals, &working, &mut draws, valid) else {
-            failing += 1;
-            continue;
-        };
-        (found_so_far, failing) = (found_so_far + 1, 0);
-        working = found;
-        let distance = |goal: &[f64; D]| (0..D).map(|i| (goal[i] - found[i]).abs()).sum::<f64>();
-        if kept.iter().all(|goal| distance(goal) > f64::EPSILON) {
-            kept.push(found);
-        }
-    }
-    kept
+    let mut sampling = Sampling::new(goals, start, goal_samples, seed, ended, valid);
+    while !matches!(sampling.sample(), Sampled::Ended) {}
+    sampling.kept
 }
 
 /// One goal sample of the arms of `goals` from the working state `working`, as MoveIt's

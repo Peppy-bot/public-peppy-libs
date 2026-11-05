@@ -190,15 +190,16 @@ constexpr std::size_t bounce_steps = 5;
 // OMPL's PRM or PRM*, `Roadmap`, whose roadmap and path depend on the plan's questions
 // whether to stop and on nothing else. Its solve is PRM::solve with five changes. It
 // takes every goal into the roadmap after the start, before its search thread starts,
-// where PRM's search thread takes each goal after the first in a search of its own. It
-// grows and expands the roadmap in rounds of questions, where PRM's rounds are timed.
-// Once the planner has ended, it searches the finished roadmap, unless its search thread
-// found a path that ended the planner, as PRM's first path does. It sets the best cost to
-// infinite before its search thread starts, where PRM::constructRoadmap sets it after
-// PRM::solve has started that thread, which may have written it by then. And it leaves
-// out PRM::solve's messages, and its refusals of a goal that is not a sampleable region
-// and of one that cannot be sampled, which the bridge's GoalStates of at least one state
-// never meets.
+// the caller's sampled goals until their sampling ends, where PRM's search thread takes
+// each goal after the first in a search of its own. It grows and expands the roadmap in
+// rounds of questions, where PRM's rounds are timed. Once the planner has ended, it
+// searches the finished roadmap, unless its search thread found a path that ended the
+// planner, as PRM's first path does. It sets the best cost to infinite before its search
+// thread starts, where PRM::constructRoadmap sets it after PRM::solve has started that
+// thread, which may have written it by then. And it leaves out PRM::solve's messages, and
+// its refusals of a goal that is not a sampleable region and of one that cannot be
+// sampled: the bridge's goals are sampleable regions, and goals that give the roadmap
+// none answer an invalid goal, or no path once the plan's bounds have ended it.
 template <typename Roadmap>
 class RepeatableRoadmap : public Roadmap {
  public:
@@ -384,6 +385,139 @@ std::optional<Ending> ended_before(const Callbacks& callbacks, Clock::time_point
   return std::nullopt;
 }
 
+// Whether `state` passes the state check of `si` and lies on `constraint`, when the plan
+// has one.
+bool passes(const ob::SpaceInformation& si, const CallerConstraint* constraint,
+            const ob::State* state) {
+  return si.isValid(state) && (constraint == nullptr || constraint->isSatisfied(state));
+}
+
+// The goals of an attempt that the caller samples while the attempt plans, as MoveIt's
+// ConstrainedGoalSampler, an OMPL GoalLazySamples, samples a request's goals beside its
+// planner (moveit2 2.15.2 constrained_goal_sampler.cpp), here on the thread whose question
+// asks for one, so an attempt's goals and its path depend on its questions alone. A
+// planner asks through maxSampleCount, which canSample, PlannerInputStates::nextGoal and
+// haveMoreGoalStates call: once the planner has been handed every goal found, a question
+// samples once, and before the first goal it samples until one is found or no sample may
+// start, as a planner waits for its first goal (OMPL 2.0.2 PlannerInputStates::nextGoal).
+// With `until_found`, for a planner that takes its goals before it plans, each question
+// samples so.
+// A goal found before `deadline` joins the goals when it passes the state check and lies
+// on the constraint. The sampling ends when the caller's sampling ends, and no sample
+// starts at an interruption or once `deadline` has passed. Until the sampling ends the
+// goals could sample, so a planner left waiting for its first goal asks its termination
+// condition, which ends it. The lock serves the threads on which PRM and PRM* search their
+// roadmap.
+class SampledGoals : public ob::GoalStates {
+ public:
+  SampledGoals(const ob::SpaceInformationPtr& si, const Callbacks& callbacks,
+               std::uint32_t attempt, std::size_t dimension, bool constrained, bool until_found,
+               std::shared_ptr<CallerConstraint> constraint, Clock::time_point deadline)
+      : ob::GoalStates(si),
+        callbacks_(callbacks),
+        attempt_(attempt),
+        dimension_(dimension),
+        constrained_(constrained),
+        until_found_(until_found),
+        constraint_(std::move(constraint)),
+        deadline_(deadline),
+        values_(dimension) {}
+
+  unsigned int maxSampleCount() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (const std::size_t held = getStateCount(); handed_ >= held) {
+      do {
+        sample();
+      } while ((until_found_ || held == 0) && getStateCount() == held && may_start());
+    }
+    return static_cast<unsigned int>(getStateCount());
+  }
+
+  bool couldSample() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !ended_;
+  }
+
+  void sampleGoal(ob::State* state) const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ob::GoalStates::sampleGoal(state);
+    ++handed_;
+  }
+
+  double distanceGoal(const ob::State* state) const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return ob::GoalStates::distanceGoal(state);
+  }
+
+  // Ends the sampling, as MoveIt's postSolve stops its sampling thread: the simplifier, which
+  // reads a plan's goals, takes those found by then.
+  void stop_sampling() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ended_ = true;
+  }
+
+  // The goals found, flattened.
+  std::vector<double> found() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<double> flat;
+    flat.reserve(getStateCount() * dimension_);
+    for (std::size_t at = 0; at < getStateCount(); ++at) {
+      const double* goal = values(getState(static_cast<unsigned int>(at)), constrained_);
+      flat.insert(flat.end(), goal, goal + dimension_);
+    }
+    return flat;
+  }
+
+  // Takes the flattened `goals`, found by the attempts of the plan.
+  void take(const std::vector<double>& goals) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (std::size_t at = 0; at < goals.size(); at += dimension_) {
+      addState(state_of(si_->getStateSpace(), goals.data() + at, dimension_, constrained_).get());
+    }
+  }
+
+ private:
+  // Whether a sample may start.
+  bool may_start() const {
+    return !ended_ && !interruption(callbacks_) && Clock::now() < deadline_;
+  }
+
+  // One sample of the caller's sampling, when one may start, which adds the goal it finds.
+  // OMPL asks for goals through const functions, so the goals grow through a cast.
+  void sample() const {
+    if (!may_start()) {
+      return;
+    }
+    switch (callbacks_.sample_goal(attempt_, rust::Slice<double>(values_.data(), dimension_))) {
+      case GoalSample::Found: {
+        const auto goal = state_of(si_->getStateSpace(), values_.data(), dimension_, constrained_);
+        if (Clock::now() < deadline_ && passes(*si_, constraint_.get(), goal.get())) {
+          const_cast<SampledGoals*>(this)->ob::GoalStates::addState(goal.get());
+        }
+        return;
+      }
+      case GoalSample::Missed:
+        return;
+      case GoalSample::Ended:
+        ended_ = true;
+        return;
+    }
+  }
+
+  const Callbacks& callbacks_;
+  std::uint32_t attempt_;
+  std::size_t dimension_;
+  bool constrained_;
+  bool until_found_;
+  std::shared_ptr<CallerConstraint> constraint_;
+  Clock::time_point deadline_;
+  mutable std::mutex mutex_;
+  mutable std::vector<double> values_;
+  // The goals handed to the planner, repeats among them, counted over the goals found.
+  mutable std::size_t handed_ = 0;
+  mutable bool ended_ = false;
+};
+
 // A termination condition that ends the planner or the simplifier it is given to at an
 // interruption, at the first question after the thread that built it has asked it
 // `iterations` times, or once `deadline` has passed, tested in that order, and
@@ -466,23 +600,30 @@ og::PathGeometric answered(og::PathGeometric path, bool constrained) {
 }
 
 // A request's problem: a setup of its state space, the space's information with the
-// caller's checks, its start, the goals that pass the state check and lie on the
-// constraint, and its planner.
+// caller's checks, its start, its goals, the given ones that pass the state check and lie
+// on the constraint or the caller's sampled goals, and its planner.
 struct Problem {
   og::SimpleSetupPtr setup;
   std::size_t dimension;
   bool constrained;
 };
 
-// The problem of `request`, built on the calling thread once its seed generator takes
-// `seed`, so `seed` seeds every random number generator of the problem, the planner's,
-// the samplers' and the simplifier's, in the order of the problem's construction; or the
-// status that refuses the request's start, when it fails the state check or lies off the
-// constraint, or its every goal.
+// The sampled goals of `problem`; none when its goals were given.
+std::shared_ptr<SampledGoals> sampled_goals_of(const Problem& problem) {
+  return std::dynamic_pointer_cast<SampledGoals>(problem.setup->getGoal());
+}
+
+// The problem of attempt `attempt` of `request`, built on the calling thread once its seed
+// generator takes the attempt's seed, so that seed seeds every random number generator of
+// the problem, the planner's, the samplers' and the simplifier's, in the order of the
+// problem's construction; or the status that refuses the request's start, when it fails
+// the state check or lies off the constraint, or its every given goal. Its sampled goals
+// sample until `deadline`.
 std::variant<Problem, ob::PlannerStatus::StatusType> posed(const PlanRequest& request,
                                                            const Callbacks& callbacks,
-                                                           std::uint32_t seed) {
-  ompl::RNG::setThreadSeed(seed);
+                                                           std::uint32_t attempt,
+                                                           Clock::time_point deadline) {
+  ompl::RNG::setThreadSeed(attempt_seed(request.seed, attempt));
   const std::size_t dimension = request.low.size();
   auto real = std::make_shared<ob::RealVectorStateSpace>(dimension);
   ob::RealVectorBounds bounds(dimension);
@@ -511,26 +652,30 @@ std::variant<Problem, ob::PlannerStatus::StatusType> posed(const PlanRequest& re
   }
   si->setStateValidityChecker(std::make_shared<StateCheck>(si, callbacks, dimension, constrained));
 
-  // Whether `state` passes the state check and lies on the constraint.
-  const auto passes = [&](const ob::State* state) {
-    return si->isValid(state) && (!constraint || constraint->isSatisfied(state));
-  };
   const auto start = state_of(space, request.start.data(), dimension, constrained);
-  if (!passes(start.get())) {
+  if (!passes(*si, constraint.get(), start.get())) {
     return ob::PlannerStatus::INVALID_START;
   }
-  auto goals = std::make_shared<ob::GoalStates>(si);
-  for (std::size_t at = 0; at < request.goals.size(); at += dimension) {
-    const auto goal = state_of(space, request.goals.data() + at, dimension, constrained);
-    if (passes(goal.get())) {
-      goals->addState(goal);
+  auto setup = std::make_shared<og::SimpleSetup>(si);
+  ob::GoalPtr goals;
+  if (request.sampled_goals) {
+    const bool until_found = request.planner == Planner::Prm || request.planner == Planner::PrmStar;
+    goals = std::make_shared<SampledGoals>(si, callbacks, attempt, dimension, constrained,
+                                           until_found, constraint, deadline);
+  } else {
+    auto given = std::make_shared<ob::GoalStates>(si);
+    for (std::size_t at = 0; at < request.goals.size(); at += dimension) {
+      const auto goal = state_of(space, request.goals.data() + at, dimension, constrained);
+      if (passes(*si, constraint.get(), goal.get())) {
+        given->addState(goal);
+      }
     }
-  }
-  if (!goals->hasStates()) {
-    return ob::PlannerStatus::INVALID_GOAL;
+    if (!given->hasStates()) {
+      return ob::PlannerStatus::INVALID_GOAL;
+    }
+    goals = given;
   }
 
-  auto setup = std::make_shared<og::SimpleSetup>(si);
   setup->setStartState(start);
   setup->setGoal(goals);
   setup->setPlanner(planner_of(request.planner, si));
@@ -538,39 +683,52 @@ std::variant<Problem, ob::PlannerStatus::StatusType> posed(const PlanRequest& re
   return Problem{setup, dimension, constrained};
 }
 
-// What an attempt of a plan found: what its planner answered, what ended it, and the
-// path, flattened, once it found an exact one.
+// What an attempt of a plan found: what its planner answered, what ended it, the path,
+// flattened, once it found an exact one, and its sampled goals, flattened.
 struct Attempt {
   ob::PlannerStatus status;
   Ending ended_by = Ending::Returned;
   rust::Vec<double> path;
+  std::vector<double> goals;
 };
 
 // The attempt at `problem` on the calling thread until `deadline`, whose thread's
 // questions alone count toward the iteration bound. Its path stays in the problem's
-// setup.
+// setup, and its sampling ends with its planner. A planner left with no goal once the plan
+// is interrupted or `deadline` has passed answers no path, as a planner that they end later
+// does.
 Attempt solved(const Problem& problem, const PlanRequest& request, const Callbacks& callbacks,
                Clock::time_point deadline) {
   Bounds bounds(callbacks, request.iterations, deadline);
   Attempt attempt{problem.setup->solve(bounds.condition())};
   attempt.ended_by = bounds.ended_by();
+  if (const std::shared_ptr<SampledGoals> sampled = sampled_goals_of(problem)) {
+    sampled->stop_sampling();
+    attempt.goals = sampled->found();
+  }
+  if (attempt.status == ob::PlannerStatus::INVALID_GOAL) {
+    if (const std::optional<Ending> ended = ended_before(callbacks, deadline)) {
+      attempt.status = ob::PlannerStatus::TIMEOUT;
+      attempt.ended_by = attempt.ended_by == Ending::Returned ? *ended : attempt.ended_by;
+    }
+  }
   return attempt;
 }
 
-// The attempt at `request` from `seed` until `deadline` on the calling thread, with its
-// path; a request that its problem refuses plans nothing.
-Attempt attempt_from(const PlanRequest& request, const Callbacks& callbacks, std::uint32_t seed,
-                     Clock::time_point deadline) {
-  const auto problem = posed(request, callbacks, seed);
+// Attempt `attempt` at `request` until `deadline` on the calling thread, with its path; a
+// request that its problem refuses plans nothing.
+Attempt attempt_from(const PlanRequest& request, const Callbacks& callbacks,
+                     std::uint32_t attempt, Clock::time_point deadline) {
+  const auto problem = posed(request, callbacks, attempt, deadline);
   if (const auto* refused = std::get_if<ob::PlannerStatus::StatusType>(&problem)) {
     return Attempt{*refused};
   }
   const Problem& own = std::get<Problem>(problem);
-  Attempt attempt = solved(own, request, callbacks, deadline);
-  if (status_of(attempt.status) == Status::Exact && !callbacks.failed()) {
-    attempt.path = flattened(own.setup->getSolutionPath(), own.dimension, own.constrained);
+  Attempt ended = solved(own, request, callbacks, deadline);
+  if (status_of(ended.status) == Status::Exact && !callbacks.failed()) {
+    ended.path = flattened(own.setup->getSolutionPath(), own.dimension, own.constrained);
   }
-  return attempt;
+  return ended;
 }
 
 // The ending of a plan whose attempts ended by `a` and by `b`: the caller's stop over a
@@ -587,10 +745,12 @@ Ending prevailing(Ending a, Ending b) {
 }
 
 // What the attempts of a plan found: the paths of those that found an exact one, in
-// attempt order; the exact solution once one found it, and otherwise what attempt 0
-// answered, or a timeout when no attempt ran; and what ended them.
+// attempt order; their sampled goals, flattened, in attempt order; the exact solution once
+// one found it, and otherwise what attempt 0 answered, or a timeout when no attempt ran;
+// and what ended them.
 struct Attempts {
   std::vector<rust::Vec<double>> paths;
+  std::vector<double> goals;
   ob::PlannerStatus status = ob::PlannerStatus::TIMEOUT;
   Ending ended_by = Ending::Returned;
 };
@@ -621,10 +781,10 @@ Attempts attempts_of(const PlanRequest& request, const Callbacks& callbacks,
     };
     try {
       for (std::uint32_t k = 0; k < size; ++k) {
-        const std::uint32_t seed = attempt_seed(request.seed, first + k);
-        threads.emplace_back([&request, &callbacks, &batch, &errors, k, seed, deadline] {
+        const std::uint32_t attempt = first + k;
+        threads.emplace_back([&request, &callbacks, &batch, &errors, k, attempt, deadline] {
           try {
-            batch[k] = attempt_from(request, callbacks, seed, deadline);
+            batch[k] = attempt_from(request, callbacks, attempt, deadline);
           } catch (...) {
             errors[k] = std::current_exception();
           }
@@ -646,6 +806,7 @@ Attempts attempts_of(const PlanRequest& request, const Callbacks& callbacks,
         attempts.status = ended.status;
       }
       attempts.ended_by = prevailing(attempts.ended_by, ended.ended_by);
+      attempts.goals.insert(attempts.goals.end(), ended.goals.begin(), ended.goals.end());
       if (!ended.path.empty()) {
         attempts.status = ob::PlannerStatus::EXACT_SOLUTION;
         attempts.paths.push_back(std::move(ended.path));
@@ -719,7 +880,7 @@ void write_path(PlanResult& result, const Problem& problem, const og::PathGeomet
 // plans, and simplifies the path it finds.
 PlanResult plan_once(const PlanRequest& request, const Callbacks& callbacks,
                      Clock::time_point deadline, Clock::time_point simplification_deadline) {
-  const auto problem = posed(request, callbacks, request.seed);
+  const auto problem = posed(request, callbacks, 0, deadline);
   if (const auto* refused = std::get_if<ob::PlannerStatus::StatusType>(&problem)) {
     return answer_of(*refused, Ending::Returned);
   }
@@ -734,9 +895,10 @@ PlanResult plan_once(const PlanRequest& request, const Callbacks& callbacks,
   return result;
 }
 
-// A plan of several attempts. Its problem, posed on the calling thread from the seed of
-// attempt `attempts`, refuses the request's start or goals before any attempt starts,
-// and joins and simplifies what the attempts find. The paths of two or more join into
+// A plan of several attempts. Its problem, posed on the calling thread as that of attempt
+// `attempts`, which plans nothing and so samples no goal, refuses the request's start or
+// its given goals before any attempt starts, takes the goals the attempts sample, and joins
+// and simplifies what the attempts find. The paths of two or more join into
 // their hybrid, unless the plan is stopped, and the plan keeps the shortest of the paths
 // and the hybrid, the first of the equally short in attempt order, the hybrid last; the
 // hybrid when it passes the checks, the state check of its start and the motion check of
@@ -744,12 +906,19 @@ PlanResult plan_once(const PlanRequest& request, const Callbacks& callbacks,
 // direction and may take it in the other.
 PlanResult plan_attempts(const PlanRequest& request, const Callbacks& callbacks,
                          Clock::time_point deadline, Clock::time_point simplification_deadline) {
-  const auto problem = posed(request, callbacks, attempt_seed(request.seed, request.attempts));
+  const auto problem = posed(request, callbacks, request.attempts, deadline);
   if (const auto* refused = std::get_if<ob::PlannerStatus::StatusType>(&problem)) {
     return answer_of(*refused, Ending::Returned);
   }
   const Problem& joining = std::get<Problem>(problem);
+  const std::shared_ptr<SampledGoals> sampled = sampled_goals_of(joining);
+  if (sampled) {
+    sampled->stop_sampling();
+  }
   const Attempts attempts = attempts_of(request, callbacks, deadline);
+  if (sampled) {
+    sampled->take(attempts.goals);
+  }
   PlanResult result = answer_of(attempts.status, attempts.ended_by);
   if (attempts.paths.empty() || callbacks.failed()) {
     return result;

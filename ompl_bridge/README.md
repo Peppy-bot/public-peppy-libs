@@ -13,6 +13,9 @@ image holds, from the source archive of its release tag (see "Building").
   request (see "Attempts").
 - `Planner` names the planners: RRTConnect, RRT, RRTstar, BiTRRT, KPIECE1, BKPIECE1,
   LBKPIECE1, EST, SBL, PRM and PRMstar, spelled as OMPL spells their classes.
+- `Goals` are states given with the request, or goals the caller samples while each
+  attempt plans (`SampledGoals`), as MoveIt samples a request's goals beside its planner
+  (see "Sampled goals").
 - `Checks` and `Constraint` are the caller's functions, called from OMPL.
 
 ## Quick start
@@ -21,7 +24,7 @@ image holds, from the source archive of its release tag (see "Building").
 use std::num::{NonZeroU32, NonZeroU64};
 use std::time::Duration;
 
-use ompl_bridge::{CheckError, Checks, Motion, Request, Space, plan};
+use ompl_bridge::{CheckError, Checks, Goals, Motion, Request, Space, plan};
 
 /// The open cube of half-width 1 about the origin. It is convex, so a straight motion
 /// from one of its states stays in it when its end does.
@@ -49,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             planner: "RRTConnect".parse()?,
             space: &space,
             start: &[0.0; 7],
-            goals: &goals,
+            goals: Goals::States(&goals),
             time_limit: Duration::from_secs(1),
             iterations: NonZeroU64::new(10_000).ok_or("a bound of 0 iterations")?,
             seed: NonZeroU32::MIN,
@@ -69,16 +72,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Repeating a plan
 
-OMPL seeds each of its random number generators from a seed generator, which the
-crate's patch of OMPL gives each thread of its own (`ompl::RNG::setThreadSeed`, see
-"Building"). Each attempt of a plan seeds the generator of its thread before it builds
-anything, attempt 0 from the request's seed and each other from a seed derived from it,
-so its planner, samplers and simplifier take their seeds in the order of its own
-construction, whatever runs on other threads. A plan of several attempts joins and
-simplifies their paths in a problem of its own on the thread that calls `plan`, seeded
-the same way from the seed of index `attempts`, one past its last attempt's. Plans run
-at once in a process. `plan` refuses a call from a check or the constraint of a plan: a
-plan there reseeds the generator of the thread that the other plan draws from.
+OMPL seeds each of its random number generators from a seed generator, which the crate's
+patch of OMPL gives each thread of its own (`ompl::RNG::setThreadSeed`, see "Building").
+Each attempt of a plan seeds the generator of its thread before it builds anything,
+attempt 0 from the request's seed and each other from a seed derived from it, so its
+planner, samplers and simplifier take their seeds in the order of its own construction,
+whatever runs on other threads. A plan of several attempts joins and simplifies their
+paths in a problem of its own on the thread that calls `plan`, seeded the same way from
+the seed of index `attempts`, one past its last attempt's. Plans run at once in a
+process. `plan` refuses a call from a check, the constraint or the goal sampling of a
+plan: a plan there reseeds the generator of the thread that the other plan draws from.
 
 Each attempt's planner ends when it returns, when the caller's stop flag is set, when it
 asks whether to stop once more after it has been told to go on as many times as the
@@ -90,23 +93,25 @@ ends the same way under the simplification bound and the simplification's time, 
 `Simplification::ended_by` says which. A plan that neither a time limit nor the caller's
 stop ends, in its planners or in its simplifier, repeats, path for path and
 simplification for simplification, in the same process and in another, for every planner
-but PRM, with any number of goals and of attempts.
+but PRM, with any number of goals, given or sampled by a sampling that repeats, and of
+attempts.
 
 PRM and PRM* plan as OMPL's `PRM::solve` does, with five changes. Three make their
 roadmap depend on the plan's questions whether to stop and on nothing else. They take
-every goal into the roadmap after the start, before the thread that searches the roadmap
-starts, where OMPL's search thread takes each goal after the first in a search of its
-own, whenever that search runs. They grow and expand the roadmap in turn, in rounds of
-1000 and 500 questions, where OMPL's rounds last 0.4 s and 0.2 s (`ROADMAP_BUILD_TIME` in
-`PRM.cpp`), so a slow host builds the roadmap that a fast one builds. And once the
-planner has ended, the plan searches the finished roadmap. The fourth sets the best cost
-found to infinite before the search thread starts, where OMPL sets it after starting that
-thread, which may have written it by then. The fifth leaves out the messages of
-`PRM::solve`, and its refusals of a goal that is not a sampleable region and of one that
-cannot be sampled, which the plan's goals, an OMPL `GoalStates` of at least one state,
-never meet. The search thread's questions do not count toward the bound. PRM ends at the
-first path that its search finds, and that path depends on when the search runs; whether
-PRM finds a path repeats, and so does PRM*'s path, the shortest in the finished roadmap.
+every goal into the roadmap after the start, sampled goals until their sampling ends,
+before the thread that searches the roadmap starts, where OMPL's search thread takes each
+goal after the first in a search of its own, whenever that search runs. They grow and
+expand the roadmap in turn, in rounds of 1000 and 500 questions, where OMPL's rounds last
+0.4 s and 0.2 s (`ROADMAP_BUILD_TIME` in `PRM.cpp`), so a slow host builds the roadmap
+that a fast one builds. And once the planner has ended, the plan searches the finished
+roadmap. The fourth sets the best cost found to infinite before the search thread starts,
+where OMPL sets it after starting that thread, which may have written it by then. The
+fifth leaves out the messages of `PRM::solve`, and its refusals of a goal that is not a
+sampleable region and of one that cannot be sampled: the plan's goals are sampleable
+regions, and goals that give the roadmap none answer `PlanError::InvalidGoal`. The search
+thread's questions do not count toward the bound. PRM ends at the first path that its
+search finds, and that path depends on when the search runs; whether PRM finds a path
+repeats, and so does PRM*'s path, the shortest in the finished roadmap.
 
 ## Attempts
 
@@ -115,15 +120,16 @@ that calls `plan`. Several plan as MoveIt's `ModelBasedPlanningContext::solve` p
 through OMPL's `ParallelPlan`, each on a thread of its own: `PLANNING_THREADS`, 4, at
 once, MoveIt's default `max_planning_threads`, and each further batch of as many once the
 one before it has ended, while the time limit lasts and the plan is not stopped. Each
-attempt poses the request's problem on its thread, checks its start and its goals, and
-plans under the whole time limit and the whole iteration bound. The plan joins the exact
-paths of two or more attempts with OMPL's `PathHybridization`, as `ParallelPlan` joins
-them: it records each in turn, joins it to each recorded before it where their states
-align by the motions that pass the motion check, and takes the shortest path through them
-all, the hybrid. It keeps the shortest of the attempts' paths and the hybrid, the first
-of the equally short in attempt order and the hybrid last, and simplifies it.
+attempt poses the request's problem on its thread, checks its start and its given goals,
+and plans under the whole time limit and the whole iteration bound. The plan joins the
+exact paths of two or more attempts with OMPL's `PathHybridization`, as `ParallelPlan`
+joins them: it records each in turn, joins it to each recorded before it where their
+states align by the motions that pass the motion check, and takes the shortest path
+through them all, the hybrid. It keeps the shortest of the attempts' paths and the
+hybrid, the first of the equally short in attempt order and the hybrid last, and
+simplifies it.
 
-The plan departs from MoveIt in seven ways, each a choice its caller sees:
+The plan departs from MoveIt in eight ways, each a choice its caller sees:
 
 - MoveIt's attempts draw the seeds of their samplers from one seed generator of the
   process, in the order their threads construct them, and its hybrid records each path
@@ -151,6 +157,36 @@ The plan departs from MoveIt in seven ways, each a choice its caller sees:
 - MoveIt's hybrid records every path its planners answer, the approximate ones among
   them (`ParallelPlan::solveMore` records each solution of the problem once a planner's
   `solve` answers one). Here only the exact paths of the attempts join the hybrid.
+- MoveIt's attempts share one goal sampling, which runs on a thread of its own beside
+  their planners. Here each attempt samples its own goals on its own thread, when its
+  planner asks for one, so the goals an attempt plans to depend on its own questions
+  alone (see "Sampled goals").
+
+## Sampled goals
+
+`Goals::Sampled` takes the caller's `SampledGoals`, which gives each attempt its own
+`GoalSampling` at the attempt's first goal sample. MoveIt samples a request's goals with
+a `ConstrainedGoalSampler`, an OMPL `GoalLazySamples`, on a thread that starts with the
+goal and samples beside the planner until the goals reach the request's most, its bound
+of samples in a row that find none ends it, or the problem holds a solution (moveit2
+2.15.2 `constrained_goal_sampler.cpp:74`, `:102-111`); the planner waits for the first
+goal and takes the others as it asks for them. Here an attempt samples when its planner
+asks. OMPL's planners ask through the goal's sample count (`maxSampleCount`, which
+`canSample`, `PlannerInputStates::nextGoal` and `haveMoreGoalStates` call): once the
+planner has been handed every goal found, a question samples once, and before the first
+goal it samples until one is found or the sampling ends. RRTConnect asks for its first
+goal before it plans, and for another whenever it has been handed fewer goals than half
+its goal tree's states (`RRTConnect.cpp`); BiTRRT, BKPIECE1, LBKPIECE1 and SBL ask when
+they take a goal into a tree of their goals; RRT, KPIECE1 and EST when they draw a goal
+to grow toward, and RRT* on each iteration; PRM and PRM* take goals until the sampling
+ends, before their roadmap grows. A goal found before the time limit joins the attempt's
+goals when it passes the state check and lies on the constraint. An attempt's sampling
+ends when the caller's sampling answers `GoalSample::Ended`, and no sample starts once
+the plan is stopped or a check has failed, or past the time limit; a planner that waits
+for its first goal waits on a sampling that neither finds a goal nor ends until then, and
+then answers no path, as a planner ended later does. An attempt's sampling ends with its
+planner, as MoveIt's `postSolve` stops its sampling thread: the simplifier, which reads a
+plan's goals, takes those found by then, those of every attempt in a plan of several.
 
 ## Stopping a plan
 
@@ -214,12 +250,18 @@ states, its end included: OMPL takes the motion's start as valid. When a motion 
 invalid it answers the fraction of the way along it to its last valid state. A plan calls
 both on the thread that calls `plan`, and, when it makes several attempts, on the thread
 of each, and shares them with the threads on which PRM and PRM* search their roadmap, so
-both traits are `Sync`.
+both traits are `Sync`. `SampledGoals::sampling` and the `GoalSampling::sample` of an
+attempt run on the attempt's thread, so `SampledGoals` is `Sync` and `GoalSampling` is
+`Send`.
 
 Before the planner starts, the start passes the state check and lies on the constraint,
-or the plan answers `PlanError::InvalidStart`. The plan keeps the goals that pass, and
-answers `PlanError::InvalidGoal` when none does. A start or a goal outside the space's
-bounds is refused with `PlanError::Request`.
+or the plan answers `PlanError::InvalidStart`. The plan keeps the given goals that pass,
+and answers `PlanError::InvalidGoal` when none does; an attempt keeps the sampled goals
+that pass as it finds them, and when the sampling ends with none, RRTConnect, BiTRRT,
+BKPIECE1, LBKPIECE1, SBL, PRM and PRM* answer `PlanError::InvalidGoal`, while RRT, RRT*,
+KPIECE1 and EST, which grow from the start alone, plan to their bound and answer no path.
+A start or a given goal outside the space's bounds is refused with `PlanError::Request`,
+and a sampled goal outside them fails the plan with `PlanError::Check`.
 
 An error or a panic in any of the caller's functions, in the error's message or in its
 drop, ends the plan with `PlanError::Check`, which says what the first one said, and

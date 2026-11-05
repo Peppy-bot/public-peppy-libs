@@ -11,7 +11,9 @@
 
 mod common;
 
+use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
@@ -445,6 +447,12 @@ fn a_plan_its_iterations_end_gives_no_path() {
     );
 }
 
+/// What a refusal adds when the deadline ended its goal sampling.
+const MORE_TIME: &str = "; the deadline ended the sampling, and more time may find a goal";
+
+/// A deadline by which a plan here has started its first goal sample, on any host.
+const SAMPLE_STARTS_WITHIN: Duration = Duration::from_secs(1);
+
 /// A goal sampler that waits out the plan's time limit, until `until`, then answers
 /// `answer` where it is valid.
 struct WaitingOut {
@@ -466,9 +474,67 @@ impl GoalSampler<JOINTS> for WaitingOut {
     }
 }
 
+/// A goal sampler that finds `answer` at its first sample and nothing after it, and counts
+/// its samples.
+struct OneGoal {
+    answer: [f64; JOINTS],
+    samples: AtomicUsize,
+}
+
+impl GoalSampler<JOINTS> for OneGoal {
+    fn sample_from(
+        &self,
+        _: &Goal,
+        _: &[f64; JOINTS],
+        _: usize,
+        _: &mut Draws,
+        valid: &dyn Fn(&[f64; JOINTS]) -> bool,
+    ) -> Option<[f64; JOINTS]> {
+        let first = self.samples.fetch_add(1, Ordering::Relaxed) == 0;
+        (first && valid(&self.answer)).then_some(self.answer)
+    }
+}
+
+// A plan samples its goals while its planner plans, as a planner of MoveIt plans while its
+// goal sampler samples: a sampling that finds one goal and no other holds no planner back.
+// The planner plans to that goal with fewer samples than the 1000 that end such a sampling,
+// MoveIt's `max_goal_sampling_attempts`.
+#[test]
+fn a_plan_samples_its_goals_while_its_planner_plans() {
+    let (map, field) = world(&box_between());
+    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goal = at(&HIGH);
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+        objects: Objects::none(),
+    };
+    let one = OneGoal {
+        answer: HIGH,
+        samples: AtomicUsize::new(0),
+    };
+    let waypoints = plan_path(
+        &arms,
+        &scene,
+        &PlanRequest {
+            goals: vec![ArmGoal {
+                goal: &goal,
+                sampler: &one,
+            }],
+            ..request(Planner::RrtConnect, LOW, &goal, &sampler)
+        },
+    )
+    .expect("a path");
+    assert_eq!(waypoints.last(), Some(&HIGH));
+    let samples = one.samples.load(Ordering::Relaxed);
+    assert!(samples < 1000, "{samples} goal samples");
+}
+
 // The time limit bounds the goal sampling and the planner's plan: a plan whose goal
-// sampling takes all of it gives no path, and says the time ended before the planner
-// planned.
+// sampling takes all of it gives no path, and a plan past its deadline says the time ended
+// before the planner planned.
 #[test]
 fn a_plan_whose_sampling_takes_its_time_gives_no_path() {
     let (map, field) = world(&[]);
@@ -481,10 +547,10 @@ fn a_plan_whose_sampling_takes_its_time_gives_no_path() {
         stamp: 1,
         objects: Objects::none(),
     };
-    let deadline = Instant::now() + Duration::from_millis(50);
+    let deadline = Instant::now() + SAMPLE_STARTS_WITHIN;
     let waiting = WaitingOut {
         answer: HIGH,
-        until: deadline,
+        until: deadline + Duration::from_millis(50),
     };
     let limited = PlanRequest {
         goals: vec![ArmGoal {
@@ -494,6 +560,14 @@ fn a_plan_whose_sampling_takes_its_time_gives_no_path() {
         deadline,
         ..request(Planner::RrtConnect, LOW, &goal, &sampler)
     };
+    assert_eq!(
+        plan_path(&arms, &scene, &limited),
+        Err(PlanFailure::NoPath(
+            "RRTConnect found no path within 20000 iterations or by its deadline, keeping the \
+             plan's clearance, 0.0210 m from the map and the objects"
+                .to_string()
+        ))
+    );
     assert_eq!(
         plan_path(&arms, &scene, &limited),
         Err(PlanFailure::NoPath(
@@ -677,10 +751,164 @@ fn lies_between(w: &[[f64; JOINTS]]) -> bool {
         < 1e-9
 }
 
-// From a start 1 cm from the slab, with the box across the way, the plan of seed 10
-// rounds its first corner into the box and adds a waypoint on the first run, which the
-// start rule walks: the answer's rounded path keeps the clearance once it first keeps
-// it, and the answer passes the check of a caller's path.
+/// A goal sampler that waits out the plan's time limit, until `until`, and finds nothing.
+struct WaitingOutEmpty {
+    until: Instant,
+}
+
+impl GoalSampler<JOINTS> for WaitingOutEmpty {
+    fn sample_from(
+        &self,
+        _: &Goal,
+        _: &[f64; JOINTS],
+        _: usize,
+        _: &mut Draws,
+        _: &dyn Fn(&[f64; JOINTS]) -> bool,
+    ) -> Option<[f64; JOINTS]> {
+        std::thread::sleep(self.until.saturating_duration_since(Instant::now()));
+        None
+    }
+}
+
+// A goal sampling that the deadline ends says more time may find a goal, whether it rejected
+// every sample or found no configuration.
+#[test]
+fn a_goal_sampling_the_deadline_ends_says_more_time_may_help() {
+    let goal_hand = hand(&HIGH);
+    let (map, field) = world(&solid(
+        goal_hand - Vector3::repeat(0.1),
+        goal_hand + Vector3::repeat(0.1),
+    ));
+    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goal = at(&HIGH);
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+        objects: Objects::none(),
+    };
+    let deadline = Instant::now() + SAMPLE_STARTS_WITHIN;
+    let waiting = WaitingOut {
+        answer: HIGH,
+        until: deadline + Duration::from_millis(50),
+    };
+    let failure = plan_path(
+        &arms,
+        &scene,
+        &PlanRequest {
+            goals: vec![ArmGoal {
+                goal: &goal,
+                sampler: &waiting,
+            }],
+            deadline,
+            ..request(Planner::RrtConnect, LOW, &goal, &sampler)
+        },
+    )
+    .expect_err("no goal before the deadline");
+    let PlanFailure::Unreachable(message) = failure else {
+        panic!("not unreachable: {failure}");
+    };
+    assert!(message.ends_with(MORE_TIME), "{message}");
+    let deadline = Instant::now() + SAMPLE_STARTS_WITHIN;
+    let waiting = WaitingOutEmpty {
+        until: deadline + Duration::from_millis(50),
+    };
+    let failure = plan_path(
+        &arms,
+        &scene,
+        &PlanRequest {
+            goals: vec![ArmGoal {
+                goal: &goal,
+                sampler: &waiting,
+            }],
+            deadline,
+            ..request(Planner::RrtConnect, LOW, &goal, &sampler)
+        },
+    )
+    .expect_err("no goal before the deadline");
+    let PlanFailure::Unreachable(message) = failure else {
+        panic!("not unreachable: {failure}");
+    };
+    assert!(
+        message.starts_with("inverse kinematics found no"),
+        "{message}"
+    );
+    assert!(message.ends_with(MORE_TIME), "{message}");
+}
+
+/// A goal sampler that finds `answer` in every attempt of a plan but attempt 0, which it
+/// tells by the first draw of the thread that asks: attempt 0 draws from the seed itself.
+struct AllButAttemptZero {
+    answer: [f64; JOINTS],
+    seed: u64,
+    finds: Mutex<HashMap<ThreadId, bool>>,
+}
+
+impl GoalSampler<JOINTS> for AllButAttemptZero {
+    fn sample_from(
+        &self,
+        _: &Goal,
+        _: &[f64; JOINTS],
+        _: usize,
+        draws: &mut Draws,
+        valid: &dyn Fn(&[f64; JOINTS]) -> bool,
+    ) -> Option<[f64; JOINTS]> {
+        let drawn = draws.unit();
+        let finds = *self
+            .finds
+            .lock()
+            .expect("no panic")
+            .entry(std::thread::current().id())
+            .or_insert_with(|| drawn != Draws::new(self.seed).unit());
+        (finds && valid(&self.answer)).then_some(self.answer)
+    }
+}
+
+// An attempt that finds no goal, in a plan where another finds one and no path, leaves the
+// plan's answer that it found no path: attempt 0's answer is not taken for the plan's.
+#[test]
+fn an_attempt_with_no_goal_leaves_the_plan_no_path() {
+    let (map, field) = world(&box_between());
+    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goal = at(&HIGH);
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+        objects: Objects::none(),
+    };
+    let base = request(Planner::RrtConnect, LOW, &goal, &sampler);
+    let finding = AllButAttemptZero {
+        answer: HIGH,
+        seed: u64::from(base.seed),
+        finds: Mutex::new(HashMap::new()),
+    };
+    let failure = plan_path(
+        &arms,
+        &scene,
+        &PlanRequest {
+            goals: vec![ArmGoal {
+                goal: &goal,
+                sampler: &finding,
+            }],
+            attempts: NonZeroU32::new(2).expect("nonzero"),
+            max_iterations: NonZeroU64::MIN,
+            ..base
+        },
+    )
+    .expect_err("no path within one iteration");
+    let PlanFailure::NoPath(message) = failure else {
+        panic!("not no path: {failure}");
+    };
+    assert!(message.starts_with("RRTConnect found no path"), "{message}");
+}
+
+// From a start 1 cm from the slab, with the box across the way, a plan among those of the
+// first 200 seeds rounds its first corner into the box and adds a waypoint on the first
+// run, which the start rule walks: the answer's rounded path keeps the clearance once it
+// first keeps it, and the answer passes the check of a caller's path.
 #[test]
 fn a_first_corner_from_a_start_near_the_slab_gets_waypoints_until_it_clears() {
     let NearTheSlab { start, .. } = near_the_slab(0.01);
@@ -694,19 +922,20 @@ fn a_first_corner_from_a_start_near_the_slab_gets_waypoints_until_it_clears() {
         stamp: 1,
         objects: Objects::none(),
     };
-    let waypoints = plan_path(
-        &arms,
-        &scene,
-        &PlanRequest {
-            seed: 10,
-            ..request(Planner::RrtConnect, start, &goal, &sampler)
-        },
-    )
-    .expect("a path around the box");
-    assert!(
-        lies_between(&waypoints[0..3]),
-        "no waypoint added on the first run: {waypoints:?}"
-    );
+    let waypoints = (1..=200)
+        .filter_map(|seed| {
+            plan_path(
+                &arms,
+                &scene,
+                &PlanRequest {
+                    seed,
+                    ..request(Planner::RrtConnect, start, &goal, &sampler)
+                },
+            )
+            .ok()
+        })
+        .find(|waypoints| lies_between(&waypoints[0..3]))
+        .expect("a plan that adds a waypoint on the first run");
     assert_dense_clear_after_departure(&arms, &map, &field, &waypoints);
     assert_eq!(
         check(&arms, &scene, start, &waypoints[1..]),

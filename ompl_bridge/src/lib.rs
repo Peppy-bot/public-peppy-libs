@@ -5,6 +5,8 @@
 //!
 //! - [`plan`] runs one [`Request`] and answers a [`Plan`].
 //! - [`Planner`] names the planners; [`Space`] holds the bounds.
+//! - [`Goals`] are states given with the request, or goals the caller samples while each
+//!   attempt plans ([`SampledGoals`]), as MoveIt samples a request's goals.
 //! - [`Checks`] and [`Constraint`] are the caller's functions. An error in one ends the
 //!   plan with [`PlanError::Check`] and never reaches C++, and so does a panic in a
 //!   binary that unwinds on panic, Rust's default; under `panic = "abort"`, a panic in
@@ -22,7 +24,8 @@
 //! and the simplification's time; [`Plan::ended_by`] and [`Simplification::ended_by`] say
 //! which. A plan that neither a time limit nor the caller's stop ends, in its planners or
 //! in its simplifier, repeats, path for path, in the same process and in another, for
-//! every planner but PRM, with any number of goals and of attempts. PRM and PRM* take
+//! every planner but PRM, with any number of goals and of attempts, given or sampled by a
+//! sampling that repeats. PRM and PRM* take
 //! every goal into their roadmap before they search it, grow and expand the roadmap in
 //! rounds of questions whether to stop, and search it on a second thread, whose questions
 //! do not count toward the bound. PRM ends at the first path that search finds, and that
@@ -50,7 +53,7 @@ use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use callbacks::Callbacks;
+use callbacks::{Callbacks, Sampled};
 use ffi::bridge;
 
 /// What a caller's check or constraint answers when it cannot answer.
@@ -284,15 +287,63 @@ pub struct Projection<'a> {
     pub iterations: NonZeroU32,
 }
 
+/// The goals of a plan.
+pub enum Goals<'a> {
+    /// The states that end the plan, each within the space's bounds. The plan reaches
+    /// one of those that pass the state check and lie on the constraint.
+    States(&'a [Vec<f64>]),
+    /// Goals the caller samples while each attempt plans, as MoveIt's
+    /// `ConstrainedGoalSampler` samples a request's goals beside its planner (moveit2
+    /// 2.15.2 constrained_goal_sampler.cpp), here on the attempt's thread when its planner
+    /// asks for a goal: once the planner has been handed every goal found, each question
+    /// samples once, and before the first goal the question samples until one is found or
+    /// the sampling ends, as a planner waits for its first goal. RRTConnect asks for its
+    /// first goal before it plans, and for another whenever it has been handed fewer goals
+    /// than half its goal tree's states; PRM and PRM* take goals until the sampling ends,
+    /// before their roadmap grows. A goal found before the time limit joins the attempt's
+    /// goals when it passes the state check and lies on the constraint. An attempt's
+    /// sampling ends at the
+    /// caller's [`GoalSample::Ended`], and no sample starts once the plan has been stopped
+    /// or a check has failed, or past the time limit; a sampling that neither finds a goal
+    /// nor ends keeps a planner that waits for its first goal waiting until then, and the
+    /// planner then answers no path, as one ended later does.
+    Sampled(&'a dyn SampledGoals),
+}
+
+/// The caller's goal sampling: a sampling of each attempt's goals.
+pub trait SampledGoals: Sync {
+    /// The sampling of attempt `attempt`'s goals, attempt 0 the first, which the plan
+    /// starts at the attempt's first goal sample, on the attempt's thread.
+    fn sampling(&self, attempt: u32) -> Box<dyn GoalSampling + '_>;
+}
+
+/// The goal sampling of one attempt of a plan. An error or a panic in it, in the error's
+/// message or in its drop, ends the plan with [`PlanError::Check`].
+pub trait GoalSampling: Send {
+    /// One goal sample: what it found, and the goal, when it found one, written into
+    /// `goal`, one value per dimension of the space.
+    fn sample(&mut self, goal: &mut [f64]) -> Result<GoalSample, CheckError>;
+}
+
+/// What one goal sample found.
+#[derive(Debug, PartialEq)]
+pub enum GoalSample {
+    /// A goal, written into the sample's `goal`. A goal outside the space's bounds fails
+    /// the plan with [`PlanError::Check`].
+    Found,
+    /// No goal; a later sample may find one.
+    Missed,
+    /// No goal, and the sampling has ended: its attempt asks for no other.
+    Ended,
+}
+
 /// One plan.
 pub struct Request<'a> {
     pub planner: Planner,
     pub space: &'a Space,
     /// A state within the space's bounds.
     pub start: &'a [f64],
-    /// The states that end the plan, each within the space's bounds. The plan reaches
-    /// one of those that pass the state check and lie on the constraint.
-    pub goals: &'a [Vec<f64>],
+    pub goals: Goals<'a>,
     /// The time limit of the plan's attempts, from the call of `plan`. The planners end
     /// at their first question whether to stop past the limit, and no batch of attempts
     /// starts past it. What runs between two questions runs to its end, a call of the
@@ -307,7 +358,7 @@ pub struct Request<'a> {
     /// 3 s with 32 goals, as measured on an x86-64 host.
     pub time_limit: Duration,
     /// The times each attempt's planner may ask whether to stop, on the attempt's thread,
-    /// before it stops.
+    /// before it stops. A planner's wait for its first sampled goal asks no such question.
     pub iterations: NonZeroU64,
     pub seed: NonZeroU32,
     /// The attempts the plan makes, as MoveIt's `num_planning_attempts`: attempt 0 from
@@ -387,7 +438,7 @@ pub enum PlanError {
     InvalidStart,
     #[error("every goal fails the state check or lies off the constraint")]
     InvalidGoal,
-    #[error("a check or the constraint failed: {0}")]
+    #[error("a check, the constraint or the goal sampling failed: {0}")]
     Check(String),
     #[error("OMPL: {0}")]
     Ompl(String),
@@ -397,17 +448,23 @@ pub enum PlanError {
 pub fn plan(request: &Request, checks: &dyn Checks) -> Result<Plan, PlanError> {
     if callbacks::in_callback() {
         return Err(PlanError::Request(
-            "plan was called from a check or the constraint of a plan; a plan seeds the generator of its thread, which the other plan draws from, so call plan outside the checks of another"
+            "plan was called from a check, the constraint or the goal sampling of a plan; a plan seeds the generator of its thread, which the other plan draws from, so call plan outside the checks of another"
                 .to_string(),
         ));
     }
     let ffi_request = ffi_request(request)?;
+    let sampled = match request.goals {
+        Goals::States(_) => None,
+        Goals::Sampled(goals) => Some(Sampled::new(goals, request.space)),
+    };
     let callbacks = Callbacks::new(
         checks,
         request.projection.map(|p| p.constraint),
+        sampled,
         request.stop,
     );
     let answer = bridge::plan(&ffi_request, &callbacks);
+    callbacks.end_samplings();
     if let Some(failure) = callbacks.failure() {
         return Err(PlanError::Check(failure));
     }
@@ -476,10 +533,12 @@ fn ffi_request(request: &Request) -> Result<bridge::PlanRequest, PlanError> {
             counted(dimension, "dimension")
         ));
     }
-    if request.goals.is_empty() {
-        return refuse("a plan has at least one goal".to_string());
-    }
-    if let Some(goal) = request.goals.iter().find(|goal| goal.len() != dimension) {
+    let (given, sampled_goals) = match request.goals {
+        Goals::States([]) => return refuse("a plan has at least one goal".to_string()),
+        Goals::States(goals) => (goals, false),
+        Goals::Sampled(_) => (&[][..], true),
+    };
+    if let Some(goal) = given.iter().find(|goal| goal.len() != dimension) {
         return refuse(format!(
             "a goal has {}; the space has {}",
             counted(goal.len(), "value"),
@@ -487,8 +546,7 @@ fn ffi_request(request: &Request) -> Result<bridge::PlanRequest, PlanError> {
         ));
     }
     let outside = space.outside("the start", request.start).or_else(|| {
-        request
-            .goals
+        given
             .iter()
             .enumerate()
             .find_map(|(index, goal)| space.outside(&format!("goal {index}"), goal))
@@ -532,7 +590,8 @@ fn ffi_request(request: &Request) -> Result<bridge::PlanRequest, PlanError> {
         low: space.low.clone(),
         high: space.high.clone(),
         start: request.start.to_vec(),
-        goals: request.goals.iter().flatten().copied().collect(),
+        goals: given.iter().flatten().copied().collect(),
+        sampled_goals,
         time_limit_s: request.time_limit.as_secs_f64(),
         iterations: request.iterations.get(),
         seed: request.seed.get(),
