@@ -122,8 +122,6 @@ class Robot:
         orientation: Quat,
         *,
         duration_s: float,
-        plan_position_tolerance_m: float,
-        plan_orientation_tolerance_rad: float,
         settle_position_tolerance_m: float,
         settle_orientation_tolerance_rad: float,
         settle_timeout_s: float,
@@ -131,13 +129,13 @@ class Robot:
         """Plans and runs one grasp-point move of `arm`, robot frame, and
         waits for it to settle within the settle tolerances or to fail its
         settle timeout. The caller names every tolerance and time, as the
-        limb_motion contract has them: the plan may sit within the plan
-        tolerances of the pose, the move completes once the measured grasp
-        point stands within the settle tolerances at or after the planned
-        end, and fails with `timeout` `settle_timeout_s` after it otherwise.
+        limb_motion contract has them: the plan ends within 1 mm and 0.01 rad of
+        the pose, the move completes once the measured grasp point stands within
+        the settle tolerances at or after the planned end, and fails with
+        `timeout` `settle_timeout_s` after it otherwise.
         A duration of 0 is the fastest the joint limits allow."""
         request = self._move_arm.GoalRequest(
-            **_arm_move_fields(arm, position, orientation, duration_s, plan_position_tolerance_m, plan_orientation_tolerance_rad),
+            **_arm_move_fields(arm, position, orientation, duration_s),
             settle_position_tolerance_m=settle_position_tolerance_m,
             settle_orientation_tolerance_rad=settle_orientation_tolerance_rad,
             settle_timeout_s=settle_timeout_s,
@@ -182,16 +180,13 @@ class Robot:
         orientation: Quat,
         *,
         duration_s: float,
-        plan_position_tolerance_m: float,
-        plan_orientation_tolerance_rad: float,
     ) -> MoveCheck:
-        """Whether `move_arm` with the same pose, duration and plan
-        tolerances has a plan from where the arm is commanded now; the caller
-        names each of them, as for the move. A check that fails, or that
+        """Whether `move_arm` with the same pose and duration has a plan from
+        where the arm is commanded now. A check that fails, or that
         gets no answer within `CHECK_TIMEOUT_S`, is reported as not
         reachable, with the reason."""
         request = self._check_arm_move.Request(
-            **_arm_move_fields(arm, position, orientation, duration_s, plan_position_tolerance_m, plan_orientation_tolerance_rad)
+            **_arm_move_fields(arm, position, orientation, duration_s)
         )
         try:
             answer = await self._check_arm_move.poll(
@@ -252,8 +247,6 @@ def _arm_move_fields(
     position: Vec3,
     orientation: Quat,
     duration_s: float,
-    plan_position_tolerance_m: float,
-    plan_orientation_tolerance_rad: float,
 ) -> dict:
     """The fields a move_arm goal and a check_arm_move request share."""
     return dict(
@@ -261,8 +254,6 @@ def _arm_move_fields(
         position=list(position),
         orientation=list(orientation),
         duration_s=duration_s,
-        plan_position_tolerance_m=plan_position_tolerance_m,
-        plan_orientation_tolerance_rad=plan_orientation_tolerance_rad,
     )
 
 
