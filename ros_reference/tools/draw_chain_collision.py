@@ -27,8 +27,10 @@ from drawing import (
     CONFIGURATIONS_DRAWN,
     REPOSITORY,
     configurations,
+    element_to_link,
     generator,
     joint_limits,
+    link_bounds,
     openarm_joints,
     options,
     robot,
@@ -78,94 +80,6 @@ def primitive_carried_links():
     """The collision-bearing links the arm of PRIMITIVE_ARM carries: the child of each
     joint, and the tool fixed to the last."""
     return [f"link_{i}" for i in range(1, PRIMITIVE_JOINTS + 1)] + ["tool"]
-
-
-def stl_vertices(path):
-    data = path.read_bytes()
-    (count,) = struct.unpack_from("<I", data, 80)
-    return [
-        struct.unpack_from("<3f", data, 84 + facet * 50 + 12 + corner * 12)
-        for facet in range(count)
-        for corner in range(3)
-    ]
-
-
-def rotation(roll, pitch, yaw):
-    """The rotation of a URDF origin's rpy, as rows."""
-    cr, sr, cp, sp, cy, sy = (
-        math.cos(roll),
-        math.sin(roll),
-        math.cos(pitch),
-        math.sin(pitch),
-        math.cos(yaw),
-        math.sin(yaw),
-    )
-    return [
-        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-        [-sp, cp * sr, cp * cr],
-    ]
-
-
-def element_to_link(collision):
-    """The map of a point from the frame of the collision element `collision` to the frame
-    of its link."""
-    origin = collision.find("origin")
-
-    def values(key):
-        text = origin.get(key, "0 0 0") if origin is not None else "0 0 0"
-        return [float(v) for v in text.split()]
-
-    xyz, turn = values("xyz"), rotation(*values("rpy"))
-    return lambda point: [
-        sum(turn[row][k] * point[k] for k in range(3)) + xyz[row] for row in range(3)
-    ]
-
-
-def element_corners(geometry, meshes):
-    """The points that bound a collision element's geometry in its own frame: a mesh's
-    vertices, scaled, or the corners of a primitive's box."""
-    mesh = geometry.find("mesh")
-    if mesh is not None:
-        scale = [float(v) for v in mesh.get("scale", "1 1 1").split()]
-        basename = mesh.get("filename").rsplit("/", 1)[-1]
-        return [
-            [vertex[axis] * scale[axis] for axis in range(3)]
-            for vertex in stl_vertices(REPOSITORY / meshes / basename)
-        ]
-    box = geometry.find("box")
-    cylinder = geometry.find("cylinder")
-    sphere = geometry.find("sphere")
-    if box is not None:
-        half = [float(v) / 2 for v in box.get("size").split()]
-    elif cylinder is not None:
-        radius, length = float(cylinder.get("radius")), float(cylinder.get("length"))
-        half = [radius, radius, length / 2]
-    elif sphere is not None:
-        radius = float(sphere.get("radius"))
-        half = [radius, radius, radius]
-    else:
-        raise SystemExit("a collision geometry is a mesh, a box, a cylinder or a sphere")
-    return [
-        [sign_x * half[0], sign_y * half[1], sign_z * half[2]]
-        for sign_x in (-1, 1)
-        for sign_y in (-1, 1)
-        for sign_z in (-1, 1)
-    ]
-
-
-def link_bounds(parsed, link, meshes):
-    """The bounds, in the link's frame, of every collision element of the link."""
-    points = [
-        element_to_link(collision)(corner)
-        for collision in parsed.findall(f"link[@name='{link}']/collision")
-        for corner in element_corners(collision.find("geometry"), meshes)
-    ]
-    if not points:
-        raise SystemExit(f"{link} has no collision element")
-    return [min(p[axis] for p in points) for axis in range(3)], [
-        max(p[axis] for p in points) for axis in range(3)
-    ]
 
 
 def probe_points(rng, bounds):

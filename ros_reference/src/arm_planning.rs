@@ -1,15 +1,17 @@
-//! Arm planning. The scenario holds scenes of an arm among boxes of voxels, each with a
-//! start, a goal and a seed, and motion_planning_core's answer to each, which its
-//! example `plan_arm_scenes` gives `tools/draw_arm_planning.py`. The reference is
-//! MoveIt's planning pipeline, with the OMPL planner of the scenario's objective, its
-//! default request adapters and the response adapters AddTimeOptimalParameterization and
-//! ValidateSolution, planning each scene with the voxels as an octomap to the goal state
-//! itself, seeded from the scene and ended as the scenario's termination says, and
-//! MoveIt's collision check and distance probing each planned path: MoveIt's own, and
-//! motion_planning_core's with its corners rounded as MoveIt's time-optimal trajectory
-//! generation rounds them. Both check every link that moves with the arm's joints, the
-//! gripper's fingers among them, closed, as MoveIt's default state holds them.
+//! Arm planning. The scenario holds scenes of an arm among boxes of voxels and collision
+//! objects, each with a start, a goal and a seed, and motion_planning_core's answer to
+//! each, which its example `plan_arm_scenes` gives `tools/draw_arm_planning.py`. The
+//! reference is MoveIt's planning pipeline, with the OMPL planner of the scenario's
+//! objective, its default request adapters and the response adapters
+//! AddTimeOptimalParameterization and ValidateSolution, planning each scene with the
+//! voxels as an octomap, among its collision objects and holding its attached object, to
+//! the goal state itself, seeded from the scene and ended as the scenario's termination
+//! says, and MoveIt's collision check and distance probing each planned path: MoveIt's
+//! own, and motion_planning_core's with its corners rounded as MoveIt's time-optimal
+//! trajectory generation rounds them. Both check every link that moves with the arm's
+//! joints, the gripper's fingers among them, closed, as MoveIt's default state holds them.
 
+use crate::planning_scene::Object;
 use crate::{Kind, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU32;
@@ -42,6 +44,9 @@ pub struct Scenes {
     /// The half side of the cube about the robot's origin that motion_planning_core's
     /// map covers.
     pub map_half_side: f64,
+    /// The clearance of the plans: motion_planning_core's min_clearance_m, and the padding
+    /// of every link of MoveIt's robot against the octomap and the objects, the robot
+    /// meeting itself unpadded.
     pub min_clearance: f64,
     /// The maximum deviation at which execute_joint_path and MoveIt's time-optimal path
     /// round a path's corners.
@@ -97,15 +102,47 @@ pub struct VoxelBox {
     pub last: [i32; 3],
 }
 
-/// One scene: its boxes, the plan's start, goal and seed, and `ours`,
-/// motion_planning_core's answer to it: an `Option<Ours>` in a scenario, null in one the
-/// example `plan_arm_scenes` reads before it answers, and an [`Ours`] in a [`SceneCase`].
+impl Scenes {
+    /// The grasp link of the other arm, which holds a scene's `other_arm_holds`: the tip
+    /// link's mirror, OpenArm's name of it with `left` and `right` swapped, as
+    /// arm_planning.cpp names it.
+    pub fn other_tip_link(&self) -> String {
+        let (side, other) = if self.tip_link.contains("left") {
+            ("left", "right")
+        } else {
+            ("right", "left")
+        };
+        assert!(
+            self.tip_link.contains(side),
+            "the tip link {} names no side, left or right, of OpenArm",
+            self.tip_link
+        );
+        self.tip_link.replacen(side, other, 1)
+    }
+}
+
+/// One scene: its boxes, its collision objects, the object the arm holds, the object the
+/// other arm holds, the pairs allowed to touch, the plan's start, goal and seed, and
+/// `ours`, motion_planning_core's answer to it: an `Option<Ours>` in a scenario, null in
+/// one the example `plan_arm_scenes` reads before it answers, and an [`Ours`] in a
+/// [`SceneCase`].
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scene<O = Option<Ours>> {
     pub boxes: Vec<VoxelBox>,
+    /// The collision objects, each as apply_collision_objects adds it, in the robot frame.
+    pub objects: Vec<Object>,
+    /// The object the arm's tip link holds through the plan; null for none.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub attached: Option<Held>,
+    /// The object the other arm's grasp link holds ([`Scenes::other_tip_link`]), the
+    /// other arm at its zero configuration; null for none.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub other_arm_holds: Option<Held>,
+    /// The pairs of names allowed to touch, as set_allowed_collision allows them.
+    pub allowed: Vec<[String; 2]>,
     pub start: Vec<f64>,
-    pub goal: Vec<f64>,
+    pub goal: SceneGoal,
     /// Both planners' seed, above 0: OMPL takes no seed of 0.
     pub seed: NonZeroU32,
     pub ours: O,
@@ -116,6 +153,10 @@ impl Scene {
     fn answered(self, what: &str) -> Scene<Ours> {
         let Scene {
             boxes,
+            objects,
+            attached,
+            other_arm_holds,
+            allowed,
             start,
             goal,
             seed,
@@ -123,12 +164,51 @@ impl Scene {
         } = self;
         Scene {
             boxes,
+            objects,
+            attached,
+            other_arm_holds,
+            allowed,
             start,
             goal,
             seed,
             ours: ours.unwrap_or_else(|| panic!("{what}: motion_planning_core's answer")),
         }
     }
+}
+
+/// What a scene's plan reaches for: a configuration of the arm, each joint within the
+/// scenario's `goal_tolerance` of it for motion_planning_core and at it for MoveIt; or a
+/// pose of the tip link, which both reach through inverse kinematics, MoveIt's KDL.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum SceneGoal {
+    Joints(Vec<f64>),
+    Pose(PoseGoal),
+}
+
+/// A pose of the tip link in the robot frame, its position (m) and its orientation `[x, y,
+/// z, w]`, and how near each the goal holds: within `position_tolerance` (m) of the
+/// position, and turned within `orientation_tolerance` (rad) of the orientation, which
+/// MoveIt's `constructGoalConstraints` takes as the radius of its position region and as
+/// the tolerance of each component of the rotation vector of its orientation (moveit2
+/// 2.15.2 utils.cpp:220-226).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoseGoal {
+    pub position: [f64; 3],
+    pub orientation: [f64; 4],
+    pub position_tolerance: f64,
+    pub orientation_tolerance: f64,
+}
+
+/// An object a grasp link holds: the object, its pose in the link's frame, and the links
+/// it may touch, as apply_attached_collision_object attaches it with the arm at the
+/// scene's start.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Held {
+    pub object: Object,
+    pub touch_links: Vec<String>,
 }
 
 /// motion_planning_core's answer to a scene: the waypoints of its path, or the name of
@@ -144,11 +224,17 @@ pub enum Ours {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Probed {
-    /// The probes MoveIt finds in collision.
+    /// The probes MoveIt finds in collision, its links padded by the scenario's clearance.
     pub collisions: u64,
-    /// The smallest distance MoveIt measures from the arm to the voxels: -1 where a probe
-    /// is in collision, as MoveIt's distanceToCollision answers it.
+    /// The smallest distance MoveIt measures from the arm to the voxels and the objects,
+    /// unpadded: -1 where a probe is in collision, as MoveIt's distanceToCollisionUnpadded
+    /// answers it, and in place of a distance below -1, which FCL can read of a body that
+    /// touches the octomap.
     pub clearance: f64,
+    /// The smallest distance MoveIt measures from the object the arm holds to the voxels
+    /// and the objects, unpadded and held at -1 or above as `clearance` is; none for a
+    /// scene where the arm holds none.
+    pub held_clearance: Option<f64>,
     /// The path's length in the joints' L2 norm.
     pub length: f64,
 }
@@ -163,6 +249,8 @@ struct MoveItRead {
     collisions: Option<u64>,
     #[serde(deserialize_with = "Option::deserialize")]
     clearance: Option<f64>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    held_clearance: Option<f64>,
     #[serde(deserialize_with = "Option::deserialize")]
     length: Option<f64>,
 }
@@ -289,15 +377,17 @@ fn moveit_of(what: &str, read: MoveItRead) -> MoveIt {
         status,
         collisions,
         clearance,
+        held_clearance,
         length,
     } = read;
     let probed = match (collisions, clearance, length) {
         (Some(collisions), Some(clearance), Some(length)) => Some(Probed {
             collisions,
             clearance,
+            held_clearance,
             length,
         }),
-        (None, None, None) => None,
+        (None, None, None) if held_clearance.is_none() => None,
         _ => panic!("{what}: MoveIt's probe whole or not at all"),
     };
     assert_eq!(
@@ -328,13 +418,16 @@ mod tests {
                 "termination": "{termination}", "time_limit": 5.0, "iterations": 10,
                 "probe_spacing": 0.01,
                 "scenes": [{{"boxes": [{{"first": [0, 0, 0], "last": [1, 1, 1]}}],
-                             "start": [0.0], "goal": [1.0], "seed": 1, "ours": {ours}}}]}}"#
+                             "objects": [], "attached": null, "other_arm_holds": null,
+                             "allowed": [], "start": [0.0],
+                             "goal": [1.0], "seed": 1, "ours": {ours}}}]}}"#
         )
     }
 
     const PATH: &str = r#"{"waypoints": [[0.0], [1.0]]}"#;
     const FAILURE: &str = r#"{"failure": "no_path"}"#;
-    const PROBED: &str = r#"{"collisions": 0, "clearance": 0.03125, "length": 1.0}"#;
+    const PROBED: &str =
+        r#"{"collisions": 0, "clearance": 0.03125, "held_clearance": null, "length": 1.0}"#;
 
     /// The output of one scene: MoveIt's `status` and the fields of its probe, and the
     /// probe of ours.
@@ -346,8 +439,10 @@ mod tests {
         .expect("parses")
     }
 
-    const MOVEIT_PROBED: &str = r#""collisions": 0, "clearance": 0.03125, "length": 1.0"#;
-    const MOVEIT_NONE: &str = r#""collisions": null, "clearance": null, "length": null"#;
+    const MOVEIT_PROBED: &str =
+        r#""collisions": 0, "clearance": 0.03125, "held_clearance": null, "length": 1.0"#;
+    const MOVEIT_NONE: &str =
+        r#""collisions": null, "clearance": null, "held_clearance": null, "length": null"#;
 
     fn paired(ours: &str, status: i32, moveit_probe: &str, ours_probe: &str) -> Case {
         pair(
@@ -385,10 +480,45 @@ mod tests {
         assert!(planned("any", "deadline").is_err());
     }
 
+    // The other arm's grasp link is the tip link's mirror, left and right swapped, either
+    // way; a tip link that names no side has none.
+    #[test]
+    fn the_other_arm_mirrors_the_tip_link() {
+        let with_tip = |tip: &str| -> Scenes {
+            serde_json::from_str(
+                &scenario("arm_planning", "any", "iterations", PATH)
+                    .replace(r#""tip_link": "tip""#, &format!(r#""tip_link": "{tip}""#)),
+            )
+            .expect("a scenario")
+        };
+        assert_eq!(
+            with_tip("openarm_left_tcp").other_tip_link(),
+            "openarm_right_tcp"
+        );
+        assert_eq!(
+            with_tip("openarm_right_tcp").other_tip_link(),
+            "openarm_left_tcp"
+        );
+        let sideless = with_tip("tip");
+        assert!(std::panic::catch_unwind(|| sideless.other_tip_link()).is_err());
+    }
+
     #[test]
     fn a_scene_seeded_with_0_is_refused() {
-        let text = r#"{"boxes": [], "start": [0.0], "goal": [1.0], "seed": 0, "ours": null}"#;
+        let text = r#"{"boxes": [], "objects": [], "attached": null, "other_arm_holds": null,
+                             "allowed": [], "start": [0.0],
+            "goal": [1.0], "seed": 0, "ours": null}"#;
         assert!(serde_json::from_str::<Scene>(text).is_err());
+    }
+
+    #[test]
+    fn a_scenes_goal_is_a_configuration_or_a_pose_of_the_tip_link() {
+        let goal = |text: &str| serde_json::from_str::<SceneGoal>(text);
+        assert!(matches!(goal("[1.0, 2.0]"), Ok(SceneGoal::Joints(q)) if q == [1.0, 2.0]));
+        let pose = r#"{"position": [0.1, 0.2, 0.3], "orientation": [0.0, 0.0, 0.0, 1.0],
+                       "position_tolerance": 0.005, "orientation_tolerance": 0.05}"#;
+        assert!(matches!(goal(pose), Ok(SceneGoal::Pose(p)) if p.orientation_tolerance == 0.05));
+        assert!(goal(&pose.replace('}', r#", "frame": "world"}"#)).is_err());
     }
 
     #[test]

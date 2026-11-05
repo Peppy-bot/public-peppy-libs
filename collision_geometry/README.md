@@ -1,8 +1,9 @@
 # collision_geometry
 
 Collision geometry for any robot, read from its URDF and its collision meshes: the
-convex pieces of each body, the distance between convex shapes, and the pieces of a
-serial chain placed at a joint configuration. No hardware or messaging dependencies.
+convex pieces of each body, the distance between convex shapes, the pieces of a serial
+chain placed at a joint configuration, and the shapes of collision objects. No hardware
+or messaging dependencies.
 
 - `fit::fit_pieces` fits the convex pieces of one body to its collision elements: one
   circumscribing polytope per `<collision>` element, which holds its element by
@@ -13,13 +14,22 @@ serial chain placed at a joint configuration. No hardware or messaging dependenc
   move, places them at a configuration, each with a bounding sphere, and tests
   whether a point lies inside a link, or inside the chain, grown by a padding: every
   point within the offset of each element scaled about its center.
-- `chain::Rider` is a part that a link of a chain carries rigidly, such as a gripper
-  finger at the gripper's opening: the part's link name, the segment of the link that
-  carries it, the part's offset in that link's frame, and its pieces in its own.
+- `chain::Rider` is a body that a link of a chain carries rigidly: a part of the robot,
+  such as a gripper finger at the gripper's opening, or a shape of a collision object
+  attached to the link. It holds its name, the part's link name or the object's id, the
+  segment of the link that carries it, its offset in that link's frame, and its body in
+  its own frame (`RiderBody`): a part's pieces, or the object's shape.
   `ChainGeometry::carried` gives the parts below the chain's links across movable
   joints off its path, each a `CarriedPart` placed with those joints at 0, as riders.
 - `chain::BodyGeometry` holds the pieces of the links that fixed joints alone join to
   the URDF root, the robot's body around its chains, and grows them by the same rule.
+- `shapes` holds the shapes of collision objects: a box, a sphere, a cylinder, and a
+  closed triangle mesh in a bounding volume hierarchy, as FCL holds one. It measures a
+  convex body against a shape, a mesh by its triangles, so a body passes through the
+  open corner of an L-shaped mesh, and a body wholly inside a mesh lies at a negative
+  distance; it tests whether a point lies inside a shape grown by a padding by the
+  robot filter's rule, and gives the box along the frame's axes that holds a placed
+  shape.
 - `urdf_collision`, `stl` and `hull` read the collision elements of a URDF (meshes,
   boxes, cylinders and spheres) and build the exact convex hull of a point cloud.
 
@@ -138,15 +148,14 @@ caller can tell separating motion from approaching motion even inside an overlap
 
 ## The robot filter
 
-`Mask` holds every collision element grown by a `Padding`: the element scaled by
-`scale` about its center, and every point within `offset` meters of the scaled
-element. Placed at a configuration, it answers for each link
-(`PlacedGrownLink::contains`) and for the chain (`PlacedMask::contains`, any link). A
-`BodyMask` grows a body's pieces by the same rule, a region's piece as a mesh's piece, and
-stands where the body stands as a `PlacedMask` (`BodyMask::placed`). `BodyMask::of` grows
-parts a caller places, such as the riders of a chain where they stand, each piece as a
-mesh's piece. Each piece is a fitted one, which carries no rounding, and a rounded piece
-panics.
+`Mask` holds every collision element grown by a `Padding`: the element scaled by `scale`
+about its center, and every point within `offset` meters of the scaled element. Placed at
+a configuration, it answers for each link (`PlacedGrownLink::contains`) and for the chain
+(`PlacedMask::contains`, any link). A `BodyMask` grows a body's pieces by the same rule, a
+region's piece as a mesh's piece, and stands where the body stands as a `PlacedMask`
+(`BodyMask::placed`). `BodyMask::of` grows parts a caller places, such as the parts that
+ride a chain where they stand, each piece as a mesh's piece. Each piece is a fitted one,
+which carries no rounding, and a rounded piece panics.
 
 - A mesh scales from its piece, about the mean of the piece's vertices. A point inside
   every face of the scaled piece is inside it, and a point beyond the piece's bounding
@@ -167,6 +176,13 @@ mesh's piece holds the convex hull of the mesh and lies within
 its fit error (1 mm) of it, so at a scale of 1 a grown mesh holds every point within the
 offset of the mesh's convex hull, and no point farther from that hull than the offset
 plus the fit error.
+
+A collision object's shape grows by the same rule (`PlacedShape::contains`): a box, a
+cylinder and a sphere scale as themselves about their own origin, and a point is inside
+when its distance from the scaled primitive is at most the offset, by the same
+functions as a link's primitive; a mesh, a closed solid that may be concave, scales
+about the center of its bounds, and a point is inside when it lies inside the scaled
+mesh or within the offset of one of its triangles.
 
 A placed mask holds the reach of each grown piece in the frame of the URDF root, two
 balls about the center of its scaled element: the largest ball that the element holds,
@@ -223,7 +239,8 @@ ships Qhull's `COPYING.txt` with it and states that Qhull's source can be obtain
 src/
   chain.rs           ChainGeometry, PlacedChain, Padding, Mask, PlacedMask,
                      PlacedGrownLink: a serial chain's pieces and the robot filter;
-                     Rider, CarriedPart: a part a link of a chain carries;
+                     Rider, RiderBody, CarriedPart: a body a link of a chain
+                     carries;
                      BodyGeometry, BodyMask: the body fixed to the root
   fit.rs             fit_pieces: one body's pieces, and the containment check
   simplify.rs        the supporting-plane fit to a deviation budget
@@ -231,6 +248,8 @@ src/
   hull.rs            the exact convex hull, by Qhull
   hull/report.rs     the stream in memory that Qhull writes its messages to
   gjk.rs             GJK distance, EPA penetration, Hull, Placed and Vertex
+  shapes.rs          Shape, PlacedShape, PlacedMesh, the closed triangle mesh's hierarchy
+                     and inside test
   stl.rs             binary STL reader
   urdf_collision.rs  URDF collision elements and their surfaces, fixed poses, joint
                      transforms
@@ -238,6 +257,8 @@ src/
 tests/
   chain_geometry.rs                  properties of the pieces of drawn chains, the
                                      robot filter on one link, and the body
+  shapes.rs                          box meshes against their boxes, the L's open corner,
+                                     paddings, scales, bounds, a mirrored mesh
   common/properties.rs               the dressed robots and paddings the properties draw
   common/growth.rs                   MoveIt's growth of a primitive, which the
                                      properties and the MoveIt comparison read
@@ -319,7 +340,17 @@ rounded cube is refused.
 `tests/fit_prints_nothing.rs` runs a hull, a cloud with no hull and the fit of
 an OpenArm arm in a child process of its own and reads that it prints nothing, and
 `tests/hull_without_a_free_descriptor.rs` builds a hull with no file descriptor free.
-`HEGEL_TEST_CASES` sets the cases each property runs, 100 by default.
+For the shapes of collision objects, at drawn poses: a box mesh measures a drawn
+sphere as its box does and holds the points its box holds, two box meshes measure each
+other as their boxes do, a primitive grown by a padding holds every point within the
+offset of it and no point farther, a shape grown by a scale holds a point along each of
+its axes up to the scale times its reach and no farther, and a shape's bounds hold it
+and reach it on each side; a box mesh inside another lies at a negative distance from
+either; an L-shaped mesh leaves its open corner free and holds what lies inside its
+bars; a mesh whose mirrored half meets the other with -0.0 is closed; a point with a
+coordinate that is not a finite number lies inside no shape; and a shape refuses what
+it cannot be, an open mesh among them. `HEGEL_TEST_CASES` sets the cases each property
+runs, 100 by default.
 
 `tests/ros_reference_chain_collision.rs` is the evidence for the chain geometry and
 the robot filter against MoveIt: at every configuration of the chain collision

@@ -31,6 +31,7 @@ add_executable(ros_reference
   reference_programs/planning.cpp
   reference_programs/occupancy.cpp
   reference_programs/arm_planning.cpp
+  reference_programs/planning_scene.cpp
 )
 target_link_libraries(ros_reference PRIVATE
   geometric_shapes::geometric_shapes
@@ -43,6 +44,7 @@ target_link_libraries(ros_reference PRIVATE
   moveit_core::moveit_trajectory_processing
   moveit_ros_occupancy_map_monitor::moveit_ros_occupancy_map_monitor
   moveit_ros_perception::moveit_pointcloud_octomap_updater_core
+  moveit_ros_planning::moveit_kinematics_plugin_loader
   moveit_ros_planning::moveit_planning_pipeline
   nlohmann_json::nlohmann_json
   ${OCTOMAP_LIBRARIES}

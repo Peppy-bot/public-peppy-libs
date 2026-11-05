@@ -1,7 +1,8 @@
 //! A depth frame's intake into the voxel map: its samples deprojected into points in the
-//! robot frame, the robot cut out where a history of its joint positions puts it at the
-//! frame's stamp, and the points inserted. A point on the robot marks nothing, and its ray
-//! clears the space before it.
+//! robot frame, the robot and the objects of the planning scene cut out, the robot and
+//! the objects its links carry where a history of its joint positions puts them at the
+//! frame's stamp, and the points inserted. A point on the robot or inside an object marks
+//! nothing, and its ray clears the space before it.
 
 use std::collections::VecDeque;
 use std::time::{Duration, SystemTime};
@@ -9,9 +10,13 @@ use std::time::{Duration, SystemTime};
 use camera_core::pinhole::{DepthModel, Pinhole};
 use camera_core::pose::Pose;
 use collision_geometry::chain::{
-    BodyGeometry, BodyMask, ChainGeometry, Mask, Padding, PlacedMask, Rider,
+    BodyGeometry, BodyMask, ChainGeometry, Mask, Padding, PlacedMask, Rider, RiderBody,
 };
-use occupancy_map::{DepthError, InsertError, RobotCutout, Scan, VoxelMap, depth_points};
+use collision_geometry::shapes::PlacedShape;
+use nalgebra::Isometry3;
+use occupancy_map::{
+    Cutout, DepthError, InsertError, RobotCutout, Scan, ShapeCutout, VoxelMap, depth_points,
+};
 
 use crate::arm::rider_pose;
 
@@ -114,43 +119,71 @@ impl<const N: usize> JointHistory<N> {
     }
 }
 
-/// A chain of the robot at the joint positions a depth frame shows it at, with the parts
-/// its links carry, such as a gripper's fingers at the gripper's opening.
+/// A chain of the robot at the joint positions a depth frame shows it at, with the bodies
+/// its links carry: parts such as a gripper's fingers at the gripper's opening, and the
+/// shapes of the objects attached to its grasp link.
 pub struct PosedChain<'a, const N: usize> {
     pub geometry: &'a ChainGeometry<N>,
     pub joints: [f64; N],
     pub riders: &'a [Rider<'a>],
 }
 
-/// The robot grown by a padding at one instant, the shape a depth frame cuts out: each
-/// chain's links at its joint positions, the parts they carry, and the body fixed around
-/// the chains. Each piece grows as [`Padding`] says: scaled about its center, a mesh's or
-/// a region's piece about the mean of its vertices, and taking in every point within the
-/// offset of the scaled piece.
+/// The robot grown by a padding at one instant, with the objects of the planning scene,
+/// the shapes a depth frame cuts out: each chain's links at its joint positions, the
+/// bodies they carry, the body fixed around the chains, and the objects no link carries
+/// where they stand. Each piece grows as [`Padding`] says: scaled about its center, a
+/// mesh's or a region's piece about the mean of its vertices, and taking in every point
+/// within the offset of the scaled piece; and each shape of an object by the same rule
+/// (`PlacedShape::contains`).
 pub struct RobotMask<'a, const N: usize> {
     chains: Vec<(Mask<'a, N>, [f64; N])>,
     carried: BodyMask<'a>,
     body: BodyMask<'a>,
+    /// The shapes of the objects, placed in the frame of the URDF root: those the chains
+    /// carry, and those no link carries.
+    objects: Vec<PlacedShape<'a>>,
+    padding: Padding,
 }
 
 impl<'a, const N: usize> RobotMask<'a, N> {
-    /// The robot of `chains` and `body`, each piece grown by `padding`.
+    /// The robot of `chains` and `body`, each piece and each shape its links carry grown
+    /// by `padding`.
     pub fn new(chains: &[PosedChain<'a, N>], body: &'a BodyGeometry, padding: Padding) -> Self {
-        let carried = chains.iter().flat_map(|chain| {
-            let posed = chain.geometry.chain().at(&chain.joints);
-            chain
-                .riders
-                .iter()
-                .map(move |rider| (rider.link, rider.pieces, rider_pose(&posed, rider)))
+        let riders: Vec<(&Rider<'a>, Isometry3<f64>)> = chains
+            .iter()
+            .flat_map(|chain| {
+                let posed = chain.geometry.chain().at(&chain.joints);
+                chain
+                    .riders
+                    .iter()
+                    .map(move |rider| (rider, rider_pose(&posed, rider)))
+            })
+            .collect();
+        let parts = riders.iter().filter_map(|(rider, pose)| match rider.body {
+            RiderBody::Pieces(pieces) => Some((rider.name, pieces, *pose)),
+            RiderBody::Shape(_) => None,
+        });
+        let objects = riders.iter().filter_map(|(rider, pose)| match rider.body {
+            RiderBody::Pieces(_) => None,
+            RiderBody::Shape(shape) => Some(PlacedShape::new(shape, *pose)),
         });
         Self {
             chains: chains
                 .iter()
                 .map(|chain| (chain.geometry.mask(padding), chain.joints))
                 .collect(),
-            carried: BodyMask::of(carried, padding),
+            carried: BodyMask::of(parts, padding),
             body: body.mask(padding),
+            objects: objects.collect(),
+            padding,
         }
+    }
+
+    /// The mask with `standing`, the shapes of the objects no link carries placed in the
+    /// frame of the URDF root, cut out too, each grown by the robot's padding.
+    pub fn with_objects(mut self, standing: impl IntoIterator<Item = PlacedShape<'a>>) -> Self {
+        self.objects.extend(standing);
+        self
     }
 
     /// Each grown part where it stands, in the frame of the URDF root.
@@ -163,16 +196,28 @@ impl<'a, const N: usize> RobotMask<'a, N> {
     }
 }
 
-/// Inserts `scan` into `map` with `robot` cut out, the robot's URDF root at the origin of
-/// the scan's frame. A scan in another frame than the map's is refused.
+/// Inserts `scan` into `map` with `robot` and its objects cut out, the robot's URDF root
+/// at the origin of the scan's frame. A scan in another frame than the map's is refused.
 pub fn insert_cut_out<const N: usize>(
     map: &mut VoxelMap,
     scan: &Scan,
     robot: &RobotMask<N>,
 ) -> Result<(), InsertError> {
     let root = Pose::new([0.0; 3], [0.0, 0.0, 0.0, 1.0]).expect("the identity is a pose");
-    let cutout = RobotCutout::new(scan.frame, root, robot.placed());
-    map.insert(scan, &[&cutout])
+    let body = RobotCutout::new(scan.frame, root, robot.placed());
+    let objects: Vec<ShapeCutout> = robot
+        .objects
+        .iter()
+        .map(|shape| ShapeCutout {
+            frame: scan.frame,
+            shape: *shape,
+            padding: robot.padding,
+        })
+        .collect();
+    let cutouts: Vec<&dyn Cutout> = std::iter::once(&body as &dyn Cutout)
+        .chain(objects.iter().map(|object| object as &dyn Cutout))
+        .collect();
+    map.insert(scan, &cutouts)
 }
 
 #[cfg(test)]

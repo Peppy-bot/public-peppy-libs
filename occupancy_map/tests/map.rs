@@ -1,23 +1,26 @@
-//! Properties of the voxel map on drawn scenes: what one point does to the
-//! voxels of its ray, what an empty depth sample and a point that is not a
-//! number do, what repeated scans of a still scene make of a surface, the
-//! robot cut out where it stands, its chains and the body fixed around them,
-//! the frames a map refuses, the distance
-//! field against a brute-force distance inside the map and outside it, and a
-//! rendered depth frame of a box.
+//! Properties of the voxel map on drawn scenes: what one point does to the voxels of its
+//! ray, what an empty depth sample and a point that is not a number do, what repeated
+//! scans of a still scene make of a surface, the robot cut out where it stands, its
+//! chains and the body fixed around them, the frames a map refuses, the distance field
+//! against a brute-force distance inside the map and outside it, a rendered depth frame
+//! of a box, and a collision object clearing the voxels it intersects or touches, those
+//! it covers in part among them, a mesh clearing the voxels each one measured on its own
+//! finds, and cutting what the sensor sees of it, grown by a padding, out of a scan.
 
 use std::collections::BTreeSet;
 
 use camera_core::pinhole::{DepthModel, Intrinsics, Pinhole};
 use camera_core::pose::Pose;
 use collision_geometry::chain::{BodyGeometry, Padding};
+use collision_geometry::gjk::Vertex;
+use collision_geometry::shapes::{PlacedShape, Shape};
 use control_core::positive_finite::PositiveFinite;
 use hegel::TestCase;
 use hegel::generators as gs;
 use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{
-    Bounds, Cutout, DistanceField, Frame, InsertError, Key, NotANumber, RobotCutout, Scan, Voxel,
-    VoxelMap, depth_points,
+    Bounds, Cutout, DistanceField, Frame, InsertError, Key, NotANumber, RobotCutout, Scan,
+    ShapeCutout, Voxel, VoxelMap, depth_points,
 };
 use openarm_description::Side;
 
@@ -25,6 +28,8 @@ use openarm_description::Side;
 mod arms;
 #[path = "common/ball.rs"]
 mod ball;
+#[path = "common/meshes.rs"]
+mod meshes;
 #[path = "common/pose.rs"]
 mod pose;
 #[path = "common/slab.rs"]
@@ -52,9 +57,14 @@ fn range(meters: f64) -> PositiveFinite {
 }
 
 fn map() -> VoxelMap {
+    map_of(VOXEL_M)
+}
+
+/// An empty map 4 m across of voxels `voxel_m` on a side.
+fn map_of(voxel_m: f64) -> VoxelMap {
     VoxelMap::new(
         frame(),
-        PositiveFinite::parse(VOXEL_M).expect("positive"),
+        PositiveFinite::parse(voxel_m).expect("positive"),
         Bounds {
             min: [-EDGE_M; 3],
             max: [EDGE_M; 3],
@@ -86,17 +96,21 @@ fn sensor(tc: &TestCase) -> Pose {
     Pose::new(origin, q).expect("a unit quaternion")
 }
 
+/// A unit vector, any way.
+fn direction(tc: &TestCase) -> Vector3<f64> {
+    let raw = Vector3::from(tc.draw(gs::arrays(gs::floats().min_value(-1.0).max_value(1.0))));
+    if raw.norm() > 0.1 {
+        raw.normalize()
+    } else {
+        Vector3::z()
+    }
+}
+
 /// A point at a distance of `near` to `far` from the sensor, any way.
 fn point(tc: &TestCase, near: f64, far: f64) -> [f32; 3] {
-    let direction: [f64; 3] = tc.draw(gs::arrays(gs::floats().min_value(-1.0).max_value(1.0)));
-    let norm = direction.iter().map(|c| c * c).sum::<f64>().sqrt();
-    let direction = if norm > 0.1 {
-        direction.map(|c| c / norm)
-    } else {
-        [0.0, 0.0, 1.0]
-    };
+    let direction = direction(tc);
     let distance: f64 = tc.draw(gs::floats().min_value(near).max_value(far));
-    direction.map(|c| (c * distance) as f32)
+    std::array::from_fn(|i| (direction[i] * distance) as f32)
 }
 
 /// The key `map` gives a sensor point that it holds.
@@ -862,4 +876,212 @@ fn a_cleared_map_is_an_empty_one() {
     insert(&mut empty, identity(), &points, &[]);
     assert!(!voxels(&empty).is_empty());
     assert_eq!(voxels(&cleared), voxels(&empty));
+}
+
+/// The shape of a collision object: a box, a sphere or a cylinder, one to eight voxels
+/// across.
+fn object_shape(tc: &TestCase) -> Shape {
+    let length = || gs::floats().min_value(VOXEL_M).max_value(8.0 * VOXEL_M);
+    match tc.draw(gs::integers::<usize>().min_value(0).max_value(2)) {
+        0 => Shape::cuboid(tc.draw(gs::arrays(length()))),
+        1 => Shape::sphere(tc.draw(length()) / 2.0),
+        _ => Shape::cylinder(tc.draw(length()) / 2.0, tc.draw(length())),
+    }
+    .expect("a shape of lengths above 0")
+}
+
+/// A rotation drawn from its Euler angles.
+fn turned(tc: &TestCase) -> UnitQuaternion<f64> {
+    UnitQuaternion::from_euler_angles(
+        tc.draw(gs::floats().min_value(-3.0).max_value(3.0)),
+        tc.draw(gs::floats().min_value(-1.5).max_value(1.5)),
+        tc.draw(gs::floats().min_value(-3.0).max_value(3.0)),
+    )
+}
+
+// An object placed over a scanned cloud clears every voxel whose center it holds, each
+// to the lowest log-odds, and leaves every voxel whose box lies wholly beyond it as it
+// was.
+#[hegel::test]
+fn an_object_clears_the_voxels_it_intersects(tc: TestCase) {
+    let sensor = sensor(&tc);
+    let points: Vec<[f32; 3]> = (0..60).map(|_| point(&tc, 0.2, 1.5)).collect();
+    let mut map = map();
+    insert(&mut map, sensor, &points, &[]);
+    let occupied: Vec<Key> = map.occupied().collect();
+    tc.assume(!occupied.is_empty());
+    let at = map.center(
+        occupied[tc.draw(
+            gs::integers::<usize>()
+                .min_value(0)
+                .max_value(occupied.len() - 1),
+        )],
+    );
+    let shape = object_shape(&tc);
+    let placed = PlacedShape::new(
+        &shape,
+        Isometry3::from_parts(Translation3::new(at[0], at[1], at[2]), turned(&tc)),
+    );
+    let before: Vec<(Key, Voxel)> = map.known().map(|key| (key, map.voxel(key))).collect();
+    map.clear_intersecting(&placed);
+    let at_key = map.key(at).expect("inside the map");
+    assert_eq!(log_odds(&map, at_key), Some(lowest()));
+    let half_diagonal = VOXEL_M * 3.0_f64.sqrt() / 2.0;
+    for (key, voxel) in before {
+        let center = Point3::from(map.center(key));
+        let distance = placed.distance_to(&Vertex(center), (center, 0.0));
+        if distance <= 0.0 {
+            assert_eq!(
+                log_odds(&map, key),
+                Some(lowest()),
+                "{key:?} stays as it was inside the object"
+            );
+        } else if distance > half_diagonal {
+            assert_eq!(map.voxel(key), voxel, "{key:?} beyond the object changed");
+        }
+    }
+}
+
+// A point inside a collision object grown by its padding marks nothing, and a point
+// beyond the padding is a hit: the band a ball's padding cuts reaches its radius times
+// the scale less 1, and the offset farther.
+#[hegel::test]
+fn a_point_inside_an_object_marks_nothing(tc: TestCase) {
+    let sensor = sensor(&tc);
+    let p = point(&tc, 0.3, 1.0);
+    let at = Vector3::from(sensor.apply(p.map(f64::from)));
+    let radius: f64 = tc.draw(gs::floats().min_value(VOXEL_M).max_value(0.2));
+    let scale: f64 = tc.draw(gs::floats().min_value(1.0).max_value(1.5));
+    let offset: f64 = tc.draw(gs::floats().min_value(0.0).max_value(0.05));
+    let band = radius * (scale - 1.0) + offset;
+    let gap: f64 = tc.draw(gs::floats().min_value(0.0).max_value(0.2));
+    tc.assume((gap - band).abs() > 1e-6);
+    let ball = Shape::sphere(radius).expect("a sphere");
+    let center = at + direction(&tc) * (radius + gap);
+    let frame = frame();
+    let object = ShapeCutout {
+        frame: &frame,
+        shape: PlacedShape::new(&ball, Isometry3::translation(center.x, center.y, center.z)),
+        padding: Padding::new(scale, offset).expect("a scale above 0 and an offset of 0 or more"),
+    };
+    let mut map = map();
+    insert(&mut map, sensor, &[p], &[&object]);
+    assert_eq!(
+        map.occupied().count() == 0,
+        gap < band,
+        "a point {gap} m from the object, whose padding cuts a band of {band} m"
+    );
+}
+
+/// The voxels `map` knows.
+fn known(map: &VoxelMap) -> BTreeSet<Key> {
+    map.known().collect()
+}
+
+/// The voxels from `lo` to `hi`, both included.
+fn keys(lo: [i32; 3], hi: [i32; 3]) -> BTreeSet<Key> {
+    (lo[0]..=hi[0])
+        .flat_map(|x| {
+            (lo[1]..=hi[1]).flat_map(move |y| (lo[2]..=hi[2]).map(move |z| Key([x, y, z])))
+        })
+        .collect()
+}
+
+// A box whose faces lie on voxel faces clears the voxels it fills and those whose faces,
+// edges or corners touch its own, and no other, as a box and as a mesh: voxels of 12.5 cm
+// and a box from 12.5 to 37.5 cm on each axis, and voxels of 10 cm and a box from 10 to
+// 20 cm, whose lower faces the sum of its center and half its size puts a rounding above
+// 10 cm.
+#[test]
+fn an_object_clears_the_voxels_whose_faces_touch_it() {
+    for (voxel_m, first, last) in [(0.125, 1, 2), (0.1, 1, 1)] {
+        let size = f64::from(last - first + 1) * voxel_m;
+        let center = f64::from(first + last + 1) / 2.0 * voxel_m;
+        let shapes = [
+            ("a box", Shape::cuboid([size; 3]).expect("a box")),
+            ("a box mesh", meshes::box_mesh([size; 3])),
+        ];
+        for (form, shape) in shapes {
+            let mut map = map_of(voxel_m);
+            map.clear_intersecting(&PlacedShape::new(
+                &shape,
+                Isometry3::translation(center, center, center),
+            ));
+            assert_eq!(
+                known(&map),
+                keys([first - 1; 3], [last + 1; 3]),
+                "{form} in {voxel_m} m voxels"
+            );
+            assert!(map.known().all(|key| log_odds(&map, key) == Some(lowest())));
+        }
+    }
+}
+
+// A box of 10 cm about the corner the voxels of 12.5 cm from 12.5 to 37.5 cm share
+// covers each of those eight voxels in part, none of their centers among it: it clears
+// the eight, and no other.
+#[test]
+fn an_object_clears_the_voxels_it_covers_in_part() {
+    let mut map = map_of(0.125);
+    let cube = Shape::cuboid([0.1; 3]).expect("a box");
+    map.clear_intersecting(&PlacedShape::new(
+        &cube,
+        Isometry3::translation(0.25, 0.25, 0.25),
+    ));
+    assert_eq!(known(&map), keys([1; 3], [2; 3]));
+}
+
+/// A closed mesh one to twelve voxels across: a sphere whose vertices lie at drawn
+/// radii, an L, or a box with a box hollowed out of it.
+fn drawn_mesh(tc: &TestCase) -> Shape {
+    let across = || gs::floats().min_value(VOXEL_M).max_value(12.0 * VOXEL_M);
+    match tc.draw(gs::integers::<usize>().min_value(0).max_value(2)) {
+        0 => {
+            let rings = tc.draw(gs::integers::<usize>().min_value(1).max_value(12));
+            let around = tc.draw(gs::integers::<usize>().min_value(3).max_value(16));
+            let radius: f64 = tc.draw(across()) / 2.0;
+            meshes::sphere(rings, around, || {
+                tc.draw(gs::floats().min_value(radius / 2.0).max_value(radius))
+            })
+        }
+        1 => meshes::l_mesh(tc.draw(across())),
+        _ => meshes::hollow_box(
+            tc.draw(gs::arrays(across())),
+            tc.draw(gs::floats().min_value(0.2).max_value(0.8)),
+        ),
+    }
+}
+
+/// The voxels of `map` that `shape` touches, each measured on its own: every voxel of the
+/// map within a voxel of the shape's bounds.
+fn touched_one_by_one(map: &VoxelMap, shape: &PlacedShape) -> BTreeSet<Key> {
+    let (min, max) = shape.bounds();
+    let index = |c: f64| (c / map.voxel_size()).floor() as i32;
+    let lo = std::array::from_fn(|i| index(min[i]) - 1);
+    let hi = std::array::from_fn(|i| index(max[i]) + 1);
+    keys(lo, hi)
+        .into_iter()
+        .filter(|key| map.key(map.center(*key)) == Some(*key) && map.touches(shape, *key))
+        .collect()
+}
+
+// A mesh clears the voxels it touches, as each measured on its own finds them: those its
+// triangles cross or touch and those it holds whole, and no voxel of an L's open corner or
+// of a hollow box's hollow; on drawn meshes, turned any way, standing anywhere in the map
+// or across its faces, edges and corners.
+#[hegel::test]
+fn a_mesh_clears_the_voxels_each_one_measured_alone_finds(tc: TestCase) {
+    let shape = drawn_mesh(&tc);
+    let reach = EDGE_M + 6.0 * VOXEL_M;
+    let center: [f64; 3] = tc.draw(gs::arrays(gs::floats().min_value(-reach).max_value(reach)));
+    let placed = PlacedShape::new(
+        &shape,
+        Isometry3::from_parts(
+            Translation3::new(center[0], center[1], center[2]),
+            turned(&tc),
+        ),
+    );
+    let mut map = map();
+    map.clear_intersecting(&placed);
+    assert_eq!(known(&map), touched_one_by_one(&map, &placed));
 }

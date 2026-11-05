@@ -1,11 +1,13 @@
-//! The arm a plan moves: its chain, the collision pieces of its links and of the parts
-//! its links carry rigidly through a plan, how far any point of them moves per unit of
-//! each joint, and the robot's self model where the robot has one.
+//! The arm a plan moves: its chain, the collision pieces of its links and the bodies its
+//! links carry rigidly through a plan, the parts of the robot such as its fingers and the
+//! objects attached to its grasp link, how far any point of them moves per unit of each
+//! joint, and the robot's self model where the robot has one.
 
-use chain_kinematics::{JointKind, Posed};
-use collision_geometry::chain::{ChainGeometry, Rider};
-use collision_geometry::gjk::{Hull, Placed};
-use nalgebra::Isometry3;
+use chain_kinematics::{Chain, JointKind, Posed};
+use collision_geometry::chain::{ChainGeometry, Rider, RiderBody};
+use collision_geometry::gjk::{self, Placed, Support};
+use collision_geometry::shapes::PlacedShape;
+use nalgebra::{Isometry3, Point3};
 
 /// A robot's check of its own body: the smallest distance between the pairs of its
 /// self model with the arm at a configuration, and the rest of the robot where it
@@ -22,12 +24,56 @@ pub trait SelfModel<const N: usize>: Sync {
 /// A rider that the child link of no joint of the arm carries.
 #[derive(Debug, PartialEq, thiserror::Error)]
 #[error(
-    "{link} rides the child link of joint {segment}, and the arm's joints run from 0 to {last}"
+    "{name} rides the child link of joint {segment}, and the arm's joints run from 0 to {last}"
 )]
 pub struct RiderOffTheArm {
-    pub link: String,
+    pub name: String,
     pub segment: usize,
     pub last: usize,
+}
+
+/// A body of the arm placed at a configuration: a piece of a link or of a part a link
+/// carries, or a shape of an object a link carries.
+#[derive(Debug)]
+pub enum Body<'a> {
+    Piece(Placed<'a>),
+    Shape(PlacedShape<'a>),
+}
+
+impl Body<'_> {
+    /// The center and the radius of a sphere that holds the body.
+    pub fn bounding_sphere(&self) -> (Point3<f64>, f64) {
+        match self {
+            Self::Piece(piece) => piece.bounding_sphere(),
+            Self::Shape(shape) => shape.bounding_sphere(),
+        }
+    }
+
+    /// The signed distance from the body to the convex `other`, which `sphere` holds:
+    /// negative where they overlap, and where `other` lies wholly inside a mesh.
+    pub fn distance_to_convex(&self, other: &impl Support, sphere: (Point3<f64>, f64)) -> f64 {
+        match self {
+            Self::Piece(piece) => gjk::distance(piece, other).distance,
+            Self::Shape(shape) => shape.distance_to(other, sphere),
+        }
+    }
+
+    /// The signed distance from the body to `other`, a shape of an object: negative
+    /// where they overlap, and where one lies wholly inside the other's mesh.
+    pub fn distance_to_shape(&self, other: &PlacedShape) -> f64 {
+        match self {
+            Self::Piece(piece) => other.distance_to(piece, piece.bounding_sphere()),
+            Self::Shape(shape) => shape.distance_to_shape(other),
+        }
+    }
+
+    /// The shape, for a shape of an object a link carries.
+    pub fn shape(&self) -> Option<&PlacedShape<'_>> {
+        match self {
+            Self::Piece(_) => None,
+            Self::Shape(shape) => Some(shape),
+        }
+    }
 }
 
 /// The arm of a plan.
@@ -55,7 +101,7 @@ impl<'a, const N: usize> Arm<'a, N> {
     pub fn riding(self, riders: &'a [Rider<'a>]) -> Result<Self, RiderOffTheArm> {
         if let Some(rider) = riders.iter().find(|rider| rider.segment >= N) {
             return Err(RiderOffTheArm {
-                link: rider.link.to_string(),
+                name: rider.name.to_string(),
                 segment: rider.segment,
                 last: N.saturating_sub(1),
             });
@@ -67,21 +113,27 @@ impl<'a, const N: usize> Arm<'a, N> {
         })
     }
 
-    /// Every piece of the arm's links and of its riders, placed with the arm at `q` in
-    /// the frame of the URDF root, with the name of its link.
-    pub fn pieces(&self, q: &[f64; N]) -> Vec<(&'a str, Placed<'a>)> {
+    /// Every body of the arm, each piece of its links and each piece or shape of its
+    /// riders, placed with the arm at `q` in the frame of the URDF root, with the name of
+    /// its link or of its rider.
+    pub fn bodies(&self, q: &[f64; N]) -> Vec<(&'a str, Body<'a>)> {
         let posed = self.geometry.chain().at(q);
         self.geometry
             .place_at(&posed)
             .pieces()
+            .map(|(link, piece)| (link, Body::Piece(piece)))
             .chain(self.riders.iter().flat_map(|rider| {
                 let pose = rider_pose(&posed, rider);
-                rider
-                    .pieces
-                    .iter()
-                    .map(move |piece| (rider.link, Placed::new(piece, pose)))
+                rider_bodies(rider, pose).map(move |body| (rider.name, body))
             }))
             .collect()
+    }
+
+    /// Whether a link of the arm carries an object: a rider of a shape.
+    pub fn carries_an_object(&self) -> bool {
+        self.riders
+            .iter()
+            .any(|rider| matches!(rider.body, RiderBody::Shape(_)))
     }
 
     pub fn geometry(&self) -> &ChainGeometry<N> {
@@ -133,17 +185,38 @@ pub(crate) fn frame_on_segment<const N: usize>(
     posed.link_pose_world(segment) * offset
 }
 
+/// The grasp point of `chain`, its end effector, as a frame on the child link of its last
+/// joint: where a goal of the grasp point and an object attached to the grasp link ride.
+pub(crate) fn grasp_frame<const N: usize>(chain: &Chain<N>) -> Isometry3<f64> {
+    let zero = [0.0; N];
+    chain.at(&zero).link_pose_world(N - 1).inverse() * chain.world_ee_pose(&zero)
+}
+
 /// Where `rider` stands in the frame of the URDF root with its chain posed at `posed`.
 pub(crate) fn rider_pose<const N: usize>(posed: &Posed<N>, rider: &Rider) -> Isometry3<f64> {
     frame_on_segment(posed, rider.segment, &rider.offset)
+}
+
+/// The bodies of `rider` standing at `pose` in the frame of the URDF root: each of a
+/// part's pieces, or the object's shape.
+fn rider_bodies<'a>(rider: &Rider<'a>, pose: Isometry3<f64>) -> impl Iterator<Item = Body<'a>> {
+    let (pieces, shape) = match rider.body {
+        RiderBody::Pieces(pieces) => (pieces, None),
+        RiderBody::Shape(shape) => (&[][..], Some(shape)),
+    };
+    pieces
+        .iter()
+        .map(move |piece| Body::Piece(Placed::new(piece, pose)))
+        .chain(shape.map(|shape| Body::Shape(PlacedShape::new(shape, pose))))
 }
 
 /// For each joint of `geometry`'s chain, the farthest any point of a link it moves, or of
 /// one of `riders`, lies from it, over every configuration: a revolute joint turning by an
 /// angle moves a point at most that angle times the point's distance from the joint's
 /// origin. That distance is at most the lengths between the joint origins from the joint
-/// to the link's own joint, plus the farthest point of the link's pieces, or the rider's,
-/// from its joint's origin. The length from one joint's origin to the next one's is the
+/// to the link's own joint, plus the farthest point of the link's pieces, or of the
+/// rider's pieces or shape, from its joint's origin, as each one's bounding sphere bounds
+/// it. The length from one joint's origin to the next one's is the
 /// one at 0, and longer by up to the next joint's farthest limit where that joint is
 /// prismatic, which moves its own origin along its axis. A prismatic joint moves every
 /// point it carries by its own travel.
@@ -164,25 +237,26 @@ fn reach_of<const N: usize>(geometry: &ChainGeometry<N>, riders: &[Rider]) -> [f
             }
         })
         .collect();
-    // The farthest point of `hull`, placed at `pose` with the chain at 0, from the origin
-    // of joint `segment`, whose link carries it.
-    let extent = |segment: usize, pose: &Isometry3<f64>, hull: &Hull| {
-        ((pose * hull.center()).coords - origin(segment)).norm() + hull.bound_radius()
+    // The farthest point of `body`, placed with the chain at 0, from the origin of joint
+    // `segment`, whose link carries it.
+    let extent = |segment: usize, body: Body| {
+        let (center, radius) = body.bounding_sphere();
+        (center.coords - origin(segment)).norm() + radius
     };
     let placed = geometry.place(&[0.0; N]);
-    // Each piece's joint, and the farthest point of the piece from that joint's origin.
+    // Each body's joint, and the farthest point of the body from that joint's origin.
     let links = placed.links().flat_map(|(link, pose)| {
         let segment = link.segment();
-        link.pieces()
-            .iter()
-            .map(move |piece| (segment, extent(segment, pose, piece.hull())))
+        link.pieces().iter().map(move |piece| {
+            (
+                segment,
+                extent(segment, Body::Piece(Placed::new(piece.hull(), *pose))),
+            )
+        })
     });
     let carried = riders.iter().flat_map(|rider| {
-        let pose = rider_pose(&posed, rider);
-        rider
-            .pieces
-            .iter()
-            .map(move |hull| (rider.segment, extent(rider.segment, &pose, hull)))
+        rider_bodies(rider, rider_pose(&posed, rider))
+            .map(|body| (rider.segment, extent(rider.segment, body)))
     });
     let extents: Vec<(usize, f64)> = links.chain(carried).collect();
     std::array::from_fn(|i| {

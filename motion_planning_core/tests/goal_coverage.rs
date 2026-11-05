@@ -1,55 +1,42 @@
-//! The generic goal sampler against OpenArm's closed form: on reachable poses, it
-//! reaches each shoulder and wrist branch that `srs_model` finds. It reaches the
-//! reachable poses of the links above the grasp point, and of a part a link carries.
+//! The generic goal sampler against OpenArm's closed form: on reachable poses, with the
+//! configurations of every other shoulder and wrist branch invalid, one goal sample
+//! reaches each branch that `srs_model` finds. It reaches the reachable poses of the
+//! links above the grasp point, and of a part a link carries.
 
 mod common;
 
 use std::collections::BTreeSet;
+use std::num::NonZeroUsize;
 
 use motion_planning_core::{
-    Frame, Goal, GoalSampler, IkGoalSampler, OrientationTarget, PositionTarget,
+    Draws, Frame, Goal, GoalSampler, IkGoalSampler, OrientationTarget, PositionTarget, sample_goals,
 };
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use openarm_description::{HardwareVersion, Side};
 use srs_model::ArmAnglePolicy;
 
-use common::{JOINTS, LEFT_ARM, an_hour_from_now, positive};
+use common::{JOINTS, LEFT_ARM, SplitMix64, branch, positive};
 
 /// The poses drawn.
 const POSES: usize = 200;
-/// The configurations the generic sampler draws per pose.
-const GOAL_SAMPLES: usize = 64;
+/// The working state each goal sample sets out from, every joint at 0: a start unrelated
+/// to the drawn pose.
+const START: [f64; JOINTS] = [0.0; JOINTS];
+/// The attempts of a goal sample: the plan's, MoveIt's `max_state_sampling_attempts`
+/// default (moveit2 2.15.2 planning_context_manager.cpp:259).
+const ATTEMPTS: usize = 4;
 /// The arm angles at which `srs_model` is asked for a solution on each branch.
 const ARM_ANGLES: usize = 720;
-/// The share of the poses on which the generic sampler reaches every branch.
-const COVERED_SHARE: f64 = 0.95;
 /// How near the grasp point lies to the pose for the generic sampler's goal.
 const POSITION_TOLERANCE_M: f64 = 0.005;
 const ORIENTATION_TOLERANCE_RAD: f64 = 0.01;
 
-/// The shoulder and wrist branch of `q`: on which side of a quarter turn the middle
-/// joint of each spherical limb stands. The two solutions of a limb differ there.
-fn branch(q: &[f64; JOINTS]) -> (bool, bool) {
-    (q[1].cos() >= 0.0, q[5].cos() >= 0.0)
-}
-
-/// SplitMix64 draws in `[0, 1)`.
-struct Draws(u64);
-
-impl Draws {
-    fn unit(&mut self) -> f64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        ((z ^ (z >> 31)) >> 11) as f64 / (1_u64 << 53) as f64
-    }
-}
-
-// On drawn reachable poses of OpenArm v2's left arm, the generic sampler reaches each
-// branch that srs_model finds on at least 95% of them.
+// On each of 200 drawn reachable poses of OpenArm v2's left arm, for each branch that
+// srs_model finds, one goal sample from a working state unrelated to the pose, every
+// configuration off that branch invalid, reaches a goal on it: the goal sampling reaches
+// a branch that the scene leaves valid when the branches its seeds lead to are not.
 #[test]
-fn the_generic_sampler_reaches_each_branch_srs_model_finds() {
+fn one_goal_sample_reaches_each_branch_srs_model_finds_when_the_others_are_invalid() {
     let version = HardwareVersion::V2;
     let srs = srs_model::Arm::from_urdf(version.urdf(), version.base_link(Side::Left))
         .expect("an SRS arm")
@@ -58,7 +45,7 @@ fn the_generic_sampler_reaches_each_branch_srs_model_finds() {
     let chain = LEFT_ARM.chain();
     let sampler = IkGoalSampler::new(chain.clone());
     let limits = chain.limits();
-    let mut draws = Draws(20261028);
+    let mut draws = SplitMix64(20261028);
     let mut covered = 0;
     // The poses on which srs_model finds more than one branch.
     let mut several = 0;
@@ -111,39 +98,41 @@ fn the_generic_sampler_reaches_each_branch_srs_model_finds() {
             }],
         )
         .expect("a valid goal");
-        let reached: BTreeSet<(bool, bool)> = sampler
-            .sample(
-                &goal,
-                GOAL_SAMPLES,
-                pose_index as u64,
-                an_hour_from_now(),
-                None,
-            )
+        let reached: BTreeSet<(bool, bool)> = found
             .iter()
-            .map(branch)
+            .copied()
+            .filter(|&only| {
+                sampler
+                    .sample_from(
+                        &goal,
+                        &START,
+                        ATTEMPTS,
+                        &mut Draws::new(pose_index as u64),
+                        &|q| branch(q) == only,
+                    )
+                    .is_some()
+            })
             .collect();
         several += usize::from(found.len() > 1);
-        if found.is_subset(&reached) {
+        if found == reached {
             covered += 1;
         } else {
             missed.push((pose_index, found, reached));
         }
     }
-    let share = covered as f64 / POSES as f64;
-    println!(
-        "covered {covered} of {POSES} poses, {several} with more than one branch; missed {:?}",
-        missed.iter().take(5).collect::<Vec<_>>()
-    );
+    println!("covered {covered} of {POSES} poses, {several} with more than one branch");
     assert!(
-        share >= COVERED_SHARE,
-        "the generic sampler covers {share} of the poses"
+        missed.is_empty(),
+        "one goal sample misses a branch on {} poses: {:?}",
+        missed.len(),
+        missed.iter().take(5).collect::<Vec<_>>()
     );
 }
 
 /// The reachable poses drawn for each link frame.
 const LINK_POSES: usize = 10;
-/// The configurations the sampler draws per link pose.
-const LINK_SAMPLES: usize = 16;
+/// The goals sampled per link pose.
+const LINK_GOALS: usize = 4;
 
 // On drawn reachable poses of the forearm, of the wrist link, and of a part the hand
 // carries off its frame, the sampler finds configurations whose frame meets the pose.
@@ -156,7 +145,7 @@ fn the_sampler_reaches_the_poses_of_links_and_carried_parts() {
         Translation3::new(0.0, 0.03, -0.1),
         UnitQuaternion::from_euler_angles(0.3, 0.0, 0.0),
     );
-    let mut draws = Draws(20261029);
+    let mut draws = SplitMix64(20261029);
     for frame in [
         Frame::Link {
             segment: 3,
@@ -166,7 +155,7 @@ fn the_sampler_reaches_the_poses_of_links_and_carried_parts() {
             segment: 5,
             offset: Isometry3::identity(),
         },
-        Frame::Link {
+        Frame::Part {
             segment: JOINTS - 1,
             offset: carried,
         },
@@ -175,8 +164,8 @@ fn the_sampler_reaches_the_poses_of_links_and_carried_parts() {
             let q: [f64; JOINTS] = std::array::from_fn(|i| {
                 limits[i].lo + (limits[i].hi - limits[i].lo) * draws.unit()
             });
-            let Frame::Link { segment, offset } = frame else {
-                unreachable!("each frame drawn is a link's")
+            let (Frame::Link { segment, offset } | Frame::Part { segment, offset }) = frame else {
+                unreachable!("each frame drawn is a link's or a part's")
             };
             let pose = chain.at(&q).link_pose_world(segment) * offset;
             let goal = Goal::new(
@@ -195,12 +184,14 @@ fn the_sampler_reaches_the_poses_of_links_and_carried_parts() {
                 }],
             )
             .expect("a valid goal");
-            let reached = sampler.sample(
+            let reached = sample_goals(
+                &sampler,
                 &goal,
-                LINK_SAMPLES,
+                &START,
+                NonZeroUsize::new(LINK_GOALS).expect("nonzero"),
                 pose_index as u64,
-                an_hour_from_now(),
-                None,
+                &|| false,
+                &|_| true,
             );
             assert!(
                 !reached.is_empty(),

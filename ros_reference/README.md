@@ -21,7 +21,8 @@ change of the reference, which `run.sh --check` proves.
 | `path_timing` | MoveIt's time-optimal trajectory generation (TOTG): the blended path through waypoints at a maximum deviation, and its time-optimal duration under velocity and acceleration limits, or its refusal of a path that turns back | `control_core/tests/ros_reference_path_timing.rs` |
 | `planning` | OMPL's geometric planners: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
 | `occupancy` | MoveIt's point cloud updater: the log-odds of every voxel of MoveIt's occupancy map after a sequence of point clouds, with a sphere cut out as the robot's own body | `occupancy_map/tests/ros_reference_occupancy.rs` |
-| `arm_planning` | MoveIt's planning pipeline with the OMPL planner of the scenario's objective, RRTConnect for `any` and RRTstar for `shortest`, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, on scenes of an arm of OpenArm v2, the fingers of its gripper checked with it, among boxes of voxels as an octomap: MoveIt's answer to each scene, planned to the goal state itself, and MoveIt's collision check, smallest distance and length along its path and along motion_planning_core's, which the scenario carries (`tools/draw_arm_planning.py` writes it, with the answers of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
+| `arm_planning` | MoveIt's planning pipeline with the OMPL planner of the scenario's objective, RRTConnect for `any` and RRTstar for `shortest`, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, on scenes of an arm of OpenArm v2, the fingers of its gripper checked with it, among boxes of voxels as an octomap, or among collision objects of each shape kind, the hand holding a cube, attached with the gripper as its touch links, in every other one: MoveIt's answer to each scene, planned to the goal state itself or to a pose of the grasp point, which MoveIt's KDL inverse kinematics reaches, and MoveIt's collision check, smallest distance and length along its path and along motion_planning_core's, which the scenario carries (`tools/draw_arm_planning.py` writes it, with the answers of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes, with `--objects` the scenes among collision objects, and with `--poses` the scenes whose goal is a pose of the grasp point) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
+| `planning_scene` | MoveIt's planning scene, its FCL collision environment, its path check and its octomap updater's shape mask: the objects, the attached objects and the allowed pairs that name an object after calls of motion_planning's scene members, as MoveIt's planning scene message holds them, the scenario's voxels its octomap from the start; at each configuration the signed distance of each pair of a link or an attached object and an object or the octomap, and of an attached object and a link it may not touch, with whether one body of a pair FCL finds apart lies wholly inside the other's closed mesh; the waypoints of each path of the arm that MoveIt's path check (`PlanningScene::isPathValid`) finds invalid, the rest of the robot standing still, and its dense probe of the path, a state every 1e-3 rad, whether a state is in collision and how far the arm stands from the objects and the octomap, and both again with the robot's links padded by the scenario's path padding; and whether each probe of the scenario lies inside an object the calls leave standing, grown by each padding as the shape mask grows it | `motion_planning_core/tests/ros_reference_planning_scene.rs` |
 
 ## Layout
 
@@ -33,7 +34,7 @@ change of the reference, which `run.sh --check` proves.
 | `packages-amd64.txt`, `packages-arm64.txt` | The version of every package of the reference image, on each architecture. |
 | `reference_programs/` | The reference program `ros_reference`: one function per kind of scenario. |
 | `src/` | The Rust crate `ros_reference`: one module per kind of scenario, which lists the scenarios of the kind and reads each with its reference output, checked with the scenario and the files it names against their digests, for the parity test. |
-| `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, a parsed URDF, the joints of an arm of OpenArm v2, the joint limits of a URDF, the configurations of a chain, the constants of a Rust file, and `write`, which writes a scenario. |
+| `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, a parsed URDF, the joints of an arm of OpenArm v2, the joint limits of a URDF, the configurations of a chain, the origin of a URDF element, the bounds of a link's collision elements, a rotation drawn uniformly, the constants of a Rust file, and `write`, which writes a scenario. |
 | `Dockerfile`, `CMakeLists.txt`, `ros-snapshots.asc` | The reference image and the build of the reference program in it. |
 | `run.sh` | Runs the reference of every scenario in the reference image. |
 
@@ -116,12 +117,17 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    logging unconfigured: configuring it creates a log directory in the home directory,
    and the container runs as the host's user, whom the image may give none.
 2. A reference gives the same output on every run: the container has no network and one
-   OpenMP thread, every random generator of a reference is seeded from its scenario, and
-   a search ends on an iteration bound that the scenario gives. MoveIt's samplers draw
-   from generators of random_numbers that they construct by its default constructor, which
+   OpenMP thread, every random generator of a reference is seeded from its scenario, and a
+   search ends on an iteration bound that the scenario gives. MoveIt's samplers draw from
+   generators of random_numbers that they construct by its default constructor, which
    random_numbers seeds from the clock; the reference program defines that constructor and
    exports it, so MoveIt's libraries construct their generators through it, and the arm
-   planning reference seeds them from each scene.
+   planning reference seeds them from each scene, and std::rand, which KDL's step off a
+   singularity draws from through Eigen. Two things of a pose goal's scene are MoveIt's
+   own: KDL's search for a goal ends on its timeout, a clock, and the planner's thread and
+   the goal sampler's each build a generator, whose seeds follow the order they are built
+   in. The committed pose scenes repeat their bytes in every run measured, each alone and
+   after the others, in six processes and under load.
 3. A comparison that is statistical by nature, a sampling planner's against another's,
    runs over a drawn set, locally: draw the set with the `--drawn` option of the kind's
    script, run `run.sh`, and run the crate's parity test with `cargo test -- --ignored`,
@@ -130,35 +136,53 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    `tools/draw_arm_planning.py --episodes <directory> --launcher <fragment>` writes their
    scenes in place of the drawn ones, each the map the motion planner of the launcher
    fragment builds of the episode's depth frames, its measured start, and a goal
-   configuration drawn for its pose goal. The arm planning script's `--objective
-   shortest` plans each scene with RRTstar, and its `--planning-time <seconds>` ends each
-   plan on that time alone, MoveIt's on its allowed planning time and
-   motion_planning_core's on its deadline, as a robot's plan ends; a set planned so gives
-   other paths on each run, and runs locally, never committed. The statistical test
-   refuses a set too small for its intervals. The committed cases of such a kind compare
-   bit for bit, as every other output does: the arm planning scenario plans `any` on its
-   iterations.
+   configuration drawn for its pose goal. The arm planning script's `--objective shortest`
+   plans each scene with RRTstar, and its `--planning-time <seconds>` ends MoveIt's plans
+   on that time alone, their allowed planning time, and motion_planning_core's `any` plans
+   on that time or the iteration bound, whichever comes first, as the robot runs (its
+   motion planner's launcher fragment bounds a plan by `max_iterations`); a set planned so
+   gives other paths on each run, and runs locally, never committed. Its
+   `--min-clearance <meters>` plans at that clearance: motion_planning_core's
+   `min_clearance_m`, and the padding of each of MoveIt's links against the octomap and
+   the objects, the robot meeting itself unpadded, as a collision request's defaults ask.
+   The scenes plan the arm without its self model, and MoveIt's links may all meet each
+   other, so no part of a gap at a clearance comes from this crate's clearance within the
+   robot's own body. The object the hand holds keeps the clearance from the parts of the
+   robot that stand still, and the arm and that object keep it from the object the other
+   hand holds, which MoveIt holds as an attached body and checks against them unpadded.
+   MoveIt pads no held object, which takes the padding of the grasp link, a link with no
+   collision geometry, which MoveIt pads by 0 (moveit2 2.15.2 collision_env.cpp:127-133
+   and :166-176, collision_env_fcl.cpp:195-196): it keeps the object the hand holds
+   unpadded from the objects and the octomap, and the tally counts the paths of each that
+   bring it nearer than the clearance and 1 mm. MoveIt pads a link's mesh by moving each
+   vertex along its normal (geometric_shapes 2.3.4 shapes.cpp:402-404), so a face beside a
+   right-angled edge moves out the padding over the square root of 2, and one at a box's
+   corner the padding over the square root of 3. Each arm planning scenario has its own
+   statistical test, among boxes, among objects or to poses, which a filter runs:
+   `cargo test --test ros_reference_arm_planning -- --ignored among_objects`. The
+   statistical test refuses a set too small for its intervals. The committed cases of such
+   a kind compare bit for bit, as every other output does: the arm planning scenario plans
+   `any` on its iterations.
 4. A parity test states what the library guarantees, and the bound within which its
-   outputs agree with the reference, or the statistic it compares, and why. A number of
-   an output reads back to the bits that the reference computed, so a test compares
-   with the reference's own double. A test that compares the exact bits of an output
-   runs under `#[cfg(target_arch = "x86_64")]`, since the committed outputs hold amd64
-   bits. The occupancy test compares bits with the committed outputs on every
-   architecture, since the map under test gives the amd64 bits on arm64 too. Against the
-   outputs that `ROS_REFERENCE_OUTPUTS` names, it counts the voxels that differ, held by
-   one map alone or at other log-odds, and fails when more than 1% of the reference's
-   voxels do: MoveIt's arm64 build fuses multiply-adds in its point cloud callback (31 of
-   them in `cloudMsgCallback`). Its map of `occupancy_room` equals the amd64 one in all
-   398 voxels, and that of a drawn set of 60 points of each drawn case (rule 6) differs
-   from the amd64 one in 6 of 7187 voxels (0.08%). The arm planning test plans and
-   compares this crate's paths, and asks for a scene of each outcome, on amd64 alone,
-   where the committed outputs hold the answers of MoveIt that the scenes were picked
-   by. Against the outputs that `ROS_REFERENCE_OUTPUTS` names, it holds every probe of
-   those paths free in MoveIt's check and each refusal as MoveIt's. MoveIt's arm64 build
-   answers the committed scenes otherwise: it refuses the same four starts and goals, and
+   outputs agree with the reference, or the statistic it compares, and why. A number of an
+   output reads back to the bits that the reference computed, so a test compares with the
+   reference's own double. A test that compares the exact bits of an output runs under
+   `#[cfg(target_arch = "x86_64")]`, since the committed outputs hold amd64 bits. The
+   occupancy test compares bits with the committed outputs on every architecture, since
+   the map under test gives the amd64 bits on arm64 too. Against the outputs that
+   `ROS_REFERENCE_OUTPUTS` names, it counts the voxels that differ, held by one map alone
+   or at other log-odds, and fails when more than 1% of the reference's voxels do:
+   MoveIt's arm64 build fuses multiply-adds in its point cloud callback (31 of them in
+   `cloudMsgCallback`). Its map of `occupancy_room` equals the amd64 one in all 398
+   voxels, and that of a drawn set of 60 points of each drawn case (rule 6) differs from
+   the amd64 one in 6 of 7187 voxels (0.08%). The arm planning test plans and compares
+   this crate's paths, and asks for a scene of each outcome, on amd64 alone, where the
+   committed outputs hold the answers of MoveIt that the scenes were picked by. Against
+   the outputs that `ROS_REFERENCE_OUTPUTS` names, it holds every probe of those paths
+   free in MoveIt's check and each refusal as MoveIt's. MoveIt's arm64 build answers the
+   committed scenes among boxes otherwise: it refuses the same four starts and goals, and
    of the four scenes it plans, it plans the straight path to other last bits and another
-   path with corners, its own check passes the path that fails it on amd64, and fails
-   the path with the most corners that passes it on amd64.
+   path with corners, and its own check passes the path that fails it on amd64.
 5. One rule lays out every scenario and every reference output: a value goes on one line
    when it is a scalar, an array of scalars, or a record, an object whose members are
    each a scalar or an array of scalars; every other array or object spreads over lines,
@@ -197,24 +221,47 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    voxel that the later cloud crosses after the scene took it to the upper clamp, a
    cut-out voxel on the ray of another point, and a voxel that holds a cut-out point and a
    hit, and the level sensor's two points beyond the range at a voxel face; for arm
-   planning, one drawn scene of each outcome of `tools/draw_arm_planning.py`, a straight
-   path and a path with corners that MoveIt plans too, the scene whose path has the most
-   corners among the first 200 drawn, which the script picks, a path of
-   `motion_planning_core` where MoveIt's own path fails its check, a start in a box and a
-   goal in a box that both refuse, and a start below a lower limit and one above an upper
-   limit, its statistics over 200 drawn scenes as rule 3 says. A large drawn set runs
+   planning, in each of its scenarios, among boxes of voxels and among collision objects,
+   one drawn scene of each outcome of `tools/draw_arm_planning.py`, a straight path and a
+   path with corners that MoveIt plans too, the scene whose path has the most corners
+   among the first 200 drawn, which the script picks, a path of `motion_planning_core`
+   where MoveIt's own path fails its check, a start and a goal in a box or an object that
+   both refuse, and a start below a lower limit and one above an upper limit, the scenes
+   among objects holding a box, a cylinder, a closed mesh and an object of two shapes
+   among them, the hand holding a cube in one and a cylinder it sets down on a table it
+   may touch in another, and the other hand holding a cube in one, and to poses, each such
+   scene (`COMMITTED_POSES`), its statistics over 200 drawn
+   scenes as rule 3 says; for the planning scene, the calls of
+   `tools/draw_planning_scene.py` on OpenArm v2 and eight configurations of its left arm,
+   all joints at zero, at their lower limits, at their upper limits, the one an item and a
+   lid are attached at, the one the lid is detached at, and three drawn inside the limits
+   that each place objects around a link: a sphere that holds a link, beside a box that
+   fills a link it may touch; a link wholly inside a closed box mesh; and a link in the
+   open corner of an L-shaped mesh; sixteen voxels, those the table, the item and the cap
+   fill, one beside a link and twelve drawn, and two the calls mark, where the sphere
+   moves to and where the item is attached, before the move and the attach; twenty paths,
+   each two configurations in turn, the first through a post between two clear waypoints,
+   all eight in one, and twelve from the zero configuration, the lower limits or a
+   configuration drawn inside the limits to one within 0.3 rad of it in each joint; and
+   twelve probes about each of eleven objects at three paddings. A large drawn set runs
    locally and is never committed: draw it into `scenarios/` with the `--drawn` option of
    the kind's script (for forward kinematics,
    `python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
    `ros_reference/run.sh` and the parity tests, and restore the committed files with
    `git restore ros_reference/scenarios ros_reference/reference`.
 7. Every mode of arm planning that a caller selects, each objective and planner that the
-   contracts expose, has its own arm planning scenario and tally against MoveIt at
-   MoveIt's production time model: each plan ended on its allowed planning time alone
-   (`--planning-time`), at MoveIt's default of 5 s (moveit2 2.15.2
-   `MoveGroupInterfaceImpl`, `allowed_planning_time_ = 5.0`) and at the time that the
-   robot's callers ask, over the drawn set and the recorded episodes, as rule 3 says. The
-   pull request states which modes its tally covers.
+   contracts expose, and the planning scene it plans in, among collision objects and
+   holding an attached object (`--objects`), and the goal a pose of the grasp point that
+   MoveIt reaches through KDL's inverse kinematics (`--poses`), has its own arm planning
+   scenario and tally against MoveIt at each one's production termination
+   (`--planning-time`): MoveIt's plans ended on their allowed planning time alone, and
+   this crate's on that time or the robot's iteration bound, whichever comes first, at
+   MoveIt's default of 5 s (moveit2 2.15.2 `MoveGroupInterfaceImpl`,
+   `allowed_planning_time_ = 5.0`) and at the time that the robot's callers ask, over the
+   drawn set, and over the recorded episodes for a mode whose goal they give, a
+   configuration, as rule 3 says, at a clearance of 0 and at the clearance of the robot's
+   launch (`--min-clearance`), each plan of this crate sampling the launch's goals (its
+   fragment's `goal_samples`). The pull request states which modes its tally covers.
 
 ## Pins
 
@@ -279,8 +326,10 @@ arm64 host.
    within 0.02 degrees, and a path with corners at the deviation of execute_joint_path,
    the planning parity test asks each scenario for a plan of each planner that finds a
    path and one that finds none, the occupancy parity test asks each scenario's map for at
-   least 199 voxels, and the arm planning parity test asks each scenario for a scene of
-   each outcome that it names.
+   least 199 voxels, the arm planning parity test asks each scenario for a scene of each
+   outcome that it names, and the planning scene parity test builds the self model of
+   OpenArm v2, refuses a scenario that names another URDF or poses another arm, and asks
+   each scenario for a pair of each case that it names.
 
 A routine test of `ros_reference` fails when a scenario has no reference output, a
 reference output has no scenario or no digest, or a scenario, a URDF or a mesh differs

@@ -1,51 +1,31 @@
 //! A goal: the constraints a path's last waypoint meets, and the samplers that find
 //! configurations meeting them.
 
-use std::sync::atomic::AtomicBool;
-use std::time::Instant;
-
-use chain_kinematics::{
-    Chain, DEFAULT_DLS_LAMBDA, Goal as PoseGoal, Jacobian, Kinematics, clamp_into,
-    damped_pseudo_inverse,
-};
+use chain_kinematics::{Chain, Limit, Posed, all_within};
 use collision_geometry::chain::Rider;
 use control_core::positive_finite::PositiveFinite;
-use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3, Vector6};
+use nalgebra::{Isometry3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
 
 use crate::arm::frame_on_segment;
 use crate::draws::Draws;
-use crate::stop::is_set;
-
-/// Two goal configurations closer than this in every joint, in radians or meters, are
-/// one: the sampler keeps the first.
-const SAME_CONFIGURATION: f64 = 1e-3;
-
-/// A position tolerance that leaves the position free, for a frame whose goal names
-/// only its orientation.
-const FREE_POSITION_M: f64 = 1e3;
-
-/// The steps a descent toward a link's pose takes at most.
-const DESCENT_STEPS: usize = 200;
-/// The turn of a joint (rad, or m for a prismatic joint) over which a descent takes the
-/// change of a link's pose.
-const DIFFERENCE_STEP: f64 = 1e-7;
-/// The most one step of a descent aims to move a link: meters, and radians.
-const DESCENT_STEP_M: f64 = 0.05;
-const DESCENT_STEP_RAD: f64 = 0.2;
-/// How near its target, in meters and radians together, a descent stops.
-const DESCENT_REACHED: f64 = 1e-9;
+use crate::goal_ik::{Aims, GoalIk};
 
 /// A frame of the arm that a target names.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Frame {
     /// The chain's grasp point: its tool frame.
     GraspPoint,
-    /// A link the child link of joint `segment` carries rigidly through a plan, at
-    /// `offset` in that link's frame: the child link itself at the identity, or a part
-    /// it carries, such as a gripper finger at the gripper's opening, whose
+    /// A link of the chain, the child link of joint `segment`, at the identity `offset`,
+    /// or a link fixed below it, at `offset` in that link's frame.
+    Link {
+        segment: usize,
+        offset: Isometry3<f64>,
+    },
+    /// A part the child link of joint `segment` carries through a plan at `offset` in
+    /// that link's frame, such as a gripper finger at the gripper's opening, whose
     /// [`Rider`] gives the frame (`Frame::from`) where the arm's clearance checks place
     /// the part.
-    Link {
+    Part {
         segment: usize,
         offset: Isometry3<f64>,
     },
@@ -53,7 +33,7 @@ pub enum Frame {
 
 impl From<&Rider<'_>> for Frame {
     fn from(rider: &Rider<'_>) -> Self {
-        Self::Link {
+        Self::Part {
             segment: rider.segment,
             offset: rider.offset,
         }
@@ -68,6 +48,9 @@ impl std::fmt::Display for Frame {
                 write!(f, "the child link of joint {segment}")
             }
             Self::Link { segment, .. } => {
+                write!(f, "a link fixed below the child link of joint {segment}")
+            }
+            Self::Part { segment, .. } => {
                 write!(f, "a part the child link of joint {segment} carries")
             }
         }
@@ -148,6 +131,48 @@ impl OrientationTarget {
             }
         }
     }
+
+    /// An orientation within the tolerance of the target, drawn inside this crate's
+    /// region of it as MoveIt's `IKConstraintSampler::samplePose` draws one inside its
+    /// own (moveit2 2.15.2 default_constraint_samplers.cpp:493-529): the target turned by
+    /// a rotation vector drawn uniformly inside the ball of the tolerance, where MoveIt
+    /// draws each component of it inside the tolerance, a box; and with a free axis, first
+    /// turned about it by an angle drawn whole.
+    fn draw(&self, draws: &mut Draws) -> UnitQuaternion<f64> {
+        let tilt = loop {
+            let v = Vector3::from_fn(|_, _| draws.between(-1.0, 1.0));
+            if v.norm_squared() <= 1.0 {
+                break v * self.tolerance_rad.get();
+            }
+        };
+        let turned = match self.free_axis {
+            None => self.orientation,
+            Some(axis) => {
+                let turn = draws.between(-std::f64::consts::PI, std::f64::consts::PI);
+                self.orientation
+                    * UnitQuaternion::from_axis_angle(&Unit::new_unchecked(axis.unit()), turn)
+            }
+        };
+        turned * UnitQuaternion::from_scaled_axis(tilt)
+    }
+}
+
+/// A rotation drawn uniformly, as `IKConstraintSampler::samplePose` draws the orientation
+/// of a goal that names none (default_constraint_samplers.cpp:541-547): Shoemake's draw
+/// of a unit quaternion from three uniform numbers.
+fn uniform_rotation(draws: &mut Draws) -> UnitQuaternion<f64> {
+    let share = draws.unit();
+    let (first, second) = (
+        std::f64::consts::TAU * draws.unit(),
+        std::f64::consts::TAU * draws.unit(),
+    );
+    let (r1, r2) = ((1.0 - share).sqrt(), share.sqrt());
+    UnitQuaternion::from_quaternion(Quaternion::new(
+        second.cos() * r2,
+        first.sin() * r1,
+        first.cos() * r1,
+        second.sin() * r2,
+    ))
 }
 
 /// A goal that names nothing to meet, or names it out of range.
@@ -208,7 +233,7 @@ impl Goal {
         };
         let frame = |frame: Frame| match frame {
             Frame::GraspPoint => Ok(()),
-            Frame::Link { segment, .. } => in_arm(segment),
+            Frame::Link { segment, .. } | Frame::Part { segment, .. } => in_arm(segment),
         };
         for target in &joints {
             in_arm(target.joint)?;
@@ -270,33 +295,113 @@ impl Goal {
 
 /// The pose of `frame` of `chain` at `q`, in the robot frame.
 fn frame_pose<const N: usize>(chain: &Chain<N>, q: &[f64; N], frame: Frame) -> Isometry3<f64> {
+    frame_pose_at(&chain.at(q), frame)
+}
+
+/// The pose of `frame` of the chain `posed` holds, in the robot frame.
+pub(crate) fn frame_pose_at<const N: usize>(posed: &Posed<N>, frame: Frame) -> Isometry3<f64> {
     match frame {
-        Frame::GraspPoint => chain.world_ee_pose(q),
-        Frame::Link { segment, offset } => frame_on_segment(&chain.at(q), segment, &offset),
+        Frame::GraspPoint => posed.base_from_world().inverse() * posed.ee_pose(),
+        Frame::Link { segment, offset } | Frame::Part { segment, offset } => {
+            frame_on_segment(posed, segment, &offset)
+        }
     }
 }
 
-/// What finds configurations that meet a goal.
-pub trait GoalSampler<const N: usize>: Sync {
-    /// Up to `count` configurations of the arm, inside its joint limits, that meet
-    /// `goal`, each drawn from `seed`, the ones drawn before `deadline` and before `stop`,
-    /// if any, is set.
-    fn sample(
+impl Goal {
+    /// The frame the goal's position and orientation name, if it names either.
+    fn frame(&self) -> Option<Frame> {
+        self.position
+            .map(|t| t.frame)
+            .or_else(|| self.orientation.map(|t| t.frame))
+    }
+
+    /// A configuration inside `limits`, the joints the goal names drawn inside their
+    /// targets where those overlap the limits, as MoveIt's
+    /// `JointConstraintSampler::sample` draws the unbounded joints and then the bounded
+    /// ones (default_constraint_samplers.cpp:179-191).
+    fn draw_joints<const N: usize>(&self, limits: &[Limit; N], draws: &mut Draws) -> [f64; N] {
+        let mut drawn = draws.within(limits);
+        for t in &self.joints {
+            let low = (t.position - t.below.get()).max(limits[t.joint].lo);
+            let high = (t.position + t.above.get()).min(limits[t.joint].hi);
+            if low <= high {
+                drawn[t.joint] = draws.between(low, high);
+            }
+        }
+        drawn
+    }
+
+    /// A pose of `frame` of `chain` drawn inside the goal, as
+    /// `IKConstraintSampler::samplePose` draws one
+    /// (default_constraint_samplers.cpp:441-557): a position drawn uniformly inside the
+    /// position's tolerance, or, for a goal that names none, the frame's position at a
+    /// configuration drawn inside `limits`; then an orientation drawn inside the
+    /// orientation's tolerance, or drawn uniformly for a goal that names none.
+    fn draw_pose<const N: usize>(
         &self,
-        goal: &Goal,
-        count: usize,
-        seed: u64,
-        deadline: Instant,
-        stop: Option<&AtomicBool>,
-    ) -> Vec<[f64; N]>;
+        chain: &Chain<N>,
+        frame: Frame,
+        limits: &[Limit; N],
+        draws: &mut Draws,
+    ) -> Isometry3<f64> {
+        let position = match self.position {
+            Some(t) => t.draw(draws),
+            None => {
+                frame_pose(chain, &draws.within(limits), frame)
+                    .translation
+                    .vector
+            }
+        };
+        let rotation = match self.orientation {
+            Some(t) => t.draw(draws),
+            None => uniform_rotation(draws),
+        };
+        Isometry3::from_parts(Translation3::from(position), rotation)
+    }
 }
 
-/// The goal sampler of any chain: inverse kinematics descends from each of `count`
-/// configurations drawn inside the joint limits, the joints a goal names drawn inside
-/// their targets, toward a pose of the goal's frame drawn within its position and
-/// orientation tolerances, until the deadline passes or the stop flag is set. The chain's
-/// own solver reaches for its grasp point, and a damped least-squares descent on the
-/// frame's Jacobian for a link.
+/// What finds configurations that meet a goal, one goal sample at a time, as MoveIt's
+/// constraint samplers find them for its `ConstrainedGoalSampler`
+/// (`crate::plan::sample_goals` runs the samples).
+pub trait GoalSampler<const N: usize>: Sync {
+    /// One goal sample, as MoveIt's `ConstraintSampler::sample` makes one: from the
+    /// working state `working`, which lies inside the joint limits, with up to `attempts`
+    /// attempts, drawing from `draws`; the first configuration inside the joint limits that
+    /// meets `goal` and that `valid` accepts, or none.
+    fn sample_from(
+        &self,
+        goal: &Goal,
+        working: &[f64; N],
+        attempts: usize,
+        draws: &mut Draws,
+        valid: &dyn Fn(&[f64; N]) -> bool,
+    ) -> Option<[f64; N]>;
+}
+
+/// The goal sampler of any chain, as MoveIt's samplers of a goal sample. For a goal of
+/// joints, one configuration drawn inside the joint limits, the joints the goal names
+/// inside their targets, whatever the attempts, as `JointConstraintSampler::sample` draws
+/// one (moveit2 2.15.2 default_constraint_samplers.cpp:169-196). For a pose, as
+/// `IKConstraintSampler::sample` (:580-651): each attempt draws a pose of the goal's
+/// frame inside the goal (`IKConstraintSampler::samplePose`) and searches for it by the
+/// inverse kinematics of MoveIt's KDL plugin (`crate::goal_ik`), the first attempt from
+/// the working state held to the joint limits (`callIK(..., a == 0)`, :647, whose
+/// `use_as_seed` seeds from the state's joints, :670-678) and every later one from a
+/// configuration drawn inside them (:674-678). The search hands each configuration it
+/// finds to the goal's constraints and to `valid`, as KDL's search hands each to the
+/// constraint sampler's validity callback (:595-603). The grasp point, and a link that
+/// the chain's every joint moves and that is fixed below the last joint's link, are the
+/// tip of MoveIt's solver or a link fixed to it, and the search solves for them as KDL
+/// does. A link the chain's later joints do not move, and a part a link carries such as a
+/// finger, which hangs on a joint of its own, depart from MoveIt, which has no inverse
+/// kinematics for them: MoveIt builds no IK sampler for a link that is not the tip or
+/// fixed to it (`IKConstraintSampler::loadIKSolver`, :386-439), so its constraint sampler
+/// manager selects none (constraint_sampler_manager.cpp:395) and its goal sampler draws
+/// states uniformly and keeps those that meet the goal by chance
+/// (constrained_goal_sampler.cpp:71-72, :158-166). This sampler descends toward what the
+/// goal names, with KDL's position-only and approximate-solution options applied, and the
+/// goal's constraints decide (`crate::goal_ik`).
 pub struct IkGoalSampler<const N: usize> {
     chain: Chain<N>,
 }
@@ -307,156 +412,38 @@ impl<const N: usize> IkGoalSampler<N> {
     }
 }
 
-/// Joint positions from `seed` that bring `frame` of `chain` toward `target`, by damped
-/// least squares on the frame's Jacobian, each column taken as the change of the frame's
-/// pose over a small turn of its joint. The frame's position counts when `position`
-/// holds, and its orientation when `orientation` holds. Each step stays inside the joint
-/// limits; the descent ends at the first step that brings the frame no nearer.
-fn descend_to<const N: usize>(
-    chain: &Chain<N>,
-    frame: Frame,
-    seed: [f64; N],
-    target: &Isometry3<f64>,
-    position: bool,
-    orientation: bool,
-) -> [f64; N] {
-    let limits = chain.limits();
-    // How far the frame at `q` lies from the target: the translation to it, and the
-    // rotation vector of the turn to it.
-    let miss = |q: &[f64; N]| -> Vector6<f64> {
-        let pose = frame_pose(chain, q, frame);
-        let moved = if position {
-            target.translation.vector - pose.translation.vector
-        } else {
-            Vector3::zeros()
-        };
-        let turned = if orientation {
-            (target.rotation * pose.rotation.inverse()).scaled_axis()
-        } else {
-            Vector3::zeros()
-        };
-        Vector6::new(moved.x, moved.y, moved.z, turned.x, turned.y, turned.z)
-    };
-    let mut q = seed;
-    let mut here = miss(&q);
-    for _ in 0..DESCENT_STEPS {
-        if here.norm() <= DESCENT_REACHED {
-            break;
-        }
-        let columns: [Vector6<f64>; N] = std::array::from_fn(|j| {
-            let mut turned = q;
-            turned[j] += DIFFERENCE_STEP;
-            (here - miss(&turned)) / DIFFERENCE_STEP
-        });
-        let shrink = (DESCENT_STEP_M / here.fixed_rows::<3>(0).norm())
-            .min(DESCENT_STEP_RAD / here.fixed_rows::<3>(3).norm())
-            .min(1.0);
-        let step =
-            damped_pseudo_inverse(&Jacobian::<N>::from_columns(&columns), DEFAULT_DLS_LAMBDA)
-                * (here * shrink);
-        let next = clamp_into(&limits, &std::array::from_fn(|i| q[i] + step[i]));
-        let there = miss(&next);
-        if there.norm() >= here.norm() {
-            break;
-        }
-        q = next;
-        here = there;
-    }
-    q
-}
-
 impl<const N: usize> GoalSampler<N> for IkGoalSampler<N> {
-    fn sample(
+    fn sample_from(
         &self,
         goal: &Goal,
-        count: usize,
-        seed: u64,
-        deadline: Instant,
-        stop: Option<&AtomicBool>,
-    ) -> Vec<[f64; N]> {
-        let mut draws = Draws::new(seed);
+        working: &[f64; N],
+        attempts: usize,
+        draws: &mut Draws,
+        valid: &dyn Fn(&[f64; N]) -> bool,
+    ) -> Option<[f64; N]> {
         let limits = self.chain.limits();
-        // The frame inverse kinematics reaches for: the one the goal's position and
-        // orientation name.
-        let posed = goal
-            .position
-            .map(|t| t.frame)
-            .or_else(|| goal.orientation.map(|t| t.frame));
-        // The chain's own solver, for its grasp point.
-        let kinematics = posed.map(|frame| {
-            (
-                frame,
-                (frame == Frame::GraspPoint).then(|| Kinematics::new(self.chain.clone())),
-            )
-        });
-        let mut kept: Vec<[f64; N]> = Vec::new();
-        for _ in 0..count {
-            if Instant::now() >= deadline || is_set(stop) {
-                break;
-            }
-            let mut start: [f64; N] =
-                std::array::from_fn(|i| draws.between(limits[i].lo, limits[i].hi));
-            for t in &goal.joints {
-                let low = (t.position - t.below.get()).max(limits[t.joint].lo);
-                let high = (t.position + t.above.get()).min(limits[t.joint].hi);
-                if low <= high {
-                    start[t.joint] = draws.between(low, high);
-                }
-            }
-            let candidate = match &kinematics {
-                None => Some(start),
-                Some((frame, kinematics)) => {
-                    let current = frame_pose(&self.chain, &start, *frame);
-                    let (region, orientation) = (goal.position, goal.orientation);
-                    let position =
-                        region.map_or(current.translation.vector, |t| t.draw(&mut draws));
-                    // A free axis turns the target about it by an angle drawn whole.
-                    let rotation = orientation.map_or(current.rotation, |t| match t.free_axis {
-                        None => t.orientation,
-                        Some(axis) => {
-                            let turn = draws.between(-std::f64::consts::PI, std::f64::consts::PI);
-                            t.orientation
-                                * UnitQuaternion::from_axis_angle(
-                                    &nalgebra::Unit::new_unchecked(axis.unit()),
-                                    turn,
-                                )
-                        }
-                    });
-                    let pose = Isometry3::from_parts(Translation3::from(position), rotation);
-                    match kinematics {
-                        None => Some(descend_to(
-                            &self.chain,
-                            *frame,
-                            start,
-                            &pose,
-                            region.is_some(),
-                            orientation.is_some(),
-                        )),
-                        Some(kinematics) => {
-                            let mut target = PoseGoal::at(pose);
-                            if region.is_none() {
-                                target = target
-                                    .position_within(FREE_POSITION_M)
-                                    .expect("a positive tolerance");
-                            }
-                            if let Some(t) = orientation {
-                                target = target
-                                    .orientation_within(t.tolerance_rad.get())
-                                    .expect("a goal's tolerance is positive");
-                            }
-                            kinematics.continue_to(&start, &target)
-                        }
-                    }
-                }
+        let accepted = |q: &[f64; N]| goal.met(&self.chain, q) && valid(q);
+        let Some(frame) = goal.frame() else {
+            let drawn = goal.draw_joints(&limits, draws);
+            return accepted(&drawn).then_some(drawn);
+        };
+        let named = Aims {
+            position: goal.position.is_some(),
+            orientation: goal.orientation.is_some(),
+        };
+        assert!(
+            all_within(&limits, working),
+            "a goal sample's working state lies inside the joint limits, and {working:?} does not"
+        );
+        let ik = GoalIk::new(&self.chain, frame, named);
+        (0..attempts).find_map(|attempt| {
+            let target = goal.draw_pose(&self.chain, frame, &limits, draws);
+            let seed = if attempt == 0 {
+                *working
+            } else {
+                draws.within(&limits)
             };
-            let Some(q) = candidate else { continue };
-            let distinct = kept
-                .iter()
-                .all(|k| (0..N).any(|i| (k[i] - q[i]).abs() > SAME_CONFIGURATION));
-            if distinct && goal.met(&self.chain, &q) {
-                kept.push(q);
-            }
-        }
-        kept
+            ik.search(seed, &target, draws, &accepted)
+        })
     }
 }

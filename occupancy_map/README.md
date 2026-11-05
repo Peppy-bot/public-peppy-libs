@@ -2,14 +2,16 @@
 
 A voxel map of what a depth sensor sees, in a frame the caller names: log-odds occupancy
 over a bounded grid of voxels, each scan's points clearing the voxels their rays cross
-and marking the voxels they hit, with the robot cut out, and the distance from any point
-to the nearest occupied voxel. No hardware or messaging dependencies.
+and marking the voxels they hit, with the robot and the collision objects cut out, the
+voxels a collision object intersects cleared, and the distance from any point to the
+nearest occupied voxel. No hardware or messaging dependencies.
 
 - `VoxelMap` holds the voxels in its `Frame`, inserts a `Scan` with the shapes it cuts
-  out, answers each voxel's state and the occupied voxels inside a box, and `clear`s.
+  out, answers each voxel's state, its box and the occupied voxels inside a box,
+  `clear`s, and clears the voxels a collision object's shape intersects or touches.
 - `RobotCutout` is the robot's body to cut out: its chains placed and the body fixed
   around them, grown by `collision_geometry`, where the robot's URDF root stands in the
-  map's frame.
+  map's frame; a `ShapeCutout` is a collision object's shape to cut out.
 - `depth_points` reads a z16 depth frame as the points of its valid samples, from its
   stream's pinhole model (`camera_core::pinhole`).
 - `DistanceField` holds, for a map as it stands, the distance from each voxel's center
@@ -111,6 +113,25 @@ positions, and for the body fixed around them (`BodyGeometry`), each grown by a 
 every point within the offset of each collision element scaled about its center
 (collision_geometry's README, The robot filter), in the frame of the URDF root, and the
 root's pose in the map's frame.
+
+A `ShapeCutout` is a collision object's shape (`collision_geometry::shapes`) placed in
+the map's frame and grown by a padding by the same rule: a point inside it is the sensor
+seeing the object.
+
+## Collision objects
+
+`clear_intersecting` clears every voxel a collision object's shape touches: whose box it
+intersects or comes within 1e-9 m of, ten times the gap at which GJK counts two bodies as
+touching, since GJK measures a face that touches a voxel's face as a gap of rounding. Each
+takes the lowest log-odds, as a clip point's voxel does, so the map holds nothing where
+the object stands. A primitive is measured against each voxel whose box meets its bounds,
+faces included, by GJK. A mesh is measured by its surface: a voxel near one of its
+triangles' bounds is cleared when the triangle touches it, and every other voxel lies
+wholly inside the mesh or wholly outside it, as does each region of them joined by their
+faces: the first and the last voxel of a region decide it where the test answers them
+alike, and each voxel decides its own where it answers them otherwise, as a wrong inside
+test of one of them makes it. `tests/map.rs` checks a mesh's voxels against each voxel
+measured on its own, on drawn meshes standing anywhere in the map and across its bounds.
 
 ## The distance field
 

@@ -78,7 +78,7 @@ fn the_fingers_hang_where_the_model_places_them() {
                     .fingers(side, arms[side].carried())
                     .expect("each arm's chain carries its own fingers")
                     .into_iter()
-                    .map(|f| (f.link.to_string(), side, f.segment, f.offset))
+                    .map(|f| (f.name.to_string(), side, f.segment, f.offset))
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -146,7 +146,7 @@ fn a_closed_finger_hangs_where_the_chain_carries_it() {
                     (closed.translation.vector - chain_offset.translation.vector).norm() < 1e-12
                         && closed.rotation.angle_to(&chain_offset.rotation) < 1e-12,
                     "{version:?} {}: closed at {closed}, carried at {chain_offset}",
-                    finger.link
+                    finger.name
                 );
             }
         }
@@ -212,12 +212,11 @@ fn a_part_the_model_holds_as_no_finger_of_the_arm_is_refused() {
         let part = strange
             .carried()
             .iter()
-            .find(|part| part.rider().link == link)
+            .find(|part| part.rider().name == link)
             .unwrap_or_else(|| panic!("the strange chain carries {link}"));
         model
             .fingers(Side::Left, std::slice::from_ref(part))
-            .err()
-            .expect("a part of another robot is refused")
+            .expect_err("a part of another robot is refused")
     };
     let named = |link: &str| link.to_string();
     assert_eq!(
@@ -250,12 +249,11 @@ fn a_part_the_model_holds_as_no_finger_of_the_arm_is_refused() {
         },
     )
     .expect("the left arm fits");
-    let first = left.carried()[0].rider().link.to_string();
+    let first = left.carried()[0].rider().name.to_string();
     assert_eq!(
         model
             .fingers(Side::Right, left.carried())
-            .err()
-            .expect("the left arm's fingers are refused for the right arm"),
+            .expect_err("the left arm's fingers are refused for the right arm"),
         FingerError::OtherArm {
             link: first,
             side: Side::Right

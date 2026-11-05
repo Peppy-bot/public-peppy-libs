@@ -2,7 +2,12 @@
 //! returned path keeps its clearance under a dense check and passes the check of a
 //! caller's path, the same request on the same map gives the same path, of one attempt
 //! or several, a stop ends a plan, and a goal or a world that admits no path says why.
-//! Checks of a caller's path: where each fault lies and the waypoints before it.
+//! Checks of a caller's path: where each fault lies and the waypoints before it. Plans
+//! and checks among the objects of a planning scene: an object is avoided until it is
+//! removed, an object the hand holds is carried around an obstacle, the fingers and the
+//! table it rests on touch it once pairs allow them, an object the other arm holds stands
+//! where that arm holds it, a link passes the open corner of an L-shaped mesh and collides
+//! inside a closed one, and a start near an object or holding one near the arm departs.
 
 mod common;
 
@@ -11,20 +16,26 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
+use chain_kinematics::{Goal as PoseGoal, Kinematics};
+use collision_geometry::chain::Rider;
+use collision_geometry::gjk::{Hull, Placed};
+use collision_geometry::hull::exact_hull;
 use control_core::path_timing::RoundedPath;
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, CheckFailure, CheckRequest, Contact, Goal, GoalSampler, IkGoalSampler, JointTarget,
-    MAX_STEP_M, PathCheck, PathFault, Place, PlanFailure, PlanRequest, Scene, StartFault,
-    Surroundings, check_arm_path, plan_arm_path,
+    Arm, ArmObjects, AttachRequest, CheckFailure, CheckRequest, Contact, Draws, Frame, Goal,
+    GoalSampler, IkGoalSampler, JointTarget, MAX_STEP_M, ObjectFields, ObjectRequest, Objects,
+    OrientationTarget, PathCheck, PathFault, Place, PlanFailure, PlanRequest, PlanningScene,
+    PositionTarget, RobotLinks, RobotPart, Scene, ShapeFields, StartFault, Surroundings,
+    check_arm_path, plan_arm_path, pose_parts, term_clearances,
 };
-use nalgebra::Vector3;
+use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::Planner;
 
 use common::{
-    JOINTS, LEFT_ARM, an_hour_from_now, distance_to_map, left_fingers, map, occupied_at, positive,
-    voxel_in_a_finger,
+    JOINTS, LEFT_ARM, an_hour_from_now, branch, distance_to_map, held_from_its_arm, left_fingers,
+    map, occupied_at, off_the_branch_seams, positive, voxel_in_a_finger,
 };
 
 const VOXEL_M: f64 = 0.04;
@@ -107,22 +118,40 @@ fn probes(path: &RoundedPath, spacing: PositiveFinite) -> Vec<Vec<f64>> {
         .collect()
 }
 
-/// Asserts that the rounded path through `waypoints` keeps `MIN_CLEARANCE_M` at every
-/// state of a dense check: no point of a link moves a tenth of a voxel between two.
+/// Asserts that the rounded path through `waypoints` keeps `MIN_CLEARANCE_M` from the map
+/// at every state of a dense check.
 fn assert_dense_clear(
     arm: &Arm<JOINTS>,
     map: &VoxelMap,
     field: &DistanceField,
     waypoints: &[[f64; JOINTS]],
 ) {
+    let surroundings = Surroundings::new(map, field, term_clearances(MIN_CLEARANCE_M));
+    assert_dense_clear_of(arm, &surroundings, waypoints);
+}
+
+/// The states of the rounded path through `waypoints`, so dense that no point of `arm`
+/// moves a tenth of a voxel between two.
+fn dense_states(arm: &Arm<JOINTS>, waypoints: &[[f64; JOINTS]]) -> Vec<[f64; JOINTS]> {
     let path = RoundedPath::joint_path(&vectors(waypoints));
     let spacing = PositiveFinite::parse(VOXEL_M / 10.0 / arm.lever()).expect("positive");
-    let surroundings = Surroundings::new(map, field, MIN_CLEARANCE_M, MIN_CLEARANCE_M);
-    for probe in probes(&path, spacing) {
-        let q: [f64; JOINTS] = probe.as_slice().try_into().expect("a configuration");
+    probes(&path, spacing)
+        .iter()
+        .map(|probe| probe.as_slice().try_into().expect("a configuration"))
+        .collect()
+}
+
+/// Asserts that the rounded path through `waypoints` keeps the clearances of
+/// `surroundings` at every state of a dense check.
+fn assert_dense_clear_of(
+    arm: &Arm<JOINTS>,
+    surroundings: &Surroundings,
+    waypoints: &[[f64; JOINTS]],
+) {
+    for q in dense_states(arm, waypoints) {
         assert!(
             surroundings.clear(arm, &q),
-            "the rounded path touches the map at {q:?}"
+            "the rounded path comes within its clearance at {q:?}"
         );
     }
 }
@@ -148,8 +177,9 @@ fn a_plan_around_a_box_keeps_its_clearance_on_its_rounded_path() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
-    let straight = Surroundings::new(&map, &field, MIN_CLEARANCE_M, MIN_CLEARANCE_M);
+    let straight = Surroundings::new(&map, &field, term_clearances(MIN_CLEARANCE_M));
     assert!(
         (0..=100).any(|k| {
             let t = f64::from(k) / 100.0;
@@ -189,6 +219,7 @@ fn the_same_request_on_the_same_map_gives_the_same_path() {
             map: &map,
             field: &field,
             stamp,
+            objects: Objects::none(),
         };
         plan_arm_path(
             &arm,
@@ -201,9 +232,111 @@ fn the_same_request_on_the_same_map_gives_the_same_path() {
     assert_ne!(plan_at(1), plan_at(2));
 }
 
-// A goal inside a box is unreachable, and the message says that each configuration
-// meeting it is in collision, nearer than the plan's clearance it names, and names the
-// link of the one that falls short least nearest the map.
+/// The most goals the motion planner's launch samples for a goal (its fragment's
+/// goal_samples, launchers-hub openarm/fragments/motion_planner.json5).
+const LAUNCH_GOAL_SAMPLES: usize = 10;
+/// How far the short pose moves lower the grasp point: 8 cm, a short move against the
+/// arm's reach, the 0.6 m from its shoulder (openarm_left_link2's origin) to its grasp
+/// point with the arm straight.
+const LOWERING_M: f64 = 0.08;
+/// How near the goal's pose the grasp point lands: goal_coverage.rs's tolerances.
+const GOAL_TOLERANCE_M: f64 = 0.005;
+const GOAL_TOLERANCE_RAD: f64 = 0.01;
+/// The short pose moves each test plans.
+const SHORT_MOVES: usize = 12;
+/// The most starts drawn for them, ten for each: the test fails when fewer than
+/// `SHORT_MOVES` of them can be lowered.
+const STARTS_DRAWN: usize = 10 * SHORT_MOVES;
+
+// From each of 12 drawn starts from which inverse kinematics lowers the grasp point 8 cm
+// straight down inside the joint limits, its orientation kept, a pose goal there plans a
+// path that ends on the start's shoulder and wrist branches: the first goal sample sets
+// out from the start, and each later one from the goal before it, as MoveIt's do.
+#[test]
+fn a_short_pose_move_from_the_start_ends_on_its_branches() {
+    let (map, field) = world(&[]);
+    let arm = Arm::new(&LEFT_ARM, None);
+    let scene = Scene {
+        map: &map,
+        field: &field,
+        stamp: 1,
+        objects: Objects::none(),
+    };
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let (mut longest, mut planned, mut drawn): (f64, usize, usize) = (0.0, 0, 0);
+    let kinematics = Kinematics::new(LEFT_ARM.chain().clone());
+    for start in off_the_branch_seams(20261103).take(STARTS_DRAWN) {
+        if planned == SHORT_MOVES {
+            break;
+        }
+        drawn += 1;
+        let pose = LEFT_ARM.chain().world_ee_pose(&start);
+        let lowered = pose.translation.vector - Vector3::z() * LOWERING_M;
+        let reached = kinematics.continue_to(
+            &start,
+            &PoseGoal::at(Isometry3::from_parts(
+                Translation3::from(lowered),
+                pose.rotation,
+            ))
+            .orientation_within(GOAL_TOLERANCE_RAD)
+            .expect("a positive tolerance"),
+        );
+        if reached.is_none() {
+            continue;
+        }
+        let goal = Goal::new(
+            JOINTS,
+            Vec::new(),
+            vec![PositionTarget {
+                frame: Frame::GraspPoint,
+                position: lowered,
+                tolerance_m: positive(GOAL_TOLERANCE_M),
+            }],
+            vec![OrientationTarget {
+                frame: Frame::GraspPoint,
+                orientation: pose.rotation,
+                tolerance_rad: positive(GOAL_TOLERANCE_RAD),
+                free_axis: None,
+            }],
+        )
+        .expect("a valid goal");
+        let request = PlanRequest {
+            goal_samples: NonZeroUsize::new(LAUNCH_GOAL_SAMPLES).expect("nonzero"),
+            ..request(Planner::RrtConnect, start, &goal, &sampler)
+        };
+        let waypoints = plan_arm_path(&arm, &scene, &request)
+            .unwrap_or_else(|failure| panic!("from {start:?}: {failure}"));
+        let length: f64 = waypoints
+            .windows(2)
+            .map(|pair| {
+                (0..JOINTS)
+                    .map(|i| (pair[1][i] - pair[0][i]).powi(2))
+                    .sum::<f64>()
+                    .sqrt()
+            })
+            .sum();
+        let end = waypoints.last().expect("a path");
+        assert_eq!(
+            branch(end),
+            branch(&start),
+            "from {start:?}, an 8 cm lowering plans {length} rad to {end:?}"
+        );
+        longest = longest.max(length);
+        planned += 1;
+    }
+    assert_eq!(
+        planned, SHORT_MOVES,
+        "too few starts can be lowered inside the limits"
+    );
+    println!(
+        "of {drawn} starts drawn, {planned} could be lowered; the longest of their moves turns \
+         the joints {longest} rad"
+    );
+}
+
+// A goal inside a box is unreachable, and the message says that the goal sampling
+// rejected the configurations meeting it, each nearer than the plan's clearance it names,
+// and names the link of the one that falls short least nearest the map.
 #[test]
 fn a_goal_inside_an_obstacle_is_unreachable() {
     let goal_hand = hand(&HIGH);
@@ -218,6 +351,7 @@ fn a_goal_inside_an_obstacle_is_unreachable() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let failure = plan_arm_path(
         &arm,
@@ -233,7 +367,8 @@ fn a_goal_inside_an_obstacle_is_unreachable() {
         .expect("the message names what the nearest configuration falls short against");
     assert!(
         clearance.ends_with(
-            "that meet the goal is in collision, nearer than the plan's clearance, 0.0210 m from the map"
+            "configurations that meet the goal, each nearer than the plan's clearance, 0.0210 m \
+             from the map and the objects"
         ),
         "{message}"
     );
@@ -258,6 +393,7 @@ fn a_goal_within_the_clearance_of_its_own_body_names_the_pair() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let failure = plan_arm_path(
         &arm,
@@ -293,6 +429,7 @@ fn a_plan_its_iterations_end_gives_no_path() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let short = PlanRequest {
         max_iterations: NonZeroU64::new(1).expect("nonzero"),
@@ -303,26 +440,30 @@ fn a_plan_its_iterations_end_gives_no_path() {
         failure,
         PlanFailure::NoPath(
             "RRTConnect found no path within 1 iterations or by its deadline, keeping the \
-             plan's clearance, 0.0210 m from the map"
+             plan's clearance, 0.0210 m from the map and the objects"
                 .to_string()
         )
     );
 }
 
-/// A goal sampler that waits out the plan's time limit, then answers `0`.
-struct WaitingOut([f64; JOINTS]);
+/// A goal sampler that waits out the plan's time limit, until `until`, then answers
+/// `answer` where it is valid.
+struct WaitingOut {
+    answer: [f64; JOINTS],
+    until: Instant,
+}
 
 impl GoalSampler<JOINTS> for WaitingOut {
-    fn sample(
+    fn sample_from(
         &self,
         _: &Goal,
+        _: &[f64; JOINTS],
         _: usize,
-        _: u64,
-        deadline: Instant,
-        _: Option<&AtomicBool>,
-    ) -> Vec<[f64; JOINTS]> {
-        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
-        vec![self.0]
+        _: &mut Draws,
+        valid: &dyn Fn(&[f64; JOINTS]) -> bool,
+    ) -> Option<[f64; JOINTS]> {
+        std::thread::sleep(self.until.saturating_duration_since(Instant::now()));
+        valid(&self.answer).then_some(self.answer)
     }
 }
 
@@ -339,11 +480,16 @@ fn a_plan_whose_sampling_takes_its_time_gives_no_path() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
-    let waiting = WaitingOut(HIGH);
+    let deadline = Instant::now() + Duration::from_millis(50);
+    let waiting = WaitingOut {
+        answer: HIGH,
+        until: deadline,
+    };
     let limited = PlanRequest {
         sampler: &waiting,
-        deadline: Instant::now() + Duration::from_millis(50),
+        deadline,
         ..request(Planner::RrtConnect, LOW, &goal, &sampler)
     };
     assert_eq!(
@@ -385,11 +531,13 @@ fn departed(start: f64) -> f64 {
     start - MAX_STEP_M.min(room / 2.0)
 }
 
-/// A slab under the arm, and a start `start_distance_m` from it.
+/// A slab under the arm, a start `start_distance_m` from it, and the turn of one joint
+/// from `LOW` past the start that brings the arm nearer.
 struct NearTheSlab {
     map: VoxelMap,
     field: DistanceField,
     start: [f64; JOINTS],
+    toward: [f64; JOINTS],
 }
 
 /// A slab of voxels under the arm.
@@ -434,7 +582,12 @@ fn near_the_slab(start_distance_m: f64) -> NearTheSlab {
         (start_clearance - start_distance_m).abs() < start_distance_m / 10.0,
         "the start lies {start_clearance} from the slab"
     );
-    NearTheSlab { map, field, start }
+    NearTheSlab {
+        map,
+        field,
+        start,
+        toward,
+    }
 }
 
 /// Asserts that from a start `start_distance_m` from a slab, with a goal raised away
@@ -452,6 +605,7 @@ fn assert_departs_from(start_distance_m: f64) {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let waypoints = plan_arm_path(
         &arm,
@@ -491,7 +645,7 @@ fn assert_dense_clear_after_departure(
 ) {
     let path = RoundedPath::joint_path(&vectors(waypoints));
     let spacing = PositiveFinite::parse(VOXEL_M / 10.0 / arm.lever()).expect("positive");
-    let surroundings = Surroundings::new(map, field, MIN_CLEARANCE_M, MIN_CLEARANCE_M);
+    let surroundings = Surroundings::new(map, field, term_clearances(MIN_CLEARANCE_M));
     let probes = probes(&path, spacing);
     let kept = probes
         .iter()
@@ -536,6 +690,7 @@ fn a_first_corner_from_a_start_near_the_slab_gets_waypoints_until_it_clears() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let waypoints = plan_arm_path(
         &arm,
@@ -581,13 +736,14 @@ fn on_drawn_worlds_every_returned_path_clears_its_rounding(tc: hegel::TestCase) 
         .collect();
     let (map, field) = world(&points);
     let arm = Arm::new(&LEFT_ARM, None);
-    let surroundings = Surroundings::new(&map, &field, MIN_CLEARANCE_M, MIN_CLEARANCE_M);
+    let surroundings = Surroundings::new(&map, &field, term_clearances(MIN_CLEARANCE_M));
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
     let scene = Scene {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let planner = tc.draw(gs::sampled_from(&[
         Planner::RrtConnect,
@@ -648,6 +804,7 @@ fn a_path_keeps_its_clearance_from_the_self_model() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let waypoints = plan_arm_path(
         &arm,
@@ -679,6 +836,7 @@ fn a_start_moves_onto_a_limit_within_its_tolerance() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let limit = LEFT_ARM.chain().limits()[3].lo;
     let mut near = LOW;
@@ -724,18 +882,19 @@ fn a_start_inside_an_obstacle_is_refused() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let refused = plan_arm_path(
         &arm,
         &scene,
         &request(Planner::RrtConnect, LOW, &goal, &sampler),
     );
-    let Err(PlanFailure::Start(StartFault::InCollision(Contact::Map { link }))) = refused else {
+    let Err(PlanFailure::Start(StartFault::InCollision(Contact::Map { body }))) = refused else {
         panic!("a start inside the box gives {refused:?}");
     };
     assert!(
-        LEFT_ARM.links().iter().any(|l| l.name() == link),
-        "{link} is not a link of the arm"
+        LEFT_ARM.links().iter().any(|l| l.name() == body),
+        "{body} is not a link of the arm"
     );
 }
 
@@ -750,6 +909,7 @@ fn a_request_without_distances_is_refused() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let base = request(Planner::RrtConnect, LOW, &goal, &sampler);
     let mut tolerance = [0.0; JOINTS];
@@ -810,6 +970,7 @@ fn from_a_start_near_the_slab_and_its_own_body_both_clearances_rise() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let waypoints = plan_arm_path(
         &arm,
@@ -901,6 +1062,7 @@ fn plan_from_a_pair(stands: Stands) -> Result<Vec<[f64; JOINTS]>, PlanFailure> {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     plan_arm_path(
         &arm,
@@ -996,6 +1158,7 @@ fn plan_from_near_the_slab(start_distance_m: f64) -> Result<Vec<[f64; JOINTS]>, 
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     plan_arm_path(
         &arm,
@@ -1020,7 +1183,9 @@ fn a_start_just_above_the_minimum_clearance_departs() {
 /// from the slab to `HIGH`, answers a path whose rounded path keeps the clearance once it
 /// first keeps it.
 fn assert_answers_from_near_the_slab(distance: f64, planner: Planner, seed: u32) {
-    let NearTheSlab { map, field, start } = near_the_slab(distance);
+    let NearTheSlab {
+        map, field, start, ..
+    } = near_the_slab(distance);
     let arm = Arm::new(&LEFT_ARM, None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
@@ -1028,6 +1193,7 @@ fn assert_answers_from_near_the_slab(distance: f64, planner: Planner, seed: u32)
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let answer = plan_arm_path(
         &arm,
@@ -1099,18 +1265,19 @@ fn a_start_whose_finger_touches_the_map_is_refused_naming_it() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let refused = plan_arm_path(
         &arm,
         &scene,
         &request(Planner::RrtConnect, LOW, &goal, &sampler),
     );
-    let Err(PlanFailure::Start(StartFault::InCollision(Contact::Map { link }))) = refused else {
+    let Err(PlanFailure::Start(StartFault::InCollision(Contact::Map { body }))) = refused else {
         panic!("a start whose finger holds a voxel gives {refused:?}");
     };
     assert!(
-        riders.iter().any(|rider| rider.link == link),
-        "{link} is not a finger"
+        riders.iter().any(|rider| rider.name == body),
+        "{body} is not a finger"
     );
 }
 
@@ -1122,15 +1289,17 @@ struct StoppingOnceDrawn<'a> {
 }
 
 impl GoalSampler<JOINTS> for StoppingOnceDrawn<'_> {
-    fn sample(
+    fn sample_from(
         &self,
         goal: &Goal,
-        count: usize,
-        seed: u64,
-        deadline: Instant,
-        stop: Option<&AtomicBool>,
-    ) -> Vec<[f64; JOINTS]> {
-        let drawn = self.sampler.sample(goal, count, seed, deadline, stop);
+        working: &[f64; JOINTS],
+        attempts: usize,
+        draws: &mut Draws,
+        valid: &dyn Fn(&[f64; JOINTS]) -> bool,
+    ) -> Option<[f64; JOINTS]> {
+        let drawn = self
+            .sampler
+            .sample_from(goal, working, attempts, draws, valid);
         self.stop.store(true, Ordering::Relaxed);
         drawn
     }
@@ -1148,6 +1317,7 @@ fn a_stopped_plan_says_so() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let clear = AtomicBool::new(false);
     let unstopped = PlanRequest {
@@ -1192,6 +1362,7 @@ fn a_plan_of_several_attempts_repeats_and_keeps_its_clearance() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let attempts = PlanRequest {
         attempts: NonZeroU32::new(3).expect("nonzero"),
@@ -1248,6 +1419,7 @@ fn plan_with_a_stopping_self_model(
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let stop = AtomicBool::new(false);
     let model = StopsTheAttempts {
@@ -1336,8 +1508,8 @@ fn around_the_box(arm: &Arm<JOINTS>, scene: &Scene) -> Vec<[f64; JOINTS]> {
     .expect("a path around the box")
 }
 
-/// Asserts that `check` finds a state short of the plan's clearance from the map at
-/// `place`, leaving `passing` waypoints before it.
+/// Asserts that `check` finds a state short of the plan's clearance from the map and the
+/// objects at `place`, leaving `passing` waypoints before it.
 fn assert_falls_short(check: &PathCheck, place: Place, passing: usize) {
     let Some(PathFault::Clearance {
         place: found,
@@ -1356,7 +1528,9 @@ fn assert_falls_short(check: &PathCheck, place: Place, passing: usize) {
     let reason = check.fault.as_ref().expect("a fault").to_string();
     assert!(
         reason.starts_with(&format!("{place}, the arm comes "))
-            && reason.ends_with("m from the map, nearer than the plan's clearance, 0.0210 m"),
+            && reason.ends_with(
+                "m from the map and the objects, nearer than the plan's clearance, 0.0210 m"
+            ),
         "{reason}"
     );
 }
@@ -1377,6 +1551,7 @@ fn a_check_answers_the_waypoints_before_the_first_fault() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let planned = around_the_box(&arm, &scene);
     let waypoints = &planned[1..];
@@ -1393,6 +1568,7 @@ fn a_check_answers_the_waypoints_before_the_first_fault() {
         map: &open,
         field: &open_field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let checked = check(&arm, &open_scene, LOW, &past);
     assert_eq!(checked.clear_waypoints, count);
@@ -1436,6 +1612,7 @@ fn a_waypoint_far_outside_a_limit_answers_promptly() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let mut far = LOW;
     far[6] = 1e12;
@@ -1466,6 +1643,7 @@ fn a_check_answers_the_faults_of_its_start() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let checked = check(&arm, &scene, LOW, &[HIGH]);
     assert_eq!(checked.clear_waypoints, 0);
@@ -1483,6 +1661,7 @@ fn a_check_answers_the_faults_of_its_start() {
         map: &empty,
         field: &empty_field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let limit = LEFT_ARM.chain().limits()[3].lo;
     let mut near = HIGH;
@@ -1521,7 +1700,9 @@ fn a_check_answers_the_faults_of_its_start() {
 // passes the run and fails at its waypoint; each passes no waypoint.
 #[test]
 fn a_check_walks_the_run_from_its_start_by_the_start_rule() {
-    let NearTheSlab { map, field, start } = near_the_slab(0.01);
+    let NearTheSlab {
+        map, field, start, ..
+    } = near_the_slab(0.01);
     let arm = Arm::new(&LEFT_ARM, None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
@@ -1529,6 +1710,7 @@ fn a_check_walks_the_run_from_its_start_by_the_start_rule() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let planned = plan_arm_path(
         &arm,
@@ -1576,6 +1758,7 @@ fn a_check_refuses_a_request_out_of_range_and_ends_by_its_deadline() {
         map: &map,
         field: &field,
         stamp: 1,
+        objects: Objects::none(),
     };
     let base = CheckRequest {
         start: LOW,
@@ -1613,5 +1796,977 @@ fn a_check_refuses_a_request_out_of_range_and_ends_by_its_deadline() {
     assert_eq!(
         check_arm_path(&arm, &scene, &late),
         Err(CheckFailure::TimeEnded)
+    );
+}
+
+/// The link of the left arm's grasp point, which carries what the arm holds.
+const GRASP_LINK: &str = "openarm_left_tcp";
+/// The gripper's links, which a held item may touch: the hand and its two fingers.
+const GRIPPER: [&str; 3] = [
+    "openarm_left_ee_base_link",
+    "openarm_left_ee_link1",
+    "openarm_left_ee_link2",
+];
+/// The side of the item the tests' gripper holds: 2 cm, which the closed fingers overlap.
+const ITEM_M: f64 = 0.02;
+/// The right arm's grasp link, which the scene of both arms names besides the left's.
+const RIGHT_GRASP_LINK: &str = "openarm_right_tcp";
+
+/// The scene of a plan on `map`, whose distances `field` holds, among `objects`.
+fn among<'a>(map: &'a VoxelMap, field: &'a DistanceField, objects: Objects<'a>) -> Scene<'a> {
+    Scene {
+        map,
+        field,
+        stamp: 1,
+        objects,
+    }
+}
+
+/// The planning scene of the left arm's links and fingers and of the grasp links
+/// `grasp_links`, the left arm's among them.
+fn scene_of_grasp_links(grasp_links: &[&str]) -> PlanningScene {
+    let links = LEFT_ARM
+        .links()
+        .iter()
+        .map(|link| link.name())
+        .chain(grasp_links.iter().copied())
+        .chain(GRIPPER)
+        .map(String::from);
+    PlanningScene::new(RobotLinks::new(
+        links,
+        grasp_links.iter().map(|link| link.to_string()),
+    ))
+}
+
+/// The grasp point of the left arm at `q`.
+fn grasp_pose(q: &[f64; JOINTS]) -> Isometry3<f64> {
+    LEFT_ARM.chain().world_ee_pose(q)
+}
+
+/// A shape of `kind` and `dimensions` centered `position` from its object's origin,
+/// turned as its object.
+fn primitive(kind: &str, dimensions: &[f64], position: [f64; 3]) -> ShapeFields {
+    ShapeFields {
+        kind: kind.to_string(),
+        dimensions: dimensions.to_vec(),
+        mesh_vertices: Vec::new(),
+        mesh_triangles: Vec::new(),
+        position,
+        orientation: [0.0, 0.0, 0.0, 1.0],
+    }
+}
+
+/// An object of `shapes`, at `pose`, as apply_collision_objects adds it.
+fn add_object(id: &str, pose: &Isometry3<f64>, shapes: Vec<ShapeFields>) -> ObjectRequest {
+    let (position, orientation) = pose_parts(pose);
+    ObjectRequest {
+        operation: "add".to_string(),
+        object: ObjectFields {
+            id: id.to_string(),
+            position,
+            orientation,
+            shapes,
+        },
+    }
+}
+
+/// An object of one shape at `pose`.
+fn add_shape(id: &str, pose: &Isometry3<f64>, kind: &str, dimensions: &[f64]) -> ObjectRequest {
+    add_object(id, pose, vec![primitive(kind, dimensions, [0.0; 3])])
+}
+
+/// The removal of the object `id`.
+fn remove_object(id: &str) -> ObjectRequest {
+    ObjectRequest {
+        operation: "remove".to_string(),
+        ..add_object(id, &Isometry3::identity(), Vec::new())
+    }
+}
+
+/// The left arm's scene after `requests`, applied to `map`.
+fn scene_with(map: &mut VoxelMap, requests: &[ObjectRequest]) -> PlanningScene {
+    let mut scene = scene_of_grasp_links(&[GRASP_LINK]);
+    scene
+        .apply_collision_objects(requests, map)
+        .expect("the objects apply");
+    scene
+}
+
+/// `scene` with the object `id` attached to the grasp link `link` standing at
+/// `link_pose`, touching `touch_links`.
+fn attached(
+    scene: &PlanningScene,
+    id: &str,
+    link: &str,
+    link_pose: Isometry3<f64>,
+    touch_links: &[&str],
+) -> PlanningScene {
+    let mut held = scene.clone();
+    held.apply_attached_collision_object(
+        &AttachRequest {
+            object_id: id.to_string(),
+            link_name: link.to_string(),
+            touch_links: touch_links.iter().map(|link| link.to_string()).collect(),
+            operation: "attach".to_string(),
+        },
+        |_| Some(link_pose),
+        &mut map(VOXEL_M, 1.6),
+    )
+    .expect("attached");
+    held
+}
+
+/// `scene` with the object "item" attached to the left grasp point where the arm stands
+/// at `q`, touching `touch_links`.
+fn holding(scene: &PlanningScene, q: &[f64; JOINTS], touch_links: &[&str]) -> PlanningScene {
+    attached(scene, "item", GRASP_LINK, grasp_pose(q), touch_links)
+}
+
+/// The scene as a plan of the left arm meets it, the left arm its only arm.
+fn left_objects(scene: &PlanningScene) -> ArmObjects<'_> {
+    scene.for_arm(GRASP_LINK, |link| {
+        panic!("the left arm is the only arm, and {link} another's grasp link")
+    })
+}
+
+/// The riders of the left arm: `fingers`, and the shapes of the objects of `objects` it
+/// carries.
+fn riders<'a>(objects: &ArmObjects<'a>, fingers: &[Rider<'a>]) -> Vec<Rider<'a>> {
+    fingers
+        .iter()
+        .copied()
+        .chain(objects.riders(&LEFT_ARM))
+        .collect()
+}
+
+/// The box `box_between` fills with voxels, as an object.
+fn box_object() -> ObjectRequest {
+    add_shape(
+        "box",
+        &Isometry3::translation(0.375, 0.20, 0.36),
+        "box",
+        &[0.15, 0.20, 0.12],
+    )
+}
+
+/// `LOW` with the shoulder turned by 0.05 rad the way that raises the grasp point.
+fn raised() -> [f64; JOINTS] {
+    [-0.05, 0.05]
+        .map(|turn| {
+            let mut q = LOW;
+            q[1] += turn;
+            q
+        })
+        .into_iter()
+        .max_by(|a, b| {
+            let height = |q: &[f64; JOINTS]| grasp_pose(q).translation.vector.z;
+            height(a).total_cmp(&height(b))
+        })
+        .expect("two turns")
+}
+
+/// Whether `check` breaks on the run from the start, a state of it short of the plan's
+/// clearance of the term `term`, 0 for the map and the objects, 1 for the robot's own body
+/// and `HELD` for an attached object against the arm that carries it, passing no waypoint.
+fn breaks_first_run_on(check: &PathCheck, term: usize) -> bool {
+    check.clear_waypoints == 0
+        && matches!(
+            check.fault,
+            Some(PathFault::Clearance { place: Place::Run(0), distances, clearances })
+                if distances[term] < clearances[term]
+        )
+}
+
+// A box added between the start and the goal is avoided, as the box of voxels is: the
+// straight path into it fails on its run, and the path around it keeps the clearance under
+// a dense check. Once it is removed, the straight path through its place passes its check,
+// and the plan goes through its place.
+#[test]
+fn a_box_is_avoided_until_it_is_removed() {
+    let mut voxels = map(VOXEL_M, 1.6);
+    let with_box = scene_with(&mut voxels, &[box_object()]);
+    let field = DistanceField::of(&voxels);
+    let arm = Arm::new(&LEFT_ARM, None);
+    let boxed = left_objects(&with_box);
+    let near_the_box = Surroundings::new(&voxels, &field, term_clearances(MIN_CLEARANCE_M))
+        .with_objects(boxed.objects(&[]));
+    let straight = check(
+        &arm,
+        &among(&voxels, &field, boxed.objects(&[])),
+        LOW,
+        &[HIGH],
+    );
+    assert!(breaks_first_run_on(&straight, 0), "{straight:?}");
+    let around = around_the_box(&arm, &among(&voxels, &field, boxed.objects(&[])));
+    assert_dense_clear_of(&arm, &near_the_box, &around);
+    let mut emptied = with_box.clone();
+    emptied
+        .apply_collision_objects(&[remove_object("box")], &mut voxels.clone())
+        .expect("removed");
+    let empty = left_objects(&emptied);
+    assert_eq!(
+        check(
+            &arm,
+            &among(&voxels, &field, empty.objects(&[])),
+            LOW,
+            &[HIGH]
+        ),
+        passing(&[HIGH])
+    );
+    let through = around_the_box(&arm, &among(&voxels, &field, empty.objects(&[])));
+    assert!(
+        dense_states(&arm, &through)
+            .iter()
+            .any(|q| !near_the_box.clear(&arm, q)),
+        "the plan keeps clear of where the box stood"
+    );
+}
+
+// A goal inside an object is unreachable, and the message names, of the configuration
+// that falls short least, the body of the arm nearest the object and the object.
+#[test]
+fn a_goal_inside_an_object_names_the_object() {
+    let goal_hand = hand(&HIGH);
+    let mut voxels = map(VOXEL_M, 1.6);
+    let around_the_goal = Isometry3::translation(goal_hand.x, goal_hand.y, goal_hand.z);
+    let with_box = scene_with(
+        &mut voxels,
+        &[add_shape("box", &around_the_goal, "box", &[0.2; 3])],
+    );
+    let field = DistanceField::of(&voxels);
+    let arm = Arm::new(&LEFT_ARM, None);
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let boxed = left_objects(&with_box);
+    let failure = plan_arm_path(
+        &arm,
+        &among(&voxels, &field, boxed.objects(&[])),
+        &request(Planner::RrtConnect, LOW, &at(&HIGH), &sampler),
+    )
+    .expect_err("no path into the box");
+    let PlanFailure::Unreachable(message) = failure else {
+        panic!("not unreachable: {failure}");
+    };
+    let (_, short) = message
+        .split_once("; the one that falls short least has ")
+        .expect("the message names what the nearest configuration falls short against");
+    assert!(short.ends_with(" m from box"), "{message}");
+}
+
+// An item attached to the grasp point is carried around the box of voxels: with the
+// gripper as its touch links, the fingers closed on it are no collision, and the path
+// keeps the item's clearance from the map under a dense check. Without touch links, the
+// start is in contact, the item and a link of the gripper.
+#[test]
+fn an_attached_item_is_carried_around_the_box() {
+    let mut voxels = map(VOXEL_M, 1.6);
+    occupied_at(&mut voxels, [0.0, 0.0, 3.0], &box_between());
+    let item = add_shape("item", &grasp_pose(&LOW), "box", &[ITEM_M; 3]);
+    let scene = scene_with(&mut voxels, &[item]);
+    let field = DistanceField::of(&voxels);
+    let fingers = left_fingers();
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goal = at(&HIGH);
+    let plan = |held: &PlanningScene| {
+        let objects = left_objects(held);
+        let riders = riders(&objects, &fingers);
+        let arm = Arm::new(&LEFT_ARM, None)
+            .riding(&riders)
+            .expect("the fingers and the item ride the hand");
+        let scene = among(&voxels, &field, objects.objects(&[]));
+        let planned = plan_arm_path(
+            &arm,
+            &scene,
+            &request(Planner::RrtConnect, LOW, &goal, &sampler),
+        );
+        if let Ok(waypoints) = &planned {
+            let surroundings = Surroundings::new(&voxels, &field, term_clearances(MIN_CLEARANCE_M))
+                .with_objects(objects.objects(&[]));
+            assert_dense_clear_of(&arm, &surroundings, waypoints);
+        }
+        planned
+    };
+    let refused = plan(&holding(&scene, &LOW, &[]));
+    assert!(
+        matches!(
+            &refused,
+            Err(PlanFailure::Start(StartFault::InCollision(Contact::Own { a, b })))
+                if a == "item" && GRIPPER.contains(&b.as_str())
+        ),
+        "an item touching the gripper with no touch links gives {refused:?}"
+    );
+    let carried = plan(&holding(&scene, &LOW, &GRIPPER)).expect("the item carried around the box");
+    assert!(goal.met(LEFT_ARM.chain(), carried.last().expect("a waypoint")));
+}
+
+/// The grasp point's frame at `q` moved `ahead_m` along the way from the hand's origin to
+/// the grasp point: past every link.
+fn ahead_of_the_grasp_point(q: &[f64; JOINTS], ahead_m: f64) -> Isometry3<f64> {
+    let hand = LEFT_ARM.chain().at(q).link_pose_world(JOINTS - 1);
+    let grasp = grasp_pose(q);
+    let out = (grasp.translation.vector - hand.translation.vector).normalize();
+    Isometry3::from_parts(
+        Translation3::from(grasp.translation.vector + out * ahead_m),
+        grasp.rotation,
+    )
+}
+
+// A 4 cm item held 15 cm past the grasp point, a 5 mm box object 1.75 cm past its face,
+// while the bare arm keeps the plan's clearance from the object: the start falls short of
+// the plan's clearance by the item alone, departs by the start rule, and the planned path
+// passes its check whole.
+#[test]
+fn a_start_whose_held_item_comes_near_an_object_departs() {
+    let ahead = ahead_of_the_grasp_point(&LOW, 0.15);
+    let mut voxels = map(VOXEL_M, 1.6);
+    let planning = scene_with(
+        &mut voxels,
+        &[
+            add_shape("item", &ahead, "box", &[0.04; 3]),
+            add_shape(
+                "pebble",
+                &(ahead * Isometry3::translation(0.04, 0.0, 0.0)),
+                "box",
+                &[0.005; 3],
+            ),
+        ],
+    );
+    let field = DistanceField::of(&voxels);
+    let held = holding(&planning, &LOW, &[]);
+    let objects = left_objects(&held);
+    let riders = riders(&objects, &[]);
+    let arm = Arm::new(&LEFT_ARM, None)
+        .riding(&riders)
+        .expect("the item rides the hand");
+    let plan_clearance =
+        Surroundings::new(&voxels, &field, [MIN_CLEARANCE_M + PLAN_SPARE_M, 0.0, 0.0])
+            .with_objects(objects.objects(&[]));
+    assert!(
+        !plan_clearance.clear(&arm, &LOW),
+        "the item keeps the plan's clearance from the pebble"
+    );
+    assert!(
+        plan_clearance.clear(&Arm::new(&LEFT_ARM, None), &LOW),
+        "the bare arm comes within the plan's clearance of the pebble"
+    );
+    let scene = among(&voxels, &field, objects.objects(&[]));
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goal = at(&HIGH);
+    let waypoints = plan_arm_path(
+        &arm,
+        &scene,
+        &request(Planner::RrtConnect, LOW, &goal, &sampler),
+    )
+    .expect("a path away from the pebble");
+    assert_eq!(
+        check(&arm, &scene, LOW, &waypoints[1..]),
+        passing(&waypoints[1..])
+    );
+}
+
+/// The plan's clearance between an attached object and the arm that carries it: the 0
+/// `term_clearances` asks of it and the 2 mm of spare its two moving bodies keep.
+const HELD_PLAN_CLEARANCE_M: f64 = 0.002;
+/// The place of that term in an array of the terms.
+const HELD: usize = 2;
+
+/// `LOW` with the last joint turned to `angle`.
+fn last_joint_at(angle: f64) -> [f64; JOINTS] {
+    let mut q = LOW;
+    q[JOINTS - 1] = angle;
+    q
+}
+
+/// The scene of an empty map holding a 2 cm item, the gripper its touch links, at the
+/// arm's configuration `q`, `apart` meters from the nearest link of the arm it may not
+/// touch: the item stands on the way from the grasp point to the last joint, at the share
+/// of the way that bisection finds.
+fn held_apart_from_its_arm(empty: &VoxelMap, q: &[f64; JOINTS], apart: f64) -> PlanningScene {
+    let tcp = grasp_pose(q);
+    let joint = LEFT_ARM.chain().at(q).origin_world(JOINTS - 1);
+    let held_at = |t: f64| {
+        let at = Isometry3::from_parts(
+            Translation3::from(tcp.translation.vector + (joint - tcp.translation.vector) * t),
+            tcp.rotation,
+        );
+        let scene = scene_with(
+            &mut empty.clone(),
+            &[add_shape("item", &at, "box", &[ITEM_M; 3])],
+        );
+        attached(&scene, "item", GRASP_LINK, tcp, &GRIPPER)
+    };
+    let (mut far, mut near) = (0.0, 1.0);
+    assert!(from_its_arm(&held_at(far), q) > apart);
+    assert!(from_its_arm(&held_at(near), q) < apart);
+    while near - far > 1e-9 {
+        let mid = (far + near) / 2.0;
+        if from_its_arm(&held_at(mid), q) > apart {
+            far = mid;
+        } else {
+            near = mid;
+        }
+    }
+    held_at(far)
+}
+
+/// The least distance at `q` between the item `held` attaches to the left arm and the
+/// pieces of the arm's links it may not touch.
+fn from_its_arm(held: &PlanningScene, q: &[f64; JOINTS]) -> f64 {
+    let objects = left_objects(held);
+    let riders = riders(&objects, &[]);
+    let arm = Arm::new(&LEFT_ARM, None)
+        .riding(&riders)
+        .expect("the item rides the hand");
+    held_from_its_arm(&arm, q, |_, link| GRIPPER.contains(&link))
+}
+
+/// What `with` gives of the left arm carrying what `held` attaches to it, among the
+/// objects of `held` on `empty`, whose distances `field` holds.
+fn holding_in<R>(
+    held: &PlanningScene,
+    empty: &VoxelMap,
+    field: &DistanceField,
+    with: impl FnOnce(&Arm<JOINTS>, &Scene) -> R,
+) -> R {
+    let objects = left_objects(held);
+    let riders = riders(&objects, &[]);
+    let arm = Arm::new(&LEFT_ARM, None)
+        .riding(&riders)
+        .expect("the item rides the hand");
+    with(&arm, &among(empty, field, objects.objects(&[])))
+}
+
+// An item held between the grasp point and the last joint, the gripper touching it, a
+// centimeter from the nearest link of the arm it may not touch, nearer than
+// `MIN_CLEARANCE_M`: an attached object is asked only to keep out of contact with the arm
+// that carries it, so the start keeps every clearance and the turn of the last joint
+// to 0 passes its check. Held 2 mm into that link, the start is in contact, the item and
+// the link.
+#[test]
+fn a_deep_grasp_near_its_own_arm_keeps_out_of_contact_alone() {
+    let (start, away) = (last_joint_at(0.1), last_joint_at(0.0));
+    let empty = map(VOXEL_M, 1.6);
+    let field = DistanceField::of(&empty);
+    let deep = held_apart_from_its_arm(&empty, &start, 0.01);
+    holding_in(&deep, &empty, &field, |arm, scene| {
+        let surroundings = Surroundings::new(&empty, &field, term_clearances(MIN_CLEARANCE_M))
+            .with_objects(scene.objects);
+        assert!(surroundings.clear(arm, &start));
+        assert_eq!(check(arm, scene, start, &[away]), passing(&[away]));
+    });
+    let into = held_apart_from_its_arm(&empty, &start, -0.002);
+    holding_in(&into, &empty, &field, |arm, scene| {
+        let checked = check(arm, scene, start, &[away]);
+        assert!(
+            matches!(
+                &checked.fault,
+                Some(PathFault::Start(StartFault::InCollision(Contact::Own { a, b })))
+                    if a == "item" && !GRIPPER.contains(&b.as_str())
+            ),
+            "{checked:?}"
+        );
+    });
+}
+
+// The item held 0.5 mm from the nearest link of the arm it may not touch, the last joint
+// turned 0.1 rad: the start falls short of the plan's clearance between an attached
+// object and the arm that carries it, 2 mm. Turning the last joint back to 0, which carries
+// the item away from the link, departs by the start rule on its run and stops at a
+// waypoint still short of the clearance; turning it on to 0.2 rad, which carries the item
+// nearer, breaks the rule on the run, on that term. An attached object is a term of the
+// start rule as the self model is.
+#[test]
+fn a_start_whose_held_item_comes_near_its_own_arm_departs() {
+    let (start, away, nearer) = (last_joint_at(0.1), last_joint_at(0.0), last_joint_at(0.2));
+    let empty = map(VOXEL_M, 1.6);
+    let field = DistanceField::of(&empty);
+    let held = held_apart_from_its_arm(&empty, &start, 0.0005);
+    let at_start = from_its_arm(&held, &start);
+    assert!(
+        from_its_arm(&held, &away) > at_start && from_its_arm(&held, &nearer) < at_start,
+        "the turns do not carry the item away from and nearer its arm, from {at_start} m"
+    );
+    assert!(
+        from_its_arm(&held, &away) < HELD_PLAN_CLEARANCE_M,
+        "the turn away carries the item {} m from its arm, past the plan's clearance",
+        from_its_arm(&held, &away)
+    );
+    holding_in(&held, &empty, &field, |arm, scene| {
+        let departing = check(arm, scene, start, &[away]);
+        assert!(
+            departing.clear_waypoints == 0
+                && matches!(
+                    departing.fault,
+                    Some(PathFault::Clearance { place: Place::Waypoint(1), distances, clearances })
+                        if distances[HELD] > at_start && clearances[HELD] == HELD_PLAN_CLEARANCE_M
+                ),
+            "{departing:?}"
+        );
+        let toward = check(arm, scene, start, &[nearer]);
+        assert!(breaks_first_run_on(&toward, HELD), "{toward:?}");
+    });
+}
+
+/// The hull of a cube of side `side`.
+fn cube_hull(side: f64) -> Hull {
+    let h = side / 2.0;
+    let corners: Vec<Point3<f64>> = (0..8)
+        .map(|i| {
+            let at = |bit: usize| if i & bit == 0 { -h } else { h };
+            Point3::new(at(1), at(2), at(4))
+        })
+        .collect();
+    Hull::new(&exact_hull(&corners).expect("a cube's hull"), 0.0).expect("a hull")
+}
+
+// A 4 cm item held 15 cm past the grasp point, and a 5 mm piece 1.75 cm past its face,
+// of the other arm or of the torso, which stand still through the plan: the item keeps
+// the plan's full clearance from each, as from the map and the objects, so the state falls
+// short of it by the item alone, while the bare arm keeps it.
+#[test]
+fn a_held_item_keeps_the_full_clearance_from_the_other_arm_and_the_torso() {
+    let ahead = ahead_of_the_grasp_point(&LOW, 0.15);
+    let mut voxels = map(VOXEL_M, 1.6);
+    let planning = scene_with(&mut voxels, &[add_shape("item", &ahead, "box", &[0.04; 3])]);
+    let field = DistanceField::of(&voxels);
+    let held = holding(&planning, &LOW, &[]);
+    let objects = left_objects(&held);
+    let riders = riders(&objects, &[]);
+    let arm = Arm::new(&LEFT_ARM, None)
+        .riding(&riders)
+        .expect("the item rides the hand");
+    let hull = cube_hull(0.005);
+    let beside = ahead * Isometry3::translation(0.04, 0.0, 0.0);
+    for link in ["openarm_right_link5", "openarm_body_link0"] {
+        let parts = [RobotPart {
+            link,
+            piece: Placed::new(&hull, beside),
+        }];
+        let plan_clearance = Surroundings::new(
+            &voxels,
+            &field,
+            term_clearances(MIN_CLEARANCE_M + PLAN_SPARE_M),
+        )
+        .with_objects(objects.objects(&parts));
+        assert!(
+            !plan_clearance.clear(&arm, &LOW),
+            "the item keeps the plan's clearance from {link}"
+        );
+        assert!(
+            plan_clearance.clear(&Arm::new(&LEFT_ARM, None), &LOW),
+            "the bare arm comes within the plan's clearance of {link}"
+        );
+    }
+}
+
+// An item resting on the table touches it: the start is in contact until a pair lets them
+// touch, and then a path from it passes its check. An item between the closed fingers
+// touches them until a pair of the item and the gripper lets them close on it.
+#[test]
+fn pairs_let_the_item_rest_on_the_table_and_the_fingers_close_on_it() {
+    let mut voxels = map(VOXEL_M, 1.6);
+    let at = grasp_pose(&LOW);
+    // A table top 4 cm square under the item, its top 5 mm above the item's lowest face, so
+    // the item reaches into it.
+    let top = at.translation.vector.z - ITEM_M / 2.0 + 0.005;
+    let table = add_shape(
+        "table",
+        &Isometry3::translation(at.translation.vector.x, at.translation.vector.y, top - 0.01),
+        "box",
+        &[0.04, 0.04, 0.02],
+    );
+    let item = add_shape("item", &at, "box", &[ITEM_M; 3]);
+    let mut scene = scene_with(&mut voxels, &[item, table]);
+    let field = DistanceField::of(&voxels);
+    let raised = raised();
+    let check_holding = |held: &PlanningScene, fingers: &[Rider]| {
+        let objects = left_objects(held);
+        let riders = riders(&objects, fingers);
+        let arm = Arm::new(&LEFT_ARM, None)
+            .riding(&riders)
+            .expect("the riders ride the hand");
+        check(
+            &arm,
+            &among(&voxels, &field, objects.objects(&[])),
+            LOW,
+            &[raised],
+        )
+    };
+    let touching = |checked: &PathCheck, body: &str, object: &str| {
+        matches!(
+            &checked.fault,
+            Some(PathFault::Start(StartFault::InCollision(Contact::Object { body: b, object: o })))
+                if b == body && o == object
+        )
+    };
+    let on_table = holding(&scene, &LOW, &GRIPPER);
+    let resting = check_holding(&on_table, &[]);
+    assert!(touching(&resting, "item", "table"), "{resting:?}");
+    let mut allowed = on_table.clone();
+    allowed
+        .set_allowed_collision("item", &["table".to_string()], true)
+        .expect("allowed");
+    assert_eq!(check_holding(&allowed, &[]), passing(&[raised]));
+
+    scene
+        .apply_collision_objects(&[remove_object("table")], &mut voxels.clone())
+        .expect("removed");
+    let fingers = left_fingers();
+    let between = check_holding(&scene, &fingers);
+    assert!(
+        matches!(
+            &between.fault,
+            Some(PathFault::Start(StartFault::InCollision(Contact::Object { body, object })))
+                if GRIPPER.contains(&body.as_str()) && object == "item"
+        ),
+        "{between:?}"
+    );
+    let gripper: Vec<String> = GRIPPER.iter().map(|link| link.to_string()).collect();
+    scene
+        .set_allowed_collision("item", &gripper, true)
+        .expect("allowed");
+    assert_eq!(check_holding(&scene, &fingers), passing(&[raised]));
+}
+
+/// Where the right arm's grasp link stands while the left arm plans.
+fn right_hand() -> Isometry3<f64> {
+    Isometry3::translation(0.3, -0.3, 0.3)
+}
+
+/// The scene of both arms after `requests`, applied to `map`, with the object `id`
+/// attached to the right arm's grasp link where it stands, touching `touch_links`.
+fn held_by_the_right_arm(
+    map: &mut VoxelMap,
+    requests: &[ObjectRequest],
+    id: &str,
+    touch_links: &[&str],
+) -> PlanningScene {
+    let mut scene = scene_of_grasp_links(&[GRASP_LINK, RIGHT_GRASP_LINK]);
+    scene
+        .apply_collision_objects(requests, map)
+        .expect("the objects apply");
+    attached(&scene, id, RIGHT_GRASP_LINK, right_hand(), touch_links)
+}
+
+/// The scene as a plan of the left arm meets it, the right arm's grasp link at
+/// `right_hand`.
+fn left_objects_beside_the_right(scene: &PlanningScene) -> ArmObjects<'_> {
+    scene.for_arm(GRASP_LINK, |link| {
+        assert_eq!(link, RIGHT_GRASP_LINK, "the other arm's grasp link");
+        right_hand()
+    })
+}
+
+// The right arm holds the box across the left arm's path: the left arm's straight path
+// fails on its run where the right arm holds the box, and the path around it keeps the
+// clearance under a dense check. The right arm holds an item between the left gripper's
+// fingers: the left arm's start is in contact with it until the item's touch links are
+// the left gripper's links, and a path from the start then passes its check.
+#[test]
+fn an_object_the_other_arm_holds_stands_where_it_holds_it() {
+    let mut voxels = map(VOXEL_M, 1.6);
+    let boxed = held_by_the_right_arm(&mut voxels, &[box_object()], "box", &[]);
+    let field = DistanceField::of(&voxels);
+    let objects = left_objects_beside_the_right(&boxed);
+    let arm = Arm::new(&LEFT_ARM, None);
+    let scene = among(&voxels, &field, objects.objects(&[]));
+    let straight = check(&arm, &scene, LOW, &[HIGH]);
+    assert!(breaks_first_run_on(&straight, 0), "{straight:?}");
+    let around = around_the_box(&arm, &scene);
+    let near_the_box = Surroundings::new(&voxels, &field, term_clearances(MIN_CLEARANCE_M))
+        .with_objects(objects.objects(&[]));
+    assert_dense_clear_of(&arm, &near_the_box, &around);
+
+    let item = add_shape("item", &grasp_pose(&LOW), "box", &[ITEM_M; 3]);
+    let fingers = left_fingers();
+    let gripped = Arm::new(&LEFT_ARM, None)
+        .riding(&fingers)
+        .expect("the fingers ride the hand");
+    let check_held = |touch_links: &[&str]| {
+        let mut voxels = map(VOXEL_M, 1.6);
+        let held = held_by_the_right_arm(
+            &mut voxels,
+            std::slice::from_ref(&item),
+            "item",
+            touch_links,
+        );
+        let field = DistanceField::of(&voxels);
+        let objects = left_objects_beside_the_right(&held);
+        check(
+            &gripped,
+            &among(&voxels, &field, objects.objects(&[])),
+            LOW,
+            &[raised()],
+        )
+    };
+    let untouchable = check_held(&[]);
+    assert!(
+        matches!(
+            &untouchable.fault,
+            Some(PathFault::Start(StartFault::InCollision(Contact::Object { body, object })))
+                if GRIPPER.contains(&body.as_str()) && object == "item"
+        ),
+        "{untouchable:?}"
+    );
+    assert_eq!(check_held(&GRIPPER), passing(&[raised()]));
+}
+
+/// A mesh of `vertices` and `triangles`, as apply_collision_objects takes one.
+fn mesh(vertices: Vec<[f64; 3]>, triangles: Vec<[u32; 3]>) -> ShapeFields {
+    ShapeFields {
+        kind: "mesh".to_string(),
+        dimensions: Vec::new(),
+        mesh_vertices: vertices.into_iter().flatten().collect(),
+        mesh_triangles: triangles.into_iter().flatten().collect(),
+        position: [0.0; 3],
+        orientation: [0.0, 0.0, 0.0, 1.0],
+    }
+}
+
+/// An L of two bars, each 20 cm long and 2 cm wide, meeting at the frame's origin along
+/// x and y, from z = 0 to 10 cm: a closed solid of 20 triangles.
+fn l_mesh() -> ShapeFields {
+    let corners = [
+        [0.0, 0.0],
+        [0.2, 0.0],
+        [0.2, 0.02],
+        [0.02, 0.02],
+        [0.02, 0.2],
+        [0.0, 0.2],
+    ];
+    let vertices = [0.0, 0.1]
+        .iter()
+        .flat_map(|&z| corners.map(|[x, y]| [x, y, z]))
+        .collect();
+    let caps = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 5]]
+        .into_iter()
+        .flat_map(|[a, b, c]| [[a, c, b], [a + 6, b + 6, c + 6]]);
+    let sides = (0..6).flat_map(|i| {
+        let j = (i + 1) % 6;
+        [[i, j, j + 6], [i, j + 6, i + 6]]
+    });
+    mesh(vertices, caps.chain(sides).collect())
+}
+
+/// A cube of `side` about the frame's origin as a closed mesh of 12 triangles.
+fn cube_mesh(side: f64) -> ShapeFields {
+    let half = side / 2.0;
+    let vertices = (0..8)
+        .map(|i| {
+            let at = |bit: usize| if i & bit == 0 { -half } else { half };
+            [at(1), at(2), at(4)]
+        })
+        .collect();
+    let faces = [
+        [0, 2, 3, 1],
+        [4, 5, 7, 6],
+        [0, 1, 5, 4],
+        [2, 6, 7, 3],
+        [0, 4, 6, 2],
+        [1, 3, 7, 5],
+    ];
+    let triangles = faces
+        .into_iter()
+        .flat_map(|[a, b, c, d]| [[a, b, c], [a, c, d]])
+        .collect();
+    mesh(vertices, triangles)
+}
+
+// A 2 cm cube the hand holds 15 cm past the grasp point lies in the open corner of an
+// L-shaped mesh, inside the convex hull of the L and 3 cm from each bar: the state keeps
+// 5 mm from the L, where a box of the L's bounds holds the cube. Inside a closed cube
+// mesh, clear of its triangles, the held cube is in collision.
+#[test]
+fn a_body_passes_the_corner_of_an_l_and_collides_inside_a_mesh() {
+    let q = [0.0; JOINTS];
+    let grasp = grasp_pose(&q);
+    let hand = LEFT_ARM.chain().at(&q).link_pose_world(JOINTS - 1);
+    let out = (grasp.translation.vector - hand.translation.vector).normalize();
+    let center = grasp.translation.vector + out * 0.15;
+    let turned = UnitQuaternion::rotation_between(&Vector3::z(), &out).unwrap_or_else(|| {
+        UnitQuaternion::from_axis_angle(&Vector3::x_axis(), std::f64::consts::PI)
+    });
+    let at_cube = Isometry3::from_parts(Translation3::from(center), turned);
+    let voxels = map(VOXEL_M, 1.6);
+    let field = DistanceField::of(&voxels);
+    let holding_the_cube = |requests: &[ObjectRequest]| {
+        let cube = add_shape("cube", &at_cube, "box", &[0.02; 3]);
+        let scene = scene_with(&mut voxels.clone(), &[requests, &[cube]].concat());
+        attached(&scene, "cube", GRASP_LINK, grasp, &GRIPPER)
+    };
+    let keeps = |requests: &[ObjectRequest]| {
+        let scene = holding_the_cube(requests);
+        let objects = left_objects(&scene);
+        let riders = riders(&objects, &[]);
+        let arm = Arm::new(&LEFT_ARM, None)
+            .riding(&riders)
+            .expect("the cube rides the hand");
+        Surroundings::new(&voxels, &field, term_clearances(0.005))
+            .with_objects(objects.objects(&[]))
+            .clear(&arm, &q)
+    };
+    let corner = at_cube * Isometry3::translation(-0.04, -0.04, -0.05);
+    assert!(keeps(&[add_object("corner", &corner, vec![l_mesh()])]));
+    let bounds = at_cube * Isometry3::translation(0.06, 0.06, 0.0);
+    assert!(!keeps(&[add_shape(
+        "bounds",
+        &bounds,
+        "box",
+        &[0.2, 0.2, 0.1]
+    )]));
+    let scene = holding_the_cube(&[add_object("crate", &at_cube, vec![cube_mesh(0.1)])]);
+    let objects = left_objects(&scene);
+    let riders = riders(&objects, &[]);
+    let arm = Arm::new(&LEFT_ARM, None)
+        .riding(&riders)
+        .expect("the cube rides the hand");
+    let checked = check(
+        &arm,
+        &among(&voxels, &field, objects.objects(&[])),
+        q,
+        &[raised()],
+    );
+    assert!(
+        matches!(
+            &checked.fault,
+            Some(PathFault::Start(StartFault::InCollision(Contact::Object { body, object })))
+                if body == "cube" && object == "crate"
+        ),
+        "{checked:?}"
+    );
+}
+
+// The slab as an object of a box at each of its voxels, on an empty map: from the start a
+// centimeter from it, a path that moves nearer it breaks the start rule on the map and the
+// objects, while the planned path away from it passes whole. An object is a term of the
+// start rule as the map is.
+#[test]
+fn a_path_from_a_start_near_an_object_must_move_away() {
+    let NearTheSlab {
+        map: slab,
+        start,
+        toward,
+        ..
+    } = near_the_slab(0.01);
+    let side = slab.voxel_size();
+    let boxes = slab
+        .occupied()
+        .map(|key| primitive("box", &[side; 3], slab.center(key)))
+        .collect();
+    let mut voxels = map(VOXEL_M, 1.6);
+    let planning = scene_with(
+        &mut voxels,
+        &[add_object("slab", &Isometry3::identity(), boxes)],
+    );
+    let field = DistanceField::of(&voxels);
+    let objects = left_objects(&planning);
+    let arm = Arm::new(&LEFT_ARM, None);
+    assert!(
+        !Surroundings::new(&voxels, &field, [MIN_CLEARANCE_M + PLAN_SPARE_M, 0.0, 0.0])
+            .with_objects(objects.objects(&[]))
+            .clear(&arm, &start),
+        "the start keeps the plan's clearance from the slab"
+    );
+    let scene = among(&voxels, &field, objects.objects(&[]));
+    assert!(breaks_first_run_on(
+        &check(&arm, &scene, start, &[toward]),
+        0
+    ));
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goal = at(&HIGH);
+    let waypoints = plan_arm_path(
+        &arm,
+        &scene,
+        &request(Planner::RrtConnect, start, &goal, &sampler),
+    )
+    .expect("a path away from the slab");
+    assert_eq!(
+        check(&arm, &scene, start, &waypoints[1..]),
+        passing(&waypoints[1..])
+    );
+}
+
+// A 4 cm item held 15 cm past the grasp point, a voxel the map marks inside it after the
+// attach, from three frames: the start is in contact, the item and the map, until a pair
+// of the item and "occupancy_map" lets it touch the map, and then a path from it passes
+// its check.
+#[test]
+fn a_pair_with_the_map_lets_a_held_item_touch_it() {
+    let ahead = ahead_of_the_grasp_point(&LOW, 0.15);
+    let mut voxels = map(0.01, 1.6);
+    let item = add_shape("item", &ahead, "box", &[0.04; 3]);
+    let held = holding(&scene_with(&mut voxels, &[item]), &LOW, &[]);
+    // The add left the voxel at the lowest log-odds, which three frames' hits raise past
+    // the occupancy threshold.
+    let inside: [f64; 3] = ahead.translation.vector.into();
+    for _ in 0..3 {
+        occupied_at(&mut voxels, [0.0, 0.0, 3.0], &[inside]);
+    }
+    assert!(voxels.is_occupied(voxels.key(inside).expect("a point inside the map")));
+    let field = DistanceField::of(&voxels);
+    let check_held = |held: &PlanningScene| {
+        let objects = left_objects(held);
+        let riders = riders(&objects, &[]);
+        let arm = Arm::new(&LEFT_ARM, None)
+            .riding(&riders)
+            .expect("the item rides the hand");
+        check(
+            &arm,
+            &among(&voxels, &field, objects.objects(&[])),
+            LOW,
+            &[raised()],
+        )
+    };
+    let touching = check_held(&held);
+    assert!(
+        matches!(
+            &touching.fault,
+            Some(PathFault::Start(StartFault::InCollision(Contact::Map { body }))) if body == "item"
+        ),
+        "{touching:?}"
+    );
+    let mut allowed = held.clone();
+    allowed
+        .set_allowed_collision("item", &["occupancy_map".to_string()], true)
+        .expect("allowed");
+    assert_eq!(check_held(&allowed), passing(&[raised()]));
+}
+
+// Two items the hand holds 15 cm past the grasp point, the second overlapping the first,
+// each with the gripper as its touch links: objects one arm carries are never checked
+// against each other, so the start is clear and a path from it passes its check, with no
+// pair that lets them touch.
+#[test]
+fn two_held_items_are_never_checked_against_each_other() {
+    let ahead = ahead_of_the_grasp_point(&LOW, 0.15);
+    let mut voxels = map(VOXEL_M, 1.6);
+    let first = add_shape("item", &ahead, "box", &[0.04; 3]);
+    let second = add_shape(
+        "second",
+        &(ahead * Isometry3::translation(0.03, 0.0, 0.0)),
+        "box",
+        &[0.04; 3],
+    );
+    let both = scene_with(&mut voxels, &[first, second]);
+    let held = attached(
+        &holding(&both, &LOW, &GRIPPER),
+        "second",
+        GRASP_LINK,
+        grasp_pose(&LOW),
+        &GRIPPER,
+    );
+    let field = DistanceField::of(&voxels);
+    let objects = left_objects(&held);
+    let riders = riders(&objects, &[]);
+    let arm = Arm::new(&LEFT_ARM, None)
+        .riding(&riders)
+        .expect("the items ride the hand");
+    assert_eq!(
+        check(
+            &arm,
+            &among(&voxels, &field, objects.objects(&[])),
+            LOW,
+            &[raised()],
+        ),
+        passing(&[raised()])
     );
 }

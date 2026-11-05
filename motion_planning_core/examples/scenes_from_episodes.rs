@@ -27,10 +27,10 @@
 //!   more than the planner's start tolerance moved onto it (`start_inside_limits`). The
 //!   arm planning kind refuses any start outside a limit, so an episode whose start lies
 //!   farther out is dropped.
-//! - The goal: the first configuration that the goal sampler of the scenario's arm draws
-//!   for the episode's pose goal, of the planner's goal samples, seeded by the scene's
-//!   seed, that keeps the scenario's clearance from the boxes. An episode with none is
-//!   dropped.
+//! - The goal: the first goal that the goal sampling of the scenario's arm finds for the
+//!   episode's pose goal (`sample_goals`, at the planner's goal samples and the
+//!   scenario's time limit), seeded by the scene's seed, its validity the scenario's
+//!   clearance from the boxes. An episode with none is dropped.
 //! - The seed: the episode's index plus one, as OMPL takes no seed of 0.
 
 #[path = "../tests/arm_scenes/mod.rs"]
@@ -49,13 +49,13 @@ use camera_core::pose::Pose;
 use collision_geometry::chain::Padding;
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, DepthCamera, Frame, Goal, GoalSampler, IkGoalSampler, JointHistory, OrientationTarget,
-    PositionTarget, Surroundings, insert_cut_out, start_inside_limits,
+    Arm, DepthCamera, Frame, Goal, IkGoalSampler, JointHistory, OrientationTarget, PositionTarget,
+    Surroundings, insert_cut_out, sample_goals, start_inside_limits, term_clearances,
 };
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 use occupancy_map::{Bounds, DistanceField, Frame as MapFrame, Scan, VoxelMap};
 use openarm_description::{ARM_DOF, ArmPair, HardwareVersion, Side};
-use ros_reference::arm_planning::{Scene as ReferenceScene, Scenes};
+use ros_reference::arm_planning::{Scene as ReferenceScene, SceneGoal, Scenes};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -113,7 +113,7 @@ fn main() {
         scenes.urdf
     );
     let answers: Vec<(String, Result<Value, Dropped>)> =
-        on_the_arm(&scenes, &urdf, &meshes, |kind_arm| {
+        on_the_arm(&scenes, &urdf, &meshes, |kind_arm, _| {
             let sampler = IkGoalSampler::new(kind_arm.geometry().chain().clone());
             recorded
                 .episodes
@@ -623,39 +623,36 @@ fn scene_of(
     let boxes = boxes_of(&map);
     let scene = ReferenceScene {
         boxes,
+        objects: Vec::new(),
+        attached: None,
+        other_arm_holds: None,
+        allowed: Vec::new(),
         start: start.to_vec(),
-        goal: Vec::new(),
+        goal: SceneGoal::Joints(Vec::new()),
         seed,
         ours: (),
     };
     let kind_map = map_of(scenes, &scene);
     let field = DistanceField::of(&kind_map);
-    let surroundings = Surroundings::new(
-        &kind_map,
-        &field,
-        scenes.min_clearance,
-        scenes.min_clearance,
-    );
+    let surroundings = Surroundings::new(&kind_map, &field, term_clearances(scenes.min_clearance));
     let deadline = Instant::now() + Duration::from_secs_f64(scenes.time_limit);
-    let sampled = sampler.sample(
+    let sampled = sample_goals(
+        sampler,
         &episode.goal,
-        planner.goal_samples.get(),
+        &start,
+        planner.goal_samples,
         u64::from(seed.get()),
-        deadline,
-        None,
+        &|| Instant::now() >= deadline,
+        &|q| surroundings.clear(arm, q),
     );
-    let goal = sampled
-        .iter()
-        .find(|q| surroundings.clear(arm, q))
-        .ok_or_else(|| Dropped {
-            reason: "no_free_goal",
-            detail: format!(
-                "none of the {} of {} configurations the goal sampler drew keeps {} m from the boxes",
-                sampled.len(),
-                planner.goal_samples,
-                scenes.min_clearance
-            ),
-        })?;
+    let goal = sampled.first().ok_or_else(|| Dropped {
+        reason: "no_free_goal",
+        detail: format!(
+            "the goal sampling found no configuration that meets the goal and keeps {} m from \
+             the boxes by its end",
+            scenes.min_clearance
+        ),
+    })?;
     eprintln!(
         "episode {}: {taken} of {} frames taken, {} boxes",
         episode.index,
@@ -668,6 +665,10 @@ fn scene_of(
             .iter()
             .map(|b| json!({ "first": b.first, "last": b.last }))
             .collect::<Vec<_>>(),
+        "objects": [],
+        "attached": null,
+        "other_arm_holds": null,
+        "allowed": [],
         "start": scene.start,
         "goal": goal.to_vec(),
         "seed": seed.get(),

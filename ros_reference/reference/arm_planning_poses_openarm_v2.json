@@ -1,0 +1,33 @@
+{
+  "kind": "arm_planning",
+  "scenes": [
+    {
+      "moveit": {"clearance":0.2064507590746983,"collisions":0,"held_clearance":null,"length":0.32478853752359627,"status":1},
+      "ours": {"clearance":0.2065892423187365,"collisions":0,"held_clearance":null,"length":0.32482819990086165}
+    },
+    {
+      "moveit": {"clearance":-1,"collisions":4,"held_clearance":null,"length":5.593387710226161,"status":1},
+      "ours": {"clearance":0.0021285829656105906,"collisions":0,"held_clearance":null,"length":5.4860264313286216}
+    },
+    {
+      "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"status":-2},
+      "ours": {"clearance":0.0030222621056533727,"collisions":0,"held_clearance":null,"length":4.929344239124422}
+    },
+    {
+      "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"status":-10},
+      "ours": null
+    },
+    {
+      "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"status":-27},
+      "ours": null
+    },
+    {
+      "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"status":-26},
+      "ours": null
+    },
+    {
+      "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"status":-26},
+      "ours": null
+    }
+  ]
+}

@@ -899,10 +899,11 @@ impl SelfCollisionModel {
     }
 
     /// World-frame hull pieces of every body at the given configuration, paired
-    /// with the body name (for visualization; runtime queries use
-    /// [`min_distance`](Self::min_distance)). Each piece gives its placed
-    /// vertices, and its hull the face triangles and the rounding radius, which is
-    /// enough to draw the exact collision surface.
+    /// with the body name: each piece gives its placed vertices, and its hull the
+    /// face triangles and the rounding radius, the exact collision surface. A
+    /// planner measures the objects an arm carries against the bodies the plan does
+    /// not move by these pieces; [`min_distance`](Self::min_distance) measures the
+    /// checked pairs between the bodies.
     pub fn world_pieces(
         &mut self,
         q_left: &JointVec,
@@ -936,7 +937,7 @@ impl SelfCollisionModel {
             .map(|part| {
                 let rider = part.rider();
                 Ok(Rider {
-                    offset: self.finger_offset(side, rider.link, rider.segment)?,
+                    offset: self.finger_offset(side, rider.name, rider.segment)?,
                     ..rider
                 })
             })

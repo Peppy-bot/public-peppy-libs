@@ -1,6 +1,8 @@
-//! What the tests share: OpenArm v2's left arm and the fingers its hand carries, a
-//! deadline no sampling reaches, voxel maps of drawn points, and the distance from an arm
-//! to every occupied voxel.
+//! What the tests share: OpenArm v2's left arm and the fingers its hand carries, the
+//! shoulder and wrist branch of a configuration and configurations drawn off the seams of
+//! the branches, a deadline no sampling reaches, voxel maps of drawn points, the distance
+//! from an arm to every occupied voxel, and the distance from the objects an arm carries
+//! to its own pieces.
 //!
 //! Each integration test is its own crate, so items unused by one suite are
 //! expected; the allow keeps clippy's -D warnings gate meaningful for the rest.
@@ -12,12 +14,12 @@ use std::time::{Duration, Instant};
 
 use camera_core::pose::Pose;
 use chain_kinematics::{ChainSpec, JointSelection};
-use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
-use collision_geometry::gjk::{self, Placed, Support};
+use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider, RiderBody};
+use collision_geometry::gjk::{self, Placed};
 use control_core::positive_finite::PositiveFinite;
-use motion_planning_core::Arm;
-use nalgebra::{Point3, Vector3};
-use occupancy_map::{Bounds, Frame, Scan, VoxelMap};
+use motion_planning_core::{Arm, Body};
+use nalgebra::Point3;
+use occupancy_map::{Bounds, Frame, Scan, VoxelBox, VoxelMap};
 use openarm_description::{HardwareVersion, Side};
 
 pub const JOINTS: usize = 7;
@@ -50,6 +52,41 @@ pub static LEFT_ARM: LazyLock<ChainGeometry<JOINTS>> = LazyLock::new(|| {
 /// hand.
 pub fn left_fingers() -> Vec<Rider<'static>> {
     LEFT_ARM.carried().iter().map(CarriedPart::rider).collect()
+}
+
+/// The shoulder and wrist branch of `q`: on which side of a quarter turn the middle joint
+/// of each spherical limb stands. The two solutions of a limb differ there.
+pub fn branch(q: &[f64; JOINTS]) -> (bool, bool) {
+    (q[1].cos() >= 0.0, q[5].cos() >= 0.0)
+}
+
+/// SplitMix64 draws in `[0, 1)`.
+pub struct SplitMix64(pub u64);
+
+impl SplitMix64 {
+    pub fn unit(&mut self) -> f64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1_u64 << 53) as f64
+    }
+}
+
+/// Configurations of the left arm drawn inside its limits by SplitMix64 from `seed`, the
+/// middle joint of each spherical limb (joints 2 and 6) at least a quarter of pi from the
+/// quarter turn its two branches meet at.
+pub fn off_the_branch_seams(seed: u64) -> impl Iterator<Item = [f64; JOINTS]> {
+    let limits = LEFT_ARM.chain().limits();
+    let mut draws = SplitMix64(seed);
+    std::iter::repeat_with(move || -> [f64; JOINTS] {
+        std::array::from_fn(|i| limits[i].lo + (limits[i].hi - limits[i].lo) * draws.unit())
+    })
+    .filter(|q| {
+        [q[1], q[5]]
+            .iter()
+            .all(|v| v.cos().abs() >= std::f64::consts::FRAC_1_SQRT_2)
+    })
 }
 
 /// `value`, a tolerance of the tests above 0.
@@ -100,35 +137,48 @@ pub fn occupied_at(map: &mut VoxelMap, origin: [f64; 3], points: &[[f64; 3]]) {
     .expect("the scan stands in the map's frame");
 }
 
-/// The box of an occupied voxel, as GJK measures it.
-pub struct VoxelBox {
-    pub center: Point3<f64>,
-    pub half: f64,
-}
-
-impl Support for VoxelBox {
-    fn core_support(&self, dir: &Vector3<f64>) -> Point3<f64> {
-        self.center + dir.map(|d| if d < 0.0 { -self.half } else { self.half })
-    }
-}
-
 /// The box of every occupied voxel of `map`.
 pub fn voxel_boxes(map: &VoxelMap) -> Vec<VoxelBox> {
-    map.occupied()
-        .map(|key| VoxelBox {
-            center: map.center(key).into(),
-            half: map.voxel_size() / 2.0,
-        })
-        .collect()
+    map.occupied().map(|key| map.voxel_box(key)).collect()
 }
 
-/// The least distance GJK measures from every piece of `arm` at `q` to the box of every
-/// occupied voxel of `map`, with no screen.
+/// The least distance at `q` between a shape of an object `arm` carries and a piece of
+/// the arm's links and of the parts they carry that the object may not touch, measured
+/// shape against piece with no screen: `may_touch` takes the object's id and the link's
+/// name.
+pub fn held_from_its_arm<const N: usize>(
+    arm: &Arm<N>,
+    q: &[f64; N],
+    may_touch: impl Fn(&str, &str) -> bool,
+) -> f64 {
+    let bodies = arm.bodies(q);
+    let shapes = bodies
+        .iter()
+        .filter_map(|(object, body)| body.shape().map(|shape| (*object, shape)));
+    shapes
+        .flat_map(|(object, shape)| {
+            bodies
+                .iter()
+                .filter(|(link, _)| !may_touch(object, link))
+                .filter_map(move |(_, body)| match body {
+                    Body::Piece(piece) => Some(shape.distance_to(piece, piece.bounding_sphere())),
+                    Body::Shape(_) => None,
+                })
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// The least distance from every body of `arm` at `q` to the box of every occupied voxel
+/// of `map`, with no screen.
 pub fn distance_to_map<const N: usize>(arm: &Arm<N>, map: &VoxelMap, q: &[f64; N]) -> f64 {
     let boxes = voxel_boxes(map);
-    arm.pieces(q)
+    arm.bodies(q)
         .iter()
-        .flat_map(|(_, piece)| boxes.iter().map(|b| gjk::distance(piece, b).distance))
+        .flat_map(|(_, body)| {
+            boxes
+                .iter()
+                .map(|b| body.distance_to_convex(b, b.bounding_sphere()))
+        })
         .fold(f64::INFINITY, f64::min)
 }
 
@@ -137,21 +187,21 @@ pub fn distance_to_map<const N: usize>(arm: &Arm<N>, map: &VoxelMap, q: &[f64; N
 /// a vertex of a finger's piece toward its center, one the finger touches. With that
 /// distance from the bare arm. Each finger stands where its hand carries it.
 pub fn voxel_in_a_finger(map: &VoxelMap, q: &[f64; JOINTS]) -> ([f64; 3], f64) {
-    let bare = Arm::new(&LEFT_ARM, None).pieces(q);
+    let bare = Arm::new(&LEFT_ARM, None).bodies(q);
     let posed = LEFT_ARM.chain().at(q);
     let fingers: Vec<Placed> = left_fingers()
         .into_iter()
         .flat_map(|rider| {
             let pose = posed.link_pose_world(rider.segment) * rider.offset;
-            rider.pieces.iter().map(move |hull| Placed::new(hull, pose))
+            let RiderBody::Pieces(pieces) = rider.body else {
+                panic!("a finger is a part of the robot");
+            };
+            pieces.iter().map(move |hull| Placed::new(hull, pose))
         })
         .collect();
     let voxel_of = |point: Point3<f64>| {
         let key = map.key(point.into()).expect("a point inside the map");
-        VoxelBox {
-            center: map.center(key).into(),
-            half: map.voxel_size() / 2.0,
-        }
+        map.voxel_box(key)
     };
     fingers
         .iter()
@@ -164,11 +214,12 @@ pub fn voxel_in_a_finger(map: &VoxelMap, q: &[f64; JOINTS]) -> ([f64; 3], f64) {
                 .collect::<Vec<_>>()
         })
         .map(|voxel| {
+            let sphere = voxel.bounding_sphere();
             let away = bare
                 .iter()
-                .map(|(_, piece)| gjk::distance(piece, &voxel).distance)
+                .map(|(_, body)| body.distance_to_convex(&voxel, sphere))
                 .fold(f64::INFINITY, f64::min);
-            (voxel.center.into(), away)
+            (sphere.0.into(), away)
         })
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .expect("a voxel inside a finger")

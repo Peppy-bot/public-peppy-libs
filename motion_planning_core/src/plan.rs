@@ -2,17 +2,23 @@
 //! simplification, and the check of the path the robot runs.
 //!
 //! A motion is walked, and each arc of a rounded path, by conservative advancement. A
-//! joint turning by an angle moves a point of a link, or of a part a link carries, at
-//! most that angle times the joint's reach (`Arm::reach`). A term of the clearances, the
-//! map's or the robot's own body's, has `k` moving bodies: 1 for the map, which stands
-//! still, and 2 for a pair of the self model, each of whose links moves. At each checked
-//! state the walk measures each term's distance, and the term's spare is its distance
-//! above `min_clearance_m` over `k`: a step that moves no point of a link farther than
-//! the least spare of the terms keeps every state up to the next checked one at
-//! `min_clearance_m` or more. A step moves a point at most `MAX_STEP_M`. So:
+//! joint turning by an angle moves a point of a link, or of a body a link carries, a part
+//! of the robot or an object, at most that angle times the joint's reach (`Arm::reach`).
+//! Each term of the clearances, as `Surroundings` holds them, is asked a clearance
+//! (`term_clearances`): `min_clearance_m` from the map and the objects and within the
+//! robot's own body, and 0 between an attached object and the links of the arm that
+//! carries it, outside its touch links, which keep out of contact. A term has `k` moving
+//! bodies: 1 for the map and the objects, which stand still, and 2 for the robot's own
+//! body and for an attached object against the arm that carries it, both bodies of whose
+//! pairs move. At each checked state the walk measures each term's distance, and the
+//! term's spare is its distance above the clearance asked of it over `k`: a step that
+//! moves no point of a link farther than the least spare of the terms keeps every state
+//! up to the next checked one at the clearance asked of each term or more. A step moves a
+//! point at most `MAX_STEP_M`. So:
 //!
-//! - A state keeps the plan's clearance of each term: `min_clearance_m` plus `k` times
-//!   `MIN_SPARE_M`, 1 mm from the map and 2 mm between the robot's own links, so that each
+//! - A state keeps the plan's clearance of each term: the clearance asked of it plus `k`
+//!   times `MIN_SPARE_M`, 1 mm from the map and the objects and 2 mm within the robot's
+//!   own body and between an attached object and the arm that carries it, so that each
 //!   step from it moves a point at least `MIN_SPARE_M`; a walk ends at a state that falls
 //!   short of it. The voxel's size needs no inflation: a state is measured against each
 //!   occupied voxel's whole box, which holds every point the voxel stands for.
@@ -21,24 +27,26 @@
 //!   the start rule until it keeps it. At each checked state the term lies no nearer than
 //!   the farthest checked state before it, or than its plan clearance where that is
 //!   nearer, to the rounding of the arithmetic, `ROUNDING_SLACK_M`. The start sets the
-//!   term's floor: 0 from a start below `min_clearance_m`, and from one at or above it
-//!   `min_clearance_m`, or the start's distance less `2k` times `MIN_DEPARTURE_STEP_M`
-//!   and `ROUNDING_SLACK_M` where that is lower, never below 0. While the term falls
-//!   short, a step moves no point farther than the term's room, the farthest checked
-//!   distance above the floor, over `2k`, so between two checked states the term comes
-//!   nearer by at most half its room: from a start below `min_clearance_m` it stays above
-//!   half its farthest distance, so above 0; from one at least `2k` times
-//!   `MIN_DEPARTURE_STEP_M` above it, above `min_clearance_m`; and from one nearer above
-//!   it, at most `k` times `MIN_DEPARTURE_STEP_M` below it, 0.1 mm for the map and 0.2 mm
-//!   for the robot's own body. A motion ends where its step falls under
-//!   `MIN_DEPARTURE_STEP_M`, so a start within `2k` times that above a floor of 0 takes
-//!   no step. A term the start keeps the plan's clearance of, or that has risen to it,
-//!   steps by its spare and keeps it, as on any run. A run whose path from the start lies
-//!   on the straight line from the start to the run's end, past waypoints on it such as
-//!   one a corner's repair adds to the first run, is walked by the rule from the start,
-//!   and so is a planner's motion whose first state lies on the straight line from the
-//!   start to its end. Any other run is walked by its spare from its first state, so one
-//!   that leaves a state short of the plan's clearance fails there.
+//!   term's floor: 0 from a start below the clearance asked of it, and from one at or
+//!   above it that clearance, or the start's distance less `2k` times
+//!   `MIN_DEPARTURE_STEP_M` and `ROUNDING_SLACK_M` where that is lower, never below 0.
+//!   While the term falls short, a step moves no point farther than the term's room, the
+//!   farthest checked distance above the floor, over `2k`, so between two checked states
+//!   the term comes nearer by at most half its room: from a start below the clearance
+//!   asked of it, it stays above half its farthest distance, so above 0; from one at
+//!   least `2k` times `MIN_DEPARTURE_STEP_M` above it, above that clearance; and from one
+//!   nearer above it, at most `k` times `MIN_DEPARTURE_STEP_M` below it, 0.1 mm for the
+//!   map and the objects and 0.2 mm for the robot's own body. An attached object, asked
+//!   to keep 0 from the arm that carries it, has a floor of 0 there and never comes
+//!   nearer than 0. A motion ends where its step falls under `MIN_DEPARTURE_STEP_M`, so a
+//!   start within `2k` times that above a floor of 0 takes no step. A term the start
+//!   keeps the plan's clearance of, or that has risen to it, steps by its spare and keeps
+//!   it, as on any run. A run whose path from the start lies on the straight line from
+//!   the start to the run's end, past waypoints on it such as one a corner's repair adds
+//!   to the first run, is walked by the rule from the start, and so is a planner's motion
+//!   whose first state lies on the straight line from the start to its end. Any other run
+//!   is walked by its spare from its first state, so one that leaves a state short of the
+//!   plan's clearance fails there.
 //! - The planner keeps every state of its paths but the start at the plan's clearances:
 //!   its check of a motion fails one whose first state, the start excepted, falls short
 //!   of them, and one from the start that ends before each term keeps them. OMPL's
@@ -47,37 +55,37 @@
 //!   robot runs through it passes its check, and the planned path when only that one
 //!   passes. MoveIt checks the simplified path alone and answers INVALID_MOTION_PLAN
 //!   when it fails.
-//! - Run from the plan's start, the path keeps `min_clearance_m` as these say. Run from
-//!   up to a tolerance from the start in each joint, as a robot's controller allows, it
-//!   comes nearer anything near its start by at most the sum over the joints of the
-//!   tolerance times the joint's reach, as MoveIt's execution starts within its allowed
-//!   start tolerance and checks nothing more.
-//! - Each arc of a rounded path is walked from where it leaves a run to where it joins the
-//!   next, along the path: a step of the path's length moves a point at most the step
+//! - Run from the plan's start, the path keeps the clearance asked of each term as these
+//!   say. Run from up to a tolerance from the start in each joint, as a robot's
+//!   controller allows, it comes nearer anything near its start by at most the sum over
+//!   the joints of the tolerance times the joint's reach, as MoveIt's execution starts
+//!   within its allowed start tolerance and checks nothing more.
+//! - Each arc of a rounded path is walked from where it leaves a run to where it joins
+//!   the next, along the path: a step of the path's length moves a point at most the step
 //!   times the arc's lever, the sum over the joints of the largest share of the path's
 //!   unit tangent the joint has on the arc times its reach, at most the joints' reach in
 //!   their L2 norm (`Arm::lever_along`). A state on a run is not checked: the plan walks
 //!   every run of its answer, a run it joins past a waypoint it drops, one within
-//!   `MIN_JOINT_CHANGE_RAD` of the one before, among them. Each planned waypoint after the
-//!   start keeps the plan's clearances, so the start rule holds at no corner, and each arc
-//!   keeps the plan's clearances. A corner's repair adds waypoints at states its runs'
-//!   walks check that keep the plan's clearances, the start rule's among them, so each
-//!   run they split walks only states the plan walked: walked from a state it checks, a
-//!   run steps as the walk stepped.
+//!   `MIN_JOINT_CHANGE_RAD` of the one before, among them. Each planned waypoint after
+//!   the start keeps the plan's clearances, so the start rule holds at no corner, and
+//!   each arc keeps the plan's clearances. A corner's repair adds waypoints at states its
+//!   runs' walks check that keep the plan's clearances, the start rule's among them, so
+//!   each run they split walks only states the plan walked: walked from a state it
+//!   checks, a run steps as the walk stepped.
 //!
 //! The request's deadline bounds the plan as MoveIt's allowed planning time bounds a
-//! request: the goal sampler draws up to `goal_samples` configurations, ending early once
-//! the deadline passes, OMPL makes the request's attempts in what remains before it, each
-//! under all of it, and its simplifier takes what remains after the attempts, at most
-//! `SIMPLIFICATION_ITERATIONS` iterations, as MoveIt simplifies in the allowed planning
-//! time less the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve`), whatever is
-//! left of it. OMPL's simplifier runs its first pass however little time it has
-//! (`PathSimplifier::simplify`, `atLeastOnce`), so a planner that plans until its time
-//! ends, such as RRT*, has its path simplified once, past the deadline. A corner's repair
-//! runs only before the deadline: when a corner of the simplified path rounds short of the
-//! clearances once it has passed, the plan answers its planned path if that passes its
-//! own check, and no path otherwise. The check of the rounded path runs to its end past
-//! the deadline.
+//! request: the goal sampling (`sample_goals`) samples up to `goal_samples` goals, ending
+//! before a sample once the deadline passes, OMPL makes the request's attempts in what
+//! remains before it, each under all of it, and its simplifier takes what remains after
+//! the attempts, at most `SIMPLIFICATION_ITERATIONS` iterations, as MoveIt simplifies in
+//! the allowed planning time less the plan's (moveit2 2.15.2
+//! `ModelBasedPlanningContext::solve`), whatever is left of it. OMPL's simplifier runs
+//! its first pass however little time it has (`PathSimplifier::simplify`, `atLeastOnce`),
+//! so a planner that plans until its time ends, such as RRT*, has its path simplified
+//! once, past the deadline. A corner's repair runs only before the deadline: when a
+//! corner of the simplified path rounds short of the clearances once it has passed, the
+//! plan answers its planned path if that passes its own check, and no path otherwise. The
+//! check of the rounded path runs to its end past the deadline.
 //!
 //! `check_arm_path` checks a caller's path with the same checks: each waypoint after the
 //! start keeps the plan's clearances, each run keeps them as the plan's runs keep them,
@@ -94,9 +102,10 @@ use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::{CheckError, Checks, Motion, PlanError, Planner, Request, Space, plan};
 
 use crate::arm::Arm;
-use crate::clearance::{Contact, Surroundings};
-use crate::draws::mixed_seed;
+use crate::clearance::{Contact, Surroundings, TERMS, term_clearances};
+use crate::draws::{Draws, mixed_seed};
 use crate::goal::{Goal, GoalSampler};
+use crate::scene::Objects;
 use crate::stop::is_set;
 
 /// The iterations the simplification of a planned path takes at most.
@@ -104,24 +113,24 @@ const SIMPLIFICATION_ITERATIONS: u32 = 1000;
 
 /// The least spare a checked state keeps of each term, as the module says: a walk ends at
 /// a state from which a step would move a point less than this. 1 mm: near a surface at
-/// `min_clearance_m` the spare, and with it the step, shrinks toward 0, and the floor
-/// bounds a motion's checks by its length over 1 mm.
+/// the clearance asked of a term the spare, and with it the step, shrinks toward 0, and
+/// the floor bounds a motion's checks by its length over 1 mm.
 const MIN_SPARE_M: f64 = 1e-3;
 
 /// The farthest any point of a link moves between two checked states. 1.5 cm: a corner's
 /// repair adds waypoints at states its runs' walks check, so each run of a path holds a
-/// checked state within this of any point of it, and a state's distance from the map is
-/// measured exactly up to `min_clearance_m` plus this, past which a piece's bounding
-/// sphere bounds it.
+/// checked state within this of any point of it, and a state's distance from the map and
+/// the objects is measured exactly up to `min_clearance_m` plus this, past which a body's
+/// bounding sphere bounds it.
 pub const MAX_STEP_M: f64 = 0.015;
 
 /// The shortest step of a motion from a start that falls short of its clearances.
 const MIN_DEPARTURE_STEP_M: f64 = 1e-4;
 
-/// How many of a term's bodies a motion moves: the map stands still, and both links of
-/// a pair of the self model may move. The terms are the map's and the robot's own
-/// body's, in that order.
-const MOVED: [f64; 2] = [1.0, 2.0];
+/// How many of a term's bodies a motion moves, for each of the terms `clearance` names:
+/// the map and the objects stand still, and both bodies of a pair of the robot's own body,
+/// or of an attached object and the arm that carries it, may move.
+const MOVED: [f64; TERMS] = [1.0, 2.0, 2.0];
 
 /// The share of each of its runs at which the first waypoints added at a corner that
 /// fails its check lie from it; each failed try halves it.
@@ -140,13 +149,23 @@ const ROUNDING_SLACK_M: f64 = 1e-9;
 /// meters long to well under a nanometer.
 const BISECTIONS: usize = 48;
 
-/// The map a plan keeps clear of, as it stood at `stamp`.
+/// What a plan keeps clear of: the map as it stood at `stamp`, and the objects of the
+/// planning scene.
 pub struct Scene<'a> {
     pub map: &'a VoxelMap,
     pub field: &'a DistanceField,
     /// The stamp of the last frame the map took in, in nanoseconds. It joins the
     /// request's seed, so the same request on the same map gives the same path.
     pub stamp: u64,
+    pub objects: Objects<'a>,
+}
+
+impl<'a> Scene<'a> {
+    /// The surroundings of a state in the scene at the clearance of each term of
+    /// `clearances`.
+    fn surroundings(&self, clearances: [f64; TERMS]) -> Surroundings<'a> {
+        Surroundings::new(self.map, self.field, clearances).with_objects(self.objects)
+    }
 }
 
 /// One plan of an arm's path.
@@ -158,7 +177,8 @@ pub struct PlanRequest<'a, const N: usize> {
     pub start_tolerance: [f64; N],
     pub goal: &'a Goal,
     pub sampler: &'a dyn GoalSampler<N>,
-    /// The configurations the sampler draws for the goal.
+    /// The most goals the plan samples, as MoveIt's `max_goal_samples` bounds the goal
+    /// states its goal sampler adds (`sample_goals`).
     pub goal_samples: NonZeroUsize,
     pub planner: Planner,
     /// The instant the goal sampling, the planner's plan and its simplification end by,
@@ -170,6 +190,7 @@ pub struct PlanRequest<'a, const N: usize> {
     /// hybridization.
     pub attempts: NonZeroU32,
     pub seed: u32,
+    /// The clearance each state keeps, as `term_clearances` asks it of each term.
     pub min_clearance_m: f64,
     /// A flag the caller sets to end the plan, at any part of it.
     pub stop: Option<&'a AtomicBool>,
@@ -184,6 +205,7 @@ pub struct CheckRequest<'a, const N: usize> {
     pub start_tolerance: [f64; N],
     /// The waypoints after the start, at least one.
     pub waypoints: &'a [[f64; N]],
+    /// The clearance each state keeps, as `term_clearances` asks it of each term.
     pub min_clearance_m: f64,
     /// The instant the check ends by.
     pub deadline: Instant,
@@ -243,12 +265,12 @@ pub enum PathFault {
         high: f64,
     },
     /// A state at `place` falls short of a plan clearance: it lies `distances` meters
-    /// from the map and between the robot's own links, and the plan keeps `clearances`.
+    /// from the bodies of each term, and the plan keeps `clearances`.
     #[error("{place}, {}", nearness(distances, clearances))]
     Clearance {
         place: Place,
-        distances: [f64; 2],
-        clearances: [f64; 2],
+        distances: [f64; TERMS],
+        clearances: [f64; TERMS],
     },
 }
 
@@ -275,23 +297,28 @@ impl std::fmt::Display for Place {
     }
 }
 
-/// How near a state comes that lies `distances` meters from the map and between the
-/// robot's own links, of each term it keeps less than its plan clearance of
-/// `clearances`.
-fn nearness(distances: &[f64; 2], clearances: &[f64; 2]) -> String {
-    let [map, own] = *distances;
-    let [map_clearance, own_clearance] = *clearances;
+/// How near a state comes that lies `distances` meters from the bodies of each term, of
+/// each term it keeps less than its plan clearance of `clearances`.
+fn nearness(distances: &[f64; TERMS], clearances: &[f64; TERMS]) -> String {
+    let [world, own, held] = *distances;
+    let [world_clearance, own_clearance, held_clearance] = *clearances;
     let terms = [
-        (map < map_clearance).then(|| {
+        (world < world_clearance).then(|| {
             format!(
-                "the arm comes {map:.4} m from the map, nearer than the plan's clearance, \
-                 {map_clearance:.4} m"
+                "the arm comes {world:.4} m from the map and the objects, nearer than the \
+                 plan's clearance, {world_clearance:.4} m"
             )
         }),
         (own < own_clearance).then(|| {
             format!(
                 "the robot's own links come {own:.4} m apart, nearer than the plan's \
                  clearance, {own_clearance:.4} m"
+            )
+        }),
+        (held < held_clearance).then(|| {
+            format!(
+                "an attached object comes {held:.4} m from a link of the arm that carries it, \
+                 nearer than the plan's clearance, {held_clearance:.4} m"
             )
         }),
     ];
@@ -332,7 +359,7 @@ pub fn plan_arm_path<const N: usize>(
     let start = start_clear(arm, scene, &request.start, &request.start_tolerance)?;
     let checks = ArmChecks::new(arm, scene, start, request.min_clearance_m);
     let deadline = request.deadline;
-    let goals = goal_configurations(arm, &checks, request, deadline)?;
+    let goals = goal_configurations(arm, &checks, request, &start, deadline)?;
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         return Err(PlanFailure::NoPath(format!(
@@ -524,7 +551,7 @@ fn distances_in_range<const N: usize>(
 }
 
 /// The start a plan or a check of `arm` takes from `start`: inside the joint limits by
-/// `tolerance` and out of contact with the map and the robot's own body.
+/// `tolerance` and out of contact with the map, the objects and the robot's own body.
 fn start_clear<const N: usize>(
     arm: &Arm<N>,
     scene: &Scene,
@@ -532,7 +559,7 @@ fn start_clear<const N: usize>(
     tolerance: &[f64; N],
 ) -> Result<[f64; N], StartFault> {
     let start = start_inside_limits(arm.geometry().chain(), start, tolerance)?;
-    match Surroundings::new(scene.map, scene.field, 0.0, 0.0).contact(arm, &start) {
+    match scene.surroundings([0.0; TERMS]).contact(arm, &start) {
         Some(contact) => Err(StartFault::InCollision(contact)),
         None => Ok(start),
     }
@@ -588,13 +615,13 @@ fn where_it_leaves_the_limits<const N: usize>(
     std::array::from_fn(|i| leaving[i].clamp(limits[i].lo, limits[i].hi))
 }
 
-/// The floor a start `distance` meters from the bodies of a term with `moved` moving
-/// bodies sets, as the module says.
-fn floor_of(distance: f64, min_clearance_m: f64, moved: f64) -> f64 {
-    if distance < min_clearance_m {
+/// The floor a start `distance` meters from the bodies of a term asked to keep `asked`,
+/// with `moved` moving bodies, sets, as the module says.
+fn floor_of(distance: f64, asked: f64, moved: f64) -> f64 {
+    if distance < asked {
         return 0.0;
     }
-    min_clearance_m
+    asked
         .min(distance - 2.0 * moved * (MIN_DEPARTURE_STEP_M + ROUNDING_SLACK_M))
         .max(0.0)
 }
@@ -627,49 +654,123 @@ pub fn start_inside_limits<const N: usize>(
         .map(|values| values.try_into().expect("one value per joint"))
 }
 
-/// The configurations that meet the goal and keep their clearance, drawn before
-/// `deadline`, or why there are none; a set stop flag ends the plan.
+/// The configurations that meet the goal and keep their clearance, sampled from the
+/// plan's `start` before `deadline` (`sample_goals`, the plan's clearance check deciding
+/// inside each sample), or why there are none; a set stop flag ends the plan.
 fn goal_configurations<const N: usize>(
     arm: &Arm<N>,
     checks: &ArmChecks<N>,
     request: &PlanRequest<N>,
+    start: &[f64; N],
     deadline: Instant,
 ) -> Result<Vec<[f64; N]>, PlanFailure> {
-    let sampled = request.sampler.sample(
+    // The rejections of configurations that meet the goal and fall short of the
+    // clearances: how many, and the configuration that falls short least.
+    let short = std::cell::RefCell::new((0_usize, None::<([f64; N], f64)>));
+    let clear = |q: &[f64; N]| {
+        if checks.surroundings.clear(arm, q) {
+            return true;
+        }
+        let shortfall = checks.shortfall(q);
+        let mut short = short.borrow_mut();
+        short.0 += 1;
+        if short.1.is_none_or(|(_, least)| shortfall < least) {
+            short.1 = Some((*q, shortfall));
+        }
+        false
+    };
+    let goals = sample_goals(
+        request.sampler,
         request.goal,
-        request.goal_samples.get(),
+        start,
+        request.goal_samples,
         u64::from(request.seed),
-        deadline,
-        request.stop,
+        &|| Instant::now() >= deadline || is_set(request.stop),
+        &clear,
     );
     if is_set(request.stop) {
         return Err(PlanFailure::Stopped);
     }
-    if sampled.is_empty() {
-        return Err(PlanFailure::Unreachable(format!(
-            "inverse kinematics found no configuration that meets the goal in {} samples or by the deadline",
-            request.goal_samples
-        )));
+    if !goals.is_empty() {
+        return Ok(goals);
     }
-    let clear: Vec<[f64; N]> = sampled
-        .iter()
-        .filter(|q| checks.surroundings.clear(arm, q))
-        .copied()
-        .collect();
-    if clear.is_empty() {
-        let (least_short, _) = sampled
-            .iter()
-            .map(|q| (q, checks.shortfall(q)))
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .expect("the sampled configurations are not empty");
+    let (rejections, least_short) = short.into_inner();
+    let Some((least_short, _)) = least_short else {
         return Err(PlanFailure::Unreachable(format!(
-            "each of the {} configurations that meet the goal is in collision, nearer than {}; the one that falls short least has {}",
-            sampled.len(),
-            checks.plan_clearance(),
-            checks.short_of(least_short)
+            "inverse kinematics found no configuration that meets the goal in {MAX_GOAL_SAMPLING_ATTEMPTS} goal samples or by the deadline"
         )));
+    };
+    Err(PlanFailure::Unreachable(format!(
+        "the goal sampling rejected {rejections} configurations that meet the goal, each nearer than {}; the one that falls short least has {}",
+        checks.plan_clearance(),
+        checks.short_of(&least_short)
+    )))
+}
+
+/// The attempts of each goal sample: MoveIt's `max_state_sampling_attempts` default
+/// (moveit2 2.15.2 planning_context_manager.cpp:259), the attempts its
+/// `ConstrainedGoalSampler` gives its constraint sampler
+/// (constrained_goal_sampler.cpp:137).
+const MAX_STATE_SAMPLING_ATTEMPTS: usize = 4;
+
+/// MoveIt's `max_goal_sampling_attempts` default (planning_context_manager.cpp:260), which
+/// bounds the goal samples in a row that find no goal, as `sample_goals` says.
+const MAX_GOAL_SAMPLING_ATTEMPTS: usize = 1000;
+
+/// The goals `sampler` finds for `goal` from `start`, as MoveIt's
+/// `ConstrainedGoalSampler` finds them (moveit2 2.15.2 constrained_goal_sampler.cpp). A
+/// working state starts at `start` (:66). Each goal sample runs from it with
+/// `MAX_STATE_SAMPLING_ATTEMPTS` attempts, drawing from the draws of `seed`, `valid`
+/// deciding inside it, as MoveIt's validity callback does (`GoalSampler::sample_from`;
+/// :84-94, :126-137). The goal a sample finds becomes the working state (:137), and joins
+/// the goals when it lies farther than the double's epsilon from each of them in the sum
+/// of its joints' differences, as OMPL adds a goal state
+/// (`GoalLazySamples::addStateIfDifferent` at its default `minDist`,
+/// GoalLazySamples.cpp:205-215, :211, GoalLazySamples.h:101) in MoveIt's distance of a
+/// group's states (`JointModelGroup::distance`, joint_model_group.cpp:466-476). Sampling
+/// ends at `goal_samples` goals (:105-107), before a sample once `ended` holds, and once
+/// the samples since the last goal found reach `MAX_GOAL_SAMPLING_ATTEMPTS` less the
+/// goals found so far: OMPL counts each goal its sampling function returns
+/// (GoalLazySamples.cpp:114-116), and MoveIt's function samples from that count up to
+/// `MAX_GOAL_SAMPLING_ATTEMPTS` until a sample finds a goal, and ends the sampling when
+/// none does (constrained_goal_sampler.cpp:98-114, :169).
+pub fn sample_goals<const N: usize>(
+    sampler: &dyn GoalSampler<N>,
+    goal: &Goal,
+    start: &[f64; N],
+    goal_samples: NonZeroUsize,
+    seed: u64,
+    ended: &dyn Fn() -> bool,
+    valid: &dyn Fn(&[f64; N]) -> bool,
+) -> Vec<[f64; N]> {
+    let mut draws = Draws::new(seed);
+    let mut working = *start;
+    let mut goals: Vec<[f64; N]> = Vec::new();
+    // The goals the samples have found, OMPL's `samplingAttempts_`, and the samples since
+    // the last of them.
+    let (mut found_so_far, mut failing) = (0, 0);
+    while goals.len() < goal_samples.get()
+        && failing < MAX_GOAL_SAMPLING_ATTEMPTS.saturating_sub(found_so_far)
+        && !ended()
+    {
+        let Some(found) = sampler.sample_from(
+            goal,
+            &working,
+            MAX_STATE_SAMPLING_ATTEMPTS,
+            &mut draws,
+            valid,
+        ) else {
+            failing += 1;
+            continue;
+        };
+        (found_so_far, failing) = (found_so_far + 1, 0);
+        working = found;
+        let distance = |kept: &[f64; N]| (0..N).map(|i| (kept[i] - found[i]).abs()).sum::<f64>();
+        if goals.iter().all(|kept| distance(kept) > f64::EPSILON) {
+            goals.push(found);
+        }
     }
-    Ok(clear)
+    goals
 }
 
 /// Where a walk breaks: the position of the last state it checks that keeps its
@@ -677,7 +778,7 @@ fn goal_configurations<const N: usize>(
 /// from the bodies of each term.
 struct Break {
     last_valid: f64,
-    distances: [f64; 2],
+    distances: [f64; TERMS],
 }
 
 /// A walk of a path that its caller ended before it reached the path's end: the plan's
@@ -692,36 +793,36 @@ struct ArmChecks<'a, const N: usize> {
     /// The surroundings at which a state's distances are measured, exactly up to the
     /// distance a step of `MAX_STEP_M` needs.
     measuring: Surroundings<'a>,
-    min_clearance: f64,
+    /// The clearance the caller asks of each term (`term_clearances`).
+    asked: [f64; TERMS],
     start: [f64; N],
-    /// Whether the start falls short of the plan's clearance of each term, the map's and
-    /// the robot's own body's.
-    start_short: [bool; 2],
+    /// Whether the start falls short of the plan's clearance of each term.
+    start_short: [bool; TERMS],
     /// The plan's clearance of each term.
-    clearance: [f64; 2],
+    clearance: [f64; TERMS],
     /// The floor the start sets of each term, as the module says.
-    floor: [f64; 2],
+    floor: [f64; TERMS],
 }
 
 impl<'a, const N: usize> ArmChecks<'a, N> {
-    /// The checks of `arm`'s states and motions around `scene`, keeping `min_clearance_m`
-    /// along every path from `start`, as the module says.
+    /// The checks of `arm`'s states and motions around `scene`, keeping the clearance
+    /// `min_clearance_m` asks of each term along every path from `start`, as the module
+    /// says.
     fn new(arm: &'a Arm<'a, N>, scene: &Scene<'a>, start: [f64; N], min_clearance_m: f64) -> Self {
-        let clearance = MOVED.map(|moved| min_clearance_m + moved * MIN_SPARE_M);
-        let measured = MOVED.map(|moved| min_clearance_m + moved * MAX_STEP_M);
-        let measuring = Surroundings::new(scene.map, scene.field, measured[0], measured[1]);
+        let asked = term_clearances(min_clearance_m);
+        let clearance = std::array::from_fn(|term| asked[term] + MOVED[term] * MIN_SPARE_M);
+        let measured = std::array::from_fn(|term| asked[term] + MOVED[term] * MAX_STEP_M);
+        let measuring = scene.surroundings(measured);
         let at_start = measuring.distances(arm, &start);
         Self {
             arm,
-            surroundings: Surroundings::new(scene.map, scene.field, clearance[0], clearance[1]),
+            surroundings: scene.surroundings(clearance),
             measuring,
-            min_clearance: min_clearance_m,
+            asked,
             start,
             start_short: std::array::from_fn(|term| at_start[term] < clearance[term]),
             clearance,
-            floor: std::array::from_fn(|term| {
-                floor_of(at_start[term], min_clearance_m, MOVED[term])
-            }),
+            floor: std::array::from_fn(|term| floor_of(at_start[term], asked[term], MOVED[term])),
         }
     }
 
@@ -752,7 +853,7 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
 
     /// The fault of a state at `place` that lies `distances` meters from the bodies of
     /// each term, as a check of a path answers it.
-    fn fault(&self, place: Place, distances: [f64; 2]) -> PathFault {
+    fn fault(&self, place: Place, distances: [f64; TERMS]) -> PathFault {
         PathFault::Clearance {
             place,
             distances,
@@ -761,46 +862,49 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
     }
 
     /// How far `q` falls short of the plan's clearance of the term it falls shortest of, in
-    /// meters; at or below 0 where it keeps both.
+    /// meters; at or below 0 where it keeps each.
     fn shortfall(&self, q: &[f64; N]) -> f64 {
         let distances = self.surroundings.distances(self.arm, q);
-        (0..2)
+        (0..TERMS)
             .map(|term| self.clearance[term] - distances[term])
             .fold(f64::NEG_INFINITY, f64::max)
     }
 
     /// What `q` falls short of the plan's clearances against, as a message names it: the
-    /// pair of the robot's own links, and the link and the map, of each term it falls short
-    /// of, and how far apart they stand.
+    /// nearest pair of each term it falls short of, the robot's own body first, then an
+    /// attached object against the arm that carries it, then the map and the objects, and
+    /// how far apart they stand.
     fn short_of(&self, q: &[f64; N]) -> String {
-        let [map, own] = self.surroundings.distances(self.arm, q);
-        let own_pair = self
-            .arm
-            .self_model()
-            .filter(|_| own < self.clearance[1])
-            .map(|model| {
-                let (a, b) = model.nearest_pair(q);
-                format!("{a} {own:.4} m from {b}")
-            });
-        let map_link = (map < self.clearance[0])
-            .then(|| self.surroundings.nearest_to_map(self.arm, q))
-            .flatten()
-            .map(|(link, distance)| format!("{link} {distance:.4} m from the map"));
-        [own_pair, map_link]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" and ")
+        let [world, own, held] = self.surroundings.nearest_pairs(self.arm, q);
+        let [world_clearance, own_clearance, held_clearance] = self.clearance;
+        [
+            (own, own_clearance),
+            (held, held_clearance),
+            (world, world_clearance),
+        ]
+        .into_iter()
+        .filter_map(|(nearest, clearance)| nearest.filter(|r| r.distance < clearance))
+        .map(|reading| reading.to_string())
+        .collect::<Vec<_>>()
+        .join(" and ")
     }
 
     /// The plan's clearances, as a message names them.
     fn plan_clearance(&self) -> String {
-        let [map, own] = self.clearance;
-        match self.arm.self_model() {
-            None => format!("the plan's clearance, {map:.4} m from the map"),
-            Some(_) => format!(
-                "the plan's clearances, {map:.4} m from the map and {own:.4} m between the robot's own links"
-            ),
+        let [world, own, held] = self.clearance;
+        let terms = [
+            Some(format!("{world:.4} m from the map and the objects")),
+            self.arm
+                .self_model()
+                .map(|_| format!("{own:.4} m between the robot's own links")),
+            self.arm.carries_an_object().then(|| {
+                format!("{held:.4} m between an attached object and the arm that carries it")
+            }),
+        ];
+        let named: Vec<String> = terms.into_iter().flatten().collect();
+        match named.as_slice() {
+            [world] => format!("the plan's clearance, {world}"),
+            _ => format!("the plan's clearances, {}", named.join(" and ")),
         }
     }
 
@@ -903,26 +1007,26 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
     }
 
     /// The step, in meters any point of a link moves, that keeps every state up to the next
-    /// checked one at `min_clearance_m` from a state `distances` meters from the bodies of
-    /// each term: the least spare of the terms, at most `MAX_STEP_M`. None under
-    /// `MIN_SPARE_M`.
-    fn spare_step(&self, distances: &[f64; 2]) -> Option<f64> {
-        let step = (0..2)
+    /// checked one at the clearance asked of each term from a state `distances` meters
+    /// from the bodies of each term: the least spare of the terms, at most `MAX_STEP_M`.
+    /// None under `MIN_SPARE_M`.
+    fn spare_step(&self, distances: &[f64; TERMS]) -> Option<f64> {
+        let step = (0..TERMS)
             .map(|term| self.spare(term, distances[term]))
             .fold(MAX_STEP_M, f64::min);
         (step >= MIN_SPARE_M).then_some(step)
     }
 
-    /// The spare of a term `distance` meters from its bodies: its distance above
-    /// `min_clearance_m` over its moving bodies.
+    /// The spare of a term `distance` meters from its bodies: its distance above the
+    /// clearance asked of it over its moving bodies.
     fn spare(&self, term: usize, distance: f64) -> f64 {
-        (distance - self.min_clearance) / MOVED[term]
+        (distance - self.asked[term]) / MOVED[term]
     }
 
     /// Whether a state `distances` meters from the bodies of each term keeps each of the
     /// plan's clearances.
-    fn keeps_clearances(&self, distances: &[f64; 2]) -> bool {
-        (0..2).all(|term| distances[term] >= self.clearance[term])
+    fn keeps_clearances(&self, distances: &[f64; TERMS]) -> bool {
+        (0..TERMS).all(|term| distances[term] >= self.clearance[term])
     }
 
     /// Walks the motion from the start to `to` by the start rule, as the module says,
@@ -954,12 +1058,12 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
             before = std::array::from_fn(|term| before[term].max(here[term]));
             t = next;
         }
-        Ok((0..2).any(|term| self.start_short[term] && before[term] < self.clearance[term]))
+        Ok((0..TERMS).any(|term| self.start_short[term] && before[term] < self.clearance[term]))
     }
 
     /// The distance of the arm at `q` from the bodies of each term: exact up to the
     /// distance a step of `MAX_STEP_M` needs, and a lower bound past it.
-    fn distances(&self, q: &[f64; N]) -> [f64; 2] {
+    fn distances(&self, q: &[f64; N]) -> [f64; TERMS] {
         self.measuring.distances(self.arm, q)
     }
 
@@ -968,8 +1072,8 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
     /// short of the plan's clearance steps by its room, at least `MIN_DEPARTURE_STEP_M`,
     /// and any other term by its spare, as `spare_step` says. None where a term's step
     /// falls under its floor.
-    fn step_from(&self, here: &[f64; 2], before: &[f64; 2]) -> Option<f64> {
-        (0..2).try_fold(MAX_STEP_M, |step, term| {
+    fn step_from(&self, here: &[f64; TERMS], before: &[f64; TERMS]) -> Option<f64> {
+        (0..TERMS).try_fold(MAX_STEP_M, |step, term| {
             let (term_step, least) =
                 if self.start_short[term] && before[term] < self.clearance[term] {
                     (
@@ -987,8 +1091,8 @@ impl<'a, const N: usize> ArmChecks<'a, N> {
     /// after states at most `before` meters from them: a term the start falls short of
     /// no nearer than before or than its plan clearance, to `ROUNDING_SLACK_M`, and any
     /// other term at its plan clearance.
-    fn keeps(&self, here: &[f64; 2], before: &[f64; 2]) -> bool {
-        (0..2).all(|term| {
+    fn keeps(&self, here: &[f64; TERMS], before: &[f64; TERMS]) -> bool {
+        (0..TERMS).all(|term| {
             let clearance = self.clearance[term];
             if self.start_short[term] {
                 here[term] >= before[term].min(clearance) - ROUNDING_SLACK_M
@@ -1142,7 +1246,7 @@ fn toward<const N: usize>(at: &[f64; N], other: &[f64; N], fraction: f64) -> [f6
 fn first_short_waypoint<const N: usize>(
     checks: &ArmChecks<N>,
     path: &[[f64; N]],
-) -> Option<(usize, [f64; 2])> {
+) -> Option<(usize, [f64; TERMS])> {
     (1..path.len())
         .find(|&k| !checks.surroundings.clear(checks.arm, &path[k]))
         .map(|k| (k, checks.distances(&path[k])))
@@ -1248,13 +1352,14 @@ mod tests {
     use camera_core::pose::Pose;
     use chain_kinematics::{ChainSpec, JointSelection};
     use collision_geometry::chain::ChainGeometry;
+    use collision_geometry::gjk::Placed;
     use control_core::positive_finite::PositiveFinite;
     use hegel::TestCase;
     use hegel::generators as gs;
     use occupancy_map::{Bounds, Frame, Scan};
 
     use super::*;
-    use crate::arm::SelfModel;
+    use crate::arm::{Body, SelfModel};
 
     const MIN_CLEARANCE_M: f64 = 0.02;
 
@@ -1416,6 +1521,7 @@ mod tests {
             map: &map,
             field: &field,
             stamp: 0,
+            objects: Objects::none(),
         };
         let checks = ArmChecks::new(&arm, &scene, [0.0, 0.0], MIN_CLEARANCE_M);
         let path = [[0.0, 0.0], [0.5, 0.5], [1.0, 0.0]];
@@ -1457,6 +1563,7 @@ mod tests {
             map: &map,
             field: &field,
             stamp: 0,
+            objects: Objects::none(),
         };
         let checks = ArmChecks::new(&arm, &scene, [0.45], MIN_CLEARANCE_M);
         checks.walk_run(&[[-0.3]], &[0.3]).is_ok()
@@ -1560,10 +1667,11 @@ mod tests {
             map: &map,
             field: &field,
             stamp: 0,
+            objects: Objects::none(),
         };
         let checks = ArmChecks::new(&arm, &scene, [2.9, 2.9], min_clearance);
         tc.assume(checks.surroundings.clear(&arm, &from));
-        let dense = Surroundings::new(&map, &field, min_clearance, min_clearance);
+        let dense = Surroundings::new(&map, &field, term_clearances(min_clearance));
         let keeps = |q: &[f64; 2]| dense.clear(&arm, q);
         if checks.walk_run(&[from], &via).is_ok() {
             let count = (arm.displacement(&from, &via) / DENSE_M).ceil() as usize;
@@ -1660,11 +1768,12 @@ mod tests {
             map: &map,
             field: &field,
             stamp: 0,
+            objects: Objects::none(),
         };
         let from = [face - 0.005 - PLATE[0] / 2.0];
         let to = [face + 0.03];
         let checks = ArmChecks::new(&arm, &scene, [-0.4], 0.0);
-        let touching = Surroundings::new(&map, &field, 0.0, 0.0);
+        let touching = Surroundings::new(&map, &field, [0.0; TERMS]);
         assert!(touching.contact(&arm, &[face + VOXEL / 2.0]).is_some());
         let gap = checks.distances(&from)[0];
         assert!(
@@ -1674,19 +1783,19 @@ mod tests {
         assert!(checks.walk_run(&[from], &to).is_err());
     }
 
-    /// A goal sampler that answers one configuration.
+    /// A goal sampler that answers one configuration where it is valid.
     struct At<const N: usize>([f64; N]);
 
     impl<const N: usize> GoalSampler<N> for At<N> {
-        fn sample(
+        fn sample_from(
             &self,
             _: &Goal,
+            _: &[f64; N],
             _: usize,
-            _: u64,
-            _: Instant,
-            _: Option<&AtomicBool>,
-        ) -> Vec<[f64; N]> {
-            vec![self.0]
+            _: &mut Draws,
+            valid: &dyn Fn(&[f64; N]) -> bool,
+        ) -> Option<[f64; N]> {
+            valid(&self.0).then_some(self.0)
         }
     }
 
@@ -1698,11 +1807,19 @@ mod tests {
         let geometry = turn_and_slide();
         let arm = Arm::new(&geometry, None);
         let (from, to) = ([-0.6, 0.5], [0.6, 0.5]);
-        let moved = arm
-            .pieces(&from)
+        let pieces = |q: &[f64; 2]| -> Vec<Placed> {
+            arm.bodies(q)
+                .into_iter()
+                .map(|(_, body)| match body {
+                    Body::Piece(piece) => piece,
+                    Body::Shape(_) => panic!("the arm carries no object"),
+                })
+                .collect()
+        };
+        let moved = pieces(&from)
             .iter()
-            .zip(&arm.pieces(&to))
-            .flat_map(|((_, a), (_, b))| {
+            .zip(&pieces(&to))
+            .flat_map(|(a, b)| {
                 a.vertices()
                     .zip(b.vertices())
                     .map(|(p, q)| (q - p).norm())
@@ -1749,6 +1866,7 @@ mod tests {
                 map: &map,
                 field: &field,
                 stamp: 1,
+                objects: Objects::none(),
             },
             &PlanRequest {
                 start,
@@ -1769,7 +1887,7 @@ mod tests {
             answer,
             Err(PlanFailure::NoPath(
                 "RRTConnect found no path within 20000 iterations or by its deadline, keeping \
-                 the plan's clearance, 0.0210 m from the map"
+                 the plan's clearance, 0.0210 m from the map and the objects"
                     .to_string()
             ))
         );
@@ -1793,11 +1911,12 @@ mod tests {
             map: &map,
             field: &field,
             stamp: 0,
+            objects: Objects::none(),
         };
         let planned = [[-0.5, 0.0], [0.0, 0.0], [0.0, 0.5]];
         let checks = ArmChecks::new(&arm, &scene, planned[0], MIN_CLEARANCE_M);
         let rounded_first = RoundedPath::joint_path(&vectors(&planned));
-        let dense = Surroundings::new(&map, &field, MIN_CLEARANCE_M, MIN_CLEARANCE_M);
+        let dense = Surroundings::new(&map, &field, term_clearances(MIN_CLEARANCE_M));
         let at = |path: &RoundedPath, s: f64| -> [f64; 2] {
             path.at(s).as_slice().try_into().expect("a configuration")
         };
@@ -1873,6 +1992,7 @@ mod tests {
             map: &map,
             field: &field,
             stamp: 0,
+            objects: Objects::none(),
         };
         let request = CheckRequest {
             start,
@@ -2003,6 +2123,7 @@ mod tests {
             map: &map,
             field: &field,
             stamp: 0,
+            objects: Objects::none(),
         };
         let request = CheckRequest {
             start: [0.0, 0.0],
@@ -2060,6 +2181,7 @@ mod tests {
             map: &map,
             field: &field,
             stamp: 0,
+            objects: Objects::none(),
         };
         let checks = ArmChecks::new(&arm, &scene, [0.0, 0.0], MIN_CLEARANCE_M);
         assert!(
@@ -2093,6 +2215,7 @@ mod tests {
             map: &map,
             field: &field,
             stamp: 0,
+            objects: Objects::none(),
         };
         let planned = [[-0.5, 0.0], [0.0, 0.0], [0.0, 0.5]];
         let checks = ArmChecks::new(&arm, &scene, planned[0], MIN_CLEARANCE_M);

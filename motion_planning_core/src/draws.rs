@@ -1,10 +1,14 @@
 //! Seeded draws: SplitMix64, so a seed gives the same numbers on every machine and in
 //! every release.
 
-pub(crate) struct Draws(u64);
+use chain_kinematics::Limit;
+
+/// The draws of a plan's goal sampling: the poses and the configurations each goal sample
+/// draws, from one seed.
+pub struct Draws(u64);
 
 impl Draws {
-    pub(crate) fn new(seed: u64) -> Self {
+    pub fn new(seed: u64) -> Self {
         Self(seed)
     }
 
@@ -17,13 +21,18 @@ impl Draws {
     }
 
     /// A number in `[0, 1)`, from the top 53 bits of the next draw.
-    pub(crate) fn unit(&mut self) -> f64 {
+    pub fn unit(&mut self) -> f64 {
         (self.next() >> 11) as f64 / (1_u64 << 53) as f64
     }
 
     /// A number in `[low, high)`.
-    pub(crate) fn between(&mut self, low: f64, high: f64) -> f64 {
+    pub fn between(&mut self, low: f64, high: f64) -> f64 {
         low + (high - low) * self.unit()
+    }
+
+    /// A configuration inside `limits`, each joint drawn in turn.
+    pub fn within<const N: usize>(&mut self, limits: &[Limit; N]) -> [f64; N] {
+        std::array::from_fn(|i| self.between(limits[i].lo, limits[i].hi))
     }
 }
 
