@@ -236,12 +236,14 @@ ends before it starts gives the planned path, and `Simplification::ended_by` say
 
 A constrained plan projects its states onto the zero set of the `Constraint` by Newton
 steps, as OMPL's projected state space does, within the projection's tolerance. It walks
-each motion along the constraint in steps of half `CONSTRAINED_SPACING`, and judges each
-state of the walk with `Checks::state`. The plan walks its path and its simplification
-out along the constraint the same way, as OMPL's demos of constrained planning and
-MoveIt interpolate a constrained path: consecutive states lie at most
-`CONSTRAINED_SPACING` apart, and each state the walk adds between two states of the
-planner lies within the projection's tolerance of the constraint.
+each motion along the constraint in steps of half the projection's `spacing`, and judges
+each straight stretch of the walk with `Checks::motion`, the steps the projection leaves in
+one line joined in one motion. A motion whose walk leaves the space's bounds is invalid, as
+OMPL leaves the bounds to the state check this walk replaces. The plan walks its path and its
+simplification out along the constraint the same way, as OMPL's demos of constrained planning
+and MoveIt interpolate a constrained path: consecutive states lie at most `spacing` apart, and each
+state the walk adds between two states of the planner lies within the projection's
+tolerance of the constraint. `CONSTRAINED_SPACING` is OMPL's default spacing.
 
 ## The caller's functions
 

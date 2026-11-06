@@ -72,10 +72,17 @@
 //!   not checked: the plan walks every run of its answer, a run it joins past a waypoint
 //!   it drops, one within `MIN_JOINT_CHANGE_RAD` of the one before, among them. Each
 //!   planned waypoint after the start keeps the plan's clearances, so the start rule
-//!   holds at no corner, and each arc keeps the plan's clearances. A corner's repair adds
-//!   waypoints at states its runs' walks check that keep the plan's clearances, the start
-//!   rule's among them, so each run they split walks only states the plan walked: walked
-//!   from a state it checks, a run steps as the walk stepped.
+//!   holds at no corner, and each arc keeps the plan's clearances. A corner's repair of its
+//!   clearance adds waypoints at states its runs' walks check that keep the plan's
+//!   clearances, the start rule's among them, so each run they split walks only states the
+//!   plan walked: walked from a state it checks, a run steps as the walk stepped.
+//! - A plan that holds path orientations (`crate::path_orientation`) corrects its states
+//!   onto them with OMPL's projected state space, walks each motion along them, and checks
+//!   each straight stretch of the walk as any motion, the walk's states inside the joints'
+//!   limits. Each walk of a run or an arc walks each orientation too, so every state of the
+//!   rounded path holds it. A corner whose arc breaks one gains waypoints at shares of its
+//!   runs that keep the plan's clearances, and the answer's walk checks the runs they split
+//!   from those states. A start or a goal that breaks one fails with no path.
 //!
 //! The request's deadline bounds the plan as MoveIt's allowed planning time bounds a
 //! request: OMPL makes the request's attempts before it, each under all of it, each
@@ -114,6 +121,7 @@ use crate::arm::Moving;
 use crate::arms::Arms;
 use crate::clearance::{Contact, Surroundings, TERMS, term_clearances};
 use crate::goal::{Goal, GoalSampler};
+use crate::path_orientation::{PathOrientation, PathOrientations, Turned};
 use crate::scene::Objects;
 use crate::stop::is_set;
 
@@ -193,6 +201,8 @@ pub struct PlanRequest<'a, const N: usize, const D: usize> {
     pub start_tolerance: [f64; D],
     /// The goal of each arm, in the group's order.
     pub goals: Vec<ArmGoal<'a, N>>,
+    /// The orientations every state of the path holds, fewer than `D`, in no order.
+    pub path_orientations: &'a [PathOrientation<'a>],
     /// The most goals each attempt of the plan samples, as MoveIt's `max_goal_samples`
     /// bounds the goal states its goal sampler adds (`Sampling`).
     pub goal_samples: NonZeroUsize,
@@ -376,7 +386,8 @@ pub enum PlanFailure {
 ///
 /// # Panics
 ///
-/// When `request` holds a goal for other than each arm of `arms`.
+/// When `request` holds a goal for other than each arm of `arms`, or a path orientation of
+/// an arm outside them.
 pub fn plan_path<const N: usize, const D: usize>(
     arms: &Arms<N, D>,
     scene: &Scene,
@@ -390,7 +401,13 @@ pub fn plan_path<const N: usize, const D: usize>(
     distances_in_range(request.min_clearance_m, &request.start_tolerance)
         .map_err(PlanFailure::Request)?;
     let start = start_clear(arms, scene, &request.start, &request.start_tolerance)?;
-    let checks = PathChecks::new(arms, scene, start, request.min_clearance_m);
+    let orientations = PathOrientations::new(arms, request.path_orientations, &start)?;
+    if let Some(apart) = (request.goals.iter().enumerate())
+        .find_map(|(k, goal)| orientations.goal_apart(k, goal.goal))
+    {
+        return Err(PlanFailure::NoPath(apart));
+    }
+    let checks = PathChecks::new(arms, scene, start, request.min_clearance_m).holding(orientations);
     let deadline = request.deadline;
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
@@ -402,10 +419,11 @@ pub fn plan_path<const N: usize, const D: usize>(
     let answer = plan_to_sampled_goals(arms, scene, &checks, request, &start, remaining)?;
     let (Some(planned), Some(simplification)) = (answer.path, answer.simplified) else {
         return Err(PlanFailure::NoPath(format!(
-            "{} found no path within {} iterations or by its deadline, keeping {}",
+            "{} found no path within {} iterations or by its deadline, keeping {}{}",
             request.planner,
             request.max_iterations,
-            checks.plan_clearance()
+            checks.plan_clearance(),
+            checks.orientations.kept()
         )));
     };
     let simplified = simplification.path;
@@ -435,12 +453,21 @@ fn answered<const N: usize, const D: usize>(
                 .expect("a state of the arms' space")
         })
         .collect();
-    let answer = rounded_clear(
-        checks,
-        &distinct_joint_waypoints(&waypoints),
-        deadline,
-        stop,
-    )?;
+    let distinct = distinct_joint_waypoints(&waypoints);
+    let kept = if checks.orientations.is_empty() {
+        distinct
+    } else {
+        without_straight_waypoints(&distinct)
+    };
+    let answer = rounded_clear(checks, &kept, deadline, stop)?;
+    let turning = first_turning_run(checks, &answer, &|| is_set(stop))
+        .map_err(|Ended| PlanFailure::Stopped)?;
+    if let Some((k, turned)) = turning {
+        return Err(PlanFailure::NoPath(format!(
+            "the planned path falls short {}; send a wider tolerance_rad",
+            checks.turned(Place::Run(k), &turned)
+        )));
+    }
     match first_failing_run(checks, &answer, &|| is_set(stop)) {
         Err(Ended) => Err(PlanFailure::Stopped),
         Ok(None) => Ok(answer),
@@ -449,6 +476,26 @@ fn answered<const N: usize, const D: usize>(
             checks.fault(Place::Run(k), broken.distances)
         ))),
     }
+}
+
+/// `waypoints` without each that lies on the straight segment from the waypoint kept before
+/// it to the one after it: a walk along a path orientation spaces waypoints along each
+/// stretch the correction leaves straight, which the robot runs as one.
+fn without_straight_waypoints<const D: usize>(waypoints: &[[f64; D]]) -> Vec<[f64; D]> {
+    let Some((first, rest)) = waypoints.split_first() else {
+        return Vec::new();
+    };
+    let mut kept = vec![*first];
+    for (k, at) in rest.iter().enumerate() {
+        let before = kept.last().expect("the first waypoint is kept");
+        if !rest
+            .get(k + 1)
+            .is_some_and(|next| on_segment(at, before, next))
+        {
+            kept.push(*at);
+        }
+    }
+    kept
 }
 
 /// Checks the path of `request` for `arms` around `scene` with the checks of a plan's
@@ -691,7 +738,10 @@ pub fn start_inside_limits<const N: usize>(
 /// clearances, as MoveIt's validity callback does, and from a start nearer than the plan's
 /// clearance, which the start rule plans from, the pairs `Moving::Arm` names of the turn's
 /// arm. Once a sample of any attempt has found a goal, an attempt that found none answers no
-/// path, whichever attempt it is.
+/// path, whichever attempt it is. An attempt of a plan that holds orientations samples each goal
+/// alone after each sample that misses (`GoalsAlone`), so that a plan with no goal says which of
+/// the two the caller may change: a state of the goals alone is no path, and none is
+/// unreachable, as a plan that holds nothing answers.
 fn plan_to_sampled_goals<const N: usize, const D: usize>(
     arms: &Arms<N, D>,
     scene: &Scene,
@@ -701,12 +751,17 @@ fn plan_to_sampled_goals<const N: usize, const D: usize>(
     remaining: Duration,
 ) -> Result<Plan, PlanFailure> {
     let deadline = request.deadline;
+    let ended = || Instant::now() >= deadline || is_set(request.stop);
     // The rejections of states that fall short of the clearances in the pairs a turn
     // judges: how many, and the state that falls short least, with those pairs.
     let short = Mutex::new((0_usize, None::<([f64; D], Moving, f64)>));
+    // The rejections of states clear of collisions that lie past a path orientation's
+    // allowed angle: how many, and the one nearest it.
+    let turned = Mutex::new((0_usize, None::<Turned>));
     let start_keeps = !checks.start_short.contains(&true);
-    let clear = |q: &[f64; D], turn: Moving| {
-        let moving = if start_keeps { Moving::All } else { turn };
+    let moving_of = |turn: Moving| if start_keeps { Moving::All } else { turn };
+    let clear_of_bodies = |q: &[f64; D], turn: Moving| {
+        let moving = moving_of(turn);
         if checks.surroundings.clear_moving(arms, q, moving) {
             return true;
         }
@@ -718,6 +773,20 @@ fn plan_to_sampled_goals<const N: usize, const D: usize>(
         }
         false
     };
+    let clear = |q: &[f64; D], turn: Moving| {
+        if !clear_of_bodies(q, turn) {
+            return false;
+        }
+        let Some(past) = checks.orientations.past_allowed(q, turn) else {
+            return true;
+        };
+        let mut turned = turned.lock().unwrap_or_else(PoisonError::into_inner);
+        turned.0 += 1;
+        if turned.1.is_none_or(|nearest| past.error < nearest.error) {
+            turned.1 = Some(past);
+        }
+        false
+    };
     let recording: Vec<Recording<N>> = request
         .goals
         .iter()
@@ -726,9 +795,18 @@ fn plan_to_sampled_goals<const N: usize, const D: usize>(
             found: AtomicBool::new(false),
         })
         .collect();
-    let goals: Vec<ArmGoal<N>> = request
+    let held_goals: Vec<Goal> = request
         .goals
         .iter()
+        .enumerate()
+        .map(|(k, goal)| goal.goal.holding(&checks.orientations.targets_of(k)))
+        .collect();
+    let goals: Vec<ArmGoal<N>> = held_goals
+        .iter()
+        .zip(&recording)
+        .map(|(goal, sampler)| ArmGoal { goal, sampler })
+        .collect();
+    let goals_alone: Vec<ArmGoal<N>> = (request.goals.iter())
         .zip(&recording)
         .map(|(goal, sampler)| ArmGoal {
             goal: goal.goal,
@@ -736,14 +814,20 @@ fn plan_to_sampled_goals<const N: usize, const D: usize>(
         })
         .collect();
     let found_a_goal = AtomicBool::new(false);
+    let goals_alone_found = AtomicBool::new(false);
     let sampled = PlanGoals {
         goals: &goals,
         start: *start,
         goal_samples: request.goal_samples,
         seed: u64::from(request.seed),
-        ended: &|| Instant::now() >= deadline || is_set(request.stop),
+        ended: &ended,
         valid: &clear,
         found_a_goal: &found_a_goal,
+        goals_alone: (!checks.orientations.is_empty()).then_some(GoalsAlone {
+            goals: &goals_alone,
+            valid: &clear_of_bodies,
+            found: &goals_alone_found,
+        }),
     };
     let bounds: Vec<(f64, f64)> = arms.limits().iter().map(|l| (l.lo, l.hi)).collect();
     let space = Space::new(&bounds).map_err(|e| PlanFailure::NoPath(e.to_string()))?;
@@ -759,7 +843,7 @@ fn plan_to_sampled_goals<const N: usize, const D: usize>(
             attempts: request.attempts,
             simplification: NonZeroU32::new(SIMPLIFICATION_ITERATIONS),
             simplification_time: Duration::ZERO,
-            projection: None,
+            projection: checks.orientations.projection(),
             stop: request.stop,
         },
         checks,
@@ -784,6 +868,25 @@ fn plan_to_sampled_goals<const N: usize, const D: usize>(
     } else {
         ""
     };
+    let (past_allowed, nearest) = turned.into_inner().unwrap_or_else(PoisonError::into_inner);
+    if let Some(nearest) = nearest {
+        let (link, tolerance) = checks.orientations.named(nearest.orientation);
+        return Err(PlanFailure::NoPath(format!(
+            "the goal sampling found {past_allowed} configurations that meet the goal clear of \
+             collisions, each breaking a path orientation; the nearest holds {link} {:.4} rad \
+             from it, and a goal stands within {:.4} rad of its tolerance_rad {tolerance:.4}; \
+             send a goal nearer it or a wider tolerance_rad{more_time}",
+            nearest.error,
+            checks.orientations.allowed(nearest.orientation)
+        )));
+    }
+    if goals_alone_found.load(Ordering::Relaxed) {
+        return Err(PlanFailure::NoPath(format!(
+            "the goal can be met, and the goal sampling found no configuration of it that keeps \
+             the path orientations of {}; send a goal nearer them or a wider tolerance_rad{more_time}",
+            checks.orientations.links()
+        )));
+    }
     let (rejections, least_short) = short.into_inner().unwrap_or_else(PoisonError::into_inner);
     let Some((least_short, moving, _)) = least_short else {
         let of = arms
@@ -809,6 +912,16 @@ fn plan_to_sampled_goals<const N: usize, const D: usize>(
     )))
 }
 
+/// Each goal of a plan that holds orientations without them. An attempt samples them after each
+/// sample of its own that misses, until a sample of either finds a state, so a plan whose goal
+/// its first samples find samples nothing more.
+struct GoalsAlone<'p, const N: usize, const D: usize> {
+    goals: &'p [ArmGoal<'p, N>],
+    valid: &'p (dyn Fn(&[f64; D], Moving) -> bool + Sync),
+    /// Whether a sample of an attempt has found a state of them.
+    found: &'p AtomicBool,
+}
+
 /// The goals of a plan's attempts, each attempt sampling its own (`Sampling`): attempt 0 from
 /// `seed`, as `sample_goals` samples from it, and each other from the seeds after those of
 /// the attempts before it, one for each arm.
@@ -821,20 +934,33 @@ struct PlanGoals<'p, const N: usize, const D: usize> {
     valid: &'p (dyn Fn(&[f64; D], Moving) -> bool + Sync),
     /// Whether a sample of an attempt has found a goal.
     found_a_goal: &'p AtomicBool,
+    goals_alone: Option<GoalsAlone<'p, N, D>>,
 }
 
 impl<const N: usize, const D: usize> SampledGoals for PlanGoals<'_, N, D> {
     fn sampling(&self, attempt: u32) -> Box<dyn GoalSampling + '_> {
+        let seed = self.seed + u64::from(attempt) * self.goals.len() as u64;
         Box::new(AttemptSampling {
             sampling: Sampling::new(
                 self.goals,
                 &self.start,
                 self.goal_samples,
-                self.seed + u64::from(attempt) * self.goals.len() as u64,
+                seed,
                 self.ended,
                 self.valid,
             ),
             found_a_goal: self.found_a_goal,
+            alone: self.goals_alone.as_ref().map(|alone| {
+                let sampling = Sampling::new(
+                    alone.goals,
+                    &self.start,
+                    NonZeroUsize::MIN,
+                    seed,
+                    self.ended,
+                    alone.valid,
+                );
+                (sampling, alone.found)
+            }),
         })
     }
 }
@@ -843,6 +969,23 @@ impl<const N: usize, const D: usize> SampledGoals for PlanGoals<'_, N, D> {
 struct AttemptSampling<'p, const N: usize, const D: usize> {
     sampling: Sampling<'p, N, D>,
     found_a_goal: &'p AtomicBool,
+    /// The sampling of the goals alone, and whether a sample of an attempt has found a state.
+    alone: Option<(Sampling<'p, N, D>, &'p AtomicBool)>,
+}
+
+impl<const N: usize, const D: usize> AttemptSampling<'_, N, D> {
+    /// One sample of the goals alone, while no sample of either has found a state.
+    fn sample_goals_alone(&mut self) {
+        let Some((alone, found)) = self.alone.as_mut() else {
+            return;
+        };
+        if self.found_a_goal.load(Ordering::Relaxed) || found.load(Ordering::Relaxed) {
+            return;
+        }
+        if matches!(alone.sample(), Sampled::Goal(_)) {
+            found.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 impl<const N: usize, const D: usize> GoalSampling for AttemptSampling<'_, N, D> {
@@ -853,7 +996,10 @@ impl<const N: usize, const D: usize> GoalSampling for AttemptSampling<'_, N, D> 
                 goal.copy_from_slice(&found);
                 GoalSample::Found
             }
-            Sampled::Missed => GoalSample::Missed,
+            Sampled::Missed => {
+                self.sample_goals_alone();
+                GoalSample::Missed
+            }
             Sampled::Ended => GoalSample::Ended,
         })
     }
@@ -1074,6 +1220,8 @@ pub(crate) struct PathChecks<'a, const N: usize, const D: usize> {
     clearance: [f64; TERMS],
     /// The floor the start sets of each term, as the module says.
     floor: [f64; TERMS],
+    /// The orientations the path holds.
+    orientations: PathOrientations<'a, N, D>,
 }
 
 impl<'a, const N: usize, const D: usize> PathChecks<'a, N, D> {
@@ -1100,6 +1248,15 @@ impl<'a, const N: usize, const D: usize> PathChecks<'a, N, D> {
             start_short: std::array::from_fn(|term| at_start[term] < clearance[term]),
             clearance,
             floor: std::array::from_fn(|term| floor_of(at_start[term], asked[term], MOVED[term])),
+            orientations: PathOrientations::none(),
+        }
+    }
+
+    /// The checks that hold `orientations` as well.
+    fn holding(self, orientations: PathOrientations<'a, N, D>) -> Self {
+        Self {
+            orientations,
+            ..self
         }
     }
 
@@ -1110,6 +1267,9 @@ impl<'a, const N: usize, const D: usize> PathChecks<'a, N, D> {
     /// keeps no state.
     fn walk(&self, from: &[f64; D], to: &[f64; D]) -> Motion {
         if *from != self.start && !self.surroundings.clear(self.arms, from) {
+            return Motion::Invalid { last_valid: 0.0 };
+        }
+        if self.walk_orientations(from, to).is_err() {
             return Motion::Invalid { last_valid: 0.0 };
         }
         // The planner's path to `from` is unknown here: a motion whose first state lies on
@@ -1137,6 +1297,24 @@ impl<'a, const N: usize, const D: usize> PathChecks<'a, N, D> {
             distances,
             clearances: self.clearance,
         }
+    }
+
+    /// What a message says of a state at `place` too near a path orientation's tolerance.
+    fn turned(&self, place: Place, turned: &Turned) -> String {
+        let (link, tolerance) = self.orientations.named(turned.orientation);
+        format!(
+            "{place}, {link} stands {:.4} rad from its path orientation, too near its \
+             tolerance_rad {tolerance:.4}",
+            turned.error
+        )
+    }
+
+    /// Walks each path orientation along the straight run from `from` to `to`, and answers
+    /// where along the run one breaks.
+    fn walk_orientations(&self, from: &[f64; D], to: &[f64; D]) -> Result<(), (f64, Turned)> {
+        let motion: [f64; D] = std::array::from_fn(|i| (to[i] - from[i]).abs());
+        self.orientations
+            .walk(0.0, 1.0, &motion, |t| toward(from, to, t))
     }
 
     /// How far `q` falls short of the plan's clearance of the term it falls shortest of, in
@@ -1453,30 +1631,49 @@ fn rounded_clear<const N: usize, const D: usize>(
             })
             .unzip();
         let path = RoundedPath::joint_path(&vectors(&waypoints));
-        let Some((corner, _)) =
-            first_failing_probe(checks, &path, &corner_of, planned, &|| is_set(stop))
+        let failing = first_failing_probe(checks, &path, &corner_of, planned, &|| is_set(stop))
+            .map_err(|Ended| PlanFailure::Stopped)?
+            .map(|(corner, _)| (corner, None));
+        let turning = if failing.is_some() || checks.orientations.is_empty() {
+            None
+        } else {
+            first_turning_arc(checks, &path, &corner_of, planned, &|| is_set(stop))
                 .map_err(|Ended| PlanFailure::Stopped)?
-        else {
+                .map(|(corner, turned)| (corner, Some(turned)))
+        };
+        let Some((corner, turned)) = failing.or(turning) else {
             return Ok(waypoints);
         };
         if Instant::now() >= deadline {
-            return Err(PlanFailure::NoPath(
-                "the plan's deadline passed before its rounded path kept its clearance".to_string(),
-            ));
+            return Err(PlanFailure::NoPath(format!(
+                "the plan's deadline passed before its rounded path kept its clearance{}",
+                checks.orientations.kept()
+            )));
         }
         let fraction = added[corner].map_or(FIRST_CORNER_FRACTION, |(f, _)| f / 2.0);
-        let apart = |q: &[f64; D]| {
-            (0..D).any(|i| (q[i] - planned[corner][i]).abs() > 2.0 * MIN_JOINT_CHANGE_RAD)
-        };
         let repair = (corner > 0 && corner + 1 < planned.len())
-            .then(|| repair_waypoints(checks, planned, corner, fraction))
+            .then(|| match turned {
+                None => repair_waypoints(checks, planned, corner, fraction),
+                Some(_) => turning_repair_waypoints(checks, planned, corner, fraction),
+            })
             .flatten()
-            .filter(|added| added.iter().all(apart));
+            .filter(|added| {
+                added
+                    .iter()
+                    .all(|q| stands_apart_from_corner(q, &planned[corner]))
+            });
         let Some(repair) = repair else {
-            return Err(PlanFailure::NoPath(format!(
-                "the rounded path falls short of {} at the corner of waypoint {corner}, however near it the waypoints added lie",
-                checks.plan_clearance()
-            )));
+            return Err(PlanFailure::NoPath(match turned {
+                None => format!(
+                    "the rounded path falls short of {} at the corner of waypoint {corner}, however near it the waypoints added lie",
+                    checks.plan_clearance()
+                ),
+                Some(turned) => format!(
+                    "the rounded path falls short {}, however near it the waypoints added lie; \
+                     send a wider tolerance_rad",
+                    checks.turned(Place::Corner(corner), &turned)
+                ),
+            }));
         };
         added[corner] = Some((fraction, repair));
     }
@@ -1508,6 +1705,36 @@ fn repair_waypoints<const N: usize, const D: usize>(
         .filter(|&s| s < 1.0 && keeps(at, after, s))
         .last()?;
     Some([toward(before, at, into), toward(at, after, out)])
+}
+
+/// Whether a waypoint added at a corner stands far enough from it for the path to round both.
+fn stands_apart_from_corner<const D: usize>(q: &[f64; D], corner: &[f64; D]) -> bool {
+    (0..D).any(|i| (q[i] - corner[i]).abs() > 2.0 * MIN_JOINT_CHANGE_RAD)
+}
+
+/// The waypoints a repair adds at the corner of waypoint `corner` of `planned` whose rounding
+/// breaks a path orientation: on each run, the state at the largest of `fraction` and its
+/// halves that keeps the plan's clearances. Each lies on a run that holds the orientations,
+/// and the plan walks the runs they split, so the shares shrink an arc to its corner however
+/// short the runs are. `None` when every such state of a run that stands apart from the corner
+/// falls short of them.
+fn turning_repair_waypoints<const N: usize, const D: usize>(
+    checks: &PathChecks<N, D>,
+    planned: &[[f64; D]],
+    corner: usize,
+    fraction: f64,
+) -> Option<[[f64; D]; 2]> {
+    let at = &planned[corner];
+    let nearest_clear = |other: &[f64; D]| {
+        std::iter::successors(Some(fraction), |share| Some(share / 2.0))
+            .map(|share| toward(at, other, share))
+            .take_while(|q| stands_apart_from_corner(q, at))
+            .find(|q| checks.surroundings.clear(checks.arms, q))
+    };
+    Some([
+        nearest_clear(&planned[corner - 1])?,
+        nearest_clear(&planned[corner + 1])?,
+    ])
 }
 
 /// Each configuration of `waypoints` as a vector of its joint values.
@@ -1550,12 +1777,28 @@ fn first_failing_run<const N: usize, const D: usize>(
     Ok(None)
 }
 
+/// The first run of `path` along which a path orientation breaks, by the waypoint it leaves
+/// from, and which. `ended` ends the walk before a run.
+fn first_turning_run<const N: usize, const D: usize>(
+    checks: &PathChecks<N, D>,
+    path: &[[f64; D]],
+    ended: &dyn Fn() -> bool,
+) -> Result<Option<(usize, Turned)>, Ended> {
+    for (k, run) in path.windows(2).enumerate() {
+        if ended() {
+            return Err(Ended);
+        }
+        if let Err((_, turned)) = checks.walk_orientations(&run[0], &run[1]) {
+            return Ok(Some((k, turned)));
+        }
+    }
+    Ok(None)
+}
+
 /// The waypoint of `planned` whose corner holds the first arc of `path` that does not keep
 /// its clearances as `PathChecks::advance_by_spare` walks it along the path, at the arc's
-/// lever (`Arms::lever_along`). `corner_of` names, for each waypoint of `path`, the
-/// waypoint of `planned` whose corner it rounds. A state on a segment of `planned` is not
-/// checked: the plan walks each run of its answer. That waypoint, and where the arc
-/// breaks; `ended` ends the walk before an arc.
+/// lever (`Arms::lever_along`), and where the arc breaks. `ended` ends the walk before an
+/// arc.
 fn first_failing_probe<const N: usize, const D: usize>(
     checks: &PathChecks<N, D>,
     path: &RoundedPath,
@@ -1563,6 +1806,45 @@ fn first_failing_probe<const N: usize, const D: usize>(
     planned: &[[f64; D]],
     ended: &dyn Fn() -> bool,
 ) -> Result<Option<(usize, Break)>, Ended> {
+    first_failing_arc(path, corner_of, planned, ended, &|from, to, share, at| {
+        let lever = checks.arms.lever_along(share);
+        checks
+            .advance_by_spare(from, to, lever, at, &mut |_| {})
+            .map_err(|broken| (broken.last_valid, broken))
+    })
+}
+
+/// The waypoint of `planned` whose corner holds the first arc of `path` along which a path
+/// orientation breaks, and where. `ended` ends the walk before an arc.
+fn first_turning_arc<const N: usize, const D: usize>(
+    checks: &PathChecks<N, D>,
+    path: &RoundedPath,
+    corner_of: &[usize],
+    planned: &[[f64; D]],
+    ended: &dyn Fn() -> bool,
+) -> Result<Option<(usize, Turned)>, Ended> {
+    first_failing_arc(path, corner_of, planned, ended, &|from, to, share, at| {
+        checks.orientations.walk(from, to, share, at)
+    })
+}
+
+/// A walk of an arc, as `first_failing_arc` says.
+type ArcWalk<'a, const D: usize, T> =
+    dyn Fn(f64, f64, &[f64; D], &dyn Fn(f64) -> [f64; D]) -> Result<(), (f64, T)> + 'a;
+
+/// The waypoint of `planned` whose corner holds the first arc of `path` that `walk` fails,
+/// and what it finds. `walk` takes the positions the arc runs between, the largest share of
+/// the path's tangent each joint has on it, and the path's state at a position, and answers
+/// the position where the arc fails. `corner_of` names, for each waypoint of `path`, the
+/// waypoint of `planned` whose corner it rounds. A state on a segment of `planned` is not
+/// checked: the plan walks each run of its answer. `ended` ends the walk before an arc.
+fn first_failing_arc<const D: usize, T>(
+    path: &RoundedPath,
+    corner_of: &[usize],
+    planned: &[[f64; D]],
+    ended: &dyn Fn() -> bool,
+    walk: &ArcWalk<'_, D, T>,
+) -> Result<Option<(usize, T)>, Ended> {
     let length = path.length();
     let at = |s: f64| -> [f64; D] { path.at(s).as_slice().try_into().expect("a configuration") };
     let walked = |s: f64| {
@@ -1582,12 +1864,8 @@ fn first_failing_probe<const N: usize, const D: usize>(
             .max_abs_tangent(from, to)
             .try_into()
             .expect("a share of the tangent per joint");
-        let lever = checks.arms.lever_along(&share);
-        if let Err(broken) = checks.advance_by_spare(from, to, lever, at, &mut |_| {}) {
-            return Ok(Some((
-                corner_of[path.waypoint_at(broken.last_valid)],
-                broken,
-            )));
+        if let Err((position, found)) = walk(from, to, &share, &at) {
+            return Ok(Some((corner_of[path.waypoint_at(position)], found)));
         }
     }
     Ok(None)
@@ -1639,6 +1917,28 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::arm::{Arm, Body, SelfModel};
+    use crate::goal::OrientationTarget;
+
+    // Waypoints inside a straight stretch go, the first and the last and each corner stay, and a
+    // turn back on the same line stays: the path rests there.
+    #[test]
+    fn the_waypoints_inside_a_straight_stretch_go() {
+        let path = [
+            [0.0, 0.0],
+            [0.1, 0.0],
+            [0.2, 0.0],
+            [0.3, 0.1],
+            [0.4, 0.2],
+            [0.1, -0.1],
+            [0.0, -0.2],
+        ];
+        assert_eq!(
+            without_straight_waypoints(&path),
+            [[0.0, 0.0], [0.2, 0.0], [0.4, 0.2], [0.0, -0.2]]
+        );
+        assert_eq!(without_straight_waypoints::<2>(&[]), Vec::<[f64; 2]>::new());
+        assert_eq!(without_straight_waypoints(&[[1.0, 2.0]]), [[1.0, 2.0]]);
+    }
 
     const MIN_CLEARANCE_M: f64 = 0.02;
 
@@ -1825,6 +2125,218 @@ pub(crate) mod tests {
             answered(&checks, &run, far, Some(&set)),
             Err(PlanFailure::Stopped)
         );
+    }
+
+    /// A wrist of three revolute joints about x, y and z at one point, its links with no body.
+    fn wrist() -> ChainGeometry<3> {
+        const URDF: &str = r#"<robot name="wrist">
+            <link name="base"/>
+            <link name="link_1"/>
+            <link name="link_2"/>
+            <link name="link_3"/>
+            <joint name="joint_1" type="revolute">
+              <parent link="base"/><child link="link_1"/><axis xyz="1 0 0"/>
+              <limit lower="-3" upper="3" effort="1" velocity="1"/>
+            </joint>
+            <joint name="joint_2" type="revolute">
+              <parent link="link_1"/><child link="link_2"/><axis xyz="0 1 0"/>
+              <limit lower="-3" upper="3" effort="1" velocity="1"/>
+            </joint>
+            <joint name="joint_3" type="revolute">
+              <parent link="link_2"/><child link="link_3"/><axis xyz="0 0 1"/>
+              <limit lower="-3" upper="3" effort="1" velocity="1"/>
+            </joint>
+          </robot>"#;
+        ChainGeometry::from_urdf(URDF, "", &spec("link_3")).expect("a wrist")
+    }
+
+    /// The target that the wrist's last link holds within `tolerance`, its z axis free to turn
+    /// about: that axis opposite to where `q` holds it, so the error is a half turn at `q` and
+    /// falls as the wrist leaves `q`, the way a state moves off the far side of a sphere.
+    fn half_a_turn_from(
+        geometry: &ChainGeometry<3>,
+        q: &[f64; 3],
+        tolerance: f64,
+    ) -> OrientationTarget {
+        let frame = crate::goal::Frame::Link {
+            segment: 2,
+            offset: nalgebra::Isometry3::identity(),
+        };
+        OrientationTarget {
+            frame,
+            orientation: geometry.chain().at(q).link_pose_world(2).rotation
+                * nalgebra::UnitQuaternion::from_axis_angle(
+                    &nalgebra::Vector3::x_axis(),
+                    std::f64::consts::PI,
+                ),
+            tolerance_rad: PositiveFinite::parse(tolerance).expect("a positive tolerance"),
+            free_axis: Some(crate::goal::Axis::Z),
+        }
+    }
+
+    /// The largest error of `target` on the wrist along the rounded path through `waypoints`.
+    fn largest_on_the_wrist(
+        geometry: &ChainGeometry<3>,
+        target: &OrientationTarget,
+        waypoints: &[[f64; 3]],
+    ) -> f64 {
+        const STEP_RAD: f64 = 1e-3;
+        let path = RoundedPath::joint_path(&vectors(waypoints));
+        let count = (path.length() / STEP_RAD).ceil() as usize;
+        (0..=count)
+            .map(|k| {
+                let q: [f64; 3] = path
+                    .at(path.length() * k as f64 / count as f64)
+                    .as_slice()
+                    .try_into()
+                    .expect("a state of the wrist");
+                target.error_at(geometry.chain(), &q)
+            })
+            .fold(0.0, f64::max)
+    }
+
+    /// Runs `body` on the wrist's checks from `start`, holding `target`.
+    fn with_the_wrist_holding<T>(
+        geometry: &ChainGeometry<3>,
+        target: OrientationTarget,
+        start: [f64; 3],
+        body: impl Fn(&PathChecks<3, 3>) -> T,
+    ) -> T {
+        let arms = one_arm(geometry, None);
+        let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], &[]);
+        let scene = Scene {
+            map: &map,
+            field: &field,
+            stamp: 0,
+            objects: Objects::none(),
+        };
+        let orientations = [PathOrientation {
+            arm: 0,
+            link_name: "link_3",
+            target,
+        }];
+        let held = PathOrientations::new(&arms, &orientations, &start)
+            .unwrap_or_else(|failure| panic!("{failure}"));
+        body(&PathChecks::new(&arms, &scene, start, MIN_CLEARANCE_M).holding(held))
+    }
+
+    // A corner's rounding can leave an orientation both of its runs hold: the held axis stands
+    // opposite to its target at the arc's middle. The wrist has no body, so a clearance's walk
+    // holds no state near the corner, and the repair adds waypoints that pull the arc in, which
+    // then holds the orientation.
+    #[test]
+    fn a_corner_that_breaks_an_orientation_gains_waypoints_that_hold_it() {
+        /// The share of a tolerance a state may hold: `FLOOR_SHARE` from the tolerance.
+        const LARGEST_SHARE: f64 = 0.99;
+        let geometry = wrist();
+        let planned = [[0.4, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.4, 0.0]];
+        let rounded = RoundedPath::joint_path(&vectors(&planned));
+        let middle: [f64; 3] = rounded
+            .at(rounded.length() / 2.0)
+            .as_slice()
+            .try_into()
+            .expect("a state of the wrist");
+        let measure = half_a_turn_from(&geometry, &middle, 1.0);
+        let on_the_runs = largest_on_the_wrist(&geometry, &measure, &planned[..2])
+            .max(largest_on_the_wrist(&geometry, &measure, &planned[1..]));
+        let on_the_arc = largest_on_the_wrist(&geometry, &measure, &planned);
+        assert!(
+            on_the_arc > on_the_runs,
+            "the arc holds {on_the_arc}, the runs {on_the_runs}: nothing to repair"
+        );
+        let tolerance = (on_the_arc + on_the_runs) / 2.0 / LARGEST_SHARE;
+        let target = half_a_turn_from(&geometry, &middle, tolerance);
+        let answer = with_the_wrist_holding(&geometry, target, planned[0], |checks| {
+            let far = Instant::now() + Duration::from_secs(3600);
+            assert!(
+                first_turning_arc(checks, &rounded, &[0, 1, 2], &planned, &|| false)
+                    .is_ok_and(|turning| turning.is_some()),
+                "the arc holds the orientation: nothing to repair"
+            );
+            rounded_clear(checks, &planned, far, None).unwrap_or_else(|failure| panic!("{failure}"))
+        });
+        assert!(answer.len() > planned.len(), "{answer:?}");
+        let largest = largest_on_the_wrist(&geometry, &target, &answer);
+        assert!(largest <= tolerance, "{largest} rad, past {tolerance}");
+    }
+
+    // A repair of a turning corner takes, on each run, the largest of its share and its halves
+    // that keeps the plan's clearances, and none where each stands too near. The arm's tip
+    // sweeps past a block on the run into the corner.
+    #[test]
+    fn a_turning_repair_takes_the_largest_share_clear_of_the_bodies() {
+        let geometry = two_links();
+        let arms = one_arm(&geometry, None);
+        let planned = [[1.0, 0.0], [0.0, 0.0], [0.0, 0.4]];
+        let repair_with_a_block_at = |block: [f64; 3]| {
+            let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], &[block]);
+            let scene = Scene {
+                map: &map,
+                field: &field,
+                stamp: 0,
+                objects: Objects::none(),
+            };
+            let checks = PathChecks::new(&arms, &scene, planned[0], MIN_CLEARANCE_M);
+            turning_repair_waypoints(&checks, &planned, 1, FIRST_CORNER_FRACTION)
+        };
+        let [into, out] = repair_with_a_block_at([0.533, 0.136, 0.0]).expect("a share clear of it");
+        assert!(into[0] > 0.0 && into[0] < FIRST_CORNER_FRACTION, "{into:?}");
+        assert_eq!(out, toward(&planned[1], &planned[2], FIRST_CORNER_FRACTION));
+        assert_eq!(repair_with_a_block_at([0.56, 0.0, 0.0]), None);
+    }
+
+    // A corner that stands past an orientation's tolerance by more than a corner's deviation has
+    // no repair: however near it the added waypoints pull the arc, the arc breaks the orientation,
+    // and the plan says so.
+    #[test]
+    fn a_corner_past_its_tolerance_has_no_repair() {
+        let geometry = wrist();
+        let planned = [[0.4, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.4, 0.0]];
+        let target = half_a_turn_from(&geometry, &planned[1], 3.0);
+        let failure = with_the_wrist_holding(&geometry, target, planned[0], |checks| {
+            let far = Instant::now() + Duration::from_secs(3600);
+            rounded_clear(checks, &planned, far, None).expect_err("no repair holds the corner")
+        });
+        let PlanFailure::NoPath(message) = failure else {
+            panic!("{failure:?}");
+        };
+        assert!(
+            message.contains("from its path orientation, too near its tolerance_rad 3.0000")
+                && message.contains("however near it the waypoints added lie"),
+            "{message}"
+        );
+    }
+
+    // A straight run whose middle breaks an orientation its ends hold is no motion of the
+    // planner's, and it fails the answer's walk, naming the link; a set stop flag ends that walk
+    // first.
+    #[test]
+    fn a_run_that_breaks_an_orientation_fails_the_answer() {
+        let geometry = wrist();
+        let run = [[0.4, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let target = half_a_turn_from(&geometry, &[0.2, 0.0, 0.0], 3.1);
+        let (motion, failure, stopped) =
+            with_the_wrist_holding(&geometry, target, run[0], |checks| {
+                let far = Instant::now() + Duration::from_secs(3600);
+                let set = AtomicBool::new(true);
+                let path = vectors(&run);
+                (
+                    checks.motion(&run[0], &run[1]),
+                    answered(checks, &path, far, None),
+                    answered(checks, &path, far, Some(&set)),
+                )
+            });
+        assert!(matches!(motion, Ok(Motion::Invalid { .. })), "{motion:?}");
+        let Err(PlanFailure::NoPath(message)) = failure else {
+            panic!("{failure:?}");
+        };
+        assert!(
+            message.starts_with("the planned path falls short")
+                && message.contains("link_3 stands")
+                && message.contains("send a wider tolerance_rad"),
+            "{message}"
+        );
+        assert_eq!(stopped, Err(PlanFailure::Stopped));
     }
 
     /// Whether the plain walk, a run from a state that is not the start, of the sliding
@@ -2162,6 +2674,7 @@ pub(crate) mod tests {
                     goal: &goal,
                     sampler: &At(end),
                 }],
+                path_orientations: &[],
                 goal_samples: NonZeroUsize::new(1).expect("nonzero"),
                 planner: Planner::RrtConnect,
                 deadline: Instant::now() + Duration::from_secs(600),

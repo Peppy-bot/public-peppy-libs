@@ -49,20 +49,26 @@ static MESHES_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     dir
 });
 
-/// The collision pieces of OpenArm v2's left arm, from its base to its grasp point.
-pub static LEFT_ARM: LazyLock<ChainGeometry<JOINTS>> = LazyLock::new(|| {
+/// The collision pieces of OpenArm v2's arm on `side`, from its base to its grasp point.
+fn arm_on(side: Side) -> ChainGeometry<JOINTS> {
     let version = HardwareVersion::V2;
     ChainGeometry::from_urdf(
         version.urdf(),
         MESHES_DIR.to_str().expect("the mesh directory is UTF-8"),
         &ChainSpec {
-            base_link: Some(version.base_link(Side::Left)),
-            tip_link: version.tcp_link(Side::Left),
+            base_link: Some(version.base_link(side)),
+            tip_link: version.tcp_link(side),
             joints: JointSelection::PathOrder,
         },
     )
-    .expect("the left arm fits")
-});
+    .expect("the arm fits")
+}
+
+/// The collision pieces of OpenArm v2's left arm, from its base to its grasp point.
+pub static LEFT_ARM: LazyLock<ChainGeometry<JOINTS>> = LazyLock::new(|| arm_on(Side::Left));
+
+/// The collision pieces of OpenArm v2's right arm, from its base to its grasp point.
+pub static RIGHT_ARM: LazyLock<ChainGeometry<JOINTS>> = LazyLock::new(|| arm_on(Side::Right));
 
 /// The parts the left arm's links carry, the gripper's fingers, closed, as riders of its
 /// hand.

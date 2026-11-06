@@ -401,8 +401,61 @@ impl Checks for Equator {
         Ok(!(state[2].abs() < 0.1 && state[1] < 0.5))
     }
 
-    fn motion(&self, _: &[f64], _: &[f64]) -> Result<Motion, CheckError> {
-        Err("a constrained plan checks its motions by its states".into())
+    fn motion(&self, _: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        Ok(if self.state(to)? {
+            Motion::Valid
+        } else {
+            Motion::Invalid { last_valid: 0.0 }
+        })
+    }
+}
+
+/// The band of `Equator` that only a motion check sees: every state passes, and a motion
+/// that ends in the band fails.
+struct EquatorOfMotions;
+
+impl Checks for EquatorOfMotions {
+    fn state(&self, _: &[f64]) -> Result<bool, CheckError> {
+        Ok(true)
+    }
+
+    fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        Equator.motion(from, to)
+    }
+}
+
+/// Every state, as a constraint: its function is 0 everywhere.
+struct Anywhere;
+
+impl Constraint for Anywhere {
+    fn codimension(&self) -> usize {
+        1
+    }
+
+    fn function(&self, _: &[f64], out: &mut [f64]) -> Result<(), CheckError> {
+        out[0] = 0.0;
+        Ok(())
+    }
+
+    fn jacobian(&self, _: &[f64], out: &mut [f64]) -> Result<(), CheckError> {
+        out.fill(0.0);
+        Ok(())
+    }
+}
+
+/// Checks that pass every state and motion and record the longest motion asked of them.
+#[derive(Default)]
+struct LongestMotion(Mutex<f64>);
+
+impl Checks for LongestMotion {
+    fn state(&self, _: &[f64]) -> Result<bool, CheckError> {
+        Ok(true)
+    }
+
+    fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError> {
+        let mut longest = self.0.lock().expect("no check panics");
+        *longest = longest.max(distance(from, to));
+        Ok(Motion::Valid)
     }
 }
 
@@ -425,6 +478,7 @@ fn on_the_sphere<'a>(
             constraint,
             tolerance: TOLERANCE,
             iterations: NonZeroU32::new(50).expect("nonzero"),
+            spacing: CONSTRAINED_SPACING,
         }),
         ..request(planner, space, start, goals, 1)
     }
@@ -476,6 +530,111 @@ fn a_constrained_plan_walks_the_constraint() {
         let simplified = answer.simplified.expect("a simplified path").path;
         let what = format!("{planner}'s simplified path");
         assert_walks_the_sphere(&simplified, &start, &goal, &what);
+    }
+}
+
+// A constrained plan judges each stretch of a motion's walk by the motion check: a band that
+// only the motion check sees stands in the way of every planner's path.
+#[test]
+fn a_constrained_plan_judges_the_stretches_of_its_walks_by_the_motion_check() {
+    let (space, start, goal) = sphere_ends();
+    let goals = [goal.clone()];
+    for planner in [Planner::RrtConnect, Planner::Rrt, Planner::Est] {
+        let answer = plan(
+            &on_the_sphere(planner, &space, &start, &goals, &UnitSphere),
+            &EquatorOfMotions,
+        )
+        .expect("a plan");
+        let path = answer
+            .path
+            .unwrap_or_else(|| panic!("{planner} found no path on the sphere"));
+        assert_walks_the_sphere(&path, &start, &goal, &format!("{planner}'s path"));
+    }
+}
+
+// The steps of a walk that the projection leaves in one line join one motion, so a check of
+// a motion walks it whole: with a constraint every state meets, the motion check sees a
+// motion longer than the spacing, and the plan's path keeps to the spacing all the same.
+#[test]
+fn the_steps_of_a_walk_in_one_line_join_one_motion() {
+    let space = unit_cube(2);
+    let (start, goal) = (vec![0.05, 0.05], vec![0.95, 0.95]);
+    let goals = [goal.clone()];
+    let checks = LongestMotion::default();
+    let answer = plan(
+        &on_the_sphere(Planner::RrtConnect, &space, &start, &goals, &Anywhere),
+        &checks,
+    )
+    .expect("a plan");
+    let path = answer.path.expect("a path through an empty space");
+    let longest = *checks.0.lock().expect("no check panics");
+    assert!(
+        longest > CONSTRAINED_SPACING,
+        "the longest motion asked is {longest}"
+    );
+    assert!(
+        path.windows(2)
+            .all(|w| distance(&w[0], &w[1]) <= CONSTRAINED_SPACING)
+    );
+}
+
+// A plan walks at its projection's spacing: consecutive states of its path and of its
+// simplification lie at most that far apart.
+#[test]
+fn a_constrained_plan_keeps_its_states_at_its_spacing() {
+    let (space, start, goal) = sphere_ends();
+    let goals = [goal];
+    let spacing = CONSTRAINED_SPACING / 4.0;
+    let on_the_sphere = on_the_sphere(Planner::RrtConnect, &space, &start, &goals, &UnitSphere);
+    let answer = plan(
+        &Request {
+            simplification: NonZeroU32::new(SIMPLIFICATION),
+            projection: on_the_sphere.projection.map(|projection| Projection {
+                spacing,
+                ..projection
+            }),
+            ..on_the_sphere
+        },
+        &Equator,
+    )
+    .expect("a plan");
+    let path = answer.path.expect("a path on the sphere");
+    let simplified = answer.simplified.expect("a simplified path").path;
+    for states in [&path, &simplified] {
+        assert!(states.windows(2).all(|w| distance(&w[0], &w[1]) <= spacing));
+    }
+}
+
+// A walk that leaves the space's bounds is invalid, though its ends lie inside them and every
+// state passes the caller's checks. The space holds the sphere's lower cap outside, and the
+// shortest way between the two ends crosses it, so the plan goes around.
+#[test]
+fn a_constrained_plan_keeps_its_states_inside_the_bounds() {
+    const LOWEST_Z: f64 = -0.9;
+    let space = Space::new(&[(-1.5, 1.5), (-1.5, 1.5), (LOWEST_Z, 1.5)]).expect("a space");
+    let at_the_side = |x: f64| [x, 0.0, -(1.0 - x * x).sqrt()];
+    let (start, goal) = (at_the_side(-0.5), at_the_side(0.5));
+    assert!(
+        start[2] > LOWEST_Z
+            && (0..=20).any(|k| at_the_side(0.05 * f64::from(k) - 0.5)[2] < LOWEST_Z),
+        "the shortest way between the ends stays inside the bounds: nothing to go around"
+    );
+    let goals = [goal.to_vec()];
+    let answer = plan(
+        &Request {
+            simplification: NonZeroU32::new(SIMPLIFICATION),
+            ..on_the_sphere(Planner::RrtConnect, &space, &start, &goals, &UnitSphere)
+        },
+        &LongestMotion::default(),
+    )
+    .expect("a plan");
+    let path = answer.path.expect("a path around the cap");
+    let simplified = answer.simplified.expect("a simplified path").path;
+    for states in [&path, &simplified] {
+        assert!(
+            states.iter().all(|state| state[2] >= LOWEST_Z),
+            "a state of the path stands below {LOWEST_Z}"
+        );
     }
 }
 
@@ -1453,10 +1612,28 @@ fn a_request_that_does_not_fit_its_space_is_refused() {
                     constraint: &Components(components),
                     tolerance,
                     iterations: NonZeroU32::new(50).expect("nonzero"),
+                    spacing: CONSTRAINED_SPACING,
                 }),
                 ..request(Planner::Rrt, &space, &middle, &goals, 1)
             },
             &says,
+        );
+    }
+    for spacing in [0.0, f64::NAN, f64::INFINITY] {
+        let space = unit_cube(2);
+        let middle = vec![0.5; 2];
+        let goals = [middle.clone()];
+        assert_refused(
+            &Request {
+                projection: Some(Projection {
+                    constraint: &Components(1),
+                    tolerance: TOLERANCE,
+                    iterations: NonZeroU32::new(50).expect("nonzero"),
+                    spacing,
+                }),
+                ..request(Planner::Rrt, &space, &middle, &goals, 1)
+            },
+            &format!("the projection spacing is {spacing}; it is a positive number"),
         );
     }
 

@@ -141,14 +141,18 @@ void load_kdl(const moveit::core::RobotModelPtr& model,
   }
   options.parameter_overrides(solvers);
   auto node = std::make_shared<rclcpp::Node>("arm_planning_kinematics", options);
-  kinematics_plugin_loader::KinematicsPluginLoader loader(node);
-  const auto allocator = loader.getLoaderFunction(std::make_shared<srdf::Model>(*model->getSRDF()));
+  auto loader = std::make_shared<kinematics_plugin_loader::KinematicsPluginLoader>(node);
+  const auto load = loader->getLoaderFunction(std::make_shared<srdf::Model>(*model->getSRDF()));
+  // The model calls the loader for each solver it allocates after this, as a pose space does for
+  // its own, so the loader lives as long as the allocators, as RobotModelLoader keeps it.
+  const moveit::core::SolverAllocatorFn allocator =
+      [loader, load](const moveit::core::JointModelGroup* group) { return load(group); };
   std::map<std::string, moveit::core::SolverAllocatorFn> allocators;
-  for (const auto& name : loader.getKnownGroups()) {
+  for (const auto& name : loader->getKnownGroups()) {
     allocators[name] = allocator;
   }
   model->setKinematicsAllocators(allocators);
-  for (const auto& [name, timeout] : loader.getIKTimeout()) {
+  for (const auto& [name, timeout] : loader->getIKTimeout()) {
     if (model->hasJointModelGroup(name)) {
       model->getJointModelGroup(name)->setDefaultIKTimeout(timeout);
     }

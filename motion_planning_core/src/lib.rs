@@ -22,8 +22,8 @@
 //!   [`IkGoalSampler`] by `chain_kinematics`' inverse kinematics, MoveIt's KDL, for any
 //!   chain.
 //! - [`plan_path`]: plans a [`PlanRequest`] on a [`Scene`], each arm to its [`ArmGoal`],
-//!   and checks the rounded path the robot runs; [`check_path`] checks a caller's path, a
-//!   [`CheckRequest`], with the same checks.
+//!   holding each [`PathOrientation`] at every state, and checks the rounded path the robot
+//!   runs; [`check_path`] checks a caller's path, a [`CheckRequest`], with the same checks.
 //! - [`cartesian_path`]: a frame of one arm along straight lines through the poses of a
 //!   [`CartesianRequest`], as MoveIt's `computeCartesianPath` follows them, as much of them
 //!   as is valid, and the [`CartesianPath`]'s fraction covered.
@@ -39,6 +39,7 @@ mod cartesian;
 mod clearance;
 mod goal;
 mod intake;
+mod path_orientation;
 mod plan;
 mod pose;
 mod scene;
@@ -56,6 +57,7 @@ pub use goal::{
     PositionTarget,
 };
 pub use intake::{DepthCamera, JointHistory, PosedChain, RobotMask, insert_cut_out};
+pub use path_orientation::PathOrientation;
 pub use plan::{
     ArmGoal, CheckFailure, CheckRequest, MAX_STEP_M, PathCheck, PathFault, Place, PlanFailure,
     PlanRequest, Scene, StartFault, check_path, plan_path, sample_goals, start_inside_limits,

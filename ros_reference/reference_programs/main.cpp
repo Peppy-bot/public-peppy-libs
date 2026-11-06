@@ -5,6 +5,7 @@
 // The scenario's path and the paths inside it are relative to the repository root,
 // argv[3].
 
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -18,6 +19,7 @@
 #include "chain_collision.hpp"
 #include "forward_kinematics.hpp"
 #include "occupancy.hpp"
+#include "orientation_constraints.hpp"
 #include "path_timing.hpp"
 #include "planning.hpp"
 #include "planning_scene.hpp"
@@ -34,6 +36,7 @@ const std::map<std::string, Reference> references = {
     {"chain_collision", ros_reference::chain_collision},
     {"forward_kinematics", ros_reference::forward_kinematics},
     {"occupancy", ros_reference::occupancy},
+    {"orientation_constraints", ros_reference::orientation_constraints},
     {"path_timing", ros_reference::path_timing},
     {"planning", ros_reference::planning},
     {"planning_scene", ros_reference::planning_scene},
@@ -64,5 +67,7 @@ int main(int argc, char** argv) {
     std::cerr << argv[1] << ": " << error.what() << '\n';
     return 1;
   }
-  return 0;
+  // The outputs are closed. libompl's exit handlers end the process with a segmentation fault
+  // after a plan in a projected state space, so the program leaves without them.
+  std::quick_exit(0);
 }

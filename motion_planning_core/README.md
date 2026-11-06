@@ -89,6 +89,7 @@ let waypoints = plan_path(
             ArmGoal { goal: &left_goal, sampler: &samplers[0] },
             ArmGoal { goal: &right_goal, sampler: &samplers[1] },
         ],
+        path_orientations: &[],
         goal_samples: NonZeroUsize::new(10).unwrap(),
         planner: Planner::RrtConnect,
         deadline: Instant::now() + Duration::from_secs(1),
@@ -403,6 +404,61 @@ states it checks only as points of a checked motion, so the plan answers the sim
 path when the path the robot runs through it passes the checks above, and the planned
 path when only that one passes. MoveIt checks the simplified path alone, and answers
 INVALID_MOTION_PLAN when it fails.
+
+## Path orientations
+
+`PlanRequest::path_orientations` lists the orientations every state of the path holds, each
+a frame of an arm of the group with an `OrientationTarget`, the measure a goal's orientation
+takes: the angle of the rotation from the target, or, with a free axis, the angle between
+that axis and its direction in the target. The list carries no order. It holds fewer
+orientations than the state has joints, for OMPL's projection needs fewer rows than
+dimensions; a longer list fails with `PlanFailure::Request`.
+
+The plan corrects its states onto the orientations with OMPL's projected state space. Its
+function holds one row for each orientation, the error above the angle the plan allows it:
+`HELD_SHARE`, 0.9, of the tolerance, or the start's error where that is more. Each row's
+Jacobian is the unit axis along which the error grows against each joint that turns the
+frame, and 0 for every other joint, so the row of one arm leaves the other arm's joints
+alone. MoveIt's constrained planning projects so for one orientation path constraint, its
+default for one (moveit2 2.15.2 `ConstrainedPlanningStateSpaceFactory`, priority 200), with
+each component of a rotation vector bounded by twice its tolerance (ompl_constraints.cpp).
+With two or more it plans in pose space through inverse kinematics, and on a group of two
+chains its Jacobian is refused (`RobotState::getJacobian`, robot_state.cpp:1516). Here the
+rows of every orientation stack on one arm and on two.
+
+Every state of the rounded path holds each orientation. A joint turning by an angle turns a
+frame it moves by at most that angle, so a frame turns along a motion at most the sum of the
+changes of its joints, and a step that turns it no farther than what lies between its error
+and its tolerance keeps every state of the step inside. The plan walks each run and each arc
+so, apart from the walks of its clearances, and a state within 1% of the tolerance ends the
+walk: the planner's motions, each straight stretch of OMPL's walk along the orientations as
+one motion; the runs of its answer; and each arc. A corner whose arc breaks an orientation
+gains a waypoint on each of its runs, a quarter of the run from the corner and then each time
+half as far, which pulls the arc in until it holds or its waypoints lie at the corner. OMPL's
+walk checks no bounds when the caller checks its states, so the bridge refuses a walk with a
+state outside the joints' limits, as MoveIt's validity check does (state_validity_checker.cpp).
+A run of the answer stays inside between its states: a straight joint motion `a` turns a frame
+off the shortest rotation between its ends by at most `|a|_1^2 / 16`, a free axis as much again
+by the small circle it follows, and the plan spaces its states so that the first is at most half
+of what lies between the allowed angle and the tolerance (`Projection::spacing`), which is
+OMPL's default, 0.1, from a tolerance of about 0.09 rad up on a frame all seven joints turn. The
+answer drops the waypoints inside a straight stretch. Run from up to a tolerance from the start
+in each joint, as a robot's controller allows, a frame turns from the plan's start by at most
+the sum of its joints' differences from it.
+
+A start more than 99% of a tolerance from its orientation fails with `PlanFailure::NoPath`.
+A goal stands within the angle the plan allows: a goal that names a frame's position or
+orientation takes a path orientation of that frame as MoveIt merges a request's goal and path
+constraints, drawing from the smaller of the two sampling volumes (constraint_sampler_manager.cpp)
+and meeting both, and any other goal is judged by the orientations as it is sampled. A goal
+orientation whose middle stands farther from a path orientation's than the goal's tolerance and
+the allowed angle together fails with `PlanFailure::NoPath` at once, unless the two hold different
+free axes, whose distance no one angle states. After each sample that misses, an attempt samples
+the goal alone, until a sample of either finds a state. A plan with no goal fails with
+`PlanFailure::NoPath` where a sample of the goal alone found a configuration, and with
+`PlanFailure::Unreachable` where none did, as a plan that holds nothing does.
+
+`check_path` holds no orientation, as check_joint_path takes none.
 
 ## Checking a path
 

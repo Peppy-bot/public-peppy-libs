@@ -95,6 +95,7 @@ fn request<'a>(
         start,
         start_tolerance: [0.0; JOINTS],
         goals: vec![ArmGoal { goal, sampler }],
+        path_orientations: &[],
         goal_samples: NonZeroUsize::new(8).expect("nonzero"),
         planner,
         deadline: an_hour_from_now(),

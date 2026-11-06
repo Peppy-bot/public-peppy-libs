@@ -134,6 +134,8 @@ pub struct Scene<O = Option<Ours>> {
     pub attached: Vec<Held>,
     /// The pairs of names allowed to touch, as set_allowed_collision allows them.
     pub allowed: Vec<[String; 2]>,
+    /// The orientations the plan's path holds.
+    pub path_orientations: Vec<HeldOrientation>,
     pub start: Vec<f64>,
     pub goal: SceneGoal,
     /// Both planners' seed, above 0: OMPL takes no seed of 0.
@@ -149,6 +151,7 @@ impl Scene {
             objects,
             attached,
             allowed,
+            path_orientations,
             start,
             goal,
             seed,
@@ -159,12 +162,28 @@ impl Scene {
             objects,
             attached,
             allowed,
+            path_orientations,
             start,
             goal,
             seed,
             ours: ours.unwrap_or_else(|| panic!("{what}: motion_planning_core's answer")),
         }
     }
+}
+
+/// An orientation a plan's path holds of a link of the chain at `chain` among the scenario's
+/// chains, as plan_joint_path's path_orientation_constraints names it for
+/// motion_planning_core, and MoveIt's rotation-vector tolerances about x, y and z of the robot
+/// frame for MoveIt's path constraint.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeldOrientation {
+    pub chain: usize,
+    pub link_name: String,
+    pub orientation: [f64; 4],
+    pub tolerance_rad: f64,
+    pub free_axis: String,
+    pub moveit_tolerances: [f64; 3],
 }
 
 /// What a scene's plan reaches for: a configuration of the arms, each joint within the
@@ -237,6 +256,10 @@ pub struct Probed {
     /// empty.
     #[serde(deserialize_with = "Option::deserialize")]
     pub self_clearance: Option<f64>,
+    /// The largest share of its tolerance that any orientation the scene holds reaches along
+    /// the path, measured as plan_joint_path states the tolerance; null where it holds none.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub share_of_tolerance: Option<f64>,
     /// The path's length in the joints' L2 norm.
     pub length: f64,
 }
@@ -255,6 +278,8 @@ struct MoveItRead {
     held_clearance: Option<f64>,
     #[serde(deserialize_with = "Option::deserialize")]
     self_clearance: Option<f64>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    share_of_tolerance: Option<f64>,
     #[serde(deserialize_with = "Option::deserialize")]
     length: Option<f64>,
 }
@@ -372,6 +397,7 @@ fn pair(name: String, urdf: String, meshes: PathBuf, scenes: Scenes, reference: 
                 matches!(scene.ours, Ours::Path { .. }),
                 "{what}: MoveIt's probe of our path exactly where ours is a path"
             );
+            let holds = !scene.path_orientations.is_empty();
             let case = SceneCase {
                 scene,
                 moveit: moveit_of(&what, answer.moveit),
@@ -381,6 +407,12 @@ fn pair(name: String, urdf: String, meshes: PathBuf, scenes: Scenes, reference: 
                 case.probes()
                     .all(|p| p.self_clearance.is_some() != checked_pairs.is_empty()),
                 "{what}: a self distance in each probe exactly where the scenario checks pairs"
+            );
+            assert!(
+                case.probes()
+                    .all(|p| p.share_of_tolerance.is_some() == holds),
+                "{what}: a share of the tolerance in each probe exactly where the scene holds an \
+                 orientation"
             );
             case
         })
@@ -404,6 +436,7 @@ fn moveit_of(what: &str, read: MoveItRead) -> MoveIt {
         clearance,
         held_clearance,
         self_clearance,
+        share_of_tolerance,
         length,
     } = read;
     let probed = match (collisions, clearance, length) {
@@ -412,9 +445,16 @@ fn moveit_of(what: &str, read: MoveItRead) -> MoveIt {
             clearance,
             held_clearance,
             self_clearance,
+            share_of_tolerance,
             length,
         }),
-        (None, None, None) if held_clearance.is_none() && self_clearance.is_none() => None,
+        (None, None, None)
+            if held_clearance.is_none()
+                && self_clearance.is_none()
+                && share_of_tolerance.is_none() =>
+        {
+            None
+        }
         _ => panic!("{what}: MoveIt's probe whole or not at all"),
     };
     assert_eq!(
@@ -448,6 +488,7 @@ mod tests {
                 "probe_spacing": 0.01,
                 "scenes": [{{"boxes": [{{"first": [0, 0, 0], "last": [1, 1, 1]}}],
                              "objects": [], "attached": [], "allowed": [],
+                             "path_orientations": [],
                              "start": [0.0], "goal": [1.0], "seed": 1, "ours": {ours}}}]}}"#
         )
     }
@@ -455,7 +496,8 @@ mod tests {
     const PATH: &str = r#"{"waypoints": [[0.0], [1.0]]}"#;
     const FAILURE: &str = r#"{"failure": "no_path"}"#;
     const PROBED: &str = r#"{"collisions": 0, "clearance": 0.03125, "held_clearance": null,
-                             "self_clearance": null, "length": 1.0}"#;
+                             "self_clearance": null, "share_of_tolerance": null,
+                             "length": 1.0}"#;
 
     /// The output of one scene: MoveIt's `status` and the fields of its probe, and the
     /// probe of ours.
@@ -469,10 +511,10 @@ mod tests {
 
     const MOVEIT_PROBED: &str = r#""collisions": 0, "clearance": 0.03125,
                                    "held_clearance": null, "self_clearance": null,
-                                   "length": 1.0"#;
+                                   "share_of_tolerance": null, "length": 1.0"#;
     const MOVEIT_NONE: &str = r#""collisions": null, "clearance": null,
                                  "held_clearance": null, "self_clearance": null,
-                                 "length": null"#;
+                                 "share_of_tolerance": null, "length": null"#;
 
     fn paired(ours: &str, status: i32, moveit_probe: &str, ours_probe: &str) -> Case {
         pair(
