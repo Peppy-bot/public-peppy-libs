@@ -59,7 +59,9 @@ pub use ik::{
     ACCEPT_ORIENTATION_RAD, ACCEPT_POSITION_M, Goal, Kinematics, SEED_TABLE_SIZE, SolveError,
 };
 pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse, manipulability};
-pub use line::{COINCIDENT_ARC_EPS, interpolate};
+pub use line::{
+    COINCIDENT_ARC_EPS, LinePrecision, LineSolver, LineState, WalkEnd, interpolate, walk_line,
+};
 pub use payload::{Payload, segments_carrying};
 pub use rate::{DEFAULT_DLS_LAMBDA, PoseMiss, pose_miss, rate_step};
 pub use servo::{

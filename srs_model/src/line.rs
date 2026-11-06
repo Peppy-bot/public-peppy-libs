@@ -9,10 +9,14 @@
 //! path, whose bounds hold at every point. [`plan_line`] takes the line when a
 //! swivel tracks it continuously at a sane duration, a [`LineCursor`] walks it,
 //! at plan time and at run time alike, and a [`LineTrajectory`] plays it.
+//! Both walks are `chain_kinematics`' [`walk_line`] with the elbow swiveling.
 
 use std::time::{Duration, Instant};
 
-use chain_kinematics::{ee_progress, interpolate, limit_margin, timed_with_ee};
+use chain_kinematics::{
+    LineSolver, LineState, WalkEnd, ee_progress, interpolate, limit_margin, timed_with_ee,
+    walk_line,
+};
 use control_core::path_timing::{TimedPath, TimedTrajectory};
 use control_core::timing::{MotionClock, duration_at_least, tick_checked_duration, tick_fractions};
 use nalgebra::Isometry3;
@@ -108,14 +112,36 @@ impl Swivel {
     pub(crate) const HELD: Self = Self { by_rad: 0.0 };
 }
 
+/// The arm's IK along a line with its elbow swiveling by `swivel` over the
+/// line: each solve moves the arm angle on from the state before by the share
+/// of the swivel its step of the line carries.
+struct Swiveling<'a> {
+    arm: &'a Arm,
+    swivel: Swivel,
+}
+
+impl LineSolver<ARM_DOF> for Swiveling<'_> {
+    fn solve(&self, pose: &Isometry3<f64>, from: &LineState<ARM_DOF>, to: f64) -> Option<JointVec> {
+        let policy = ArmAnglePolicy::Swiveled {
+            by_rad: self.swivel.by_rad * (to - from.blend),
+        };
+        self.arm
+            .solve_ik(&self.arm.base_pose(pose), policy, &from.q)
+            .map(|solution| solution.q)
+    }
+
+    fn pose(&self, q: &JointVec) -> Isometry3<f64> {
+        self.arm.world_ee_pose(q)
+    }
+}
+
 /// Where a walk along a line has got to: the configuration it last solved and
 /// the blend it solved at. The plan walks the line with one and the runtime
 /// follows it with one, each solve seeded from the last, so execution follows
 /// the branch the plan validated.
 #[derive(Debug, Clone, Copy)]
 pub struct LineCursor {
-    q: JointVec,
-    blend: f64,
+    at: LineState<ARM_DOF>,
     swivel: Swivel,
 }
 
@@ -124,50 +150,38 @@ impl LineCursor {
     /// `swivel` over the line.
     pub fn new(start_q: JointVec, swivel: Swivel) -> Self {
         Self {
-            q: start_q,
-            blend: 0.0,
+            at: LineState {
+                blend: 0.0,
+                q: start_q,
+            },
             swivel,
         }
     }
 
     /// The configuration the walk last solved.
     pub fn q(&self) -> JointVec {
-        self.q
-    }
-
-    /// One IK solve at blend `s` of the line `at_blend` samples, seeded from
-    /// the last and swiveling the elbow on by this step's share of the swivel;
-    /// the configuration there, or `None` when that arm angle has no in-limit
-    /// solution.
-    fn step_to(
-        &mut self,
-        arm: &Arm,
-        at_blend: &impl Fn(f64) -> Isometry3<f64>,
-        s: f64,
-    ) -> Option<JointVec> {
-        let policy = ArmAnglePolicy::Swiveled {
-            by_rad: self.swivel.by_rad * (s - self.blend),
-        };
-        self.q = arm
-            .solve_ik(&arm.base_pose(&at_blend(s)), policy, &self.q)?
-            .q;
-        self.blend = s;
-        Some(self.q)
+        self.at.q
     }
 
     /// Walk on to `blend` in steps no wider than one plan cell, the resolution
     /// the plan walked the line at; the configuration at `blend`, or `None`
-    /// when a solve fails.
+    /// when a solve fails, the cursor then at the last configuration solved.
     pub fn advance(
         &mut self,
         arm: &Arm,
         at_blend: impl Fn(f64) -> Isometry3<f64>,
         blend: f64,
     ) -> Option<JointVec> {
-        for s in subdivided_blends(self.blend, blend) {
-            self.step_to(arm, &at_blend, s)?;
-        }
-        Some(self.q)
+        let solver = Swiveling {
+            arm,
+            swivel: self.swivel,
+        };
+        let blends = subdivided_blends(self.at.blend, blend);
+        let end = walk_line(&solver, at_blend, self.at, blends, None, |_, step| {
+            self.at = step[step.len() - 1];
+            true
+        });
+        (end == WalkEnd::Whole).then_some(self.at.q)
     }
 }
 
@@ -186,37 +200,51 @@ enum Untracked {
 /// The configurations at the plan's samples of the line `at_blend` traces,
 /// walked from `start_q` swiveling by `swivel`, each solve seeded from the
 /// last; or why the line is not continuously trackable under it.
-fn walk_line(
+fn sampled_walk(
     arm: &Arm,
     at_blend: &impl Fn(f64) -> Isometry3<f64>,
     start_q: JointVec,
     swivel: Swivel,
 ) -> Result<Vec<JointVec>, Untracked> {
-    let mut cursor = LineCursor::new(start_q, swivel);
     let mut walk = vec![start_q];
-    for k in 1..=LINE_PLAN_SAMPLES {
-        let s = k as f64 * LINE_PLAN_DS;
-        let prev = cursor.q();
-        let Some(q) = cursor.step_to(arm, at_blend, s) else {
+    let start = LineState {
+        blend: 0.0,
+        q: start_q,
+    };
+    let samples = (1..=LINE_PLAN_SAMPLES).map(|k| k as f64 * LINE_PLAN_DS);
+    let end = walk_line(
+        &Swiveling { arm, swivel },
+        at_blend,
+        start,
+        samples,
+        None,
+        |before, step| {
+            let q = step[step.len() - 1].q;
+            let jumped = (0..ARM_DOF).any(|i| (q[i] - before.q[i]).abs() > MAX_LINE_STEP_RAD);
+            if !jumped {
+                walk.push(q);
+            }
+            !jumped
+        },
+    );
+    match end {
+        WalkEnd::Whole => Ok(walk),
+        WalkEnd::NoSolution { blend } => {
             let reachable = arm
                 .solve_ik(
-                    &arm.base_pose(&at_blend(s)),
+                    &arm.base_pose(&at_blend(blend)),
                     ArmAnglePolicy::FromSeed,
-                    &prev,
+                    &walk[walk.len() - 1],
                 )
                 .is_some();
-            return Err(if reachable {
+            Err(if reachable {
                 Untracked::PastALimit
             } else {
                 Untracked::Discontinuous
-            });
-        };
-        if (0..ARM_DOF).any(|i| (q[i] - prev[i]).abs() > MAX_LINE_STEP_RAD) {
-            return Err(Untracked::Discontinuous);
+            })
         }
-        walk.push(q);
+        WalkEnd::Refused { .. } | WalkEnd::Imprecise { .. } => Err(Untracked::Discontinuous),
     }
-    Ok(walk)
 }
 
 /// Every swivel within [`MAX_ELBOW_SWIVEL_RAD`] that tracks the line, with its
@@ -231,7 +259,7 @@ fn swivel_walks(
     std::iter::once(0.0)
         .chain((1..=LINE_PLAN_SAMPLES).flat_map(|k| [k as f64, -(k as f64)]))
         .map(|k| Swivel { by_rad: k * share })
-        .filter_map(|swivel| Some((swivel, walk_line(arm, at_blend, start_q, swivel).ok()?)))
+        .filter_map(|swivel| Some((swivel, sampled_walk(arm, at_blend, start_q, swivel).ok()?)))
         .collect()
 }
 
@@ -415,7 +443,7 @@ pub(crate) fn plan_line(
         start_q,
         path,
     };
-    let held_walk = walk_line(arm, &at_blend, start_q, Swivel::HELD);
+    let held_walk = sampled_walk(arm, &at_blend, start_q, Swivel::HELD);
     if let Ok(walk) = &held_walk
         && let Some(sized) = sized(Swivel::HELD, walk)
     {
@@ -441,8 +469,12 @@ pub(crate) fn plan_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::properties::sides;
+    use crate::test_support::v1_arm;
     use hegel::TestCase;
     use hegel::generators as gs;
+    use kinematics_properties::{configs, unit_vectors};
+    use nalgebra::{Translation3, Unit, UnitQuaternion};
 
     const EPS: f64 = 1e-9;
 
@@ -487,15 +519,6 @@ mod tests {
         }
     }
 
-    /// The v1 fixture arm, which the crate's own tests load.
-    fn fixture_arm() -> Arm {
-        Arm::from_urdf(
-            include_str!("../tests/fixtures/openarm_v10.urdf"),
-            "openarm_left_link0",
-        )
-        .expect("the fixture URDF builds")
-    }
-
     // One plan sample's share of the swivel budget, `MAX_ELBOW_SWIVEL_RAD *
     // LINE_PLAN_DS`, stays well inside the branch-jump guard `MAX_LINE_STEP_RAD`
     // from a well-conditioned pose: if one sample's swivel could induce a joint
@@ -504,7 +527,7 @@ mod tests {
     // either way, comfortably under the guard.
     #[test]
     fn a_swivels_share_of_one_sample_stays_under_the_branch_guard() {
-        let arm = fixture_arm();
+        let arm = v1_arm("left");
         let q: JointVec = [0.2, -0.3, 0.3, 1.0, -0.4, 0.5, 0.3];
         let target = arm.at(&q).ee_pose();
         let share = MAX_ELBOW_SWIVEL_RAD * LINE_PLAN_DS;
@@ -569,5 +592,145 @@ mod tests {
             cap,
             (requested * LINE_OVERRUN_FACTOR).max(MIN_LINE_BUDGET_S)
         );
+    }
+
+    /// A line of either fixture arm from any configuration: the end effector
+    /// moves up to 0.5 m and turns up to 1.2 rad, the elbow swivels by up to
+    /// the whole budget either way, so walks along it track, pass a limit and
+    /// jump branch.
+    struct DrawnLine {
+        arm: &'static Arm,
+        start_q: JointVec,
+        start: Isometry3<f64>,
+        end: Isometry3<f64>,
+        swivel: Swivel,
+    }
+
+    impl DrawnLine {
+        fn draw(tc: &TestCase) -> Self {
+            let arm = v1_arm(tc.draw(sides()));
+            let start_q = tc.draw(configs(arm.limits()));
+            let start = arm.world_ee_pose(&start_q);
+            let travel: f64 = tc.draw(gs::floats().min_value(0.0).max_value(0.5));
+            let turn: f64 = tc.draw(gs::floats().min_value(0.0).max_value(1.2));
+            let end = Isometry3::from_parts(
+                Translation3::from(start.translation.vector + tc.draw(unit_vectors()) * travel),
+                UnitQuaternion::from_axis_angle(
+                    &Unit::new_normalize(tc.draw(unit_vectors())),
+                    turn,
+                ) * start.rotation,
+            );
+            let by_rad: f64 = tc.draw(
+                gs::floats()
+                    .min_value(-MAX_ELBOW_SWIVEL_RAD)
+                    .max_value(MAX_ELBOW_SWIVEL_RAD),
+            );
+            Self {
+                arm,
+                start_q,
+                start,
+                end,
+                swivel: Swivel { by_rad },
+            }
+        }
+
+        fn at_blend(&self, s: f64) -> Isometry3<f64> {
+            interpolate(&self.start, &self.end, s)
+        }
+
+        /// The IK solution at blend `to`, seeded from `q` solved at blend
+        /// `from`, the elbow swiveled on by the share of the swivel between
+        /// them.
+        fn solved_from(&self, from: f64, q: &JointVec, to: f64) -> Option<JointVec> {
+            let policy = ArmAnglePolicy::Swiveled {
+                by_rad: self.swivel.by_rad * (to - from),
+            };
+            self.arm
+                .solve_ik(&self.arm.base_pose(&self.at_blend(to)), policy, q)
+                .map(|solution| solution.q)
+        }
+    }
+
+    fn bits(q: &JointVec) -> [u64; ARM_DOF] {
+        q.map(f64::to_bits)
+    }
+
+    // A cursor walks each tick by one IK solve per subdivided blend, each
+    // seeded from the solution before with the elbow swiveled on by the
+    // blend's share since it, to the bit; a tick whose solve fails leaves the
+    // cursor at the last solution, and the ticks after walk on from there.
+    #[hegel::test]
+    fn a_cursor_solves_each_blend_from_the_solution_before(tc: TestCase) {
+        let line = DrawnLine::draw(&tc);
+        let ticks: Vec<f64> = tc
+            .draw(gs::vecs(gs::floats().min_value(0.0).max_value(0.3)).max_size(12))
+            .into_iter()
+            .scan(0.0, |blend: &mut f64, step: f64| {
+                *blend = (*blend + step).min(1.0);
+                Some(*blend)
+            })
+            .collect();
+        let mut cursor = LineCursor::new(line.start_q, line.swivel);
+        let mut solved = (0.0, line.start_q);
+        for tick in ticks {
+            let walked = subdivided_blends(solved.0, tick).try_fold(solved, |(from, q), s| {
+                line.solved_from(from, &q, s)
+                    .map(|next| (s, next))
+                    .ok_or((from, q))
+            });
+            let expected = walked.ok().map(|(_, q)| bits(&q));
+            solved = walked.unwrap_or_else(|stopped| stopped);
+            let got = cursor.advance(line.arm, |s| line.at_blend(s), tick);
+            assert_eq!(got.map(|q| bits(&q)), expected, "the tick to {tick}");
+            assert_eq!(
+                bits(&cursor.q()),
+                bits(&solved.1),
+                "the cursor after {tick}"
+            );
+        }
+    }
+
+    // The plan's walk of a line is one IK solve per plan sample, each seeded
+    // from the solution before, to the bit; it stops at the first sample whose
+    // solution moves a joint further than the branch guard, a discontinuity,
+    // or that has no solution, past a limit when the seed's own arm angle
+    // solves that sample's pose and a discontinuity when it does not.
+    #[hegel::test]
+    fn the_plans_walk_solves_each_sample_from_the_solution_before(tc: TestCase) {
+        let line = DrawnLine::draw(&tc);
+        let mut expected = vec![line.start_q];
+        let mut blend = 0.0;
+        let mut verdict = Ok(());
+        for k in 1..=LINE_PLAN_SAMPLES {
+            let s = k as f64 * LINE_PLAN_DS;
+            let q = expected[expected.len() - 1];
+            let Some(next) = line.solved_from(blend, &q, s) else {
+                let reachable = line
+                    .arm
+                    .solve_ik(
+                        &line.arm.base_pose(&line.at_blend(s)),
+                        ArmAnglePolicy::FromSeed,
+                        &q,
+                    )
+                    .is_some();
+                verdict = Err(if reachable {
+                    Untracked::PastALimit
+                } else {
+                    Untracked::Discontinuous
+                });
+                break;
+            };
+            if (0..ARM_DOF).any(|i| (next[i] - q[i]).abs() > MAX_LINE_STEP_RAD) {
+                verdict = Err(Untracked::Discontinuous);
+                break;
+            }
+            expected.push(next);
+            blend = s;
+        }
+        tc.event(format!("{verdict:?}"));
+        let expected = verdict.map(|()| expected.iter().map(bits).collect::<Vec<_>>());
+        let walked = sampled_walk(line.arm, &|s| line.at_blend(s), line.start_q, line.swivel)
+            .map(|walk| walk.iter().map(bits).collect::<Vec<_>>());
+        assert_eq!(walked, expected);
     }
 }

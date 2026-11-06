@@ -103,10 +103,12 @@ pub enum SolveError {
     Tolerance { what: &'static str, value: f64 },
 }
 
-fn positive(value: f64, what: &'static str) -> Result<f64, SolveError> {
-    (value.is_finite() && value > 0.0)
-        .then_some(value)
-        .ok_or(SolveError::Tolerance { what, value })
+pub(crate) const fn positive(value: f64, what: &'static str) -> Result<f64, SolveError> {
+    if value.is_finite() && value > 0.0 {
+        Ok(value)
+    } else {
+        Err(SolveError::Tolerance { what, value })
+    }
 }
 
 fn assert_finite_pose(pose: &Isometry3<f64>, what: &str) {

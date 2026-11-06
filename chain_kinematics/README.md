@@ -77,6 +77,7 @@ different solver.
 | `plan_servo` | the servo plan: the rollout timed with the end effector, played over the longer of a request and the path's own time |
 | `JointSmoothing` / `command_smoothing` | one Butterworth per joint at MoveIt Servo's default cutoff for the control period |
 | `interpolate` | the straight line between two poses |
+| `walk_line` | a walk along a line by inverse kinematics from a seed: each step solved from the state before by a `LineSolver`, kept or refused by the caller, and with a `LinePrecision` held to the line between states |
 | `clamp_into` / `all_within` / `limit_margin` / `pose_miss` | joint-limit and pose-distance helpers |
 
 ## Point-to-point: `inverse_kinematics`, `continue_to`, `track`
@@ -110,6 +111,26 @@ construction, seeds unrelated to the answers):
 |---|---|---|---|
 | SO-101, 5 DOF, 1000 poses | 0 | 5.7e-4 m | 1 (worst 2.1 deg) |
 | OpenArm, 7 DOF, 300 poses | 0 | 8.3e-4 m | 0 |
+
+## Walking a line
+
+`walk_line` walks the line a caller traces, a pose for each blend such as
+`interpolate` gives between two poses, through the blends it is given, from a
+state of the caller's. A `LineSolver` solves each step from the state before
+it, which keeps the walk on one branch of the solutions; `srs_model` walks its
+line tier with its closed form and the elbow swiveling. The caller gets each
+step with the state before it and keeps it or refuses it. The walk ends at the
+first step that has no solution, cannot keep the precision, or is refused, and
+the caller has kept every step before it.
+
+A `LinePrecision` is MoveIt's `CartesianPrecision`: the frame at each step's
+joint midpoint stands within its translational and rotational bounds of the
+line's midpoint, or the step is halved, its midpoint solved from the joint
+midpoint and each half refined in turn, down to intervals of the precision's
+resolution (MoveIt's `validateAndImproveInterval`). A solution that jumps
+branch inside a step keeps the pose at both ends while its joint midpoint
+leaves the line at every halving, so the walk ends before the jump. Without a
+precision a step is its own state alone and the walk allocates nothing.
 
 ## The servo law
 
@@ -153,7 +174,7 @@ src/
   jacobian.rs   the Jacobian's inverses, generic over N
   chain.rs      the serial chain and its posed view: forward kinematics, the Jacobian, limits
   rate.rs       one damped resolved-rate step, holding the joints it would carry past their limits, and the distance between poses
-  line.rs       the straight line between two poses
+  line.rs       the straight line between two poses, and the walk along a line by IK from a seed
   ik.rs         point-to-point IK: searched, verified, willing to refuse
   dynamics.rs   gravity and Coriolis feedforward over the posed chain
   servo.rs      the leashed-reference Cartesian move, its offline rollout, the timing of a move's configurations with the end effector, and the servo plan
@@ -183,6 +204,10 @@ separate exercise.
 
 `tests/refusals.rs` covers the table above: every rule is checked both ways, so a
 refusal that would also reject a valid chain fails the suite.
+`tests/line_walk.rs` checks the walk on one-joint solvers whose every answer
+is known: each step solved from the state before, the end at the first step it
+cannot take, and the precision's halving, which a solution jumping a whole turn
+cannot pass.
 `tests/ik_quality.rs` is the point-to-point qualification: the debug build
 runs a fast subset of the same draws, and `--release` runs the full scale the
 numbers above are quoted at.
