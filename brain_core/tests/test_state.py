@@ -194,6 +194,34 @@ def test_items_sharing_a_place_keep_their_own_ids():
     assert [item.label for item in second] == ["apple", "bowl"]
 
 
+def test_an_identify_search_takes_no_near_item_whose_label_shares_no_word():
+    state = make_state()
+    bowl = state.remember([Detection("bowl", (0.231, -0.005, 0.383), 0.0)], now_ns=1, coverage=NOTHING)[0]
+    # The mug stands in the bowl, 1 cm from the bowl's place.
+    mug = state.remember([Detection("the mug", (0.240, -0.004, 0.390), 0.0)], now_ns=2, coverage=NOTHING)[0]
+    assert (mug.item_id, mug.label) == ("the_mug_1-t0", "the mug")
+    assert bowl.item_id == "bowl_1-t0" and bowl.position == (0.231, -0.005, 0.383)
+    again = state.remember([Detection("mug", (0.239, -0.004, 0.390), 0.0)], now_ns=3, coverage=NOTHING)[0]
+    assert again.item_id == "the_mug_1-t0"
+    assert set(state.items) == {"bowl_1-t0", "the_mug_1-t0"}
+
+
+def test_a_scan_takes_no_near_item_whose_label_shares_no_word():
+    state = make_state()
+    state.remember([Detection("bowl", (0.50, 0.00, 0.70), 0.9)], now_ns=1, coverage=NOTHING)
+    # The scan sees only the mug in the bowl: it does not rename the bowl.
+    [mug] = state.remember([Detection("mug", (0.51, 0.00, 0.71), 0.9)], now_ns=2, coverage=Coverage(frozenset({"mug"})))
+    assert (mug.item_id, mug.label) == ("mug_1-t0", "mug")
+    assert state.items["bowl_1-t0"].label == "bowl"
+
+
+def test_a_label_of_stopwords_alone_takes_no_known_item():
+    state = make_state()
+    state.remember([Detection("cup", (0.5, 0.1, 0.7), 0.9)], now_ns=1, coverage=EVERY)
+    [it] = state.remember([Detection("it", (0.5, 0.1, 0.7), 0.9)], now_ns=2, coverage=NOTHING)
+    assert it.item_id == "it_1-t0"
+
+
 def test_a_scan_drops_only_the_unseen_items_it_could_name():
     state = make_state()
     vocabulary_scan = Coverage(frozenset({"cup", "bowl"}))

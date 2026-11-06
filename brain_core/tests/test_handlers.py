@@ -266,6 +266,21 @@ async def test_a_search_under_other_words_returns_the_scans_id():
     assert ctx.completed["confidence"] == 0.96
 
 
+async def test_a_search_for_an_item_in_another_returns_its_own_id():
+    detector = FakeDetector([Box("the bowl", 0.0, 6, 4, 10, 8)])
+    brain = await make_brain(detector=detector)
+    with_frames(brain)
+    bowl = identify_goal("the bowl")
+    await identify_item.run(brain, bowl)
+    assert bowl.completed["item_id"] == "the_bowl_1-t0"
+
+    # The mug stands in the bowl: its box has the same centre, so the same place.
+    detector.boxes = [Box("the mug", 0.0, 7, 5, 9, 7)]
+    mug = identify_goal("the mug")
+    await identify_item.run(brain, mug)
+    assert (mug.completed["item_id"], mug.completed["label"]) == ("the_mug_1-t0", "the mug")
+
+
 async def test_a_description_names_whole_words_only():
     # A scan under the vocabulary returns general names; a description
     # that shares letters with one of them, or only stopwords, names none.

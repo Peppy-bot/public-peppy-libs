@@ -62,9 +62,11 @@ from typing import Optional, Sequence
 
 from .limbs import Limb
 from .ports import Coverage, Detection, FailureKind, Gripper, Item, Quat, Refusal, Vec3
-from .words import named_by
+from .words import content_words, named_by
 
 MATCH_RADIUS_M = 0.05
+# The label of an item that a goal addressed by pose: no look named it yet.
+UNNAMED_LABEL = "item"
 
 
 def new_run_token() -> str:
@@ -230,7 +232,7 @@ class State:
     def mint_from_pose(self, position: Vec3, orientation: Optional[Quat], now_ns: int) -> Item:
         """An id for an item a goal addressed by pose rather than by id:
         the pose is a grasp point, where the gripper closes."""
-        item = self._mint("item", position, orientation, 0.0, now_ns)
+        item = self._mint(UNNAMED_LABEL, position, orientation, 0.0, now_ns)
         item.position_is_grasp_point = True
         return item
 
@@ -244,15 +246,21 @@ class State:
 
     def _match(self, detection: Detection, claimed: set[str], held: set[str]) -> Optional[Item]:
         """The known item at the detection's place: among the items within
-        the match radius that no earlier detection of this look claimed and
-        no gripper holds, one with the detection's label first, then the
-        nearest."""
+        the match radius that no earlier detection of this look claimed, no
+        gripper holds and whose label shares a content word with the
+        detection's label or no look named yet, one with the detection's
+        label first, then the nearest. Items that stand one in the other,
+        such as a mug in a bowl, lie within the radius of each other, so the
+        place alone does not tell them apart: a detection whose label shares
+        no word with a near named item is another item."""
+        words = content_words(detection.label)
         near = [
             item
             for item in self.items.values()
             if item.item_id not in claimed
             and item.item_id not in held
             and distance(item.position, detection.position) <= self.match_radius_m
+            and (item.label == UNNAMED_LABEL or not words.isdisjoint(content_words(item.label)))
         ]
         if not near:
             return None
@@ -295,7 +303,7 @@ def _stem(label: str) -> str:
     while "__" in cleaned:
         cleaned = cleaned.replace("__", "_")
     cleaned = cleaned.strip("_")
-    return cleaned or "item"
+    return cleaned or UNNAMED_LABEL
 
 
 def _side_cost(gripper_name: str, near: Vec3) -> int:
