@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value, json};
 
-use crate::geometry::Point;
+use crate::geometry::{Point, Raise};
 use crate::names::first_named_twice;
 use crate::pattern::physics_candidates;
 use crate::sampler::{Sampled, Segment, SitePath, SiteRule, placeholder};
@@ -280,6 +280,7 @@ impl FurnishStation {
             landmark: self.landmark.clone(),
             side: Some(self.side),
             offset: Offset::default(),
+            raise: Raise::NONE,
         }
     }
 }
