@@ -153,6 +153,33 @@ fn a_field_of_the_step_inside_an_object_of_the_step_is_refused_with_where_it_goe
     );
 }
 
+/// A field of a `for_each` or a `repeat_until` step of its own kind, written
+/// inside the object of the step, is refused with where it goes too.
+#[test]
+fn a_field_of_a_loop_step_inside_its_object_is_refused_with_where_it_goes() {
+    let mut max_items_inside = clear_table();
+    let each = &mut max_items_inside["actions"]["clearer"]["tree"]["body"]["sequence"][1];
+    each.as_object_mut().unwrap().remove("max_items");
+    each["for_each"]["max_items"] = json!(20);
+    assert!(
+        reasons(&max_items_inside).contains(
+            &"clearer.each: `for_each` has an unknown field `max_items`: `max_items` is a field of the step, beside `for_each`"
+                .to_owned()
+        ),
+        "{:?}",
+        reasons(&max_items_inside)
+    );
+    let mut max_iterations_inside = clear_table();
+    let clear = &mut max_iterations_inside["actions"]["clearer"]["tree"];
+    clear["breaker"] = json!({ "max_failures": 2, "max_iterations": 3 });
+    assert_eq!(
+        reasons(&max_iterations_inside),
+        [
+            "clearer.clear: `breaker` has an unknown field `max_iterations`: `max_iterations` is a field of the step, beside `breaker`"
+        ]
+    );
+}
+
 /// An unknown field of an object of a step that is no field of the step is
 /// refused with the object that holds it alone.
 #[test]

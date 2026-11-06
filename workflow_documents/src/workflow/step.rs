@@ -142,8 +142,26 @@ const KIND_KEYS: [&str; 10] = [
 ];
 
 /// The fields that a step of a lane or of an initialization holds beside its
-/// kind key.
+/// kind key, whatever its kind.
 pub(super) const STEP_FIELDS: [&str; 4] = ["id", "timeout_s", "retry", "invariant"];
+
+/// The fields that a `for_each` step holds beside `for_each`, with
+/// [`STEP_FIELDS`].
+const FOR_EACH_STEP_FIELDS: [&str; 6] =
+    ["id", "timeout_s", "retry", "invariant", "max_items", "body"];
+
+/// The fields that a `repeat_until` step holds beside its `breaker`, with
+/// [`STEP_FIELDS`].
+const REPEAT_UNTIL_STEP_FIELDS: [&str; 8] = [
+    "id",
+    "timeout_s",
+    "retry",
+    "invariant",
+    "repeat_until",
+    "fail_when",
+    "max_iterations",
+    "body",
+];
 
 /// The fields that a step of a `safe_state` holds beside its `call`.
 pub(super) const SAFE_STEP_FIELDS: [&str; 2] = ["id", "timeout_s"];
@@ -319,7 +337,7 @@ impl StepReader<'_> {
                 let list = self.expression(at, spec.get("list"), "for_each.list")??;
                 let element = self.field(at, spec.read_required::<Name>("as"))?;
                 self.no_param_named(at, Some(&element));
-                self.refuse_unknown_in(at, &spec, "for_each", &STEP_FIELDS);
+                self.refuse_unknown_in(at, &spec, "for_each", &FOR_EACH_STEP_FIELDS);
                 let max_items = self.field(at, fields.read_required::<NonZeroU32>("max_items"))?;
                 let body = child(self, "body")?;
                 Some(StepKind::ForEach {
@@ -340,7 +358,7 @@ impl StepReader<'_> {
                         let spec = self.field(at, Fields::of(value, &fields.at("breaker")))?;
                         let max =
                             self.field(at, spec.read_required::<NonZeroU32>("max_failures"))?;
-                        self.refuse_unknown_in(at, &spec, "breaker", &STEP_FIELDS);
+                        self.refuse_unknown_in(at, &spec, "breaker", &REPEAT_UNTIL_STEP_FIELDS);
                         Some(max)
                     }
                 };
