@@ -1907,6 +1907,24 @@ mod tests {
     }
 
     #[test]
+    fn a_pattern_gives_the_stations_of_its_furnish_poses_by_piece() {
+        let pattern = room();
+        let stations: Vec<(&str, &str, Side)> = pattern
+            .furnish_stations()
+            .into_iter()
+            .map(|(piece, station)| (piece.as_str(), station.landmark.as_str(), station.side))
+            .collect();
+        assert_eq!(
+            stations,
+            [
+                ("counter", "top", Side::PosX),
+                ("desk", "top", Side::NegY),
+                ("rug", "top", Side::PosY),
+            ]
+        );
+    }
+
+    #[test]
     fn a_concrete_world_refuses_fixed_stations() {
         let text = format!(
             r#"{{

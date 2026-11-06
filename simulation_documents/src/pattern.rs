@@ -28,8 +28,8 @@ use std::sync::Arc;
 
 use crate::daylight::Daylight;
 use crate::furnish::{
-    FixedStation, FurnishEntry, FurnishPiece, check_fixed_stations, check_furnish_poses,
-    furnish_path, placeholder_places, places_of, writes_a_furnish_pose,
+    FixedStation, FurnishEntry, FurnishPiece, FurnishStation, check_fixed_stations,
+    check_furnish_poses, furnish_path, placeholder_places, places_of, writes_a_furnish_pose,
 };
 use crate::geometry::Region;
 use crate::sampler::{
@@ -782,6 +782,14 @@ impl WorldPattern {
                 };
                 Some((name, asset_candidates(object)))
             })
+            .collect()
+    }
+
+    /// The stations of each object whose pose is `furnish`, by the name of
+    /// the object, in the order of the names, then of its stations.
+    pub fn furnish_stations(&self) -> Vec<(&Name, &FurnishStation)> {
+        self.furnish_entries()
+            .flat_map(|(name, piece)| piece.stations.iter().map(move |station| (name, station)))
             .collect()
     }
 
