@@ -51,6 +51,6 @@ async def serve_service(service_module, node_runner, token, handler) -> None:
     """Serves one exposed service, one request after another."""
     while not token.is_cancelled():
         try:
-            await unless_cancelled(token, service_module.handle_next_request(node_runner, handler))
+            await unless_cancelled(token, service_module.handle_requests(node_runner, handler))
         except Exception as error:
             logger.error("%s request failed: %r", service_module.SERVICE_NAME, error)

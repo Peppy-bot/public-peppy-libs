@@ -13,16 +13,17 @@ use crate::time::sleep_unless_cancelled;
 const RETRY_BACKOFF: Duration = Duration::from_secs(1);
 
 /// Serves `service` one request at a time until `cancelled` resolves:
-/// `next_request` listens for the next request and answers it (a generated
-/// `handle_next_request`). A cancel ends the loop at once, while it waits for
-/// a request or waits out an error. The first error of a run is logged at
-/// error level as `"{service} failing, suppressing repeats: {error}"`, a
-/// served request ends the run, and each error is waited out for 1 s before
-/// the loop listens again.
+/// `serve_requests` listens once and answers each request until the request
+/// stream ends (a generated `handle_requests`), and the loop listens again
+/// when it returns. A cancel ends the loop at once, while it serves or
+/// waits out an error. The first error of a run is logged at error level as
+/// `"{service} failing, suppressing repeats: {error}"`, a `serve_requests`
+/// that returns with no error ends the run, and each error is waited out for
+/// 1 s before the loop listens again.
 pub async fn serve<F, E>(
     service: &str,
     cancelled: impl Future<Output = ()>,
-    mut next_request: impl FnMut() -> F,
+    mut serve_requests: impl FnMut() -> F,
 ) where
     F: Future<Output = Result<(), E>>,
     E: Display,
@@ -33,7 +34,7 @@ pub async fn serve<F, E>(
         let served = tokio::select! {
             biased;
             () = &mut cancelled => return,
-            served = next_request() => served,
+            served = serve_requests() => served,
         };
         let Err(e) = served else {
             service_errors.success();
@@ -168,7 +169,7 @@ mod tests {
 
     /// A node spawns each loop onto the runtime's worker threads, which
     /// takes a `Send` future, with a request closure that borrows what the
-    /// task owns, as a generated `handle_next_request(&runner, ..)` does.
+    /// task owns, as a generated `handle_requests(&runner, ..)` does.
     #[tokio::test]
     async fn the_loop_runs_as_a_spawned_task() {
         let serving = tokio::spawn(async move {

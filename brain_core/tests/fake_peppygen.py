@@ -6,7 +6,7 @@ Each exposed action is a `FakeAction` named as the generated module is:
 its result's fields, which the fake goal context checks every end against,
 its `FailureKind` and `Failure`, which refuse an undeclared kind as the
 generated ones do, and its `GoalDecision`. `ActionHandle.expose` gives an
-action that never receives a goal, and `handle_next_request` a service
+action that never receives a goal, and `handle_requests` a service
 that never receives a request, for a node that boots and stops. The
 limb_motion clients are scripted by the test (`FakeLimbAction` for a
 move, `FakeService` for check_arm_move), and so is the limb_states topic
@@ -129,7 +129,7 @@ class get_state:
         gripper_openings: list[float]
 
     @staticmethod
-    async def handle_next_request(node_runner, handler):
+    async def handle_requests(node_runner, handler):
         await asyncio.Event().wait()
 
 
@@ -143,7 +143,7 @@ class get_model:
         starting: list[str]
 
     @staticmethod
-    async def handle_next_request(node_runner, handler):
+    async def handle_requests(node_runner, handler):
         await asyncio.Event().wait()
 
 
@@ -156,7 +156,7 @@ class list_models:
         models: list[str]
 
     @staticmethod
-    async def handle_next_request(node_runner, handler):
+    async def handle_requests(node_runner, handler):
         await asyncio.Event().wait()
 
 

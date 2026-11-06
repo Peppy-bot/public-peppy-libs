@@ -196,7 +196,7 @@ async def serve(node_runner, service_module, handler, label: str) -> None:
     token = node_runner.cancellation_token()
     while not token.is_cancelled():
         try:
-            await service_module.handle_next_request(node_runner, handler)
+            await service_module.handle_requests(node_runner, handler)
         except Exception as e:
             log(f"{label} service error: {e!r}")
             await asyncio.sleep(_SERVICE_RETRY_S)
