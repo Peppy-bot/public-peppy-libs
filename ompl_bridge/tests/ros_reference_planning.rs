@@ -15,7 +15,7 @@ mod world;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::time::Duration;
 
-use ompl_bridge::{Planner, Request, Space, plan};
+use ompl_bridge::{Goals, Planner, Request, Space, plan};
 use ros_reference::planning::{Case, Ending, PlanCase, PlanStatus, Planned};
 use world::{World, length};
 
@@ -75,7 +75,7 @@ fn plan_world(
         planner,
         space: &space,
         start: &world.start,
-        goals: &goals,
+        goals: Goals::States(&goals),
         time_limit: TIME_LIMIT,
         iterations: NonZeroU64::new(iterations).expect("nonzero"),
         seed: NonZeroU32::new(seed).expect("nonzero"),

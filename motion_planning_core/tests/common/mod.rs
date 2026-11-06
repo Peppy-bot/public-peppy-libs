@@ -17,7 +17,7 @@ use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider, RiderBody};
 use collision_geometry::gjk::{self, Placed};
 use control_core::positive_finite::PositiveFinite;
-use motion_planning_core::{Arm, Body};
+use motion_planning_core::{Arm, Arms, Body};
 use nalgebra::Point3;
 use occupancy_map::{Bounds, Frame, Scan, VoxelBox, VoxelMap};
 use openarm_description::{HardwareVersion, Side};
@@ -142,25 +142,26 @@ pub fn voxel_boxes(map: &VoxelMap) -> Vec<VoxelBox> {
     map.occupied().map(|key| map.voxel_box(key)).collect()
 }
 
-/// The least distance at `q` between a shape of an object `arm` carries and a piece of
-/// the arm's links and of the parts they carry that the object may not touch, measured
-/// shape against piece with no screen: `may_touch` takes the object's id and the link's
-/// name.
-pub fn held_from_its_arm<const N: usize>(
-    arm: &Arm<N>,
-    q: &[f64; N],
+/// The least distance at `q` between a shape of an object an arm of `arms` carries and a
+/// piece of that arm's links and of the parts they carry that the object may not touch,
+/// measured shape against piece with no screen: `may_touch` takes the object's id and the
+/// link's name.
+pub fn held_from_its_arm<const N: usize, const D: usize>(
+    arms: &Arms<N, D>,
+    q: &[f64; D],
     may_touch: impl Fn(&str, &str) -> bool,
 ) -> f64 {
-    let bodies = arm.bodies(q);
+    let bodies = arms.bodies(q);
+    let may_touch = &may_touch;
     let shapes = bodies
         .iter()
-        .filter_map(|(object, body)| body.shape().map(|shape| (*object, shape)));
+        .filter_map(|held| held.body.shape().map(|shape| (held.arm, held.name, shape)));
     shapes
-        .flat_map(|(object, shape)| {
+        .flat_map(|(arm, object, shape)| {
             bodies
                 .iter()
-                .filter(|(link, _)| !may_touch(object, link))
-                .filter_map(move |(_, body)| match body {
+                .filter(move |body| body.arm == arm && !may_touch(object, body.name))
+                .filter_map(move |body| match &body.body {
                     Body::Piece(piece) => Some(shape.distance_to(piece, piece.bounding_sphere())),
                     Body::Shape(_) => None,
                 })
@@ -168,16 +169,20 @@ pub fn held_from_its_arm<const N: usize>(
         .fold(f64::INFINITY, f64::min)
 }
 
-/// The least distance from every body of `arm` at `q` to the box of every occupied voxel
+/// The least distance from every body of `arms` at `q` to the box of every occupied voxel
 /// of `map`, with no screen.
-pub fn distance_to_map<const N: usize>(arm: &Arm<N>, map: &VoxelMap, q: &[f64; N]) -> f64 {
+pub fn distance_to_map<const N: usize, const D: usize>(
+    arms: &Arms<N, D>,
+    map: &VoxelMap,
+    q: &[f64; D],
+) -> f64 {
     let boxes = voxel_boxes(map);
-    arm.bodies(q)
+    arms.bodies(q)
         .iter()
-        .flat_map(|(_, body)| {
+        .flat_map(|body| {
             boxes
                 .iter()
-                .map(|b| body.distance_to_convex(b, b.bounding_sphere()))
+                .map(|b| body.body.distance_to_convex(b, b.bounding_sphere()))
         })
         .fold(f64::INFINITY, f64::min)
 }
@@ -187,7 +192,7 @@ pub fn distance_to_map<const N: usize>(arm: &Arm<N>, map: &VoxelMap, q: &[f64; N
 /// a vertex of a finger's piece toward its center, one the finger touches. With that
 /// distance from the bare arm. Each finger stands where its hand carries it.
 pub fn voxel_in_a_finger(map: &VoxelMap, q: &[f64; JOINTS]) -> ([f64; 3], f64) {
-    let bare = Arm::new(&LEFT_ARM, None).bodies(q);
+    let bare = Arm::new("left_arm", &LEFT_ARM).bodies(q);
     let posed = LEFT_ARM.chain().at(q);
     let fingers: Vec<Placed> = left_fingers()
         .into_iter()

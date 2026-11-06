@@ -6,7 +6,7 @@ mod common;
 use hegel::TestCase;
 use hegel::generators as gs;
 use kinematics_properties::{configs, unit_vectors};
-use motion_planning_core::{Arm, Contact, Surroundings};
+use motion_planning_core::{Arm, Arms, Contact, Surroundings};
 use nalgebra::Point3;
 use occupancy_map::{DistanceField, VoxelMap};
 
@@ -16,12 +16,17 @@ const VOXEL_M: f64 = 0.05;
 
 /// Whether every body of the arm at `q` lies at least `clearance` from the box of every
 /// occupied voxel of `map`, hull against box, with no screen.
-fn hulls_alone(arm: &Arm<JOINTS>, map: &VoxelMap, q: &[f64; JOINTS], clearance: f64) -> bool {
+fn hulls_alone(
+    arms: &Arms<JOINTS, JOINTS>,
+    map: &VoxelMap,
+    q: &[f64; JOINTS],
+    clearance: f64,
+) -> bool {
     let boxes = voxel_boxes(map);
-    arm.bodies(q).iter().all(|(_, body)| {
+    arms.bodies(q).iter().all(|body| {
         boxes
             .iter()
-            .all(|b| body.distance_to_convex(b, b.bounding_sphere()) >= clearance)
+            .all(|b| body.body.distance_to_convex(b, b.bounding_sphere()) >= clearance)
     })
 }
 
@@ -31,14 +36,19 @@ fn hulls_alone(arm: &Arm<JOINTS>, map: &VoxelMap, q: &[f64; JOINTS], clearance: 
 #[hegel::test]
 fn the_sphere_screen_gives_the_hulls_verdict(tc: TestCase) {
     let riders = left_fingers();
-    let arm = Arm::new(&LEFT_ARM, None)
-        .riding(&riders)
-        .expect("the fingers ride the hand");
+    let arms = Arms::new(
+        vec![
+            Arm::new("left_arm", &LEFT_ARM)
+                .riding(&riders)
+                .expect("the fingers ride the hand"),
+        ],
+        None,
+    );
     let q = tc.draw(configs(LEFT_ARM.chain().limits()));
-    let spheres: Vec<(Point3<f64>, f64)> = arm
+    let spheres: Vec<(Point3<f64>, f64)> = arms
         .bodies(&q)
         .iter()
-        .map(|(_, body)| body.bounding_sphere())
+        .map(|body| body.body.bounding_sphere())
         .collect();
     let clearance: f64 = tc.draw(gs::floats().min_value(0.0).max_value(0.15));
     // Each point lies outside a piece's bounding sphere, up to twice the clearance and
@@ -66,8 +76,8 @@ fn the_sphere_screen_gives_the_hulls_verdict(tc: TestCase) {
     let field = DistanceField::of(&map);
     let surroundings = Surroundings::new(&map, &field, [clearance, 0.0, 0.0]);
     assert_eq!(
-        surroundings.clear(&arm, &q),
-        hulls_alone(&arm, &map, &q, clearance),
+        surroundings.clear(&arms, &q),
+        hulls_alone(&arms, &map, &q, clearance),
         "the screened verdict"
     );
 }
@@ -88,10 +98,15 @@ fn a_finger_keeps_its_clearance_as_the_links_do() {
     let field = DistanceField::of(&map);
     let surroundings = Surroundings::new(&map, &field, [CLEARANCE_M, 0.0, 0.0]);
     let riders = left_fingers();
-    let riding = Arm::new(&LEFT_ARM, None)
-        .riding(&riders)
-        .expect("the fingers ride the hand");
-    assert!(surroundings.clear(&Arm::new(&LEFT_ARM, None), &q));
+    let riding = Arms::new(
+        vec![
+            Arm::new("left_arm", &LEFT_ARM)
+                .riding(&riders)
+                .expect("the fingers ride the hand"),
+        ],
+        None,
+    );
+    assert!(surroundings.clear(&Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None), &q));
     assert!(!surroundings.clear(&riding, &q));
     let contact = surroundings.contact(&riding, &q);
     assert!(

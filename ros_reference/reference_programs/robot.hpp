@@ -18,11 +18,23 @@ namespace ros_reference {
 // the URDF root stands fixed at the origin of the model frame.
 moveit::core::RobotModelPtr robot_model(const std::string& urdf_text);
 
-// A planning group of an SRDF: the chain of joints from `base_link` to `tip_link`.
-struct ChainGroup {
+// A chain of joints from `base_link` to `tip_link`, by `name`.
+struct Chain {
   std::string name;
   std::string base_link;
   std::string tip_link;
+};
+
+// A planning group of an SRDF: the joints of its one chain, or of several chains, each a
+// group of its own, by the chain's name, that the planning group holds, in their order.
+struct ChainGroup {
+  std::string name;
+  std::vector<Chain> chains;
+
+  // The groups that carry an inverse kinematics solver: the group itself for one chain,
+  // and each chain's group for several, whose union MoveIt samples a goal of the group
+  // from (moveit2 2.15.2 constraint_sampler_manager.cpp, UnionConstraintSampler).
+  std::vector<std::string> solver_groups() const;
 };
 
 // The robot model of the URDF at `urdf`, whose collision meshes MoveIt loads from the

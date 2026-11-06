@@ -21,7 +21,7 @@ change of the reference, which `run.sh --check` proves.
 | `path_timing` | MoveIt's time-optimal trajectory generation (TOTG): the blended path through waypoints at a maximum deviation, and its time-optimal duration under velocity and acceleration limits, or its refusal of a path that turns back | `control_core/tests/ros_reference_path_timing.rs` |
 | `planning` | OMPL's geometric planners: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
 | `occupancy` | MoveIt's point cloud updater: the log-odds of every voxel of MoveIt's occupancy map after a sequence of point clouds, with a sphere cut out as the robot's own body | `occupancy_map/tests/ros_reference_occupancy.rs` |
-| `arm_planning` | MoveIt's planning pipeline with the OMPL planner of the scenario's objective, RRTConnect for `any` and RRTstar for `shortest`, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, on scenes of an arm of OpenArm v2, the fingers of its gripper checked with it, among boxes of voxels as an octomap, or among collision objects of each shape kind, the hand holding a cube, attached with the gripper as its touch links, in every other one: MoveIt's answer to each scene, planned to the goal state itself or to a pose of the grasp point, which MoveIt's KDL inverse kinematics reaches, and MoveIt's collision check, smallest distance and length along its path and along motion_planning_core's, which the scenario carries (`tools/draw_arm_planning.py` writes it, with the answers of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes, with `--objects` the scenes among collision objects, and with `--poses` the scenes whose goal is a pose of the grasp point) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
+| `arm_planning` | MoveIt's planning pipeline with the OMPL planner of the scenario's objective, RRTConnect for `any` and RRTstar for `shortest`, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, on scenes of an arm of OpenArm v2, or of both its arms planned as one group, the fingers of each gripper checked with its arm, among boxes of voxels as an octomap, or among collision objects of each shape kind, a hand holding a cube, attached with its gripper as its touch links, in some of them; a plan of both arms checks the pairs of the robot's own links that motion_planning_core's self model checks, which the scenario names: MoveIt's answer to each scene, planned to the goal state itself or to a pose of each grasp point, which MoveIt's KDL inverse kinematics reaches, of each arm for a plan of both, whose goal MoveIt samples from the union of the arms' samplers, and MoveIt's collision check, smallest distances, to the scene and, where the scenario names pairs, between the robot's own bodies, and length along its path and along motion_planning_core's, which the scenario carries (`tools/draw_arm_planning.py` writes it, with the answers and the checked pairs of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes, with `--objects` the scenes among collision objects, with `--poses` the scenes whose goal is a pose of the grasp point, and with `--both-arms` the scenes of both arms, to a pose of each grasp point with `--poses`) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
 | `planning_scene` | MoveIt's planning scene, its FCL collision environment, its path check and its octomap updater's shape mask: the objects, the attached objects and the allowed pairs that name an object after calls of motion_planning's scene members, as MoveIt's planning scene message holds them, the scenario's voxels its octomap from the start; at each configuration the signed distance of each pair of a link or an attached object and an object or the octomap, and of an attached object and a link it may not touch, with whether one body of a pair FCL finds apart lies wholly inside the other's closed mesh; the waypoints of each path of the arm that MoveIt's path check (`PlanningScene::isPathValid`) finds invalid, the rest of the robot standing still, and its dense probe of the path, a state every 1e-3 rad, whether a state is in collision and how far the arm stands from the objects and the octomap, and both again with the robot's links padded by the scenario's path padding; and whether each probe of the scenario lies inside an object the calls leave standing, grown by each padding as the shape mask grows it | `motion_planning_core/tests/ros_reference_planning_scene.rs` |
 
 ## Layout
@@ -145,21 +145,36 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    `--min-clearance <meters>` plans at that clearance: motion_planning_core's
    `min_clearance_m`, and the padding of each of MoveIt's links against the octomap and
    the objects, the robot meeting itself unpadded, as a collision request's defaults ask.
-   The scenes plan the arm without its self model, and MoveIt's links may all meet each
-   other, so no part of a gap at a clearance comes from this crate's clearance within the
-   robot's own body. The object the hand holds keeps the clearance from the parts of the
-   robot that stand still, and the arm and that object keep it from the object the other
-   hand holds, which MoveIt holds as an attached body and checks against them unpadded.
-   MoveIt pads no held object, which takes the padding of the grasp link, a link with no
-   collision geometry, which MoveIt pads by 0 (moveit2 2.15.2 collision_env.cpp:127-133
-   and :166-176, collision_env_fcl.cpp:195-196): it keeps the object the hand holds
-   unpadded from the objects and the octomap, and the tally counts the paths of each that
-   bring it nearer than the clearance and 1 mm. MoveIt pads a link's mesh by moving each
-   vertex along its normal (geometric_shapes 2.3.4 shapes.cpp:402-404), so a face beside a
-   right-angled edge moves out the padding over the square root of 2, and one at a box's
-   corner the padding over the square root of 3. Each arm planning scenario has its own
-   statistical test, among boxes, among objects or to poses, which a filter runs:
-   `cargo test --test ros_reference_arm_planning -- --ignored among_objects`. The
+   The scenes of one arm plan it without its self model, and MoveIt's links may all meet
+   each other, so no part of a gap at a clearance comes from this crate's clearance within
+   the robot's own body. The object the hand holds keeps the clearance from the parts of
+   the robot that stand still, and the arm and that object keep it from the object the
+   other hand holds, which MoveIt holds as an attached body and checks against them
+   unpadded. MoveIt pads no held object, which takes the padding of the grasp link, a link
+   with no collision geometry, which MoveIt pads by 0 (moveit2 2.15.2
+   collision_env.cpp:127-133 and :166-176, collision_env_fcl.cpp:195-196): it keeps an
+   object a hand holds unpadded from the objects and the octomap, and the tally counts the
+   paths of each that bring it nearer than the clearance and 1 mm. MoveIt pads a link's
+   mesh by moving each vertex along its normal (geometric_shapes 2.3.4 shapes.cpp:402-404),
+   so a face beside a right-angled edge moves out the padding over the square root of 2,
+   and one at a box's corner the padding over the square root of 3. The scenes of both arms
+   (`--both-arms`) plan them with this crate's self model, and MoveIt's collision matrix
+   checks the pairs of the robot's own links that the self model checks, the scenario's
+   `checked_pairs`, and each object a hand holds against the other arm and what that arm
+   holds. MoveIt checks the robot against itself unpadded, and this crate keeps the
+   clearance between the robot's own bodies too, so a gap between them at a clearance above
+   0 comes from this crate's clearance. Each drawn scene of both arms starts where the self
+   model holds the robot's own bodies apart, and its goal of joints, or the configuration
+   whose grasp poses its goal of poses holds in every other scene, stands at least
+   `min_clearance_m` apart, which the example `self_distances` measures: a nearer goal is
+   one this crate refuses and MoveIt, checking them unpadded, reaches. The self model's hulls
+   enclose the meshes MoveIt checks, so MoveIt holds them apart there too. A path of both
+   arms at a clearance above 0 holds it where MoveIt's may come nearer, so the test judges
+   its length on the scenes both plan where MoveIt's path keeps the clearances, and prints
+   the mean over every path beside it. Each arm planning scenario has its own
+   statistical test, of one arm or of both, among boxes, among objects or to poses, which a
+   filter runs: `cargo test --test ros_reference_arm_planning -- --ignored among_objects`
+   runs the test of one arm among objects, and `both_arms` the three of both arms. The
    statistical test refuses a set too small for its intervals. The committed cases of such
    a kind compare bit for bit, as every other output does: the arm planning scenario plans
    `any` on its iterations.
@@ -230,8 +245,15 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    among objects holding a box, a cylinder, a closed mesh and an object of two shapes
    among them, the hand holding a cube in one and a cylinder it sets down on a table it
    may touch in another, and the other hand holding a cube in one, and to poses, each such
-   scene (`COMMITTED_POSES`), its statistics over 200 drawn
-   scenes as rule 3 says; for the planning scene, the calls of
+   scene (`COMMITTED_POSES`); of both arms, among boxes, among objects and to a pose of
+   each grasp point, each such scene, a straight joint line through the robot's own body
+   that both plan around, the scenes among objects holding the left hand's object, the
+   right hand's cube, both, and the left hand's object set down on a table, and the scene
+   whose start, and the one whose goal, holds the robot's own bodies meeting, to poses
+   each but a path of `motion_planning_core` where MoveIt's own fails its check, which no
+   scene of the first 200 drawn gives, and the straight joint line, which a goal of poses
+   has none of (`COMMITTED_BOTH`, `COMMITTED_BOTH_OBJECTS` and `COMMITTED_BOTH_POSES`); its
+   statistics over 200 drawn scenes as rule 3 says; for the planning scene, the calls of
    `tools/draw_planning_scene.py` on OpenArm v2 and eight configurations of its left arm,
    all joints at zero, at their lower limits, at their upper limits, the one an item and a
    lid are attached at, the one the lid is detached at, and three drawn inside the limits
@@ -250,18 +272,19 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    `ros_reference/run.sh` and the parity tests, and restore the committed files with
    `git restore ros_reference/scenarios ros_reference/reference`.
 7. Every mode of arm planning that a caller selects, each objective and planner that the
-   contracts expose, and the planning scene it plans in, among collision objects and
-   holding an attached object (`--objects`), and the goal a pose of the grasp point that
-   MoveIt reaches through KDL's inverse kinematics (`--poses`), has its own arm planning
-   scenario and tally against MoveIt at each one's production termination
-   (`--planning-time`): MoveIt's plans ended on their allowed planning time alone, and
-   this crate's on that time or the robot's iteration bound, whichever comes first, at
-   MoveIt's default of 5 s (moveit2 2.15.2 `MoveGroupInterfaceImpl`,
-   `allowed_planning_time_ = 5.0`) and at the time that the robot's callers ask, over the
-   drawn set, and over the recorded episodes for a mode whose goal they give, a
-   configuration, as rule 3 says, at a clearance of 0 and at the clearance of the robot's
-   launch (`--min-clearance`), each plan of this crate sampling the launch's goals (its
-   fragment's `goal_samples`). The pull request states which modes its tally covers.
+   contracts expose, the arms it plans, one or both as one group (`--both-arms`), the
+   planning scene it plans in, among collision objects and holding an attached object
+   (`--objects`), and the goal a pose of the grasp point that MoveIt reaches through KDL's
+   inverse kinematics (`--poses`), has its own arm planning scenario and tally against
+   MoveIt at each one's production termination (`--planning-time`): MoveIt's plans ended
+   on their allowed planning time alone, and this crate's on that time or the robot's
+   iteration bound, whichever comes first, at MoveIt's default of 5 s (moveit2 2.15.2
+   `MoveGroupInterfaceImpl`, `allowed_planning_time_ = 5.0`) and at the time that the
+   robot's callers ask, over the drawn set, and over the recorded episodes for a mode whose
+   goal they give, a configuration, as rule 3 says, at a clearance of 0 and at the
+   clearance of the robot's launch (`--min-clearance`), each plan of this crate sampling the
+   launch's goals (its fragment's `goal_samples`). The pull request states which modes its
+   tally covers.
 
 ## Pins
 
@@ -327,7 +350,8 @@ arm64 host.
    the planning parity test asks each scenario for a plan of each planner that finds a
    path and one that finds none, the occupancy parity test asks each scenario's map for at
    least 199 voxels, the arm planning parity test asks each scenario for a scene of each
-   outcome that it names, and the planning scene parity test builds the self model of
+   outcome that it names, and each scenario of both arms for a scene of each outcome of a
+   plan of both, and the planning scene parity test builds the self model of
    OpenArm v2, refuses a scenario that names another URDF or poses another arm, and asks
    each scenario for a pair of each case that it names.
 

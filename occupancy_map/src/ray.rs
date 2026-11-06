@@ -23,6 +23,11 @@ pub(crate) fn ray_keys(size: VoxelSize, origin: [f32; 3], end: [f32; 3]) -> Opti
     let norm_sq =
         direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2];
     let length = f64::from(norm_sq).sqrt() as f32;
+    // A squared norm that underflows leaves no direction to walk: the ray has
+    // run its length in its origin's voxel. OctoMap's walk has no exit here.
+    if length == 0.0 {
+        return Some(ray);
+    }
     let direction = direction.map(|d| d / length);
     let mut step = [0_i32; 3];
     let mut t_max = [f64::MAX; 3];
@@ -132,5 +137,13 @@ mod tests {
             (0..5).map(|x| Key([x, 0, 0])).collect::<Vec<_>>(),
             "the end's voxel, 5, is left out"
         );
+    }
+
+    // A ray whose squared norm underflows to 0, its ends either side of zero
+    // on two axes, ends at its origin's voxel.
+    #[test]
+    fn a_ray_of_a_length_that_rounds_to_zero_ends_at_its_origin() {
+        let ray = ray_keys(size(), [-1e-30, -1e-30, 0.0], [1e-30, 1e-30, 0.0]).expect("in range");
+        assert_eq!(ray, [Key([-1, -1, 0])]);
     }
 }

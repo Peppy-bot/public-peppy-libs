@@ -89,19 +89,33 @@ constexpr double max_acceleration = 5.0;
 constexpr int moveit_success = moveit_msgs::msg::MoveItErrorCodes::SUCCESS;
 constexpr int moveit_invalid_motion_plan = moveit_msgs::msg::MoveItErrorCodes::INVALID_MOTION_PLAN;
 
-// The robot model of the scenario, whose group "arm" is the chain from `base_link` to
-// `tip_link`, its joints the scenario's `joints` in their order, each bounded in
-// acceleration.
-moveit::core::RobotModelPtr arm_model(const nlohmann::json& scenario, Inputs& inputs) {
-  auto model = robot_model_with_meshes(
-      inputs, scenario.at("urdf").get<std::string>(), scenario.at("meshes").get<std::string>(),
-      ChainGroup{group, scenario.at("base_link").get<std::string>(),
-                 scenario.at("tip_link").get<std::string>()});
-  const auto joints = scenario.at("joints").get<std::vector<std::string>>();
+// The group "arm" of the scenario's `chains`, each by its `name` from its `base_link` to its
+// `tip_link`.
+ChainGroup chains_of(const nlohmann::json& scenario) {
+  ChainGroup chains{group, {}};
+  for (const auto& chain : scenario.at("chains")) {
+    chains.chains.push_back({chain.at("name").get<std::string>(),
+                             chain.at("base_link").get<std::string>(),
+                             chain.at("tip_link").get<std::string>()});
+  }
+  return chains;
+}
+
+// The robot model of the scenario, whose group "arm" holds its `chains`, its joints the
+// chains' `joints` in their order, each bounded in acceleration.
+moveit::core::RobotModelPtr arm_model(const nlohmann::json& scenario, const ChainGroup& chains,
+                                      Inputs& inputs) {
+  std::vector<std::string> joints;
+  for (const auto& chain : scenario.at("chains")) {
+    const auto named = chain.at("joints").get<std::vector<std::string>>();
+    joints.insert(joints.end(), named.begin(), named.end());
+  }
+  auto model = robot_model_with_meshes(inputs, scenario.at("urdf").get<std::string>(),
+                                       scenario.at("meshes").get<std::string>(), chains);
   if (model->getJointModelGroup(group)->getActiveJointModelNames() != joints) {
     throw std::runtime_error(
-        "the group from base_link to tip_link holds other joints than the scenario's joints, "
-        "or holds them in another order");
+        "the group of the scenario's chains holds other joints than the chains' joints, or "
+        "holds them in another order");
   }
   // A URDF bounds no acceleration, and the pipeline's time parameterization needs one,
   // as a moveit_config's joint_limits.yaml gives it.
@@ -118,20 +132,24 @@ moveit::core::RobotModelPtr arm_model(const nlohmann::json& scenario, Inputs& in
   return model;
 }
 
-// MoveIt's KDL inverse kinematics on the group "arm", which a pose goal's constraint
-// sampler reads. It loads as move_group loads a moveit_config's kinematics.yaml that names
-// only the solver: at the search resolution and the timeout that moveit_ros_planning's
-// kinematics_parameters.yaml gives by default (0.1 and 0.05 s), the timeout set on each
-// group as RobotModelLoader::loadKinematicsSolvers sets it (moveit2 2.15.2
-// robot_model_loader.cpp:310-318), which the constraint sampler gives each IK call
+// MoveIt's KDL inverse kinematics on `solver_groups`, a ChainGroup's, which a pose goal's
+// constraint sampler reads. It loads as move_group loads a moveit_config's kinematics.yaml
+// that names only the solver: at the search resolution and the timeout that
+// moveit_ros_planning's kinematics_parameters.yaml gives by default (0.1 and 0.05 s), the
+// timeout set on each group as RobotModelLoader::loadKinematicsSolvers sets it (moveit2
+// 2.15.2 robot_model_loader.cpp:310-318), which the constraint sampler gives each IK call
 // (default_constraint_samplers.cpp:268).
-void load_kdl(const moveit::core::RobotModelPtr& model) {
+void load_kdl(const moveit::core::RobotModelPtr& model,
+              const std::vector<std::string>& solver_groups) {
   start_ros();
   rclcpp::NodeOptions options;
   options.automatically_declare_parameters_from_overrides(true);
-  options.parameter_overrides(
-      {{std::string("robot_description_kinematics.") + group + ".kinematics_solver",
-        "kdl_kinematics_plugin/KDLKinematicsPlugin"}});
+  std::vector<rclcpp::Parameter> solvers;
+  for (const auto& name : solver_groups) {
+    solvers.emplace_back("robot_description_kinematics." + name + ".kinematics_solver",
+                         "kdl_kinematics_plugin/KDLKinematicsPlugin");
+  }
+  options.parameter_overrides(solvers);
   auto node = std::make_shared<rclcpp::Node>("arm_planning_kinematics", options);
   kinematics_plugin_loader::KinematicsPluginLoader loader(node);
   const auto allocator = loader.getLoaderFunction(std::make_shared<srdf::Model>(*model->getSRDF()));
@@ -145,8 +163,10 @@ void load_kdl(const moveit::core::RobotModelPtr& model) {
       model->getJointModelGroup(name)->setDefaultIKTimeout(timeout);
     }
   }
-  if (!model->getJointModelGroup(group)->getSolverInstance()) {
-    throw std::runtime_error("MoveIt's KDL plugin loads no inverse kinematics for the arm");
+  for (const auto& name : solver_groups) {
+    if (!model->getJointModelGroup(name)->getSolverInstance()) {
+      throw std::runtime_error("MoveIt's KDL plugin loads no inverse kinematics for " + name);
+    }
   }
 }
 
@@ -246,36 +266,24 @@ bool moves_with_group(const moveit::core::LinkModel* link,
   return false;
 }
 
-// The grasp link of the other arm, which holds a scene's other_arm_holds: the mirror of
-// `tip_link`, OpenArm's name of it with left and right swapped, as ros_reference's
-// Scenes::other_tip_link names it.
-std::string other_tip_link(const std::string& tip_link) {
-  const bool left = tip_link.find("left") != std::string::npos;
-  const std::string side = left ? "left" : "right";
-  const auto at = tip_link.find(side);
-  if (at == std::string::npos) {
-    throw std::runtime_error("the tip link " + tip_link + " names no side, left or right");
-  }
-  return std::string(tip_link).replace(at, side.size(), left ? "right" : "left");
-}
-
 // The scene `s`: its boxes, each the voxels from its first key to its last on every axis,
-// in an octomap of `voxel_size`; its objects; and the object it attaches to `tip_link`
-// with its touch links, at its pose in the link's frame, the arm at the scene's start,
-// which stays the scene's state; the object it attaches to the other arm's grasp link,
-// that arm at its zero configuration; and its allowed pairs. Every link with collision
-// geometry is padded by `padding` against the octomap and the objects, and the robot meets
-// itself unpadded, as a collision request's defaults pad_environment_collisions and
-// pad_self_collisions ask. An attached object takes the padding of its link (moveit2
-// 2.15.2 collision_env_fcl.cpp:195-196), and the grasp link has no collision geometry,
-// which setPadding pads alone (collision_env.cpp:127-133), so its padding is 0
-// (collision_env.cpp:166-176): MoveIt keeps a held object unpadded from the objects.
-// Collisions between the robot's own links are allowed, and those of every link that does
-// not move with the group's joints, the body, both arms' bases, the head camera, and the
-// other arm and its gripper, but against the object the arm holds.
+// in an octomap of `voxel_size`; its objects; each object it attaches to a grasp link with
+// its touch links, at its pose in the link's frame, the arms at the scene's start, which
+// stays the scene's state, an arm outside the group at its zero configuration; and its
+// allowed pairs. Every link with collision geometry is padded by `padding` against the
+// octomap and the objects, and the robot meets itself unpadded, as a collision request's
+// defaults pad_environment_collisions and pad_self_collisions ask. An attached object
+// takes the padding of its link (moveit2 2.15.2 collision_env_fcl.cpp:195-196), and a
+// grasp link has no collision geometry, which setPadding pads alone
+// (collision_env.cpp:127-133), so its padding is 0 (collision_env.cpp:166-176): MoveIt
+// keeps a held object unpadded from the objects. Collisions between the robot's own links
+// are allowed but those of `checked_pairs`, the pairs motion_planning_core's self model
+// checks, and so are those of every link that does not move with the group's joints, the
+// body, the arms' bases, the head camera, and an arm outside the group and its gripper,
+// but against an object an arm of the group holds.
 planning_scene::PlanningScenePtr scene_of(const moveit::core::RobotModelPtr& model,
                                          const nlohmann::json& s, double voxel_size,
-                                         const std::string& tip_link, double padding) {
+                                         const nlohmann::json& checked_pairs, double padding) {
   auto scene = std::make_shared<planning_scene::PlanningScene>(model);
   scene->getCollisionEnvNonConst()->setPadding(padding);
   auto tree = std::make_shared<octomap::OcTree>(voxel_size);
@@ -315,13 +323,8 @@ planning_scene::PlanningScenePtr scene_of(const moveit::core::RobotModelPtr& mod
       throw std::runtime_error("MoveIt refused the attached object " + held.dump());
     }
   };
-  const auto& held = s.at("attached");
-  if (!held.is_null()) {
-    attach(held, tip_link);
-  }
-  const auto& other = s.at("other_arm_holds");
-  if (!other.is_null()) {
-    attach(other, other_tip_link(tip_link));
+  for (const auto& held : s.at("attached")) {
+    attach(held, held.at("link").get<std::string>());
   }
   auto& acm = scene->getAllowedCollisionMatrixNonConst();
   const auto& links = model->getLinkModelNamesWithCollisionGeometry();
@@ -334,17 +337,31 @@ planning_scene::PlanningScenePtr scene_of(const moveit::core::RobotModelPtr& mod
       standing.push_back(link->getName());
     }
   }
-  // The object the arm holds meets the links that stand still, as it meets the parts of
-  // the robot motion_planning_core's plan does not move.
-  if (!held.is_null()) {
-    acm.setEntry(held.at("object").at("id").get<std::string>(), standing, false);
+  for (const auto& held : s.at("attached")) {
+    const auto id = held.at("object").at("id").get<std::string>();
+    const auto link = held.at("link").get<std::string>();
+    if (moves_with_group(model->getLinkModel(link), arm)) {
+      // An object an arm of the group holds meets the links that stand still, as it meets
+      // the parts of the robot motion_planning_core's plan does not move.
+      acm.setEntry(id, standing, false);
+    } else {
+      // An object an arm outside the group holds stands still with that arm: it meets the
+      // arms the plan moves and what they hold, as an obstacle such an arm holds meets them.
+      acm.setEntry(id, scene->getWorld()->getObjectIds(), true);
+      acm.setEntry(id, standing, true);
+    }
   }
-  // The object the other arm holds stands still with that arm: it meets the arm the plan
-  // moves and what it holds, as an obstacle another arm holds meets them.
-  if (!other.is_null()) {
-    const auto id = other.at("object").at("id").get<std::string>();
-    acm.setEntry(id, scene->getWorld()->getObjectIds(), true);
-    acm.setEntry(id, standing, true);
+  const auto& bodies = model->getLinkModelNamesWithCollisionGeometry();
+  for (const auto& pair : checked_pairs) {
+    const auto a = pair.at(0).get<std::string>();
+    const auto b = pair.at(1).get<std::string>();
+    for (const auto& name : {a, b}) {
+      if (std::find(bodies.begin(), bodies.end(), name) == bodies.end()) {
+        throw std::runtime_error("the checked pair " + a + ", " + b + " names " + name +
+                                 ", no link of the robot with collision geometry");
+      }
+    }
+    acm.setEntry(a, b, false);
   }
   for (const auto& pair : s.at("allowed")) {
     acm.setEntry(pair.at(0).get<std::string>(), pair.at(1).get<std::string>(), true);
@@ -352,23 +369,47 @@ planning_scene::PlanningScenePtr scene_of(const moveit::core::RobotModelPtr& mod
   return scene;
 }
 
-// MoveIt's collision check and distance at the probes of a joint path.
-struct Probed {
-  std::size_t collisions = 0;
-  double clearance = std::numeric_limits<double>::infinity();
-  // The grasp link when it holds an object, and the least unpadded distance from what it
-  // holds to the objects and the octomap.
-  const moveit::core::LinkModel* holding = nullptr;
-  double held = std::numeric_limits<double>::infinity();
+// Whether `goal` is a pose of each chain's tip link, and no configuration.
+bool is_poses(const nlohmann::json& goal) {
+  return !goal.empty() && goal.front().is_object();
+}
+
+// What the probes of a scenario's paths measure, `spacing` apart in the joints' L2 norm,
+// besides the scene: the objects the chains' tip links `tip_links` hold, and, with
+// `self`, the robot's own bodies.
+struct Probing {
+  std::vector<std::string> tip_links;
+  bool self = false;
+  double spacing = 0.0;
 };
 
-// The probe of a path in `scene`, whose grasp link `tip_link` holds an object or none.
-Probed probe_of(const planning_scene::PlanningScene& scene, const std::string& tip_link) {
-  Probed probed;
-  std::vector<const moveit::core::AttachedBody*> held;
-  const auto* tip = scene.getRobotModel()->getLinkModel(tip_link);
-  scene.getCurrentState().getAttachedBodies(held, tip);
-  probed.holding = held.empty() ? nullptr : tip;
+// MoveIt's collision check and distances at the probes of a joint path: to the scene,
+// from the objects the grasp links `holding` hold, and, with `self`, between the robot's
+// own bodies.
+struct Probed {
+  bool self = false;
+  std::size_t collisions = 0;
+  double clearance = std::numeric_limits<double>::infinity();
+  // The grasp links that hold an object, and the least unpadded distance from what they
+  // hold to the objects and the octomap.
+  std::set<const moveit::core::LinkModel*> holding;
+  double held = std::numeric_limits<double>::infinity();
+  // The least unpadded distance between the robot's own bodies that the scene's matrix
+  // leaves checked, when `self` asks for it.
+  double self_clearance = std::numeric_limits<double>::infinity();
+};
+
+// The probe of a path in `scene` as `probing` asks: of each tip link that holds an object.
+Probed probe_of(const planning_scene::PlanningScene& scene, const Probing& probing) {
+  Probed probed{probing.self};
+  for (const auto& tip_link : probing.tip_links) {
+    std::vector<const moveit::core::AttachedBody*> held;
+    const auto* tip = scene.getRobotModel()->getLinkModel(tip_link);
+    scene.getCurrentState().getAttachedBodies(held, tip);
+    if (!held.empty()) {
+      probed.holding.insert(tip);
+    }
+  }
   return probed;
 }
 
@@ -384,14 +425,21 @@ void probe(const planning_scene::PlanningScene& scene, moveit::core::RobotState&
   // stands for every distance below it.
   probed.clearance =
       std::min(probed.clearance, std::max(scene.distanceToCollisionUnpadded(state), -1.0));
-  if (probed.holding != nullptr) {
+  if (!probed.holding.empty()) {
     collision_detection::DistanceRequest request;
-    const std::set<const moveit::core::LinkModel*> holding{probed.holding};
-    request.active_components_only = &holding;
+    request.active_components_only = &probed.holding;
     request.acm = &scene.getAllowedCollisionMatrix();
     collision_detection::DistanceResult result;
     scene.getCollisionEnvUnpadded()->distanceRobot(request, result, state);
     probed.held = std::min(probed.held, std::max(result.minimum_distance.distance, -1.0));
+  }
+  // The unpadded environment: the scene pads the robot's links against the world alone,
+  // and its self check reads them unpadded (pad_self_collisions false). -1 stands for
+  // every distance below it, as for the world.
+  if (probed.self) {
+    const double self = scene.getCollisionEnvUnpadded()->distanceSelf(
+        state, scene.getAllowedCollisionMatrix());
+    probed.self_clearance = std::min(probed.self_clearance, std::max(self, -1.0));
   }
 }
 
@@ -400,15 +448,14 @@ std::size_t steps_of(double length, double spacing) {
   return static_cast<std::size_t>(std::max(std::ceil(length / spacing), 1.0));
 }
 
-// MoveIt's trajectory, straight between its points, probed at most `spacing` apart.
+// MoveIt's trajectory, straight between its points, probed as `probing` asks.
 Probed probe_polyline(const planning_scene::PlanningScene& scene,
                       moveit::core::RobotState& state, const moveit::core::JointModelGroup& arm,
-                      const std::vector<Eigen::VectorXd>& points, double spacing,
-                      const std::string& tip_link) {
-  Probed probed = probe_of(scene, tip_link);
+                      const std::vector<Eigen::VectorXd>& points, const Probing& probing) {
+  Probed probed = probe_of(scene, probing);
   probe(scene, state, arm, points.front(), probed);
   for (std::size_t i = 1; i < points.size(); ++i) {
-    const std::size_t steps = steps_of((points[i] - points[i - 1]).norm(), spacing);
+    const std::size_t steps = steps_of((points[i] - points[i - 1]).norm(), probing.spacing);
     for (std::size_t k = 1; k <= steps; ++k) {
       const double t = static_cast<double>(k) / static_cast<double>(steps);
       probe(scene, state, arm, points[i - 1] + (points[i] - points[i - 1]) * t, probed);
@@ -429,30 +476,21 @@ nlohmann::json measured(const Probed& probed, double length) {
   return {{"collisions", probed.collisions},
           {"clearance", probed.clearance},
           {"held_clearance",
-           probed.holding != nullptr ? nlohmann::json(probed.held) : nlohmann::json(nullptr)},
+           probed.holding.empty() ? nlohmann::json(nullptr) : nlohmann::json(probed.held)},
+          {"self_clearance",
+           probed.self ? nlohmann::json(probed.self_clearance) : nlohmann::json(nullptr)},
           {"length", length}};
 }
 
-// MoveIt's constraints of the goal `goal`. A configuration is the goal state itself,
-// each joint within 0 of it: every goal state that MoveIt's goal-sampling thread adds is
-// that one state, however many it has added when the planner takes one. A pose of
-// `tip_link` holds its position within the radius `position_tolerance` and each component
-// of the rotation vector from its target orientation within `orientation_tolerance`
-// (constructGoalConstraints, ROTATION_VECTOR, moveit2 2.15.2 utils.cpp:220-226), which
-// MoveIt samples by KDL's inverse kinematics, each goal sample's first attempt seeded from
-// its working state, the start for the first sample.
-moveit_msgs::msg::Constraints goal_constraints(const nlohmann::json& goal,
-                                               const moveit::core::RobotState& start,
-                                               const moveit::core::JointModelGroup& arm,
+// MoveIt's constraints of a pose `goal` of the link `tip_link` in the frame of `model`:
+// its position within the radius `position_tolerance` and each component of the rotation
+// vector from its target orientation within `orientation_tolerance`
+// (constructGoalConstraints, ROTATION_VECTOR, moveit2 2.15.2 utils.cpp:220-226).
+moveit_msgs::msg::Constraints pose_constraints(const nlohmann::json& goal,
+                                               const moveit::core::RobotModel& model,
                                                const std::string& tip_link) {
-  if (goal.is_array()) {
-    moveit::core::RobotState state(start);
-    state.setJointGroupPositions(&arm, numbers(goal));
-    state.update();
-    return kinematic_constraints::constructGoalConstraints(state, &arm, 0.0, 0.0);
-  }
   geometry_msgs::msg::PoseStamped pose;
-  pose.header.frame_id = start.getRobotModel()->getModelFrame();
+  pose.header.frame_id = model.getModelFrame();
   const auto position = numbers(goal.at("position"));
   const auto orientation = numbers(goal.at("orientation"));
   pose.pose.position.x = position.at(0);
@@ -467,15 +505,43 @@ moveit_msgs::msg::Constraints goal_constraints(const nlohmann::json& goal,
       goal.at("orientation_tolerance").get<double>());
 }
 
+// MoveIt's constraints of the goal `goal`. A configuration is the goal state itself,
+// each joint within 0 of it: every goal state that MoveIt's goal-sampling thread adds is
+// that one state, however many it has added when the planner takes one. Poses, one of
+// each chain's tip link of `tip_links` in their order, each as `pose_constraints` holds
+// it, MoveIt samples by KDL's inverse kinematics, each goal sample's first attempt seeded
+// from its working state, the start for the first sample.
+moveit_msgs::msg::Constraints goal_constraints(const nlohmann::json& goal,
+                                               const moveit::core::RobotState& start,
+                                               const moveit::core::JointModelGroup& arm,
+                                               const std::vector<std::string>& tip_links) {
+  if (!is_poses(goal)) {
+    moveit::core::RobotState state(start);
+    state.setJointGroupPositions(&arm, numbers(goal));
+    state.update();
+    return kinematic_constraints::constructGoalConstraints(state, &arm, 0.0, 0.0);
+  }
+  if (goal.size() != tip_links.size()) {
+    throw std::runtime_error("a goal of poses holds a pose of each chain's tip link");
+  }
+  const auto& model = *start.getRobotModel();
+  auto constraints = pose_constraints(goal.front(), model, tip_links.front());
+  for (std::size_t k = 1; k < tip_links.size(); ++k) {
+    constraints = kinematic_constraints::mergeConstraints(
+        constraints, pose_constraints(goal.at(k), model, tip_links.at(k)));
+  }
+  return constraints;
+}
+
 // MoveIt's answer to a scene, planned within `time_limit` seconds: its error code, and
 // its path's probe when it planned one.
 nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
                              const std::string& planner_id,
                              const planning_scene::PlanningScenePtr& scene,
                              const moveit::core::RobotModelPtr& model, const nlohmann::json& s,
-                             const std::string& tip_link, double time_limit, double spacing) {
+                             double time_limit, const Probing& probing) {
   const auto& arm = *model->getJointModelGroup(group);
-  // The scene's state: the arm at the scene's start, holding what the scene attaches.
+  // The scene's state: the arms at the scene's start, holding what the scene attaches.
   const moveit::core::RobotState start(scene->getCurrentState());
 
   planning_interface::MotionPlanRequest request;
@@ -487,7 +553,8 @@ nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
   request.max_velocity_scaling_factor = 1.0;
   request.max_acceleration_scaling_factor = 1.0;
   moveit::core::robotStateToRobotStateMsg(start, request.start_state);
-  request.goal_constraints.push_back(goal_constraints(s.at("goal"), start, arm, tip_link));
+  request.goal_constraints.push_back(
+      goal_constraints(s.at("goal"), start, arm, probing.tip_links));
 
   const auto seed = s.at("seed").get<std::uint32_t>();
   const auto level = ompl::msg::getLogLevel();
@@ -515,6 +582,7 @@ nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
                             {"collisions", nullptr},
                             {"clearance", nullptr},
                             {"held_clearance", nullptr},
+                            {"self_clearance", nullptr},
                             {"length", nullptr}};
   if (!planned || status != moveit_success || !response.trajectory) {
     return answer;
@@ -526,17 +594,17 @@ nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
     points.push_back(vector_of(q));
   }
   moveit::core::RobotState state(start);
-  answer.update(measured(probe_polyline(*scene, state, arm, points, spacing, tip_link),
+  answer.update(measured(probe_polyline(*scene, state, arm, points, probing),
                          polyline_length(points)));
   return answer;
 }
 
 // MoveIt's probe of motion_planning_core's path `waypoints`, rounded by MoveIt's
-// time-optimal path at `corner_tolerance` and probed at most `spacing` apart along it.
+// time-optimal path at `corner_tolerance` and probed along it as `probing` asks.
 nlohmann::json ours_probed(const planning_scene::PlanningScene& scene,
                            const moveit::core::RobotModelPtr& model,
                            const nlohmann::json& waypoints, double corner_tolerance,
-                           double spacing, const std::string& tip_link) {
+                           const Probing& probing) {
   const auto& arm = *model->getJointModelGroup(group);
   std::vector<Eigen::VectorXd> points;
   for (const auto& w : waypoints) {
@@ -547,9 +615,9 @@ nlohmann::json ours_probed(const planning_scene::PlanningScene& scene,
     throw std::runtime_error("MoveIt's time-optimal path does not round a path of ours");
   }
   moveit::core::RobotState state(scene.getCurrentState());
-  Probed probed = probe_of(scene, tip_link);
+  Probed probed = probe_of(scene, probing);
   const double length = path->getLength();
-  const std::size_t steps = steps_of(length, spacing);
+  const std::size_t steps = steps_of(length, probing.spacing);
   for (std::size_t k = 0; k <= steps; ++k) {
     const double at = length * static_cast<double>(k) / static_cast<double>(steps);
     probe(scene, state, arm, path->getConfig(at), probed);
@@ -560,15 +628,23 @@ nlohmann::json ours_probed(const planning_scene::PlanningScene& scene,
 }  // namespace
 
 nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
-  const auto model = arm_model(scenario, inputs);
+  const ChainGroup chains = chains_of(scenario);
+  const auto model = arm_model(scenario, chains, inputs);
   const PlannerConfig config =
       planner_config(scenario.at("objective").get<std::string>(), pipeline_namespace);
   auto planner = pipeline(model, scenario, config);
-  const auto tip_link = scenario.at("tip_link").get<std::string>();
+  const auto& checked_pairs = scenario.at("checked_pairs");
+  Probing probing;
+  for (const auto& chain : chains.chains) {
+    probing.tip_links.push_back(chain.tip_link);
+  }
+  // The probes measure the robot's own bodies apart where motion_planning_core's self
+  // model checks pairs of them.
+  probing.self = !checked_pairs.empty();
+  probing.spacing = scenario.at("probe_spacing").get<double>();
   const double voxel_size = scenario.at("voxel_size").get<double>();
   // MoveIt keeps the plans' clearance as the padding of the robot's links.
   const double padding = scenario.at("min_clearance").get<double>();
-  const double spacing = scenario.at("probe_spacing").get<double>();
   const double corner_tolerance = scenario.at("corner_tolerance").get<double>();
   const double time_limit = scenario.at("time_limit").get<double>();
 
@@ -578,18 +654,16 @@ nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
     // sampler reads, as a solver of its own: its random restarts draw from a generator
     // that no scene before it drew from. A scene of a configuration loads none, and its
     // joint constraint reads none.
-    if (s.at("goal").is_object()) {
-      load_kdl(model);
+    if (is_poses(s.at("goal"))) {
+      load_kdl(model, chains.solver_groups());
     }
-    const auto scene = scene_of(model, s, voxel_size, tip_link, padding);
+    const auto scene = scene_of(model, s, voxel_size, checked_pairs, padding);
     const auto& ours = s.at("ours");
     answers.push_back({
-        {"moveit",
-         moveit_answer(*planner, config.name, scene, model, s, tip_link, time_limit, spacing)},
-        {"ours", ours.contains("waypoints")
-                     ? ours_probed(*scene, model, ours.at("waypoints"), corner_tolerance, spacing,
-                                   tip_link)
-                     : nlohmann::json(nullptr)},
+        {"moveit", moveit_answer(*planner, config.name, scene, model, s, time_limit, probing)},
+        {"ours", ours.contains("waypoints") ? ours_probed(*scene, model, ours.at("waypoints"),
+                                                          corner_tolerance, probing)
+                                            : nlohmann::json(nullptr)},
     });
   }
   return {{"kind", "arm_planning"}, {"scenes", answers}};

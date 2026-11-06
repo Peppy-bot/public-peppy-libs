@@ -1,21 +1,25 @@
-//! The caller's checks and constraint as OMPL calls them, from C++, and as `plan` calls
-//! them: an error or a panic in one, in its message or in its drop, is kept here, never
-//! crosses into C++ or out of `plan`, and ends the plan.
+//! The caller's checks, constraint and goal sampling as OMPL calls them, from C++, and as
+//! `plan` calls them: an error or a panic in one, in its message or in its drop, is kept
+//! here, never crosses into C++ or out of `plan`, and ends the plan.
 
 use std::any::Any;
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 
-use crate::{CheckError, Checks, Constraint, Motion};
+use crate::ffi::bridge;
+use crate::{
+    CheckError, Checks, Constraint, GoalSample, GoalSampling, Motion, PLANNING_THREADS,
+    SampledGoals, Space,
+};
 
 thread_local! {
-    /// Whether this thread runs a check or the constraint of a plan.
+    /// Whether this thread runs a check, the constraint or the goal sampling of a plan.
     static IN_CALLBACK: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Whether the calling thread runs a check or the constraint of a plan.
+/// Whether the calling thread runs a check, the constraint or the goal sampling of a plan.
 pub(crate) fn in_callback() -> bool {
     IN_CALLBACK.get()
 }
@@ -23,6 +27,7 @@ pub(crate) fn in_callback() -> bool {
 pub(crate) struct Callbacks<'a> {
     checks: &'a dyn Checks,
     constraint: Option<&'a dyn Constraint>,
+    sampled: Option<Sampled<'a>>,
     /// The caller's flag that ends the plan.
     stop: Option<&'a AtomicBool>,
     failed: AtomicBool,
@@ -37,15 +42,40 @@ const _: () = {
     shared_between_threads::<Callbacks<'static>>();
 };
 
+/// The sampling of an attempt, with the attempt's number.
+type AttemptSampling<'a> = (u32, Box<dyn GoalSampling + 'a>);
+
+/// A plan's sampled goals: the caller's sampling, the space its goals lie in, and a slot for
+/// the sampling of each attempt that plans at once, once the attempt has asked for a goal.
+/// The attempts of a batch are at most `PLANNING_THREADS` in a row, so each takes a slot of its
+/// own, and an attempt of a later batch replaces the sampling of one that has ended.
+pub(crate) struct Sampled<'a> {
+    goals: &'a dyn SampledGoals,
+    space: &'a Space,
+    slots: [Mutex<Option<AttemptSampling<'a>>>; PLANNING_THREADS.get() as usize],
+}
+
+impl<'a> Sampled<'a> {
+    pub(crate) fn new(goals: &'a dyn SampledGoals, space: &'a Space) -> Self {
+        Self {
+            goals,
+            space,
+            slots: std::array::from_fn(|_| Mutex::new(None)),
+        }
+    }
+}
+
 impl<'a> Callbacks<'a> {
     pub(crate) fn new(
         checks: &'a dyn Checks,
         constraint: Option<&'a dyn Constraint>,
+        sampled: Option<Sampled<'a>>,
         stop: Option<&'a AtomicBool>,
     ) -> Self {
         Self {
             checks,
             constraint,
+            sampled,
             stop,
             failed: AtomicBool::new(false),
             failure: Mutex::new(None),
@@ -109,6 +139,59 @@ impl<'a> Callbacks<'a> {
             .constraint
             .expect("a constrained plan has a constraint");
         self.guarded((), || constraint.jacobian(state, out));
+    }
+
+    /// One sample of attempt `attempt`'s goal sampling, which writes the goal it finds into
+    /// `goal`; the sampling of an attempt starts at the attempt's first sample. A goal
+    /// outside the space fails the plan.
+    pub(crate) fn sample_goal(&self, attempt: u32, goal: &mut [f64]) -> bridge::GoalSample {
+        let sampled = self
+            .sampled
+            .as_ref()
+            .expect("a plan of sampled goals has its sampling");
+        let found = self.guarded(GoalSample::Ended, || {
+            let mut slot = sampled.slots[attempt as usize % sampled.slots.len()]
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if slot.as_ref().is_none_or(|(of, _)| *of != attempt) {
+                *slot = Some((attempt, sampled.goals.sampling(attempt)));
+            }
+            let (_, sampling) = slot
+                .as_mut()
+                .expect("the slot holds the attempt's sampling");
+            let found = sampling.sample(goal)?;
+            let outside = (found == GoalSample::Found)
+                .then(|| sampled.space.outside("a sampled goal", goal))
+                .flatten();
+            match outside {
+                Some(outside) => {
+                    Err(format!("{outside}; a goal lies within the space's bounds").into())
+                }
+                None => Ok(found),
+            }
+        });
+        match found {
+            GoalSample::Found => bridge::GoalSample::Found,
+            GoalSample::Missed => bridge::GoalSample::Missed,
+            GoalSample::Ended => bridge::GoalSample::Ended,
+        }
+    }
+
+    /// Drops the samplings of the attempts, whose drop is the caller's too: a panic in one
+    /// fails the plan.
+    pub(crate) fn end_samplings(&self) {
+        let Some(sampled) = &self.sampled else {
+            return;
+        };
+        for slot in &sampled.slots {
+            let ended = caught(|| {
+                drop(slot.lock().unwrap_or_else(PoisonError::into_inner).take());
+                Ok(())
+            });
+            if let Err(failure) = ended {
+                self.fail(failure);
+            }
+        }
     }
 
     /// `call`'s answer, or `fallback` once any call has failed: this one by its error

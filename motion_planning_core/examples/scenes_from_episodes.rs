@@ -1,6 +1,7 @@
 //! Turns episodes of OpenArm v2 recorded in simulation, each one plan request of an arm,
 //! into scenes of an arm planning scenario of the ROS reference harness, and writes them on
-//! stdout as JSON with the arm they plan, the map they stand in and the episodes it drops.
+//! stdout as JSON with the chain of the arm they plan, the map they stand in and the
+//! episodes it drops.
 //! `ros_reference/tools/draw_arm_planning.py --episodes` runs it, plans the scenes with the
 //! example `plan_arm_scenes`, and writes the scenario.
 //!
@@ -8,8 +9,8 @@
 //! scenes_from_episodes <episodes directory> <launcher fragment of the motion planner>
 //! ```
 //!
-//! It reads on stdin the scenario's header without its arm and its map: the arm is the
-//! one the episodes plan, and the map is the motion planner's, whose arguments the
+//! It reads on stdin the scenario's header without its chains and its map: its one chain
+//! is the arm the episodes plan, and the map is the motion planner's, whose arguments the
 //! launcher fragment gives. Each subdirectory of the episodes directory that holds an
 //! `episode.json`, in the format the harness README gives, is an episode, taken in the
 //! order of their names. An episode becomes a scene at the planner's arguments:
@@ -49,8 +50,9 @@ use camera_core::pose::Pose;
 use collision_geometry::chain::Padding;
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, DepthCamera, Frame, Goal, IkGoalSampler, JointHistory, OrientationTarget, PositionTarget,
-    Surroundings, insert_cut_out, sample_goals, start_inside_limits, term_clearances,
+    Arm, ArmGoal, Arms, DepthCamera, Frame, Goal, IkGoalSampler, JointHistory, OrientationTarget,
+    PositionTarget, Surroundings, insert_cut_out, sample_goals, start_inside_limits,
+    term_clearances,
 };
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 use occupancy_map::{Bounds, DistanceField, Frame as MapFrame, Scan, VoxelMap};
@@ -59,7 +61,7 @@ use ros_reference::arm_planning::{Scene as ReferenceScene, SceneGoal, Scenes};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use arm_scenes::{boxes_of, map_of, on_the_arm};
+use arm_scenes::{boxes_of, map_of, on_the_arms};
 use openarm_v2::Robot;
 
 /// The node whose deployment in the launcher fragment gives the planner's arguments.
@@ -91,17 +93,20 @@ fn main() {
     let version = HardwareVersion::V2;
     let side = recorded.side;
     let chain = robot.arms[side].chain();
-    let arm = json!({
-        "base_link": version.base_link(side),
-        "tip_link": version.tcp_link(side),
-        "joints": (0..ARM_DOF).map(|i| chain.joint_name(i)).collect::<Vec<_>>(),
+    let arms = json!({
+        "chains": [{
+            "name": side.arm_name(),
+            "base_link": version.base_link(side),
+            "tip_link": version.tcp_link(side),
+            "joints": (0..ARM_DOF).map(|i| chain.joint_name(i)).collect::<Vec<_>>(),
+        }],
     });
     let map = json!({
         "voxel_size": planner.voxel_size.get(),
         "map_half_side": planner.map_half_side(),
     });
     let mut whole = header;
-    for part in [&arm, &map] {
+    for part in [&arms, &map] {
         whole.extend(part.as_object().expect("an object").clone());
     }
     whole.insert("scenes".into(), json!([]));
@@ -113,7 +118,10 @@ fn main() {
         scenes.urdf
     );
     let answers: Vec<(String, Result<Value, Dropped>)> =
-        on_the_arm(&scenes, &urdf, &meshes, |kind_arm, _| {
+        on_the_arms(&scenes, &urdf, &meshes, |kind_arms, _| {
+            let [kind_arm] = kind_arms else {
+                panic!("the scenario of the episodes plans the arm they record");
+            };
             let sampler = IkGoalSampler::new(kind_arm.geometry().chain().clone());
             recorded
                 .episodes
@@ -125,7 +133,7 @@ fn main() {
                 .collect()
         });
     let output = json!({
-        "arm": arm,
+        "arms": arms,
         "map": map,
         "scenes": answers
             .iter()
@@ -624,8 +632,7 @@ fn scene_of(
     let scene = ReferenceScene {
         boxes,
         objects: Vec::new(),
-        attached: None,
-        other_arm_holds: None,
+        attached: Vec::new(),
         allowed: Vec::new(),
         start: start.to_vec(),
         goal: SceneGoal::Joints(Vec::new()),
@@ -636,14 +643,17 @@ fn scene_of(
     let field = DistanceField::of(&kind_map);
     let surroundings = Surroundings::new(&kind_map, &field, term_clearances(scenes.min_clearance));
     let deadline = Instant::now() + Duration::from_secs_f64(scenes.time_limit);
+    let alone = Arms::<ARM_DOF, ARM_DOF>::new(vec![arm.clone()], None);
     let sampled = sample_goals(
-        sampler,
-        &episode.goal,
+        &[ArmGoal {
+            goal: &episode.goal,
+            sampler,
+        }],
         &start,
         planner.goal_samples,
         u64::from(seed.get()),
         &|| Instant::now() >= deadline,
-        &|q| surroundings.clear(arm, q),
+        &|q, _| surroundings.clear(&alone, q),
     );
     let goal = sampled.first().ok_or_else(|| Dropped {
         reason: "no_free_goal",
@@ -666,8 +676,7 @@ fn scene_of(
             .map(|b| json!({ "first": b.first, "last": b.last }))
             .collect::<Vec<_>>(),
         "objects": [],
-        "attached": null,
-        "other_arm_holds": null,
+        "attached": [],
         "allowed": [],
         "start": scene.start,
         "goal": goal.to_vec(),

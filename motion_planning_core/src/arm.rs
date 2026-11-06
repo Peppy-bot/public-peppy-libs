@@ -1,7 +1,8 @@
-//! The arm a plan moves: its chain, the collision pieces of its links and the bodies its
-//! links carry rigidly through a plan, the parts of the robot such as its fingers and the
-//! objects attached to its grasp link, how far any point of them moves per unit of each
-//! joint, and the robot's self model where the robot has one.
+//! An arm a plan moves: its name, its chain, the collision pieces of its links and the
+//! bodies its links carry rigidly through a plan, the parts of the robot such as its
+//! fingers and the objects attached to its grasp link, and how far any point of them moves
+//! per unit of each joint; and the robot's self model, which checks the arms of a plan
+//! ([`Arms`](crate::Arms)).
 
 use chain_kinematics::{Chain, JointKind, Posed};
 use collision_geometry::chain::{ChainGeometry, Rider, RiderBody};
@@ -10,15 +11,37 @@ use collision_geometry::shapes::PlacedShape;
 use nalgebra::{Isometry3, Point3};
 
 /// A robot's check of its own body: the smallest distance between the pairs of its
-/// self model with the arm at a configuration, and the rest of the robot where it
-/// stands. The walk of a motion bounds how far a pair comes nearer by how far the arm's
-/// links and riders move: the bound holds for a pair each of whose links that the arm's
-/// joints move is a link or a rider of the arm.
+/// self model with the arms of a plan at a state, and the rest of the robot where it
+/// stands. The walk of a motion bounds how far a pair comes nearer by how far the arms'
+/// links and riders move: the bound holds for a pair each of whose links that the arms'
+/// joints move is a link or a rider of an arm of the plan.
 pub trait SelfModel<const N: usize>: Sync {
-    /// The least distance between the pairs the model checks at `q`, in meters.
-    fn clearance(&self, q: &[f64; N]) -> f64;
-    /// The names of the two links of the pair nearest each other at `q`.
-    fn nearest_pair(&self, q: &[f64; N]) -> (String, String);
+    /// The least distance at `q` between the pairs the model checks that `moving`
+    /// judges, in meters.
+    fn clearance(&self, q: &[f64; N], moving: Moving) -> f64;
+    /// The names of the two links of the nearest of those pairs at `q`.
+    fn nearest_pair(&self, q: &[f64; N], moving: Moving) -> (String, String);
+}
+
+/// The pairs a check of a state of a plan's group judges: every pair, or those of the
+/// arm at a place in the group after the arms before it: each pair that holds a body of
+/// that arm and none of an arm after it, against the rest of the robot, the world and
+/// the arms before it.
+#[derive(Clone, Copy, Debug)]
+pub enum Moving {
+    All,
+    Arm(usize),
+}
+
+impl Moving {
+    /// Whether a check judges a pair whose bodies ride the arms at `a` and `b` in the
+    /// group; a pair of one arm's body and a body of no arm of the group rides `a` twice.
+    pub fn judges(self, a: usize, b: usize) -> bool {
+        match self {
+            Self::All => true,
+            Self::Arm(k) => a.max(b) == k,
+        }
+    }
 }
 
 /// A rider that the child link of no joint of the arm carries.
@@ -76,23 +99,23 @@ impl Body<'_> {
     }
 }
 
-/// The arm of a plan.
+/// An arm of a plan.
+#[derive(Clone)]
 pub struct Arm<'a, const N: usize> {
+    name: &'a str,
     geometry: &'a ChainGeometry<N>,
     riders: &'a [Rider<'a>],
     reach: [f64; N],
-    self_model: Option<&'a dyn SelfModel<N>>,
 }
 
 impl<'a, const N: usize> Arm<'a, N> {
-    /// The arm whose links `geometry` holds, checked against `self_model` when the
-    /// robot has one.
-    pub fn new(geometry: &'a ChainGeometry<N>, self_model: Option<&'a dyn SelfModel<N>>) -> Self {
+    /// The arm `name`, as a message names it, whose links `geometry` holds.
+    pub fn new(name: &'a str, geometry: &'a ChainGeometry<N>) -> Self {
         Self {
+            name,
             geometry,
             riders: &[],
             reach: reach_of(geometry, &[]),
-            self_model,
         }
     }
 
@@ -136,12 +159,12 @@ impl<'a, const N: usize> Arm<'a, N> {
             .any(|rider| matches!(rider.body, RiderBody::Shape(_)))
     }
 
-    pub fn geometry(&self) -> &ChainGeometry<N> {
-        self.geometry
+    pub fn name(&self) -> &'a str {
+        self.name
     }
 
-    pub fn self_model(&self) -> Option<&dyn SelfModel<N>> {
-        self.self_model
+    pub fn geometry(&self) -> &ChainGeometry<N> {
+        self.geometry
     }
 
     /// For each joint, the farthest any point of a link or of a rider moves per unit the

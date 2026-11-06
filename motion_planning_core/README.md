@@ -1,65 +1,94 @@
 # motion_planning_core
 
-Plans the paths of one serial chain of joints around a voxel map of what the robot's
-cameras see and the objects of its planning scene. It knows no robot: a robot's node
-gives it the chain's collision geometry, the parts its links carry, the robot's self
-model where the robot has one, its links, and a goal sampler.
+Plans the paths of one or more serial chains of joints, moved together, around a voxel
+map of what the robot's cameras see and the objects of its planning scene. It knows no
+robot: a robot's node gives it each chain's collision geometry, the parts its links
+carry, the robot's self model where the robot has one, its links, and a goal sampler for
+each chain.
 
-- `Arm` binds the chain's collision pieces (`collision_geometry`) and the bodies its
-  links carry rigidly through a plan (`Rider`, `Arm::riding`): parts of the robot, such
-  as a gripper finger at the gripper's opening (`ChainGeometry::carried` reads them from
-  the URDF), and the shapes of the objects attached to its grasp link
-  (`ArmObjects::riders`). It places each as a `Body`, a piece or a shape, and binds how
-  far a joint moves any point of them, and the `SelfModel`. A rider on no joint of the
-  arm is refused (`RiderOffTheArm`).
+- `Arm` binds a chain's collision pieces (`collision_geometry`) and the bodies its links
+  carry rigidly through a plan (`Rider`, `Arm::riding`): parts of the robot, such as a
+  gripper finger at the gripper's opening (`ChainGeometry::carried` reads them from the
+  URDF), and the shapes of the objects attached to its grasp link
+  (`PlanningScene::riders`). It places each as a `Body`, a piece or a shape, and binds
+  how far a joint moves any point of them. A rider on no joint of the arm is refused
+  (`RiderOffTheArm`).
+- `Arms` is the arms a plan moves together: a state holds their joints one arm after
+  another, `N` per arm and `D` in all, and a motion moves a point of any arm at most the
+  largest of the arms' bounds. It binds the `SelfModel`.
 - `PlanningScene` holds the collision objects, the attached objects and the pairs
   allowed to touch, as MoveIt's planning scene holds them, and decides every rule of
   motion_planning's scene members (`apply_collision_objects`,
   `apply_attached_collision_object`, `set_allowed_collision`, `get_planning_scene`).
-- `Surroundings` says whether the arm at a configuration keeps its clearance from the
-  map (`occupancy_map`) and the objects that stand still (`Objects`), and within its own
-  body, and reads the distance of each pair it checks (`Surroundings::readings`).
-- `Goal` holds the constraints a path's last waypoint meets; `IkGoalSampler` finds
+- `Surroundings` says whether the arms at a state keep their clearance from the map
+  (`occupancy_map`) and the objects that stand still (`Objects`), within the robot's own
+  body and from one another, and reads the distance of each pair it checks
+  (`Surroundings::readings`).
+- `Goal` holds the constraints an arm's last waypoint meets; `IkGoalSampler` finds
   configurations meeting them for any chain.
-- `plan_arm_path` plans a `PlanRequest` on a `Scene` with OMPL (`ompl_bridge`) and
-  checks the rounded path the robot runs
-  (`control_core::path_timing::RoundedPath::joint_path`); `check_arm_path` checks a
-  caller's path, a `CheckRequest`, with the same checks.
+- `plan_path` plans a `PlanRequest` on a `Scene` with OMPL (`ompl_bridge`), each arm to
+  its `ArmGoal`, and checks the rounded path the robot runs
+  (`control_core::path_timing::RoundedPath::joint_path`); `check_path` checks a caller's
+  path, a `CheckRequest`, with the same checks.
 - The map's intake of a depth frame: `DepthCamera` reads its points, `JointHistory`
   gives the robot's joint positions at its stamp, and `insert_cut_out` inserts the
   points with the robot there and the objects, a `RobotMask`, cut out.
 
 ## Quick start
 
+A plan of both of a robot's arms, each to its own goal; a plan of one arm is a group of
+one, `Arms<7, 7>`, and the other arm stands among the parts of the robot it keeps clear
+of.
+
 ```rust
 use collision_geometry::chain::{CarriedPart, Rider};
-use motion_planning_core::{Arm, IkGoalSampler, PlanRequest, Scene, plan_arm_path};
+use motion_planning_core::{Arm, ArmGoal, Arms, IkGoalSampler, PlanRequest, Scene, plan_path};
 
-// The left arm's view of the planning scene, the right grasp link where it stands.
-let objects = planning_scene.for_arm("openarm_left_tcp", |grasp_link| grasp_pose(grasp_link));
-let riders: Vec<Rider> = left_arm_geometry
-    .carried()
-    .iter()
-    .map(CarriedPart::rider)
-    .chain(objects.riders(&left_arm_geometry))
-    .collect();
-let arm = Arm::new(&left_arm_geometry, Some(&self_model)).riding(&riders)?;
-let sampler = IkGoalSampler::new(left_arm_geometry.chain().clone());
+// The scene as a plan of both arms meets it.
+let grasp_links = ["openarm_left_tcp", "openarm_right_tcp"];
+let objects = planning_scene.for_arms(&grasp_links, |grasp_link| grasp_pose(grasp_link));
+// Each arm carries its fingers and the objects its grasp link holds.
+let riders = |geometry: &ChainGeometry<7>, grasp_link: &str| -> Vec<Rider> {
+    geometry
+        .carried()
+        .iter()
+        .map(CarriedPart::rider)
+        .chain(planning_scene.riders(grasp_link, geometry))
+        .collect()
+};
+let (left_riders, right_riders) = (
+    riders(&left_geometry, grasp_links[0]),
+    riders(&right_geometry, grasp_links[1]),
+);
+let arms = Arms::<7, 14>::new(
+    vec![
+        Arm::new("left_arm", &left_geometry).riding(&left_riders)?,
+        Arm::new("right_arm", &right_geometry).riding(&right_riders)?,
+    ],
+    Some(&self_model),
+);
+let samplers = [
+    IkGoalSampler::new(left_geometry.chain().clone()),
+    IkGoalSampler::new(right_geometry.chain().clone()),
+];
 let field = DistanceField::of(&map);
-let waypoints = plan_arm_path(
-    &arm,
+let waypoints = plan_path(
+    &arms,
     &Scene {
         map: &map,
         field: &field,
         stamp: last_frame_ns,
-        // The right arm and the body where they stand.
+        // The body where it stands.
         objects: objects.objects(&standing_parts),
     },
     &PlanRequest {
+        // The left arm's joints, then the right's.
         start: measured,
-        start_tolerance: [0.01; 7],
-        goal: &goal,
-        sampler: &sampler,
+        start_tolerance: [0.01; 14],
+        goals: vec![
+            ArmGoal { goal: &left_goal, sampler: &samplers[0] },
+            ArmGoal { goal: &right_goal, sampler: &samplers[1] },
+        ],
         goal_samples: NonZeroUsize::new(10).unwrap(),
         planner: Planner::RrtConnect,
         deadline: Instant::now() + Duration::from_secs(1),
@@ -105,32 +134,35 @@ term (`term_clearances`) plus 1 mm for each of its bodies that moves; the next s
 says why each is as large as it is:
 
 - The map and the objects, which stand still through a plan: `min_clearance_m` plus
-  1 mm. Each body of the arm, a piece of a link, a piece of a part a link carries or a
+  1 mm. Each body of the arms, a piece of a link, a piece of a part a link carries or a
   shape of an object it carries, keeps it from every occupied voxel and from each
-  obstacle, an object of the scene where it stands or where another arm holds it; and
-  each object the arm carries keeps it from each part of the robot the plan does not
-  move, such as the other arm and the torso (`RobotPart`).
+  obstacle, an object of the scene where it stands or where an arm the plan does not move
+  holds it; and each object the arms carry keeps it from each part of the robot the plan
+  does not move, such as an arm it does not move and the torso (`RobotPart`).
 - The robot's own body, where both bodies of a pair move: `min_clearance_m` plus 2 mm.
-  Each pair of the self model keeps it.
+  Each pair of the self model keeps it, and so does each object an arm carries from each
+  piece of another arm of the plan and of the parts it carries, and from each object
+  another arm of the plan carries.
 - An attached object against the arm that carries it, where both bodies of a pair move: 0
-  plus 2 mm. Each object the arm carries keeps it from each piece of the arm's links and
+  plus 2 mm. Each object an arm carries keeps it from each piece of that arm's links and
   of the parts they carry, outside its touch links: between an attached object and the
   links of the arm that carries it, outside its touch_links, the clearance is 0: they keep
   out of contact. Objects one arm carries are never checked against each other. From the
-  rest of the robot, the other arm and the torso, which stand still through the plan, an
-  attached object keeps the clearance as from an object, and so it does from the objects
-  another arm holds.
+  rest of the robot an attached object keeps the clearance as from an object: from an arm
+  the plan does not move, the torso and the objects such an arm holds, which stand still
+  through the plan, in the first term, and from another arm of the plan and the objects
+  it carries in the second.
 
 MoveIt checks an attached object against the robot unpadded and never checks two objects
 attached to one link against each other (moveit2 2.15.2 `collision_common.cpp`, the
 always-allowed collision of bodies attached to one link). This crate departs from it
 there: an attached object keeps 2 mm, the spare of its two moving bodies, from the arm
 that carries it at each checked state, and the clearance it keeps from an object from the
-parts of the robot the plan does not move, which MoveIt checks it against unpadded. An
-object another arm holds is an obstacle here: the arm a plan moves and the object it
-carries keep `min_clearance_m` from it, where MoveIt holds it as an attached body of the
-other arm and checks those pairs in its self check, unpadded (`CollisionRequest`'s
-`pad_self_collisions`, false by default,
+parts of the robot and from the other arms, which MoveIt checks it against unpadded. An
+object an arm the plan does not move holds is an obstacle here: the arms a plan moves and
+the objects they carry keep `min_clearance_m` from it, where MoveIt holds it as an
+attached body of that arm and checks those pairs in its self check, unpadded
+(`CollisionRequest`'s `pad_self_collisions`, false by default,
 moveit_core/collision_detection/include/moveit/collision_detection/collision_common.hpp:157;
 planning_scene.cpp:453 runs the self check on the unpadded collision environment).
 
@@ -145,9 +177,9 @@ padding over the square root of 2, 2.8 cm at 4 cm, and one at a box's corner the
 over the square root of 3, 2.3 cm; this crate keeps the clearance all round.
 
 A pair allowed to touch keeps none (`PlanningScene::set_allowed_collision`), and nor does
-an object the arm carries from its grasp link and its touch links, or an object another
-arm holds from that arm's grasp link and its touch links. The messages of `Unreachable`
-and `NoPath` name the plan's clearances in meters.
+an object an arm carries from its grasp link and its touch links, or an object an arm the
+plan does not move holds from that arm's grasp link and its touch links. The messages of
+`Unreachable` and `NoPath` name the plan's clearances in meters.
 
 Each body's bounding sphere screens first: against the map's distance field, which reads
 the distance between voxel centers, within half a voxel's diagonal of the sphere center's
@@ -168,30 +200,33 @@ A motion is walked by conservative advancement. A joint turning by an angle move
 at most that angle times the point's distance from the joint, so how far a step moves any
 point of a link or of a rider, a part or an object it carries, follows from each joint's
 reach over every configuration (`Arm::reach`), each body bounded by its bounding sphere; a
-prismatic joint lengthens the arm past it by up to its farthest limit. At each checked
-state the walk measures the arm's distance from the map and the objects, the least
-distance within its own body, and the least between an attached object and the arm that
-carries it. It measures the bodies against the map nearest screen first, and sets aside a
-body whose screen, a voxel whose bounding sphere, or a pair whose spheres lie apart past
-the least distance it has found: what it sets aside lies no nearer. A body's distance from
-an occupied voxel or an object, which stand still, falls by at most how far the body
-moves, and the distance of a pair of its own body, each of whose bodies moves, by at most
-twice that. So the walk steps no farther than the least spare: the distance from the map
-and the objects above `min_clearance_m`, half the own body's above it, and half the
-distance between an attached object and the arm that carries it, and at most `MAX_STEP_M`,
-1.5 cm. Every state between two checked states keeps the clearance asked of each term. A
-state from which the step would fall under 1 mm falls short of the plan's clearance and
-ends the motion: near a surface at the clearance asked of its term the spare, and the step
-with it, shrinks toward 0, and the floor bounds a motion's checks by its length over 1 mm.
-The cap keeps a checked state within 1.5 cm of any point of a run, where a corner's repair
-adds its waypoints, and the distance from the map is measured exactly up to
-`min_clearance_m` plus 1.5 cm, past which a body's bounding sphere bounds it, and so is
-the distance from an object or within the robot's own body. Each arc of the rounded path
-is walked the same way along the path: a step of its length moves a point at most that
-times the arc's lever, the sum over the joints of the largest share of the path's unit
-tangent the joint has on the arc times its reach, and at most the joints' reach in their
-L2 norm (`Arm::lever_along`). The voxel's size needs no inflation, for a state is measured
-against each occupied voxel's whole box, which holds every point the voxel stands for.
+prismatic joint lengthens the arm past it by up to its farthest limit. A point rides one
+arm, so a motion of several arms moves it at most the largest of the arms' bounds
+(`Arms::displacement`), and two bodies of two moving arms come nearer by at most twice
+that. At each checked state the walk measures the arms' distance from the map and the
+objects, the least distance within the robot's own body, and the least between an attached
+object and the arm that carries it. It measures the bodies against the map nearest screen
+first, and sets aside a body whose screen, a voxel whose bounding sphere, or a pair whose
+spheres lie apart past the least distance it has found: what it sets aside lies no nearer.
+A body's distance from an occupied voxel or an object, which stand still, falls by at most
+how far the body moves, and the distance of a pair of its own body, each of whose bodies
+moves, by at most twice that. So the walk steps no farther than the least spare: the
+distance from the map and the objects above `min_clearance_m`, half the own body's above
+it, and half the distance between an attached object and the arm that carries it, and at
+most `MAX_STEP_M`, 1.5 cm. Every state between two checked states keeps the clearance
+asked of each term. A state from which the step would fall under 1 mm falls short of the
+plan's clearance and ends the motion: near a surface at the clearance asked of its term
+the spare, and the step with it, shrinks toward 0, and the floor bounds a motion's checks
+by its length over 1 mm. The cap keeps a checked state within 1.5 cm of any point of a
+run, where a corner's repair adds its waypoints, and the distance from the map is measured
+exactly up to `min_clearance_m` plus 1.5 cm, past which a body's bounding sphere bounds
+it, and so is the distance from an object or within the robot's own body. Each arc of the
+rounded path is walked the same way along the path: a step of its length moves a point at
+most that times the arc's lever, the sum over the joints of the largest share of the
+path's unit tangent the joint has on the arc times its reach, and at most the joints'
+reach in their L2 norm, the largest of the arms' (`Arms::lever_along`). The voxel's size
+needs no inflation, for a state is measured against each occupied voxel's whole box, which
+holds every point the voxel stands for.
 
 ## The start
 
@@ -229,8 +264,8 @@ there.
 Run from the plan's start, the path keeps the clearance asked of each term. Run from up to
 a tolerance from the start in each joint, as a robot's controller allows, it comes nearer
 anything near its start by at most the sum over the joints of the tolerance times the
-joint's reach (`Arm::reach`), as MoveIt's execution starts within its allowed start
-tolerance and checks nothing more.
+joint's reach (`Arm::reach`), over the joints of both arms for a pair of two arms, as
+MoveIt's execution starts within its allowed start tolerance and checks nothing more.
 
 ## The goal
 
@@ -258,13 +293,40 @@ the plan's start. Each goal sample sets out from it with MoveIt's 4 attempts
 MoveIt's validity callback does. The goal a sample finds becomes the working state, so the
 goals of a short pose move gather about the first one, which lies on the start's shoulder
 and wrist branches where the first attempt from the start reaches the pose; a goal joins
-the goals unless it equals one of them. Sampling ends at `goal_samples` goals, as MoveIt's
-`max_goal_samples` (10 by default) ends it; once the samples since the last goal found
-reach 1000 less the goals found so far, as MoveIt's `max_goal_sampling_attempts` (1000)
-bounds the samples its sampling function makes before it returns a goal, counting from the
-goals OMPL has taken; or before a sample once the deadline passes or the stop flag is set.
-MoveIt samples on a thread beside its planner and ends once the planner has a path; this
-crate samples the goals, then plans to them.
+the goals unless it equals one of them. An attempt's sampling ends at `goal_samples`
+goals, as MoveIt's `max_goal_samples` (10 by default) ends it; once the samples since the
+last goal found reach 1000 less the goals found so far, as MoveIt's
+`max_goal_sampling_attempts` (1000) bounds the samples its sampling function makes before
+it returns a goal, counting from the goals OMPL has taken; or before a sample once the
+deadline passes or the stop flag is set. MoveIt samples on a thread beside its planner and
+ends once the problem holds a path (constrained_goal_sampler.cpp:109-111). Here each
+attempt samples its own goals on its own thread when its planner asks for one
+(`ompl_bridge::Goals::Sampled`, and its README's "Sampled goals"), so a plan's goals
+depend on its planner's questions alone and the plan repeats: RRTConnect waits for its
+first goal, and plans once it holds one, whatever the later samples find. PRM and PRM*
+plan once the sampling has ended.
+
+Each arm of a plan has its own goal and sampler (`ArmGoal`), and a goal sample of several
+arms is MoveIt's sample of a group whose constraint sampler is the union of its arms'
+(`UnionConstraintSampler`, union_constraint_sampler.cpp): it draws every arm in turn
+(`GoalSampler::sample_from`) from its joints of the state the sample has reached, with the
+4 attempts, and from the draws of the request's seed plus the arm's place in the group;
+the plan's clearance check decides on that state with the arms before it at their sampled
+joints and the arms after it at the working state's, an arm the plan does not move among
+the scene. From a start that keeps its clearances, the check judges the whole state, as
+MoveIt's validity callback does. From a start nearer than the plan's clearance, which the
+start rule plans from, a turn judges each pair that holds a body of its arm and none of an
+arm after it (`Moving::Arm`), and a pair with an arm after it waits for that arm's turn,
+where both stand as the goal holds them: so an arm that starts nearer the scene or the
+other arm than the clearance holds back no goal, and every goal keeps every clearance. A
+sample in which an arm finds none finds no goal. A plan whose sampling finds no goal fails
+`Unreachable`, saying so and, for a plan of several arms, naming the first arm that met
+its goal in no sample; one whose sampling rejects states and finds no goal fails
+`Unreachable` and says that instead, how many states the sampling rejected, naming, of the
+state that falls short least, the nearest pair the check judged: of the robot's own body,
+of an attached object and the arm that carries it, or of a body of an arm and the map, an
+object or a part of the robot, of each clearance it falls short of and how far apart they
+stand.
 
 `IkGoalSampler` makes a sample. For a goal of joints it draws one configuration inside the
 joint limits, the targeted joints inside their targets, as MoveIt's
@@ -292,13 +354,7 @@ constraint sampler manager selects none (constraint_sampler_manager.cpp:395) and
 sampler draws states uniformly and keeps those that meet the goal by chance
 (constrained_goal_sampler.cpp:71-72, :158-166). This sampler descends toward what the goal
 names, with KDL's position-only and approximate-solution options applied
-(kdl_kinematics_plugin.cpp:344-350, :389), and the goal's constraints decide. A plan whose
-sampling finds no goal fails `Unreachable`, saying so; one whose every configuration that
-meets the goal is in collision fails `Unreachable` and says that instead, how many such
-configurations the sampling rejected, naming, of the configuration that falls short least,
-the nearest pair of the robot's own body, of an attached object and the arm that carries
-it, or of a body of the arm and the map, an object or a part of the robot, of each
-clearance it falls short of and how far apart they stand.
+(kdl_kinematics_plugin.cpp:344-350, :389), and the goal's constraints decide.
 
 On 200 drawn reachable poses of OpenArm v2's left arm, with the configurations of every
 other branch invalid, one goal sample from all joints at zero reaches each shoulder and
@@ -308,25 +364,25 @@ the forearm, of the wrist link, and of a part the hand carries.
 
 ## The plan and its path
 
-The request's deadline bounds the plan as MoveIt's allowed planning time bounds a
-request: the goal sampling samples up to `goal_samples` goals, ending before a sample once
-the deadline passes, OMPL makes the request's `attempts` in what remains before it, as
-MoveIt makes a request's `num_planning_attempts` (ompl_bridge's README, Attempts): each
-from its own seed, under the whole of that time and the whole iteration bound, their
-paths joined by OMPL's path hybridization, and OMPL's simplifier takes what remains after
-the attempts, at most 1000 iterations, as MoveIt simplifies in the allowed planning time
-less the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve` calls
-`simplifySolution` with that time, whatever is left of it). OMPL's simplifier runs its
-first pass however little time it has (`PathSimplifier::simplify`, `atLeastOnce`), so a
-planner that plans until its time ends, such as RRT*, has its path simplified once, past
-the deadline. A corner's repair runs only before the deadline: when a corner of the
-simplified path rounds short of the clearances once the deadline has passed, the plan
-answers its planned path if that passes its own check, and fails `NoPath` otherwise. The
-hybrid of several attempts and its checks, and the check of the rounded path, run to
-their end past the deadline. OMPL plans with the request's planner and iteration bound,
-seeded from the request's seed and the map's stamp, so the same request on the same map
-gives the same path when the plan ends before its deadline, for every planner but PRM and
-PRM*, with any number of attempts. OMPL's simplifier shortens the path.
+The request's deadline bounds the plan as MoveIt's allowed planning time bounds a request:
+OMPL makes the request's `attempts` before it, as MoveIt makes a request's
+`num_planning_attempts` (ompl_bridge's README, Attempts): each from its own seed, under
+the whole of that time and the whole iteration bound, sampling up to `goal_samples` goals
+as its planner asks for them, ending before a sample once the deadline passes, their paths
+joined by OMPL's path hybridization, and OMPL's simplifier takes what remains after the
+attempts, at most 1000 iterations, as MoveIt simplifies in the allowed planning time less
+the plan's (moveit2 2.15.2 `ModelBasedPlanningContext::solve` calls `simplifySolution`
+with that time, whatever is left of it). OMPL's simplifier runs its first pass however
+little time it has (`PathSimplifier::simplify`, `atLeastOnce`), so a planner that plans
+until its time ends, such as RRT*, has its path simplified once, past the deadline. A
+corner's repair runs only before the deadline: when a corner of the simplified path rounds
+short of the clearances once the deadline has passed, the plan answers its planned path if
+that passes its own check, and fails `NoPath` otherwise. The hybrid of several attempts
+and its checks, and the check of the rounded path, run to their end past the deadline.
+OMPL plans with the request's planner and iteration bound, seeded from the request's seed
+and the map's stamp, so the same request on the same map gives the same path when the plan
+ends before its deadline, for every planner but PRM and PRM*, with any number of attempts.
+OMPL's simplifier shortens the path.
 
 The caller's flag `stop` ends a plan at any part of it, and the plan fails `Stopped`:
 the goal sampling makes no further sample, OMPL's planners and simplifier end at
@@ -359,23 +415,24 @@ INVALID_MOTION_PLAN when it fails.
 
 ## Checking a path
 
-`check_arm_path` checks the path execute_joint_path runs from a caller's start through its
-waypoints with the checks of a plan's answer: the start inside its limits by its tolerance
-and out of contact, each waypoint inside the joint limits and, after the start, at the
-plan's clearances, each run as the plan walks the runs of its answer, the run whose path
-from the start lies on the straight line from the start by the start rule, and each arc of
-the rounded path as the plan walks its arcs. The walks follow the run into the first
-waypoint outside a limit up to where it leaves the limits, and go no farther. It answers
-the first fault along the path (`PathFault`): the start's, a waypoint that holds a joint,
-by its URDF name, outside its limits, or a state short of the plan's clearance, where it
-lies (`Place`: at a waypoint, on a run, or on the arc at a corner) and how near it comes
-to the map and the objects, within the robot's own body, and between an attached object
-and the arm that carries it. It answers too the most waypoints, from the first, whose
-path, run on its own, passes: the waypoints up to the one whose run or corner fails, the
-start counted as waypoint 0, or before the waypoint that fails. A corner's arc runs before
-the rest of the run from its waypoint, and that run before the waypoint it ends at. Each
-walk of a run or of a corner starts only before the check's deadline, and a check that
-reaches its deadline fails `TimeEnded`.
+`check_path` checks the path execute_joint_path runs from a caller's start through its
+waypoints, each holding every arm's joints, with the checks of a plan's answer: the start
+inside its limits by its tolerance and out of contact, each waypoint inside the joint
+limits and, after the start, at the plan's clearances, each run as the plan walks the runs
+of its answer, the run whose path from the start lies on the straight line from the start
+by the start rule, and each arc of the rounded path as the plan walks its arcs. The walks
+follow the run into the first waypoint outside a limit up to where it leaves the limits,
+and go no farther. It answers the first fault along the path (`PathFault`): the start's, a
+waypoint that holds a joint, by its URDF name, outside its limits, or a state short of the
+plan's clearance, where it lies (`Place`: at a waypoint, on a run, or on the arc at a
+corner) and how near it comes to the map and the objects, within the robot's own body, and
+between an attached object and the arm that carries it. It answers too the most waypoints,
+from the first, whose path, every arm run together through them with the last of them as
+its end, passes: the waypoints up to the one whose run or corner fails, the start counted
+as waypoint 0, or before the waypoint that fails. A corner's arc runs before the rest of
+the run from its waypoint, and that run before the waypoint it ends at. Each walk of a run
+or of a corner starts only before the check's deadline, and a check that reaches its
+deadline fails `TimeEnded`.
 
 ## The planning scene
 
@@ -408,13 +465,14 @@ refusals (`SceneError`), each `rejected` but a link whose pose is not known yet
 
 Adding, moving or attaching an object clears every voxel of the map it intersects where
 it then stands (`VoxelMap::clear_intersecting`); a batch clears where it leaves each
-object it adds or moves, and nothing for one it then removes. A plan of one arm meets the
-scene as `ArmObjects` (`PlanningScene::for_arm`): the objects its grasp link carries,
-each shape a rider of the child link of the chain's last joint at the grasp point, the
-chain's end effector (`ArmObjects::riders`), and the obstacles, which with the parts of
-the robot the plan does not move make the scene's `Objects`. A depth frame's intake cuts
-out the objects no link carries where they stand and each arm's riders where its joints
-stood at the frame's stamp (`PlanningScene::standing_shapes`, `PlanningScene::riders`).
+object it adds or moves, and nothing for one it then removes. Each shape of an object
+attached to a grasp link rides the child link of the chain's last joint at the grasp
+point, the chain's end effector (`PlanningScene::riders`). A plan of one or more arms
+meets the scene as `PlanObjects` (`PlanningScene::for_arms`): the objects the arms' grasp
+links carry, and the obstacles, which with the parts of the robot the plan does not move
+make the scene's `Objects`. A depth frame's intake cuts out the objects no link carries
+where they stand and each arm's riders where its joints stood at the frame's stamp
+(`PlanningScene::standing_shapes`, `PlanningScene::riders`).
 
 After the same calls, the snapshot holds what MoveIt's planning scene message holds, each
 object's shapes in the order the calls gave them, which the message lists primitives first
@@ -441,7 +499,7 @@ The departures from MoveIt, measured on that scenario:
   in contact where this crate reads them apart: an attached object among the voxels it
   filled.
 - MoveIt's path check (`PlanningScene::isPathValid`) checks a path's waypoints alone;
-  `check_arm_path` checks the runs and the corners between them too, at its clearance. On
+  `check_path` checks the runs and the corners between them too, at its clearance. On
   the scenario's 20 paths, this crate's check fails no later than MoveIt's first invalid
   waypoint: 8 pass both, 6 fail at the same waypoint in both, 4 fail in this crate's check
   before MoveIt's first invalid waypoint, and 2 fail this crate's check between two

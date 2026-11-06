@@ -1,5 +1,5 @@
 //! The boundary with the C++ glue of `bridge.cpp`: one plan request in, one plan
-//! out, and the caller's checks and constraint called back from OMPL.
+//! out, and the caller's checks, constraint and goal sampling called back from OMPL.
 
 use crate::callbacks::Callbacks;
 
@@ -27,7 +27,10 @@ pub(crate) mod bridge {
         low: Vec<f64>,
         high: Vec<f64>,
         start: Vec<f64>,
+        /// Empty for a plan of sampled goals.
         goals: Vec<f64>,
+        /// Whether the caller samples the goals while the plan runs.
+        sampled_goals: bool,
         time_limit_s: f64,
         iterations: u64,
         seed: u32,
@@ -57,6 +60,13 @@ pub(crate) mod bridge {
         Other,
     }
 
+    /// What one sample of the caller's goal sampling found.
+    enum GoalSample {
+        Found,
+        Missed,
+        Ended,
+    }
+
     /// What ended the planner or the simplifier.
     enum Ending {
         Returned,
@@ -83,6 +93,7 @@ pub(crate) mod bridge {
         fn motion_valid(self: &Callbacks, from: &[f64], to: &[f64], last_valid: &mut f64) -> bool;
         fn constraint_function(self: &Callbacks, state: &[f64], out: &mut [f64]);
         fn constraint_jacobian(self: &Callbacks, state: &[f64], out: &mut [f64]);
+        fn sample_goal(self: &Callbacks, attempt: u32, goal: &mut [f64]) -> GoalSample;
         fn failed(self: &Callbacks) -> bool;
         fn stopped(self: &Callbacks) -> bool;
     }

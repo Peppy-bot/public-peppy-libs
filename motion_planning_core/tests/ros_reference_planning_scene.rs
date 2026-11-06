@@ -35,9 +35,9 @@ use collision_geometry::gjk::{Hull, Placed};
 use collision_geometry::hull::exact_hull;
 use collision_geometry::shapes::{PlacedShape, ShapeKind};
 use motion_planning_core::{
-    Arm, AttachRequest, AttachedObjectFields, CheckRequest, Contact, ObjectFields, Objects,
+    Arm, Arms, AttachRequest, AttachedObjectFields, CheckRequest, Contact, ObjectFields, Objects,
     PathCheck, PathFault, Place, PlanningScene, Reading, RobotLinks, RobotPart, Scene,
-    SceneSnapshot, ShapeFields, Surroundings, TERMS, check_arm_path, pose_from_parts,
+    SceneSnapshot, ShapeFields, Surroundings, TERMS, check_path, pose_from_parts,
 };
 use nalgebra::{Isometry3, Point3};
 use occupancy_map::{DistanceField, VoxelMap};
@@ -482,11 +482,11 @@ fn with_the_left_arm<R>(
     robot: &Robot,
     scene: &PlanningScene,
     state: &BTreeMap<String, f64>,
-    read: impl FnOnce(&Arm<JOINTS>, Objects) -> R,
+    read: impl FnOnce(&Arms<JOINTS, JOINTS>, Objects) -> R,
 ) -> R {
     let left = positions_of(&robot.arms.left, state);
     let right = positions_of(&robot.arms.right, state);
-    let objects = scene.for_arm(VERSION.tcp_link(Side::Left), |link| {
+    let objects = scene.for_arms(&[VERSION.tcp_link(Side::Left)], |link| {
         grasp_pose(robot, link, state)
     });
     let fingers = robot.fingers(&robot.self_model).left;
@@ -506,12 +506,17 @@ fn with_the_left_arm<R>(
     let riders: Vec<Rider> = fingers
         .iter()
         .copied()
-        .chain(objects.riders(&robot.arms.left))
+        .chain(scene.riders(VERSION.tcp_link(Side::Left), &robot.arms.left))
         .collect();
-    let arm = Arm::new(&robot.arms.left, None)
-        .riding(&riders)
-        .expect("the fingers and the objects ride the hand");
-    read(&arm, objects.objects(&parts))
+    let arms = Arms::new(
+        vec![
+            Arm::new("arm", &robot.arms.left)
+                .riding(&riders)
+                .expect("the fingers and the objects ride the hand"),
+        ],
+        None,
+    );
+    read(&arms, objects.objects(&parts))
 }
 
 /// The distance of each pair that `Surroundings` checks of the left arm of `robot` at
@@ -524,10 +529,10 @@ fn read_pairs(
     voxels: &(VoxelMap, DistanceField),
 ) -> BTreeMap<NamePair, f64> {
     let (map, field) = voxels;
-    with_the_left_arm(robot, scene, state, |arm, objects| {
+    with_the_left_arm(robot, scene, state, |arms, objects| {
         let surroundings =
             Surroundings::new(map, field, [EXACT_WITHIN_M; TERMS]).with_objects(objects);
-        least_by_pair(surroundings.readings(arm, &positions_of(&robot.arms.left, state)))
+        least_by_pair(surroundings.readings(arms, &positions_of(&robot.arms.left, state)))
     })
 }
 
@@ -664,7 +669,7 @@ fn assert_the_pairs_bound_fcls(cases: &Cases, robot: &Robot) {
         let ours = read_pairs(robot, &scene, &state, &as_moveit_holds_it);
         let unchecked = read_pairs(robot, &unexempt, &state, &as_moveit_holds_it);
         let after_clearing = read_pairs(robot, &scene, &state, &as_cleared);
-        let objects = scene.for_arm(left_grasp, |link| grasp_pose(robot, link, &state));
+        let objects = scene.for_arms(&[left_grasp], |link| grasp_pose(robot, link, &state));
         let meshes: BTreeMap<&str, Vec<&PlacedShape>> = objects
             .obstacles()
             .iter()
@@ -976,9 +981,9 @@ impl PathOf {
         (voxels, field): (&VoxelMap, &DistanceField),
         clearance: f64,
     ) -> PathCheck {
-        with_the_left_arm(robot, scene, &self.states[0], |arm, objects| {
-            check_arm_path(
-                arm,
+        with_the_left_arm(robot, scene, &self.states[0], |arms, objects| {
+            check_path(
+                arms,
                 &Scene {
                     map: voxels,
                     field,
@@ -1031,10 +1036,10 @@ impl PathOf {
                 })
             })
             .collect();
-        with_the_left_arm(robot, scene, &self.states[0], |arm, _| {
+        with_the_left_arm(robot, scene, &self.states[0], |arms, _| {
             states
                 .iter()
-                .map(|q| held_from_its_arm(arm, q, may_touch))
+                .map(|q| held_from_its_arm(arms, q, may_touch))
                 .fold(f64::INFINITY, f64::min)
         })
     }
@@ -1107,10 +1112,10 @@ fn objects_one_arm_carries_are_never_checked_against_each_other() {
         );
         let (scene, called, voxels, _) = scene_after(cases, robot, AS_CALLED);
         let field = DistanceField::of(&voxels);
-        let readings = with_the_left_arm(robot, &scene, &called, |arm, objects| {
+        let readings = with_the_left_arm(robot, &scene, &called, |arms, objects| {
             Surroundings::new(&voxels, &field, [EXACT_WITHIN_M; TERMS])
                 .with_objects(objects)
-                .readings(arm, &positions_of(&robot.arms.left, &called))
+                .readings(arms, &positions_of(&robot.arms.left, &called))
         });
         let read: BTreeSet<NamePair> = least_by_pair(readings).into_keys().collect();
         for pair in &cases.one_link_pairs {
@@ -1181,19 +1186,24 @@ fn the_cut_out_of_the_objects_departs_from_moveits_at_edges_and_meshes_alone() {
         let (scene, called, ..) = scene_after(cases, robot, AS_CALLED);
         // The objects where they stand or another arm holds them, and the objects the left
         // arm carries where the calls leave it: the riders an intake cuts out with them.
-        let objects = scene.for_arm(VERSION.tcp_link(Side::Left), |link| {
+        let objects = scene.for_arms(&[VERSION.tcp_link(Side::Left)], |link| {
             grasp_pose(robot, link, &called)
         });
-        let riders = objects.riders(&robot.arms.left);
-        let arm = Arm::new(&robot.arms.left, None)
-            .riding(&riders)
-            .expect("the objects ride the hand");
-        let bodies = arm.bodies(&positions_of(&robot.arms.left, &called));
+        let riders = scene.riders(VERSION.tcp_link(Side::Left), &robot.arms.left);
+        let arms = Arms::new(
+            vec![
+                Arm::new("arm", &robot.arms.left)
+                    .riding(&riders)
+                    .expect("the objects ride the hand"),
+            ],
+            None,
+        );
+        let bodies = arms.bodies(&positions_of(&robot.arms.left, &called));
         let standing: Vec<&PlacedShape> = objects
             .obstacles()
             .iter()
             .flat_map(|obstacle| obstacle.shapes())
-            .chain(bodies.iter().filter_map(|(_, body)| body.shape()))
+            .chain(bodies.iter().filter_map(|body| body.body.shape()))
             .collect();
         for (padding, theirs) in cases.cut_out.paddings.iter().zip(&cases.cut_out.inside) {
             let grown = Padding::new(padding.scale, padding.offset).expect("a padding");

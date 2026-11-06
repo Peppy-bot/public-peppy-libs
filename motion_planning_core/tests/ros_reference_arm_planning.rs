@@ -1,13 +1,17 @@
 //! Parity with MoveIt's planning pipeline on the arm planning scenarios of the ROS
-//! reference harness, at one attempt, the gripper's fingers carried by the arm in both,
-//! each plan with the planner of the scenario's objective. The committed scenarios plan at
-//! a clearance of 0: this crate still plans the paths each of them carries; MoveIt's
-//! collision check finds every probe of each of them free; this crate refuses each start
-//! that MoveIt refuses outside a joint limit or in collision; and each holds a scene of
-//! each outcome the README names. The robot around a scenario's arm, either arm, holds the
-//! other arm at its zero configuration. Over the scenes of a drawn set, at its clearance, which
-//! pads MoveIt's links, the success rate and the mean smallest clearance lie within or
-//! above MoveIt's 95% intervals, and the mean path length within or below its interval.
+//! reference harness, of one arm and of both, at one attempt, the grippers' fingers
+//! carried by the arms in both, each plan with the planner of the scenario's objective,
+//! and a plan of both arms checking the pairs of the robot's own links that this crate's
+//! self model checks in both. The committed scenarios plan at a clearance of 0: this crate
+//! still plans the paths each of them carries; MoveIt's collision check finds every probe
+//! of each of them free; this crate refuses each start that MoveIt refuses outside a joint
+//! limit or in collision; and each holds a scene of each outcome the README names. The
+//! robot around a scenario's arm, either arm, holds the other arm at its zero
+//! configuration. Over the scenes of a drawn set, at its clearance, which pads MoveIt's
+//! links, the success rate and the mean smallest clearances, to the scene and between the
+//! robot's own bodies, lie within or above MoveIt's 95% intervals, and the mean path length
+//! within or below its interval, of both arms at a clearance above 0 on the scenes both plan
+//! where MoveIt's path keeps the clearances.
 
 mod arm_scenes;
 
@@ -16,13 +20,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use control_core::path_timing::JOINT_PATH_CORNER_DEVIATION;
 use hegel::TestCase;
 use hegel::generators as gs;
-use motion_planning_core::IkGoalSampler;
 use ros_reference::arm_planning::{
-    Case, MOVEIT_SUCCESS, Ours, Probed, Scene, SceneCase, SceneGoal, Scenes, Termination, VoxelBox,
+    Case, Held, MOVEIT_SUCCESS, Ours, Probed, Scene, SceneCase, SceneGoal, Scenes, Termination,
+    VoxelBox,
 };
 
 use arm_scenes::{
-    boxes_of, configuration, geometry, map_of, on_the_arm, plan_scene, probe_spacing,
+    JOINTS, boxes_of, geometry, joint_goal, least_self_clearance_along, map_of, on_the_arms,
+    plan_scene, probe_spacing, samplers, state,
 };
 use nalgebra::{Point3, Vector3};
 use openarm_description::{HardwareVersion, Side};
@@ -72,6 +77,18 @@ struct Shown<'a> {
 /// An outcome of a scene, by its name, and whether a scene shows it.
 type Outcome = (&'static str, fn(&Shown) -> bool);
 
+/// The least distance between the robot's own bodies in a scene of both arms, in this
+/// crate's self model of their plans: at its start, and, for a goal of joints, at its goal
+/// and along the straight joint line between them.
+struct OwnDistances {
+    start: f64,
+    goal: Option<f64>,
+    line: Option<f64>,
+}
+
+/// An outcome of a scene of both arms, by its name, and whether a scene shows it.
+type OutcomeOfBoth = (&'static str, fn(&SceneCase, &OwnDistances) -> bool);
+
 /// The name of this crate's failure in `ours`, or none for a path.
 fn failure(ours: &Ours) -> Option<&str> {
     match ours {
@@ -87,8 +104,8 @@ fn failure(ours: &Ours) -> Option<&str> {
 #[hegel::test]
 fn a_maps_voxels_as_boxes_fill_a_scenes_map_with_them(tc: TestCase) {
     let scenes: Scenes = serde_json::from_str(
-        r#"{"kind": "arm_planning", "urdf": "", "meshes": "", "base_link": "", "tip_link": "",
-            "joints": [], "voxel_size": 0.04, "map_half_side": 0.2, "min_clearance": 0.0,
+        r#"{"kind": "arm_planning", "urdf": "", "meshes": "", "chains": [],
+            "voxel_size": 0.04, "map_half_side": 0.2, "min_clearance": 0.0,
             "corner_tolerance": 0.1, "goal_tolerance": 0.01, "objective": "any",
             "termination": "iterations", "time_limit": 1.0, "iterations": 1, "scenes": []}"#,
     )
@@ -99,8 +116,7 @@ fn a_maps_voxels_as_boxes_fill_a_scenes_map_with_them(tc: TestCase) {
     let scene_of = |boxes: Vec<VoxelBox>| Scene {
         boxes,
         objects: Vec::new(),
-        attached: None,
-        other_arm_holds: None,
+        attached: Vec::new(),
         allowed: Vec::new(),
         start: Vec::new(),
         goal: SceneGoal::Joints(Vec::new()),
@@ -172,16 +188,13 @@ fn the_robot_around_either_arm_holds_the_other_arm_at_zero() {
     let prefix = |side| HardwareVersion::V2.tcp_link(side).trim_end_matches("tcp");
     for side in Side::BOTH {
         let named = |name: &str| name.replace(prefix(Side::Left), prefix(side));
-        case.scenes.base_link = named(&case.scenes.base_link);
-        case.scenes.tip_link = named(&case.scenes.tip_link);
-        case.scenes.joints = case
-            .scenes
-            .joints
-            .iter()
-            .map(|joint| named(joint))
-            .collect();
-        on_the_arm(&case.scenes, &case.urdf, &case.meshes, |arm, standing| {
-            let parts = standing.parts(arm, &start);
+        let chain = &mut case.scenes.chains[0];
+        chain.name = side.arm_name().to_string();
+        chain.base_link = named(&chain.base_link);
+        chain.tip_link = named(&chain.tip_link);
+        chain.joints = chain.joints.iter().map(|joint| named(joint)).collect();
+        on_the_arms(&case.scenes, &case.urdf, &case.meshes, |arms, standing| {
+            let (parts, _) = standing.around(arms, &start);
             let base = HardwareVersion::V2.base_link(side);
             assert!(
                 parts.iter().any(|part| part.link == base),
@@ -215,9 +228,10 @@ fn the_robot_around_either_arm_holds_the_other_arm_at_zero() {
 }
 
 // This crate plans, scene by scene, the answer each scenario carries for it: the paths
-// the reference probed are this crate's, rounded as execute_joint_path rounds them, and
-// probed at the spacing this crate's arm gives. Each scenario's plans end on its
-// iterations, so they repeat.
+// the reference probed are this crate's, rounded as execute_joint_path rounds them,
+// probed at the spacing this crate's arms give, against the pairs of the robot's own
+// links this crate's plans check. Each scenario's plans end on its iterations, so they
+// repeat.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn each_scenario_carries_the_paths_this_crate_plans() {
@@ -230,17 +244,23 @@ fn each_scenario_carries_the_paths_this_crate_plans() {
             case.name
         );
         assert_eq!(case.scenes.corner_tolerance, JOINT_PATH_CORNER_DEVIATION);
-        on_the_arm(&case.scenes, &case.urdf, &case.meshes, |arm, standing| {
-            let sampler = IkGoalSampler::new(arm.geometry().chain().clone());
+        on_the_arms(&case.scenes, &case.urdf, &case.meshes, |arms, standing| {
+            let samplers = samplers(arms);
             assert_eq!(
                 case.probe_spacing,
-                probe_spacing(arm, &case.scenes),
-                "{}: the scenario's probe spacing is its arm's",
+                probe_spacing(arms, &case.scenes),
+                "{}: the scenario's probe spacing is its arms'",
+                case.name
+            );
+            assert_eq!(
+                case.checked_pairs,
+                standing.checked_pairs(),
+                "{}: the scenario's checked pairs are those its plans check",
                 case.name
             );
             for (k, c) in case.cases.iter().enumerate() {
                 assert_eq!(
-                    plan_scene(arm, standing, &sampler, &case.scenes, &c.scene).ours,
+                    plan_scene(arms, standing, &samplers, &case.scenes, &c.scene).ours,
                     c.scene.ours,
                     "{} scene {k}",
                     case.name
@@ -253,8 +273,11 @@ fn each_scenario_carries_the_paths_this_crate_plans() {
 // Each scenario holds a scene of each outcome: a straight path and one with corners that
 // MoveIt plans too, a path of ours where MoveIt's own fails its check, a start in a box
 // and a goal in a box that both refuse, and a start below a joint's lower limit and one
-// above an upper limit that both refuse. The committed outputs hold MoveIt's amd64
-// answers, whose outcomes the scenes were picked by, so the test runs on amd64.
+// above an upper limit that both refuse. The scenario of both arms to poses holds each
+// but a path of ours where MoveIt's own fails its check: none of its first 200 drawn
+// scenes, planned on the committed scenes' iterations, gives one. The committed outputs
+// hold MoveIt's amd64 answers, whose outcomes the scenes were picked by, so the test runs
+// on amd64.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn each_scenario_holds_a_scene_of_each_outcome() {
@@ -265,7 +288,7 @@ fn each_scenario_holds_a_scene_of_each_outcome() {
         ("a path with corners", |s| {
             s.waypoints > 2 && s.case.moveit.status == MOVEIT_SUCCESS
         }),
-        ("a path where MoveIt's fails its check", |s| {
+        (MOVEIT_PATH_INVALID, |s| {
             s.waypoints >= 2 && s.case.moveit.status == MOVEIT_INVALID_MOTION_PLAN
         }),
         ("a start in a box", |s| {
@@ -288,8 +311,16 @@ fn each_scenario_holds_a_scene_of_each_outcome() {
         }),
     ];
     for case in Case::load_all() {
-        let geometry = geometry(&case.scenes, &case.urdf, &case.meshes);
-        let limits = geometry.chain().limits();
+        let geometries: Vec<_> = case
+            .scenes
+            .chains
+            .iter()
+            .map(|chain| geometry(chain, &case.urdf, &case.meshes))
+            .collect();
+        let limits: Vec<_> = geometries
+            .iter()
+            .flat_map(|geometry| geometry.chain().limits())
+            .collect();
         let shown: Vec<Shown> = case
             .cases
             .iter()
@@ -299,17 +330,88 @@ fn each_scenario_holds_a_scene_of_each_outcome() {
                     Ours::Path { waypoints } => waypoints.len(),
                     Ours::Failure { .. } => 0,
                 },
-                below: c.scene.start.iter().zip(limits).any(|(q, l)| *q < l.lo),
-                above: c.scene.start.iter().zip(limits).any(|(q, l)| *q > l.hi),
+                below: c.scene.start.iter().zip(&limits).any(|(q, l)| *q < l.lo),
+                above: c.scene.start.iter().zip(&limits).any(|(q, l)| *q > l.hi),
             })
             .collect();
+        let both_to_poses = case.scenes.chains.len() > 1 && to_poses(&case);
         for (outcome, holds) in outcomes {
+            if both_to_poses && outcome == MOVEIT_PATH_INVALID {
+                continue;
+            }
             assert!(
                 shown.iter().any(holds),
                 "{} holds no scene of {outcome}",
                 case.name
             );
         }
+    }
+}
+
+// Each scenario of both arms holds a scene of each outcome of a plan of both: a start
+// where the robot's own bodies meet and a goal where they meet, which both refuse, and a
+// straight joint line from the start to the goal on which they meet, which both plan
+// around; a scenario to poses holds the first two, its drawn goals holding no
+// configuration and so no joint line. So the pairs of the robot's own links that this
+// crate's self model checks, and MoveIt's collision matrix with them, hold both plans'
+// bodies apart. The committed outputs hold MoveIt's amd64 answers, whose outcomes the
+// scenes were picked by, so the test runs on amd64.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn each_scenario_of_both_arms_holds_a_scene_of_each_of_their_outcomes() {
+    let outcomes: [OutcomeOfBoth; 3] = [
+        ("a start where the robot's own bodies meet", |c, own| {
+            own.start < 0.0
+                && failure(&c.scene.ours) == Some("start_in_collision")
+                && c.moveit.status == MOVEIT_START_STATE_IN_COLLISION
+        }),
+        ("a goal where the robot's own bodies meet", |c, own| {
+            own.goal.is_some_and(|goal| goal < 0.0)
+                && failure(&c.scene.ours) == Some("unreachable")
+                && c.moveit.status == MOVEIT_GOAL_STATE_INVALID
+        }),
+        (
+            "a straight joint line through the robot's own body, planned around",
+            |c, own| {
+                own.line.is_some_and(|line| line < 0.0)
+                    && matches!(c.scene.ours, Ours::Path { .. })
+                    && c.moveit.status == MOVEIT_SUCCESS
+            },
+        ),
+    ];
+    let both: Vec<Case> = Case::load_all()
+        .into_iter()
+        .filter(|case| case.scenes.chains.len() == 2)
+        .collect();
+    assert!(!both.is_empty(), "scenarios/ holds a scenario of both arms");
+    for case in both {
+        on_the_arms(&case.scenes, &case.urdf, &case.meshes, |_, standing| {
+            let shown: Vec<OwnDistances> = case
+                .cases
+                .iter()
+                .map(|c| {
+                    let goal = joint_goal(&c.scene.goal);
+                    OwnDistances {
+                        start: standing.self_clearance(&c.scene.start),
+                        goal: goal.map(|goal| standing.self_clearance(goal)),
+                        line: goal
+                            .map(|goal| least_self_clearance_along(standing, &c.scene.start, goal)),
+                    }
+                })
+                .collect();
+            let held = if to_poses(&case) {
+                &outcomes[..2]
+            } else {
+                &outcomes[..]
+            };
+            for (outcome, holds) in held {
+                assert!(
+                    case.cases.iter().zip(&shown).any(|(c, own)| holds(c, own)),
+                    "{} holds no scene of {outcome}",
+                    case.name
+                );
+            }
+        });
     }
 }
 
@@ -371,6 +473,20 @@ fn moveit_finds_every_path_of_this_crate_free() {
 /// from an object at each checked state.
 const OBJECT_SPARE_M: f64 = 1e-3;
 
+/// The spare a plan keeps above its clearance between the robot's own bodies, 2 mm (the plan
+/// module's `MIN_SPARE_M` over a pair of which both bodies move).
+const OWN_BODY_SPARE_M: f64 = 2e-3;
+
+/// Whether a scene of `case` reaches for poses.
+fn to_poses(case: &Case) -> bool {
+    case.cases
+        .iter()
+        .any(|c| matches!(c.scene.goal, SceneGoal::Poses(_)))
+}
+
+/// The outcome of a path of ours where MoveIt's own fails its check.
+const MOVEIT_PATH_INVALID: &str = "a path where MoveIt's fails its check";
+
 /// A group of scenes, by its name, and whether a scene belongs to it.
 type Group<'a> = (&'static str, &'a dyn Fn(&SceneCase) -> bool);
 
@@ -378,11 +494,34 @@ type Group<'a> = (&'static str, &'a dyn Fn(&SceneCase) -> bool);
 /// move's grasp point (draw_arm_planning.py's SHORT_REACH_M).
 const SHORT_REACH_M: f64 = 0.1;
 
+/// Whether an arm of `scenes`'s chains holds `held`.
+fn held_by_an_arm_of_the_plan(held: &Held, scenes: &Scenes) -> bool {
+    scenes
+        .chains
+        .iter()
+        .any(|chain| chain.tip_link == held.link)
+}
+
+/// The mean of `values`.
+fn mean(values: &[f64]) -> f64 {
+    values.iter().sum::<f64>() / values.len() as f64
+}
+
+/// The mean smallest distance between the robot's own bodies along `paths`, as a tally
+/// writes it: none where no path holds one.
+fn self_clearance(paths: &[Probed]) -> String {
+    let values: Vec<f64> = paths.iter().filter_map(|p| p.self_clearance).collect();
+    if values.is_empty() {
+        return String::new();
+    }
+    format!(", self clearance {:.4}", mean(&values))
+}
+
 /// What `scenes` show: their number; this crate's paths and failures by name, and
-/// MoveIt's paths and error codes; the mean smallest clearance and path length of each
-/// one's paths; how many of each one's paths MoveIt's check finds in collision at a
-/// probe; and how many bring the object the arm holds nearer an object or a voxel than
-/// `held_within`.
+/// MoveIt's paths and error codes; the mean smallest clearance, to the scene and between
+/// the robot's own bodies where a scenario checks them, and path length of each one's
+/// paths; how many of each one's paths MoveIt's check finds in collision at a probe; and
+/// how many bring an object an arm holds nearer an object or a voxel than `held_within`.
 fn tally(scenes: &[&SceneCase], held_within: f64) -> String {
     let mut failures: BTreeMap<&str, usize> = BTreeMap::new();
     let mut codes: BTreeMap<i32, usize> = BTreeMap::new();
@@ -394,8 +533,8 @@ fn tally(scenes: &[&SceneCase], held_within: f64) -> String {
     }
     let ours: Vec<Probed> = scenes.iter().filter_map(|c| c.ours_probed).collect();
     let theirs: Vec<Probed> = scenes.iter().filter_map(|c| c.moveit.probed).collect();
-    let mean = |paths: &[Probed], of: fn(&Probed) -> f64| {
-        paths.iter().map(of).sum::<f64>() / paths.len() as f64
+    let mean_of = |paths: &[Probed], of: fn(&Probed) -> f64| {
+        mean(&paths.iter().map(of).collect::<Vec<f64>>())
     };
     let colliding = |paths: &[Probed]| paths.iter().filter(|p| p.collisions > 0).count();
     let held_near = |paths: &[Probed]| {
@@ -405,27 +544,33 @@ fn tally(scenes: &[&SceneCase], held_within: f64) -> String {
             .count()
     };
     format!(
-        "{} scenes; ours {} paths, failures {failures:?}, clearance {:.4}, length {:.3}, {} \
-         in collision at a probe, {} holding an object nearer than {held_within} m; MoveIt's \
-         {} paths, codes {codes:?}, clearance {:.4}, length {:.3}, {} in collision at a \
-         probe, {} holding an object nearer than {held_within} m",
+        "{} scenes; ours {} paths, failures {failures:?}, clearance {:.4}{}, length {:.3}, \
+         {} in collision at a probe, {} holding an object nearer than {held_within} m; \
+         MoveIt's {} paths, codes {codes:?}, clearance {:.4}{}, length {:.3}, {} in \
+         collision at a probe, {} holding an object nearer than {held_within} m",
         scenes.len(),
         ours.len(),
-        mean(&ours, |p| p.clearance),
-        mean(&ours, |p| p.length),
+        mean_of(&ours, |p| p.clearance),
+        self_clearance(&ours),
+        mean_of(&ours, |p| p.length),
         colliding(&ours),
         held_near(&ours),
         theirs.len(),
-        mean(&theirs, |p| p.clearance),
-        mean(&theirs, |p| p.length),
+        mean_of(&theirs, |p| p.clearance),
+        self_clearance(&theirs),
+        mean_of(&theirs, |p| p.length),
         colliding(&theirs),
         held_near(&theirs),
     )
 }
 
 /// Asserts that over the scenes of the drawn set in the scenario `name`, this crate's
-/// success rate and mean smallest clearance lie within or above MoveIt's 95% intervals,
-/// and its mean path length within or below MoveIt's interval.
+/// success rate and mean smallest clearances, to the scene and between the robot's own
+/// bodies where the scenario checks them, lie within or above MoveIt's 95% intervals, and
+/// its mean path length within or below MoveIt's interval. A plan of both arms at a clearance
+/// above 0 holds the clearance where MoveIt's path may come nearer, which lengthens ours on
+/// those scenes, so its length is judged on the scenes both plan where MoveIt's path keeps
+/// the clearances (`keeps_the_clearances`), its length over every path printed beside it.
 fn lies_on_its_side_of_moveits(name: &str) {
     let case = Case::load_all()
         .into_iter()
@@ -449,26 +594,48 @@ fn lies_on_its_side_of_moveits(name: &str) {
         case.scenes.min_clearance
     );
     let held_within = case.scenes.min_clearance + OBJECT_SPARE_M;
-    let geometry = geometry(&case.scenes, &case.urdf, &case.meshes);
-    let chain = geometry.chain();
-    // How far the goal's grasp point stands from the start's, for a pose goal.
+    let geometries: Vec<_> = case
+        .scenes
+        .chains
+        .iter()
+        .map(|chain| geometry(chain, &case.urdf, &case.meshes))
+        .collect();
+    // How far a goal's grasp point stands from the start's, the farthest of the arms', for a
+    // goal of poses.
     let reach = |c: &SceneCase| match &c.scene.goal {
-        SceneGoal::Pose(pose) => Some(
-            (Vector3::from(pose.position)
-                - chain
-                    .world_ee_pose(&configuration(&c.scene.start))
-                    .translation
-                    .vector)
-                .norm(),
+        SceneGoal::Poses(poses) => Some(
+            poses
+                .iter()
+                .zip(&geometries)
+                .zip(c.scene.start.chunks_exact(JOINTS))
+                .map(|((pose, geometry), start)| {
+                    (Vector3::from(pose.position)
+                        - geometry
+                            .chain()
+                            .world_ee_pose(&state(start))
+                            .translation
+                            .vector)
+                        .norm()
+                })
+                .fold(0.0, f64::max),
         ),
         SceneGoal::Joints(_) => None,
     };
+    let held_by_the_plan = |c: &SceneCase| {
+        c.scene
+            .attached
+            .iter()
+            .any(|held| held_by_an_arm_of_the_plan(held, &case.scenes))
+    };
     let groups: [Group; 7] = [
         ("all", &|_| true),
-        ("holding", &|c| c.scene.attached.is_some()),
-        ("not holding", &|c| c.scene.attached.is_none()),
-        ("the other arm holding", &|c| {
-            c.scene.other_arm_holds.is_some()
+        ("holding", &held_by_the_plan),
+        ("not holding", &|c| !held_by_the_plan(c)),
+        ("an arm off the plan holding", &|c| {
+            c.scene
+                .attached
+                .iter()
+                .any(|held| !held_by_an_arm_of_the_plan(held, &case.scenes))
         }),
         ("with an allowed pair", &|c| !c.scene.allowed.is_empty()),
         ("a pose within the short reach of the start's", &|c| {
@@ -500,7 +667,7 @@ fn lies_on_its_side_of_moveits(name: &str) {
     );
     let interval = |of: fn(&Probed) -> f64| {
         let values: Vec<f64> = theirs.iter().map(of).collect();
-        let mean = ours.iter().map(of).sum::<f64>() / ours.len() as f64;
+        let mean = mean(&ours.iter().map(of).collect::<Vec<f64>>());
         (mean, mean_interval(&values))
     };
     let (clearance, (low, high)) = interval(|p| p.clearance);
@@ -514,25 +681,90 @@ fn lies_on_its_side_of_moveits(name: &str) {
         "{}: a mean clearance of {clearance}, below MoveIt's interval from {low}",
         case.name
     );
+    if !case.checked_pairs.is_empty() {
+        let (clearance, (low, high)) = interval(|p| {
+            p.self_clearance
+                .expect("a self distance where the scenario checks pairs")
+        });
+        println!(
+            "{}: self clearance ours {clearance}, MoveIt's {} in {low}..{high}",
+            case.name,
+            (low + high) / 2.0
+        );
+        assert!(
+            clearance >= low,
+            "{}: a mean self clearance of {clearance}, below MoveIt's interval from {low}",
+            case.name
+        );
+    }
     let (length, (low, high)) = interval(|p| p.length);
     println!(
         "{}: length ours {length}, MoveIt's {} in {low}..{high}",
         case.name,
         (low + high) / 2.0
     );
+    if case.scenes.min_clearance == 0.0 || case.checked_pairs.is_empty() {
+        assert!(
+            length <= high,
+            "{}: a mean length of {length}, above MoveIt's interval to {high}",
+            case.name
+        );
+        return;
+    }
+    let (ours, theirs): (Vec<f64>, Vec<f64>) = scenes
+        .iter()
+        .filter_map(|c| Some((c.ours_probed?, c.moveit.probed?)))
+        .filter(|(_, theirs)| keeps_the_clearances(theirs, case.scenes.min_clearance))
+        .map(|(ours, theirs)| (ours.length, theirs.length))
+        .unzip();
+    assert!(
+        ours.len() >= MIN_SCENES,
+        "{}: {} scenes both plan where MoveIt's path keeps the clearances; the statistics need \
+         at least {MIN_SCENES}",
+        case.name,
+        ours.len()
+    );
+    let (length, (low, high)) = (mean(&ours), mean_interval(&theirs));
+    println!(
+        "{}: length on the {} scenes both plan where MoveIt's path keeps the clearances: ours \
+         {length}, MoveIt's {} in {low}..{high}",
+        case.name,
+        ours.len(),
+        (low + high) / 2.0
+    );
     assert!(
         length <= high,
-        "{}: a mean length of {length}, above MoveIt's interval to {high}",
+        "{}: where MoveIt's path keeps the clearances, a mean length of {length}, above its \
+         interval to {high}",
         case.name
     );
 }
 
-// Over the scenes of a drawn set, among boxes of voxels, among collision objects or to a
-// pose of the grasp point, this crate's success rate and mean smallest clearance lie
-// within or above MoveIt's 95% intervals, and its mean path length within or below
-// MoveIt's; a probe of MoveIt's in collision measures a clearance of -1. The committed
-// scenes, one of each outcome, are too few for the intervals: each test runs on its
-// scenario's drawn set, locally, as the harness README's rule 3 says, and the pull
+/// Whether a path of MoveIt keeps the clearances a plan of both arms keeps at `min_clearance`:
+/// from the scene, of the objects the arms hold from the scene, and between the robot's own
+/// bodies, as `Probed` measures them unpadded. `Probed::self_clearance` also holds an object
+/// against the arm that carries it, which a plan keeps 2 mm apart, so this leaves out more of
+/// MoveIt's paths than the plan's clearances alone do.
+fn keeps_the_clearances(path: &Probed, min_clearance: f64) -> bool {
+    let from_the_scene = min_clearance + OBJECT_SPARE_M;
+    path.clearance >= from_the_scene
+        && path
+            .held_clearance
+            .is_none_or(|held| held >= from_the_scene)
+        && path
+            .self_clearance
+            .is_none_or(|own| own >= min_clearance + OWN_BODY_SPARE_M)
+}
+
+// Over the scenes of a drawn set, of one arm or of both, among boxes of voxels, among
+// collision objects or to a pose of each grasp point, this crate's success rate and mean
+// smallest clearances, to the scene and between the robot's own bodies where the scenario
+// checks them, lie within or above MoveIt's 95% intervals, and its mean path length within
+// or below MoveIt's, of both arms at a clearance above 0 on the scenes both plan where
+// MoveIt's path keeps the clearances; a probe of MoveIt's in collision measures a clearance
+// of -1. The
+// committed scenes, one of each outcome, are too few for the intervals: each test runs on
+// its scenario's drawn set, locally, as the harness README's rule 3 says, and the pull
 // request states its tally at its head, for each objective, termination and clearance it
 // ran.
 #[test]
@@ -551,4 +783,25 @@ fn among_objects_the_success_rate_the_clearance_and_the_length_lie_on_their_side
 #[ignore = "statistics of a drawn set of pose goals, run locally as the harness README's rule 3 says"]
 fn among_poses_the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() {
     lies_on_its_side_of_moveits("arm_planning_poses_openarm_v2");
+}
+
+#[test]
+#[ignore = "statistics of a drawn set of both arms among boxes, run locally as the harness README's rule 3 says"]
+fn both_arms_with_boxes_the_success_rate_the_clearances_and_the_length_lie_on_their_side_of_moveits()
+ {
+    lies_on_its_side_of_moveits("arm_planning_both_arms_openarm_v2");
+}
+
+#[test]
+#[ignore = "statistics of a drawn set of both arms among objects, run locally as the harness README's rule 3 says"]
+fn both_arms_with_objects_the_success_rate_the_clearances_and_the_length_lie_on_their_side_of_moveits()
+ {
+    lies_on_its_side_of_moveits("arm_planning_both_arms_objects_openarm_v2");
+}
+
+#[test]
+#[ignore = "statistics of a drawn set of both arms to poses, run locally as the harness README's rule 3 says"]
+fn both_arms_to_poses_the_success_rate_the_clearances_and_the_length_lie_on_their_side_of_moveits()
+{
+    lies_on_its_side_of_moveits("arm_planning_both_arms_poses_openarm_v2");
 }
