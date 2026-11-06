@@ -191,15 +191,19 @@ async def consume_gated(
 
 
 async def serve(node_runner, service_module, handler, label: str) -> None:
-    """Answer one exposed service until shutdown; a raising handler must not
-    end the loop or the service would never answer again."""
+    """Answer one exposed service from one endpoint until shutdown. When the
+    service stops, its request stream ended or it could not listen, the log
+    says why and the loop listens again _SERVICE_RETRY_S later, so a
+    service that stops at once cannot hot-spin the loop."""
     token = node_runner.cancellation_token()
     while not token.is_cancelled():
         try:
             await service_module.handle_requests(node_runner, handler)
         except Exception as e:
-            log(f"{label} service error: {e!r}")
-            await asyncio.sleep(_SERVICE_RETRY_S)
+            log(f"{label} service error: {e!r}; it listens again in {_SERVICE_RETRY_S:g} s")
+        else:
+            log(f"{label}: its request stream ended; it listens again in {_SERVICE_RETRY_S:g} s")
+        await asyncio.sleep(_SERVICE_RETRY_S)
 
 
 def wire_timestamp_s(clock_now_ns: int, captured_monotonic: float) -> float:

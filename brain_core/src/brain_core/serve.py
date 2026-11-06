@@ -7,7 +7,10 @@ tasks weakly, and a task collected mid-await drops its goal context
 without ending it, which the caller sees as abandoned.
 
 A service loop listens once and answers one request at a time, until the
-token fires; it listens again when its service stops.
+token fires. When its service stops, the request stream ended or the
+service could not listen, the log says why and the loop listens again
+`SERVICE_RETRY_S` later, so a service that stops at once cannot hot-spin
+the loop.
 """
 
 from __future__ import annotations
@@ -19,6 +22,9 @@ from typing import Awaitable, Callable
 from .waiting import unless_cancelled
 
 logger = logging.getLogger(__name__)
+
+# The pause after a service stops before its loop listens again (s).
+SERVICE_RETRY_S = 1.0
 
 
 async def serve_action(
@@ -50,10 +56,17 @@ def report_failure(task: asyncio.Task) -> None:
 
 async def serve_service(service_module, node_runner, token, handler) -> None:
     """Serves one exposed service from one endpoint, one request after
-    another, and listens again when the service stops: its request stream
-    ends, or it cannot listen or send a reply, which the log says."""
+    another, until the token fires. When the service stops, its request
+    stream ended or it could not listen, the log says why and the loop
+    listens again `SERVICE_RETRY_S` later."""
+    name = service_module.SERVICE_NAME
     while not token.is_cancelled():
         try:
             await unless_cancelled(token, service_module.handle_requests(node_runner, handler))
         except Exception as error:
-            logger.error("%s service failed: %r", service_module.SERVICE_NAME, error)
+            logger.error("%s service failed: %r; it listens again in %g s", name, error, SERVICE_RETRY_S)
+        else:
+            if token.is_cancelled():
+                return
+            logger.warning("%s: its request stream ended; it listens again in %g s", name, SERVICE_RETRY_S)
+        await unless_cancelled(token, asyncio.sleep(SERVICE_RETRY_S))
