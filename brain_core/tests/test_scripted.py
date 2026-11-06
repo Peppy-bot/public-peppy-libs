@@ -204,10 +204,11 @@ async def test_every_check_arm_move_and_gripper_move_names_its_bars():
     assert await manipulator.grab(cup(), LEFT, 12.0, CancelToken()) == Outcome(True)
     bars = {"check": CHECK_BARS, "move": MOVE_BARS, "grip": GRIP_BARS}
     assert robot.bars == [(kind, bars[kind]) for kind in robot.kinds()]
-    # Plan 1 mm and 0.01 rad; settle within 2 cm and 0.15 rad, 2 s after the
-    # planned end at most; the jaws get 2 s to stand still.
+    # Plan 1 cm and 0.05 rad, as check_positions calls a point reachable;
+    # settle within 2 cm and 0.15 rad, 2 s after the planned end at most;
+    # the jaws get 2 s to stand still.
     assert MOVE_BARS == dict(
-        duration_s=0.0, plan_position_tolerance_m=0.001, plan_orientation_tolerance_rad=0.01,
+        duration_s=0.0, plan_position_tolerance_m=0.01, plan_orientation_tolerance_rad=0.05,
         settle_position_tolerance_m=0.02, settle_orientation_tolerance_rad=0.15, settle_timeout_s=2.0,
     )
     assert GRIP_BARS == dict(settle_timeout_s=2.0)
@@ -402,12 +403,23 @@ async def test_the_first_orientation_whose_three_checks_plan_is_the_one_moved_in
     assert {call[2] for call in robot.calls if call[0] == "move"} == {DOWN[1]}
 
 
-async def test_no_orientation_that_plans_fails_with_the_backbones_last_words():
+async def test_no_orientation_that_plans_fails_with_the_last_orientation_its_point_and_the_backbones_words():
     manipulator, robot, store = await started()
     robot.checks.extend([MoveCheck(False, f"refusal {i}") for i in range(len(DOWN))])
     outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
-    assert outcome == Outcome(False, "no plan reaches item 'cup_1-t0' with gripper 'left_gripper': refusal 7")
+    assert outcome == Outcome(
+        False,
+        "no plan reaches item 'cup_1-t0' with gripper 'left_gripper': orientation 8 of 8, "
+        "[-0.383, 0.924, 0.000, 0.000], has no plan to its pre-grasp point [0.500, 0.100, 0.770]: refusal 7",
+    )
     assert robot.kinds() == ["check"] * len(DOWN)
+
+
+async def test_a_grab_whose_grasp_point_has_no_plan_names_that_point():
+    manipulator, robot, store = await started()
+    robot.checks.extend([MoveCheck(True, ""), MoveCheck(False, "no line plan")] * len(DOWN))
+    outcome = await manipulator.grab(cup(), LEFT, 0.0, CancelToken())
+    assert outcome.message.endswith("has no plan to its grasp point [0.500, 0.100, 0.695]: no line plan")
 
 
 async def test_a_refused_pre_grasp_move_ends_the_grab_with_its_message():
@@ -444,7 +456,12 @@ async def test_a_grab_by_pose_is_not_lowered_and_its_orientation_is_the_only_one
     point, q = (0.5, 0.1, 0.7), (0.0, 0.0, 0.0, 1.0)
     robot.checks.append(MoveCheck(False, "goal pose not planned within 0.010 m"))
     outcome = await manipulator.grab(cup(point, q, grasp_point=True), LEFT, 0.0, CancelToken())
-    assert outcome == Outcome(False, "no plan reaches item 'cup_1-t0' with gripper 'left_gripper': goal pose not planned within 0.010 m")
+    assert outcome == Outcome(
+        False,
+        "no plan reaches item 'cup_1-t0' with gripper 'left_gripper': orientation 1 of 1, "
+        "[0.000, 0.000, 0.000, 1.000], has no plan to its pre-grasp point [0.500, 0.100, 0.625]: "
+        "goal pose not planned within 0.010 m",
+    )
     # The approach of the identity orientation is +Z: the pre-grasp point
     # stands below the grasp point.
     assert robot.calls == [("check", (0.5, 0.1, 0.7 - CLEARANCE_M), q)]
@@ -623,7 +640,11 @@ async def test_a_place_without_an_orientation_tries_the_down_rolls():
     manipulator, robot, _ = await started()
     robot.checks.extend([MoveCheck(False, "no plan")] * (2 * len(DOWN)))
     outcome = await manipulator.place(LEFT, Pose((0.6, 0.0, 0.75)), CancelToken())
-    assert outcome == Outcome(False, "no plan reaches the pose [0.600, 0.000, 0.750] with gripper 'left_gripper': no plan")
+    assert outcome == Outcome(
+        False,
+        "no plan reaches the pose [0.600, 0.000, 0.750] with gripper 'left_gripper': orientation 8 of 8, "
+        "[-0.383, 0.924, 0.000, 0.000], has no plan to its pre-place point [0.600, 0.000, 0.825]: no plan",
+    )
     assert [call[2] for call in robot.calls] == list(DOWN) + list(DOWN)
     assert {round(call[1][2], 6) for call in robot.calls} == {0.9, 0.825}
     zero = await manipulator.place(LEFT, Pose((0.6, 0.0, 0.75), (0.0, 0.0, 0.0, 0.0)), CancelToken())
