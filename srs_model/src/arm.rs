@@ -18,7 +18,7 @@ pub use chain_kinematics::DEFAULT_DLS_LAMBDA;
 /// How far past an edge of the wrist center's reach [`Arm::solve_ik_within`]
 /// moves a target at least, and how far short of its tolerance its deepest move
 /// stops, in metres: clear of the edge itself.
-pub const SHELL_MARGIN: f64 = 1e-4;
+const SHELL_MARGIN: f64 = 1e-4;
 
 /// A complete SRS arm built from a URDF: forward kinematics + gravity/Coriolis
 /// dynamics + closed-form inverse kinematics. The URDF is parsed once at
@@ -121,7 +121,7 @@ impl Arm {
     /// less than `tolerance` metres from an edge of its reach
     /// ([`reach_shortfall`](Self::reach_shortfall)), outside or inside it, for the
     /// pose of the same orientation moved straight into the reach: first just past
-    /// that edge, then as far in as `tolerance` allows ([`SHELL_MARGIN`] short of
+    /// that edge, then as far in as `tolerance` allows (`SHELL_MARGIN` short of
     /// it), since the other joints' limits can keep the arm off the edge itself.
     /// The end-effector then stops less than `tolerance` from `target`. `None` when
     /// none of these poses admits an in-limit solution.

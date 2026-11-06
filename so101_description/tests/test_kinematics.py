@@ -7,7 +7,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from so101_description.kinematics import Kinematics
+from so101_description.kinematics import (
+    LINE_ORIENTATION_BAR_RAD,
+    LINE_POSITION_BAR_M,
+    LINE_SAMPLES,
+    MAX_LINE_STEP_RAD,
+    Kinematics,
+)
+from so101_description.limits import JointLimits, from_urdf
 from so101_description.transforms import relative_rotation_rad
 
 URDF = str(Path(__file__).parent / "assets" / "mini_so101.urdf")
@@ -309,3 +316,62 @@ def test_an_unusable_tolerance_is_refused(kinematics, bad):
         kinematics.inverse_kinematics(
             HOME, *target, position_tolerance_m=0.01, orientation_tolerance_rad=bad
         )
+
+
+BENT = (0.3, -0.4, 0.5, -0.3, 0.2)
+OTHER_BENT = (0.4, -0.3, 0.4, -0.2, 0.1)
+
+
+def off_the_segment(point, start, end):
+    along = np.subtract(end, start)
+    t = np.clip(np.dot(np.subtract(point, start), along) / np.dot(along, along), 0.0, 1.0)
+    return float(np.linalg.norm(np.subtract(point, np.add(start, along * t))))
+
+
+def test_a_walk_keeps_the_grasp_point_on_the_line_and_lands_on_the_pose(kinematics):
+    start, _ = kinematics.forward_kinematics(BENT)
+    position, orientation = kinematics.forward_kinematics(OTHER_BENT)
+    walk = kinematics.walk_line(BENT, position, orientation, from_urdf(URDF))
+    assert walk is not None and len(walk) == LINE_SAMPLES + 1
+    assert walk[0] == BENT
+    for q in walk:
+        assert off_the_segment(kinematics.forward_kinematics(q)[0], start, position) <= LINE_POSITION_BAR_M
+    for a, b in zip(walk, walk[1:], strict=False):
+        assert max(abs(x - y) for x, y in zip(a, b, strict=True)) <= MAX_LINE_STEP_RAD
+    landed, turned = kinematics.forward_kinematics(walk[-1])
+    assert math.dist(landed, position) <= LINE_POSITION_BAR_M
+    assert relative_rotation_rad(turned, orientation) <= LINE_ORIENTATION_BAR_RAD
+
+
+def test_a_position_out_of_reach_has_no_walk(kinematics):
+    assert kinematics.walk_line(BENT, (5.0, 0.0, 0.0), None, from_urdf(URDF)) is None
+
+
+def test_an_orientation_the_arm_cannot_end_on_has_no_walk(kinematics):
+    position, _ = kinematics.forward_kinematics(OTHER_BENT)
+    assert kinematics.walk_line(BENT, position, (1.0, 0.0, 0.0, 0.0), from_urdf(URDF)) is None
+
+
+def test_an_orientation_a_little_past_the_bar_has_no_walk(kinematics):
+    # The pose's own orientation walks; turned 0.05 rad about the world's x axis, the
+    # end stands past the 0.01 rad bar, and the arm's joints cannot take it up.
+    position, orientation = kinematics.forward_kinematics(OTHER_BENT)
+    s, c = math.sin(0.025), math.cos(0.025)
+    x, y, z, w = orientation
+    turned = (c * x + s * w, c * y - s * z, c * z + s * y, c * w - s * x)
+    assert kinematics.walk_line(BENT, position, turned, from_urdf(URDF)) is None
+
+
+def test_a_position_alone_ends_near_the_turn_the_line_starts_with(kinematics):
+    _, start_orientation = kinematics.forward_kinematics(BENT)
+    position, _ = kinematics.forward_kinematics(OTHER_BENT)
+    walk = kinematics.walk_line(BENT, position, None, from_urdf(URDF))
+    assert walk is not None
+    assert relative_rotation_rad(kinematics.forward_kinematics(walk[-1])[1], start_orientation) < 1.0
+
+
+def test_a_solution_past_the_limits_has_no_walk(kinematics):
+    position, orientation = kinematics.forward_kinematics(OTHER_BENT)
+    limits = from_urdf(URDF)
+    narrow = JointLimits(lower=limits.lower, upper=(0.31, *limits.upper[1:]))
+    assert kinematics.walk_line(BENT, position, orientation, narrow) is None

@@ -9,9 +9,8 @@ use chain_kinematics::nalgebra::{
     Isometry3, SVector, Translation3, Unit, UnitQuaternion, Vector3, Vector6,
 };
 use chain_kinematics::{
-    Chain, ChainSpec, DEFAULT_DLS_LAMBDA, EeCaps, JointSelection, NoSmoothing, ServoLimits,
-    ServoState, ServoStep, ServoTolerances, all_within, damped_pseudo_inverse, rate_step,
-    rate_step_toward,
+    Chain, ChainSpec, DEFAULT_DLS_LAMBDA, EeCaps, JointSelection, StepLimits, all_within,
+    damped_pseudo_inverse, pose_miss, rate_step, rate_step_toward,
 };
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -39,20 +38,30 @@ fn loads_arms_of_different_joint_counts() {
     }
 }
 
-/// The servo limits these tests drive at: 2 rad/s a joint, 0.15 m/s and 1 rad/s
-/// at the end effector, a 100 Hz tick, and arrival within `position_m` and
-/// 1e-2 rad.
-fn servo_limits<const N: usize>(position_m: f64) -> ServoLimits<N> {
-    ServoLimits {
+/// The limits these tests step at: 2 rad/s a joint, 0.15 m/s and 1 rad/s at the
+/// end effector, and a 100 Hz tick.
+fn step_limits<const N: usize>() -> StepLimits<N> {
+    StepLimits {
         max_joint_velocity: [2.0; N],
-        max_joint_acceleration: [5.0; N],
         ee: EeCaps {
             linear_m_s: 0.15,
             angular_rad_s: 1.0,
         },
-        tolerances: ServoTolerances::new(position_m, 1e-2).expect("a reachable tolerance"),
         dt_s: 0.01,
     }
+}
+
+/// The configuration `ticks` steps from `seed` toward `target` reach.
+fn stepped_toward<const N: usize>(
+    chain: &Chain<N>,
+    seed: [f64; N],
+    target: &Isometry3<f64>,
+    ticks: usize,
+) -> [f64; N] {
+    let limits = step_limits::<N>();
+    (0..ticks).fold(seed, |q, _| {
+        rate_step_toward(chain, &q, &chain.world_ee_pose(&q), target, &limits)
+    })
 }
 
 /// Asserts every column of `chain`'s Jacobian at `q` against a central finite
@@ -170,44 +179,19 @@ fn a_wrong_joint_count_is_refused_at_load() {
     );
 }
 
-/// The servo law is the crate's reason to exist, so it has to drive a robot it
-/// was not written for.
+/// The damped step is the crate's reason to exist, so it has to drive a robot it
+/// was not written for: repeated, it reaches a goal the chain provably reaches,
+/// the pose of another configuration.
 #[test]
-fn the_servo_law_converges_on_both_robots() {
+fn repeated_steps_reach_a_pose_on_both_robots() {
     fn run<const N: usize>(chain: &Chain<N>, seed: [f64; N], label: &str) {
-        let limits = servo_limits::<N>(1e-3);
-
-        // A goal the chain provably reaches: the pose of another configuration.
         let goal_q: [f64; N] = std::array::from_fn(|i| seed[i] * 0.4);
-        let start = chain.world_ee_pose(&seed);
         let goal = chain.world_ee_pose(&goal_q);
-
-        let state = ServoState::new(start, goal, 0.05, NoSmoothing);
-        let configs = chain_kinematics::rollout(chain, state, seed, &limits, 30.0)
-            .unwrap_or_else(|| panic!("{label}: servo did not converge"));
-        let took = (configs.len() - 1) as f64 * limits.dt_s;
-        assert!(took > 0.0 && took < 30.0, "{label}: converged in {took}s");
-        assert_eq!(
-            configs[0], seed,
-            "{label}: the path does not start at the seed"
-        );
-        // A step is clamped to the velocity limit before it is added to the
-        // configuration, so the difference read back rounds by up to an ulp of it.
-        for step in configs.windows(2) {
-            for i in 0..N {
-                assert!(
-                    (step[1][i] - step[0][i]).abs()
-                        <= limits.max_joint_velocity[i] * limits.dt_s + 1e-12,
-                    "{label}: joint {i} stepped past its velocity limit in {step:?}"
-                );
-            }
-        }
-        let short_m =
-            chain_kinematics::pose_miss(&chain.world_ee_pose(&configs[configs.len() - 1]), &goal)
-                .position_m;
+        let landed = stepped_toward(chain, seed, &goal, 3000);
+        let miss = pose_miss(&chain.world_ee_pose(&landed), &goal);
         assert!(
-            short_m < limits.tolerances.position_m(),
-            "{label}: the path ends {short_m} m short of the goal"
+            miss.position_m < 1e-3 && miss.orientation_rad < 1e-2,
+            "{label}: the steps end {miss:?} from the goal"
         );
     }
     run(&so101(), [0.3, -0.4, 0.5, -0.3, 0.2], "SO-101");
@@ -306,57 +290,26 @@ fn poses_are_reported_in_the_named_base_frame() {
     assert!(world.translation.vector != Vector3::zeros());
 }
 
+// A step toward any target leaves every joint inside its limits.
 #[hegel::test]
-fn an_arrival_tolerance_is_a_finite_positive_slack_on_each_axis(tc: TestCase) {
-    let slack: f64 = tc.draw(gs::floats());
-    assert_eq!(
-        ServoTolerances::new(slack, 1e-2).is_ok(),
-        slack.is_finite() && slack > 0.0,
-        "position slack {slack} m"
-    );
-    assert_eq!(
-        ServoTolerances::new(1e-2, slack).is_ok(),
-        slack.is_finite() && slack > 0.0,
-        "orientation slack {slack} rad"
-    );
-}
-
-// A step toward any target leaves every joint inside its limits, and a joint
-// that moved toward a limit can still stop before it from the speed it moved
-// at, braking at its acceleration limit from the next tick on: the room left
-// covers its braking distance.
-#[hegel::test]
-fn a_step_heads_into_a_limit_no_faster_than_it_can_stop_there(tc: TestCase) {
-    struct StopsInTime;
-    impl ChainProperty for StopsInTime {
+fn a_step_toward_any_target_stays_inside_the_limits(tc: TestCase) {
+    struct StaysInside;
+    impl ChainProperty for StaysInside {
         fn check<const N: usize>(tc: &TestCase, robot: &Robot) {
             let chain = chain_of::<N>(robot);
             let q = tc.draw(configs(chain.limits()));
             let target = tc.draw(poses());
-            let limits = ServoLimits {
-                max_joint_acceleration: tc
-                    .draw(gs::arrays(gs::floats().min_value(0.1).max_value(50.0))),
-                ..servo_limits::<N>(1e-3)
-            };
-            let next = rate_step_toward(&chain, &q, &chain.world_ee_pose(&q), &target, &limits);
+            let next = rate_step_toward(
+                &chain,
+                &q,
+                &chain.world_ee_pose(&q),
+                &target,
+                &step_limits::<N>(),
+            );
             assert!(all_within(&chain.limits(), &next));
-            for (i, limit) in chain.limits().iter().enumerate() {
-                let (moved, room_left) = if next[i] < q[i] {
-                    (q[i] - next[i], next[i] - limit.lo)
-                } else {
-                    (next[i] - q[i], limit.hi - next[i])
-                };
-                let speed = moved / limits.dt_s;
-                let braking = speed * speed / (2.0 * limits.max_joint_acceleration[i]);
-                assert!(
-                    room_left + TOLERANCE >= braking,
-                    "joint {i} moved at {speed} rad/s with {room_left} left, under the {braking} it \
-                     brakes over"
-                );
-            }
         }
     }
-    on_a_drawn_robot::<StopsInTime>(&tc);
+    on_a_drawn_robot::<StaysInside>(&tc);
 }
 
 // A task increment of up to 0.1 m and 0.1 rad on each axis, from anywhere in
@@ -444,9 +397,9 @@ const DYADIC_ARM: &str = r#"<?xml version="1.0"?><robot name="dyadic">
 </robot>"#;
 
 #[test]
-fn a_tiny_position_error_is_corrected_and_the_law_arrives_within_a_tight_slack() {
-    // Every position error draws a step, so an arrival slack is any positive
-    // distance: a pose a micron away is reached to a tenth of that.
+fn a_tiny_position_error_is_corrected_to_a_tenth_of_itself() {
+    // Every position error draws a step, so a pose a micron away is reached to a
+    // tenth of that.
     const TINY_M: f64 = 1e-6;
     let robot = urdf_rs::read_from_string(DYADIC_ARM).expect("parse the dyadic arm");
     let chain = Chain::<1>::from_urdf(
@@ -460,27 +413,17 @@ fn a_tiny_position_error_is_corrected_and_the_law_arrives_within_a_tight_slack()
     .expect("one revolute joint");
 
     let q = [0.0];
-    let ee = chain.world_ee_pose(&q);
     // The tip sits 0.25 m out, so a micron along the circle is this much joint.
     let target = chain.world_ee_pose(&[TINY_M / 0.25]);
-    let limits = servo_limits::<1>(TINY_M / 10.0);
     assert_ne!(
-        rate_step_toward(&chain, &q, &ee, &target, &limits),
+        stepped_toward(&chain, q, &target, 1),
         q,
         "an error of a micron must draw a step"
     );
-
-    let mut state = ServoState::new(ee, target, 0.05, NoSmoothing);
-    let mut walked = q;
-    let converged = (0..2000).any(|_| match state.step(&chain, &walked, &limits) {
-        ServoStep::Stepped(next) => {
-            walked = next;
-            false
-        }
-        ServoStep::Converged(_) => true,
-    });
+    let landed = stepped_toward(&chain, q, &target, 2000);
+    let short_m = pose_miss(&chain.world_ee_pose(&landed), &target).position_m;
     assert!(
-        converged,
-        "a move of a micron must arrive within a tenth of it"
+        short_m < TINY_M / 10.0,
+        "a move of a micron ends {short_m} m short"
     );
 }

@@ -34,15 +34,10 @@ use crate::{ARM_DOF, ELBOW, JointVec, Limit, PARALLEL_SIN_EPS, SHOULDER, WRIST};
 /// How to resolve the redundant arm angle when the caller doesn't pin it.
 #[derive(Debug, Clone, Copy)]
 pub enum ArmAnglePolicy {
-    /// Use the arm angle of the seed configuration (continuity; servoing).
+    /// Use the arm angle of the seed configuration (continuity along a walk).
     FromSeed,
     /// Use this exact arm angle (radians). Infeasible if it violates a limit.
     Fixed(f64),
-    /// The seed's arm angle on the target's circle, swiveled by `by_rad`:
-    /// where `FromSeed` keeps the elbow, moved on by that angle. Infeasible
-    /// when no in-limit solution sits there, or the seed's elbow lies on the
-    /// circle's axis.
-    Swiveled { by_rad: f64 },
 }
 
 /// One inverse-kinematics solution.
@@ -375,9 +370,7 @@ fn circle_frame(model: &ArmModel, p_w: Vector3<f64>) -> Circle {
 /// infeasible for this target, or when the seed is at the exact straight-arm
 /// singularity and so carries no arm angle (a merely near-straight seed, e.g. the
 /// home pose at q4 ≈ 0.05, still does and is tracked continuously). In `Fixed`
-/// mode the given arm angle is used verbatim and infeasibility yields `None`;
-/// `Swiveled` takes the seed's arm angle on this target's circle moved on by
-/// its angle, exactly, and yields `None` the same way.
+/// mode the given arm angle is used verbatim and infeasibility yields `None`.
 pub(crate) fn solve(
     model: &ArmModel,
     limits: &[Limit; ARM_DOF],
@@ -393,13 +386,6 @@ pub(crate) fn solve(
         ArmAnglePolicy::FromSeed => ctx
             .seeded_solution(seed)
             .map(|(psi, q)| Solution { q, arm_angle: psi }),
-        ArmAnglePolicy::Swiveled { by_rad } => {
-            let psi = ctx.preferred_psi(seed)? + by_rad;
-            ctx.solve_at_psi(psi, seed).map(|q| Solution {
-                q,
-                arm_angle: wrap_pi(psi),
-            })
-        }
     }
 }
 
@@ -950,10 +936,10 @@ mod tests {
     }
 
     #[test]
-    fn cartesian_trajectory_servos_continuously() {
+    fn a_cartesian_trajectory_solves_continuously() {
         // Trace a smooth closed Cartesian path (a circle in position plus a gentle
-        // orientation wobble) and servo along it in FromSeed mode, seeding each
-        // solve with the *previous* solution, as a real servo consumer would.
+        // orientation wobble) and walk along it in FromSeed mode, seeding each
+        // solve with the *previous* solution, as a line's walk does.
         // This is the one test that exercises the README's continuity guarantee:
         // along a smooth path the joints move smoothly, with no branch flip or psi
         // jump, while every pose is still hit exactly.
@@ -1504,66 +1490,6 @@ mod tests {
         let seed = tc.draw(configs(lim));
         let target = iso(Rotation3::identity(), position);
         assert!(solve(&m, &lim, &target, policy, &seed).is_none());
-    }
-
-    /// A swiveled solve of any pose from any seed is the `FromSeed` solve's
-    /// elbow moved on by its angle: it hits the pose, its arm angle is that
-    /// angle from the seed's azimuth on the target's circle, and a swivel of
-    /// zero solves to exactly the `FromSeed` solution whenever the seed's own
-    /// azimuth is feasible there.
-    #[hegel::test]
-    fn a_swiveled_solve_moves_the_elbow_on_from_the_seeds_azimuth(tc: hegel::TestCase) {
-        let side = tc.draw(sides());
-        let fk = v1_fk(side);
-        let lim = fk.limits();
-        let m = ArmModel::from_fk(fk).unwrap();
-        let q = tc.draw(configs(lim));
-        let seed = tc.draw(configs(lim));
-        let by_rad: f64 = tc.draw(angles());
-        let target = pose(fk, &q);
-        let Some(ctx) = PsiSolve::new(&m, &lim, &target) else {
-            return;
-        };
-        let Some(azimuth) = ctx.preferred_psi(&seed) else {
-            assert!(
-                solve(
-                    &m,
-                    &lim,
-                    &target,
-                    ArmAnglePolicy::Swiveled { by_rad },
-                    &seed
-                )
-                .is_none()
-            );
-            return;
-        };
-        if let Some(swiveled) = solve(
-            &m,
-            &lim,
-            &target,
-            ArmAnglePolicy::Swiveled { by_rad },
-            &seed,
-        ) {
-            let got = pose(fk, &swiveled.q);
-            assert!((got.translation.vector - target.translation.vector).norm() < TOLERANCE);
-            assert!(got.rotation.angle_to(&target.rotation) < TOLERANCE);
-            assert!(
-                wrap_pi(swiveled.arm_angle - azimuth - by_rad).abs() < TOLERANCE,
-                "swiveled to {} from the seed's {azimuth}, asked {by_rad}",
-                swiveled.arm_angle
-            );
-        }
-        let held = solve(
-            &m,
-            &lim,
-            &target,
-            ArmAnglePolicy::Swiveled { by_rad: 0.0 },
-            &seed,
-        );
-        let from_seed = solve(&m, &lim, &target, ArmAnglePolicy::FromSeed, &seed);
-        if let (Some(held), Some(from_seed)) = (held, from_seed) {
-            assert_eq!(held.q, from_seed.q, "a zero swivel differs from FromSeed");
-        }
     }
 
     /// `FromSeed` keeps the elbow's azimuth about the shoulder-wrist axis where

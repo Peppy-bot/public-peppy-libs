@@ -3,8 +3,8 @@
 Kinematics, dynamics and Cartesian planning for a **7-DOF SRS arm** (spherical
 shoulder, revolute elbow, spherical wrist): forward kinematics, closed-form
 arm-angle inverse kinematics, gravity/Coriolis validation on the real arm, and
-the plan of a Cartesian move, a straight line with the elbow held or swiveled or
-the guarded servo (`plan_cartesian`). Robot-agnostic: every dimension comes from
+the plan of a Cartesian move, a straight line walked by KDL's descent
+(`plan_line`). Robot-agnostic: every dimension comes from
 the URDF the caller supplies, and a chain that is not SRS is refused at load.
 Pure Rust; no hardware, messaging, or async dependencies.
 
@@ -35,7 +35,7 @@ let solution = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &q)?;
 | `Arm::at(q)` | pose for FK and dynamics; `&self`, so two configurations compare side by side |
 | `Posed::{ee_pose, tip_pose}` | the tool control point, and the wrist before any tool |
 | `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics (the chain's, at seven joints), payload included |
-| `Posed::jacobian` | the 6x7 geometric Jacobian, its damped inverse and its manipulability |
+| `Posed::jacobian` | the 6x7 geometric Jacobian and its damped inverse |
 | `Arm::solve_ik` | closed-form arm-angle (Shimizu) IK under an [`ArmAnglePolicy`] |
 | `Arm::wrist_reach` | the nearest and farthest the wrist center stands from the shoulder within the elbow's limits |
 | `Arm::reach_shortfall` | how far a target lies beyond the arm's reach: its wrist center's distance outside `wrist_reach` |
@@ -44,16 +44,15 @@ let solution = arm.solve_ik(&target, ArmAnglePolicy::FromSeed, &q)?;
 | `Arm::arm_angle` | the arm angle a configuration is already at |
 | `Arm::rate_step` | one damped resolved-rate step (`chain_kinematics`'s, at seven joints) |
 | `Arm::chain` | the arm as a plain serial chain, for the generic laws |
-| `plan_cartesian` | the Cartesian plan of a move: a straight line with the elbow held or swiveled (`plan_line`, walked at run time with a `LineCursor`), or `chain_kinematics`'s guarded servo when no line tracks, within a `PlanLimits` |
+| `plan_line` | the Cartesian plan of a move: the configurations of a straight line's walk, one descent of `chain_kinematics`' KDL search per step, which a caller times and plays as a joint path |
 
 ## The redundancy
 
 Seven joints reaching a six-dimensional pose leaves a one-parameter family of
 solutions: the elbow sweeps a circle about the shoulder-wrist axis, and its
 position on that circle is the **arm angle**. `solve_ik` resolves it by policy -
-hold the seed's, swivel it on by an angle, or take a fixed one - and reports it back on the
-[`Solution`], because on this robot the arm angle is not an
-implementation detail: it is a planning tier, a jog mode, and a wire field.
+hold the seed's or take a fixed one - and reports it back on the
+[`Solution`].
 
 The feasible arm angles are computed **analytically**, as the exact intervals of
 psi that keep every joint in limits, rather than sampled. A sampled sweep misses
@@ -90,8 +89,7 @@ src/
   arm.rs      the arm and its posed view: forward kinematics, dynamics, limits, the IK entry
   fk.rs       forward kinematics over the model
   ik.rs       closed-form arm-angle inverse kinematics and its feasible intervals
-  line.rs     the line tier: the walk with the elbow held or swiveled on chain_kinematics' walk_line, its timing and tick check, the cursor and the trajectory
-  plan.rs     the Cartesian plan: the limits, the tiers in order, the refusals
+  line.rs     the Cartesian plan: the walk of a straight line on chain_kinematics' walk_line and KDL search
   error.rs    what can go wrong building an arm
 ```
 
@@ -113,7 +111,7 @@ shares with `chain_kinematics`. Four suites carry most of the weight:
 - **`tests/round_trip.rs`** - IK inverts FK for every bent elbow and refuses
   every straight-arm pose.
 - **`tests/parity.rs`** - a recorded fixture of FK, Jacobians, dynamics, IK
-  solutions and servo steps, asserted through the public API only. It is the
+  solutions and damped steps, asserted through the public API only. It is the
   parity gate: a refactor that changes a number fails here rather than on the
   robot. Regenerate deliberately with `SRS_PARITY_REGENERATE=1`, and never to
   make a change pass.

@@ -11,7 +11,7 @@ mod cartesian_scenes;
 
 use std::path::Path;
 
-use motion_planning_core::CARTESIAN_STEP_M;
+use chain_kinematics::CARTESIAN_STEP_M;
 use ros_reference::cartesian_paths::{Ours, Paths};
 use serde_json::json;
 

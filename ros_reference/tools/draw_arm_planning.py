@@ -153,8 +153,7 @@ COMMITTED_OBJECTS = {
 # the arm's 0.6 m reach from its shoulder (openarm_left_link2's origin) to its grasp point
 # with the arm straight, and turned at most 0.3 rad, which turns the grasp point about 5
 # cm, half that, about the wrist 16 cm from it (openarm_left_link6's origin). Each pose
-# goal holds within 1 mm and 0.01 rad, the plan tolerances that the robot MCP's move_arm
-# tool names for a seven-joint arm such as OpenArm v2 (mcp-hub robot/robot_control.json5).
+# goal holds within 1 mm and 0.01 rad, the defaults of MoveIt's CartesianPrecision.
 SHORT_REACH_M = 0.1
 SHORT_TURN_RAD = 0.3
 POSE_TOLERANCE_M = 0.001

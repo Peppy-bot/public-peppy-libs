@@ -6,9 +6,8 @@
 //!
 //! - [`pacer`]: fixed-rate pacing for a control loop, with overrun accounting.
 //! - [`chase`]: the rate-limited chase that absorbs a setpoint's target jumps
-//!   ([`chase_step`](chase::chase_step)), the chase along the line to a target
-//!   ([`chase_along`](chase::chase_along)), and the check of a step against
-//!   its rates.
+//!   ([`chase_step`](chase::chase_step)), and the chase along the line to a
+//!   target ([`chase_along`](chase::chase_along)).
 //! - [`filters`]: scalar signal filters ([`LowPassFilter`](filters::LowPassFilter),
 //!   [`ButterworthFilter`](filters::ButterworthFilter),
 //!   [`HampelFilter`](filters::HampelFilter)).
@@ -17,11 +16,9 @@
 //! - [`minimum_jerk`]: the quintic blend between two values and its peak rate.
 //! - [`path_timing`]: a path through waypoints rounded at each corner
 //!   within a deviation, its time-optimal timing under velocity and
-//!   acceleration limits, and the trajectories that play it: a timed path
-//!   over a duration, and the joint path.
-//! - [`timing`]: the clock a motion plays on, the duration a caller may ask
-//!   of it, its control ticks, and the check that what they command moves and
-//!   accelerates within the limits.
+//!   acceleration limits, and the trajectory that plays a joint path.
+//! - [`timing`]: the clock a motion plays on and the duration a caller may ask
+//!   of it.
 //! - [`motor_health`]: judging one motor's load, temperature and condition
 //!   against its ratings.
 //! - [`positive_finite`]: a positive finite float, carried as proof it was checked.
@@ -29,7 +26,6 @@
 //!   a node, with the pause after a receive error.
 //! - [`serving`]: the loop that serves one service for the life of a node,
 //!   with the pause after a runtime error.
-//! - [`servo`]: the tolerances that decide when a Cartesian goal is reached.
 //! - [`setpoint_stream`]: the latest setpoint, published to a sink on a fixed
 //!   interval until cancelled, with one warning per failure burst.
 //! - [`throttle`]: admitting a repeating event at most once per window.
@@ -54,7 +50,6 @@ pub mod positive_finite;
 pub mod receiving;
 pub mod report_once;
 pub mod serving;
-pub mod servo;
 pub mod setpoint_stream;
 pub mod sync;
 #[cfg(test)]

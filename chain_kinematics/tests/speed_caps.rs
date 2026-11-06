@@ -10,27 +10,22 @@
 //! could overshoot a budget the algebra assumed was met exactly.
 
 use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
-use chain_kinematics::{
-    Chain, EeCaps, NoSmoothing, ServoLimits, ServoState, ServoStep, ServoTolerances,
-    rate_step_toward,
-};
+use chain_kinematics::{Chain, EeCaps, StepLimits, rate_step_toward};
 
 mod common;
 use common::{openarm, so101};
 
 const DT: f64 = 0.01;
 
-/// A generous per-joint velocity budget and no acceleration budget, so the
-/// end-effector cap is the only thing binding.
-fn limits<const N: usize>(linear_m_s: f64, angular_rad_s: f64) -> ServoLimits<N> {
-    ServoLimits {
+/// A generous per-joint velocity budget, so the end-effector cap is the only
+/// thing binding.
+fn limits<const N: usize>(linear_m_s: f64, angular_rad_s: f64) -> StepLimits<N> {
+    StepLimits {
         max_joint_velocity: [8.0; N],
-        max_joint_acceleration: [f64::INFINITY; N],
         ee: EeCaps {
             linear_m_s,
             angular_rad_s,
         },
-        tolerances: ServoTolerances::new(1e-3, 1e-2).expect("a reachable tolerance"),
         dt_s: DT,
     }
 }
@@ -50,7 +45,7 @@ fn peak_toward<const N: usize>(
     chain: &Chain<N>,
     seed: [f64; N],
     target: &Isometry3<f64>,
-    limits: &ServoLimits<N>,
+    limits: &StepLimits<N>,
     ticks: usize,
 ) -> Peaks {
     let mut q = seed;
@@ -133,9 +128,9 @@ fn quartering_the_cap_quarters_the_speed() {
 
 #[test]
 fn distance_to_the_target_does_not_change_the_step() {
-    // The documented promise: a target metres away produces the same bounded
-    // step as one millimetres away. This is what lets one law serve both a
-    // planned move and a live stream where the operator drags the target.
+    // The documented promise: a target meters away produces the same bounded
+    // step as one millimeters away. This is what lets the step serve a live
+    // stream where the operator drags the target.
     fn run<const N: usize>(chain: &Chain<N>, seed: [f64; N], label: &str) {
         let here = tip(chain, &seed);
         let l = limits::<N>(0.25, 10.0);
@@ -222,37 +217,5 @@ fn the_tighter_of_the_two_budgets_is_the_one_that_binds() {
     assert!(
         fastest < 1.0,
         "the joint budget was the tighter one, yet the tip still reached {fastest:.4} m/s"
-    );
-}
-
-#[test]
-fn a_servo_move_respects_the_cap_end_to_end() {
-    // The same budget through the whole state machine rather than one step:
-    // reference walking, smoothing and re-clamping included.
-    let chain = openarm();
-    let seed = [0.3, -0.4, 0.2, 0.8, -0.5, 0.3, 0.6];
-    let start = tip(&chain, &seed);
-    let goal = tip(&chain, &[0.1, -0.2, 0.1, 1.4, -0.2, 0.1, 0.2]);
-    let cap = 0.2;
-    let l = limits::<7>(cap, 10.0);
-
-    let mut state = ServoState::new(start, goal, 0.05, NoSmoothing);
-    let mut q = seed;
-    let mut fastest = 0.0f64;
-    for _ in 0..3000 {
-        let here = tip(&chain, &q);
-        match state.step(&chain, &q, &l) {
-            ServoStep::Stepped(next) => {
-                fastest = fastest.max(
-                    (tip(&chain, &next).translation.vector - here.translation.vector).norm() / DT,
-                );
-                q = next;
-            }
-            ServoStep::Converged(_) => break,
-        }
-    }
-    assert!(
-        fastest <= cap * OVERSHOOT_MARGIN,
-        "a servo move peaked at {fastest:.4} m/s under a {cap} m/s cap"
     );
 }

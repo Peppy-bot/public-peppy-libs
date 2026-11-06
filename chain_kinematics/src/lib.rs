@@ -57,24 +57,21 @@ mod jacobian;
 mod line;
 mod payload;
 mod rate;
-mod servo;
 mod tree;
 
 pub use chain::{Chain, ChainSpec, JointSelection, Posed};
 pub use draws::Draws;
 pub use error::ChainError;
 pub use ik::{Aims, ChainFrame, Ends, IkSolver, RandomSource, SEARCH_ITERATIONS};
-pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse, manipulability};
+pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse};
 pub use line::{
-    COINCIDENT_ARC_EPS, LinePrecision, LineSolver, LineState, PrecisionError, WalkEnd, interpolate,
-    walk_line,
+    CARTESIAN_STEP_M, CARTESIAN_STEP_RAD, COINCIDENT_ARC_EPS, LinePrecision, LineSolver, LineState,
+    MAX_RESOLUTION, PRECISION, PRECISION_M, PRECISION_RAD, PrecisionError, WalkEnd, interpolate,
+    line_blends, line_extents, line_precision, walk_line,
 };
 pub use payload::{Payload, segments_carrying};
-pub use rate::{DEFAULT_DLS_LAMBDA, PoseMiss, pose_miss, rate_step};
-pub use servo::{
-    EeCaps, JointSmoothing, LEASH_M, MAX_SERVO_S, NoSmoothing, ServoLimits, ServoPlan, ServoState,
-    ServoStep, ServoTolerances, ServoTrajectory, Smoother, ToleranceError, command_smoothing,
-    ee_progress, joints, plan_servo, rate_step_toward, rollout, timed_with_ee,
+pub use rate::{
+    DEFAULT_DLS_LAMBDA, EeCaps, PoseMiss, StepLimits, pose_miss, rate_step, rate_step_toward,
 };
 pub use tree::{JointKind, Tree};
 
@@ -118,14 +115,4 @@ pub fn clamp_into<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> [f64; N]
 /// True if every joint of `q` lies inside its limit.
 pub fn all_within<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> bool {
     limits.iter().zip(q).all(|(limit, v)| limit.contains(*v))
-}
-
-/// How far the joint of `q` closest to a limit sits inside it, negative when
-/// that joint lies outside.
-pub fn limit_margin<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> f64 {
-    limits
-        .iter()
-        .zip(q)
-        .map(|(limit, v)| (v - limit.lo).min(limit.hi - v))
-        .fold(f64::INFINITY, f64::min)
 }

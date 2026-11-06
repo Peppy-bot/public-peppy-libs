@@ -8,15 +8,14 @@ mod common;
 
 use std::sync::atomic::AtomicBool;
 
-use chain_kinematics::interpolate;
+use chain_kinematics::{PRECISION_M, PRECISION_RAD, interpolate};
 use control_core::path_timing::RoundedPath;
 use control_core::positive_finite::PositiveFinite;
 use hegel::TestCase;
 use hegel::generators as gs;
 use motion_planning_core::{
     Arm, Arms, CartesianFailure, CartesianPath, CartesianRequest, CheckRequest, Collisions,
-    FollowedFrame, Frame, Objects, PRECISION_M, PRECISION_RAD, Scene, StartFault, cartesian_path,
-    check_path,
+    FollowedFrame, Frame, Objects, Scene, StartFault, cartesian_path, check_path,
 };
 use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{DistanceField, VoxelMap};

@@ -65,17 +65,12 @@ error, so it is a refusal at construction.
 | `Posed::{mass, com_world, inertia_world}` | per-segment rigid-body data |
 | `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics, revolute and prismatic joints alike, with everything each segment carries folded in |
 | `damped_pseudo_inverse` | `Jᵀ(J Jᵀ + λ²I)⁻¹`, defined everywhere including at singularities |
-| `manipulability` | Yoshikawa index, the product of the singular values, at any joint count |
 | `IkSolver::search` | the inverse kinematics of a `ChainFrame`, as MoveIt's KDL plugin searches: descents from a seed, then from drawn configurations, until the caller accepts an end or the budget is spent |
 | `rate_step` | one damped resolved-rate step under a velocity budget and joint limits, holding a joint it would carry past a limit and solving the task again on the rest |
-| `rate_step_toward` | the step toward a pose, capped at the end-effector speed caps and braking into joint limits within the acceleration budget |
-| `ServoState` / `rollout` | a guarded Cartesian move, and the same law rolled out offline as its reachability proof and the configurations it commands |
-| `timed_with_ee` / `ServoTrajectory` | a move's configurations timed from rest to rest within the joints' velocity and acceleration limits and the end effector's caps, and the trajectory that plays the path over a duration |
-| `plan_servo` | the servo plan: the rollout timed with the end effector, played over the longer of a request and the path's own time |
-| `JointSmoothing` / `command_smoothing` | one Butterworth per joint at MoveIt Servo's default cutoff for the control period |
+| `rate_step_toward` | the step toward a pose, capped at an end-effector speed budget (`EeCaps`, `StepLimits`), within the joint limits |
 | `interpolate` | the straight line between two poses |
 | `walk_line` | a walk along a line by inverse kinematics from a seed: each step solved from the state before by a `LineSolver`, kept or refused by the caller, and with a `LinePrecision` held to the line between states |
-| `clamp_into` / `all_within` / `limit_margin` / `pose_miss` | joint-limit and pose-distance helpers |
+| `clamp_into` / `all_within` / `pose_miss` | joint-limit and pose-distance helpers |
 
 ## Inverse kinematics
 
@@ -112,8 +107,8 @@ offers the callback each descent's end, converged or not, as
 `walk_line` walks the line a caller traces, a pose for each blend such as
 `interpolate` gives between two poses, through the blends it is given, from a
 state of the caller's. A `LineSolver` solves each step from the state before
-it, which keeps the walk on one branch of the solutions; `srs_model` walks its
-line tier with its closed form and the elbow swiveling. The caller gets each
+it; `srs_model` walks its lines with one descent of `IkSolver::search` per
+step. The caller gets each
 step with the state before it and keeps it or refuses it. The walk ends at the
 first step that has no solution, cannot keep the precision, or is refused, and
 the caller has kept every step before it.
@@ -127,38 +122,22 @@ branch inside a step keeps the pose at both ends while its joint midpoint
 leaves the line at every halving, so the walk ends before the jump. Without a
 precision a step is its own state alone and the walk allocates nothing.
 
-## The servo law
+## The damped step
 
 A discrete IK walk cannot cross the singular surface between two solution
 branches. The damped law can: the damping bounds the joint rates while the task
 error carries the chain across, deviating from the straight line only where the
-geometry forces it. The reference is *leashed* - it stops advancing while the
-chain is behind it - so a wall is ground through instead of the goal running
-away.
+geometry forces it.
 
-`rollout` runs the identical law offline before a move is accepted, which is the
-reachability check: a goal that does not converge within the caller's budget is
-refused, and one that does comes back as the configurations
-the law commanded, one per control period. `timed_with_ee` times them from
-rest to rest within the joint velocity and acceleration limits and the
-end-effector caps, for the caller to play over a duration of its own
-(`ServoTrajectory`). The law is deterministic, so the path that was validated is
-the path that runs.
+`rate_step_toward` caps the task error at an end-effector speed budget, so a
+target meters away produces the same bounded step as one millimeters away.
 
 A joint the step would carry past its limit is held on it and the task solved
-again on the joints left free, and a joint heading for a limit moves no faster
-than it can brake from to rest there at its acceleration limit, so the law
-arrives at a wall without a jolt and the other joints take up the motion.
+again on the joints left free, so the other joints take up the motion.
 
 The step always returns a configuration. An unreachable target moves toward the
 closest pose the step can find and saturates there: a teleoperator pushing past
 the edge feels a wall.
-
-Tolerances are the caller's, and so is the output smoother: `Smoother` is a
-trait, and `JointSmoothing` (one `control_core` Butterworth per joint at MoveIt
-Servo's default cutoff, `command_smoothing`) is the one a planner passes to
-`plan_servo`. An arrival slack is parsed (`ServoTolerances::new`): a finite
-positive distance and angle.
 
 ## Layout
 
@@ -172,7 +151,6 @@ src/
   line.rs       the straight line between two poses, and the walk along a line by IK from a seed
   ik.rs         MoveIt's KDL inverse kinematics of a frame of a chain: the search and its descents
   dynamics.rs   gravity and Coriolis feedforward over the posed chain
-  servo.rs      the leashed-reference Cartesian move, its offline rollout, the timing of a move's configurations with the end effector, and the servo plan
   error.rs      what can go wrong building a chain
   payload.rs    what each segment carries beyond its own link, lumped in
 ```
@@ -184,7 +162,7 @@ cargo test                                     # every suite, each property at 1
 HEGEL_TEST_CASES=100000 cargo test --release   # every property at 100000 cases
 ```
 
-The forward kinematics, the Jacobian, its damped inverse and manipulability,
+The forward kinematics, the Jacobian, its damped inverse,
 the dynamics and the inverse kinematics' search are checked as [Hegel](https://hegel.dev)
 properties on drawn robots: serial chains of one to seven revolute or prismatic
 joints, each placed anywhere on its parent, about any axis, with any range, and
@@ -192,7 +170,7 @@ each link carrying any mass and inertia. The generators of robots live in
 `tests/common/properties.rs`, and those `srs_model` shares, configurations,
 directions and rotations, in [`kinematics_properties`](../kinematics_properties).
 The URDF models of a five-joint SO-101 and a seven-joint OpenArm carry the
-claims that belong to a robot: the servo law converging on both, a wrong joint
+claims that belong to a robot: the damped step reaching a pose on both, a wrong joint
 count refused at load, and the speed caps held at the tip. No hardware is
 involved; qualifying the law on a physical arm is a separate exercise.
 
