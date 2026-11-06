@@ -26,7 +26,9 @@
 //! - [`Side`] names an arm (`left`, its wire `arm_name` and `gripper_name`), and
 //!   [`ArmPair`] holds one value per arm, read and written by [`Side`]. [`ArmOrder`] is the
 //!   arms a request names, in its order, the order its joint arrays hold them in;
-//!   [`ARMS`] counts the arms and [`DUAL_DOF`] both arms' joints.
+//!   [`ARMS`] counts the arms and [`DUAL_DOF`] both arms' joints. [`places_in_order`],
+//!   [`common_waypoint_count`] and [`no_such_arm`] are its refusals in plain names, for a
+//!   robot of any arms.
 //! - [`HardwareVersion::camera_mounts`] lists where the generation's design carries its
 //!   cameras: each one's name, the URDF link it is fixed to, and its pose in that link's
 //!   frame, the numbers the simulation places its rendered cameras by.
@@ -47,7 +49,7 @@ use std::str::FromStr;
 mod arm_order;
 mod side;
 
-pub use arm_order::ArmOrder;
+pub use arm_order::{ArmOrder, common_waypoint_count, no_such_arm, places_in_order};
 pub use side::{ArmPair, Side, UnknownArmName, UnknownGripperName};
 
 /// Joints per arm (j1..j7) in both generations.
