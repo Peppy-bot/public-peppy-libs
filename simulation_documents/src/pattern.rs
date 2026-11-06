@@ -7,8 +7,10 @@
 //! of that item kind, and an entry of `objects` whose pose is `furnish` is a
 //! piece that the simulation lays out in the room with the other such pieces
 //! ([`crate::furnish`]). `work_cell_parameters` says how to measure each
-//! quantity of the work cell that an operator can measure in a real one, and
-//! `min_spacing_m` is the least distance between sampled objects.
+//! quantity of the work cell that an operator can measure in a real one,
+//! `min_spacing_m` is the least distance between sampled objects, and
+//! `stations` lists the fixed stations that the furnish layout keeps free
+//! ([`FixedStation`]).
 //!
 //! An [`Expansion`] of a pattern and a seed draws every sampler that the
 //! seed alone draws: `one_of`, `range`, the count and the asset of each
@@ -26,8 +28,8 @@ use std::sync::Arc;
 
 use crate::daylight::Daylight;
 use crate::furnish::{
-    FurnishEntry, FurnishPiece, check_furnish_poses, furnish_path, placeholder_places, places_of,
-    writes_a_furnish_pose,
+    FixedStation, FurnishEntry, FurnishPiece, check_fixed_stations, check_furnish_poses,
+    furnish_path, placeholder_places, places_of, writes_a_furnish_pose,
 };
 use crate::geometry::Region;
 use crate::sampler::{
@@ -544,6 +546,8 @@ pub struct WorldPattern {
     pub work_cell_parameters: WorkCellParameters,
     /// The least distance between sampled objects, metres.
     pub min_spacing_m: f64,
+    /// The fixed stations that the furnish layout keeps free.
+    pub stations: Vec<FixedStation>,
     fields: WorldFields,
     origin: Origin,
 }
@@ -558,7 +562,8 @@ impl WorldPattern {
     /// catalogue or scene, a mark with no base entry, an entry of an item
     /// kind that adds the name of another entry or of a scene object, the
     /// furnish poses that break a rule across entries
-    /// ([`check_furnish_poses`]), a `reachable_by` that names no robot with
+    /// ([`check_furnish_poses`]), the fixed stations that break a rule
+    /// ([`check_fixed_stations`]), a `reachable_by` that names no robot with
     /// a body, and a distance that names no robot with a body or, without
     /// `per_robot`, a pattern with other than one robot with a body.
     pub(crate) fn of_fields(fields: WorldFields, origin: Origin) -> Result<WorldPattern, Error> {
@@ -592,6 +597,8 @@ impl WorldPattern {
             })
             .collect();
         check_furnish_poses(&pieces, &marked.robots)?;
+        let stations = fields.stations.clone().unwrap_or_default();
+        check_fixed_stations(&stations, &marked.objects, &marked.scene_objects)?;
         let with_a_body: BTreeSet<&RobotName> = marked
             .robots
             .iter()
@@ -609,6 +616,7 @@ impl WorldPattern {
                     .collect(),
             ),
             min_spacing_m: fields.min_spacing_m.map_or(0.0, f64::from),
+            stations,
             fields: fields.clone(),
             origin,
         };
@@ -1323,6 +1331,7 @@ impl Expansion {
         };
         fields.work_cell_parameters = BTreeMap::new();
         fields.min_spacing_m = None;
+        fields.stations = None;
         let root = |key: &str| SitePath::new(vec![Segment::Key(key.to_owned())]);
         if let Some(scene) = &fields.scene {
             fields.scene = Some(Sampled::Fixed(self.concrete(

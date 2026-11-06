@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::daylight::Daylight;
+use crate::furnish::FixedStation;
 use crate::geometry::{Offset, Placement, Point, Pose, Region};
 use crate::limbs::Limbs;
 use crate::names::{
@@ -885,8 +886,8 @@ impl<'de, T: DeserializeOwned> Deserialize<'de> for Entry<T> {
 
 /// The fields of a world document as written, before its base is resolved.
 /// An entry holds samplers in a world pattern, and the pattern adds
-/// entries of an item kind to `objects`, `work_cell_parameters` and
-/// `min_spacing_m`.
+/// entries of an item kind to `objects`, `work_cell_parameters`,
+/// `min_spacing_m` and `stations`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WorldFields {
@@ -917,6 +918,8 @@ pub(crate) struct WorldFields {
     pub work_cell_parameters: BTreeMap<ParameterName, Entry<WorkCellParameter>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_spacing_m: Option<MinSpacing>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stations: Option<Vec<FixedStation>>,
 }
 
 /// A world document as written: it may extend a base.
@@ -963,6 +966,9 @@ impl WorldDocument {
         }
         if fields.min_spacing_m.is_some() {
             return Err(pattern_field("min_spacing_m"));
+        }
+        if fields.stations.is_some() {
+            return Err(pattern_field("stations"));
         }
         let maps = fields.concrete_maps(origin)?;
         let world = World {
@@ -1369,6 +1375,7 @@ impl World {
             locations: value_entries(&self.locations),
             work_cell_parameters: BTreeMap::new(),
             min_spacing_m: None,
+            stations: None,
         }
     }
 }
@@ -1828,7 +1835,7 @@ pub(crate) mod tests {
             ),
             (
                 example_text().replace("catalogue:", "workflow: 1, catalogue:"),
-                "workflow: unknown field `workflow`, expected one of `manifest`, `catalogue`, `extends`, `scene`, `robots`, `scene_objects`, `objects`, `lighting`, `materials`, `daylight`, `regions`, `locations`, `work_cell_parameters`, `min_spacing_m`",
+                "workflow: unknown field `workflow`, expected one of `manifest`, `catalogue`, `extends`, `scene`, `robots`, `scene_objects`, `objects`, `lighting`, `materials`, `daylight`, `regions`, `locations`, `work_cell_parameters`, `min_spacing_m`, `stations`",
             ),
             (
                 example_text().replace("scale: 1", "scale: 0"),

@@ -4,7 +4,8 @@
 //! catalogue release and the scene, the robots with their joins, stands and
 //! limbs, the scene objects moved or removed, the spawned objects, the lighting, the
 //! materials, the daylight, its regions and the named locations. A world pattern
-//! ([`WorldPattern`]) is a world with samplers and furnish poses, which a
+//! ([`WorldPattern`]) is a world with samplers, furnish poses and the fixed
+//! stations that the layout of the furnish poses keeps free, which a
 //! [`Seed`] expands into a concrete world ([`Expansion`]). A sweep
 //! (`sweep/v1`, [`Sweep`]) runs one workflow revision in many worlds of its
 //! world patterns. A simulation keeps a [`SetupRecord`] of
@@ -41,7 +42,9 @@ pub use compose::{StackRobot, StartSetup};
 pub use daylight::{Date, Daylight, TimeOfDay, Weather};
 pub use documents_core::{Digest, Manifest, Revision};
 pub use error::Error;
-pub use furnish::{FurnishPiece, FurnishRule, FurnishStation, ScaleRange, StationRoom};
+pub use furnish::{
+    FixedStation, FurnishPiece, FurnishRule, FurnishStation, ScaleRange, StationRoom,
+};
 pub use geometry::{Offset, Placement, Point, Pose, Region};
 pub use judge::{
     Band, BeltLine, Bound, Bounds, Check, ClearWays, ContentsOn, Control, Count, Holding, Judge,
