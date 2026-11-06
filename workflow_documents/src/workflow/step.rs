@@ -141,6 +141,13 @@ const KIND_KEYS: [&str; 10] = [
     "wait_for",
 ];
 
+/// The fields that a step of a lane or of an initialization holds beside its
+/// kind key.
+pub(super) const STEP_FIELDS: [&str; 4] = ["id", "timeout_s", "retry", "invariant"];
+
+/// The fields that a step of a `safe_state` holds beside its `call`.
+pub(super) const SAFE_STEP_FIELDS: [&str; 2] = ["id", "timeout_s"];
+
 /// Reads the steps of one role: its role, the parameters a lane group gives
 /// it, and the refusals found so far.
 pub(super) struct StepReader<'a> {
@@ -163,6 +170,25 @@ impl StepReader<'_> {
             .into_iter()
             .for_each(|refusal| self.refuse(Refusal::new(at.clone(), refusal.reason)));
         refused
+    }
+
+    /// Refuses each field of `fields`, the object `object` of the step at
+    /// `at`, that no rule read, naming the object: whether one was. A field
+    /// of `step_fields`, the fields of that step, is refused with where it
+    /// goes.
+    fn refuse_unknown_in(
+        &mut self,
+        at: &At,
+        fields: &Fields,
+        object: &str,
+        step_fields: &[&str],
+    ) -> bool {
+        let unknown = fields.unknown_keys();
+        for key in &unknown {
+            let reason = unknown_field_of_object(object, key, step_fields);
+            self.refuse(Refusal::new(at.clone(), reason));
+        }
+        !unknown.is_empty()
     }
 
     fn at_step(&self, id: &StepId) -> At {
@@ -239,7 +265,7 @@ impl StepReader<'_> {
         };
         match kind {
             "call" => self
-                .call(fields.get("call")?, &fields.at("call"), at)
+                .call(fields.get("call")?, &fields.at("call"), at, &STEP_FIELDS)
                 .map(StepKind::Call),
             "sequence" => self
                 .steps(fields.get("sequence")?, &fields.at("sequence"), at)
@@ -293,7 +319,7 @@ impl StepReader<'_> {
                 let list = self.expression(at, spec.get("list"), "for_each.list")??;
                 let element = self.field(at, spec.read_required::<Name>("as"))?;
                 self.no_param_named(at, Some(&element));
-                self.refuse_unknown(at, &spec);
+                self.refuse_unknown_in(at, &spec, "for_each", &STEP_FIELDS);
                 let max_items = self.field(at, fields.read_required::<NonZeroU32>("max_items"))?;
                 let body = child(self, "body")?;
                 Some(StepKind::ForEach {
@@ -314,7 +340,7 @@ impl StepReader<'_> {
                         let spec = self.field(at, Fields::of(value, &fields.at("breaker")))?;
                         let max =
                             self.field(at, spec.read_required::<NonZeroU32>("max_failures"))?;
-                        self.refuse_unknown(at, &spec);
+                        self.refuse_unknown_in(at, &spec, "breaker", &STEP_FIELDS);
                         Some(max)
                     }
                 };
@@ -397,7 +423,15 @@ impl StepReader<'_> {
         self.field(at, read_value(value, "signal"))
     }
 
-    pub(super) fn call(&mut self, value: &Value, path: &str, at: &At) -> Option<Call> {
+    /// The `call` at `path` of the step at `at`, whose own fields are
+    /// `step_fields`, or `None` once its refusals are recorded.
+    pub(super) fn call(
+        &mut self,
+        value: &Value,
+        path: &str,
+        at: &At,
+        step_fields: &[&str],
+    ) -> Option<Call> {
         let fields = self.field(at, Fields::of(value, path))?;
         let member = self.field(at, fields.read_required::<MemberRef>("member"))?;
         let instance = self.field(at, fields.read::<InstanceName>("instance"))?;
@@ -405,7 +439,7 @@ impl StepReader<'_> {
         let result = self.field(at, fields.read::<Name>("as"))?;
         self.no_param_named(at, result.as_ref());
         let done_when = self.expression(at, fields.get("done_when"), "call.done_when")?;
-        let refused = self.refuse_unknown(at, &fields);
+        let refused = self.refuse_unknown_in(at, &fields, "call", step_fields);
         (!refused).then_some(Call {
             member,
             instance,
@@ -538,7 +572,7 @@ impl StepReader<'_> {
             ));
             return None;
         };
-        let refused = self.refuse_unknown(at, &fields);
+        let refused = self.refuse_unknown_in(at, &fields, path, &[]);
         (!refused).then_some(arg)
     }
 
@@ -697,4 +731,14 @@ fn literal_expr(value: &Value) -> Option<Expr> {
             .map(Expr::List),
         Value::Null | Value::Object(_) => None,
     }
+}
+
+/// Why the field `key` of the object `object` of a step is refused: a field
+/// of `step_fields`, the fields of that step, goes beside the object.
+fn unknown_field_of_object(object: &str, key: &str, step_fields: &[&str]) -> String {
+    let unknown = format!("`{object}` has an unknown field `{key}`");
+    if !step_fields.contains(&key) {
+        return unknown;
+    }
+    format!("{unknown}: `{key}` is a field of the step, beside `{object}`")
 }
