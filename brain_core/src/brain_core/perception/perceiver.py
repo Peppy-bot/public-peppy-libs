@@ -35,6 +35,7 @@ from typing import Callable, Optional, Sequence
 from ..ports import Box, CancelToken, Deadline, Detection, Detector, ExpectedFailure, FailureKind, Refusal, SearchTimeout, iou
 from .camera import CameraModel
 from .frames import FrameStore, decode_color, decode_depth, depth_at
+from .geometry import MOUNTS_VACANT, VACANT
 
 # The budget of a search whose goal names a timeout_s of 0. A hosted model
 # with reasoning answers a scan in 3 to 10 s and at times later, and a
@@ -136,6 +137,15 @@ class Perceiver:
         if not self.camera.placed:
             return f"no perception source: {self.pose_reason}"
         return ""
+
+    def starting(self) -> str:
+        """Why the frames or the camera model cannot serve a search yet
+        while they come, or the empty string: once they serve, and when a
+        slot that they come from is vacant, which sends nothing."""
+        vacant = self.frames.vacant or self.intrinsics_reason == VACANT or self.pose_reason == MOUNTS_VACANT
+        if vacant:
+            return ""
+        return self.why_unavailable()
 
     def refuse_unless_ready(self) -> None:
         """Raises the Refusal, `resource_unavailable`, of a search the

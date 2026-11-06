@@ -218,6 +218,11 @@ class ScriptedManipulator:
             return NOT_STARTED
         return self._limb_states.why_unavailable()
 
+    def starting(self) -> str:
+        if self._robot is None or self._limb_states is None:
+            return NOT_STARTED
+        return self._limb_states.starting()
+
     async def start(self, senses: Senses) -> None:
         self._robot = senses.robot
         self._limb_states = senses.limb_states

@@ -76,9 +76,11 @@ def test_the_openings_of_named_grippers_come_in_their_order_or_not_at_all():
 def test_the_store_has_no_snapshot_until_one_arrives_then_keeps_the_latest():
     store = LimbStateStore()
     assert store.why_unavailable() == NO_SNAPSHOT and store.latest is None
+    assert store.starting() == NO_SNAPSHOT, "the first snapshot is still to come"
     store.add(two_arms(1.0))
     store.add(two_arms(2.0))
     assert store.why_unavailable() == "" and store.latest.timestamp == 2.0
+    assert store.starting() == ""
 
 
 def test_a_message_that_does_not_parse_is_dropped_and_logged_once_until_another_reason(caplog):
@@ -104,6 +106,7 @@ async def test_a_vacant_slot_makes_the_follower_return_and_every_grab_hears_why(
     store = LimbStateStore()
     await asyncio.wait_for(store.run(None, FakeToken(), VacantSlot), WAIT)
     assert store.why_unavailable() == VACANT
+    assert store.starting() == "", "a vacant slot never sends a snapshot"
 
 
 async def test_the_follower_keeps_what_the_topic_publishes_until_the_node_stops():

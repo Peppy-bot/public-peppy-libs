@@ -108,6 +108,14 @@ class LimbStateStore:
             return NO_SNAPSHOT
         return ""
 
+    def starting(self) -> str:
+        """Why a grab cannot read the limbs yet while their first snapshot
+        comes, or the empty string: once one came, and for a vacant slot,
+        which sends none."""
+        if self._vacant or self.latest is not None:
+            return ""
+        return NO_SNAPSHOT
+
     def openings(self, grippers: Sequence[str]) -> list[float]:
         """The opening of each of `grippers`, in their order, from the
         latest snapshot; empty when there is none, or when it does not name

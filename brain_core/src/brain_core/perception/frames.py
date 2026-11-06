@@ -76,6 +76,8 @@ class FrameStore:
         self.depths: deque[DepthMessage] = deque(maxlen=FRAME_BUFFER)
         self.depth_unit: Optional[float] = None
         self.frames_seen = 0
+        # Set when the camera slot is vacant: no frame ever comes.
+        self.vacant = False
 
     def add_color(self, message: ColorMessage) -> None:
         self.colors.append(message)
@@ -117,6 +119,7 @@ class FrameStore:
         generated camera modules. Nothing to do when the slot is vacant."""
         producer = video_stream.bound_producer(node_runner)
         if producer is None:
+            self.vacant = True
             return
         await self._learn_depth_unit(node_runner, producer, token, depth_stream_info)
         if token.is_cancelled():

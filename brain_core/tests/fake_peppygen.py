@@ -140,6 +140,7 @@ class get_model:
     class Response:
         roles: list[str]
         models: list[str]
+        starting: list[str]
 
     @staticmethod
     async def handle_next_request(node_runner, handler):

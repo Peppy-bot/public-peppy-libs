@@ -88,21 +88,30 @@ class FakeDetector:
     """Returns the boxes the test hands it, and records the phrases and the
     deadlines of each search. Its scans name every label unless the test
     hands it a coverage; it can search unless the test hands it a reason it
-    cannot."""
+    cannot, which is a reason it still starts when the test says so."""
 
     name = "fake"
 
     def __init__(
-        self, boxes: Optional[list[Box]] = None, coverage: Coverage = Coverage(every_label=True), unavailable: str = ""
+        self,
+        boxes: Optional[list[Box]] = None,
+        coverage: Coverage = Coverage(every_label=True),
+        unavailable: str = "",
+        *,
+        starting: bool = False,
     ) -> None:
         self.boxes = boxes or []
         self.coverage = coverage
         self.unavailable = unavailable
+        self.is_starting = starting
         self.phrases: list[list[str]] = []
         self.deadlines: list[Deadline] = []
 
     def why_unavailable(self) -> str:
         return self.unavailable
+
+    def starting(self) -> str:
+        return self.unavailable if self.is_starting else ""
 
     async def detect(self, image: np.ndarray, phrases: Sequence[str], deadline: Deadline) -> list[Box]:
         self.phrases.append(list(phrases))
@@ -131,6 +140,9 @@ class FakeManipulator:
         self._began = asyncio.Event()
 
     def why_unavailable(self) -> str:
+        return ""
+
+    def starting(self) -> str:
         return ""
 
     async def start(self, senses) -> None:

@@ -19,6 +19,9 @@ class NoneDetector:
     def why_unavailable(self) -> str:
         return "perception_model is 'none'"
 
+    def starting(self) -> str:
+        return ""
+
     async def detect(self, image, phrases: Sequence[str], deadline: Deadline) -> list[Box]:
         return []
 
