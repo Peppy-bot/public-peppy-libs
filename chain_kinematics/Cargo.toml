@@ -2,7 +2,7 @@
 name = "chain_kinematics"
 version = "0.1.0"
 edition = "2024"
-description = "Forward kinematics, the geometric Jacobian, and damped resolved-rate inverse kinematics for any serial chain read from a URDF. Robot-agnostic and generic over the number of joints. Pure Rust, no hardware or messaging deps."
+description = "Forward kinematics, the geometric Jacobian, damped resolved-rate steps and MoveIt's KDL inverse kinematics for any serial chain read from a URDF. Robot-agnostic and generic over the number of joints. Pure Rust, no hardware or messaging deps."
 
 # A workspace root of its own, so cargo's search for one ends at this manifest
 # whatever sits above this repository, which is what lets a consumer pull the
@@ -18,4 +18,6 @@ urdf-rs = "0.10"
 [dev-dependencies]
 hegeltest = { version = "0.51", features = ["static-engine"] }
 kinematics_properties = { path = "../kinematics_properties" }
+openarm_description = { path = "../openarm_description" }
 ros_reference = { path = "../ros_reference" }
+serde_json = "1"

@@ -30,7 +30,9 @@ add_executable(ros_reference
   reference_programs/path_timing.cpp
   reference_programs/planning.cpp
   reference_programs/occupancy.cpp
+  reference_programs/arm_scene.cpp
   reference_programs/arm_planning.cpp
+  reference_programs/cartesian_paths.cpp
   reference_programs/planning_scene.cpp
 )
 target_link_libraries(ros_reference PRIVATE
@@ -61,9 +63,9 @@ target_link_libraries(ros_reference PRIVATE
 set_source_files_properties(reference_programs/planning.cpp PROPERTIES COMPILE_OPTIONS
   -ffp-contract=off)
 target_include_directories(ros_reference PRIVATE ${OCTOMAP_INCLUDE_DIRS})
-# The arm planning reference defines the default constructor of random_numbers'
-# generator, which MoveIt's samplers construct theirs by, and seeds it from the scene;
-# the program exports it, so MoveIt's libraries bind to it.
+# arm_scene.cpp defines the default constructor of random_numbers' generator, which MoveIt's
+# samplers and its KDL plugin construct theirs by, and seeds it from the scene; the program
+# exports it, so MoveIt's libraries bind to it.
 target_link_options(ros_reference PRIVATE
   "LINKER:--export-dynamic-symbol=_ZN14random_numbers21RandomNumberGeneratorC1Ev"
   "LINKER:--export-dynamic-symbol=_ZN14random_numbers21RandomNumberGeneratorC2Ev")

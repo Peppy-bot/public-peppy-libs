@@ -3,11 +3,15 @@
 //! order, and poses past a chain's reach.
 
 use chain_kinematics::nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
-use chain_kinematics::{ACCEPT_POSITION_M, Chain, ChainSpec, JointSelection, Limit};
+use chain_kinematics::{Chain, ChainSpec, JointSelection, Limit};
 use hegel::TestCase;
 use hegel::generators as gs;
-use kinematics_properties::{TIP, TOLERANCE, joint_name, rotations, unit_vectors};
+use kinematics_properties::{TIP, joint_name, rotations, unit_vectors};
 use urdf_rs::Robot;
+
+/// How far past a chain's reach bound an unreachable pose stands at least, in meters: a
+/// hundred times the 1e-5 m a descent converges within.
+const PAST_REACH_M: f64 = 1e-3;
 
 /// The chain from a drawn robot's root to its tip, joints in path order.
 pub fn chain_of<const N: usize>(robot: &Robot) -> Chain<N> {
@@ -88,14 +92,13 @@ pub fn reach_bound<const N: usize>(chain: &Chain<N>) -> f64 {
     spacing + travel
 }
 
-/// A pose no configuration reaches within the acceptance bar, in the world frame
-/// goals are given in: any orientation, at a point past the chain's reach bound
-/// by the bar and [`TOLERANCE`], out to a reach beyond that, from the base
-/// origin.
+/// A pose no configuration reaches, in the world frame targets are given in: any
+/// orientation, at a point past the chain's reach bound by [`PAST_REACH_M`], out to a
+/// reach beyond that, from the base origin.
 #[hegel::composite]
 pub fn unreachable_poses<const N: usize>(tc: &TestCase, chain: &Chain<N>) -> Isometry3<f64> {
     let reach = reach_bound(chain);
-    let nearest = reach + ACCEPT_POSITION_M + TOLERANCE;
+    let nearest = reach + PAST_REACH_M;
     let distance: f64 = tc.draw(gs::floats().min_value(nearest).max_value(nearest + reach));
     let position = tc.draw(unit_vectors()) * distance;
     let rotation = UnitQuaternion::from_rotation_matrix(&tc.draw(rotations()));

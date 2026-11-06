@@ -90,7 +90,7 @@ src/
   arm.rs      the arm and its posed view: forward kinematics, dynamics, limits, the IK entry
   fk.rs       forward kinematics over the model
   ik.rs       closed-form arm-angle inverse kinematics and its feasible intervals
-  line.rs     the line tier: the walk with the elbow held or swiveled, its timing and tick check, the cursor and the trajectory
+  line.rs     the line tier: the walk with the elbow held or swiveled on chain_kinematics' walk_line, its timing and tick check, the cursor and the trajectory
   plan.rs     the Cartesian plan: the limits, the tiers in order, the refusals
   error.rs    what can go wrong building an arm
 ```

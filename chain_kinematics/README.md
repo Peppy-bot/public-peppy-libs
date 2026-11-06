@@ -1,12 +1,10 @@
 # chain_kinematics
 
-Forward kinematics, the geometric Jacobian, and damped resolved-rate inverse
-kinematics for **any serial chain** read from a URDF. Generic over the number of
-joints, with no assumption about topology: a seven-axis arm, a five-axis arm, a
-leg, a pan-tilt head. Pure Rust; no hardware, messaging, or async dependencies.
-
-This is the Rust sibling of [`chain_kinematics_py`](../chain_kinematics_py),
-which solves the same problem on placo's QP for Python nodes.
+Forward kinematics, the geometric Jacobian, damped resolved-rate steps and
+MoveIt's KDL inverse kinematics for **any serial chain** read from a URDF. Generic
+over the number of joints, with no assumption about topology: a seven-axis arm, a
+five-axis arm, a leg, a pan-tilt head. Pure Rust; no hardware, messaging, or async
+dependencies.
 
 ## Quick start
 
@@ -45,9 +43,7 @@ fixed-size and a control tick allocates nothing.
 ## What it refuses at load, and why
 
 Each of these would otherwise produce a plausible wrong answer rather than an
-error, so it is a refusal at construction rather than a caveat downstream. The
-list matches `chain_kinematics_py`'s, which arrived at the same rules against a
-different solver.
+error, so it is a refusal at construction.
 
 | Refused | What you would get otherwise |
 |---|---|
@@ -70,6 +66,7 @@ different solver.
 | `Posed::{gravity_torques, coriolis_torques}` | feedforward dynamics, revolute and prismatic joints alike, with everything each segment carries folded in |
 | `damped_pseudo_inverse` | `Jᵀ(J Jᵀ + λ²I)⁻¹`, defined everywhere including at singularities |
 | `manipulability` | Yoshikawa index, the product of the singular values, at any joint count |
+| `IkSolver::search` | the inverse kinematics of a `ChainFrame`, as MoveIt's KDL plugin searches: descents from a seed, then from drawn configurations, until the caller accepts an end or the budget is spent |
 | `rate_step` | one damped resolved-rate step under a velocity budget and joint limits, holding a joint it would carry past a limit and solving the task again on the rest |
 | `rate_step_toward` | the step toward a pose, capped at the end-effector speed caps and braking into joint limits within the acceleration budget |
 | `ServoState` / `rollout` | a guarded Cartesian move, and the same law rolled out offline as its reachability proof and the configurations it commands |
@@ -77,39 +74,58 @@ different solver.
 | `plan_servo` | the servo plan: the rollout timed with the end effector, played over the longer of a request and the path's own time |
 | `JointSmoothing` / `command_smoothing` | one Butterworth per joint at MoveIt Servo's default cutoff for the control period |
 | `interpolate` | the straight line between two poses |
+| `walk_line` | a walk along a line by inverse kinematics from a seed: each step solved from the state before by a `LineSolver`, kept or refused by the caller, and with a `LinePrecision` held to the line between states |
 | `clamp_into` / `all_within` / `limit_margin` / `pose_miss` | joint-limit and pose-distance helpers |
 
-## Point-to-point: `inverse_kinematics`, `continue_to`, `track`
+## Inverse kinematics
 
-The `Kinematics` type carries the surface frozen across this library and
-`chain_kinematics_py`: three entry points that answer different questions and
-whose refusals mean different things.
+`IkSolver` is MoveIt's KDL inverse kinematics (`kdl_kinematics_plugin.cpp` of moveit2
+2.15.2 at its defaults, and orocos_kdl 1.5.2) for one frame of a chain. The frame is a
+`ChainFrame`: the end effector, or an offset on a segment's link.
 
-| Entry | For | Search scope | A refusal means |
-|---|---|---|---|
-| `inverse_kinematics` | a planned move | whole workspace | nothing found reached it |
-| `continue_to` | following a path | the seed's neighbourhood only | this neighbourhood does not reach it |
-| `track` | streamed setpoints | one bounded descent | never refuses |
+```rust
+let solver = IkSolver::new(&chain, ChainFrame::EndEffector, Aims::Both, Ends::Converged);
+let found = solver.search(seed, &target, &mut draws, &|q| valid(q), SEARCH_ITERATIONS);
+```
 
-An accepted solution is proven: forward kinematics on the chain itself puts it
-inside the tolerance. A refusal is the search giving up within its budget, not
-a proof of unreachability; a general chain has no closed form to prove with.
-Position alone is the acceptance test unless the goal names an orientation
-tolerance, because a chain under six actuated joints cannot meet an arbitrary
-orientation. `track` always returns an in-limit configuration and comes to rest
-against an unreachable target, so a held target gives a held answer rather than
-walking the arm around the workspace boundary.
+A search descends from the seed toward the target, a world-frame `Isometry3`, then from
+a configuration drawn inside the limits after each descent, and answers the first end its
+caller's callback accepts. A descent converges where the frame's position and orientation
+both lie within 1e-5 m and rad of the target; a step that does not lower its error is cut,
+a joint clipped at its limit weighs 0.01 in the next step, and a stuck descent steps off by
+a drawn turn, for at most 500 steps.
 
-Targets are world-frame `Isometry3` values; the typed rotation is what keeps a
-wire quaternion's component order from being confused past the boundary.
+KDL's search ends on a clock, the 0.05 s move_group gives each inverse kinematics call. This
+one starts no descent once its descents have made the caller's budget of passes of KDL's
+loop, and `SEARCH_ITERATIONS`, 9274, is 0.05 s over the mean time of a pass in the
+reference image, so a seed gives the same answer on every machine. The numbers come from the
+caller's `RandomSource`, `Draws` for a SplitMix64 stream that a seed fixes on every machine,
+each joint of a restart in turn and each joint of a step off a singularity in turn.
 
-Qualification, `cargo test --release --test ik_quality` (poses reachable by
-construction, seeds unrelated to the answers):
+Two of KDL's options are the caller's. `Aims` names what a descent brings to the target:
+the position, the orientation or both, `position_only_ik` generalized. `Ends::Approximate`
+offers the callback each descent's end, converged or not, as
+`return_approximate_solution` does.
 
-| | refused | worst position | orientations abandoned (>1 deg) |
-|---|---|---|---|
-| SO-101, 5 DOF, 1000 poses | 0 | 5.7e-4 m | 1 (worst 2.1 deg) |
-| OpenArm, 7 DOF, 300 poses | 0 | 8.3e-4 m | 0 |
+## Walking a line
+
+`walk_line` walks the line a caller traces, a pose for each blend such as
+`interpolate` gives between two poses, through the blends it is given, from a
+state of the caller's. A `LineSolver` solves each step from the state before
+it, which keeps the walk on one branch of the solutions; `srs_model` walks its
+line tier with its closed form and the elbow swiveling. The caller gets each
+step with the state before it and keeps it or refuses it. The walk ends at the
+first step that has no solution, cannot keep the precision, or is refused, and
+the caller has kept every step before it.
+
+A `LinePrecision` is MoveIt's `CartesianPrecision`: the frame at each step's
+joint midpoint stands within its translational and rotational bounds of the
+line's midpoint, or the step is halved, its midpoint solved from the joint
+midpoint and each half refined in turn, down to intervals of the precision's
+resolution (MoveIt's `validateAndImproveInterval`). A solution that jumps
+branch inside a step keeps the pose at both ends while its joint midpoint
+leaves the line at every halving, so the walk ends before the jump. Without a
+precision a step is its own state alone and the walk allocates nothing.
 
 ## The servo law
 
@@ -153,8 +169,8 @@ src/
   jacobian.rs   the Jacobian's inverses, generic over N
   chain.rs      the serial chain and its posed view: forward kinematics, the Jacobian, limits
   rate.rs       one damped resolved-rate step, holding the joints it would carry past their limits, and the distance between poses
-  line.rs       the straight line between two poses
-  ik.rs         point-to-point IK: searched, verified, willing to refuse
+  line.rs       the straight line between two poses, and the walk along a line by IK from a seed
+  ik.rs         MoveIt's KDL inverse kinematics of a frame of a chain: the search and its descents
   dynamics.rs   gravity and Coriolis feedforward over the posed chain
   servo.rs      the leashed-reference Cartesian move, its offline rollout, the timing of a move's configurations with the end effector, and the servo plan
   error.rs      what can go wrong building a chain
@@ -169,7 +185,7 @@ HEGEL_TEST_CASES=100000 cargo test --release   # every property at 100000 cases
 ```
 
 The forward kinematics, the Jacobian, its damped inverse and manipulability,
-the dynamics and the point-to-point IK are checked as [Hegel](https://hegel.dev)
+the dynamics and the inverse kinematics' search are checked as [Hegel](https://hegel.dev)
 properties on drawn robots: serial chains of one to seven revolute or prismatic
 joints, each placed anywhere on its parent, about any axis, with any range, and
 each link carrying any mass and inertia. The generators of robots live in
@@ -177,15 +193,22 @@ each link carrying any mass and inertia. The generators of robots live in
 directions and rotations, in [`kinematics_properties`](../kinematics_properties).
 The URDF models of a five-joint SO-101 and a seven-joint OpenArm carry the
 claims that belong to a robot: the servo law converging on both, a wrong joint
-count refused at load, the speed caps held at the tip, and the qualification
-above. No hardware is involved; qualifying the law on a physical arm is a
-separate exercise.
+count refused at load, and the speed caps held at the tip. No hardware is
+involved; qualifying the law on a physical arm is a separate exercise.
 
 `tests/refusals.rs` covers the table above: every rule is checked both ways, so a
 refusal that would also reject a valid chain fails the suite.
-`tests/ik_quality.rs` is the point-to-point qualification: the debug build
-runs a fast subset of the same draws, and `--release` runs the full scale the
-numbers above are quoted at.
+`tests/line_walk.rs` checks the walk on one-joint solvers whose every answer
+is known: each step solved from the state before, the end at the first step it
+cannot take, and the precision's halving, which a solution jumping a whole turn
+cannot pass.
+`tests/ik_search.rs` checks the search: an answer stands at its target inside the
+limits, a descent aims at what its solver names, and the callback and the budget
+end the search. The evidence for the descents against MoveIt is beside them in
+`src/ik.rs`: from the seeds of seven descents of MoveIt's KDL plugin recorded in
+the reference image on OpenArm v2's left arm, converged, stuck and at the 500 step
+cap, each descent ends within 1e-6 rad of KDL's, after as many passes
+(`tests/fixtures/kdl_descents.json`).
 `tests/ros_reference_forward_kinematics.rs` is the evidence for the forward
 kinematics against MoveIt: at every configuration of the forward kinematics
 scenarios of the [ROS reference harness](../ros_reference), the OpenArm v2 arms

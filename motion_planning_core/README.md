@@ -332,23 +332,14 @@ stand.
 joint limits, the targeted joints inside their targets, as MoveIt's
 `JointConstraintSampler` does. For a pose, as MoveIt's `IKConstraintSampler`, each attempt
 draws a pose of the goal's frame inside the goal and searches for it by MoveIt's KDL
-inverse kinematics, ported (kdl_kinematics_plugin.cpp at its defaults): the first attempt
-from the working state, each later one from a configuration drawn inside the limits. A
-descent converges where the frame's position and orientation both lie within 1e-5 m and
-rad of the pose; a step that does not lower its error is cut, a joint clipped at its limit
-weighs 0.01 in the next step, and a stuck descent steps off by a drawn turn, for at most
-500 steps. A search re-seeds from a drawn configuration after each descent. KDL's search
-ends on a clock, the 0.05 s move_group gives each inverse kinematics call; this one starts
-no descent once its descents have made 9274 passes of KDL's loop, 0.05 s over the mean
-time of a pass in the reference image, so a seed gives the same goals on every machine.
-From the seeds of seven descents of MoveIt's KDL plugin recorded in the reference image,
-converged, stuck and at the 500 step cap, the port's descents end within 1e-6 rad of
-KDL's, after as many passes (`tests/kdl_descents.json`). The grasp point, and a link that
-the chain's every joint moves and that is fixed below the last joint's link, are the tip
-of MoveIt's solver or a link fixed to it, and the search solves for them as KDL does. A
-link the chain's later joints do not move, and a part a link carries such as a finger,
-which hangs on a joint of its own, depart from MoveIt, which has no inverse kinematics for
-them: MoveIt builds no IK sampler for a link that is neither the tip nor fixed to it
+inverse kinematics, as [`chain_kinematics`](../chain_kinematics) holds it, at the search's
+budget of 9274 passes, so a seed gives the same goals on every machine: the first attempt
+from the working state, each later one from a configuration drawn inside the limits. The
+grasp point, and a link that the chain's every joint moves and that is fixed below the last
+joint's link, are the tip of MoveIt's solver or a link fixed to it, and the search solves
+for them as KDL does. A link the chain's later joints do not move, and a part a link
+carries such as a finger, which hangs on a joint of its own, depart from MoveIt, which has
+no inverse kinematics for them: MoveIt builds no IK sampler for a link that is neither the tip nor fixed to it
 (`IKConstraintSampler::loadIKSolver`, default_constraint_samplers.cpp:386-439), so its
 constraint sampler manager selects none (constraint_sampler_manager.cpp:395) and its goal
 sampler draws states uniformly and keeps those that meet the goal by chance
@@ -433,6 +424,48 @@ as waypoint 0, or before the waypoint that fails. A corner's arc runs before the
 the run from its waypoint, and that run before the waypoint it ends at. Each walk of a run
 or of a corner starts only before the check's deadline, and a check that reaches its
 deadline fails `TimeEnded`.
+
+## Cartesian paths
+
+`cartesian_path` moves a frame of one arm along straight lines through poses, as MoveIt's
+`CartesianInterpolator::computeCartesianPath` does for move_group's
+`compute_cartesian_path` service (moveit2 2.15.2, `cartesian_interpolator.cpp:206-307`,
+`cartesian_path_service_capability.cpp:186-188`). A `FollowedFrame` is the grasp point or a
+link fixed to it; MoveIt has no inverse kinematics for any other link.
+
+- Each line runs from the frame's pose at the state the path reached to the next pose, its
+  position lerped and its orientation slerped the shorter way in step with it.
+- Its steps are the more of its length over 0.01 m and its turn over 0.035 rad, each rounded
+  down, plus one: `MaxEEFStep(0.01)`, the step of RViz's MotionPlanning panel
+  (`motion_planning_frame_planning.cpp:141`).
+- Each step is the KDL search from the state before, the state's check inside the search
+  (`setFromIK` at its default timeout, `cartesian_interpolator.cpp:260`,
+  `robot_state.cpp:2017-2019`). Each interval keeps the frame at the joints' midpoint within
+  1 mm and 0.01 rad of the line's midpoint, or is halved and its midpoint solved from the
+  joints' midpoint, down to 1e-5 of the line (`validateAndImproveInterval`): the walk is
+  `chain_kinematics::walk_line`, which the OpenArm backbone's `move_arm` walks too with
+  `srs_model`'s closed form.
+- The first step that fails ends the path. `fraction` sums as MoveIt sums it: one share of
+  the poses for each whole line, and the reached share of the line the path ends on.
+
+Past MoveIt's walk, `cartesian_path` checks the path the move runs, its repeats dropped and
+its corners rounded as `execute_joint_path` runs it:
+
+- `Collisions::Checked` checks it as `check_path` checks a caller's path, and a fault ends
+  the path at the waypoint before it. MoveIt checks each state for collisions and no motion
+  between two. `Collisions::Unchecked` checks no collision and no start contact.
+- At probes of the rounded path, the frame stands within 0.9 mm and 0.009 rad of the lines'
+  pose that pairs with the probe. The probes stand so close that the frame and that pose each
+  move at most 0.05 mm and turn at most 0.5 mrad between two, so the frame stays within 1 mm
+  and 0.01 rad at every state. A probe outside halves the intervals beside its waypoint, and
+  an interval narrower than 1e-5 of a line, whose midway has no state, or whose midway state the
+  move drops, ends the path before it. MoveIt checks the midpoint of each interval.
+- A start nearer than the clearance leaves in one straight joint run to the first state that
+  keeps the clearance, as the start rule walks a departure (see "The start"). A path that
+  reaches no such state, or whose run leaves the precision, ends at its start with a fraction
+  of 0. A corner at the run's end halves the interval after it alone. MoveIt's validity
+  callback judges each state alone, so a first state still nearer than its padding ends its
+  path there.
 
 ## The planning scene
 

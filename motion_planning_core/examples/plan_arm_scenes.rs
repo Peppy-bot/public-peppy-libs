@@ -22,7 +22,7 @@ fn main() {
     let repository = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
     let urdf = std::fs::read_to_string(repository.join(&scenes.urdf)).expect("the URDF reads");
     let answers = on_the_arms(
-        &scenes,
+        &scenes.chains,
         &urdf,
         &repository.join(&scenes.meshes),
         |arms, standing| {
