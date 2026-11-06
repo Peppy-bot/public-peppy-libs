@@ -754,6 +754,37 @@ impl WorldPattern {
         })
     }
 
+    /// Each scene that the pattern can draw: its scene, or the scene with
+    /// each candidate of each of its samplers, the others at their first.
+    pub fn scenes(&self) -> Vec<Scene> {
+        let scene = self.fields.scene.as_ref().expect("a pattern holds a scene");
+        match scene {
+            Sampled::Fixed(scene) => vec![scene.clone()],
+            Sampled::Drawn(drawn) => drawn
+                .candidate_values::<Scene>()
+                .expect("the candidates of a pattern read"),
+        }
+    }
+
+    /// Each asset that each object of `objects` can take, by its name: the
+    /// asset of an object and of an object whose pose is `furnish`, or each
+    /// candidate of a sampler of it. An entry of an item kind draws its
+    /// assets from its item kind ([`Self::item_kinds`]), and is not here.
+    pub fn object_assets(&self) -> BTreeMap<&Name, BTreeSet<String>> {
+        self.fields
+            .objects
+            .iter()
+            .filter_map(|(name, entry)| {
+                let object = match entry {
+                    Entry::Value(ObjectEntry::Object(object)) => object,
+                    Entry::Value(ObjectEntry::Furnished(piece)) => &piece.template,
+                    _ => return None,
+                };
+                Some((name, asset_candidates(object)))
+            })
+            .collect()
+    }
+
     /// An expansion of the pattern with `seed`: each sampler that the seed
     /// alone draws, drawn, with a copy of the pattern. `assets_of_kind`
     /// gives the assets of the catalogue of an item kind; an entry of an
@@ -1041,6 +1072,20 @@ pub(crate) fn physics_candidates(object: &Sampled<Object>) -> BTreeSet<Option<Ph
             .expect("the candidates of a pattern read")
             .into_iter()
             .map(|object| object.physics)
+            .collect(),
+    }
+}
+
+/// Each asset that `object` can take: its asset, or the asset of each
+/// candidate of its samplers.
+fn asset_candidates(object: &Sampled<Object>) -> BTreeSet<String> {
+    match object {
+        Sampled::Fixed(object) => BTreeSet::from([object.asset.clone()]),
+        Sampled::Drawn(drawn) => drawn
+            .candidate_values::<Object>()
+            .expect("the candidates of a pattern read")
+            .into_iter()
+            .map(|object| object.asset)
             .collect(),
     }
 }

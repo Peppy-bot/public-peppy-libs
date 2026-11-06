@@ -1871,6 +1871,42 @@ mod tests {
     }
 
     #[test]
+    fn a_pattern_gives_each_scene_and_each_asset_of_an_object_that_it_can_draw() {
+        let pattern = room();
+        let scene = |asset: &str| crate::Scene {
+            asset: asset.into(),
+            scale: 1.0,
+        };
+        assert_eq!(pattern.scenes(), [scene("scene/empty_room")]);
+        let rooms = room_with(
+            r#"scene: { asset: "scene/empty_room" }"#,
+            r#"scene: { asset: { one_of: ["scene/empty_room", "scene/bare_room"] } }"#,
+        );
+        assert_eq!(
+            WorldPattern::parse(&rooms).unwrap().scenes(),
+            [scene("scene/empty_room"), scene("scene/bare_room")]
+        );
+        let assets: BTreeMap<String, Vec<String>> = pattern
+            .object_assets()
+            .into_iter()
+            .map(|(name, assets)| (name.to_string(), assets.into_iter().collect()))
+            .collect();
+        assert_eq!(
+            assets["desk"],
+            ["object/office_desk", "object/standing_desk"]
+        );
+        assert_eq!(assets["lamp"], ["object/lamp"]);
+        assert_eq!(assets["mug"], ["object/mug"]);
+        assert_eq!(assets.len(), 9);
+        let item_kind = room_with(
+            r#"tray: { asset: "object/tray", pose: { in: "aisle" } },"#,
+            r#"tray: { item_kind: "tray", count: 2, pose: { in: "aisle" } },"#,
+        );
+        let pattern = WorldPattern::parse(&item_kind).unwrap();
+        assert!(!pattern.object_assets().contains_key(&name("tray")));
+    }
+
+    #[test]
     fn a_concrete_world_refuses_fixed_stations() {
         let text = format!(
             r#"{{
