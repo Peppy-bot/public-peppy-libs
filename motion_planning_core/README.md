@@ -348,6 +348,19 @@ sampler draws states uniformly and keeps those that meet the goal by chance
 names, with KDL's position-only and approximate-solution options applied
 (kdl_kinematics_plugin.cpp:344-350, :389), and the goal's constraints decide.
 
+A chain of fewer joints than a pose has freedoms, SO-101's five, reaches no pose drawn inside
+a goal exactly, so a frame MoveIt solves for takes other options. A goal of a position alone
+descends on the position alone, as MoveIt's KDL solver does under its `position_only_ik`
+option. A goal of a position and an orientation departs from MoveIt, whose sampler offers
+converged ends alone (`callIK` passes no options, default_constraint_samplers.cpp:687-689): a
+descent weighs the orientation's rows at 0.01, the search offers each end, and the goal's
+constraints decide. A goal of an orientation alone descends on the orientation alone, and the
+goal's constraints decide on each end. Of
+100 goals of SO-101's arm at 1 mm, held within 0.02 rad, or tilted 0.05 rad and held within
+0.1 rad, it meets 100 of each, where `position_only_ik` with converged ends meets 45 and 94,
+and the search of a longer chain 10 and 2. A Cartesian path takes the search of every chain,
+so it ends where a chain this short cannot keep the precision.
+
 On 200 drawn reachable poses of OpenArm v2's left arm, with the configurations of every
 other branch invalid, one goal sample from all joints at zero reaches each shoulder and
 wrist branch that `srs_model`'s closed form finds on each of them, 144 of which have two

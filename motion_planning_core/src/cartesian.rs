@@ -40,9 +40,9 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use chain_kinematics::{
-    Aims, Chain, Draws, IkSolver, JointKind, LinePrecision, LineSolver, LineState, MAX_RESOLUTION,
-    PRECISION, PRECISION_M, PRECISION_RAD, SEARCH_ITERATIONS, WalkEnd, interpolate, line_blends,
-    line_extents, line_precision, walk_line,
+    Aims, Chain, Draws, Ends, IkSolver, JointKind, LinePrecision, LineSolver, LineState,
+    MAX_RESOLUTION, PRECISION, PRECISION_M, PRECISION_RAD, SEARCH_ITERATIONS, WalkEnd, interpolate,
+    line_blends, line_extents, line_precision, walk_line,
 };
 use control_core::path_timing::{RoundedPath, distinct_joint_waypoint_indices};
 use control_core::positive_finite::PositiveFinite;
@@ -154,7 +154,7 @@ pub fn cartesian_path<const N: usize>(
     let follower = Follower {
         chain,
         frame,
-        ik: frame.ik_solver(chain, Aims::Both),
+        ik: IkSolver::new(chain, frame.into(), Aims::Both, Ends::Converged),
         draws: RefCell::new(Draws::new(request.seed)),
         judge: match request.collisions {
             Collisions::Checked {
@@ -738,7 +738,7 @@ mod tests {
         Follower {
             chain,
             frame: Frame::GraspPoint,
-            ik: Frame::GraspPoint.ik_solver(chain, Aims::Both),
+            ik: IkSolver::new(chain, Frame::GraspPoint.into(), Aims::Both, Ends::Converged),
             draws: RefCell::new(Draws::new(1)),
             judge,
             stop,

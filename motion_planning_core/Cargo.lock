@@ -691,6 +691,7 @@ dependencies = [
  "self_collision_model",
  "serde",
  "serde_json",
+ "so101_description",
  "srs_model",
  "thiserror 2.0.21",
  "urdf-rs",

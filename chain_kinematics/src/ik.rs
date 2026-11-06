@@ -31,9 +31,9 @@
 //! passes, and the same seed gives the same answer on every machine.
 //!
 //! Two of KDL's options are the caller's: what a descent aims at ([`Aims`]) generalizes
-//! `position_only_ik`, which drops the orientation rows (kdl_kinematics_plugin.cpp:344-350,
-//! :442-443), and which ends a search offers ([`Ends`]) is `return_approximate_solution`
-//! (:389).
+//! `position_only_ik`, which drops the orientation rows, and `orientation_vs_position`,
+//! which weighs them (kdl_kinematics_plugin.cpp:344-350, :442-443), and which ends a search
+//! offers ([`Ends`]) is `return_approximate_solution` (:389).
 
 use nalgebra::{Isometry3, Point3, SMatrix, SVector, SymmetricEigen, Vector3, Vector6};
 
@@ -69,6 +69,12 @@ const SVD_THRESHOLD: f64 = 1e-3;
 /// 1698897 passes, each descent's passes read from the plugin's debug line
 /// (kdl_kinematics_plugin.cpp:493-494); per goal, 0.05 s holds 7750 to 10361 passes.
 pub const SEARCH_ITERATIONS: usize = 9274;
+/// The weight of the orientation rows of a solve that aims at [`Aims::PositionFirst`], KDL's
+/// `orientation_vs_position`: the position's rows at 1. The 1e-4 on the squared orientation
+/// error of so101_description's solver, on a row. Measured on SO-101's five joints, through
+/// the goal sampler at a plan's attempts, of 100 goals at 1 mm: at 0.01 it meets 100 held at
+/// 0.02 rad and 100 tilted 0.05 rad and held within 0.1 rad, and at 1 it meets 99 and 87.
+const POSITION_FIRST_ORIENTATION_WEIGHT: f64 = 0.01;
 
 /// Where a search draws its numbers: the configurations it restarts from and its steps off
 /// a singularity.
@@ -136,6 +142,9 @@ pub enum Aims {
     Position,
     Orientation,
     Both,
+    /// Both, the orientation's rows weighed low: a chain of fewer joints than a pose has
+    /// freedoms reaches the position and turns as near the orientation as it can from there.
+    PositionFirst,
 }
 
 /// Which ends of its descents a search offers its caller.
@@ -288,7 +297,7 @@ impl<'a, const N: usize> IkSolver<'a, N> {
         let (linear, angular) = match self.aims {
             Aims::Position => (linear, Vector3::zeros()),
             Aims::Orientation => (Vector3::zeros(), angular),
-            Aims::Both => (linear, angular),
+            Aims::Both | Aims::PositionFirst => (linear, angular),
         };
         Vector6::new(
             linear.x, linear.y, linear.z, angular.x, angular.y, angular.z,
@@ -300,7 +309,10 @@ impl<'a, const N: usize> IkSolver<'a, N> {
     /// Jacobian whose columns `weights` scale, the singular values under `SVD_THRESHOLD`
     /// of the largest left out, scaled by `weights` again. The plugin weighs position and
     /// orientation alike (`orientation_vs_position` 1,
-    /// kdl_kinematics_parameters.yaml:36-46, :344-350). The step is the SVD's, taken from
+    /// kdl_kinematics_parameters.yaml:36-46, :344-350), and [`Aims::PositionFirst`] weighs
+    /// the orientation's rows of the miss and of the Jacobian at
+    /// `POSITION_FIRST_ORIENTATION_WEIGHT` (chainiksolver_vel_mimic_svd.cpp:106-112). The step
+    /// is the SVD's, taken from
     /// the eigenvectors of the Jacobian times its transpose, whose eigenvalues are the
     /// squares of the singular values: each kept singular direction `u` with eigenvalue
     /// `λ` adds the Jacobian's transpose times `u (u · miss) / λ`.
@@ -311,8 +323,14 @@ impl<'a, const N: usize> IkSolver<'a, N> {
         weights: &SVector<f64, N>,
     ) -> SVector<f64, N> {
         let columns = self.jacobian(posed);
-        let jacobian =
-            SMatrix::<f64, 6, N>::from_fn(|row, column| columns[column][row] * weights[column]);
+        let row_weight = |row: usize| match self.aims {
+            Aims::PositionFirst if row >= 3 => POSITION_FIRST_ORIENTATION_WEIGHT,
+            _ => 1.0,
+        };
+        let miss = Vector6::from_fn(|row, _| miss[row] * row_weight(row));
+        let jacobian = SMatrix::<f64, 6, N>::from_fn(|row, column| {
+            columns[column][row] * weights[column] * row_weight(row)
+        });
         let eigen = SymmetricEigen::new(jacobian * jacobian.transpose());
         let floor = eigen.eigenvalues.max() * SVD_THRESHOLD * SVD_THRESHOLD;
         let inner = eigen
@@ -321,7 +339,7 @@ impl<'a, const N: usize> IkSolver<'a, N> {
             .zip(eigen.eigenvectors.column_iter())
             .filter(|(value, _)| **value > 0.0 && **value >= floor)
             .fold(Vector6::zeros(), |sum, (value, u)| {
-                sum + u * (u.dot(miss) / value)
+                sum + u * (u.dot(&miss) / value)
             });
         (jacobian.transpose() * inner).component_mul(weights)
     }
