@@ -92,6 +92,7 @@ pub type JointVec = [f64; ARM_DOF];
 /// rather than mirrored, so the limits [`Arm::limits`] reports and the limits
 /// the IK checks against cannot be two structs that happen to agree.
 pub use chain_kinematics::Limit;
+pub use chain_kinematics::{OutsideLimits, TARGET_SLACK, take_targets};
 
 /// Smallest sine of an angle between two unit axes (or two link directions) we
 /// treat as non-degenerate (~1e-6 rad). Below it the perpendicular / cross

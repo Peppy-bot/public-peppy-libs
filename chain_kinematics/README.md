@@ -76,6 +76,7 @@ error, so it is a refusal at construction.
 | `interpolate` | the straight line between two poses |
 | `walk_line` | a walk along a line by inverse kinematics from a seed: each step solved from the state before by a `LineSolver`, kept or refused by the caller, and with a `LinePrecision` held to the line between states |
 | `clamp_into` / `all_within` / `limit_margin` / `pose_miss` | joint-limit and pose-distance helpers |
+| `take_targets` / `Limit::take_target` / `TARGET_SLACK` | a joint target as a robot takes it: a joint at most 0.001 rad outside its limit runs at the limit, one farther out is refused by its joint, position and limits (`OutsideLimits`) |
 
 ## Inverse kinematics
 

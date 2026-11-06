@@ -409,7 +409,8 @@ INVALID_MOTION_PLAN when it fails.
 `check_path` checks the path execute_joint_path runs from a caller's start through its
 waypoints, each holding every arm's joints, with the checks of a plan's answer: the start
 inside its limits by its tolerance and out of contact, each waypoint inside the joint
-limits and, after the start, at the plan's clearances, each run as the plan walks the runs
+limits, a joint at most `TARGET_SLACK` (0.001) outside a limit taken at the limit as
+execute_joint_path takes it, and, after the start, at the plan's clearances, each run as the plan walks the runs
 of its answer, the run whose path from the start lies on the straight line from the start
 by the start rule, and each arc of the rounded path as the plan walks its arcs. The walks
 follow the run into the first waypoint outside a limit up to where it leaves the limits,

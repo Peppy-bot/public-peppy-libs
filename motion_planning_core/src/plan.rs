@@ -102,7 +102,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use chain_kinematics::{Chain, Draws};
+use chain_kinematics::{Chain, Draws, Limit};
 use control_core::path_timing::{MIN_JOINT_CHANGE_RAD, RoundedPath, distinct_joint_waypoints};
 use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::{
@@ -495,8 +495,14 @@ pub(crate) fn check_path_until<const N: usize, const D: usize>(
         }
     };
     let checks = PathChecks::new(arms, scene, start, request.min_clearance_m);
+    let limits = arms.limits();
     let path: Vec<[f64; D]> = std::iter::once(start)
-        .chain(request.waypoints.iter().copied())
+        .chain(
+            request
+                .waypoints
+                .iter()
+                .map(|waypoint| as_targets(&limits, waypoint)),
+        )
         .collect();
     // Each fault with the waypoints its path leaves passing, and its rank among the
     // faults that leave as many: a corner's arc comes before the rest of the run from its
@@ -586,6 +592,13 @@ pub(crate) fn start_clear<const N: usize, const D: usize>(
         Some(contact) => Err(StartFault::InCollision(contact)),
         None => Ok(start),
     }
+}
+
+/// `waypoint` as execute_joint_path runs it: each joint at most
+/// [`TARGET_SLACK`](chain_kinematics::TARGET_SLACK) outside
+/// its limit at the limit ([`Limit::take_target`]), and each other joint where it is.
+fn as_targets<const D: usize>(limits: &[Limit; D], waypoint: &[f64; D]) -> [f64; D] {
+    std::array::from_fn(|i| limits[i].take_target(waypoint[i]).unwrap_or(waypoint[i]))
 }
 
 /// The first waypoint of `path`, the start first, that holds a joint outside the limits of
@@ -2351,6 +2364,24 @@ pub(crate) mod tests {
                 "{block:?}: {past:?}"
             );
         }
+    }
+
+    // A waypoint a hair past joint 1's limit at 1 m runs at the limit, as
+    // execute_joint_path runs it, and the path passes; one 1.1 mm past it lies outside.
+    #[test]
+    fn a_waypoint_a_hair_past_a_limit_runs_at_the_limit_and_one_farther_out_lies_outside() {
+        let hair = gantry_check([0.0, 0.0], &[[1.0005, 0.0]], &[], &|| false)
+            .unwrap_or_else(|failure| panic!("{failure}"));
+        assert_eq!((hair.clear_waypoints, hair.fault), (1, None));
+        let past = gantry_check([0.0, 0.0], &[[1.0011, 0.0]], &[], &|| false)
+            .unwrap_or_else(|failure| panic!("{failure}"));
+        assert!(
+            matches!(
+                past.fault,
+                Some(PathFault::OutsideLimits { waypoint: 1, position, .. }) if position == 1.0011
+            ),
+            "{past:?}"
+        );
     }
 
     // A waypoint with a value that is not finite answers that it lies outside the limits,
