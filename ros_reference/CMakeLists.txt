@@ -30,6 +30,7 @@ add_executable(ros_reference
   reference_programs/path_timing.cpp
   reference_programs/planning.cpp
   reference_programs/occupancy.cpp
+  reference_programs/orientation_constraints.cpp
   reference_programs/arm_scene.cpp
   reference_programs/arm_planning.cpp
   reference_programs/cartesian_paths.cpp

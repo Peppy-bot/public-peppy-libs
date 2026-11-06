@@ -11,7 +11,9 @@
 //! links, the success rate and the mean smallest clearances, to the scene and between the
 //! robot's own bodies, lie within or above MoveIt's 95% intervals, and the mean path length
 //! within or below its interval, of both arms at a clearance above 0 on the scenes both plan
-//! where MoveIt's path keeps the clearances.
+//! where MoveIt's path keeps the clearances. Over a drawn set whose scenes hold path orientations,
+//! MoveIt's own forward kinematics finds every probe of each rounded path of ours inside each
+//! tolerance, and the tally states the share of the tolerance MoveIt's own paths reach.
 
 mod arm_scenes;
 
@@ -50,6 +52,10 @@ fn mean_interval(values: &[f64]) -> (f64, f64) {
     let half = Z_95 * (variance / n).sqrt();
     (mean - half, mean + half)
 }
+
+/// The fewest values `mean_interval` draws an interval from: it divides by one less than their
+/// count.
+const LEAST_TO_COMPARE: usize = 2;
 
 /// The Wilson score interval of a success rate, at 95%.
 fn rate_interval(successes: usize, trials: usize) -> (f64, f64) {
@@ -551,8 +557,12 @@ fn tally(scenes: &[&SceneCase], held_within: f64) -> String {
 /// bodies where the scenario checks them, lie within or above MoveIt's 95% intervals, and
 /// its mean path length within or below MoveIt's interval. A plan of both arms at a clearance
 /// above 0 holds the clearance where MoveIt's path may come nearer, which lengthens ours on
-/// those scenes, so its length is judged on the scenes both plan where MoveIt's path keeps
-/// the clearances (`keeps_the_clearances`), its length over every path printed beside it.
+/// those scenes, so its length is judged on the scenes both plan where MoveIt's path keeps the
+/// clearances (`keeps_the_clearances`), its length over every path printed beside it. A plan
+/// that holds path orientations answers scenes MoveIt's does not, whose means say nothing of
+/// the two, so its clearances and its length are judged on the scenes both plan where MoveIt's
+/// path keeps the clearances. A set of path orientations takes MoveIt's rate as it comes: where
+/// fewer than `LEAST_TO_COMPARE` such scenes remain, the rate alone judges it.
 fn lies_on_its_side_of_moveits(name: &str) {
     let case = Case::load_all()
         .into_iter()
@@ -647,6 +657,33 @@ fn lies_on_its_side_of_moveits(name: &str) {
         "{}: a success rate of {rate}, below MoveIt's interval from {low}",
         case.name
     );
+    let both_plan = || -> (Vec<Probed>, Vec<Probed>) {
+        scenes
+            .iter()
+            .filter_map(|c| Some((c.ours_probed?, c.moveit.probed?)))
+            .filter(|(_, theirs)| keeps_the_clearances(theirs, case.scenes.min_clearance))
+            .unzip()
+    };
+    let holds_orientations = scenes.iter().any(|c| !c.scene.path_orientations.is_empty());
+    let (ours, theirs) = if holds_orientations {
+        both_plan()
+    } else {
+        (ours, theirs)
+    };
+    if holds_orientations {
+        println!(
+            "{}: on the {} scenes both plan where MoveIt's path keeps the clearances:",
+            case.name,
+            ours.len()
+        );
+        if ours.len() < LEAST_TO_COMPARE {
+            println!(
+                "{}: too few to judge: the rate alone judges this set",
+                case.name
+            );
+            return;
+        }
+    }
     let interval = |of: fn(&Probed) -> f64| {
         let values: Vec<f64> = theirs.iter().map(of).collect();
         let mean = mean(&ours.iter().map(of).collect::<Vec<f64>>());
@@ -685,7 +722,7 @@ fn lies_on_its_side_of_moveits(name: &str) {
         case.name,
         (low + high) / 2.0
     );
-    if case.scenes.min_clearance == 0.0 || case.checked_pairs.is_empty() {
+    if holds_orientations || case.scenes.min_clearance == 0.0 || case.checked_pairs.is_empty() {
         assert!(
             length <= high,
             "{}: a mean length of {length}, above MoveIt's interval to {high}",
@@ -693,12 +730,11 @@ fn lies_on_its_side_of_moveits(name: &str) {
         );
         return;
     }
-    let (ours, theirs): (Vec<f64>, Vec<f64>) = scenes
-        .iter()
-        .filter_map(|c| Some((c.ours_probed?, c.moveit.probed?)))
-        .filter(|(_, theirs)| keeps_the_clearances(theirs, case.scenes.min_clearance))
-        .map(|(ours, theirs)| (ours.length, theirs.length))
-        .unzip();
+    let (ours, theirs) = both_plan();
+    let (ours, theirs): (Vec<f64>, Vec<f64>) = (
+        ours.iter().map(|p| p.length).collect(),
+        theirs.iter().map(|p| p.length).collect(),
+    );
     assert!(
         ours.len() >= MIN_SCENES,
         "{}: {} scenes both plan where MoveIt's path keeps the clearances; the statistics need \
@@ -786,4 +822,92 @@ fn both_arms_with_objects_the_success_rate_the_clearances_and_the_length_lie_on_
 fn both_arms_to_poses_the_success_rate_the_clearances_and_the_length_lie_on_their_side_of_moveits()
 {
     lies_on_its_side_of_moveits("arm_planning_both_arms_poses_openarm_v2");
+}
+
+/// How far past its tolerance a probe of a path of ours may read, in shares of the tolerance:
+/// 1e-7 rad at a tolerance of 0.1 rad, a slack over the rounding of MoveIt's forward kinematics,
+/// some 4e-15 per coordinate, and of the points of its rounded corners, 1e-12 in control_core's
+/// path timing parity. The plan's own walks leave a hundredth of the tolerance for it.
+const PROBE_SHARE_ROUNDING: f64 = 1e-6;
+
+/// Asserts that each path of ours in the scenario `name` keeps every orientation its scene holds,
+/// as MoveIt's forward kinematics finds it along the rounded path, and prints what MoveIt's own
+/// paths reach; then the tally of `lies_on_its_side_of_moveits`.
+fn holds_its_orientations_and_lies_on_its_side_of_moveits(name: &str) {
+    let case = Case::load_all()
+        .into_iter()
+        .find(|case| case.name == name)
+        .unwrap_or_else(|| panic!("scenarios/ holds no scenario {name}"));
+    let shares = |of: &dyn Fn(&SceneCase) -> Option<Probed>| -> Vec<f64> {
+        case.cases
+            .iter()
+            .filter_map(of)
+            .map(|probed| {
+                probed
+                    .share_of_tolerance
+                    .expect("a share where the scene holds an orientation")
+            })
+            .collect()
+    };
+    let held = &case.cases[0].scene.path_orientations[0];
+    println!(
+        "{name}: tolerance_rad {}, MoveIt's box {:?}",
+        held.tolerance_rad, held.moveit_tolerances
+    );
+    let ours = shares(&|c| c.ours_probed);
+    let theirs = shares(&|c| c.moveit.probed);
+    let largest = |values: &[f64]| values.iter().copied().fold(0.0, f64::max);
+    let past = |values: &[f64]| values.iter().filter(|share| **share > 1.0).count();
+    println!(
+        "{name}: share of the tolerance: ours largest {} of {} paths, {} past it; MoveIt's largest {} \
+         of {} paths, {} past it",
+        largest(&ours),
+        ours.len(),
+        past(&ours),
+        largest(&theirs),
+        theirs.len(),
+        past(&theirs)
+    );
+    assert!(
+        largest(&ours) <= 1.0 + PROBE_SHARE_ROUNDING,
+        "{name}: a path of ours reaches {} of its tolerance",
+        largest(&ours)
+    );
+    lies_on_its_side_of_moveits(name);
+}
+
+#[test]
+#[ignore = "statistics of a drawn set holding a whole orientation, run locally as the harness README's rule 3 says"]
+fn holding_a_whole_orientation_a_path_lies_on_its_side_of_moveits() {
+    holds_its_orientations_and_lies_on_its_side_of_moveits("arm_planning_path_whole_openarm_v2");
+}
+
+#[test]
+#[ignore = "statistics of a drawn set holding a free axis, run locally as the harness README's rule 3 says"]
+fn holding_a_free_axis_a_path_lies_on_its_side_of_moveits() {
+    holds_its_orientations_and_lies_on_its_side_of_moveits("arm_planning_path_free_openarm_v2");
+}
+
+#[test]
+#[ignore = "statistics of a drawn set holding two links, run locally as the harness README's rule 3 says"]
+fn holding_two_links_a_path_lies_on_its_side_of_moveits() {
+    holds_its_orientations_and_lies_on_its_side_of_moveits(
+        "arm_planning_path_two_links_openarm_v2",
+    );
+}
+
+#[test]
+#[ignore = "statistics of a drawn set of both arms each holding an orientation, run locally as the harness README's rule 3 says"]
+fn both_arms_holding_whole_orientations_a_path_lies_on_its_side_of_moveits() {
+    holds_its_orientations_and_lies_on_its_side_of_moveits(
+        "arm_planning_both_arms_path_whole_openarm_v2",
+    );
+}
+
+#[test]
+#[ignore = "statistics of a drawn set of both arms each holding a free axis, run locally as the harness README's rule 3 says"]
+fn both_arms_holding_free_axes_a_path_lies_on_its_side_of_moveits() {
+    holds_its_orientations_and_lies_on_its_side_of_moveits(
+        "arm_planning_both_arms_path_free_openarm_v2",
+    );
 }

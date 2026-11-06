@@ -634,6 +634,7 @@ fn scene_of(
         objects: Vec::new(),
         attached: Vec::new(),
         allowed: Vec::new(),
+        path_orientations: Vec::new(),
         start: start.to_vec(),
         goal: SceneGoal::Joints(Vec::new()),
         seed,
