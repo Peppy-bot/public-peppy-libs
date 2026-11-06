@@ -98,7 +98,7 @@ src/
 ```sh
 cargo test                                     # unit, round-trip, psi completeness, parity fixture
 HEGEL_TEST_CASES=100000 cargo test --release   # every property at 100000 cases
-cargo bench                                    # FK, Jacobian, dynamics and IK on the 100 Hz path
+cargo bench                                    # FK, Jacobian, dynamics and IK on the control path
 ```
 
 The kinematics are checked as [Hegel](https://hegel.dev) properties over drawn
