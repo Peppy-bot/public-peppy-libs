@@ -65,8 +65,9 @@ pub use error::ChainError;
 pub use ik::{Aims, ChainFrame, Ends, IkSolver, RandomSource, SEARCH_ITERATIONS};
 pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse, manipulability};
 pub use line::{
-    COINCIDENT_ARC_EPS, LinePrecision, LineSolver, LineState, PrecisionError, WalkEnd, interpolate,
-    walk_line,
+    CARTESIAN_STEP_M, CARTESIAN_STEP_RAD, COINCIDENT_ARC_EPS, LinePrecision, LineSolver, LineState,
+    MAX_RESOLUTION, PRECISION, PRECISION_M, PRECISION_RAD, PrecisionError, WalkEnd, interpolate,
+    line_blends, line_extents, line_precision, walk_line,
 };
 pub use payload::{Payload, segments_carrying};
 pub use rate::{

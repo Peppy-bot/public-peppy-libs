@@ -13,11 +13,11 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use camera_core::pose::Pose;
-use chain_kinematics::{ChainSpec, Draws, JointSelection, interpolate};
+use chain_kinematics::{ChainSpec, Draws, JointSelection, PRECISION_M, PRECISION_RAD, interpolate};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider, RiderBody};
 use collision_geometry::gjk::{self, Placed};
 use control_core::positive_finite::PositiveFinite;
-use motion_planning_core::{Arm, Arms, Body, PRECISION_M, PRECISION_RAD};
+use motion_planning_core::{Arm, Arms, Body};
 use nalgebra::{Isometry3, Point3};
 use occupancy_map::{Bounds, Frame, Scan, VoxelBox, VoxelMap};
 use openarm_description::{HardwareVersion, Side};
