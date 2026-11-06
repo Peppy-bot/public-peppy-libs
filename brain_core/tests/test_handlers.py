@@ -10,8 +10,8 @@ import pytest
 from types import SimpleNamespace
 
 from conftest import (
-    CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, depth_frame, failed_with, make_brain, records_of,
-    rgb_frame,
+    FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, depth_frame, failed_with, make_brain, records_of,
+    rgb_frame, with_frames,
 )
 from fake_peppygen import abort as abort_action
 from fake_peppygen import drop_item as drop_action
@@ -25,17 +25,6 @@ from brain_core.brain import Brain
 from brain_core.handlers import abort, drop_item, get_state, grab_item, identify_item, place_item, scan_items
 from brain_core.manipulators.scripted import CentreProposer, ScriptedManipulator
 from brain_core.ports import Box, Coverage, Detection, FailureKind, Refusal, Role, SearchTimeout
-
-
-def with_frames(brain: Brain, depth_m: float = 1.0) -> None:
-    brain.perceiver.frames.add_color(rgb_frame(16, 12))
-    brain.perceiver.frames.add_depth(depth_frame(depth_m, 16, 12))
-    brain.perceiver.frames.depth_unit = 0.001
-    # The camera has answered where its pixels point, a 90 degree lens, and
-    # the robot where it stands: at the origin, looking along +Z.
-    brain.perceiver.set_camera(
-        brain.perceiver.camera.with_intrinsics(CAMERA_16X12).with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
-    )
 
 
 def scan_goal(timeout_s: float = 0.0) -> FakeCtx:

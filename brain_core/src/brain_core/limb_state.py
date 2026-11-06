@@ -6,7 +6,8 @@ slicing rule (`contracts-hub/robot/limb_state.json5`): arm i's joints
 start at the sum of `joints_per_arm[0..i]`, its position at `3 * i` and its
 orientation at `4 * i`; the gripper openings follow `gripper_names`. A
 message whose arrays do not fit its names is dropped with a log line, and
-the store keeps the snapshot before it.
+the store keeps the snapshot before it; with none before it, a grab is
+refused with the reason the message was dropped.
 
 A snapshot's stamp is the backbone's capture time, on the backbone's
 clock, which need not be the brain's: a launch can run one on a
@@ -31,6 +32,7 @@ from .waiting import unless_cancelled
 logger = logging.getLogger(__name__)
 
 NO_SNAPSHOT = "no limb_states snapshot received from the robot yet"
+UNREADABLE = "no limb_states message of the robot parses"
 VACANT = "no limb_state source: the launcher left the limb_state slot vacant"
 
 
@@ -104,15 +106,18 @@ class LimbStateStore:
         """Why a grab cannot read the limbs now, or the empty string."""
         if self._vacant:
             return VACANT
+        if self.latest is None and self._last_rejection:
+            return f"{UNREADABLE}: {self._last_rejection}"
         if self.latest is None:
             return NO_SNAPSHOT
         return ""
 
     def starting(self) -> str:
         """Why a grab cannot read the limbs yet while their first snapshot
-        comes, or the empty string: once one came, and for a vacant slot,
-        which sends none."""
-        if self._vacant or self.latest is not None:
+        comes, or the empty string: once one came, for a vacant slot, which
+        sends none, and while the robot sends messages that do not parse,
+        which its next ones do not change."""
+        if self._vacant or self.latest is not None or self._last_rejection:
             return ""
         return NO_SNAPSHOT
 

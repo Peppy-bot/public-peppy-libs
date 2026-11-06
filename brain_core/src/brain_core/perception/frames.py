@@ -90,6 +90,13 @@ class FrameStore:
         """The newest colour frame with the depth frame of its capture, or
         a Refusal naming what is missing: a stream, the depth unit, a pair
         of one capture, or the alignment."""
+        color, depth = self._latest_pair()
+        return Frame.paired(color, depth, self.depth_unit)
+
+    def _latest_pair(self) -> tuple[ColorMessage, DepthMessage]:
+        """The newest colour frame and the depth frame of its capture, or a
+        Refusal naming what has not come yet: a stream, the depth unit, or
+        a pair of one capture."""
         if not self.colors:
             raise _no_source("no camera frame received")
         if not self.depths:
@@ -100,7 +107,7 @@ class FrameStore:
         for color in reversed(self.colors):
             depth = depths.get(color.header.frame_id)
             if depth is not None:
-                return Frame.paired(color, depth, self.depth_unit)
+                return color, depth
         raise _no_source(
             f"no colour and depth frame of one capture received (latest colour frame_id {self.colors[-1].header.frame_id}, "
             f"depth {self.depths[-1].header.frame_id})"
@@ -110,6 +117,20 @@ class FrameStore:
         """Why `latest` would refuse, or the empty string."""
         try:
             self.latest()
+        except Refusal as refusal:
+            return refusal.message
+        return ""
+
+    def starting(self) -> str:
+        """Why `latest` refuses while the camera's frames still come: no
+        frame of a stream, no depth unit or no pair of one capture yet. The
+        empty string once a pair is there, for a vacant slot, which sends
+        nothing, and for a pair whose streams are not aligned, which the
+        next frames of the same camera do not change."""
+        if self.vacant:
+            return ""
+        try:
+            self._latest_pair()
         except Refusal as refusal:
             return refusal.message
         return ""

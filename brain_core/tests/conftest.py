@@ -286,6 +286,18 @@ def depth_frame(depth_m: float, width: int = 16, height: int = 12, unit: float =
     )
 
 
+def with_frames(brain: Brain, depth_m: float = 1.0) -> None:
+    """The camera's frames, `depth_m` deep everywhere, its intrinsics and
+    its pose, as the slots give them to a running brain: a 90 degree lens
+    at the origin, looking along +Z."""
+    brain.perceiver.frames.add_color(rgb_frame(16, 12))
+    brain.perceiver.frames.add_depth(depth_frame(depth_m, 16, 12))
+    brain.perceiver.frames.depth_unit = 0.001
+    brain.perceiver.set_camera(
+        brain.perceiver.camera.with_intrinsics(CAMERA_16X12).with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    )
+
+
 class Ticks:
     """A clock the test advances by hand, in nanoseconds; with `step_ns`,
     it also moves on by that much at every reading."""

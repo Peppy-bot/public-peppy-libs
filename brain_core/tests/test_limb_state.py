@@ -13,7 +13,7 @@ from fake_peppygen import FakeTopic, LimbStatesMessage, VacantSlot, limb_states_
 from hypothesis import given
 from hypothesis import strategies as st
 
-from brain_core.limb_state import NO_SNAPSHOT, VACANT, ArmState, LimbSnapshot, LimbStateStore
+from brain_core.limb_state import NO_SNAPSHOT, UNREADABLE, VACANT, ArmState, LimbSnapshot, LimbStateStore
 
 WAIT = 10.0
 
@@ -100,6 +100,18 @@ def test_a_message_that_does_not_parse_is_dropped_and_logged_once_until_another_
         "a limb_states message was dropped: gripper_openings has 0 entries for 2 grippers",
     ]
     assert all(record.levelno == logging.WARNING for record in log.records)
+
+
+def test_a_robot_whose_messages_do_not_parse_is_not_starting_and_a_grab_hears_why():
+    store = LimbStateStore()
+    short = two_arms(1.0)
+    short.positions = [0.0]
+    store.add(short)
+    assert store.latest is None
+    assert store.why_unavailable() == f"{UNREADABLE}: positions has 1 entries for 2 arms"
+    assert store.starting() == "", "the robot's next messages do not parse either"
+    store.add(two_arms(2.0))
+    assert store.why_unavailable() == "" and store.starting() == ""
 
 
 async def test_a_vacant_slot_makes_the_follower_return_and_every_grab_hears_why():
