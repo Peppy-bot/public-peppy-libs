@@ -151,6 +151,23 @@ pub enum Axis {
 }
 
 impl Axis {
+    /// The free axis a request's constraint names: "none", "x", "y" or "z".
+    ///
+    /// # Errors
+    ///
+    /// Any other name, as a message that says what to send.
+    pub fn free_named(name: &str) -> Result<Option<Self>, String> {
+        match name {
+            "none" => Ok(None),
+            "x" => Ok(Some(Self::X)),
+            "y" => Ok(Some(Self::Y)),
+            "z" => Ok(Some(Self::Z)),
+            other => Err(format!(
+                "free_axis is \"none\", \"x\", \"y\" or \"z\", not {other:?}"
+            )),
+        }
+    }
+
     fn unit(self) -> Vector3<f64> {
         match self {
             Self::X => Vector3::x(),
@@ -181,6 +198,50 @@ impl OrientationTarget {
                 target.cross(&held).norm().atan2(target.dot(&held))
             }
         }
+    }
+
+    /// How far the target's frame of `chain` at `q` lies from the target, in radians, as
+    /// the tolerance bounds it.
+    pub fn error_at<const N: usize>(&self, chain: &Chain<N>, q: &[f64; N]) -> f64 {
+        self.error(&frame_pose(chain, q, self.frame).rotation)
+    }
+
+    /// The unit axis, in the robot frame, about which turning `actual` grows its error by
+    /// one radian per radian. None where no axis does: at no error, and with a free axis
+    /// that points exactly away from its direction in the target.
+    pub(crate) fn error_axis(&self, actual: &UnitQuaternion<f64>) -> Option<Vector3<f64>> {
+        match self.free_axis {
+            None => (self.orientation.inverse() * actual)
+                .axis()
+                .map(|axis| self.orientation * axis.into_inner()),
+            Some(axis) => {
+                let (target, held) = (self.orientation * axis.unit(), actual * axis.unit());
+                Unit::try_new(target.cross(&held), 0.0).map(Unit::into_inner)
+            }
+        }
+    }
+
+    /// How far apart the middles of this target and `other` of the same frame stand, by the
+    /// measure of the one that holds a free axis, where no orientation meets both: the error
+    /// grows at most as fast as the frame turns, so an orientation within a target's tolerance
+    /// of its middle lies at most that much nearer the other's. None where one may, and where
+    /// the two hold different free axes, whose distance no single angle states.
+    fn apart_from(&self, other: &Self) -> Option<f64> {
+        let angle = match (self.free_axis, other.free_axis) {
+            (Some(own), Some(theirs)) if own != theirs => return None,
+            (Some(_), _) => self.error(&other.orientation),
+            (None, _) => other.error(&self.orientation),
+        };
+        (angle > self.tolerance_rad.get() + other.tolerance_rad.get()).then_some(angle)
+    }
+
+    /// The product of the target's tolerances about the three axes, a free axis's pi, as
+    /// MoveIt's `IKConstraintSampler::getSamplingVolume` multiplies them
+    /// (default_constraint_samplers.cpp:346-351).
+    fn sampling_volume(&self) -> f64 {
+        let tolerance = self.tolerance_rad.get();
+        let about_the_third = self.free_axis.map_or(tolerance, |_| std::f64::consts::PI);
+        tolerance * tolerance * about_the_third
     }
 
     /// An orientation within the tolerance of the target, drawn inside this crate's
@@ -246,12 +307,14 @@ pub enum GoalError {
 }
 
 /// The constraints a path's last waypoint meets: joints, or the position and the
-/// orientation of one frame of the arm, either or both.
+/// orientation of one frame of the arm, either or both, and the orientation a plan's path
+/// holds of that frame, when the plan takes one.
 #[derive(Debug, PartialEq)]
 pub struct Goal {
     joints: Vec<JointTarget>,
     position: Option<PositionTarget>,
     orientation: Option<OrientationTarget>,
+    path_orientation: Option<OrientationTarget>,
 }
 
 impl Goal {
@@ -325,6 +388,7 @@ impl Goal {
             joints,
             position: positions.into_iter().next(),
             orientation: orientations.into_iter().next(),
+            path_orientation: None,
         })
     }
 
@@ -338,9 +402,44 @@ impl Goal {
             && self
                 .position
                 .is_none_or(|t| t.holds(&pose(t.frame).translation.vector))
-            && self
-                .orientation
-                .is_none_or(|t| t.error(&pose(t.frame).rotation) <= t.tolerance_rad.get())
+            && [self.orientation, self.path_orientation]
+                .into_iter()
+                .flatten()
+                .all(|t| t.error(&pose(t.frame).rotation) <= t.tolerance_rad.get())
+    }
+
+    /// The goal a plan samples that holds `held`, the orientations its path holds of the
+    /// arm's frames, as MoveIt merges a request's goal and path constraints
+    /// (`kinematic_constraints::mergeConstraints`, utils.cpp:64-131): it takes the one on
+    /// the frame it names, which it meets too. A goal of joints, or of another frame, takes
+    /// none, and the plan judges what it samples by the orientations.
+    pub(crate) fn holding(&self, held: &[OrientationTarget]) -> Self {
+        let named = self.named_frame().map(|(frame, _)| frame);
+        Self {
+            joints: self.joints.clone(),
+            position: self.position,
+            orientation: self.orientation,
+            path_orientation: held.iter().find(|t| Some(t.frame) == named).copied(),
+        }
+    }
+
+    /// How far apart the goal's orientation and `held` stand where `held` names the goal's frame
+    /// and no orientation meets both.
+    pub(crate) fn orientation_apart_from(&self, held: &OrientationTarget) -> Option<f64> {
+        self.orientation
+            .filter(|own| own.frame == held.frame)
+            .and_then(|own| own.apart_from(held))
+    }
+
+    /// The orientation a pose drawn inside the goal draws from: of the goal's and the
+    /// path's, the one of the smaller sampling volume, the path's where they tie, as MoveIt
+    /// keeps a link's sampler (constraint_sampler_manager.cpp:190-197, its path constraints
+    /// after its goal's in a merged list).
+    fn drawn_orientation(&self) -> Option<OrientationTarget> {
+        match (self.orientation, self.path_orientation) {
+            (Some(own), Some(path)) if own.sampling_volume() < path.sampling_volume() => Some(own),
+            (own, path) => path.or(own),
+        }
     }
 }
 
@@ -358,7 +457,7 @@ impl Goal {
     /// The frame the goal's position and orientation name, if it names either, and which of
     /// the two it names.
     fn named_frame(&self) -> Option<(Frame, Aims)> {
-        match (self.position, self.orientation) {
+        match (self.position, self.drawn_orientation()) {
             (Some(position), Some(_)) => Some((position.frame, Aims::Both)),
             (Some(position), None) => Some((position.frame, Aims::Position)),
             (None, Some(orientation)) => Some((orientation.frame, Aims::Orientation)),
@@ -403,7 +502,7 @@ impl Goal {
                     .vector
             }
         };
-        let rotation = match self.orientation {
+        let rotation = match self.drawn_orientation() {
             Some(t) => t.draw(draws),
             None => uniform_rotation(draws),
         };
@@ -513,6 +612,184 @@ pub(crate) mod tests {
             },
         )
         .expect("the left arm")
+    }
+
+    /// The grasp point held within `tolerance` of the identity, free about `free_axis`.
+    fn hand_within(tolerance: f64, free_axis: Option<Axis>) -> OrientationTarget {
+        OrientationTarget {
+            frame: Frame::GraspPoint,
+            orientation: UnitQuaternion::identity(),
+            tolerance_rad: PositiveFinite::parse(tolerance).expect("a tolerance above 0"),
+            free_axis,
+        }
+    }
+
+    fn at_a_position(orientations: Vec<OrientationTarget>) -> Goal {
+        Goal::new(
+            7,
+            Vec::new(),
+            vec![PositionTarget {
+                frame: Frame::GraspPoint,
+                position: Vector3::new(0.3, 0.2, 0.5),
+                tolerance_m: PositiveFinite::parse(0.01).expect("a tolerance above 0"),
+            }],
+            orientations,
+        )
+        .expect("a valid goal")
+    }
+
+    // A goal takes the path's orientation of the frame it names and leaves one of another frame
+    // alone; a goal of joints takes none. It draws from the smaller sampling volume, the path's
+    // where they tie, and a free axis counts pi about it, as MoveIt keeps a link's sampler.
+    #[test]
+    fn a_goal_holding_a_path_orientation_draws_from_the_smaller_volume() {
+        let path = hand_within(0.1, None);
+        let other_frame = OrientationTarget {
+            frame: Frame::Link {
+                segment: 2,
+                offset: Isometry3::identity(),
+            },
+            ..path
+        };
+        let position_alone = at_a_position(Vec::new());
+        assert_eq!(
+            position_alone.named_frame(),
+            Some((Frame::GraspPoint, Aims::Position))
+        );
+        let taken = position_alone.holding(&[other_frame, path]);
+        assert_eq!(taken.path_orientation, Some(path));
+        assert_eq!(taken.named_frame(), Some((Frame::GraspPoint, Aims::Both)));
+        assert_eq!(taken.drawn_orientation(), Some(path));
+        assert_eq!(
+            position_alone.holding(&[other_frame]).path_orientation,
+            None
+        );
+
+        let tighter = hand_within(0.05, None);
+        let of = |own: OrientationTarget, path: OrientationTarget| {
+            at_a_position(vec![own])
+                .holding(&[path])
+                .drawn_orientation()
+        };
+        assert_eq!(of(tighter, path), Some(tighter));
+        assert_eq!(of(path, tighter), Some(tighter));
+        let tie = hand_within(0.1, None);
+        assert_eq!(of(tie, path), Some(path));
+        let free = hand_within(0.1, Some(Axis::Z));
+        assert_eq!(of(free, path), Some(path));
+        assert_eq!(of(path, free), Some(path));
+
+        let joints = Goal::new(
+            7,
+            vec![JointTarget {
+                joint: 0,
+                position: 0.0,
+                above: PositiveFinite::parse(0.1).expect("a tolerance above 0"),
+                below: PositiveFinite::parse(0.1).expect("a tolerance above 0"),
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("a valid goal");
+        assert_eq!(joints.holding(&[path]).path_orientation, None);
+    }
+
+    // A goal's orientation lies apart from a path orientation of its frame exactly where their
+    // middles stand farther apart than their tolerances together, whichever holds a free axis; a
+    // path orientation of another frame, and two different free axes, state nothing.
+    #[test]
+    fn a_goal_orientation_lies_apart_from_a_path_orientation_past_both_tolerances() {
+        let turned = |angle: f64, tolerance: f64, free_axis| OrientationTarget {
+            orientation: UnitQuaternion::from_axis_angle(&Vector3::x_axis(), angle),
+            ..hand_within(tolerance, free_axis)
+        };
+        let of_goal = |own| at_a_position(vec![own]);
+        let whole = turned(0.0, 0.1, None);
+        assert!(
+            of_goal(whole)
+                .orientation_apart_from(&turned(0.25, 0.1, None))
+                .is_some()
+        );
+        assert_eq!(
+            of_goal(whole).orientation_apart_from(&turned(0.15, 0.1, None)),
+            None
+        );
+        let about_z = turned(0.0, 0.1, Some(Axis::Z));
+        assert!(
+            of_goal(whole)
+                .orientation_apart_from(&turned(0.5, 0.1, Some(Axis::Z)))
+                .is_some()
+        );
+        assert!(
+            of_goal(about_z)
+                .orientation_apart_from(&turned(0.5, 0.1, None))
+                .is_some()
+        );
+        assert!(
+            of_goal(about_z)
+                .orientation_apart_from(&turned(0.5, 0.1, Some(Axis::Z)))
+                .is_some()
+        );
+        assert_eq!(
+            of_goal(about_z).orientation_apart_from(&turned(0.15, 0.1, None)),
+            None
+        );
+        assert_eq!(
+            of_goal(about_z).orientation_apart_from(&turned(0.5, 0.1, Some(Axis::Y))),
+            None
+        );
+        let spun = OrientationTarget {
+            orientation: UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 1.5),
+            ..about_z
+        };
+        assert_eq!(of_goal(about_z).orientation_apart_from(&spun), None);
+        assert_eq!(of_goal(whole).orientation_apart_from(&spun), None);
+        let other_frame = OrientationTarget {
+            frame: Frame::Link {
+                segment: 2,
+                offset: Isometry3::identity(),
+            },
+            ..turned(1.0, 0.1, None)
+        };
+        assert_eq!(of_goal(whole).orientation_apart_from(&other_frame), None);
+        assert_eq!(
+            at_a_position(Vec::new()).orientation_apart_from(&whole),
+            None
+        );
+    }
+
+    // A constraint names a free axis by its letter, or none; any other word says what to send.
+    #[test]
+    fn a_free_axis_is_named_by_its_letter() {
+        assert_eq!(Axis::free_named("none"), Ok(None));
+        assert_eq!(Axis::free_named("x"), Ok(Some(Axis::X)));
+        assert_eq!(Axis::free_named("y"), Ok(Some(Axis::Y)));
+        assert_eq!(Axis::free_named("z"), Ok(Some(Axis::Z)));
+        assert_eq!(
+            Axis::free_named("w"),
+            Err("free_axis is \"none\", \"x\", \"y\" or \"z\", not \"w\"".to_string())
+        );
+    }
+
+    // A goal holding a path orientation meets it as well as its own.
+    #[test]
+    fn a_goal_holding_a_path_orientation_meets_both() {
+        let chain = left_arm();
+        let q = [0.1; 7];
+        let pose = frame_pose(&chain, &q, Frame::GraspPoint);
+        let at = PositionTarget {
+            frame: Frame::GraspPoint,
+            position: pose.translation.vector,
+            tolerance_m: PositiveFinite::parse(0.01).expect("a tolerance above 0"),
+        };
+        let turned_by = |angle: f64, tolerance: f64| OrientationTarget {
+            orientation: pose.rotation * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), angle),
+            ..hand_within(tolerance, None)
+        };
+        let goal = Goal::new(7, Vec::new(), vec![at], vec![turned_by(0.0, 0.1)]).expect("a goal");
+        assert!(goal.met(&chain, &q));
+        assert!(goal.holding(&[turned_by(0.05, 0.1)]).met(&chain, &q));
+        assert!(!goal.holding(&[turned_by(0.5, 0.1)]).met(&chain, &q));
     }
 
     // The grasp point, and a link fixed below the last joint's link, are solved exactly,

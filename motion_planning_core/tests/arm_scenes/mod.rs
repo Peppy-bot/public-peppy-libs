@@ -737,6 +737,7 @@ fn plan_group<const D: usize, O>(
                         .zip(samplers)
                         .map(|(goal, sampler)| ArmGoal { goal, sampler })
                         .collect(),
+                    path_orientations: &[],
                     goal_samples: NonZeroUsize::new(LAUNCH_GOAL_SAMPLES).expect("nonzero"),
                     planner: planner_of(scenes.objective),
                     deadline,
