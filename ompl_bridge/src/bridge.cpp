@@ -95,12 +95,46 @@ class StateCheck : public ob::StateValidityChecker {
   bool constrained_;
 };
 
+// The caller's check of a straight motion between two states of the plan's space, and the
+// counts OMPL keeps of a validator's answers.
+class CallerMotion : public ob::MotionValidator {
+ public:
+  CallerMotion(const ob::SpaceInformationPtr& si, const Callbacks& callbacks,
+               std::size_t dimension, bool constrained)
+      : ob::MotionValidator(si),
+        dimension_(dimension),
+        callbacks_(callbacks),
+        constrained_(constrained) {}
+
+ protected:
+  bool check(const ob::State* from, const ob::State* to, double& last_valid) const {
+    return callbacks_.motion_valid(
+        rust::Slice<const double>(values(from, constrained_), dimension_),
+        rust::Slice<const double>(values(to, constrained_), dimension_), last_valid);
+  }
+
+  bool count(bool valid) const {
+    if (valid) {
+      ++valid_;
+    } else {
+      ++invalid_;
+    }
+    return valid;
+  }
+
+  std::size_t dimension_;
+
+ private:
+  const Callbacks& callbacks_;
+  bool constrained_;
+};
+
 // The caller's check of the straight motion between two states of a real vector
 // space.
-class MotionCheck : public ob::MotionValidator {
+class MotionCheck : public CallerMotion {
  public:
   MotionCheck(const ob::SpaceInformationPtr& si, const Callbacks& callbacks, std::size_t dimension)
-      : ob::MotionValidator(si), callbacks_(callbacks), dimension_(dimension) {}
+      : CallerMotion(si, callbacks, dimension, false) {}
 
   bool checkMotion(const ob::State* from, const ob::State* to) const override {
     double last_valid = 0.0;
@@ -119,25 +153,94 @@ class MotionCheck : public ob::MotionValidator {
     }
     return count(valid);
   }
+};
+
+// How far a step of a walk along the constraint may stand from the line of the stretch it
+// extends and still extend it, the bound motion_planning_core's `on_segment` holds a run of a
+// path's answer to: steps the projection leaves where they are round by some ulps of 4.4e-16 rad
+// each, under this over a million steps.
+constexpr double stretch_tolerance = 1e-9;
+
+// The caller's check of a motion along the constraint: OMPL's walk of the motion, as its
+// own `ConstrainedMotionValidator` walks it, with the caller's check of each straight
+// stretch of the walk in place of its check of each state. A motion the walk does not
+// finish is invalid, and so is one with a state outside the space's bounds, which the walk
+// ends at: OMPL's walk leaves the bounds to the validity check it skips here, as MoveIt's
+// validity check holds them (state_validity_checker.cpp:233). An invalid motion's last valid
+// state is the end of its last stretch that passes.
+class WalkedMotionCheck : public CallerMotion {
+ public:
+  WalkedMotionCheck(const ob::SpaceInformationPtr& si, const Callbacks& callbacks,
+                    std::size_t dimension)
+      : CallerMotion(si, callbacks, dimension, true) {}
+
+  bool checkMotion(const ob::State* from, const ob::State* to) const override {
+    std::pair<ob::State*, double> last_valid{nullptr, 0.0};
+    return checkMotion(from, to, last_valid);
+  }
+
+  bool checkMotion(const ob::State* from, const ob::State* to,
+                   std::pair<ob::State*, double>& last_valid) const override {
+    const auto& space = *si_->getStateSpace()->as<ob::ConstrainedStateSpace>();
+    std::vector<ob::State*> walk;
+    const bool walked =
+        space.getConstraint()->isSatisfied(to) && space.discreteGeodesic(from, to, true, &walk);
+    const auto outside = std::find_if(walk.begin(), walk.end(), [this](const ob::State* state) {
+      return !si_->satisfiesBounds(state);
+    });
+    const bool finished = walked && outside == walk.end() && si_->satisfiesBounds(to);
+    std::vector<const ob::State*> points{from};
+    if (outside - walk.begin() > 1) {
+      points.insert(points.end(), walk.begin() + 1, outside);
+    }
+    if (finished) {
+      points.push_back(to);
+    }
+    std::size_t reached = 0;
+    double traveled = 0.0;
+    bool passes = true;
+    for (std::size_t at = 1; passes && at < points.size(); ++at) {
+      if (at + 1 < points.size() && on_stretch(points[reached], points[at], points[at + 1])) {
+        continue;
+      }
+      double unused = 0.0;
+      passes = check(points[reached], points[at], unused);
+      if (passes) {
+        traveled += space.distance(points[reached], points[at]);
+        reached = at;
+      }
+    }
+    const bool valid = finished && passes;
+    if (!valid) {
+      const double whole = traveled + space.distance(points[reached], to);
+      if (last_valid.first != nullptr) {
+        space.copyState(last_valid.first, points[reached]);
+      }
+      last_valid.second = whole > 0.0 ? traveled / whole : 0.0;
+    }
+    for (ob::State* state : walk) {
+      space.freeState(state);
+    }
+    return count(valid);
+  }
 
  private:
-  bool check(const ob::State* from, const ob::State* to, double& last_valid) const {
-    return callbacks_.motion_valid(rust::Slice<const double>(values(from, false), dimension_),
-                                   rust::Slice<const double>(values(to, false), dimension_),
-                                   last_valid);
-  }
-
-  bool count(bool valid) const {
-    if (valid) {
-      ++valid_;
-    } else {
-      ++invalid_;
+  // Whether `at` lies on the straight segment from `first` to `last`, to
+  // `stretch_tolerance`.
+  bool on_stretch(const ob::State* first, const ob::State* at, const ob::State* last) const {
+    const auto vector_of = [this](const ob::State* state) {
+      return Eigen::Map<const Eigen::VectorXd>(values(state, true),
+                                               static_cast<Eigen::Index>(dimension_));
+    };
+    const Eigen::VectorXd line = vector_of(last) - vector_of(first);
+    const Eigen::VectorXd along = vector_of(at) - vector_of(first);
+    const double squared = line.squaredNorm();
+    if (squared == 0.0) {
+      return false;
     }
-    return valid;
+    const double share = along.dot(line) / squared;
+    return share >= 0.0 && share <= 1.0 && (along - share * line).norm() <= stretch_tolerance;
   }
-
-  const Callbacks& callbacks_;
-  std::size_t dimension_;
 };
 
 // The caller's constraint: its function and its Jacobian, which the caller writes
@@ -645,6 +748,7 @@ std::variant<Problem, ob::PlannerStatus::StatusType> posed(const PlanRequest& re
     projected->setDelta(request.constrained_spacing / projected->getLambda());
     space = projected;
     si = std::make_shared<ob::ConstrainedSpaceInformation>(space);
+    si->setMotionValidator(std::make_shared<WalkedMotionCheck>(si, callbacks, dimension));
   } else {
     space = real;
     si = std::make_shared<ob::SpaceInformation>(space);

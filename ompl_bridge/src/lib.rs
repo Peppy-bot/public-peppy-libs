@@ -59,10 +59,8 @@ use ffi::bridge;
 /// What a caller's check or constraint answers when it cannot answer.
 pub type CheckError = Box<dyn std::error::Error + Send + Sync>;
 
-/// The farthest apart two consecutive states of a constrained plan's path lie, in the
-/// path and in its simplification. A constrained plan walks each motion along the
-/// constraint in steps of half this length, as OMPL's projected state space walks
-/// one, and OMPL takes a motion whose step stretches beyond this length as invalid.
+/// The [`Projection::spacing`] OMPL's projected state space has by default: its delta,
+/// 0.05, times its lambda, 2 (OMPL 2.0.2 `ConstrainedStateSpace.h:53-54`).
 pub const CONSTRAINED_SPACING: f64 = 0.1;
 
 /// The attempts of a plan that plan at once, each on a thread of its own: MoveIt's
@@ -254,8 +252,9 @@ pub trait Checks: Sync {
 
     /// Whether the straight motion from `from` to `to` is valid, `to` included: OMPL
     /// takes `from` as valid and judges `to` by this answer alone, as a planner that
-    /// steps toward a sampled state does. A constrained plan checks its motions along
-    /// the constraint with [`Checks::state`] instead.
+    /// steps toward a sampled state does. A constrained plan walks each motion along the
+    /// constraint and asks this of each straight stretch of the walk, the steps in one
+    /// line joined in one motion.
     fn motion(&self, from: &[f64], to: &[f64]) -> Result<Motion, CheckError>;
 }
 
@@ -285,6 +284,11 @@ pub struct Projection<'a> {
     pub constraint: &'a dyn Constraint,
     pub tolerance: f64,
     pub iterations: NonZeroU32,
+    /// The farthest apart two consecutive states of the plan's path lie, in the path and
+    /// in its simplification. The plan walks each motion along the constraint in steps of
+    /// half this length, as OMPL's projected state space walks one, and OMPL takes a
+    /// motion whose step stretches beyond this length as invalid.
+    pub spacing: f64,
 }
 
 /// The goals of a plan.
@@ -405,9 +409,9 @@ pub enum Ending {
 #[derive(Debug, PartialEq)]
 pub struct Plan {
     /// The states of the path from the start to a goal, when the planner found an
-    /// exact one. On a constrained plan, consecutive states lie at most
-    /// [`CONSTRAINED_SPACING`] apart, and each state the plan adds between two states
-    /// of the planner lies within the projection's tolerance of the constraint.
+    /// exact one. On a constrained plan, consecutive states lie at most the projection's
+    /// spacing apart, and each state the plan adds between two states of the planner lies
+    /// within the projection's tolerance of the constraint.
     pub path: Option<Vec<Vec<f64>>>,
     /// The simplification of the path, when the request asked for it and the planner
     /// found an exact path.
@@ -557,12 +561,15 @@ fn ffi_request(request: &Request) -> Result<bridge::PlanRequest, PlanError> {
     if request.time_limit.is_zero() {
         return refuse("the time limit is 0; a plan needs time to plan".to_string());
     }
-    let (codimension, tolerance, projection_iterations) = match request.projection {
-        None => (0, 0.0, 0),
+    let (codimension, tolerance, projection_iterations, constrained_spacing) = match request
+        .projection
+    {
+        None => (0, 0.0, 0, CONSTRAINED_SPACING),
         Some(Projection {
             constraint,
             tolerance,
             iterations,
+            spacing,
         }) => {
             let codimension =
                 callbacks::caught(|| Ok(constraint.codimension())).map_err(PlanError::Check)?;
@@ -578,10 +585,16 @@ fn ffi_request(request: &Request) -> Result<bridge::PlanRequest, PlanError> {
                     "the projection tolerance is {tolerance}; it is a positive number"
                 ));
             }
+            if !(spacing.is_finite() && spacing > 0.0) {
+                return refuse(format!(
+                    "the projection spacing is {spacing}; it is a positive number"
+                ));
+            }
             (
                 u32::try_from(codimension).expect("fewer components than dimensions"),
                 tolerance,
                 iterations.get(),
+                spacing,
             )
         }
     };
@@ -602,6 +615,6 @@ fn ffi_request(request: &Request) -> Result<bridge::PlanRequest, PlanError> {
         codimension,
         tolerance,
         projection_iterations,
-        constrained_spacing: CONSTRAINED_SPACING,
+        constrained_spacing,
     })
 }
