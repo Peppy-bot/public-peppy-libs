@@ -21,13 +21,12 @@ use control_core::path_timing::JOINT_PATH_CORNER_DEVIATION;
 use hegel::TestCase;
 use hegel::generators as gs;
 use ros_reference::arm_planning::{
-    Case, Held, MOVEIT_SUCCESS, Ours, Probed, Scene, SceneCase, SceneGoal, Scenes, Termination,
-    VoxelBox,
+    Case, Held, MOVEIT_SUCCESS, Ours, Probed, SceneCase, SceneGoal, Scenes, Termination, VoxelBox,
 };
 
 use arm_scenes::{
-    JOINTS, boxes_of, geometry, joint_goal, least_self_clearance_along, map_of, on_the_arms,
-    plan_scene, probe_spacing, samplers, state,
+    JOINTS, MIN_SCENES, boxes_of, geometry, joint_goal, least_self_clearance_along, map_of,
+    on_the_arms, plan_scene, probe_spacing, samplers, state,
 };
 use nalgebra::{Point3, Vector3};
 use openarm_description::{HardwareVersion, Side};
@@ -42,9 +41,6 @@ const MOVEIT_INVALID_MOTION_PLAN: i32 = -2;
 /// The quantile of the standard normal distribution that bounds a two-sided 95%
 /// interval.
 const Z_95: f64 = 1.959_963_984_540_054;
-/// The fewest scenes whose statistics the test compares: where the normal approximation
-/// of the intervals holds.
-const MIN_SCENES: usize = 30;
 
 /// The 95% interval of the mean of `values`.
 fn mean_interval(values: &[f64]) -> (f64, f64) {
@@ -103,35 +99,18 @@ fn failure(ours: &Ours) -> Option<&str> {
 // voxel.
 #[hegel::test]
 fn a_maps_voxels_as_boxes_fill_a_scenes_map_with_them(tc: TestCase) {
-    let scenes: Scenes = serde_json::from_str(
-        r#"{"kind": "arm_planning", "urdf": "", "meshes": "", "chains": [],
-            "voxel_size": 0.04, "map_half_side": 0.2, "min_clearance": 0.0,
-            "corner_tolerance": 0.1, "goal_tolerance": 0.01, "objective": "any",
-            "termination": "iterations", "time_limit": 1.0, "iterations": 1, "scenes": []}"#,
-    )
-    .expect("a scenario's header");
     // Keys -5 to 4 lie inside the map of 0.04 m voxels 0.2 m about the origin.
     let keys: Vec<[i32; 3]> = tc
         .draw(gs::vecs(gs::arrays(gs::integers::<i32>().min_value(-5).max_value(4))).max_size(60));
-    let scene_of = |boxes: Vec<VoxelBox>| Scene {
-        boxes,
-        objects: Vec::new(),
-        attached: Vec::new(),
-        allowed: Vec::new(),
-        start: Vec::new(),
-        goal: SceneGoal::Joints(Vec::new()),
-        seed: std::num::NonZeroU32::MIN,
-        ours: (),
-    };
-    let voxels = scene_of(
-        keys.iter()
-            .map(|&key| VoxelBox {
-                first: key,
-                last: key,
-            })
-            .collect(),
-    );
-    let map = map_of(&scenes, &voxels);
+    let map_of_boxes = |boxes: &[VoxelBox]| map_of(0.04, 0.2, boxes);
+    let voxels: Vec<VoxelBox> = keys
+        .iter()
+        .map(|&key| VoxelBox {
+            first: key,
+            last: key,
+        })
+        .collect();
+    let map = map_of_boxes(&voxels);
     let boxes = boxes_of(&map);
     let occupied = |map: &occupancy_map::VoxelMap| -> BTreeSet<[i32; 3]> {
         map.occupied().map(|key| key.0).collect()
@@ -156,7 +135,7 @@ fn a_maps_voxels_as_boxes_fill_a_scenes_map_with_them(tc: TestCase) {
         }),
         "no two boxes of a row touch: {boxes:?}"
     );
-    assert_eq!(occupied(&map_of(&scenes, &scene_of(boxes))), occupied(&map));
+    assert_eq!(occupied(&map_of_boxes(&boxes)), occupied(&map));
 }
 
 // The robot around a scenario's arm, the left or the right one, holds the other arm at its
@@ -193,7 +172,8 @@ fn the_robot_around_either_arm_holds_the_other_arm_at_zero() {
         chain.base_link = named(&chain.base_link);
         chain.tip_link = named(&chain.tip_link);
         chain.joints = chain.joints.iter().map(|joint| named(joint)).collect();
-        on_the_arms(&case.scenes, &case.urdf, &case.meshes, |arms, standing| {
+        let chains = &case.scenes.chains;
+        on_the_arms(chains, &case.urdf, &case.meshes, |arms, standing| {
             let (parts, _) = standing.around(arms, &start);
             let base = HardwareVersion::V2.base_link(side);
             assert!(
@@ -244,7 +224,8 @@ fn each_scenario_carries_the_paths_this_crate_plans() {
             case.name
         );
         assert_eq!(case.scenes.corner_tolerance, JOINT_PATH_CORNER_DEVIATION);
-        on_the_arms(&case.scenes, &case.urdf, &case.meshes, |arms, standing| {
+        let chains = &case.scenes.chains;
+        on_the_arms(chains, &case.urdf, &case.meshes, |arms, standing| {
             let samplers = samplers(arms);
             assert_eq!(
                 case.probe_spacing,
@@ -385,7 +366,8 @@ fn each_scenario_of_both_arms_holds_a_scene_of_each_of_their_outcomes() {
         .collect();
     assert!(!both.is_empty(), "scenarios/ holds a scenario of both arms");
     for case in both {
-        on_the_arms(&case.scenes, &case.urdf, &case.meshes, |_, standing| {
+        let chains = &case.scenes.chains;
+        on_the_arms(chains, &case.urdf, &case.meshes, |_, standing| {
             let shown: Vec<OwnDistances> = case
                 .cases
                 .iter()

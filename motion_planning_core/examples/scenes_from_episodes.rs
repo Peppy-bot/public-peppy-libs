@@ -118,7 +118,7 @@ fn main() {
         scenes.urdf
     );
     let answers: Vec<(String, Result<Value, Dropped>)> =
-        on_the_arms(&scenes, &urdf, &meshes, |kind_arms, _| {
+        on_the_arms(&scenes.chains, &urdf, &meshes, |kind_arms, _| {
             let [kind_arm] = kind_arms else {
                 panic!("the scenario of the episodes plans the arm they record");
             };
@@ -639,7 +639,7 @@ fn scene_of(
         seed,
         ours: (),
     };
-    let kind_map = map_of(scenes, &scene);
+    let kind_map = map_of(scenes.voxel_size, scenes.map_half_side, &scene.boxes);
     let field = DistanceField::of(&kind_map);
     let surroundings = Surroundings::new(&kind_map, &field, term_clearances(scenes.min_clearance));
     let deadline = Instant::now() + Duration::from_secs_f64(scenes.time_limit);

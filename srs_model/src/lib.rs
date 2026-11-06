@@ -157,6 +157,20 @@ pub(crate) mod test_support {
         }
     }
 
+    /// The fixture's arm on `side`, built once per test binary.
+    pub(crate) fn v1_arm(side: &str) -> &'static crate::Arm {
+        fn load(side: &str) -> crate::Arm {
+            crate::Arm::from_urdf(FIXTURE_URDF, &base(side)).expect("load fixture arm")
+        }
+        static LEFT: LazyLock<crate::Arm> = LazyLock::new(|| load("left"));
+        static RIGHT: LazyLock<crate::Arm> = LazyLock::new(|| load("right"));
+        match side {
+            "left" => &LEFT,
+            "right" => &RIGHT,
+            _ => panic!("the fixture's arms are \"left\" and \"right\", not {side:?}"),
+        }
+    }
+
     pub(crate) fn v1_model(side: &str) -> ArmModel {
         ArmModel::from_fk(v1_fk(side)).expect("load fixture model")
     }

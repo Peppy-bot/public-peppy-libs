@@ -71,18 +71,19 @@ robot against the octomap and the objects, which meets itself unpadded; it goes 
 drawn set or the episodes' scenes.
 """
 
-import json
 import math
-import subprocess
 from collections import Counter
 from pathlib import Path
 
 from drawing import (
     IDENTITY,
-    REPOSITORY,
     about_axis,
     box_mesh,
+    chain,
+    configuration,
+    example,
     generator,
+    grasp_link,
     joint_limits,
     l_mesh,
     link_pose,
@@ -92,6 +93,7 @@ from drawing import (
     product,
     quaternion,
     robot,
+    run_example,
     shape,
     unit_quaternion,
     write,
@@ -221,49 +223,9 @@ PAIRS_BATCH = 200
 EMPTY_BATCHES = 10
 
 
-def grasp_link(side):
-    """The grasp link of the arm on `side`."""
-    return f"openarm_{side}_tcp"
-
-
 def gripper(side):
     """The links of the gripper of the arm on `side`, which a held object may touch."""
     return [f"openarm_{side}_ee_base_link", *(f"openarm_{side}_ee_link{k}" for k in (1, 2))]
-
-
-def chain(side):
-    """The chain of the arm on `side`, by its name, from its base link to its grasp link."""
-    return {
-        "name": f"{side}_arm",
-        "base_link": f"openarm_{side}_base_link",
-        "tip_link": grasp_link(side),
-        "joints": openarm_joints(side),
-    }
-
-
-def example(name, *arguments):
-    """The command that runs motion_planning_core's example `name` with `arguments`."""
-    manifest = str(REPOSITORY / "motion_planning_core" / "Cargo.toml")
-    return [
-        "cargo",
-        "run",
-        "--release",
-        "--quiet",
-        "--manifest-path",
-        manifest,
-        "--example",
-        name,
-        "--",
-        *arguments,
-    ]
-
-
-def run_example(command, given):
-    """What `command` writes on stdout, as JSON, given `given` as JSON on stdin."""
-    done = subprocess.run(
-        command, input=json.dumps(given), stdout=subprocess.PIPE, text=True, check=True
-    )
-    return json.loads(done.stdout)
 
 
 def voxel_box(rng, side="left"):
@@ -277,10 +239,6 @@ def voxel_box(rng, side="left"):
     last = [math.floor(c / VOXEL_SIZE - 0.5) for c in high]
     assert all(f <= l for f, l in zip(first, last)), "a box as wide as a voxel holds a center"
     return {"first": first, "last": last}
-
-
-def configuration(rng, limits):
-    return [rng.uniform(low, high) for low, high in limits]
 
 
 def drawn_scene(rng, limits):

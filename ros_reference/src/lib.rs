@@ -23,6 +23,7 @@
 //! scenario and a kind.
 
 pub mod arm_planning;
+pub mod cartesian_paths;
 pub mod chain_collision;
 pub mod forward_kinematics;
 pub mod occupancy;
@@ -55,6 +56,7 @@ const INPUT_DIGEST_FILE: &str = "INPUTS.SHA256SUMS";
 #[serde(rename_all = "snake_case")]
 enum Kind {
     ArmPlanning,
+    CartesianPaths,
     ChainCollision,
     ForwardKinematics,
     Occupancy,
@@ -301,7 +303,7 @@ impl Digests {
 }
 
 /// The transform of `link` in the frame of the URDF root.
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LinkPose {
     pub link: String,
