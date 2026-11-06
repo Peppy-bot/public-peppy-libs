@@ -1,10 +1,11 @@
 """What the scripts that write the scenarios of the ROS reference harness share: the
 paths, the generator of each scenario's draws, the --drawn option, a parsed URDF, the
-joints of an arm of OpenArm v2, the joint limits of a URDF, the configurations of a
-chain, the origin of a URDF element, the bounds of a link's collision elements, a
-rotation drawn uniformly, a shape of a collision object as motion_planning writes it, a
-closed box mesh and an L-shaped one, the pose of a link at joint positions, the constants
-of a Rust file, and the writing of a scenario.
+joints, the grasp link and the chain of an arm of OpenArm v2, the joint limits of a URDF,
+the configurations of a chain, the origin of a URDF element, the bounds of a link's
+collision elements, a rotation drawn uniformly, a shape of a collision object as
+motion_planning writes it, a closed box mesh and an L-shaped one, the pose of a link at
+joint positions, the constants of a Rust file, the running of an example of
+motion_planning_core, and the writing of a scenario.
 
 Each scenario draws from a generator seeded with its own name, so every run writes the
 same scenarios, and a change to one scenario leaves the draws of the others as they are.
@@ -24,6 +25,7 @@ import operator
 import random
 import re
 import struct
+import subprocess
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
@@ -56,6 +58,46 @@ def openarm_joints(side):
     return [f"openarm_{side}_joint{i}" for i in range(1, 8)]
 
 
+def grasp_link(side):
+    """The grasp link of the arm on `side`."""
+    return f"openarm_{side}_tcp"
+
+
+def chain(side):
+    """The chain of the arm on `side`, by its name, from its base link to its grasp link."""
+    return {
+        "name": f"{side}_arm",
+        "base_link": f"openarm_{side}_base_link",
+        "tip_link": grasp_link(side),
+        "joints": openarm_joints(side),
+    }
+
+
+def example(name, *arguments):
+    """The command that runs motion_planning_core's example `name` with `arguments`."""
+    manifest = str(REPOSITORY / "motion_planning_core" / "Cargo.toml")
+    return [
+        "cargo",
+        "run",
+        "--release",
+        "--quiet",
+        "--manifest-path",
+        manifest,
+        "--example",
+        name,
+        "--",
+        *arguments,
+    ]
+
+
+def run_example(command, given):
+    """What `command` writes on stdout, as JSON, given `given` as JSON on stdin."""
+    done = subprocess.run(
+        command, input=json.dumps(given), stdout=subprocess.PIPE, text=True, check=True
+    )
+    return json.loads(done.stdout)
+
+
 def joint_limits(robot, joint):
     element = robot.find(f"joint[@name='{joint}']/limit")
     if element is None:
@@ -64,12 +106,17 @@ def joint_limits(robot, joint):
     return float(element.get("lower", 0)), float(element.get("upper", 0))
 
 
+def configuration(rng, limits):
+    """A configuration drawn uniformly inside the limits."""
+    return [rng.uniform(low, high) for low, high in limits]
+
+
 def configurations(rng, limits, drawn):
     """The zero configuration, the lower limits, the upper limits, and `drawn`
     configurations drawn uniformly inside the limits."""
     lower = [low for low, _ in limits]
     upper = [high for _, high in limits]
-    inside = [[rng.uniform(low, high) for low, high in limits] for _ in range(drawn)]
+    inside = [configuration(rng, limits) for _ in range(drawn)]
     return [[0.0] * len(limits), lower, upper, *inside]
 
 

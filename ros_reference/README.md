@@ -23,6 +23,7 @@ change of the reference, which `run.sh --check` proves.
 | `occupancy` | MoveIt's point cloud updater: the log-odds of every voxel of MoveIt's occupancy map after a sequence of point clouds, with a sphere cut out as the robot's own body | `occupancy_map/tests/ros_reference_occupancy.rs` |
 | `arm_planning` | MoveIt's planning pipeline with the OMPL planner of the scenario's objective, RRTConnect for `any` and RRTstar for `shortest`, its default request adapters and the response adapters AddTimeOptimalParameterization and ValidateSolution, on scenes of an arm of OpenArm v2, or of both its arms planned as one group, the fingers of each gripper checked with its arm, among boxes of voxels as an octomap, or among collision objects of each shape kind, a hand holding a cube, attached with its gripper as its touch links, in some of them; a plan of both arms checks the pairs of the robot's own links that motion_planning_core's self model checks, which the scenario names: MoveIt's answer to each scene, planned to the goal state itself or to a pose of each grasp point, which MoveIt's KDL inverse kinematics reaches, of each arm for a plan of both, whose goal MoveIt samples from the union of the arms' samplers, and MoveIt's collision check, smallest distances, to the scene and, where the scenario names pairs, between the robot's own bodies, and length along its path and along motion_planning_core's, which the scenario carries (`tools/draw_arm_planning.py` writes it, with the answers and the checked pairs of `motion_planning_core`'s example `plan_arm_scenes`, and with `--episodes` the scenes of episodes recorded in simulation, which the example `scenes_from_episodes` makes, with `--objects` the scenes among collision objects, with `--poses` the scenes whose goal is a pose of the grasp point, and with `--both-arms` the scenes of both arms, to a pose of each grasp point with `--poses`) | `motion_planning_core/tests/ros_reference_arm_planning.rs` |
 | `planning_scene` | MoveIt's planning scene, its FCL collision environment, its path check and its octomap updater's shape mask: the objects, the attached objects and the allowed pairs that name an object after calls of motion_planning's scene members, as MoveIt's planning scene message holds them, the scenario's voxels its octomap from the start; at each configuration the signed distance of each pair of a link or an attached object and an object or the octomap, and of an attached object and a link it may not touch, with whether one body of a pair FCL finds apart lies wholly inside the other's closed mesh; the waypoints of each path of the arm that MoveIt's path check (`PlanningScene::isPathValid`) finds invalid, the rest of the robot standing still, and its dense probe of the path, a state every 1e-3 rad, whether a state is in collision and how far the arm stands from the objects and the octomap, and both again with the robot's links padded by the scenario's path padding; and whether each probe of the scenario lies inside an object the calls leave standing, grown by each padding as the shape mask grows it | `motion_planning_core/tests/ros_reference_planning_scene.rs` |
+| `cartesian_paths` | MoveIt's Cartesian interpolator, as move_group's compute_cartesian_path service runs it at its precision's defaults, with KDL as the inverse kinematics, on cases of an arm of OpenArm v2 among boxes of voxels as an octomap and collision objects, each state held clear of them by the service's validity check where the case avoids collisions, the robot's links padded by the scenario's clearance: the fraction of each path, and the link's pose and the joints at each of its states (`tools/draw_cartesian_paths.py` writes it, with the answers, the checked pairs and the step of `motion_planning_core`'s example `cartesian_scenes`) | `motion_planning_core/tests/ros_reference_cartesian_paths.rs` |
 
 ## Layout
 
@@ -34,7 +35,7 @@ change of the reference, which `run.sh --check` proves.
 | `packages-amd64.txt`, `packages-arm64.txt` | The version of every package of the reference image, on each architecture. |
 | `reference_programs/` | The reference program `ros_reference`: one function per kind of scenario. |
 | `src/` | The Rust crate `ros_reference`: one module per kind of scenario, which lists the scenarios of the kind and reads each with its reference output, checked with the scenario and the files it names against their digests, for the parity test. |
-| `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, a parsed URDF, the joints of an arm of OpenArm v2, the joint limits of a URDF, the configurations of a chain, the origin of a URDF element, the bounds of a link's collision elements, a rotation drawn uniformly, the constants of a Rust file, and `write`, which writes a scenario. |
+| `tools/` | The scripts that write the scenarios, one per kind, with the robots they draw, and `drawing.py`, what they share: the paths, the generator of each scenario's draws, the `--drawn` option, a parsed URDF, the joints, the grasp link and the chain of an arm of OpenArm v2, the joint limits of a URDF, the configurations of a chain, the origin of a URDF element, the bounds of a link's collision elements, a rotation drawn uniformly, the constants of a Rust file, the running of an example of `motion_planning_core`, and `write`, which writes a scenario. |
 | `Dockerfile`, `CMakeLists.txt`, `ros-snapshots.asc` | The reference image and the build of the reference program in it. |
 | `run.sh` | Runs the reference of every scenario in the reference image. |
 
@@ -122,12 +123,14 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    generators of random_numbers that they construct by its default constructor, which
    random_numbers seeds from the clock; the reference program defines that constructor and
    exports it, so MoveIt's libraries construct their generators through it, and the arm
-   planning reference seeds them from each scene, and std::rand, which KDL's step off a
-   singularity draws from through Eigen. Two things of a pose goal's scene are MoveIt's
-   own: KDL's search for a goal ends on its timeout, a clock, and the planner's thread and
-   the goal sampler's each build a generator, whose seeds follow the order they are built
-   in. The committed pose scenes repeat their bytes in every run measured, each alone and
-   after the others, in six processes and under load.
+   planning reference seeds them from each scene, the Cartesian paths reference from each
+   case, and std::rand, which KDL's step off a singularity draws from through Eigen. Two
+   things of a pose goal's scene are MoveIt's own: KDL's search for a goal ends on its
+   timeout, a clock, and the planner's thread and the goal sampler's each build a
+   generator, whose seeds follow the order they are built in. The committed pose scenes
+   repeat their bytes in every run measured, each alone and after the others, in six
+   processes and under load. KDL's search for each step of a Cartesian path ends on that
+   timeout too.
 3. A comparison that is statistical by nature, a sampling planner's against another's,
    runs over a drawn set, locally: draw the set with the `--drawn` option of the kind's
    script, run `run.sh`, and run the crate's parity test with `cargo test -- --ignored`,
@@ -175,7 +178,13 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    statistical test, of one arm or of both, among boxes, among objects or to poses, which a
    filter runs: `cargo test --test ros_reference_arm_planning -- --ignored among_objects`
    runs the test of one arm among objects, and `both_arms` the three of both arms. The
-   statistical test refuses a set too small for its intervals. The committed cases of such
+   statistical test refuses a set too small for its intervals. For Cartesian paths,
+   `tools/draw_cartesian_paths.py --drawn <count>` draws the set, each case of it at the
+   clearance of its `--min-clearance <meters>`, as the arm planning script's pads MoveIt's
+   links, and `cargo test --test ros_reference_cartesian_paths -- --ignored` tallies, by
+   group of cases, the paths with collisions unchecked whose fraction is MoveIt's and the
+   paths with collisions checked that end within one step of MoveIt's, and refuses a set
+   as small as the committed one. The committed cases of such
    a kind compare bit for bit, as every other output does: the arm planning scenario plans
    `any` on its iterations.
 4. A parity test states what the library guarantees, and the bound within which its
@@ -197,7 +206,9 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    free in MoveIt's check and each refusal as MoveIt's. MoveIt's arm64 build answers the
    committed scenes among boxes otherwise: it refuses the same four starts and goals, and
    of the four scenes it plans, it plans the straight path to other last bits and another
-   path with corners, and its own check passes the path that fails it on amd64.
+   path with corners, and its own check passes the path that fails it on amd64. The
+   Cartesian paths test computes and compares this crate's paths, and asks for a case of
+   each behavior, on amd64 alone, where the committed outputs hold MoveIt's answers.
 5. One rule lays out every scenario and every reference output: a value goes on one line
    when it is a scalar, an array of scalars, or a record, an object whose members are
    each a scalar or an array of scalars; every other array or object spreads over lines,
@@ -265,7 +276,14 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    each two configurations in turn, the first through a post between two clear waypoints,
    all eight in one, and twelve from the zero configuration, the lower limits or a
    configuration drawn inside the limits to one within 0.3 rad of it in each joint; and
-   twelve probes about each of eleven objects at three paddings. A large drawn set runs
+   twelve probes about each of eleven objects at three paddings; for Cartesian paths, the
+   first drawn case of each behavior of `tools/draw_cartesian_paths.py`, a free line both
+   cover whole, a line past the arm's reach, collisions unchecked, a line that a box ends
+   and the same line unchecked, which both cover whole, a line that a collision object
+   ends, a turn in place, two lines whole, a line that stands still then a line, two lines of
+   which the second ends, a line of the
+   last joint's link, and a start in contact, which this crate refuses and whose fraction
+   of MoveIt's, which checks no start, the parity test prints. A large drawn set runs
    locally and is never committed: draw it into `scenarios/` with the `--drawn` option of
    the kind's script (for forward kinematics,
    `python3 ros_reference/tools/draw_forward_kinematics.py --drawn 500`), run
@@ -353,7 +371,8 @@ arm64 host.
    outcome that it names, and each scenario of both arms for a scene of each outcome of a
    plan of both, and the planning scene parity test builds the self model of
    OpenArm v2, refuses a scenario that names another URDF or poses another arm, and asks
-   each scenario for a pair of each case that it names.
+   each scenario for a pair of each case that it names, and the Cartesian paths parity
+   test asks each scenario for a case of each behavior that it names.
 
 A routine test of `ros_reference` fails when a scenario has no reference output, a
 reference output has no scenario or no digest, or a scenario, a URDF or a mesh differs

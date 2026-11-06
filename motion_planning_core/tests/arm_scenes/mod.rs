@@ -5,7 +5,8 @@
 //! with its allowed pairs, and its plan. The example `plan_arm_scenes` and the parity
 //! test share them, so the paths, the checked pairs and the probe spacing each scenario
 //! carries are the ones the test plans. The planning scene parity test shares the reading
-//! of a harness object as an entry of apply_collision_objects.
+//! of a harness object as an entry of apply_collision_objects, and the Cartesian paths
+//! scenes (`cartesian_scenes`) share the arms and a scene's parts as this crate meets them.
 #![allow(dead_code)]
 
 use std::collections::BTreeSet;
@@ -29,12 +30,16 @@ use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
 use ompl_bridge::Planner;
 use openarm_description::{ARM_DOF, ArmOrder, ArmPair, DUAL_DOF, HardwareVersion, Side};
 use ros_reference::arm_planning::{
-    ArmChain, Objective, Ours, Scene as ReferenceScene, SceneGoal, Scenes, Termination, VoxelBox,
+    ArmChain, Held, Objective, Ours, Scene as ReferenceScene, SceneGoal, Scenes, Termination,
+    VoxelBox,
 };
 use ros_reference::planning_scene::{Object, Shape};
 use self_collision_model::{CollisionError, Proximity, SelfCollisionModel};
 
 pub const JOINTS: usize = ARM_DOF;
+/// The fewest scenes of a drawn set whose statistics a parity test compares: where the
+/// normal approximation of the arm planning test's intervals holds.
+pub const MIN_SCENES: usize = 30;
 /// The most goals a scene's plan samples: the motion planner's launch's (launchers-hub
 /// openarm/fragments/motion_planner.json5, `goal_samples`).
 const LAUNCH_GOAL_SAMPLES: usize = 10;
@@ -71,24 +76,22 @@ pub fn geometry(chain: &ArmChain, urdf: &str, meshes: &Path) -> ChainGeometry<JO
     .expect("the arm fits")
 }
 
-/// `with` run on the scenario's arms, from the URDF text `urdf` whose meshes lie in
-/// `meshes`, in the order of its chains: each arm by its chain's name, with the parts its
-/// links carry, its gripper's fingers closed, as MoveIt's default state holds them; and
-/// the robot around them.
+/// `with` run on the arms of `chains`, from the URDF text `urdf` whose meshes lie in
+/// `meshes`, in their order: each arm by its chain's name, with the parts its links carry,
+/// its gripper's fingers closed, as MoveIt's default state holds them; and the robot around
+/// them.
 pub fn on_the_arms<R>(
-    scenes: &Scenes,
+    chains: &[ArmChain],
     urdf: &str,
     meshes: &Path,
     with: impl FnOnce(&[Arm<JOINTS>], &mut Standing) -> R,
 ) -> R {
-    let geometries: Vec<ChainGeometry<JOINTS>> = scenes
-        .chains
+    let geometries: Vec<ChainGeometry<JOINTS>> = chains
         .iter()
         .map(|chain| geometry(chain, urdf, meshes))
         .collect();
     let riders: Vec<Vec<Rider>> = geometries.iter().map(parts).collect();
-    let arms: Vec<Arm<JOINTS>> = scenes
-        .chains
+    let arms: Vec<Arm<JOINTS>> = chains
         .iter()
         .zip(&geometries)
         .zip(&riders)
@@ -98,7 +101,7 @@ pub fn on_the_arms<R>(
                 .expect("the parts ride the arm's links")
         })
         .collect();
-    let mut standing = Standing::new(urdf, meshes, &scenes.chains);
+    let mut standing = Standing::new(urdf, meshes, chains);
     with(&arms, &mut standing)
 }
 
@@ -369,14 +372,26 @@ fn held_request(held: &Object, link_pose: &Isometry3<f64>) -> ObjectRequest {
     request
 }
 
+/// What a scene of a scenario of any kind stands in: the voxel size and the half side of the
+/// map, its boxes, its collision objects, the objects the robot's grasp links hold, and the
+/// pairs allowed to touch.
+pub struct SceneParts<'a> {
+    pub voxel_size: f64,
+    pub map_half_side: f64,
+    pub boxes: &'a [VoxelBox],
+    pub objects: &'a [Object],
+    pub attached: &'a [Held],
+    pub allowed: &'a [[String; 2]],
+}
+
 /// The planning scene of `scene` on `map`, which its objects clear where they stand: its
 /// objects; each object it attaches to a grasp link, at its pose in the link's frame, the
 /// link where `grasp_pose` puts it with the arms at the scene's start; and its allowed
 /// pairs. The tip links of `arms` are `tips`.
-fn planning_scene_of<O>(
+fn planning_scene_of(
     arms: &[Arm<JOINTS>],
     tips: &[&str],
-    scene: &ReferenceScene<O>,
+    scene: &SceneParts,
     grasp_pose: &dyn Fn(&str) -> Isometry3<f64>,
     map: &mut VoxelMap,
 ) -> PlanningScene {
@@ -421,7 +436,7 @@ fn planning_scene_of<O>(
             )
             .expect("the held object attaches to its link");
     }
-    for [name, other] in &scene.allowed {
+    for [name, other] in scene.allowed {
         planning
             .set_allowed_collision(name, std::slice::from_ref(other), true)
             .expect("the scene's pair is allowed");
@@ -429,10 +444,9 @@ fn planning_scene_of<O>(
     planning
 }
 
-/// The map of the voxels of `scene`'s boxes at the scenario's voxel size, each occupied.
-pub fn map_of<O>(scenes: &Scenes, scene: &ReferenceScene<O>) -> VoxelMap {
-    let size = scenes.voxel_size;
-    let half = scenes.map_half_side;
+/// The map of the voxels of `boxes` at the voxel size `size`, each occupied, over the cube of
+/// half side `half` about the robot's origin.
+pub fn map_of(size: f64, half: f64, boxes: &[VoxelBox]) -> VoxelMap {
     let frame = Frame::parse(ROOT_FRAME).expect("a frame name");
     let mut map = VoxelMap::new(
         frame.clone(),
@@ -443,8 +457,7 @@ pub fn map_of<O>(scenes: &Scenes, scene: &ReferenceScene<O>) -> VoxelMap {
         },
     )
     .expect("a valid map");
-    let points: Vec<[f32; 3]> = scene
-        .boxes
+    let points: Vec<[f32; 3]> = boxes
         .iter()
         .flat_map(|b| {
             (b.first[0]..=b.last[0]).flat_map(move |x| {
@@ -620,36 +633,32 @@ pub fn plan_scene<O>(
     }
 }
 
-/// This crate's answer to `scene` by the group of `arms`, D the joints of them all, among
-/// the voxels its boxes occupy, its objects and the parts of `standing` the arms do not
-/// move, holding the objects it attaches, with `standing`'s self model where the scenario
-/// plans both arms: each arm's parts ride its links, and the objects its grasp link holds
-/// its tip link.
-fn plan_group<const D: usize, O>(
+/// `with` run on the group of `arms`, the arms of `chains`, D the joints of them all, and
+/// on the scene they meet from `start`: among the voxels the boxes of `scene` occupy, its
+/// objects and the parts of `standing` the arms do not move, holding the objects it attaches,
+/// with `standing`'s self model where the scenario plans both arms: each arm's parts ride its
+/// links, and the objects its grasp link holds its tip link.
+pub fn in_the_scene<const D: usize, R>(
     arms: &[Arm<JOINTS>],
     standing: &mut Standing,
-    samplers: &[IkGoalSampler<JOINTS>],
-    scenes: &Scenes,
-    scene: &ReferenceScene<O>,
-) -> Planned {
-    let mut map = map_of(scenes, scene);
-    let start: [f64; D] = state(&scene.start);
-    let tips: Vec<&str> = scenes
-        .chains
-        .iter()
-        .map(|chain| chain.tip_link.as_str())
-        .collect();
+    chains: &[ArmChain],
+    scene: &SceneParts,
+    start: &[f64; D],
+    with: impl FnOnce(&Arms<JOINTS, D>, &Scene<'_>) -> R,
+) -> R {
+    let mut map = map_of(scene.voxel_size, scene.map_half_side, scene.boxes);
+    let tips: Vec<&str> = chains.iter().map(|chain| chain.tip_link.as_str()).collect();
     let grasp_pose = |link: &str| match tips.iter().position(|tip| *tip == link) {
         Some(k) => arms[k]
             .geometry()
             .chain()
-            .world_ee_pose(&Arms::<JOINTS, D>::slice(&start, k)),
+            .world_ee_pose(&Arms::<JOINTS, D>::slice(start, k)),
         None => standing.idle_grasp_pose(link),
     };
     let planning = planning_scene_of(arms, &tips, scene, &grasp_pose, &mut map);
     let field = DistanceField::of(&map);
     let objects = planning.for_arms(&tips, grasp_pose);
-    let (standing_parts, self_model) = standing.around(arms, &start);
+    let (standing_parts, self_model) = standing.around(arms, start);
     let riders: Vec<Vec<Rider>> = arms
         .iter()
         .zip(&tips)
@@ -671,9 +680,7 @@ fn plan_group<const D: usize, O>(
             .collect(),
         self_model,
     );
-    let goals = goals_of::<D>(scenes, &scene.goal);
-    let deadline = Instant::now() + Duration::from_secs_f64(scenes.time_limit);
-    let answer = plan_path(
+    with(
         &group,
         &Scene {
             map: &map,
@@ -681,46 +688,88 @@ fn plan_group<const D: usize, O>(
             stamp: 0,
             objects: objects.objects(&standing_parts),
         },
-        &PlanRequest {
-            start,
-            start_tolerance: [0.0; D],
-            goals: goals
-                .iter()
-                .zip(samplers)
-                .map(|(goal, sampler)| ArmGoal { goal, sampler })
-                .collect(),
-            goal_samples: NonZeroUsize::new(LAUNCH_GOAL_SAMPLES).expect("nonzero"),
-            planner: planner_of(scenes.objective),
-            deadline,
-            max_iterations: max_iterations(scenes),
-            attempts: NonZeroU32::MIN,
-            seed: scene.seed.get(),
-            min_clearance_m: scenes.min_clearance,
-            stop: None,
-        },
-    );
-    let at_the_deadline = Instant::now() >= deadline;
-    let failure = |name: &str| Ours::Failure {
-        failure: name.to_string(),
-    };
-    let ours = match answer {
-        Ok(waypoints) => Ours::Path {
-            waypoints: waypoints.iter().map(|q| q.to_vec()).collect(),
-        },
-        Err(PlanFailure::Start(StartFault::OutsideLimits { .. })) => {
-            failure("start_outside_limits")
-        }
-        Err(PlanFailure::Start(StartFault::InCollision(_))) => failure("start_in_collision"),
-        Err(PlanFailure::Unreachable(_)) => failure("unreachable"),
-        Err(PlanFailure::NoPath(_)) => failure("no_path"),
-        Err(
-            failure @ (PlanFailure::Request(_) | PlanFailure::Planner(_) | PlanFailure::Stopped),
-        ) => {
-            panic!("the scene's request fails: {failure}")
-        }
-    };
-    Planned {
-        ours,
-        at_the_deadline,
+    )
+}
+
+/// The name of a scenario's answer for a start that `fault` refuses.
+pub fn start_fault_name(fault: &StartFault) -> &'static str {
+    match fault {
+        StartFault::OutsideLimits { .. } => "start_outside_limits",
+        StartFault::InCollision(_) => "start_in_collision",
     }
+}
+
+/// This crate's answer to `scene` by the group of `arms`, D the joints of them all, in the
+/// scene `in_the_scene` holds.
+fn plan_group<const D: usize, O>(
+    arms: &[Arm<JOINTS>],
+    standing: &mut Standing,
+    samplers: &[IkGoalSampler<JOINTS>],
+    scenes: &Scenes,
+    scene: &ReferenceScene<O>,
+) -> Planned {
+    let start: [f64; D] = state(&scene.start);
+    let world = SceneParts {
+        voxel_size: scenes.voxel_size,
+        map_half_side: scenes.map_half_side,
+        boxes: &scene.boxes,
+        objects: &scene.objects,
+        attached: &scene.attached,
+        allowed: &scene.allowed,
+    };
+    in_the_scene(
+        arms,
+        standing,
+        &scenes.chains,
+        &world,
+        &start,
+        |group, met| {
+            let goals = goals_of::<D>(scenes, &scene.goal);
+            let deadline = Instant::now() + Duration::from_secs_f64(scenes.time_limit);
+            let answer = plan_path(
+                group,
+                met,
+                &PlanRequest {
+                    start,
+                    start_tolerance: [0.0; D],
+                    goals: goals
+                        .iter()
+                        .zip(samplers)
+                        .map(|(goal, sampler)| ArmGoal { goal, sampler })
+                        .collect(),
+                    goal_samples: NonZeroUsize::new(LAUNCH_GOAL_SAMPLES).expect("nonzero"),
+                    planner: planner_of(scenes.objective),
+                    deadline,
+                    max_iterations: max_iterations(scenes),
+                    attempts: NonZeroU32::MIN,
+                    seed: scene.seed.get(),
+                    min_clearance_m: scenes.min_clearance,
+                    stop: None,
+                },
+            );
+            let at_the_deadline = Instant::now() >= deadline;
+            let failure = |name: &str| Ours::Failure {
+                failure: name.to_string(),
+            };
+            let ours = match answer {
+                Ok(waypoints) => Ours::Path {
+                    waypoints: waypoints.iter().map(|q| q.to_vec()).collect(),
+                },
+                Err(PlanFailure::Start(fault)) => failure(start_fault_name(&fault)),
+                Err(PlanFailure::Unreachable(_)) => failure("unreachable"),
+                Err(PlanFailure::NoPath(_)) => failure("no_path"),
+                Err(
+                    failure @ (PlanFailure::Request(_)
+                    | PlanFailure::Planner(_)
+                    | PlanFailure::Stopped),
+                ) => {
+                    panic!("the scene's request fails: {failure}")
+                }
+            };
+            Planned {
+                ours,
+                at_the_deadline,
+            }
+        },
+    )
 }
