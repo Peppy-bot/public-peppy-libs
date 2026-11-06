@@ -23,6 +23,9 @@
 //! - [`plan_path`]: plans a [`PlanRequest`] on a [`Scene`], each arm to its [`ArmGoal`],
 //!   and checks the rounded path the robot runs; [`check_path`] checks a caller's path, a
 //!   [`CheckRequest`], with the same checks.
+//! - [`cartesian_path`]: a frame of one arm along straight lines through the poses of a
+//!   [`CartesianRequest`], as MoveIt's `computeCartesianPath` follows them, as much of them
+//!   as is valid, and the [`CartesianPath`]'s fraction covered.
 //! - The map's intake of a depth frame: a [`DepthCamera`]'s points of the frame, the
 //!   robot's joint positions at the frame's stamp from a [`JointHistory`], and
 //!   [`insert_cut_out`], which inserts the points with the robot there, a [`RobotMask`]
@@ -31,6 +34,7 @@
 
 mod arm;
 mod arms;
+mod cartesian;
 mod clearance;
 mod draws;
 mod goal;
@@ -43,6 +47,10 @@ mod stop;
 
 pub use arm::{Arm, Body, Moving, RiderOffTheArm, SelfModel};
 pub use arms::{Arms, GroupBody};
+pub use cartesian::{
+    CARTESIAN_STEP_M, CARTESIAN_STEP_RAD, CartesianFailure, CartesianPath, CartesianRequest,
+    Collisions, FollowedFrame, PRECISION_M, PRECISION_RAD, cartesian_path, poses_in_range,
+};
 pub use clearance::{Contact, Reading, Surroundings, TERMS, term_clearances};
 pub use draws::Draws;
 pub use goal::{

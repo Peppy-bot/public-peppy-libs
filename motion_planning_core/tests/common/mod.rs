@@ -1,8 +1,8 @@
 //! What the tests share: OpenArm v2's left arm and the fingers its hand carries, the
 //! shoulder and wrist branch of a configuration and configurations drawn off the seams of
 //! the branches, a deadline no sampling reaches, voxel maps of drawn points, the distance
-//! from an arm to every occupied voxel, and the distance from the objects an arm carries
-//! to its own pieces.
+//! from an arm to every occupied voxel, the distance from the objects an arm carries to its
+//! own pieces, and whether a pose stands within the precision of a Cartesian path's line.
 //!
 //! Each integration test is its own crate, so items unused by one suite are
 //! expected; the allow keeps clippy's -D warnings gate meaningful for the rest.
@@ -13,16 +13,32 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use camera_core::pose::Pose;
-use chain_kinematics::{ChainSpec, JointSelection};
+use chain_kinematics::{ChainSpec, JointSelection, interpolate};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider, RiderBody};
 use collision_geometry::gjk::{self, Placed};
 use control_core::positive_finite::PositiveFinite;
-use motion_planning_core::{Arm, Arms, Body};
-use nalgebra::Point3;
+use motion_planning_core::{Arm, Arms, Body, PRECISION_M, PRECISION_RAD};
+use nalgebra::{Isometry3, Point3};
 use occupancy_map::{Bounds, Frame, Scan, VoxelBox, VoxelMap};
 use openarm_description::{HardwareVersion, Side};
 
 pub const JOINTS: usize = 7;
+/// The samples of a line `on_line` compares a pose with: the pose's nearest sample lies at
+/// most half a sample from its nearest point of the line, which `on_line` allows.
+const LINE_SAMPLES: usize = 1000;
+
+/// Whether `actual` stands within the precision of a pose of the line from `a` to `b`.
+pub fn on_line(actual: &Isometry3<f64>, a: &Isometry3<f64>, b: &Isometry3<f64>) -> bool {
+    let length = (b.translation.vector - a.translation.vector).norm();
+    let turn = a.rotation.angle_to(&b.rotation);
+    let half_sample = 0.5 / LINE_SAMPLES as f64;
+    (0..=LINE_SAMPLES).any(|k| {
+        let target = interpolate(a, b, k as f64 / LINE_SAMPLES as f64);
+        (actual.translation.vector - target.translation.vector).norm()
+            <= PRECISION_M + length * half_sample
+            && actual.rotation.angle_to(&target.rotation) <= PRECISION_RAD + turn * half_sample
+    })
+}
 
 /// OpenArm v2's collision meshes, written once per test binary.
 static MESHES_DIR: LazyLock<PathBuf> = LazyLock::new(|| {

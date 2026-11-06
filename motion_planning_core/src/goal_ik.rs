@@ -100,6 +100,14 @@ pub(crate) struct Aims {
     pub(crate) orientation: bool,
 }
 
+impl Aims {
+    /// A descent that brings the frame to the target's position and orientation alike.
+    pub(crate) const BOTH: Self = Self {
+        position: true,
+        orientation: true,
+    };
+}
+
 /// The inverse kinematics of one frame of a chain.
 pub(crate) struct GoalIk<'a, const N: usize> {
     chain: &'a Chain<N>,
@@ -144,11 +152,7 @@ impl<'a, const N: usize> GoalIk<'a, N> {
             Frame::Part { .. } => false,
         };
         let (aims, approximate) = if exact {
-            let both = Aims {
-                position: true,
-                orientation: true,
-            };
-            (both, false)
+            (Aims::BOTH, false)
         } else {
             (named, true)
         };
@@ -160,6 +164,13 @@ impl<'a, const N: usize> GoalIk<'a, N> {
             aims,
             approximate,
         }
+    }
+
+    /// Whether the search solves the frame as KDL does, aiming at its position and its
+    /// orientation and handing over converged ends alone: the grasp point, or a link that
+    /// the chain's every joint moves, as the module says.
+    pub(crate) fn is_exact(&self) -> bool {
+        !self.approximate
     }
 
     /// The first configuration that `accept` takes of those the descents toward `target`
@@ -358,7 +369,7 @@ impl<'a, const N: usize> GoalIk<'a, N> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use chain_kinematics::{ChainSpec, JointSelection};
     use nalgebra::UnitQuaternion;
     use openarm_description::{HardwareVersion, Side};
@@ -373,13 +384,8 @@ mod tests {
     /// limits and the elbow (joint 4) bent.
     const SEED: [f64; 7] = [0.3, -0.5, 0.2, 1.2, 0.1, 0.4, 0.2];
 
-    const BOTH: Aims = Aims {
-        position: true,
-        orientation: true,
-    };
-
     /// OpenArm v2's left arm from its base to its grasp point.
-    fn left_arm() -> Chain<7> {
+    pub(crate) fn left_arm() -> Chain<7> {
         let version = HardwareVersion::V2;
         Chain::from_urdf(
             &urdf_rs::read_from_string(version.urdf()).expect("the URDF parses"),
@@ -399,7 +405,7 @@ mod tests {
     #[test]
     fn a_descent_converges_on_the_position_and_the_orientation_together() {
         let chain = left_arm();
-        let ik = GoalIk::new(&chain, Frame::GraspPoint, BOTH);
+        let ik = GoalIk::new(&chain, Frame::GraspPoint, Aims::BOTH);
         let here = chain.world_ee_pose(&SEED);
         let target = Isometry3::from_parts(
             here.translation,
@@ -462,7 +468,7 @@ mod tests {
     #[test]
     fn each_descent_follows_kdls() {
         let chain = left_arm();
-        let ik = GoalIk::new(&chain, Frame::GraspPoint, BOTH);
+        let ik = GoalIk::new(&chain, Frame::GraspPoint, Aims::BOTH);
         let recorded: serde_json::Value =
             serde_json::from_str(KDL_DESCENTS).expect("the recorded descents parse");
         let numbers = |value: &serde_json::Value| -> Vec<f64> {

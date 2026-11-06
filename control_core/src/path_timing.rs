@@ -858,19 +858,29 @@ pub const MIN_JOINT_CHANGE_RAD: f64 = 0.001;
 /// of it in every joint, unless that one is the first. A planner answers
 /// these, so the path it answers rests at no repeat before its end.
 pub fn distinct_joint_waypoints<const N: usize>(waypoints: &[[f64; N]]) -> Vec<[f64; N]> {
+    distinct_joint_waypoint_indices(waypoints)
+        .into_iter()
+        .map(|k| waypoints[k])
+        .collect()
+}
+
+/// The indices, in order, of the waypoints [`distinct_joint_waypoints`] keeps
+/// of `waypoints`.
+pub fn distinct_joint_waypoint_indices<const N: usize>(waypoints: &[[f64; N]]) -> Vec<usize> {
     assert!(!waypoints.is_empty(), "a joint path has a waypoint");
     let last = waypoints.len() - 1;
     waypoints
         .iter()
         .enumerate()
-        .fold(Vec::new(), |mut kept: Vec<[f64; N]>, (k, waypoint)| {
-            let repeats = |before: &[f64; N]| lies_within(waypoint, before, MIN_JOINT_CHANGE_RAD);
+        .fold(Vec::new(), |mut kept: Vec<usize>, (k, waypoint)| {
+            let repeats =
+                |before: usize| lies_within(waypoint, &waypoints[before], MIN_JOINT_CHANGE_RAD);
             match kept.last() {
-                Some(before) if repeats(before) && k == last && kept.len() > 1 => {
-                    *kept.last_mut().expect("a waypoint is kept") = *waypoint;
+                Some(&before) if repeats(before) && k == last && kept.len() > 1 => {
+                    *kept.last_mut().expect("a waypoint is kept") = k;
                 }
-                Some(before) if repeats(before) && k < last => {}
-                _ => kept.push(*waypoint),
+                Some(&before) if repeats(before) && k < last => {}
+                _ => kept.push(k),
             }
             kept
         })

@@ -471,8 +471,9 @@ pub fn check_path<const N: usize, const D: usize>(
     check_path_until(arms, scene, request, &|| Instant::now() >= request.deadline)
 }
 
-/// `check_path`, its walks of a run or a corner ended once `ended` holds before them.
-fn check_path_until<const N: usize, const D: usize>(
+/// `check_path`, its walks of a run or a corner ended once `ended` holds before them, in
+/// place of `request`'s deadline.
+pub(crate) fn check_path_until<const N: usize, const D: usize>(
     arms: &Arms<N, D>,
     scene: &Scene,
     request: &CheckRequest<D>,
@@ -545,7 +546,7 @@ fn check_path_until<const N: usize, const D: usize>(
 }
 
 /// Refuses `min_clearance_m` or a start tolerance that is no distance, saying why.
-fn distances_in_range<const N: usize>(
+pub(crate) fn distances_in_range<const N: usize>(
     min_clearance_m: f64,
     start_tolerance: &[f64; N],
 ) -> Result<(), String> {
@@ -563,7 +564,7 @@ fn distances_in_range<const N: usize>(
 /// The start a plan or a check of `arms` takes from `start`: each arm's joints inside its
 /// joint limits by `tolerance`, the arms in the group's order, and out of contact with the
 /// map, the objects and the robot's own body.
-fn start_clear<const N: usize, const D: usize>(
+pub(crate) fn start_clear<const N: usize, const D: usize>(
     arms: &Arms<N, D>,
     scene: &Scene,
     start: &[f64; D],
@@ -1051,7 +1052,7 @@ struct Break {
 struct Ended;
 
 /// The checks of the plan's states and motions.
-struct PathChecks<'a, const N: usize, const D: usize> {
+pub(crate) struct PathChecks<'a, const N: usize, const D: usize> {
     arms: &'a Arms<'a, N, D>,
     /// The plan's clearances.
     surroundings: Surroundings<'a>,
@@ -1073,7 +1074,7 @@ impl<'a, const N: usize, const D: usize> PathChecks<'a, N, D> {
     /// The checks of `arms`' states and motions around `scene`, keeping the clearance
     /// `min_clearance_m` asks of each term along every path from `start`, as the module
     /// says.
-    fn new(
+    pub(crate) fn new(
         arms: &'a Arms<'a, N, D>,
         scene: &Scene<'a>,
         start: [f64; D],
@@ -1135,7 +1136,7 @@ impl<'a, const N: usize, const D: usize> PathChecks<'a, N, D> {
     /// How far `q` falls short of the plan's clearance of the term it falls shortest of, in
     /// the pairs that a body of a `moving` arm is one of, in meters; at or below 0 where it
     /// keeps each.
-    fn shortfall(&self, q: &[f64; D], moving: Moving) -> f64 {
+    pub(crate) fn shortfall(&self, q: &[f64; D], moving: Moving) -> f64 {
         let distances = self.surroundings.distances(self.arms, q, moving);
         (0..TERMS)
             .map(|term| self.clearance[term] - distances[term])
@@ -1504,7 +1505,7 @@ fn repair_waypoints<const N: usize, const D: usize>(
 }
 
 /// Each configuration of `waypoints` as a vector of its joint values.
-fn vectors<const N: usize>(waypoints: &[[f64; N]]) -> Vec<Vec<f64>> {
+pub(crate) fn vectors<const N: usize>(waypoints: &[[f64; N]]) -> Vec<Vec<f64>> {
     waypoints.iter().map(|q| q.to_vec()).collect()
 }
 
@@ -1620,7 +1621,7 @@ fn on_segment<const N: usize>(q: &[f64; N], a: &[f64; N], b: &[f64; N]) -> bool 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use camera_core::pose::Pose;
     use chain_kinematics::{ChainSpec, JointSelection};
     use collision_geometry::chain::ChainGeometry;
@@ -1737,7 +1738,7 @@ mod tests {
 
     /// A map of `voxel_m` voxels over the box from `min` to `max`, each voxel of `points`
     /// occupied, and its distance field.
-    fn world(
+    pub(crate) fn world(
         voxel_m: f64,
         min: [f64; 3],
         max: [f64; 3],
