@@ -6,7 +6,8 @@ fires. The per-goal tasks are kept in a set the caller owns: asyncio holds
 tasks weakly, and a task collected mid-await drops its goal context
 without ending it, which the caller sees as abandoned.
 
-A service loop answers one request at a time the same way.
+A service loop listens once and answers one request at a time, until the
+token fires; it listens again when its service stops.
 """
 
 from __future__ import annotations
@@ -48,9 +49,11 @@ def report_failure(task: asyncio.Task) -> None:
 
 
 async def serve_service(service_module, node_runner, token, handler) -> None:
-    """Serves one exposed service, one request after another."""
+    """Serves one exposed service from one endpoint, one request after
+    another, and listens again when the service stops: its request stream
+    ends, or it cannot listen or send a reply, which the log says."""
     while not token.is_cancelled():
         try:
             await unless_cancelled(token, service_module.handle_requests(node_runner, handler))
         except Exception as error:
-            logger.error("%s request failed: %r", service_module.SERVICE_NAME, error)
+            logger.error("%s service failed: %r", service_module.SERVICE_NAME, error)
