@@ -5,7 +5,12 @@ import math
 
 import pytest
 
-from path_timing_py import JOINT_PATH_CORNER_DEVIATION, MIN_JOINT_CHANGE_RAD, JointTrajectory
+from path_timing_py import (
+    JOINT_PATH_CORNER_DEVIATION,
+    MIN_JOINT_CHANGE_RAD,
+    JointTrajectory,
+    distinct_joint_waypoints,
+)
 
 # Two joints, each capped at 1 rad/s and 2 rad/s².
 VELOCITY_LIMITS = (1.0, 1.0)
@@ -191,3 +196,14 @@ def test_a_sample_time_that_is_not_finite_is_refused(t_s):
 def test_waypoints_that_are_not_iterables_of_numbers_are_refused(waypoints):
     with pytest.raises(TypeError):
         through(waypoints=waypoints)
+
+
+def test_a_repeat_within_the_minimum_change_is_dropped_and_the_end_kept():
+    close = MIN_JOINT_CHANGE_RAD / 2.0
+    waypoints = ((0.0, 0.0), (close, 0.0), (1.0, 0.0), (1.0, close), (1.0, 1.0), (1.0, 1.0 + close))
+    assert distinct_joint_waypoints(waypoints) == [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0 + close)]
+
+
+def test_distinct_waypoints_are_refused_as_a_joint_path_refuses_them():
+    with pytest.raises(ValueError, match="a joint path has a waypoint"):
+        distinct_joint_waypoints(())

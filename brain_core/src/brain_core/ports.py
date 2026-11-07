@@ -330,6 +330,13 @@ class Detector(Protocol):
         no model at all."""
         ...
 
+    def starting(self) -> str:
+        """Why a search is refused now while the detector starts, in a few
+        words, such as a model still loading, or "": once the detector can
+        search, and when it does not become able to (no model, a load that
+        failed)."""
+        ...
+
     async def detect(self, image, phrases: Sequence[str], deadline: Deadline) -> list[Box]:
         """`image` is an H x W x 3 uint8 RGB array, `phrases` the labels to
         look for: empty means the detector's own vocabulary, which is what a

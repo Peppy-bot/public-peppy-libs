@@ -57,24 +57,21 @@ mod jacobian;
 mod line;
 mod payload;
 mod rate;
-mod servo;
 mod tree;
 
 pub use chain::{Chain, ChainSpec, JointSelection, Posed};
 pub use draws::Draws;
 pub use error::ChainError;
 pub use ik::{Aims, ChainFrame, Ends, IkSolver, RandomSource, SEARCH_ITERATIONS};
-pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse, manipulability};
+pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse};
 pub use line::{
-    COINCIDENT_ARC_EPS, LinePrecision, LineSolver, LineState, PrecisionError, WalkEnd, interpolate,
-    walk_line,
+    CARTESIAN_STEP_M, CARTESIAN_STEP_RAD, COINCIDENT_ARC_EPS, LinePrecision, LineSolver, LineState,
+    MAX_RESOLUTION, PRECISION, PRECISION_M, PRECISION_RAD, PrecisionError, WalkEnd, interpolate,
+    line_blends, line_extents, line_precision, walk_line,
 };
 pub use payload::{Payload, segments_carrying};
-pub use rate::{DEFAULT_DLS_LAMBDA, PoseMiss, pose_miss, rate_step};
-pub use servo::{
-    EeCaps, JointSmoothing, LEASH_M, MAX_SERVO_S, NoSmoothing, ServoLimits, ServoPlan, ServoState,
-    ServoStep, ServoTolerances, ServoTrajectory, Smoother, ToleranceError, command_smoothing,
-    ee_progress, joints, plan_servo, rate_step_toward, rollout, timed_with_ee,
+pub use rate::{
+    DEFAULT_DLS_LAMBDA, EeCaps, PoseMiss, StepLimits, pose_miss, rate_step, rate_step_toward,
 };
 pub use tree::{JointKind, Tree};
 
@@ -82,6 +79,12 @@ pub use tree::{JointKind, Tree};
 /// was built against, rather than each picking their own and finding the
 /// `Isometry3`s do not match.
 pub use nalgebra;
+
+/// How far outside a joint limit a target may lie and still be taken, at that
+/// limit (rad, or m for a prismatic joint). A measured position sent back as
+/// a target lies that close: a joint that a posture holds at a limit settles
+/// a hair on either side of it.
+pub const TARGET_SLACK: f64 = 0.001;
 
 /// Inclusive joint position limit, radians (or metres for a prismatic joint).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -97,6 +100,17 @@ impl Limit {
         self.lo <= x && x <= self.hi
     }
 
+    /// `x` as a target of the joint: `x` inside the limit, the limit for an
+    /// `x` at most [`TARGET_SLACK`] outside it, and none for an `x` farther
+    /// out or not finite.
+    pub fn take_target(&self, x: f64) -> Option<f64> {
+        let with_slack = Limit {
+            lo: self.lo - TARGET_SLACK,
+            hi: self.hi + TARGET_SLACK,
+        };
+        with_slack.contains(x).then(|| self.clamp(x))
+    }
+
     /// `x` brought inside the limit.
     pub fn clamp(&self, x: f64) -> f64 {
         x.clamp(self.lo, self.hi)
@@ -110,6 +124,48 @@ impl Limit {
     }
 }
 
+/// A joint of a target farther outside its limit than [`TARGET_SLACK`]: the
+/// joint counted from 0, its position and its limit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OutsideLimits {
+    pub joint: usize,
+    pub position: f64,
+    pub limit: Limit,
+}
+
+impl std::fmt::Display for OutsideLimits {
+    /// The joint counted from 1, with every digit of its position and its
+    /// limits, so that a position a hair outside a limit reads apart from it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "joint {} at {} rad, outside its limits [{}, {}]",
+            self.joint + 1,
+            self.position,
+            self.limit.lo,
+            self.limit.hi
+        )
+    }
+}
+
+/// `q` as a target ([`Limit::take_target`]): each joint inside its limit as
+/// it is, each at most [`TARGET_SLACK`] outside it at the limit, or the
+/// first joint that lies farther out.
+pub fn take_targets<const N: usize>(
+    limits: &[Limit; N],
+    q: &[f64; N],
+) -> Result<[f64; N], OutsideLimits> {
+    let mut taken = *q;
+    for (joint, (position, limit)) in taken.iter_mut().zip(limits).enumerate() {
+        *position = limit.take_target(*position).ok_or(OutsideLimits {
+            joint,
+            position: *position,
+            limit: *limit,
+        })?;
+    }
+    Ok(taken)
+}
+
 /// `q` with every joint brought inside its limit.
 pub fn clamp_into<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> [f64; N] {
     std::array::from_fn(|i| limits[i].clamp(q[i]))
@@ -118,14 +174,4 @@ pub fn clamp_into<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> [f64; N]
 /// True if every joint of `q` lies inside its limit.
 pub fn all_within<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> bool {
     limits.iter().zip(q).all(|(limit, v)| limit.contains(*v))
-}
-
-/// How far the joint of `q` closest to a limit sits inside it, negative when
-/// that joint lies outside.
-pub fn limit_margin<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> f64 {
-    limits
-        .iter()
-        .zip(q)
-        .map(|(limit, v)| (v - limit.lo).min(limit.hi - v))
-        .fold(f64::INFINITY, f64::min)
 }

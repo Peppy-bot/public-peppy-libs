@@ -1,6 +1,5 @@
-//! Setpoint shaping: the rate-limited chase that absorbs target jumps, the
-//! chase along a path that keeps a setpoint on its way to the target, and the
-//! guard that reads a step against the rate it was allowed.
+//! Setpoint shaping: the rate-limited chase that absorbs target jumps, and the
+//! chase along a path that keeps a setpoint on its way to the target.
 //!
 //! Every component-wise chase is built on [`rate_limited`], so all of them
 //! round and bound alike.
@@ -46,35 +45,11 @@ pub fn chase_along<const N: usize>(
     std::array::from_fn(|i| setpoint[i] + (target[i] - setpoint[i]) / load)
 }
 
-/// Whether stepping from `from` to `to` over `dt` moves any component faster
-/// than its `max_rate`.
-pub fn exceeds_rate<const N: usize>(
-    from: &[f64; N],
-    to: &[f64; N],
-    max_rate: &[f64; N],
-    dt: f64,
-) -> bool {
-    (0..N).any(|i| (to[i] - from[i]).abs() > max_rate[i] * dt)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use hegel::TestCase;
     use hegel::generators as gs;
-
-    // A step exceeds its rates exactly when some component moved further than
-    // its rate over the tick allows.
-    #[hegel::test]
-    fn a_step_exceeds_its_rates_exactly_when_a_component_outruns_its_own(tc: TestCase) {
-        let span = || gs::floats().min_value(-10.0).max_value(10.0);
-        let from: [f64; 3] = tc.draw(gs::arrays(span()));
-        let to: [f64; 3] = tc.draw(gs::arrays(span()));
-        let max_rate: [f64; 3] = tc.draw(gs::arrays(gs::floats().min_value(0.0).max_value(20.0)));
-        let dt: f64 = tc.draw(gs::floats().min_value(0.0).max_value(0.1));
-        let outrun = (0..3).any(|i| (to[i] - from[i]).abs() > max_rate[i] * dt);
-        assert_eq!(exceeds_rate(&from, &to, &max_rate, dt), outrun);
-    }
 
     // One tick moves at most `rate * dt`, toward the target, reaches a target
     // within reach to the rounding of `from + (target - from)`, and holds
@@ -114,7 +89,7 @@ mod tests {
         let max_rate: [f64; 7] = tc.draw(gs::arrays(gs::floats().min_value(0.1).max_value(20.0)));
         let dt: f64 = tc.draw(gs::floats().min_value(0.001).max_value(0.1));
         let next = chase_along(&setpoint, &target, &max_rate, dt);
-        if !exceeds_rate(&setpoint, &target, &max_rate, dt) {
+        if (0..7).all(|i| (target[i] - setpoint[i]).abs() <= max_rate[i] * dt) {
             assert_eq!(next, target);
             return;
         }

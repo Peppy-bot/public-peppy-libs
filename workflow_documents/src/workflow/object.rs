@@ -60,12 +60,20 @@ impl<'a> Fields<'a> {
         read_value(self.require(key)?, &self.at(key))
     }
 
-    /// A refusal for each field that no reader took.
-    pub(super) fn unknown(&self) -> Vec<Refusal> {
+    /// The fields that no reader took, in the order of their keys.
+    pub(super) fn unknown_keys(&self) -> Vec<&'a str> {
         let taken = self.taken.borrow();
         self.map
             .keys()
-            .filter(|key| !taken.contains(key.as_str()))
+            .map(String::as_str)
+            .filter(|key| !taken.contains(key))
+            .collect()
+    }
+
+    /// A refusal for each field that no reader took.
+    pub(super) fn unknown(&self) -> Vec<Refusal> {
+        self.unknown_keys()
+            .into_iter()
             .map(|key| {
                 Refusal::new(
                     At::field(&self.path),

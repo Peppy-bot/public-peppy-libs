@@ -557,7 +557,7 @@ impl<'a> Walker<'a> {
                 if !bounded {
                     self.refusals.push(Refusal::new(
                         at.clone(),
-                        "a call has its own `timeout_s` or one of an enclosing step",
+                        "a call has its own `timeout_s` or one of an enclosing step: `timeout_s` is a field of the step, beside `call`",
                     ));
                 }
                 self.args(&call.args, &defined, &at);

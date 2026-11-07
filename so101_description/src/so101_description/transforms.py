@@ -14,6 +14,11 @@ class PoseError(ValueError):
     """A wire pose that cannot become a transform."""
 
 
+# Above this dot product two unit quaternions are one orientation to slerp's
+# rounding: the sine it divides by vanishes.
+_SAME_ORIENTATION_DOT = 0.9995
+
+
 def matrix_from_pose(position, orientation) -> np.ndarray:
     if len(position) != 3 or len(orientation) != 4:
         raise PoseError(
@@ -81,3 +86,24 @@ def relative_rotation_rad(q0, q1) -> float:
     folds the double cover."""
     dot = abs(sum(a * b for a, b in zip(q0, q1, strict=True)))
     return 2.0 * math.acos(min(1.0, dot))
+
+
+def slerp(q0, q1, share: float) -> tuple[float, float, float, float]:
+    """The unit quaternion at `share` of the shorter turn from `q0` to `q1`;
+    `q1`'s own at `share` 1, and a blend of the two where they are one
+    orientation to the rounding slerp divides by."""
+    if share >= 1.0:
+        return tuple(q1)
+    dot = sum(a * b for a, b in zip(q0, q1, strict=True))
+    near = tuple(-v for v in q1) if dot < 0.0 else tuple(q1)
+    dot = abs(dot)
+    if dot > _SAME_ORIENTATION_DOT:
+        blended = [a + (b - a) * share for a, b in zip(q0, near, strict=True)]
+    else:
+        turn = math.acos(dot)
+        blended = [
+            (math.sin((1.0 - share) * turn) * a + math.sin(share * turn) * b) / math.sin(turn)
+            for a, b in zip(q0, near, strict=True)
+        ]
+    norm = math.sqrt(sum(v * v for v in blended))
+    return tuple(v / norm for v in blended)

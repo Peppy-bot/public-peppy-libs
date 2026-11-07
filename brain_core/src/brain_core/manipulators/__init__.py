@@ -22,6 +22,13 @@ class Manipulator(Protocol):
         when the manipulator can move."""
         ...
 
+    def starting(self) -> str:
+        """Why a manipulation goal is refused now while the manipulator
+        starts, in a few words, such as no limb state received yet, or "":
+        once the manipulator can move, and when it does not become able to
+        (no model, a vacant limb_state slot)."""
+        ...
+
     async def start(self, senses: Senses) -> None:
         """Hands the manipulator what it senses and moves with, before it
         runs."""

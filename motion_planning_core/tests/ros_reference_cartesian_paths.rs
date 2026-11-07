@@ -16,7 +16,7 @@ mod arm_scenes;
 mod cartesian_scenes;
 mod common;
 
-use motion_planning_core::{CARTESIAN_STEP_M, CARTESIAN_STEP_RAD};
+use chain_kinematics::{CARTESIAN_STEP_M, CARTESIAN_STEP_RAD};
 use nalgebra::{Isometry3, Matrix3, Rotation3, Translation3, UnitQuaternion, Vector3};
 use openarm_description::{HardwareVersion, Side};
 use ros_reference::LinkPose;

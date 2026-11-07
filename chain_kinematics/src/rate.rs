@@ -1,5 +1,9 @@
 //! One damped resolved-rate step: the inner loop of every Cartesian controller
 //! here, and the whole of a streaming jog.
+//!
+//! The damped law crosses a singular surface: the damping bounds the joint rates
+//! while the task error carries the chain across, deviating from the straight
+//! line only where the geometry forces it and re-converging beyond.
 
 use nalgebra::{Isometry3, SVector, Vector3, Vector6};
 
@@ -11,6 +15,62 @@ use crate::{Chain, Jacobian, Limit, clamp_into};
 /// visibly lag a jog step. Control paths that share a step should share this
 /// too, so they cannot drift apart on damping alone.
 pub const DEFAULT_DLS_LAMBDA: f64 = 0.05;
+
+/// The end-effector speed budget a Cartesian step runs under.
+#[derive(Debug, Clone, Copy)]
+pub struct EeCaps {
+    pub linear_m_s: f64,
+    pub angular_rad_s: f64,
+}
+
+/// What one step toward a pose runs under: the per-joint velocity budget, the
+/// end-effector speed budget, and the control period.
+#[derive(Debug, Clone, Copy)]
+pub struct StepLimits<const N: usize> {
+    pub max_joint_velocity: [f64; N],
+    pub ee: EeCaps,
+    pub dt_s: f64,
+}
+
+/// One damped resolved-rate step toward a pose target, given the end-effector
+/// pose already computed at `q`.
+///
+/// The task error is capped before it is resolved: position at the speed budget,
+/// orientation at the turn budget. A target meters away therefore produces the
+/// same bounded step as one millimeters away.
+///
+/// It always returns a configuration. An unreachable target moves toward the
+/// closest pose this step can find and saturates there: a teleoperator pushing
+/// past the edge feels a wall.
+pub fn rate_step_toward<const N: usize>(
+    chain: &Chain<N>,
+    q: &[f64; N],
+    ee: &Isometry3<f64>,
+    target: &Isometry3<f64>,
+    limits: &StepLimits<N>,
+) -> [f64; N] {
+    let (caps, dt_s) = (limits.ee, limits.dt_s);
+    let (dp, dw) = pose_error(ee, target);
+    let dp = if dp.norm() > 0.0 {
+        dp * (caps.linear_m_s * dt_s / dp.norm()).min(1.0)
+    } else {
+        Vector3::zeros()
+    };
+    let dw = if dw.norm() > 0.0 {
+        dw * (caps.angular_rad_s * dt_s / dw.norm()).min(1.0)
+    } else {
+        Vector3::zeros()
+    };
+    rate_step(
+        chain,
+        q,
+        &Vector6::new(dp.x, dp.y, dp.z, dw.x, dw.y, dw.z),
+        &chain.limits(),
+        &limits.max_joint_velocity,
+        dt_s,
+        DEFAULT_DLS_LAMBDA,
+    )
+}
 
 /// One damped resolved-rate joint step at `q` toward a world-frame task
 /// increment `twist_world`: meters of end-effector translation in its first

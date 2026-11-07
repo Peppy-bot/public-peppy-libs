@@ -14,14 +14,12 @@ POSITION = (0.5, 0.1, 0.7)
 ORIENTATION = (0.0, 0.0, 0.0, 1.0)
 # The tolerances and settle timeout the moves below name.
 BARS = {
-    "plan_position_tolerance_m": 0.001,
-    "plan_orientation_tolerance_rad": 0.01,
     "settle_position_tolerance_m": 0.02,
     "settle_orientation_tolerance_rad": 0.15,
     "settle_timeout_s": 2.0,
 }
-# The fields a check names besides the pose: the moves' plan bars.
-PLAN = {"duration_s": 0.0, **{key: BARS[key] for key in ("plan_position_tolerance_m", "plan_orientation_tolerance_rad")}}
+# The field a check names besides the pose.
+PLAN = {"duration_s": 0.0}
 
 
 def backbone(**kwargs):
@@ -170,12 +168,11 @@ def check_answer(reachable: bool, reason: str, duration_s: float):
 async def test_a_check_asks_with_the_move_arm_fields_and_reads_the_plan():
     robot, _, _, check = backbone_with_check()
     check.enqueue(check_answer(True, "", 1.25))
-    planned = await robot.check_arm_move("left_arm", POSITION, ORIENTATION, duration_s=1.5, plan_position_tolerance_m=0.01, plan_orientation_tolerance_rad=0.02)
+    planned = await robot.check_arm_move("left_arm", POSITION, ORIENTATION, duration_s=1.5)
     assert planned == MoveCheck(True, "", 1.25)
     [request] = check.polled
     assert request == CheckArmMoveRequest(
         arm_name="left_arm", position=[0.5, 0.1, 0.7], orientation=[0.0, 0.0, 0.0, 1.0], duration_s=1.5,
-        plan_position_tolerance_m=0.01, plan_orientation_tolerance_rad=0.02,
     )
     # A check moves nothing: no goal is in flight for a stop to cancel.
     assert robot.moves_in_flight == 0
@@ -183,9 +180,9 @@ async def test_a_check_asks_with_the_move_arm_fields_and_reads_the_plan():
 
 async def test_a_check_with_no_plan_carries_the_backbones_reason():
     robot, _, _, check = backbone_with_check()
-    check.enqueue(check_answer(False, "goal pose not planned within 0.010 m", 0.0))
+    check.enqueue(check_answer(False, "goal pose not planned", 0.0))
     unreachable = await robot.check_arm_move("left_arm", POSITION, ORIENTATION, **PLAN)
-    assert unreachable == MoveCheck(False, "goal pose not planned within 0.010 m", 0.0)
+    assert unreachable == MoveCheck(False, "goal pose not planned", 0.0)
 
 
 async def test_a_check_that_fails_is_not_reachable_and_names_its_kind():

@@ -40,8 +40,9 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use chain_kinematics::{
-    Aims, Chain, Draws, IkSolver, JointKind, LinePrecision, LineSolver, LineState,
-    SEARCH_ITERATIONS, WalkEnd, interpolate, walk_line,
+    Aims, Chain, Draws, IkSolver, JointKind, LinePrecision, LineSolver, LineState, MAX_RESOLUTION,
+    PRECISION, PRECISION_M, PRECISION_RAD, SEARCH_ITERATIONS, WalkEnd, interpolate, line_blends,
+    line_extents, line_precision, walk_line,
 };
 use control_core::path_timing::{RoundedPath, distinct_joint_waypoint_indices};
 use control_core::positive_finite::PositiveFinite;
@@ -56,31 +57,6 @@ use crate::plan::{
 };
 use crate::stop;
 
-/// The longest step of a line (m): the step of RViz's MotionPlanning panel
-/// (motion_planning_frame_planning.cpp:141), which a caller of compute_cartesian_path
-/// names.
-pub const CARTESIAN_STEP_M: f64 = 0.01;
-/// The largest turn of a step of a line (rad): `MaxEEFStep`'s 3.5 rad for each meter of
-/// its step (cartesian_interpolator.hpp:97).
-pub const CARTESIAN_STEP_RAD: f64 = 3.5 * CARTESIAN_STEP_M;
-/// How far the frame stands from its line at most (m): `CartesianPrecision`'s
-/// `translational` (cartesian_interpolator.hpp:50).
-pub const PRECISION_M: f64 = 1e-3;
-/// How far the frame stands turned from its line at most (rad): `CartesianPrecision`'s
-/// `rotational` (cartesian_interpolator.hpp:51).
-pub const PRECISION_RAD: f64 = 0.01;
-/// The narrowest interval of a line a path halves, as a share of the line:
-/// `CartesianPrecision`'s `max_resolution` (cartesian_interpolator.hpp:52).
-const MAX_RESOLUTION: f64 = 1e-5;
-/// A precision of these positive values, halving down to `MAX_RESOLUTION`.
-const fn line_precision(translational_m: f64, rotational_rad: f64) -> LinePrecision {
-    match LinePrecision::new(translational_m, rotational_rad, MAX_RESOLUTION) {
-        Ok(precision) => precision,
-        Err(_) => panic!("a precision's values are finite and positive"),
-    }
-}
-/// The precision each interval of a line keeps at its joints' midpoint.
-const PRECISION: LinePrecision = line_precision(PRECISION_M, PRECISION_RAD);
 /// The share of the precision a probe of the rounded path keeps: the rest covers the
 /// frame's motion and its point's on the line between two probes.
 const PROBE_SHARE: f64 = 0.9;
@@ -290,25 +266,14 @@ impl Line {
         interpolate(&self.from, &self.to, blend)
     }
 
-    /// How far the line moves over `CARTESIAN_STEP_M`, and how far it turns over
-    /// `CARTESIAN_STEP_RAD`, each.
-    fn extents(&self) -> (f64, f64) {
-        let length = (self.to.translation.vector - self.from.translation.vector).norm();
-        let turn = self.from.rotation.angle_to(&self.to.rotation);
-        (length / CARTESIAN_STEP_M, turn / CARTESIAN_STEP_RAD)
-    }
-
-    /// The share of the line at each step: as many steps as `computeCartesianPath` takes,
-    /// the more of its extents, each rounded down, plus one (:237-245).
+    /// The share of the line at each step.
     fn blends(&self) -> impl Iterator<Item = f64> + use<> {
-        let (moved, turned) = self.extents();
-        let steps = (moved.floor().max(turned.floor()) as usize).saturating_add(1);
-        (1..=steps).map(move |k| k as f64 / steps as f64)
+        line_blends(&self.from, &self.to)
     }
 
     /// How much way the line takes, in steps: the more of its extents.
     fn way(&self) -> f64 {
-        let (moved, turned) = self.extents();
+        let (moved, turned) = line_extents(&self.from, &self.to);
         moved.max(turned)
     }
 }

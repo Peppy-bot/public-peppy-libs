@@ -88,21 +88,30 @@ class FakeDetector:
     """Returns the boxes the test hands it, and records the phrases and the
     deadlines of each search. Its scans name every label unless the test
     hands it a coverage; it can search unless the test hands it a reason it
-    cannot."""
+    cannot, which is a reason it still starts when the test says so."""
 
     name = "fake"
 
     def __init__(
-        self, boxes: Optional[list[Box]] = None, coverage: Coverage = Coverage(every_label=True), unavailable: str = ""
+        self,
+        boxes: Optional[list[Box]] = None,
+        coverage: Coverage = Coverage(every_label=True),
+        unavailable: str = "",
+        *,
+        starting: bool = False,
     ) -> None:
         self.boxes = boxes or []
         self.coverage = coverage
         self.unavailable = unavailable
+        self.is_starting = starting
         self.phrases: list[list[str]] = []
         self.deadlines: list[Deadline] = []
 
     def why_unavailable(self) -> str:
         return self.unavailable
+
+    def starting(self) -> str:
+        return self.unavailable if self.is_starting else ""
 
     async def detect(self, image: np.ndarray, phrases: Sequence[str], deadline: Deadline) -> list[Box]:
         self.phrases.append(list(phrases))
@@ -131,6 +140,9 @@ class FakeManipulator:
         self._began = asyncio.Event()
 
     def why_unavailable(self) -> str:
+        return ""
+
+    def starting(self) -> str:
         return ""
 
     async def start(self, senses) -> None:
@@ -271,6 +283,18 @@ def depth_frame(depth_m: float, width: int = 16, height: int = 12, unit: float =
         width=width,
         height=height,
         frame=np.full((height, width), value, dtype="<u2").tobytes(),
+    )
+
+
+def with_frames(brain: Brain, depth_m: float = 1.0) -> None:
+    """The camera's frames, `depth_m` deep everywhere, its intrinsics and
+    its pose, as the slots give them to a running brain: a 90 degree lens
+    at the origin, looking along +Z."""
+    brain.perceiver.frames.add_color(rgb_frame(16, 12))
+    brain.perceiver.frames.add_depth(depth_frame(depth_m, 16, 12))
+    brain.perceiver.frames.depth_unit = 0.001
+    brain.perceiver.set_camera(
+        brain.perceiver.camera.with_intrinsics(CAMERA_16X12).with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
     )
 
 

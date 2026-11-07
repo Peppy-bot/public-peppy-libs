@@ -5,6 +5,8 @@ use std::fmt::Display;
 use std::future::Future;
 use std::time::Duration;
 
+use tracing::warn;
+
 use crate::latched_log::LatchedLog;
 use crate::time::sleep_unless_cancelled;
 
@@ -13,16 +15,18 @@ use crate::time::sleep_unless_cancelled;
 const RETRY_BACKOFF: Duration = Duration::from_secs(1);
 
 /// Serves `service` one request at a time until `cancelled` resolves:
-/// `next_request` listens for the next request and answers it (a generated
-/// `handle_next_request`). A cancel ends the loop at once, while it waits for
-/// a request or waits out an error. The first error of a run is logged at
-/// error level as `"{service} failing, suppressing repeats: {error}"`, a
-/// served request ends the run, and each error is waited out for 1 s before
-/// the loop listens again.
+/// `serve_requests` listens once and answers each request until the request
+/// stream ends (a generated `handle_requests`), and the loop listens again
+/// 1 s after it returns, so a service that stops at once cannot hot-spin the
+/// loop. A cancel ends the loop at once, while it serves or waits. Each
+/// return is logged: an error that ends `serve_requests` before it serves,
+/// the first of a run at error level as `"{service} failing, suppressing
+/// repeats: {error}"`, and a request stream that ends, which shows that the
+/// service listened and so ends the run of errors, at warn level.
 pub async fn serve<F, E>(
     service: &str,
     cancelled: impl Future<Output = ()>,
-    mut next_request: impl FnMut() -> F,
+    mut serve_requests: impl FnMut() -> F,
 ) where
     F: Future<Output = Result<(), E>>,
     E: Display,
@@ -33,13 +37,15 @@ pub async fn serve<F, E>(
         let served = tokio::select! {
             biased;
             () = &mut cancelled => return,
-            served = next_request() => served,
+            served = serve_requests() => served,
         };
-        let Err(e) = served else {
-            service_errors.success();
-            continue;
-        };
-        service_errors.failure(e);
+        match served {
+            Ok(()) => {
+                service_errors.success();
+                warn!("{service}: its request stream ended; it listens again in 1 s");
+            }
+            Err(e) => service_errors.failure(e),
+        }
         if !sleep_unless_cancelled(RETRY_BACKOFF, &mut cancelled).await {
             return;
         }
@@ -90,8 +96,11 @@ mod tests {
         assert_eq!(listened.count(), 1);
     }
 
-    #[tokio::test]
-    async fn requests_are_served_one_after_another_until_cancelled() {
+    /// On a paused clock that moves only when every task waits: the pause
+    /// is the clock's, not the host's.
+    #[tokio::test(start_paused = true)]
+    async fn a_request_stream_that_ends_is_logged_and_waited_out_before_the_loop_listens_again() {
+        let (logged, _guard) = Logged::capture();
         let (sender, cancelled) = cancellation();
         let listened = Listened::at_most(3);
         serve("served", cancelled, || async {
@@ -101,7 +110,17 @@ mod tests {
             Ok::<(), String>(())
         })
         .await;
-        assert_eq!(listened.count(), 3);
+        let listens = listened.at.borrow();
+        assert_eq!(listens.len(), 3);
+        assert!(
+            listens
+                .windows(2)
+                .all(|pair| pair[1] - pair[0] >= RETRY_BACKOFF)
+        );
+        assert_eq!(
+            logged.lines_holding("served: its request stream ended; it listens again in 1 s"),
+            3
+        );
     }
 
     /// On a paused clock that moves only when every task waits: the pause
@@ -140,8 +159,8 @@ mod tests {
         assert!(Instant::now() - start < RETRY_BACKOFF);
     }
 
-    /// Requests 1, 2, 4 and 5 fail and request 3 is served, so the errors
-    /// make two runs.
+    /// Listens 1, 2, 4 and 5 fail and the request stream of listen 3 ends,
+    /// so the errors make two runs.
     #[tokio::test(start_paused = true)]
     async fn the_first_error_of_each_run_is_logged() {
         let (logged, _guard) = Logged::capture();
@@ -168,7 +187,7 @@ mod tests {
 
     /// A node spawns each loop onto the runtime's worker threads, which
     /// takes a `Send` future, with a request closure that borrows what the
-    /// task owns, as a generated `handle_next_request(&runner, ..)` does.
+    /// task owns, as a generated `handle_requests(&runner, ..)` does.
     #[tokio::test]
     async fn the_loop_runs_as_a_spawned_task() {
         let serving = tokio::spawn(async move {

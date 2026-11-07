@@ -19,7 +19,22 @@ fn path_timing_py(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("JOINT_PATH_CORNER_DEVIATION", JOINT_PATH_CORNER_DEVIATION)?;
     module.add("MIN_JOINT_CHANGE_RAD", MIN_JOINT_CHANGE_RAD)?;
     module.add_class::<PyJointTrajectory>()?;
+    module.add_function(wrap_pyfunction!(distinct_joint_waypoints, module)?)?;
     Ok(())
+}
+
+/// The waypoints of `waypoints` a joint path plays through without resting at a
+/// repeat before its end, as control_core's distinct_joint_waypoints keeps them,
+/// each a tuple.
+#[pyfunction]
+fn distinct_joint_waypoints<'py>(
+    py: Python<'py>,
+    waypoints: &Bound<'py, PyAny>,
+) -> PyResult<Vec<Bound<'py, PyTuple>>> {
+    control_core::path_timing::distinct_joint_waypoints(&joint_waypoints(waypoints)?)
+        .iter()
+        .map(|waypoint| PyTuple::new(py, waypoint))
+        .collect()
 }
 
 /// A path of limb_motion's execute_joint_path played from rest to rest, as

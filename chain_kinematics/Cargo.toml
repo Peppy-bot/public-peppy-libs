@@ -10,7 +10,6 @@ description = "Forward kinematics, the geometric Jacobian, damped resolved-rate 
 [workspace]
 
 [dependencies]
-control_core = { path = "../control_core" }
 nalgebra = "0.35"
 thiserror = "2"
 urdf-rs = "0.10"
