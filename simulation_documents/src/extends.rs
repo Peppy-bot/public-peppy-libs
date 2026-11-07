@@ -39,7 +39,8 @@ impl WorldDocument {
     /// comes of a base, or of a base of a base, names each base it passes
     /// through. The chain of bases is walked and folded in a loop, and holds
     /// at most 128 bases. Refuses a world pattern: one that holds a sampler,
-    /// an entry of an item kind, `work_cell_parameters` or `min_spacing_m`.
+    /// an entry of an item kind, `work_cell_parameters`, `min_spacing_m` or
+    /// `stations`.
     pub fn resolve(self, bases: &[WorldDocument]) -> Result<World, Error> {
         let (fields, origin) = self.folded(bases)?;
         WorldDocument { fields }.into_world(origin)
@@ -194,6 +195,7 @@ fn merged(fields: WorldFields, base: WorldFields) -> Result<WorldFields, Error> 
             fields.work_cell_parameters,
         )?,
         min_spacing_m: fields.min_spacing_m.or(base.min_spacing_m),
+        stations: fields.stations.or(base.stations),
     };
     check_name_rules(&merged)?;
     Ok(merged)

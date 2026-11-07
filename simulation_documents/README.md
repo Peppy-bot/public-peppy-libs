@@ -136,6 +136,8 @@ of its stations work its surfaces. The scale of a piece takes no sampler. An
 entry of an item kind and a scene object take no `furnish` pose, and an
 object whose pose is not `furnish` takes no scale `{ min, max }`.
 
+A pattern lists its fixed stations in `stations` at its root, each `{ object, landmark, side, depth_m, width_m }` (`FixedStation`): the room at the side of a work surface of an object of `objects` with a fixed pose, or of a scene object, `depth_m` deep out of the edge of the side and `width_m` wide along it, each above 0, such as the room of a robot at the belt of a conveyor line that stands at a fixed pose. The furnish layout keeps each fixed station free: the solver takes it as a station of no piece, so each piece and each station of the layout stays clear of its room, and the base of each station of the layout stands as far from its centre as from the base of another station. No two fixed stations work one side of one landmark of one object, and a fixed station works no object whose pose is `furnish`, no entry of an item kind, no object or scene object whose pose holds a sampler, and no scene object that the pattern removes. The simulation checks a station on a scene object against the drawn scene. `WorldPattern::stations` gives them, and a concrete world takes none, as it takes no `min_spacing_m`.
+
 An `Expansion` of a pattern and a `Seed` draws each sampler that the seed
 alone draws: `one_of`, `range`, and the count and the asset of each object of
 an item kind. Each sampler draws from its own `Stream`, which the seed and the
