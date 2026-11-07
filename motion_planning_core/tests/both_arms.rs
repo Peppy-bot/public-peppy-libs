@@ -11,15 +11,15 @@ mod common;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use chain_kinematics::{ChainSpec, JointSelection};
+use chain_kinematics::{ChainSpec, Draws, JointSelection};
 use collision_geometry::chain::ChainGeometry;
 use collision_geometry::gjk;
 use control_core::path_timing::RoundedPath;
 use hegel::TestCase;
 use hegel::generators as gs;
 use motion_planning_core::{
-    Arm, ArmGoal, Arms, Body, Draws, Goal, GoalSampler, IkGoalSampler, JointTarget, Moving,
-    Objects, PlanFailure, PlanRequest, Scene, SelfModel, plan_path,
+    Arm, ArmGoal, Arms, Body, Goal, GoalSampler, IkGoalSampler, JointTarget, Moving, Objects,
+    PlanFailure, PlanRequest, Scene, SelfModel, plan_path,
 };
 use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::Planner;

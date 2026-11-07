@@ -137,7 +137,7 @@ async def test_the_aligners_moves_go_through_the_manipulator_with_its_bars():
     assert moved == MoveResult(MoveEnd.COMPLETED, final_position=ALIGNED_PRE, final_orientation=TURNED)
     kind, bars = robot.bars[-1]
     assert kind == "move" and set(bars) == {
-        "duration_s", "plan_position_tolerance_m", "plan_orientation_tolerance_rad",
+        "duration_s",
         "settle_position_tolerance_m", "settle_orientation_tolerance_rad", "settle_timeout_s",
     }
 

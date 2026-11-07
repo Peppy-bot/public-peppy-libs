@@ -30,7 +30,7 @@ an arm move plans within 1 mm and 0.01 rad of its pose and completes once
 the measured grasp point stands within `settle_position_m` and
 `settle_orientation_rad` of it, or fails `settle_timeout_s` after its
 planned end; a gripper move waits up to `grip_settle_timeout_s` for the
-jaws to stand still. A check asks with the arm move's plan bars.
+jaws to stand still. A check asks with the arm move's pose and duration.
 
 Each step that fails ends the grab with the backbone's own words. A step
 that fails once the descent has begun (the descent itself, the close, the
@@ -109,14 +109,11 @@ HOLD_OPENING_MIN = 0.05
 # from 0.378 to 0.062.
 HOLD_DROP_MAX = 0.05
 SNAPSHOT_WAIT_S = 1.0
-# The bars every arm move names. The plan may sit 1 mm and 0.01 rad from
-# the commanded pose, the backbone's servo tolerances; the move completes
-# once the measured grasp point stands within 2 cm and 0.15 rad of it, the
-# settle the robots' endpoint gives for the OpenArm v2, and fails 2 s after
-# the planned end otherwise. 0 s is the fastest move the joint limits allow.
+# The bars every arm move names. The move completes once the measured grasp
+# point stands within 2 cm and 0.15 rad of the commanded pose, the settle the
+# robots' endpoint gives for the OpenArm v2, and fails 2 s after the planned
+# end otherwise. 0 s is the fastest move the joint limits allow.
 MOVE_DURATION_S = 0.0
-PLAN_POSITION_M = 0.001
-PLAN_ORIENTATION_RAD = 0.01
 SETTLE_POSITION_M = 0.02
 SETTLE_ORIENTATION_RAD = 0.15
 SETTLE_TIMEOUT_S = 2.0
@@ -475,7 +472,6 @@ class ScriptedManipulator:
                 cancel.wait(),
                 self._robot.check_arm_move(
                     arm, point, orientation, duration_s=MOVE_DURATION_S,
-                    plan_position_tolerance_m=PLAN_POSITION_M, plan_orientation_tolerance_rad=PLAN_ORIENTATION_RAD,
                 ),
             )
             checks.count += 1
@@ -523,7 +519,6 @@ class ScriptedManipulator:
         """One move_arm with the bars of every arm move."""
         return await self._robot.move_arm(
             arm, point, orientation, duration_s=MOVE_DURATION_S,
-            plan_position_tolerance_m=PLAN_POSITION_M, plan_orientation_tolerance_rad=PLAN_ORIENTATION_RAD,
             settle_position_tolerance_m=self.settle_position_m, settle_orientation_tolerance_rad=self.settle_orientation_rad,
             settle_timeout_s=self.settle_timeout_s,
         )

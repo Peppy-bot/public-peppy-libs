@@ -13,11 +13,9 @@
 //!   ([`ArmAnglePolicy`], [`Solution`]); [`Arm::arm_angle`] reports a config's arm angle.
 //! - [`Arm::limits`] are the URDF joint limits; [`Arm::base_pose`] /
 //!   [`Arm::world_pose`] convert between world and arm base frames.
-//! - [`plan_cartesian`] plans a move of the end effector to a pose: a straight
-//!   line walked by the IK with the elbow held or swiveled (a [`LinePlan`], run
-//!   with a [`LineCursor`] and a [`LineTrajectory`]), or the guarded servo of
-//!   `chain_kinematics` when no line tracks, within the limits a
-//!   [`PlanLimits`] carries.
+//! - [`plan_line`] plans a move of the end effector to a pose: a straight line
+//!   walked by `chain_kinematics`' KDL search, whose configurations a caller times
+//!   and plays as a joint path.
 //!
 //! Frames: FK and IK work in the **arm base frame** (the arm's own mounting link).
 //! Gravity / Coriolis compute in the **world frame**, because gravity is a world
@@ -46,16 +44,14 @@ mod fk;
 mod ik;
 mod line;
 mod model;
-mod plan;
 
 /// The library entry point: build an [`Arm`] from a URDF, then read FK, gravity,
 /// Coriolis, and IK off it. [`Posed`] is the read-only view returned by
 /// [`Arm::at`]; [`ArmAnglePolicy`] / [`Solution`] are the IK types.
-pub use arm::{Arm, DEFAULT_DLS_LAMBDA, SHELL_MARGIN};
+pub use arm::{Arm, DEFAULT_DLS_LAMBDA};
 pub use error::SrsError;
 pub use ik::{ArmAnglePolicy, Solution};
-pub use line::{Elbow, LineCursor, LinePlan, LineTrajectory, Swivel};
-pub use plan::{CartesianPlan, PlanLimits, PlanRejection, plan_cartesian};
+pub use line::plan_line;
 
 /// The arm posed at one configuration: the chain's own read-only view, at
 /// seven joints. Every pose-dependent quantity, the feedforward dynamics
@@ -65,8 +61,8 @@ pub type Posed<'a> = chain_kinematics::Posed<'a, ARM_DOF>;
 /// The geometric Jacobian of the end effector at seven joints, read off a
 /// [`Posed`] view via [`Posed::jacobian`]: maps joint rates (rad/s) to the EE
 /// spatial twist, both in the arm base frame. Rows 0..3 are linear velocity
-/// (m/s), rows 3..6 are angular velocity (rad/s). Its damped inverse and its
-/// manipulability are [`Posed`] methods too.
+/// (m/s), rows 3..6 are angular velocity (rad/s). Its damped inverse is a [`Posed`]
+/// method too.
 pub type Jacobian = chain_kinematics::Jacobian<ARM_DOF>;
 
 /// Degrees of freedom of the arm. The URDF chain is validated against this at

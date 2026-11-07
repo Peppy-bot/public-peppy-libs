@@ -1,5 +1,6 @@
 //! Kinematics for a serial chain read from a URDF: forward kinematics, the
-//! geometric Jacobian, and damped resolved-rate inverse kinematics.
+//! geometric Jacobian, damped resolved-rate steps, and MoveIt's KDL inverse
+//! kinematics.
 //!
 //! Nothing here assumes a topology. A [`Chain`] is any path through any URDF
 //! with `N` actuated joints - a seven-axis arm, a five-axis arm, a leg, a
@@ -40,9 +41,15 @@
 //! OpenArm v2 arms and SO-101, each link pose agrees with the global link
 //! transform of MoveIt's robot state within 16 units of
 //! `f64::EPSILON * max(1, |x|)` (`tests/ros_reference_forward_kinematics.rs`).
+//!
+//! Evidence for the inverse kinematics: from the seeds of seven descents of MoveIt's
+//! KDL plugin, converged, stuck and at the step cap, on OpenArm v2's left arm, each
+//! descent here ends within 1e-6 rad of KDL's after as many passes of its loop
+//! (`src/ik.rs`, `tests/fixtures/kdl_descents.json`).
 #![forbid(unsafe_code)]
 
 mod chain;
+mod draws;
 mod dynamics;
 mod error;
 mod ik;
@@ -50,22 +57,21 @@ mod jacobian;
 mod line;
 mod payload;
 mod rate;
-mod servo;
 mod tree;
 
 pub use chain::{Chain, ChainSpec, JointSelection, Posed};
+pub use draws::Draws;
 pub use error::ChainError;
-pub use ik::{
-    ACCEPT_ORIENTATION_RAD, ACCEPT_POSITION_M, Goal, Kinematics, SEED_TABLE_SIZE, SolveError,
+pub use ik::{Aims, ChainFrame, Ends, IkSolver, RandomSource, SEARCH_ITERATIONS};
+pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse};
+pub use line::{
+    CARTESIAN_STEP_M, CARTESIAN_STEP_RAD, COINCIDENT_ARC_EPS, LinePrecision, LineSolver, LineState,
+    MAX_RESOLUTION, PRECISION, PRECISION_M, PRECISION_RAD, PrecisionError, WalkEnd, interpolate,
+    line_blends, line_extents, line_precision, walk_line,
 };
-pub use jacobian::{Jacobian, JacobianPinv, damped_pseudo_inverse, manipulability};
-pub use line::{COINCIDENT_ARC_EPS, interpolate};
 pub use payload::{Payload, segments_carrying};
-pub use rate::{DEFAULT_DLS_LAMBDA, PoseMiss, pose_miss, rate_step};
-pub use servo::{
-    EeCaps, JointSmoothing, LEASH_M, MAX_SERVO_S, NoSmoothing, ServoLimits, ServoPlan, ServoState,
-    ServoStep, ServoTolerances, ServoTrajectory, Smoother, ToleranceError, command_smoothing,
-    ee_progress, joints, plan_servo, rate_step_toward, rollout, timed_with_ee,
+pub use rate::{
+    DEFAULT_DLS_LAMBDA, EeCaps, PoseMiss, StepLimits, pose_miss, rate_step, rate_step_toward,
 };
 pub use tree::{JointKind, Tree};
 
@@ -109,14 +115,4 @@ pub fn clamp_into<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> [f64; N]
 /// True if every joint of `q` lies inside its limit.
 pub fn all_within<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> bool {
     limits.iter().zip(q).all(|(limit, v)| limit.contains(*v))
-}
-
-/// How far the joint of `q` closest to a limit sits inside it, negative when
-/// that joint lies outside.
-pub fn limit_margin<const N: usize>(limits: &[Limit; N], q: &[f64; N]) -> f64 {
-    limits
-        .iter()
-        .zip(q)
-        .map(|(limit, v)| (v - limit.lo).min(limit.hi - v))
-        .fold(f64::INFINITY, f64::min)
 }

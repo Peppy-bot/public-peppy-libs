@@ -1,14 +1,12 @@
 //! A goal: the constraints a path's last waypoint meets, and the samplers that find
 //! configurations meeting them.
 
-use chain_kinematics::{Chain, Limit, Posed, all_within};
+use chain_kinematics::{
+    Aims, Chain, ChainFrame, Draws, Ends, IkSolver, Limit, Posed, SEARCH_ITERATIONS, all_within,
+};
 use collision_geometry::chain::Rider;
 use control_core::positive_finite::PositiveFinite;
 use nalgebra::{Isometry3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
-
-use crate::arm::frame_on_segment;
-use crate::draws::Draws;
-use crate::goal_ik::{Aims, GoalIk};
 
 /// A frame of the arm that a target names.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -54,6 +52,59 @@ impl std::fmt::Display for Frame {
                 write!(f, "a part the child link of joint {segment} carries")
             }
         }
+    }
+}
+
+impl From<Frame> for ChainFrame {
+    fn from(frame: Frame) -> Self {
+        match frame {
+            Frame::GraspPoint => Self::EndEffector,
+            Frame::Link { segment, offset } | Frame::Part { segment, offset } => {
+                Self::OnSegment { segment, offset }
+            }
+        }
+    }
+}
+
+impl Frame {
+    /// Whether MoveIt's constraint sampler solves for the frame: the tip of its solver's
+    /// chain or a link fixed to it (`IKConstraintSampler::loadIKSolver`,
+    /// default_constraint_samplers.cpp:386-439), the grasp point, or a link that the chain's
+    /// every joint moves and that is fixed below the last joint's link.
+    pub(crate) fn solved_by_moveit<const N: usize>(self, chain: &Chain<N>) -> bool {
+        match self {
+            Self::GraspPoint => true,
+            Self::Link { .. } => ChainFrame::from(self).moved_by_every_joint(chain),
+            Self::Part { .. } => false,
+        }
+    }
+
+    /// What a search for the frame aims at and the ends it offers, for a goal that names
+    /// `named`. A frame MoveIt solves for is solved as KDL does. Two frames depart from
+    /// MoveIt, which has no inverse kinematics for them ([`IkGoalSampler`] says what MoveIt
+    /// does instead): a link the chain's later joints do not move, which fewer joints than
+    /// the chain's move, so it may reach no pose drawn inside a goal exactly; and a part a
+    /// link carries, such as a finger, which hangs on a joint of its own that the chain does
+    /// not hold fixed, so MoveIt finds no fixed transform from it to the tip
+    /// (`getAssociatedFixedTransforms`, default_constraint_samplers.cpp:395). For them the
+    /// descent aims only at what the goal names, and the search offers the configuration each
+    /// descent ends at.
+    fn search_of<const N: usize>(self, chain: &Chain<N>, named: Aims) -> (Aims, Ends) {
+        if self.solved_by_moveit(chain) {
+            (Aims::Both, Ends::Converged)
+        } else {
+            (named, Ends::Approximate)
+        }
+    }
+
+    /// The inverse kinematics of the frame of `chain`, for a goal that names `named`.
+    pub(crate) fn ik_solver<const N: usize>(
+        self,
+        chain: &Chain<N>,
+        named: Aims,
+    ) -> IkSolver<'_, N> {
+        let (aims, ends) = self.search_of(chain, named);
+        IkSolver::new(chain, self.into(), aims, ends)
     }
 }
 
@@ -300,20 +351,19 @@ fn frame_pose<const N: usize>(chain: &Chain<N>, q: &[f64; N], frame: Frame) -> I
 
 /// The pose of `frame` of the chain `posed` holds, in the robot frame.
 pub(crate) fn frame_pose_at<const N: usize>(posed: &Posed<N>, frame: Frame) -> Isometry3<f64> {
-    match frame {
-        Frame::GraspPoint => posed.base_from_world().inverse() * posed.ee_pose(),
-        Frame::Link { segment, offset } | Frame::Part { segment, offset } => {
-            frame_on_segment(posed, segment, &offset)
-        }
-    }
+    ChainFrame::from(frame).pose_at(posed)
 }
 
 impl Goal {
-    /// The frame the goal's position and orientation name, if it names either.
-    fn frame(&self) -> Option<Frame> {
-        self.position
-            .map(|t| t.frame)
-            .or_else(|| self.orientation.map(|t| t.frame))
+    /// The frame the goal's position and orientation name, if it names either, and which of
+    /// the two it names.
+    fn named_frame(&self) -> Option<(Frame, Aims)> {
+        match (self.position, self.orientation) {
+            (Some(position), Some(_)) => Some((position.frame, Aims::Both)),
+            (Some(position), None) => Some((position.frame, Aims::Position)),
+            (None, Some(orientation)) => Some((orientation.frame, Aims::Orientation)),
+            (None, None) => None,
+        }
     }
 
     /// A configuration inside `limits`, the joints the goal names drawn inside their
@@ -385,7 +435,7 @@ pub trait GoalSampler<const N: usize>: Sync {
 /// one (moveit2 2.15.2 default_constraint_samplers.cpp:169-196). For a pose, as
 /// `IKConstraintSampler::sample` (:580-651): each attempt draws a pose of the goal's
 /// frame inside the goal (`IKConstraintSampler::samplePose`) and searches for it by the
-/// inverse kinematics of MoveIt's KDL plugin (`crate::goal_ik`), the first attempt from
+/// inverse kinematics of MoveIt's KDL plugin ([`IkSolver`]), the first attempt from
 /// the working state held to the joint limits (`callIK(..., a == 0)`, :647, whose
 /// `use_as_seed` seeds from the state's joints, :670-678) and every later one from a
 /// configuration drawn inside them (:674-678). The search hands each configuration it
@@ -401,7 +451,7 @@ pub trait GoalSampler<const N: usize>: Sync {
 /// states uniformly and keeps those that meet the goal by chance
 /// (constrained_goal_sampler.cpp:71-72, :158-166). This sampler descends toward what the
 /// goal names, with KDL's position-only and approximate-solution options applied, and the
-/// goal's constraints decide (`crate::goal_ik`).
+/// goal's constraints decide (`Frame::search_of`).
 pub struct IkGoalSampler<const N: usize> {
     chain: Chain<N>,
 }
@@ -423,19 +473,15 @@ impl<const N: usize> GoalSampler<N> for IkGoalSampler<N> {
     ) -> Option<[f64; N]> {
         let limits = self.chain.limits();
         let accepted = |q: &[f64; N]| goal.met(&self.chain, q) && valid(q);
-        let Some(frame) = goal.frame() else {
+        let Some((frame, named)) = goal.named_frame() else {
             let drawn = goal.draw_joints(&limits, draws);
             return accepted(&drawn).then_some(drawn);
-        };
-        let named = Aims {
-            position: goal.position.is_some(),
-            orientation: goal.orientation.is_some(),
         };
         assert!(
             all_within(&limits, working),
             "a goal sample's working state lies inside the joint limits, and {working:?} does not"
         );
-        let ik = GoalIk::new(&self.chain, frame, named);
+        let ik = frame.ik_solver(&self.chain, named);
         (0..attempts).find_map(|attempt| {
             let target = goal.draw_pose(&self.chain, frame, &limits, draws);
             let seed = if attempt == 0 {
@@ -443,7 +489,52 @@ impl<const N: usize> GoalSampler<N> for IkGoalSampler<N> {
             } else {
                 draws.within(&limits)
             };
-            ik.search(seed, &target, draws, &accepted)
+            ik.search(seed, &target, draws, &accepted, SEARCH_ITERATIONS)
         })
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use chain_kinematics::{ChainSpec, JointSelection};
+    use openarm_description::{HardwareVersion, Side};
+
+    use super::*;
+
+    /// OpenArm v2's left arm from its base to its grasp point.
+    pub(crate) fn left_arm() -> Chain<7> {
+        let version = HardwareVersion::V2;
+        Chain::from_urdf(
+            &urdf_rs::read_from_string(version.urdf()).expect("the URDF parses"),
+            &ChainSpec {
+                base_link: Some(version.base_link(Side::Left)),
+                tip_link: version.tcp_link(Side::Left),
+                joints: JointSelection::PathOrder,
+            },
+        )
+        .expect("the left arm")
+    }
+
+    // The grasp point, and a link fixed below the last joint's link, are solved exactly,
+    // aiming at the position and the orientation whatever the goal names; a link the
+    // chain's later joints do not move, and a part the last link carries, take approximate
+    // ends and aim at what the goal names.
+    #[test]
+    fn the_tip_and_a_link_fixed_to_it_are_solved_exactly_and_an_inner_link_and_a_part_are_not() {
+        let chain = left_arm();
+        let offset = Isometry3::translation(0.0, 0.0, 0.1);
+        let solved = |frame: Frame| frame.search_of(&chain, Aims::Position);
+        let exact = (Aims::Both, Ends::Converged);
+        let departing = (Aims::Position, Ends::Approximate);
+        assert_eq!(solved(Frame::GraspPoint), exact);
+        assert_eq!(solved(Frame::Link { segment: 6, offset }), exact);
+        assert_eq!(
+            solved(Frame::Link {
+                segment: 3,
+                offset: Isometry3::identity()
+            }),
+            departing
+        );
+        assert_eq!(solved(Frame::Part { segment: 6, offset }), departing);
     }
 }

@@ -47,35 +47,6 @@ pub fn openarm() -> Chain<7> {
     .expect("OpenArm is a seven-joint chain")
 }
 
-/// SplitMix64: a tiny deterministic generator for uniform test draws, so a
-/// suite's verdict is a function of the code alone.
-pub struct SplitMix64(pub u64);
-
-impl SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// Uniform in [0, 1): the top 53 bits, a full mantissa's worth.
-    fn unit(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
-    }
-
-    /// A configuration drawn uniformly from the joint box.
-    pub fn config<const N: usize>(&mut self, chain: &Chain<N>) -> [f64; N] {
-        let limits = chain.limits();
-        let mut q = [0.0; N];
-        for (value, limit) in q.iter_mut().zip(limits.iter()) {
-            *value = limit.lo + self.unit() * (limit.hi - limit.lo);
-        }
-        q
-    }
-}
-
 /// The singular values of `j`, from the eigenvalues of whichever Gram matrix is
 /// the smaller: `Jᵀ J` below six joints, one value per joint, and `J Jᵀ` from
 /// six up, six values. nalgebra 0.35's SVD misreports some rank-deficient
