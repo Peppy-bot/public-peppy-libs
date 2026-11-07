@@ -80,6 +80,12 @@ pub use tree::{JointKind, Tree};
 /// `Isometry3`s do not match.
 pub use nalgebra;
 
+/// How far outside a joint limit a target may lie and still be taken, at that
+/// limit (rad, or m for a prismatic joint). A measured position sent back as
+/// a target lies that close: a joint that a posture holds at a limit settles
+/// a hair on either side of it.
+pub const TARGET_SLACK: f64 = 0.001;
+
 /// Inclusive joint position limit, radians (or metres for a prismatic joint).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Limit {
@@ -94,6 +100,17 @@ impl Limit {
         self.lo <= x && x <= self.hi
     }
 
+    /// `x` as a target of the joint: `x` inside the limit, the limit for an
+    /// `x` at most [`TARGET_SLACK`] outside it, and none for an `x` farther
+    /// out or not finite.
+    pub fn take_target(&self, x: f64) -> Option<f64> {
+        let with_slack = Limit {
+            lo: self.lo - TARGET_SLACK,
+            hi: self.hi + TARGET_SLACK,
+        };
+        with_slack.contains(x).then(|| self.clamp(x))
+    }
+
     /// `x` brought inside the limit.
     pub fn clamp(&self, x: f64) -> f64 {
         x.clamp(self.lo, self.hi)
@@ -105,6 +122,48 @@ impl Limit {
     pub fn midpoint(&self) -> f64 {
         (self.lo + self.hi) / 2.0
     }
+}
+
+/// A joint of a target farther outside its limit than [`TARGET_SLACK`]: the
+/// joint counted from 0, its position and its limit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OutsideLimits {
+    pub joint: usize,
+    pub position: f64,
+    pub limit: Limit,
+}
+
+impl std::fmt::Display for OutsideLimits {
+    /// The joint counted from 1, with every digit of its position and its
+    /// limits, so that a position a hair outside a limit reads apart from it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "joint {} at {} rad, outside its limits [{}, {}]",
+            self.joint + 1,
+            self.position,
+            self.limit.lo,
+            self.limit.hi
+        )
+    }
+}
+
+/// `q` as a target ([`Limit::take_target`]): each joint inside its limit as
+/// it is, each at most [`TARGET_SLACK`] outside it at the limit, or the
+/// first joint that lies farther out.
+pub fn take_targets<const N: usize>(
+    limits: &[Limit; N],
+    q: &[f64; N],
+) -> Result<[f64; N], OutsideLimits> {
+    let mut taken = *q;
+    for (joint, (position, limit)) in taken.iter_mut().zip(limits).enumerate() {
+        *position = limit.take_target(*position).ok_or(OutsideLimits {
+            joint,
+            position: *position,
+            limit: *limit,
+        })?;
+    }
+    Ok(taken)
 }
 
 /// `q` with every joint brought inside its limit.

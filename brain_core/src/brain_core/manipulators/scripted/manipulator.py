@@ -32,7 +32,9 @@ the measured grasp point stands within `settle_position_m` and
 planned end; a gripper move waits up to `grip_settle_timeout_s` for the
 jaws to stand still. A check asks with the arm move's pose and duration.
 
-Each step that fails ends the grab with the backbone's own words. A step
+Each step that fails ends the grab with the backbone's own words. A grab
+or a place that no orientation plans names the last orientation it tried,
+the point of it that has no plan and the backbone's words for it. A step
 that fails once the descent has begun (the descent itself, the close, the
 two hold judgements, the lift, the wait for a snapshot) first retreats:
 the gripper opens and the arm moves straight back up to the pre-grasp
@@ -78,7 +80,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 from ...limb_state import LimbSnapshot
 from ...ports import Cancelled, CancelToken, Gripper, Item, Outcome, Pose, Quat, Senses, Vec3
@@ -209,6 +211,11 @@ class ScriptedManipulator:
         if self._robot is None or self._limb_states is None:
             return NOT_STARTED
         return self._limb_states.why_unavailable()
+
+    def starting(self) -> str:
+        if self._robot is None or self._limb_states is None:
+            return NOT_STARTED
+        return self._limb_states.starting()
 
     async def start(self, senses: Senses) -> None:
         self._robot = senses.robot
@@ -389,7 +396,7 @@ class ScriptedManipulator:
             orientations = orientations_for(pose.orientation)
         except ValueError as error:
             raise _Failed(str(error)) from None
-        target = "the pose [{:.3f}, {:.3f}, {:.3f}]".format(*pose.position)
+        target = f"the pose {_numbers(pose.position)}"
         notes: list[str] = []
         orientation, (pre, point) = await self._place_reach(gripper, Grasp(pose.position, orientations), target, cancel, notes)
         await self._move(gripper.arm, pre, orientation, cancel)
@@ -443,21 +450,26 @@ class ScriptedManipulator:
         """The first orientation of `grasp` whose moves all plan, with the
         points of those moves in order: the pre point, `clearance_m` back
         along the approach, the grasp point, and the lifted point when
-        `with_lift`."""
+        `with_lift` (a grab; else a place, whose grasp point is the place
+        point). With none, the failure names the last orientation tried, its
+        point that has no plan and the backbone's words for it."""
+        names = ("pre-grasp point", "grasp point", "lifted point") if with_lift else ("pre-place point", "place point")
         last_refusal = ""
         checks = _Checks()
         for index, orientation in enumerate(grasp.orientations):
             points = (pre_grasp(grasp.point, orientation, clearance_m), grasp.point)
             if with_lift:
                 points += (lifted(grasp.point, self.lift_m),)
-            refusal = await self._first_refusal(gripper.arm, points, orientation, cancel, checks)
-            if not refusal:
-                notes.append(
-                    f"orientation {index + 1} of {len(grasp.orientations)} planned, "
-                    f"[{', '.join(f'{value:.3f}' for value in orientation)}] ({checks})"
-                )
+            refused = await self._first_refused_point(gripper.arm, points, orientation, cancel, checks)
+            tried = f"orientation {index + 1} of {len(grasp.orientations)}"
+            if refused is None:
+                notes.append(f"{tried} planned, {_numbers(orientation)} ({checks})")
                 return orientation, points
-            last_refusal = refusal
+            point, words = refused
+            last_refusal = (
+                f"{tried}, {_numbers(orientation)}, has no plan to its {names[point]} "
+                f"{_numbers(points[point])}: {words}"
+            )
         raise _Failed(f"no plan reaches {target} with gripper '{gripper.name}': {last_refusal}")
 
     async def _first_refusal(
@@ -466,7 +478,16 @@ class ScriptedManipulator:
         """The backbone's words for the first of `points` it has no plan
         for, or "" when it has a plan for each. Each check counts in
         `checks`."""
-        for point in points:
+        refused = await self._first_refused_point(arm, points, orientation, cancel, checks)
+        return "" if refused is None else refused[1]
+
+    async def _first_refused_point(
+        self, arm: str, points: tuple[Vec3, ...], orientation: Quat, cancel: CancelToken, checks: _Checks
+    ) -> tuple[int, str] | None:
+        """The index of the first of `points` the backbone has no plan for,
+        with its words, or None when it has a plan for each. Each check
+        counts in `checks`."""
+        for index, point in enumerate(points):
             started = self._clock()
             check = await until(
                 cancel.wait(),
@@ -478,8 +499,8 @@ class ScriptedManipulator:
             checks.seconds += self._clock() - started
             cancel.check()
             if not check.reachable:
-                return check.reason or "check_arm_move found no plan"
-        return ""
+                return index, check.reason or "check_arm_move found no plan"
+        return None
 
     async def _move(self, arm: str, point: Vec3, orientation: Quat, cancel: CancelToken) -> MoveResult:
         """Moves the grasp point of `arm` to `point` in `orientation`; the
@@ -569,3 +590,9 @@ def _opening_of(snapshot: Optional[LimbSnapshot], gripper: str) -> float:
     if opening is None:
         raise _Failed(f"limb_states names no gripper '{gripper}'")
     return opening
+
+
+def _numbers(values: Sequence[float]) -> str:
+    """`values` as a failure or a note names a point or an orientation: in
+    brackets, with 3 decimals each."""
+    return f"[{', '.join(f'{value:.3f}' for value in values)}]"

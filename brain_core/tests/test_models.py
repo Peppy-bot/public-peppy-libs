@@ -7,7 +7,7 @@ import asyncio
 
 import fake_peppygen
 import pytest
-from conftest import CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeSource, depth_frame, failed_with, make_brain, rgb_frame
+from conftest import FakeCtx, FakeDetector, FakeManipulator, FakeSource, failed_with, make_brain, with_frames
 
 from brain_core.handlers import abort, grab_item, place_item, scan_items, switch_model
 from brain_core.manipulators.none import NoneManipulator
@@ -59,10 +59,7 @@ def two_detectors(old, new, manipulator=None) -> FakeSource:
 
 async def brain_with(source: FakeSource, manipulation_model: str = "none"):
     brain = await make_brain(source=source, perception_model="old", manipulation_model=manipulation_model)
-    brain.perceiver.frames.add_color(rgb_frame(16, 12))
-    brain.perceiver.frames.add_depth(depth_frame(1.0, 16, 12))
-    brain.perceiver.frames.depth_unit = 0.001
-    brain.perceiver.set_camera(brain.perceiver.camera.with_intrinsics(CAMERA_16X12).with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)))
+    with_frames(brain)
     return brain
 
 

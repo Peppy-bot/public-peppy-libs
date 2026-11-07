@@ -226,6 +226,27 @@ class Brain:
         self.refuse_unless_searchable(self.models.current(Role.PERCEPTION))
         self.perceiver.refuse_unless_ready()
 
+    def starting(self, role: Role) -> str:
+        """Why `role` cannot serve a goal yet while the brain starts it, as
+        get_model of brain_model gives it, or "": once the role can serve a
+        goal, and when it does not become able to (its model is "none", its
+        model could not load, a slot that it reads is vacant, or a source
+        gave what the brain cannot read). Perception waits for its model,
+        then for the frames and the camera model, unless one of those does
+        not become able to serve; manipulation for its manipulator."""
+        if role is Role.MANIPULATION:
+            return self.models.current(Role.MANIPULATION).starting()
+        sources_starting = self.perceiver.starting()
+        if self.perceiver.why_unavailable() and not sources_starting:
+            return ""
+        detector = self.models.current(Role.PERCEPTION)
+        detector_starting = detector.starting()
+        if detector_starting:
+            return f"no perception source: {detector_starting}"
+        if detector.why_unavailable():
+            return ""
+        return sources_starting
+
     def refuse_unless_searchable(self, detector: Detector) -> None:
         """Raises the Refusal of a search through `detector` while it cannot
         search: `precondition_failed` for the model "none", as brain_model
