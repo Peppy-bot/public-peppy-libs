@@ -1679,7 +1679,7 @@ fn ordered(placements: Vec<PlacementSite>) -> Result<Vec<PlacementSite>, Error> 
 pub(crate) mod tests {
     use super::*;
     use crate::world::tests::{RELEASE, name, robot};
-    use crate::{Feature, Offset, Pose, Stand};
+    use crate::{Feature, Offset, Pose, Raise, Stand};
     use serde_json::json;
 
     /// The tape line of the plan: two arms at their stations with a drawn
@@ -2333,7 +2333,8 @@ pub(crate) mod tests {
                 object: name("modern_coffee_table_01"),
                 landmark: "top".into(),
                 side: Some(crate::Side::NegX),
-                offset: Offset::default()
+                offset: Offset::default(),
+                raise: Raise::NONE,
             })
         );
     }
