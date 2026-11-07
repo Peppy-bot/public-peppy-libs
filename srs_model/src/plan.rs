@@ -1,7 +1,8 @@
 //! The Cartesian plan of an arm move: the limits a plan is sized against, the
 //! choice between the line tier (`crate::line`), the servo tier
 //! ([`chain_kinematics::plan_servo`]) and the joint tier (a joint-space path to
-//! the exact solver's solution that keeps the grasp point within
+//! the exact solver's solution, which on a move of up to
+//! [`JOINT_PATH_LINE_MOVE_M`] keeps the grasp point within
 //! [`JOINT_PATH_CORRIDOR_M`] of the straight line), and why no plan reached the
 //! goal.
 
@@ -23,13 +24,20 @@ use crate::{ARM_DOF, Arm, ArmAnglePolicy, JointVec};
 /// chords stay close to its arc.
 const JOINT_PATH_STEP_RAD: f64 = 0.01;
 
-/// How far the grasp point of a joint-tier path may stand from the straight
-/// line between where it starts and where it ends (m). A caller's moves near
-/// an item, such as a grab's descent, its lift and its retreat, count on the
-/// grasp point keeping to that line, as the line and the servo tiers keep it.
-/// A joint path that swings wider could sweep the gripper through the item or
-/// what it stands in, so it is no plan.
+/// How far the grasp point of a joint-tier path of a short move may stand
+/// from the straight line between where it starts and where it ends (m). A
+/// caller's moves near an item, such as a grab's descent, its lift and its
+/// retreat, count on the grasp point keeping to that line, as the line and
+/// the servo tiers keep it. A joint path that swings wider could sweep the
+/// gripper through the item or what it stands in, so it is no plan.
 pub const JOINT_PATH_CORRIDOR_M: f64 = 0.02;
+
+/// The longest move whose joint-tier path keeps to [`JOINT_PATH_CORRIDOR_M`]
+/// (m), the distance between where the grasp point starts and where it ends.
+/// A caller's moves near an item are this short: a grab's descent, lift and
+/// retreat are 7.5 cm each. A longer move, such as the approach from a
+/// posture to a pre-grasp point, plays the joint path wherever it goes.
+pub const JOINT_PATH_LINE_MOVE_M: f64 = 0.10;
 
 /// The motion limits a Cartesian plan sizes and validates against: the joint
 /// velocity and acceleration limits, the end-effector speed caps, the control
@@ -72,9 +80,9 @@ pub enum PlanRejection {
     /// arrive within the slack asked for.
     ServoCannotArrive(ToleranceError),
     /// No line was usable, the guarded servo's rollout did not converge, and
-    /// the joint path to the exact solver's solution takes the grasp point
-    /// `swing_m` from the straight line, farther than
-    /// [`JOINT_PATH_CORRIDOR_M`].
+    /// the joint path to the exact solver's solution of a move of up to
+    /// [`JOINT_PATH_LINE_MOVE_M`] takes the grasp point `swing_m` from the
+    /// straight line, farther than [`JOINT_PATH_CORRIDOR_M`].
     JointPathLeavesTheLine { swing_m: f64 },
 }
 
@@ -94,8 +102,9 @@ impl std::fmt::Display for PlanRejection {
             Self::JointPathLeavesTheLine { swing_m } => write!(
                 f,
                 "no line plan fits the limits, the servo rollout stalls, and the joint \
-                 path to the pose takes the grasp point {:.1} cm from the straight line, \
-                 farther than {:.1} cm",
+                 path of this move of up to {:.0} cm takes the grasp point {:.1} cm from \
+                 the straight line, farther than {:.1} cm",
+                JOINT_PATH_LINE_MOVE_M * 100.0,
                 swing_m * 100.0,
                 JOINT_PATH_CORRIDOR_M * 100.0
             ),
@@ -116,10 +125,12 @@ pub enum CartesianPlan {
     Servo(ServoPlan),
     /// Neither a line nor the servo reaches the pose, and the exact solver
     /// does: a straight joint-space path from the seed to its solution, timed
-    /// and played as the servo's path is. The end effector travels within
-    /// [`JOINT_PATH_CORRIDOR_M`] of the straight line, not on it, its
-    /// orientation turning as the joints do, and it stops within the caller's
-    /// position slack of the pose, in its orientation.
+    /// and played as the servo's path is. The end effector does not travel on
+    /// the straight line: on a move of up to [`JOINT_PATH_LINE_MOVE_M`] it
+    /// keeps within [`JOINT_PATH_CORRIDOR_M`] of it, and on a longer move it
+    /// goes where the joints take it. Its orientation turns as the joints do,
+    /// and it stops within the caller's position slack of the pose, in its
+    /// orientation.
     Joint(ServoPlan),
 }
 
@@ -138,9 +149,10 @@ impl CartesianPlan {
 /// held or swiveled (`plan_line`), and only when no line is usable the guarded
 /// servo ([`plan_servo`]), whose damped law crosses the singular surfaces a
 /// discrete IK walk cannot, and only when the servo stalls too the joint tier
-/// ([`plan_joint`]), which reaches a pose the exact solver reaches when its
-/// path keeps the grasp point within [`JOINT_PATH_CORRIDOR_M`] of the
-/// straight line. `tolerance` is the slack the servo and the joint tier
+/// ([`plan_joint`]), which reaches a pose the exact solver reaches, and on a
+/// move of up to [`JOINT_PATH_LINE_MOVE_M`] only when its path keeps the
+/// grasp point within [`JOINT_PATH_CORRIDOR_M`] of the straight line.
+/// `tolerance` is the slack the servo and the joint tier
 /// arrive within, or why none can, which refuses the move once no line fits.
 /// A refusal names the limit that refused the move.
 pub fn plan_cartesian(
@@ -175,10 +187,8 @@ pub fn plan_cartesian(
 /// most [`JOINT_PATH_STEP_RAD`] apart in every joint, timed with the end
 /// effector under `limits` and played over the longer of `requested` and the
 /// path's own time from rest to rest. Refused as unreachable when no solution
-/// exists, and when a configuration of the path takes the grasp point farther
-/// than [`JOINT_PATH_CORRIDOR_M`] from the straight line between the path's
-/// two ends. A path between two configurations inside the joint limits stays
-/// inside them.
+/// exists, and when the path leaves the line ([`leaves_the_line`]). A path
+/// between two configurations inside the joint limits stays inside them.
 fn plan_joint(
     arm: &Arm,
     end: &Isometry3<f64>,
@@ -197,9 +207,8 @@ fn plan_joint(
         .ok_or(PlanRejection::Unreachable)?
         .q;
     let configs = joint_path(&seed, &goal);
-    let swing_m = widest_swing_m(arm, &configs);
-    if swing_m > JOINT_PATH_CORRIDOR_M {
-        return Err(PlanRejection::JointPathLeavesTheLine { swing_m });
+    if let Some(refusal) = leaves_the_line(arm, &configs) {
+        return Err(refusal);
     }
     let path = timed_with_ee(
         arm.chain(),
@@ -212,20 +221,25 @@ fn plan_joint(
     Ok(ServoPlan { duration, path })
 }
 
-/// The farthest the grasp point of any of `configs` stands from the straight
-/// segment between its positions at the first and at the last of them (m).
-fn widest_swing_m(arm: &Arm, configs: &[JointVec]) -> f64 {
+/// The refusal of the joint path `configs` of a move of up to
+/// [`JOINT_PATH_LINE_MOVE_M`] between the grasp point at its first and at its
+/// last configuration, when one of its configurations takes the grasp point
+/// farther than [`JOINT_PATH_CORRIDOR_M`] from the straight segment between
+/// those two; none for a longer move, and for a path that keeps to the line.
+fn leaves_the_line(arm: &Arm, configs: &[JointVec]) -> Option<PlanRejection> {
     let positions: Vec<Vector3<f64>> = configs
         .iter()
         .map(|q| arm.at(q).ee_pose().translation.vector)
         .collect();
-    let (Some(start), Some(end)) = (positions.first(), positions.last()) else {
-        return 0.0;
-    };
-    positions
+    let (start, end) = (positions.first()?, positions.last()?);
+    if (end - start).norm() > JOINT_PATH_LINE_MOVE_M {
+        return None;
+    }
+    let swing_m = positions
         .iter()
         .map(|point| distance_to_segment(point, start, end))
-        .fold(0.0, f64::max)
+        .fold(0.0, f64::max);
+    (swing_m > JOINT_PATH_CORRIDOR_M).then_some(PlanRejection::JointPathLeavesTheLine { swing_m })
 }
 
 /// The distance from `point` to the segment from `start` to `end` (m).
@@ -278,6 +292,53 @@ mod tests {
             }
         }
         assert_eq!(joint_path(&from, &from), [from, from]);
+    }
+
+    /// The left arm of the fixture URDF (`crate::test_support`), and the
+    /// middle of its joint limits.
+    fn fixture_arm_and_middle() -> (Arm, JointVec) {
+        let arm = Arm::from_urdf(crate::test_support::FIXTURE_URDF, "openarm_left_link0")
+            .expect("the fixture arm loads");
+        let limits = arm.limits();
+        let middle = std::array::from_fn(|j| (limits[j].lo + limits[j].hi) / 2.0);
+        (arm, middle)
+    }
+
+    /// A short move whose path detours through a configuration off its line
+    /// leaves the line, with how far its grasp point swings; the same path
+    /// with no detour keeps to it; and a move longer than the short ones may
+    /// detour.
+    #[test]
+    fn a_short_move_that_detours_leaves_the_line_and_a_long_one_may() {
+        let (arm, start) = fixture_arm_and_middle();
+        let at = |q: &JointVec| arm.at(q).ee_pose().translation.vector;
+        let mut short_end = start;
+        short_end[3] += 0.1;
+        let short_m = (at(&short_end) - at(&start)).norm();
+        assert!(
+            short_m <= JOINT_PATH_LINE_MOVE_M,
+            "a short move of {short_m} m"
+        );
+        assert_eq!(leaves_the_line(&arm, &joint_path(&start, &short_end)), None);
+        let mut detour = start;
+        detour[1] += 0.6;
+        let off_m = distance_to_segment(&at(&detour), &at(&start), &at(&short_end));
+        assert!(
+            off_m > JOINT_PATH_CORRIDOR_M,
+            "a detour {off_m} m off the line"
+        );
+        let through_the_detour = [start, detour, short_end];
+        let Some(PlanRejection::JointPathLeavesTheLine { swing_m }) =
+            leaves_the_line(&arm, &through_the_detour)
+        else {
+            panic!("the detour keeps to the line");
+        };
+        assert_eq!(swing_m, off_m);
+        let mut long_end = start;
+        long_end[0] += 1.2;
+        let long_m = (at(&long_end) - at(&start)).norm();
+        assert!(long_m > JOINT_PATH_LINE_MOVE_M, "a long move of {long_m} m");
+        assert_eq!(leaves_the_line(&arm, &[start, detour, long_end]), None);
     }
 
     /// The distance to a segment is the distance to its nearest point: across

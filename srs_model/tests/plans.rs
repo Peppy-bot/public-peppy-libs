@@ -14,8 +14,8 @@ use srs_model::chain_kinematics::pose_miss;
 use srs_model::nalgebra::Vector3;
 use srs_model::nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion};
 use srs_model::{
-    ARM_DOF, Arm, CartesianPlan, JOINT_PATH_CORRIDOR_M, JointVec, LineCursor, LineTrajectory,
-    PlanLimits, PlanRejection, plan_cartesian,
+    ARM_DOF, Arm, CartesianPlan, JOINT_PATH_CORRIDOR_M, JOINT_PATH_LINE_MOVE_M, JointVec,
+    LineCursor, LineTrajectory, PlanLimits, PlanRejection, plan_cartesian,
 };
 
 mod common;
@@ -128,11 +128,13 @@ fn an_accepted_plan_plays_within_the_limits_it_was_sized_against(tc: TestCase) {
                 seed,
                 "the path starts away from the seed"
             );
-            if matches!(plan, CartesianPlan::Joint(_)) {
+            if matches!(plan, CartesianPlan::Joint(_))
+                && travel_m(arm, &configuration) <= JOINT_PATH_LINE_MOVE_M
+            {
                 let swing_m = widest_swing_m(arm, &configuration);
                 assert!(
                     swing_m <= JOINT_PATH_CORRIDOR_M + 1e-4,
-                    "the joint path takes the grasp point {swing_m} m from the line"
+                    "the joint path of a short move takes the grasp point {swing_m} m from the line"
                 );
             }
             let ticks = tick_fractions(duration_s, period_s)
@@ -168,6 +170,13 @@ fn an_accepted_plan_plays_within_the_limits_it_was_sized_against(tc: TestCase) {
             );
         }
     }
+}
+
+/// How far the grasp point of the path `configuration` stands at its end from
+/// where it starts (m).
+fn travel_m(arm: &Arm, configuration: &dyn Fn(f64) -> JointVec) -> f64 {
+    let at = |f: f64| -> Vector3<f64> { arm.at(&configuration(f)).ee_pose().translation.vector };
+    (at(1.0) - at(0.0)).norm()
 }
 
 /// The farthest the grasp point of the path `configuration`, read at 201
@@ -253,11 +262,6 @@ fn a_pose_that_no_line_or_servo_reaches_in_time_plans_on_the_joint_tier() {
             );
         }
     }
-    let swing_m = widest_swing_m(arm, &|f| joints(&joint.path.at_fraction(f)));
-    assert!(
-        swing_m <= JOINT_PATH_CORRIDOR_M,
-        "the joint path takes the grasp point {swing_m} m from the line"
-    );
     let travel_m = (end.translation.vector - start.translation.vector).norm();
     assert!(
         plan.duration().as_secs_f64() >= travel_m / limits.ee.linear_m_s * (1.0 - 1e-6),
@@ -266,46 +270,46 @@ fn a_pose_that_no_line_or_servo_reaches_in_time_plans_on_the_joint_tier() {
     );
 }
 
-/// A turn of the shoulder that sweeps the grasp point on an arc, which
-/// neither a line nor the servo reaches in its time at the slow caps, is no
-/// plan on the joint tier either: its joint path takes the grasp point
-/// farther than the corridor from the straight line, and the refusal names
-/// how far.
+/// A turn of the shoulder of 1.2 rad sweeps the grasp point on an arc far
+/// from the straight line, a move longer than the short moves that keep to
+/// the corridor. Neither a line nor the servo reaches it in its time at the
+/// slow caps, and the joint tier plays it wherever its path goes, ending on
+/// the pose.
 #[test]
-fn a_joint_path_that_swings_wider_than_the_corridor_is_refused_with_its_swing() {
+fn a_long_move_plays_its_joint_path_wherever_it_goes() {
     let (arm, seed, moved) = seed_and_moved(&[(0, 1.2)]);
-    let joint_limits = arm.limits();
     assert!(
-        joint_limits[0].contains(moved[0]),
+        arm.limits()[0].contains(moved[0]),
         "the turn stays within its limits"
     );
     let end = arm.world_pose(&arm.at(&moved).ee_pose());
     let tolerance = ServoTolerances::new(1e-3, 1e-2).expect("a reachable tolerance");
-    let refused = plan_cartesian(
+    let plan = plan_cartesian(
         arm,
         &end,
         seed,
         &slow_end_effector_limits(),
         Duration::ZERO,
         Ok(tolerance),
-    );
-    let Err(PlanRejection::JointPathLeavesTheLine { swing_m }) = refused else {
-        panic!("{refused:?} is no refusal for the swing")
+    )
+    .expect("the exact solver reaches the pose");
+    let CartesianPlan::Joint(joint) = &plan else {
+        panic!("{plan:?} is not on the joint tier")
     };
-    assert!(swing_m > JOINT_PATH_CORRIDOR_M, "a swing of {swing_m} m");
-    let straight =
-        |f: f64| -> JointVec { std::array::from_fn(|j| seed[j] + f * (moved[j] - seed[j])) };
-    let measured_m = widest_swing_m(arm, &straight);
-    assert!(
-        (swing_m - measured_m).abs() < 0.005,
-        "the refusal names {swing_m} m, the path swings {measured_m} m"
+    let configuration = |f: f64| -> JointVec { joints(&joint.path.at_fraction(f)) };
+    let (travel, swing) = (
+        travel_m(arm, &configuration),
+        widest_swing_m(arm, &configuration),
     );
+    assert!(travel > JOINT_PATH_LINE_MOVE_M, "a long move of {travel} m");
     assert!(
-        PlanRejection::JointPathLeavesTheLine { swing_m }
-            .to_string()
-            .ends_with(&format!(
-                "takes the grasp point {:.1} cm from the straight line, farther than 2.0 cm",
-                swing_m * 100.0
-            ))
+        swing > JOINT_PATH_CORRIDOR_M,
+        "a swing of {swing} m from the line"
+    );
+    let landed = configuration(1.0);
+    let miss = pose_miss(&arm.world_pose(&arm.at(&landed).ee_pose()), &end);
+    assert!(
+        miss.position_m <= tolerance.position_m() + TOLERANCE && miss.orientation_rad <= TOLERANCE,
+        "the joint path ends {miss:?} from the pose"
     );
 }
