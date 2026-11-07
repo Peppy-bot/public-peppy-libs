@@ -55,7 +55,7 @@ pub use arm::{Arm, DEFAULT_DLS_LAMBDA, SHELL_MARGIN};
 pub use error::SrsError;
 pub use ik::{ArmAnglePolicy, Solution};
 pub use line::{Elbow, LineCursor, LinePlan, LineTrajectory, Swivel};
-pub use plan::{CartesianPlan, PlanLimits, PlanRejection, plan_cartesian};
+pub use plan::{CartesianPlan, JOINT_PATH_CORRIDOR_M, PlanLimits, PlanRejection, plan_cartesian};
 
 /// The arm posed at one configuration: the chain's own read-only view, at
 /// seven joints. Every pose-dependent quantity, the feedforward dynamics

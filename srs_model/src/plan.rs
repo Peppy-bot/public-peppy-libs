@@ -1,7 +1,9 @@
 //! The Cartesian plan of an arm move: the limits a plan is sized against, the
 //! choice between the line tier (`crate::line`), the servo tier
 //! ([`chain_kinematics::plan_servo`]) and the joint tier (a joint-space path to
-//! the exact solver's solution), and why no plan reached the goal.
+//! the exact solver's solution that keeps the grasp point within
+//! [`JOINT_PATH_CORRIDOR_M`] of the straight line), and why no plan reached the
+//! goal.
 
 use std::time::Duration;
 
@@ -11,7 +13,7 @@ use chain_kinematics::{
 };
 use control_core::filters::ButterworthFilter;
 use control_core::timing::duration_at_least;
-use nalgebra::Isometry3;
+use nalgebra::{Isometry3, Vector3};
 
 use crate::line::{LinePlan, plan_line};
 use crate::{ARM_DOF, Arm, ArmAnglePolicy, JointVec};
@@ -20,6 +22,14 @@ use crate::{ARM_DOF, Arm, ArmAnglePolicy, JointVec};
 /// path (rad): the end effector's travel is timed chord by chord, so its
 /// chords stay close to its arc.
 const JOINT_PATH_STEP_RAD: f64 = 0.01;
+
+/// How far the grasp point of a joint-tier path may stand from the straight
+/// line between where it starts and where it ends (m). A caller's moves near
+/// an item, such as a grab's descent, its lift and its retreat, count on the
+/// grasp point keeping to that line, as the line and the servo tiers keep it.
+/// A joint path that swings wider could sweep the gripper through the item or
+/// what it stands in, so it is no plan.
+pub const JOINT_PATH_CORRIDOR_M: f64 = 0.02;
 
 /// The motion limits a Cartesian plan sizes and validates against: the joint
 /// velocity and acceleration limits, the end-effector speed caps, the control
@@ -61,6 +71,11 @@ pub enum PlanRejection {
     /// No line was usable, and the guarded servo that would take over cannot
     /// arrive within the slack asked for.
     ServoCannotArrive(ToleranceError),
+    /// No line was usable, the guarded servo's rollout did not converge, and
+    /// the joint path to the exact solver's solution takes the grasp point
+    /// `swing_m` from the straight line, farther than
+    /// [`JOINT_PATH_CORRIDOR_M`].
+    JointPathLeavesTheLine { swing_m: f64 },
 }
 
 impl std::fmt::Display for PlanRejection {
@@ -75,6 +90,14 @@ impl std::fmt::Display for PlanRejection {
                 f,
                 "no line plan fits the limits, and the guarded servo that would take \
                  over cannot arrive that tightly ({refusal})"
+            ),
+            Self::JointPathLeavesTheLine { swing_m } => write!(
+                f,
+                "no line plan fits the limits, the servo rollout stalls, and the joint \
+                 path to the pose takes the grasp point {:.1} cm from the straight line, \
+                 farther than {:.1} cm",
+                swing_m * 100.0,
+                JOINT_PATH_CORRIDOR_M * 100.0
             ),
         }
     }
@@ -93,9 +116,10 @@ pub enum CartesianPlan {
     Servo(ServoPlan),
     /// Neither a line nor the servo reaches the pose, and the exact solver
     /// does: a straight joint-space path from the seed to its solution, timed
-    /// and played as the servo's path is. The end effector does not travel
-    /// on a straight line, and it stops within the caller's position slack of
-    /// the pose, in its orientation.
+    /// and played as the servo's path is. The end effector travels within
+    /// [`JOINT_PATH_CORRIDOR_M`] of the straight line, not on it, its
+    /// orientation turning as the joints do, and it stops within the caller's
+    /// position slack of the pose, in its orientation.
     Joint(ServoPlan),
 }
 
@@ -114,10 +138,11 @@ impl CartesianPlan {
 /// held or swiveled (`plan_line`), and only when no line is usable the guarded
 /// servo ([`plan_servo`]), whose damped law crosses the singular surfaces a
 /// discrete IK walk cannot, and only when the servo stalls too the joint tier
-/// ([`plan_joint`]), which reaches every pose the exact solver reaches.
-/// `tolerance` is the slack the servo and the joint tier arrive within, or why
-/// none can, which refuses the move once no line fits. A refusal names the
-/// limit that refused the move.
+/// ([`plan_joint`]), which reaches a pose the exact solver reaches when its
+/// path keeps the grasp point within [`JOINT_PATH_CORRIDOR_M`] of the
+/// straight line. `tolerance` is the slack the servo and the joint tier
+/// arrive within, or why none can, which refuses the move once no line fits.
+/// A refusal names the limit that refused the move.
 pub fn plan_cartesian(
     arm: &Arm,
     end: &Isometry3<f64>,
@@ -140,9 +165,7 @@ pub fn plan_cartesian(
     ) {
         return Ok(CartesianPlan::Servo(servo));
     }
-    plan_joint(arm, end, seed, limits, requested, tolerance)
-        .map(CartesianPlan::Joint)
-        .ok_or(PlanRejection::Unreachable)
+    plan_joint(arm, end, seed, limits, requested, tolerance).map(CartesianPlan::Joint)
 }
 
 /// The joint-tier plan of a move from `seed` to `end`: the exact solver's
@@ -151,8 +174,11 @@ pub fn plan_cartesian(
 /// one), reached on a straight joint-space path whose configurations stand at
 /// most [`JOINT_PATH_STEP_RAD`] apart in every joint, timed with the end
 /// effector under `limits` and played over the longer of `requested` and the
-/// path's own time from rest to rest; `None` when no solution exists. A path
-/// between two configurations inside the joint limits stays inside them.
+/// path's own time from rest to rest. Refused as unreachable when no solution
+/// exists, and when a configuration of the path takes the grasp point farther
+/// than [`JOINT_PATH_CORRIDOR_M`] from the straight line between the path's
+/// two ends. A path between two configurations inside the joint limits stays
+/// inside them.
 fn plan_joint(
     arm: &Arm,
     end: &Isometry3<f64>,
@@ -160,16 +186,21 @@ fn plan_joint(
     limits: &PlanLimits,
     requested: Duration,
     tolerance: ServoTolerances,
-) -> Option<ServoPlan> {
+) -> Result<ServoPlan, PlanRejection> {
     let goal = arm
         .solve_ik_within(
             &arm.base_pose(end),
             tolerance.position_m(),
             ArmAnglePolicy::FromSeed,
             &seed,
-        )?
+        )
+        .ok_or(PlanRejection::Unreachable)?
         .q;
     let configs = joint_path(&seed, &goal);
+    let swing_m = widest_swing_m(arm, &configs);
+    if swing_m > JOINT_PATH_CORRIDOR_M {
+        return Err(PlanRejection::JointPathLeavesTheLine { swing_m });
+    }
     let path = timed_with_ee(
         arm.chain(),
         &configs,
@@ -178,7 +209,34 @@ fn plan_joint(
         &limits.ee,
     );
     let duration = duration_at_least(path.duration_s(), requested);
-    Some(ServoPlan { duration, path })
+    Ok(ServoPlan { duration, path })
+}
+
+/// The farthest the grasp point of any of `configs` stands from the straight
+/// segment between its positions at the first and at the last of them (m).
+fn widest_swing_m(arm: &Arm, configs: &[JointVec]) -> f64 {
+    let positions: Vec<Vector3<f64>> = configs
+        .iter()
+        .map(|q| arm.at(q).ee_pose().translation.vector)
+        .collect();
+    let (Some(start), Some(end)) = (positions.first(), positions.last()) else {
+        return 0.0;
+    };
+    positions
+        .iter()
+        .map(|point| distance_to_segment(point, start, end))
+        .fold(0.0, f64::max)
+}
+
+/// The distance from `point` to the segment from `start` to `end` (m).
+fn distance_to_segment(point: &Vector3<f64>, start: &Vector3<f64>, end: &Vector3<f64>) -> f64 {
+    let along = end - start;
+    let length_squared = along.norm_squared();
+    if length_squared == 0.0 {
+        return (point - start).norm();
+    }
+    let share = ((point - start).dot(&along) / length_squared).clamp(0.0, 1.0);
+    (point - (start + share * along)).norm()
 }
 
 /// The configurations of the straight joint-space path from `from` to `to`:
@@ -220,5 +278,18 @@ mod tests {
             }
         }
         assert_eq!(joint_path(&from, &from), [from, from]);
+    }
+
+    /// The distance to a segment is the distance to its nearest point: across
+    /// the middle, beyond either end, and to a segment of no length.
+    #[test]
+    fn the_distance_to_a_segment_is_the_distance_to_its_nearest_point() {
+        let (start, end) = (Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.1, 0.0, 0.0));
+        let at = |x: f64, y: f64| distance_to_segment(&Vector3::new(x, y, 0.0), &start, &end);
+        assert!((at(0.05, 0.03) - 0.03).abs() < 1e-12);
+        assert!((at(-0.03, 0.04) - 0.05).abs() < 1e-12);
+        assert!((at(0.13, 0.04) - 0.05).abs() < 1e-12);
+        let point = Vector3::new(0.0, 0.02, 0.0);
+        assert!((distance_to_segment(&point, &start, &start) - 0.02).abs() < 1e-12);
     }
 }
