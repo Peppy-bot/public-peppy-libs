@@ -109,33 +109,66 @@ class Look:
         return f"frame {self.frame_id} taken {taken}, {count}: {', '.join(boxes)}"
 
 
+@dataclass
+class SourceReason:
+    """Why a source of the camera model has not given what the brain reads,
+    or the empty string once it has, and whether the reason ends on its own
+    while the source starts: an answer that has not come yet, or the error
+    reply a source gives before it has heard from what it reads. A vacant
+    slot, an answer the brain cannot read and any other error reply hold
+    until the source changes."""
+
+    reason: str
+    starting: bool = True
+
+    def update(self, reason: str, *, starting: bool) -> None:
+        self.reason = reason
+        self.starting = starting
+
+
 class Perceiver:
     def __init__(self, frames: FrameStore, camera: CameraModel) -> None:
         self.frames = frames
         self.camera = camera
         # Why the camera cannot place a pixel yet: its intrinsics, until
         # the camera has answered, and its pose, until the robot has.
-        self.intrinsics_reason = "the camera's intrinsics have not been received yet"
-        self.pose_reason = "the camera's pose has not been received from the robot yet"
+        self.intrinsics = SourceReason("the camera's intrinsics have not been received yet")
+        self.pose = SourceReason("the camera's pose has not been received from the robot yet")
 
     def set_camera(self, camera: CameraModel) -> None:
         self.camera = camera
         if camera.intrinsics is not None:
-            self.intrinsics_reason = ""
+            self.intrinsics.update("", starting=False)
         if camera.placed:
-            self.pose_reason = ""
+            self.pose.update("", starting=False)
 
     def why_unavailable(self) -> str:
         """Why the frames or the camera model cannot serve a search yet, or
         the empty string."""
+        reason = next((source.reason for source in self._sources() if source.reason), "")
+        return f"no perception source: {reason}" if reason else ""
+
+    def starting(self) -> str:
+        """Why the frames or the camera model cannot serve a search yet
+        while their sources start, or the empty string: once they serve,
+        and when a source does not become able to serve one (a vacant slot,
+        frames that are not aligned, a camera the robot does not carry, an
+        error reply that holds), whatever the other sources say. A camera
+        that never sends what the brain reads, such as one with no depth
+        stream, reads as starting: nothing tells it from one that has not
+        sent yet."""
+        reasons = [source for source in self._sources() if source.reason]
+        if not reasons or not all(source.starting for source in reasons):
+            return ""
+        return f"no perception source: {reasons[0].reason}"
+
+    def _sources(self) -> list[SourceReason]:
+        """The frames, the intrinsics and the pose, each with why it cannot
+        serve a search yet, in the order a search reports them."""
         frames = self.frames.why_unavailable()
-        if frames:
-            return f"no perception source: {frames}"
-        if self.camera.intrinsics is None:
-            return f"no perception source: {self.intrinsics_reason}"
-        if not self.camera.placed:
-            return f"no perception source: {self.pose_reason}"
-        return ""
+        intrinsics = self.intrinsics if self.camera.intrinsics is None else SourceReason("", starting=False)
+        pose = self.pose if not self.camera.placed else SourceReason("", starting=False)
+        return [SourceReason(frames, starting=frames == self.frames.starting()), intrinsics, pose]
 
     def refuse_unless_ready(self) -> None:
         """Raises the Refusal, `resource_unavailable`, of a search the

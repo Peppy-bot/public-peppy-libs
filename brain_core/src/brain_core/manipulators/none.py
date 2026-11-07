@@ -17,6 +17,9 @@ class NoneManipulator:
     def why_unavailable(self) -> str:
         return "no manipulation model: manipulation_model is 'none'"
 
+    def starting(self) -> str:
+        return ""
+
     async def start(self, senses) -> None:
         return None
 

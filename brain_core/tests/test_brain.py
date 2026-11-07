@@ -10,8 +10,8 @@ from types import SimpleNamespace
 import fake_peppygen
 import pytest
 from conftest import (
-    CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, camera_poses, depth_frame, failed_with, make_brain,
-    records_of, rgb_frame,
+    FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, camera_poses, failed_with, make_brain,
+    records_of, with_frames,
 )
 from fake_peppygen import FakeTopic, answering, fake_bindings, limb_states_message
 from brain_core.brain import RESULT_ENDS, STATUS_ENDS, decider
@@ -62,15 +62,6 @@ def grab_ctx() -> FakeCtx:
 
 def switch_ctx() -> FakeCtx:
     return FakeCtx(fake_peppygen.switch_model, role="perception", model="fast")
-
-
-def ready_to_search(brain) -> None:
-    """The camera's frames, its intrinsics and its pose, as the slots give
-    them to a running brain."""
-    brain.perceiver.frames.add_color(rgb_frame(16, 12))
-    brain.perceiver.frames.add_depth(depth_frame(1.0, 16, 12))
-    brain.perceiver.frames.depth_unit = 0.001
-    brain.perceiver.set_camera(brain.perceiver.camera.with_intrinsics(CAMERA_16X12).with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)))
 
 
 async def test_action_time_is_the_elapsed_time_whatever_the_outcome():
@@ -273,7 +264,7 @@ async def test_a_search_is_checked_at_once_for_the_shutdown_the_lane_the_model_a
     )
     detector.unavailable = ""
     assert (refusal().kind, refusal().message) == (FailureKind.RESOURCE_UNAVAILABLE, "no perception source: no camera frame received")
-    ready_to_search(brain)
+    with_frames(brain)
     brain.check_search()
     # A running search refuses the next one, before its source is asked.
     busy = brain.sequencer.start(Role.PERCEPTION, "identify_item", 0)
@@ -286,7 +277,7 @@ async def test_a_search_is_checked_at_once_for_the_shutdown_the_lane_the_model_a
 
 async def test_a_perception_model_none_refuses_a_search_with_precondition_failed():
     brain = await make_brain()
-    ready_to_search(brain)
+    with_frames(brain)
     with pytest.raises(Refusal, match="^no perception source: perception_model is 'none'$") as raised:
         brain.check_search()
     assert raised.value.kind is FailureKind.PRECONDITION_FAILED

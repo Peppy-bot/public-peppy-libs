@@ -48,6 +48,43 @@ class Message:
         self.value = value
 
 
+class StoppingService:
+    """An exposed service whose `handle_requests` stops at once, as each of
+    `stops` says in turn: None for a request stream that ends, or the
+    exception it raises. The token fires once they run out."""
+
+    def __init__(self, token, stops):
+        self.token = token
+        self.stops = list(stops)
+        self.listens = 0
+
+    async def handle_requests(self, node_runner, handler):
+        self.listens += 1
+        stop = self.stops.pop(0)
+        if not self.stops:
+            self.token.cancel()
+        if stop is not None:
+            raise stop
+
+
+async def test_a_service_that_stops_is_logged_and_waited_out_before_its_loop_listens_again(monkeypatch, capsys):
+    pauses = []
+
+    async def pause(seconds):
+        pauses.append(seconds)
+
+    monkeypatch.setattr(runtime.asyncio, "sleep", pause)
+    token = FakeToken()
+    node_runner = type("NodeRunner", (), {"cancellation_token": lambda self: token})()
+    service = StoppingService(token, [None, RuntimeError("the session is closed")])
+    await asyncio.wait_for(runtime.serve(node_runner, service, None, "is_ready"), 1.0)
+    assert service.listens == 2
+    assert pauses == [1.0, 1.0]
+    out = capsys.readouterr().out
+    assert "is_ready: its request stream ended; it listens again in 1 s" in out
+    assert "is_ready service error: RuntimeError('the session is closed'); it listens again in 1 s" in out
+
+
 def test_latch_logs_once_and_rearms(capsys):
     latch = runtime.Latch()
     latch.trip("condition")

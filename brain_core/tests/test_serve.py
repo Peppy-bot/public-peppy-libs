@@ -13,7 +13,8 @@ from conftest import FakeDetector, FakeManipulator, FakeSource, FakeToken, make_
 from brain_core.brain import decider
 from brain_core.handlers import switch_model
 from brain_core.ports import Role
-from brain_core.serve import report_failure, serve_action
+from brain_core import serve
+from brain_core.serve import report_failure, serve_action, serve_service
 from brain_core.waiting import unless_cancelled
 
 
@@ -180,3 +181,42 @@ async def test_an_action_loop_without_a_check_accepts_every_goal():
     assert ran == ["one", "two"] and scripted.refused == []
     token.cancel()
     await asyncio.wait_for(loop, 1.0)
+
+
+class StoppingService:
+    """An exposed service whose `handle_requests` stops at once, as each
+    of `stops` says in turn: None for a request stream that ends, or the
+    exception it raises. The token fires once they run out."""
+
+    SERVICE_NAME = "check_positions"
+
+    def __init__(self, token: FakeToken, stops: list) -> None:
+        self.token = token
+        self.stops = list(stops)
+        self.listens = 0
+
+    async def handle_requests(self, node_runner, handler) -> None:
+        self.listens += 1
+        stop = self.stops.pop(0)
+        if not self.stops:
+            self.token.cancel()
+        if stop is not None:
+            raise stop
+
+
+async def test_a_service_that_stops_is_logged_and_waited_out_before_its_loop_listens_again(serve_log, monkeypatch):
+    pauses: list[float] = []
+
+    async def pause(seconds: float) -> None:
+        pauses.append(seconds)
+
+    monkeypatch.setattr(serve.asyncio, "sleep", pause)
+    token = FakeToken()
+    service = StoppingService(token, [None, RuntimeError("the session is closed"), None])
+    await asyncio.wait_for(serve_service(service, None, token, handler=None), 1.0)
+    assert service.listens == 3
+    assert pauses == [serve.SERVICE_RETRY_S] * 2, "a pause after each stop before the token fired"
+    assert [(record.levelno, record.getMessage()) for record in serve_log.records] == [
+        (logging.WARNING, "check_positions: its request stream ended; it listens again in 1 s"),
+        (logging.ERROR, "check_positions service failed: RuntimeError('the session is closed'); it listens again in 1 s"),
+    ]
