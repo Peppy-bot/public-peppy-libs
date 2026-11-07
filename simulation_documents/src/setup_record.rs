@@ -159,7 +159,7 @@ mod tests {
             ),
             (
                 "{ pose: { at: \"corner_a\" }, typo: 1 }",
-                "scene_objects.clock: typo: unknown field `typo`, expected `pose` or `controls`",
+                "scene_objects.clock: typo: unknown field `typo`, expected one of `pose`, `controls`, `raise_m`",
             ),
         ] {
             assert_eq!(

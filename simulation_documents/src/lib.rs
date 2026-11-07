@@ -45,7 +45,7 @@ pub use error::Error;
 pub use furnish::{
     FixedStation, FurnishPiece, FurnishRule, FurnishStation, ScaleRange, StationRoom,
 };
-pub use geometry::{Offset, Placement, Point, Pose, Region};
+pub use geometry::{Offset, Placement, Point, Pose, Raise, Region};
 pub use judge::{
     Band, BeltLine, Bound, Bounds, Check, ClearWays, ContentsOn, Control, Count, Holding, Judge,
     Landmark, LandmarkOn, NearPoint, Place, Reachable, Target, Verdict, Verdicts, WithinM,

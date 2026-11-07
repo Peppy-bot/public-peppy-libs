@@ -20,7 +20,7 @@ use simulation_documents::{
     Band, Bounds, Catalogue, Check, ClearWays, Cone, ContentsOn, Control, Count, Date, Daylight,
     Digest, Error, Feature, Finish, Holding, Join, Judge, Landmark, LandmarkOn, Light, Limbs,
     Location, Manifest, Material, Name, NearPoint, Object, Offset, Opening, Physics, Place,
-    Placement, PlacementKind, Point, Pose, Reachable, Region, Revision, Robot, RobotName,
+    Placement, PlacementKind, Point, Pose, Raise, Reachable, Region, Revision, Robot, RobotName,
     ScaleRange, Scene, SceneObject, Seed, SetupRecord, Side, SitePath, StackRobot, Stand, Target,
     TimeOfDay, Weather, WithinM, World, WorldDocument, WorldPattern,
 };
@@ -147,6 +147,16 @@ fn sides(tc: &TestCase) -> Option<Side> {
     }
 }
 
+/// No raise, or the height of a riser.
+#[hegel::composite]
+fn raises(tc: &TestCase) -> Raise {
+    if tc.draw(gs::booleans()) {
+        return Raise::NONE;
+    }
+    Raise::new(tc.draw(gs::floats::<f64>().min_value(0.0).max_value(1.0)))
+        .expect("a finite number from 0 is a raise")
+}
+
 #[hegel::composite]
 fn stands(tc: &TestCase) -> Stand {
     match tc.draw(gs::integers::<u8>().min_value(0).max_value(2)) {
@@ -155,6 +165,7 @@ fn stands(tc: &TestCase) -> Stand {
             landmark: tc.draw(labels()),
             side: tc.draw(sides()),
             offset: tc.draw(offsets()),
+            raise: tc.draw(raises()),
         },
         1 => Stand::At {
             at: tc.draw(names()),
@@ -183,6 +194,7 @@ fn objects(tc: &TestCase) -> Object {
             gs::floats::<f64>().min_value(0.0).max_value(20.0),
         )),
         controls: tc.draw(controls()),
+        raise: tc.draw(raises()),
     }
 }
 
@@ -194,6 +206,7 @@ fn scene_objects(tc: &TestCase) -> SceneObject {
     SceneObject::Placed {
         pose: tc.draw(poses()),
         controls: tc.draw(controls()),
+        raise: tc.draw(raises()),
     }
 }
 
@@ -627,6 +640,7 @@ fn a_document_that_extends_a_base_merges_each_key_as_its_entry_says(tc: TestCase
     let scene_object = SceneObject::Placed {
         pose: tc.draw(poses()),
         controls: tc.draw(controls()),
+        raise: tc.draw(raises()),
     };
     let light = tc.draw(lights());
     let material = tc.draw(materials());

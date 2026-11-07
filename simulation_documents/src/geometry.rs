@@ -164,6 +164,54 @@ fn is_zero(value: &f64) -> bool {
     *value == 0.0
 }
 
+/// How high a riser raises a robot of a stand at a work surface, or an
+/// object, above the floor: metres, a finite number from 0, 0 for none.
+/// Written `raise_m`, and left out when it is 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "f64", into = "f64")]
+pub struct Raise(f64);
+
+impl Raise {
+    /// No raise: on the floor.
+    pub const NONE: Raise = Raise(0.0);
+
+    /// The raise of `metres`, refused when it is not a finite number from 0.
+    pub fn new(metres: f64) -> Result<Raise, Error> {
+        if !(metres.is_finite() && metres >= 0.0) {
+            return Err(Error::rule(format!(
+                "the raise_m {metres} is not a finite number from 0; write the height of a riser \
+                 in metres, or leave it out for none"
+            )));
+        }
+        // -0 reads as 0.
+        Ok(Raise(metres + 0.0))
+    }
+
+    /// The raise in metres.
+    pub fn metres(self) -> f64 {
+        self.0
+    }
+
+    /// Whether there is no raise: 0.
+    pub fn is_none(&self) -> bool {
+        self.0 == 0.0
+    }
+}
+
+impl TryFrom<f64> for Raise {
+    type Error = Error;
+
+    fn try_from(metres: f64) -> Result<Raise, Error> {
+        Raise::new(metres)
+    }
+}
+
+impl From<Raise> for f64 {
+    fn from(raise: Raise) -> f64 {
+        raise.0
+    }
+}
+
 /// A named region of a world: a box in the world frame, with its centre, its
 /// size along its own axes and a yaw about +z. A point is in the region when
 /// it is inside the box or on its faces.
