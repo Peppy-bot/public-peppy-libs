@@ -3,7 +3,13 @@ import math
 import numpy as np
 import pytest
 
-from so101_description.transforms import PoseError, matrix_from_pose, pose_from_matrix
+from so101_description.transforms import (
+    PoseError,
+    matrix_from_pose,
+    pose_from_matrix,
+    relative_rotation_rad,
+    slerp,
+)
 
 _HALF_TURN_Z = (0.0, 0.0, 1.0, 0.0)
 _QUARTER_TURN_X = (math.sin(math.pi / 8), 0.0, 0.0, math.cos(math.pi / 8))
@@ -49,3 +55,16 @@ def test_slightly_denormalized_quaternion_is_renormalized():
 def test_bad_poses_are_refused(position, quat):
     with pytest.raises(PoseError):
         matrix_from_pose(position, quat)
+
+
+def test_slerp_runs_the_shorter_turn_from_end_to_end():
+    half_turn_about_z = (0.0, 0.0, math.sin(0.5), math.cos(0.5))
+    identity = (0.0, 0.0, 0.0, 1.0)
+    assert slerp(identity, half_turn_about_z, 0.0) == pytest.approx(identity)
+    assert slerp(identity, half_turn_about_z, 1.0) == half_turn_about_z
+    assert relative_rotation_rad(slerp(identity, half_turn_about_z, 0.5), identity) == pytest.approx(0.5)
+    # q and -q name one rotation: the turn takes the short way either way.
+    flipped = tuple(-v for v in half_turn_about_z)
+    assert relative_rotation_rad(slerp(identity, flipped, 0.5), identity) == pytest.approx(0.5)
+    # One orientation twice blends to itself.
+    assert slerp(identity, identity, 0.5) == pytest.approx(identity)

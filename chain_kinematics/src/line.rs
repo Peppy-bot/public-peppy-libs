@@ -8,8 +8,8 @@ use nalgebra::Isometry3;
 /// Below this sine of the half-angle between two orientations, a turn of
 /// 2e-6 rad, they are one orientation, and the arc between them is whatever
 /// the last few bits of the quaternion happened to be. Slerp divides by that
-/// sine, so the goal's orientation is taken instead: four orders below the
-/// orientation tolerance a chain is servoed to.
+/// sine, so the goal's orientation is taken instead: four orders below a line's
+/// orientation precision.
 pub const COINCIDENT_ARC_EPS: f64 = 1e-6;
 
 /// Pose on the straight line between two poses: position lerped, orientation
@@ -43,6 +43,43 @@ pub trait LineSolver<const N: usize> {
 
     /// The walked frame's pose at `q`, in the frame of the line's poses.
     fn pose(&self, q: &[f64; N]) -> Isometry3<f64>;
+}
+
+/// The longest step of a line (m): the step of RViz's MotionPlanning panel
+/// (motion_planning_frame_planning.cpp:141), which a caller of compute_cartesian_path
+/// names.
+pub const CARTESIAN_STEP_M: f64 = 0.01;
+/// The largest turn of a step of a line (rad): `MaxEEFStep`'s 3.5 rad for each meter of
+/// its step (cartesian_interpolator.hpp:97).
+pub const CARTESIAN_STEP_RAD: f64 = 3.5 * CARTESIAN_STEP_M;
+/// How far the frame stands from its line at most (m): `CartesianPrecision`'s
+/// `translational` (cartesian_interpolator.hpp:50).
+pub const PRECISION_M: f64 = 1e-3;
+/// How far the frame stands turned from its line at most (rad): `CartesianPrecision`'s
+/// `rotational` (cartesian_interpolator.hpp:51).
+pub const PRECISION_RAD: f64 = 0.01;
+/// The narrowest interval of a line a walk halves, as a share of the line:
+/// `CartesianPrecision`'s `max_resolution` (cartesian_interpolator.hpp:52).
+pub const MAX_RESOLUTION: f64 = 1e-5;
+
+/// How far the line from `from` to `to` moves over [`CARTESIAN_STEP_M`], and how far it
+/// turns over [`CARTESIAN_STEP_RAD`], each.
+pub fn line_extents(from: &Isometry3<f64>, to: &Isometry3<f64>) -> (f64, f64) {
+    let length = (to.translation.vector - from.translation.vector).norm();
+    let turn = from.rotation.angle_to(&to.rotation);
+    (length / CARTESIAN_STEP_M, turn / CARTESIAN_STEP_RAD)
+}
+
+/// The share of the line from `from` to `to` at each step: as many steps as
+/// `computeCartesianPath` takes, the more of its extents, each rounded down, plus one
+/// (cartesian_interpolator.cpp:237-245).
+pub fn line_blends(
+    from: &Isometry3<f64>,
+    to: &Isometry3<f64>,
+) -> impl Iterator<Item = f64> + use<> {
+    let (moved, turned) = line_extents(from, to);
+    let steps = (moved.floor().max(turned.floor()) as usize).saturating_add(1);
+    (1..=steps).map(move |k| k as f64 / steps as f64)
 }
 
 /// How closely a walk keeps its frame on its line between two states, MoveIt's
@@ -101,6 +138,17 @@ impl LinePrecision {
             && actual.rotation.angle_to(&target.rotation) <= self.rotational_rad
     }
 }
+
+/// A precision of these positive values, halving down to [`MAX_RESOLUTION`].
+pub const fn line_precision(translational_m: f64, rotational_rad: f64) -> LinePrecision {
+    match LinePrecision::new(translational_m, rotational_rad, MAX_RESOLUTION) {
+        Ok(precision) => precision,
+        Err(_) => panic!("a precision's values are finite and positive"),
+    }
+}
+
+/// The precision each interval of a line keeps at its joints' midpoint.
+pub const PRECISION: LinePrecision = line_precision(PRECISION_M, PRECISION_RAD);
 
 /// Why a walk along a line ended, and at which blend's step.
 #[derive(Debug, PartialEq)]

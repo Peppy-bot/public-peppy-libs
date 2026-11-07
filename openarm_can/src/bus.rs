@@ -38,13 +38,35 @@ const RECV_BACKSTOP: Duration = Duration::from_micros(100);
 /// start a healthy arm or reports a register as unreadable.
 const REPLY_WINDOW: Duration = Duration::from_millis(100);
 
-/// Ceiling on one control-tick receive pass. The per-tick path holds the bus
-/// lock the shutdown path needs and its caller has its own budget (the loop
-/// period), so its bound is a backstop against a flooded bus rather than a
-/// patience window: generous against a 1-2 ms pass, far under the bring-up
-/// [`REPLY_WINDOW`] whose written justification is exactly that it never
-/// runs per tick.
-const TICK_RECV_WINDOW: Duration = Duration::from_millis(5);
+/// A control tick over this is how long a receive pass waits for its first
+/// frame, which a quiet bus costs every tick.
+const FIRST_FRAME_DIVISOR: u32 = 10;
+
+/// A control tick over this bounds a receive pass. The per-tick path holds the
+/// bus lock the shutdown path needs and its caller has its own budget (the loop
+/// period), so the bound is a backstop against a flooded bus.
+const CEILING_DIVISOR: u32 = 2;
+
+/// One control tick's receive pass, sized from the loop's period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReceivePass {
+    first_timeout_us: u32,
+    ceiling: Duration,
+}
+
+impl ReceivePass {
+    /// The pass of a loop of `cycle_period`. It waits at least a microsecond,
+    /// because a receive that never waits turns every quiet tick into a silence
+    /// pass, and no longer than [`REPLY_WINDOW`], which keeps the shutdown
+    /// hooks' lock inside their grace window at the slowest rate.
+    pub fn new(cycle_period: Duration) -> Self {
+        let first_timeout = (cycle_period / FIRST_FRAME_DIVISOR).as_micros();
+        Self {
+            first_timeout_us: u32::try_from(first_timeout).unwrap_or(u32::MAX).max(1),
+            ceiling: (cycle_period / CEILING_DIVISOR).min(REPLY_WINDOW),
+        }
+    }
+}
 
 /// What a receive pass does with the frames it reads, and whether it counts
 /// against every slot's silence. A confirmation runs several receives inside
@@ -253,14 +275,14 @@ impl MotorBus {
         )
     }
 
-    /// Receives and decodes state frames into the cache: waits up to
-    /// `first_timeout_us` for the first frame, then drains without waiting.
+    /// Receives and decodes state frames into the cache: waits for the first
+    /// frame as `pass` says, then drains without waiting until its ceiling.
     /// Frames from unknown ids and undecodable payloads are ignored.
-    pub fn recv_all(&mut self, first_timeout_us: u32) -> Result<()> {
+    pub fn recv_all(&mut self, pass: ReceivePass) -> Result<()> {
         self.recv_until(
-            first_timeout_us,
+            pass.first_timeout_us,
             Decode::AsOnePass,
-            Instant::now() + TICK_RECV_WINDOW,
+            Instant::now() + pass.ceiling,
         )
     }
 
@@ -521,6 +543,31 @@ fn decode_into_slots(slots: &mut [MotorSlot], extended: bool, id: u32, data: &[u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_receive_pass_follows_the_period_of_its_loop() {
+        let pass = |period_ms| ReceivePass::new(Duration::from_millis(period_ms));
+        let expected = |first_timeout_us, ceiling_us| ReceivePass {
+            first_timeout_us,
+            ceiling: Duration::from_micros(ceiling_us),
+        };
+        assert_eq!(pass(10), expected(1_000, 5_000));
+        assert_eq!(pass(4), expected(400, 2_000));
+        assert_eq!(pass(1), expected(100, 500));
+    }
+
+    #[test]
+    fn a_receive_pass_of_the_slowest_rate_stays_inside_the_reply_window() {
+        let pass = ReceivePass::new(Duration::from_secs(1));
+        assert_eq!(pass.ceiling, REPLY_WINDOW);
+        assert_eq!(pass.first_timeout_us, 100_000);
+    }
+
+    #[test]
+    fn a_receive_pass_always_waits() {
+        let pass = ReceivePass::new(Duration::from_micros(1));
+        assert_eq!(pass.first_timeout_us, 1);
+    }
 
     fn gripper_slot() -> MotorSlot {
         MotorSlot::new(MotorType::DM4310, 0x08, 0x18, 0x300).unwrap()

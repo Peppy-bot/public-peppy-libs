@@ -13,7 +13,7 @@
 //! 2.15.2), and control_core's rest at a repeated waypoint is its own rule, which its unit
 //! tests check.
 
-use control_core::path_timing::{Corners, JOINT_PATH_CORNER_DEVIATION, RoundedPath, TimedPath};
+use control_core::path_timing::{JOINT_PATH_CORNER_DEVIATION, RoundedPath, TimedPath};
 use control_core::positive_finite::PositiveFinite;
 use ros_reference::path_timing::{Cases, PathCase, Totg};
 
@@ -51,7 +51,7 @@ const SPEED_STEPS: u32 = 100_000;
 fn rounded(case: &PathCase) -> RoundedPath {
     RoundedPath::through(
         &case.waypoints,
-        Corners::Within(PositiveFinite::parse(case.max_deviation).expect("a positive deviation")),
+        PositiveFinite::parse(case.max_deviation).expect("a positive deviation"),
     )
 }
 

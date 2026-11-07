@@ -346,7 +346,7 @@ its pose and settles within `settle_position_m` (2 cm) and
 the OpenArm v2, or fails with `timeout` `settle_timeout_s` (2 s) after
 its planned end, with the backbone's words, such as `still 8.0 mm / 0.02 rad
 from the target, 2.0 s after the planned end`. A check asks with the same
-plan bars. A gripper move waits up to `grip_settle_timeout_s` (2 s) for the
+pose and duration. A gripper move waits up to `grip_settle_timeout_s` (2 s) for the
 jaws to stand still.
 
 ```mermaid

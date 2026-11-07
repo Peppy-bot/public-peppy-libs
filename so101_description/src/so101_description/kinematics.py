@@ -39,6 +39,7 @@ from so101_description.transforms import (
     matrix_from_pose,
     pose_from_matrix,
     relative_rotation_rad,
+    slerp,
 )
 from so101_description.units import JOINT_NAMES
 
@@ -48,6 +49,22 @@ IK_MAX_ITERATIONS = 100
 # The streamed path is best effort: a few steps bound the per-tick cost, and
 # an out-of-reach pose tracks the workspace boundary instead of freezing.
 IK_STREAM_ITERATIONS = 3
+# The samples a straight line's walk solves: on the longest line of the arm's
+# reach, 0.87 m, a step under MoveIt's 1 cm.
+LINE_SAMPLES = 100
+# The most a joint may turn from one configuration of a walk to the next: past
+# it the solution has jumped to another branch. 218 walks of drawn position goals
+# step at most 0.32 rad.
+MAX_LINE_STEP_RAD = 0.35
+# How far the grasp point may stand off a walk's line: MoveIt's
+# CartesianPrecision::translational default.
+LINE_POSITION_BAR_M = 0.001
+# How far the end of a walk may stand off an orientation it names: MoveIt's
+# CartesianPrecision::rotational default.
+LINE_ORIENTATION_BAR_RAD = 0.01
+# The largest angle between two rotations: an orientation bar this wide takes
+# any orientation.
+ANY_ORIENTATION_RAD = math.pi
 
 # Position and orientation are both soft objectives of one QP, minimising
 # `position_weight * |dp|^2 + orientation_weight * |dtheta|^2`. The terms are
@@ -256,6 +273,44 @@ class Kinematics:
             if relative_rotation_rad(reached_orientation, target_orientation) <= orientation_bar:
                 return solution_rad
         return None
+
+    def walk_line(
+        self,
+        seed_rad: tuple[float, ...],
+        position,
+        orientation,
+        limits: JointLimits,
+    ) -> tuple[tuple[float, ...], ...] | None:
+        """The configurations of a straight line from the pose at `seed_rad` to
+        `position`, from `seed_rad` on: one verified solve per sample, each seeded
+        from the last, with the grasp point within LINE_POSITION_BAR_M of its
+        sample. Five joints cannot hold a turn between two poses in general, so
+        the orientation is free along the way, and the last sample lands within
+        LINE_ORIENTATION_BAR_RAD of `orientation`. With `orientation` None the goal
+        is the position alone, and the solves aim at the turn the line starts with.
+        None when a sample has no solution inside `limits` or its solution jumps
+        branch."""
+        start_position, start_orientation = self.forward_kinematics(seed_rad)
+        turn_to = start_orientation if orientation is None else orientation
+        end_bar = ANY_ORIENTATION_RAD if orientation is None else LINE_ORIENTATION_BAR_RAD
+        walk = [tuple(seed_rad)]
+        for k in range(1, LINE_SAMPLES + 1):
+            share = k / LINE_SAMPLES
+            last = k == LINE_SAMPLES
+            sample = tuple(a + (b - a) * share for a, b in zip(start_position, position, strict=True))
+            solved = self.inverse_kinematics(
+                walk[-1],
+                tuple(position) if last else sample,
+                slerp(start_orientation, turn_to, share),
+                position_tolerance_m=LINE_POSITION_BAR_M,
+                orientation_tolerance_rad=end_bar if last else ANY_ORIENTATION_RAD,
+            )
+            if solved is None or not limits.contains(solved):
+                return None
+            if any(abs(a - b) > MAX_LINE_STEP_RAD for a, b in zip(solved, walk[-1], strict=True)):
+                return None
+            walk.append(solved)
+        return tuple(walk)
 
     def inverse_kinematics_streaming(
         self, seed_rad: tuple[float, ...], position, orientation

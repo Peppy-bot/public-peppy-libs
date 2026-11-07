@@ -174,8 +174,6 @@ class MoveArmRequest:
     position: list[float]
     orientation: list[float]
     duration_s: float
-    plan_position_tolerance_m: float
-    plan_orientation_tolerance_rad: float
     settle_position_tolerance_m: float
     settle_orientation_tolerance_rad: float
     settle_timeout_s: float
@@ -319,8 +317,6 @@ class CheckArmMoveRequest:
     position: list[float]
     orientation: list[float]
     duration_s: float
-    plan_position_tolerance_m: float
-    plan_orientation_tolerance_rad: float
 
 
 class FakeService:

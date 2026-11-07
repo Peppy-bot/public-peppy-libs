@@ -19,6 +19,9 @@ use std::marker::PhantomData;
 use std::num::NonZeroU32;
 use std::time::Duration;
 
+use control_core::time::ticks_within;
+
+pub use bus::ReceivePass;
 use bus::{MotorBus, MotorSlot};
 use protocol::TorquePu;
 pub use protocol::{DriveState, EffectiveRatings, FaultKind, MotorParam, MotorStatus, MotorType};
@@ -217,10 +220,10 @@ impl ArmCan {
         self.0.disable_all()
     }
 
-    /// Receives pending state frames into the cache: waits up to
-    /// `first_timeout_us` for the first frame, then drains without waiting.
-    pub fn recv_all(&mut self, first_timeout_us: u32) -> Result<()> {
-        self.0.recv_all(first_timeout_us)
+    /// Receives pending state frames into the cache: waits for the first frame
+    /// as `pass` says, then drains without waiting until its ceiling.
+    pub fn recv_all(&mut self, pass: ReceivePass) -> Result<()> {
+        self.0.recv_all(pass)
     }
 
     /// Receives and discards pending frames (bring-up replies that must not
@@ -450,10 +453,10 @@ impl<M: Mode> GripperCan<M> {
         self.bus.disable_all()
     }
 
-    /// Receives pending state frames into the cache: waits up to
-    /// `first_timeout_us` for the first frame, then drains without waiting.
-    pub fn recv_all(&mut self, first_timeout_us: u32) -> Result<()> {
-        self.bus.recv_all(first_timeout_us)
+    /// Receives pending state frames into the cache: waits for the first frame
+    /// as `pass` says, then drains without waiting until its ceiling.
+    pub fn recv_all(&mut self, pass: ReceivePass) -> Result<()> {
+        self.bus.recv_all(pass)
     }
 
     /// Receives and discards pending frames (bring-up replies that must not
@@ -564,24 +567,32 @@ mod tests {
     }
 }
 
-/// Log throttle for a periodic bus loop: one line per failure burst (the
-/// first, then every [`Self::REPEAT_EVERY`]th) and one on recovery, instead of
-/// several per tick at the loop rate. [`consecutive`](Self::consecutive) lets
-/// the caller escalate when a burst has clearly stopped being transient.
-#[derive(Debug, Default)]
+/// Log throttle for a periodic bus loop: one line per failure burst, the first
+/// and then one per [`Self::REPEAT_AFTER`] of it, and one on recovery.
+#[derive(Debug)]
 pub struct CanErrorThrottle {
     consecutive: u64,
+    repeat_every_ticks: u64,
 }
 
 impl CanErrorThrottle {
-    const REPEAT_EVERY: u64 = 100;
+    const REPEAT_AFTER: Duration = Duration::from_secs(1);
 
-    pub fn new() -> Self {
-        Self::default()
+    /// The throttle of a loop of `cycle_period`.
+    pub fn new(cycle_period: Duration) -> Self {
+        Self {
+            consecutive: 0,
+            repeat_every_ticks: u64::from(ticks_within(Self::REPEAT_AFTER, cycle_period)),
+        }
+    }
+
+    /// Whether the next failure logs its line.
+    fn logs_next_failure(&self) -> bool {
+        self.consecutive.is_multiple_of(self.repeat_every_ticks)
     }
 
     pub fn failure(&mut self, context: &str, e: &CanError) {
-        if self.consecutive.is_multiple_of(Self::REPEAT_EVERY) {
+        if self.logs_next_failure() {
             tracing::error!(
                 "{context}: CAN tick failed ({} consecutive): {e}",
                 self.consecutive + 1
@@ -599,11 +610,6 @@ impl CanErrorThrottle {
         }
         self.consecutive = 0;
     }
-
-    /// Failed ticks since the last success.
-    pub fn consecutive(&self) -> u64 {
-        self.consecutive
-    }
 }
 
 #[cfg(test)]
@@ -611,14 +617,30 @@ mod throttle_tests {
     use super::*;
 
     #[test]
+    fn a_failure_burst_repeats_its_line_every_second_at_any_rate() {
+        let e = CanError::InvalidCanId(0x800);
+        for (period_ms, ticks_per_second) in [(10, 100), (4, 250), (1, 1_000)] {
+            let mut t = CanErrorThrottle::new(Duration::from_millis(period_ms));
+            let logged: Vec<u64> = (0..3 * ticks_per_second)
+                .filter(|_| {
+                    let logs = t.logs_next_failure();
+                    t.failure("test", &e);
+                    logs
+                })
+                .collect();
+            assert_eq!(logged, [0, ticks_per_second, 2 * ticks_per_second]);
+        }
+    }
+
+    #[test]
     fn throttle_counts_and_resets() {
-        let mut t = CanErrorThrottle::new();
+        let mut t = CanErrorThrottle::new(Duration::from_millis(10));
         let e = CanError::InvalidCanId(0x800);
         for _ in 0..5 {
             t.failure("test", &e);
         }
-        assert_eq!(t.consecutive(), 5);
+        assert_eq!(t.consecutive, 5);
         t.success("test");
-        assert_eq!(t.consecutive(), 0);
+        assert_eq!(t.consecutive, 0);
     }
 }

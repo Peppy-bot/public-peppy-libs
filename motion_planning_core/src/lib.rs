@@ -47,8 +47,8 @@ mod stop;
 pub use arm::{Arm, Body, Moving, RiderOffTheArm, SelfModel};
 pub use arms::{Arms, GroupBody};
 pub use cartesian::{
-    CARTESIAN_STEP_M, CARTESIAN_STEP_RAD, CartesianFailure, CartesianPath, CartesianRequest,
-    Collisions, FollowedFrame, PRECISION_M, PRECISION_RAD, cartesian_path, poses_in_range,
+    CartesianFailure, CartesianPath, CartesianRequest, Collisions, FollowedFrame, cartesian_path,
+    poses_in_range,
 };
 pub use clearance::{Contact, Reading, Surroundings, TERMS, term_clearances};
 pub use goal::{

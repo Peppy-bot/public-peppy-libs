@@ -23,8 +23,6 @@ from brain_core.manipulators.scripted.manipulator import (
     LIFT_M,
     MOVE_DURATION_S,
     NOT_STARTED,
-    PLAN_ORIENTATION_RAD,
-    PLAN_POSITION_M,
     SETTLE_ORIENTATION_RAD,
     SETTLE_POSITION_M,
     SETTLE_TIMEOUT_S,
@@ -43,10 +41,12 @@ PRE = (GRASP[0], GRASP[1], GRASP[2] + CLEARANCE_M)
 LIFT = (GRASP[0], GRASP[1], GRASP[2] + LIFT_M)
 # A grab's third move is its lift.
 LIFT_MOVE = 3
-# The bars a check, an arm move and a gripper move name.
-CHECK_BARS = dict(duration_s=MOVE_DURATION_S, plan_position_tolerance_m=PLAN_POSITION_M, plan_orientation_tolerance_rad=PLAN_ORIENTATION_RAD)
+# What a check, an arm move and a gripper move name besides the pose.
+CHECK_BARS = dict(duration_s=MOVE_DURATION_S)
 MOVE_BARS = dict(
-    CHECK_BARS, settle_position_tolerance_m=SETTLE_POSITION_M, settle_orientation_tolerance_rad=SETTLE_ORIENTATION_RAD,
+    CHECK_BARS,
+    settle_position_tolerance_m=SETTLE_POSITION_M,
+    settle_orientation_tolerance_rad=SETTLE_ORIENTATION_RAD,
     settle_timeout_s=SETTLE_TIMEOUT_S,
 )
 GRIP_BARS = dict(settle_timeout_s=GRIP_SETTLE_TIMEOUT_S)
@@ -204,11 +204,10 @@ async def test_every_check_arm_move_and_gripper_move_names_its_bars():
     assert await manipulator.grab(cup(), LEFT, 12.0, CancelToken()) == Outcome(True)
     bars = {"check": CHECK_BARS, "move": MOVE_BARS, "grip": GRIP_BARS}
     assert robot.bars == [(kind, bars[kind]) for kind in robot.kinds()]
-    # Plan 1 cm and 0.05 rad, as check_positions calls a point reachable;
-    # settle within 2 cm and 0.15 rad, 2 s after the planned end at most;
-    # the jaws get 2 s to stand still.
+    # Settle within 2 cm and 0.15 rad, 2 s after the planned end at most; the
+    # jaws get 2 s to stand still.
     assert MOVE_BARS == dict(
-        duration_s=0.0, plan_position_tolerance_m=0.01, plan_orientation_tolerance_rad=0.05,
+        duration_s=0.0,
         settle_position_tolerance_m=0.02, settle_orientation_tolerance_rad=0.15, settle_timeout_s=2.0,
     )
     assert GRIP_BARS == dict(settle_timeout_s=2.0)
@@ -396,7 +395,7 @@ async def test_a_snapshot_after_the_lift_is_waited_for():
 async def test_the_first_orientation_whose_three_checks_plan_is_the_one_moved_in():
     manipulator, robot, store = await started()
     holding(robot, store)
-    robot.checks.extend([MoveCheck(True, ""), MoveCheck(False, "goal pose not planned within 0.010 m")])
+    robot.checks.extend([MoveCheck(True, ""), MoveCheck(False, "goal pose not planned")])
     assert await manipulator.grab(cup(), LEFT, 0.0, CancelToken()) == Outcome(True)
     checks = [call for call in robot.calls if call[0] == "check"]
     assert [call[2] for call in checks] == [DOWN[0], DOWN[0], DOWN[1], DOWN[1], DOWN[1]]
@@ -454,13 +453,13 @@ async def test_a_cancel_during_a_check_raises_cancelled_before_any_move():
 async def test_a_grab_by_pose_is_not_lowered_and_its_orientation_is_the_only_one_tried():
     manipulator, robot, store = await started()
     point, q = (0.5, 0.1, 0.7), (0.0, 0.0, 0.0, 1.0)
-    robot.checks.append(MoveCheck(False, "goal pose not planned within 0.010 m"))
+    robot.checks.append(MoveCheck(False, "goal pose not planned"))
     outcome = await manipulator.grab(cup(point, q, grasp_point=True), LEFT, 0.0, CancelToken())
     assert outcome == Outcome(
         False,
         "no plan reaches item 'cup_1-t0' with gripper 'left_gripper': orientation 1 of 1, "
         "[0.000, 0.000, 0.000, 1.000], has no plan to its pre-grasp point [0.500, 0.100, 0.625]: "
-        "goal pose not planned within 0.010 m",
+        "goal pose not planned",
     )
     # The approach of the identity orientation is +Z: the pre-grasp point
     # stands below the grasp point.
