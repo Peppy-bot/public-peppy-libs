@@ -170,26 +170,29 @@ class State:
     def set_held(self, gripper: Gripper, item_id: str) -> None:
         gripper.held_item_id = item_id
 
-    def forget_dropped(self, gripper: Gripper) -> str:
-        """Releases what the gripper holds after a drop_item and returns its
-        id. Nothing measured where the item landed, so the item is
-        forgotten: its id is refused from then on."""
-        item_id = self._release(gripper)
+    def forget_dropped(self, gripper: Gripper, item_id: str) -> None:
+        """Releases the gripper after a drop_item of `item_id`, the item it
+        held when the drop started. Nothing measured where the item landed,
+        so the item is forgotten: its id is refused from then on. A forget
+        that ran during the drop already released the gripper and forgot
+        the item."""
+        self._release(gripper)
         self.items.pop(item_id, None)
-        return item_id
 
-    def clear_held_placed(self, gripper: Gripper, position: Vec3, orientation: Optional[Quat]) -> str:
-        """Releases what the gripper holds at the pose place_item put it at
-        and returns its id. The item takes that pose, so the next scan finds
-        it where it stands and keeps its id."""
-        item_id = self._release(gripper)
+    def clear_held_placed(self, gripper: Gripper, item_id: str, position: Vec3, orientation: Optional[Quat]) -> None:
+        """Releases the gripper after a place_item of `item_id`, the item it
+        held when the place started, at the pose the place put it at. The
+        item takes that pose, so the next scan finds it where it stands and
+        keeps its id. A forget that ran during the place already released
+        the gripper and forgot the item, which the next scan gives a new
+        id."""
+        self._release(gripper)
         item = self.items.get(item_id)
         if item is not None:
             item.position = position
             item.orientation = orientation
             item.position_is_grasp_point = True
             item.top_z = None
-        return item_id
 
     def forget(self) -> list[str]:
         """Forgets every known item and every hold, and returns the ids of
@@ -275,10 +278,8 @@ class State:
         item.position_is_grasp_point = True
         return item
 
-    def _release(self, gripper: Gripper) -> str:
-        item_id = gripper.held_item_id or ""
+    def _release(self, gripper: Gripper) -> None:
         gripper.held_item_id = None
-        return item_id
 
     def _held_ids(self) -> set[str]:
         return {gripper.held_item_id for gripper in self.grippers.values() if gripper.held_item_id is not None}

@@ -123,15 +123,17 @@ class FakeDetector:
 
 
 class FakeManipulator:
-    """Succeeds at once unless told to fail or to wait for a stop. `begun`
-    resolves when a sequence has reached it, so a test knows the sequence
-    is running without waiting on the clock."""
+    """Succeeds at once unless told to fail, to wait for a stop or to wait
+    for `release` to be set. `begun` resolves when a sequence has reached
+    it, so a test knows the sequence is running without waiting on the
+    clock."""
 
     name = "fake"
 
-    def __init__(self, *, fail: str = "", wait_for_stop: bool = False) -> None:
+    def __init__(self, *, fail: str = "", wait_for_stop: bool = False, release: Optional[asyncio.Event] = None) -> None:
         self.fail = fail
         self.wait_for_stop = wait_for_stop
+        self.release = release
         self.calls: list[tuple] = []
         self.stopped = 0
         self.senses = None
@@ -159,6 +161,8 @@ class FakeManipulator:
         if self.wait_for_stop:
             await cancel.wait()
             cancel.check()
+        if self.release is not None:
+            await self.release.wait()
         if self.fail:
             return Outcome(False, self.fail)
         return Outcome(True, "", final_position)

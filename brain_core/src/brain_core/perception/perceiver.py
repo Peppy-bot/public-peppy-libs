@@ -36,7 +36,7 @@ import numpy as np
 
 from ..ports import Box, CancelToken, Deadline, Detection, Detector, ExpectedFailure, FailureKind, Refusal, SearchTimeout, iou
 from .camera import CameraModel
-from .frames import FrameStore, decode_color, decode_depth, depth_at
+from .frames import FrameStore, decode_color, decode_depth, depth_at, depth_pixel
 
 # The budget of a search whose goal names a timeout_s of 0. A hosted model
 # with reasoning answers a scan in 3 to 10 s and at times later, and a
@@ -237,29 +237,30 @@ class Perceiver:
 def top_height(depth_m: np.ndarray, box: Box, color_width: int, color_height: int, camera: CameraModel) -> Optional[float]:
     """The height of the top of the item in `box`, in the robot frame: the
     TOP_QUANTILE quantile of the heights that the depth readings of the
-    middle of the box give (TOP_WINDOW, TOP_SAMPLES). None when that middle
-    holds no reading. Under the centre of the box, a camera that looks into
-    an open item, a mug or a bowl, reads its inside bottom; the walls and
-    the rim around it give its top."""
+    middle of the box give (TOP_WINDOW, TOP_SAMPLES), each the reading
+    under its colour pixel (`depth_pixel`), all of them deprojected in one
+    pass. None when that middle holds no reading. Under the centre of the
+    box, a camera that looks into an open item, a mug or a bowl, reads its
+    inside bottom; the walls and the rim around it give its top."""
     depth_height, depth_width = depth_m.shape
     u, v = box.centre
     half_width = (box.x1 - box.x0) * TOP_WINDOW / 2.0
     half_height = (box.y1 - box.y0) * TOP_WINDOW / 2.0
-    heights: list[float] = []
-    for row in np.linspace(v - half_height, v + half_height, TOP_SAMPLES):
-        y = int(round(row * depth_height / max(1, color_height)))
-        if not 0 <= y < depth_height:
-            continue
-        for column in np.linspace(u - half_width, u + half_width, TOP_SAMPLES):
-            x = int(round(column * depth_width / max(1, color_width)))
-            if not 0 <= x < depth_width:
-                continue
-            depth = float(depth_m[y, x])
-            if depth > 0.0:
-                heights.append(camera.deproject(float(column), float(row), depth, color_width, color_height)[2])
-    if not heights:
+    rows, columns = np.meshgrid(
+        np.linspace(v - half_height, v + half_height, TOP_SAMPLES),
+        np.linspace(u - half_width, u + half_width, TOP_SAMPLES),
+        indexing="ij",
+    )
+    columns, rows = columns.ravel(), rows.ravel()
+    x, y = depth_pixel(depth_m, columns, rows, color_width, color_height)
+    inside = (0 <= x) & (x < depth_width) & (0 <= y) & (y < depth_height)
+    columns, rows, x, y = columns[inside], rows[inside], x[inside], y[inside]
+    depths = depth_m[y, x]
+    read = depths > 0.0
+    if not read.any():
         return None
-    return float(np.quantile(heights, TOP_QUANTILE))
+    points = camera.deproject_points(columns[read], rows[read], depths[read], color_width, color_height)
+    return float(np.quantile(points[:, 2], TOP_QUANTILE))
 
 
 def merge_duplicates(boxes: Sequence[Box]) -> tuple[list[Box], list[Box]]:

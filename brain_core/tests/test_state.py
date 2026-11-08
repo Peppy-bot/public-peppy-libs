@@ -62,7 +62,7 @@ def test_a_top_follows_the_look_that_last_saw_the_item_and_a_placed_item_has_non
     # An item place_item put down stands where no look measured its top.
     left = state.grippers["left_gripper"]
     state.set_held(left, cup.item_id)
-    state.clear_held_placed(left, (0.6, -0.2, 0.75), None)
+    state.clear_held_placed(left, cup.item_id, (0.6, -0.2, 0.75), None)
     assert cup.top_z is None
     # An item addressed by pose has no top.
     assert state.mint_from_pose((0.2, 0.2, 0.7), None, now_ns=4).top_z is None
@@ -127,7 +127,7 @@ def test_the_holder_rules_for_drop_and_place():
     with pytest.raises(Refusal, match="more than one gripper"):
         state.holder("")
     assert state.holder("right_gripper").name == "right_gripper"
-    assert state.forget_dropped(state.grippers["right_gripper"]) == "cup_2"
+    state.forget_dropped(state.grippers["right_gripper"], "cup_2")
     assert state.snapshot() == (["left_gripper", "right_gripper"], [True, False], ["cup_1", ""])
 
 
@@ -306,12 +306,12 @@ def test_a_placed_item_keeps_its_id_where_it_was_put_and_a_dropped_one_is_forgot
     state.remember([Detection("cup", (0.5, 0.1, 0.7), 0.9), Detection("bowl", (0.4, -0.1, 0.7), 0.9)], now_ns=1, coverage=EVERY)
     left, right = state.grippers["left_gripper"], state.grippers["right_gripper"]
     state.set_held(left, "cup_1-t0")
-    assert state.clear_held_placed(left, (0.6, -0.2, 0.75), (0.0, 0.0, 0.0, 1.0)) == "cup_1-t0"
+    state.clear_held_placed(left, "cup_1-t0", (0.6, -0.2, 0.75), (0.0, 0.0, 0.0, 1.0))
     assert not left.holding
     assert state.items["cup_1-t0"].position == (0.6, -0.2, 0.75)
     assert state.items["cup_1-t0"].orientation == (0.0, 0.0, 0.0, 1.0)
     state.set_held(right, "bowl_1-t0")
-    assert state.forget_dropped(right) == "bowl_1-t0"
+    state.forget_dropped(right, "bowl_1-t0")
     assert not right.holding and "bowl_1-t0" not in state.items
     with pytest.raises(Refusal, match="^unknown item 'bowl_1-t0': scan or identify it again$"):
         state.item_to_grab("bowl_1-t0")
@@ -383,7 +383,7 @@ def test_an_item_a_gripper_holds_cannot_be_grabbed_again():
     with pytest.raises(Refusal, match="item 'cup_1-t0' is held by gripper 'left_gripper'"):
         state.item_to_grab("cup_1-t0")
     assert state.item_to_grab("bowl_1-t0").item_id == "bowl_1-t0"
-    state.clear_held_placed(state.grippers["left_gripper"], (0.6, 0.1, 0.7), None)
+    state.clear_held_placed(state.grippers["left_gripper"], "cup_1-t0", (0.6, 0.1, 0.7), None)
     assert state.item_to_grab("cup_1-t0").item_id == "cup_1-t0"
 
 
@@ -445,5 +445,5 @@ def test_a_pose_grab_or_a_placement_makes_the_position_a_grasp_point_and_a_look_
     assert not posed.position_is_grasp_point and posed.orientation is None and posed.position == (0.5, 0.0, 0.72)
     left = state.grippers["left_gripper"]
     state.set_held(left, posed.item_id)
-    state.clear_held_placed(left, (0.6, 0.1, 0.75), None)
+    state.clear_held_placed(left, posed.item_id, (0.6, 0.1, 0.75), None)
     assert posed.position_is_grasp_point and posed.position == (0.6, 0.1, 0.75)

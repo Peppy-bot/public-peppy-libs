@@ -26,8 +26,18 @@ from brain_core.perception.camera import (
 )
 from brain_core.perception import frames as frames_module
 from brain_core.perception import geometry
-from brain_core.perception.frames import FRAME_BUFFER, FrameStore, decode_color, decode_depth, depth_at
-from brain_core.perception.perceiver import DEFAULT_TIMEOUT_S, Look, Perceiver, in_daemon_thread, merge_duplicates, top_height
+from brain_core.perception.frames import FRAME_BUFFER, FrameStore, decode_color, decode_depth, depth_at, depth_pixel
+from brain_core.perception.perceiver import (
+    DEFAULT_TIMEOUT_S,
+    TOP_QUANTILE,
+    TOP_SAMPLES,
+    TOP_WINDOW,
+    Look,
+    Perceiver,
+    in_daemon_thread,
+    merge_duplicates,
+    top_height,
+)
 from brain_core.ports import Box, CancelToken, Coverage, Detection, ExpectedFailure, FailureKind, Refusal, SearchTimeout
 
 # At the robot frame's origin, looking along its +Z: the identity pose.
@@ -382,6 +392,55 @@ def test_the_top_of_an_open_item_is_its_rim_and_its_seen_point_its_inside_bottom
     assert top_height(np.zeros((48, 64)), mug, 64, 48, LOOKING_DOWN) is None
     # The colour picture can be larger than the depth frame.
     assert top_height(depths, Box("mug", 0.9, 32, 24, 96, 72), 128, 96, LOOKING_DOWN) == pytest.approx(0.08)
+
+
+# A camera with a lens, turned and placed off the origin, over a picture
+# larger than the one its intrinsics were given for.
+LENS_CAMERA = (
+    CameraModel()
+    .with_pose((0.1, -0.2, 0.9), (0.9, 0.1, -0.05, 0.4))
+    .with_intrinsics(Intrinsics(64, 48, 40.0, 41.0, 31.5, 23.5, PLUMB_BOB, LENS))
+)
+
+
+def test_a_grid_of_pixels_deprojects_as_each_pixel_does():
+    us = np.array([0.0, 17.25, 63.0, 100.5])
+    vs = np.array([0.0, 30.5, 47.0, 70.25])
+    depths = np.array([0.3, 0.75, 1.2, 2.0])
+    points = LENS_CAMERA.deproject_points(us, vs, depths, 128, 96)
+    assert points.shape == (4, 3)
+    for point, u, v, depth in zip(points, us, vs, depths):
+        assert close(point, LENS_CAMERA.deproject(float(u), float(v), float(depth), 128, 96), 1e-12)
+
+
+def test_a_colour_pixel_falls_on_the_depth_reading_under_it():
+    depths = np.zeros((48, 64))
+    # The colour picture is twice the depth frame: pixel (21, 9) is reading
+    # (10.5, 4.5), which rounds to the nearest even reading, (10, 4).
+    assert tuple(int(i) for i in depth_pixel(depths, 21.0, 9.0, 128, 96)) == (10, 4)
+    columns, rows = depth_pixel(depths, np.array([21.0, 23.0, 127.0]), np.array([9.0, 11.0, 95.0]), 128, 96)
+    assert columns.tolist() == [10, 12, 64] and rows.tolist() == [4, 6, 48]
+
+
+def test_the_top_of_an_item_is_the_quantile_of_the_heights_each_reading_of_the_middle_gives():
+    # Depth readings that differ from pixel to pixel, through a lens: the
+    # top is the quantile of the heights that each reading, deprojected on
+    # its own, gives, read in the depth frame under each colour pixel.
+    depths = 0.6 + 0.4 * np.random.default_rng(7).random((48, 64))
+    depths[20:24, 30:34] = 0.0
+    box = Box("mug", 0.9, 20.0, 14.0, 100.0, 80.0)
+    u, v = box.centre
+    half_width, half_height = (box.x1 - box.x0) * TOP_WINDOW / 2.0, (box.y1 - box.y0) * TOP_WINDOW / 2.0
+    heights = []
+    for row in np.linspace(v - half_height, v + half_height, TOP_SAMPLES):
+        for column in np.linspace(u - half_width, u + half_width, TOP_SAMPLES):
+            x, y = (int(round(value)) for value in (column * 64 / 128, row * 48 / 96))
+            if 0 <= x < 64 and 0 <= y < 48 and depths[y, x] > 0.0:
+                heights.append(LENS_CAMERA.deproject(float(column), float(row), float(depths[y, x]), 128, 96)[2])
+    assert top_height(depths, box, 128, 96, LENS_CAMERA) == pytest.approx(float(np.quantile(heights, TOP_QUANTILE)), abs=1e-12)
+    # A box that stands half out of the picture reads the part inside.
+    edge = Box("mug", 0.9, 100.0, 60.0, 160.0, 120.0)
+    assert top_height(depths, edge, 128, 96, LENS_CAMERA) is not None
 
 
 async def test_a_scan_gives_each_item_its_top():

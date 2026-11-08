@@ -1,7 +1,8 @@
 """forget: the brain forgets every item it knows and every hold, for a
 world that changed while it did not look (`State.forget`). The robot does
 not move, and a goal that runs keeps running: its result changes the
-memory as each result does."""
+memory as each result does, and a place or a drop names the item its
+gripper held when it started."""
 
 from __future__ import annotations
 

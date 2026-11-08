@@ -18,6 +18,11 @@ lens taken off. The distortion models are the contract's: "none";
 the distorted one, so undistorting inverts it by iteration; and
 "inverse_plumb_bob", the same polynomial run from the distorted point to
 the undistorted one, applied once. Any other name is refused.
+
+The arithmetic of a pixel's way to the robot frame (`pixel_to_ray`,
+`undistort`, `rotate`) takes numbers and numpy arrays alike, so
+`CameraModel.deproject_points` takes a whole grid of pixels through it in
+one pass, as `CameraModel.deproject` takes one pixel.
 """
 
 from __future__ import annotations
@@ -25,6 +30,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from typing import Sequence, Optional
+
+import numpy as np
 
 from ..ports import Quat, Vec3
 
@@ -125,6 +132,18 @@ class CameraModel:
         `height`: the pixel through the intrinsics, scaled to that image
         size when the stream is not at the size the intrinsics were given
         for, the lens taken off, then the ray placed by the pose."""
+        x, y, z = self._deprojected(u, v, depth_m, width, height)
+        return (float(x), float(y), float(z))
+
+    def deproject_points(self, us: np.ndarray, vs: np.ndarray, depths_m: np.ndarray, width: int, height: int) -> np.ndarray:
+        """The robot-frame positions, one row of x, y, z each, of the pixels
+        (`us`, `vs`) seen at `depths_m`, three arrays of one length, as
+        `deproject` gives the position of one pixel, in one pass."""
+        return np.stack(self._deprojected(us, vs, depths_m, width, height), axis=-1)
+
+    def _deprojected(self, u, v, depth_m, width: int, height: int):
+        """The path of `deproject`, on numbers or on numpy arrays of
+        pixels, as x, y and z."""
         if self.intrinsics is None:
             raise ValueError("the camera's intrinsics are not known yet")
         if self.pose is None:
