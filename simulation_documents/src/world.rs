@@ -126,7 +126,7 @@ fn written_scale(scale: f64) -> Option<f64> {
 }
 
 /// A simulated robot of the world: how it joins the stack, where it stands,
-/// and where its limbs stand. A robot without limbs stands at home, its
+/// and where its limbs stand. A robot without limbs stands at Ready, its
 /// grippers closed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, expecting = "a robot, { join, stand, limbs }")]
@@ -2363,7 +2363,7 @@ pub(crate) mod tests {
     }
 
     /// The world of the worked example whose robot `alpha` stands with its
-    /// one arm at `joint` and its gripper at `opening`, or at home.
+    /// one arm at `joint` and its gripper at `opening`, or at Ready.
     fn with_limbs(limbs: Option<(f64, f64)>) -> World {
         let mut world = example();
         world.robots.get_mut(&robot("alpha")).unwrap().limbs = limbs.map(|(joint, opening)| {
