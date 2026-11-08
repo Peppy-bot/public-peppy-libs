@@ -66,7 +66,7 @@ model of each role, `perception_model` and `manipulation_model`.
 | `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Outcome`, `Pose`, and `Senses`, what a manipulator is started with: the robot, the limbs, the chest perceiver, the wrist frames and the camera poses), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the port a detector implements, `Detector` (an awaited `detect`, `why_unavailable`, and `starting`, the part of it that ends on its own while the detector starts), and the port a node implements, `ModelSource` |
 | `words` | The one rule for whether a description names a label |
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
-| `state` | The grippers, the known items and their ids, and the rules that resolve a goal's names |
+| `state` | The grippers, the known items and their ids, the rules that resolve a goal's names, and `forget`, which drops every item and every hold for a world that changed while the brain did not look (forget of brain_model) |
 | `sequencer` | One sequence at a time per lane (a lane is a `Role`), lane-less jobs beside them, and the way to stop the ones that run |
 | `robot` | The proxy to the backbone: one limb_motion goal per move, how each one ended (completed, cancelled with its reason, refused or failed with its kind, or lost), `check_arm_move`, which asks whether a move has a plan and moves nothing, and `stop`, which cancels every move in flight |
 | `limb_state` | The robot's measured limbs: each limb_states message parsed into a `LimbSnapshot` (each arm's joints and grasp pose, each gripper's opening), the latest one kept, the wait for one captured after another, and the openings get_state reports |
@@ -157,6 +157,7 @@ classDiagram
         holder(name)
         forget_dropped(gripper)
         clear_held_placed(gripper, position, orientation)
+        forget()
     }
     class Sequencer {
         check(lane_or_none)

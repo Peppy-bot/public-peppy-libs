@@ -39,6 +39,7 @@ GENERATED_MODULES = {
     "switch_model": "exposed_actions.brain_model.switch_model",
     "get_model": "exposed_services.brain_model.get_model",
     "list_models": "exposed_services.brain_model.list_models",
+    "forget": "exposed_services.brain_model.forget",
 }
 
 
@@ -89,6 +90,7 @@ class Bindings:
     switch_model: Any
     get_model: Any
     list_models: Any
+    forget: Any
 
     # The wrist cameras, rgb_camera:v1 on the `wrist_cameras` slot
     # (peppygen.consumed_topics.wrist_cameras). None for a brain whose

@@ -323,6 +323,35 @@ def test_a_placed_item_keeps_its_id_where_it_was_put_and_a_dropped_one_is_forgot
     assert [item.item_id for item in seen] == ["cup_1-t0", "bowl_2-t0"]
 
 
+def test_forget_drops_every_item_and_every_hold_and_no_id_comes_back():
+    state = make_state()
+    state.remember([Detection("mug", (0.4, -0.2, 0.45), 0.9), Detection("bowl", (0.4, 0.1, 0.42), 0.9)], now_ns=1, coverage=EVERY)
+    right = state.grippers["right_gripper"]
+    state.set_held(right, "mug_1-t0")
+    assert state.forget() == ["mug_1-t0", "bowl_1-t0"]
+    assert state.items == {}
+    assert state.snapshot() == (["left_gripper", "right_gripper"], [False, False], ["", ""])
+    with pytest.raises(Refusal, match="^unknown item 'mug_1-t0': scan or identify it again$"):
+        state.item_to_grab("mug_1-t0")
+    # The freed gripper takes the item on its side again.
+    assert state.gripper_for_grab("", (0.4, -0.2, 0.45)) is right
+    # A new world's mug where the old one stood gets a new id.
+    seen = state.remember([Detection("mug", (0.4, -0.2, 0.45), 0.9)], now_ns=2, coverage=EVERY)
+    assert [item.item_id for item in seen] == ["mug_2-t0"]
+    assert state.forget() == ["mug_2-t0"]
+    assert state.forget() == []
+
+
+def test_forget_names_a_held_item_that_it_no_longer_knows():
+    state = make_state()
+    item = state.mint_from_pose((0.4, -0.2, 0.45), None, now_ns=1)
+    assert state.forget() == ["item_1-t0"]
+    # A grab that ran during the forget ends after it and holds its item.
+    state.set_held(state.grippers["right_gripper"], item.item_id)
+    assert state.forget() == ["item_1-t0"]
+    assert not state.grippers["right_gripper"].holding
+
+
 def test_ids_carry_the_run_token_so_an_earlier_runs_id_is_refused():
     before, after = make_state("aaaaaa"), make_state("bbbbbb")
     apple = Detection("apple", (0.5, 0.0, 0.7), 0.9)

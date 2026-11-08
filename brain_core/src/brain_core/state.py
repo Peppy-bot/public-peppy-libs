@@ -42,6 +42,10 @@ Rules written down here because the code depends on them:
   landed, so the brain no longer accounts for it, its id is refused from
   then on, and the next look that sees the item gives it a new one. A grab
   by the old id is refused rather than sent to where the item was.
+- Forgetting. `forget` (forget of brain_model) drops every known item
+  and every hold at once, for a world that changed while the brain did
+  not look. The run token and the counts stay, so an id from before is
+  refused as unknown and never comes back for another item.
 - Regions. An item carries the region of the look that last saw it, in
   that look's picture. A look that did not see a known item it keeps
   clears the region: the picture has moved on, and a region of an older
@@ -186,6 +190,18 @@ class State:
             item.position_is_grasp_point = True
             item.top_z = None
         return item_id
+
+    def forget(self) -> list[str]:
+        """Forgets every known item and every hold, and returns the ids of
+        the forgotten items: the known ones, then each held one that is not
+        known, such as the item of a grab that ended after an earlier
+        forget. The counts stay, so no id comes back."""
+        forgotten = list(self.items)
+        forgotten.extend(item_id for item_id in sorted(self._held_ids()) if item_id not in self.items)
+        self.items.clear()
+        for gripper in self.grippers.values():
+            self._release(gripper)
+        return forgotten
 
     def snapshot(self) -> tuple[list[str], list[bool], list[str]]:
         """The three index-aligned arrays get_state reports."""
