@@ -203,8 +203,9 @@ layout: robots are no obstacle.
 
 A `ClaimHolder` names the call of an applier of worlds (`world_applier:v1`
 and `sweep_runner:v1`) that holds the setup claim of a simulation: the
-apply, the run or the sweep (`ClaimCall`), the label of its caller, the
-sweep, and the run of the workflow director that runs now, as "the run of
+apply, the reset to the start world, the run or the sweep (`ClaimCall`),
+the label of its caller, the sweep, and the run of the workflow director
+that runs now, as "the run of
 'Tidy the table (c2)' (run r3)" or "the sweep of 'nightly' (sweep s2, run
 r14)". `ApplyFailureKind` names the failure kinds of an apply and of the
 first step of a run, `seed_refused` for the seed of a world pattern that
