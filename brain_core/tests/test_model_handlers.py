@@ -1,12 +1,12 @@
-"""The brain_model members against the core: get_model, list_models and
-switch_model from the decision of a goal to its end, and the line a switch
-leaves in the log."""
+"""The brain_model members against the core: get_model, list_models,
+forget, and switch_model from the decision of a goal to its end, and the
+lines a switch and a forget leave in the log."""
 
 import fake_peppygen
 import pytest
 from conftest import CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeSource, failed_with, make_brain, records_of, with_frames
 
-from brain_core.handlers import get_model, list_models, switch_model
+from brain_core.handlers import forget, get_model, get_state, list_models, switch_model
 from brain_core.perception.camera import CameraModel
 from brain_core.ports import FailureKind, Refusal, Role
 
@@ -144,3 +144,21 @@ async def test_a_switch_is_refused_at_once_while_its_role_is_busy_and_once_the_n
         switch_model.decide(brain, switch_goal("perception", "careful").request().data)
     assert raised.value.kind is FailureKind.PRECONDITION_FAILED
     assert source.prepared == []
+
+
+async def test_forget_answers_what_the_brain_forgot_and_leaves_no_gripper_holding(caplog):
+    brain = await make_brain(detector=FakeDetector(), manipulator=FakeManipulator())
+    mug = brain.state.mint_from_pose((0.4, -0.2, 0.45), None, now_ns=1)
+    brain.state.set_held(brain.state.grippers["right_gripper"], mug.item_id)
+    assert get_state.handle(brain, None).holding == [False, True]
+    with records_of(caplog, "brain_core.handlers.forget") as log:
+        response = forget.handle(brain, None)
+        again = forget.handle(brain, None)
+    assert response.item_ids == [mug.item_id]
+    assert again.item_ids == []
+    state = get_state.handle(brain, None)
+    assert (state.holding, state.held_item_ids) == ([False, False], ["", ""])
+    assert [record.getMessage() for record in log.records] == [
+        f"forget: the brain forgot {mug.item_id}",
+        "forget: the brain forgot no item",
+    ]

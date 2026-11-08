@@ -217,14 +217,25 @@ def decode_depth(message: DepthMessage, depth_unit: float) -> np.ndarray:
     return raw.astype(np.float32) * float(depth_unit)
 
 
+def depth_pixel(depth_m: np.ndarray, u, v, color_width: int, color_height: int):
+    """The column and the row of the reading of `depth_m` under the colour
+    pixel (u, v) of a picture of `color_width` x `color_height`, numbers or
+    numpy arrays of pixels: the pixel scaled to the depth frame's own
+    resolution and rounded to the nearest reading. A pixel near an edge can
+    fall outside the frame: the caller checks."""
+    height, width = depth_m.shape
+    column = np.rint(np.asarray(u) * width / max(1, color_width)).astype(int)
+    row = np.rint(np.asarray(v) * height / max(1, color_height)).astype(int)
+    return column, row
+
+
 def depth_at(depth_m: np.ndarray, box: Box, color_width: int, color_height: int) -> Optional[float]:
     """The depth under a box's centre: the median of the valid readings in
-    a small window, in the depth frame's own resolution. None when the
-    window holds no reading."""
+    a small window around the reading under it (`depth_pixel`). None when
+    the window holds no reading."""
     height, width = depth_m.shape
     u, v = box.centre
-    x = int(round(u * width / max(1, color_width)))
-    y = int(round(v * height / max(1, color_height)))
+    x, y = (int(index) for index in depth_pixel(depth_m, u, v, color_width, color_height))
     half = DEPTH_WINDOW_PX // 2
     x0, x1 = max(0, x - half), min(width, x + half + 1)
     y0, y1 = max(0, y - half), min(height, y + half + 1)

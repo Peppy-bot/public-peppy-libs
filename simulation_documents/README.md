@@ -46,7 +46,7 @@ positions] }, grippers: { <gripper>: opening } }`, name each limb as the
 robot names it (limb_state): an arm with its joint positions, radians or
 metres, in its joint order, and a gripper with its opening, a fraction of
 full jaw travel from 0 (closed) to 1. They name at least one limb. A robot
-without limbs stands at home, its grippers closed. The daylight sets the settings of the
+without limbs stands at Ready, its grippers closed. The daylight sets the settings of the
 scene's site in place of the scene's own: the local date
 (`YYYY-MM-DD`), the hour (`HH:MM` or `HH:MM:SS`, written `HH:MM:SS`), the
 clock rate and the weather (`{ cloud_cover, rain_mm_h }`). `World::parse`
@@ -192,7 +192,7 @@ JSON5 text without a root key. `World::from_setup` makes the world of a live
 simulation from the record and the robots of the stack (`StackRobot`), each
 with a body with the limbs that it measures, and `StartSetup::world` makes the
 start world from the setup the simulation started with and where each robot
-first joined, at home. `Judge::parse_list` reads a
+first joined, with no limbs, so it stands at Ready. `Judge::parse_list` reads a
 JSON5 list of judges, `true` or one of the checks, and `Verdicts` holds a
 `holds` and a `why` for each. The check `{ clear_ways: { walkway_m } }`
 holds when each doorway of the scene is clear over its width and 1.0 m into

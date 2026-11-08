@@ -160,6 +160,18 @@ class list_models:
         await asyncio.Event().wait()
 
 
+class forget:
+    SERVICE_NAME = "forget"
+
+    @dataclass
+    class Response:
+        item_ids: list[str]
+
+    @staticmethod
+    async def handle_requests(node_runner, handler):
+        await asyncio.Event().wait()
+
+
 class ResultStatus(IntEnum):
     COMPLETED = 0
     CANCELLED = 1
@@ -465,6 +477,7 @@ def fake_bindings(**overrides) -> Bindings:
         switch_model=switch_model,
         get_model=get_model,
         list_models=list_models,
+        forget=forget,
     )
     modules.update(overrides)
     return Bindings(**modules)

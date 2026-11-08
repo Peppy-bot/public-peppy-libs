@@ -116,8 +116,8 @@ impl StartSetup {
     }
 
     /// The start world: the start setup with the copies the launch started,
-    /// each with a body standing where it first joined, at home: the limbs
-    /// that `launched` measures are left out.
+    /// each with a body standing where it first joined, with no limbs, so it
+    /// stands at Ready: the limbs that `launched` measures are left out.
     pub fn world(
         &self,
         manifest: Manifest,
@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(
             world.robots[&robot("alpha")].limbs,
             None,
-            "the robots of the start world stand at home"
+            "the robots of the start world stand at Ready"
         );
         assert_eq!(world.scene.asset, "scene/default");
         assert!(world.objects.is_empty() && world.scene_objects.is_empty());

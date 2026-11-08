@@ -42,6 +42,10 @@ Rules written down here because the code depends on them:
   landed, so the brain no longer accounts for it, its id is refused from
   then on, and the next look that sees the item gives it a new one. A grab
   by the old id is refused rather than sent to where the item was.
+- Forgetting. `forget` (forget of brain_model) drops every known item
+  and every hold at once, for a world that changed while the brain did
+  not look. The run token and the counts stay, so an id from before is
+  refused as unknown and never comes back for another item.
 - Regions. An item carries the region of the look that last saw it, in
   that look's picture. A look that did not see a known item it keeps
   clears the region: the picture has moved on, and a region of an older
@@ -166,25 +170,41 @@ class State:
     def set_held(self, gripper: Gripper, item_id: str) -> None:
         gripper.held_item_id = item_id
 
-    def forget_dropped(self, gripper: Gripper) -> str:
-        """Releases what the gripper holds after a drop_item and returns its
-        id. Nothing measured where the item landed, so the item is
-        forgotten: its id is refused from then on."""
-        item_id = self._release(gripper)
+    def forget_dropped(self, gripper: Gripper, item_id: str) -> None:
+        """Releases the gripper after a drop_item of `item_id`, the item it
+        held when the drop started. Nothing measured where the item landed,
+        so the item is forgotten: its id is refused from then on. A forget
+        that ran during the drop already released the gripper and forgot
+        the item."""
+        self._release(gripper)
         self.items.pop(item_id, None)
-        return item_id
 
-    def clear_held_placed(self, gripper: Gripper, position: Vec3, orientation: Optional[Quat]) -> str:
-        """Releases what the gripper holds at the pose place_item put it at
-        and returns its id. The item takes that pose, so the next scan finds
-        it where it stands and keeps its id."""
-        item_id = self._release(gripper)
+    def clear_held_placed(self, gripper: Gripper, item_id: str, position: Vec3, orientation: Optional[Quat]) -> None:
+        """Releases the gripper after a place_item of `item_id`, the item it
+        held when the place started, at the pose the place put it at. The
+        item takes that pose, so the next scan finds it where it stands and
+        keeps its id. A forget that ran during the place already released
+        the gripper and forgot the item, which the next scan gives a new
+        id."""
+        self._release(gripper)
         item = self.items.get(item_id)
         if item is not None:
             item.position = position
             item.orientation = orientation
             item.position_is_grasp_point = True
-        return item_id
+            item.top_z = None
+
+    def forget(self) -> list[str]:
+        """Forgets every known item and every hold, and returns the ids of
+        the forgotten items: the known ones, then each held one that is not
+        known, such as the item of a grab that ended after an earlier
+        forget. The counts stay, so no id comes back."""
+        forgotten = list(self.items)
+        forgotten.extend(item_id for item_id in sorted(self._held_ids()) if item_id not in self.items)
+        self.items.clear()
+        for gripper in self.grippers.values():
+            self._release(gripper)
+        return forgotten
 
     def snapshot(self) -> tuple[list[str], list[bool], list[str]]:
         """The three index-aligned arrays get_state reports."""
@@ -237,6 +257,7 @@ class State:
                 item = self._mint(detection.label, detection.position, detection.orientation, detection.confidence, now_ns)
                 item.region = detection.region
                 item.width_m = detection.width_m
+                item.top_z = detection.top_z
             else:
                 _refresh(item, detection, now_ns, coverage)
             claimed.add(item.item_id)
@@ -257,10 +278,8 @@ class State:
         item.position_is_grasp_point = True
         return item
 
-    def _release(self, gripper: Gripper) -> str:
-        item_id = gripper.held_item_id or ""
+    def _release(self, gripper: Gripper) -> None:
         gripper.held_item_id = None
-        return item_id
 
     def _held_ids(self) -> set[str]:
         return {gripper.held_item_id for gripper in self.grippers.values() if gripper.held_item_id is not None}
@@ -310,6 +329,7 @@ def _refresh(item: Item, detection: Detection, now_ns: int, coverage: Coverage) 
     item.seen_at_ns = now_ns
     item.region = detection.region
     item.width_m = detection.width_m
+    item.top_z = detection.top_z
     if coverage.covers(detection.label):
         item.label = detection.label
 

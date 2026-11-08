@@ -66,7 +66,7 @@ model of each role, `perception_model` and `manipulation_model`.
 | `ports` | The plain data that crosses the seams (`Box`, `Detection`, `Item`, `Gripper`, `Outcome`, `Pose`, and `Senses`, what a manipulator is started with: the robot, the limbs, the chest perceiver, the wrist frames and the camera poses), the roles a model serves (`Role`, `parse_role`), the failure kinds a goal ends with (`FailureKind`), `Refusal` and `ExpectedFailure`, each with its kind, `Cancelled`, `CancelToken`, `Deadline`, `SearchTimeout`, the port a detector implements, `Detector` (an awaited `detect`, `why_unavailable`, and `starting`, the part of it that ends on its own while the detector starts), and the port a node implements, `ModelSource` |
 | `words` | The one rule for whether a description names a label |
 | `limbs` | The `limbs` parameter parsed: each gripper with the arm that carries it |
-| `state` | The grippers, the known items and their ids, and the rules that resolve a goal's names |
+| `state` | The grippers, the known items and their ids, the rules that resolve a goal's names, and `forget`, which drops every item and every hold for a world that changed while the brain did not look (forget of brain_model) |
 | `sequencer` | One sequence at a time per lane (a lane is a `Role`), lane-less jobs beside them, and the way to stop the ones that run |
 | `robot` | The proxy to the backbone: one limb_motion goal per move, how each one ended (completed, cancelled with its reason, refused or failed with its kind, or lost), `check_arm_move`, which asks whether a move has a plan and moves nothing, and `stop`, which cancels every move in flight |
 | `limb_state` | The robot's measured limbs: each limb_states message parsed into a `LimbSnapshot` (each arm's joints and grasp pose, each gripper's opening), the latest one kept, the wait for one captured after another, and the openings get_state reports |
@@ -74,7 +74,7 @@ model of each role, `perception_model` and `manipulation_model`.
 | `brain` | The parts assembled, `decider`, where a goal is refused before it is accepted, and `run_guarded`, where every goal is admitted, ended the way its contract asks and logged |
 | `handlers` | One module per exposed member |
 | `serve`, `waiting` | The loop of an exposed action or service, and the one way a part waits unless a stop comes first |
-| `perception` | The `Perceiver` (frames in, world detections out), the frame store, the camera model and the geometry learners, `in_daemon_thread` for a detector whose model blocks, `NoneDetector`; `wrist`, the newest frame of each arm's wrist camera and the wait for one captured after a move |
+| `perception` | The `Perceiver` (frames in, world detections out), the frame store, the camera model and the geometry learners, `in_daemon_thread` for a detector whose model blocks, `NoneDetector`; `wrist`, the newest frame of each arm's wrist camera, the wait for one captured after a move, and the period of each camera as its frames arrive |
 | `manipulators` | The `Manipulator` port (started with the `Senses`; `grab`, `drop`, `place`, `stop`, `why_unavailable` and `starting`); `none`, the `NoneManipulator`; `scripted`, the `ScriptedManipulator`, a grab from above through a fixed sequence of moves, with the `CentreProposer`, the grasp from the item's position, the geometry (`grasp`: the orientations workspace_core tries, the pre-grasp and lifted points, the turn about the vertical, `Grasp` and the `GraspProposer` port) and the `Aligner` port (`aligning`) of the step a node may put between the move above the item and the descent |
 | `bindings`, `node` | The generated modules a node passes in, and the shared entry |
 
@@ -155,8 +155,9 @@ classDiagram
         remember(detections, now_ns, coverage)
         gripper_for_grab(name, near)
         holder(name)
-        forget_dropped(gripper)
-        clear_held_placed(gripper, position, orientation)
+        forget_dropped(gripper, item_id)
+        clear_held_placed(gripper, item_id, position, orientation)
+        forget()
     }
     class Sequencer {
         check(lane_or_none)
@@ -416,7 +417,15 @@ logged and the place still succeeds, since the item is down and the jaws are
 open.
 
 `CentreProposer` lowers a seen item's position by `grasp_depth_m` and tries
-the eight rolls of a grasp from above; an item whose position is a grasp point
+the eight rolls of a grasp from above. Under the centre of the box of an open
+item, a mug or a bowl seen from above, the camera sees the inside bottom, so
+when the top that the look measured for the item (`top_z`: the 90 % quantile
+of the heights that the depth readings of the middle 60 % of its box give)
+stands from `open_item_depth_m` (3 cm) to `open_item_max_depth_m` (12 cm)
+above the seen point, the proposer lowers the point over the seen point at the
+height of the top instead, and the jaws close on the walls. A top that stands
+higher is that of a taller thing that a loose box takes in, so the proposer
+lowers the seen point. An item whose position is a grasp point
 (a grab by pose, or an item place_item put down) is grasped there unlowered,
 in its own orientation alone when it has one. After every await the sequence
 checks its cancel token, so a cancel, an abort or a shutdown ends it at the

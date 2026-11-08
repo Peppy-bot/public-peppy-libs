@@ -482,10 +482,16 @@ impl HardwareVersion {
 /// arm takes its [`mirror`].
 pub type JointPosture = [f64; ARM_DOF];
 
-/// The right-arm Ready posture: elbows bent, hands forward, prepared to work.
-/// The single source both the executor (backbone) and any gesture authoring
-/// anchor on; in-limit for both generations, pinned by test.
-pub const READY_R: JointPosture = [0.15, 0.40, -0.48, 0.95, 0.0, 0.0, 0.0];
+/// The right-arm Ready posture, prepared to work: the upper arms out to the
+/// sides, the elbows bent about a right angle and the grippers pointing ahead,
+/// which puts the grasp points about 0.40 m ahead of the base and 0.57 m above
+/// it. The arms thus stay clear of a table top up to about 0.45 m above the
+/// base, the height at which the arms reach a top best, and leave the top
+/// below them to the chest camera. Its wrist joints are 0, so [`mirror`] gives
+/// the left arm its mirror image. The single source both the executor
+/// (backbone) and any gesture authoring anchor on; in-limit for both
+/// generations, pinned by test.
+pub const READY_R: JointPosture = [0.15, 0.68, -0.05, 1.55, 0.0, 0.0, 0.0];
 
 /// The right-arm Home posture: hanging at rest with the elbow held exactly at
 /// its singularity floor, the safe posture to power down from. In-limit for
@@ -493,8 +499,10 @@ pub const READY_R: JointPosture = [0.15, 0.40, -0.48, 0.95, 0.0, 0.0, 0.0];
 pub const HOME_R: JointPosture = [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0];
 
 /// Mirror a right-arm posture onto the left arm: j1..j3 flip sign, the elbow
-/// and wrist do not. Exported for right-convention gesture authoring; for the
-/// postures themselves, [`ready`] and [`home`] resolve a side directly.
+/// and wrist do not. For a posture whose wrist joints (j5..j7) are 0, the left
+/// arm then stands as the mirror image of the right arm across the robot's
+/// xz-plane. Exported for right-convention gesture authoring; for the postures
+/// themselves, [`ready`] and [`home`] resolve a side directly.
 pub const fn mirror(q: JointPosture) -> JointPosture {
     [-q[0], -q[1], -q[2], q[3], q[4], q[5], q[6]]
 }
@@ -902,6 +910,37 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    // Ready holds each grasp point 0.55 m or more above the base, clear of a top
+    // 0.45 m above it, and the left arm as the mirror image of the right one.
+    #[cfg(feature = "kinematics")]
+    #[test]
+    fn ready_holds_the_grasp_points_high_and_the_arms_mirrored() {
+        for v in [HardwareVersion::V1, HardwareVersion::V2] {
+            let grasp = |side: Side| {
+                let arm = v.arm_model(side).expect("the arm model");
+                arm.world_ee_pose(&ready(side)).translation.vector
+            };
+            let (left, right) = (grasp(Side::Left), grasp(Side::Right));
+            for (side, point) in [(Side::Left, left), (Side::Right, right)] {
+                assert!(
+                    point.z >= 0.55,
+                    "{v} {side:?}: the grasp point stands at {point:?}"
+                );
+                assert!(
+                    point.x > 0.3,
+                    "{v} {side:?}: the grasp point stands at {point:?}"
+                );
+            }
+            let mirrored = [right.x, -right.y, right.z];
+            for i in 0..3 {
+                assert!(
+                    (left[i] - mirrored[i]).abs() < 1e-9,
+                    "{v}: left {left:?}, right {right:?}"
+                );
             }
         }
     }

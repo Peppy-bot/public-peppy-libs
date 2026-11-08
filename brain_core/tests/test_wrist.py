@@ -72,6 +72,28 @@ async def test_no_newer_frame_within_the_wait_gives_none():
     assert await wrists.newer_than("right_arm", float("-inf"), 0.0) is None
 
 
+def test_the_period_of_a_camera_is_the_longest_time_between_its_newest_frames_as_they_arrived():
+    now = [0.0]
+    wrists = WristFrames({"left_arm": "wrist_left", "right_arm": "wrist_right"}, clock=lambda: now[0])
+    assert wrists.period_s("left_arm") is None
+    wrists.add("wrist_left", frame(1.0))
+    assert wrists.period_s("left_arm") is None
+    # A host under load sends the frames late and unevenly: the longest
+    # time between two of them is the period, whatever their stamps say.
+    for arrived, stamp in [(1.2, 2.0), (3.7, 3.0), (4.9, 4.0)]:
+        now[0] = arrived
+        wrists.add("wrist_left", frame(stamp))
+    assert wrists.period_s("left_arm") == pytest.approx(2.5)
+    # Only the newest PERIOD_FRAMES frames count.
+    for arrived in [5.9, 6.9, 7.9, 8.9]:
+        now[0] = arrived
+        wrists.add("wrist_left", frame(arrived))
+    assert wrists.period_s("left_arm") == pytest.approx(1.0)
+    # Each camera has its own; an arm with no camera has none.
+    assert wrists.period_s("right_arm") is None
+    assert WristFrames({"left_arm": "wrist_left"}).period_s("right_arm") is None
+
+
 async def test_an_arm_with_no_camera_and_a_brain_with_no_slot_say_so():
     wrists = WristFrames({"left_arm": "wrist_left"})
     assert wrists.why_unavailable("right_arm") == NO_SOURCE.format(arm="right_arm")

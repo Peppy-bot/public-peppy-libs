@@ -22,7 +22,7 @@ from fake_peppygen import scan_items as scan_action
 from fake_peppygen import LEFT_AT_REST, FakeTopic, fake_bindings, limb_states_message
 
 from brain_core.brain import Brain
-from brain_core.handlers import abort, drop_item, get_state, grab_item, identify_item, place_item, scan_items
+from brain_core.handlers import abort, drop_item, forget, get_state, grab_item, identify_item, place_item, scan_items
 from brain_core.manipulators.scripted import CentreProposer, ScriptedManipulator
 from brain_core.ports import Box, Coverage, Detection, FailureKind, Refusal, Role, SearchTimeout
 
@@ -324,6 +324,30 @@ async def test_a_placed_item_keeps_its_id_in_the_next_scan():
     scan = scan_goal()
     await scan_items.run(brain, scan)
     assert scan.completed["item_ids"] == ["cup_1-t0"]
+
+
+@pytest.mark.parametrize("ends", ["place", "drop"])
+async def test_a_place_or_a_drop_that_a_forget_runs_during_names_the_item_it_started_with(ends):
+    release = asyncio.Event()
+    manipulator = FakeManipulator()
+    brain = await make_brain(manipulator=manipulator)
+    grab = grab_goal(gripper_name="left_gripper", position=[0.5, 0.1, 0.7])
+    await grab_item.run(brain, grab)
+    item_id = grab.completed["item_id"]
+    # The grab reached the manipulator: take that mark, so the next one is
+    # the place's or the drop's.
+    await manipulator.begun()
+
+    manipulator.release = release
+    ctx = place_goal([0.6, 0.0, 0.75]) if ends == "place" else drop_goal()
+    running = asyncio.create_task((place_item if ends == "place" else drop_item).run(brain, ctx))
+    await manipulator.begun()
+    assert forget.handle(brain, None).item_ids == [item_id]
+    release.set()
+    await running
+    assert (ctx.completed["success"], ctx.completed["gripper_name"], ctx.completed["item_id"]) == (True, "left_gripper", item_id)
+    # The forget stands: no gripper holds, and the item stays unknown.
+    assert state_of(brain).held_item_ids == ["", ""] and brain.state.items == {}
 
 
 async def test_identify_that_finds_nothing_fails_with_not_found():
