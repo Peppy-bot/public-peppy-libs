@@ -416,7 +416,13 @@ logged and the place still succeeds, since the item is down and the jaws are
 open.
 
 `CentreProposer` lowers a seen item's position by `grasp_depth_m` and tries
-the eight rolls of a grasp from above; an item whose position is a grasp point
+the eight rolls of a grasp from above. Under the centre of the box of an open
+item, a mug or a bowl seen from above, the camera sees the inside bottom, so
+when the top that the look measured for the item (`top_z`: the 90 % quantile
+of the heights that the depth readings of the middle 60 % of its box give)
+stands `open_item_depth_m` (3 cm) or more above the seen point, the proposer
+lowers the point over the seen point at the height of the top instead, and the
+jaws close on the walls. An item whose position is a grasp point
 (a grab by pose, or an item place_item put down) is grasped there unlowered,
 in its own orientation alone when it has one. After every await the sequence
 checks its cancel token, so a cancel, an abort or a shutdown ends it at the

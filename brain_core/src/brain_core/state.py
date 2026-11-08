@@ -184,6 +184,7 @@ class State:
             item.position = position
             item.orientation = orientation
             item.position_is_grasp_point = True
+            item.top_z = None
         return item_id
 
     def snapshot(self) -> tuple[list[str], list[bool], list[str]]:
@@ -237,6 +238,7 @@ class State:
                 item = self._mint(detection.label, detection.position, detection.orientation, detection.confidence, now_ns)
                 item.region = detection.region
                 item.width_m = detection.width_m
+                item.top_z = detection.top_z
             else:
                 _refresh(item, detection, now_ns, coverage)
             claimed.add(item.item_id)
@@ -310,6 +312,7 @@ def _refresh(item: Item, detection: Detection, now_ns: int, coverage: Coverage) 
     item.seen_at_ns = now_ns
     item.region = detection.region
     item.width_m = detection.width_m
+    item.top_z = detection.top_z
     if coverage.covers(detection.label):
         item.label = detection.label
 

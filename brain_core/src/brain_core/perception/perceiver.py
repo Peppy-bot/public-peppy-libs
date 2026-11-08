@@ -32,6 +32,8 @@ import threading
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
+import numpy as np
+
 from ..ports import Box, CancelToken, Deadline, Detection, Detector, ExpectedFailure, FailureKind, Refusal, SearchTimeout, iou
 from .camera import CameraModel
 from .frames import FrameStore, decode_color, decode_depth, depth_at
@@ -41,6 +43,13 @@ from .frames import FrameStore, decode_color, decode_depth, depth_at
 # failure that may be asked again needs room for the second call.
 DEFAULT_TIMEOUT_S = 30.0
 DUPLICATE_IOU = 0.5
+# The middle of a box whose depth readings give the top of its item: this
+# share of the box's width and of its height, around its centre, read at
+# TOP_SAMPLES points along each side. The highest readings give the top,
+# but not the very highest: TOP_QUANTILE of them stand lower.
+TOP_WINDOW = 0.6
+TOP_SAMPLES = 24
+TOP_QUANTILE = 0.9
 
 
 async def in_daemon_thread(function: Callable, *args):
@@ -205,7 +214,14 @@ class Perceiver:
             # The box's left and right edges at the depth of its centre.
             width_m = math.dist(self.camera.deproject(box.x0, v, depth, width, height), self.camera.deproject(box.x1, v, depth, width, height))
             detections.append(
-                Detection(label=box.label, position=position, confidence=box.confidence, region=box.xyxy, width_m=width_m)
+                Detection(
+                    label=box.label,
+                    position=position,
+                    confidence=box.confidence,
+                    region=box.xyxy,
+                    width_m=width_m,
+                    top_z=top_height(depth_m, box, width, height, self.camera),
+                )
             )
         return Look(
             detections=detections,
@@ -216,6 +232,34 @@ class Perceiver:
             duplicates=duplicates,
             unplaced=unplaced,
         )
+
+
+def top_height(depth_m: np.ndarray, box: Box, color_width: int, color_height: int, camera: CameraModel) -> Optional[float]:
+    """The height of the top of the item in `box`, in the robot frame: the
+    TOP_QUANTILE quantile of the heights that the depth readings of the
+    middle of the box give (TOP_WINDOW, TOP_SAMPLES). None when that middle
+    holds no reading. Under the centre of the box, a camera that looks into
+    an open item, a mug or a bowl, reads its inside bottom; the walls and
+    the rim around it give its top."""
+    depth_height, depth_width = depth_m.shape
+    u, v = box.centre
+    half_width = (box.x1 - box.x0) * TOP_WINDOW / 2.0
+    half_height = (box.y1 - box.y0) * TOP_WINDOW / 2.0
+    heights: list[float] = []
+    for row in np.linspace(v - half_height, v + half_height, TOP_SAMPLES):
+        y = int(round(row * depth_height / max(1, color_height)))
+        if not 0 <= y < depth_height:
+            continue
+        for column in np.linspace(u - half_width, u + half_width, TOP_SAMPLES):
+            x = int(round(column * depth_width / max(1, color_width)))
+            if not 0 <= x < depth_width:
+                continue
+            depth = float(depth_m[y, x])
+            if depth > 0.0:
+                heights.append(camera.deproject(float(column), float(row), depth, color_width, color_height)[2])
+    if not heights:
+        return None
+    return float(np.quantile(heights, TOP_QUANTILE))
 
 
 def merge_duplicates(boxes: Sequence[Box]) -> tuple[list[Box], list[Box]]:

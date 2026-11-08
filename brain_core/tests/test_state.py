@@ -50,6 +50,24 @@ def test_a_width_follows_the_look_that_last_saw_the_item_and_stays_when_one_does
     assert state.mint_from_pose((0.2, 0.2, 0.7), None, now_ns=4).width_m is None
 
 
+def test_a_top_follows_the_look_that_last_saw_the_item_and_a_placed_item_has_none():
+    state = State(ONE_ARM, "t0")
+    [cup] = state.remember([Detection("cup", (0.5, 0.1, 0.7), 0.9, top_z=0.78)], now_ns=1, coverage=EVERY)
+    assert cup.top_z == 0.78
+    state.remember([Detection("cup", (0.51, 0.1, 0.7), 0.8, top_z=0.77)], now_ns=2, coverage=NOTHING)
+    assert cup.top_z == 0.77
+    # A look that keeps the item without seeing it leaves its top.
+    state.remember([Detection("bowl", (0.9, 0.0, 0.7), 0.9, top_z=0.75)], now_ns=3, coverage=NOTHING)
+    assert cup.top_z == 0.77
+    # An item place_item put down stands where no look measured its top.
+    left = state.grippers["left_gripper"]
+    state.set_held(left, cup.item_id)
+    state.clear_held_placed(left, (0.6, -0.2, 0.75), None)
+    assert cup.top_z is None
+    # An item addressed by pose has no top.
+    assert state.mint_from_pose((0.2, 0.2, 0.7), None, now_ns=4).top_z is None
+
+
 def test_each_gripper_carries_the_arm_its_limb_names_in_the_limbs_order():
     state = make_state()
     assert state.gripper_names() == ["left_gripper", "right_gripper"]

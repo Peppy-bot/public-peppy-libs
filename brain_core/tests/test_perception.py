@@ -9,6 +9,7 @@ import threading
 from dataclasses import replace
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from conftest import CAMERA_16X12, NEVER, FakeDetector, FakeToken, camera_poses, depth_frame, rgb_frame
@@ -26,7 +27,7 @@ from brain_core.perception.camera import (
 from brain_core.perception import frames as frames_module
 from brain_core.perception import geometry
 from brain_core.perception.frames import FRAME_BUFFER, FrameStore, decode_color, decode_depth, depth_at
-from brain_core.perception.perceiver import DEFAULT_TIMEOUT_S, Look, Perceiver, in_daemon_thread, merge_duplicates
+from brain_core.perception.perceiver import DEFAULT_TIMEOUT_S, Look, Perceiver, in_daemon_thread, merge_duplicates, top_height
 from brain_core.ports import Box, CancelToken, Coverage, Detection, ExpectedFailure, FailureKind, Refusal, SearchTimeout
 
 # At the robot frame's origin, looking along its +Z: the identity pose.
@@ -352,6 +353,52 @@ async def test_a_vacant_camera_slot_leaves_the_store_empty():
     store = FrameStore()
     await asyncio.wait_for(store.run(None, FakeToken(), VacantSlot, VacantSlot, VacantSlot), 1.0)
     assert store.why_unavailable() == "no camera frame received"
+
+
+# 1 m over the table top, looking straight down: the optical +Z is the
+# robot's -Z, so a reading of depth d stands 1 - d above the top.
+LOOKING_DOWN = CameraModel().with_pose((0.0, 0.0, 1.0), (1.0, 0.0, 0.0, 0.0)).with_intrinsics(CAMERA_16X12)
+
+
+def open_item_depths(width: int = 64, height: int = 48, *, rim_m: float = 0.08, bottom_m: float = 0.005):
+    """A depth frame of LOOKING_DOWN over a table top with an open item, a
+    mug, at the middle of the picture: the table top 1 m deep, the mug's rim
+    and walls `rim_m` over it in a ring 4 to 14 px from the middle, and its
+    inside bottom `bottom_m` over it within 4 px of the middle."""
+    rows, columns = np.mgrid[0:height, 0:width]
+    from_middle = np.hypot(columns - width / 2, rows - height / 2)
+    depths = np.full((height, width), 1.0)
+    depths[from_middle <= 14] = 1.0 - rim_m
+    depths[from_middle <= 4] = 1.0 - bottom_m
+    return depths
+
+
+def test_the_top_of_an_open_item_is_its_rim_and_its_seen_point_its_inside_bottom():
+    depths = open_item_depths()
+    mug = Box("mug", 0.9, 16, 12, 48, 36)
+    assert top_height(depths, mug, 64, 48, LOOKING_DOWN) == pytest.approx(0.08)
+    assert 1.0 - depth_at(depths, mug, 64, 48) == pytest.approx(0.005)
+    # A box whose middle holds no reading has no top.
+    assert top_height(np.zeros((48, 64)), mug, 64, 48, LOOKING_DOWN) is None
+    # The colour picture can be larger than the depth frame.
+    assert top_height(depths, Box("mug", 0.9, 32, 24, 96, 72), 128, 96, LOOKING_DOWN) == pytest.approx(0.08)
+
+
+async def test_a_scan_gives_each_item_its_top():
+    depths = open_item_depths()
+    message = SimpleNamespace(
+        header=SimpleNamespace(timestamp=1.0, frame_id=3, align_mode="depth_to_color"),
+        encoding="z16",
+        width=64,
+        height=48,
+        frame=np.round(depths / 0.001).astype("<u2").tobytes(),
+    )
+    frames = store_with([rgb_frame(64, 48, frame_id=3)], [message])
+    perceiver = Perceiver(frames, LOOKING_DOWN)
+    look = await perceiver.scan(FakeDetector([Box("mug", 0.9, 16, 12, 48, 36)]), ["mug"], CancelToken(), timeout_s=0.0)
+    [mug] = look.detections
+    assert mug.position[2] == pytest.approx(0.005, abs=1e-3)
+    assert mug.top_z == pytest.approx(0.08, abs=1e-3)
 
 
 def test_duplicate_boxes_of_one_label_keep_the_most_confident():
