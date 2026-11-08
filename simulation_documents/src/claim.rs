@@ -5,12 +5,13 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// The call of the applier that holds the setup claim: an apply, a run
-/// (world_applier:v1), or a sweep (sweep_runner:v1).
+/// The call of the applier that holds the setup claim: an apply, a reset to
+/// the start world, a run (world_applier:v1), or a sweep (sweep_runner:v1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaimCall {
     Apply,
+    Reset,
     Run,
     Sweep,
 }
@@ -20,6 +21,7 @@ impl ClaimCall {
     pub fn name(self) -> &'static str {
         match self {
             ClaimCall::Apply => "apply",
+            ClaimCall::Reset => "reset",
             ClaimCall::Run => "run",
             ClaimCall::Sweep => "sweep",
         }
@@ -95,7 +97,7 @@ impl fmt::Display for ApplyFailureKind {
 /// Who holds the setup claim through the applier: the call, the label of
 /// its caller, the sweep (`s<N>`) of a sweep, and the run of the workflow
 /// director that runs now, empty before it starts, between the runs of a
-/// sweep and for an apply.
+/// sweep, and for an apply and a reset.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimHolder {
     pub call: ClaimCall,
@@ -107,7 +109,7 @@ pub struct ClaimHolder {
 
 impl fmt::Display for ClaimHolder {
     /// "the run of 'Tidy the table (c2)' (run r3)", "the apply of 'eval'",
-    /// "the sweep of 'nightly' (sweep s2, run r14)".
+    /// "the reset of 'chat (c1)'", "the sweep of 'nightly' (sweep s2, run r14)".
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "the {} of '{}'", self.call, self.started_by)?;
         let ids: Vec<String> = [("sweep", &self.sweep), ("run", &self.run)]
@@ -144,6 +146,13 @@ mod tests {
             run: String::new(),
         };
         assert_eq!(apply.to_string(), "the apply of 'eval'");
+        let reset = ClaimHolder {
+            call: ClaimCall::Reset,
+            started_by: "chat (c1)".to_owned(),
+            sweep: String::new(),
+            run: String::new(),
+        };
+        assert_eq!(reset.to_string(), "the reset of 'chat (c1)'");
         let sweep = ClaimHolder {
             call: ClaimCall::Sweep,
             started_by: "nightly".to_owned(),
@@ -170,7 +179,16 @@ mod tests {
             serde_json::to_value(&sweep).unwrap(),
             json!({ "call": "sweep", "started_by": "nightly", "sweep": "s2", "run": "r14" })
         );
-        for call in [ClaimCall::Apply, ClaimCall::Run, ClaimCall::Sweep] {
+        assert_eq!(
+            serde_json::to_value(&reset).unwrap(),
+            json!({ "call": "reset", "started_by": "chat (c1)", "run": "" })
+        );
+        for call in [
+            ClaimCall::Apply,
+            ClaimCall::Reset,
+            ClaimCall::Run,
+            ClaimCall::Sweep,
+        ] {
             assert_eq!(serde_json::to_value(call).unwrap(), call.name());
         }
     }
