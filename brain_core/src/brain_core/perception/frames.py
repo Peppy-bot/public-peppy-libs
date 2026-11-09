@@ -76,6 +76,8 @@ class FrameStore:
         self.depths: deque[DepthMessage] = deque(maxlen=FRAME_BUFFER)
         self.depth_unit: Optional[float] = None
         self.frames_seen = 0
+        # Set when the camera slot is vacant: no frame ever comes.
+        self.vacant = False
 
     def add_color(self, message: ColorMessage) -> None:
         self.colors.append(message)
@@ -88,6 +90,13 @@ class FrameStore:
         """The newest colour frame with the depth frame of its capture, or
         a Refusal naming what is missing: a stream, the depth unit, a pair
         of one capture, or the alignment."""
+        color, depth = self._latest_pair()
+        return Frame.paired(color, depth, self.depth_unit)
+
+    def _latest_pair(self) -> tuple[ColorMessage, DepthMessage]:
+        """The newest colour frame and the depth frame of its capture, or a
+        Refusal naming what has not come yet: a stream, the depth unit, or
+        a pair of one capture."""
         if not self.colors:
             raise _no_source("no camera frame received")
         if not self.depths:
@@ -98,7 +107,7 @@ class FrameStore:
         for color in reversed(self.colors):
             depth = depths.get(color.header.frame_id)
             if depth is not None:
-                return Frame.paired(color, depth, self.depth_unit)
+                return color, depth
         raise _no_source(
             f"no colour and depth frame of one capture received (latest colour frame_id {self.colors[-1].header.frame_id}, "
             f"depth {self.depths[-1].header.frame_id})"
@@ -112,11 +121,26 @@ class FrameStore:
             return refusal.message
         return ""
 
+    def starting(self) -> str:
+        """Why `latest` refuses while the camera's frames still come: no
+        frame of a stream, no depth unit or no pair of one capture yet. The
+        empty string once a pair is there, for a vacant slot, which sends
+        nothing, and for a pair whose streams are not aligned, which the
+        next frames of the same camera do not change."""
+        if self.vacant:
+            return ""
+        try:
+            self._latest_pair()
+        except Refusal as refusal:
+            return refusal.message
+        return ""
+
     async def run(self, node_runner, token, video_stream, depth_stream, depth_stream_info) -> None:
         """Follows the camera slot until the node stops, through the node's
         generated camera modules. Nothing to do when the slot is vacant."""
         producer = video_stream.bound_producer(node_runner)
         if producer is None:
+            self.vacant = True
             return
         await self._learn_depth_unit(node_runner, producer, token, depth_stream_info)
         if token.is_cancelled():
@@ -193,14 +217,25 @@ def decode_depth(message: DepthMessage, depth_unit: float) -> np.ndarray:
     return raw.astype(np.float32) * float(depth_unit)
 
 
+def depth_pixel(depth_m: np.ndarray, u, v, color_width: int, color_height: int):
+    """The column and the row of the reading of `depth_m` under the colour
+    pixel (u, v) of a picture of `color_width` x `color_height`, numbers or
+    numpy arrays of pixels: the pixel scaled to the depth frame's own
+    resolution and rounded to the nearest reading. A pixel near an edge can
+    fall outside the frame: the caller checks."""
+    height, width = depth_m.shape
+    column = np.rint(np.asarray(u) * width / max(1, color_width)).astype(int)
+    row = np.rint(np.asarray(v) * height / max(1, color_height)).astype(int)
+    return column, row
+
+
 def depth_at(depth_m: np.ndarray, box: Box, color_width: int, color_height: int) -> Optional[float]:
     """The depth under a box's centre: the median of the valid readings in
-    a small window, in the depth frame's own resolution. None when the
-    window holds no reading."""
+    a small window around the reading under it (`depth_pixel`). None when
+    the window holds no reading."""
     height, width = depth_m.shape
     u, v = box.centre
-    x = int(round(u * width / max(1, color_width)))
-    y = int(round(v * height / max(1, color_height)))
+    x, y = (int(index) for index in depth_pixel(depth_m, u, v, color_width, color_height))
     half = DEPTH_WINDOW_PX // 2
     x0, x1 = max(0, x - half), min(width, x + half + 1)
     y0, y1 = max(0, y - half), min(height, y + half + 1)

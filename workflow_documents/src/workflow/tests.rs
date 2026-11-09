@@ -127,6 +127,99 @@ fn a_step_has_one_kind_and_only_its_fields() {
     );
 }
 
+/// A field of a step written inside an object of the step is refused with
+/// the object that holds it and where the field goes.
+#[test]
+fn a_field_of_the_step_inside_an_object_of_the_step_is_refused_with_where_it_goes() {
+    let mut inside_call = clear_table();
+    let ready = &mut inside_call["initialization"]["clearer"];
+    ready.as_object_mut().unwrap().remove("timeout_s");
+    ready["call"]["timeout_s"] = json!(30);
+    assert_eq!(
+        reasons(&inside_call),
+        [
+            "clearer.ready: `call` has an unknown field `timeout_s`: `timeout_s` is a field of the step, beside `call`"
+        ]
+    );
+    let inside_for_each = with(
+        "/actions/clearer/tree/body/sequence/1/for_each/retry",
+        json!(1),
+    );
+    assert_eq!(
+        reasons(&inside_for_each),
+        [
+            "clearer.each: `for_each` has an unknown field `retry`: `retry` is a field of the step, beside `for_each`"
+        ]
+    );
+}
+
+/// A field of a `for_each` or a `repeat_until` step of its own kind, written
+/// inside the object of the step, is refused with where it goes too.
+#[test]
+fn a_field_of_a_loop_step_inside_its_object_is_refused_with_where_it_goes() {
+    let mut max_items_inside = clear_table();
+    let each = &mut max_items_inside["actions"]["clearer"]["tree"]["body"]["sequence"][1];
+    each.as_object_mut().unwrap().remove("max_items");
+    each["for_each"]["max_items"] = json!(20);
+    assert!(
+        reasons(&max_items_inside).contains(
+            &"clearer.each: `for_each` has an unknown field `max_items`: `max_items` is a field of the step, beside `for_each`"
+                .to_owned()
+        ),
+        "{:?}",
+        reasons(&max_items_inside)
+    );
+    let mut max_iterations_inside = clear_table();
+    let clear = &mut max_iterations_inside["actions"]["clearer"]["tree"];
+    clear["breaker"] = json!({ "max_failures": 2, "max_iterations": 3 });
+    assert_eq!(
+        reasons(&max_iterations_inside),
+        [
+            "clearer.clear: `breaker` has an unknown field `max_iterations`: `max_iterations` is a field of the step, beside `breaker`"
+        ]
+    );
+}
+
+/// An unknown field of an object of a step that is no field of the step is
+/// refused with the object that holds it alone.
+#[test]
+fn an_unknown_field_of_an_object_of_a_step_names_the_object() {
+    let in_call = with("/actions/clearer/tree/body/sequence/0/call/speed", json!(2));
+    assert_eq!(
+        reasons(&in_call),
+        ["clearer.scan: `call` has an unknown field `speed`"]
+    );
+    let in_reference = with(
+        "/actions/clearer/tree/body/sequence/1/body/call/args/item_id",
+        json!({ "$ref": "item", "default": "" }),
+    );
+    assert_eq!(
+        reasons(&in_reference),
+        [
+            "clearer.grab: `actions.clearer.tree.body.sequence[1].body.call.args.item_id` has an unknown field `default`"
+        ]
+    );
+}
+
+/// A step of a `safe_state` holds only `id` and `timeout_s` beside its
+/// `call`: a `retry` inside its `call` is no field of that step.
+#[test]
+fn a_safe_state_call_says_where_its_timeout_goes_and_takes_no_retry() {
+    let timeout_inside =
+        json!([{ "id": "home", "call": { "member": "postures.move_to_home", "timeout_s": 10 } }]);
+    assert_eq!(
+        reasons(&with("/actions/clearer/safe_state", timeout_inside)),
+        [
+            "clearer.home: a call of a `safe_state` has its own `timeout_s`, a field of the step, beside `call`"
+        ]
+    );
+    let retry_inside = json!([{ "id": "home", "timeout_s": 10, "call": { "member": "postures.move_to_home", "retry": 1 } }]);
+    assert_eq!(
+        reasons(&with("/actions/clearer/safe_state", retry_inside)),
+        ["clearer.home: `call` has an unknown field `retry`"]
+    );
+}
+
 #[test]
 fn each_call_has_a_bound_and_each_wait_its_own() {
     let mut workflow = clear_table();

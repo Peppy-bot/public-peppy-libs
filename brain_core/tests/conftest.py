@@ -88,21 +88,30 @@ class FakeDetector:
     """Returns the boxes the test hands it, and records the phrases and the
     deadlines of each search. Its scans name every label unless the test
     hands it a coverage; it can search unless the test hands it a reason it
-    cannot."""
+    cannot, which is a reason it still starts when the test says so."""
 
     name = "fake"
 
     def __init__(
-        self, boxes: Optional[list[Box]] = None, coverage: Coverage = Coverage(every_label=True), unavailable: str = ""
+        self,
+        boxes: Optional[list[Box]] = None,
+        coverage: Coverage = Coverage(every_label=True),
+        unavailable: str = "",
+        *,
+        starting: bool = False,
     ) -> None:
         self.boxes = boxes or []
         self.coverage = coverage
         self.unavailable = unavailable
+        self.is_starting = starting
         self.phrases: list[list[str]] = []
         self.deadlines: list[Deadline] = []
 
     def why_unavailable(self) -> str:
         return self.unavailable
+
+    def starting(self) -> str:
+        return self.unavailable if self.is_starting else ""
 
     async def detect(self, image: np.ndarray, phrases: Sequence[str], deadline: Deadline) -> list[Box]:
         self.phrases.append(list(phrases))
@@ -114,15 +123,17 @@ class FakeDetector:
 
 
 class FakeManipulator:
-    """Succeeds at once unless told to fail or to wait for a stop. `begun`
-    resolves when a sequence has reached it, so a test knows the sequence
-    is running without waiting on the clock."""
+    """Succeeds at once unless told to fail, to wait for a stop or to wait
+    for `release` to be set. `begun` resolves when a sequence has reached
+    it, so a test knows the sequence is running without waiting on the
+    clock."""
 
     name = "fake"
 
-    def __init__(self, *, fail: str = "", wait_for_stop: bool = False) -> None:
+    def __init__(self, *, fail: str = "", wait_for_stop: bool = False, release: Optional[asyncio.Event] = None) -> None:
         self.fail = fail
         self.wait_for_stop = wait_for_stop
+        self.release = release
         self.calls: list[tuple] = []
         self.stopped = 0
         self.senses = None
@@ -131,6 +142,9 @@ class FakeManipulator:
         self._began = asyncio.Event()
 
     def why_unavailable(self) -> str:
+        return ""
+
+    def starting(self) -> str:
         return ""
 
     async def start(self, senses) -> None:
@@ -147,6 +161,8 @@ class FakeManipulator:
         if self.wait_for_stop:
             await cancel.wait()
             cancel.check()
+        if self.release is not None:
+            await self.release.wait()
         if self.fail:
             return Outcome(False, self.fail)
         return Outcome(True, "", final_position)
@@ -271,6 +287,18 @@ def depth_frame(depth_m: float, width: int = 16, height: int = 12, unit: float =
         width=width,
         height=height,
         frame=np.full((height, width), value, dtype="<u2").tobytes(),
+    )
+
+
+def with_frames(brain: Brain, depth_m: float = 1.0) -> None:
+    """The camera's frames, `depth_m` deep everywhere, its intrinsics and
+    its pose, as the slots give them to a running brain: a 90 degree lens
+    at the origin, looking along +Z."""
+    brain.perceiver.frames.add_color(rgb_frame(16, 12))
+    brain.perceiver.frames.add_depth(depth_frame(depth_m, 16, 12))
+    brain.perceiver.frames.depth_unit = 0.001
+    brain.perceiver.set_camera(
+        brain.perceiver.camera.with_intrinsics(CAMERA_16X12).with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
     )
 
 

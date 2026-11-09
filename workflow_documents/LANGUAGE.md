@@ -6,6 +6,9 @@ description that perception resolves.
 
 ## Top-level fields
 
+`workflow_schema`, `manifest`, `task`, `success` and `actions` are required; the other
+fields are optional.
+
 - `workflow_schema`: `"workflow/v1"`, the first key.
 - `manifest`: `{ name, revision }`.
 - `task`: `{ objective }`, the goal in prose.
@@ -41,12 +44,13 @@ description that perception resolves.
 Every step has an `id`, unique within its role, and one kind key. Any step can have
 `timeout_s` (its bound, at least 1 ns and at most 86400 s), `retry` (new attempts after a
 retryable failure, with no wait between them) and `invariant` (an expression over topic
-observations, checked at each poll).
+observations, checked at each poll). These fields go in the step, beside its kind key, and
+never inside the object of the kind key.
 
-- `call`: `{ id, call: { member: "<alias>.<member>", instance?, args?, as?, done_when? } }`.
-  `as` names the result; `done_when`, false after a result, is a failed attempt, and may
-  read the result's own name. A skill that reports a failure inside a completed result fails
-  the step only through `done_when`.
+- `call`: `{ id, timeout_s?, call: { member: "<alias>.<member>", instance?, args?, as?,
+  done_when? } }`. `as` names the result; `done_when`, false after a result, is a failed
+  attempt, and may read the result's own name. A skill that reports a failure inside a
+  completed result fails the step only through `done_when`.
 - `sequence`: `{ id, sequence: [<steps>] }`, in order.
 - `parallel`: `{ id, parallel: [<steps>], policy: "all" | "any" }`.
 - `if`: `{ id, if: <expression>, then: <step>, else?: <step> }`.
@@ -60,12 +64,15 @@ observations, checked at each poll).
 - `wait_for`: `{ id, wait_for: ["<signal>", ...], as?, timeout_s }`; the result's `signal`
   field names the signal that came.
 
-Each call has its own `timeout_s` or one of an enclosing step; each loop has its bound; each
-wait has `timeout_s`.
+Each call step has its own `timeout_s`, or an enclosing step has one; each loop has its
+bound; each wait has `timeout_s`.
 
 ## Arguments
 
-An argument is a literal, an object or a list of arguments, or a reference:
+The `args` of a call give each field of the request of its member that the contract does
+not mark `$optional`, also a field that the member does not read in some cases, such as a
+position beside an item id. An argument is a literal, an object or a list of arguments, or
+a reference:
 
 - `{ $ref: "<name>.<path>" }`: a named result before it on every path, an observation, or
   a loop element. A name that each case of a `match` defines is defined after the `match`

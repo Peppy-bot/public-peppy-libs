@@ -16,7 +16,10 @@ unavailable and says so before any move.
 A frame's stamp is the camera's capture time, on the camera's clock, so
 the store compares stamps only with each other: `newer_than` waits for a
 frame captured after another one, which is how a step gets a picture of
-the arm where it stands now and not where it was.
+the arm where it stands now and not where it was. How long such a wait
+needs follows the camera: `period_s` is the time between its frames as
+they arrived, on the brain's clock, so a camera that a loaded host renders
+late gives a longer period than its rate says.
 
 `jpeg_of` gives a frame as JPEG bytes for a model: the frame's own bytes
 when the camera streams MJPEG, else the decoded picture encoded once.
@@ -27,7 +30,9 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-from typing import Any, Mapping, Optional, Sequence
+import time
+from collections import deque
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from ..ports import Refusal
 from ..waiting import unless_cancelled
@@ -36,6 +41,8 @@ from .frames import decode_color
 logger = logging.getLogger(__name__)
 
 JPEG_QUALITY = 95
+# How many of the newest frames of a camera its period is measured over.
+PERIOD_FRAMES = 5
 VACANT = "no wrist camera source: this brain has no wrist_cameras slot"
 NO_SOURCE = "no wrist camera for {arm}: the wrist_cameras parameter names none"
 
@@ -63,9 +70,15 @@ def parse_wrist_cameras(text: str, arms: Sequence[str]) -> dict[str, str]:
 
 
 class WristFrames:
-    def __init__(self, cameras_by_arm: Mapping[str, str]) -> None:
+    def __init__(self, cameras_by_arm: Mapping[str, str], clock: Callable[[], float] = time.monotonic) -> None:
         self.cameras_by_arm = dict(cameras_by_arm)
+        self._clock = clock
         self._latest: dict[str, ColorMessage] = {}
+        # When each of the newest PERIOD_FRAMES frames of a camera arrived,
+        # on `clock`.
+        self._arrivals: dict[str, deque[float]] = {
+            camera: deque(maxlen=PERIOD_FRAMES) for camera in self.cameras_by_arm.values()
+        }
         self._vacant = False
         # Set and replaced at each frame of a camera, so a waiter wakes
         # once per frame and looks again.
@@ -96,9 +109,20 @@ class WristFrames:
         frame = self.latest(arm)
         return float(frame.header.timestamp) if frame is not None else float("-inf")
 
+    def period_s(self, arm: str) -> Optional[float]:
+        """The longest time between two of the newest PERIOD_FRAMES frames
+        of `arm`'s camera, as they arrived, on the brain's clock; none
+        before two frames arrived, and for an arm with no camera."""
+        camera = self.cameras_by_arm.get(arm)
+        arrivals = list(self._arrivals.get(camera, ())) if camera is not None else []
+        if len(arrivals) < 2:
+            return None
+        return max(later - earlier for earlier, later in zip(arrivals, arrivals[1:]))
+
     def add(self, camera: str, message: ColorMessage) -> None:
         if camera not in self._arrived:
             return
+        self._arrivals[camera].append(self._clock())
         self._latest[camera] = message
         arrived, self._arrived[camera] = self._arrived[camera], asyncio.Event()
         arrived.set()

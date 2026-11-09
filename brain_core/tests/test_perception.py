@@ -9,6 +9,7 @@ import threading
 from dataclasses import replace
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from conftest import CAMERA_16X12, NEVER, FakeDetector, FakeToken, camera_poses, depth_frame, rgb_frame
@@ -25,8 +26,18 @@ from brain_core.perception.camera import (
 )
 from brain_core.perception import frames as frames_module
 from brain_core.perception import geometry
-from brain_core.perception.frames import FRAME_BUFFER, FrameStore, decode_color, decode_depth, depth_at
-from brain_core.perception.perceiver import DEFAULT_TIMEOUT_S, Look, Perceiver, in_daemon_thread, merge_duplicates
+from brain_core.perception.frames import FRAME_BUFFER, FrameStore, decode_color, decode_depth, depth_at, depth_pixel
+from brain_core.perception.perceiver import (
+    DEFAULT_TIMEOUT_S,
+    TOP_QUANTILE,
+    TOP_SAMPLES,
+    TOP_WINDOW,
+    Look,
+    Perceiver,
+    in_daemon_thread,
+    merge_duplicates,
+    top_height,
+)
 from brain_core.ports import Box, CancelToken, Coverage, Detection, ExpectedFailure, FailureKind, Refusal, SearchTimeout
 
 # At the robot frame's origin, looking along its +Z: the identity pose.
@@ -268,6 +279,23 @@ def test_the_frame_store_says_what_is_missing():
     assert raised.value.kind is FailureKind.RESOURCE_UNAVAILABLE
 
 
+def test_the_frame_store_starts_until_a_pair_comes_and_not_for_a_vacant_slot_or_frames_not_aligned():
+    # Each frame, the depth unit and a pair of one capture come on their own.
+    assert FrameStore().starting() == "no camera frame received"
+    assert store_with([rgb_frame()]).starting() == "no depth frame received"
+    assert store_with([rgb_frame()], [depth_frame(1.0)], depth_unit=None).starting() == "the camera has not answered depth_stream_info yet"
+    disjoint = store_with([rgb_frame(frame_id=1)], [depth_frame(1.0, frame_id=3)])
+    assert disjoint.starting() == disjoint.why_unavailable() != ""
+    assert store_with([rgb_frame()], [depth_frame(1.0)]).starting() == ""
+    # The next frames of a camera whose streams are not aligned are not
+    # aligned either, and a vacant slot sends none.
+    unaligned = store_with([rgb_frame(align_mode="none")], [depth_frame(1.0, align_mode="none")])
+    assert unaligned.why_unavailable() != "" and unaligned.starting() == ""
+    vacant = FrameStore()
+    vacant.vacant = True
+    assert vacant.why_unavailable() == "no camera frame received" and vacant.starting() == ""
+
+
 def test_frames_that_are_not_aligned_to_each_other_are_refused():
     unaligned = store_with([rgb_frame(align_mode="none")], [depth_frame(1.0, align_mode="none")])
     assert unaligned.why_unavailable() == "the camera's depth is not aligned to its colour (align_mode 'none'); the brain reads depth at colour pixels"
@@ -335,6 +363,101 @@ async def test_a_vacant_camera_slot_leaves_the_store_empty():
     store = FrameStore()
     await asyncio.wait_for(store.run(None, FakeToken(), VacantSlot, VacantSlot, VacantSlot), 1.0)
     assert store.why_unavailable() == "no camera frame received"
+
+
+# 1 m over the table top, looking straight down: the optical +Z is the
+# robot's -Z, so a reading of depth d stands 1 - d above the top.
+LOOKING_DOWN = CameraModel().with_pose((0.0, 0.0, 1.0), (1.0, 0.0, 0.0, 0.0)).with_intrinsics(CAMERA_16X12)
+
+
+def open_item_depths(width: int = 64, height: int = 48, *, rim_m: float = 0.08, bottom_m: float = 0.005):
+    """A depth frame of LOOKING_DOWN over a table top with an open item, a
+    mug, at the middle of the picture: the table top 1 m deep, the mug's rim
+    and walls `rim_m` over it in a ring 4 to 14 px from the middle, and its
+    inside bottom `bottom_m` over it within 4 px of the middle."""
+    rows, columns = np.mgrid[0:height, 0:width]
+    from_middle = np.hypot(columns - width / 2, rows - height / 2)
+    depths = np.full((height, width), 1.0)
+    depths[from_middle <= 14] = 1.0 - rim_m
+    depths[from_middle <= 4] = 1.0 - bottom_m
+    return depths
+
+
+def test_the_top_of_an_open_item_is_its_rim_and_its_seen_point_its_inside_bottom():
+    depths = open_item_depths()
+    mug = Box("mug", 0.9, 16, 12, 48, 36)
+    assert top_height(depths, mug, 64, 48, LOOKING_DOWN) == pytest.approx(0.08)
+    assert 1.0 - depth_at(depths, mug, 64, 48) == pytest.approx(0.005)
+    # A box whose middle holds no reading has no top.
+    assert top_height(np.zeros((48, 64)), mug, 64, 48, LOOKING_DOWN) is None
+    # The colour picture can be larger than the depth frame.
+    assert top_height(depths, Box("mug", 0.9, 32, 24, 96, 72), 128, 96, LOOKING_DOWN) == pytest.approx(0.08)
+
+
+# A camera with a lens, turned and placed off the origin, over a picture
+# larger than the one its intrinsics were given for.
+LENS_CAMERA = (
+    CameraModel()
+    .with_pose((0.1, -0.2, 0.9), (0.9, 0.1, -0.05, 0.4))
+    .with_intrinsics(Intrinsics(64, 48, 40.0, 41.0, 31.5, 23.5, PLUMB_BOB, LENS))
+)
+
+
+def test_a_grid_of_pixels_deprojects_as_each_pixel_does():
+    us = np.array([0.0, 17.25, 63.0, 100.5])
+    vs = np.array([0.0, 30.5, 47.0, 70.25])
+    depths = np.array([0.3, 0.75, 1.2, 2.0])
+    points = LENS_CAMERA.deproject_points(us, vs, depths, 128, 96)
+    assert points.shape == (4, 3)
+    for point, u, v, depth in zip(points, us, vs, depths):
+        assert close(point, LENS_CAMERA.deproject(float(u), float(v), float(depth), 128, 96), 1e-12)
+
+
+def test_a_colour_pixel_falls_on_the_depth_reading_under_it():
+    depths = np.zeros((48, 64))
+    # The colour picture is twice the depth frame: pixel (21, 9) is reading
+    # (10.5, 4.5), which rounds to the nearest even reading, (10, 4).
+    assert tuple(int(i) for i in depth_pixel(depths, 21.0, 9.0, 128, 96)) == (10, 4)
+    columns, rows = depth_pixel(depths, np.array([21.0, 23.0, 127.0]), np.array([9.0, 11.0, 95.0]), 128, 96)
+    assert columns.tolist() == [10, 12, 64] and rows.tolist() == [4, 6, 48]
+
+
+def test_the_top_of_an_item_is_the_quantile_of_the_heights_each_reading_of_the_middle_gives():
+    # Depth readings that differ from pixel to pixel, through a lens: the
+    # top is the quantile of the heights that each reading, deprojected on
+    # its own, gives, read in the depth frame under each colour pixel.
+    depths = 0.6 + 0.4 * np.random.default_rng(7).random((48, 64))
+    depths[20:24, 30:34] = 0.0
+    box = Box("mug", 0.9, 20.0, 14.0, 100.0, 80.0)
+    u, v = box.centre
+    half_width, half_height = (box.x1 - box.x0) * TOP_WINDOW / 2.0, (box.y1 - box.y0) * TOP_WINDOW / 2.0
+    heights = []
+    for row in np.linspace(v - half_height, v + half_height, TOP_SAMPLES):
+        for column in np.linspace(u - half_width, u + half_width, TOP_SAMPLES):
+            x, y = (int(round(value)) for value in (column * 64 / 128, row * 48 / 96))
+            if 0 <= x < 64 and 0 <= y < 48 and depths[y, x] > 0.0:
+                heights.append(LENS_CAMERA.deproject(float(column), float(row), float(depths[y, x]), 128, 96)[2])
+    assert top_height(depths, box, 128, 96, LENS_CAMERA) == pytest.approx(float(np.quantile(heights, TOP_QUANTILE)), abs=1e-12)
+    # A box that stands half out of the picture reads the part inside.
+    edge = Box("mug", 0.9, 100.0, 60.0, 160.0, 120.0)
+    assert top_height(depths, edge, 128, 96, LENS_CAMERA) is not None
+
+
+async def test_a_scan_gives_each_item_its_top():
+    depths = open_item_depths()
+    message = SimpleNamespace(
+        header=SimpleNamespace(timestamp=1.0, frame_id=3, align_mode="depth_to_color"),
+        encoding="z16",
+        width=64,
+        height=48,
+        frame=np.round(depths / 0.001).astype("<u2").tobytes(),
+    )
+    frames = store_with([rgb_frame(64, 48, frame_id=3)], [message])
+    perceiver = Perceiver(frames, LOOKING_DOWN)
+    look = await perceiver.scan(FakeDetector([Box("mug", 0.9, 16, 12, 48, 36)]), ["mug"], CancelToken(), timeout_s=0.0)
+    [mug] = look.detections
+    assert mug.position[2] == pytest.approx(0.005, abs=1e-3)
+    assert mug.top_z == pytest.approx(0.08, abs=1e-3)
 
 
 def test_duplicate_boxes_of_one_label_keep_the_most_confident():
@@ -455,12 +578,12 @@ async def test_a_scan_waits_for_the_cameras_intrinsics_and_names_the_slot():
     assert perceiver.why_unavailable() != ""
     with pytest.raises(Refusal, match="intrinsics have not been received"):
         await perceiver.scan(detector, [], CancelToken(), 1.0)
-    perceiver.intrinsics_reason = VACANT
+    perceiver.intrinsics.update(VACANT, starting=False)
     with pytest.raises(Refusal, match="geometry slot is vacant"):
         await perceiver.scan(detector, [], CancelToken(), 1.0)
     answer = SimpleNamespace(width=16, height=12, fx=6.0, fy=6.0, cx=8.0, cy=6.0, distortion_model="none", distortion=[])
     perceiver.set_camera(perceiver.camera.with_intrinsics(intrinsics_from(answer)))
-    assert perceiver.why_unavailable() == "" and perceiver.intrinsics_reason == ""
+    assert perceiver.why_unavailable() == "" and perceiver.intrinsics.reason == ""
     found = await perceiver.scan(detector, [], CancelToken(), 1.0)
     assert [d.label for d in found.detections] == ["mug"]
     with pytest.raises(ValueError, match="unknown distortion model"):
@@ -516,7 +639,7 @@ async def test_the_camera_is_asked_again_until_it_knows_its_geometry(monkeypatch
     reasons: list[str] = []
 
     monkeypatch.setattr(geometry, "INTRINSICS_RETRY_S", 0.0)
-    get_color_intrinsics = scripted_service("get_color_intrinsics", colour, lambda: reasons.append(perceiver.intrinsics_reason))
+    get_color_intrinsics = scripted_service("get_color_intrinsics", colour, lambda: reasons.append(perceiver.intrinsics.reason))
     get_depth_intrinsics = scripted_service("get_depth_intrinsics", depth)
     await asyncio.wait_for(geometry.learn_intrinsics(None, FakeToken(), perceiver, get_color_intrinsics, get_depth_intrinsics), 5.0)
     assert reasons == [
@@ -528,7 +651,7 @@ async def test_the_camera_is_asked_again_until_it_knows_its_geometry(monkeypatch
         "the camera's intrinsics are unusable: intrinsics need positive finite focal lengths, got fx 0.0 fy 6.0",
     ]
     assert colour == [] and depth == []
-    assert perceiver.camera.ready and perceiver.intrinsics_reason == ""
+    assert perceiver.camera.ready and perceiver.intrinsics.reason == ""
 
 
 async def test_a_camera_that_never_knows_its_geometry_is_asked_until_the_node_stops(monkeypatch):
@@ -550,13 +673,78 @@ async def test_a_camera_that_never_knows_its_geometry_is_asked_until_the_node_st
     await asyncio.wait_for(geometry.learn_intrinsics(None, token, perceiver, get_color_intrinsics, get_depth_intrinsics), 5.0)
     assert asked == 3
     assert not perceiver.camera.ready
-    assert perceiver.intrinsics_reason == "the camera does not know its colour intrinsics: this camera has no calibration"
+    assert perceiver.intrinsics.reason == "the camera does not know its colour intrinsics: this camera has no calibration"
 
 
 async def test_a_vacant_geometry_slot_is_the_reason_at_once():
     perceiver = Perceiver(FrameStore(), AT_ORIGIN)
     await asyncio.wait_for(geometry.learn_intrinsics(None, FakeToken(), perceiver, VacantSlot, VacantSlot), 1.0)
-    assert perceiver.intrinsics_reason == geometry.VACANT
+    assert perceiver.intrinsics.reason == geometry.VACANT
+    assert not perceiver.intrinsics.starting
+
+
+async def test_no_answer_and_precondition_failed_are_reasons_that_start_and_others_hold(monkeypatch):
+    # One reason per round: no answer and the error reply of a camera that
+    # has not heard from its simulation end on their own; a device without
+    # a calibration and a depth model the brain does not read hold.
+    perceiver = Perceiver(FrameStore(), AT_ORIGIN)
+    colour = [
+        TimeoutError("no answer"),
+        ("precondition_failed", "no camera geometry received from the simulation yet"),
+        ("rejected", "this camera has no calibration"),
+        colour_answer(),
+        colour_answer(),
+    ]
+    depth = [depth_answer(depth_model="range"), depth_answer()]
+    seen: list[tuple[str, bool]] = []
+
+    def record() -> None:
+        seen.append((perceiver.intrinsics.reason, perceiver.intrinsics.starting))
+
+    monkeypatch.setattr(geometry, "INTRINSICS_RETRY_S", 0.0)
+    get_color_intrinsics = scripted_service("get_color_intrinsics", colour, record)
+    get_depth_intrinsics = scripted_service("get_depth_intrinsics", depth)
+    await asyncio.wait_for(geometry.learn_intrinsics(None, FakeToken(), perceiver, get_color_intrinsics, get_depth_intrinsics), 5.0)
+    assert [starting for _, starting in seen[1:]] == [True, True, False, False]
+    assert seen[3][0] == "the camera does not know its colour intrinsics: this camera has no calibration"
+    assert seen[4][0].startswith("the camera's depth samples are 'range' distances")
+    assert perceiver.intrinsics.reason == ""
+
+
+async def test_a_robot_without_the_camera_is_a_reason_that_holds(monkeypatch):
+    perceiver = Perceiver(FrameStore(), CameraModel().with_intrinsics(CAMERA_16X12))
+    token = FakeToken()
+    asked = 0
+
+    def count() -> None:
+        nonlocal asked
+        asked += 1
+        if asked == 2:
+            token.cancel()
+
+    monkeypatch.setattr(geometry, "INTRINSICS_RETRY_S", 0.0)
+    answers = [("precondition_failed", "the robot has not measured its joints yet"), poses_answer(names=("wrist_left",))]
+    get_camera_poses = scripted_service("get_camera_poses", answers, count)
+    await asyncio.wait_for(geometry.learn_camera_pose(None, token, perceiver, "chest", get_camera_poses), 5.0)
+    assert perceiver.pose.reason == "the robot carries no camera named 'chest' (it carries: wrist_left)"
+    assert not perceiver.pose.starting
+
+
+def test_the_perceiver_starts_while_every_reason_starts_and_not_once_one_holds():
+    frames = store_with([rgb_frame(16, 12)], [depth_frame(1.0, 16, 12)])
+    perceiver = Perceiver(frames, CameraModel())
+    assert perceiver.starting() == "no perception source: the camera's intrinsics have not been received yet"
+    # The pose holds: the perceiver does not become able to serve, whatever
+    # the intrinsics say.
+    perceiver.pose.update(geometry.MOUNTS_VACANT, starting=False)
+    assert perceiver.starting() == ""
+    assert perceiver.why_unavailable() == "no perception source: the camera's intrinsics have not been received yet"
+    # Frames that are not aligned hold as well.
+    unaligned = Perceiver(store_with([rgb_frame(align_mode="none")], [depth_frame(1.0, align_mode="none")]), CameraModel())
+    assert unaligned.why_unavailable().startswith("no perception source: the camera's depth is not aligned")
+    assert unaligned.starting() == ""
+    ready = Perceiver(frames, CameraModel().with_intrinsics(CAMERA_16X12).with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)))
+    assert ready.starting() == "" and ready.why_unavailable() == ""
 
 
 def poses_answer(names=("wrist_left", "chest"), chest_position=(0.1, 0.2, 0.3)):
@@ -585,7 +773,7 @@ async def test_the_robot_is_asked_again_until_it_places_the_camera(monkeypatch):
     reasons: list[str] = []
 
     monkeypatch.setattr(geometry, "INTRINSICS_RETRY_S", 0.0)
-    get_camera_poses = scripted_service("get_camera_poses", answers, lambda: reasons.append(perceiver.pose_reason))
+    get_camera_poses = scripted_service("get_camera_poses", answers, lambda: reasons.append(perceiver.pose.reason))
     await asyncio.wait_for(geometry.learn_camera_pose(None, FakeToken(), perceiver, "chest", get_camera_poses), 5.0)
     assert reasons == [
         "the camera's pose has not been received from the robot yet",
@@ -594,7 +782,7 @@ async def test_the_robot_is_asked_again_until_it_places_the_camera(monkeypatch):
         "the robot carries no camera named 'chest' (it carries: wrist_left, wrist_right)",
     ]
     assert answers == []
-    assert perceiver.camera.ready and perceiver.pose_reason == ""
+    assert perceiver.camera.ready and perceiver.pose.reason == ""
     assert perceiver.camera.pose.position == (0.1, 0.2, 0.3)
     assert perceiver.why_unavailable() == ""
 
@@ -602,5 +790,5 @@ async def test_the_robot_is_asked_again_until_it_places_the_camera(monkeypatch):
 async def test_a_vacant_camera_mounts_slot_is_the_reason_at_once():
     perceiver = Perceiver(FrameStore(), CameraModel())
     await asyncio.wait_for(geometry.learn_camera_pose(None, FakeToken(), perceiver, "chest", VacantSlot), 1.0)
-    assert perceiver.pose_reason == geometry.MOUNTS_VACANT
+    assert perceiver.pose.reason == geometry.MOUNTS_VACANT
     assert not perceiver.camera.placed

@@ -96,8 +96,8 @@ def test_a_grasp_needs_an_orientation_to_try():
         Grasp((0.5, 0.0, 0.7), ())
 
 
-def item(position, orientation=None, *, grasp_point=False) -> Item:
-    return Item("cup_1-t0", "cup", position, orientation, 0.9, 1, position_is_grasp_point=grasp_point)
+def item(position, orientation=None, *, grasp_point=False, top_z=None) -> Item:
+    return Item("cup_1-t0", "cup", position, orientation, 0.9, 1, position_is_grasp_point=grasp_point, top_z=top_z)
 
 
 def test_a_seen_item_is_grasped_from_above_under_its_seen_point():
@@ -105,6 +105,39 @@ def test_a_seen_item_is_grasped_from_above_under_its_seen_point():
     assert grasp.point == (0.5, 0.1, 0.72 - 0.03)
     # The item's own orientation is not a grasp: every roll from above.
     assert grasp.orientations == candidates(GraspDirection.DOWN)
+
+
+def test_an_item_seen_into_is_grasped_under_its_top_and_a_closed_one_under_its_seen_point():
+    proposer = CentreProposer(grasp_depth_m=0.025, open_item_depth_m=0.03)
+    # A mug seen from above: the camera sees its inside bottom, 0.005 m over
+    # the table top, under the rim at 0.08 m. The jaws close on its walls.
+    mug = proposer.propose(item((0.36, -0.05, 0.405), top_z=0.48))
+    assert mug.point == pytest.approx((0.36, -0.05, 0.48 - 0.025))
+    assert mug.orientations == candidates(GraspDirection.DOWN)
+    # A closed item: its top stands less than 0.03 m over the seen point on it.
+    cube = proposer.propose(item((0.5, 0.1, 0.72), top_z=0.74))
+    assert cube.point == pytest.approx((0.5, 0.1, 0.72 - 0.025))
+    # No measured top: the seen point.
+    assert proposer.propose(item((0.5, 0.1, 0.72))).point == pytest.approx((0.5, 0.1, 0.695))
+    # A grasp point is grasped where it is, whatever top a look gave.
+    assert proposer.propose(item((0.5, 0.1, 0.7), grasp_point=True, top_z=0.9)).point == (0.5, 0.1, 0.7)
+
+
+def test_a_top_higher_than_an_open_item_is_deep_is_not_the_items():
+    proposer = CentreProposer(grasp_depth_m=0.025, open_item_depth_m=0.03, open_item_max_depth_m=0.12)
+    # A lemon whose loose box takes in a box 0.15 m taller behind it: the
+    # grasp stays under the seen point on the lemon.
+    lemon = proposer.propose(item((0.4, 0.0, 0.43), top_z=0.58))
+    assert lemon.point == pytest.approx((0.4, 0.0, 0.43 - 0.025))
+    # The deepest open item the rule takes: its top 0.12 m over the seen point.
+    deep = proposer.propose(item((0.4, 0.0, 0.405), top_z=0.525))
+    assert deep.point == pytest.approx((0.4, 0.0, 0.525 - 0.025))
+
+
+@pytest.mark.parametrize("shallow, deep", [(0.0, 0.12), (0.05, 0.04), (-0.01, 0.12)])
+def test_the_depths_of_an_open_item_are_above_zero_and_in_order(shallow, deep):
+    with pytest.raises(ValueError, match="open item"):
+        CentreProposer(open_item_depth_m=shallow, open_item_max_depth_m=deep)
 
 
 def test_a_grasp_point_is_grasped_unlowered_in_its_orientation_alone_or_from_above():

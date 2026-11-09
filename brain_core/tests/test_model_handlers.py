@@ -1,12 +1,13 @@
-"""The brain_model members against the core: get_model, list_models and
-switch_model from the decision of a goal to its end, and the line a switch
-leaves in the log."""
+"""The brain_model members against the core: get_model, list_models,
+forget, and switch_model from the decision of a goal to its end, and the
+lines a switch and a forget leave in the log."""
 
 import fake_peppygen
 import pytest
-from conftest import FakeCtx, FakeDetector, FakeManipulator, FakeSource, failed_with, make_brain, records_of
+from conftest import CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeSource, failed_with, make_brain, records_of, with_frames
 
-from brain_core.handlers import get_model, list_models, switch_model
+from brain_core.handlers import forget, get_model, get_state, list_models, switch_model
+from brain_core.perception.camera import CameraModel
 from brain_core.ports import FailureKind, Refusal, Role
 
 
@@ -28,6 +29,48 @@ async def test_get_model_names_the_active_model_of_each_role_in_order():
     brain, _ = await brain_offering()
     response = get_model.handle(brain, None)
     assert (response.roles, response.models) == (["perception", "manipulation"], ["fast", "fake"])
+
+
+async def test_get_model_says_why_perception_still_starts_until_its_frames_and_camera_come():
+    brain, _ = await brain_offering()
+    assert get_model.handle(brain, None).starting == ["no perception source: no camera frame received", ""]
+    with_frames(brain)
+    assert get_model.handle(brain, None).starting == ["", ""]
+
+
+async def test_get_model_says_a_model_that_loads_is_starting_and_one_that_failed_is_not():
+    loading = FakeDetector(unavailable="perception_model 'fake' is still loading", starting=True)
+    brain = await make_brain(detector=loading, manipulator=FakeManipulator())
+    with_frames(brain)
+    assert get_model.handle(brain, None).starting == ["no perception source: perception_model 'fake' is still loading", ""]
+    failed = FakeDetector(unavailable="perception_model 'fake' could not load: no weights")
+    brain = await make_brain(detector=failed, manipulator=FakeManipulator())
+    assert get_model.handle(brain, None).starting == ["", ""], "a failed load does not become ready"
+
+
+async def test_get_model_does_not_wait_for_a_vacant_slot_or_a_none_model():
+    brain = await make_brain(detector=FakeDetector(), manipulator=FakeManipulator())
+    brain.perceiver.frames.vacant = True
+    assert get_model.handle(brain, None).starting == ["", ""]
+    brain = await make_brain()
+    assert get_model.handle(brain, None).starting == ["", ""], "the none models never serve"
+
+
+async def test_get_model_does_not_wait_for_a_model_that_loads_behind_a_vacant_slot():
+    loading = FakeDetector(unavailable="perception_model 'fake' is still loading", starting=True)
+    brain = await make_brain(detector=loading, manipulator=FakeManipulator())
+    brain.perceiver.frames.vacant = True
+    assert get_model.handle(brain, None).starting == ["", ""], "perception never serves with no camera"
+
+
+async def test_get_model_does_not_wait_for_a_camera_the_robot_does_not_carry():
+    loading = FakeDetector(unavailable="perception_model 'fake' is still loading", starting=True)
+    brain = await make_brain(detector=loading, manipulator=FakeManipulator())
+    with_frames(brain)
+    # The camera has answered its intrinsics; the robot does not place it.
+    brain.perceiver.set_camera(CameraModel().with_intrinsics(CAMERA_16X12))
+    brain.perceiver.pose.update("the robot carries no camera named 'chest' (it carries: wrist_left)", starting=False)
+    assert get_model.handle(brain, None).starting == ["", ""]
 
 
 async def test_list_models_groups_every_accepted_model_by_role_in_get_models_order():
@@ -101,3 +144,21 @@ async def test_a_switch_is_refused_at_once_while_its_role_is_busy_and_once_the_n
         switch_model.decide(brain, switch_goal("perception", "careful").request().data)
     assert raised.value.kind is FailureKind.PRECONDITION_FAILED
     assert source.prepared == []
+
+
+async def test_forget_answers_what_the_brain_forgot_and_leaves_no_gripper_holding(caplog):
+    brain = await make_brain(detector=FakeDetector(), manipulator=FakeManipulator())
+    mug = brain.state.mint_from_pose((0.4, -0.2, 0.45), None, now_ns=1)
+    brain.state.set_held(brain.state.grippers["right_gripper"], mug.item_id)
+    assert get_state.handle(brain, None).holding == [False, True]
+    with records_of(caplog, "brain_core.handlers.forget") as log:
+        response = forget.handle(brain, None)
+        again = forget.handle(brain, None)
+    assert response.item_ids == [mug.item_id]
+    assert again.item_ids == []
+    state = get_state.handle(brain, None)
+    assert (state.holding, state.held_item_ids) == ([False, False], ["", ""])
+    assert [record.getMessage() for record in log.records] == [
+        f"forget: the brain forgot {mug.item_id}",
+        "forget: the brain forgot no item",
+    ]

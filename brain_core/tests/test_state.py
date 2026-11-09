@@ -50,6 +50,24 @@ def test_a_width_follows_the_look_that_last_saw_the_item_and_stays_when_one_does
     assert state.mint_from_pose((0.2, 0.2, 0.7), None, now_ns=4).width_m is None
 
 
+def test_a_top_follows_the_look_that_last_saw_the_item_and_a_placed_item_has_none():
+    state = State(ONE_ARM, "t0")
+    [cup] = state.remember([Detection("cup", (0.5, 0.1, 0.7), 0.9, top_z=0.78)], now_ns=1, coverage=EVERY)
+    assert cup.top_z == 0.78
+    state.remember([Detection("cup", (0.51, 0.1, 0.7), 0.8, top_z=0.77)], now_ns=2, coverage=NOTHING)
+    assert cup.top_z == 0.77
+    # A look that keeps the item without seeing it leaves its top.
+    state.remember([Detection("bowl", (0.9, 0.0, 0.7), 0.9, top_z=0.75)], now_ns=3, coverage=NOTHING)
+    assert cup.top_z == 0.77
+    # An item place_item put down stands where no look measured its top.
+    left = state.grippers["left_gripper"]
+    state.set_held(left, cup.item_id)
+    state.clear_held_placed(left, cup.item_id, (0.6, -0.2, 0.75), None)
+    assert cup.top_z is None
+    # An item addressed by pose has no top.
+    assert state.mint_from_pose((0.2, 0.2, 0.7), None, now_ns=4).top_z is None
+
+
 def test_each_gripper_carries_the_arm_its_limb_names_in_the_limbs_order():
     state = make_state()
     assert state.gripper_names() == ["left_gripper", "right_gripper"]
@@ -109,7 +127,7 @@ def test_the_holder_rules_for_drop_and_place():
     with pytest.raises(Refusal, match="more than one gripper"):
         state.holder("")
     assert state.holder("right_gripper").name == "right_gripper"
-    assert state.forget_dropped(state.grippers["right_gripper"]) == "cup_2"
+    state.forget_dropped(state.grippers["right_gripper"], "cup_2")
     assert state.snapshot() == (["left_gripper", "right_gripper"], [True, False], ["cup_1", ""])
 
 
@@ -194,6 +212,72 @@ def test_items_sharing_a_place_keep_their_own_ids():
     assert [item.label for item in second] == ["apple", "bowl"]
 
 
+def test_an_identify_search_takes_no_near_item_whose_label_shares_no_word():
+    state = make_state()
+    bowl = state.remember([Detection("bowl", (0.231, -0.005, 0.383), 0.0)], now_ns=1, coverage=NOTHING)[0]
+    # The mug stands in the bowl, 1 cm from the bowl's place.
+    mug = state.remember([Detection("the mug", (0.240, -0.004, 0.390), 0.0)], now_ns=2, coverage=NOTHING)[0]
+    assert (mug.item_id, mug.label) == ("the_mug_1-t0", "the mug")
+    assert bowl.item_id == "bowl_1-t0" and bowl.position == (0.231, -0.005, 0.383)
+    again = state.remember([Detection("mug", (0.239, -0.004, 0.390), 0.0)], now_ns=3, coverage=NOTHING)[0]
+    assert again.item_id == "the_mug_1-t0"
+    assert set(state.items) == {"bowl_1-t0", "the_mug_1-t0"}
+
+
+def test_a_scan_takes_no_near_item_by_its_place_when_it_does_not_cover_its_label():
+    state = make_state()
+    state.remember([Detection("bowl", (0.50, 0.00, 0.70), 0.9)], now_ns=1, coverage=NOTHING)
+    # The scan sees only the mug in the bowl and cannot name a bowl: it
+    # does not rename the bowl.
+    [mug] = state.remember([Detection("mug", (0.51, 0.00, 0.71), 0.9)], now_ns=2, coverage=Coverage(frozenset({"mug"})))
+    assert (mug.item_id, mug.label) == ("mug_1-t0", "mug")
+    assert state.items["bowl_1-t0"].label == "bowl"
+
+
+def test_a_covering_scan_that_names_an_item_in_other_words_keeps_its_id_and_renames_it():
+    state = make_state()
+    [mug] = state.remember([Detection("ceramic mug", (0.50, 0.00, 0.70), 0.9)], now_ns=1, coverage=EVERY)
+    # The open-vocabulary scan names the same mug in words that share none
+    # with its label: it would drop the mug unseen, so it is the mug.
+    [cup] = state.remember([Detection("coffee cup", (0.51, 0.00, 0.70), 0.9)], now_ns=2, coverage=EVERY)
+    assert cup is mug
+    assert (cup.item_id, cup.label, cup.position) == ("ceramic_mug_1-t0", "coffee cup", (0.51, 0.00, 0.70))
+    assert set(state.items) == {"ceramic_mug_1-t0"}
+
+
+def test_a_covering_scan_keeps_the_ids_of_a_mug_and_the_bowl_it_stands_in_whatever_their_order():
+    state = make_state()
+    state.remember([Detection("bowl", (0.50, 0.00, 0.70), 0.9)], now_ns=1, coverage=EVERY)
+    # The mug in the bowl comes first and lies nearer the bowl's place than
+    # the bowl does: the bowl's own detection takes the bowl's id.
+    mug, bowl = state.remember(
+        [Detection("mug", (0.50, 0.00, 0.71), 0.9), Detection("bowl", (0.52, 0.00, 0.70), 0.9)], now_ns=2, coverage=EVERY
+    )
+    assert (mug.item_id, bowl.item_id) == ("mug_1-t0", "bowl_1-t0")
+    assert bowl.position == (0.52, 0.00, 0.70)
+    assert set(state.items) == {"mug_1-t0", "bowl_1-t0"}
+
+
+def test_a_covering_scan_takes_by_its_place_only_an_item_no_word_of_the_look_took():
+    state = make_state()
+    state.remember(
+        [Detection("ceramic mug", (0.50, 0.00, 0.70), 0.9), Detection("bowl", (0.51, 0.00, 0.70), 0.9)], now_ns=1, coverage=EVERY
+    )
+    # The scan names the mug in other words, and sees the bowl: the coffee
+    # cup takes the mug's id, never the bowl's.
+    cup, bowl = state.remember(
+        [Detection("coffee cup", (0.505, 0.00, 0.70), 0.9), Detection("bowl", (0.51, 0.00, 0.70), 0.9)], now_ns=2, coverage=EVERY
+    )
+    assert (cup.item_id, bowl.item_id) == ("ceramic_mug_1-t0", "bowl_1-t0")
+
+
+def test_a_label_of_stopwords_alone_takes_no_known_item():
+    state = make_state()
+    state.remember([Detection("cup", (0.5, 0.1, 0.7), 0.9)], now_ns=1, coverage=EVERY)
+    [it] = state.remember([Detection("it", (0.5, 0.1, 0.7), 0.9)], now_ns=2, coverage=NOTHING)
+    assert it.item_id == "it_1-t0"
+
+
 def test_a_scan_drops_only_the_unseen_items_it_could_name():
     state = make_state()
     vocabulary_scan = Coverage(frozenset({"cup", "bowl"}))
@@ -222,12 +306,12 @@ def test_a_placed_item_keeps_its_id_where_it_was_put_and_a_dropped_one_is_forgot
     state.remember([Detection("cup", (0.5, 0.1, 0.7), 0.9), Detection("bowl", (0.4, -0.1, 0.7), 0.9)], now_ns=1, coverage=EVERY)
     left, right = state.grippers["left_gripper"], state.grippers["right_gripper"]
     state.set_held(left, "cup_1-t0")
-    assert state.clear_held_placed(left, (0.6, -0.2, 0.75), (0.0, 0.0, 0.0, 1.0)) == "cup_1-t0"
+    state.clear_held_placed(left, "cup_1-t0", (0.6, -0.2, 0.75), (0.0, 0.0, 0.0, 1.0))
     assert not left.holding
     assert state.items["cup_1-t0"].position == (0.6, -0.2, 0.75)
     assert state.items["cup_1-t0"].orientation == (0.0, 0.0, 0.0, 1.0)
     state.set_held(right, "bowl_1-t0")
-    assert state.forget_dropped(right) == "bowl_1-t0"
+    state.forget_dropped(right, "bowl_1-t0")
     assert not right.holding and "bowl_1-t0" not in state.items
     with pytest.raises(Refusal, match="^unknown item 'bowl_1-t0': scan or identify it again$"):
         state.item_to_grab("bowl_1-t0")
@@ -237,6 +321,35 @@ def test_a_placed_item_keeps_its_id_where_it_was_put_and_a_dropped_one_is_forgot
         [Detection("cup", (0.61, -0.2, 0.74), 0.9), Detection("bowl", (0.4, -0.1, 0.7), 0.9)], now_ns=2, coverage=EVERY
     )
     assert [item.item_id for item in seen] == ["cup_1-t0", "bowl_2-t0"]
+
+
+def test_forget_drops_every_item_and_every_hold_and_no_id_comes_back():
+    state = make_state()
+    state.remember([Detection("mug", (0.4, -0.2, 0.45), 0.9), Detection("bowl", (0.4, 0.1, 0.42), 0.9)], now_ns=1, coverage=EVERY)
+    right = state.grippers["right_gripper"]
+    state.set_held(right, "mug_1-t0")
+    assert state.forget() == ["mug_1-t0", "bowl_1-t0"]
+    assert state.items == {}
+    assert state.snapshot() == (["left_gripper", "right_gripper"], [False, False], ["", ""])
+    with pytest.raises(Refusal, match="^unknown item 'mug_1-t0': scan or identify it again$"):
+        state.item_to_grab("mug_1-t0")
+    # The freed gripper takes the item on its side again.
+    assert state.gripper_for_grab("", (0.4, -0.2, 0.45)) is right
+    # A new world's mug where the old one stood gets a new id.
+    seen = state.remember([Detection("mug", (0.4, -0.2, 0.45), 0.9)], now_ns=2, coverage=EVERY)
+    assert [item.item_id for item in seen] == ["mug_2-t0"]
+    assert state.forget() == ["mug_2-t0"]
+    assert state.forget() == []
+
+
+def test_forget_names_a_held_item_that_it_no_longer_knows():
+    state = make_state()
+    item = state.mint_from_pose((0.4, -0.2, 0.45), None, now_ns=1)
+    assert state.forget() == ["item_1-t0"]
+    # A grab that ran during the forget ends after it and holds its item.
+    state.set_held(state.grippers["right_gripper"], item.item_id)
+    assert state.forget() == ["item_1-t0"]
+    assert not state.grippers["right_gripper"].holding
 
 
 def test_ids_carry_the_run_token_so_an_earlier_runs_id_is_refused():
@@ -270,7 +383,7 @@ def test_an_item_a_gripper_holds_cannot_be_grabbed_again():
     with pytest.raises(Refusal, match="item 'cup_1-t0' is held by gripper 'left_gripper'"):
         state.item_to_grab("cup_1-t0")
     assert state.item_to_grab("bowl_1-t0").item_id == "bowl_1-t0"
-    state.clear_held_placed(state.grippers["left_gripper"], (0.6, 0.1, 0.7), None)
+    state.clear_held_placed(state.grippers["left_gripper"], "cup_1-t0", (0.6, 0.1, 0.7), None)
     assert state.item_to_grab("cup_1-t0").item_id == "cup_1-t0"
 
 
@@ -332,5 +445,5 @@ def test_a_pose_grab_or_a_placement_makes_the_position_a_grasp_point_and_a_look_
     assert not posed.position_is_grasp_point and posed.orientation is None and posed.position == (0.5, 0.0, 0.72)
     left = state.grippers["left_gripper"]
     state.set_held(left, posed.item_id)
-    state.clear_held_placed(left, (0.6, 0.1, 0.75), None)
+    state.clear_held_placed(left, posed.item_id, (0.6, 0.1, 0.75), None)
     assert posed.position_is_grasp_point and posed.position == (0.6, 0.1, 0.75)

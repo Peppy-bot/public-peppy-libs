@@ -29,10 +29,14 @@ A `World` (`world/v1`) names its catalogue release and its scene, the robots
 with the join each takes on the stack, where each stands and where its limbs
 stand, the scene objects it moves or removes, the objects it spawns, the lighting, the materials, the
 daylight, its regions and the named locations. A robot stands at a side of a
-work surface of an object, `{ object, landmark, side, offset }` (`side` one of
-`"+x"`, `"-x"`, `"+y"`, `"-y"` of the frame of the landmark's body; without
-it, the simulation takes the side), at a named pose of the scene, `{ at,
-offset }`, or at `{ position, yaw }`; `offset` is optional. A location is a
+work surface of an object, `{ object, landmark, side, offset, raise_m }`
+(`side` one of `"+x"`, `"-x"`, `"+y"`, `"-y"` of the frame of the landmark's
+body; without it, the simulation takes the side; `raise_m`, metres from 0,
+stands it on a riser of that height), at a named pose of the scene, `{ at,
+offset }`, or at `{ position, yaw }`; `offset` and `raise_m` are optional. An
+object and a placed scene object take a `raise_m` too: the object stands on
+a riser of that height, at its pose. A riser is no object of the world: the
+simulation places it again with its stand or its object. A location is a
 landmark of an object, `{ object, landmark }`, which names a work surface by
 the landmark it stands on, a named pose, `{ at }`, or a region, `{ in }`. A
 region is a box in the world frame, `{ centre, size, yaw }`, metres and
@@ -42,7 +46,7 @@ positions] }, grippers: { <gripper>: opening } }`, name each limb as the
 robot names it (limb_state): an arm with its joint positions, radians or
 metres, in its joint order, and a gripper with its opening, a fraction of
 full jaw travel from 0 (closed) to 1. They name at least one limb. A robot
-without limbs stands at home, its grippers closed. The daylight sets the settings of the
+without limbs stands at Ready, its grippers closed. The daylight sets the settings of the
 scene's site in place of the scene's own: the local date
 (`YYYY-MM-DD`), the hour (`HH:MM` or `HH:MM:SS`, written `HH:MM:SS`), the
 clock rate and the weather (`{ cloud_cover, rain_mm_h }`). `World::parse`
@@ -132,6 +136,8 @@ of its stations work its surfaces. The scale of a piece takes no sampler. An
 entry of an item kind and a scene object take no `furnish` pose, and an
 object whose pose is not `furnish` takes no scale `{ min, max }`.
 
+A pattern lists its fixed stations in `stations` at its root, each `{ object, landmark, side, depth_m, width_m }` (`FixedStation`): the room at the side of a work surface of an object of `objects` with a fixed pose, or of a scene object, `depth_m` deep out of the edge of the side and `width_m` wide along it, each above 0, such as the room of a robot at the belt of a conveyor line that stands at a fixed pose. The furnish layout keeps each fixed station free: the solver takes it as a station of no piece, so each piece and each station of the layout stays clear of its room, and the base of each station of the layout stands as far from its centre as from the base of another station. No two fixed stations work one side of one landmark of one object, and a fixed station works no object whose pose is `furnish`, no entry of an item kind, no object or scene object whose pose holds a sampler, and no scene object that the pattern removes. The simulation checks a station on a scene object against the drawn scene. `WorldPattern::stations` gives them, and a concrete world takes none, as it takes no `min_spacing_m`.
+
 An `Expansion` of a pattern and a `Seed` draws each sampler that the seed
 alone draws: `one_of`, `range`, and the count and the asset of each object of
 an item kind. Each sampler draws from its own `Stream`, which the seed and the
@@ -186,7 +192,7 @@ JSON5 text without a root key. `World::from_setup` makes the world of a live
 simulation from the record and the robots of the stack (`StackRobot`), each
 with a body with the limbs that it measures, and `StartSetup::world` makes the
 start world from the setup the simulation started with and where each robot
-first joined, at home. `Judge::parse_list` reads a
+first joined, with no limbs, so it stands at Ready. `Judge::parse_list` reads a
 JSON5 list of judges, `true` or one of the checks, and `Verdicts` holds a
 `holds` and a `why` for each. The check `{ clear_ways: { walkway_m } }`
 holds when each doorway of the scene is clear over its width and 1.0 m into
@@ -197,8 +203,9 @@ layout: robots are no obstacle.
 
 A `ClaimHolder` names the call of an applier of worlds (`world_applier:v1`
 and `sweep_runner:v1`) that holds the setup claim of a simulation: the
-apply, the run or the sweep (`ClaimCall`), the label of its caller, the
-sweep, and the run of the workflow director that runs now, as "the run of
+apply, the reset to the start world, the run or the sweep (`ClaimCall`),
+the label of its caller, the sweep, and the run of the workflow director
+that runs now, as "the run of
 'Tidy the table (c2)' (run r3)" or "the sweep of 'nightly' (sweep s2, run
 r14)". `ApplyFailureKind` names the failure kinds of an apply and of the
 first step of a run, `seed_refused` for the seed of a world pattern that

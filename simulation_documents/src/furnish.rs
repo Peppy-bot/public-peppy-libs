@@ -11,17 +11,22 @@
 //! ([`crate::PlacementKind::Furnish`]), at the path `furnish`. Its placed
 //! value holds the place of each piece: `{ "<object>": { position, yaw,
 //! scale }, ... }`.
+//!
+//! The root of a pattern may list `stations`, its fixed stations
+//! ([`FixedStation`]): the room of a station at a work surface of an object
+//! with a fixed pose or of a scene object, such as a belt of a conveyor
+//! line, which the layout keeps free.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::geometry::Point;
+use crate::geometry::{Point, Raise};
 use crate::names::first_named_twice;
-use crate::pattern::physics_candidates;
-use crate::sampler::{Sampled, Segment, SitePath, SiteRule, placeholder};
-use crate::world::{Object, Robot, positive_scale};
+use crate::pattern::{ObjectEntry, physics_candidates};
+use crate::sampler::{DrawnValue, Sampled, Segment, SitePath, SiteRule, placeholder};
+use crate::world::{Object, Robot, SceneObject, positive_scale};
 use crate::{Error, Name, Offset, Physics, Pose, RobotName, Side, Stand};
 
 /// The path of the placed value of the furnish layout.
@@ -280,8 +285,134 @@ impl FurnishStation {
             landmark: self.landmark.clone(),
             side: Some(self.side),
             offset: Offset::default(),
+            raise: Raise::NONE,
         }
     }
+}
+
+/// A station that the layout of the furnish poses keeps free, at a work
+/// surface of an object of the pattern with a fixed pose or of a scene
+/// object: `{ object, landmark, side, depth_m, width_m }` in `stations` at
+/// the root of a world pattern. Its room is the rectangle `depth_m` deep out
+/// of the edge of the side and `width_m` wide along that edge, centred on
+/// the centre of the edge, metres, each above 0. The solver takes it as a
+/// station of no piece: each piece and each station of the layout stays
+/// clear of its room, and the base of each station of the layout stands
+/// away from its centre as from the base of another station.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "FixedStationFields", into = "FixedStationFields")]
+pub struct FixedStation {
+    /// The object whose work surface the station works: an object of
+    /// `objects` with a fixed pose, or a scene object.
+    pub object: Name,
+    /// The landmark of the work surface, as the catalogue names it.
+    pub landmark: String,
+    /// The side of the work surface that the station stands at.
+    pub side: Side,
+    pub depth_m: f64,
+    pub width_m: f64,
+}
+
+/// A fixed station as written, its numbers unchecked.
+#[derive(Serialize, Deserialize)]
+#[serde(
+    deny_unknown_fields,
+    expecting = "a fixed station, { object, landmark, side, depth_m, width_m }"
+)]
+struct FixedStationFields {
+    object: Name,
+    landmark: String,
+    side: Side,
+    depth_m: f64,
+    width_m: f64,
+}
+
+impl TryFrom<FixedStationFields> for FixedStation {
+    type Error = Error;
+
+    fn try_from(fields: FixedStationFields) -> Result<FixedStation, Error> {
+        if fields.landmark.trim().is_empty() {
+            return Err(Error::rule(
+                "the landmark of a station is blank; name the landmark of a work surface of the object, such as `top`",
+            ));
+        }
+        Ok(FixedStation {
+            object: fields.object,
+            landmark: fields.landmark,
+            side: fields.side,
+            depth_m: above_zero("depth_m", "a depth", fields.depth_m)?,
+            width_m: above_zero("width_m", "a width", fields.width_m)?,
+        })
+    }
+}
+
+impl From<FixedStation> for FixedStationFields {
+    fn from(station: FixedStation) -> FixedStationFields {
+        FixedStationFields {
+            object: station.object,
+            landmark: station.landmark,
+            side: station.side,
+            depth_m: station.depth_m,
+            width_m: station.width_m,
+        }
+    }
+}
+
+/// Refuses the fixed stations `stations` of a pattern: two stations at one
+/// side of one landmark of one object; a station on an object of `objects`
+/// whose pose is `furnish`, of an item kind, or holds a sampler; and a
+/// station on a scene object that the pattern removes or whose pose holds a
+/// sampler. A station on a name that is no entry of `objects` works a scene
+/// object, which the simulation checks against the drawn scene.
+pub(crate) fn check_fixed_stations(
+    stations: &[FixedStation],
+    objects: &BTreeMap<&Name, &ObjectEntry>,
+    scene_objects: &BTreeMap<&Name, &Sampled<SceneObject>>,
+) -> Result<(), Error> {
+    if let Some(twice) = first_named_twice(stations, |one, other| {
+        one.object == other.object && one.landmark == other.landmark && one.side == other.side
+    }) {
+        return Err(Error::field(
+            "stations",
+            format!(
+                "two stations work the side `{}` of `{}` of `{}`; give each station a side of its own",
+                twice.side, twice.landmark, twice.object
+            ),
+        ));
+    }
+    for station in stations {
+        let object = &station.object;
+        let moving = match (objects.get(object), scene_objects.get(object)) {
+            (Some(ObjectEntry::Furnished(_)), _) => Some("its pose is `furnish`"),
+            (Some(ObjectEntry::ItemKind(_)), _) => Some("it is an entry of an item kind"),
+            (Some(ObjectEntry::Object(Sampled::Drawn(drawn))), _) if draws_the_pose(drawn) => {
+                Some("its pose holds a sampler")
+            }
+            (Some(ObjectEntry::Object(_)), _) => None,
+            (None, Some(Sampled::Fixed(SceneObject::Removed))) => Some("the pattern removes it"),
+            (None, Some(Sampled::Drawn(drawn))) if draws_the_pose(drawn) => {
+                Some("its pose holds a sampler")
+            }
+            (None, _) => None,
+        };
+        if let Some(why) = moving {
+            return Err(Error::field(
+                "stations",
+                format!(
+                    "a station works `{object}`, and {why}; a station works an object of `objects` with a fixed pose, or a scene object"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether the entry `drawn` holds a sampler in its pose.
+fn draws_the_pose(drawn: &DrawnValue) -> bool {
+    drawn
+        .sites
+        .iter()
+        .any(|site| site.path.segments().first() == Some(&Segment::Key("pose".to_owned())))
 }
 
 /// The scales that a piece can take, from `min` to `max`, both included and
@@ -1688,6 +1819,209 @@ mod tests {
         let pattern = room();
         let written = WorldPattern::parse(&pattern.to_json5().unwrap()).unwrap();
         assert_eq!(written, pattern);
+    }
+
+    /// The fixed stations of the room: one at `bench`, an object with a
+    /// fixed pose, and one at `window_sill`, a scene object.
+    const FIXED_STATIONS: &str = r#"stations: [
+    { object: "bench", landmark: "top", side: "-y", depth_m: 0.7, width_m: 0.9 },
+    { object: "window_sill", landmark: "top", side: "+x", depth_m: 0.5, width_m: 0.6 },
+  ],
+  regions:"#;
+    const BENCH: &str = r#"bench: { asset: "object/bench", pose: { position: [4, 0, 0], yaw: 0 } },
+    lamp:"#;
+
+    /// The room with the bench and the fixed stations.
+    fn room_with_fixed_stations() -> String {
+        room_with("lamp:", BENCH).replace("regions:", FIXED_STATIONS)
+    }
+
+    #[test]
+    fn fixed_stations_read_with_the_pattern_and_write_back_the_same() {
+        let pattern = WorldPattern::parse(&room_with_fixed_stations()).unwrap();
+        assert_eq!(
+            pattern.stations,
+            [
+                FixedStation {
+                    object: name("bench"),
+                    landmark: "top".into(),
+                    side: Side::NegY,
+                    depth_m: 0.7,
+                    width_m: 0.9,
+                },
+                FixedStation {
+                    object: name("window_sill"),
+                    landmark: "top".into(),
+                    side: Side::PosX,
+                    depth_m: 0.5,
+                    width_m: 0.6,
+                },
+            ]
+        );
+        let written = pattern.to_json5().unwrap();
+        assert!(written.contains("stations"), "{written}");
+        assert_eq!(WorldPattern::parse(&written).unwrap(), pattern);
+        assert!(room().stations.is_empty());
+        let placements = placements_of(&pattern, 3);
+        let world = placements
+            .expansion()
+            .world(&placed(placements.sites()))
+            .unwrap();
+        let world_text = world.to_json5().unwrap();
+        assert!(!world_text.contains("stations"), "{world_text}");
+    }
+
+    #[test]
+    fn a_pattern_gives_each_scene_and_each_asset_of_an_object_that_it_can_draw() {
+        let pattern = room();
+        let scene = |asset: &str| crate::Scene {
+            asset: asset.into(),
+            scale: 1.0,
+        };
+        assert_eq!(pattern.scenes(), [scene("scene/empty_room")]);
+        let rooms = room_with(
+            r#"scene: { asset: "scene/empty_room" }"#,
+            r#"scene: { asset: { one_of: ["scene/empty_room", "scene/bare_room"] } }"#,
+        );
+        assert_eq!(
+            WorldPattern::parse(&rooms).unwrap().scenes(),
+            [scene("scene/empty_room"), scene("scene/bare_room")]
+        );
+        let assets: BTreeMap<String, Vec<String>> = pattern
+            .object_assets()
+            .into_iter()
+            .map(|(name, assets)| (name.to_string(), assets.into_iter().collect()))
+            .collect();
+        assert_eq!(
+            assets["desk"],
+            ["object/office_desk", "object/standing_desk"]
+        );
+        assert_eq!(assets["lamp"], ["object/lamp"]);
+        assert_eq!(assets["mug"], ["object/mug"]);
+        assert_eq!(assets.len(), 9);
+        let item_kind = room_with(
+            r#"tray: { asset: "object/tray", pose: { in: "aisle" } },"#,
+            r#"tray: { item_kind: "tray", count: 2, pose: { in: "aisle" } },"#,
+        );
+        let pattern = WorldPattern::parse(&item_kind).unwrap();
+        assert!(!pattern.object_assets().contains_key(&name("tray")));
+    }
+
+    #[test]
+    fn a_pattern_gives_the_stations_of_its_furnish_poses_by_piece() {
+        let pattern = room();
+        let stations: Vec<(&str, &str, Side)> = pattern
+            .furnish_stations()
+            .into_iter()
+            .map(|(piece, station)| (piece.as_str(), station.landmark.as_str(), station.side))
+            .collect();
+        assert_eq!(
+            stations,
+            [
+                ("counter", "top", Side::PosX),
+                ("desk", "top", Side::NegY),
+                ("rug", "top", Side::PosY),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_concrete_world_refuses_fixed_stations() {
+        let text = format!(
+            r#"{{
+  simulation_schema: "world/v1",
+  manifest: {{ name: "bench_room", revision: 1 }},
+  catalogue: "{RELEASE}",
+  scene: {{ asset: "scene/empty_room" }},
+  objects: {{ bench: {{ asset: "object/bench", pose: {{ position: [4, 0, 0], yaw: 0 }} }} }},
+  stations: [{{ object: "bench", landmark: "top", side: "-y", depth_m: 0.7, width_m: 0.9 }}],
+}}"#
+        );
+        let refusal = crate::WorldDocument::parse(&text)
+            .unwrap()
+            .resolve(&[])
+            .unwrap_err();
+        assert_eq!(
+            refusal.to_string(),
+            "stations: is a field of a world pattern; resolve the world as a pattern, or leave the field out"
+        );
+        assert!(WorldPattern::parse(&text).unwrap().is_concrete());
+    }
+
+    #[test]
+    fn a_fixed_station_of_another_form_or_on_an_object_that_moves_is_refused() {
+        let refused = |from: &str, to: &str| {
+            let text = room_with_fixed_stations();
+            assert_eq!(text.matches(from).count(), 1, "{from}");
+            WorldPattern::parse(&text.replace(from, to))
+                .unwrap_err()
+                .to_string()
+        };
+        let bench_station =
+            r#"{ object: "bench", landmark: "top", side: "-y", depth_m: 0.7, width_m: 0.9 }"#;
+        let on = |object: &str| bench_station.replace(r#""bench""#, &format!(r#""{object}""#));
+        let cases = [
+            (
+                bench_station.to_owned(),
+                bench_station.replace("depth_m: 0.7", "depth_m: 0"),
+                "stations[0]: the depth_m 0 is not above 0; write a depth above 0 metres",
+            ),
+            (
+                bench_station.to_owned(),
+                bench_station.replace("width_m: 0.9", "width_m: -1"),
+                "stations[0]: the width_m -1 is not above 0; write a width above 0 metres",
+            ),
+            (
+                bench_station.to_owned(),
+                bench_station.replace(r#"landmark: "top""#, r#"landmark: " ""#),
+                "stations[0]: the landmark of a station is blank; name the landmark of a work surface of the object, such as `top`",
+            ),
+            (
+                bench_station.to_owned(),
+                bench_station.replace("width_m: 0.9", "width_m: 0.9, robot: \"alpha\""),
+                "stations[0].robot: unknown field `robot`, expected one of `object`, `landmark`, `side`, `depth_m`, `width_m`",
+            ),
+            (
+                bench_station.to_owned(),
+                format!("{bench_station}, {}", bench_station.replace("0.7", "0.4")),
+                "stations: two stations work the side `-y` of `top` of `bench`; give each station a side of its own",
+            ),
+            (
+                bench_station.to_owned(),
+                on("desk"),
+                "stations: a station works `desk`, and its pose is `furnish`; a station works an object of `objects` with a fixed pose, or a scene object",
+            ),
+            (
+                bench_station.to_owned(),
+                on("mug"),
+                "stations: a station works `mug`, and its pose holds a sampler; a station works an object of `objects` with a fixed pose, or a scene object",
+            ),
+            (
+                bench_station.to_owned(),
+                on("lamp"),
+                "stations: a station works `lamp`, and its pose holds a sampler; a station works an object of `objects` with a fixed pose, or a scene object",
+            ),
+        ];
+        for (from, to, expected) in &cases {
+            assert_eq!(refused(from, to), *expected, "{to}");
+        }
+        let removed = room_with_fixed_stations().replace(
+            "objects: {",
+            "scene_objects: { window_sill: { removed: true } },\n  objects: {",
+        );
+        assert_eq!(
+            WorldPattern::parse(&removed).unwrap_err().to_string(),
+            "stations: a station works `window_sill`, and the pattern removes it; a station works an object of `objects` with a fixed pose, or a scene object"
+        );
+        let item_kind = room_with_fixed_stations().replace(
+            BENCH,
+            r#"bench: { item_kind: "bench", count: 1, pose: { position: [4, 0, 0], yaw: 0 } },
+    lamp:"#,
+        );
+        assert_eq!(
+            WorldPattern::parse(&item_kind).unwrap_err().to_string(),
+            "stations: a station works `bench`, and it is an entry of an item kind; a station works an object of `objects` with a fixed pose, or a scene object"
+        );
     }
 
     #[test]

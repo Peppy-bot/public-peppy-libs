@@ -9,14 +9,27 @@ Rules written down here because the code depends on them:
   refused as unknown instead of naming whatever item this run numbered the
   same. `n` counts per label stem and only grows, so a dropped id never
   comes back.
-- An item is the thing at its place. A detection keeps the id of a known
-  item within `MATCH_RADIUS_M` of it: one with the detection's label
-  first, then the nearest. The label only breaks ties, because one object
-  gets different labels from different searches (the vocabulary's name in
-  a scan, the caller's words in an identify search). Any other detection
-  mints a new id. An item a gripper holds is in the gripper, not where it
-  was grabbed, so no detection matches it. The cost: an item swapped for
-  another within the radius between two looks hands its id to the new one.
+- An item is the thing at its place, under a name alike to its own. A
+  detection keeps the id of a known item within `MATCH_RADIUS_M` of it
+  in two passes over the look. First, an item whose label shares a
+  content word with the detection's label, or that no look named yet:
+  one with the detection's label first, then the nearest. One object gets
+  different labels from different looks (the vocabulary's name in a scan,
+  the caller's words in an identify search), and a shared word ties them.
+  Items that stand one in the other, such as a mug in a bowl, lie within
+  the radius of each other, so the place alone does not tell them apart:
+  the words do, in whatever order the look gives them. Then a detection
+  that took no item takes the nearest item left by its place alone, but
+  only when the look covers the labels of both: such a look would drop
+  the item unseen, so the item it sees there under a new name is the same
+  item, renamed. A look that does not cover them, such as an identify
+  search, mints a new id instead, so it never hands the id of the bowl to
+  the mug in it. Any other detection mints a new id. An item a gripper
+  holds is in the gripper, not where it was grabbed, so no detection
+  matches it. The cost: an item swapped within the radius for another
+  under an alike name, or under any name before a covering look, hands
+  its id to the new one, and an identify search under words that share
+  none with the known item at that place gives a second id to it.
 - What a look drops and renames is its `Coverage`. A scan drops a known
   item it did not see when it could have named it, unless a gripper holds
   it, so grab_item cannot be sent to an item that left the table; an item
@@ -29,6 +42,10 @@ Rules written down here because the code depends on them:
   landed, so the brain no longer accounts for it, its id is refused from
   then on, and the next look that sees the item gives it a new one. A grab
   by the old id is refused rather than sent to where the item was.
+- Forgetting. `forget` (forget of brain_model) drops every known item
+  and every hold at once, for a world that changed while the brain did
+  not look. The run token and the counts stay, so an id from before is
+  refused as unknown and never comes back for another item.
 - Regions. An item carries the region of the look that last saw it, in
   that look's picture. A look that did not see a known item it keeps
   clears the region: the picture has moved on, and a region of an older
@@ -58,13 +75,15 @@ from __future__ import annotations
 
 import math
 import secrets
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from .limbs import Limb
 from .ports import Coverage, Detection, FailureKind, Gripper, Item, Quat, Refusal, Vec3
-from .words import named_by
+from .words import content_words, named_by
 
 MATCH_RADIUS_M = 0.05
+# The label of an item that a goal addressed by pose: no look named it yet.
+UNNAMED_LABEL = "item"
 
 
 def new_run_token() -> str:
@@ -151,25 +170,41 @@ class State:
     def set_held(self, gripper: Gripper, item_id: str) -> None:
         gripper.held_item_id = item_id
 
-    def forget_dropped(self, gripper: Gripper) -> str:
-        """Releases what the gripper holds after a drop_item and returns its
-        id. Nothing measured where the item landed, so the item is
-        forgotten: its id is refused from then on."""
-        item_id = self._release(gripper)
+    def forget_dropped(self, gripper: Gripper, item_id: str) -> None:
+        """Releases the gripper after a drop_item of `item_id`, the item it
+        held when the drop started. Nothing measured where the item landed,
+        so the item is forgotten: its id is refused from then on. A forget
+        that ran during the drop already released the gripper and forgot
+        the item."""
+        self._release(gripper)
         self.items.pop(item_id, None)
-        return item_id
 
-    def clear_held_placed(self, gripper: Gripper, position: Vec3, orientation: Optional[Quat]) -> str:
-        """Releases what the gripper holds at the pose place_item put it at
-        and returns its id. The item takes that pose, so the next scan finds
-        it where it stands and keeps its id."""
-        item_id = self._release(gripper)
+    def clear_held_placed(self, gripper: Gripper, item_id: str, position: Vec3, orientation: Optional[Quat]) -> None:
+        """Releases the gripper after a place_item of `item_id`, the item it
+        held when the place started, at the pose the place put it at. The
+        item takes that pose, so the next scan finds it where it stands and
+        keeps its id. A forget that ran during the place already released
+        the gripper and forgot the item, which the next scan gives a new
+        id."""
+        self._release(gripper)
         item = self.items.get(item_id)
         if item is not None:
             item.position = position
             item.orientation = orientation
             item.position_is_grasp_point = True
-        return item_id
+            item.top_z = None
+
+    def forget(self) -> list[str]:
+        """Forgets every known item and every hold, and returns the ids of
+        the forgotten items: the known ones, then each held one that is not
+        known, such as the item of a grab that ended after an earlier
+        forget. The counts stay, so no id comes back."""
+        forgotten = list(self.items)
+        forgotten.extend(item_id for item_id in sorted(self._held_ids()) if item_id not in self.items)
+        self.items.clear()
+        for gripper in self.grippers.values():
+            self._release(gripper)
+        return forgotten
 
     def snapshot(self) -> tuple[list[str], list[bool], list[str]]:
         """The three index-aligned arrays get_state reports."""
@@ -203,17 +238,26 @@ class State:
     def remember(self, detections: Sequence[Detection], now_ns: int, *, coverage: Coverage) -> list[Item]:
         """Folds one look's detections into the known items and returns
         them in the detections' order. `coverage` is what the look names
-        with authority: the unseen items it drops, except held ones, and
-        the seen items whose label it replaces."""
+        with authority: the unseen items it drops, except held ones, the
+        seen items whose label it replaces, and the items a detection takes
+        by its place alone."""
         held = self._held_ids()
-        seen: list[Item] = []
         claimed: set[str] = set()
+        matches: list[Optional[Item]] = []
         for detection in detections:
-            item = self._match(detection, claimed, held)
+            item = self._match(detection, claimed, held, lambda item, label=detection.label: _named_alike(item.label, label))
+            if item is not None:
+                claimed.add(item.item_id)
+            matches.append(item)
+        seen: list[Item] = []
+        for detection, item in zip(detections, matches):
+            if item is None and coverage.covers(detection.label):
+                item = self._match(detection, claimed, held, lambda item: coverage.covers(item.label))
             if item is None:
                 item = self._mint(detection.label, detection.position, detection.orientation, detection.confidence, now_ns)
                 item.region = detection.region
                 item.width_m = detection.width_m
+                item.top_z = detection.top_z
             else:
                 _refresh(item, detection, now_ns, coverage)
             claimed.add(item.item_id)
@@ -230,29 +274,30 @@ class State:
     def mint_from_pose(self, position: Vec3, orientation: Optional[Quat], now_ns: int) -> Item:
         """An id for an item a goal addressed by pose rather than by id:
         the pose is a grasp point, where the gripper closes."""
-        item = self._mint("item", position, orientation, 0.0, now_ns)
+        item = self._mint(UNNAMED_LABEL, position, orientation, 0.0, now_ns)
         item.position_is_grasp_point = True
         return item
 
-    def _release(self, gripper: Gripper) -> str:
-        item_id = gripper.held_item_id or ""
+    def _release(self, gripper: Gripper) -> None:
         gripper.held_item_id = None
-        return item_id
 
     def _held_ids(self) -> set[str]:
         return {gripper.held_item_id for gripper in self.grippers.values() if gripper.held_item_id is not None}
 
-    def _match(self, detection: Detection, claimed: set[str], held: set[str]) -> Optional[Item]:
-        """The known item at the detection's place: among the items within
-        the match radius that no earlier detection of this look claimed and
-        no gripper holds, one with the detection's label first, then the
-        nearest."""
+    def _match(
+        self, detection: Detection, claimed: set[str], held: set[str], takes: Callable[[Item], bool]
+    ) -> Optional[Item]:
+        """The known item at the detection's place that `takes` accepts:
+        among the items within the match radius that no earlier detection
+        of this look claimed and no gripper holds, one with the detection's
+        label first, then the nearest."""
         near = [
             item
             for item in self.items.values()
             if item.item_id not in claimed
             and item.item_id not in held
             and distance(item.position, detection.position) <= self.match_radius_m
+            and takes(item)
         ]
         if not near:
             return None
@@ -284,8 +329,16 @@ def _refresh(item: Item, detection: Detection, now_ns: int, coverage: Coverage) 
     item.seen_at_ns = now_ns
     item.region = detection.region
     item.width_m = detection.width_m
+    item.top_z = detection.top_z
     if coverage.covers(detection.label):
         item.label = detection.label
+
+
+def _named_alike(item_label: str, detection_label: str) -> bool:
+    """Whether a detection under `detection_label` names the known item
+    under `item_label`: the labels share a content word, or no look named
+    the item yet."""
+    return item_label == UNNAMED_LABEL or not content_words(item_label).isdisjoint(content_words(detection_label))
 
 
 def _stem(label: str) -> str:
@@ -295,7 +348,7 @@ def _stem(label: str) -> str:
     while "__" in cleaned:
         cleaned = cleaned.replace("__", "_")
     cleaned = cleaned.strip("_")
-    return cleaned or "item"
+    return cleaned or UNNAMED_LABEL
 
 
 def _side_cost(gripper_name: str, near: Vec3) -> int:

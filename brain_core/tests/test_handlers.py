@@ -10,8 +10,8 @@ import pytest
 from types import SimpleNamespace
 
 from conftest import (
-    CAMERA_16X12, FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, depth_frame, failed_with, make_brain, records_of,
-    rgb_frame,
+    FakeCtx, FakeDetector, FakeManipulator, FakeToken, Ticks, depth_frame, failed_with, make_brain, records_of,
+    rgb_frame, with_frames,
 )
 from fake_peppygen import abort as abort_action
 from fake_peppygen import drop_item as drop_action
@@ -22,20 +22,9 @@ from fake_peppygen import scan_items as scan_action
 from fake_peppygen import LEFT_AT_REST, FakeTopic, fake_bindings, limb_states_message
 
 from brain_core.brain import Brain
-from brain_core.handlers import abort, drop_item, get_state, grab_item, identify_item, place_item, scan_items
+from brain_core.handlers import abort, drop_item, forget, get_state, grab_item, identify_item, place_item, scan_items
 from brain_core.manipulators.scripted import CentreProposer, ScriptedManipulator
 from brain_core.ports import Box, Coverage, Detection, FailureKind, Refusal, Role, SearchTimeout
-
-
-def with_frames(brain: Brain, depth_m: float = 1.0) -> None:
-    brain.perceiver.frames.add_color(rgb_frame(16, 12))
-    brain.perceiver.frames.add_depth(depth_frame(depth_m, 16, 12))
-    brain.perceiver.frames.depth_unit = 0.001
-    # The camera has answered where its pixels point, a 90 degree lens, and
-    # the robot where it stands: at the origin, looking along +Z.
-    brain.perceiver.set_camera(
-        brain.perceiver.camera.with_intrinsics(CAMERA_16X12).with_pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
-    )
 
 
 def scan_goal(timeout_s: float = 0.0) -> FakeCtx:
@@ -266,6 +255,21 @@ async def test_a_search_under_other_words_returns_the_scans_id():
     assert ctx.completed["confidence"] == 0.96
 
 
+async def test_a_search_for_an_item_in_another_returns_its_own_id():
+    detector = FakeDetector([Box("the bowl", 0.0, 6, 4, 10, 8)])
+    brain = await make_brain(detector=detector)
+    with_frames(brain)
+    bowl = identify_goal("the bowl")
+    await identify_item.run(brain, bowl)
+    assert bowl.completed["item_id"] == "the_bowl_1-t0"
+
+    # The mug stands in the bowl: its box has the same centre, so the same place.
+    detector.boxes = [Box("the mug", 0.0, 7, 5, 9, 7)]
+    mug = identify_goal("the mug")
+    await identify_item.run(brain, mug)
+    assert (mug.completed["item_id"], mug.completed["label"]) == ("the_mug_1-t0", "the mug")
+
+
 async def test_a_description_names_whole_words_only():
     # A scan under the vocabulary returns general names; a description
     # that shares letters with one of them, or only stopwords, names none.
@@ -320,6 +324,30 @@ async def test_a_placed_item_keeps_its_id_in_the_next_scan():
     scan = scan_goal()
     await scan_items.run(brain, scan)
     assert scan.completed["item_ids"] == ["cup_1-t0"]
+
+
+@pytest.mark.parametrize("ends", ["place", "drop"])
+async def test_a_place_or_a_drop_that_a_forget_runs_during_names_the_item_it_started_with(ends):
+    release = asyncio.Event()
+    manipulator = FakeManipulator()
+    brain = await make_brain(manipulator=manipulator)
+    grab = grab_goal(gripper_name="left_gripper", position=[0.5, 0.1, 0.7])
+    await grab_item.run(brain, grab)
+    item_id = grab.completed["item_id"]
+    # The grab reached the manipulator: take that mark, so the next one is
+    # the place's or the drop's.
+    await manipulator.begun()
+
+    manipulator.release = release
+    ctx = place_goal([0.6, 0.0, 0.75]) if ends == "place" else drop_goal()
+    running = asyncio.create_task((place_item if ends == "place" else drop_item).run(brain, ctx))
+    await manipulator.begun()
+    assert forget.handle(brain, None).item_ids == [item_id]
+    release.set()
+    await running
+    assert (ctx.completed["success"], ctx.completed["gripper_name"], ctx.completed["item_id"]) == (True, "left_gripper", item_id)
+    # The forget stands: no gripper holds, and the item stays unknown.
+    assert state_of(brain).held_item_ids == ["", ""] and brain.state.items == {}
 
 
 async def test_identify_that_finds_nothing_fails_with_not_found():

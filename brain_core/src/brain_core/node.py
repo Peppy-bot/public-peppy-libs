@@ -14,6 +14,7 @@ from .bindings import Bindings
 from .brain import Brain, decider
 from .handlers import abort as abort_handler
 from .handlers import drop_item as drop_item_handler
+from .handlers import forget as forget_handler
 from .handlers import get_model as get_model_handler
 from .handlers import get_state as get_state_handler
 from .handlers import grab_item as grab_item_handler
@@ -68,6 +69,7 @@ async def setup(
         (bindings.get_state, get_state_handler.handle),
         (bindings.get_model, get_model_handler.handle),
         (bindings.list_models, list_models_handler.handle),
+        (bindings.forget, forget_handler.handle),
     ]
     loops.extend(
         asyncio.create_task(serve_service(module, node_runner, token, partial(handle, brain))) for module, handle in services

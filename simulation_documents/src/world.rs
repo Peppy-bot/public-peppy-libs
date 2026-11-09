@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::daylight::Daylight;
-use crate::geometry::{Offset, Placement, Point, Pose, Region};
+use crate::furnish::FixedStation;
+use crate::geometry::{Offset, Placement, Point, Pose, Raise, Region};
 use crate::limbs::Limbs;
 use crate::names::{
     RESERVED_PEPPY_NAME, RESERVED_REASON, first_named_twice, is_peppy_name, peppy_name_grammar,
@@ -125,7 +126,7 @@ fn written_scale(scale: f64) -> Option<f64> {
 }
 
 /// A simulated robot of the world: how it joins the stack, where it stands,
-/// and where its limbs stand. A robot without limbs stands at home, its
+/// and where its limbs stand. A robot without limbs stands at Ready, its
 /// grippers closed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, expecting = "a robot, { join, stand, limbs }")]
@@ -352,9 +353,10 @@ impl fmt::Display for Side {
 }
 
 /// Where a robot with a body stands: at a side of a work surface of an
-/// object or at a named pose of the scene, offset on its own axes, or at a
-/// position with a yaw. A stand at a work surface without a side stands at
-/// the side the simulation takes.
+/// object, offset on its own axes and raised on a riser, at a named pose of
+/// the scene, offset on its own axes, or at a position with a yaw. A stand
+/// at a work surface without a side stands at the side the simulation
+/// takes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "StandFields", into = "StandFields")]
 pub enum Stand {
@@ -363,6 +365,7 @@ pub enum Stand {
         landmark: String,
         side: Option<Side>,
         offset: Offset,
+        raise: Raise,
     },
     At {
         at: Name,
@@ -372,12 +375,12 @@ pub enum Stand {
 }
 
 /// The words of a refusal of a stand of another form.
-const STAND_FORM: &str = "a stand is { object, landmark, side, offset } (a work surface of an object), { at, offset } (a named pose of the scene) or { position, yaw }; side and offset are optional";
+const STAND_FORM: &str = "a stand is { object, landmark, side, offset, raise_m } (a work surface of an object), { at, offset } (a named pose of the scene) or { position, yaw }; side, offset and raise_m are optional";
 
 #[derive(Serialize, Deserialize)]
 #[serde(
     deny_unknown_fields,
-    expecting = "a stand, { object, landmark, side, offset }, { at, offset } or { position, yaw }"
+    expecting = "a stand, { object, landmark, side, offset, raise_m }, { at, offset } or { position, yaw }"
 )]
 struct StandFields {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -394,6 +397,8 @@ struct StandFields {
     yaw: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     offset: Option<Offset>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raise_m: Option<Raise>,
 }
 
 impl TryFrom<StandFields> for Stand {
@@ -409,11 +414,13 @@ impl TryFrom<StandFields> for Stand {
                 position: None,
                 yaw: None,
                 offset,
+                raise_m,
             } => Ok(Stand::Surface {
                 object,
                 landmark,
                 side,
                 offset: offset.unwrap_or_default(),
+                raise: raise_m.unwrap_or_default(),
             }),
             StandFields {
                 object: None,
@@ -423,6 +430,7 @@ impl TryFrom<StandFields> for Stand {
                 position: None,
                 yaw: None,
                 offset,
+                raise_m: None,
             } => Ok(Stand::At {
                 at,
                 offset: offset.unwrap_or_default(),
@@ -435,6 +443,7 @@ impl TryFrom<StandFields> for Stand {
                 position: Some(position),
                 yaw: Some(yaw),
                 offset: None,
+                raise_m: None,
             } => Ok(Stand::Placed(Placement { position, yaw })),
             _ => Err(Error::rule(STAND_FORM)),
         }
@@ -452,6 +461,7 @@ impl From<Stand> for StandFields {
             position: None,
             yaw: None,
             offset: None,
+            raise_m: None,
         };
         match stand {
             Stand::Surface {
@@ -459,11 +469,13 @@ impl From<Stand> for StandFields {
                 landmark,
                 side,
                 offset,
+                raise,
             } => StandFields {
                 object: Some(object),
                 landmark: Some(landmark),
                 side,
                 offset: written_offset(offset),
+                raise_m: (!raise.is_none()).then_some(raise),
                 ..none
             },
             Stand::At { at, offset } => StandFields {
@@ -481,14 +493,16 @@ impl From<Stand> for StandFields {
 }
 
 /// An object the scene places, as the world has it: removed, or at a pose
-/// with its control values. Written as `{ removed: true }` or
-/// `{ pose, controls }`, read by the parser of the marks of a map entry.
+/// with its control values, raised on a riser or not. Written as
+/// `{ removed: true }` or `{ pose, controls, raise_m }`, read by the parser
+/// of the marks of a map entry.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SceneObject {
     Removed,
     Placed {
         pose: Pose,
         controls: BTreeMap<String, f64>,
+        raise: Raise,
     },
 }
 
@@ -496,21 +510,28 @@ pub enum SceneObject {
 #[derive(Serialize, Deserialize)]
 #[serde(
     deny_unknown_fields,
-    expecting = "a scene object, { removed: true } or { pose, controls }"
+    expecting = "a scene object, { removed: true } or { pose, controls, raise_m }"
 )]
 struct PlacedFields {
     pose: Pose,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     controls: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Raise::is_none")]
+    raise_m: Raise,
 }
 
 impl Serialize for SceneObject {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let entry = match self {
             SceneObject::Removed => Entry::Removed,
-            SceneObject::Placed { pose, controls } => Entry::Value(PlacedFields {
+            SceneObject::Placed {
+                pose,
+                controls,
+                raise,
+            } => Entry::Value(PlacedFields {
                 pose: pose.clone(),
                 controls: controls.clone(),
+                raise_m: *raise,
             }),
         };
         entry.serialize(serializer)
@@ -524,15 +545,22 @@ impl<'de> Deserialize<'de> for SceneObject {
             Entry::Kept => Err(serde::de::Error::custom(
                 "`kept` drops an entry of a base, in a world document that extends one",
             )),
-            Entry::Value(PlacedFields { pose, controls }) => {
-                Ok(SceneObject::Placed { pose, controls })
-            }
+            Entry::Value(PlacedFields {
+                pose,
+                controls,
+                raise_m,
+            }) => Ok(SceneObject::Placed {
+                pose,
+                controls,
+                raise: raise_m,
+            }),
         }
     }
 }
 
 /// An object spawned into the world. An omitted `physics`, `mass` or control
-/// takes the value of the asset in the catalogue.
+/// takes the value of the asset in the catalogue. A raised object stands on
+/// a riser, at its pose.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "ObjectFields", into = "ObjectFields")]
 pub struct Object {
@@ -542,12 +570,13 @@ pub struct Object {
     pub physics: Option<Physics>,
     pub mass: Option<f64>,
     pub controls: BTreeMap<String, f64>,
+    pub raise: Raise,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(
     deny_unknown_fields,
-    expecting = "an object, { asset, pose, scale, physics, mass, controls }"
+    expecting = "an object, { asset, pose, scale, physics, mass, controls, raise_m }"
 )]
 struct ObjectFields {
     asset: String,
@@ -560,6 +589,8 @@ struct ObjectFields {
     mass: Option<f64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     controls: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Raise::is_none")]
+    raise_m: Raise,
 }
 
 impl TryFrom<ObjectFields> for Object {
@@ -581,6 +612,7 @@ impl TryFrom<ObjectFields> for Object {
             physics: fields.physics,
             mass: fields.mass,
             controls: fields.controls,
+            raise: fields.raise_m,
         })
     }
 }
@@ -594,6 +626,7 @@ impl From<Object> for ObjectFields {
             physics: object.physics,
             mass: object.mass,
             controls: object.controls,
+            raise_m: object.raise,
         }
     }
 }
@@ -885,8 +918,8 @@ impl<'de, T: DeserializeOwned> Deserialize<'de> for Entry<T> {
 
 /// The fields of a world document as written, before its base is resolved.
 /// An entry holds samplers in a world pattern, and the pattern adds
-/// entries of an item kind to `objects`, `work_cell_parameters` and
-/// `min_spacing_m`.
+/// entries of an item kind to `objects`, `work_cell_parameters`,
+/// `min_spacing_m` and `stations`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WorldFields {
@@ -917,6 +950,8 @@ pub(crate) struct WorldFields {
     pub work_cell_parameters: BTreeMap<ParameterName, Entry<WorkCellParameter>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_spacing_m: Option<MinSpacing>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stations: Option<Vec<FixedStation>>,
 }
 
 /// A world document as written: it may extend a base.
@@ -963,6 +998,9 @@ impl WorldDocument {
         }
         if fields.min_spacing_m.is_some() {
             return Err(pattern_field("min_spacing_m"));
+        }
+        if fields.stations.is_some() {
+            return Err(pattern_field("stations"));
         }
         let maps = fields.concrete_maps(origin)?;
         let world = World {
@@ -1369,6 +1407,7 @@ impl World {
             locations: value_entries(&self.locations),
             work_cell_parameters: BTreeMap::new(),
             min_spacing_m: None,
+            stations: None,
         }
     }
 }
@@ -1453,7 +1492,8 @@ pub(crate) mod tests {
                 object: name("modern_coffee_table_01"),
                 landmark: "top".into(),
                 side: Some(Side::NegX),
-                offset: Offset::default()
+                offset: Offset::default(),
+                raise: Raise::NONE,
             })
         );
         assert_eq!(
@@ -1828,7 +1868,7 @@ pub(crate) mod tests {
             ),
             (
                 example_text().replace("catalogue:", "workflow: 1, catalogue:"),
-                "workflow: unknown field `workflow`, expected one of `manifest`, `catalogue`, `extends`, `scene`, `robots`, `scene_objects`, `objects`, `lighting`, `materials`, `daylight`, `regions`, `locations`, `work_cell_parameters`, `min_spacing_m`",
+                "workflow: unknown field `workflow`, expected one of `manifest`, `catalogue`, `extends`, `scene`, `robots`, `scene_objects`, `objects`, `lighting`, `materials`, `daylight`, `regions`, `locations`, `work_cell_parameters`, `min_spacing_m`, `stations`",
             ),
             (
                 example_text().replace("scale: 1", "scale: 0"),
@@ -1969,7 +2009,7 @@ pub(crate) mod tests {
                     "{ removed: true }",
                     "{ pose: { at: \"corner_a\" }, typo: 1 }",
                 ),
-                "scene_objects.mantel_clock_01: typo: unknown field `typo`, expected `pose` or `controls`",
+                "scene_objects.mantel_clock_01: typo: unknown field `typo`, expected one of `pose`, `controls`, `raise_m`",
             ),
             (
                 example_text().replace(
@@ -2031,14 +2071,14 @@ pub(crate) mod tests {
                     "stand: { object: \"modern_coffee_table_01\", landmark: \"top\", side: \"-x\" }",
                     "stand: { object: \"x\", landmark: \"top\", yaw: 1 }",
                 ),
-                "robots.alpha: stand: a stand is { object, landmark, side, offset } (a work surface of an object), { at, offset } (a named pose of the scene) or { position, yaw }; side and offset are optional",
+                "robots.alpha: stand: a stand is { object, landmark, side, offset, raise_m } (a work surface of an object), { at, offset } (a named pose of the scene) or { position, yaw }; side, offset and raise_m are optional",
             ),
             (
                 example_text().replace(
                     "stand: { object: \"modern_coffee_table_01\", landmark: \"top\", side: \"-x\" }",
                     "stand: { position: [0, 0, 0], yaw: 1, offset: { ahead_m: 0.2 } }",
                 ),
-                "robots.alpha: stand: a stand is { object, landmark, side, offset } (a work surface of an object), { at, offset } (a named pose of the scene) or { position, yaw }; side and offset are optional",
+                "robots.alpha: stand: a stand is { object, landmark, side, offset, raise_m } (a work surface of an object), { at, offset } (a named pose of the scene) or { position, yaw }; side, offset and raise_m are optional",
             ),
             (
                 example_text().replace(
@@ -2127,7 +2167,8 @@ pub(crate) mod tests {
                 object: name("shelving"),
                 landmark: "level_2".into(),
                 side: None,
-                offset: Offset::default()
+                offset: Offset::default(),
+                raise: Raise::NONE,
             })
         );
         for side in Side::ALL {
@@ -2176,6 +2217,85 @@ pub(crate) mod tests {
         assert!(!zero.to_json5().unwrap().contains("offset"));
         let ahead = stand(", offset: { ahead_m: 0.2 }").to_json5().unwrap();
         assert!(ahead.contains("ahead_m: 0.2"), "{ahead}");
+    }
+
+    /// A robot at a work surface, an object and a scene object stand on a
+    /// riser of their raise_m, which each writes back unless it is 0; a
+    /// raise that is not a finite number from 0 is refused, and so is a
+    /// raise of a stand at a named pose or at a position.
+    #[test]
+    fn a_stand_an_object_and_a_scene_object_write_their_raise_unless_it_is_zero() {
+        let world = |stand: &str, object: &str, clock: &str| {
+            World::parse(
+                &example_text()
+                    .replace(
+                        "stand: { object: \"modern_coffee_table_01\", landmark: \"top\", side: \"-x\" }",
+                        &format!("stand: {{ object: \"modern_coffee_table_01\", landmark: \"top\", side: \"-x\"{stand} }}"),
+                    )
+                    .replace("physics: \"dynamic\", mass: 1.6", &format!("physics: \"dynamic\", mass: 1.6{object}"))
+                    .replace("mantel_clock_01: { removed: true }", clock),
+            )
+            .map_err(|error| error.to_string())
+        };
+        let raised = world(
+            ", raise_m: 0.35",
+            ", raise_m: 0.1",
+            "mantel_clock_01: { pose: { position: [1, 2, 0.5], yaw: 0 }, raise_m: 0.5 }",
+        )
+        .unwrap();
+        let Some(Stand::Surface { raise, .. }) = raised.robots[&robot("alpha")].stand else {
+            panic!("a stand at a work surface");
+        };
+        assert_eq!(raise.metres(), 0.35);
+        assert_eq!(raised.objects[&name("crate")].raise.metres(), 0.1);
+        let SceneObject::Placed { raise, .. } = &raised.scene_objects[&name("mantel_clock_01")]
+        else {
+            panic!("a placed scene object");
+        };
+        assert_eq!(raise.metres(), 0.5);
+        let written = raised.to_json5().unwrap();
+        for raise in ["raise_m: 0.35", "raise_m: 0.1", "raise_m: 0.5"] {
+            assert!(written.contains(raise), "{raise}: {written}");
+        }
+        assert_eq!(World::parse(&written).unwrap(), raised);
+
+        let on_the_floor = world(
+            ", raise_m: 0",
+            ", raise_m: -0",
+            "mantel_clock_01: { pose: { position: [1, 2, 0.5], yaw: 0 }, raise_m: 0 }",
+        )
+        .unwrap();
+        assert!(!on_the_floor.to_json5().unwrap().contains("raise_m"));
+        assert_eq!(
+            on_the_floor.robots,
+            example().robots,
+            "a raise of 0 is no raise"
+        );
+
+        for (stand, object, refusal) in [
+            (", raise_m: -0.1", "", "is not a finite number from 0"),
+            ("", ", raise_m: -0.05", "is not a finite number from 0"),
+            (", raise_m: NaN", "", "finite numbers only"),
+            ("", ", raise_m: Infinity", "finite numbers only"),
+        ] {
+            let error = world(stand, object, "mantel_clock_01: { removed: true }").unwrap_err();
+            assert!(error.contains(refusal), "{stand}{object}: {error}");
+        }
+        for refused in [
+            "stand: { at: \"corner_a\", raise_m: 0.2 }",
+            "stand: { position: [0, 0, 0], yaw: 0, raise_m: 0.2 }",
+        ] {
+            let error = World::parse(&example_text().replace(
+                "stand: { object: \"modern_coffee_table_01\", landmark: \"top\", side: \"-x\" }",
+                refused,
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.starts_with("robots.alpha: stand"),
+                "{refused}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -2243,7 +2363,7 @@ pub(crate) mod tests {
     }
 
     /// The world of the worked example whose robot `alpha` stands with its
-    /// one arm at `joint` and its gripper at `opening`, or at home.
+    /// one arm at `joint` and its gripper at `opening`, or at Ready.
     fn with_limbs(limbs: Option<(f64, f64)>) -> World {
         let mut world = example();
         world.robots.get_mut(&robot("alpha")).unwrap().limbs = limbs.map(|(joint, opening)| {

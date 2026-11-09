@@ -4,7 +4,10 @@
 use std::f64::consts::PI;
 
 use chain_kinematics::nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion};
-use chain_kinematics::{COINCIDENT_ARC_EPS, Limit, all_within, clamp_into, interpolate};
+use chain_kinematics::{
+    COINCIDENT_ARC_EPS, Limit, OutsideLimits, TARGET_SLACK, all_within, clamp_into, interpolate,
+    take_targets,
+};
 use hegel::TestCase;
 use hegel::generators as gs;
 use kinematics_properties::{TOLERANCE, points, poses, unit_vectors};
@@ -75,4 +78,58 @@ fn a_clamped_configuration_lies_inside_the_limits(tc: TestCase) {
         }
     }
     assert_eq!(all_within(&limits, &q), clamped == q);
+}
+
+// A configuration taken as a target keeps each joint inside its limits where
+// it is and takes each joint at most TARGET_SLACK outside them at the limit;
+// it is refused, naming the first joint farther out, exactly when one is.
+#[hegel::test]
+fn a_target_takes_each_joint_a_hair_outside_its_limits_at_the_limit(tc: TestCase) {
+    let (limits, mut q) = limits_and_configuration(&tc);
+    // Bring a drawn joint a drawn hair outside its limit, so the draws
+    // reach the slack.
+    let joint: usize = tc.draw(gs::integers().min_value(0).max_value(6));
+    let hair: f64 = tc.draw(gs::floats().min_value(0.0).max_value(2.0 * TARGET_SLACK));
+    q[joint] = limits[joint].hi + hair;
+    let within =
+        |i: usize| q[i] >= limits[i].lo - TARGET_SLACK && q[i] <= limits[i].hi + TARGET_SLACK;
+    match take_targets(&limits, &q) {
+        Ok(taken) => {
+            assert!((0..7).all(within));
+            assert!(all_within(&limits, &taken));
+            assert_eq!(taken, clamp_into(&limits, &q));
+        }
+        Err(outside) => {
+            let first = (0..7).find(|&i| !within(i)).expect("a joint farther out");
+            assert_eq!(
+                outside,
+                OutsideLimits {
+                    joint: first,
+                    position: q[first],
+                    limit: limits[first],
+                }
+            );
+        }
+    }
+}
+
+/// An elbow measured a hair under its floor is taken at its floor, one 1.1
+/// mrad under it is refused by its joint from 1, its position and its limits,
+/// and a target that is not finite is refused.
+#[test]
+fn a_target_a_hair_under_a_floor_runs_at_the_floor_and_one_farther_under_is_named() {
+    let limit = Limit {
+        lo: 0.05,
+        hi: 2.4435,
+    };
+    assert_eq!(limit.take_target(0.0499925), Some(0.05));
+    assert_eq!(limit.take_target(0.049), Some(0.05));
+    assert_eq!(limit.take_target(0.4), Some(0.4));
+    assert_eq!(limit.take_target(0.0489), None);
+    assert_eq!(limit.take_target(f64::NAN), None);
+    let refused = take_targets(&[limit; 2], &[0.4, 0.0489]).unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "joint 2 at 0.0489 rad, outside its limits [0.05, 2.4435]"
+    );
 }

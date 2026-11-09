@@ -209,9 +209,10 @@ def iou(a: Sequence[float], b: Sequence[float]) -> float:
 class Detection:
     """A box turned into the world: the label, where the item is, how sure
     the detector was, the box itself, where the item is in the picture the
-    look used, and the item's width across that picture at the depth of its
-    seen point (m). Orientation is set only by a backend that resolves it;
-    the contracts make it optional for that reason."""
+    look used, the item's width across that picture at the depth of its
+    seen point (m), and the height of the item's top in the robot frame (m;
+    see `top_height`). Orientation is set only by a backend that resolves
+    it; the contracts make it optional for that reason."""
 
     label: str
     position: Vec3
@@ -219,6 +220,7 @@ class Detection:
     orientation: Optional[Quat] = None
     region: Optional[Region] = None
     width_m: Optional[float] = None
+    top_z: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -243,7 +245,10 @@ class Item:
     `region` is where the look that last saw it found it in the picture;
     none for an item the last look did not see, or one addressed by
     pose. `width_m` is its width across the picture of the last look that
-    saw it, at the depth of its seen point; none for an item no look saw.
+    saw it, at the depth of its seen point, and `top_z` the height of its
+    top in the robot frame that look measured. `width_m` is none for an
+    item no look saw; `top_z` is none for it too, and for an item that
+    place_item put down since.
 
     `position_is_grasp_point` says what `position` and `orientation` are.
     False for an item a look saw: the position is the point the camera saw
@@ -262,6 +267,7 @@ class Item:
     region: Optional[Region] = None
     position_is_grasp_point: bool = False
     width_m: Optional[float] = None
+    top_z: Optional[float] = None
 
 
 @dataclass
@@ -328,6 +334,13 @@ class Detector(Protocol):
         """Why a search is refused now, in a few words, or "" when the
         detector can search: a model still loading, a load that failed, or
         no model at all."""
+        ...
+
+    def starting(self) -> str:
+        """Why a search is refused now while the detector starts, in a few
+        words, such as a model still loading, or "": once the detector can
+        search, and when it does not become able to (no model, a load that
+        failed)."""
         ...
 
     async def detect(self, image, phrases: Sequence[str], deadline: Deadline) -> list[Box]:

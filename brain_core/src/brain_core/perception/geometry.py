@@ -15,7 +15,11 @@ error reply: `precondition_failed` before it has heard from its
 simulation, `rejected` for a device without a calibration. The brain keeps
 asking whatever the kind, so a camera node that starts again with what it
 lacked is heard: the first answers within seconds, the second gives its
-error reply for the node's whole life and the log says so once. A depth
+error reply for the node's whole life and the log says so once. So no
+answer and the error reply `precondition_failed` are reasons that end on
+their own while the source starts (`SourceStarting`), and every other
+reason holds until the source changes, which get_model of brain_model
+tells apart. A depth
 model other than "z" is a reason too: the brain reads a sample as the
 distance along the optical axis, which is what the camera model
 deprojects. The intrinsics are those of the colour stream, which the
@@ -41,6 +45,7 @@ import logging
 from ..ports import FailureKind, Refusal
 from ..waiting import unless_cancelled
 from .camera import CameraModel, Intrinsics
+from .perceiver import Perceiver, SourceReason
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +56,8 @@ MOUNTS_VACANT = "the camera_mounts slot is vacant: link the robot's camera_mount
 # The depth model the brain reads: a sample is the distance along the
 # optical axis.
 Z_DEPTH = "z"
+# The error reply of a source that has not heard yet from what it reads.
+PRECONDITION_FAILED = "precondition_failed"
 
 
 def intrinsics_from(data) -> Intrinsics:
@@ -85,32 +92,45 @@ async def camera_intrinsics(node_runner, producer, get_color_intrinsics, get_dep
         raise _not_there(f"the camera's intrinsics are unusable: {error}") from error
 
 
+class SourceStarting(Refusal):
+    """The Refusal of a source that has not given what the brain reads yet
+    and may give it on its own: it has not answered, or it gave the error
+    reply `precondition_failed`, which a camera gives before it has heard
+    from its simulation and a robot before it has measured its joints. Any
+    other Refusal of a source holds until the source changes."""
+
+
 async def _answer(service, node_runner, producer, unknown: str, unanswered: str):
     """The response data of one poll of `service`, a generated consumed
     service module; a Refusal that starts with `unknown` for its error
-    reply, or with `unanswered` for no answer at all."""
+    reply, or with `unanswered` for no answer at all. The Refusal of no
+    answer, and of the error reply `precondition_failed`, is a
+    SourceStarting."""
     try:
         return (await service.poll(node_runner, producer, INTRINSICS_TIMEOUT_S)).data
     except service.Failure as failure:
-        raise _not_there(f"{unknown}: {failure.message}") from failure
+        reason = f"{unknown}: {failure.message}"
+        if failure.kind == PRECONDITION_FAILED:
+            raise SourceStarting(FailureKind.RESOURCE_UNAVAILABLE, reason) from failure
+        raise _not_there(reason) from failure
     except Exception as error:
-        raise _not_there(f"{unanswered} ({error!r})") from error
+        raise SourceStarting(FailureKind.RESOURCE_UNAVAILABLE, f"{unanswered} ({error!r})") from error
 
 
 def _not_there(reason: str) -> Refusal:
     return Refusal(FailureKind.RESOURCE_UNAVAILABLE, reason)
 
 
-async def _learn(token, perceiver, reason_attribute: str, ask, learned) -> None:
+async def _learn(token, perceiver: Perceiver, source: SourceReason, ask, learned) -> None:
     """Asks `ask` for the camera until it answers one, then gives it to the
-    perceiver and logs it through `learned`; meanwhile the perceiver's
-    `reason_attribute` carries the last reason the answer was refused."""
+    perceiver and logs it through `learned`; meanwhile `source` carries the
+    last reason the answer was refused, and whether it is a SourceStarting."""
     reported = ""
     while not token.is_cancelled():
         try:
             camera = await ask()
         except Refusal as refusal:
-            setattr(perceiver, reason_attribute, refusal.message)
+            source.update(refusal.message, starting=isinstance(refusal, SourceStarting))
             if refusal.message != reported:
                 logger.info("%s; asking again every %g s", refusal.message, INTRINSICS_RETRY_S)
                 reported = refusal.message
@@ -127,7 +147,7 @@ async def learn_intrinsics(node_runner, token, perceiver, get_color_intrinsics, 
     carries the reason it has none."""
     producer = get_color_intrinsics.bound_producer(node_runner)
     if producer is None:
-        perceiver.intrinsics_reason = VACANT
+        perceiver.intrinsics.update(VACANT, starting=False)
         return
 
     async def ask() -> CameraModel:
@@ -143,7 +163,7 @@ async def learn_intrinsics(node_runner, token, perceiver, get_color_intrinsics, 
             k.width, k.height, k.fx, k.fy, k.cx, k.cy, k.distortion_model,
         )
 
-    await _learn(token, perceiver, "intrinsics_reason", ask, learned)
+    await _learn(token, perceiver, perceiver.intrinsics, ask, learned)
 
 
 def camera_pose_from(data, camera_name: str):
@@ -177,7 +197,7 @@ async def learn_camera_pose(node_runner, token, perceiver, camera_name: str, get
     perceiver carries the reason it is not placed."""
     producer = get_camera_poses.bound_producer(node_runner)
     if producer is None:
-        perceiver.pose_reason = MOUNTS_VACANT
+        perceiver.pose.update(MOUNTS_VACANT, starting=False)
         return
 
     async def ask() -> CameraModel:
@@ -193,4 +213,4 @@ async def learn_camera_pose(node_runner, token, perceiver, camera_name: str, get
             camera_name, *camera.pose.position, tuple(round(v, 3) for v in camera.forward()),
         )
 
-    await _learn(token, perceiver, "pose_reason", ask, learned)
+    await _learn(token, perceiver, perceiver.pose, ask, learned)

@@ -17,7 +17,7 @@ use crate::expression::Expression;
 use crate::names::{Bound, InstanceName, MemberRef, Name, NameTag, StepId};
 use crate::refusal::{At, Refusal, Refusals};
 use object::{Fields, read_value};
-use step::StepReader;
+use step::{SAFE_STEP_FIELDS, StepReader};
 
 pub use step::{Arg, Call, Param, Policy, SafeCall, Step, StepKind};
 
@@ -657,7 +657,7 @@ fn safe_call(reader: &mut StepReader, value: &Value, path: &str) -> Option<SafeC
     if !fields.has("timeout_s") {
         reader.refusals.push(Refusal::new(
             at,
-            "a call of a `safe_state` has its own `timeout_s`",
+            "a call of a `safe_state` has its own `timeout_s`, a field of the step, beside `call`",
         ));
         return None;
     }
@@ -675,7 +675,7 @@ fn safe_call(reader: &mut StepReader, value: &Value, path: &str) -> Option<SafeC
             return None;
         }
     };
-    let call = reader.call(call, &fields.at("call"), &at)?;
+    let call = reader.call(call, &fields.at("call"), &at, &SAFE_STEP_FIELDS)?;
     if call.result.is_some() || call.done_when.is_some() {
         reader.refusals.push(Refusal::new(
             at,
