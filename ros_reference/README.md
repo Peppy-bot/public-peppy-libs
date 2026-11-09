@@ -172,13 +172,14 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    whose grasp poses its goal of poses holds in every other scene, stands at least
    `min_clearance_m` apart, which the example `self_distances` measures: a nearer goal is
    one this crate refuses and MoveIt, checking them unpadded, reaches. The self model's hulls
-   enclose the meshes MoveIt checks, so MoveIt holds them apart there too. A path of both
-   arms at a clearance above 0 holds it where MoveIt's may come nearer, so the test judges
-   its length on the scenes both plan where MoveIt's path keeps the clearances, and prints
-   the mean over every path beside it. A set that holds path orientations answers scenes
-   MoveIt's plan does not, so the test judges its clearances and its length on the scenes both
-   plan where MoveIt's path keeps the clearances, and by its rate alone where fewer than two
-   remain. Each arm planning
+   enclose the meshes MoveIt checks, so MoveIt holds them apart there too. The statistical
+   test judges the success rate against MoveIt's 95% interval, and each statistic of a path,
+   the smallest clearances and the length, per scene on the scenes both plan: the 95%
+   interval of the mean of ours less MoveIt's, by Student's t, reaches 0 or the side where
+   ours is better, and where fewer than two scenes both plan, the rate alone judges. A path
+   holds the clearance where MoveIt's may come nearer, so length is judged on the scenes
+   where MoveIt's path keeps the clearances. The test prints each side's means over every
+   path it answers beside them. Each arm planning
    scenario has its own statistical test, of one arm or of both, among boxes, among objects,
    to poses or holding path orientations, which a filter runs: `cargo test --test
    ros_reference_arm_planning -- --ignored among_objects` runs the test of one arm among

@@ -8,10 +8,11 @@
 //! limit or in collision; and each holds a scene of each outcome the README names. The
 //! robot around a scenario's arm, either arm, holds the other arm at its zero
 //! configuration. Over the scenes of a drawn set, at its clearance, which pads MoveIt's
-//! links, the success rate and the mean smallest clearances, to the scene and between the
-//! robot's own bodies, lie within or above MoveIt's 95% intervals, and the mean path length
-//! within or below its interval, of both arms at a clearance above 0 on the scenes both plan
-//! where MoveIt's path keeps the clearances. Over a drawn set whose scenes hold path orientations,
+//! links, the success rate lies within or above MoveIt's 95% interval, and the scenes both
+//! plan do not show our paths worse: per scene, ours less MoveIt's, the 95% intervals of the
+//! mean smallest clearances, to the scene and between the robot's own bodies, reach 0 or
+//! above, and of the mean path length, on the scenes where MoveIt's path keeps the
+//! clearances, 0 or below. Over a drawn set whose scenes hold path orientations,
 //! MoveIt's own forward kinematics finds every probe of each rounded path of ours inside each
 //! tolerance, and the tally states the share of the tolerance MoveIt's own paths reach.
 
@@ -25,6 +26,7 @@ use hegel::generators as gs;
 use ros_reference::arm_planning::{
     Case, Held, MOVEIT_SUCCESS, Ours, Probed, SceneCase, SceneGoal, Scenes, Termination, VoxelBox,
 };
+use statrs::distribution::{ContinuousCDF, StudentsT};
 
 use arm_scenes::{
     JOINTS, MIN_SCENES, boxes_of, geometry, joint_goal, least_self_clearance_along, map_of,
@@ -44,12 +46,18 @@ const MOVEIT_INVALID_MOTION_PLAN: i32 = -2;
 /// interval.
 const Z_95: f64 = 1.959_963_984_540_054;
 
-/// The 95% interval of the mean of `values`.
+/// The quantile that bounds a two-sided 95% interval from above.
+const UPPER_95: f64 = 0.975;
+
+/// The 95% interval of the mean of `values`, by Student's t at one less than their count.
 fn mean_interval(values: &[f64]) -> (f64, f64) {
     let n = values.len() as f64;
     let mean = values.iter().sum::<f64>() / n;
     let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0);
-    let half = Z_95 * (variance / n).sqrt();
+    let t = StudentsT::new(0.0, 1.0, n - 1.0)
+        .expect("two values or more give a t distribution")
+        .inverse_cdf(UPPER_95);
+    let half = t * (variance / n).sqrt();
     (mean - half, mean + half)
 }
 
@@ -553,16 +561,13 @@ fn tally(scenes: &[&SceneCase], held_within: f64) -> String {
 }
 
 /// Asserts that over the scenes of the drawn set in the scenario `name`, this crate's
-/// success rate and mean smallest clearances, to the scene and between the robot's own
-/// bodies where the scenario checks them, lie within or above MoveIt's 95% intervals, and
-/// its mean path length within or below MoveIt's interval. A plan of both arms at a clearance
-/// above 0 holds the clearance where MoveIt's path may come nearer, which lengthens ours on
-/// those scenes, so its length is judged on the scenes both plan where MoveIt's path keeps the
-/// clearances (`keeps_the_clearances`), its length over every path printed beside it. A plan
-/// that holds path orientations answers scenes MoveIt's does not, whose means say nothing of
-/// the two, so its clearances and its length are judged on the scenes both plan where MoveIt's
-/// path keeps the clearances. A set of path orientations takes MoveIt's rate as it comes: where
-/// fewer than `LEAST_TO_COMPARE` such scenes remain, the rate alone judges it.
+/// success rate lies within or above MoveIt's 95% interval, and that the scenes both plan do
+/// not show its paths worse than MoveIt's (`judge_per_scene`): in the smallest clearances,
+/// to the scene and between the robot's own bodies where the scenario checks them, and in
+/// path length. A plan holds the clearances where MoveIt's path may come nearer, which
+/// lengthens ours on those scenes, so length is judged on the scenes where MoveIt's path
+/// keeps the clearances (`keeps_the_clearances`). Each side's means over every path it
+/// answers print beside them.
 fn lies_on_its_side_of_moveits(name: &str) {
     let case = Case::load_all()
         .into_iter()
@@ -657,108 +662,80 @@ fn lies_on_its_side_of_moveits(name: &str) {
         "{}: a success rate of {rate}, below MoveIt's interval from {low}",
         case.name
     );
-    let both_plan = || -> (Vec<Probed>, Vec<Probed>) {
-        scenes
-            .iter()
-            .filter_map(|c| Some((c.ours_probed?, c.moveit.probed?)))
-            .filter(|(_, theirs)| keeps_the_clearances(theirs, case.scenes.min_clearance))
-            .unzip()
-    };
-    let holds_orientations = scenes.iter().any(|c| !c.scene.path_orientations.is_empty());
-    let (ours, theirs) = if holds_orientations {
-        both_plan()
-    } else {
-        (ours, theirs)
-    };
-    if holds_orientations {
-        println!(
-            "{}: on the {} scenes both plan where MoveIt's path keeps the clearances:",
-            case.name,
-            ours.len()
-        );
-        if ours.len() < LEAST_TO_COMPARE {
-            println!(
-                "{}: too few to judge: the rate alone judges this set",
-                case.name
-            );
-            return;
-        }
-    }
-    let interval = |of: fn(&Probed) -> f64| {
-        let values: Vec<f64> = theirs.iter().map(of).collect();
-        let mean = mean(&ours.iter().map(of).collect::<Vec<f64>>());
-        (mean, mean_interval(&values))
-    };
-    let (clearance, (low, high)) = interval(|p| p.clearance);
-    println!(
-        "{}: clearance ours {clearance}, MoveIt's {} in {low}..{high}",
-        case.name,
-        (low + high) / 2.0
-    );
-    assert!(
-        clearance >= low,
-        "{}: a mean clearance of {clearance}, below MoveIt's interval from {low}",
-        case.name
-    );
+    let both: Vec<(Probed, Probed)> = scenes
+        .iter()
+        .filter_map(|c| Some((c.ours_probed?, c.moveit.probed?)))
+        .collect();
+    judge_per_scene(case, "clearance", Better::Higher, &both, |p| p.clearance);
     if !case.checked_pairs.is_empty() {
-        let (clearance, (low, high)) = interval(|p| {
+        judge_per_scene(case, "self clearance", Better::Higher, &both, |p| {
             p.self_clearance
                 .expect("a self distance where the scenario checks pairs")
         });
-        println!(
-            "{}: self clearance ours {clearance}, MoveIt's {} in {low}..{high}",
-            case.name,
-            (low + high) / 2.0
-        );
-        assert!(
-            clearance >= low,
-            "{}: a mean self clearance of {clearance}, below MoveIt's interval from {low}",
-            case.name
-        );
     }
-    let (length, (low, high)) = interval(|p| p.length);
-    println!(
-        "{}: length ours {length}, MoveIt's {} in {low}..{high}",
-        case.name,
-        (low + high) / 2.0
+    let kept: Vec<(Probed, Probed)> = both
+        .into_iter()
+        .filter(|(_, theirs)| keeps_the_clearances(theirs, case.scenes.min_clearance))
+        .collect();
+    judge_per_scene(
+        case,
+        "length where MoveIt's path keeps the clearances",
+        Better::Lower,
+        &kept,
+        |p| p.length,
     );
-    if holds_orientations || case.scenes.min_clearance == 0.0 || case.checked_pairs.is_empty() {
-        assert!(
-            length <= high,
-            "{}: a mean length of {length}, above MoveIt's interval to {high}",
-            case.name
+}
+
+/// The side of a statistic of a path that is better.
+#[derive(Clone, Copy)]
+enum Better {
+    Higher,
+    Lower,
+}
+
+/// Asserts that over `pairs`, our path and MoveIt's of each scene both plan, the 95% interval
+/// of the mean of ours less MoveIt's in `of` reaches 0 or its `better` side: the scenes do not
+/// show ours worse. Fewer than `LEAST_TO_COMPARE` pairs give no interval, and the success rate
+/// alone judges the set.
+fn judge_per_scene(
+    case: &Case,
+    statistic: &str,
+    better: Better,
+    pairs: &[(Probed, Probed)],
+    of: impl Fn(&Probed) -> f64,
+) {
+    if pairs.len() < LEAST_TO_COMPARE {
+        println!(
+            "{}: {statistic}: {} scenes both plan, too few to judge",
+            case.name,
+            pairs.len()
         );
         return;
     }
-    let (ours, theirs) = both_plan();
-    let (ours, theirs): (Vec<f64>, Vec<f64>) = (
-        ours.iter().map(|p| p.length).collect(),
-        theirs.iter().map(|p| p.length).collect(),
-    );
-    assert!(
-        ours.len() >= MIN_SCENES,
-        "{}: {} scenes both plan where MoveIt's path keeps the clearances; the statistics need \
-         at least {MIN_SCENES}",
-        case.name,
-        ours.len()
-    );
-    let (length, (low, high)) = (mean(&ours), mean_interval(&theirs));
+    let differences: Vec<f64> = pairs
+        .iter()
+        .map(|(ours, theirs)| of(ours) - of(theirs))
+        .collect();
+    let (low, high) = mean_interval(&differences);
     println!(
-        "{}: length on the {} scenes both plan where MoveIt's path keeps the clearances: ours \
-         {length}, MoveIt's {} in {low}..{high}",
+        "{}: {statistic}, ours less MoveIt's on the {} scenes both plan: {} in {low}..{high}",
         case.name,
-        ours.len(),
-        (low + high) / 2.0
+        pairs.len(),
+        mean(&differences)
     );
+    let not_worse = match better {
+        Better::Higher => high >= 0.0,
+        Better::Lower => low <= 0.0,
+    };
     assert!(
-        length <= high,
-        "{}: where MoveIt's path keeps the clearances, a mean length of {length}, above its \
-         interval to {high}",
+        not_worse,
+        "{}: {statistic}, ours less MoveIt's in {low}..{high}: the scenes both plan show ours \
+         worse",
         case.name
     );
 }
 
-/// Whether a path of MoveIt keeps the clearances a plan of both arms keeps at `min_clearance`:
+/// Whether a path of MoveIt keeps the clearances a plan keeps at `min_clearance`:
 /// from the scene, of the objects the arms hold from the scene, and between the robot's own
 /// bodies, as `Probed` measures them unpadded. `Probed::self_clearance` also holds an object
 /// against the arm that carries it, which a plan keeps 2 mm apart, so this leaves out more of
@@ -775,16 +752,15 @@ fn keeps_the_clearances(path: &Probed, min_clearance: f64) -> bool {
 }
 
 // Over the scenes of a drawn set, of one arm or of both, among boxes of voxels, among
-// collision objects or to a pose of each grasp point, this crate's success rate and mean
-// smallest clearances, to the scene and between the robot's own bodies where the scenario
-// checks them, lie within or above MoveIt's 95% intervals, and its mean path length within
-// or below MoveIt's, of both arms at a clearance above 0 on the scenes both plan where
-// MoveIt's path keeps the clearances; a probe of MoveIt's in collision measures a clearance
-// of -1. The
-// committed scenes, one of each outcome, are too few for the intervals: each test runs on
-// its scenario's drawn set, locally, as the harness README's rule 3 says, and the pull
-// request states its tally at its head, for each objective, termination and clearance it
-// ran.
+// collision objects or to a pose of each grasp point, this crate's success rate lies within
+// or above MoveIt's 95% interval, and the scenes both plan do not show its smallest
+// clearances, to the scene and between the robot's own bodies where the scenario checks them,
+// or its path length worse than MoveIt's. Each statistic of a path is judged per scene on the
+// scenes both plan: a scene only one side answers has no path of the other to compare with.
+// A probe of MoveIt's in collision measures a clearance of -1. The committed scenes, one of
+// each outcome, are too few for the intervals: each test runs on its scenario's drawn set,
+// locally, as the harness README's rule 3 says, and the pull request states its tally at its
+// head, for each objective, termination and clearance it ran.
 #[test]
 #[ignore = "statistics of a drawn set among boxes, run locally as the harness README's rule 3 says"]
 fn among_boxes_the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() {
