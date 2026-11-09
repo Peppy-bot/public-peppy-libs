@@ -3,11 +3,10 @@
 use std::path::Path;
 use std::sync::LazyLock;
 
+use chain_kinematics::{Chain, ChainSpec, JointSelection};
 use collision_geometry::chain::ChainGeometry;
 use openarm_description::{ArmPair, HardwareVersion, Side, home};
-use self_collision_model::{FingerError, PairSpec, SelfCollisionModel, openarm};
-use srs_model::Arm;
-use srs_model::chain_kinematics::{ChainSpec, JointSelection};
+use self_collision_model::{FingerError, PairSpec, SelfCollisionModel, openarm, openarm_fingers};
 
 /// The directory of `version`'s collision meshes, written once per test binary.
 fn meshes_dir(version: HardwareVersion) -> &'static str {
@@ -24,6 +23,15 @@ fn meshes_dir(version: HardwareVersion) -> &'static str {
     }
 }
 
+/// One side's arm of OpenArm `version`, from its base link to its grasp point.
+fn chain_spec(version: HardwareVersion, side: Side) -> ChainSpec<'static> {
+    ChainSpec {
+        base_link: Some(version.base_link(side)),
+        tip_link: version.tcp_link(side),
+        joints: JointSelection::PathOrder,
+    }
+}
+
 // Each hardware generation's model builds from its embedded description, checks pairs,
 // and finds both arms at their zero configuration clear of each other and the torso.
 #[test]
@@ -34,8 +42,7 @@ fn each_generation_builds_from_its_description() {
             !model.checked_pairs().is_empty(),
             "{version:?} checks no pair"
         );
-        let zero = [0.0; 7];
-        let proximity = model.min_distance(&zero, &zero).expect("a distance");
+        let proximity = model.min_distance(&[[0.0; 7]; 2]).expect("a distance");
         assert!(
             proximity.distance > 0.0,
             "{version:?} collides at zero: {}",
@@ -70,12 +77,12 @@ fn the_fingers_hang_where_the_model_places_them() {
         [-0.2, 0.3, -0.1, 0.9, 0.4, -0.3, -0.5],
     );
     for (left, right) in [(0.0, 0.0), (0.6, 0.2), (1.0, 1.0)] {
-        model.set_gripper_openings(left, right);
+        model.set_gripper_openings(&[left, right]);
         let fingers: Vec<_> = Side::BOTH
             .into_iter()
             .flat_map(|side| {
                 model
-                    .fingers(side, arms[side].carried())
+                    .fingers(side.index(), arms[side].carried())
                     .expect("each arm's chain carries its own fingers")
                     .into_iter()
                     .map(|f| (f.name.to_string(), side, f.segment, f.offset))
@@ -87,7 +94,7 @@ fn the_fingers_hang_where_the_model_places_them() {
             assert_eq!(on_side, 2, "{side:?} has {on_side} fingers");
         }
         assert!(fingers.iter().all(|(_, _, segment, _)| *segment == 6));
-        let placed = model.world_pieces(&q_left, &q_right).expect("placed");
+        let placed = model.world_pieces(&[q_left, q_right]).expect("placed");
         let pose_of = |name: &str| {
             *placed
                 .iter()
@@ -122,7 +129,7 @@ fn a_closed_finger_hangs_where_the_chain_carries_it() {
     for version in [HardwareVersion::V1, HardwareVersion::V2] {
         let meshes = meshes_dir(version);
         let mut model = openarm(version, meshes).expect("the model builds");
-        model.set_gripper_openings(0.0, 0.0);
+        model.set_gripper_openings(&[0.0, 0.0]);
         for side in Side::BOTH {
             let chain = ChainGeometry::<7>::from_urdf(
                 version.urdf(),
@@ -137,7 +144,7 @@ fn a_closed_finger_hangs_where_the_chain_carries_it() {
             let carried = chain.carried();
             assert_eq!(carried.len(), 2, "{version:?} {side:?} carries two fingers");
             let fingers = model
-                .fingers(side, carried)
+                .fingers(side.index(), carried)
                 .expect("each arm's chain carries its own fingers");
             for (part, finger) in carried.iter().zip(fingers) {
                 let at_zero = part.rider();
@@ -215,7 +222,7 @@ fn a_part_the_model_holds_as_no_finger_of_the_arm_is_refused() {
             .find(|part| part.rider().name == link)
             .unwrap_or_else(|| panic!("the strange chain carries {link}"));
         model
-            .fingers(Side::Left, std::slice::from_ref(part))
+            .fingers(Side::Left.index(), std::slice::from_ref(part))
             .expect_err("a part of another robot is refused")
     };
     let named = |link: &str| link.to_string();
@@ -252,11 +259,11 @@ fn a_part_the_model_holds_as_no_finger_of_the_arm_is_refused() {
     let first = left.carried()[0].rider().name.to_string();
     assert_eq!(
         model
-            .fingers(Side::Right, left.carried())
+            .fingers(Side::Right.index(), left.carried())
             .expect_err("the left arm's fingers are refused for the right arm"),
-        FingerError::OtherArm {
+        FingerError::OtherChain {
             link: first,
-            side: Side::Right
+            chain: Side::Right.index()
         }
     );
 }
@@ -284,19 +291,19 @@ fn an_arms_distance_counts_the_pairs_it_rides() {
     let mut right_nearest_turns = 0;
     for turn in (-15..=15).map(|k| f64::from(k) * 0.1) {
         let right = [0.0, turn, 0.0, 0.0, 0.0, 0.0, 0.0];
-        let robot = model.min_distance(&left, &right).expect("a distance");
+        let robot = model.min_distance(&[left, right]).expect("a distance");
         let (nearest, a, b) = (
             robot.distance,
             robot.link_a.to_string(),
             robot.link_b.to_string(),
         );
         let of_left = model
-            .min_distance_of_arm(Side::Left, &left, &right)
+            .min_distance_of_chain(Side::Left.index(), &[left, right])
             .expect("a distance");
         assert!(rides(Side::Left, of_left.link_a) || rides(Side::Left, of_left.link_b));
         let of_left = of_left.distance;
         let of_right = model
-            .min_distance_of_arm(Side::Right, &left, &right)
+            .min_distance_of_chain(Side::Right.index(), &[left, right])
             .expect("a distance");
         assert!(rides(Side::Right, of_right.link_a) || rides(Side::Right, of_right.link_b));
         assert_eq!(nearest, of_left.min(of_right.distance), "turn {turn}");
@@ -352,12 +359,12 @@ fn an_arms_distance_alone_sets_the_other_arm_aside() {
     for (left, right) in postures {
         for side in Side::BOTH {
             let own = model
-                .min_distance_of_arm(side, &left, &right)
+                .min_distance_of_chain(side.index(), &[left, right])
                 .expect("a distance");
             let own_crosses = rides(side.other(), own.link_a) || rides(side.other(), own.link_b);
             let own = own.distance;
             let alone = model
-                .min_distance_of_arm_alone(side, &left, &right)
+                .min_distance_of_chain_alone(side.index(), &[left, right])
                 .expect("a distance");
             assert!(rides(side, alone.link_a) || rides(side, alone.link_b));
             assert!(!rides(side.other(), alone.link_a) && !rides(side.other(), alone.link_b));
@@ -393,13 +400,15 @@ const LIMIT_STEPS: u32 = 24;
 fn the_pairs_v2_leaves_out_stay_apart_within_the_joint_limits() {
     let version = HardwareVersion::V2;
     let meshes = meshes_dir(version);
+    let fingers = openarm_fingers(version);
     let builder = || {
         SelfCollisionModel::builder(
             version.urdf(),
             meshes,
-            version.base_link(Side::Left),
-            version.base_link(Side::Right),
+            Side::BOTH.map(|side| chain_spec(version, side)),
+            version.yoked_joints(),
         )
+        .fingers(&fingers)
         .regions(version.torso_body(), version.torso_regions())
     };
     let left_out = |a: &str, b: &str| {
@@ -425,7 +434,8 @@ fn the_pairs_v2_leaves_out_stay_apart_within_the_joint_limits() {
         version.never_touching_pairs().len()
     );
     for side in Side::BOTH {
-        let limits = Arm::from_urdf(version.urdf(), version.base_link(side))
+        let robot = urdf_rs::read_from_string(version.urdf()).expect("the URDF parses");
+        let limits = Chain::<7>::from_urdf(&robot, &chain_spec(version, side))
             .expect("the arm")
             .limits();
         let grid = |j: usize| {
@@ -439,7 +449,7 @@ fn the_pairs_v2_leaves_out_stay_apart_within_the_joint_limits() {
             let mut arms = ArmPair::new(home(Side::Left), home(Side::Right));
             (arms[side][0], arms[side][1], arms[side][2]) = (j1, j2, j3);
             let nearest = model
-                .min_distance_of_arm(side, &arms[Side::Left], &arms[Side::Right])
+                .min_distance_of_chain(side.index(), &[arms[Side::Left], arms[Side::Right]])
                 .expect("a distance");
             assert!(
                 nearest.distance >= NEVER_TOUCHING_LEAST_M,
@@ -462,9 +472,9 @@ const PLANNER_SELF_CLEARANCE_M: f64 = 0.042;
 fn home_with_the_grippers_closed_stands_past_the_planners_self_clearance() {
     let version = HardwareVersion::V2;
     let mut model = openarm(version, meshes_dir(version)).expect("the model builds");
-    model.set_gripper_openings(0.0, 0.0);
+    model.set_gripper_openings(&[0.0, 0.0]);
     let nearest = model
-        .min_distance(&home(Side::Left), &home(Side::Right))
+        .min_distance(&[home(Side::Left), home(Side::Right)])
         .expect("a distance");
     assert!(
         nearest.distance > PLANNER_SELF_CLEARANCE_M,
@@ -483,9 +493,9 @@ fn at_home_a_finger_crosses_the_planners_self_clearance_of_the_torso_from_openin
     let version = HardwareVersion::V2;
     let mut model = openarm(version, meshes_dir(version)).expect("the model builds");
     let mut nearest_at = |opening: f64| {
-        model.set_gripper_openings(opening, opening);
+        model.set_gripper_openings(&[opening, opening]);
         let nearest = model
-            .min_distance(&home(Side::Left), &home(Side::Right))
+            .min_distance(&[home(Side::Left), home(Side::Right)])
             .expect("a distance");
         (
             nearest.distance,

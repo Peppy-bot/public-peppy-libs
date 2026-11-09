@@ -22,13 +22,14 @@
 //! magnitude outside these brackets.
 
 use self_collision_model::nalgebra::Vector3;
-use self_collision_model::{Placed, SelfCollisionModel};
-use srs_model::JointVec;
+use self_collision_model::{Joints, OpenArmModel, Placed};
 
 #[path = "fixtures/openarm.rs"]
 mod openarm;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+
+const ARM_DOF: usize = 7;
 
 /// Fibonacci-sphere direction count. 2000 directions give ~4.4e-3 sr per cell
 /// (angular radius ~2.2 degrees), so the separation lower bound is tight to
@@ -38,20 +39,16 @@ const DIRECTIONS: usize = 2000;
 /// Slack absorbing the direction fan's angular resolution plus float noise.
 const ORACLE_SLACK: f64 = 1.5e-3;
 
-fn model() -> SelfCollisionModel {
-    SelfCollisionModel::builder_from_file(
-        &format!("{FIXTURES}/openarm_v10.urdf"),
-        openarm::MESHES,
-        "openarm_left_link0",
-        "openarm_right_link0",
-    )
-    .expect("read fixture urdf")
-    .regions(
-        openarm::VERSION.torso_body(),
-        openarm::VERSION.torso_regions(),
-    )
-    .build()
-    .expect("fixture model")
+fn model() -> OpenArmModel {
+    let urdf =
+        std::fs::read_to_string(format!("{FIXTURES}/openarm_v10.urdf")).expect("read fixture urdf");
+    openarm::builder(&urdf)
+        .regions(
+            openarm::VERSION.torso_body(),
+            openarm::VERSION.torso_regions(),
+        )
+        .build()
+        .expect("fixture model")
 }
 
 fn fibonacci_directions() -> Vec<Vector3<f64>> {
@@ -104,29 +101,29 @@ fn reported_distances_sit_inside_independent_support_bounds() {
 
     // Pose sweep spanning clear, in-band, and penetrating regimes, at three
     // openings so the live finger placement is inside the check.
-    let mut poses: Vec<(JointVec, JointVec)> = Vec::new();
+    let mut poses: Vec<Joints<ARM_DOF, 2>> = Vec::new();
     for t in [0.0, 0.3, 0.6, 0.9, 1.05, 1.2, 1.5] {
-        poses.push((
+        poses.push([
             [0.0, 0.0, t, 0.4, 0.0, 0.0, 0.0],
             [0.0, 0.0, -t, 0.4, 0.0, 0.0, 0.0],
-        ));
+        ]);
     }
     for t in [0.2, 0.5, 0.8] {
-        poses.push((
+        poses.push([
             [0.15, 0.1, t, 0.5, -0.2, 0.1, 0.0],
             [-0.05, -0.25, -t, 0.35, 0.1, -0.1, 0.0],
-        ));
-        poses.push((
+        ]);
+        poses.push([
             [0.0, t * 0.5, 0.9, 0.45, 0.1, 0.0, 0.2],
             [0.0, -t * 0.5, -1.05, 0.4, -0.1, 0.1, 0.0],
-        ));
+        ]);
     }
 
     for opening in [0.0, 0.5, 1.0] {
-        m.set_gripper_openings(opening, opening);
-        for (ql, qr) in &poses {
+        m.set_gripper_openings(&[opening, opening]);
+        for q in &poses {
             let (d, link_a, link_b, on_a, on_b) = {
-                let p = m.min_distance(ql, qr).expect("query");
+                let p = m.min_distance(q).expect("query");
                 (
                     p.distance,
                     p.link_a.to_string(),
@@ -135,7 +132,7 @@ fn reported_distances_sit_inside_independent_support_bounds() {
                     p.on_b,
                 )
             };
-            let pieces = m.world_pieces(ql, qr).expect("pieces");
+            let pieces = m.world_pieces(q).expect("pieces");
             let of = |name: &str| -> &[Placed] {
                 &pieces.iter().find(|(n, _)| *n == name).expect("body").1
             };
@@ -150,7 +147,8 @@ fn reported_distances_sit_inside_independent_support_bounds() {
                 })
                 .fold(f64::NEG_INFINITY, f64::max);
             let context = format!(
-                "pose ql={ql:?} qr={qr:?} opening {opening}: {link_a} vs {link_b} d={d:+.5}"
+                "pose ql={:?} qr={:?} opening {opening}: {link_a} vs {link_b} d={d:+.5}",
+                q[0], q[1]
             );
 
             if d > 0.0 {
@@ -193,9 +191,11 @@ fn every_checked_pair_matches_the_oracle_at_a_near_contact_pose() {
     // (wrists converging, mid opening), audit every checked pair against the
     // direction fan.
     let mut m = model();
-    m.set_gripper_openings(0.5, 0.5);
-    let ql: JointVec = [0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2];
-    let qr: JointVec = [0.0, 0.0, -1.05, 0.4, -0.1, 0.1, 0.0];
+    m.set_gripper_openings(&[0.5, 0.5]);
+    let q = [
+        [0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2],
+        [0.0, 0.0, -1.05, 0.4, -0.1, 0.1, 0.0],
+    ];
 
     let dirs = fibonacci_directions();
     let checked: Vec<(String, String)> = m
@@ -208,8 +208,8 @@ fn every_checked_pair_matches_the_oracle_at_a_near_contact_pose() {
     // separated, the vertex-pair bound is a valid upper bound on that (then
     // positive) distance, so a reported minimum above it means the model
     // missed a closer pair.
-    let reported = m.min_distance(&ql, &qr).expect("query").distance;
-    let pieces = m.world_pieces(&ql, &qr).expect("pieces");
+    let reported = m.min_distance(&q).expect("query").distance;
+    let pieces = m.world_pieces(&q).expect("pieces");
     let of =
         |name: &str| -> &[Placed] { &pieces.iter().find(|(n, _)| *n == name).expect("body").1 };
     for (la, lb) in &checked {
@@ -244,15 +244,17 @@ fn every_checked_pair_matches_the_oracle_at_a_near_contact_pose() {
 #[test]
 fn field_regression_pose_reads_clear_within_oracle_brackets() {
     let mut m = model();
-    m.set_gripper_openings(0.0, 0.0);
-    let ql: JointVec = [0.0, 0.0, 0.1075, 0.1575, 0.0, 0.0, 0.0];
-    let qr: JointVec = [0.0, 0.0, -0.1075, 0.1575, 0.0, 0.0, 0.0];
+    m.set_gripper_openings(&[0.0, 0.0]);
+    let q = [
+        [0.0, 0.0, 0.1075, 0.1575, 0.0, 0.0, 0.0],
+        [0.0, 0.0, -0.1075, 0.1575, 0.0, 0.0, 0.0],
+    ];
     let (d, la, lb) = {
-        let p = m.min_distance(&ql, &qr).expect("query");
+        let p = m.min_distance(&q).expect("query");
         (p.distance, p.link_a.to_string(), p.link_b.to_string())
     };
     let dirs = fibonacci_directions();
-    let pieces = m.world_pieces(&ql, &qr).expect("pieces");
+    let pieces = m.world_pieces(&q).expect("pieces");
     let of =
         |name: &str| -> &[Placed] { &pieces.iter().find(|(n, _)| *n == name).expect("body").1 };
     let max_sep = dirs

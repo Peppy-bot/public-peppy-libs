@@ -158,7 +158,7 @@ fn the_robot_around_either_arm_holds_the_other_arm_at_zero() {
     let mut model = self_collision_model::openarm(HardwareVersion::V2, meshes)
         .expect("the self model of OpenArm v2");
     let at_zero: BTreeMap<String, Vec<Point3<f64>>> = model
-        .world_pieces(&[0.0; 7], &[0.0; 7])
+        .world_pieces(&[[0.0; 7]; 2])
         .expect("finite joint positions")
         .into_iter()
         .map(|(link, pieces)| {

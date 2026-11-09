@@ -234,9 +234,10 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    all joints at zero, at their lower limits, at their upper limits, and one drawn inside
    them, with four probe points a link at each, and at the first, for each padding, the
    points 10 µm inside and outside the surface of each grown primitive; for self distance,
-   the three configurations of OpenArm v2, of the zero configuration, the lower limits,
-   the upper limits and thirty drawn inside them, that put each pair of links in each
-   state, apart and in contact, that any of them puts it in; for path timing, one path of
+   the three configurations of OpenArm v2 and the three of SO-101, each robot's of its
+   zero configuration, its lower limits, its upper limits and thirty drawn inside them,
+   that put each pair of links in each state, apart and in contact, that any of them puts
+   it in; for path timing, one path of
    each case of `tools/draw_path_timing.py`, a cornered path blended at each of the four
    deviations, a short-leg path, a near-reversal path, a straight run and a cruising one,
    a path that turns back, two corners either side of TOTG's turning-back threshold and
@@ -367,19 +368,19 @@ arm64 host.
 3. The parity test of its kind lists the scenarios of the kind from `scenarios/`, so it
    runs on the new one. The forward kinematics parity test poses chains of 1 to 7 joints,
    the chain collision parity test chains of 7 joints, the self distance parity test
-   builds the self model of OpenArm v2 and refuses a scenario that names another URDF, the
-   path timing parity test asks each scenario for cornered paths that TOTG blends at
-   deviations of 0.01, 0.05, 0.1 and 0.2, a straight run, a path that it refuses, a path
-   with a corner that it runs straight on, turns that bracket its turning-back threshold
-   within 0.02 degrees, and a path with corners at the deviation of execute_joint_path,
-   the planning parity test asks each scenario for a plan of each planner that finds a
-   path and one that finds none, the occupancy parity test asks each scenario's map for at
-   least 199 voxels, the arm planning parity test asks each scenario for a scene of each
-   outcome that it names, and each scenario of both arms for a scene of each outcome of a
-   plan of both, and the planning scene parity test builds the self model of
-   OpenArm v2, refuses a scenario that names another URDF or poses another arm, and asks
-   each scenario for a pair of each case that it names, and the Cartesian paths parity
-   test asks each scenario for a case of each behavior that it names.
+   builds the self model of OpenArm v2 or of SO-101 and refuses a scenario that names
+   another URDF, the path timing parity test asks each scenario for cornered paths that
+   TOTG blends at deviations of 0.01, 0.05, 0.1 and 0.2, a straight run, a path that it
+   refuses, a path with a corner that it runs straight on, turns that bracket its
+   turning-back threshold within 0.02 degrees, and a path with corners at the deviation of
+   execute_joint_path, the planning parity test asks each scenario for a plan of each
+   planner that finds a path and one that finds none, the occupancy parity test asks each
+   scenario's map for at least 199 voxels, the arm planning parity test asks each scenario
+   for a scene of each outcome that it names, and each scenario of both arms for a scene
+   of each outcome of a plan of both, and the planning scene parity test builds the self
+   model of OpenArm v2, refuses a scenario that names another URDF or poses another arm,
+   and asks each scenario for a pair of each case that it names, and the Cartesian paths
+   parity test asks each scenario for a case of each behavior that it names.
 
 A routine test of `ros_reference` fails when a scenario has no reference output, a
 reference output has no scenario or no digest, or a scenario, a URDF or a mesh differs

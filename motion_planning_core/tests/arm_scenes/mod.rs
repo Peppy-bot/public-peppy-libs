@@ -28,13 +28,13 @@ use motion_planning_core::{
 use nalgebra::Isometry3;
 use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
 use ompl_bridge::Planner;
-use openarm_description::{ARM_DOF, ArmOrder, ArmPair, DUAL_DOF, HardwareVersion, Side};
+use openarm_description::{ARM_DOF, ARMS, ArmOrder, ArmPair, DUAL_DOF, HardwareVersion, Side};
 use ros_reference::arm_planning::{
     ArmChain, Held, HeldOrientation, Objective, Ours, Scene as ReferenceScene, SceneGoal, Scenes,
     Termination, VoxelBox,
 };
 use ros_reference::planning_scene::{Object, Shape};
-use self_collision_model::{CollisionError, Proximity, SelfCollisionModel};
+use self_collision_model::{CollisionError, OpenArmModel, Proximity};
 
 pub const JOINTS: usize = ARM_DOF;
 /// The fewest scenes of a drawn set whose statistics a parity test compares: where the
@@ -118,7 +118,7 @@ pub fn samplers(arms: &[Arm<JOINTS>]) -> Vec<IkGoalSampler<JOINTS>> {
 /// model of their plans; and the URDF, whose chain to the grasp link of an arm of no chain
 /// places the objects that link holds.
 pub struct Standing {
-    model: SelfCollisionModel,
+    model: OpenArmModel,
     own_body: Option<OwnBody>,
     order: ArmOrder,
     urdf: String,
@@ -219,7 +219,7 @@ impl Standing {
         let at = self.order.placed(start, &AT_ZERO);
         let parts = self
             .model
-            .world_pieces(&at.left, &at.right)
+            .world_pieces(&at.into_array())
             .expect("finite joint positions")
             .into_iter()
             .filter(|(link, _)| !moving.contains(link))
@@ -242,14 +242,14 @@ impl Standing {
 /// zero configuration, and the grippers' fingers closed, as MoveIt's default state holds
 /// them.
 struct OwnBody {
-    model: Mutex<SelfCollisionModel>,
+    model: Mutex<OpenArmModel>,
     order: ArmOrder,
 }
 
 impl OwnBody {
-    fn new(model: &SelfCollisionModel, order: &ArmOrder) -> Self {
+    fn new(model: &OpenArmModel, order: &ArmOrder) -> Self {
         let mut model = model.clone();
-        model.set_gripper_openings(FINGERS_CLOSED, FINGERS_CLOSED);
+        model.set_gripper_openings(&[FINGERS_CLOSED; ARMS]);
         Self {
             model: Mutex::new(model),
             order: order.clone(),
@@ -275,15 +275,15 @@ impl OwnBody {
         moving: Moving,
         read: impl FnOnce(Result<Proximity<'_>, CollisionError>) -> T,
     ) -> T {
-        let at = self.order.placed(q, &AT_ZERO);
+        let at = self.order.placed(q, &AT_ZERO).into_array();
         let sides = self.order.sides();
         let mut model = self.model.lock().expect("the self model");
         read(match moving {
-            Moving::All => model.min_distance(&at.left, &at.right),
+            Moving::All => model.min_distance(&at),
             Moving::Arm(k) if k + 1 == sides.len() => {
-                model.min_distance_of_arm(sides[k], &at.left, &at.right)
+                model.min_distance_of_chain(sides[k].index(), &at)
             }
-            Moving::Arm(k) => model.min_distance_of_arm_alone(sides[k], &at.left, &at.right),
+            Moving::Arm(k) => model.min_distance_of_chain_alone(sides[k].index(), &at),
         })
     }
 

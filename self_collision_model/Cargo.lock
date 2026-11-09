@@ -491,12 +491,14 @@ dependencies = [
 name = "self_collision_model"
 version = "0.1.0"
 dependencies = [
+ "chain_kinematics",
  "collision_geometry",
  "openarm_description",
  "ros_reference",
  "serde_json",
- "srs_model",
+ "so101_description",
  "thiserror 2.0.21",
+ "urdf-rs",
 ]
 
 [[package]]
@@ -590,12 +592,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "srs_model"
+name = "so101_description"
 version = "0.1.0"
 dependencies = [
- "chain_kinematics",
- "nalgebra",
- "thiserror 2.0.21",
  "urdf-rs",
 ]
 

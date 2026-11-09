@@ -576,7 +576,7 @@ fn map_of_episode(planner: &Planner, robot: &Robot, episode: &Episode) -> (Voxel
             continue;
         };
         let (arms, openings) = arms_and_openings(&values);
-        model.set_gripper_openings(openings[Side::Left], openings[Side::Right]);
+        model.set_gripper_openings(&openings.into_array());
         let fingers = robot.fingers(&model);
         let bytes = std::fs::read(samples)
             .unwrap_or_else(|e| panic!("the samples {}: {e}", samples.display()));

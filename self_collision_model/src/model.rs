@@ -1,25 +1,23 @@
-//! The runtime model: both arms' convex-hull pieces placed by forward
+//! The runtime model: every chain's convex-hull pieces placed by forward
 //! kinematics and the minimum signed distance over the checked pairs.
 //!
-//! Built once from the URDF plus its collision meshes, queried every tick with
-//! the two joint configurations. A query is FK plus GJK over the checked
+//! Built once from the URDF plus its collision meshes, queried with the joint
+//! configuration of every chain. A query is FK plus GJK over the checked
 //! piece-pairs; where pieces overlap, EPA recovers the penetration depth, so
 //! the distance is signed and continuous through contact.
 //!
 //! The checked pairs are derived at construction from the URDF: every body
 //! pair except those that cannot inform (two fixed bodies never change
-//! distance) or that touch by construction (URDF-adjacent, joint-yoked bodies).
-//! The hulls are tight: the reported distance is the true surface clearance, with
-//! no safety margin baked into the geometry. Keeping the arms apart is the
-//! caller's job (a deployment band over the reported distance), not a margin the
-//! model papers over.
+//! distance) or that touch by construction (bodies of one chain within the robot's
+//! yoked joints of each other), less the robot's never-touching pairs. The hulls
+//! are tight: the reported distance is the true surface clearance, with no safety
+//! margin baked into the geometry. Keeping the bodies apart is the caller's job (a
+//! band over the reported distance).
 
 use std::collections::{BTreeMap, HashMap};
 
-use openarm_description::Side;
-
 use crate::nalgebra::{Isometry3, Point3, Unit, Vector3};
-use srs_model::{ARM_DOF, Arm, JointVec};
+use chain_kinematics::{Chain, ChainSpec};
 
 use crate::assemble::fit_bodies;
 use collision_geometry::chain::{CarriedPart, Rider};
@@ -30,14 +28,36 @@ use collision_geometry::urdf_collision::{JointKind, ParentJoint, UrdfCollisions,
 use crate::pairs::PairSpec;
 use crate::{BuildError, CollisionError, FingerError};
 
+/// The joint positions of every chain of a model, in the order its builder names
+/// the chains.
+pub type Joints<const N: usize, const K: usize> = [[f64; N]; K];
+
+/// A finger a chain link carries on a joint of its own: the finger's link, and the
+/// position of that joint at which the finger is shut. The finger opens toward the
+/// joint's other limit.
+#[derive(Debug, Clone, Copy)]
+pub struct Finger<'a> {
+    pub link: &'a str,
+    pub shut: f64,
+}
+
 /// How a body's hulls reach the world frame.
 #[derive(Clone, Copy)]
 enum Placement {
-    /// Already in world frame (torso, mounts); identity for the whole run.
+    /// Already in world frame (a torso, a base, a mount); identity for the whole run.
     Fixed,
-    /// Link `i` of the left or right arm; placed by FK every query.
-    Left(usize),
-    Right(usize),
+    /// Link `segment` of chain `chain`; placed by FK every query.
+    Chain { chain: usize, segment: usize },
+}
+
+impl Placement {
+    /// The chain the body rides, none for a fixed body.
+    fn chain(self) -> Option<usize> {
+        match self {
+            Placement::Fixed => None,
+            Placement::Chain { chain, .. } => Some(chain),
+        }
+    }
 }
 
 /// A body's bounding sphere in its own local frame: center over the hull
@@ -65,16 +85,16 @@ struct Body {
     local: Vec<Hull>,
     placement: Placement,
     bound: BoundingSphere,
-    /// For a gripper finger: how its hull hangs off its host chain link, so it
-    /// can be placed at the live opening. `None` for every ordinary body (whose
-    /// hulls sit directly in the link frame).
-    finger: Option<Finger>,
+    /// For a finger: how its hull hangs off its host chain link, so it can be
+    /// placed at the live opening. `None` for every other body (whose hulls sit
+    /// directly in the link frame).
+    finger: Option<FingerJoint>,
 }
 
 impl Body {
     /// World pose of this body given its host chain link's world pose and its
-    /// side's gripper opening: the link pose directly for an ordinary body, or
-    /// composed with the finger offset at `opening` for a gripper finger.
+    /// chain's opening: the link pose directly for an ordinary body, or composed
+    /// with the finger offset at `opening` for a finger.
     fn place_on(&self, link_world: Isometry3<f64>, opening: f64) -> Isometry3<f64> {
         match &self.finger {
             Some(f) => link_world * f.offset(opening),
@@ -83,27 +103,25 @@ impl Body {
     }
 }
 
-/// A gripper finger's parent joint, parsed at build into an infallible placer:
-/// the joint origin, its unit axis, whether it rotates (revolute) or slides
-/// (prismatic), and the finger-joint travel oriented closed-to-open by the
-/// build's mesh-separation check (see `assemble::orient_finger_pair`).
-/// Validated once here (bounded 1-DOF, non-zero axis) so placing it at any
-/// opening cannot fail in the per-tick hot path.
+/// A finger's parent joint, parsed at build into an infallible placer: the joint
+/// origin, its unit axis, whether it rotates (revolute) or slides (prismatic), and
+/// the joint positions at which the finger is shut and fully open. Validated once
+/// here (bounded 1-DOF, non-zero axis) so placing it at any opening cannot fail in
+/// the per-tick hot path.
 #[derive(Clone, Copy)]
-struct Finger {
+struct FingerJoint {
     origin: Isometry3<f64>,
     axis: Unit<Vector3<f64>>,
     revolute: bool,
-    /// Finger-joint position (URDF joint units) at fully closed and fully open.
+    /// Joint position (URDF joint units) at shut and at fully open.
     closed: f64,
     open: f64,
 }
 
-impl Finger {
+impl FingerJoint {
     /// Parse a finger's parent joint into a validated placer, the single gate
     /// for finger-joint kinds: only a prismatic or revolute finger can be
-    /// placed, and its axis must normalize. `closed`/`open` are the
-    /// mesh-oriented travel extremes from the fit.
+    /// placed, and its axis must normalize.
     fn from_joint(
         name: &str,
         joint: &ParentJoint,
@@ -118,7 +136,7 @@ impl Finger {
         let (axis, revolute) = joint
             .one_dof()
             .map_err(|e| BuildError::Geometry(format!("finger '{name}': {e}")))?;
-        Ok(Finger {
+        Ok(FingerJoint {
             origin: joint.origin,
             axis,
             revolute,
@@ -128,10 +146,8 @@ impl Finger {
     }
 
     /// Placement of the finger hull in its host link's frame at opening `fraction`
-    /// in `[0, 1]` (0 = fully closed, 1 = fully open), linearly interpolating the
-    /// finger-joint travel. The whole opening pipeline is fraction-native, so the
-    /// fraction maps straight onto the joint's own travel for the prismatic (v1)
-    /// and revolute (v2) grippers alike.
+    /// in `[0, 1]` (0 = shut, 1 = fully open), linearly interpolating the
+    /// finger-joint travel, for a prismatic and a revolute finger alike.
     fn offset(&self, fraction: f64) -> Isometry3<f64> {
         let q = self.closed + fraction.clamp(0.0, 1.0) * (self.open - self.closed);
         place_1dof(&self.origin, &self.axis, self.revolute, q)
@@ -159,13 +175,13 @@ impl Finger {
     }
 }
 
-/// The parts of a [`Body`] the gradient needs, copied out so the arm's FK can
-/// be borrowed mutably while they are in hand: which chain the body rides and,
-/// for a gripper finger, its live placer.
+/// The parts of a [`Body`] the gradient needs, copied out so the chains' FK can
+/// be read while they are in hand: which chain the body rides and, for a finger,
+/// its live placer.
 #[derive(Clone, Copy)]
 struct BodyKinematics {
     placement: Placement,
-    finger: Option<Finger>,
+    finger: Option<FingerJoint>,
 }
 
 /// One checked pair, resolved to body indices.
@@ -179,11 +195,11 @@ struct Pair {
 enum Read {
     /// Every checked pair.
     All,
-    /// Each pair one of whose bodies rides the arm on the side.
-    OfArm(Side),
-    /// Each pair one of whose bodies rides the arm on the side and neither of whose
-    /// bodies rides the other arm.
-    OfArmAlone(Side),
+    /// Each pair one of whose bodies rides the chain.
+    OfChain(usize),
+    /// Each pair one of whose bodies rides the chain and neither of whose bodies
+    /// rides another chain.
+    OfChainAlone(usize),
 }
 
 /// Best candidate while scanning pairs in [`SelfCollisionModel::min_distance`].
@@ -211,25 +227,23 @@ pub struct Proximity<'a> {
 }
 
 /// The nearest-pair [`Proximity`] at one configuration plus the gradient of its
-/// surface distance with respect to each arm's joints and each gripper's opening
-/// fraction. `grad_left[j]` is `d(distance)/d(q_left[j])`; `grad_openings[s]` is
-/// `d(distance)/d(opening_s)` for side `s` (0 = left, 1 = right), nonzero only
-/// when a finger body carries a witness; separating motion has a positive
-/// gradient. Computed analytically from the nearest pair's witness points (the
-/// gradient of the active pair, by the envelope theorem), so it costs one
-/// distance query plus two point Jacobians.
+/// surface distance with respect to each chain's joints and each chain's opening
+/// fraction. `joints[k][j]` is `d(distance)/d(q[k][j])`; `openings[k]` is
+/// `d(distance)/d(opening_k)`, nonzero only when a finger body carries a witness;
+/// separating motion has a positive gradient. Computed analytically from the
+/// nearest pair's witness points (the gradient of the active pair, by the envelope
+/// theorem), so it costs one distance query plus two point Jacobians.
 #[derive(Debug, Clone)]
-pub struct DistanceGradient<'a> {
+pub struct DistanceGradient<'a, const N: usize, const K: usize> {
     pub proximity: Proximity<'a>,
-    pub grad_left: JointVec,
-    pub grad_right: JointVec,
-    pub grad_openings: [f64; 2],
+    pub joints: Joints<N, K>,
+    pub openings: [f64; K],
 }
 
+/// The self-collision model of a robot of `K` serial chains of `N` joints each.
 #[derive(Clone)]
-pub struct SelfCollisionModel {
-    left: Arm,
-    right: Arm,
+pub struct SelfCollisionModel<const N: usize, const K: usize> {
+    chains: [Chain<N>; K],
     bodies: Vec<Body>,
     pairs: Vec<Pair>,
     /// Pairs dropped by [`Builder::exclude`], kept for the caller to report.
@@ -237,47 +251,55 @@ pub struct SelfCollisionModel {
     /// Per-body world pose, refreshed by [`place`](Self::place). Fixed bodies
     /// keep the identity (their hulls are already in world frame).
     world_iso: Vec<Isometry3<f64>>,
-    /// Gripper opening per side (0 = left, 1 = right) as a fraction in `[0, 1]`
-    /// (0 = fully closed, 1 = fully open), set by
-    /// [`set_gripper_openings`](Self::set_gripper_openings). Finger bodies are
+    /// Opening per chain as a fraction in `[0, 1]` (0 = shut, 1 = fully open), set
+    /// by [`set_gripper_openings`](Self::set_gripper_openings). Finger bodies are
     /// placed at this opening every query. Defaults to fully open, the widest
-    /// outboard envelope; it is not a full substitute for the real opening
-    /// (closed fingers occupy between-jaws space the open placement vacates),
-    /// so a caller governing near closed jaws must feed the measured opening
-    /// before trusting the clearance.
-    openings: [f64; 2],
-    /// Per-side, per-joint Lipschitz levers of the min surface distance (m/rad):
+    /// outboard envelope; it is not a full substitute for the real opening (shut
+    /// fingers occupy between-jaws space the open placement vacates), so a caller
+    /// governing near shut fingers must feed the measured opening before trusting
+    /// the clearance.
+    openings: [f64; K],
+    /// Per-chain, per-joint Lipschitz levers of the min surface distance (m/rad):
     /// the max over checked pairs of the sum of both bodies' per-joint reach
-    /// bounds on that side (a same-side pair moves both witnesses with one
-    /// arm's joints; see [`body_reaches`]). Rebuilt whenever the pair list
+    /// bounds on that chain (a same-chain pair moves both witnesses with one
+    /// chain's joints; see [`body_reaches`]). Rebuilt whenever the pair list
     /// changes; feeds [`clearance_step_bound`](Self::clearance_step_bound).
-    levers: [JointVec; 2],
-    /// Per-side Lipschitz levers of the min surface distance per unit opening
+    levers: Joints<N, K>,
+    /// Per-chain Lipschitz levers of the min surface distance per unit opening
     /// fraction (m): the max over checked pairs of the paired finger bodies'
     /// surface speed bounds under their own joint travel. Rebuilt with `levers`;
     /// feeds [`clearance_step_bound`](Self::clearance_step_bound).
-    opening_levers: [f64; 2],
+    opening_levers: [f64; K],
 }
 
 /// Configures and builds a [`SelfCollisionModel`]; start from
-/// [`SelfCollisionModel::builder`].
-pub struct Builder {
-    urdf: String,
-    meshes_dir: String,
-    left_base: String,
-    right_base: String,
+/// [`SelfCollisionModel::builder`]. Every input is data a robot's description holds.
+pub struct Builder<'a, const N: usize, const K: usize> {
+    urdf: &'a str,
+    meshes_dir: &'a str,
+    chains: [ChainSpec<'a>; K],
+    yoked_joints: usize,
+    fingers: Vec<Finger<'a>>,
     exclude: Vec<PairSpec>,
     /// The bounds of the clip regions of each body the caller decomposes, in the order
     /// the caller gives them.
     supplied: Vec<(String, Vec<[[f64; 3]; 2]>)>,
 }
 
-impl Builder {
-    /// Drop these pairs from checking. The caller asserts they can never collide;
-    /// the assertion is trusted, not re-derived, so excluding a pair that can in
-    /// fact collide silently removes that protection. The names must resolve to
-    /// real bodies. Dropped pairs are reported by
-    /// [`excluded_pairs`](SelfCollisionModel::excluded_pairs).
+impl<'a, const N: usize, const K: usize> Builder<'a, N, K> {
+    /// The fingers the chains' links carry, each with the position of its joint at
+    /// which it is shut. Every link on a moving joint off a chain link that has
+    /// collision geometry is a finger and must be named here; naming a link that is
+    /// none, or a shut position that is neither limit of its joint, errors at build.
+    pub fn fingers(mut self, fingers: &[Finger<'a>]) -> Self {
+        self.fingers.extend_from_slice(fingers);
+        self
+    }
+
+    /// Drop these pairs from checking: pairs the robot's joint limits keep apart,
+    /// which the caller proves. Each pair must name two bodies the derived rules check;
+    /// any other pair is refused at build ([`BuildError::NotChecked`]). Dropped pairs
+    /// are reported by [`excluded_pairs`](SelfCollisionModel::excluded_pairs).
     pub fn exclude(mut self, pairs: &[PairSpec]) -> Self {
         self.exclude.extend_from_slice(pairs);
         self
@@ -299,7 +321,7 @@ impl Builder {
 
     /// Fit the bodies (supplied regions override the auto-fit), derive the checked
     /// pairs from the structural rules, and apply the exclusions.
-    pub fn build(self) -> Result<SelfCollisionModel, CollisionError> {
+    pub fn build(self) -> Result<SelfCollisionModel<N, K>, CollisionError> {
         let named: Vec<(&str, &[[[f64; 3]; 2]])> = self
             .supplied
             .iter()
@@ -307,49 +329,64 @@ impl Builder {
             .collect();
         let supplied = ClipRegion::by_body(&named).map_err(BuildError::Fit)?;
         let mut model = SelfCollisionModel::assemble(
-            &self.urdf,
-            &self.meshes_dir,
-            &self.left_base,
-            &self.right_base,
+            self.urdf,
+            self.meshes_dir,
+            &self.chains,
+            &self.fingers,
             &supplied,
         )?;
-        // Candidate pairs: everything that can inform. Excluded structurally:
-        // two world-fixed bodies (their distance never changes), and pairs within
-        // two moving joints of each other, same-side or torso against a chain's
-        // first links. Those are joint-yoked: shoulder or wrist cluster members
-        // orbit each other through their whole range, so their distance swings
-        // with every legitimate motion while real contact between them is blocked
-        // by the link in between. Cross-arm pairs are always checked.
+        // Candidate pairs: everything that can inform. Excluded structurally: two
+        // world-fixed bodies (their distance never changes), and two bodies of one
+        // chain, or a world-fixed body and a chain's link, within the robot's yoked
+        // joints of each other: they orbit each other through the joints' whole
+        // range while the link between them blocks contact. Bodies of two chains
+        // are always checked.
         let lineage: Vec<(String, Lineage)> = model
             .bodies
             .iter()
             .map(|b| {
                 let lineage = match b.placement {
-                    Placement::Left(i) => Lineage::Side(0, i + 1),
-                    Placement::Right(i) => Lineage::Side(1, i + 1),
-                    Placement::Fixed if b.name == self.left_base => Lineage::Side(0, 0),
-                    Placement::Fixed if b.name == self.right_base => Lineage::Side(1, 0),
-                    Placement::Fixed => Lineage::Torso,
+                    Placement::Chain { chain, segment } => Lineage::Chain {
+                        chain,
+                        depth: segment + 1,
+                    },
+                    Placement::Fixed => self
+                        .chains
+                        .iter()
+                        .position(|spec| spec.base_link == Some(b.name.as_str()))
+                        .map_or(Lineage::Root, |chain| Lineage::Chain { chain, depth: 0 }),
                 };
                 (b.name.clone(), lineage)
             })
             .collect();
+        let fixed: Vec<bool> = model
+            .bodies
+            .iter()
+            .map(|b| matches!(b.placement, Placement::Fixed))
+            .collect();
 
         let mut specs = Vec::new();
         for (i, (a, la)) in lineage.iter().enumerate() {
-            for (b, lb) in &lineage[i + 1..] {
-                let keep = match (la, lb) {
-                    (Lineage::Torso, Lineage::Torso) => false,
-                    (Lineage::Side(_, 0), Lineage::Torso)
-                    | (Lineage::Torso, Lineage::Side(_, 0)) => false,
-                    (Lineage::Side(sa, 0), Lineage::Side(sb, 0)) if sa != sb => false,
-                    (Lineage::Side(sa, da), Lineage::Side(sb, db)) if sa == sb => {
-                        da.abs_diff(*db) > 2
-                    }
-                    (Lineage::Torso, Lineage::Side(_, d))
-                    | (Lineage::Side(_, d), Lineage::Torso) => *d > 2,
-                    (Lineage::Side(..), Lineage::Side(..)) => true,
-                };
+            for (j, (b, lb)) in lineage.iter().enumerate().skip(i + 1) {
+                let keep = !(fixed[i] && fixed[j])
+                    && match (la, lb) {
+                        (
+                            Lineage::Chain {
+                                chain: ca,
+                                depth: da,
+                            },
+                            Lineage::Chain {
+                                chain: cb,
+                                depth: db,
+                            },
+                        ) if ca == cb => da.abs_diff(*db) > self.yoked_joints,
+                        (Lineage::Root, Lineage::Chain { depth, .. })
+                        | (Lineage::Chain { depth, .. }, Lineage::Root) => {
+                            *depth > self.yoked_joints
+                        }
+                        (Lineage::Chain { .. }, Lineage::Chain { .. }) => true,
+                        (Lineage::Root, Lineage::Root) => false,
+                    };
                 if keep {
                     specs.push(PairSpec::new(a.clone(), b.clone()));
                 }
@@ -361,50 +398,36 @@ impl Builder {
     }
 }
 
-impl SelfCollisionModel {
-    /// Start building a model from a URDF string and its collision mesh
-    /// directory, naming the two chain base links. See [`Builder`]. The model is
-    /// a pure distance oracle: it reports clearances (and, via
-    /// [`distance_gradient`](Self::distance_gradient), their gradient), and the
-    /// caller decides how to throttle on them.
-    pub fn builder(urdf: &str, meshes_dir: &str, left_base: &str, right_base: &str) -> Builder {
+impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
+    /// Start building the model of a robot from its URDF and collision mesh
+    /// directory: its `K` chains, each of `N` joints, and its yoked joints, the most
+    /// moving joints two bodies of one chain may lie apart and still go unchecked.
+    /// Each chain's base link, where it has collision geometry, is a body of that
+    /// chain at depth 0. Name the fingers its links carry with
+    /// [`fingers`](Builder::fingers). The model is a pure distance oracle: it
+    /// reports clearances (and, via [`distance_gradient`](Self::distance_gradient),
+    /// their gradient), and the caller decides how to throttle on them.
+    pub fn builder<'a>(
+        urdf: &'a str,
+        meshes_dir: &'a str,
+        chains: [ChainSpec<'a>; K],
+        yoked_joints: usize,
+    ) -> Builder<'a, N, K> {
+        const {
+            assert!(
+                N > 0 && K > 0,
+                "a model holds at least one chain of one joint"
+            )
+        };
         Builder {
-            urdf: urdf.to_string(),
-            meshes_dir: meshes_dir.to_string(),
-            left_base: left_base.to_string(),
-            right_base: right_base.to_string(),
+            urdf,
+            meshes_dir,
+            chains,
+            yoked_joints,
+            fingers: Vec::new(),
             exclude: Vec::new(),
             supplied: Vec::new(),
         }
-    }
-
-    /// Like [`builder`](Self::builder) but reading the URDF from a file.
-    pub fn builder_from_file(
-        path: &str,
-        meshes_dir: &str,
-        left_base: &str,
-        right_base: &str,
-    ) -> Result<Builder, CollisionError> {
-        let urdf = std::fs::read_to_string(path)
-            .map_err(|e| BuildError::Geometry(format!("read urdf '{path}': {e}")))?;
-        Ok(Self::builder(&urdf, meshes_dir, left_base, right_base))
-    }
-
-    /// Build the bodies with an explicit checked-pair list and no structural
-    /// derivation, bypassing the safety-relevant pair rules. Test-only: the
-    /// public path is [`builder`](Self::builder). An empty list builds the
-    /// bodies with no checked pairs.
-    #[cfg(test)]
-    fn with_pairs(
-        urdf: &str,
-        meshes_dir: &str,
-        left_base: &str,
-        right_base: &str,
-        pair_specs: &[PairSpec],
-    ) -> Result<Self, BuildError> {
-        let mut model = Self::assemble(urdf, meshes_dir, left_base, right_base, &BTreeMap::new())?;
-        model.set_pairs(pair_specs)?;
-        Ok(model)
     }
 
     /// Fit every collision body (supplied regions override the auto-fit) and place
@@ -412,35 +435,40 @@ impl SelfCollisionModel {
     fn assemble(
         urdf: &str,
         meshes_dir: &str,
-        left_base: &str,
-        right_base: &str,
+        specs: &[ChainSpec<'_>; K],
+        fingers: &[Finger<'_>],
         supplied: &BTreeMap<String, Vec<ClipRegion>>,
     ) -> Result<Self, BuildError> {
-        if left_base == right_base {
-            return Err(BuildError::IdenticalBases {
-                base: left_base.to_string(),
+        if let Some(base) = specs.iter().enumerate().find_map(|(i, spec)| {
+            specs[i + 1..]
+                .iter()
+                .any(|other| other.base_link == spec.base_link)
+                .then_some(spec.base_link)
+        }) {
+            return Err(BuildError::SharedBase {
+                base: base.unwrap_or("the URDF root").to_string(),
             });
         }
-        let mut left = Arm::from_urdf(urdf, left_base)?;
-        let mut right = Arm::from_urdf(urdf, right_base)?;
+        let robot = urdf_rs::read_from_string(urdf)
+            .map_err(|e| BuildError::Geometry(format!("parse URDF: {e}")))?;
+        let built: Vec<Chain<N>> = specs
+            .iter()
+            .map(|spec| Chain::<N>::from_urdf(&robot, spec))
+            .collect::<Result<_, _>>()?;
+        let chains: [Chain<N>; K] = built
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("one chain per spec"));
 
-        let home = [0.0; ARM_DOF];
-        let chain_names = |arm: &mut Arm| -> Vec<String> {
-            let posed = arm.at(&home);
-            (0..ARM_DOF)
-                .map(|i| posed.link_name(i).to_string())
-                .collect()
-        };
-        let left_names = chain_names(&mut left);
-        let right_names = chain_names(&mut right);
+        let names: Vec<Vec<String>> = chains
+            .iter()
+            .map(|chain| {
+                let posed = chain.at(&[0.0; N]);
+                (0..N).map(|i| posed.link_name(i).to_string()).collect()
+            })
+            .collect();
 
         let parsed = UrdfCollisions::from_urdf(urdf)?;
-        let fitted = fit_bodies(
-            &parsed,
-            &[left_names.clone(), right_names.clone()],
-            meshes_dir,
-            supplied,
-        )?;
+        let fitted = fit_bodies(&parsed, &names, fingers, meshes_dir, supplied)?;
 
         let mut bodies: Vec<Body> = Vec::new();
         let push_body = |bodies: &mut Vec<Body>, body: Body| -> Result<(), BuildError> {
@@ -466,23 +494,18 @@ impl SelfCollisionModel {
                 },
             )?;
         }
-        for (names, side_left) in [(&left_names, true), (&right_names, false)] {
-            for (i, name) in names.iter().enumerate() {
+        for (chain, chain_names) in names.iter().enumerate() {
+            for (segment, name) in chain_names.iter().enumerate() {
                 let hulls = links
                     .remove(name)
                     .ok_or_else(|| BuildError::SharedLink { name: name.clone() })?;
-                let placement = if side_left {
-                    Placement::Left(i)
-                } else {
-                    Placement::Right(i)
-                };
                 let bound = BoundingSphere::of(&hulls);
                 push_body(
                     &mut bodies,
                     Body {
                         name: name.clone(),
                         local: hulls,
-                        placement,
+                        placement: Placement::Chain { chain, segment },
                         bound,
                         finger: None,
                     },
@@ -490,14 +513,14 @@ impl SelfCollisionModel {
             }
         }
         // Finger bodies hang off their host chain link's FK segment (so they share
-        // its lineage: not checked against their own hand or sibling finger, but
-        // checked cross-arm and against the torso) and carry a `Finger` placer so
+        // its lineage: not checked against their own link or a sibling finger, but
+        // checked against another chain and a fixed body) and carry a placer so
         // each query positions them at the live opening.
         for finger in fitted.fingers {
-            let placement = chain_segment(&left_names, &right_names, &finger.parent_link)
+            let placement = chain_segment(&names, &finger.parent_link)
                 .expect("fit_bodies only emits fingers hosted on a chain link");
             let placer =
-                Finger::from_joint(&finger.name, &finger.joint, finger.closed, finger.open)?;
+                FingerJoint::from_joint(&finger.name, &finger.joint, finger.closed, finger.open)?;
             let bound = BoundingSphere::of(&finger.hulls);
             push_body(
                 &mut bodies,
@@ -513,22 +536,19 @@ impl SelfCollisionModel {
 
         let world_iso = vec![Isometry3::identity(); bodies.len()];
         Ok(Self {
-            left,
-            right,
+            chains,
             bodies,
             pairs: Vec::new(),
             excluded: Vec::new(),
             world_iso,
-            openings: [1.0, 1.0],
-            levers: [[0.0; ARM_DOF]; 2],
-            opening_levers: [0.0; 2],
+            openings: [1.0; K],
+            levers: [[0.0; N]; K],
+            opening_levers: [0.0; K],
         })
     }
 
-    /// Drop the caller's named exclusions (see [`Builder::exclude`]). The names
-    /// must resolve to real bodies, but the assertion that the pair cannot
-    /// collide is trusted, not re-derived: a pair that is not currently checked
-    /// is a harmless no-op.
+    /// Drop the caller's named exclusions (see [`Builder::exclude`]). Each must name
+    /// a pair the derived rules check.
     fn exclude_named(&mut self, exclude: &[PairSpec]) -> Result<(), BuildError> {
         for spec in exclude {
             let a = self.body_index(&spec.a)?;
@@ -536,10 +556,14 @@ impl SelfCollisionModel {
             let is_pair = |p: &Pair| (p.a == a && p.b == b) || (p.a == b && p.b == a);
             let before = self.pairs.len();
             self.pairs.retain(|p| !is_pair(p));
-            if self.pairs.len() < before {
-                self.excluded
-                    .push((self.bodies[a].name.clone(), self.bodies[b].name.clone()));
+            if self.pairs.len() == before {
+                return Err(BuildError::NotChecked {
+                    a: spec.a.clone(),
+                    b: spec.b.clone(),
+                });
             }
+            self.excluded
+                .push((self.bodies[a].name.clone(), self.bodies[b].name.clone()));
         }
         self.recompute_levers();
         Ok(())
@@ -586,27 +610,27 @@ impl SelfCollisionModel {
         Ok(())
     }
 
-    /// Rebuild the per-side Lipschitz levers from the checked pairs: for each
-    /// side and joint, the max over pairs of the sum of both bodies' reaches on
-    /// that side. Summing per pair is what keeps the bound sound for a same-side
-    /// pair, whose two witnesses both move with that arm's joints. Called
+    /// Rebuild the per-chain Lipschitz levers from the checked pairs: for each
+    /// chain and joint, the max over pairs of the sum of both bodies' reaches on
+    /// that chain. Summing per pair is what keeps the bound sound for a same-chain
+    /// pair, whose two witnesses both move with that chain's joints. Called
     /// whenever the pair list changes (build-time only, so recomputing the
     /// per-body reaches here is free).
     fn recompute_levers(&mut self) {
-        let reaches = body_reaches(&mut self.left, &mut self.right, &self.bodies);
-        let side_reach = |body: usize, side: usize, j: usize| -> f64 {
-            let on_side = match self.bodies[body].placement {
-                Placement::Left(_) => side == 0,
-                Placement::Right(_) => side == 1,
-                Placement::Fixed => false,
-            };
-            if on_side { reaches[body][j] } else { 0.0 }
+        let reaches = body_reaches(&self.chains, &self.bodies);
+        let rides = |body: usize, chain: usize| self.bodies[body].placement.chain() == Some(chain);
+        let chain_reach = |body: usize, chain: usize, j: usize| -> f64 {
+            if rides(body, chain) {
+                reaches[body][j]
+            } else {
+                0.0
+            }
         };
-        self.levers = std::array::from_fn(|side| {
+        self.levers = std::array::from_fn(|chain| {
             std::array::from_fn(|j| {
                 self.pairs
                     .iter()
-                    .map(|p| side_reach(p.a, side, j) + side_reach(p.b, side, j))
+                    .map(|p| chain_reach(p.a, chain, j) + chain_reach(p.b, chain, j))
                     .fold(0.0, f64::max)
             })
         });
@@ -635,22 +659,17 @@ impl SelfCollisionModel {
                 .fold(0.0, f64::max);
             travel * r_max
         };
-        let side_opening_reach = |body: usize, side: usize| -> f64 {
-            let on_side = match self.bodies[body].placement {
-                Placement::Left(_) => side == 0,
-                Placement::Right(_) => side == 1,
-                Placement::Fixed => false,
-            };
-            if on_side {
+        let chain_opening_reach = |body: usize, chain: usize| -> f64 {
+            if rides(body, chain) {
                 opening_reach(&self.bodies[body])
             } else {
                 0.0
             }
         };
-        self.opening_levers = std::array::from_fn(|side| {
+        self.opening_levers = std::array::from_fn(|chain| {
             self.pairs
                 .iter()
-                .map(|p| side_opening_reach(p.a, side) + side_opening_reach(p.b, side))
+                .map(|p| chain_opening_reach(p.a, chain) + chain_opening_reach(p.b, chain))
                 .fold(0.0, f64::max)
         });
     }
@@ -678,33 +697,24 @@ impl SelfCollisionModel {
             .collect()
     }
 
-    /// The nearest checked pair at the given configurations, of the pairs `read`
-    /// names: places the hulls by FK, then scans the pairs (broadphase-ordered) for
-    /// the minimum signed distance. The shared core of
+    /// The nearest checked pair at configuration `q`, of the pairs `read` names:
+    /// places the hulls by FK, then scans the pairs (broadphase-ordered) for the
+    /// minimum signed distance. The shared core of
     /// [`min_distance`](Self::min_distance),
-    /// [`min_distance_of_arm`](Self::min_distance_of_arm),
-    /// [`min_distance_of_arm_alone`](Self::min_distance_of_arm_alone) and
+    /// [`min_distance_of_chain`](Self::min_distance_of_chain),
+    /// [`min_distance_of_chain_alone`](Self::min_distance_of_chain_alone) and
     /// [`distance_gradient`](Self::distance_gradient).
-    fn closest(
-        &mut self,
-        q_left: &JointVec,
-        q_right: &JointVec,
-        read: Read,
-    ) -> Result<Closest, CollisionError> {
-        self.place(q_left, q_right);
-        let rides = |body: usize, side: Side| {
-            matches!(
-                (self.bodies[body].placement, side),
-                (Placement::Left(_), Side::Left) | (Placement::Right(_), Side::Right)
-            )
-        };
+    fn closest(&mut self, q: &Joints<N, K>, read: Read) -> Result<Closest, CollisionError> {
+        self.place(q);
+        let on = |body: usize| self.bodies[body].placement.chain();
         let reads = |pair: &Pair| match read {
             Read::All => true,
-            Read::OfArm(side) => rides(pair.a, side) || rides(pair.b, side),
-            Read::OfArmAlone(side) => {
-                (rides(pair.a, side) || rides(pair.b, side))
-                    && !rides(pair.a, side.other())
-                    && !rides(pair.b, side.other())
+            Read::OfChain(chain) => on(pair.a) == Some(chain) || on(pair.b) == Some(chain),
+            Read::OfChainAlone(chain) => {
+                let elsewhere = |body: usize| on(body).is_some_and(|other| other != chain);
+                (on(pair.a) == Some(chain) || on(pair.b) == Some(chain))
+                    && !elsewhere(pair.a)
+                    && !elsewhere(pair.b)
             }
         };
 
@@ -752,7 +762,7 @@ impl SelfCollisionModel {
                 for (hb, center_b) in self.bodies[pair.b].local.iter().zip(&centers_b) {
                     // Piece-level prefilter, same sphere bound as the pair
                     // broadphase: a piece pair that cannot beat the best
-                    // distance skips its GJK. A multi-piece body (the torso's
+                    // distance skips its GJK. A multi-piece body (a torso's
                     // region decomposition) otherwise pays one GJK per piece
                     // for pieces nowhere near the query.
                     let gap = (center_a - center_b).norm() - ha.bound_radius() - hb.bound_radius();
@@ -776,51 +786,43 @@ impl SelfCollisionModel {
         best.ok_or(CollisionError::NoPairs)
     }
 
-    /// Minimum signed distance over all checked pairs at the given
-    /// configurations, with the witness points. Non-finite joint values are
-    /// rejected so the caller fails safe rather than comparing against NaN.
-    pub fn min_distance(
-        &mut self,
-        q_left: &JointVec,
-        q_right: &JointVec,
-    ) -> Result<Proximity<'_>, CollisionError> {
-        self.proximity(q_left, q_right, Read::All)
+    /// Minimum signed distance over all checked pairs at configuration `q`, with the
+    /// witness points. Non-finite joint values are rejected, so the caller fails safe.
+    pub fn min_distance(&mut self, q: &Joints<N, K>) -> Result<Proximity<'_>, CollisionError> {
+        self.proximity(q, Read::All)
     }
 
     /// [`min_distance`](Self::min_distance) over the checked pairs one of whose
-    /// bodies rides the arm on `side`, its fingers included: the distance a motion of
-    /// that arm changes while the other arm holds where it stands.
-    pub fn min_distance_of_arm(
+    /// bodies rides chain `chain`, its fingers included: the distance a motion of
+    /// that chain changes while every other chain holds where it stands. Panics on a
+    /// chain past the model's `K`.
+    pub fn min_distance_of_chain(
         &mut self,
-        side: Side,
-        q_left: &JointVec,
-        q_right: &JointVec,
+        chain: usize,
+        q: &Joints<N, K>,
     ) -> Result<Proximity<'_>, CollisionError> {
-        self.proximity(q_left, q_right, Read::OfArm(side))
+        assert!(chain < K, "chain {chain} of a model of {K}");
+        self.proximity(q, Read::OfChain(chain))
     }
 
-    /// [`min_distance_of_arm`](Self::min_distance_of_arm) over the pairs neither of
-    /// whose bodies rides the other arm: the arm against the robot's fixed bodies and
-    /// against itself, with the other arm's bodies set aside.
-    pub fn min_distance_of_arm_alone(
+    /// [`min_distance_of_chain`](Self::min_distance_of_chain) over the pairs neither
+    /// of whose bodies rides another chain: the chain against the robot's fixed
+    /// bodies and against itself, with every other chain's bodies set aside. Panics
+    /// on a chain past the model's `K`.
+    pub fn min_distance_of_chain_alone(
         &mut self,
-        side: Side,
-        q_left: &JointVec,
-        q_right: &JointVec,
+        chain: usize,
+        q: &Joints<N, K>,
     ) -> Result<Proximity<'_>, CollisionError> {
-        self.proximity(q_left, q_right, Read::OfArmAlone(side))
+        assert!(chain < K, "chain {chain} of a model of {K}");
+        self.proximity(q, Read::OfChainAlone(chain))
     }
 
     /// The nearest pair of the pairs [`closest`](Self::closest) scans, with its
-    /// witness points, at finite configurations.
-    fn proximity(
-        &mut self,
-        q_left: &JointVec,
-        q_right: &JointVec,
-        read: Read,
-    ) -> Result<Proximity<'_>, CollisionError> {
-        ensure_finite(q_left, q_right)?;
-        let c = self.closest(q_left, q_right, read)?;
+    /// witness points, at a finite configuration.
+    fn proximity(&mut self, q: &Joints<N, K>, read: Read) -> Result<Proximity<'_>, CollisionError> {
+        ensure_finite(q)?;
+        let c = self.closest(q, read)?;
         Ok(Proximity {
             distance: c.distance,
             link_a: &self.bodies[c.a].name,
@@ -831,7 +833,7 @@ impl SelfCollisionModel {
     }
 
     /// The nearest-pair [`Proximity`] and the analytic gradient of its distance
-    /// with respect to each arm's joints (see [`DistanceGradient`]). The gradient
+    /// with respect to each chain's joints (see [`DistanceGradient`]). The gradient
     /// is the nearest pair's separating direction projected through each witness
     /// point's velocity Jacobian, so it reflects the same min-over-pairs distance
     /// `min_distance` returns at one distance query's cost. Fails on a non-finite
@@ -840,11 +842,10 @@ impl SelfCollisionModel {
     /// velocity-barrier caller holds there.
     pub fn distance_gradient(
         &mut self,
-        q_left: &JointVec,
-        q_right: &JointVec,
-    ) -> Result<DistanceGradient<'_>, CollisionError> {
-        ensure_finite(q_left, q_right)?;
-        let c = self.closest(q_left, q_right, Read::All)?;
+        q: &Joints<N, K>,
+    ) -> Result<DistanceGradient<'_, N, K>, CollisionError> {
+        ensure_finite(q)?;
+        let c = self.closest(q, Read::All)?;
         // GJK carries the separating direction explicitly (the witness difference
         // reverses sense with the sign of the distance); the +1/-1 signs below
         // sum the projected witness velocities to d(distance)/dq.
@@ -858,10 +859,8 @@ impl SelfCollisionModel {
             finger: body.finger,
         };
         let (kin_a, kin_b) = (kinematics(&self.bodies[c.a]), kinematics(&self.bodies[c.b]));
-        let (left_a, right_a, open_a) =
-            self.gradient_contribution(kin_a, &c.on_a, &normal, 1.0, q_left, q_right);
-        let (left_b, right_b, open_b) =
-            self.gradient_contribution(kin_b, &c.on_b, &normal, -1.0, q_left, q_right);
+        let (joints_a, open_a) = self.gradient_contribution(kin_a, &c.on_a, &normal, 1.0, q);
+        let (joints_b, open_b) = self.gradient_contribution(kin_b, &c.on_b, &normal, -1.0, q);
         Ok(DistanceGradient {
             proximity: Proximity {
                 distance: c.distance,
@@ -870,9 +869,10 @@ impl SelfCollisionModel {
                 on_a: c.on_a,
                 on_b: c.on_b,
             },
-            grad_left: std::array::from_fn(|j| left_a[j] + left_b[j]),
-            grad_right: std::array::from_fn(|j| right_a[j] + right_b[j]),
-            grad_openings: [open_a[0] + open_b[0], open_a[1] + open_b[1]],
+            joints: std::array::from_fn(|k| {
+                std::array::from_fn(|j| joints_a[k][j] + joints_b[k][j])
+            }),
+            openings: std::array::from_fn(|k| open_a[k] + open_b[k]),
         })
     }
 
@@ -881,67 +881,54 @@ impl SelfCollisionModel {
     /// Jacobian, plus, for a finger body, through the point's velocity per unit
     /// opening fraction. `sign` is +1 for body a and -1 for body b (`normal`
     /// increases the distance for a, decreases it for b). A world-fixed body
-    /// (torso) contributes nothing.
+    /// contributes nothing.
     fn gradient_contribution(
-        &mut self,
+        &self,
         kinematics: BodyKinematics,
         point: &Point3<f64>,
         normal: &Vector3<f64>,
         sign: f64,
-        q_left: &JointVec,
-        q_right: &JointVec,
-    ) -> (JointVec, JointVec, [f64; 2]) {
+        q: &Joints<N, K>,
+    ) -> (Joints<N, K>, [f64; K]) {
         let BodyKinematics { placement, finger } = kinematics;
-        let zero: JointVec = [0.0; ARM_DOF];
-        let contribution = |arm: &mut Arm, q: &JointVec, segment: usize| -> (JointVec, f64) {
-            let posed = arm.at(q);
+        let mut joints = [[0.0; N]; K];
+        let mut openings = [0.0; K];
+        if let Placement::Chain { chain, segment } = placement {
+            let posed = self.chains[chain].at(&q[chain]);
             let cols = posed.point_world_jacobian(point, segment);
-            let joints = std::array::from_fn(|j| sign * normal.dot(&cols[j]));
-            let opening = finger.map_or(0.0, |f| {
+            joints[chain] = std::array::from_fn(|j| sign * normal.dot(&cols[j]));
+            openings[chain] = finger.map_or(0.0, |f| {
                 let v = f.point_velocity_per_fraction(&posed.link_pose_world(segment), point);
                 sign * normal.dot(&v)
             });
-            (joints, opening)
-        };
-        match placement {
-            Placement::Fixed => (zero, zero, [0.0; 2]),
-            Placement::Left(s) => {
-                let (joints, opening) = contribution(&mut self.left, q_left, s);
-                (joints, zero, [opening, 0.0])
-            }
-            Placement::Right(s) => {
-                let (joints, opening) = contribution(&mut self.right, q_right, s);
-                (zero, joints, [0.0, opening])
-            }
         }
+        (joints, openings)
     }
 
     /// True if any checked pair is at or below `threshold`.
     pub fn in_collision(
         &mut self,
-        q_left: &JointVec,
-        q_right: &JointVec,
+        q: &Joints<N, K>,
         threshold: f64,
     ) -> Result<bool, CollisionError> {
         if !threshold.is_finite() {
             return Err(CollisionError::NonFinite);
         }
-        Ok(self.min_distance(q_left, q_right)?.distance <= threshold)
+        Ok(self.min_distance(q)?.distance <= threshold)
     }
 
-    /// World-frame hull pieces of every body at the given configuration, paired
-    /// with the body name: each piece gives its placed vertices, and its hull the
-    /// face triangles and the rounding radius, the exact collision surface. A
-    /// planner measures the objects an arm carries against the bodies the plan does
-    /// not move by these pieces; [`min_distance`](Self::min_distance) measures the
-    /// checked pairs between the bodies.
+    /// World-frame hull pieces of every body at configuration `q`, paired with the
+    /// body name: each piece gives its placed vertices, and its hull the face
+    /// triangles and the rounding radius, the exact collision surface. A planner
+    /// measures the objects a chain carries against the bodies the plan does not move
+    /// by these pieces; [`min_distance`](Self::min_distance) measures the checked
+    /// pairs between the bodies.
     pub fn world_pieces(
         &mut self,
-        q_left: &JointVec,
-        q_right: &JointVec,
+        q: &Joints<N, K>,
     ) -> Result<Vec<(&str, Vec<Placed<'_>>)>, CollisionError> {
-        ensure_finite(q_left, q_right)?;
-        self.place(q_left, q_right);
+        ensure_finite(q)?;
+        self.place(q);
         Ok(self
             .bodies
             .iter()
@@ -953,14 +940,14 @@ impl SelfCollisionModel {
             .collect())
     }
 
-    /// The gripper fingers of the arm on `side` where they hang at its current opening:
-    /// the parts `carried` that the arm's chain carries (`ChainGeometry::carried`), each
-    /// as its rider at the offset in its link's frame at which the opening places it. A
-    /// part the model does not hold as a finger of that arm, on the same link, is refused
+    /// The fingers of chain `chain` where they hang at its current opening: the parts
+    /// `carried` that the chain carries (`ChainGeometry::carried`), each as its rider
+    /// at the offset in its link's frame at which the opening places it. A part the
+    /// model does not hold as a finger of that chain, on the same link, is refused
     /// ([`FingerError`]).
     pub fn fingers<'g>(
         &self,
-        side: Side,
+        chain: usize,
         carried: &'g [CarriedPart],
     ) -> Result<Vec<Rider<'g>>, FingerError> {
         carried
@@ -968,18 +955,18 @@ impl SelfCollisionModel {
             .map(|part| {
                 let rider = part.rider();
                 Ok(Rider {
-                    offset: self.finger_offset(side, rider.name, rider.segment)?,
+                    offset: self.finger_offset(chain, rider.name, rider.segment)?,
                     ..rider
                 })
             })
             .collect()
     }
 
-    /// The offset in the frame of link `segment` of the arm on `side` at which that side's
+    /// The offset in the frame of link `segment` of chain `chain` at which that chain's
     /// opening places the finger `link`.
     fn finger_offset(
         &self,
-        side: Side,
+        chain: usize,
         link: &str,
         segment: usize,
     ) -> Result<Isometry3<f64>, FingerError> {
@@ -993,13 +980,15 @@ impl SelfCollisionModel {
             .finger
             .as_ref()
             .ok_or_else(|| FingerError::NotAFinger { link: named() })?;
-        let (host, opening) = match (body.placement, side) {
-            (Placement::Left(i), Side::Left) => (i, self.openings[0]),
-            (Placement::Right(i), Side::Right) => (i, self.openings[1]),
+        let host = match body.placement {
+            Placement::Chain {
+                chain: on,
+                segment: host,
+            } if on == chain => host,
             _ => {
-                return Err(FingerError::OtherArm {
+                return Err(FingerError::OtherChain {
                     link: named(),
-                    side,
+                    chain,
                 });
             }
         };
@@ -1010,49 +999,48 @@ impl SelfCollisionModel {
                 chain: segment,
             });
         }
-        Ok(finger.offset(opening))
+        Ok(finger.offset(self.openings[chain]))
     }
 
-    /// Set the gripper opening per side as a fraction in `[0, 1]` (0 = fully
-    /// closed, 1 = fully open); values are clamped. Finger bodies are placed at
-    /// this opening on every subsequent query, so the reported clearance follows
-    /// the fingers' true positions instead of their full swept envelope. A
-    /// non-finite value is ignored for that side (the last good opening stands),
-    /// so a bad reading never poisons the placement.
-    pub fn set_gripper_openings(&mut self, left: f64, right: f64) {
-        if left.is_finite() {
-            self.openings[0] = left.clamp(0.0, 1.0);
-        }
-        if right.is_finite() {
-            self.openings[1] = right.clamp(0.0, 1.0);
+    /// Set each chain's opening as a fraction in `[0, 1]` (0 = shut, 1 = fully open);
+    /// values are clamped. Finger bodies are placed at this opening on every
+    /// subsequent query, so the reported clearance follows the fingers' true
+    /// positions. A non-finite value is ignored for that chain (the last good opening
+    /// stands), so a bad reading never poisons the placement.
+    pub fn set_gripper_openings(&mut self, openings: &[f64; K]) {
+        for (held, opening) in self.openings.iter_mut().zip(openings) {
+            if opening.is_finite() {
+                *held = opening.clamp(0.0, 1.0);
+            }
         }
     }
 
     /// Upper bound (m) on how much the minimum surface distance can change over a
-    /// step of `dq_left` / `dq_right` on the arm joints and `dopenings` on the
-    /// gripper opening fractions, valid along the whole straight segment in that
-    /// combined space: `sum_j levers[side][j] * |dq[j]|` over both arms plus
-    /// `opening_levers[side] * |dopenings[side]|` over both grippers. Each lever
-    /// bounds, over all poses and openings, the worst per-unit closing rate of
-    /// any checked pair (summing both witnesses' travel when a pair's bodies
-    /// share a side), and a minimum of Lipschitz functions is Lipschitz, so a
-    /// segment whose start clearance exceeds a floor by more than this bound
-    /// cannot cross that floor anywhere along the step. Deliberately loose
-    /// (chain-length bounds), so it is sound for a caller skipping an exact scan,
-    /// never tight.
-    pub fn clearance_step_bound(
-        &self,
-        dq_left: &JointVec,
-        dq_right: &JointVec,
-        dopenings: &[f64; 2],
-    ) -> f64 {
-        let dot_abs = |lever: &JointVec, dq: &JointVec| -> f64 {
+    /// step of `dq` on the chains' joints and `dopenings` on their opening fractions,
+    /// valid along the whole straight segment in that combined space:
+    /// `sum_j levers[k][j] * |dq[k][j]|` over every chain plus
+    /// `opening_levers[k] * |dopenings[k]|` over every chain. Each lever bounds, over
+    /// all poses and openings, the worst per-unit closing rate of any checked pair
+    /// (summing both witnesses' travel when a pair's bodies share a chain), and a
+    /// minimum of Lipschitz functions is Lipschitz, so a segment whose start clearance
+    /// exceeds a floor by more than this bound cannot cross that floor anywhere along
+    /// the step. Deliberately loose (chain-length bounds), so it is sound for a caller
+    /// skipping an exact scan, never tight.
+    pub fn clearance_step_bound(&self, dq: &Joints<N, K>, dopenings: &[f64; K]) -> f64 {
+        let dot_abs = |lever: &[f64; N], dq: &[f64; N]| -> f64 {
             lever.iter().zip(dq).map(|(l, d)| l * d.abs()).sum::<f64>()
         };
-        let bound = dot_abs(&self.levers[0], dq_left)
-            + dot_abs(&self.levers[1], dq_right)
-            + self.opening_levers[0] * dopenings[0].abs()
-            + self.opening_levers[1] * dopenings[1].abs();
+        let joints: f64 = self
+            .levers
+            .iter()
+            .zip(dq)
+            .map(|(lever, dq)| dot_abs(lever, dq))
+            .sum();
+        let bound = self
+            .opening_levers
+            .iter()
+            .zip(dopenings)
+            .fold(joints, |bound, (lever, d)| bound + lever * d.abs());
         // A non-finite delta gives no finite bound: return infinity so a caller's
         // skip predicate (`margin > bound`) can never pass on bad data, rather
         // than a NaN whose comparison direction the caller must not rely on.
@@ -1064,39 +1052,39 @@ impl SelfCollisionModel {
     }
 
     /// Refresh the world pose of the moving bodies from FK. Finger bodies are
-    /// additionally offset by their host link pose at the side's current opening.
-    fn place(&mut self, q_left: &JointVec, q_right: &JointVec) {
-        let poses_l = link_poses(&mut self.left, q_left);
-        let poses_r = link_poses(&mut self.right, q_right);
+    /// additionally offset by their host link pose at the chain's current opening.
+    fn place(&mut self, q: &Joints<N, K>) {
+        let poses: [[Isometry3<f64>; N]; K] =
+            std::array::from_fn(|chain| link_poses(&self.chains[chain], &q[chain]));
         let openings = self.openings;
         for (body, iso) in self.bodies.iter().zip(self.world_iso.iter_mut()) {
-            *iso = match body.placement {
-                Placement::Fixed => continue,
-                Placement::Left(i) => body.place_on(poses_l[i], openings[0]),
-                Placement::Right(i) => body.place_on(poses_r[i], openings[1]),
-            };
+            if let Placement::Chain { chain, segment } = body.placement {
+                *iso = body.place_on(poses[chain][segment], openings[chain]);
+            }
         }
     }
 }
 
-/// The [`Placement`] of a body hanging off chain link `parent`: `Left`/`Right`
-/// with the link's FK segment index, or `None` if `parent` is not a chain link.
-fn chain_segment(left: &[String], right: &[String], parent: &str) -> Option<Placement> {
-    if let Some(i) = left.iter().position(|n| n == parent) {
-        return Some(Placement::Left(i));
-    }
-    right.iter().position(|n| n == parent).map(Placement::Right)
+/// The [`Placement`] of a body hanging off chain link `parent`: the chain and the
+/// link's FK segment index, or `None` if `parent` is not a chain link.
+fn chain_segment(names: &[Vec<String>], parent: &str) -> Option<Placement> {
+    names.iter().enumerate().find_map(|(chain, links)| {
+        links
+            .iter()
+            .position(|n| n == parent)
+            .map(|segment| Placement::Chain { chain, segment })
+    })
 }
 
-/// Where a body sits in the kinematic tree, for the structural pair rules:
-/// the torso, or chain side plus moving-joint depth (mount = 0, link k = k).
+/// Where a body sits in the kinematic tree, for the structural pair rules: fixed to
+/// the root, or a chain plus moving-joint depth (the chain's base = 0, link k = k).
 enum Lineage {
-    Torso,
-    Side(u8, usize),
+    Root,
+    Chain { chain: usize, depth: usize },
 }
 
-fn link_poses(arm: &mut Arm, q: &JointVec) -> [Isometry3<f64>; ARM_DOF] {
-    let posed = arm.at(q);
+fn link_poses<const N: usize>(chain: &Chain<N>, q: &[f64; N]) -> [Isometry3<f64>; N] {
+    let posed = chain.at(q);
     std::array::from_fn(|i| posed.link_pose_world(i))
 }
 
@@ -1109,23 +1097,22 @@ fn link_poses(arm: &mut Arm, q: &JointVec) -> [Isometry3<f64>; ARM_DOF] {
 /// worst translation its joint offset can add across the travel (a prismatic
 /// slide adds the full travel; a revolute offset only rotates about its origin).
 /// Rows are zero for fixed bodies and for joints distal of the body.
-fn body_reaches(left: &mut Arm, right: &mut Arm, bodies: &[Body]) -> Vec<JointVec> {
-    let home = [0.0; ARM_DOF];
-    let hops = |arm: &mut Arm| -> [f64; ARM_DOF - 1] {
-        let poses = link_poses(arm, &home);
-        std::array::from_fn(|k| {
-            (poses[k + 1].translation.vector - poses[k].translation.vector).norm()
+fn body_reaches<const N: usize>(chains: &[Chain<N>], bodies: &[Body]) -> Vec<[f64; N]> {
+    let hops: Vec<Vec<f64>> = chains
+        .iter()
+        .map(|chain| {
+            let poses = link_poses(chain, &[0.0; N]);
+            (0..N - 1)
+                .map(|k| (poses[k + 1].translation.vector - poses[k].translation.vector).norm())
+                .collect()
         })
-    };
-    let hops = [hops(left), hops(right)];
+        .collect();
 
     bodies
         .iter()
         .map(|body| {
-            let (side, seg) = match body.placement {
-                Placement::Fixed => return [0.0; ARM_DOF], // never moved by a joint
-                Placement::Left(s) => (0, s),
-                Placement::Right(s) => (1, s),
+            let Placement::Chain { chain, segment } = body.placement else {
+                return [0.0; N]; // never moved by a joint
             };
             let finger_reach = body.finger.as_ref().map_or(0.0, |f| {
                 let travel = if f.revolute {
@@ -1137,8 +1124,8 @@ fn body_reaches(left: &mut Arm, right: &mut Arm, bodies: &[Body]) -> Vec<JointVe
             });
             let reach = finger_reach + body.bound.center.coords.norm() + body.bound.radius;
             std::array::from_fn(|j| {
-                if j <= seg {
-                    hops[side][j..seg].iter().sum::<f64>() + reach
+                if j <= segment {
+                    hops[chain][j..segment].iter().sum::<f64>() + reach
                 } else {
                     0.0 // a joint distal of the body does not move it
                 }
@@ -1149,11 +1136,30 @@ fn body_reaches(left: &mut Arm, right: &mut Arm, bodies: &[Body]) -> Vec<JointVe
 
 /// Reject NaN/inf joint values so queries fail safe instead of comparing
 /// against NaN downstream.
-fn ensure_finite(q_left: &JointVec, q_right: &JointVec) -> Result<(), CollisionError> {
-    if q_left.iter().chain(q_right).any(|x| !x.is_finite()) {
+fn ensure_finite<const N: usize, const K: usize>(q: &Joints<N, K>) -> Result<(), CollisionError> {
+    if q.iter().flatten().any(|x| !x.is_finite()) {
         return Err(CollisionError::NonFinite);
     }
     Ok(())
+}
+
+#[cfg(test)]
+impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
+    /// Build the bodies with an explicit checked-pair list and no structural
+    /// derivation, bypassing the safety-relevant pair rules. The public path is
+    /// [`builder`](Self::builder). An empty list builds the bodies with no checked
+    /// pairs.
+    fn with_pairs(
+        urdf: &str,
+        meshes_dir: &str,
+        chains: &[ChainSpec<'_>; K],
+        fingers: &[Finger<'_>],
+        pair_specs: &[PairSpec],
+    ) -> Result<Self, BuildError> {
+        let mut model = Self::assemble(urdf, meshes_dir, chains, fingers, &BTreeMap::new())?;
+        model.set_pairs(pair_specs)?;
+        Ok(model)
+    }
 }
 
 #[cfg(test)]
@@ -1162,16 +1168,15 @@ mod tests {
     use crate::pairs::PairSpec;
     use collision_geometry::GeometryError;
 
-    const URDF: &str = include_str!("../tests/fixtures/openarm_v10.urdf");
-    const MESHES: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../openarm_description/assets/meshes"
-    );
+    use crate::fixture::{self, MESHES, URDF, builder, chains, fingers};
 
-    fn model() -> SelfCollisionModel {
-        SelfCollisionModel::builder(URDF, MESHES, "openarm_left_link0", "openarm_right_link0")
-            .build()
-            .expect("model")
+    const ARM_DOF: usize = 7;
+
+    type Model = SelfCollisionModel<ARM_DOF, 2>;
+    type Q = [f64; ARM_DOF];
+
+    fn model() -> Model {
+        builder(URDF).build().expect("model")
     }
 
     const INF: f64 = f64::INFINITY;
@@ -1184,14 +1189,8 @@ mod tests {
         [[-INF, -INF, 0.396], [INF, INF, INF]],
     ];
 
-    fn build(pairs: &[PairSpec]) -> Result<SelfCollisionModel, BuildError> {
-        SelfCollisionModel::with_pairs(
-            URDF,
-            MESHES,
-            "openarm_left_link0",
-            "openarm_right_link0",
-            pairs,
-        )
+    fn build(pairs: &[PairSpec]) -> Result<Model, BuildError> {
+        SelfCollisionModel::with_pairs(URDF, MESHES, &chains(), &fingers(), pairs)
     }
 
     /// Check every analytic gradient column (both arms' joints and both opening
@@ -1199,29 +1198,20 @@ mod tests {
     /// grippers at mid-travel 0.6 so the finger bodies participate with a
     /// nontrivial live offset (the opening is a constant across each FD
     /// perturbation, exactly as it is across one governor tick).
-    fn assert_gradient_matches_finite_difference(
-        m: &mut SelfCollisionModel,
-        ql: &JointVec,
-        qr: &JointVec,
-    ) {
+    fn assert_gradient_matches_finite_difference(m: &mut Model, q: &Joints<ARM_DOF, 2>) {
         let h = 1e-5;
-        m.set_gripper_openings(0.6, 0.6);
-        let grad = m.distance_gradient(ql, qr).expect("gradient defined");
-        let (analytic_left, analytic_right) = (grad.grad_left, grad.grad_right);
-        let analytic_openings = grad.grad_openings;
+        m.set_gripper_openings(&[0.6, 0.6]);
+        let grad = m.distance_gradient(q).expect("gradient defined");
+        let (analytic_joints, analytic_openings) = (grad.joints, grad.openings);
         // Opening columns against central differences on the fractions, the
         // same envelope-theorem check as the joints below.
         for s in 0..2 {
-            let openings_at = |frac: f64| -> [f64; 2] {
+            let probe = |m: &mut Model, frac: f64| -> f64 {
                 let mut o = [0.6, 0.6];
                 o[s] = frac;
-                o
-            };
-            let probe = |m: &mut SelfCollisionModel, frac: f64| -> f64 {
-                let o = openings_at(frac);
-                m.set_gripper_openings(o[0], o[1]);
-                let d = m.min_distance(ql, qr).unwrap().distance;
-                m.set_gripper_openings(0.6, 0.6);
+                m.set_gripper_openings(&o);
+                let d = m.min_distance(q).unwrap().distance;
+                m.set_gripper_openings(&[0.6, 0.6]);
                 d
             };
             let fd = (probe(m, 0.6 + h) - probe(m, 0.6 - h)) / (2.0 * h);
@@ -1231,31 +1221,20 @@ mod tests {
                 analytic_openings[s]
             );
         }
-        for j in 0..ARM_DOF {
-            let mut lp = *ql;
-            let mut lm = *ql;
-            lp[j] += h;
-            lm[j] -= h;
-            let fd_left = (m.min_distance(&lp, qr).unwrap().distance
-                - m.min_distance(&lm, qr).unwrap().distance)
-                / (2.0 * h);
-            let mut rp = *qr;
-            let mut rm = *qr;
-            rp[j] += h;
-            rm[j] -= h;
-            let fd_right = (m.min_distance(ql, &rp).unwrap().distance
-                - m.min_distance(ql, &rm).unwrap().distance)
-                / (2.0 * h);
-            assert!(
-                (analytic_left[j] - fd_left).abs() < 3e-3,
-                "left j{j}: analytic {} fd {fd_left}",
-                analytic_left[j]
-            );
-            assert!(
-                (analytic_right[j] - fd_right).abs() < 3e-3,
-                "right j{j}: analytic {} fd {fd_right}",
-                analytic_right[j]
-            );
+        for chain in 0..2 {
+            for j in 0..ARM_DOF {
+                let (mut plus, mut minus) = (*q, *q);
+                plus[chain][j] += h;
+                minus[chain][j] -= h;
+                let fd = (m.min_distance(&plus).unwrap().distance
+                    - m.min_distance(&minus).unwrap().distance)
+                    / (2.0 * h);
+                assert!(
+                    (analytic_joints[chain][j] - fd).abs() < 3e-3,
+                    "chain {chain} j{j}: analytic {} fd {fd}",
+                    analytic_joints[chain][j]
+                );
+            }
         }
     }
 
@@ -1265,20 +1244,20 @@ mod tests {
     // openings.
     #[test]
     fn a_clone_answers_as_its_original_and_keeps_its_own_openings() {
-        let (ql, qr): (JointVec, JointVec) = (
+        let q = [
             [0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2],
             [0.0, 0.0, -1.05, 0.4, -0.1, 0.1, 0.0],
-        );
-        let nearest = |m: &mut SelfCollisionModel| {
-            let p = m.min_distance(&ql, &qr).expect("query");
+        ];
+        let nearest = |m: &mut Model| {
+            let p = m.min_distance(&q).expect("query");
             (p.distance, p.link_a.to_string(), p.link_b.to_string())
         };
         let mut original = model();
-        original.set_gripper_openings(0.2, 0.2);
+        original.set_gripper_openings(&[0.2, 0.2]);
         let mut clone = original.clone();
         let before = nearest(&mut original);
         assert_eq!(nearest(&mut clone), before);
-        clone.set_gripper_openings(1.0, 1.0);
+        clone.set_gripper_openings(&[1.0, 1.0]);
         assert_ne!(nearest(&mut clone), before, "the openings move the answer");
         assert_eq!(nearest(&mut original), before);
     }
@@ -1286,34 +1265,33 @@ mod tests {
     #[test]
     fn distance_gradient_matches_finite_difference_in_penetration() {
         let mut m = model();
-        m.set_gripper_openings(0.6, 0.6);
+        m.set_gripper_openings(&[0.6, 0.6]);
         // Wrists folded inward but ASYMMETRICALLY, so one moving cross-arm pair is
         // unambiguously nearest (a symmetric pose sits on a pair-switch tie where
         // the analytic gradient and a straddling central difference legitimately
         // disagree). Every config penetrates this model's auto-fit torso hull
         // (asserted below), covering deep EPA; the companion test below walks
         // through contact. The last config has a finger body nearest.
-        let configs: [(JointVec, JointVec); 4] = [
-            (
+        let configs: [Joints<ARM_DOF, 2>; 4] = [
+            [
                 [0.15, 0.1, 0.85, 0.5, -0.2, 0.1, 0.0],
                 [-0.05, -0.25, -0.45, 0.35, 0.1, -0.1, 0.0],
-            ),
-            (
+            ],
+            [
                 [0.0, 0.3, 0.95, 0.45, 0.1, 0.0, 0.0],
                 [0.0, -0.1, -0.55, 0.4, 0.0, 0.1, 0.0],
-            ),
-            (
+            ],
+            [
                 [0.25, -0.1, 0.6, 0.65, 0.0, 0.2, 0.1],
                 [-0.1, 0.05, -0.7, 0.3, 0.0, -0.2, 0.0],
-            ),
-            (
+            ],
+            [
                 [0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2],
                 [0.0, 0.0, -1.05, 0.4, -0.1, 0.1, 0.0],
-            ),
+            ],
         ];
         {
-            let (ql, qr) = &configs[3];
-            let p = m.min_distance(ql, qr).expect("query");
+            let p = m.min_distance(&configs[3]).expect("query");
             assert!(
                 p.link_a.contains("finger") || p.link_b.contains("finger"),
                 "setup: the finger config's nearest pair should involve a finger, got {} vs {}",
@@ -1321,10 +1299,10 @@ mod tests {
                 p.link_b
             );
         }
-        for (ql, qr) in configs {
-            let d = m.min_distance(&ql, &qr).expect("query").distance;
+        for q in configs {
+            let d = m.min_distance(&q).expect("query").distance;
             assert!(d < 0.0, "setup: expected a penetrating config, got d={d}");
-            assert_gradient_matches_finite_difference(&mut m, &ql, &qr);
+            assert_gradient_matches_finite_difference(&mut m, &q);
         }
     }
 
@@ -1344,26 +1322,19 @@ mod tests {
                 ));
             }
         }
-        let mut m = SelfCollisionModel::with_pairs(
-            URDF,
-            MESHES,
-            "openarm_left_link0",
-            "openarm_right_link0",
-            &cross_pairs,
-        )
-        .expect("cross-arm model");
-        m.set_gripper_openings(0.6, 0.6);
-        let pose_at = |t: f64| -> (JointVec, JointVec) {
-            (
+        let mut m = build(&cross_pairs).expect("cross-arm model");
+        m.set_gripper_openings(&[0.6, 0.6]);
+        let pose_at = |t: f64| -> Joints<ARM_DOF, 2> {
+            [
                 [0.1, 0.05, t, 0.45, -0.1, 0.05, 0.0],
                 [-0.05, -0.1, -t - 0.08, 0.4, 0.1, -0.05, 0.0],
-            )
+            ]
         };
         let (mut separated, mut penetrating) = (0, 0);
         let mut finger_pair_covered = false;
         for i in 0..=60 {
-            let (ql, qr) = pose_at(i as f64 * 0.02);
-            let p = m.min_distance(&ql, &qr).expect("query");
+            let q = pose_at(i as f64 * 0.02);
+            let p = m.min_distance(&q).expect("query");
             // Stop before the nearest pair switches bodies (a pair-switch tie
             // would make the central difference straddle two gradients).
             if p.distance <= -0.03 {
@@ -1375,7 +1346,7 @@ mod tests {
                 penetrating += 1;
             }
             finger_pair_covered |= p.link_a.contains("finger") || p.link_b.contains("finger");
-            assert_gradient_matches_finite_difference(&mut m, &ql, &qr);
+            assert_gradient_matches_finite_difference(&mut m, &q);
         }
         assert!(
             separated >= 3 && penetrating >= 3 && finger_pair_covered,
@@ -1391,23 +1362,67 @@ mod tests {
             Some(BuildError::UnknownPairBody { .. })
         ));
         let mut empty = build(&[]).expect("bodies build without pairs");
-        assert!(
-            empty
-                .min_distance(&[0.0; ARM_DOF], &[0.0; ARM_DOF])
-                .is_err()
-        );
+        assert!(empty.min_distance(&[[0.0; ARM_DOF]; 2]).is_err());
     }
 
     #[test]
-    fn rejects_self_pairs_and_identical_bases() {
+    fn rejects_self_pairs_and_chains_that_share_a_base() {
         assert!(build(&[PairSpec::new("openarm_left_link7", "openarm_left_link7")]).is_err());
-        let e =
-            SelfCollisionModel::builder(URDF, MESHES, "openarm_left_link0", "openarm_left_link0")
-                .build()
-                .err()
-                .expect("identical bases must fail");
+        let [left, _] = chains();
+        let e = SelfCollisionModel::<ARM_DOF, 2>::builder(
+            URDF,
+            MESHES,
+            [left, left],
+            fixture::VERSION.yoked_joints(),
+        )
+        .fingers(&fingers())
+        .build()
+        .err()
+        .expect("a shared base must fail");
         assert!(
-            matches!(&e, CollisionError::Build(BuildError::IdenticalBases { .. })),
+            matches!(&e, CollisionError::Build(BuildError::SharedBase { base }) if base == "openarm_left_link0"),
+            "{e}"
+        );
+    }
+
+    // Every link on a moving joint off a chain link that has collision geometry is a
+    // finger the builder names, at a shut position that is a limit of its joint, and
+    // the builder names no other.
+    #[test]
+    fn the_fingers_are_named_each_at_a_limit_of_its_joint() {
+        let refused = |fingers: &[Finger]| {
+            SelfCollisionModel::<ARM_DOF, 2>::builder(
+                URDF,
+                MESHES,
+                chains(),
+                fixture::VERSION.yoked_joints(),
+            )
+            .fingers(fingers)
+            .build()
+            .err()
+            .expect("the fingers are refused")
+        };
+        let all = fingers();
+        let e = refused(&all[..3]);
+        assert!(
+            matches!(&e, CollisionError::Build(BuildError::UnnamedFinger { link }) if link == all[3].link),
+            "{e}"
+        );
+        let mut extra = all.clone();
+        extra.push(Finger {
+            link: "openarm_left_link7",
+            shut: 0.0,
+        });
+        let e = refused(&extra);
+        assert!(
+            matches!(&e, CollisionError::Build(BuildError::NoSuchFinger { link }) if link == "openarm_left_link7"),
+            "{e}"
+        );
+        let mut off = all.clone();
+        off[0].shut = 0.01;
+        let e = refused(&off);
+        assert!(
+            matches!(&e, CollisionError::Build(BuildError::ShutOffTheLimits { link, .. }) if link == all[0].link),
             "{e}"
         );
     }
@@ -1439,6 +1454,23 @@ mod tests {
         assert!(has("openarm_left_link7", "openarm_right_link7"));
     }
 
+    // The yoked joints set the horizon: with one, links two joints apart are checked.
+    #[test]
+    fn the_yoked_joints_set_which_links_of_a_chain_go_unchecked() {
+        let one = SelfCollisionModel::<ARM_DOF, 2>::builder(URDF, MESHES, chains(), 1)
+            .fingers(&fingers())
+            .build()
+            .expect("model");
+        let has = |m: &Model, a: &str, b: &str| {
+            m.checked_pairs()
+                .iter()
+                .any(|(x, y)| (*x == a && *y == b) || (*x == b && *y == a))
+        };
+        assert!(has(&one, "openarm_left_link3", "openarm_left_link5"));
+        assert!(!has(&one, "openarm_left_link3", "openarm_left_link4"));
+        assert!(!has(&model(), "openarm_left_link3", "openarm_left_link5"));
+    }
+
     #[test]
     fn auto_fit_is_one_hull_per_body() {
         let m = model();
@@ -1458,18 +1490,14 @@ mod tests {
         // Each gripper finger is fit as its own single-hull body (in its finger
         // frame); the wrist hull covers only the wrist mesh and fixed children.
         let m = model();
-        for finger in [
-            "openarm_left_left_finger",
-            "openarm_left_right_finger",
-            "openarm_right_left_finger",
-            "openarm_right_right_finger",
-        ] {
+        for finger in fingers() {
             assert_eq!(
-                m.local_hulls(finger)
-                    .unwrap_or_else(|| panic!("finger body {finger} missing"))
+                m.local_hulls(finger.link)
+                    .unwrap_or_else(|| panic!("finger body {} missing", finger.link))
                     .len(),
                 1,
-                "{finger} should be one auto-fit hull"
+                "{} should be one auto-fit hull",
+                finger.link
             );
         }
     }
@@ -1508,11 +1536,10 @@ mod tests {
 
     #[test]
     fn supplied_regions_replace_the_auto_fit() {
-        let m =
-            SelfCollisionModel::builder(URDF, MESHES, "openarm_left_link0", "openarm_right_link0")
-                .regions("openarm_body_link0", &COVERING_REGIONS)
-                .build()
-                .expect("covering torso regions contain the mesh");
+        let m = builder(URDF)
+            .regions("openarm_body_link0", &COVERING_REGIONS)
+            .build()
+            .expect("covering torso regions contain the mesh");
         assert_eq!(
             m.local_hulls("openarm_body_link0").expect("torso").len(),
             2,
@@ -1524,12 +1551,11 @@ mod tests {
     fn rejects_regions_that_leave_mesh_uncovered() {
         // Only the lower torso is clipped in; the head vertices escape.
         let lower_only = [[[-INF, -INF, -INF], [INF, INF, 0.3]]];
-        let e =
-            SelfCollisionModel::builder(URDF, MESHES, "openarm_left_link0", "openarm_right_link0")
-                .regions("openarm_body_link0", &lower_only)
-                .build()
-                .err()
-                .expect("under-covering regions must be rejected");
+        let e = builder(URDF)
+            .regions("openarm_body_link0", &lower_only)
+            .build()
+            .err()
+            .expect("under-covering regions must be rejected");
         assert!(
             matches!(
                 &e,
@@ -1547,12 +1573,11 @@ mod tests {
             [[-INF, -INF, -INF], [INF, INF, INF]],
             [[-INF, -INF, 5.0], [INF, INF, 6.0]],
         ];
-        let e =
-            SelfCollisionModel::builder(URDF, MESHES, "openarm_left_link0", "openarm_right_link0")
-                .regions("openarm_body_link0", &with_empty)
-                .build()
-                .err()
-                .expect("an empty slice must be rejected");
+        let e = builder(URDF)
+            .regions("openarm_body_link0", &with_empty)
+            .build()
+            .err()
+            .expect("an empty slice must be rejected");
         assert!(
             matches!(
                 &e,
@@ -1568,12 +1593,11 @@ mod tests {
     #[test]
     fn rejects_region_bounds_that_span_no_volume() {
         let inverted = [COVERING_REGIONS[0], [[0.0, 0.0, 0.5], [0.1, 0.1, 0.4]]];
-        let e =
-            SelfCollisionModel::builder(URDF, MESHES, "openarm_left_link0", "openarm_right_link0")
-                .regions("openarm_body_link0", &inverted)
-                .build()
-                .err()
-                .expect("an inverted region must be rejected");
+        let e = builder(URDF)
+            .regions("openarm_body_link0", &inverted)
+            .build()
+            .err()
+            .expect("an inverted region must be rejected");
         assert!(
             matches!(
                 &e,
@@ -1589,12 +1613,11 @@ mod tests {
 
     #[test]
     fn rejects_supplied_regions_for_unknown_body() {
-        let e =
-            SelfCollisionModel::builder(URDF, MESHES, "openarm_left_link0", "openarm_right_link0")
-                .regions("no_such_body", &COVERING_REGIONS)
-                .build()
-                .err()
-                .expect("unknown body must fail");
+        let e = builder(URDF)
+            .regions("no_such_body", &COVERING_REGIONS)
+            .build()
+            .err()
+            .expect("unknown body must fail");
         assert!(
             matches!(
                 &e,
@@ -1606,13 +1629,12 @@ mod tests {
 
     #[test]
     fn rejects_supplied_regions_for_a_body_named_twice() {
-        let e =
-            SelfCollisionModel::builder(URDF, MESHES, "openarm_left_link0", "openarm_right_link0")
-                .regions("openarm_body_link0", &COVERING_REGIONS)
-                .regions("openarm_body_link0", &COVERING_REGIONS)
-                .build()
-                .err()
-                .expect("a body named twice must fail");
+        let e = builder(URDF)
+            .regions("openarm_body_link0", &COVERING_REGIONS)
+            .regions("openarm_body_link0", &COVERING_REGIONS)
+            .build()
+            .err()
+            .expect("a body named twice must fail");
         assert!(
             matches!(
                 &e,
@@ -1634,11 +1656,10 @@ mod tests {
             </joint>
           </robot>"#;
         let urdf = URDF.replacen("</robot>", flap, 1);
-        let e =
-            SelfCollisionModel::builder(&urdf, MESHES, "openarm_left_link0", "openarm_right_link0")
-                .build()
-                .err()
-                .expect("a link no chain carries on a movable joint must fail");
+        let e = builder(&urdf)
+            .build()
+            .err()
+            .expect("a link no chain carries on a movable joint must fail");
         assert!(
             matches!(
                 &e,
@@ -1661,11 +1682,10 @@ mod tests {
             </joint>
           </robot>"#;
         let urdf = URDF.replacen("</robot>", plate, 1);
-        let e =
-            SelfCollisionModel::builder(&urdf, MESHES, "openarm_left_link0", "openarm_right_link0")
-                .build()
-                .err()
-                .expect("a world-fixed link with no mesh to read must fail");
+        let e = builder(&urdf)
+            .build()
+            .err()
+            .expect("a world-fixed link with no mesh to read must fail");
         assert!(
             matches!(
                 &e,
@@ -1677,12 +1697,11 @@ mod tests {
 
     #[test]
     fn rejects_empty_supplied_regions() {
-        let e =
-            SelfCollisionModel::builder(URDF, MESHES, "openarm_left_link0", "openarm_right_link0")
-                .regions("openarm_body_link0", &[])
-                .build()
-                .err()
-                .expect("an empty region list must fail");
+        let e = builder(URDF)
+            .regions("openarm_body_link0", &[])
+            .build()
+            .err()
+            .expect("an empty region list must fail");
         assert!(
             matches!(
                 &e,
@@ -1700,64 +1719,67 @@ mod tests {
         // openings; each segment is also probed at interior points, since the
         // bound must hold along the whole segment, not just at its ends.
         let mut m = model();
-        let poses: [(JointVec, JointVec); 3] = [
-            (
+        let poses: [Joints<ARM_DOF, 2>; 3] = [
+            [
                 [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0],
                 [0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0],
-            ),
-            (
+            ],
+            [
                 [0.15, 0.1, 0.85, 0.5, -0.2, 0.1, 0.0],
                 [-0.05, -0.25, -0.45, 0.35, 0.1, -0.1, 0.0],
-            ),
-            (
+            ],
+            [
                 [0.0, 0.0, 0.95, 0.4, 0.1, 0.0, 0.2],
                 [0.0, 0.0, -1.05, 0.4, -0.1, 0.1, 0.0],
-            ),
+            ],
         ];
         // A deterministic spread of step directions: single joints, all joints,
         // and mixed-sign combinations, at a small and a large magnitude.
-        let dirs: Vec<(JointVec, JointVec)> = {
-            let mut d: Vec<(JointVec, JointVec)> = Vec::new();
+        let dirs: Vec<Joints<ARM_DOF, 2>> = {
+            let mut d: Vec<Joints<ARM_DOF, 2>> = Vec::new();
             for j in 0..ARM_DOF {
                 let mut l = [0.0; ARM_DOF];
                 l[j] = 1.0;
-                d.push((l, [0.0; ARM_DOF]));
-                d.push(([0.0; ARM_DOF], l));
+                d.push([l, [0.0; ARM_DOF]]);
+                d.push([[0.0; ARM_DOF], l]);
             }
-            d.push(([1.0; ARM_DOF], [-1.0; ARM_DOF]));
-            d.push((
+            d.push([[1.0; ARM_DOF], [-1.0; ARM_DOF]]);
+            d.push([
                 std::array::from_fn(|i| if i % 2 == 0 { 1.0 } else { -1.0 }),
                 std::array::from_fn(|i| if i % 3 == 0 { -1.0 } else { 1.0 }),
-            ));
+            ]);
             d
         };
         // Opening deltas ride the same segment: the bound must dominate a step
         // that slides/swings the fingers too, not only the arm joints.
-        for (open_l, open_r, dopen) in [
-            (1.0, 1.0, [0.0, 0.0]),
-            (0.3, 0.8, [0.7, -0.8]),
-            (0.0, 0.0, [1.0, 1.0]),
+        for (opening, dopen) in [
+            ([1.0, 1.0], [0.0, 0.0]),
+            ([0.3, 0.8], [0.7, -0.8]),
+            ([0.0, 0.0], [1.0, 1.0]),
         ] {
-            for (ql, qr) in &poses {
-                m.set_gripper_openings(open_l, open_r);
-                let d0 = m.min_distance(ql, qr).expect("query").distance;
-                for (dl, dr) in &dirs {
+            for q in &poses {
+                m.set_gripper_openings(&opening);
+                let d0 = m.min_distance(q).expect("query").distance;
+                for dir in &dirs {
                     for mag in [0.02, 0.2] {
-                        let sl: JointVec = std::array::from_fn(|i| dl[i] * mag);
-                        let sr: JointVec = std::array::from_fn(|i| dr[i] * mag);
-                        let bound = m.clearance_step_bound(&sl, &sr, &dopen);
+                        let step: Joints<ARM_DOF, 2> =
+                            std::array::from_fn(|k| std::array::from_fn(|i| dir[k][i] * mag));
+                        let bound = m.clearance_step_bound(&step, &dopen);
                         for t in [0.25, 0.5, 1.0] {
-                            let qlt: JointVec = std::array::from_fn(|i| ql[i] + t * sl[i]);
-                            let qrt: JointVec = std::array::from_fn(|i| qr[i] + t * sr[i]);
-                            m.set_gripper_openings(open_l + t * dopen[0], open_r + t * dopen[1]);
-                            let dt = m.min_distance(&qlt, &qrt).expect("query").distance;
+                            let qt: Joints<ARM_DOF, 2> = std::array::from_fn(|k| {
+                                std::array::from_fn(|i| q[k][i] + t * step[k][i])
+                            });
+                            m.set_gripper_openings(&std::array::from_fn(|k| {
+                                opening[k] + t * dopen[k]
+                            }));
+                            let dt = m.min_distance(&qt).expect("query").distance;
                             assert!(
                                 (dt - d0).abs() <= bound + 1e-9,
                                 "step bound violated: |{dt:+.5} - {d0:+.5}| > {bound:.5} \
                                  (mag {mag}, t {t}, dopen {dopen:?})"
                             );
                         }
-                        m.set_gripper_openings(open_l, open_r);
+                        m.set_gripper_openings(&opening);
                     }
                 }
             }
@@ -1770,18 +1792,16 @@ mod tests {
         // make that false by comparison semantics alone, which a caller must not
         // have to rely on. Bad deltas must yield an explicitly infinite bound.
         let m = model();
-        let mut dq = [0.0; ARM_DOF];
-        dq[2] = f64::NAN;
+        let mut dq = [[0.0; ARM_DOF]; 2];
+        dq[0][2] = f64::NAN;
+        assert_eq!(m.clearance_step_bound(&dq, &[0.0, 0.0]), f64::INFINITY);
+        let zero = [[0.0; ARM_DOF]; 2];
         assert_eq!(
-            m.clearance_step_bound(&dq, &[0.0; ARM_DOF], &[0.0, 0.0]),
+            m.clearance_step_bound(&zero, &[f64::NAN, 0.0]),
             f64::INFINITY
         );
         assert_eq!(
-            m.clearance_step_bound(&[0.0; ARM_DOF], &[0.0; ARM_DOF], &[f64::NAN, 0.0]),
-            f64::INFINITY
-        );
-        assert_eq!(
-            m.clearance_step_bound(&[0.0; ARM_DOF], &[0.0; ARM_DOF], &[0.0, f64::INFINITY]),
+            m.clearance_step_bound(&zero, &[0.0, f64::INFINITY]),
             f64::INFINITY
         );
     }
@@ -1797,24 +1817,21 @@ mod tests {
             .iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect();
-        let poses = [
-            ([0.0; ARM_DOF], [0.0; ARM_DOF]),
-            (
+        let poses: [Joints<ARM_DOF, 2>; 3] = [
+            [[0.0; ARM_DOF], [0.0; ARM_DOF]],
+            [
                 [0.0, 0.0, 1.2, 0.4, 0.0, 0.0, 0.0],
                 [0.0, 0.0, -1.2, 0.4, 0.0, 0.0, 0.0],
-            ),
-            (
+            ],
+            [
                 [-0.4, -0.1, 0.0, 0.5, 0.0, -0.3, 0.0],
                 [0.4, 0.1, 0.0, 0.7, 0.0, -0.2, 0.0],
-            ),
+            ],
         ];
-        for (ql, qr) in poses {
-            let fast = m.min_distance(&ql, &qr).expect("query").distance;
-            let placed: HashMap<&str, Vec<Placed>> = m
-                .world_pieces(&ql, &qr)
-                .expect("pieces")
-                .into_iter()
-                .collect();
+        for q in poses {
+            let fast = m.min_distance(&q).expect("query").distance;
+            let placed: HashMap<&str, Vec<Placed>> =
+                m.world_pieces(&q).expect("pieces").into_iter().collect();
             let slow = pairs.iter().fold(f64::INFINITY, |best, (a, b)| {
                 placed[a.as_str()]
                     .iter()
@@ -1832,10 +1849,8 @@ mod tests {
         }
     }
 
-    fn excluding(pairs: &[PairSpec]) -> Result<SelfCollisionModel, CollisionError> {
-        SelfCollisionModel::builder(URDF, MESHES, "openarm_left_link0", "openarm_right_link0")
-            .exclude(pairs)
-            .build()
+    fn excluding(pairs: &[PairSpec]) -> Result<Model, CollisionError> {
+        builder(URDF).exclude(pairs).build()
     }
 
     #[test]
@@ -1874,16 +1889,30 @@ mod tests {
         );
     }
 
+    // An exclusion names a pair the rules check: a pair they already leave out is
+    // refused, naming it.
+    #[test]
+    fn rejects_excluding_a_pair_the_model_does_not_check() {
+        let e = excluding(&[PairSpec::new("openarm_left_link0", "openarm_left_link1")])
+            .err()
+            .expect("an unchecked pair must fail");
+        assert!(
+            matches!(&e, CollisionError::Build(BuildError::NotChecked { a, b })
+                if a == "openarm_left_link0" && b == "openarm_left_link1"),
+            "{e}"
+        );
+    }
+
     #[test]
     fn overlapping_bodies_report_negative_distance() {
         // Grippers wrapped toward each other across the torso: the winner
         // overlaps, and EPA reports a negative depth.
         let mut m = model();
         let p = m
-            .min_distance(
-                &[0.0, 0.0, 1.2, 0.4, 0.0, 0.0, 0.0],
-                &[0.0, 0.0, -1.2, 0.4, 0.0, 0.0, 0.0],
-            )
+            .min_distance(&[
+                [0.0, 0.0, 1.2, 0.4, 0.0, 0.0, 0.0],
+                [0.0, 0.0, -1.2, 0.4, 0.0, 0.0, 0.0],
+            ])
             .expect("query");
         assert!(
             p.distance < 0.0,
@@ -1898,20 +1927,15 @@ mod tests {
         // deeply wrapped pose reads more negative than a shallower one, so a caller
         // can tell approaching from separating even from inside an overlap.
         let mut m = model();
-        let deep = m
-            .min_distance(
-                &[0.0, 0.0, 1.2, 0.4, 0.0, 0.0, 0.0],
-                &[0.0, 0.0, -1.2, 0.4, 0.0, 0.0, 0.0],
-            )
-            .expect("q")
-            .distance;
-        let shallow = m
-            .min_distance(
-                &[0.0, 0.0, 1.0, 0.4, 0.0, 0.0, 0.0],
-                &[0.0, 0.0, -1.0, 0.4, 0.0, 0.0, 0.0],
-            )
-            .expect("q")
-            .distance;
+        let wrapped = |m: &mut Model, elbow: f64| {
+            let (left, right): (Q, Q) = (
+                [0.0, 0.0, elbow, 0.4, 0.0, 0.0, 0.0],
+                [0.0, 0.0, -elbow, 0.4, 0.0, 0.0, 0.0],
+            );
+            m.min_distance(&[left, right]).expect("q").distance
+        };
+        let deep = wrapped(&mut m, 1.2);
+        let shallow = wrapped(&mut m, 1.0);
         assert!(
             deep < 0.0 && shallow > deep,
             "deep {deep:+.4} shallow {shallow:+.4}"
@@ -1921,15 +1945,15 @@ mod tests {
     #[test]
     fn rejects_non_finite_queries() {
         let mut m = model();
-        let mut bad = [0.0; ARM_DOF];
-        bad[0] = f64::NAN;
-        assert!(m.min_distance(&bad, &[0.0; ARM_DOF]).is_err());
-        assert!(m.world_pieces(&bad, &[0.0; ARM_DOF]).is_err());
+        let mut bad = [[0.0; ARM_DOF]; 2];
+        bad[0][0] = f64::NAN;
+        assert!(m.min_distance(&bad).is_err());
+        assert!(m.world_pieces(&bad).is_err());
     }
 
     #[test]
     fn model_is_send_for_task_ownership() {
         fn assert_send<T: Send>() {}
-        assert_send::<SelfCollisionModel>();
+        assert_send::<Model>();
     }
 }

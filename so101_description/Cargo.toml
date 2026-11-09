@@ -2,7 +2,7 @@
 name = "so101_description"
 version = "0.1.0"
 edition = "2024"
-description = "SO-101's description for the Rust nodes: the kinematics URDF and the collision meshes of the Python package so101_description, the arm's chain from its base link to its tool point, its limb names, and where its jaw stands at a gripper opening."
+description = "SO-101's description for the Rust nodes: the kinematics URDF and the collision meshes of the Python package so101_description, the arm's chain from its base link to its tool point, its limb names, where its jaw stands at a gripper opening and where it shuts, its yoked joints, and the pairs of its links its joint limits keep apart."
 
 [workspace]
 

@@ -6,8 +6,8 @@
 use std::path::Path;
 
 use so101_description::{
-    ARM_DOF, ARM_LIMB, BASE_LINK, GRIPPER_LIMB, JAW_LINK, TCP_LINK, URDF, jaw_position_rad,
-    write_meshes_to,
+    ARM_DOF, ARM_LIMB, BASE_LINK, GRIPPER_LIMB, JAW_LINK, TCP_LINK, URDF, jaw_opening,
+    jaw_position_rad, write_meshes_to,
 };
 use urdf_rs::{Geometry, JointType, Robot};
 
@@ -121,5 +121,20 @@ fn the_jaws_position_runs_from_its_joints_lower_limit_shut_to_its_upper_open() {
     }
     for opening in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert_eq!(jaw_position_rad(opening), None);
+    }
+}
+
+// The opening at a jaw position is the one at which the jaw stands there, from shut to
+// fully open.
+#[test]
+fn the_opening_at_a_jaw_position_puts_the_jaw_there() {
+    const ROUNDING: f64 = 1e-12;
+    for opening in [0.0, 0.25, 0.5, 1.0] {
+        let at = jaw_position_rad(opening).expect("a finite opening has a position");
+        assert!(
+            (jaw_opening(at) - opening).abs() < ROUNDING,
+            "opening {opening}: {}",
+            jaw_opening(at)
+        );
     }
 }

@@ -2,95 +2,125 @@
 //! hold the collision meshes of its link, so the signed distance between the pieces of
 //! two bodies is no larger than the distance between their meshes. The evidence: at every
 //! configuration of every self distance scenario of the ROS reference harness, for each
-//! pair that the model checks, the fingers' pairs included, the distance between the
-//! pieces is no larger than FCL's distance between the meshes, where FCL finds them
-//! apart. Where FCL finds the meshes in contact, its distance is the depth of the deepest
-//! touching pair of triangles, which bounds neither solid's depth; there the meshes
-//! overlap, so the pieces that hold them overlap or touch, and the distance between them
-//! is no larger than zero. The model places a gripper's fingers at an opening fraction,
-//! which the scenario's finger joint gives: the fingers of OpenArm v2 close at 0, and
-//! open at the other limit of their travel.
+//! pair that the robot's model checks or leaves out, the fingers' pairs included, the
+//! distance between the pieces is no larger than FCL's distance between the meshes, where
+//! FCL finds them apart. Where FCL finds the meshes in contact, its distance is the depth
+//! of the deepest touching pair of triangles, which bounds neither solid's depth; there the
+//! meshes overlap, so the pieces that hold them overlap or touch, and the distance between
+//! them is no larger than zero. The model places a chain's fingers at an opening fraction,
+//! which the scenario's finger joint gives: from the position at which the robot's
+//! description shuts the finger toward the joint's other limit.
 
 use collision_geometry::gjk;
-use collision_geometry::urdf_collision::UrdfCollisions;
-use openarm_description::{HardwareVersion, Side};
+use openarm_description::{ARM_DOF as OPENARM_DOF, HardwareVersion, Side};
 use ros_reference::self_distance::{Cases, Configuration};
-use self_collision_model::SelfCollisionModel;
-use srs_model::JointVec;
+use self_collision_model::{Joints, SelfCollisionModel, openarm, so101};
+use so101_description::{ARM_DOF as SO101_DOF, JAW_LINK, jaw_shut_rad};
 
 /// The rounding of two distance computations, in meters.
 const TOLERANCE: f64 = 1e-9;
 
-const VERSION: HardwareVersion = HardwareVersion::V2;
+const OPENARM: HardwareVersion = HardwareVersion::V2;
 
-fn arm_joint(side: Side, joint: usize) -> String {
-    format!("openarm_{side}_joint{joint}")
-}
+/// SO-101's arm joints, base to wrist, as its URDF names them.
+const SO101_JOINTS: [&str; SO101_DOF] = [
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_roll",
+];
 
-fn arm(configuration: &Configuration, side: Side) -> JointVec {
-    std::array::from_fn(|i| configuration.positions[&arm_joint(side, i + 1)])
-}
-
-/// The opening fraction of the gripper of `side`: the position of its first finger
-/// joint, whose child is the link `ee_link1`, over the limit it opens to. The fingers
-/// close at 0, the one limit both finger joints share.
-fn opening(collisions: &UrdfCollisions, configuration: &Configuration, side: Side) -> f64 {
-    let joint = collisions
-        .parent_joint(&format!("openarm_{side}_ee_link1"))
-        .expect("the first finger joint");
-    let open = match (joint.lower_limit, joint.upper_limit) {
-        (0.0, upper) => upper,
-        (lower, 0.0) => lower,
-        (lower, upper) => panic!("the {side} fingers travel from {lower} to {upper}, not from 0"),
+/// The opening fraction at which the scenario poses the finger `link`: its joint's
+/// position from `shut`, the position at which the finger is shut, toward the joint's
+/// other limit.
+fn opening(robot: &urdf_rs::Robot, configuration: &Configuration, link: &str, shut: f64) -> f64 {
+    let joint = robot
+        .joints
+        .iter()
+        .find(|joint| joint.child.link == link)
+        .unwrap_or_else(|| panic!("{link} rides a joint"));
+    let open = if shut == joint.limit.lower {
+        joint.limit.upper
+    } else {
+        joint.limit.lower
     };
-    configuration.positions[&format!("openarm_{side}_finger_joint1")] / open
+    (configuration.positions[&joint.name] - shut) / (open - shut)
 }
 
 #[test]
-fn each_checked_distance_is_no_larger_than_fcls() {
+fn each_checked_and_left_out_distance_is_no_larger_than_fcls() {
     let scenarios = Cases::load_all();
+    let urdfs: Vec<&str> = scenarios.iter().map(|cases| cases.urdf.as_str()).collect();
     assert!(
-        !scenarios.is_empty(),
-        "the harness holds a self distance scenario"
+        urdfs.contains(&OPENARM.urdf()) && urdfs.contains(&so101_description::URDF),
+        "the harness holds a self distance scenario of OpenArm {OPENARM} and of SO-101"
     );
     for cases in &scenarios {
-        assert_each_checked_distance_is_no_larger_than_fcls(cases);
+        let robot = urdf_rs::read_from_string(&cases.urdf).expect("the URDF reads");
+        let meshes = cases.meshes.to_str().expect("the mesh directory is UTF-8");
+        if cases.urdf == OPENARM.urdf() {
+            let mut model =
+                openarm(OPENARM, meshes).unwrap_or_else(|e| panic!("{}: {e}", cases.name));
+            // A gripper is posed by its first finger joint, which the second mimics.
+            let first_finger = |side: Side| OPENARM.finger_links(side)[0];
+            assert_each_distance_is_no_larger_than_fcls(
+                cases,
+                &mut model,
+                |configuration| {
+                    Side::BOTH.map(|side| -> [f64; OPENARM_DOF] {
+                        std::array::from_fn(|i| {
+                            configuration.positions[&format!("openarm_{side}_joint{}", i + 1)]
+                        })
+                    })
+                },
+                |configuration| {
+                    Side::BOTH.map(|side| {
+                        opening(
+                            &robot,
+                            configuration,
+                            first_finger(side),
+                            OPENARM.finger_shut(),
+                        )
+                    })
+                },
+            );
+        } else if cases.urdf == so101_description::URDF {
+            let mut model = so101(meshes).unwrap_or_else(|e| panic!("{}: {e}", cases.name));
+            assert_each_distance_is_no_larger_than_fcls(
+                cases,
+                &mut model,
+                |configuration| [SO101_JOINTS.map(|joint| configuration.positions[joint])],
+                |configuration| [opening(&robot, configuration, JAW_LINK, jaw_shut_rad())],
+            );
+        } else {
+            panic!(
+                "{}: the parity test builds the self model of OpenArm {OPENARM} and of SO-101, \
+                 and the scenario names neither's URDF",
+                cases.name
+            );
+        }
     }
 }
 
-fn assert_each_checked_distance_is_no_larger_than_fcls(cases: &Cases) {
+fn assert_each_distance_is_no_larger_than_fcls<const N: usize, const K: usize>(
+    cases: &Cases,
+    model: &mut SelfCollisionModel<N, K>,
+    joints: impl Fn(&Configuration) -> Joints<N, K>,
+    openings: impl Fn(&Configuration) -> [f64; K],
+) {
     let name = &cases.name;
-    assert!(
-        cases.urdf == VERSION.urdf(),
-        "{name}: the parity test builds the self model of OpenArm {VERSION}, whose URDF the \
-         scenario names"
-    );
-    let collisions = UrdfCollisions::from_urdf(&cases.urdf).expect("the URDF reads");
-    let mut model = SelfCollisionModel::builder(
-        &cases.urdf,
-        cases.meshes.to_str().expect("the mesh directory is UTF-8"),
-        VERSION.base_link(Side::Left),
-        VERSION.base_link(Side::Right),
-    )
-    .regions(VERSION.torso_body(), VERSION.torso_regions())
-    .build()
-    .unwrap_or_else(|e| panic!("{name}: {e}"));
-    let checked: Vec<(String, String)> = model
+    let pairs: Vec<(String, String)> = model
         .checked_pairs()
         .into_iter()
         .map(|(a, b)| (a.to_owned(), b.to_owned()))
+        .chain(model.excluded_pairs().iter().cloned())
         .collect();
     let (mut apart, mut in_contact) = (0, 0);
     for (index, configuration) in cases.configurations.iter().enumerate() {
-        model.set_gripper_openings(
-            opening(&collisions, configuration, Side::Left),
-            opening(&collisions, configuration, Side::Right),
-        );
+        model.set_gripper_openings(&openings(configuration));
         let bodies = model
-            .world_pieces(
-                &arm(configuration, Side::Left),
-                &arm(configuration, Side::Right),
-            )
+            .world_pieces(&joints(configuration))
             .expect("a finite configuration");
         let pieces_of = |body_name: &str| {
             &bodies
@@ -99,7 +129,7 @@ fn assert_each_checked_distance_is_no_larger_than_fcls(cases: &Cases) {
                 .unwrap_or_else(|| panic!("the model holds {body_name}"))
                 .1
         };
-        for (a, b) in &checked {
+        for (a, b) in &pairs {
             let ours = pieces_of(a)
                 .iter()
                 .flat_map(|piece_a| {
@@ -125,7 +155,6 @@ fn assert_each_checked_distance_is_no_larger_than_fcls(cases: &Cases) {
     }
     assert!(
         apart > 0 && in_contact > 0,
-        "{name} holds checked pairs apart and in contact: {apart} apart, {in_contact} in \
-         contact"
+        "{name} holds pairs apart and in contact: {apart} apart, {in_contact} in contact"
     );
 }
