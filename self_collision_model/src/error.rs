@@ -9,7 +9,7 @@ use collision_geometry::GeometryError;
 /// escapes, while a bad-input variant is a genuine fault to surface).
 #[derive(Debug, thiserror::Error)]
 pub enum CollisionError {
-    /// A query was handed a non-finite joint value (or threshold).
+    /// A query was handed a non-finite joint value, or a bound that is not a number.
     #[error("non-finite value in query input")]
     NonFinite,
 

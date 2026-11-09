@@ -8,7 +8,7 @@ proximity band and the law that gates commanded motion on the reported distance.
 
 The library has no hardware or messaging dependencies. The model is built once
 from a URDF and its collision meshes (there is no intermediate artifact that can
-go stale), then queried every control tick at roughly 0.1 ms per query. The
+go stale), then queried every control tick at under 0.1 ms per query. The
 geometry, the fit of each body's convex pieces and the distance between them, is
 [`collision_geometry`](../collision_geometry)'s, which builds its exact convex
 hulls with Qhull, a C library, so a build needs libclang.
@@ -118,7 +118,10 @@ A bounding-sphere broadphase keeps the per-tick cost down. Each body has a local
 bounding sphere; at query time the model places the centers, sorts the candidate
 pairs by their lower-bound separation, and stops once that bound exceeds the
 running minimum. On the OpenArm fixture this culls about 88% of pairs before any
-GJK runs, and a release-mode test asserts a full query stays under 1 ms.
+GJK runs, and a release-mode test asserts a full query stays under 1 ms. A piece pair
+the spheres leave in meets a second bound that follows the pieces' shapes, their
+separation along the line of their centers (`gjk::separation_along`), and GJK
+measures the pair where that bound leaves it in too.
 
 ## Construction: from URDF to pieces
 
@@ -213,6 +216,13 @@ whose bodies rides that chain, its fingers included, the distance a motion of th
 chain changes. `min_distance_of_chain_alone(chain, ...)` reads those of them no other
 chain's bodies ride: the chain against the fixed bodies and against itself. The
 planner carries the chain's fingers with `fingers` (Construction, above).
+
+A planner's check asks whether the robot keeps a clearance, and how far under it a
+state stands. `min_distance_within(..., within)`, `min_distance_of_chain_within` and
+`min_distance_of_chain_alone_within` read each of those distances for such a check:
+exact where it lies under `within`, and a lower bound at or above `within` elsewhere.
+The scan sets a pair aside as soon as a bound puts it at `within`, so GJK measures the
+pairs near the clearance alone.
 
 ## What the caller supplies
 
@@ -336,7 +346,8 @@ in the world frame, so it models robots whose mount does not move.
 ## Testing
 
 `cargo test` covers pair derivation and exclusion, the broadphase against a brute
-force over every checked pair, the distance gradient against finite differences,
+force over every checked pair, a distance read at a bound against the exact one,
+the distance gradient against finite differences,
 the fixture integration scenarios (arms converging monotonically into collision,
 folding inward, separating sweeps holding the floor, and non-finite rejection), the
 distance query against independent support-function bounds, SO-101's checked pairs

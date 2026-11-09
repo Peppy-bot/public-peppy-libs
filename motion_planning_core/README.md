@@ -222,7 +222,8 @@ the spare, and the step with it, shrinks toward 0, and the floor bounds a motion
 by its length over 1 mm. The cap keeps a checked state within 1.5 cm of any point of a
 run, where a corner's repair adds its waypoints, and the distance from the map is measured
 exactly up to `min_clearance_m` plus 1.5 cm, past which a body's bounding sphere bounds
-it, and so is the distance from an object or within the robot's own body. Each arc of the
+it, and so is the distance from an object or within the robot's own body, past which the
+self model's lower bound of a pair stands for it. Each arc of the
 rounded path is walked the same way along the path: a step of its length moves a point at
 most that times the arc's lever, the sum over the joints of the largest share of the
 path's unit tangent the joint has on the arc times its reach, and at most the joints'

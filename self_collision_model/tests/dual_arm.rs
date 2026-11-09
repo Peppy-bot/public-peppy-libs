@@ -319,15 +319,6 @@ fn witnesses_are_finite_and_span_the_gap_when_clear() {
 }
 
 #[test]
-fn in_collision_threshold_semantics() {
-    let mut m = model();
-    let rest = m.min_distance(&BOTH_HOME).expect("query").distance;
-    assert!(m.in_collision(&BOTH_HOME, rest + 0.005).expect("query"));
-    assert!(!m.in_collision(&BOTH_HOME, rest - 0.005).expect("query"));
-    assert!(m.in_collision(&wrists_inward(1.2), 0.0).expect("query"));
-}
-
-#[test]
 fn non_finite_configurations_are_rejected() {
     let mut m = model();
     let mut bad = HOME;
@@ -335,7 +326,7 @@ fn non_finite_configurations_are_rejected() {
     assert!(m.min_distance(&[bad, HOME]).is_err());
     assert!(m.min_distance(&[HOME, bad]).is_err());
     bad[3] = f64::INFINITY;
-    assert!(m.in_collision(&[HOME, bad], 0.0).is_err());
+    assert!(m.min_distance(&[HOME, bad]).is_err());
 }
 
 /// A conservative lower bound on the distance from `p` to a placed piece's

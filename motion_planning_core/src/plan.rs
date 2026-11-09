@@ -313,7 +313,8 @@ pub enum PathFault {
         high: f64,
     },
     /// A state at `place` of a path of `arms` arms falls short of a plan clearance: it
-    /// lies `distances` meters from the bodies of each term, and the plan keeps
+    /// lies `distances` meters from the bodies of each term, each exact where it falls
+    /// short of its clearance and a lower bound elsewhere, and the plan keeps
     /// `clearances`.
     #[error("{place}, {}", nearness(*arms, distances, clearances))]
     Clearance {
@@ -2206,7 +2207,7 @@ pub(crate) mod tests {
     struct StandsApart(f64);
 
     impl<const N: usize> SelfModel<N> for StandsApart {
-        fn clearance(&self, _: &[f64; N], _: Moving) -> f64 {
+        fn clearance(&self, _: &[f64; N], _: Moving, _: f64) -> f64 {
             self.0
         }
 
@@ -2512,7 +2513,7 @@ pub(crate) mod tests {
     struct TipAndBall;
 
     impl SelfModel<2> for TipAndBall {
-        fn clearance(&self, q: &[f64; 2], _: Moving) -> f64 {
+        fn clearance(&self, q: &[f64; 2], _: Moving, _: f64) -> f64 {
             let tip = [
                 0.3 * q[0].cos() + 0.25 * (q[0] + q[1]).cos(),
                 0.3 * q[0].sin() + 0.25 * (q[0] + q[1]).sin(),
@@ -3135,7 +3136,7 @@ pub(crate) mod tests {
     struct RisingFromTheOrigin;
 
     impl SelfModel<2> for RisingFromTheOrigin {
-        fn clearance(&self, q: &[f64; 2], _: Moving) -> f64 {
+        fn clearance(&self, q: &[f64; 2], _: Moving, _: f64) -> f64 {
             0.01 + q[0].hypot(q[1])
         }
 
@@ -3405,7 +3406,7 @@ pub(crate) mod tests {
     const MOST_STATES: usize = 1000;
 
     impl<const N: usize> SelfModel<N> for CountsItsStates {
-        fn clearance(&self, _: &[f64; N], _: Moving) -> f64 {
+        fn clearance(&self, _: &[f64; N], _: Moving, _: f64) -> f64 {
             let asked = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             assert!(
                 asked < MOST_STATES,

@@ -17,8 +17,9 @@ use nalgebra::{Isometry3, Point3};
 /// joints move is a link or a rider of an arm of the plan.
 pub trait SelfModel<const N: usize>: Sync {
     /// The least distance at `q` between the pairs the model checks that `moving`
-    /// judges, in meters.
-    fn clearance(&self, q: &[f64; N], moving: Moving) -> f64;
+    /// judges, in meters, as a check at `within` meters reads it: exact where it lies
+    /// under `within`, and a lower bound at or above `within` elsewhere.
+    fn clearance(&self, q: &[f64; N], moving: Moving, within: f64) -> f64;
     /// The names of the two links of the nearest of those pairs at `q`.
     fn nearest_pair(&self, q: &[f64; N], moving: Moving) -> (String, String);
 }

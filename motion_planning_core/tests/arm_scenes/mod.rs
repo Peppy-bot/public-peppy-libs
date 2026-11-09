@@ -315,7 +315,7 @@ impl<const N: usize, const K: usize> StandingRobot<N, K> {
         self.own_body
             .as_ref()
             .expect("the scenario plans every chain of the robot")
-            .clearance(state, Moving::All)
+            .clearance(state, Moving::All, f64::INFINITY)
     }
 
     /// The pose of `link`, the grasp link of a chain of no arm of the scenario, at that
@@ -430,18 +430,33 @@ impl<const N: usize, const K: usize> OwnBody<N, K> {
         })
     }
 
-    /// The least distance of the nearest checked pair that `moving` judges, the arms at
-    /// the state `q`: a state the model cannot measure reads as a collision.
-    fn clearance(&self, q: &[f64], moving: Moving) -> f64 {
-        self.nearest(q, moving, |nearest| {
-            nearest.map_or(f64::NEG_INFINITY, |proximity| proximity.distance)
-        })
+    /// The least distance of the checked pairs that `moving` judges, the arms at the
+    /// state `q`, as a check at `within` meters reads it, each arm reading the pairs
+    /// `nearest` reads for it: a state the model cannot measure reads as a collision.
+    fn clearance(&self, q: &[f64], moving: Moving, within: f64) -> f64 {
+        let at = placed::<N, K>(&self.planned, q);
+        let last = self.planned.len() - 1;
+        let mut model = self.model.lock().expect("the self model");
+        match moving {
+            Moving::All => model.min_distance_within(&at, within),
+            Moving::Arm(k) if k == last => {
+                model.min_distance_of_chain_within(self.planned[k], &at, within)
+            }
+            Moving::Arm(0) if last == 1 => {
+                model.min_distance_of_chain_alone_within(self.planned[0], &at, within)
+            }
+            Moving::Arm(k) => panic!(
+                "the self model reads the pairs of the last arm of a plan, or of the first of two, and not of arm {k} of {}",
+                last + 1
+            ),
+        }
+        .unwrap_or(f64::NEG_INFINITY)
     }
 }
 
 impl<const N: usize, const K: usize, const D: usize> SelfModel<D> for OwnBody<N, K> {
-    fn clearance(&self, q: &[f64; D], moving: Moving) -> f64 {
-        OwnBody::clearance(self, q, moving)
+    fn clearance(&self, q: &[f64; D], moving: Moving, within: f64) -> f64 {
+        OwnBody::clearance(self, q, moving, within)
     }
 
     fn nearest_pair(&self, q: &[f64; D], moving: Moving) -> (String, String) {

@@ -202,7 +202,17 @@ enum Read {
     OfChainAlone(usize),
 }
 
-/// Best candidate while scanning pairs in [`SelfCollisionModel::min_distance`].
+/// What a scan of the checked pairs at one configuration finds
+/// ([`SelfCollisionModel::scan`]).
+struct Scan {
+    /// The nearest of the pairs the scan measured; none where it measured no pair.
+    nearest: Option<Closest>,
+    /// The least of the lower bounds at which the scan set pairs and pieces aside at
+    /// `within` or past it; infinite where it set none aside there.
+    set_aside: f64,
+}
+
+/// Best candidate while scanning pairs in [`SelfCollisionModel::scan`].
 struct Closest {
     distance: f64,
     a: usize,
@@ -697,14 +707,48 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
             .collect()
     }
 
-    /// The nearest checked pair at configuration `q`, of the pairs `read` names:
-    /// places the hulls by FK, then scans the pairs (broadphase-ordered) for the
-    /// minimum signed distance. The shared core of
+    /// The nearest checked pair at configuration `q`, of the pairs `read` names: the
+    /// minimum signed distance over them. The shared core of
     /// [`min_distance`](Self::min_distance),
     /// [`min_distance_of_chain`](Self::min_distance_of_chain),
     /// [`min_distance_of_chain_alone`](Self::min_distance_of_chain_alone) and
     /// [`distance_gradient`](Self::distance_gradient).
     fn closest(&mut self, q: &Joints<N, K>, read: Read) -> Result<Closest, CollisionError> {
+        self.scan(q, read, f64::INFINITY)?
+            .nearest
+            .ok_or(CollisionError::NoPairs)
+    }
+
+    /// The minimum signed distance over the pairs `read` names as a check at `within`
+    /// meters reads it: exact where it lies under `within`, and elsewhere a lower bound
+    /// at or above `within`, the least of the distances the scan measured and of the
+    /// bounds of the pairs it set aside. The shared core of
+    /// [`min_distance_within`](Self::min_distance_within),
+    /// [`min_distance_of_chain_within`](Self::min_distance_of_chain_within) and
+    /// [`min_distance_of_chain_alone_within`](Self::min_distance_of_chain_alone_within).
+    fn distance_within(
+        &mut self,
+        q: &Joints<N, K>,
+        read: Read,
+        within: f64,
+    ) -> Result<f64, CollisionError> {
+        ensure_finite(q)?;
+        if within.is_nan() {
+            return Err(CollisionError::NonFinite);
+        }
+        let scan = self.scan(q, read, within)?;
+        Ok(scan
+            .nearest
+            .map_or(scan.set_aside, |c| c.distance.min(scan.set_aside)))
+    }
+
+    /// Places the hulls by FK, then scans the pairs `read` names (broadphase-ordered)
+    /// for the nearest, measuring each piece pair that a lower bound on its distance,
+    /// its bounding spheres' gap and then its separation along the line of its centers,
+    /// leaves under `within` meters and no farther than the best distance found, and
+    /// setting aside with its bound each one a bound puts at `within` or past it. Fails
+    /// where `read` names no pair.
+    fn scan(&mut self, q: &Joints<N, K>, read: Read, within: f64) -> Result<Scan, CollisionError> {
         self.place(q);
         let on = |body: usize| self.bodies[body].placement.chain();
         let reads = |pair: &Pair| match read {
@@ -720,7 +764,8 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
 
         // Broadphase: a pair's bounding-sphere gap is a lower bound on its true
         // distance. Scanned in ascending order of that bound, once it exceeds
-        // the best distance found no remaining pair can win, so the scan stops.
+        // the best distance found, or reaches `within`, no remaining pair can
+        // win, so the scan stops.
         let centers: Vec<Point3<f64>> = self
             .bodies
             .iter()
@@ -743,9 +788,24 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
             .collect();
         order.sort_by(|x, y| x.0.total_cmp(&y.0));
 
+        if order.is_empty() {
+            return Err(CollisionError::NoPairs);
+        }
+
         let mut best: Option<Closest> = None;
+        let mut set_aside = f64::INFINITY;
+        // Whether `bound`, a lower bound on the distance of a pair or of a piece pair,
+        // sets it aside: at or above `within`, where the bound is its reading, or past
+        // the best distance found.
+        let mut sets_aside = |bound: f64, best: &Option<Closest>| {
+            if bound >= within {
+                set_aside = set_aside.min(bound);
+                return true;
+            }
+            best.as_ref().is_some_and(|c| bound > c.distance)
+        };
         for (lower_bound, i) in order {
-            if best.as_ref().is_some_and(|c| lower_bound > c.distance) {
+            if sets_aside(lower_bound, &best) {
                 break;
             }
             let pair = &self.pairs[i];
@@ -760,16 +820,28 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
             for ha in &self.bodies[pair.a].local {
                 let center_a = iso_a * ha.center();
                 for (hb, center_b) in self.bodies[pair.b].local.iter().zip(&centers_b) {
-                    // Piece-level prefilter, same sphere bound as the pair
-                    // broadphase: a piece pair that cannot beat the best
-                    // distance skips its GJK. A multi-piece body (a torso's
-                    // region decomposition) otherwise pays one GJK per piece
-                    // for pieces nowhere near the query.
-                    let gap = (center_a - center_b).norm() - ha.bound_radius() - hb.bound_radius();
-                    if best.as_ref().is_some_and(|c| gap > c.distance) {
+                    // Piece-level prefilter, the pair broadphase's sphere bound and
+                    // then the pieces' separation along the line of their centers,
+                    // a bound that follows their shapes: two long links side by
+                    // side lie apart along it where their spheres overlap. A piece
+                    // pair either bound sets aside skips its GJK, so a multi-piece
+                    // body (a torso's region decomposition) pays GJK for its
+                    // pieces near the query alone. Pieces whose centers coincide
+                    // take the x axis: every direction bounds their distance.
+                    let offset = center_b - center_a;
+                    let gap = offset.norm() - ha.bound_radius() - hb.bound_radius();
+                    if sets_aside(gap, &best) {
                         continue;
                     }
-                    let r = gjk::distance(&Placed::new(ha, iso_a), &Placed::new(hb, iso_b));
+                    let (placed_a, placed_b) = (Placed::new(ha, iso_a), Placed::new(hb, iso_b));
+                    let toward_b = Unit::try_new(offset, 0.0).unwrap_or(Vector3::x_axis());
+                    if sets_aside(
+                        gjk::separation_along(&placed_a, &placed_b, &toward_b),
+                        &best,
+                    ) {
+                        continue;
+                    }
+                    let r = gjk::distance(&placed_a, &placed_b);
                     if best.as_ref().is_none_or(|c| r.distance < c.distance) {
                         best = Some(Closest {
                             distance: r.distance,
@@ -783,7 +855,10 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
                 }
             }
         }
-        best.ok_or(CollisionError::NoPairs)
+        Ok(Scan {
+            nearest: best,
+            set_aside,
+        })
     }
 
     /// Minimum signed distance over all checked pairs at configuration `q`, with the
@@ -816,6 +891,46 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
     ) -> Result<Proximity<'_>, CollisionError> {
         assert!(chain < K, "chain {chain} of a model of {K}");
         self.proximity(q, Read::OfChainAlone(chain))
+    }
+
+    /// The distance of [`min_distance`](Self::min_distance) as a check at `within`
+    /// meters reads it: exact where it lies under `within`, and elsewhere a lower bound
+    /// at or above `within`. The scan measures a pair only where the bounds on its
+    /// distance leave it under `within`, so a check of a clearance pays for the pairs
+    /// near that clearance. Fails on a `within` that is not a number.
+    pub fn min_distance_within(
+        &mut self,
+        q: &Joints<N, K>,
+        within: f64,
+    ) -> Result<f64, CollisionError> {
+        self.distance_within(q, Read::All, within)
+    }
+
+    /// The distance of [`min_distance_of_chain`](Self::min_distance_of_chain), read as
+    /// [`min_distance_within`](Self::min_distance_within) reads its own. Panics on a
+    /// chain past the model's `K`.
+    pub fn min_distance_of_chain_within(
+        &mut self,
+        chain: usize,
+        q: &Joints<N, K>,
+        within: f64,
+    ) -> Result<f64, CollisionError> {
+        assert!(chain < K, "chain {chain} of a model of {K}");
+        self.distance_within(q, Read::OfChain(chain), within)
+    }
+
+    /// The distance of
+    /// [`min_distance_of_chain_alone`](Self::min_distance_of_chain_alone), read as
+    /// [`min_distance_within`](Self::min_distance_within) reads its own. Panics on a
+    /// chain past the model's `K`.
+    pub fn min_distance_of_chain_alone_within(
+        &mut self,
+        chain: usize,
+        q: &Joints<N, K>,
+        within: f64,
+    ) -> Result<f64, CollisionError> {
+        assert!(chain < K, "chain {chain} of a model of {K}");
+        self.distance_within(q, Read::OfChainAlone(chain), within)
     }
 
     /// The nearest pair of the pairs [`closest`](Self::closest) scans, with its
@@ -903,18 +1018,6 @@ impl<const N: usize, const K: usize> SelfCollisionModel<N, K> {
             });
         }
         (joints, openings)
-    }
-
-    /// True if any checked pair is at or below `threshold`.
-    pub fn in_collision(
-        &mut self,
-        q: &Joints<N, K>,
-        threshold: f64,
-    ) -> Result<bool, CollisionError> {
-        if !threshold.is_finite() {
-            return Err(CollisionError::NonFinite);
-        }
-        Ok(self.min_distance(q)?.distance <= threshold)
     }
 
     /// World-frame hull pieces of every body at configuration `q`, paired with the

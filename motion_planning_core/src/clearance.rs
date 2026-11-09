@@ -95,6 +95,10 @@ fn nearest(readings: impl IntoIterator<Item = Reading>) -> Option<Reading> {
 /// nearer.
 const SPHERE_BOUND_MARGIN_M: f64 = 1e-9;
 
+/// The distance a check of what touches reads the self model at: each distance at or
+/// below 0 lies under it.
+const TOUCHING_M: f64 = f64::MIN_POSITIVE;
+
 /// The terms of the clearances, as the module names them.
 pub const TERMS: usize = 3;
 /// The place of each term in an array of them.
@@ -150,7 +154,7 @@ impl<'a> Surroundings<'a> {
         moving: Moving,
     ) -> bool {
         let moving = of_the_group(moving, arms);
-        if own_distance(arms, q, moving) < self.clearances[OWN] {
+        if own_distance(arms, q, moving, self.clearances[OWN]) < self.clearances[OWN] {
             return false;
         }
         let bodies = arms.bodies(q);
@@ -191,7 +195,7 @@ impl<'a> Surroundings<'a> {
             ),
             least(
                 self.own_pairs(&bodies, moving),
-                own_distance(arms, q, moving),
+                own_distance(arms, q, moving, self.clearances[OWN]),
                 OWN,
             ),
             least(self.held_pairs(&bodies, moving), f64::INFINITY, HELD),
@@ -293,7 +297,7 @@ impl<'a> Surroundings<'a> {
             let (a, b) = model.nearest_pair(q, moving);
             Reading {
                 pair: Contact::Own { a, b },
-                distance: own_distance(arms, q, moving),
+                distance: own_distance(arms, q, moving, self.clearances[OWN]),
             }
         });
         [
@@ -327,7 +331,7 @@ impl<'a> Surroundings<'a> {
     ) -> Option<Contact> {
         let modeled = arms
             .self_model()
-            .filter(|model| short_if_nan(model.clearance(q, Moving::All)) <= 0.0)
+            .filter(|model| short_if_nan(model.clearance(q, Moving::All, TOUCHING_M)) <= 0.0)
             .map(|model| {
                 let (a, b) = model.nearest_pair(q, Moving::All);
                 Contact::Own { a, b }
@@ -684,15 +688,17 @@ impl Pair<'_> {
 }
 
 /// The least distance between the pairs of the self model of `arms` at `q` that `moving`
-/// judges: infinite without a self model, and minus infinity where the model answers no
-/// number.
+/// judges, read against `clearance`: exact where it lies within the clearance, and a lower
+/// bound at or above the clearance elsewhere; infinite without a self model, and minus
+/// infinity where the model answers no number.
 fn own_distance<const N: usize, const D: usize>(
     arms: &Arms<N, D>,
     q: &[f64; D],
     moving: Moving,
+    clearance: f64,
 ) -> f64 {
     arms.self_model().map_or(f64::INFINITY, |model| {
-        short_if_nan(model.clearance(q, moving))
+        short_if_nan(model.clearance(q, moving, clearance))
     })
 }
 
@@ -850,7 +856,7 @@ mod tests {
     struct NotANumber;
 
     impl SelfModel<1> for NotANumber {
-        fn clearance(&self, _: &[f64; 1], _: Moving) -> f64 {
+        fn clearance(&self, _: &[f64; 1], _: Moving, _: f64) -> f64 {
             f64::NAN
         }
 
@@ -882,12 +888,55 @@ mod tests {
         );
     }
 
+    /// A self model whose pairs stand at the bound it is read at where that is the bound
+    /// it holds, and in contact read at any other.
+    struct ApartAt(f64);
+
+    impl SelfModel<1> for ApartAt {
+        fn clearance(&self, _: &[f64; 1], _: Moving, within: f64) -> f64 {
+            if within == self.0 {
+                within
+            } else {
+                f64::NEG_INFINITY
+            }
+        }
+
+        fn nearest_pair(&self, _: &[f64; 1], _: Moving) -> (String, String) {
+            ("a link".to_string(), "its neighbor".to_string())
+        }
+    }
+
+    // The surroundings read the self model at the clearance of the robot's own body, and
+    // a check of what touches reads it at `TOUCHING_M`: a model apart at that clearance
+    // alone keeps it, stands at it, and touches; a model apart at `TOUCHING_M` alone
+    // touches nothing and falls short of the clearance.
+    #[test]
+    fn the_self_model_is_read_at_the_clearance_of_the_robots_own_body() {
+        let geometry = geometry::<1>(ONE_BOX, "link_1");
+        let (map, field) = world(0.05, &[]);
+        let surroundings = Surroundings::new(&map, &field, [0.02, 0.05, 0.03]);
+        let at_the_clearance = ApartAt(0.05);
+        let arms = one_arm(&geometry, Some(&at_the_clearance));
+        assert!(surroundings.clear(&arms, &[0.0]));
+        assert_eq!(
+            surroundings.distances(&arms, &[0.0], Moving::All)[OWN],
+            0.05
+        );
+        let [_, own_pair, _] = surroundings.nearest_pairs(&arms, &[0.0], Moving::All);
+        assert_eq!(own_pair.map(|reading| reading.distance), Some(0.05));
+        assert!(surroundings.contact(&arms, &[0.0]).is_some());
+        let at_touching = ApartAt(TOUCHING_M);
+        let arms = one_arm(&geometry, Some(&at_touching));
+        assert_eq!(surroundings.contact(&arms, &[0.0]), None);
+        assert!(!surroundings.clear(&arms, &[0.0]));
+    }
+
     /// A self model of two arms whose pair of the second arm and the torso stands in
     /// contact, and whose pair of the first arm and the torso stands 1 m apart.
     struct SecondArmTouches;
 
     impl SelfModel<4> for SecondArmTouches {
-        fn clearance(&self, _: &[f64; 4], moving: Moving) -> f64 {
+        fn clearance(&self, _: &[f64; 4], moving: Moving, _: f64) -> f64 {
             if moving.judges(1, 1) { 0.0 } else { 1.0 }
         }
 
