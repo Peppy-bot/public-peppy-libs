@@ -195,6 +195,7 @@ pub struct HeldOrientation {
 pub enum SceneGoal {
     Joints(Vec<f64>),
     Poses(Vec<PoseGoal>),
+    Positions(Vec<PositionGoal>),
 }
 
 /// A pose of a tip link in the robot frame, its position (m) and its orientation `[x, y,
@@ -210,6 +211,16 @@ pub struct PoseGoal {
     pub orientation: [f64; 4],
     pub position_tolerance: f64,
     pub orientation_tolerance: f64,
+}
+
+/// A position of a tip link in the robot frame (m), which the goal holds within
+/// `position_tolerance` (m), the tip link free to turn: MoveIt's `constructGoalConstraints`
+/// of a point.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PositionGoal {
+    pub position: [f64; 3],
+    pub position_tolerance: f64,
 }
 
 /// An object a grasp link holds: the object, its pose in the link's frame, the link, and
@@ -609,6 +620,11 @@ mod tests {
             Ok(SceneGoal::Poses(p))
                 if p.len() == 2 && p[0].orientation_tolerance == 0.05
                     && p[1].orientation_tolerance == 0.01
+        ));
+        let position = r#"[{"position": [0.1, 0.2, 0.3], "position_tolerance": 0.001}]"#;
+        assert!(matches!(
+            goal(position),
+            Ok(SceneGoal::Positions(p)) if p.len() == 1 && p[0].position_tolerance == 0.001
         ));
         assert!(goal(pose).is_err());
         assert!(

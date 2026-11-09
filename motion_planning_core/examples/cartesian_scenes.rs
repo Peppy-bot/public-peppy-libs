@@ -15,7 +15,7 @@ use chain_kinematics::CARTESIAN_STEP_M;
 use ros_reference::cartesian_paths::{Ours, Paths};
 use serde_json::json;
 
-use arm_scenes::on_the_arms;
+use arm_scenes::{JOINTS, on_the_arms};
 use cartesian_scenes::path_answer;
 
 fn main() {
@@ -23,7 +23,7 @@ fn main() {
         serde_json::from_reader(std::io::stdin()).expect("the scenario on stdin parses");
     let repository = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
     let urdf = std::fs::read_to_string(repository.join(&paths.urdf)).expect("the URDF reads");
-    let answers = on_the_arms(
+    let answers = on_the_arms::<JOINTS, _>(
         &paths.chains,
         &urdf,
         &repository.join(&paths.meshes),

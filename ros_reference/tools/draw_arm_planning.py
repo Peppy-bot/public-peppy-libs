@@ -46,7 +46,16 @@ reference ends in a segmentation fault on one orientation of a group of two chai
 sets the tolerance, and --moveit-box the rotation-vector tolerances MoveIt holds: `inner`, a box inside the tolerance, each component at it
 over the square root of 3, or `outer`, one around it, each at it, or with a free axis at pi times
 the sine of half of it; a free axis takes pi about it. These scenes run locally, with --drawn.
-Run it from any directory:
+
+With --robot so101 it writes SO101_NAME, scenes of SO-101's arm among one to three collision
+objects within its reach, each start and goal configuration of the drawn scenes one that the
+example self_distances, this crate's self model of a plan of the arm, holds apart, the goal by
+at least min_clearance_m: its goal, by --goal, the position of the grasp point at the goal
+configuration, that configuration, or that pose tilted and held within a tolerance, the hand
+holding an object in every other scene with --holding. Two scenes, one starting and one ending
+with the arm's own bodies meeting, take them more than MEETING_DEPTH into each other in the
+self model. The scenario keeps the drawn scenes at COMMITTED_SO101. Run it from any
+directory:
 
     python3 ros_reference/tools/draw_arm_planning.py
     python3 ros_reference/tools/draw_arm_planning.py --drawn 200
@@ -91,6 +100,9 @@ from pathlib import Path
 
 from drawing import (
     IDENTITY,
+    SO101_JOINTS,
+    SO101_MESHES,
+    SO101_URDF,
     about_axis,
     box_mesh,
     chain,
@@ -181,6 +193,37 @@ COMMITTED_POSES = {
     "a start in a box": 17,
     "a goal in a box": 2,
 }
+# SO-101's scenes among collision objects, written with --robot so101.
+SO101_NAME = "arm_planning_objects_so101"
+SO101_TIP = "gripper_frame_link"
+SO101_GRIPPER = ["gripper_link", "moving_jaw_so101_v1_link"]
+SO101_CHAIN = {
+    "name": "arm",
+    "base_link": "base_link",
+    "tip_link": SO101_TIP,
+    "joints": SO101_JOINTS,
+}
+# No scene of SO-101 holds a voxel: the map is empty, as on the robot, which has no depth
+# camera.
+SO101_VOXEL_MAP = {"voxel_size": 0.02, "map_half_side": 0.8}
+# Where an object's origin stands: wrist_link's origin between its 5th and 95th percentile
+# over 20000 configurations drawn inside the limits, rounded out to 1 cm.
+SO101_OBJECT_CORNERS = [(-0.06, 0.26), (-0.21, 0.21), (-0.02, 0.36)]
+# BOX_SIZES scaled by the 0.39 m of SO-101's grasp point from its base at all joints 0, over
+# the 0.6 m of OpenArm v2's reach.
+SO101_OBJECT_SIZES = (0.026, 0.13)
+# A goal that names an orientation: the configuration's, tilted within the tolerance's reach
+# of the orientations the arm holds at the position.
+SO101_TILT_RAD = 0.05
+SO101_TOLERANCE_RAD = 0.1
+# The drawn scenes of SO-101's scenario it keeps, as COMMITTED names them.
+COMMITTED_SO101 = {
+    "a straight path": 51,
+    "a path with corners": 67,
+    "MoveIt's path invalid": 65,
+    "a start in an object": 52,
+    "a goal in an object": 80,
+}
 # The kinds of a drawn object: a box, a sphere, a cylinder, a closed box mesh, an L-shaped
 # closed mesh, and an object of two shapes, a box with a cylinder standing on it.
 OBJECT_KINDS = ("box", "sphere", "cylinder", "mesh", "L", "two shapes")
@@ -243,11 +286,11 @@ ELBOW_TOLERANCE = 1.0
 # How far a goal's grasp point stands from the start's in the path orientation scenes: from a
 # short move to half the arm's 0.6 m reach from its shoulder to its grasp point.
 HELD_REACH_M = (0.05, 0.3)
-# How deep the two scenes of both arms whose start, and whose goal, holds the robot's own
-# bodies meeting take them into each other in the self model, whose hulls enclose the meshes
-# MoveIt checks, the other end of each apart.
+# How deep the two scenes whose start, and whose goal, holds the robot's own bodies meeting
+# take them into each other in the self model, whose hulls enclose the meshes MoveIt checks,
+# the other end of each apart.
 MEETING_DEPTH = 0.02
-# The start and goal pairs of both arms drawn at once for the self model to measure.
+# The start and goal pairs of the arms drawn at once for the self model to measure.
 PAIRS_BATCH = 200
 EMPTY_BATCHES = 10
 
@@ -308,10 +351,10 @@ def plain_scene(start, goal, seed):
     }
 
 
-def drawn_object(rng, k, side="left"):
-    """The object `object_<k>`: one of OBJECT_KINDS, its sizes from BOX_SIZES, turned any
-    way, its origin where a box's corner stands in front of the arm on `side`."""
-    size = lambda: rng.uniform(*BOX_SIZES)
+def drawn_object(rng, k, side="left", sizes=BOX_SIZES, corners=BOX_CORNERS):
+    """The object `object_<k>`: one of OBJECT_KINDS, its sizes from `sizes`, turned any
+    way, its origin where a corner of `corners` stands in front of the arm on `side`."""
+    size = lambda: rng.uniform(*sizes)
     kind = rng.choice(OBJECT_KINDS)
     if kind == "box":
         shapes = [shape("box", [size(), size(), size()])]
@@ -323,7 +366,7 @@ def drawn_object(rng, k, side="left"):
         shapes = [box_mesh([size(), size(), size()], (0.0, 0.0, 0.0))]
     elif kind == "L":
         side = size()
-        shapes = [l_mesh(side, rng.uniform(BOX_SIZES[0] / 2, side / 2), size())]
+        shapes = [l_mesh(side, rng.uniform(sizes[0] / 2, side / 2), size())]
     else:
         base = [size(), size(), size() / 2]
         height, radius = size(), size() / 4
@@ -331,7 +374,7 @@ def drawn_object(rng, k, side="left"):
             shape("box", base),
             shape("cylinder", [height, radius], at=(0.0, 0.0, (base[2] + height) / 2)),
         ]
-    position = [rng.uniform(low, high) for low, high in BOX_CORNERS]
+    position = [rng.uniform(low, high) for low, high in corners]
     if side == "right":
         position[1] = -position[1]
     return {
@@ -545,14 +588,15 @@ def plans(objective, planning_time):
     return {"objective": objective, "termination": "time", "time_limit": planning_time}
 
 
-def header(arms, voxel_map, min_clearance, planning):
-    """The scenario's header: the robot, the arms `arms` (their chains), the map
-    `voxel_map` (its voxel_size and map_half_side), the plans' clearance `min_clearance`,
-    and the plans' parameters, `planning` (their objective and termination) among them."""
+def header(arms, voxel_map, min_clearance, planning, urdf=URDF, meshes=MESHES):
+    """The scenario's header: the robot, by its URDF and its meshes, the arms `arms` (their
+    chains), the map `voxel_map` (its voxel_size and map_half_side), the plans' clearance
+    `min_clearance`, and the plans' parameters, `planning` (their objective and termination)
+    among them."""
     return {
         "kind": "arm_planning",
-        "urdf": URDF,
-        "meshes": MESHES,
+        "urdf": urdf,
+        "meshes": meshes,
         **arms,
         **voxel_map,
         "min_clearance": min_clearance,
@@ -598,6 +642,92 @@ def drawn_scenario(drawn, planning, min_clearance, name):
     return kept(planned(scenario_header, [*drawn_scenes, *outside]), drawn, committed)
 
 
+def so101_goal(rng, model, joints, goal):
+    """The goal of a scene of SO-101, of the grasp point at the configuration `joints`: `goal`
+    names it, the configuration, its position, or its pose tilted by SO101_TILT_RAD within
+    SO101_TOLERANCE_RAD."""
+    if goal == "joints":
+        return joints
+    turn, at = link_pose(model, SO101_TIP, dict(zip(SO101_JOINTS, joints)))
+    if goal == "position":
+        return [{"position": at, "position_tolerance": POSE_TOLERANCE_M}]
+    axis = [rng.gauss(0, 1) for _ in range(3)]
+    return [
+        {
+            "position": at,
+            "orientation": quaternion(product(turn, about_axis(axis, SO101_TILT_RAD))),
+            "position_tolerance": POSE_TOLERANCE_M,
+            "orientation_tolerance": SO101_TOLERANCE_RAD,
+        }
+    ]
+
+
+def so101_held(k):
+    """The object SO-101's hand holds in its grasp point's frame, a cube or, for an odd `k`,
+    a cylinder, its gripper the links it may touch."""
+    held_shape = (
+        shape("cylinder", [HELD_SIDE, HELD_SIDE / 2]) if k % 2 else shape("box", [HELD_SIDE] * 3)
+    )
+    return {
+        "object": {
+            "id": "held",
+            "operation": "add",
+            "position": [0.0, 0.0, HELD_AHEAD],
+            "orientation": IDENTITY,
+            "shapes": [held_shape],
+        },
+        "link": SO101_TIP,
+        "touch_links": SO101_GRIPPER,
+    }
+
+
+def so101_scene(rng, model, k, start, joints, goal, holding):
+    """The `k`th drawn scene of SO-101 among one to three drawn objects, from `start` to the
+    goal `goal` names of the configuration `joints`, and with `holding`, the hand holding an
+    object in every other scene."""
+    objects = [
+        drawn_object(rng, i, sizes=SO101_OBJECT_SIZES, corners=SO101_OBJECT_CORNERS)
+        for i in range(rng.randint(1, 3))
+    ]
+    return {
+        "boxes": [],
+        "objects": objects,
+        "attached": [so101_held(k // 2)] if holding and k % 2 else [],
+        "allowed": [],
+        "path_orientations": [],
+        "start": start,
+        "goal": so101_goal(rng, model, joints, goal),
+        "seed": rng.randint(1, 2**31 - 1),
+        "ours": None,
+    }
+
+
+def so101_scenario(drawn, planning, min_clearance, goal, holding):
+    """The scenario SO101_NAME of SO-101 among collision objects: the drawn scenes it picks,
+    or with `drawn` the first `drawn`, the scenes whose start and whose goal hold the arm's own
+    bodies meeting, and the starts outside the limits, planned as `planning` says at
+    `min_clearance`."""
+    rng = generator(SO101_NAME)
+    model = robot(SO101_URDF)
+    limits = [joint_limits(model, joint) for joint in SO101_JOINTS]
+    scenario_header = header(
+        {"chains": [SO101_CHAIN]},
+        SO101_VOXEL_MAP,
+        min_clearance,
+        planning,
+        urdf=SO101_URDF,
+        meshes=SO101_MESHES,
+    )
+    pairs, meeting = self_clear_pairs(rng, scenario_header, limits, drawn or DRAWN)
+    scenes = [
+        so101_scene(rng, model, k, start, joints, goal, holding)
+        for k, (start, joints) in enumerate(pairs)
+    ]
+    outside = [outside_limits(rng, limits, k) for k in range(OUTSIDE_LIMITS)]
+    scenario = planned(scenario_header, [*scenes, *meeting, *outside])
+    return kept(scenario, drawn, COMMITTED_SO101)
+
+
 def kept(scenario, drawn, committed):
     """`scenario`, its drawn scenes first and every other scene after them, keeping of
     those drawn the first `drawn`, or with no `drawn` those at `committed` and the one whose
@@ -619,14 +749,14 @@ def self_distances(scenario_header, pairs):
     return run_example(example("self_distances"), {**scenario_header, "scenes": scenes})
 
 
-def both_arms_pairs(rng, scenario_header, limits, count):
-    """The first `count` starts and goals of both arms drawn inside `limits`, in batches of
-    PAIRS_BATCH, whose start the self model holds apart and whose goal it holds at least
-    min_clearance_m apart, a goal nearer than that being one this crate's plans refuse and
-    MoveIt's, which check the robot's own bodies unpadded, reach; and the scenes of the first
-    drawn whose start holds the arms meeting, by more than MEETING_DEPTH, its goal apart, and
-    of the first whose goal holds them so, its start apart. Stops the script when
-    EMPTY_BATCHES batches hold no such pair."""
+def self_clear_pairs(rng, scenario_header, limits, count):
+    """The first `count` starts and goals of the arms of `scenario_header` drawn inside
+    `limits`, in batches of PAIRS_BATCH, whose start the self model holds apart and whose goal
+    it holds at least min_clearance_m apart, a goal nearer than that being one this crate's
+    plans refuse and MoveIt's, which check the robot's own bodies unpadded, reach; and the
+    scenes of the first drawn whose start holds the robot's own bodies meeting, by more than
+    MEETING_DEPTH, its goal apart, and of the first whose goal holds them so, its start
+    apart. Stops the script when EMPTY_BATCHES batches hold no such pair."""
     apart, start_meeting, goal_meeting = [], None, None
     clearance = scenario_header["min_clearance"]
     batches = 0
@@ -634,7 +764,7 @@ def both_arms_pairs(rng, scenario_header, limits, count):
         batches += 1
         if batches > EMPTY_BATCHES and not apart:
             raise SystemExit(
-                f"--min-clearance {clearance}: no drawn goal of both arms keeps it in the self "
+                f"--min-clearance {clearance}: no drawn goal of the arms keeps it in the self "
                 f"model; give less"
             )
         batch = [
@@ -704,7 +834,7 @@ def both_arms_scenario(drawn, planning, min_clearance, name):
     limits = [joint_limits(model, joint) for side in SIDES for joint in openarm_joints(side)]
     chains = {"chains": [chain(side) for side in SIDES]}
     scenario_header = header(chains, VOXEL_MAP, min_clearance, planning)
-    pairs, meeting = both_arms_pairs(rng, scenario_header, limits, drawn or DRAWN)
+    pairs, meeting = self_clear_pairs(rng, scenario_header, limits, drawn or DRAWN)
     scene_of, committed = {
         BOTH_NAME: (
             lambda k, start, goal: both_arms_scene(rng, model, k, start, goal, False),
@@ -774,6 +904,24 @@ def main():
         f"{BOTH_POSES_NAME}, scenes of both arms planned as one group",
     )
     parser.add_argument(
+        "--robot",
+        choices=("openarm_v2", "so101"),
+        default="openarm_v2",
+        help=f"so101 writes {SO101_NAME}, scenes of SO-101 among collision objects",
+    )
+    parser.add_argument(
+        "--goal",
+        choices=("position", "joints", "tolerance"),
+        default="position",
+        help="with --robot so101, what each scene's goal names: the grasp point's position, a "
+        "configuration, or a pose held within a tolerance",
+    )
+    parser.add_argument(
+        "--holding",
+        action="store_true",
+        help="with --robot so101, the hand holds an object in every other scene",
+    )
+    parser.add_argument(
         "--planning-time",
         type=float,
         metavar="SECONDS",
@@ -819,10 +967,23 @@ def main():
         parser.error("--objects and --poses each write a scenario of their own: give one")
     if args.episodes is not None and args.poses:
         parser.error("--episodes writes the episodes' scenes to their configurations: drop --poses")
+    if args.robot == "so101" and (
+        args.episodes is not None
+        or args.objects
+        or args.poses
+        or args.both_arms
+        or args.path_orientation is not None
+    ):
+        parser.error(
+            "--robot so101 writes its scenes among collision objects: drop --episodes, "
+            "--objects, --poses, --both-arms and --path-orientation, and name the goal with --goal"
+        )
     if args.planning_time is not None and not 0 < args.planning_time < math.inf:
         parser.error(f"--planning-time is {args.planning_time}; give the seconds, more than 0")
     if not 0 <= args.min_clearance < math.inf:
         parser.error(f"--min-clearance is {args.min_clearance}; give the meters, 0 or more")
+    if args.robot != "so101" and (args.goal != "position" or args.holding):
+        parser.error("--goal and --holding name what SO-101's scenes hold: give --robot so101")
     if args.path_orientation is not None:
         if not args.drawn or args.episodes is not None or args.objects or args.poses:
             parser.error(
@@ -854,7 +1015,18 @@ def main():
             "plans its scenes are picked by: give --drawn 200, or --episodes and --launcher, "
             "with --objective, --planning-time or --min-clearance"
         )
+    if committed and (args.goal != "position" or args.holding):
+        parser.error(
+            "SO-101's committed scenario goes to positions with nothing held: give --drawn 200 "
+            "with --goal or --holding"
+        )
     planning = plans(args.objective, args.planning_time)
+    if args.robot == "so101":
+        write(
+            SO101_NAME,
+            so101_scenario(args.drawn, planning, args.min_clearance, args.goal, args.holding),
+        )
+        return
     if args.both_arms:
         name = BOTH_OBJECTS_NAME if args.objects else BOTH_POSES_NAME if args.poses else BOTH_NAME
         write(name, both_arms_scenario(args.drawn, planning, args.min_clearance, name))

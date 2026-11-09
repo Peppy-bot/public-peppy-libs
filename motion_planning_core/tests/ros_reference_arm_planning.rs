@@ -1,8 +1,9 @@
 //! Parity with MoveIt's planning pipeline on the arm planning scenarios of the ROS
 //! reference harness, of one arm and of both, at one attempt, the grippers' fingers
 //! carried by the arms in both, each plan with the planner of the scenario's objective,
-//! and a plan of both arms checking the pairs of the robot's own links that this crate's
-//! self model checks in both. The committed scenarios plan at a clearance of 0: this crate
+//! and a plan of every chain of the robot, both of OpenArm v2's arms or SO-101's arm,
+//! checking the pairs of the robot's own links that this crate's self model checks in
+//! both. The committed scenarios plan at a clearance of 0: this crate
 //! still plans the paths each of them carries; MoveIt's collision check finds every probe
 //! of each of them free; this crate refuses each start that MoveIt refuses outside a joint
 //! limit or in collision; and each holds a scene of each outcome the README names. The
@@ -20,6 +21,7 @@ mod arm_scenes;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use chain_kinematics::Limit;
 use control_core::path_timing::JOINT_PATH_CORNER_DEVIATION;
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -29,8 +31,8 @@ use ros_reference::arm_planning::{
 use statrs::distribution::{ContinuousCDF, StudentsT};
 
 use arm_scenes::{
-    JOINTS, MIN_SCENES, boxes_of, geometry, joint_goal, least_self_clearance_along, map_of,
-    on_the_arms, plan_scene, probe_spacing, samplers, state,
+    AtItsJoints, JOINTS, MIN_SCENES, Standing, at_its_joints, boxes_of, geometry, joint_goal,
+    least_self_clearance_along, map_of, on_the_arms, plan_scene, probe_spacing, samplers, state,
 };
 use nalgebra::{Point3, Vector3};
 use openarm_description::{HardwareVersion, Side};
@@ -87,17 +89,18 @@ struct Shown<'a> {
 /// An outcome of a scene, by its name, and whether a scene shows it.
 type Outcome = (&'static str, fn(&Shown) -> bool);
 
-/// The least distance between the robot's own bodies in a scene of both arms, in this
-/// crate's self model of their plans: at its start, and, for a goal of joints, at its goal
-/// and along the straight joint line between them.
+/// The least distance between the robot's own bodies in a scene of a plan of every chain
+/// of the robot, in this crate's self model of its plans: at its start, and, for a goal of
+/// joints, at its goal and along the straight joint line between them.
 struct OwnDistances {
     start: f64,
     goal: Option<f64>,
     line: Option<f64>,
 }
 
-/// An outcome of a scene of both arms, by its name, and whether a scene shows it.
-type OutcomeOfBoth = (&'static str, fn(&SceneCase, &OwnDistances) -> bool);
+/// An outcome of a scene whose plans check the robot's own pairs, by its name, and whether
+/// a scene shows it.
+type OwnBodyOutcome = (&'static str, fn(&SceneCase, &OwnDistances) -> bool);
 
 /// The name of this crate's failure in `ours`, or none for a path.
 fn failure(ours: &Ours) -> Option<&str> {
@@ -187,7 +190,7 @@ fn the_robot_around_either_arm_holds_the_other_arm_at_zero() {
         chain.tip_link = named(&chain.tip_link);
         chain.joints = chain.joints.iter().map(|joint| named(joint)).collect();
         let chains = &case.scenes.chains;
-        on_the_arms(chains, &case.urdf, &case.meshes, |arms, standing| {
+        on_the_arms::<JOINTS, _>(chains, &case.urdf, &case.meshes, |arms, standing| {
             let (parts, _) = standing.around(arms, &start);
             let base = HardwareVersion::V2.base_link(side);
             assert!(
@@ -238,12 +241,25 @@ fn each_scenario_carries_the_paths_this_crate_plans() {
             case.name
         );
         assert_eq!(case.scenes.corner_tolerance, JOINT_PATH_CORNER_DEVIATION);
+        at_its_joints(&case.scenes.chains, CarriesItsPaths(&case));
+    }
+}
+
+/// That the scenario `case` carries the answers, the probe spacing and the checked pairs
+/// this crate gives.
+struct CarriesItsPaths<'a>(&'a Case);
+
+impl AtItsJoints for CarriesItsPaths<'_> {
+    type Output = ();
+
+    fn run<const N: usize, const D: usize>(self) {
+        let case = self.0;
         let chains = &case.scenes.chains;
-        on_the_arms(chains, &case.urdf, &case.meshes, |arms, standing| {
+        on_the_arms::<N, _>(chains, &case.urdf, &case.meshes, |arms, standing| {
             let samplers = samplers(arms);
             assert_eq!(
                 case.probe_spacing,
-                probe_spacing(arms, &case.scenes),
+                probe_spacing::<N, D>(arms, &case.scenes),
                 "{}: the scenario's probe spacing is its arms'",
                 case.name
             );
@@ -255,13 +271,33 @@ fn each_scenario_carries_the_paths_this_crate_plans() {
             );
             for (k, c) in case.cases.iter().enumerate() {
                 assert_eq!(
-                    plan_scene(arms, standing, &samplers, &case.scenes, &c.scene).ours,
+                    plan_scene::<N, D, _>(arms, standing, &samplers, &case.scenes, &c.scene).ours,
                     c.scene.ours,
                     "{} scene {k}",
                     case.name
                 );
             }
         });
+    }
+}
+
+/// Each joint's limits, of the arms of a scenario in their order.
+struct LimitsOf<'a>(&'a Case);
+
+impl AtItsJoints for LimitsOf<'_> {
+    type Output = Vec<Limit>;
+
+    fn run<const N: usize, const D: usize>(self) -> Vec<Limit> {
+        let case = self.0;
+        case.scenes
+            .chains
+            .iter()
+            .flat_map(|chain| {
+                geometry::<N>(chain, &case.urdf, &case.meshes)
+                    .chain()
+                    .limits()
+            })
+            .collect()
     }
 }
 
@@ -306,16 +342,7 @@ fn each_scenario_holds_a_scene_of_each_outcome() {
         }),
     ];
     for case in Case::load_all() {
-        let geometries: Vec<_> = case
-            .scenes
-            .chains
-            .iter()
-            .map(|chain| geometry(chain, &case.urdf, &case.meshes))
-            .collect();
-        let limits: Vec<_> = geometries
-            .iter()
-            .flat_map(|geometry| geometry.chain().limits())
-            .collect();
+        let limits = at_its_joints(&case.scenes.chains, LimitsOf(&case));
         let shown: Vec<Shown> = case
             .cases
             .iter()
@@ -329,9 +356,9 @@ fn each_scenario_holds_a_scene_of_each_outcome() {
                 above: c.scene.start.iter().zip(&limits).any(|(q, l)| *q > l.hi),
             })
             .collect();
-        let both_to_poses = case.scenes.chains.len() > 1 && to_poses(&case);
+        let both_to_grasp_points = case.scenes.chains.len() > 1 && to_grasp_points(&case);
         for (outcome, holds) in outcomes {
-            if both_to_poses && outcome == MOVEIT_PATH_INVALID {
+            if both_to_grasp_points && outcome == MOVEIT_PATH_INVALID {
                 continue;
             }
             assert!(
@@ -343,18 +370,19 @@ fn each_scenario_holds_a_scene_of_each_outcome() {
     }
 }
 
-// Each scenario of both arms holds a scene of each outcome of a plan of both: a start
-// where the robot's own bodies meet and a goal where they meet, which both refuse, and a
-// straight joint line from the start to the goal on which they meet, which both plan
-// around; a scenario to poses holds the first two, its drawn goals holding no
-// configuration and so no joint line. So the pairs of the robot's own links that this
-// crate's self model checks, and MoveIt's collision matrix with them, hold both plans'
-// bodies apart. The committed outputs hold MoveIt's amd64 answers, whose outcomes the
-// scenes were picked by, so the test runs on amd64.
+// Each scenario whose plans check the robot's own pairs, both of OpenArm v2's arms or
+// SO-101's arm, holds a scene of each outcome of such a plan: a start where the robot's own
+// bodies meet and a goal where they meet, which both refuse, and a straight joint line from
+// the start to the goal on which they meet, which both plan around; a scenario to grasp
+// points holds the first two, its drawn goals holding no configuration and so no joint
+// line. So the pairs of the robot's own links that this crate's self model checks, and
+// MoveIt's collision matrix with them, hold both plans' bodies apart. The committed outputs
+// hold MoveIt's amd64 answers, whose outcomes the scenes were picked by, so the test runs
+// on amd64.
 #[cfg(target_arch = "x86_64")]
 #[test]
-fn each_scenario_of_both_arms_holds_a_scene_of_each_of_their_outcomes() {
-    let outcomes: [OutcomeOfBoth; 3] = [
+fn each_scenario_checking_the_robots_own_pairs_holds_a_scene_of_each_of_their_outcomes() {
+    let outcomes: [OwnBodyOutcome; 3] = [
         ("a start where the robot's own bodies meet", |c, own| {
             own.start < 0.0
                 && failure(&c.scene.ours) == Some("start_in_collision")
@@ -374,40 +402,43 @@ fn each_scenario_of_both_arms_holds_a_scene_of_each_of_their_outcomes() {
             },
         ),
     ];
-    let both: Vec<Case> = Case::load_all()
+    let checking: Vec<Case> = Case::load_all()
         .into_iter()
-        .filter(|case| case.scenes.chains.len() == 2)
+        .filter(|case| !case.checked_pairs.is_empty())
         .collect();
-    assert!(!both.is_empty(), "scenarios/ holds a scenario of both arms");
-    for case in both {
-        let chains = &case.scenes.chains;
-        on_the_arms(chains, &case.urdf, &case.meshes, |_, standing| {
-            let shown: Vec<OwnDistances> = case
-                .cases
-                .iter()
-                .map(|c| {
-                    let goal = joint_goal(&c.scene.goal);
-                    OwnDistances {
-                        start: standing.self_clearance(&c.scene.start),
-                        goal: goal.map(|goal| standing.self_clearance(goal)),
-                        line: goal
-                            .map(|goal| least_self_clearance_along(standing, &c.scene.start, goal)),
-                    }
-                })
-                .collect();
-            let held = if to_poses(&case) {
-                &outcomes[..2]
-            } else {
-                &outcomes[..]
-            };
-            for (outcome, holds) in held {
-                assert!(
-                    case.cases.iter().zip(&shown).any(|(c, own)| holds(c, own)),
-                    "{} holds no scene of {outcome}",
-                    case.name
-                );
-            }
-        });
+    for robot in ["openarm_v2", "so101"] {
+        assert!(
+            checking.iter().any(|case| case.name.ends_with(robot)),
+            "scenarios/ holds a scenario of {robot} whose plans check the robot's own pairs"
+        );
+    }
+    for case in checking {
+        let standing = Standing::new(&case.urdf, &case.meshes, &case.scenes.chains);
+        let shown: Vec<OwnDistances> = case
+            .cases
+            .iter()
+            .map(|c| {
+                let goal = joint_goal(&c.scene.goal);
+                OwnDistances {
+                    start: standing.self_clearance(&c.scene.start),
+                    goal: goal.map(|goal| standing.self_clearance(goal)),
+                    line: goal
+                        .map(|goal| least_self_clearance_along(&standing, &c.scene.start, goal)),
+                }
+            })
+            .collect();
+        let held = if to_grasp_points(&case) {
+            &outcomes[..2]
+        } else {
+            &outcomes[..]
+        };
+        for (outcome, holds) in held {
+            assert!(
+                case.cases.iter().zip(&shown).any(|(c, own)| holds(c, own)),
+                "{} holds no scene of {outcome}",
+                case.name
+            );
+        }
     }
 }
 
@@ -473,11 +504,11 @@ const OBJECT_SPARE_M: f64 = 1e-3;
 /// module's `MIN_SPARE_M` over a pair of which both bodies move).
 const OWN_BODY_SPARE_M: f64 = 2e-3;
 
-/// Whether a scene of `case` reaches for poses.
-fn to_poses(case: &Case) -> bool {
+/// Whether a scene of `case` reaches for poses or positions of the grasp points.
+fn to_grasp_points(case: &Case) -> bool {
     case.cases
         .iter()
-        .any(|c| matches!(c.scene.goal, SceneGoal::Poses(_)))
+        .any(|c| matches!(c.scene.goal, SceneGoal::Poses(_) | SceneGoal::Positions(_)))
 }
 
 /// The outcome of a path of ours where MoveIt's own fails its check.
@@ -573,6 +604,21 @@ fn lies_on_its_side_of_moveits(name: &str) {
         .into_iter()
         .find(|case| case.name == name)
         .unwrap_or_else(|| panic!("scenarios/ holds no scenario {name}"));
+    at_its_joints(&case.scenes.chains, OnItsSide(&case));
+}
+
+/// That the scenario `case`, a drawn set, lies on its side of MoveIt's intervals.
+struct OnItsSide<'a>(&'a Case);
+
+impl AtItsJoints for OnItsSide<'_> {
+    type Output = ();
+
+    fn run<const N: usize, const D: usize>(self) {
+        on_its_side::<N>(self.0);
+    }
+}
+
+fn on_its_side<const N: usize>(case: &Case) {
     let scenes: &[SceneCase] = &case.cases;
     assert!(
         scenes.len() >= MIN_SCENES,
@@ -595,18 +641,23 @@ fn lies_on_its_side_of_moveits(name: &str) {
         .scenes
         .chains
         .iter()
-        .map(|chain| geometry(chain, &case.urdf, &case.meshes))
+        .map(|chain| geometry::<N>(chain, &case.urdf, &case.meshes))
         .collect();
     // How far a goal's grasp point stands from the start's, the farthest of the arms', for a
-    // goal of poses.
-    let reach = |c: &SceneCase| match &c.scene.goal {
-        SceneGoal::Poses(poses) => Some(
-            poses
-                .iter()
+    // goal of poses or of positions.
+    let reach = |c: &SceneCase| {
+        let positions: Vec<[f64; 3]> = match &c.scene.goal {
+            SceneGoal::Poses(poses) => poses.iter().map(|pose| pose.position).collect(),
+            SceneGoal::Positions(goals) => goals.iter().map(|goal| goal.position).collect(),
+            SceneGoal::Joints(_) => return None,
+        };
+        Some(
+            positions
+                .into_iter()
                 .zip(&geometries)
-                .zip(c.scene.start.chunks_exact(JOINTS))
-                .map(|((pose, geometry), start)| {
-                    (Vector3::from(pose.position)
+                .zip(c.scene.start.chunks_exact(N))
+                .map(|((position, geometry), start)| {
+                    (Vector3::from(position)
                         - geometry
                             .chain()
                             .world_ee_pose(&state(start))
@@ -615,8 +666,7 @@ fn lies_on_its_side_of_moveits(name: &str) {
                         .norm()
                 })
                 .fold(0.0, f64::max),
-        ),
-        SceneGoal::Joints(_) => None,
+        )
     };
     let held_by_the_plan = |c: &SceneCase| {
         c.scene
@@ -777,6 +827,13 @@ fn among_objects_the_success_rate_the_clearance_and_the_length_lie_on_their_side
 #[ignore = "statistics of a drawn set of pose goals, run locally as the harness README's rule 3 says"]
 fn among_poses_the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits() {
     lies_on_its_side_of_moveits("arm_planning_poses_openarm_v2");
+}
+
+#[test]
+#[ignore = "statistics of a drawn set of SO-101 among objects, run locally as the harness README's rule 3 says"]
+fn so101_among_objects_the_success_rate_the_clearance_and_the_length_lie_on_their_side_of_moveits()
+{
+    lies_on_its_side_of_moveits("arm_planning_objects_so101");
 }
 
 #[test]

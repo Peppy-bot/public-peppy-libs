@@ -24,7 +24,7 @@ use ros_reference::cartesian_paths::{Case, Ours, PathCase};
 
 #[cfg(target_arch = "x86_64")]
 use arm_scenes::on_the_arms;
-use arm_scenes::{MIN_SCENES, geometry};
+use arm_scenes::{JOINTS, MIN_SCENES, geometry};
 use cartesian_scenes::corners;
 #[cfg(target_arch = "x86_64")]
 use cartesian_scenes::path_answer;
@@ -125,7 +125,7 @@ impl Compared<'_> {
 /// The cases of `case`, each as the tests read it.
 fn compared(case: &Case) -> Vec<Compared<'_>> {
     let chain = &case.paths.chains[0];
-    let geometry = geometry(chain, &case.urdf, &case.meshes);
+    let geometry = geometry::<JOINTS>(chain, &case.urdf, &case.meshes);
     case.cases
         .iter()
         .enumerate()
@@ -223,7 +223,7 @@ fn each_scenario_carries_the_paths_this_crate_computes() {
             "{}: the scenario's step is this crate's",
             case.name
         );
-        on_the_arms(
+        on_the_arms::<JOINTS, _>(
             &case.paths.chains,
             &case.urdf,
             &case.meshes,

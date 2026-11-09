@@ -1,0 +1,41 @@
+{
+  "kind": "arm_planning",
+  "scenes": [
+    {
+      "moveit": {"clearance":0.046011729082185926,"collisions":0,"held_clearance":null,"length":3.6302105429853317,"self_clearance":0.04873806082114648,"share_of_tolerance":null,"status":1},
+      "ours": {"clearance":0.05206919186087399,"collisions":0,"held_clearance":null,"length":6.7211820148254215,"self_clearance":0.04873806082114648,"share_of_tolerance":null}
+    },
+    {
+      "moveit": {"clearance":-1,"collisions":11,"held_clearance":null,"length":8.124810255750951,"self_clearance":0.024095175326768702,"share_of_tolerance":null,"status":1},
+      "ours": {"clearance":0.001279899507857521,"collisions":0,"held_clearance":null,"length":8.064350363809963,"self_clearance":0.024095175326768702,"share_of_tolerance":null}
+    },
+    {
+      "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-2},
+      "ours": {"clearance":0.002357833342176527,"collisions":0,"held_clearance":null,"length":3.7294974050809797,"self_clearance":0.016307158431411707,"share_of_tolerance":null}
+    },
+    {
+      "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-10},
+      "ours": null
+    },
+    {
+      "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-27},
+      "ours": null
+    },
+    {
+      "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-10},
+      "ours": null
+    },
+    {
+      "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-27},
+      "ours": null
+    },
+    {
+      "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-26},
+      "ours": null
+    },
+    {
+      "moveit": {"clearance":null,"collisions":null,"held_clearance":null,"length":null,"self_clearance":null,"share_of_tolerance":null,"status":-26},
+      "ours": null
+    }
+  ]
+}

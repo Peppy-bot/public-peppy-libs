@@ -14,23 +14,32 @@ use std::path::Path;
 use ros_reference::arm_planning::{Ours, Scenes};
 use serde_json::json;
 
-use arm_scenes::{Planned, on_the_arms, plan_scene, probe_spacing, samplers};
+use arm_scenes::{
+    AtItsJoints, Planned, at_its_joints, on_the_arms, plan_scene, probe_spacing, samplers,
+};
 
-fn main() {
-    let scenes: Scenes =
-        serde_json::from_reader(std::io::stdin()).expect("the scenario on stdin parses");
-    let repository = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
-    let urdf = std::fs::read_to_string(repository.join(&scenes.urdf)).expect("the URDF reads");
-    let answers = on_the_arms(
-        &scenes.chains,
-        &urdf,
-        &repository.join(&scenes.meshes),
-        |arms, standing| {
+/// The answers to every scene of `scenes`, from the URDF text `urdf`.
+struct Answers<'a> {
+    scenes: &'a Scenes,
+    urdf: &'a str,
+    meshes: &'a Path,
+}
+
+impl AtItsJoints for Answers<'_> {
+    type Output = serde_json::Value;
+
+    fn run<const N: usize, const D: usize>(self) -> serde_json::Value {
+        let Self {
+            scenes,
+            urdf,
+            meshes,
+        } = self;
+        on_the_arms::<N, _>(&scenes.chains, urdf, meshes, |arms, standing| {
             let samplers = samplers(arms);
             let planned: Vec<Planned> = scenes
                 .scenes
                 .iter()
-                .map(|scene| plan_scene(arms, standing, &samplers, &scenes, scene))
+                .map(|scene| plan_scene::<N, D, _>(arms, standing, &samplers, scenes, scene))
                 .collect();
             let no_path: Vec<&Planned> = planned
                 .iter()
@@ -46,9 +55,24 @@ fn main() {
             let ours: Vec<Ours> = planned.into_iter().map(|p| p.ours).collect();
             json!({
                 "checked_pairs": standing.checked_pairs(),
-                "probe_spacing": probe_spacing(arms, &scenes),
+                "probe_spacing": probe_spacing::<N, D>(arms, scenes),
                 "ours": ours,
             })
+        })
+    }
+}
+
+fn main() {
+    let scenes: Scenes =
+        serde_json::from_reader(std::io::stdin()).expect("the scenario on stdin parses");
+    let repository = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let urdf = std::fs::read_to_string(repository.join(&scenes.urdf)).expect("the URDF reads");
+    let answers = at_its_joints(
+        &scenes.chains,
+        Answers {
+            scenes: &scenes,
+            urdf: &urdf,
+            meshes: &repository.join(&scenes.meshes),
         },
     );
     println!("{answers}");

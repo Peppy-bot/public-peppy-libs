@@ -43,7 +43,9 @@ moveit::core::RobotModelPtr arm_model(const nlohmann::json& scenario, const Chai
 // moveit_ros_planning's kinematics_parameters.yaml gives by default (0.1 and 0.05 s), the
 // timeout set on each group as RobotModelLoader::loadKinematicsSolvers sets it (moveit2
 // 2.15.2 robot_model_loader.cpp:310-318), which the constraint sampler gives each IK call
-// (default_constraint_samplers.cpp:268).
+// (default_constraint_samplers.cpp:268). A group of fewer joints than a pose has freedoms
+// solves the position alone, its kinematics.yaml naming position_only_ik too: KDL's search
+// otherwise converges on no pose such a group does not hold.
 void load_kdl(const moveit::core::RobotModelPtr& model,
               const std::vector<std::string>& solver_groups);
 
