@@ -27,6 +27,7 @@ pub mod cartesian_paths;
 pub mod chain_collision;
 pub mod forward_kinematics;
 pub mod occupancy;
+pub mod orientation_constraints;
 pub mod path_timing;
 pub mod planning;
 pub mod planning_scene;
@@ -60,6 +61,7 @@ enum Kind {
     ChainCollision,
     ForwardKinematics,
     Occupancy,
+    OrientationConstraints,
     PathTiming,
     Planning,
     PlanningScene,

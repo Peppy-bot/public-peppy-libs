@@ -20,18 +20,18 @@ use chain_kinematics::{ChainSpec, JointSelection};
 use collision_geometry::chain::{CarriedPart, ChainGeometry, Rider};
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
-    Arm, ArmGoal, Arms, AttachRequest, Goal, IkGoalSampler, JointTarget, Moving, ObjectFields,
-    ObjectRequest, OrientationTarget, PlanFailure, PlanRequest, PlanningScene, PositionTarget,
-    RobotLinks, RobotPart, Scene, SelfModel, ShapeFields, StartFault, plan_path, pose_from_parts,
-    pose_parts,
+    Arm, ArmGoal, Arms, AttachRequest, Axis, Goal, IkGoalSampler, JointTarget, Moving,
+    ObjectFields, ObjectRequest, OrientationTarget, PathOrientation, PlanFailure, PlanRequest,
+    PlanningScene, PositionTarget, RobotLinks, RobotPart, Scene, SelfModel, ShapeFields,
+    StartFault, orientation_from_parts, plan_path, pose_from_parts, pose_parts,
 };
 use nalgebra::Isometry3;
 use occupancy_map::{Bounds, DistanceField, Frame, Scan, VoxelMap};
 use ompl_bridge::Planner;
 use openarm_description::{ARM_DOF, ArmOrder, ArmPair, DUAL_DOF, HardwareVersion, Side};
 use ros_reference::arm_planning::{
-    ArmChain, Held, Objective, Ours, Scene as ReferenceScene, SceneGoal, Scenes, Termination,
-    VoxelBox,
+    ArmChain, Held, HeldOrientation, Objective, Ours, Scene as ReferenceScene, SceneGoal, Scenes,
+    Termination, VoxelBox,
 };
 use ros_reference::planning_scene::{Object, Shape};
 use self_collision_model::{CollisionError, Proximity, SelfCollisionModel};
@@ -592,6 +592,39 @@ fn goals_of<const D: usize>(scenes: &Scenes, goal: &SceneGoal) -> Vec<Goal> {
     }
 }
 
+/// What a plan holds of `held`, an orientation of a link of the chains `chains` with their
+/// arms `arms`: of the grasp point for a chain's tip link, and of the link of a joint for any
+/// other.
+fn path_orientation<'a>(
+    held: &'a HeldOrientation,
+    chains: &[ArmChain],
+    arms: &[Arm<JOINTS>],
+) -> PathOrientation<'a> {
+    let frame = if held.link_name == chains[held.chain].tip_link {
+        motion_planning_core::Frame::GraspPoint
+    } else {
+        let posed = arms[held.chain].geometry().chain().at(&[0.0; JOINTS]);
+        let segment = (0..JOINTS)
+            .find(|&segment| posed.link_name(segment) == held.link_name)
+            .unwrap_or_else(|| panic!("{} is a link of its chain", held.link_name));
+        motion_planning_core::Frame::Link {
+            segment,
+            offset: Isometry3::identity(),
+        }
+    };
+    PathOrientation {
+        arm: held.chain,
+        link_name: &held.link_name,
+        target: OrientationTarget {
+            frame,
+            orientation: orientation_from_parts(held.orientation).expect("a unit quaternion"),
+            tolerance_rad: PositiveFinite::parse(held.tolerance_rad)
+                .expect("a path orientation's tolerance"),
+            free_axis: Axis::free_named(&held.free_axis).expect("a free axis's name"),
+        },
+    }
+}
+
 /// The planner of `objective`: RRTConnect for `any`, as the motion planner node plans it,
 /// and RRTstar for `shortest`.
 fn planner_of(objective: Objective) -> Planner {
@@ -725,6 +758,11 @@ fn plan_group<const D: usize, O>(
         &start,
         |group, met| {
             let goals = goals_of::<D>(scenes, &scene.goal);
+            let orientations: Vec<PathOrientation> = scene
+                .path_orientations
+                .iter()
+                .map(|held| path_orientation(held, &scenes.chains, arms))
+                .collect();
             let deadline = Instant::now() + Duration::from_secs_f64(scenes.time_limit);
             let answer = plan_path(
                 group,
@@ -737,6 +775,7 @@ fn plan_group<const D: usize, O>(
                         .zip(samplers)
                         .map(|(goal, sampler)| ArmGoal { goal, sampler })
                         .collect(),
+                    path_orientations: &orientations,
                     goal_samples: NonZeroUsize::new(LAUNCH_GOAL_SAMPLES).expect("nonzero"),
                     planner: planner_of(scenes.objective),
                     deadline,

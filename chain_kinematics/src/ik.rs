@@ -113,7 +113,7 @@ impl ChainFrame {
 
     /// The joints of `chain` that move the frame: each joint for the end effector, and for
     /// a frame on a segment, the joints on the path from the root to its link.
-    fn moving_joints<const N: usize>(self, chain: &Chain<N>) -> [bool; N] {
+    pub fn moving_joints<const N: usize>(self, chain: &Chain<N>) -> [bool; N] {
         let Self::OnSegment { segment, .. } = self else {
             return [true; N];
         };

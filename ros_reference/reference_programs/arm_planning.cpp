@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <moveit/collision_detection/collision_common.hpp>
 #include <moveit/kinematic_constraints/utils.hpp>
@@ -117,13 +119,60 @@ bool is_poses(const nlohmann::json& goal) {
   return !goal.empty() && goal.front().is_object();
 }
 
+// An orientation a path holds, as plan_joint_path states it: the angle of the rotation from
+// `orientation`, or with a free axis the angle of that axis from its direction there, at most
+// `tolerance`.
+struct HeldTarget {
+  const moveit::core::LinkModel* link;
+  Eigen::Quaterniond orientation;
+  std::optional<Eigen::Vector3d> free_axis;
+  double tolerance;
+};
+
+// The share of its tolerance that `target` reaches at `state`.
+double share_of_tolerance(const HeldTarget& target, const moveit::core::RobotState& state) {
+  const Eigen::Quaterniond actual(state.getGlobalLinkTransform(target.link).linear());
+  if (!target.free_axis) {
+    return target.orientation.angularDistance(actual) / target.tolerance;
+  }
+  const Eigen::Vector3d wanted = target.orientation * *target.free_axis;
+  const Eigen::Vector3d held = actual * *target.free_axis;
+  return std::atan2(wanted.cross(held).norm(), wanted.dot(held)) / target.tolerance;
+}
+
+// The orientations the scene `s` holds of the links of `model`.
+std::vector<HeldTarget> held_targets_of(const nlohmann::json& s,
+                                        const moveit::core::RobotModel& model) {
+  std::vector<HeldTarget> targets;
+  for (const auto& held : s.at("path_orientations")) {
+    const auto orientation = numbers(held.at("orientation"));
+    const auto free_axis = held.at("free_axis").get<std::string>();
+    std::optional<Eigen::Vector3d> axis;
+    if (free_axis == "x") {
+      axis = Eigen::Vector3d::UnitX();
+    } else if (free_axis == "y") {
+      axis = Eigen::Vector3d::UnitY();
+    } else if (free_axis == "z") {
+      axis = Eigen::Vector3d::UnitZ();
+    } else if (free_axis != "none") {
+      throw std::runtime_error("free_axis is none, x, y or z, and it is " + free_axis);
+    }
+    targets.push_back({model.getLinkModel(held.at("link_name").get<std::string>()),
+                       Eigen::Quaterniond(orientation.at(3), orientation.at(0), orientation.at(1),
+                                          orientation.at(2)),
+                       axis, held.at("tolerance_rad").get<double>()});
+  }
+  return targets;
+}
+
 // What the probes of a scenario's paths measure, `spacing` apart in the joints' L2 norm,
-// besides the scene: the objects the chains' tip links `tip_links` hold, and, with
-// `self`, the robot's own bodies.
+// besides the scene: the objects the chains' tip links `tip_links` hold, with `self` the
+// robot's own bodies, and the orientations `held` the scene holds.
 struct Probing {
   std::vector<std::string> tip_links;
   bool self = false;
   double spacing = 0.0;
+  std::vector<HeldTarget> held;
 };
 
 // MoveIt's collision check and distances at the probes of a joint path: to the scene,
@@ -140,11 +189,16 @@ struct Probed {
   // The least unpadded distance between the robot's own bodies that the scene's matrix
   // leaves checked, when `self` asks for it.
   double self_clearance = std::numeric_limits<double>::infinity();
+  // The orientations the path holds, and the largest share of its tolerance any of them
+  // reaches.
+  std::vector<HeldTarget> held_targets;
+  double share_of_tolerance = 0.0;
 };
 
 // The probe of a path in `scene` as `probing` asks: of each tip link that holds an object.
 Probed probe_of(const planning_scene::PlanningScene& scene, const Probing& probing) {
   Probed probed{probing.self};
+  probed.held_targets = probing.held;
   for (const auto& tip_link : probing.tip_links) {
     std::vector<const moveit::core::AttachedBody*> held;
     const auto* tip = scene.getRobotModel()->getLinkModel(tip_link);
@@ -160,6 +214,10 @@ void probe(const planning_scene::PlanningScene& scene, moveit::core::RobotState&
            const moveit::core::JointModelGroup& arm, const Eigen::VectorXd& q, Probed& probed) {
   state.setJointGroupPositions(&arm, q);
   state.update();
+  for (const auto& target : probed.held_targets) {
+    probed.share_of_tolerance =
+        std::max(probed.share_of_tolerance, share_of_tolerance(target, state));
+  }
   if (scene.isStateColliding(state, group)) {
     ++probed.collisions;
   }
@@ -222,6 +280,9 @@ nlohmann::json measured(const Probed& probed, double length) {
            probed.holding.empty() ? nlohmann::json(nullptr) : nlohmann::json(probed.held)},
           {"self_clearance",
            probed.self ? nlohmann::json(probed.self_clearance) : nlohmann::json(nullptr)},
+          {"share_of_tolerance", probed.held_targets.empty()
+                                     ? nlohmann::json(nullptr)
+                                     : nlohmann::json(probed.share_of_tolerance)},
           {"length", length}};
 }
 
@@ -276,6 +337,27 @@ moveit_msgs::msg::Constraints goal_constraints(const nlohmann::json& goal,
   return constraints;
 }
 
+// MoveIt's path constraint of `held`, an orientation of a link in the model's frame with
+// the rotation-vector tolerances the scenario names.
+moveit_msgs::msg::OrientationConstraint path_orientation(const nlohmann::json& held,
+                                                         const moveit::core::RobotModel& model) {
+  const auto orientation = numbers(held.at("orientation"));
+  const auto tolerances = numbers(held.at("moveit_tolerances"));
+  moveit_msgs::msg::OrientationConstraint constraint;
+  constraint.header.frame_id = model.getModelFrame();
+  constraint.link_name = held.at("link_name").get<std::string>();
+  constraint.orientation.x = orientation.at(0);
+  constraint.orientation.y = orientation.at(1);
+  constraint.orientation.z = orientation.at(2);
+  constraint.orientation.w = orientation.at(3);
+  constraint.absolute_x_axis_tolerance = tolerances.at(0);
+  constraint.absolute_y_axis_tolerance = tolerances.at(1);
+  constraint.absolute_z_axis_tolerance = tolerances.at(2);
+  constraint.parameterization = moveit_msgs::msg::OrientationConstraint::ROTATION_VECTOR;
+  constraint.weight = 1.0;
+  return constraint;
+}
+
 // MoveIt's answer to a scene, planned within `time_limit` seconds: its error code, and
 // its path's probe when it planned one.
 nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
@@ -298,6 +380,9 @@ nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
   moveit::core::robotStateToRobotStateMsg(start, request.start_state);
   request.goal_constraints.push_back(
       goal_constraints(s.at("goal"), start, arm, probing.tip_links));
+  for (const auto& held : s.at("path_orientations")) {
+    request.path_constraints.orientation_constraints.push_back(path_orientation(held, *model));
+  }
 
   const auto seed = s.at("seed").get<std::uint32_t>();
   const auto level = ompl::msg::getLogLevel();
@@ -321,6 +406,7 @@ nlohmann::json moveit_answer(planning_pipeline::PlanningPipeline& planner,
                             {"clearance", nullptr},
                             {"held_clearance", nullptr},
                             {"self_clearance", nullptr},
+                            {"share_of_tolerance", nullptr},
                             {"length", nullptr}};
   if (!planned || status != moveit_success || !response.trajectory) {
     return answer;
@@ -397,10 +483,13 @@ nlohmann::json arm_planning(const nlohmann::json& scenario, Inputs& inputs) {
     }
     const auto scene = scene_of(model, s, voxel_size, checked_pairs, padding);
     const auto& ours = s.at("ours");
+    Probing of_the_scene = probing;
+    of_the_scene.held = held_targets_of(s, *model);
     answers.push_back({
-        {"moveit", moveit_answer(*planner, config.name, scene, model, s, time_limit, probing)},
+        {"moveit",
+         moveit_answer(*planner, config.name, scene, model, s, time_limit, of_the_scene)},
         {"ours", ours.contains("waypoints") ? ours_probed(*scene, model, ours.at("waypoints"),
-                                                          corner_tolerance, probing)
+                                                          corner_tolerance, of_the_scene)
                                             : nlohmann::json(nullptr)},
     });
   }

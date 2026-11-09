@@ -242,6 +242,7 @@ fn plan_in(
             start,
             start_tolerance: [0.0; 4],
             goals,
+            path_orientations: &[],
             goal_samples: NonZeroUsize::new(GOAL_SAMPLES).expect("nonzero"),
             planner: Planner::RrtConnect,
             deadline: an_hour_from_now(),
