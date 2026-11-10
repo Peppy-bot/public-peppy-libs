@@ -147,7 +147,7 @@ const MIN_SPARE_M: f64 = 1e-3;
 pub const MAX_STEP_M: f64 = 0.015;
 
 /// The shortest step of a motion from a start that falls short of its clearances.
-const MIN_DEPARTURE_STEP_M: f64 = 1e-4;
+pub const MIN_DEPARTURE_STEP_M: f64 = 1e-4;
 
 /// How many of a term's bodies a motion moves, for each of the terms `clearance` names:
 /// the map and the objects stand still, and both bodies of a pair of the robot's own body,
