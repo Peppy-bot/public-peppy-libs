@@ -55,7 +55,7 @@ const UPRIGHT: [f64; ARM_DOF] = [0.0, 0.0, 0.0, 0.0, -std::f64::consts::FRAC_PI_
 
 /// The clearance a plan of the SO-101 launchers keeps between the arm's own bodies: the
 /// launchers' `min_clearance_m` and 1 mm of spare for each of a pair's two moving links.
-const PLANNER_SELF_CLEARANCE_M: f64 = 0.022;
+const PLANNER_SELF_CLEARANCE_M: f64 = 0.002;
 
 fn same(pair: (&str, &str), other: (&str, &str)) -> bool {
     pair == other || pair == (other.1, other.0)
