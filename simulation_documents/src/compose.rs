@@ -79,6 +79,7 @@ impl World {
                 .collect(),
             scene_objects: record.scene_objects.clone(),
             objects: record.objects.clone(),
+            risers: record.risers.clone(),
             lighting: record.lighting.clone(),
             materials: record.materials.clone(),
             daylight: record.daylight.clone(),

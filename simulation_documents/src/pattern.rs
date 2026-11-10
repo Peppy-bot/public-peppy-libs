@@ -38,8 +38,8 @@ use crate::sampler::{
 };
 use crate::stream::{Seed, Stream};
 use crate::world::{
-    Entry, Light, Location, Material, Object, Origin, Robot, Scene, SceneObject, WORLD,
-    WorldFields, check_name_rules, no_such_region,
+    Entry, Light, Location, Material, Object, Origin, Riser, Robot, Scene, SceneObject, WORLD,
+    WorldFields, check_name_rules, no_such_region, writes_a_riser,
 };
 use crate::{
     Catalogue, Error, Join, Manifest, Name, ParameterName, Physics, RobotName, World,
@@ -375,11 +375,13 @@ fn robots_named_once(robots: Vec<RobotName>) -> Result<BTreeSet<RobotName>, Erro
     Ok(once)
 }
 
-/// An entry of `objects`: one object, the objects of an item kind, or one
-/// object whose pose is `furnish`.
+/// An entry of `objects`: one object, a riser that its stand or its raise
+/// left, the objects of an item kind, or one object whose pose is
+/// `furnish`.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ObjectEntry {
     Object(Sampled<Object>),
+    Riser(Riser),
     ItemKind(ItemKindEntry),
     Furnished(FurnishEntry),
 }
@@ -388,14 +390,16 @@ impl Serialize for ObjectEntry {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             ObjectEntry::Object(object) => object.serialize(serializer),
+            ObjectEntry::Riser(riser) => riser.serialize(serializer),
             ObjectEntry::ItemKind(entry) => entry.written.serialize(serializer),
             ObjectEntry::Furnished(entry) => entry.written.serialize(serializer),
         }
     }
 }
 
-/// An object that holds the key `item_kind` is an entry of an item kind,
-/// and an object whose pose holds the key `furnish` is a furnish pose.
+/// An object that holds the key `riser` is a riser, one that holds the key
+/// `item_kind` is an entry of an item kind, and one whose pose holds the
+/// key `furnish` is a furnish pose.
 impl<'de> Deserialize<'de> for ObjectEntry {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<ObjectEntry, D::Error> {
         let value = Value::deserialize(deserializer)?;
@@ -404,10 +408,16 @@ impl<'de> Deserialize<'de> for ObjectEntry {
 }
 
 impl ObjectEntry {
-    /// The entry `value` writes. Refuses a scale `{ min, max }` on an entry
-    /// whose pose is not `furnish`; an entry of an item kind refuses a
-    /// furnish pose ([`Sampled::of`]).
+    /// The entry `value` writes. A riser holds no sampler: each of its
+    /// values is written. Refuses a scale `{ min, max }` on an entry whose
+    /// pose is not `furnish`; an entry of an item kind refuses a furnish
+    /// pose ([`Sampled::of`]).
     fn of(value: Value) -> Result<ObjectEntry, Error> {
+        if writes_a_riser(&value) {
+            return serde_path_to_error::deserialize(value)
+                .map(ObjectEntry::Riser)
+                .map_err(Error::fields);
+        }
         let fields = match value {
             Value::Object(fields) => fields,
             value => return Sampled::of(value).map(ObjectEntry::Object),
@@ -1406,6 +1416,9 @@ impl Expansion {
                     let concrete = self.concrete(&objects_path(&name), &object, placed)?;
                     let entry = ObjectEntry::Object(Sampled::Fixed(concrete));
                     objects.insert(name, Entry::Value(entry));
+                }
+                ObjectEntry::Riser(riser) => {
+                    objects.insert(name, Entry::Value(ObjectEntry::Riser(riser)));
                 }
                 ObjectEntry::Furnished(piece) => {
                     let drawn = self.concrete(&objects_path(&name), &piece.template, placed)?;

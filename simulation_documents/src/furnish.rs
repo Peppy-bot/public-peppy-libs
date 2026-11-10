@@ -388,7 +388,7 @@ pub(crate) fn check_fixed_stations(
             (Some(ObjectEntry::Object(Sampled::Drawn(drawn))), _) if draws_the_pose(drawn) => {
                 Some("its pose holds a sampler")
             }
-            (Some(ObjectEntry::Object(_)), _) => None,
+            (Some(ObjectEntry::Object(_) | ObjectEntry::Riser(_)), _) => None,
             (None, Some(Sampled::Fixed(SceneObject::Removed))) => Some("the pattern removes it"),
             (None, Some(Sampled::Drawn(drawn))) if draws_the_pose(drawn) => {
                 Some("its pose holds a sampler")

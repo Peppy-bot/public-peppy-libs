@@ -68,6 +68,6 @@ pub use sweep::{
 /// director.
 pub use workflow_documents::Name as ParameterName;
 pub use world::{
-    Catalogue, Cone, Feature, Finish, Join, Light, Location, Material, Object, Physics, Robot,
-    Scene, SceneObject, Side, Stand, World, WorldDocument,
+    Catalogue, Cone, Feature, Finish, Join, Light, Location, Material, Object, Physics, Riser,
+    Robot, Scene, SceneObject, Side, Stand, World, WorldDocument,
 };

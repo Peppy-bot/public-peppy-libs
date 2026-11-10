@@ -31,12 +31,18 @@ stand, the scene objects it moves or removes, the objects it spawns, the lightin
 daylight, its regions and the named locations. A robot stands at a side of a
 work surface of an object, `{ object, landmark, side, offset, raise_m }`
 (`side` one of `"+x"`, `"-x"`, `"+y"`, `"-y"` of the frame of the landmark's
-body; without it, the simulation takes the side; `raise_m`, metres from 0,
-stands it on a riser of that height), at a named pose of the scene, `{ at,
-offset }`, or at `{ position, yaw }`; `offset` and `raise_m` are optional. An
-object and a placed scene object take a `raise_m` too: the object stands on
-a riser of that height, at its pose. A riser is no object of the world: the
-simulation places it again with its stand or its object. A location is a
+body; without it, the simulation takes the side; `raise_m`, 0 or from 0.10 m
+to 0.80 m, stands it on a riser of that height), at a named pose of the
+scene, `{ at, offset }`, or at `{ position, yaw }`; `offset` and `raise_m`
+are optional. An object and a placed scene object take a `raise_m` too: the
+object stands on a riser of that height, at its pose. The riser of a stand
+or of a raised object is no object of the world: the simulation builds it
+again with its stand or its object. A riser that its stand or its raise left
+is an entry of `objects` that holds `riser` in place of `asset`, `{ riser: {
+width_m, depth_m, height_m }, pose }`: the two sides of its deck, each above
+0, the height of its top, from 0.10 m to 0.80 m, and where it stands. A
+`World` and a `SetupRecord` hold these risers in `risers`, by their names,
+and an object and a riser share no name. A location is a
 landmark of an object, `{ object, landmark }`, which names a work surface by
 the landmark it stands on, a named pose, `{ at }`, or a region, `{ in }`. A
 region is a box in the world frame, `{ centre, size, yaw }`, metres and
