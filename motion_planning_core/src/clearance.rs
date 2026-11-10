@@ -212,16 +212,9 @@ impl<'a> Surroundings<'a> {
     ) -> [Vec<Reading>; TERMS] {
         let moving = of_the_group(moving, arms);
         let bodies = arms.bodies(q);
-        let on_the_map = self.on_the_map(&bodies, moving).map(|body| Reading {
-            pair: Contact::Map {
-                body: body.name.to_string(),
-            },
-            distance: self
-                .screened(&body.body)
-                .map_or(f64::NEG_INFINITY, |screen| {
-                    self.body_distance_below(&body.body, screen, f64::INFINITY)
-                }),
-        });
+        let on_the_map = self
+            .on_the_map(&bodies, moving)
+            .map(|body| self.map_reading(body));
         let read = |pairs: Vec<Pair>, term: usize| -> Vec<Reading> {
             pairs
                 .iter()
@@ -238,6 +231,50 @@ impl<'a> Surroundings<'a> {
             read(self.own_pairs(&bodies, moving), OWN),
             read(self.held_pairs(&bodies, moving), HELD),
         ]
+    }
+
+    /// A body's distance from the map, as a contact names the pair, read against the world
+    /// clearance: exact where it lies within it, and a lower bound at or above it elsewhere.
+    fn map_reading(&self, body: &GroupBody) -> Reading {
+        Reading {
+            pair: Contact::Map {
+                body: body.name.to_string(),
+            },
+            distance: self
+                .screened(&body.body)
+                .map_or(f64::NEG_INFINITY, |screen| {
+                    self.body_distance_below(&body.body, screen, f64::INFINITY)
+                }),
+        }
+    }
+
+    /// The nearest pair of a body of `arms` at `q` and the map or an object no arm holds,
+    /// read against the world clearance as `readings_by_term` reads it: the pairs MoveIt's
+    /// padding pads. None where no such pair is checked.
+    pub(crate) fn nearest_in_the_world<const N: usize, const D: usize>(
+        &self,
+        arms: &Arms<N, D>,
+        q: &[f64; D],
+    ) -> Option<Reading> {
+        let bodies = arms.bodies(q);
+        let free: Vec<&str> = (self.objects.obstacles.iter())
+            .filter(|obstacle| !obstacle.held())
+            .map(|obstacle| obstacle.id())
+            .collect();
+        let objects = self
+            .world_pairs(&bodies, Moving::All)
+            .into_iter()
+            .filter(|pair| matches!(pair, Pair::Obstacle { object, .. } if free.contains(object)))
+            .map(|pair| Reading {
+                pair: pair.contact(),
+                distance: pair.least_with(f64::INFINITY, self.clearances[WORLD]),
+            })
+            .collect::<Vec<_>>();
+        nearest(
+            self.on_the_map(&bodies, Moving::All)
+                .map(|body| self.map_reading(body))
+                .chain(objects),
+        )
     }
 
     /// The nearest pair of each term of `arms` at `q` that `moving` judges, read as

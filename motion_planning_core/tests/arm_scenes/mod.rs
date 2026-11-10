@@ -895,7 +895,7 @@ pub fn in_the_scene<const N: usize, const D: usize, R>(
 pub fn start_fault_name(fault: &StartFault) -> &'static str {
     match fault {
         StartFault::OutsideLimits { .. } => "start_outside_limits",
-        StartFault::InCollision(_) => "start_in_collision",
+        StartFault::InCollision(_) | StartFault::InsideClearance { .. } => "start_in_collision",
     }
 }
 

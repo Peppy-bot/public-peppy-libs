@@ -1,6 +1,7 @@
 //! An arm of five joints, SO-101's: a goal sample meets a position alone, and an orientation
-//! within its tolerance where the arm's joints come that near it, and a Cartesian path
-//! covers the lines on which the joints hold the orientation.
+//! within its tolerance where the arm's joints come that near it, a Cartesian path covers
+//! the lines on which the joints hold the orientation, and a plan departs from the park pose
+//! within the real arm's joint error.
 
 use std::path::Path;
 use std::sync::LazyLock;
@@ -10,9 +11,10 @@ use collision_geometry::chain::ChainGeometry;
 use control_core::positive_finite::PositiveFinite;
 use motion_planning_core::{
     Arm, Arms, Axis, CartesianRequest, Collisions, FollowedFrame, Frame, Goal, GoalSampler,
-    IkGoalSampler, OrientationTarget, PositionTarget, cartesian_path,
+    IkGoalSampler, MIN_DEPARTURE_STEP_M, OrientationTarget, PositionTarget, cartesian_path,
 };
 use nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion, Vector3};
+use self_collision_model::so101;
 use so101_description::{ARM_DOF, BASE_LINK, TCP_LINK, URDF, write_meshes_to};
 
 /// The goals each count runs: the position of a configuration drawn inside the limits.
@@ -37,13 +39,29 @@ const MOST_GOALS_AXIS_HELD: usize = 90;
 /// How far the lines of the Cartesian paths run.
 const LINE_M: f64 = 0.03;
 
-/// SO-101's arm with its collision pieces.
-static ARM: LazyLock<ChainGeometry<ARM_DOF>> = LazyLock::new(|| {
+/// The park pose (postures.py's `HOME_POSITIONS_RAD`): the arm folded onto itself as it
+/// rests, unfolded on the shoulder lift, the elbow and the wrist.
+const HOME: [f64; ARM_DOF] = [-0.05, -1.51, 1.47, 1.03, 0.32];
+/// The real arm's largest joint error at a goal over A13's three runs on hardware.
+const ARM_ERROR_RAD: f64 = 0.046;
+/// The moving bodies of a pair of the robot's own body: its `k` in the plan module's start
+/// rule.
+const OWN_PAIR_MOVING_BODIES: f64 = 2.0;
+
+/// SO-101's collision meshes, written once per test binary.
+static MESHES: LazyLock<String> = LazyLock::new(|| {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("so101_meshes");
     write_meshes_to(&dir).expect("the meshes write");
+    dir.to_str()
+        .expect("the mesh directory is UTF-8")
+        .to_string()
+});
+
+/// SO-101's arm with its collision pieces.
+static ARM: LazyLock<ChainGeometry<ARM_DOF>> = LazyLock::new(|| {
     ChainGeometry::from_urdf(
         URDF,
-        dir.to_str().expect("the mesh directory is UTF-8"),
+        &MESHES,
         &ChainSpec {
             base_link: Some(BASE_LINK),
             tip_link: TCP_LINK,
@@ -211,4 +229,32 @@ fn a_cartesian_path_covers_the_lines_on_which_the_joints_hold_the_orientation() 
     assert_eq!(fraction_along(Vector3::new(0.0, 0.0, LINE_M)), 1.0);
     let sideways = fraction_along(Vector3::new(0.0, LINE_M, 0.0));
     assert!(sideways < 1.0, "{sideways}");
+}
+
+// At the park pose, at every corner of the real arm's joint error around it and the jaw shut
+// or open, every pair of the arm's own bodies stands farther apart than the start rule's
+// least departure, `2k` of its least step for a pair whose two bodies move: a plan departs
+// from there.
+#[test]
+fn a_plan_departs_from_the_park_pose_within_the_arms_error() {
+    let least_departure_m = 2.0 * OWN_PAIR_MOVING_BODIES * MIN_DEPARTURE_STEP_M;
+    let mut model = so101(&MESHES).expect("SO-101's self model builds");
+    let corners = 3usize.pow(ARM_DOF as u32);
+    for opening in [0.0, 1.0] {
+        model.set_gripper_openings(&[opening]);
+        for corner in 0..corners {
+            let q: [f64; ARM_DOF] = std::array::from_fn(|i| {
+                let side = (corner / 3usize.pow(i as u32)) % 3;
+                HOME[i] + ARM_ERROR_RAD * (side as f64 - 1.0)
+            });
+            let nearest = model.min_distance(&[q]).expect("a distance");
+            assert!(
+                nearest.distance > least_departure_m,
+                "at {q:?}, opening {opening}: {} - {} at {}",
+                nearest.link_a,
+                nearest.link_b,
+                nearest.distance
+            );
+        }
+    }
 }

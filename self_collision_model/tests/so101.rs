@@ -47,7 +47,7 @@ const CHECKED: [(&str, &str); 11] = [
     ("upper_arm_link", "wrist_link"),
 ];
 
-/// The arm folded onto itself, as it rests (postures.py's `HOME_POSITIONS_RAD`).
+/// The arm folded onto itself, as it rests.
 const FOLDED: [f64; ARM_DOF] = [-0.05, -1.72, 1.68, 1.24, 0.32];
 
 /// The arm upright, its wrist rolled a quarter turn (postures.py's `READY_POSITIONS_RAD`).

@@ -36,13 +36,13 @@
     },
   ],
 
-  // Home: the collapsed park pose, folded onto the base, with the jaw closed
-  // at its joint's lower limit.
+  // Home: the park pose, the collapsed pose unfolded out of contact, with the
+  // jaw closed at its joint's lower limit.
   start_posture: {
     shoulder_pan: -0.05,
-    shoulder_lift: -1.72,
-    elbow_flex: 1.68,
-    wrist_flex: 1.24,
+    shoulder_lift: -1.51,
+    elbow_flex: 1.47,
+    wrist_flex: 1.03,
     wrist_roll: 0.32,
     gripper: -0.174533,
   },

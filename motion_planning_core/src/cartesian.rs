@@ -26,14 +26,15 @@
 //! intervals beside its waypoint, and an interval narrower than `MAX_RESOLUTION`, whose
 //! midway has no state, or whose midway state the move drops, ends the path before it.
 //!
-//! The start rule walks a departure along one straight joint run from the start, and every
-//! waypoint after the start keeps the plan's clearance (`crate::plan`). So a path from a
-//! start nearer than the clearance leaves it in one run to the first state that keeps the
-//! clearance, which holds the precision like any other, and a path that reaches no such
-//! state, or whose run breaks the start rule or strays from its line, ends at its start. A
-//! corner at the run's end halves the interval after it alone, as a state on the run falls
-//! short of the clearance. MoveIt's validity callback judges each state alone, so a first
-//! state still nearer than its padding ends its path there.
+//! A start nearer than the clearance to the map or an object no arm holds is refused, as a
+//! plan's (`crate::plan`). The start rule walks a departure from any other start short of
+//! the plan's clearance along one straight joint run, and every waypoint after the start
+//! keeps the plan's clearance. So such a path leaves it in one run to the first state that
+//! keeps the clearance, which holds the precision like any other, and a path that reaches
+//! no such state, or whose run breaks the start rule or strays from its line, ends at its
+//! start. A corner at the run's end halves the interval after it alone, as a state on the
+//! run falls short of the clearance. MoveIt's validity callback judges each state alone,
+//! so a first state still nearer than its padding ends its path there.
 
 use std::cell::RefCell;
 use std::sync::atomic::AtomicBool;
@@ -217,9 +218,13 @@ fn start_of<const N: usize>(
     distances_in_range(min_clearance_m, &request.start_tolerance)
         .map_err(CartesianFailure::Request)?;
     match request.collisions {
-        Collisions::Checked { scene, .. } => {
-            start_clear(arms, scene, &request.start, &request.start_tolerance)
-        }
+        Collisions::Checked { scene, .. } => start_clear(
+            arms,
+            scene,
+            &request.start,
+            &request.start_tolerance,
+            min_clearance_m,
+        ),
         Collisions::Unchecked => start_inside_limits(
             arms.arms()[0].geometry().chain(),
             &request.start,
