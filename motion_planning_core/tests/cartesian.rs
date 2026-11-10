@@ -21,8 +21,8 @@ use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{DistanceField, VoxelMap};
 
 use common::{
-    JOINTS, LEFT_ARM, an_hour_from_now, distance_to_map, map, occupied_at, off_the_branch_seams,
-    on_line,
+    JOINTS, LEFT_ARM, PLAN_SPARE_M, an_hour_from_now, distance_to_map, map, occupied_at,
+    off_the_branch_seams, on_line,
 };
 
 const VOXEL_M: f64 = 0.02;
@@ -392,12 +392,13 @@ fn a_link_fixed_to_the_last_joint_follows_the_lines() {
     assert!(end.rotation.angle_to(&target.rotation) <= PRECISION_RAD);
 }
 
-// From a start nearer than the clearance, a line away from the obstacle departs in one run
-// to a first waypoint that keeps the clearance and covers the whole line, stands on it, and
-// passes the check of a caller's path; a line toward it ends at the start. A corner at the
-// end of the run halves the leg after it, so a path through it covers its lines.
+// From a start in the spare above the clearance, a line away from the obstacle departs in
+// one run to a first waypoint that keeps the plan's clearance and covers the whole line,
+// stands on it, and passes the check of a caller's path; a line toward it ends at the start.
+// A corner at the end of the run halves the leg after it, so a path through it covers its
+// lines.
 #[test]
-fn a_start_nearer_than_the_clearance_departs_in_one_run() {
+fn a_start_in_the_spare_above_the_clearance_departs_in_one_run() {
     let start = hand(&START);
     let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
     let box_center = start.translation.vector - Vector3::new(0.0, 0.0, 0.1);
@@ -405,8 +406,8 @@ fn a_start_nearer_than_the_clearance_departs_in_one_run() {
     let scene = scene(&map, &field);
     let standing = distance_to_map(&arms, &map, &START);
     assert!(standing > 0.0, "the start touches the box: {standing}");
-    // The start falls 2 cm short of this clearance, more than one step's worth of a line.
-    let min_clearance_m = standing + 0.02;
+    // The start stands in the spare above this clearance, short of the plan's.
+    let min_clearance_m = standing - PLAN_SPARE_M / 2.0;
     let asking = |poses: &[Isometry3<f64>]| {
         cartesian_path(
             &arms,
@@ -458,6 +459,40 @@ fn a_start_in_contact_fails_unless_collisions_go_unchecked() {
     let failure = checked_path_of(START, &[pose], &scene).expect_err("a start in contact");
     assert!(
         matches!(failure, CartesianFailure::Start(StartFault::InCollision(_))),
+        "{failure}"
+    );
+    let unchecked = path_of(START, &[pose], Collisions::Unchecked).expect("a path");
+    assert_eq!(unchecked.fraction, 1.0);
+}
+
+// A start out of contact and nearer than the clearance to the map fails where collisions
+// are checked, naming a pair inside it, and walks where they are not: a box raised under the
+// last link until the arm stands inside the clearance of it.
+#[test]
+fn a_start_inside_the_clearance_fails_unless_collisions_go_unchecked() {
+    let last_link = LEFT_ARM.chain().at(&START).link_pose_world(JOINTS - 1);
+    let below = last_link.translation.vector - Vector3::new(0.0, 0.0, 0.2);
+    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let raised = |by: f64| world(&cube(below + Vector3::new(0.0, 0.0, by), 0.02));
+    let (map, field) = (0..200)
+        .map(|k| raised(f64::from(k) * 0.001))
+        .find(|(map, _)| {
+            let apart = distance_to_map(&arms, map, &START);
+            apart > 0.0 && apart < MIN_CLEARANCE_M
+        })
+        .expect("a box that stands the arm inside its clearance, out of contact");
+    let scene = scene(&map, &field);
+    let pose = moved(&hand(&START), Vector3::new(0.0, 0.0, 0.05));
+    let failure =
+        checked_path_of(START, &[pose], &scene).expect_err("a start inside the clearance");
+    assert!(
+        matches!(
+            &failure,
+            CartesianFailure::Start(StartFault::InsideClearance { reading, clearance })
+                if reading.distance > 0.0
+                    && reading.distance < MIN_CLEARANCE_M
+                    && *clearance == MIN_CLEARANCE_M
+        ),
         "{failure}"
     );
     let unchecked = path_of(START, &[pose], Collisions::Unchecked).expect("a path");

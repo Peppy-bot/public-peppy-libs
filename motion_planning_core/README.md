@@ -235,12 +235,16 @@ A joint that starts outside its limits by no more than its start tolerance moves
 the limit; one farther out refuses the plan, naming the joint by its URDF name
 (`StartFault::OutsideLimits`), and a caller asks `start_inside_limits` before it takes
 a request. A start in contact with an obstacle or with its own body refuses it too, and
-the refusal names the pair (`StartFault::InCollision`, `Contact`).
+the refusal names the pair (`StartFault::InCollision`, `Contact`). So does a start nearer
+than `min_clearance_m` to the map or to an object no arm holds, as MoveIt's collision
+check, padded by the clearance, refuses a start in collision (START_STATE_IN_COLLISION):
+the refusal names the nearest such pair and how far apart it stands
+(`StartFault::InsideClearance`). MoveIt pads no pair of the robot's own body.
 
-The robot runs a path from its measured joints, the start. A start closer than the plan's
-clearance of a term, such as one a millimeter from an obstacle, departs along the straight
-line from the start by the start rule, each term judged on its own, until it keeps that
-clearance. The rule holds at the states the walk checks: each lies no nearer than the
+The robot runs a path from its measured joints, the start. A start otherwise closer than
+the plan's clearance of a term, such as one whose links stand a millimeter apart, departs
+along the straight line from the start by the start rule, each term judged on its own,
+until it keeps that clearance. The rule holds at the states the walk checks: each lies no nearer than the
 farthest checked state before it, or than the plan's clearance where that is nearer, to
 the rounding of the arithmetic, 1e-9 m. Between two checked states the term comes nearer
 by at most half its room. The start sets each term's floor: 0 when the start is nearer
@@ -530,8 +534,10 @@ its corners rounded as `execute_joint_path` runs it:
   and 0.01 rad at every state. A probe outside halves the intervals beside its waypoint, and
   an interval narrower than 1e-5 of a line, whose midway has no state, or whose midway state the
   move drops, ends the path before it. MoveIt checks the midpoint of each interval.
-- A start nearer than the clearance leaves in one straight joint run to the first state that
-  keeps the clearance, as the start rule walks a departure (see "The start"). A path that
+- A start nearer than the clearance to the map or an object no arm holds is refused, as a
+  plan's is; any other start short of the clearance leaves in one straight joint run to the
+  first state that keeps the clearance, as the start rule walks a departure (see "The
+  start"). A path that
   reaches no such state, or whose run leaves the precision, ends at its start with a fraction
   of 0. A corner at the run's end halves the interval after it alone. MoveIt's validity
   callback judges each state alone, so a first state still nearer than its padding ends its

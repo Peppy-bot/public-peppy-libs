@@ -103,6 +103,10 @@ pub fn positive(value: f64) -> PositiveFinite {
     PositiveFinite::parse(value).expect("a positive tolerance")
 }
 
+/// How much farther than the clearance asked of it a plan keeps its states from the map and
+/// the objects, as its messages name the plan's clearance.
+pub const PLAN_SPARE_M: f64 = 0.001;
+
 /// A deadline no test's goal sampling reaches: an hour from now.
 pub fn an_hour_from_now() -> Instant {
     Instant::now() + Duration::from_secs(3600)

@@ -24,7 +24,7 @@ use motion_planning_core::{
 use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::Planner;
 
-use common::{an_hour_from_now, distance_to_map, map, occupied_at, positive};
+use common::{an_hour_from_now, map, positive};
 
 /// The clearance the plans keep between the arms (m).
 const MIN_CLEARANCE_M: f64 = 0.02;
@@ -396,56 +396,6 @@ fn a_goal_sample_draws_each_arm_against_the_arms_drawn_before_it() {
     .expect("a path to the right arm's second try");
     let last = waypoints.last().expect("a waypoint");
     assert_eq!(Arms::<2, 4>::slice(last, 1), [1.0, 0.0], "{last:?}");
-}
-
-/// A point just past the right arm's tip where it stands at `UP`: its voxel lies 1.6 cm
-/// from the arm, inside the plan's clearance and out of contact, and far from the left
-/// arm.
-const BESIDE_THE_RIGHT_TIP: [f64; 3] = [0.58, 0.5, 0.02];
-
-/// The right arm's goal: swung back from `UP`, away from `BESIDE_THE_RIGHT_TIP`.
-const RIGHT_AWAY: [f64; 2] = [-0.7, 0.0];
-
-// The right arm starts nearer the map than the plan's clearance, which the start rule
-// plans from: the left arm's turn of a goal sample judges the left arm's pairs, the right
-// arm standing at its start, and the right arm's turn moves it clear of the map: the plan
-// answers a path to both goals.
-#[test]
-fn an_arm_that_starts_nearer_than_the_clearance_holds_back_no_goal_sample() {
-    let facing = Facing::new();
-    let model = facing.model();
-    let arms = facing.arms(&model);
-    let mut map = map(0.04, 1.6);
-    let above = [BESIDE_THE_RIGHT_TIP[0], BESIDE_THE_RIGHT_TIP[1], 1.0];
-    occupied_at(&mut map, above, &[BESIDE_THE_RIGHT_TIP]);
-    let field = DistanceField::of(&map);
-    let end = [UP[0], UP[1], RIGHT_AWAY[0], RIGHT_AWAY[1]];
-    let at_start = distance_to_map(&arms, &map, &UP);
-    assert!(0.0 < at_start && at_start < MIN_CLEARANCE_M, "{at_start}");
-    assert!(distance_to_map(&arms, &map, &end) > MIN_CLEARANCE_M);
-    let (left_goal, right_goal) = (at([UP[0], UP[1]]), at(RIGHT_AWAY));
-    let (left, right) = (
-        Drawn::new(vec![[UP[0], UP[1]]]),
-        Drawn::new(vec![RIGHT_AWAY]),
-    );
-    let waypoints = plan_in(
-        &map,
-        &field,
-        &arms,
-        UP,
-        vec![
-            ArmGoal {
-                goal: &left_goal,
-                sampler: &left,
-            },
-            ArmGoal {
-                goal: &right_goal,
-                sampler: &right,
-            },
-        ],
-    )
-    .expect("a path from a start the start rule plans from");
-    assert_eq!(waypoints.last(), Some(&end));
 }
 
 // Each try of the right arm in collision with the left arm's drawn joints, the plan fails

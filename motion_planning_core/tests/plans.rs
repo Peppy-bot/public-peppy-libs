@@ -28,7 +28,7 @@ use motion_planning_core::{
     Arm, ArmGoal, Arms, AttachRequest, CheckFailure, CheckRequest, Contact, Frame, Goal,
     GoalSampler, IkGoalSampler, JointTarget, MAX_STEP_M, Moving, ObjectFields, ObjectRequest,
     Objects, OrientationTarget, PathCheck, PathFault, Place, PlanFailure, PlanObjects, PlanRequest,
-    PlanningScene, PositionTarget, RobotLinks, RobotPart, Scene, ShapeFields, StartFault,
+    PlanningScene, PositionTarget, Reading, RobotLinks, RobotPart, Scene, ShapeFields, StartFault,
     Surroundings, check_path, plan_path, pose_parts, term_clearances,
 };
 use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
@@ -36,8 +36,8 @@ use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::Planner;
 
 use common::{
-    JOINTS, LEFT_ARM, an_hour_from_now, branch, distance_to_map, held_from_its_arm, left_fingers,
-    map, occupied_at, off_the_branch_seams, positive, voxel_in_a_finger,
+    JOINTS, LEFT_ARM, PLAN_SPARE_M, an_hour_from_now, branch, distance_to_map, held_from_its_arm,
+    left_fingers, map, occupied_at, off_the_branch_seams, positive, voxel_in_a_finger,
 };
 
 const VOXEL_M: f64 = 0.04;
@@ -583,21 +583,6 @@ fn a_plan_whose_sampling_takes_its_time_gives_no_path() {
     );
 }
 
-// From a start 1 cm above a slab, with a goal raised away from it, the clearance of the
-// rounded path rises from the start until it keeps the clearance, falling below the
-// start's by no more than a step of the departure, at most half the start's.
-#[test]
-fn from_a_start_near_an_obstacle_the_clearance_rises() {
-    assert_departs_from(0.01);
-}
-
-// From a start half a millimeter from the slab, where a step of the departure is a
-// quarter of a millimeter, the path departs as it does from a centimeter.
-#[test]
-fn from_a_start_half_a_millimeter_away_the_clearance_rises() {
-    assert_departs_from(0.0005);
-}
-
 /// How far a link point moves at most between two probes of a departure.
 const DEPARTURE_PROBE_M: f64 = 1e-3;
 
@@ -627,6 +612,10 @@ struct NearTheSlab {
 fn slab() -> Vec<[f64; 3]> {
     solid(Vector3::new(0.0, 0.1, 0.10), Vector3::new(0.3, 0.35, 0.16))
 }
+
+/// A start's distance from the slab within the spare above `MIN_CLEARANCE_M`: refused by no
+/// rule, and short of the plan's clearance, so a path leaves it by the start rule.
+const IN_THE_SPARE_M: f64 = MIN_CLEARANCE_M + 5e-4;
 
 fn near_the_slab(start_distance_m: f64) -> NearTheSlab {
     let (map, field) = world(&slab());
@@ -671,51 +660,6 @@ fn near_the_slab(start_distance_m: f64) -> NearTheSlab {
         start,
         toward,
     }
-}
-
-/// Asserts that from a start `start_distance_m` from a slab, with a goal raised away
-/// from it, the clearance of the rounded path rises from the start until it keeps the
-/// clearance.
-fn assert_departs_from(start_distance_m: f64) {
-    let NearTheSlab {
-        map, field, start, ..
-    } = near_the_slab(start_distance_m);
-    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
-    let start_clearance = distance_to_map(&arms, &map, &start);
-    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
-    let goal = at(&HIGH);
-    let scene = Scene {
-        map: &map,
-        field: &field,
-        stamp: 1,
-        objects: Objects::none(),
-    };
-    let waypoints = plan_path(
-        &arms,
-        &scene,
-        &request(Planner::RrtConnect, start, &goal, &sampler),
-    )
-    .expect("a path away from the slab");
-    let path = RoundedPath::joint_path(&vectors(&waypoints));
-    let spacing = PositiveFinite::parse(DEPARTURE_PROBE_M / arms.lever()).expect("positive");
-    let mut best = start_clearance;
-    for probe in probes(&path, spacing) {
-        let q: [f64; JOINTS] = probe.as_slice().try_into().expect("a configuration");
-        let here = distance_to_map(&arms, &map, &q);
-        if best >= MIN_CLEARANCE_M {
-            break;
-        }
-        assert!(
-            here >= departed(start_clearance),
-            "the clearance falls from {start_clearance} to {here} at {q:?}"
-        );
-        best = best.max(here);
-    }
-    assert!(
-        best >= MIN_CLEARANCE_M,
-        "the path never keeps its clearance"
-    );
-    assert_dense_clear_after_departure(&arms, &map, &field, &waypoints);
 }
 
 /// Asserts that the rounded path through `waypoints` keeps `MIN_CLEARANCE_M` at every
@@ -912,13 +856,13 @@ fn an_attempt_with_no_goal_leaves_the_plan_no_path() {
     assert!(message.starts_with("RRTConnect found no path"), "{message}");
 }
 
-// From a start 1 cm from the slab, with the box across the way, a plan among those of the
-// first 200 seeds rounds its first corner into the box and adds a waypoint on the first
-// run, which the start rule walks: the answer's rounded path keeps the clearance once it
+// From a start in the spare above the clearance from the slab, with the box across the
+// way, a plan among those of the first 200 seeds rounds its first corner into the box and
+// adds a waypoint on the first run, which the start rule walks: the answer's rounded path keeps the clearance once it
 // first keeps it, and the answer passes the check of a caller's path.
 #[test]
 fn a_first_corner_from_a_start_near_the_slab_gets_waypoints_until_it_clears() {
-    let NearTheSlab { start, .. } = near_the_slab(0.01);
+    let NearTheSlab { start, .. } = near_the_slab(IN_THE_SPARE_M);
     let (map, field) = world(&[slab(), box_between()].concat());
     let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
@@ -1136,6 +1080,66 @@ fn a_start_inside_an_obstacle_is_refused() {
     );
 }
 
+// A start out of contact and nearer than the clearance to an object is refused, as
+// MoveIt's collision check, padded by the clearance, refuses it, the fault naming a link of
+// the arm, the object and how far apart they stand: a box raised under the hand until the
+// arm stands inside the clearance of it.
+#[test]
+fn a_start_inside_the_clearance_of_an_object_is_refused() {
+    let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
+    let (empty, field) = world(&[]);
+    let under = hand(&LOW) - Vector3::new(0.0, 0.0, 0.4);
+    let raised = |by: f64| {
+        let center = under + Vector3::new(0.0, 0.0, by);
+        let pose = Isometry3::translation(center.x, center.y, center.z);
+        let mut voxels = empty.clone();
+        let scene = scene_with(&mut voxels, &[add_shape("box", &pose, "box", &[0.2; 3])]);
+        (voxels, scene)
+    };
+    let apart = |voxels: &VoxelMap, scene: &PlanningScene| {
+        Surroundings::new(voxels, &field, term_clearances(MIN_CLEARANCE_M))
+            .with_objects(left_objects(scene).objects(&[]))
+            .readings(&arms, &LOW)
+            .into_iter()
+            .filter(|reading| matches!(reading.pair, Contact::Object { .. }))
+            .map(|reading| reading.distance)
+            .fold(f64::INFINITY, f64::min)
+    };
+    let (voxels, scene) = (0..450)
+        .map(|k| raised(f64::from(k) * 0.001))
+        .find(|(voxels, scene)| {
+            let d = apart(voxels, scene);
+            d > 0.0 && d < MIN_CLEARANCE_M
+        })
+        .expect("a box that stands the arm inside its clearance, out of contact");
+    let objects = left_objects(&scene);
+    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
+    let goal = at(&HIGH);
+    let refused = plan_path(
+        &arms,
+        &among(&voxels, &field, objects.objects(&[])),
+        &request(Planner::RrtConnect, LOW, &goal, &sampler),
+    );
+    let Err(PlanFailure::Start(StartFault::InsideClearance {
+        reading:
+            Reading {
+                pair: Contact::Object { body, object },
+                distance,
+            },
+        clearance,
+    })) = refused
+    else {
+        panic!("a start inside the clearance gives {refused:?}");
+    };
+    assert!(
+        LEFT_ARM.links().iter().any(|l| l.name() == body) || GRIPPER.contains(&body.as_str()),
+        "{body} is not a link of the arm"
+    );
+    assert_eq!(object, "box");
+    assert!(0.0 < distance && distance < MIN_CLEARANCE_M, "{distance}");
+    assert_eq!(clearance, MIN_CLEARANCE_M);
+}
+
 // A request whose clearance or start tolerance is no distance is refused, by name.
 #[test]
 fn a_request_without_distances_is_refused() {
@@ -1176,15 +1180,15 @@ fn a_request_without_distances_is_refused() {
     assert!(plan_path(&arms, &scene, &base).is_ok());
 }
 
-// From a start a centimeter from the slab, the hand a centimeter from a ball of its own
-// body, the planned path departs from both: until it keeps both clearances, neither
+// From a start in the spare above the clearance from the slab, the hand a centimeter from
+// a ball of its own body, the planned path departs from both: until it keeps both clearances, neither
 // its distance from the map nor the hand's from the ball comes nearer than at the start
 // by more than a step of the departure.
 #[test]
 fn from_a_start_near_the_slab_and_its_own_body_both_clearances_rise() {
     let NearTheSlab {
         map, field, start, ..
-    } = near_the_slab(0.01);
+    } = near_the_slab(IN_THE_SPARE_M);
     let aside = (hand(&HIGH) - hand(&start))
         .cross(&Vector3::z())
         .try_normalize(1e-6)
@@ -1447,38 +1451,16 @@ fn assert_answers_from_near_the_slab(distance: f64, planner: Planner, seed: u32)
     assert_dense_clear_after_departure(&arms, &map, &field, &waypoints);
 }
 
-// From starts 1 cm and 0.5 mm from the slab, the plans of RRTConnect and BiTRRT from
-// each of eight seeds answer a path: every state a planner keeps but the start keeps the
-// plan's clearance, so no planned waypoint falls short of it.
+// From a start in the spare above the clearance from the slab, the plans of RRTConnect and
+// BiTRRT from each of eight seeds answer a path: every state a planner keeps but the start
+// keeps the plan's clearance, so no planned waypoint falls short of it.
 #[test]
 fn from_a_start_near_the_slab_every_seed_answers_a_path() {
-    for distance in [0.01, 0.0005] {
-        for planner in [Planner::RrtConnect, Planner::BiTrrt] {
-            for seed in 1..=8 {
-                assert_answers_from_near_the_slab(distance, planner, seed);
-            }
+    for planner in [Planner::RrtConnect, Planner::BiTrrt] {
+        for seed in 1..=8 {
+            assert_answers_from_near_the_slab(IN_THE_SPARE_M, planner, seed);
         }
     }
-}
-
-// From a start half a millimeter from the slab, BiTRRT's plan from seed 23 simplifies its
-// path to one whose check fails: the plan answers the planned path, which passes.
-#[test]
-fn a_plan_whose_simplified_path_fails_its_check_answers_the_planned_path() {
-    assert_answers_from_near_the_slab(0.0005, Planner::BiTrrt, 23);
-}
-
-// A start 0.15 mm from the slab steps half that, 0.075 mm, under the 0.1 mm floor of a
-// step: every run from it ends at it, and the plan finds no path. From 0.3 mm the step
-// is 0.15 mm, and the path departs. The map stands still, so a step of the map's term is
-// half its room, twice a step of the robot's own body's.
-#[test]
-fn a_departure_from_the_map_steps_half_its_distance() {
-    assert!(matches!(
-        plan_from_near_the_slab(0.00015),
-        Err(PlanFailure::NoPath(_))
-    ));
-    assert!(plan_from_near_the_slab(0.0003).is_ok());
 }
 
 // A start whose finger holds an occupied voxel, the voxel 2 cm or more from every link of
@@ -1782,10 +1764,6 @@ fn assert_falls_short(check: &PathCheck, place: Place, passing: usize) {
     );
 }
 
-/// How much farther than `MIN_CLEARANCE_M` from the map a plan keeps its states, as its
-/// messages name it: the 0.0210 m of the plan's clearance.
-const PLAN_SPARE_M: f64 = 0.001;
-
 // The path the plan answers around the box passes its check; the same path and then
 // straight back to the start, through the box, passes up to its last waypoint and
 // breaks on the run from it; and, around no box, with a waypoint past joint 4's lower
@@ -1940,16 +1918,16 @@ fn a_check_answers_the_faults_of_its_start() {
     );
 }
 
-// From a start a centimeter from the slab, the path the plan answers passes its check,
-// and so does a path whose run from the start rises from the slab; a path whose first
-// waypoint lies nearer the slab than the start breaks the start rule on the run from
-// the start, and one whose first run rises yet ends short of the plan's clearance
-// passes the run and fails at its waypoint; each passes no waypoint.
+// From a start in the spare above the clearance from the slab, the path the plan answers
+// passes its check, and so does a path whose run from the start rises from the slab; a
+// path whose first waypoint lies nearer the slab than the start breaks the start rule on
+// the run from the start, and one whose first run rises yet ends short of the plan's
+// clearance passes the run and fails at its waypoint; each passes no waypoint.
 #[test]
 fn a_check_walks_the_run_from_its_start_by_the_start_rule() {
     let NearTheSlab {
         map, field, start, ..
-    } = near_the_slab(0.01);
+    } = near_the_slab(IN_THE_SPARE_M);
     let arms = Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None);
     let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
     let goal = at(&HIGH);
@@ -1981,11 +1959,11 @@ fn a_check_walks_the_run_from_its_start_by_the_start_rule() {
         0,
     );
     let plan_clearance = MIN_CLEARANCE_M + PLAN_SPARE_M;
-    let rising_short = (1..100)
-        .map(|k| along(1.0 - f64::from(k) * 0.01))
+    let rising_short = (1..1000)
+        .map(|k| along(1.0 - f64::from(k) * 0.001))
         .find(|q| {
             let d = distance(q);
-            d > distance(&start) + 0.002 && d < plan_clearance
+            d > distance(&start) && d < plan_clearance
         })
         .expect("a state on the line, rising from the start, short of the plan's clearance");
     assert_falls_short(
@@ -2360,67 +2338,6 @@ fn ahead_of_the_grasp_point(q: &[f64; JOINTS], ahead_m: f64) -> Isometry3<f64> {
         Translation3::from(grasp.translation.vector + out * ahead_m),
         grasp.rotation,
     )
-}
-
-// A 4 cm item held 15 cm past the grasp point, a 5 mm box object 1.75 cm past its face,
-// while the bare arm keeps the plan's clearance from the object: the start falls short of
-// the plan's clearance by the item alone, departs by the start rule, and the planned path
-// passes its check whole.
-#[test]
-fn a_start_whose_held_item_comes_near_an_object_departs() {
-    let ahead = ahead_of_the_grasp_point(&LOW, 0.15);
-    let mut voxels = map(VOXEL_M, 1.6);
-    let planning = scene_with(
-        &mut voxels,
-        &[
-            add_shape("item", &ahead, "box", &[0.04; 3]),
-            add_shape(
-                "pebble",
-                &(ahead * Isometry3::translation(0.04, 0.0, 0.0)),
-                "box",
-                &[0.005; 3],
-            ),
-        ],
-    );
-    let field = DistanceField::of(&voxels);
-    let held = holding(&planning, &LOW, &[]);
-    let objects = left_objects(&held);
-    let riders = riders(&held, &[]);
-    let arms = Arms::new(
-        vec![
-            Arm::new("left_arm", &LEFT_ARM)
-                .riding(&riders)
-                .expect("the item rides the hand"),
-        ],
-        None,
-    );
-    let plan_clearance =
-        Surroundings::new(&voxels, &field, [MIN_CLEARANCE_M + PLAN_SPARE_M, 0.0, 0.0])
-            .with_objects(objects.objects(&[]));
-    assert!(
-        !plan_clearance.clear(&arms, &LOW),
-        "the item keeps the plan's clearance from the pebble"
-    );
-    assert!(
-        plan_clearance.clear(
-            &Arms::new(vec![Arm::new("left_arm", &LEFT_ARM)], None),
-            &LOW
-        ),
-        "the bare arm comes within the plan's clearance of the pebble"
-    );
-    let scene = among(&voxels, &field, objects.objects(&[]));
-    let sampler = IkGoalSampler::new(LEFT_ARM.chain().clone());
-    let goal = at(&HIGH);
-    let waypoints = plan_path(
-        &arms,
-        &scene,
-        &request(Planner::RrtConnect, LOW, &goal, &sampler),
-    )
-    .expect("a path away from the pebble");
-    assert_eq!(
-        check(&arms, &scene, LOW, &waypoints[1..]),
-        passing(&waypoints[1..])
-    );
 }
 
 /// The plan's clearance between an attached object and the arm that carries it: the 0
@@ -2932,9 +2849,9 @@ fn a_body_passes_the_corner_of_an_l_and_collides_inside_a_mesh() {
     );
 }
 
-// The slab as an object of a box at each of its voxels, on an empty map: from the start a
-// centimeter from it, a path that moves nearer it breaks the start rule on the map and the
-// objects, while the planned path away from it passes whole. An object is a term of the
+// The slab as an object of a box at each of its voxels, on an empty map: from a start in the
+// spare above the clearance from it, a path that moves nearer it breaks the start rule on
+// the map and the objects, while the planned path away from it passes whole. An object is a term of the
 // start rule as the map is.
 #[test]
 fn a_path_from_a_start_near_an_object_must_move_away() {
@@ -2943,7 +2860,7 @@ fn a_path_from_a_start_near_an_object_must_move_away() {
         start,
         toward,
         ..
-    } = near_the_slab(0.01);
+    } = near_the_slab(IN_THE_SPARE_M);
     let side = slab.voxel_size();
     let boxes = slab
         .occupied()

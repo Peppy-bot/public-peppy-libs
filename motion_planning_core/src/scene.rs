@@ -820,6 +820,11 @@ impl<'a> Obstacle<'a> {
         &self.shapes
     }
 
+    /// Whether an arm the plan does not move holds the object.
+    pub(crate) fn held(&self) -> bool {
+        self.holder.is_some()
+    }
+
     /// Whether the object, held by an arm the plan does not move, may touch the link
     /// `link`: the link that holds it, or a touch link.
     pub(crate) fn may_touch(&self, link: &str) -> bool {

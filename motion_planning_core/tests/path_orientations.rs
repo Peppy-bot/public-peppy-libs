@@ -23,7 +23,8 @@ use occupancy_map::{DistanceField, VoxelMap};
 use ompl_bridge::Planner;
 
 use common::{
-    JOINTS, LEFT_ARM, RIGHT_ARM, an_hour_from_now, distance_to_map, map, occupied_at, positive,
+    JOINTS, LEFT_ARM, PLAN_SPARE_M, RIGHT_ARM, an_hour_from_now, distance_to_map, map, occupied_at,
+    positive,
 };
 
 const VOXEL_M: f64 = 0.04;
@@ -336,10 +337,10 @@ fn every_state_of_the_rounded_path_holds_the_orientation() {
     }
 }
 
-// A hand that starts nearer a table than the clearance departs from it by the start rule and
-// holds its orientation at every state.
+// A hand that starts in the spare above the clearance from a table departs from it by the
+// start rule and holds its orientation at every state.
 #[test]
-fn a_hand_near_a_table_departs_holding_its_orientation() {
+fn a_hand_in_the_spare_above_a_tables_clearance_departs_holding_its_orientation() {
     /// The top of the table, on the voxels' grid: 18 voxels up.
     const TABLE_TOP_M: f64 = 18.0 * VOXEL_M;
     let (arms, samplers) = left_arm();
@@ -349,14 +350,15 @@ fn a_hand_near_a_table_departs_holding_its_orientation() {
         [0.4, 0.3, TABLE_TOP_M - VOXEL_M / 2.0],
     );
     let (voxels, _) = world(&[table]);
-    let start = (0..40)
+    let start = (0..1000)
         .find_map(|k| {
-            let height = TABLE_TOP_M + f64::from(k) * 0.005;
+            let height = TABLE_TOP_M + f64::from(k) * 2e-4;
             let start = found_at(&LEFT_ARM, [NEAR[0], NEAR[1], height], upright())?;
             let distance = distance_to_map(&arms, &voxels, &start);
-            (distance > 0.0 && distance < MIN_CLEARANCE_M).then_some(start)
+            (distance > MIN_CLEARANCE_M && distance < MIN_CLEARANCE_M + PLAN_SPARE_M)
+                .then_some(start)
         })
-        .expect("a height of the hand nearer the table than the clearance");
+        .expect("a height of the hand in the spare above the table's clearance");
     let goal = pose_goal(NEARBY, &hand);
     let orientations = of_the_left_hand(hand);
     let path = plan_holding(&arms, &[table], start, &[&goal], &samplers, &orientations)

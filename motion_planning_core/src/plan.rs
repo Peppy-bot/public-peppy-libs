@@ -25,9 +25,14 @@
 //!   step from it moves a point at least `MIN_SPARE_M`; a walk ends at a state that falls
 //!   short of it. The voxel's size needs no inflation: a state is measured against each
 //!   occupied voxel's whole box, which holds every point the voxel stands for.
-//! - The robot runs a path from its measured joints, the start. A term the start falls
-//!   short of the plan's clearance of departs along the straight line from the start by
-//!   the start rule until it keeps it. At each checked state the term lies no nearer than
+//! - The robot runs a path from its measured joints, the start. A start nearer than
+//!   `min_clearance_m` to the map or to an object no arm holds is refused, as MoveIt's
+//!   collision check, padded by the clearance, refuses a start in collision
+//!   (START_STATE_IN_COLLISION), and so is one in contact; MoveIt pads no pair of the
+//!   robot's own body. A term the start otherwise falls short of the plan's clearance of,
+//!   the robot's own body, an attached object against the arm that carries it, or the map
+//!   and the objects within the spare above `min_clearance_m`, departs along the straight
+//!   line from the start by the start rule until it keeps it. At each checked state the term lies no nearer than
 //!   the farthest checked state before it, or than its plan clearance where that is
 //!   nearer, to the rounding of the arithmetic, `ROUNDING_SLACK_M`. The start sets the
 //!   term's floor: 0 from a start below the clearance asked of it, and from one at or
@@ -119,7 +124,7 @@ use ompl_bridge::{
 
 use crate::arm::Moving;
 use crate::arms::Arms;
-use crate::clearance::{Contact, Surroundings, TERMS, term_clearances};
+use crate::clearance::{Contact, Reading, Surroundings, TERMS, term_clearances};
 use crate::goal::{Goal, GoalSampler};
 use crate::path_orientation::{PathOrientation, PathOrientations, Turned};
 use crate::scene::Objects;
@@ -262,6 +267,10 @@ pub enum StartFault {
     },
     #[error("the start is in contact: {0}")]
     InCollision(Contact),
+    /// The nearest pair of a body and the map or an object, out of contact, nearer than
+    /// `min_clearance_m` at the start, and that clearance (m).
+    #[error("the start keeps {reading}, inside the clearance {clearance:.4} m")]
+    InsideClearance { reading: Reading, clearance: f64 },
 }
 
 /// What a check of a path finds.
@@ -400,7 +409,13 @@ pub fn plan_path<const N: usize, const D: usize>(
     );
     distances_in_range(request.min_clearance_m, &request.start_tolerance)
         .map_err(PlanFailure::Request)?;
-    let start = start_clear(arms, scene, &request.start, &request.start_tolerance)?;
+    let start = start_clear(
+        arms,
+        scene,
+        &request.start,
+        &request.start_tolerance,
+        request.min_clearance_m,
+    )?;
     let orientations = PathOrientations::new(arms, request.path_orientations, &start)?;
     if let Some(apart) = (request.goals.iter().enumerate())
         .find_map(|(k, goal)| orientations.goal_apart(k, goal.goal))
@@ -426,10 +441,28 @@ pub fn plan_path<const N: usize, const D: usize>(
             checks.orientations.kept()
         )));
     };
-    let simplified = simplification.path;
-    answered(&checks, &simplified, deadline, request.stop).or_else(|failure| match failure {
+    answer_of(
+        &checks,
+        &planned,
+        &simplification.path,
+        deadline,
+        request.stop,
+    )
+}
+
+/// The answer of a plan whose planner found `planned` and simplified it to `simplified`,
+/// as the module says: the simplified path's when the path the robot runs through it
+/// passes its check, and the planned path's when only that one passes.
+fn answer_of<const N: usize, const D: usize>(
+    checks: &PathChecks<N, D>,
+    planned: &[Vec<f64>],
+    simplified: &[Vec<f64>],
+    deadline: Instant,
+    stop: Option<&AtomicBool>,
+) -> Result<Vec<[f64; D]>, PlanFailure> {
+    answered(checks, simplified, deadline, stop).or_else(|failure| match failure {
         PlanFailure::NoPath(_) if planned != simplified => {
-            answered(&checks, &planned, deadline, request.stop)
+            answered(checks, planned, deadline, stop)
         }
         other => Err(other),
     })
@@ -532,7 +565,13 @@ pub(crate) fn check_path_until<const N: usize, const D: usize>(
             "the path holds no waypoint after its start: give one or more".to_string(),
         ));
     }
-    let start = match start_clear(arms, scene, &request.start, &request.start_tolerance) {
+    let start = match start_clear(
+        arms,
+        scene,
+        &request.start,
+        &request.start_tolerance,
+        request.min_clearance_m,
+    ) {
         Ok(start) => start,
         Err(fault) => {
             return Ok(PathCheck {
@@ -614,13 +653,16 @@ pub(crate) fn distances_in_range<const N: usize>(
 }
 
 /// The start a plan or a check of `arms` takes from `start`: each arm's joints inside its
-/// joint limits by `tolerance`, the arms in the group's order, and out of contact with the
-/// map, the objects and the robot's own body.
+/// joint limits by `tolerance`, the arms in the group's order, out of contact with the map,
+/// the objects and the robot's own body, and `min_clearance_m` or farther from the map and
+/// the objects, as MoveIt's collision check, padded by the clearance, refuses a start in
+/// collision.
 pub(crate) fn start_clear<const N: usize, const D: usize>(
     arms: &Arms<N, D>,
     scene: &Scene,
     start: &[f64; D],
     tolerance: &[f64; D],
+    min_clearance_m: f64,
 ) -> Result<[f64; D], StartFault> {
     let inside = arms
         .arms()
@@ -635,8 +677,17 @@ pub(crate) fn start_clear<const N: usize, const D: usize>(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let start = Arms::<N, D>::join(&inside);
-    match scene.surroundings([0.0; TERMS]).contact(arms, &start) {
-        Some(contact) => Err(StartFault::InCollision(contact)),
+    if let Some(contact) = scene.surroundings([0.0; TERMS]).contact(arms, &start) {
+        return Err(StartFault::InCollision(contact));
+    }
+    let nearest = scene
+        .surroundings(term_clearances(min_clearance_m))
+        .nearest_in_the_world(arms, &start);
+    match nearest.filter(|reading| reading.distance < min_clearance_m) {
+        Some(reading) => Err(StartFault::InsideClearance {
+            reading,
+            clearance: min_clearance_m,
+        }),
         None => Ok(start),
     }
 }
@@ -1931,6 +1982,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::arm::{Arm, Body, SelfModel};
     use crate::goal::OrientationTarget;
+    use crate::scene::{ObjectFields, ObjectRequest, PlanningScene, RobotLinks, ShapeFields};
 
     // Waypoints inside a straight stretch go, the first and the last and each corner stay, and a
     // turn back on the same line stays: the path rests there.
@@ -2821,31 +2873,196 @@ pub(crate) mod tests {
         check_path_until(&arms, &scene, &request, ended)
     }
 
-    /// Four voxels at the middle of the run from the gantry's start at the origin to
-    /// (0.25, 0.25), and a voxel 1 cm below the cube at the start, which so falls short of
-    /// the plan's clearance.
-    fn block_on_the_diagonal() -> Vec<[f64; 3]> {
-        [0.115, 0.125]
-            .into_iter()
-            .flat_map(|x| [0.115, 0.125].map(|y| [x, y, 0.0]))
-            .chain([[0.0, -0.025, 0.0]])
-            .collect()
+    /// A self model of the gantry whose pair stands 1 cm apart at the origin and farther by
+    /// how far the cube stands from it.
+    struct RisingFromTheOrigin;
+
+    impl SelfModel<2> for RisingFromTheOrigin {
+        fn clearance(&self, q: &[f64; 2], _: Moving) -> f64 {
+            0.01 + q[0].hypot(q[1])
+        }
+
+        fn nearest_pair(&self, _: &[f64; 2], _: Moving) -> (String, String) {
+            ("link_2".to_string(), "its base".to_string())
+        }
     }
 
-    // A start short of the plan's clearance, a path from it around a block by a waypoint
-    // off the straight line to its end, then on through a waypoint on that line: the run
-    // from that waypoint is walked by its spare, and the path passes. The straight path
-    // to that waypoint runs into the block.
+    // A start short of the plan's clearance of the robot's own body, a path from it around a
+    // block by a waypoint off the straight line to its end, then on through a waypoint on
+    // that line: the run from that waypoint is walked by its spare, and the path passes. The
+    // straight path to that waypoint runs into the block.
     #[test]
     fn a_run_on_the_starts_line_after_a_waypoint_off_it_walks_by_its_spare() {
-        let block = block_on_the_diagonal();
+        let block: Vec<[f64; 3]> = [0.115, 0.125]
+            .into_iter()
+            .flat_map(|x| [0.115, 0.125].map(|y| [x, y, 0.0]))
+            .collect();
+        let (map, field) = world(VOXEL_M, [-1.2, -0.6, -0.1], [1.2, 0.6, 0.1], &block);
+        let geometry = gantry();
+        let arms = one_arm(&geometry, Some(&RisingFromTheOrigin));
+        let scene = Scene {
+            map: &map,
+            field: &field,
+            stamp: 0,
+            objects: Objects::none(),
+        };
+        let checked = |waypoints: &[[f64; 2]]| {
+            check_path(
+                &arms,
+                &scene,
+                &CheckRequest {
+                    start: [0.0, 0.0],
+                    start_tolerance: [0.0; 2],
+                    waypoints,
+                    min_clearance_m: MIN_CLEARANCE_M,
+                    deadline: Instant::now() + Duration::from_secs(3600),
+                },
+            )
+            .unwrap_or_else(|failure| panic!("{failure}"))
+        };
         let around = [[0.0, 0.25], [0.25, 0.25], [0.45, 0.45]];
-        let check = gantry_check([0.0, 0.0], &around, &block, &|| false)
-            .unwrap_or_else(|failure| panic!("{failure}"));
+        let check = checked(&around);
         assert_eq!((check.clear_waypoints, check.fault), (3, None));
-        let straight = gantry_check([0.0, 0.0], &around[1..], &block, &|| false)
-            .unwrap_or_else(|failure| panic!("{failure}"));
+        let straight = checked(&around[1..]);
         assert_eq!(check_place(&straight), Some(Place::Run(0)), "{straight:?}");
+    }
+
+    // A simplified path that runs through a block fails its check, and the plan answers
+    // the planned path around it, which passes; with no block the simplified path passes
+    // and is the answer.
+    #[test]
+    fn a_plan_whose_simplified_path_fails_its_check_answers_the_planned_path() {
+        let planned: Vec<Vec<f64>> = [[0.0, 0.0], [0.0, 0.25], [0.4, 0.25], [0.4, 0.0]]
+            .map(Vec::from)
+            .to_vec();
+        let simplified: Vec<Vec<f64>> = [[0.0, 0.0], [0.4, 0.0]].map(Vec::from).to_vec();
+        let geometry = gantry();
+        let arms = one_arm(&geometry, None);
+        let deadline = Instant::now() + Duration::from_secs(3600);
+        let answer = |block: &[[f64; 3]]| {
+            let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], block);
+            let scene = Scene {
+                map: &map,
+                field: &field,
+                stamp: 0,
+                objects: Objects::none(),
+            };
+            let checks = PathChecks::new(&arms, &scene, [0.0, 0.0], MIN_CLEARANCE_M);
+            answer_of(&checks, &planned, &simplified, deadline, None)
+                .unwrap_or_else(|failure| panic!("{failure}"))
+        };
+        let around = answer(&[[0.2, 0.0, 0.0]]);
+        assert_eq!(around.first(), Some(&[0.0, 0.0]));
+        assert_eq!(around.last(), Some(&[0.4, 0.0]));
+        assert!(
+            around.iter().any(|q| q[1] >= 0.2),
+            "the answer does not go around the block: {around:?}"
+        );
+        assert_eq!(answer(&[]), [[0.0, 0.0], [0.4, 0.0]]);
+    }
+
+    /// The fault of the check of the gantry's path from the origin to (0.3, 0) among `block`
+    /// and `objects`, with `self_model`.
+    fn fault_from_the_origin(
+        block: &[[f64; 3]],
+        objects: &[ObjectRequest],
+        self_model: Option<&dyn SelfModel<2>>,
+    ) -> Option<PathFault> {
+        let (mut map, _) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], block);
+        let mut scene = PlanningScene::new(RobotLinks::new(
+            ["link_1", "link_2"].map(String::from),
+            ["link_2".to_string()],
+        ));
+        scene
+            .apply_collision_objects(objects, &mut map)
+            .expect("the objects apply");
+        let field = DistanceField::of(&map);
+        let objects = scene.for_arms(&["link_2"], |link| panic!("{link} is no other arm's"));
+        let geometry = gantry();
+        let arms = one_arm(&geometry, self_model);
+        let met = Scene {
+            map: &map,
+            field: &field,
+            stamp: 0,
+            objects: objects.objects(&[]),
+        };
+        check_path(
+            &arms,
+            &met,
+            &CheckRequest {
+                start: [0.0, 0.0],
+                start_tolerance: [0.0; 2],
+                waypoints: &[[0.3, 0.0]],
+                min_clearance_m: MIN_CLEARANCE_M,
+                deadline: Instant::now() + Duration::from_secs(3600),
+            },
+        )
+        .unwrap_or_else(|failure| panic!("{failure}"))
+        .fault
+    }
+
+    /// A box of side `side` at `position`, as an object request adds it.
+    fn box_at(id: &str, position: [f64; 3], side: f64) -> ObjectRequest {
+        ObjectRequest {
+            operation: "add".to_string(),
+            object: ObjectFields {
+                id: id.to_string(),
+                position,
+                orientation: [0.0, 0.0, 0.0, 1.0],
+                shapes: vec![ShapeFields {
+                    kind: "box".to_string(),
+                    dimensions: vec![side; 3],
+                    mesh_vertices: Vec::new(),
+                    mesh_triangles: Vec::new(),
+                    position: [0.0; 3],
+                    orientation: [0.0, 0.0, 0.0, 1.0],
+                }],
+            },
+        }
+    }
+
+    // A start 1 cm from a voxel or from an object, out of contact and nearer than
+    // `min_clearance_m`, is refused, naming the pair, its distance and the clearance; the
+    // same starts 3 cm away pass. A start 1 cm from the robot's own body, which MoveIt does
+    // not pad, and one in the spare above the clearance from an object, leave by the start
+    // rule.
+    #[test]
+    fn a_start_inside_the_clearance_of_the_map_or_an_object_is_refused() {
+        let cube = Contact::Map {
+            body: "link_2".to_string(),
+        };
+        let shelf = Contact::Object {
+            body: "link_2".to_string(),
+            object: "shelf".to_string(),
+        };
+        let refused = |fault: &Option<PathFault>, pair: &Contact| {
+            matches!(
+                fault,
+                Some(PathFault::Start(StartFault::InsideClearance { reading, clearance }))
+                    if reading.pair == *pair
+                        && (reading.distance - 0.01).abs() < 1e-9
+                        && *clearance == MIN_CLEARANCE_M
+            )
+        };
+        let near = fault_from_the_origin(&[[0.0, -0.025, 0.0]], &[], None);
+        assert!(refused(&near, &cube), "{near:?}");
+        assert_eq!(
+            fault_from_the_origin(&[[0.0, -0.045, 0.0]], &[], None),
+            None
+        );
+        let near = fault_from_the_origin(&[], &[box_at("shelf", [0.0, 0.04, 0.0], 0.04)], None);
+        assert!(refused(&near, &shelf), "{near:?}");
+        assert_eq!(
+            fault_from_the_origin(&[], &[box_at("shelf", [0.0, 0.06, 0.0], 0.04)], None),
+            None
+        );
+        let in_the_spare = MIN_CLEARANCE_M + MIN_SPARE_M / 2.0;
+        let spare_shelf = box_at("shelf", [0.0, 0.03 + in_the_spare, 0.0], 0.04);
+        assert_eq!(fault_from_the_origin(&[], &[spare_shelf], None), None);
+        assert_eq!(
+            fault_from_the_origin(&[], &[], Some(&RisingFromTheOrigin)),
+            None
+        );
     }
 
     /// Where the first fault of `check` lies, when it is a clearance fault.
@@ -3028,68 +3245,5 @@ pub(crate) mod tests {
             Motion::Invalid { last_valid: 0.0 }
         );
         assert_eq!(checks.walk(&[0.3, 0.05], &[0.45, 0.05]), Motion::Valid);
-    }
-
-    // From a start 1 cm above a wall that runs under the first run to 5 cm before the
-    // corner, short of the plan's clearance, the first try at repairing the corner puts
-    // its waypoint on the first run where the start rule's walk has risen to the plan's
-    // clearance, within 2.2 cm of the corner, though the share it takes from the corner,
-    // a quarter, reaches over the wall. A corner rounded into a block gets
-    // waypoints until it clears, and the answer passes the check of a caller's path.
-    #[test]
-    fn a_first_corner_repair_adds_a_waypoint_that_keeps_the_clearance() {
-        let wall = (0..50).map(|i| [-0.545 + f64::from(i) * VOXEL_M, -0.025, 0.0]);
-        let block = [-0.085, -0.075]
-            .into_iter()
-            .flat_map(|x| [0.075, 0.085].map(|y| [x, y, 0.0]));
-        let points: Vec<[f64; 3]> = wall.chain(block).collect();
-        let (map, field) = world(VOXEL_M, [-0.6, -0.6, -0.1], [0.6, 0.6, 0.1], &points);
-        let geometry = gantry();
-        let arms = one_arm(&geometry, None);
-        let scene = Scene {
-            map: &map,
-            field: &field,
-            stamp: 0,
-            objects: Objects::none(),
-        };
-        let planned = [[-0.5, 0.0], [0.0, 0.0], [0.0, 0.5]];
-        let checks = PathChecks::new(&arms, &scene, planned[0], MIN_CLEARANCE_M);
-        assert!(
-            checks.start_short[0],
-            "the start keeps the plan's clearance"
-        );
-        let farthest = toward(&planned[0], &planned[1], 1.0 - FIRST_CORNER_FRACTION);
-        assert!(!checks.surroundings.clear(&arms, &farthest), "{farthest:?}");
-        let [into, _] = repair_waypoints(&checks, &planned, 1, FIRST_CORNER_FRACTION)
-            .expect("a waypoint on each run");
-        assert!(checks.surroundings.clear(&arms, &into), "{into:?}");
-        assert!(
-            into[0] > -0.022,
-            "{into:?} lies 2.2 cm or more before the corner"
-        );
-        let deadline = Instant::now() + Duration::from_secs(3600);
-        let answer = answered(&checks, &vectors(&planned), deadline, None)
-            .unwrap_or_else(|failure| panic!("the corner is not repaired: {failure}"));
-        assert!(
-            answer.len() > planned.len(),
-            "no waypoint added: {answer:?}"
-        );
-        let check = check_path(
-            &arms,
-            &scene,
-            &CheckRequest {
-                start: planned[0],
-                start_tolerance: [0.0; 2],
-                waypoints: &answer[1..],
-                min_clearance_m: MIN_CLEARANCE_M,
-                deadline,
-            },
-        )
-        .unwrap_or_else(|failure| panic!("{failure}"));
-        assert_eq!(
-            (check.clear_waypoints, check.fault),
-            (answer.len() - 1, None),
-            "{answer:?}"
-        );
     }
 }
