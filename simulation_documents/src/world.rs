@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 
 use crate::daylight::Daylight;
 use crate::furnish::FixedStation;
-use crate::geometry::{Offset, Placement, Point, Pose, Raise, Region};
+use crate::geometry::{Offset, Placement, Point, Pose, Raise, Region, is_riser_height};
 use crate::limbs::Limbs;
 use crate::names::{
     RESERVED_PEPPY_NAME, RESERVED_REASON, first_named_twice, is_peppy_name, peppy_name_grammar,
@@ -31,6 +31,9 @@ pub struct World {
     pub robots: BTreeMap<RobotName, Robot>,
     pub scene_objects: BTreeMap<Name, SceneObject>,
     pub objects: BTreeMap<Name, Object>,
+    /// The risers that their stand or their raise left, which the document
+    /// writes among its `objects`.
+    pub risers: BTreeMap<Name, Riser>,
     pub lighting: BTreeMap<String, Light>,
     pub materials: BTreeMap<String, Material>,
     pub daylight: Option<Daylight>,
@@ -631,6 +634,180 @@ impl From<Object> for ObjectFields {
     }
 }
 
+/// A riser that its stand or its raise left, which stays where it stands,
+/// fixed in place: a platform built to measure, an instance of no asset.
+/// Its deck is `width_m` along its own x by `depth_m` along its own y, and
+/// `height_m` is the height of the top of its deck above its origin, the
+/// height of a riser ([`Raise::LOWEST_M`], [`Raise::HIGHEST_M`]). Written
+/// among the `objects` of a document as `{ riser: { width_m, depth_m,
+/// height_m }, pose }`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RiserFields", into = "RiserFields")]
+pub struct Riser {
+    pub width_m: f64,
+    pub depth_m: f64,
+    pub height_m: f64,
+    pub pose: Pose,
+}
+
+/// The key that makes an entry of `objects` a riser.
+pub(crate) const RISER_KEY: &str = "riser";
+
+#[derive(Serialize, Deserialize)]
+#[serde(
+    deny_unknown_fields,
+    expecting = "a riser, { riser: { width_m, depth_m, height_m }, pose }"
+)]
+struct RiserFields {
+    riser: RiserSize,
+    pose: Pose,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(
+    deny_unknown_fields,
+    expecting = "the size of a riser, { width_m, depth_m, height_m }"
+)]
+struct RiserSize {
+    width_m: f64,
+    depth_m: f64,
+    height_m: f64,
+}
+
+impl TryFrom<RiserFields> for Riser {
+    type Error = Error;
+
+    fn try_from(fields: RiserFields) -> Result<Riser, Error> {
+        let RiserSize {
+            width_m,
+            depth_m,
+            height_m,
+        } = fields.riser;
+        for (side, metres) in [("width_m", width_m), ("depth_m", depth_m)] {
+            let above_zero = metres > 0.0;
+            if !above_zero {
+                return Err(Error::rule(format!(
+                    "the {side} {metres} of the riser is not above 0; write the side of its deck in metres"
+                )));
+            }
+        }
+        if !is_riser_height(height_m) {
+            return Err(Error::rule(format!(
+                "the height_m {height_m} of the riser is not from {} m to {} m, the heights of a riser",
+                Raise::LOWEST_M,
+                Raise::HIGHEST_M
+            )));
+        }
+        Ok(Riser {
+            width_m,
+            depth_m,
+            height_m,
+            pose: fields.pose,
+        })
+    }
+}
+
+impl From<Riser> for RiserFields {
+    fn from(riser: Riser) -> RiserFields {
+        RiserFields {
+            riser: RiserSize {
+                width_m: riser.width_m,
+                depth_m: riser.depth_m,
+                height_m: riser.height_m,
+            },
+            pose: riser.pose,
+        }
+    }
+}
+
+/// Whether `value`, an entry of `objects`, writes a riser: it holds the key
+/// [`RISER_KEY`].
+pub(crate) fn writes_a_riser(value: &Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|fields| fields.contains_key(RISER_KEY))
+}
+
+/// An entry of `objects` of a setup record: an object, or a riser that its
+/// stand or its raise left.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RecordedObject {
+    Object(Object),
+    Riser(Riser),
+}
+
+impl Serialize for RecordedObject {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            RecordedObject::Object(object) => object.serialize(serializer),
+            RecordedObject::Riser(riser) => riser.serialize(serializer),
+        }
+    }
+}
+
+/// An entry that holds the key [`RISER_KEY`] is a riser, and any other is
+/// an object.
+impl<'de> Deserialize<'de> for RecordedObject {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        let read = match writes_a_riser(&value) {
+            true => serde_path_to_error::deserialize(value).map(RecordedObject::Riser),
+            false => serde_path_to_error::deserialize(value).map(RecordedObject::Object),
+        };
+        read.map_err(serde::de::Error::custom)
+    }
+}
+
+/// Refuses a name that an object of `objects` and a riser of `risers`
+/// share: a document writes both in its `objects`, by their names.
+pub(crate) fn check_riser_names(
+    objects: &BTreeMap<Name, Object>,
+    risers: &BTreeMap<Name, Riser>,
+) -> Result<(), Error> {
+    match risers.keys().find(|name| objects.contains_key(*name)) {
+        Some(shared) => Err(Error::field(
+            format!("objects.{shared}"),
+            "is the name of an object and of a riser; a document writes both in `objects`, so give one of the two another name",
+        )),
+        None => Ok(()),
+    }
+}
+
+/// `objects` and `risers` as the one map of `objects` that a setup record
+/// writes, with the refusal of [`check_riser_names`].
+pub(crate) fn recorded_objects(
+    objects: BTreeMap<Name, Object>,
+    risers: BTreeMap<Name, Riser>,
+) -> Result<BTreeMap<Name, RecordedObject>, Error> {
+    check_riser_names(&objects, &risers)?;
+    let objects = objects
+        .into_iter()
+        .map(|(name, object)| (name, RecordedObject::Object(object)));
+    let risers = risers
+        .into_iter()
+        .map(|(name, riser)| (name, RecordedObject::Riser(riser)));
+    Ok(objects.chain(risers).collect())
+}
+
+/// The objects and the risers of `recorded`, the `objects` of a document.
+pub(crate) fn objects_and_risers(
+    recorded: BTreeMap<Name, RecordedObject>,
+) -> (BTreeMap<Name, Object>, BTreeMap<Name, Riser>) {
+    let mut objects = BTreeMap::new();
+    let mut risers = BTreeMap::new();
+    for (name, entry) in recorded {
+        match entry {
+            RecordedObject::Object(object) => {
+                objects.insert(name, object);
+            }
+            RecordedObject::Riser(riser) => {
+                risers.insert(name, riser);
+            }
+        }
+    }
+    (objects, risers)
+}
+
 /// How an object takes part in physics, as `scene.spawn_object` takes it:
 /// written `dynamic`, `static` or `none`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1010,6 +1187,7 @@ impl WorldDocument {
             robots: maps.robots,
             scene_objects: maps.scene_objects,
             objects: maps.objects,
+            risers: maps.risers,
             lighting: maps.lighting,
             materials: maps.materials,
             daylight: maps.daylight,
@@ -1060,6 +1238,7 @@ pub(crate) struct ConcreteMaps {
     robots: BTreeMap<RobotName, Robot>,
     scene_objects: BTreeMap<Name, SceneObject>,
     objects: BTreeMap<Name, Object>,
+    risers: BTreeMap<Name, Riser>,
     lighting: BTreeMap<String, Light>,
     materials: BTreeMap<String, Material>,
     daylight: Option<Daylight>,
@@ -1106,23 +1285,27 @@ impl WorldFields {
         let marked = self.marked_maps(origin)?;
         let robots = concrete_values("robots", marked.robots)?;
         let scene_objects = concrete_values("scene_objects", marked.scene_objects)?;
-        let objects = marked
-            .objects
-            .into_iter()
-            .map(|(name, entry)| match entry {
-                ObjectEntry::Object(object) => Ok((
-                    name.clone(),
-                    concrete_value(&format!("objects.{name}"), object)?,
-                )),
-                ObjectEntry::ItemKind(_) | ObjectEntry::Furnished(_) => {
-                    Err(sampler_in_concrete_world(format!("objects.{name}")))
+        let mut objects = BTreeMap::new();
+        let mut risers = BTreeMap::new();
+        for (name, entry) in marked.objects {
+            match entry {
+                ObjectEntry::Object(object) => {
+                    let object = concrete_value(&format!("objects.{name}"), object)?;
+                    objects.insert(name.clone(), object);
                 }
-            })
-            .collect::<Result<_, Error>>()?;
+                ObjectEntry::Riser(riser) => {
+                    risers.insert(name.clone(), riser.clone());
+                }
+                ObjectEntry::ItemKind(_) | ObjectEntry::Furnished(_) => {
+                    return Err(sampler_in_concrete_world(format!("objects.{name}")));
+                }
+            }
+        }
         Ok(ConcreteMaps {
             robots,
             scene_objects,
             objects,
+            risers,
             lighting: concrete_values("lighting", marked.lighting)?,
             materials: concrete_values("materials", marked.materials)?,
             daylight: marked
@@ -1269,7 +1452,9 @@ pub(crate) fn check_name_rules(fields: &WorldFields) -> Result<(), Error> {
             .filter(|(_, entry)| {
                 matches!(
                     entry,
-                    Entry::Value(ObjectEntry::Object(_) | ObjectEntry::Furnished(_))
+                    Entry::Value(
+                        ObjectEntry::Object(_) | ObjectEntry::Riser(_) | ObjectEntry::Furnished(_)
+                    )
                 )
             })
             .map(|(name, _)| name),
@@ -1282,9 +1467,10 @@ pub(crate) fn check_name_rules(fields: &WorldFields) -> Result<(), Error> {
     )
 }
 
-/// Object names and scene object names share one namespace.
+/// Object names, riser names and scene object names share one namespace.
 pub(crate) fn check_namespaces(world: &World) -> Result<(), Error> {
-    first_shared_name(world.objects.keys(), |name| {
+    check_riser_names(&world.objects, &world.risers)?;
+    first_shared_name(world.objects.keys().chain(world.risers.keys()), |name| {
         world.scene_objects.contains_key(name)
     })
 }
@@ -1347,6 +1533,7 @@ impl World {
     /// document cannot hold, by its path: a float that is not finite, or a
     /// number beyond 2^53.
     pub fn document(&self) -> Result<Document, Error> {
+        check_riser_names(&self.objects, &self.risers)?;
         Ok(Document::of(WORLD, &self.fields())?)
     }
 
@@ -1396,6 +1583,12 @@ impl World {
                     let entry = ObjectEntry::Object(Sampled::Fixed(object.clone()));
                     (name.clone(), Entry::Value(entry))
                 })
+                .chain(self.risers.iter().map(|(name, riser)| {
+                    (
+                        name.clone(),
+                        Entry::Value(ObjectEntry::Riser(riser.clone())),
+                    )
+                }))
                 .collect(),
             lighting: value_entries(&self.lighting),
             materials: value_entries(&self.materials),
@@ -1422,7 +1615,7 @@ fn value_entries<K: Clone + Ord, T: Clone>(map: &BTreeMap<K, T>) -> BTreeMap<K, 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::{JOINT_SLACK, OPENING_SLACK};
+    use crate::{JOINT_SLACK, OPENING_SLACK, SetupRecord};
     use documents_core::Revision;
     use std::collections::BTreeSet;
 
@@ -2221,8 +2414,8 @@ pub(crate) mod tests {
 
     /// A robot at a work surface, an object and a scene object stand on a
     /// riser of their raise_m, which each writes back unless it is 0; a
-    /// raise that is not a finite number from 0 is refused, and so is a
-    /// raise of a stand at a named pose or at a position.
+    /// raise that is neither 0 nor the height of a riser is refused, and so
+    /// is a raise of a stand at a named pose or at a position.
     #[test]
     fn a_stand_an_object_and_a_scene_object_write_their_raise_unless_it_is_zero() {
         let world = |stand: &str, object: &str, clock: &str| {
@@ -2273,8 +2466,21 @@ pub(crate) mod tests {
         );
 
         for (stand, object, refusal) in [
-            (", raise_m: -0.1", "", "is not a finite number from 0"),
-            ("", ", raise_m: -0.05", "is not a finite number from 0"),
+            (
+                ", raise_m: -0.1",
+                "",
+                "is neither 0 nor the height of a riser",
+            ),
+            (
+                "",
+                ", raise_m: 0.05",
+                "is neither 0 nor the height of a riser",
+            ),
+            (
+                ", raise_m: 0.85",
+                "",
+                "is neither 0 nor the height of a riser",
+            ),
             (", raise_m: NaN", "", "finite numbers only"),
             ("", ", raise_m: Infinity", "finite numbers only"),
         ] {
@@ -2296,6 +2502,158 @@ pub(crate) mod tests {
                 "{refused}: {error}"
             );
         }
+    }
+
+    /// A raise is 0, for none, or the height of a riser, from 0.10 m to
+    /// 0.80 m, both ends read.
+    #[test]
+    fn a_raise_is_zero_or_the_height_of_a_riser() {
+        for metres in [0.0, -0.0, 0.10, 0.35, 0.80] {
+            let raise = Raise::new(metres).unwrap_or_else(|error| panic!("{metres}: {error}"));
+            assert_eq!(raise.metres(), metres);
+            assert_eq!(raise.is_none(), metres == 0.0);
+        }
+        for metres in [0.05, 0.099, 0.801, 0.85, -0.1, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                Raise::new(metres).unwrap_err().to_string(),
+                format!(
+                    "the raise_m {metres} is neither 0 nor the height of a riser, from 0.1 m to 0.8 m; \
+                     write the height of a riser in metres, or leave it out for none"
+                ),
+            );
+        }
+    }
+
+    /// The text of the worked example with the entry `riser` among its
+    /// objects, under the name `alpha_riser`.
+    fn text_with_a_riser(riser: &str) -> String {
+        example_text().replace(
+            "  objects: {",
+            &format!("  objects: {{\n    alpha_riser: {riser},"),
+        )
+    }
+
+    /// A riser that its stand or its raise left is an entry of `objects`
+    /// that holds `riser`: a world reads it into its risers, with its deck,
+    /// its height and its pose, and writes it back among its objects.
+    #[test]
+    fn a_riser_of_objects_reads_and_writes_back_the_same() {
+        let text = text_with_a_riser(
+            "{ riser: { width_m: 0.61, depth_m: 0.45, height_m: 0.35 }, pose: { position: [1, 2, 0], yaw: 1.5 } }",
+        );
+        let world = World::parse(&text).unwrap();
+        assert_eq!(
+            world.risers,
+            BTreeMap::from([(
+                name("alpha_riser"),
+                Riser {
+                    width_m: 0.61,
+                    depth_m: 0.45,
+                    height_m: 0.35,
+                    pose: Pose::Yawed {
+                        position: [1.0, 2.0, 0.0],
+                        yaw: 1.5,
+                    },
+                },
+            )])
+        );
+        assert_eq!(world.objects, example().objects, "a riser is no object");
+        let written = world.to_json5().unwrap();
+        assert!(
+            written.contains("riser: {") && written.contains("height_m: 0.35"),
+            "{written}"
+        );
+        assert_eq!(World::parse(&written).unwrap(), world);
+        let record = SetupRecord::built(&world);
+        assert_eq!(record.risers, world.risers);
+        assert_eq!(
+            SetupRecord::parse(&record.to_json5().unwrap()).unwrap(),
+            record
+        );
+    }
+
+    /// A riser writes each of its values: a side of its deck above 0, the
+    /// height of a riser, a pose, and no other field.
+    #[test]
+    fn a_riser_with_another_size_or_another_field_is_refused() {
+        let refusal = |riser: &str| {
+            World::parse(&text_with_a_riser(riser))
+                .unwrap_err()
+                .to_string()
+        };
+        let pose = "pose: { position: [0, 0, 0], yaw: 0 }";
+        for (riser, reason) in [
+            (
+                format!("{{ riser: {{ width_m: 0, depth_m: 1, height_m: 0.3 }}, {pose} }}"),
+                "the width_m 0 of the riser is not above 0",
+            ),
+            (
+                format!("{{ riser: {{ width_m: 1, depth_m: -1, height_m: 0.3 }}, {pose} }}"),
+                "the depth_m -1 of the riser is not above 0",
+            ),
+            (
+                format!("{{ riser: {{ width_m: 1, depth_m: 1, height_m: 0.05 }}, {pose} }}"),
+                "the height_m 0.05 of the riser is not from 0.1 m to 0.8 m",
+            ),
+            (
+                format!("{{ riser: {{ width_m: 1, depth_m: 1, height_m: 0.85 }}, {pose} }}"),
+                "the height_m 0.85 of the riser is not from 0.1 m to 0.8 m",
+            ),
+            (
+                format!("{{ riser: {{ width_m: 1, depth_m: 1 }}, {pose} }}"),
+                "missing field `height_m`",
+            ),
+            (
+                format!(
+                    "{{ riser: {{ width_m: 1, depth_m: 1, height_m: 0.3 }}, {pose}, asset: \"object/box\" }}"
+                ),
+                "unknown field `asset`",
+            ),
+            (
+                "{ riser: { width_m: 1, depth_m: 1, height_m: 0.3 } }".to_owned(),
+                "missing field `pose`",
+            ),
+            (
+                format!(
+                    "{{ riser: {{ width_m: {{ range: [1, 2] }}, depth_m: 1, height_m: 0.3 }}, {pose} }}"
+                ),
+                "riser.width_m",
+            ),
+        ] {
+            let refused = refusal(&riser);
+            assert!(
+                refused.starts_with("objects.alpha_riser") && refused.contains(reason),
+                "{riser}: {refused}"
+            );
+        }
+    }
+
+    /// An object and a riser of a world share no name, since the document
+    /// writes both in its `objects`: the write of such a world is refused.
+    #[test]
+    fn an_object_and_a_riser_share_no_name() {
+        let mut world = example();
+        world.risers.insert(
+            name("crate"),
+            Riser {
+                width_m: 1.0,
+                depth_m: 1.0,
+                height_m: 0.3,
+                pose: Pose::Yawed {
+                    position: [0.0; 3],
+                    yaw: 0.0,
+                },
+            },
+        );
+        let refusal = "objects.crate: is the name of an object and of a riser; a document writes both in `objects`, so give one of the two another name";
+        assert_eq!(world.to_json5().unwrap_err().to_string(), refusal);
+        assert_eq!(
+            SetupRecord::built(&world)
+                .to_json5()
+                .unwrap_err()
+                .to_string(),
+            refusal
+        );
     }
 
     #[test]

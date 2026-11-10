@@ -164,9 +164,16 @@ fn is_zero(value: &f64) -> bool {
     *value == 0.0
 }
 
+/// Whether a riser is `metres` high: from [`Raise::LOWEST_M`] to
+/// [`Raise::HIGHEST_M`].
+pub(crate) fn is_riser_height(metres: f64) -> bool {
+    (Raise::LOWEST_M..=Raise::HIGHEST_M).contains(&metres)
+}
+
 /// How high a riser raises a robot of a stand at a work surface, or an
-/// object, above the floor: metres, a finite number from 0, 0 for none.
-/// Written `raise_m`, and left out when it is 0.
+/// object, above the floor: metres, 0 for none, or the height of a riser,
+/// from [`Raise::LOWEST_M`] to [`Raise::HIGHEST_M`]. Written `raise_m`, and
+/// left out when it is 0.
 #[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "f64", into = "f64")]
 pub struct Raise(f64);
@@ -174,17 +181,27 @@ pub struct Raise(f64);
 impl Raise {
     /// No raise: on the floor.
     pub const NONE: Raise = Raise(0.0);
+    /// The height of the lowest riser, in metres.
+    pub const LOWEST_M: f64 = 0.10;
+    /// The height of the highest riser, in metres.
+    pub const HIGHEST_M: f64 = 0.80;
 
-    /// The raise of `metres`, refused when it is not a finite number from 0.
+    /// The raise of `metres`, refused when it is neither 0 nor the height
+    /// of a riser.
     pub fn new(metres: f64) -> Result<Raise, Error> {
-        if !(metres.is_finite() && metres >= 0.0) {
+        if metres == 0.0 {
+            // -0 reads as 0.
+            return Ok(Raise::NONE);
+        }
+        if !is_riser_height(metres) {
             return Err(Error::rule(format!(
-                "the raise_m {metres} is not a finite number from 0; write the height of a riser \
-                 in metres, or leave it out for none"
+                "the raise_m {metres} is neither 0 nor the height of a riser, from {} m to {} m; \
+                 write the height of a riser in metres, or leave it out for none",
+                Raise::LOWEST_M,
+                Raise::HIGHEST_M
             )));
         }
-        // -0 reads as 0.
-        Ok(Raise(metres + 0.0))
+        Ok(Raise(metres))
     }
 
     /// The raise in metres.

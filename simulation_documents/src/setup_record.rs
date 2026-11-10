@@ -6,34 +6,102 @@ use serde::{Deserialize, Serialize};
 
 use crate::daylight::Daylight;
 use crate::geometry::Region;
-use crate::world::{Light, Location, Material, Object, Scene, SceneObject, Stand};
+use crate::world::{
+    Light, Location, Material, Object, RecordedObject, Riser, Scene, SceneObject, Stand,
+    objects_and_risers, recorded_objects,
+};
 use crate::{Error, Name, RobotName, World, text};
 
 /// The last value of each setup call the simulation took, without the joins
 /// of the robots, which the stack listing gives.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(from = "RecordFields")]
+pub struct SetupRecord {
+    pub scene: Scene,
+    pub scene_objects: BTreeMap<Name, SceneObject>,
+    pub objects: BTreeMap<Name, Object>,
+    /// The risers that their stand or their raise left, which the record
+    /// writes among its `objects`.
+    pub risers: BTreeMap<Name, Riser>,
+    pub lighting: BTreeMap<String, Light>,
+    pub materials: BTreeMap<String, Material>,
+    pub daylight: Option<Daylight>,
+    pub regions: BTreeMap<Name, Region>,
+    pub locations: BTreeMap<Name, Location>,
+    pub stands: BTreeMap<RobotName, Stand>,
+}
+
+/// A setup record as its text writes it: its `objects` hold the objects and
+/// the risers.
+#[derive(Serialize, Deserialize)]
 #[serde(
     deny_unknown_fields,
     expecting = "a setup record, { scene, scene_objects, objects, lighting, materials, daylight, regions, locations, stands }"
 )]
-pub struct SetupRecord {
-    pub scene: Scene,
+struct RecordFields {
+    scene: Scene,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub scene_objects: BTreeMap<Name, SceneObject>,
+    scene_objects: BTreeMap<Name, SceneObject>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub objects: BTreeMap<Name, Object>,
+    objects: BTreeMap<Name, RecordedObject>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub lighting: BTreeMap<String, Light>,
+    lighting: BTreeMap<String, Light>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub materials: BTreeMap<String, Material>,
+    materials: BTreeMap<String, Material>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub daylight: Option<Daylight>,
+    daylight: Option<Daylight>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub regions: BTreeMap<Name, Region>,
+    regions: BTreeMap<Name, Region>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub locations: BTreeMap<Name, Location>,
+    locations: BTreeMap<Name, Location>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub stands: BTreeMap<RobotName, Stand>,
+    stands: BTreeMap<RobotName, Stand>,
+}
+
+impl From<RecordFields> for SetupRecord {
+    fn from(fields: RecordFields) -> SetupRecord {
+        let (objects, risers) = objects_and_risers(fields.objects);
+        SetupRecord {
+            scene: fields.scene,
+            scene_objects: fields.scene_objects,
+            objects,
+            risers,
+            lighting: fields.lighting,
+            materials: fields.materials,
+            daylight: fields.daylight,
+            regions: fields.regions,
+            locations: fields.locations,
+            stands: fields.stands,
+        }
+    }
+}
+
+/// A record writes the fields of its text, with the refusal of a name that
+/// an object and a riser share.
+impl Serialize for SetupRecord {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        RecordFields::try_from(self.clone())
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+}
+
+impl TryFrom<SetupRecord> for RecordFields {
+    type Error = Error;
+
+    fn try_from(record: SetupRecord) -> Result<RecordFields, Error> {
+        Ok(RecordFields {
+            scene: record.scene,
+            scene_objects: record.scene_objects,
+            objects: recorded_objects(record.objects, record.risers)?,
+            lighting: record.lighting,
+            materials: record.materials,
+            daylight: record.daylight,
+            regions: record.regions,
+            locations: record.locations,
+            stands: record.stands,
+        })
+    }
 }
 
 impl SetupRecord {
@@ -43,6 +111,7 @@ impl SetupRecord {
             scene,
             scene_objects: BTreeMap::new(),
             objects: BTreeMap::new(),
+            risers: BTreeMap::new(),
             lighting: BTreeMap::new(),
             materials: BTreeMap::new(),
             daylight: None,
@@ -58,6 +127,7 @@ impl SetupRecord {
             scene: world.scene.clone(),
             scene_objects: world.scene_objects.clone(),
             objects: world.objects.clone(),
+            risers: world.risers.clone(),
             lighting: world.lighting.clone(),
             materials: world.materials.clone(),
             daylight: world.daylight.clone(),
@@ -78,7 +148,7 @@ impl SetupRecord {
 
     /// The record as JSON5 text, with the refusals of [`World::to_json5`].
     pub fn to_json5(&self) -> Result<String, Error> {
-        text::to_json5(self)
+        text::to_json5(&RecordFields::try_from(self.clone())?)
     }
 }
 

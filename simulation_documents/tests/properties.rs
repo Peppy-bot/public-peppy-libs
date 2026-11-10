@@ -20,9 +20,9 @@ use simulation_documents::{
     Band, Bounds, Catalogue, Check, ClearWays, Cone, ContentsOn, Control, Count, Date, Daylight,
     Digest, Error, Feature, Finish, Holding, Join, Judge, Landmark, LandmarkOn, Light, Limbs,
     Location, Manifest, Material, Name, NearPoint, Object, Offset, Opening, Physics, Place,
-    Placement, PlacementKind, Point, Pose, Raise, Reachable, Region, Revision, Robot, RobotName,
-    ScaleRange, Scene, SceneObject, Seed, SetupRecord, Side, SitePath, StackRobot, Stand, Target,
-    TimeOfDay, Weather, WithinM, World, WorldDocument, WorldPattern,
+    Placement, PlacementKind, Point, Pose, Raise, Reachable, Region, Revision, Riser, Robot,
+    RobotName, ScaleRange, Scene, SceneObject, Seed, SetupRecord, Side, SitePath, StackRobot,
+    Stand, Target, TimeOfDay, Weather, WithinM, World, WorldDocument, WorldPattern,
 };
 
 /// Names of objects, scene objects, locations, poses and regions: over the
@@ -153,8 +153,26 @@ fn raises(tc: &TestCase) -> Raise {
     if tc.draw(gs::booleans()) {
         return Raise::NONE;
     }
-    Raise::new(tc.draw(gs::floats::<f64>().min_value(0.0).max_value(1.0)))
-        .expect("a finite number from 0 is a raise")
+    Raise::new(tc.draw(riser_heights())).expect("the height of a riser is a raise")
+}
+
+/// The height of a riser, in metres.
+fn riser_heights() -> impl PrintableGenerator<f64> {
+    gs::floats::<f64>()
+        .min_value(Raise::LOWEST_M)
+        .max_value(Raise::HIGHEST_M)
+}
+
+/// A riser that its stand or its raise left.
+#[hegel::composite]
+fn risers(tc: &TestCase) -> Riser {
+    let deck_sides = || gs::floats::<f64>().min_value(0.2).max_value(3.0);
+    Riser {
+        width_m: tc.draw(deck_sides()),
+        depth_m: tc.draw(deck_sides()),
+        height_m: tc.draw(riser_heights()),
+        pose: tc.draw(poses()),
+    }
 }
 
 #[hegel::composite]
@@ -401,8 +419,9 @@ fn scenes(tc: &TestCase) -> Scene {
     }
 }
 
-/// A concrete world: its object names and scene object names disjoint, its
-/// robot names standing together, each region of its locations declared.
+/// A concrete world: its object names, its riser names and its scene object
+/// names disjoint, its robot names standing together, each region of its
+/// locations declared.
 #[hegel::composite]
 fn worlds(tc: &TestCase) -> World {
     let scene_objects: BTreeMap<Name, SceneObject> =
@@ -411,6 +430,11 @@ fn worlds(tc: &TestCase) -> World {
         .draw(gs::btree_maps(names(), objects()).max_size(3))
         .into_iter()
         .filter(|(name, _)| !scene_objects.contains_key(name))
+        .collect();
+    let risers: BTreeMap<Name, Riser> = tc
+        .draw(gs::btree_maps(names(), risers()).max_size(2))
+        .into_iter()
+        .filter(|(name, _)| !scene_objects.contains_key(name) && !objects.contains_key(name))
         .collect();
     let robots = tc
         .draw(standing_robot_names())
@@ -444,6 +468,7 @@ fn worlds(tc: &TestCase) -> World {
         robots,
         scene_objects,
         objects,
+        risers,
         lighting: tc.draw(gs::btree_maps(labels(), lights()).max_size(2)),
         materials: tc.draw(gs::btree_maps(labels(), materials()).max_size(2)),
         daylight: tc.draw(gs::optional(daylights())),
