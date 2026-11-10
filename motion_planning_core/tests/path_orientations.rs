@@ -250,6 +250,7 @@ fn plan_until<const N: usize, const D: usize>(
             path_orientations: orientations,
             goal_samples: NonZeroUsize::new(GOAL_SAMPLES).expect("nonzero"),
             planner: Planner::RrtConnect,
+            refiner: None,
             deadline,
             max_iterations: NonZeroU64::new(20_000).expect("nonzero"),
             attempts: NonZeroU32::MIN,

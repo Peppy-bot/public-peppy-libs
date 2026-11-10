@@ -27,7 +27,8 @@ each chain.
 - `Goal` holds the constraints an arm's last waypoint meets; `IkGoalSampler` finds
   configurations meeting them for any chain.
 - `plan_path` plans a `PlanRequest` on a `Scene` with OMPL (`ompl_bridge`), each arm to
-  its `ArmGoal`, and checks the rounded path the robot runs
+  its `ArmGoal`, refines OMPL's path with MoveIt's CHOMP when the request's `Refiner` says
+  so, and checks the rounded path the robot runs
   (`control_core::path_timing::RoundedPath::joint_path`); `check_path` checks a caller's
   path, a `CheckRequest`, with the same checks.
 - The map's intake of a depth frame: `DepthCamera` reads its points, `JointHistory`
@@ -387,7 +388,8 @@ until its time ends, such as RRT*, has its path simplified once, past the deadli
 corner's repair runs only before the deadline: when a corner of the simplified path rounds
 short of the clearances once the deadline has passed, the plan answers its planned path if
 that passes its own check, and fails `NoPath` otherwise. The hybrid of several attempts
-and its checks, and the check of the rounded path, run to their end past the deadline.
+and its checks, the check of the rounded path, and CHOMP's refinement of it (CHOMP), run to
+their end past the deadline.
 OMPL plans with the request's planner and iteration bound, seeded from the request's seed
 and the map's stamp, so the same request on the same map gives the same path when the plan
 ends before its deadline, for every planner but PRM and PRM*, with any number of attempts.
@@ -421,6 +423,61 @@ states it checks only as points of a checked motion, so the plan answers the sim
 path when the path the robot runs through it passes the checks above, and the planned
 path when only that one passes. MoveIt checks the simplified path alone, and answers
 INVALID_MOTION_PLAN when it fails.
+
+## CHOMP
+
+`src/chomp.rs` is MoveIt 2.15.2's CHOMP optimizer (`chomp_motion_planner`) in Rust, with the
+values of its planner plugin (`chomp_interface.cpp`, `loadParams`), and keeps MoveIt's BSD
+license notice. A plan whose `refiner` is `Refiner::Chomp` refines the path its planner
+answers. CHOMP starts from the path the robot runs through it, its corners rounded as
+execute_joint_path rounds them, its 101 points, 3 s at 0.03 s, evenly spaced along it; the
+start and the end stay where they are, and the 99 points between them are free. MoveIt's
+`fillInFromTrajectory` fills CHOMP's points by waypoint index through the trajectory CHOMP
+is given (chomp_trajectory.cpp:188-209): through the trajectory MoveIt's time
+parameterization answers, sampled every 0.1 s, the points lie at even times on the chords
+between the samples. On 100 drawn scenes whose RRTConnect path turns, at a clearance of
+4 cm, CHOMP from MoveIt's fill answers a path that bends more than RRTConnect's on each of
+the 82 it changes, and from the start here one that bends less on 75 of those 82 and that
+the robot runs in less time on 76. A
+trajectory's cost is its squared acceleration, weighed by 0.1, plus, at each free point,
+each collision sphere's potential times its speed. The spheres are those of each link of
+each arm and of each part its links carry, such as a gripper finger
+(`collision_geometry::spheres`), grown by the plan's clearance, as MoveIt grows each
+link's bodies by its padding. A sphere's potential is MoveIt's of its center's distance in
+CHOMP's field less its radius: 0 from a clearance of 0.2 m, quadratic within it and linear
+inside an obstacle. The field holds the map's distances and every obstacle of the plan,
+each voxel its shapes touch occupied (`VoxelMap::occupy_intersecting`): every object that
+stands in the world, as MoveIt's CHOMP holds every object of its world, and every object
+an arm the plan does not move holds, as MoveIt's CHOMP holds the bodies of the links
+outside the group in a second field. Its distances and gradient stop at MoveIt's
+propagation distance, 0.25 m, rounded up to whole voxels as MoveIt's field rounds it, and a
+sphere 0.25 m or more from every obstacle has no potential. The field's cells are the
+map's voxels; MoveIt's field has cells of 2 cm (collision_env_distance_field.hpp:53)
+whatever the size of its octomap's voxels.
+
+Each iteration descends as MoveIt's optimizer does: the smoothness increments of every
+free point and the collision increments of one free point drawn from the plan's seed,
+joined with the map's stamp, through the inverse of the smoothness cost, each joint's step
+held to 0.1 rad, each joint pulled back inside its limits. CHOMP runs its 200 iterations
+to their end, past the plan's deadline when the planner leaves it none, as MoveIt's CHOMP
+plans by its own limit and reads no allowed planning time; a stop ends it. It weighs the
+trajectories MoveIt's optimizer walks that cost less than the planner's path, the
+trajectory of least cost at every tenth iteration and after the last, each free point held
+inside the joint limits, walks them with the plan's own check of the path the robot runs,
+corner repairs run to their end whatever the time, from the least cost up, and the plan
+answers the first that passes, and the planner's path when none does. So a refined plan
+passes every check of a plan, costs less than its planner's path in CHOMP's cost, and is
+the same for the same request on the same map whatever its timing. MoveIt's optimizer
+stops at its first clear walk, the walk of the planner's path itself when that path is
+valid, or five iterations after its collision cost falls below 0.07, and walks nothing
+after its last iteration.
+
+A sphere's Jacobian is the derivative of its center: a revolute joint's axis crossed with
+the center's offset from the joint, and a prismatic joint's axis. MoveIt's
+`computeJointProperties` (chomp_optimizer.cpp:749) takes `joint_transform * axis` on an
+`Eigen::Isometry3d`, which adds the joint's position to its axis. CHOMP's field holds no
+link of the robot: MoveIt's optimizer also reads the distances to the robot's links outside
+the group, and between the group's own links.
 
 ## Path orientations
 

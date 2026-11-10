@@ -245,6 +245,7 @@ fn plan_in(
             path_orientations: &[],
             goal_samples: NonZeroUsize::new(GOAL_SAMPLES).expect("nonzero"),
             planner: Planner::RrtConnect,
+            refiner: None,
             deadline: an_hour_from_now(),
             max_iterations: NonZeroU64::new(20_000).expect("nonzero"),
             attempts: NonZeroU32::MIN,

@@ -1,7 +1,8 @@
 //! Plans of OpenArm v2's left arm around boxes of voxels: the rounded path of every
-//! returned path keeps its clearance under a dense check and passes the check of a
-//! caller's path, the same request on the same map gives the same path, of one attempt
-//! or several, a stop ends a plan, and a goal or a world that admits no path says why.
+//! returned path, refined by CHOMP or not, keeps its clearance under a dense check and
+//! passes the check of a caller's path, the same request on the same map gives the same
+//! path, of one attempt or several, a stop ends a plan, and a goal or a world that admits
+//! no path says why.
 //! Checks of a caller's path: where each fault lies and the waypoints before it. Plans
 //! and checks among the objects of a planning scene: an object is avoided until it is
 //! removed, an object the hand holds is carried around an obstacle, the fingers and the
@@ -28,8 +29,8 @@ use motion_planning_core::{
     Arm, ArmGoal, Arms, AttachRequest, CheckFailure, CheckRequest, Contact, Frame, Goal,
     GoalSampler, IkGoalSampler, JointTarget, MAX_STEP_M, Moving, ObjectFields, ObjectRequest,
     Objects, OrientationTarget, PathCheck, PathFault, Place, PlanFailure, PlanObjects, PlanRequest,
-    PlanningScene, PositionTarget, Reading, RobotLinks, RobotPart, Scene, ShapeFields, StartFault,
-    Surroundings, check_path, plan_path, pose_parts, term_clearances,
+    PlanningScene, PositionTarget, Reading, Refiner, RobotLinks, RobotPart, Scene, ShapeFields,
+    StartFault, Surroundings, check_path, plan_path, pose_parts, term_clearances,
 };
 use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 use occupancy_map::{DistanceField, VoxelMap};
@@ -98,6 +99,7 @@ fn request<'a>(
         path_orientations: &[],
         goal_samples: NonZeroUsize::new(8).expect("nonzero"),
         planner,
+        refiner: None,
         deadline: an_hour_from_now(),
         max_iterations: NonZeroU64::new(20_000).expect("nonzero"),
         attempts: NonZeroU32::MIN,
@@ -447,8 +449,8 @@ fn a_plan_its_iterations_end_gives_no_path() {
     assert_eq!(
         failure,
         PlanFailure::NoPath(
-            "RRTConnect found no path within 1 iterations or by its deadline, keeping the \
-             plan's clearance, 0.0210 m from the map and the objects"
+            "RRTConnect found no path within 1 iterations, keeping the plan's clearance, \
+             0.0210 m from the map and the objects"
                 .to_string()
         )
     );
@@ -570,8 +572,8 @@ fn a_plan_whose_sampling_takes_its_time_gives_no_path() {
     assert_eq!(
         plan_path(&arms, &scene, &limited),
         Err(PlanFailure::NoPath(
-            "RRTConnect found no path within 20000 iterations or by its deadline, keeping the \
-             plan's clearance, 0.0210 m from the map and the objects"
+            "RRTConnect found no path by its deadline, keeping the plan's clearance, 0.0210 m \
+             from the map and the objects"
                 .to_string()
         ))
     );
@@ -894,12 +896,16 @@ fn a_first_corner_from_a_start_near_the_slab_gets_waypoints_until_it_clears() {
     );
 }
 
+/// The iteration bound of a drawn world's plan by RRTstar, which plans until its bound ends
+/// it, where each other planner here returns at its first path.
+const RRT_STAR_ITERATIONS: NonZeroU64 = NonZeroU64::new(500).expect("500 is above 0");
+
 // On drawn worlds of boxes in front of the arm, clear of it at the start and at the
-// goal, every path a planner returns has a rounded path that keeps the clearance under
-// a dense check and passes the check of a caller's path, and every plan that returns
-// none says the goal is unreachable or that it found no path. A world whose plan returns
-// none is discarded, so Hegel's FilterTooMuch health check fails a run in which few plans
-// return a path.
+// goal, every path a planner returns, refined by CHOMP or not, has a rounded path that
+// keeps the clearance under a dense check and passes the check of a caller's path, and
+// every plan that returns none says the goal is unreachable or that it found no path. A
+// world whose plan returns none is discarded, so Hegel's FilterTooMuch health check fails
+// a run in which few plans return a path.
 #[hegel::test(test_cases = 40)]
 fn on_drawn_worlds_every_returned_path_clears_its_rounding(tc: hegel::TestCase) {
     use hegel::generators as gs;
@@ -930,12 +936,23 @@ fn on_drawn_worlds_every_returned_path_clears_its_rounding(tc: hegel::TestCase) 
     let planner = tc.draw(gs::sampled_from(&[
         Planner::RrtConnect,
         Planner::Rrt,
+        Planner::RrtStar,
         Planner::BiTrrt,
     ]));
+    let refiner = tc.draw(gs::sampled_from(&[None, Some(Refiner::Chomp)]));
     // A world whose boxes stand on the arm at the start or at the goal tests nothing
     // here.
     tc.assume(surroundings.clear(&arms, &LOW) && surroundings.clear(&arms, &HIGH));
-    match plan_path(&arms, &scene, &request(planner, LOW, &goal, &sampler)) {
+    let bounded = request(planner, LOW, &goal, &sampler);
+    let request = PlanRequest {
+        refiner,
+        max_iterations: match planner {
+            Planner::RrtStar => RRT_STAR_ITERATIONS,
+            _ => bounded.max_iterations,
+        },
+        ..bounded
+    };
+    match plan_path(&arms, &scene, &request) {
         Ok(waypoints) => {
             assert_dense_clear(&arms, &map, &field, &waypoints);
             assert_eq!(
@@ -944,7 +961,7 @@ fn on_drawn_worlds_every_returned_path_clears_its_rounding(tc: hegel::TestCase) 
             );
         }
         Err(PlanFailure::Unreachable(_) | PlanFailure::NoPath(_)) => tc.assume(false),
-        Err(other) => panic!("{planner}: {other}"),
+        Err(other) => panic!("{planner}, refined by {refiner:?}: {other}"),
     }
 }
 

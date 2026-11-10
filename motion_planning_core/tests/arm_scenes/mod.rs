@@ -945,6 +945,7 @@ fn plan_group<const N: usize, const D: usize, O>(
                     path_orientations: &orientations,
                     goal_samples: NonZeroUsize::new(LAUNCH_GOAL_SAMPLES).expect("nonzero"),
                     planner: planner_of(scenes.objective),
+                    refiner: None,
                     deadline,
                     max_iterations: max_iterations(scenes),
                     attempts: NonZeroU32::MIN,

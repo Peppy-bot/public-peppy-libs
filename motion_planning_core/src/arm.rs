@@ -167,6 +167,11 @@ impl<'a, const N: usize> Arm<'a, N> {
         self.geometry
     }
 
+    /// The bodies the arm's links carry.
+    pub(crate) fn riders(&self) -> &'a [Rider<'a>] {
+        self.riders
+    }
+
     /// For each joint, the farthest any point of a link or of a rider moves per unit the
     /// joint moves: per radian for a revolute joint, per meter for a prismatic one.
     pub fn reach(&self) -> &[f64; N] {
