@@ -22,18 +22,23 @@ mod arm_scenes;
 use std::collections::{BTreeMap, BTreeSet};
 
 use chain_kinematics::Limit;
+#[cfg(target_arch = "x86_64")]
 use control_core::path_timing::JOINT_PATH_CORNER_DEVIATION;
 use hegel::TestCase;
 use hegel::generators as gs;
 use ros_reference::arm_planning::{
-    Case, Held, MOVEIT_SUCCESS, Ours, Probed, SceneCase, SceneGoal, Scenes, Termination, VoxelBox,
+    Case, Held, Ours, Probed, SceneCase, SceneGoal, Scenes, VoxelBox,
 };
+#[cfg(target_arch = "x86_64")]
+use ros_reference::arm_planning::{MOVEIT_SUCCESS, Termination};
 use statrs::distribution::{ContinuousCDF, StudentsT};
 
 use arm_scenes::{
-    AtItsJoints, JOINTS, MIN_SCENES, Standing, at_its_joints, boxes_of, geometry, joint_goal,
-    least_self_clearance_along, map_of, on_the_arms, plan_scene, probe_spacing, samplers, state,
+    AtItsJoints, JOINTS, MIN_SCENES, at_its_joints, boxes_of, geometry, map_of, on_the_arms,
+    plan_scene, probe_spacing, samplers, state,
 };
+#[cfg(target_arch = "x86_64")]
+use arm_scenes::{Standing, joint_goal, least_self_clearance_along};
 use nalgebra::{Point3, Vector3};
 use openarm_description::{HardwareVersion, Side};
 
@@ -42,7 +47,9 @@ use openarm_description::{HardwareVersion, Side};
 /// own check finds invalid.
 const MOVEIT_START_STATE_INVALID: i32 = -26;
 const MOVEIT_START_STATE_IN_COLLISION: i32 = -10;
+#[cfg(target_arch = "x86_64")]
 const MOVEIT_GOAL_STATE_INVALID: i32 = -27;
+#[cfg(target_arch = "x86_64")]
 const MOVEIT_INVALID_MOTION_PLAN: i32 = -2;
 /// The quantile of the standard normal distribution that bounds a two-sided 95%
 /// interval.
@@ -79,6 +86,7 @@ fn rate_interval(successes: usize, trials: usize) -> (f64, f64) {
 
 /// What the outcomes of a scene read: its case, the waypoints of our path (0 for a
 /// failure), and whether its start lies below a joint's lower limit or above an upper.
+#[cfg(target_arch = "x86_64")]
 struct Shown<'a> {
     case: &'a SceneCase,
     waypoints: usize,
@@ -87,11 +95,13 @@ struct Shown<'a> {
 }
 
 /// An outcome of a scene, by its name, and whether a scene shows it.
+#[cfg(target_arch = "x86_64")]
 type Outcome = (&'static str, fn(&Shown) -> bool);
 
 /// The least distance between the robot's own bodies in a scene of a plan of every chain
 /// of the robot, in this crate's self model of its plans: at its start, and, for a goal of
 /// joints, at its goal and along the straight joint line between them.
+#[cfg(target_arch = "x86_64")]
 struct OwnDistances {
     start: f64,
     goal: Option<f64>,
@@ -100,6 +110,7 @@ struct OwnDistances {
 
 /// An outcome of a scene whose plans check the robot's own pairs, by its name, and whether
 /// a scene shows it.
+#[cfg(target_arch = "x86_64")]
 type OwnBodyOutcome = (&'static str, fn(&SceneCase, &OwnDistances) -> bool);
 
 /// The name of this crate's failure in `ours`, or none for a path.
@@ -505,6 +516,7 @@ const OBJECT_SPARE_M: f64 = 1e-3;
 const OWN_BODY_SPARE_M: f64 = 2e-3;
 
 /// Whether a scene of `case` reaches for poses or positions of the grasp points.
+#[cfg(target_arch = "x86_64")]
 fn to_grasp_points(case: &Case) -> bool {
     case.cases
         .iter()
@@ -512,6 +524,7 @@ fn to_grasp_points(case: &Case) -> bool {
 }
 
 /// The outcome of a path of ours where MoveIt's own fails its check.
+#[cfg(target_arch = "x86_64")]
 const MOVEIT_PATH_INVALID: &str = "a path where MoveIt's fails its check";
 
 /// A group of scenes, by its name, and whether a scene belongs to it.
