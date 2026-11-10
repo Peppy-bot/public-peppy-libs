@@ -735,6 +735,140 @@ fn the_distance_at_a_point_that_is_not_a_number_is_refused() {
     assert_eq!(field.distance([5.0, 0.0, 0.0]), Ok(f64::INFINITY));
 }
 
+fn cap(meters: f64) -> PositiveFinite {
+    PositiveFinite::parse(meters).expect("a positive cap")
+}
+
+/// The voxel `steps` voxels from `key` along `axis`.
+fn stepped(key: Key, axis: usize, steps: i32) -> Key {
+    Key(std::array::from_fn(|i| {
+        key.0[i] + if i == axis { steps } else { 0 }
+    }))
+}
+
+// On drawn maps, at a point whose voxel has its neighbors on every axis, the
+// gradient is the central difference of the brute-force distances at the
+// neighbors' centers, each capped, and the distance the capped brute-force
+// distance at the voxel's center.
+#[hegel::test]
+fn the_gradient_is_the_central_difference_of_the_capped_distances(tc: TestCase) {
+    let map = drawn_map(&tc);
+    let centers = occupied_centers(&map);
+    let field = DistanceField::of(&map);
+    let limit = tc.draw(gs::floats().min_value(VOXEL_M).max_value(3.0));
+    let whole_voxels = (limit / VOXEL_M).ceil() * VOXEL_M;
+    let capped = |key: Key| brute_force(&centers, map.center(key)).min(whole_voxels);
+    for _ in 0..20 {
+        let q: [f64; 3] = tc.draw(gs::arrays(
+            gs::floats()
+                .min_value(-EDGE_M + 2.0 * VOXEL_M)
+                .max_value(EDGE_M - 2.0 * VOXEL_M),
+        ));
+        let key = map.key(q).expect("in the map");
+        let at = field
+            .gradient(q, cap(limit))
+            .expect("a point")
+            .expect("a voxel with neighbors on every axis");
+        assert!(
+            (at.distance - capped(key)).abs() <= ROUNDING_M,
+            "{at:?} at {q:?}"
+        );
+        for axis in 0..3 {
+            let want =
+                (capped(stepped(key, axis, 1)) - capped(stepped(key, axis, -1))) / (2.0 * VOXEL_M);
+            assert!(
+                (at.gradient[axis] - want).abs() <= ROUNDING_M / VOXEL_M,
+                "axis {axis}: {at:?} against {want} at {q:?}"
+            );
+        }
+    }
+}
+
+// Three voxels from the one occupied voxel along x, the distance falls by one voxel
+// toward it and rises by one away from it: a gradient of 1 along x, and 0 across it,
+// where the neighbors stand alike. A cap of two and a half voxels rounds up to three, as
+// MoveIt's propagation field rounds it, which stops the distance ahead there at three
+// voxels: the gradient along x falls to 0.5, and the distance stays three voxels.
+#[test]
+fn a_cap_flattens_the_gradient_where_a_neighbor_reaches_it() {
+    let mut map = map();
+    let hit = map.key([1.0, 0.0, 0.0]).expect("in the map");
+    let point = map.center(hit).map(|c| c as f32);
+    insert(&mut map, identity(), &[point], &[]);
+    assert_eq!(map.occupied().collect::<Vec<_>>(), vec![hit]);
+    let field = DistanceField::of(&map);
+    let q = map.center(stepped(hit, 0, 3));
+    let at = |limit: f64| {
+        field
+            .gradient(q, cap(limit))
+            .expect("a point")
+            .expect("inside the map")
+    };
+    let uncapped = at(10.0);
+    assert!(
+        (uncapped.distance - 3.0 * VOXEL_M).abs() <= ROUNDING_M,
+        "{uncapped:?}"
+    );
+    for (axis, want) in [1.0, 0.0, 0.0].into_iter().enumerate() {
+        assert!(
+            (uncapped.gradient[axis] - want).abs() <= 1e-12,
+            "{uncapped:?}"
+        );
+    }
+    let capped = at(2.5 * VOXEL_M);
+    assert!(
+        (capped.distance - 3.0 * VOXEL_M).abs() <= ROUNDING_M,
+        "{capped:?}"
+    );
+    assert!((capped.gradient[0] - 0.5).abs() <= 1e-12, "{capped:?}");
+}
+
+// A map with nothing occupied reads the cap, rounded up to whole voxels, everywhere,
+// with no slope.
+#[test]
+fn a_map_with_nothing_occupied_reads_the_cap_and_no_slope() {
+    let field = DistanceField::of(&map());
+    let at = field
+        .gradient([0.3, -0.2, 0.1], cap(0.27))
+        .expect("a point")
+        .expect("inside the map");
+    assert!((at.distance - 6.0 * VOXEL_M).abs() <= ROUNDING_M, "{at:?}");
+    assert_eq!(at.gradient, [0.0; 3]);
+}
+
+// Outside the map, and on its outermost voxels, which lack a neighbor on one
+// side, there is no gradient, where MoveIt reports the point out of bounds.
+#[hegel::test]
+fn outside_the_map_and_on_its_edge_there_is_no_gradient(tc: TestCase) {
+    let map = drawn_map(&tc);
+    let field = DistanceField::of(&map);
+    let q = outside(&tc);
+    assert_eq!(field.gradient(q, cap(0.25)), Ok(None), "{q:?}");
+    let axis = tc.draw(gs::integers::<usize>().max_value(2));
+    let edge = if tc.draw(gs::booleans()) {
+        EDGE_M + VOXEL_M / 2.0
+    } else {
+        -EDGE_M + VOXEL_M / 2.0
+    };
+    let mut q = [0.0; 3];
+    q[axis] = edge;
+    let key = map.key(q).expect("the edge voxel lies in the map");
+    let outward = if edge > 0.0 { 1 } else { -1 };
+    assert_eq!(
+        map.key(map.center(stepped(key, axis, outward))),
+        None,
+        "{q:?} lies on an outermost voxel"
+    );
+    assert_eq!(field.gradient(q, cap(0.25)), Ok(None), "{q:?}");
+}
+
+#[test]
+fn the_gradient_at_a_point_that_is_not_a_number_is_refused() {
+    let field = DistanceField::of(&map());
+    let q = [0.0, f64::NAN, 0.0];
+    assert!(matches!(field.gradient(q, cap(0.25)), Err(NotANumber(_))));
+}
+
 /// The camera of the rendered frames: an ideal pinhole, 160 by 90 pixels.
 const BOX_CAMERA: Intrinsics<'static> = Intrinsics {
     width: 160,
@@ -940,6 +1074,49 @@ fn an_object_clears_the_voxels_it_intersects(tc: TestCase) {
             assert_eq!(map.voxel(key), voxel, "{key:?} beyond the object changed");
         }
     }
+}
+
+/// OctoMap's upper bound of a voxel's log-odds, the log-odds of 0.971.
+fn highest() -> f32 {
+    (0.971_f64 / (1.0 - 0.971)).ln() as f32
+}
+
+// An object occupies the voxels it clears: the voxels that clear_intersecting reaches on
+// an empty map, occupy_intersecting takes to the highest log-odds on a map a scan has
+// filled, and it leaves every other voxel as it was; the distance field of the map then
+// reads 0 at the object's center.
+#[hegel::test]
+fn an_object_occupies_the_voxels_it_clears(tc: TestCase) {
+    let sensor = sensor(&tc);
+    let points: Vec<[f32; 3]> = (0..60).map(|_| point(&tc, 0.2, 1.5)).collect();
+    let mut scanned = map();
+    insert(&mut scanned, sensor, &points, &[]);
+    let at: [f64; 3] = tc.draw(gs::arrays(gs::floats().min_value(-1.0).max_value(1.0)));
+    let shape = object_shape(&tc);
+    let placed = PlacedShape::new(
+        &shape,
+        Isometry3::from_parts(Translation3::new(at[0], at[1], at[2]), turned(&tc)),
+    );
+    let mut cleared = map();
+    cleared.clear_intersecting(&placed);
+    let touched: BTreeSet<Key> = cleared.known().collect();
+    let center = cleared.key(at).expect("inside the map");
+    assert!(
+        touched.contains(&center),
+        "the object holds its center's voxel"
+    );
+    let mut occupied = scanned.clone();
+    occupied.occupy_intersecting(&placed);
+    let keys: BTreeSet<Key> = occupied.known().chain(scanned.known()).collect();
+    for key in keys {
+        let want = if touched.contains(&key) {
+            Some(highest())
+        } else {
+            log_odds(&scanned, key)
+        };
+        assert_eq!(log_odds(&occupied, key), want, "{key:?}");
+    }
+    assert_eq!(DistanceField::of(&occupied).distance(at), Ok(0.0));
 }
 
 // A point inside a collision object grown by its padding marks nothing, and a point

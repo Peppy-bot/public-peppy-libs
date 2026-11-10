@@ -4,7 +4,7 @@ A voxel map of what a depth sensor sees, in a frame the caller names: log-odds o
 over a bounded grid of voxels, each scan's points clearing the voxels their rays cross
 and marking the voxels they hit, with the robot and the collision objects cut out, the
 voxels a collision object intersects cleared, and the distance from any point to the
-nearest occupied voxel. No hardware or messaging dependencies.
+nearest occupied voxel, with its gradient. No hardware or messaging dependencies.
 
 - `VoxelMap` holds the voxels in its `Frame`, inserts a `Scan` with the shapes it cuts
   out, answers each voxel's state, its box and the occupied voxels inside a box,
@@ -15,7 +15,8 @@ nearest occupied voxel. No hardware or messaging dependencies.
 - `depth_points` reads a z16 depth frame as the points of its valid samples, from its
   stream's pinhole model (`camera_core::pinhole`).
 - `DistanceField` holds, for a map as it stands, the distance from each voxel's center
-  to the center of the nearest occupied voxel.
+  to the center of the nearest occupied voxel, and gives its gradient capped as a
+  propagation field caps it.
 
 ## Quick start
 
@@ -124,9 +125,11 @@ seeing the object.
 intersects or comes within 1e-9 m of, ten times the gap at which GJK counts two bodies as
 touching, since GJK measures a face that touches a voxel's face as a gap of rounding. Each
 takes the lowest log-odds, as a clip point's voxel does, so the map holds nothing where
-the object stands. A primitive is measured against each voxel whose box meets its bounds,
-faces included, by GJK. A mesh is measured by its surface: a voxel near one of its
-triangles' bounds is cleared when the triangle touches it, and every other voxel lies
+the object stands. `occupy_intersecting` takes the same voxels to the highest log-odds,
+so a distance field of the map holds the object, as MoveIt's CHOMP holds each object of
+its world in its field. A primitive is measured against each voxel whose box meets its
+bounds, faces included, by GJK. A mesh is measured by its surface: a voxel near one of its
+triangles' bounds is touched when the triangle touches it, and every other voxel lies
 wholly inside the mesh or wholly outside it, as does each region of them joined by their
 faces: the first and the last voxel of a region decide it where the test answers them
 alike, and each voxel decides its own where it answers them otherwise, as a wrong inside
@@ -144,6 +147,16 @@ centers, joined at a right angle to a lower bound of `p`'s distance. Straight ou
 voxel center on the map's face, with every occupied voxel on that face, the bound is the
 distance itself. A map with nothing occupied reads infinity everywhere, and a point that
 is not a number is refused.
+
+`DistanceField::gradient` gives what MoveIt 2.15.2's `DistanceField::getDistanceGradient`
+gives CHOMP from its propagation field, whose distances stop at its propagation distance:
+every distance capped at the caller's cap rounded up to whole voxels, as MoveIt's field
+holds distances up to `ceil(cap / resolution)` voxels, the capped distance at the center
+of a point's voxel, and the gradient there by central differences, along each axis the
+capped distance at the voxel's neighbor ahead less that at its neighbor behind, over twice
+the voxel size.
+Outside the map, and on its outermost voxels, which lack a neighbor on one side, it gives
+none, where MoveIt reports the point out of bounds.
 
 ## Agreement with MoveIt
 

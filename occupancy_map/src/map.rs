@@ -383,6 +383,20 @@ impl VoxelMap {
     /// bounds; a mesh as `mesh_intersecting` finds them, with the same verdicts wherever
     /// `touches` answers alike across a region of voxels that no triangle touches.
     pub fn clear_intersecting(&mut self, shape: &PlacedShape) {
+        self.update_intersecting(shape, self.model.cut_out);
+    }
+
+    /// Marks occupied every voxel of the map that `shape` touches, the voxels
+    /// `clear_intersecting` clears: each takes the highest log-odds, so a distance field of
+    /// the map holds the collision object where it stands, as MoveIt's CHOMP holds each
+    /// object of its world in its field.
+    pub fn occupy_intersecting(&mut self, shape: &PlacedShape) {
+        self.update_intersecting(shape, self.model.filled);
+    }
+
+    /// Updates by `update` every voxel of the map that `shape` touches, as `touches` finds
+    /// them.
+    fn update_intersecting(&mut self, shape: &PlacedShape, update: f32) {
         let (min, max) = reach(shape.bounds());
         let intersected: Vec<Key> = match shape.mesh() {
             Some(mesh) => self.mesh_intersecting(shape, &mesh, min, max),
@@ -397,7 +411,7 @@ impl VoxelMap {
                 .grid
                 .index(key)
                 .expect("a key between two of the grid's voxels");
-            self.update(index, self.model.cut_out);
+            self.update(index, update);
         }
     }
 

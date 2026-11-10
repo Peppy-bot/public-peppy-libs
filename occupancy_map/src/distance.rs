@@ -1,7 +1,10 @@
 //! The distance from any point to the nearest occupied voxel of a map: the
 //! exact Euclidean distance transform of the grid (Felzenszwalb and
 //! Huttenlocher, "Distance Transforms of Sampled Functions", 2012), taken
-//! between voxel centers, one axis at a time.
+//! between voxel centers, one axis at a time, and its gradient by central
+//! differences, as MoveIt's distance field gives it to CHOMP.
+
+use control_core::positive_finite::PositiveFinite;
 
 use crate::grid::Grid;
 use crate::key::Key;
@@ -77,12 +80,68 @@ impl DistanceField {
         Ok((between(point, projected).powi(2) + from_projected.powi(2)).sqrt())
     }
 
+    /// The distance at the center of `point`'s voxel and its gradient there,
+    /// every distance first capped at `cap` rounded up to whole voxels, as
+    /// MoveIt's `DistanceField::getDistanceGradient` reads a propagation field
+    /// whose distances stop at `ceil(cap / resolution)` voxels
+    /// (propagation_distance_field.cpp:88): along each axis, the capped
+    /// distance at the voxel's neighbor ahead less the capped distance at its
+    /// neighbor behind, over twice the voxel size. None outside the map and on
+    /// its outermost voxels, which lack a neighbor on one side, where MoveIt
+    /// reports the point out of bounds.
+    pub fn gradient(
+        &self,
+        point: [f64; 3],
+        cap: PositiveFinite,
+    ) -> Result<Option<DistanceGradient>, NotANumber> {
+        if point.iter().any(|c| c.is_nan()) {
+            return Err(NotANumber(point));
+        }
+        let Some(key) = self.grid.key(point) else {
+            return Ok(None);
+        };
+        let size = self.grid.size.get();
+        let limit = (cap.get() / size).ceil() * size;
+        let capped = |key: Key| {
+            self.grid
+                .index(key)
+                .map(|index| self.distance_at(index).min(limit))
+        };
+        let neighbor = |axis: usize, step: i32| {
+            capped(Key(std::array::from_fn(|i| {
+                key.0[i] + if i == axis { step } else { 0 }
+            })))
+        };
+        let differences = [0, 1, 2].map(|axis| Some(neighbor(axis, 1)? - neighbor(axis, -1)?));
+        let [Some(x), Some(y), Some(z)] = differences else {
+            return Ok(None);
+        };
+        let twice = 2.0 * size;
+        Ok(Some(DistanceGradient {
+            distance: capped(key).expect("the grid holds the point's voxel"),
+            gradient: [x / twice, y / twice, z / twice],
+        }))
+    }
+
     /// The distance from the center of voxel `key` of the grid to the center
     /// of the nearest occupied voxel.
     fn at(&self, key: Key) -> f64 {
-        let index = self.grid.index(key).expect("the grid holds the voxel");
+        self.distance_at(self.grid.index(key).expect("the grid holds the voxel"))
+    }
+
+    /// The distance from the center of the voxel at `index` of the grid to the
+    /// center of the nearest occupied voxel.
+    fn distance_at(&self, index: usize) -> f64 {
         self.squared[index].sqrt() * self.grid.size.get()
     }
+}
+
+/// The capped distance at the center of a voxel, and its gradient there, a
+/// vector in the map's frame of meters per meter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DistanceGradient {
+    pub distance: f64,
+    pub gradient: [f64; 3],
 }
 
 /// A distance asked at a point that is not a number on every axis.

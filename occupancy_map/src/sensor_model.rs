@@ -27,6 +27,9 @@ pub(crate) struct SensorModel {
     /// What a voxel inside the robot adds: enough to take any log-odds to
     /// the lower bound, as MoveIt's updater sets it.
     pub cut_out: f32,
+    /// What a voxel a collision object fills adds: enough to take any log-odds to the
+    /// upper bound.
+    pub filled: f32,
     min: f32,
     max: f32,
 }
@@ -38,6 +41,7 @@ impl SensorModel {
             hit: log_odds(PROB_HIT),
             miss: log_odds(PROB_MISS),
             cut_out: min - max,
+            filled: max - min,
             min,
             max,
         }
