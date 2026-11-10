@@ -16,7 +16,7 @@ change of the reference, which `run.sh --check` proves.
 | Kind of scenario | Reference | Parity test |
 |---|---|---|
 | `forward_kinematics` | MoveIt's robot state: the global transform of each link of a chain | `chain_kinematics/tests/ros_reference_forward_kinematics.rs` |
-| `chain_collision` | MoveIt's robot model, robot state and robot filter: the links with collision geometry that a chain carries and the center MoveIt grows each of their bodies about, the global transform of each carried link, and whether each probe point lies inside the links' bodies (a convex mesh for a mesh, the primitive itself for a box, a cylinder or a sphere) grown by a padding | `collision_geometry/tests/ros_reference_chain_collision.rs` |
+| `chain_collision` | MoveIt's robot model, robot state and robot filter: the links with collision geometry that a chain carries and the center MoveIt grows each of their bodies about, the global transform of each carried link, whether each probe point lies inside the links' bodies (a convex mesh for a mesh, the primitive itself for a box, a cylinder or a sphere) grown by a padding, and the collision spheres that CHOMP's collision checker places on each carried link, its bodies grown by each sphere padding | `collision_geometry/tests/ros_reference_chain_collision.rs` |
 | `self_distance` | MoveIt's FCL collision environment: the signed distance between the collision meshes of each pair of links | `self_collision_model/tests/ros_reference_self_distance.rs` |
 | `path_timing` | MoveIt's time-optimal trajectory generation (TOTG): the blended path through waypoints at a maximum deviation, and its time-optimal duration under velocity and acceleration limits, or its refusal of a path that turns back | `control_core/tests/ros_reference_path_timing.rs` |
 | `planning` | OMPL's geometric planners: the status of each plan through worlds of box obstacles, and for every planner but PRM its ending, its path and the path's simplification | `ompl_bridge/tests/ros_reference_planning.rs` |
@@ -236,7 +236,9 @@ arguments that the launcher fragment gives, and names each episode it drops and 
    limits, and five drawn inside them; for chain collision, four configurations a chain,
    all joints at zero, at their lower limits, at their upper limits, and one drawn inside
    them, with four probe points a link at each, and at the first, for each padding, the
-   points 10 µm inside and outside the surface of each grown primitive; for self distance,
+   points 10 µm inside and outside the surface of each grown primitive, and the collision
+   spheres of each carried link at no padding and at the clearance of OpenArm v2's
+   launch; for self distance,
    the three configurations of OpenArm v2 and the three of SO-101, each robot's of its
    zero configuration, its lower limits, its upper limits and thirty drawn inside them,
    that put each pair of links in each state, apart and in contact, that any of them puts

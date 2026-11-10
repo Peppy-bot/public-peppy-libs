@@ -160,11 +160,11 @@ impl<'a, const N: usize> RobotMask<'a, N> {
             })
             .collect();
         let parts = riders.iter().filter_map(|(rider, pose)| match rider.body {
-            RiderBody::Pieces(pieces) => Some((rider.name, pieces, *pose)),
+            RiderBody::Part(part) => Some((rider.name, part.pieces(), *pose)),
             RiderBody::Shape(_) => None,
         });
         let objects = riders.iter().filter_map(|(rider, pose)| match rider.body {
-            RiderBody::Pieces(_) => None,
+            RiderBody::Part(_) => None,
             RiderBody::Shape(shape) => Some(PlacedShape::new(shape, *pose)),
         });
         Self {

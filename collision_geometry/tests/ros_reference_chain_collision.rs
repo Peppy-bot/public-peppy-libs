@@ -6,7 +6,9 @@
 //! an arm dressed in boxes, cylinders and spheres and a turned wedge, the chain carries
 //! the links that MoveIt's chain carries, each at MoveIt's transform within
 //! [`FRAME_TOLERANCE`], and for each padding the filter holds to its rule on every probe,
-//! and answers as MoveIt's robot filter outside the band of each body.
+//! and answers as MoveIt's robot filter outside the band of each body. For each sphere
+//! padding, each link holds the collision spheres that CHOMP's collision checker places
+//! on it, within [`FRAME_TOLERANCE`].
 //!
 //! The rule: a grown element holds every point within the offset of the element scaled
 //! about its center, and no point farther. A mesh scales from its piece, which holds the
@@ -35,6 +37,7 @@ use collision_geometry::chain::{ChainGeometry, Padding, Piece, PlacedChain};
 use collision_geometry::gjk::{self, Hull, Vertex};
 use collision_geometry::hull::{ConvexHull, exact_hull};
 use collision_geometry::nalgebra::{Isometry3, Matrix3, Point3, Rotation3, Translation3, Vector3};
+use collision_geometry::spheres::CollisionSphere;
 use collision_geometry::urdf_collision::{Collision, CollisionGeometry};
 use kinematics_properties::TOLERANCE;
 use ros_reference::LinkPose;
@@ -271,6 +274,43 @@ fn each_chain_carries_moveits_links_at_moveits_frames() {
                          {translation:e} m and {rotation:e} in rotation",
                         pose.link
                     );
+                }
+            }
+        }
+    }
+}
+
+// For each sphere padding, each link holds the collision spheres that CHOMP's collision
+// checker places on it: as many, in MoveIt's order, each center and radius within
+// FRAME_TOLERANCE of MoveIt's.
+#[test]
+fn each_link_holds_chomps_collision_spheres() {
+    for cases in scenarios() {
+        for chain in &cases.chains {
+            let geometry = geometry_of(&cases, chain);
+            for (padding, by_link) in cases.sphere_paddings.iter().zip(&chain.spheres) {
+                for (name, moveits) in chain.links.iter().zip(by_link) {
+                    let at = format!("{} {} {name} padded by {padding}", cases.name, chain.name);
+                    let link = geometry
+                        .links()
+                        .iter()
+                        .find(|link| link.name() == name)
+                        .expect("the chain carries MoveIt's links");
+                    let ours: Vec<CollisionSphere> = link
+                        .pieces()
+                        .iter()
+                        .flat_map(|piece| piece.sphere_source().spheres(*padding))
+                        .collect();
+                    assert_eq!(ours.len(), moveits.len(), "{at}: the count of spheres");
+                    for (k, (ours, theirs)) in ours.iter().zip(moveits).enumerate() {
+                        let miss = (ours.center - Point3::from(theirs.center))
+                            .amax()
+                            .max((ours.radius - theirs.radius).abs());
+                        assert!(
+                            miss <= FRAME_TOLERANCE,
+                            "{at} sphere {k}: {ours:?} against MoveIt's {theirs:?}"
+                        );
+                    }
                 }
             }
         }

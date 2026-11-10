@@ -213,7 +213,7 @@ pub(crate) fn rider_pose<const N: usize>(posed: &Posed<N>, rider: &Rider) -> Iso
 /// part's pieces, or the object's shape.
 fn rider_bodies<'a>(rider: &Rider<'a>, pose: Isometry3<f64>) -> impl Iterator<Item = Body<'a>> {
     let (pieces, shape) = match rider.body {
-        RiderBody::Pieces(pieces) => (pieces, None),
+        RiderBody::Part(part) => (part.pieces(), None),
         RiderBody::Shape(shape) => (&[][..], Some(shape)),
     };
     pieces

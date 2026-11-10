@@ -12,7 +12,9 @@ first, for each padding and each primitive, a point SURFACE_STEP inside and one
 SURFACE_STEP outside a drawn point of the surface of the primitive grown by the padding.
 A probe lies in its link's frame, so it tests the same body at every configuration. The
 robot filter grows the links by each of PADDINGS: none, an offset alone, and a scale
-with an offset. Run it from any directory:
+with an offset. CHOMP's collision checker places each carried link's collision spheres
+at each of SPHERE_PADDINGS: none, and the clearance of OpenArm v2's launch. Run it from
+any directory:
 
     python3 ros_reference/tools/draw_chain_collision.py
     python3 ros_reference/tools/draw_chain_collision.py --drawn 50
@@ -45,6 +47,9 @@ PADDINGS = [
     {"scale": 1.0, "offset": 0.03},
     {"scale": 1.1, "offset": 0.01},
 ]
+# The paddings of the collision spheres, in meters: none, and the min_clearance_m of
+# OpenArm v2's motion planner (launchers-hub openarm/fragments/motion_planner.json5).
+SPHERE_PADDINGS = [0.0, 0.04]
 
 OPENARM = "chain_collision_openarm_v2"
 OPENARM_URDF = "openarm_description/assets/openarm_v20.urdf"
@@ -284,6 +289,7 @@ def main():
             "urdf": OPENARM_URDF,
             "meshes": OPENARM_MESHES,
             "paddings": PADDINGS,
+            "sphere_paddings": SPHERE_PADDINGS,
             "chains": [
                 chain(
                     rng,
@@ -310,6 +316,7 @@ def main():
             "urdf": PRIMITIVE_ARM,
             "meshes": PRIMITIVE_MESHES,
             "paddings": PADDINGS,
+            "sphere_paddings": SPHERE_PADDINGS,
             "chains": [
                 chain(
                     rng,

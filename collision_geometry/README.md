@@ -18,7 +18,8 @@ or messaging dependencies.
   such as a gripper finger at the gripper's opening, or a shape of a collision object
   attached to the link. It holds its name, the part's link name or the object's id, the
   segment of the link that carries it, its offset in that link's frame, and its body in
-  its own frame (`RiderBody`): a part's pieces, or the object's shape.
+  its own frame (`RiderBody`): a part, with its pieces and the bodies of their collision
+  spheres, or the object's shape.
   `ChainGeometry::carried` gives the parts below the chain's links across movable
   joints off its path, each a `CarriedPart` placed with those joints at 0, as riders.
 - `chain::BodyGeometry` holds the pieces of the links that fixed joints alone join to
@@ -30,6 +31,9 @@ or messaging dependencies.
   distance; it tests whether a point lies inside a shape grown by a padding by the
   robot filter's rule, and gives the box along the frame's axes that holds a placed
   shape.
+- `spheres` places the collision spheres of a `<collision>` element as MoveIt's CHOMP
+  places them (see Collision spheres); each piece of a chain, and of a part it carries,
+  holds the body they are placed on.
 - `urdf_collision`, `stl` and `hull` read the collision elements of a URDF (meshes,
   boxes, cylinders and spheres) and build the exact convex hull of a point cloud.
 
@@ -146,6 +150,23 @@ distance is therefore continuous through contact: it falls smoothly through zero
 caller can tell separating motion from approaching motion even inside an overlap.
 `gjk::Vertex` is a single point as a body, for the distance from a point to a piece.
 
+## Collision spheres
+
+`spheres::SphereSource::spheres` places the collision spheres of an element as MoveIt
+2.15.2's distance-field collision checker places them for CHOMP
+(`determineCollisionSpheres`). A sphere is one sphere of its own radius, unpadded, as the
+checker reads a sphere's dimensions. Every other element gets spheres of the radius of its
+bounding cylinder on the cylinder's axis, `ceil(length / (radius / 2))` points evenly
+spaced from end to end, the two at the ends left out, so a cylinder of fewer than three
+points gets none. The bounding cylinder is geometric_shapes 2.3.4's, of the element grown
+by the padding: a box's runs along its longest side, its radius the half diagonal of the
+other two; a cylinder's is the cylinder; a mesh's runs along the longest side of the box
+of its vertices in its own frame, through the box's center, as long as that side, its
+radius the farthest vertex's distance from the axis, and the padding adds to the radius
+and twice to the length. For each sphere padding of the chain collision scenarios of the
+ROS reference harness, each link's spheres are those CHOMP's checker places, within
+1e-12 (`tests/ros_reference_chain_collision.rs`).
+
 ## The robot filter
 
 `Mask` holds every collision element grown by a `Padding`: the element scaled by `scale`
@@ -250,6 +271,8 @@ src/
   gjk.rs             GJK distance, EPA penetration, Hull, Placed and Vertex
   shapes.rs          Shape, PlacedShape, PlacedMesh, the closed triangle mesh's hierarchy
                      and inside test
+  spheres.rs         CollisionSphere, SphereSource: CHOMP's collision spheres of an
+                     element
   stl.rs             binary STL reader
   urdf_collision.rs  URDF collision elements and their surfaces, fixed poses, joint
                      transforms
@@ -265,7 +288,8 @@ tests/
   fixtures/thin_plate.rs             a cloud whose first hull fails on rounding
   fit_prints_nothing.rs              a fit prints nothing to stdout or stderr
   hull_without_a_free_descriptor.rs  a hull with no file descriptor free
-  ros_reference_chain_collision.rs   link frames and the robot filter against MoveIt
+  ros_reference_chain_collision.rs   link frames, the robot filter and CHOMP's spheres
+                                     against MoveIt
 ```
 
 ## Testing

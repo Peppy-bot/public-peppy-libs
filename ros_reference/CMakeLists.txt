@@ -39,6 +39,7 @@ add_executable(ros_reference
 target_link_libraries(ros_reference PRIVATE
   geometric_shapes::geometric_shapes
   moveit_core::moveit_collision_detection
+  moveit_core::moveit_collision_distance_field
   moveit_core::moveit_collision_detection_fcl
   moveit_core::moveit_kinematic_constraints
   moveit_core::moveit_planning_scene

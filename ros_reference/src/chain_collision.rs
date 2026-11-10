@@ -2,7 +2,9 @@
 //! links with collision geometry that the chain carries and the center it grows each of
 //! their bodies about, its robot state, posed at each configuration of the chain, gives
 //! the global transform of each carried link, and its robot filter, the bodies of those
-//! links grown by a padding, tells whether each probe point lies inside them.
+//! links grown by a padding, tells whether each probe point lies inside them; CHOMP's
+//! collision checker gives the collision spheres of each carried link at each of the
+//! scenario's sphere paddings.
 
 use crate::{
     Kind, LinkPose, read_mesh_directory, read_reference, read_scenario, read_urdf, scenario_names,
@@ -18,7 +20,8 @@ enum ThisKind {
     ChainCollision,
 }
 
-/// A robot, the paddings to grow its links by, and the chains of it to pose.
+/// A robot, the paddings to grow its links by, the paddings of their collision spheres,
+/// and the chains of it to pose.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Scenario {
@@ -29,6 +32,9 @@ struct Scenario {
     /// relative to the repository root; absent for a URDF that names no collision mesh.
     meshes: Option<String>,
     paddings: Vec<Padding>,
+    /// The paddings, in meters, that CHOMP's collision checker grows each link's bodies
+    /// by before it places their collision spheres.
+    sphere_paddings: Vec<f64>,
     chains: Vec<Chain>,
 }
 
@@ -67,27 +73,30 @@ pub struct Probe {
     pub position: [f64; 3],
 }
 
-/// The paddings of the scenario as the reference read them, and for each chain of the
-/// scenario, in its order, and each of its configurations: the positions and the probe
-/// points as the reference read them, the global transform of each link the chain
-/// carries, in the order of the links, and for each padding, in its order, whether
-/// each probe point lies inside the grown links.
+/// The paddings and the sphere paddings of the scenario as the reference read them, and
+/// for each chain of the scenario, in its order, and each of its configurations: the
+/// positions and the probe points as the reference read them, the global transform of
+/// each link the chain carries, in the order of the links, and for each padding, in its
+/// order, whether each probe point lies inside the grown links.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reference {
     kind: ThisKind,
     paddings: Vec<Padding>,
+    sphere_paddings: Vec<f64>,
     chains: Vec<ChainOutput>,
 }
 
 /// A chain's output: the links with collision geometry that MoveIt's chain carries, the
-/// center of each of their bodies, and one output per configuration.
+/// center of each of their bodies, their collision spheres, and one output per
+/// configuration.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChainOutput {
     name: String,
     links: Vec<String>,
     bodies: Vec<Body>,
+    spheres: Vec<Vec<Vec<Sphere>>>,
     configurations: Vec<PosedOutput>,
 }
 
@@ -98,6 +107,14 @@ struct ChainOutput {
 pub struct Body {
     pub link: String,
     pub center: [f64; 3],
+}
+
+/// A collision sphere of a link, its center in the link's frame.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sphere {
+    pub center: [f64; 3],
+    pub radius: f64,
 }
 
 #[derive(Deserialize)]
@@ -118,6 +135,7 @@ pub struct Cases {
     /// The directory of the collision meshes; `None` for a URDF that names none.
     pub meshes: Option<PathBuf>,
     pub paddings: Vec<Padding>,
+    pub sphere_paddings: Vec<f64>,
     pub chains: Vec<ChainCase>,
 }
 
@@ -130,6 +148,9 @@ pub struct ChainCase {
     pub tip_link: String,
     pub links: Vec<String>,
     pub bodies: Vec<Body>,
+    /// For each sphere padding, in its order, the collision spheres of each link, in the
+    /// order of the links.
+    pub spheres: Vec<Vec<Vec<Sphere>>>,
     pub configurations: Vec<Configuration>,
 }
 
@@ -147,7 +168,8 @@ pub struct Configuration {
 impl Cases {
     /// Every chain collision scenario under `scenarios/`, in the order of their names,
     /// each paired with its reference output: the reference read the scenario's
-    /// paddings, each chain's output names a body of a carried link with each center, and
+    /// paddings and sphere paddings, each chain's output names a body of a carried link
+    /// with each center, holds the spheres of each link for each sphere padding, and
     /// one output per chain and per configuration, which read its positions and probe
     /// points, holds one pose per carried link and one answer per padding and per probe.
     pub fn load_all() -> Vec<Self> {
@@ -163,34 +185,49 @@ impl Cases {
             urdf,
             meshes,
             paddings,
+            sphere_paddings,
             chains,
         } = read_scenario(&name);
         let Reference {
             kind: ThisKind::ChainCollision,
             paddings: paddings_read,
+            sphere_paddings: sphere_paddings_read,
             chains: outputs,
         } = read_reference(&name);
         assert_eq!(
             paddings_read, paddings,
             "{name}: the reference read the paddings"
         );
+        assert_eq!(
+            sphere_paddings_read, sphere_paddings,
+            "{name}: the reference read the sphere paddings"
+        );
         assert_eq!(chains.len(), outputs.len(), "{name}: one output per chain");
         let chains = chains
             .into_iter()
             .zip(outputs)
-            .map(|(chain, output)| pair(&name, paddings.len(), chain, output))
+            .map(|(chain, output)| {
+                pair(&name, paddings.len(), sphere_paddings.len(), chain, output)
+            })
             .collect();
         Cases {
             urdf: read_urdf(&name, &urdf),
             meshes: meshes.map(|meshes| read_mesh_directory(&name, &meshes)),
             name,
             paddings,
+            sphere_paddings,
             chains,
         }
     }
 }
 
-fn pair(name: &str, paddings: usize, chain: Chain, output: ChainOutput) -> ChainCase {
+fn pair(
+    name: &str,
+    paddings: usize,
+    sphere_paddings: usize,
+    chain: Chain,
+    output: ChainOutput,
+) -> ChainCase {
     let context = format!("{name} {}", chain.name);
     assert_eq!(
         chain.name, output.name,
@@ -202,6 +239,18 @@ fn pair(name: &str, paddings: usize, chain: Chain, output: ChainOutput) -> Chain
             links.contains(&body.link),
             "{context}: the body of {} belongs to a carried link",
             body.link
+        );
+    }
+    assert_eq!(
+        output.spheres.len(),
+        sphere_paddings,
+        "{context}: one set of spheres per sphere padding"
+    );
+    for spheres in &output.spheres {
+        assert_eq!(
+            spheres.len(),
+            links.len(),
+            "{context}: the spheres of each carried link"
         );
     }
     assert_eq!(
@@ -257,6 +306,7 @@ fn pair(name: &str, paddings: usize, chain: Chain, output: ChainOutput) -> Chain
         tip_link: chain.tip_link,
         links,
         bodies: output.bodies,
+        spheres: output.spheres,
         configurations,
     }
 }
@@ -269,7 +319,7 @@ mod tests {
     fn a_scenario_of_another_kind_is_refused() {
         let scenario = |kind: &str| {
             format!(
-                r#"{{"kind": "{kind}", "urdf": "a.urdf", "meshes": "m", "paddings": [], "chains": []}}"#
+                r#"{{"kind": "{kind}", "urdf": "a.urdf", "meshes": "m", "paddings": [], "sphere_paddings": [], "chains": []}}"#
             )
         };
         assert!(serde_json::from_str::<Scenario>(&scenario("forward_kinematics")).is_err());
@@ -295,6 +345,7 @@ mod tests {
             name: "arm".into(),
             links: vec![],
             bodies: vec![],
+            spheres: vec![],
             configurations: vec![PosedOutput {
                 positions: vec![],
                 points: vec![Probe {
@@ -305,7 +356,7 @@ mod tests {
                 inside: vec![vec![]],
             }],
         };
-        pair("scenario", 1, chain, output);
+        pair("scenario", 1, 0, chain, output);
     }
 
     #[test]
@@ -328,6 +379,7 @@ mod tests {
             name: "arm".into(),
             links: vec![],
             bodies: vec![],
+            spheres: vec![],
             configurations: vec![PosedOutput {
                 positions: vec![],
                 points: vec![probe(0.25)],
@@ -335,7 +387,7 @@ mod tests {
                 inside: vec![vec![true]],
             }],
         };
-        pair("scenario", 1, chain, output);
+        pair("scenario", 1, 0, chain, output);
     }
 
     #[test]
@@ -354,14 +406,15 @@ mod tests {
                 link: "l".into(),
                 center: [0.0; 3],
             }],
+            spheres: vec![],
             configurations: vec![],
         };
-        pair("scenario", 1, chain, output);
+        pair("scenario", 1, 0, chain, output);
     }
 
     #[test]
     fn a_scenario_without_a_mesh_directory_reads() {
-        let text = r#"{"kind": "chain_collision", "urdf": "a.urdf", "paddings": [], "chains": []}"#;
+        let text = r#"{"kind": "chain_collision", "urdf": "a.urdf", "paddings": [], "sphere_paddings": [], "chains": []}"#;
         let scenario: Scenario = serde_json::from_str(text).expect("a scenario reads");
         assert!(scenario.meshes.is_none());
     }

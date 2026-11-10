@@ -7,6 +7,7 @@
     {"scale":1.0,"offset":0.03},
     {"scale":1.1,"offset":0.01}
   ],
+  "sphere_paddings": [0.0,0.04],
   "chains": [
     {
       "name": "left",
