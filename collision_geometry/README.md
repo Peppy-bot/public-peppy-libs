@@ -254,6 +254,10 @@ A binary distributed with this crate in it includes Qhull, so, as that license a
 ships Qhull's `COPYING.txt` with it and states that Qhull's source can be obtained from
 [qhull.org](http://www.qhull.org).
 
+`src/spheres.rs` translates MoveIt's placement of collision spheres and geometric_shapes'
+bounding cylinder, and keeps their BSD license notice. A binary distributed with this crate
+in it ships that notice with it too, as the notice's second clause asks.
+
 ## Layout
 
 ```text

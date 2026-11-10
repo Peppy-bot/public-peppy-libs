@@ -442,7 +442,8 @@ states alone, and answers INVALID_MOTION_PLAN when it fails.
 
 `src/chomp.rs` is MoveIt 2.15.2's CHOMP optimizer (`chomp_motion_planner`) in Rust, with the
 values of its planner plugin (`chomp_interface.cpp`, `loadParams`), and keeps MoveIt's BSD
-license notice. A plan whose `refiner` is `Refiner::Chomp` refines the path its planner
+license notice. A binary distributed with this crate in it includes that code, so, as the
+notice's second clause asks, it ships the notice with it. A plan whose `refiner` is `Refiner::Chomp` refines the path its planner
 answers. CHOMP starts from the path the robot runs through it, its corners rounded as
 execute_joint_path rounds them, its 101 points, 3 s at 0.03 s, evenly spaced along it; the
 start and the end stay where they are, and the 99 points between them are free. MoveIt's
